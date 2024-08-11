@@ -1,15 +1,7 @@
-use sse::document::Document;
-use sse::examples::basic::standard_sexp_whitespace_chars;
-use sse::Encloser as SSEEncloser;
-use sse::Operator as SSEOperator;
-use sse::ParseError;
-use sse::SyntaxContext;
-use sse::SyntaxGraph;
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Context {
-  Main,
-}
+use sse::{
+  document::Document, standard_whitespace_chars, Encloser as SSEEncloser,
+  Operator as SSEOperator, ParseError, SyntaxGraph,
+};
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Encloser {
   Parens,
@@ -78,34 +70,12 @@ impl SSEOperator for Operator {
 
 pub fn parse_tynt(
   tynt_source: &str,
-) -> Result<Document<Context, Encloser, Operator>, ParseError> {
+) -> Result<Document<(), Encloser, Operator>, ParseError> {
   Document::from_text_with_syntax(
-    SyntaxGraph::new(
-      Context::Main,
-      [(
-        Context::Main,
-        SyntaxContext::new(
-          vec![Encloser::Parens, Encloser::Square, Encloser::Curly],
-          vec![Operator::Metadata, Operator::TypeAnnotation],
-          None,
-          standard_sexp_whitespace_chars(),
-        ),
-      )]
-      .into_iter()
-      .collect(),
-      [
-        (Encloser::Parens, Context::Main),
-        (Encloser::Square, Context::Main),
-        (Encloser::Curly, Context::Main),
-      ]
-      .into_iter()
-      .collect(),
-      [
-        (Operator::Metadata, Context::Main),
-        (Operator::TypeAnnotation, Context::Main),
-      ]
-      .into_iter()
-      .collect(),
+    SyntaxGraph::contextless(
+      vec![Encloser::Parens, Encloser::Square, Encloser::Curly],
+      vec![Operator::Metadata, Operator::TypeAnnotation],
+      standard_whitespace_chars(),
     ),
     tynt_source,
   )

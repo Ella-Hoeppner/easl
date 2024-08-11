@@ -5,7 +5,7 @@ version = 3
 [[package]]
 name = "sse"
 version = "0.0.0"
-source = "git+https://github.com/Ella-Hoeppner/SSE.git#fdd1eeac7d510657e3f6ccee54baa399eba9a3c5"
+source = "git+https://github.com/Ella-Hoeppner/SSE.git#b8e2943a8228149173a2373f47a6754dc7a22bf6"
 dependencies = [
  "unicode-segmentation",
 ]
