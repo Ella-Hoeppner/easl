@@ -7,17 +7,17 @@ use super::{
 };
 
 pub fn compile_top_level_var(
-  mut expressions: Vec<TyntTree>,
+  mut forms: Vec<TyntTree>,
 ) -> Result<String, CompileError> {
-  match expressions.len() {
-    1 => compile_type_annotated_name(expressions.remove(0))
+  match forms.len() {
+    1 => compile_type_annotated_name(forms.remove(0))
       .map(|s| "var ".to_string() + &s + ";"),
     2 => {
-      let name = compile_type_annotated_name(expressions.remove(1))?;
+      let name = compile_type_annotated_name(forms.remove(1))?;
       if let TyntTree::Inner(
         (_, EncloserOrOperator::Encloser(Encloser::Square)),
         attributes,
-      ) = expressions.remove(0)
+      ) = forms.remove(0)
       {
         if attributes.is_empty() {
           return Err(CompileError::InvalidTopLevelVarAttributes);

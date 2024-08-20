@@ -5,14 +5,12 @@ use super::{
   word::tynt_word_to_wgsl_word,
 };
 
-pub fn compile_struct(
-  expressions: Vec<TyntTree>,
-) -> Result<String, CompileError> {
-  let mut expression_iter = expressions.into_iter();
-  if let Some(TyntTree::Leaf(_, name)) = expression_iter.next() {
+pub fn compile_struct(forms: Vec<TyntTree>) -> Result<String, CompileError> {
+  let mut form_iter = forms.into_iter();
+  if let Some(TyntTree::Leaf(_, name)) = form_iter.next() {
     let mut struct_string =
       "struct ".to_string() + &tynt_word_to_wgsl_word(name) + " {\n";
-    while let Some(field) = expression_iter.next() {
+    while let Some(field) = form_iter.next() {
       struct_string += "  ";
       struct_string += &compile_type_annotated_name(field)?;
       struct_string += ",\n";

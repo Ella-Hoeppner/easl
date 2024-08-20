@@ -7,11 +7,11 @@ use super::{
   structs::compile_struct, var::compile_top_level_var,
 };
 
-pub fn compile_top_level_tynt_expression(
-  expression: TyntTree,
+pub fn compile_top_level_tynt_form(
+  form: TyntTree,
 ) -> Result<String, CompileError> {
-  let original_expression = expression.clone();
-  match expression {
+  let original_form = form.clone();
+  match form {
     TyntTree::Leaf(_, label) => Ok(label.replace("-", "_")),
     TyntTree::Inner((_, encloser_or_operator), mut children) => {
       match encloser_or_operator {
@@ -22,18 +22,18 @@ pub fn compile_top_level_tynt_expression(
               "var" => compile_top_level_var(children_iter.collect()),
               "struct" => compile_struct(children_iter.collect()),
               "fn" => compile_function(children_iter.collect()),
-              _ => Ok(RawSexp::from(original_expression).to_string()),
+              _ => Ok(RawSexp::from(original_form).to_string()),
             }
           } else {
-            Err(CompileError::UnrecognizedTopLevelExpression)
+            Err(CompileError::UnrecognizedTopLevelForm)
           }
         }
         EncloserOrOperator::Operator(Operator::Metadata) => {
-          let body = compile_top_level_tynt_expression(children.remove(1))?;
+          let body = compile_top_level_tynt_form(children.remove(1))?;
           let metadata = compile_metadata(children.remove(0))?;
           Ok(metadata + &body)
         }
-        _ => Err(CompileError::UnrecognizedTopLevelExpression),
+        _ => Err(CompileError::UnrecognizedTopLevelForm),
       }
     }
   }
@@ -45,7 +45,7 @@ pub fn compile_tynt(tynt_source: &str) -> Result<String, CompileError> {
     document
       .syntax_trees
       .into_iter()
-      .map(|tree| compile_top_level_tynt_expression(tree))
+      .map(|tree| compile_top_level_tynt_form(tree))
       .collect::<Result<Vec<String>, CompileError>>()?
       .into_iter()
       .fold(String::new(), |text, tree| text + "\n\n" + &tree)

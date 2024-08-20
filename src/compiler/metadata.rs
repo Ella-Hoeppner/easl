@@ -7,8 +7,8 @@ use super::{
   word::{compile_word, tynt_word_to_wgsl_word},
 };
 
-pub fn compile_metadata(expression: TyntTree) -> Result<String, CompileError> {
-  match expression {
+pub fn compile_metadata(form: TyntTree) -> Result<String, CompileError> {
+  match form {
     TyntTree::Leaf(_, label) => {
       Ok("@".to_string() + &tynt_word_to_wgsl_word(label) + "\n")
     }
@@ -38,32 +38,30 @@ pub fn compile_metadata(expression: TyntTree) -> Result<String, CompileError> {
                 .unwrap(),
             )
           } else {
-            Err(CompileError::InvalidMetadataExpression)
+            Err(CompileError::InvalidMetadataForm)
           }
         }
-        _ => Err(CompileError::InvalidMetadataExpression),
+        _ => Err(CompileError::InvalidMetadataForm),
       }
     }
   }
 }
 
-pub fn compile_expression_possibly_with_metadata(
-  expression: TyntTree,
-  subexpression_compiler: impl Fn(TyntTree) -> Result<String, CompileError>,
+pub fn compile_form_possibly_with_metadata(
+  form: TyntTree,
+  subform_compiler: impl Fn(TyntTree) -> Result<String, CompileError>,
 ) -> Result<String, CompileError> {
   if let TyntTree::Inner(
     (_, EncloserOrOperator::Operator(Operator::Metadata)),
     mut children,
-  ) = expression
+  ) = form
   {
-    let expression = children.remove(1);
-    let metadata_expression = children.remove(0);
-    let expression_string = compile_expression_possibly_with_metadata(
-      expression,
-      subexpression_compiler,
-    )?;
-    Ok(compile_metadata(metadata_expression)? + &expression_string)
+    let form = children.remove(1);
+    let metadata_form = children.remove(0);
+    let form_string =
+      compile_form_possibly_with_metadata(form, subform_compiler)?;
+    Ok(compile_metadata(metadata_form)? + &form_string)
   } else {
-    subexpression_compiler(expression)
+    subform_compiler(form)
   }
 }

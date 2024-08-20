@@ -3,9 +3,9 @@ use sse::ParseError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompileError {
   Parse(ParseError),
-  InvalidMetadataExpression,
+  InvalidMetadataForm,
   ExpectedWord,
-  UnrecognizedTopLevelExpression,
+  UnrecognizedTopLevelForm,
   InvalidStructName,
   InvalidStructBody,
   InvalidStructField,
