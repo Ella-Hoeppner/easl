@@ -6,5 +6,5 @@ fn main() {
     .expect("Unable to read simple.tynt");
   let wgsl = compile_tynt(&tynt_source).expect("failed to compile tynt source");
   fs::create_dir_all("./out/").expect("Unable to create out directory");
-  fs::write("./out/compiled.txt", wgsl).expect("Unable to write file");
+  fs::write("./out/compiled.wgsl", wgsl).expect("Unable to write file");
 }
