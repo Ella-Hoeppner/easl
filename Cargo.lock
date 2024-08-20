@@ -5,10 +5,17 @@ version = 3
 [[package]]
 name = "sse"
 version = "0.0.0"
-source = "git+https://github.com/Ella-Hoeppner/SSE.git#b8e2943a8228149173a2373f47a6754dc7a22bf6"
+source = "git+https://github.com/Ella-Hoeppner/SSE.git#4e3662ff151337384e04a15fe76685a7104c2462"
 dependencies = [
+ "take_mut",
  "unicode-segmentation",
 ]
+
+[[package]]
+name = "take_mut"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f764005d11ee5f36500a149ace24e00e3da98b0158b3e2d53a7495660d3f4d60"
 
 [[package]]
 name = "tynt"

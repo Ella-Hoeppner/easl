@@ -1,6 +1,6 @@
 use sse::{
-  document::Document, standard_whitespace_chars, Encloser as SSEEncloser,
-  Operator as SSEOperator, ParseError, SyntaxGraph,
+  document::Document, standard_whitespace_chars, DocumentSyntaxTree,
+  Encloser as SSEEncloser, Operator as SSEOperator, ParseError, SyntaxGraph,
 };
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Encloser {
@@ -56,7 +56,7 @@ impl SSEOperator for Operator {
   fn right_args(&self) -> usize {
     match self {
       Operator::Metadata => 2,
-      Operator::TypeAnnotation => 0,
+      Operator::TypeAnnotation => 1,
     }
   }
 
@@ -80,3 +80,5 @@ pub fn parse_tynt(
     tynt_source,
   )
 }
+
+pub type TyntTree = DocumentSyntaxTree<Encloser, Operator>;

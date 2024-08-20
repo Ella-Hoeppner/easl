@@ -7,7 +7,7 @@ struct VertexInput {
 
 struct VertexOutput {
   @builtin(position) vertex_pos: vec4f,
-};
+}
 
 @vertex
 fn vertex(in: VertexInput) -> VertexOutput {
