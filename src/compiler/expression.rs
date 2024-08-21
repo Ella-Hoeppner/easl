@@ -1,12 +1,12 @@
 use sse::{syntax::EncloserOrOperator, RawSexp};
 
-use crate::parse::{Encloser, TyntTree};
-
 use super::{
   error::CompileError,
   types::compile_form_possibly_with_type_annotation,
   word::{compile_word, tynt_word_to_wgsl_word},
 };
+use crate::parse::{Encloser, TyntTree};
+use core::fmt::Debug;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ExpressionContext {
