@@ -9,9 +9,6 @@ pub fn tynt_word_to_wgsl_word(word: String) -> String {
 pub fn compile_word(form: TyntTree) -> Result<String, CompileError> {
   match form {
     TyntTree::Leaf(_, s) => Ok(tynt_word_to_wgsl_word(s)),
-    other => {
-      println!("{other:?}");
-      Err(CompileError::ExpectedWord)
-    }
+    _ => Err(CompileError::ExpectedWord),
   }
 }

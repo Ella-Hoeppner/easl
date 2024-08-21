@@ -3,15 +3,16 @@ use sse::syntax::EncloserOrOperator;
 use crate::parse::{Encloser, Operator, TyntTree};
 
 use super::{
-  error::CompileError, metadata::compile_metadata,
-  types::compile_type_annotated_name, word::compile_word,
+  core::indent, error::CompileError, expression::compile_body_expression,
+  metadata::compile_metadata, types::compile_type_annotated_name,
+  word::compile_word,
 };
 
 pub fn compile_function(forms: Vec<TyntTree>) -> Result<String, CompileError> {
   if forms.len() <= 2 {
     return Err(CompileError::InvalidFunctionBody);
   }
-  let mut forms_iter = forms.into_iter();
+  let mut forms_iter = forms.into_iter().peekable();
   let mut fn_string = "fn ".to_string();
   fn_string += &compile_word(forms_iter.next().unwrap())?;
   fn_string += "(";
@@ -46,6 +47,13 @@ pub fn compile_function(forms: Vec<TyntTree>) -> Result<String, CompileError> {
         fn_string += &compile_word(return_type_form)?;
       }
       fn_string += " {\n";
+      while let Some(expression) = forms_iter.next() {
+        fn_string += &indent(compile_body_expression(
+          expression,
+          forms_iter.peek().is_none(),
+        )?);
+        fn_string += "\n";
+      }
       fn_string += "}";
     } else {
       return Err(CompileError::InvalidFunctionArgumentList);

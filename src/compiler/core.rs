@@ -1,4 +1,4 @@
-use sse::{syntax::EncloserOrOperator, RawSexp};
+use sse::syntax::EncloserOrOperator;
 
 use crate::parse::{parse_tynt, Encloser, Operator, TyntTree};
 
@@ -7,10 +7,11 @@ use super::{
   structs::compile_struct, var::compile_top_level_var,
 };
 
-pub fn compile_top_level_tynt_form(
-  form: TyntTree,
-) -> Result<String, CompileError> {
-  let original_form = form.clone();
+pub fn indent(s: String) -> String {
+  "  ".to_string() + &s.replace("\n", "\n  ")
+}
+
+pub fn compile_top_level_form(form: TyntTree) -> Result<String, CompileError> {
   match form {
     TyntTree::Leaf(_, label) => Ok(label.replace("-", "_")),
     TyntTree::Inner((_, encloser_or_operator), mut children) => {
@@ -22,14 +23,14 @@ pub fn compile_top_level_tynt_form(
               "var" => compile_top_level_var(children_iter.collect()),
               "struct" => compile_struct(children_iter.collect()),
               "fn" => compile_function(children_iter.collect()),
-              _ => Ok(RawSexp::from(original_form).to_string()),
+              _ => Err(CompileError::UnrecognizedTopLevelForm),
             }
           } else {
             Err(CompileError::UnrecognizedTopLevelForm)
           }
         }
         EncloserOrOperator::Operator(Operator::Metadata) => {
-          let body = compile_top_level_tynt_form(children.remove(1))?;
+          let body = compile_top_level_form(children.remove(1))?;
           let metadata = compile_metadata(children.remove(0))?;
           Ok(metadata + &body)
         }
@@ -45,7 +46,7 @@ pub fn compile_tynt(tynt_source: &str) -> Result<String, CompileError> {
     document
       .syntax_trees
       .into_iter()
-      .map(|tree| compile_top_level_tynt_form(tree))
+      .map(|tree| compile_top_level_form(tree))
       .collect::<Result<Vec<String>, CompileError>>()?
       .into_iter()
       .fold(String::new(), |text, tree| text + "\n\n" + &tree)

@@ -1,5 +1,6 @@
 pub mod core;
 pub mod error;
+pub mod expression;
 pub mod functions;
 pub mod metadata;
 pub mod structs;

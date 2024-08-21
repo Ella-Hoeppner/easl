@@ -15,6 +15,9 @@ pub enum CompileError {
   ExpectedTypeAnnotatedName,
   InvalidFunctionBody,
   InvalidFunctionArgumentList,
+  InvalidExpression,
+  InvalidLetBlock,
+  InvalidLetBindings,
 }
 
 impl From<ParseError> for CompileError {
