@@ -1,76 +1,126 @@
 use core::fmt::Debug;
 
-use super::types::TypePossibilities;
-
 #[derive(Debug, Clone, PartialEq)]
-enum Number {
+pub enum Number {
   Int(i64),
   Float(f64),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Expression<D: Debug + Clone + PartialEq> {
-  data: D,
-  kind: Box<ExpressionKind<D>>,
+pub struct ExpNode<D: Debug + Clone + PartialEq> {
+  pub data: D,
+  pub exp: Box<Exp<D>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum ExpressionKind<D: Debug + Clone + PartialEq> {
+pub enum Exp<D: Debug + Clone + PartialEq> {
   Name(String),
   NumberLiteral(Number),
   BooleanLiteral(bool),
-  Application(Expression<D>, Vec<Expression<D>>),
-  Let(Vec<(String, Expression<D>)>, Vec<Expression<D>>),
-  Match(
-    Box<Expression<D>>,
-    Vec<(Vec<Expression<D>>, Vec<Expression<D>>)>,
-  ),
+  Application(ExpNode<D>, Vec<ExpNode<D>>),
+  Let(Vec<(String, ExpNode<D>)>, Vec<ExpNode<D>>),
+  Match(Box<ExpNode<D>>, Vec<(Vec<ExpNode<D>>, Vec<ExpNode<D>>)>),
 }
 
-impl<D: Debug + Clone + PartialEq> Expression<D> {
-  fn map_kind(
-    self,
-    f: impl Fn(ExpressionKind<D>) -> ExpressionKind<D>,
-  ) -> Self {
+impl<D: Debug + Clone + PartialEq> ExpNode<D> {
+  fn map(self, f: impl Fn(Exp<D>) -> Exp<D>) -> Self {
     Self {
       data: self.data,
-      kind: f(*self.kind).into(),
+      exp: f(*self.exp).into(),
     }
   }
-  fn prewalk_replace(self, replacer: &impl Fn(Self) -> Self) -> Self {
-    replacer(self).map_kind(|kind| match kind {
-      ExpressionKind::Application(f_expression, args) => {
-        ExpressionKind::Application(
-          f_expression.prewalk_replace(replacer),
-          args
-            .into_iter()
-            .map(|exp| exp.prewalk_replace(replacer))
-            .collect(),
-        )
-      }
-      ExpressionKind::Let(bindings, body_expressions) => ExpressionKind::Let(
+  pub fn try_replace_data<NewD: Debug + Clone + PartialEq, E>(
+    self,
+    data_deriver: &impl Fn(&Exp<NewD>, D) -> Result<NewD, E>,
+  ) -> Result<ExpNode<NewD>, E> {
+    let new_exp = match *self.exp {
+      Exp::Application(f_expression, args) => Exp::Application(
+        f_expression.try_replace_data(data_deriver)?,
+        args
+          .into_iter()
+          .map(|exp| exp.try_replace_data(data_deriver))
+          .collect::<Result<_, E>>()?,
+      ),
+      Exp::Let(bindings, body_expressions) => Exp::Let(
         bindings
           .into_iter()
-          .map(|(name, value)| (name, value.prewalk_replace(replacer)))
+          .map(|(name, value)| -> Result<_, E> {
+            Ok((name, value.try_replace_data(data_deriver)?))
+          })
+          .collect::<Result<_, E>>()?,
+        body_expressions
+          .into_iter()
+          .map(|exp| exp.try_replace_data(data_deriver))
+          .collect::<Result<_, E>>()?,
+      ),
+      Exp::Match(exp, cases) => Exp::Match(
+        Box::new(exp.try_replace_data(data_deriver)?),
+        cases
+          .into_iter()
+          .map(|(potential_matches, body_expressions)| -> Result<_, E> {
+            Ok((
+              potential_matches
+                .into_iter()
+                .map(|exp| exp.try_replace_data(data_deriver))
+                .collect::<Result<_, E>>()?,
+              body_expressions
+                .into_iter()
+                .map(|exp| exp.try_replace_data(data_deriver))
+                .collect::<Result<_, E>>()?,
+            ))
+          })
+          .collect::<Result<_, E>>()?,
+      ),
+      Exp::Name(name) => Exp::Name(name),
+      Exp::NumberLiteral(num) => Exp::NumberLiteral(num),
+      Exp::BooleanLiteral(b) => Exp::BooleanLiteral(b),
+    };
+    let new_data = data_deriver(&new_exp, self.data)?;
+    Ok(ExpNode {
+      exp: Box::new(new_exp),
+      data: new_data,
+    })
+  }
+  pub fn replace_data<NewD: Debug + Clone + PartialEq>(
+    self,
+    data_deriver: &impl Fn(&Exp<NewD>, D) -> NewD,
+  ) -> ExpNode<NewD> {
+    self
+      .try_replace_data(&|exp, data| Ok::<_, !>(data_deriver(exp, data)))
+      .unwrap()
+  }
+  pub fn prewalk_modify(self, modifier: &impl Fn(Self) -> Self) -> Self {
+    modifier(self).map(|exp| match exp {
+      Exp::Application(f_expression, args) => Exp::Application(
+        f_expression.prewalk_modify(modifier),
+        args
+          .into_iter()
+          .map(|exp| exp.prewalk_modify(modifier))
+          .collect(),
+      ),
+      Exp::Let(bindings, body_expressions) => Exp::Let(
+        bindings
+          .into_iter()
+          .map(|(name, value)| (name, value.prewalk_modify(modifier)))
           .collect(),
         body_expressions
           .into_iter()
-          .map(|exp| exp.prewalk_replace(replacer))
+          .map(|exp| exp.prewalk_modify(modifier))
           .collect(),
       ),
-      ExpressionKind::Match(exp, cases) => ExpressionKind::Match(
-        Box::new(exp.prewalk_replace(replacer)),
+      Exp::Match(exp, cases) => Exp::Match(
+        Box::new(exp.prewalk_modify(modifier)),
         cases
           .into_iter()
           .map(|(potential_matches, body_expressions)| {
             (
               potential_matches
                 .into_iter()
-                .map(|exp| exp.prewalk_replace(replacer))
+                .map(|exp| exp.prewalk_modify(modifier))
                 .collect(),
               body_expressions
                 .into_iter()
-                .map(|exp| exp.prewalk_replace(replacer))
+                .map(|exp| exp.prewalk_modify(modifier))
                 .collect(),
             )
           })
@@ -80,16 +130,14 @@ impl<D: Debug + Clone + PartialEq> Expression<D> {
     })
   }
   fn replace_name(self, old_name: String, new_name: String) -> Self {
-    self.prewalk_replace(&|expression| {
-      expression.map_kind(|kind| match kind {
-        ExpressionKind::Name(name) => {
-          ExpressionKind::Name(if name == old_name {
-            new_name.clone()
-          } else {
-            name
-          })
-        }
-        ExpressionKind::Let(bindings, args) => ExpressionKind::Let(
+    self.prewalk_modify(&|expression| {
+      expression.map(|exp| match exp {
+        Exp::Name(name) => Exp::Name(if name == old_name {
+          new_name.clone()
+        } else {
+          name
+        }),
+        Exp::Let(bindings, args) => Exp::Let(
           bindings
             .into_iter()
             .map(|(name, value)| {
@@ -113,9 +161,6 @@ impl<D: Debug + Clone + PartialEq> Expression<D> {
     todo!()
   }
   fn lift_internal_lets(self) -> Self {
-    todo!()
-  }
-  fn initialize_type_possibilities(self) -> Expression<TypePossibilities> {
     todo!()
   }
 }

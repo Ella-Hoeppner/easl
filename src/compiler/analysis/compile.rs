@@ -1,6 +1,6 @@
 use crate::compiler::error::CompileError;
 
-use super::{expression::Expression, types::TyntType};
+use super::{expression::ExpNode, types::TyntType};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ExpressionContext {
@@ -14,7 +14,7 @@ impl ExpressionContext {
   }
 }
 
-impl Expression<TyntType> {
+impl ExpNode<TyntType> {
   fn compile(self, context: ExpressionContext) -> Result<String, CompileError> {
     todo!()
   }
