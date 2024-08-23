@@ -11,3 +11,5 @@ Feature goals:
   * extend vector arithmetic to arbitrary-sized arrays, including multidimensional arrays
   * tuples and anonymous structs
   * typeclasses? arithmetic could be implemented by a "Num" typeclass so that it could be implemented on arbitrary structs in addition to vectors
+
+## todo

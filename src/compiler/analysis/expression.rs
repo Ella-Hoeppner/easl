@@ -21,141 +21,111 @@ pub enum Exp<D: Debug + Clone + PartialEq> {
   Let(Vec<(String, ExpNode<D>)>, Vec<ExpNode<D>>),
   Match(Box<ExpNode<D>>, Vec<(Vec<ExpNode<D>>, Vec<ExpNode<D>>)>),
 }
+use Exp::*;
 
 impl<D: Debug + Clone + PartialEq> ExpNode<D> {
-  fn map(self, f: impl Fn(Exp<D>) -> Exp<D>) -> Self {
+  fn map_exp(self, f: impl Fn(Exp<D>) -> Exp<D>) -> Self {
     Self {
       data: self.data,
       exp: f(*self.exp).into(),
     }
   }
-  pub fn try_replace_data<NewD: Debug + Clone + PartialEq, E>(
+  pub fn walk<NewD: Debug + Clone + PartialEq, E>(
     self,
-    data_deriver: &impl Fn(&Exp<NewD>, D) -> Result<NewD, E>,
+    prewalk_transformer: &impl Fn(Self) -> Result<Self, E>,
+    postwalk_transformer: &impl Fn(Box<Exp<NewD>>, D) -> Result<ExpNode<NewD>, E>,
   ) -> Result<ExpNode<NewD>, E> {
-    let new_exp = match *self.exp {
-      Exp::Application(f_expression, args) => Exp::Application(
-        f_expression.try_replace_data(data_deriver)?,
+    let prewalked_node = prewalk_transformer(self)?;
+    let new_exp: Exp<NewD> = match *prewalked_node.exp {
+      Application(f_expression, args) => Application(
+        f_expression.walk(prewalk_transformer, postwalk_transformer)?,
         args
           .into_iter()
-          .map(|exp| exp.try_replace_data(data_deriver))
+          .map(|exp| exp.walk(prewalk_transformer, postwalk_transformer))
           .collect::<Result<_, E>>()?,
       ),
-      Exp::Let(bindings, body_expressions) => Exp::Let(
+      Let(bindings, body_expressions) => Let(
         bindings
           .into_iter()
           .map(|(name, value)| -> Result<_, E> {
-            Ok((name, value.try_replace_data(data_deriver)?))
+            Ok((name, value.walk(prewalk_transformer, postwalk_transformer)?))
           })
           .collect::<Result<_, E>>()?,
         body_expressions
           .into_iter()
-          .map(|exp| exp.try_replace_data(data_deriver))
+          .map(|exp| exp.walk(prewalk_transformer, postwalk_transformer))
           .collect::<Result<_, E>>()?,
       ),
-      Exp::Match(exp, cases) => Exp::Match(
-        Box::new(exp.try_replace_data(data_deriver)?),
+      Match(exp, cases) => Match(
+        Box::new(exp.walk(prewalk_transformer, postwalk_transformer)?),
         cases
           .into_iter()
-          .map(|(potential_matches, body_expressions)| -> Result<_, E> {
+          .map(|(potential_matches, body_expressions)| {
             Ok((
               potential_matches
                 .into_iter()
-                .map(|exp| exp.try_replace_data(data_deriver))
+                .map(|exp| exp.walk(prewalk_transformer, postwalk_transformer))
                 .collect::<Result<_, E>>()?,
               body_expressions
                 .into_iter()
-                .map(|exp| exp.try_replace_data(data_deriver))
+                .map(|exp| exp.walk(prewalk_transformer, postwalk_transformer))
                 .collect::<Result<_, E>>()?,
             ))
           })
           .collect::<Result<_, E>>()?,
       ),
-      Exp::Name(name) => Exp::Name(name),
-      Exp::NumberLiteral(num) => Exp::NumberLiteral(num),
-      Exp::BooleanLiteral(b) => Exp::BooleanLiteral(b),
+      Name(name) => Name(name),
+      NumberLiteral(num) => NumberLiteral(num),
+      BooleanLiteral(b) => BooleanLiteral(b),
     };
-    let new_data = data_deriver(&new_exp, self.data)?;
-    Ok(ExpNode {
-      exp: Box::new(new_exp),
-      data: new_data,
-    })
+    postwalk_transformer(Box::new(new_exp), prewalked_node.data)
   }
-  pub fn replace_data<NewD: Debug + Clone + PartialEq>(
+  pub fn try_replace_data<NewD: Debug + Clone + PartialEq, E>(
     self,
-    data_deriver: &impl Fn(&Exp<NewD>, D) -> NewD,
-  ) -> ExpNode<NewD> {
-    self
-      .try_replace_data(&|exp, data| Ok::<_, !>(data_deriver(exp, data)))
-      .unwrap()
-  }
-  pub fn prewalk_modify(self, modifier: &impl Fn(Self) -> Self) -> Self {
-    modifier(self).map(|exp| match exp {
-      Exp::Application(f_expression, args) => Exp::Application(
-        f_expression.prewalk_modify(modifier),
-        args
-          .into_iter()
-          .map(|exp| exp.prewalk_modify(modifier))
-          .collect(),
-      ),
-      Exp::Let(bindings, body_expressions) => Exp::Let(
-        bindings
-          .into_iter()
-          .map(|(name, value)| (name, value.prewalk_modify(modifier)))
-          .collect(),
-        body_expressions
-          .into_iter()
-          .map(|exp| exp.prewalk_modify(modifier))
-          .collect(),
-      ),
-      Exp::Match(exp, cases) => Exp::Match(
-        Box::new(exp.prewalk_modify(modifier)),
-        cases
-          .into_iter()
-          .map(|(potential_matches, body_expressions)| {
-            (
-              potential_matches
-                .into_iter()
-                .map(|exp| exp.prewalk_modify(modifier))
-                .collect(),
-              body_expressions
-                .into_iter()
-                .map(|exp| exp.prewalk_modify(modifier))
-                .collect(),
-            )
-          })
-          .collect(),
-      ),
-      other => other,
+    data_deriver: &impl Fn(&Exp<NewD>, D) -> Result<NewD, E>,
+  ) -> Result<ExpNode<NewD>, E> {
+    self.walk(&|node| Ok(node), &|exp, data| {
+      let new_data = data_deriver(&exp, data)?;
+      Ok(ExpNode {
+        exp,
+        data: new_data,
+      })
     })
   }
   fn replace_name(self, old_name: String, new_name: String) -> Self {
-    self.prewalk_modify(&|expression| {
-      expression.map(|exp| match exp {
-        Exp::Name(name) => Exp::Name(if name == old_name {
-          new_name.clone()
-        } else {
-          name
-        }),
-        Exp::Let(bindings, args) => Exp::Let(
-          bindings
-            .into_iter()
-            .map(|(name, value)| {
-              (
-                if name == old_name {
-                  new_name.clone()
-                } else {
-                  name
-                },
-                value,
-              )
-            })
-            .collect(),
-          args,
-        ),
-        other => other,
-      })
-    })
+    self
+      .walk(
+        &|node| {
+          Ok::<_, !>(node.map_exp(|exp| {
+            match exp {
+              Name(name) => Name(if name == old_name {
+                new_name.clone()
+              } else {
+                name
+              }),
+              Let(bindings, args) => Let(
+                bindings
+                  .into_iter()
+                  .map(|(name, value)| {
+                    (
+                      if name == old_name {
+                        new_name.clone()
+                      } else {
+                        name
+                      },
+                      value,
+                    )
+                  })
+                  .collect(),
+                args,
+              ),
+              other => other,
+            }
+          }))
+        },
+        &|exp, data| Ok(Self { exp, data }),
+      )
+      .unwrap()
   }
   fn deshadow_bindings(self) -> Self {
     todo!()

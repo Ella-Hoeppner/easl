@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 sse = { git = "https://github.com/Ella-Hoeppner/SSE.git" }
+take_mut = "0.2.2"
