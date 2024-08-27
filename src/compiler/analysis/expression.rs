@@ -32,8 +32,11 @@ impl<D: Debug + Clone + PartialEq> ExpNode<D> {
   }
   pub fn walk<NewD: Debug + Clone + PartialEq, E>(
     self,
-    prewalk_transformer: &impl Fn(Self) -> Result<Self, E>,
-    postwalk_transformer: &impl Fn(Box<Exp<NewD>>, D) -> Result<ExpNode<NewD>, E>,
+    prewalk_transformer: &mut impl FnMut(Self) -> Result<Self, E>,
+    postwalk_transformer: &mut impl FnMut(
+      Box<Exp<NewD>>,
+      D,
+    ) -> Result<ExpNode<NewD>, E>,
   ) -> Result<ExpNode<NewD>, E> {
     let prewalked_node = prewalk_transformer(self)?;
     let new_exp: Exp<NewD> = match *prewalked_node.exp {
@@ -82,9 +85,9 @@ impl<D: Debug + Clone + PartialEq> ExpNode<D> {
   }
   pub fn try_replace_data<NewD: Debug + Clone + PartialEq, E>(
     self,
-    data_deriver: &impl Fn(&Exp<NewD>, D) -> Result<NewD, E>,
+    data_deriver: &mut impl FnMut(&Exp<NewD>, D) -> Result<NewD, E>,
   ) -> Result<ExpNode<NewD>, E> {
-    self.walk(&|node| Ok(node), &|exp, data| {
+    self.walk(&mut |node| Ok(node), &mut |exp, data| {
       let new_data = data_deriver(&exp, data)?;
       Ok(ExpNode {
         exp,
@@ -95,7 +98,7 @@ impl<D: Debug + Clone + PartialEq> ExpNode<D> {
   fn replace_name(self, old_name: String, new_name: String) -> Self {
     self
       .walk(
-        &|node| {
+        &mut |node| {
           Ok::<_, !>(node.map_exp(|exp| {
             match exp {
               Name(name) => Name(if name == old_name {
@@ -123,7 +126,7 @@ impl<D: Debug + Clone + PartialEq> ExpNode<D> {
             }
           }))
         },
-        &|exp, data| Ok(Self { exp, data }),
+        &mut |exp, data| Ok(Self { exp, data }),
       )
       .unwrap()
   }

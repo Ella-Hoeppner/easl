@@ -21,4 +21,7 @@ impl Environment {
   pub fn fn_input_types(&self, name: &str) -> Option<Vec<TyntType>> {
     self.functions.get(name).map(|f| f.inputs.clone())
   }
+  pub fn bind(&mut self, name: String, constraints: ConstraintState) {
+    self.bindings.insert(name, constraints);
+  }
 }

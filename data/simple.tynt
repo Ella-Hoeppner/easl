@@ -8,11 +8,11 @@
         @{builtin position} vertex-pos: vec4f)
 
 @vertex
-(fn vertex [in: VertexInput]: VertexOutput
+(defn vertex [in: VertexInput]: VertexOutput
   (VertexOutput (vec4f in.corner-position 0. 1.)))
 
 @fragment
-(fn fragment [in: VertexOutput]: @{location 0} vec4f
+(defn fragment [in: VertexOutput]: @{location 0} vec4f
   (let [pos (/ in.vertex-pos.xy dimensions)
         osc (-> time
                 (* 9.)

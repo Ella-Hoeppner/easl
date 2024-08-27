@@ -1,6 +1,11 @@
+use crate::parse::TyntTree;
+
 use super::{
   environment::Environment,
-  expression::{Exp::*, ExpNode},
+  expression::{
+    Exp::{self, *},
+    ExpNode, Number,
+  },
 };
 use core::fmt::Debug;
 use std::{cell::RefCell, rc::Rc};
@@ -98,39 +103,105 @@ impl ConstraintState {
   fn restrict(&self, constraints: TypeConstraints) -> Result<(), TypeError> {
     self.constraints.borrow_mut().restrict(constraints)
   }
+  fn restricted(self, constraints: TypeConstraints) -> Result<Self, TypeError> {
+    self.restrict(constraints)?;
+    Ok(self)
+  }
 }
 
-impl<D: Debug + Clone + PartialEq> ExpNode<D> {}
+impl From<TyntTree> for ExpNode<ConstraintState> {
+  fn from(value: TyntTree) -> Self {
+    match value {
+      TyntTree::Leaf(_, leaf) => {
+        if leaf == "true" || leaf == "false" {
+          ExpNode {
+            exp: Box::new(Exp::BooleanLiteral(leaf == "true")),
+            data: TypeConstraints::Definitely(TyntType::Bool).into(),
+          }
+        } else if let Ok(i) = leaf.parse::<i64>() {
+          ExpNode {
+            exp: Box::new(Exp::NumberLiteral(Number::Int(i))),
+            data: if i < 0 {
+              TypeConstraints::OneOf(vec![TyntType::Int, TyntType::Float])
+            } else {
+              TypeConstraints::OneOf(vec![
+                TyntType::Int,
+                TyntType::UInt,
+                TyntType::Float,
+              ])
+            }
+            .into(),
+          }
+        } else if let Ok(f) = leaf.parse::<f64>() {
+          ExpNode {
+            exp: Box::new(Exp::NumberLiteral(Number::Float(f))),
+            data: TypeConstraints::Definitely(TyntType::Float).into(),
+          }
+        } else {
+          ExpNode {
+            exp: Box::new(Exp::Name(leaf)),
+            data: TypeConstraints::Anything.into(),
+          }
+        }
+      }
+      TyntTree::Inner((_, encloser_or_operator), children) => todo!(),
+    }
+  }
+}
 
 impl ExpNode<ConstraintState> {
   fn infer_initial_constraints(
     self,
-    env: Environment,
+    mut env: Environment,
   ) -> Result<Self, TypeError> {
-    self.walk(&|node| Ok(node), &|exp, data| {
-      data.restrict(
-        match &*exp {
-          NumberLiteral(_) => {
-            OneOf(vec![TyntType::Int, TyntType::Float, TyntType::UInt])
+    self.walk(
+      &mut |node| Ok(node),
+      &mut |exp: Box<Exp<ConstraintState>>, data| {
+        let new_data = match &*exp {
+          Name(_) => data,
+          NumberLiteral(_) => data.restricted(
+            OneOf(vec![TyntType::Int, TyntType::Float, TyntType::UInt]).into(),
+          )?,
+          BooleanLiteral(_) => {
+            data.restricted(Definitely(TyntType::Bool).into())?
           }
-          BooleanLiteral(_) => Definitely(TyntType::Bool),
-          Application(f, _) => match &*f.exp {
+          Application(f, _) => data.restricted(match &*f.exp {
             Name(name) => Definitely(
               env.fn_output_type(name).ok_or(TypeError::UnknownFunction)?,
             ),
             _ => todo!("I haven't implemented higher order functions yet!!"),
-          },
-          Let(_, _) => todo!(), // attach names and value constraints for each binding, and also attach constraint of let block and the last expression of it's body
-          _ => Anything,
-        }
-        .into(),
-      )?;
-      Ok(ExpNode { exp, data })
-    })
+          })?,
+          Let(binding_pairs, body) => {
+            for (name, value) in binding_pairs {
+              env.bind(name.clone(), value.data.clone());
+            }
+            if let Some(last_body_exp) = body.last() {
+              last_body_exp.data.clone()
+            } else {
+              data.restricted(Definitely(TyntType::None))?
+            }
+          }
+          Match(exp, cases) => {
+            todo!()
+            // merge match block type with each of the case bodies, and the
+            // match input value type with each case value
+
+            // if the match block is non-exhaustive, it's type should be
+            // restricted to bottom. I think at first match blocks only
+            // need to be able to match to literals, so the only exhaustive
+            // case will be the case of 2 bools
+          }
+        };
+        Ok(ExpNode {
+          exp,
+          data: new_data,
+        })
+      },
+    )
   }
   fn propagate_constraints(self, env: &Environment) -> Result<Self, TypeError> {
     self.walk(
-      &|node| {
+      &mut |node| {
         let constraints = node.data;
         let new_exp = match *node.exp {
           Application(f, args) => match *f.exp {
@@ -158,8 +229,6 @@ impl ExpNode<ConstraintState> {
             }
             _ => todo!("I haven't implemented higher order functions yet!!"),
           },
-          Let(bindings, body) => todo!(),
-          Match(value, cases) => todo!(),
           other => other,
         };
         Ok(Self {
@@ -167,7 +236,7 @@ impl ExpNode<ConstraintState> {
           data: constraints,
         })
       },
-      &|exp, data| Ok(Self { exp, data }),
+      &mut |exp, data| Ok(Self { exp, data }),
     )
   }
   pub fn to_typed(
@@ -186,7 +255,7 @@ impl ExpNode<ConstraintState> {
       }
       node = new_node;
     }
-    node.walk(&|exp| Ok(exp), &|exp, data| {
+    node.walk(&mut |exp| Ok(exp), &mut |exp, data| {
       Ok(ExpNode {
         exp,
         data: match data.constraints.borrow().clone() {
