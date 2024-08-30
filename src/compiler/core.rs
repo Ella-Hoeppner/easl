@@ -22,7 +22,7 @@ pub fn compile_top_level_form(form: TyntTree) -> Result<String, CompileError> {
             match first_symbol.as_str() {
               "var" => compile_top_level_var(children_iter.collect()),
               "struct" => compile_struct(children_iter.collect()),
-              "fn" => compile_function(children_iter.collect()),
+              "defn" => compile_function(children_iter.collect()),
               _ => Err(CompileError::UnrecognizedTopLevelForm),
             }
           } else {

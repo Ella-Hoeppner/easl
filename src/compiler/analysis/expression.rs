@@ -13,13 +13,20 @@ pub struct ExpNode<D: Debug + Clone + PartialEq> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum Metadata {
+  Singular(String),
+  Map(Vec<(String, String)>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Exp<D: Debug + Clone + PartialEq> {
   Name(String),
   NumberLiteral(Number),
   BooleanLiteral(bool),
+  Metadata(Metadata, ExpNode<D>),
   Application(ExpNode<D>, Vec<ExpNode<D>>),
-  Let(Vec<(String, ExpNode<D>)>, Vec<ExpNode<D>>),
-  Match(Box<ExpNode<D>>, Vec<(Vec<ExpNode<D>>, Vec<ExpNode<D>>)>),
+  Let(Vec<(String, ExpNode<D>)>, ExpNode<D>),
+  Match(Box<ExpNode<D>>, Vec<(ExpNode<D>, ExpNode<D>)>),
 }
 use Exp::*;
 
@@ -40,6 +47,10 @@ impl<D: Debug + Clone + PartialEq> ExpNode<D> {
   ) -> Result<ExpNode<NewD>, E> {
     let prewalked_node = prewalk_transformer(self)?;
     let new_exp: Exp<NewD> = match *prewalked_node.exp {
+      Metadata(metadata, exp) => Metadata(
+        metadata,
+        exp.walk(prewalk_transformer, postwalk_transformer)?,
+      ),
       Application(f_expression, args) => Application(
         f_expression.walk(prewalk_transformer, postwalk_transformer)?,
         args
@@ -47,32 +58,23 @@ impl<D: Debug + Clone + PartialEq> ExpNode<D> {
           .map(|exp| exp.walk(prewalk_transformer, postwalk_transformer))
           .collect::<Result<_, E>>()?,
       ),
-      Let(bindings, body_expressions) => Let(
+      Let(bindings, body) => Let(
         bindings
           .into_iter()
           .map(|(name, value)| -> Result<_, E> {
             Ok((name, value.walk(prewalk_transformer, postwalk_transformer)?))
           })
           .collect::<Result<_, E>>()?,
-        body_expressions
-          .into_iter()
-          .map(|exp| exp.walk(prewalk_transformer, postwalk_transformer))
-          .collect::<Result<_, E>>()?,
+        body.walk(prewalk_transformer, postwalk_transformer)?,
       ),
       Match(exp, cases) => Match(
         Box::new(exp.walk(prewalk_transformer, postwalk_transformer)?),
         cases
           .into_iter()
-          .map(|(potential_matches, body_expressions)| {
+          .map(|(pattern, arm_bodies)| {
             Ok((
-              potential_matches
-                .into_iter()
-                .map(|exp| exp.walk(prewalk_transformer, postwalk_transformer))
-                .collect::<Result<_, E>>()?,
-              body_expressions
-                .into_iter()
-                .map(|exp| exp.walk(prewalk_transformer, postwalk_transformer))
-                .collect::<Result<_, E>>()?,
+              pattern.walk(prewalk_transformer, postwalk_transformer)?,
+              arm_bodies.walk(prewalk_transformer, postwalk_transformer)?,
             ))
           })
           .collect::<Result<_, E>>()?,
