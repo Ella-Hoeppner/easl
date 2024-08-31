@@ -1,3 +1,4 @@
+use super::metadata::ExpMetadata;
 use core::fmt::Debug;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -13,17 +14,11 @@ pub struct ExpNode<D: Debug + Clone + PartialEq> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Metadata {
-  Singular(String),
-  Map(Vec<(String, String)>),
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub enum Exp<D: Debug + Clone + PartialEq> {
   Name(String),
   NumberLiteral(Number),
   BooleanLiteral(bool),
-  Metadata(Metadata, ExpNode<D>),
+  Metadata(ExpMetadata, ExpNode<D>),
   Application(ExpNode<D>, Vec<ExpNode<D>>),
   Let(Vec<(String, ExpNode<D>)>, ExpNode<D>),
   Match(Box<ExpNode<D>>, Vec<(ExpNode<D>, ExpNode<D>)>),

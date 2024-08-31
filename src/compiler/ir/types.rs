@@ -1,4 +1,4 @@
-use crate::parse::TyntTree;
+use crate::{compiler::ir::structs::UntypedStruct, parse::TyntTree};
 
 use super::{
   environment::Environment,
@@ -6,23 +6,60 @@ use super::{
     Exp::{self, *},
     ExpNode, Number,
   },
+  structs::Struct,
 };
 use core::fmt::Debug;
+
+pub enum CompileError {
+  TypeError(TypeError),
+  InvalidMetadata,
+  InvalidStructField,
+  InvalidStructName,
+}
 
 pub enum TypeError {
   CouldntInfer,
   IncompatibleConstraints,
   UnknownFunction,
   InvalidArity,
+  UnrecognizedTypeName,
+}
+
+impl From<TypeError> for CompileError {
+  fn from(err: TypeError) -> Self {
+    Self::TypeError(err)
+  }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TyntType {
   None,
-  Float,
-  Int,
-  UInt,
+  F32,
+  I32,
+  U32,
   Bool,
+  Struct(String),
+}
+impl TyntType {
+  pub fn from_name(
+    name: String,
+    struct_names: &Vec<String>,
+  ) -> Result<Self, CompileError> {
+    use TyntType::*;
+    Ok(match name.as_str() {
+      "F32" => F32,
+      "I32" => I32,
+      "U32" => U32,
+      "Bool" => Bool,
+      _ => {
+        if struct_names.contains(&name) {
+          Struct(name)
+        } else {
+          return Err(TypeError::UnrecognizedTypeName.into());
+        }
+      }
+    })
+  }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,8 +68,8 @@ enum TypeConstraints {
   OneOf(Vec<TyntType>),
   Definitely(TyntType),
 }
-
 use TypeConstraints::*;
+
 impl TypeConstraints {
   fn restrict(&mut self, constraints: Self) -> Result<bool, TypeError> {
     match (self.clone(), constraints) {
@@ -119,7 +156,6 @@ impl TypeMap {
       unreachable!()
     }
   }
-
   pub fn join(&mut self, a: usize, b: usize) -> Result<bool, TypeError> {
     let a_representative = self.get_type_representative_index(a);
     let b_representative = self.get_type_representative_index(b);
@@ -142,7 +178,6 @@ impl TypeMap {
       },
     )
   }
-
   pub fn constrain(
     &mut self,
     index: usize,
@@ -164,7 +199,6 @@ impl ExpNode<(usize, Environment)> {
     tree: TyntTree,
     parent_env: &Environment,
     tree_type_constraints: &mut Vec<SharedTypeConstraints>,
-    top_level: bool,
   ) -> Self {
     let mut build_type_constraints =
       |exp, (constraints, env)| -> Result<ExpNode<(usize, Environment)>, !> {
@@ -188,12 +222,12 @@ impl ExpNode<(usize, Environment)> {
             exp: Box::new(Exp::NumberLiteral(Number::Int(i))),
             data: if i < 0 {
               (
-                OneOf(vec![TyntType::Int, TyntType::Float]),
+                OneOf(vec![TyntType::I32, TyntType::F32]),
                 parent_env.clone(),
               )
             } else {
               (
-                OneOf(vec![TyntType::Int, TyntType::UInt, TyntType::Float]),
+                OneOf(vec![TyntType::I32, TyntType::U32, TyntType::U32]),
                 parent_env.clone(),
               )
             },
@@ -201,7 +235,7 @@ impl ExpNode<(usize, Environment)> {
         } else if let Ok(f) = leaf.parse::<f64>() {
           ExpNode {
             exp: Box::new(Exp::NumberLiteral(Number::Float(f))),
-            data: (Definitely(TyntType::Float), parent_env.clone()),
+            data: (Definitely(TyntType::F32), parent_env.clone()),
           }
         } else {
           ExpNode {
@@ -233,7 +267,8 @@ impl ExpNode<(usize, Environment)> {
 }
 
 struct Program {
-  trees: Vec<ExpNode<(usize, Environment)>>,
+  structs: Vec<(String, Struct)>,
+  expressions: Vec<ExpNode<(usize, Environment)>>,
   types: TypeMap,
   global_env: Environment,
 }
@@ -242,32 +277,79 @@ impl Program {
   pub fn new(
     trees: Vec<TyntTree>,
     global_env: Environment,
-  ) -> Result<Self, TypeError> {
-    Self::unfinished_from_tynt_trees(trees, global_env)
-      .infer_initial_constraints()?
-      .infer_types_until_fixed_point()?
-      .ensure_fully_typed()
+  ) -> Result<Self, CompileError> {
+    Ok(
+      Self::unfinished_from_tynt_trees(trees, global_env)?
+        .infer_initial_constraints()?
+        .infer_types_until_fixed_point()?
+        .ensure_fully_typed()?,
+    )
   }
   fn unfinished_from_tynt_trees(
     trees: Vec<TyntTree>,
     global_env: Environment,
-  ) -> Self {
+  ) -> Result<Self, CompileError> {
     let mut types = vec![];
-    let initial_trees = trees
-      .into_iter()
-      .map(|tree| {
-        ExpNode::build_from_tynt_tree(tree, &global_env, &mut types, true)
-      })
-      .collect();
-    Self {
-      trees: initial_trees,
+    let mut expressions = vec![];
+    let mut structs = vec![];
+    for tree in trees.into_iter() {
+      use crate::parse::Encloser::*;
+      use crate::parse::Operator::*;
+      use sse::syntax::EncloserOrOperator::*;
+      let mut matched_struct = false;
+      if let TyntTree::Inner((_, Encloser(Parens)), children) = &tree {
+        if let Some(first_child) = children.first() {
+          if let TyntTree::Leaf(_, leaf) = first_child {
+            if leaf == "struct" {
+              matched_struct = true;
+              let mut children_iter = children.iter().skip(1).cloned();
+              if let Some(TyntTree::Leaf(_, struct_name)) = children_iter.next()
+              {
+                let fields: Vec<_> = children.iter().skip(1).cloned().collect();
+                structs.push((
+                  struct_name,
+                  UntypedStruct::from_field_expressions(fields)?,
+                ));
+              } else {
+                return Err(CompileError::InvalidStructName);
+              }
+            }
+          }
+        }
+      }
+      if !matched_struct {
+        expressions.push(ExpNode::build_from_tynt_tree(
+          tree,
+          &global_env,
+          &mut types,
+        ));
+      }
+    }
+    /*let initial_trees = trees
+    .into_iter()
+    .map(|tree| {
+      ExpNode::build_from_tynt_tree(tree, &global_env, &mut types, true)
+    })
+    .collect();*/
+    let struct_names: Vec<String> =
+      structs.iter().map(|(name, _)| name.clone()).collect();
+    Ok(Self {
+      structs: structs
+        .into_iter()
+        .map(|(name, untyped_struct)| {
+          untyped_struct
+            .assign_types(&struct_names)
+            .map(|s| (name, s))
+        })
+        .collect::<Result<Vec<(String, Struct)>, CompileError>>()?,
+      expressions,
       types: TypeMap::new(types),
       global_env,
-    }
+    })
   }
   fn infer_initial_constraints(mut self) -> Result<Self, TypeError> {
-    let new_trees = self
-      .trees
+    let new_expressions = self
+      .expressions
       .into_iter()
       .map(|tree| {
         tree.walk(
@@ -320,15 +402,16 @@ impl Program {
       })
       .collect::<Result<_, TypeError>>()?;
     Ok(Self {
-      trees: new_trees,
+      expressions: new_expressions,
+      structs: self.structs,
       types: self.types,
       global_env: self.global_env,
     })
   }
   fn propagate_constraints(mut self) -> Result<(Self, bool), TypeError> {
     let mut changed = false;
-    let new_trees = self
-      .trees
+    let new_expressions = self
+      .expressions
       .into_iter()
       .map(|tree| {
         tree.walk(
@@ -379,7 +462,8 @@ impl Program {
       .collect::<Result<_, TypeError>>()?;
     Ok((
       Self {
-        trees: new_trees,
+        expressions: new_expressions,
+        structs: self.structs,
         types: self.types,
         global_env: self.global_env,
       },
@@ -398,8 +482,8 @@ impl Program {
   }
   fn ensure_fully_typed(self) -> Result<Self, TypeError> {
     Ok(Self {
-      trees: self
-        .trees
+      expressions: self
+        .expressions
         .into_iter()
         .map(|tree| {
           tree.walk(&mut |exp| Ok(exp), &mut |exp, (type_index, env)| {
@@ -413,6 +497,7 @@ impl Program {
           })
         })
         .collect::<Result<_, TypeError>>()?,
+      structs: self.structs,
       types: self.types,
       global_env: self.global_env,
     })
