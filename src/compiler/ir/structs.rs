@@ -1,14 +1,14 @@
 use sse::syntax::EncloserOrOperator;
 
-use crate::parse::TyntTree;
+use crate::{compiler::ir::program::read_type_annotated_name, parse::TyntTree};
 
 use super::{
-  metadata::ExpMetadata,
+  metadata::Metadata,
   types::{CompileError, TyntType},
 };
 
 pub struct UntypedStructField {
-  metadata: Option<ExpMetadata>,
+  metadata: Option<Metadata>,
   name: String,
   field_type_name: String,
 }
@@ -22,29 +22,17 @@ impl UntypedStructField {
       TyntTree::Inner((_, Operator(Metadata)), mut children) => {
         let field_exp = children.remove(1);
         metadata =
-          Some(ExpMetadata::from_metadata_expression(children.remove(0))?);
+          Some(Metadata::from_metadata_expression(children.remove(0))?);
         field_exp
       }
       other => other,
     };
-    match inner_exp {
-      TyntTree::Inner((_, Operator(TypeAnnotation)), mut children) => {
-        if let TyntTree::Leaf(_, field_type_name) = children.remove(1) {
-          if let TyntTree::Leaf(_, name) = children.remove(0) {
-            Ok(Self {
-              metadata,
-              name,
-              field_type_name,
-            })
-          } else {
-            Err(CompileError::InvalidStructField)
-          }
-        } else {
-          Err(CompileError::InvalidStructField)
-        }
-      }
-      _ => Err(CompileError::InvalidStructField),
-    }
+    let (name, type_name) = read_type_annotated_name(inner_exp)?;
+    Ok(Self {
+      metadata,
+      name,
+      field_type_name: type_name,
+    })
   }
   pub fn assign_type(
     self,
@@ -59,14 +47,17 @@ impl UntypedStructField {
 }
 
 pub struct UntypedStruct {
-  fields: Vec<UntypedStructField>,
+  pub name: String,
+  pub fields: Vec<UntypedStructField>,
 }
 
 impl UntypedStruct {
   pub fn from_field_expressions(
+    name: String,
     field_expressions: Vec<TyntTree>,
   ) -> Result<Self, CompileError> {
     Ok(Self {
+      name,
       fields: field_expressions
         .into_iter()
         .map(UntypedStructField::from_field_expression)
@@ -78,6 +69,7 @@ impl UntypedStruct {
     struct_names: &Vec<String>,
   ) -> Result<Struct, CompileError> {
     Ok(Struct {
+      name: self.name,
       fields: self
         .fields
         .into_iter()
@@ -88,11 +80,12 @@ impl UntypedStruct {
 }
 
 pub struct StructField {
-  metadata: Option<ExpMetadata>,
+  metadata: Option<Metadata>,
   name: String,
   field_type: TyntType,
 }
 
 pub struct Struct {
+  name: String,
   fields: Vec<StructField>,
 }

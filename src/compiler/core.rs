@@ -29,7 +29,7 @@ pub fn compile_top_level_form(form: TyntTree) -> Result<String, CompileError> {
             Err(CompileError::UnrecognizedTopLevelForm)
           }
         }
-        EncloserOrOperator::Operator(Operator::Metadata) => {
+        EncloserOrOperator::Operator(Operator::MetadataAnnotation) => {
           let body = compile_top_level_form(children.remove(1))?;
           let metadata = compile_metadata(children.remove(0))?;
           Ok(metadata + &body)

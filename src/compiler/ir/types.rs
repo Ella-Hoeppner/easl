@@ -13,8 +13,13 @@ use core::fmt::Debug;
 pub enum CompileError {
   TypeError(TypeError),
   InvalidMetadata,
+  ExpectedTypeAnnotatedName,
   InvalidStructField,
   InvalidStructName,
+  InvalidTopLevelVar(String),
+  InvalidDef(String),
+  InvalidFunction(String),
+  UnrecognizedTopLevelForm,
 }
 
 pub enum TypeError {
@@ -63,7 +68,7 @@ impl TyntType {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum TypeConstraints {
+pub enum TypeConstraints {
   Anything,
   OneOf(Vec<TyntType>),
   Definitely(TyntType),
@@ -126,23 +131,26 @@ impl TypeConstraints {
   }
 }
 
-enum SharedTypeConstraints {
+pub enum SharedTypeConstraints {
   Representative(TypeConstraints),
-  Shared(usize),
+  JoinedTo(usize),
 }
 
-struct TypeMap {
+pub struct TypeMap {
   types: Vec<SharedTypeConstraints>,
 }
 
 impl TypeMap {
+  pub fn empty() -> Self {
+    Self { types: vec![] }
+  }
   pub fn new(types: Vec<SharedTypeConstraints>) -> Self {
     Self { types }
   }
   pub fn get_type_representative_index(&self, i: usize) -> usize {
     match self.types[i] {
       SharedTypeConstraints::Representative(_) => i,
-      SharedTypeConstraints::Shared(parent) => {
+      SharedTypeConstraints::JoinedTo(parent) => {
         self.get_type_representative_index(parent)
       }
     }
@@ -162,7 +170,7 @@ impl TypeMap {
     if a_representative == b_representative {
       return Ok(false);
     }
-    let mut b_constraints = SharedTypeConstraints::Shared(a);
+    let mut b_constraints = SharedTypeConstraints::JoinedTo(a);
     std::mem::swap(&mut self.types[b_representative], &mut b_constraints);
     Ok(
       if let SharedTypeConstraints::Representative(a_type_ref) =
@@ -195,7 +203,7 @@ impl TypeMap {
 }
 
 impl ExpNode<(usize, Environment)> {
-  fn build_from_tynt_tree(
+  pub fn build_from_tynt_tree(
     tree: TyntTree,
     parent_env: &Environment,
     tree_type_constraints: &mut Vec<SharedTypeConstraints>,
@@ -263,243 +271,5 @@ impl ExpNode<(usize, Environment)> {
     }
     .walk(&mut |node| Ok(node), &mut build_type_constraints)
     .unwrap()
-  }
-}
-
-struct Program {
-  structs: Vec<(String, Struct)>,
-  expressions: Vec<ExpNode<(usize, Environment)>>,
-  types: TypeMap,
-  global_env: Environment,
-}
-
-impl Program {
-  pub fn new(
-    trees: Vec<TyntTree>,
-    global_env: Environment,
-  ) -> Result<Self, CompileError> {
-    Ok(
-      Self::unfinished_from_tynt_trees(trees, global_env)?
-        .infer_initial_constraints()?
-        .infer_types_until_fixed_point()?
-        .ensure_fully_typed()?,
-    )
-  }
-  fn unfinished_from_tynt_trees(
-    trees: Vec<TyntTree>,
-    global_env: Environment,
-  ) -> Result<Self, CompileError> {
-    let mut types = vec![];
-    let mut expressions = vec![];
-    let mut structs = vec![];
-    for tree in trees.into_iter() {
-      use crate::parse::Encloser::*;
-      use crate::parse::Operator::*;
-      use sse::syntax::EncloserOrOperator::*;
-      let mut matched_struct = false;
-      if let TyntTree::Inner((_, Encloser(Parens)), children) = &tree {
-        if let Some(first_child) = children.first() {
-          if let TyntTree::Leaf(_, leaf) = first_child {
-            if leaf == "struct" {
-              matched_struct = true;
-              let mut children_iter = children.iter().skip(1).cloned();
-              if let Some(TyntTree::Leaf(_, struct_name)) = children_iter.next()
-              {
-                let fields: Vec<_> = children.iter().skip(1).cloned().collect();
-                structs.push((
-                  struct_name,
-                  UntypedStruct::from_field_expressions(fields)?,
-                ));
-              } else {
-                return Err(CompileError::InvalidStructName);
-              }
-            }
-          }
-        }
-      }
-      if !matched_struct {
-        expressions.push(ExpNode::build_from_tynt_tree(
-          tree,
-          &global_env,
-          &mut types,
-        ));
-      }
-    }
-    /*let initial_trees = trees
-    .into_iter()
-    .map(|tree| {
-      ExpNode::build_from_tynt_tree(tree, &global_env, &mut types, true)
-    })
-    .collect();*/
-    let struct_names: Vec<String> =
-      structs.iter().map(|(name, _)| name.clone()).collect();
-    Ok(Self {
-      structs: structs
-        .into_iter()
-        .map(|(name, untyped_struct)| {
-          untyped_struct
-            .assign_types(&struct_names)
-            .map(|s| (name, s))
-        })
-        .collect::<Result<Vec<(String, Struct)>, CompileError>>()?,
-      expressions,
-      types: TypeMap::new(types),
-      global_env,
-    })
-  }
-  fn infer_initial_constraints(mut self) -> Result<Self, TypeError> {
-    let new_expressions = self
-      .expressions
-      .into_iter()
-      .map(|tree| {
-        tree.walk(
-          &mut |node| Ok(node),
-          &mut |exp: Box<Exp<(usize, Environment)>>, (type_index, env)| {
-            let new_env = match &*exp {
-              Application(f, _) => match &*f.exp {
-                Name(name) => {
-                  let fn_output_type = env
-                    .fn_output_type(name)
-                    .ok_or(TypeError::UnknownFunction)?;
-                  self
-                    .types
-                    .constrain(type_index, Definitely(fn_output_type))?;
-                  env
-                }
-                _ => {
-                  todo!("I haven't implemented higher order functions yet!!")
-                }
-              },
-              Let(binding_pairs, body) => {
-                self.types.join(type_index, body.data.0)?;
-                let body_env = binding_pairs.into_iter().fold(
-                  env,
-                  |env, (name, value_scope)| {
-                    env.bind(name.clone(), value_scope.data.0)
-                  },
-                );
-                body_env
-              }
-              Match(scrutinee, cases) => {
-                for (pattern_exp, body_exp) in cases {
-                  self.types.join(scrutinee.data.0, pattern_exp.data.0)?;
-                  self.types.join(type_index, body_exp.data.0)?;
-                }
-                env
-                // if the match block is non-exhaustive, it's type should be
-                // restricted to bottom. I think at first match blocks only
-                // need to be able to match to literals, so the only exhaustive
-                // case will be the case of 2 bools
-              }
-              _ => env,
-            };
-            Ok(ExpNode {
-              exp,
-              data: (type_index, new_env),
-            })
-          },
-        )
-      })
-      .collect::<Result<_, TypeError>>()?;
-    Ok(Self {
-      expressions: new_expressions,
-      structs: self.structs,
-      types: self.types,
-      global_env: self.global_env,
-    })
-  }
-  fn propagate_constraints(mut self) -> Result<(Self, bool), TypeError> {
-    let mut changed = false;
-    let new_expressions = self
-      .expressions
-      .into_iter()
-      .map(|tree| {
-        tree.walk(
-          &mut |node| {
-            let (type_index, env) = node.data;
-            let new_exp = match *node.exp {
-              Application(f, args) => match *f.exp {
-                Name(name) => {
-                  let arg_types = env
-                    .fn_input_types(&name)
-                    .ok_or(TypeError::UnknownFunction)?;
-                  if arg_types.len() != args.len() {
-                    return Err(TypeError::InvalidArity);
-                  }
-                  Application(
-                    ExpNode {
-                      data: f.data,
-                      exp: Box::new(Name(name)),
-                    },
-                    args
-                      .into_iter()
-                      .zip(arg_types.into_iter())
-                      .map(|(arg, arg_type)| {
-                        let constrain_caused_change = self.types.constrain(
-                          type_index,
-                          TypeConstraints::Definitely(arg_type),
-                        )?;
-                        changed |= constrain_caused_change;
-                        Ok(arg)
-                      })
-                      .collect::<Result<_, TypeError>>()?,
-                  )
-                }
-                _ => {
-                  todo!("I haven't implemented higher order functions yet!!")
-                }
-              },
-              other => other,
-            };
-            Ok(ExpNode {
-              exp: Box::new(new_exp),
-              data: (type_index, env),
-            })
-          },
-          &mut |exp, data| Ok(ExpNode { exp, data }),
-        )
-      })
-      .collect::<Result<_, TypeError>>()?;
-    Ok((
-      Self {
-        expressions: new_expressions,
-        structs: self.structs,
-        types: self.types,
-        global_env: self.global_env,
-      },
-      changed,
-    ))
-  }
-  fn infer_types_until_fixed_point(mut self) -> Result<Self, TypeError> {
-    loop {
-      let (new_program, changed) = self.propagate_constraints()?;
-      self = new_program;
-      if !changed {
-        break;
-      }
-    }
-    Ok(self)
-  }
-  fn ensure_fully_typed(self) -> Result<Self, TypeError> {
-    Ok(Self {
-      expressions: self
-        .expressions
-        .into_iter()
-        .map(|tree| {
-          tree.walk(&mut |exp| Ok(exp), &mut |exp, (type_index, env)| {
-            Ok(ExpNode {
-              exp,
-              data: match self.types.get_type(type_index) {
-                TypeConstraints::Definitely(t) => Ok((type_index, env)),
-                _ => Err(TypeError::CouldntInfer),
-              }?,
-            })
-          })
-        })
-        .collect::<Result<_, TypeError>>()?,
-      structs: self.structs,
-      types: self.types,
-      global_env: self.global_env,
-    })
   }
 }

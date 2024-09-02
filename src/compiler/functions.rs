@@ -35,7 +35,7 @@ pub fn compile_function(forms: Vec<TyntTree>) -> Result<String, CompileError> {
       fn_string += &arg_strings.join(", ");
       fn_string += ") -> ";
       if let TyntTree::Inner(
-        (_, EncloserOrOperator::Operator(Operator::Metadata)),
+        (_, EncloserOrOperator::Operator(Operator::MetadataAnnotation)),
         mut metadata_and_output_type,
       ) = return_type_form
       {

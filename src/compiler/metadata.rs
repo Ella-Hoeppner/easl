@@ -52,7 +52,7 @@ pub fn compile_form_possibly_with_metadata(
   subform_compiler: impl Fn(TyntTree) -> Result<String, CompileError>,
 ) -> Result<String, CompileError> {
   if let TyntTree::Inner(
-    (_, EncloserOrOperator::Operator(Operator::Metadata)),
+    (_, EncloserOrOperator::Operator(Operator::MetadataAnnotation)),
     mut children,
   ) = form
   {

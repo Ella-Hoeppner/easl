@@ -1,4 +1,4 @@
-use super::metadata::ExpMetadata;
+use super::metadata::Metadata;
 use core::fmt::Debug;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,7 +18,7 @@ pub enum Exp<D: Debug + Clone + PartialEq> {
   Name(String),
   NumberLiteral(Number),
   BooleanLiteral(bool),
-  Metadata(ExpMetadata, ExpNode<D>),
+  Function(Vec<(Option<Metadata>, String)>, ExpNode<D>),
   Application(ExpNode<D>, Vec<ExpNode<D>>),
   Let(Vec<(String, ExpNode<D>)>, ExpNode<D>),
   Match(Box<ExpNode<D>>, Vec<(ExpNode<D>, ExpNode<D>)>),
@@ -42,9 +42,9 @@ impl<D: Debug + Clone + PartialEq> ExpNode<D> {
   ) -> Result<ExpNode<NewD>, E> {
     let prewalked_node = prewalk_transformer(self)?;
     let new_exp: Exp<NewD> = match *prewalked_node.exp {
-      Metadata(metadata, exp) => Metadata(
-        metadata,
-        exp.walk(prewalk_transformer, postwalk_transformer)?,
+      Function(arg_names, body) => Function(
+        arg_names,
+        body.walk(prewalk_transformer, postwalk_transformer)?,
       ),
       Application(f_expression, args) => Application(
         f_expression.walk(prewalk_transformer, postwalk_transformer)?,

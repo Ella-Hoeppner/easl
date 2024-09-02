@@ -14,16 +14,14 @@ Feature goals:
   * type holes
 
 ## todo
-* get basic type inference and compilation working
-  * for now all arithmetic only needs to work on floats
-* support threading macros
-* support shadowing
-* convert + and * calls with >2 args to chains of 2-arg calls
-* convert - and / calls with 1 arg to calls to negate and invert, respectively
+* finish type inference and basic compilation + parsing from TyntTrees
+
+* add macros and syntactic conveniences
+  * shadowing
+  * threading macros
+  * convert + and * calls with >2 args to chains of 2-arg calls
+  * convert - and / calls with 1 arg to calls to negate and invert, respectively
 * support internal lets (lets inside function applications)
-* make functions first class
-  * add a `Fn` type, i.e. `(Fn [In1 In2 ... InN] Output)`
-  * add a `Function` case to `Exp`
 * support higher-order functions
   * any invocation of one of these functions will need to have that argument inlined
     * for now there can be a restriction that the values for these arguments must always be constant, support non-constant fn args via dynamic dispatch later
@@ -40,11 +38,15 @@ Feature goals:
     * this should require providing a signature for all functions in each typeclass within the alias
   * support user-defined typeclasses
   * support user-defined typeclass combination aliases
+
 * Support anonymous structs
   * each anonymous struct compiles to a concrete struct with a name derived from its field and types
 * Support tuples
   * compile to structs
+
 * add closures, lambda lifting
   * closures will need to be compiled to a struct holding captured values, along with a corresponding function for "invoking" instances of the struct
+
 * loop construct
+
 * add typeclasses for trig ops (including a Trig combo alias), exp, exp2, log, log2, pow, ceil/floor, abs, clamp, length, distance, dot, fract, mod, sign, smoothstep, sqrt, step

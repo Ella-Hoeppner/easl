@@ -35,34 +35,34 @@ impl SSEEncloser for Encloser {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Operator {
-  Metadata,
+  MetadataAnnotation,
   TypeAnnotation,
 }
 impl SSEOperator for Operator {
   fn id_str(&self) -> &str {
     match self {
-      Operator::Metadata => ":metadata:",
+      Operator::MetadataAnnotation => ":metadata:",
       Operator::TypeAnnotation => ":type-annotation:",
     }
   }
 
   fn left_args(&self) -> usize {
     match self {
-      Operator::Metadata => 0,
+      Operator::MetadataAnnotation => 0,
       Operator::TypeAnnotation => 1,
     }
   }
 
   fn right_args(&self) -> usize {
     match self {
-      Operator::Metadata => 2,
+      Operator::MetadataAnnotation => 2,
       Operator::TypeAnnotation => 1,
     }
   }
 
   fn op_str(&self) -> &str {
     match self {
-      Operator::Metadata => "@",
+      Operator::MetadataAnnotation => "@",
       Operator::TypeAnnotation => ":",
     }
   }
@@ -74,7 +74,7 @@ pub fn parse_tynt(
   Document::from_text_with_syntax(
     SyntaxGraph::contextless(
       vec![Encloser::Parens, Encloser::Square, Encloser::Curly],
-      vec![Operator::Metadata, Operator::TypeAnnotation],
+      vec![Operator::MetadataAnnotation, Operator::TypeAnnotation],
       standard_whitespace_chars(),
     ),
     tynt_source,
