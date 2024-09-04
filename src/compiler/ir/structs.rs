@@ -14,20 +14,19 @@ pub struct UntypedStructField {
 }
 
 impl UntypedStructField {
-  fn from_field_expression(exp: TyntTree) -> Result<Self, CompileError> {
+  fn from_field_tree(exp: TyntTree) -> Result<Self, CompileError> {
     use crate::parse::Operator::*;
     use EncloserOrOperator::*;
     let mut metadata = None;
-    let inner_exp = match exp {
+    let inner_ast = match exp {
       TyntTree::Inner((_, Operator(MetadataAnnotation)), mut children) => {
-        let field_exp = children.remove(1);
-        metadata =
-          Some(Metadata::from_metadata_expression(children.remove(0))?);
-        field_exp
+        let field_ast = children.remove(1);
+        metadata = Some(Metadata::from_metadata_tree(children.remove(0))?);
+        field_ast
       }
       other => other,
     };
-    let (name, type_name) = read_type_annotated_name(inner_exp)?;
+    let (name, type_name) = read_type_annotated_name(inner_ast)?;
     Ok(Self {
       metadata,
       name,
@@ -52,15 +51,15 @@ pub struct UntypedStruct {
 }
 
 impl UntypedStruct {
-  pub fn from_field_expressions(
+  pub fn from_field_trees(
     name: String,
-    field_expressions: Vec<TyntTree>,
+    field_asts: Vec<TyntTree>,
   ) -> Result<Self, CompileError> {
     Ok(Self {
       name,
-      fields: field_expressions
+      fields: field_asts
         .into_iter()
-        .map(UntypedStructField::from_field_expression)
+        .map(UntypedStructField::from_field_tree)
         .collect::<Result<_, CompileError>>()?,
     })
   }

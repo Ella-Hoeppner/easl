@@ -6,7 +6,7 @@ use crate::{
 };
 
 use super::{
-  expression::ExpNode,
+  expression::Exp,
   metadata::Metadata,
   structs::Struct,
   types::{CompileError, TyntType},
@@ -24,7 +24,7 @@ struct TopLevelFunction {
   metadata: Option<Metadata>,
   arg_metadata: Vec<Option<Metadata>>,
   return_metadata: Option<Metadata>,
-  exp: ExpNode<Option<TyntType>>,
+  exp: Exp<Option<TyntType>>,
 }
 
 struct Program {
@@ -65,10 +65,7 @@ fn extract_metadata(
     ) = exp
     {
       let exp = children.remove(1);
-      (
-        Some(Metadata::from_metadata_expression(children.remove(0))?),
-        exp,
-      )
+      (Some(Metadata::from_metadata_tree(children.remove(0))?), exp)
     } else {
       (None, exp)
     },
@@ -107,7 +104,7 @@ impl Program {
         if let Some(TyntTree::Leaf(_, first_child)) = children_iter.next() {
           if &first_child == "struct" {
             if let Some(TyntTree::Leaf(_, struct_name)) = children_iter.next() {
-              untyped_structs.push(UntypedStruct::from_field_expressions(
+              untyped_structs.push(UntypedStruct::from_field_trees(
                 struct_name,
                 children_iter.collect(),
               )?);
@@ -142,20 +139,20 @@ impl Program {
         if let Some(TyntTree::Leaf(_, first_child)) = children_iter.next() {
           match first_child.as_str() {
             "var" => {
-              let (attributes, name_and_type_exp) = match children_iter.len() {
+              let (attributes, name_and_type_ast) = match children_iter.len() {
                 1 => (vec![], children_iter.next().unwrap()),
                 2 => {
-                  let attributes_exp = children_iter.next().unwrap();
+                  let attributes_ast = children_iter.next().unwrap();
                   if let TyntTree::Inner(
                     (_, Encloser(Square)),
-                    attribute_exps,
-                  ) = attributes_exp
+                    attribute_asts,
+                  ) = attributes_ast
                   {
-                    let attributes: Vec<String> = attribute_exps
+                    let attributes: Vec<String> = attribute_asts
                       .into_iter()
-                      .map(|attribute_exp| {
+                      .map(|attribute_ast| {
                         if let TyntTree::Leaf(_, attribute_string) =
-                          attribute_exp
+                          attribute_ast
                         {
                           Ok(attribute_string)
                         } else {
@@ -180,7 +177,7 @@ impl Program {
                 }
               };
               let (name, type_name) =
-                read_type_annotated_name(name_and_type_exp)?;
+                read_type_annotated_name(name_and_type_ast)?;
               top_level_vars.push(TopLevelVar {
                 name,
                 metadata,
@@ -189,14 +186,14 @@ impl Program {
               })
             }
             "def" => {
-              let name_exp = children_iter
+              let name_ast = children_iter
                 .next()
                 .ok_or(CompileError::InvalidDef("Missing Name".to_string()))?;
-              if let TyntTree::Leaf(_, name) = name_exp {
-                let value_exp = children_iter.next().ok_or(
+              if let TyntTree::Leaf(_, name) = name_ast {
+                let value_ast = children_iter.next().ok_or(
                   CompileError::InvalidDef("Missing Value".to_string()),
                 )?;
-                match value_exp {
+                match value_ast {
                   TyntTree::Inner(
                     (fn_range, Encloser(Parens)),
                     value_children,
@@ -206,7 +203,7 @@ impl Program {
                       value_children_iter.next()
                     {
                       if first_leaf == "fn".to_string() {
-                        let signature_exp = value_children_iter.next().ok_or(
+                        let signature_ast = value_children_iter.next().ok_or(
                           CompileError::InvalidFunction(
                             "Missing Argument List".to_string(),
                           ),
@@ -214,9 +211,9 @@ impl Program {
                         if let TyntTree::Inner(
                           (signature_range, Operator(TypeAnnotation)),
                           args_and_return_type,
-                        ) = signature_exp
+                        ) = signature_ast
                         {
-                          let (return_metadata, return_type_exp) =
+                          let (return_metadata, return_type_ast) =
                             extract_metadata(args_and_return_type[1].clone())?;
                           let arg_list = args_and_return_type[0].clone();
                           if let TyntTree::Inner(
@@ -224,36 +221,35 @@ impl Program {
                             arg_children,
                           ) = arg_list
                           {
-                            let (arg_metadata, arg_expressions): (
+                            let (arg_metadata, arg_asts): (
                               Vec<Option<Metadata>>,
                               Vec<TyntTree>,
                             ) = arg_children
                               .into_iter()
                               .map(|arg| extract_metadata(arg))
                               .collect::<Result<_, CompileError>>()?;
-                            let metadata_stripped_fn_expression =
-                              TyntTree::Inner(
-                                (fn_range, Encloser(Parens)),
-                                std::iter::once(TyntTree::Inner(
-                                  (signature_range, Operator(TypeAnnotation)),
-                                  vec![
-                                    TyntTree::Inner(
-                                      (arg_list_range, Encloser(Square)),
-                                      arg_expressions,
-                                    ),
-                                    return_type_exp,
-                                  ],
-                                ))
-                                .chain(value_children_iter)
-                                .collect(),
-                              );
+                            let metadata_stripped_fn_ast = TyntTree::Inner(
+                              (fn_range, Encloser(Parens)),
+                              std::iter::once(TyntTree::Inner(
+                                (signature_range, Operator(TypeAnnotation)),
+                                vec![
+                                  TyntTree::Inner(
+                                    (arg_list_range, Encloser(Square)),
+                                    arg_asts,
+                                  ),
+                                  return_type_ast,
+                                ],
+                              ))
+                              .chain(value_children_iter)
+                              .collect(),
+                            );
                             top_level_functions.push(TopLevelFunction {
                               name,
                               metadata,
                               arg_metadata,
                               return_metadata,
-                              exp: ExpNode::try_from_tynt_tree(
-                                metadata_stripped_fn_expression,
+                              exp: Exp::try_from_tynt_tree(
+                                metadata_stripped_fn_ast,
                                 &struct_names,
                               )?,
                             })

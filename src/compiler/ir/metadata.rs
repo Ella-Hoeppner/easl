@@ -9,7 +9,7 @@ pub enum Metadata {
 }
 
 impl Metadata {
-  pub fn from_metadata_expression(exp: TyntTree) -> Result<Self, CompileError> {
+  pub fn from_metadata_tree(ast: TyntTree) -> Result<Self, CompileError> {
     todo!()
   }
 }

@@ -10,25 +10,25 @@ pub enum Number {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ExpNode<D: Debug + Clone + PartialEq> {
+pub struct Exp<D: Debug + Clone + PartialEq> {
   pub data: D,
-  pub exp: Box<Exp<D>>,
+  pub exp: Box<ExpKind<D>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Exp<D: Debug + Clone + PartialEq> {
+pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Name(String),
   NumberLiteral(Number),
   BooleanLiteral(bool),
-  Function(Vec<String>, ExpNode<D>),
-  Application(ExpNode<D>, Vec<ExpNode<D>>),
-  Let(Vec<(String, ExpNode<D>)>, ExpNode<D>),
-  Match(Box<ExpNode<D>>, Vec<(ExpNode<D>, ExpNode<D>)>),
+  Function(Vec<String>, Exp<D>),
+  Application(Exp<D>, Vec<Exp<D>>),
+  Let(Vec<(String, Exp<D>)>, Exp<D>),
+  Match(Box<Exp<D>>, Vec<(Exp<D>, Exp<D>)>),
 }
-use Exp::*;
+use ExpKind::*;
 
-impl<D: Debug + Clone + PartialEq> ExpNode<D> {
-  fn map_exp(self, f: impl Fn(Exp<D>) -> Exp<D>) -> Self {
+impl<D: Debug + Clone + PartialEq> Exp<D> {
+  fn map_exp(self, f: impl Fn(ExpKind<D>) -> ExpKind<D>) -> Self {
     Self {
       data: self.data,
       exp: Box::new(f(*self.exp)),
@@ -38,12 +38,12 @@ impl<D: Debug + Clone + PartialEq> ExpNode<D> {
     self,
     prewalk_transformer: &mut impl FnMut(Self) -> Result<Self, E>,
     postwalk_transformer: &mut impl FnMut(
-      Box<Exp<NewD>>,
+      Box<ExpKind<NewD>>,
       D,
-    ) -> Result<ExpNode<NewD>, E>,
-  ) -> Result<ExpNode<NewD>, E> {
+    ) -> Result<Exp<NewD>, E>,
+  ) -> Result<Exp<NewD>, E> {
     let prewalked_node = prewalk_transformer(self)?;
-    let new_exp: Exp<NewD> = match *prewalked_node.exp {
+    let new_exp: ExpKind<NewD> = match *prewalked_node.exp {
       Function(arg_names, body) => Function(
         arg_names,
         body.walk(prewalk_transformer, postwalk_transformer)?,
@@ -84,11 +84,11 @@ impl<D: Debug + Clone + PartialEq> ExpNode<D> {
   }
   pub fn try_replace_data<NewD: Debug + Clone + PartialEq, E>(
     self,
-    data_deriver: &mut impl FnMut(&Exp<NewD>, D) -> Result<NewD, E>,
-  ) -> Result<ExpNode<NewD>, E> {
+    data_deriver: &mut impl FnMut(&ExpKind<NewD>, D) -> Result<NewD, E>,
+  ) -> Result<Exp<NewD>, E> {
     self.walk(&mut |node| Ok(node), &mut |exp, data| {
       let new_data = data_deriver(&exp, data)?;
-      Ok(ExpNode {
+      Ok(Exp {
         exp,
         data: new_data,
       })
@@ -137,7 +137,7 @@ impl<D: Debug + Clone + PartialEq> ExpNode<D> {
   }
 }
 
-impl ExpNode<Option<TyntType>> {
+impl Exp<Option<TyntType>> {
   pub fn try_from_tynt_tree(
     tree: TyntTree,
     struct_names: &Vec<String>,
@@ -145,23 +145,23 @@ impl ExpNode<Option<TyntType>> {
     Ok(match tree {
       TyntTree::Leaf(_, leaf) => {
         if leaf == "true" || leaf == "false" {
-          ExpNode {
-            exp: Box::new(Exp::BooleanLiteral(leaf == "true")),
+          Exp {
+            exp: Box::new(ExpKind::BooleanLiteral(leaf == "true")),
             data: Some(TyntType::Bool),
           }
         } else if let Ok(i) = leaf.parse::<i64>() {
-          ExpNode {
-            exp: Box::new(Exp::NumberLiteral(Number::Int(i))),
+          Exp {
+            exp: Box::new(ExpKind::NumberLiteral(Number::Int(i))),
             data: Some(TyntType::I32),
           }
         } else if let Ok(f) = leaf.parse::<f64>() {
-          ExpNode {
-            exp: Box::new(Exp::NumberLiteral(Number::Float(f))),
+          Exp {
+            exp: Box::new(ExpKind::NumberLiteral(Number::Float(f))),
             data: Some(TyntType::F32),
           }
         } else {
-          ExpNode {
-            exp: Box::new(Exp::Name(leaf)),
+          Exp {
+            exp: Box::new(ExpKind::Name(leaf)),
             data: None,
           }
         }
@@ -190,21 +190,21 @@ impl ExpNode<Option<TyntType>> {
                           )?;
                           if let TyntTree::Inner(
                             (_, Encloser(Square)),
-                            arg_exps,
+                            arg_asts,
                           ) = args_and_return_type.remove(0)
                           {
                             if children_iter.len() == 1 {
                               let body = children_iter.next().unwrap();
-                              let (arg_types, arg_names) = arg_exps
+                              let (arg_types, arg_names) = arg_asts
                                 .into_iter()
                                 .map(|arg| -> Result<_, CompileError> {
-                                  let (maybe_t, arg_name_exp) =
+                                  let (maybe_t, arg_name_ast) =
                                     extract_type(arg, struct_names)?;
                                   let t = maybe_t.ok_or(
                                     CompileError::FunctionArgMissingType,
                                   )?;
                                   if let TyntTree::Leaf(_, arg_name) =
-                                    arg_name_exp
+                                    arg_name_ast
                                   {
                                     Ok((t, arg_name))
                                   } else {
@@ -215,12 +215,12 @@ impl ExpNode<Option<TyntType>> {
                                   (Vec<TyntType>, Vec<String>),
                                   CompileError,
                                 >>()?;
-                              Some(ExpNode {
+                              Some(Exp {
                                 data: Some(TyntType::Function(
                                   arg_types,
                                   Box::new(return_type),
                                 )),
-                                exp: Box::new(Exp::Function(
+                                exp: Box::new(ExpKind::Function(
                                   arg_names,
                                   Self::try_from_tynt_tree(body, struct_names)?,
                                 )),
@@ -250,7 +250,7 @@ impl ExpNode<Option<TyntType>> {
                   }
                   _ => None,
                 }
-                .unwrap_or(ExpNode {
+                .unwrap_or(Exp {
                   exp: Box::new(Application(
                     Self::try_from_tynt_tree(first_child, struct_names)?,
                     children_iter
@@ -271,11 +271,10 @@ impl ExpNode<Option<TyntType>> {
               todo!("Encountered metadata in internal expression")
             }
             TypeAnnotation => {
-              let mut exp: ExpNode<Option<TyntType>> =
-                Self::try_from_tynt_tree(
-                  children_iter.next().unwrap(),
-                  struct_names,
-                )?;
+              let mut exp: Exp<Option<TyntType>> = Self::try_from_tynt_tree(
+                children_iter.next().unwrap(),
+                struct_names,
+              )?;
               if let TyntTree::Leaf(_, type_name) =
                 children_iter.next().unwrap()
               {
