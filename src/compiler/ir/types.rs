@@ -4,7 +4,7 @@ use crate::parse::TyntTree;
 
 pub enum CompileError {
   TypeError(TypeError),
-  InvalidMetadata,
+  InvalidMetadata(String),
   ExpectedTypeAnnotatedName,
   InvalidStructField,
   InvalidStructName,
