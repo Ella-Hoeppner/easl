@@ -1,9 +1,6 @@
 use crate::{compiler::ir::program::extract_type, parse::TyntTree};
 
-use super::{
-  metadata::Metadata,
-  types::{CompileError, TyntType},
-};
+use super::types::{CompileError, TyntType};
 use core::fmt::Debug;
 
 #[derive(Debug, Clone, PartialEq)]

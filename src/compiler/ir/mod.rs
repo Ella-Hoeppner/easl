@@ -1,4 +1,3 @@
-pub mod compile;
 pub mod expression;
 pub mod metadata;
 pub mod program;

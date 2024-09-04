@@ -19,7 +19,7 @@ impl UntypedStructField {
     use EncloserOrOperator::*;
     let mut metadata = None;
     let inner_exp = match exp {
-      TyntTree::Inner((_, Operator(Metadata)), mut children) => {
+      TyntTree::Inner((_, Operator(MetadataAnnotation)), mut children) => {
         let field_exp = children.remove(1);
         metadata =
           Some(Metadata::from_metadata_expression(children.remove(0))?);
