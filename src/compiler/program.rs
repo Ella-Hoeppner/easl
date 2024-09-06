@@ -1,102 +1,30 @@
-use sse::syntax::EncloserOrOperator;
-
 use crate::{
-  compiler::ir::structs::UntypedStruct,
-  parse::{Operator, TyntTree},
+  compiler::{
+    metadata::extract_metadata, structs::UntypedStruct,
+    util::read_type_annotated_name,
+  },
+  parse::TyntTree,
 };
 
 use super::{
-  expression::Exp,
-  metadata::Metadata,
-  structs::Struct,
-  types::{CompileError, TyntType},
+  error::CompileError, expression::Exp, functions::TopLevelFunction,
+  metadata::Metadata, structs::Struct, types::TyntType, vars::TopLevelVar,
 };
 
-struct TopLevelVar {
-  name: String,
-  metadata: Option<Metadata>,
-  attributes: Vec<String>,
-  var_type: TyntType,
-}
-
-struct TopLevelFunction {
-  name: String,
-  metadata: Option<Metadata>,
-  arg_metadata: Vec<Option<Metadata>>,
-  return_metadata: Option<Metadata>,
-  exp: Exp<Option<TyntType>>,
-}
-
-struct Program {
+pub struct Program {
   structs: Vec<Struct>,
   top_level_vars: Vec<TopLevelVar>,
   top_level_functions: Vec<TopLevelFunction>,
 }
 
-pub fn read_type_annotated_name(
-  exp: TyntTree,
-) -> Result<(String, String), CompileError> {
-  if let TyntTree::Inner(
-    (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
-    mut children,
-  ) = exp
-  {
-    if let TyntTree::Leaf(_, type_name) = children.remove(1) {
-      if let TyntTree::Leaf(_, name) = children.remove(0) {
-        Ok((name, type_name))
-      } else {
-        Err(CompileError::ExpectedTypeAnnotatedName)
-      }
-    } else {
-      Err(CompileError::ExpectedTypeAnnotatedName)
-    }
-  } else {
-    Err(CompileError::ExpectedTypeAnnotatedName)
-  }
-}
-
-fn extract_metadata(
-  exp: TyntTree,
-) -> Result<(Option<Metadata>, TyntTree), CompileError> {
-  Ok(
-    if let TyntTree::Inner(
-      (_, EncloserOrOperator::Operator(Operator::MetadataAnnotation)),
-      mut children,
-    ) = exp
-    {
-      let exp = children.remove(1);
-      (Some(Metadata::from_metadata_tree(children.remove(0))?), exp)
-    } else {
-      (None, exp)
-    },
-  )
-}
-
-pub fn extract_type(
-  exp: TyntTree,
-  struct_names: &Vec<String>,
-) -> Result<(Option<TyntType>, TyntTree), CompileError> {
-  Ok(
-    if let TyntTree::Inner(
-      (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
-      mut children,
-    ) = exp
-    {
-      let t = TyntType::from_tynt_tree(children.remove(1), struct_names)?;
-      (Some(t), children.remove(0))
-    } else {
-      (None, exp)
-    },
-  )
-}
-
 impl Program {
-  fn init_from_tynt_trees(trees: Vec<TyntTree>) -> Result<Self, CompileError> {
+  pub fn init_from_tynt_trees(
+    trees: Vec<TyntTree>,
+  ) -> Result<Self, CompileError> {
     let mut non_struct_trees = vec![];
     let mut untyped_structs = vec![];
     for tree in trees.into_iter() {
       use crate::parse::Encloser::*;
-      use crate::parse::Operator::*;
       use sse::syntax::EncloserOrOperator::*;
       let (metadata, tree_body) = extract_metadata(tree.clone())?;
       if let TyntTree::Inner((_, Encloser(Parens)), children) = tree_body {
@@ -112,7 +40,7 @@ impl Program {
               return Err(CompileError::InvalidStructName);
             }
           } else {
-            non_struct_trees.push(tree)
+            non_struct_trees.push((metadata, tree))
           }
         } else {
           return Err(CompileError::UnrecognizedTopLevelForm);
@@ -129,12 +57,11 @@ impl Program {
       .collect::<Result<Vec<Struct>, CompileError>>()?;
     let mut top_level_vars = vec![];
     let mut top_level_functions = vec![];
-    for tree in non_struct_trees.into_iter() {
+    for (metadata, tree) in non_struct_trees.into_iter() {
       use crate::parse::Encloser::*;
       use crate::parse::Operator::*;
       use sse::syntax::EncloserOrOperator::*;
-      let (metadata, tree_body) = extract_metadata(tree.clone())?;
-      if let TyntTree::Inner((_, Encloser(Parens)), children) = tree_body {
+      if let TyntTree::Inner((_, Encloser(Parens)), children) = tree {
         let mut children_iter = children.into_iter();
         if let Some(TyntTree::Leaf(_, first_child)) = children_iter.next() {
           match first_child.as_str() {
@@ -245,9 +172,9 @@ impl Program {
                             );
                             top_level_functions.push(TopLevelFunction {
                               name,
-                              metadata,
                               arg_metadata,
                               return_metadata,
+                              metadata,
                               exp: Exp::try_from_tynt_tree(
                                 metadata_stripped_fn_ast,
                                 &struct_names,
@@ -292,5 +219,51 @@ impl Program {
       top_level_vars,
       top_level_functions,
     })
+  }
+  fn propagate_types(&mut self) -> Result<bool, CompileError> {
+    self.top_level_functions.iter_mut().try_fold(
+      false,
+      |did_type_states_change_so_far, f| {
+        let did_f_type_states_change = f.exp.propagate_types()?;
+        Ok(did_type_states_change_so_far || did_f_type_states_change)
+      },
+    )
+  }
+  fn is_fully_typed(&self) -> bool {
+    self
+      .top_level_functions
+      .iter()
+      .fold(true, |fully_typed_so_far, f| {
+        fully_typed_so_far && f.exp.is_fully_typed()
+      })
+  }
+  pub fn fully_infer_types(mut self) -> Result<Self, CompileError> {
+    loop {
+      let did_type_states_change = self.propagate_types()?;
+      if !did_type_states_change {
+        return if self.is_fully_typed() {
+          Ok(self)
+        } else {
+          Err(CompileError::CouldntInferTypes)
+        };
+      }
+    }
+  }
+  pub fn compile_to_wgsl(self) -> Result<String, CompileError> {
+    let mut wgsl = String::new();
+    for v in self.top_level_vars {
+      wgsl += &v.compile();
+      wgsl += "\n";
+    }
+    wgsl += "\n";
+    for s in self.structs {
+      wgsl += &s.compile();
+      wgsl += "\n\n";
+    }
+    for f in self.top_level_functions {
+      wgsl += &f.compile()?;
+      wgsl += "\n\n";
+    }
+    Ok(wgsl)
   }
 }

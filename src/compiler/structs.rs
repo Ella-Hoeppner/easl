@@ -1,11 +1,8 @@
 use sse::syntax::EncloserOrOperator;
 
-use crate::{compiler::ir::program::read_type_annotated_name, parse::TyntTree};
+use crate::{compiler::util::read_type_annotated_name, parse::TyntTree};
 
-use super::{
-  metadata::Metadata,
-  types::{CompileError, TyntType},
-};
+use super::{error::CompileError, metadata::Metadata, types::TyntType};
 
 pub struct UntypedStructField {
   metadata: Option<Metadata>,
@@ -87,4 +84,10 @@ pub struct StructField {
 pub struct Struct {
   name: String,
   fields: Vec<StructField>,
+}
+
+impl Struct {
+  pub fn compile(self) -> String {
+    todo!()
+  }
 }

@@ -1,9 +1,9 @@
-use sse::{syntax::EncloserOrOperator::*, Encloser};
+use sse::syntax::EncloserOrOperator::{self, *};
 
-use crate::parse::Encloser::*;
 use crate::parse::TyntTree;
+use crate::parse::{Encloser::*, Operator};
 
-use super::types::CompileError;
+use super::error::CompileError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Metadata {
@@ -45,4 +45,21 @@ impl Metadata {
       )),
     }
   }
+}
+
+pub fn extract_metadata(
+  exp: TyntTree,
+) -> Result<(Option<Metadata>, TyntTree), CompileError> {
+  Ok(
+    if let TyntTree::Inner(
+      (_, EncloserOrOperator::Operator(Operator::MetadataAnnotation)),
+      mut children,
+    ) = exp
+    {
+      let exp = children.remove(1);
+      (Some(Metadata::from_metadata_tree(children.remove(0))?), exp)
+    } else {
+      (None, exp)
+    },
+  )
 }

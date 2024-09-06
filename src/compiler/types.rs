@@ -1,32 +1,10 @@
 use core::fmt::Debug;
 
-use crate::parse::TyntTree;
+use sse::syntax::EncloserOrOperator;
 
-pub enum CompileError {
-  TypeError(TypeError),
-  InvalidMetadata(String),
-  ExpectedTypeAnnotatedName,
-  InvalidStructField,
-  InvalidStructName,
-  InvalidTopLevelVar(String),
-  InvalidDef(String),
-  InvalidFunction(String),
-  UnrecognizedTopLevelForm,
-  EmptyList,
-  InvalidType,
-  FunctionArgMissingType,
-  InvalidArgumentName,
-}
+use crate::parse::{Operator, TyntTree};
 
-pub enum TypeError {
-  UnrecognizedTypeName,
-}
-
-impl From<TypeError> for CompileError {
-  fn from(err: TypeError) -> Self {
-    Self::TypeError(err)
-  }
-}
+use super::{error::CompileError, functions::FunctionSignature};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TyntType {
@@ -36,7 +14,7 @@ pub enum TyntType {
   U32,
   Bool,
   Struct(String),
-  Function(Vec<TyntType>, Box<TyntType>),
+  Function(Box<FunctionSignature>),
 }
 impl TyntType {
   pub fn from_name(
@@ -53,7 +31,7 @@ impl TyntType {
         if struct_names.contains(&name) {
           Struct(name)
         } else {
-          return Err(TypeError::UnrecognizedTypeName.into());
+          return Err(CompileError::UnrecognizedTypeName);
         }
       }
     })
@@ -68,4 +46,28 @@ impl TyntType {
       Err(CompileError::InvalidType)
     }
   }
+}
+
+pub fn extract_type_annotation(
+  exp: TyntTree,
+  struct_names: &Vec<String>,
+) -> Result<(Option<TyntType>, TyntTree), CompileError> {
+  Ok(
+    if let TyntTree::Inner(
+      (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
+      mut children,
+    ) = exp
+    {
+      let t = TyntType::from_tynt_tree(children.remove(1), struct_names)?;
+      (Some(t), children.remove(0))
+    } else {
+      (None, exp)
+    },
+  )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeState {
+  Unknown,
+  Known(TyntType),
 }
