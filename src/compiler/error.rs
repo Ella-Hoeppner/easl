@@ -17,6 +17,10 @@ pub enum CompileError {
   FunctionArgMissingType,
   InvalidArgumentName,
   CouldntInferTypes,
+  IncompatibleTypes,
+  UnboundName,
+  AppliedNonFunction,
+  WrongArity,
 }
 
 impl From<ParseError> for CompileError {

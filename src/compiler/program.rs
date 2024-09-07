@@ -7,8 +7,13 @@ use crate::{
 };
 
 use super::{
-  error::CompileError, expression::Exp, functions::TopLevelFunction,
-  metadata::Metadata, structs::Struct, types::TyntType, vars::TopLevelVar,
+  error::CompileError,
+  expression::Exp,
+  functions::TopLevelFunction,
+  metadata::Metadata,
+  structs::Struct,
+  types::{Context, TyntType},
+  vars::TopLevelVar,
 };
 
 pub struct Program {
@@ -221,10 +226,12 @@ impl Program {
     })
   }
   fn propagate_types(&mut self) -> Result<bool, CompileError> {
+    let mut base_context = Context::base();
     self.top_level_functions.iter_mut().try_fold(
       false,
       |did_type_states_change_so_far, f| {
-        let did_f_type_states_change = f.exp.propagate_types()?;
+        let did_f_type_states_change =
+          f.exp.propagate_types(&mut base_context)?;
         Ok(did_type_states_change_so_far || did_f_type_states_change)
       },
     )

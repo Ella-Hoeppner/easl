@@ -19,6 +19,14 @@ Feature goals:
 * finish basic compilation
 
 * support `let` expressions
+
+* add typeclasses
+  * support generic variables bound by typeclass
+    * monomorphization
+    * account for ambiguity of function type variables in type inference
+  * core built-in number typeclasses: Add, Subtract, Negate, Multiply, Divide
+    * these will be automatically defined on the built in number + vector types
+
 * support `match` expressions
   * treat if statements a special case of match blocks
   * want logic for exhaustivity checking. For now the only exhaustible type is `Bool`, so basically for everything other than `Bool` there should be a requirement to have an "other" arm in the match block
@@ -33,13 +41,6 @@ Feature goals:
 * add syntax for reading struct fields
   * same syntax as kudzu, ideally
   * will want to make sure assignment (and mutability checking) work with these, too
-
-* add type classes
-  * support generic variables bound by typeclass
-    * monomorphization
-    * account for ambiguity of function type variables in type inference
-  * core built-in number typeclasses: Add, Subtract, Negate, Multiply, Divide
-    * these will be automatically defined on the built in number + vector types
 
 * add macros and syntactic conveniences
   * shadowing

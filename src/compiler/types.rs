@@ -1,4 +1,5 @@
 use core::fmt::Debug;
+use std::collections::HashMap;
 
 use sse::syntax::EncloserOrOperator;
 
@@ -70,4 +71,61 @@ pub fn extract_type_annotation(
 pub enum TypeState {
   Unknown,
   Known(TyntType),
+}
+
+impl TypeState {
+  pub fn constrain(
+    &mut self,
+    mut other: TypeState,
+  ) -> Result<bool, CompileError> {
+    Ok(match (&self, &other) {
+      (TypeState::Unknown, TypeState::Unknown) => false,
+      (TypeState::Unknown, TypeState::Known(_)) => {
+        std::mem::swap(self, &mut other);
+        true
+      }
+      (TypeState::Known(_), TypeState::Unknown) => false,
+      (TypeState::Known(current_type), TypeState::Known(new_type)) => {
+        if current_type == new_type {
+          return Err(CompileError::IncompatibleTypes);
+        }
+        false
+      }
+    })
+  }
+  pub fn mutually_constrain(
+    &mut self,
+    other: &mut TypeState,
+  ) -> Result<bool, CompileError> {
+    let self_changed = self.constrain(other.clone())?;
+    let other_changed = other.constrain(self.clone())?;
+    Ok(self_changed || other_changed)
+  }
+}
+
+pub struct Context {
+  bindings: HashMap<String, Vec<TypeState>>,
+}
+
+impl Context {
+  pub fn bind(&mut self, name: &str, t: TypeState) {
+    if !self.bindings.contains_key(name) {
+      self.bindings.insert(name.to_string(), vec![]);
+    }
+    self.bindings.get_mut(name).unwrap().push(t);
+  }
+  pub fn unbind(&mut self, name: &str) -> TypeState {
+    let name_bindings = self.bindings.get_mut(name).unwrap();
+    let t = name_bindings.pop().unwrap();
+    if name_bindings.is_empty() {
+      self.bindings.remove(name);
+    }
+    t
+  }
+  pub fn is_bound(&self, name: &str) -> bool {
+    self.bindings.contains_key(name)
+  }
+  pub fn get_typestate_mut(&mut self, name: &str) -> &mut TypeState {
+    self.bindings.get_mut(name).unwrap().last_mut().unwrap()
+  }
 }
