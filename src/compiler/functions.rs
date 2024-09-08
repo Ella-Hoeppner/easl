@@ -2,9 +2,10 @@ use crate::compiler::util::compile_word;
 
 use super::{
   error::CompileError,
-  expression::{ExpKind, TypedExp},
+  expression::{ExpKind, ExpressionCompilationContext, TypedExp},
   metadata::Metadata,
   types::{TyntType, TypeState},
+  util::indent,
 };
 
 #[derive(Debug)]
@@ -58,10 +59,10 @@ impl TopLevelFunction {
       .join(", ");
 
     Ok(format!(
-      "fn {name}({args}) -> {}{} {{\n{}}}",
+      "fn {name}({args}) -> {}{} {{{}\n}}",
       Metadata::compile_optional(self.return_metadata),
       return_type.compile(),
-      body.compile()
+      indent(body.compile(ExpressionCompilationContext::Return))
     ))
   }
 }

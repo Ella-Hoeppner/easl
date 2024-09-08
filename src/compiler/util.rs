@@ -4,6 +4,10 @@ use crate::parse::{Operator, TyntTree};
 
 use super::error::CompileError;
 
+pub fn indent(s: String) -> String {
+  s.replace("\n", "\n  ")
+}
+
 pub fn read_leaf(ast: TyntTree) -> Result<String, CompileError> {
   if let TyntTree::Leaf(_, word) = ast {
     Ok(word)

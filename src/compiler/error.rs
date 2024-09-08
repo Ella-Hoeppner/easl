@@ -18,7 +18,7 @@ pub enum CompileError {
   InvalidArgumentName,
   CouldntInferTypes,
   IncompatibleTypes,
-  UnboundName,
+  UnboundName(String),
   AppliedNonFunction,
   WrongArity,
   ExpectedLeaf,

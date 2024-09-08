@@ -10,9 +10,12 @@
 @vertex
 (def vertex
   (fn [in: VertexInput]: VertexOutput
-    (VertexOutput (vec4f 0. 0. 0. 1.))))
+    (VertexOutput (vec4f in.corner-position 0. 1.))))
 
 @fragment
 (def fragment 
   (fn [in: VertexOutput]: @{location 0} vec4f
-    (vec4f 0. 0. 0. 1.)))
+    (vec4f (pow (vec3f (/ in.vertex-pos.xy dimensions)
+                       (+ (* (sin (* time 9.)) 0.5) 0.5))
+                (vec3f 2.2))
+           1.)))

@@ -6,8 +6,8 @@ use sse::syntax::EncloserOrOperator;
 use crate::parse::{Operator, TyntTree};
 
 use super::{
-  error::CompileError, functions::FunctionSignature, structs::Struct,
-  util::compile_word,
+  builtins::built_in_functions, error::CompileError,
+  functions::FunctionSignature, structs::Struct, util::compile_word,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,7 +110,7 @@ impl TypeState {
       }
       (TypeState::Known(_), TypeState::Unknown) => false,
       (TypeState::Known(current_type), TypeState::Known(new_type)) => {
-        if current_type == new_type {
+        if current_type != new_type {
           return Err(CompileError::IncompatibleTypes);
         }
         false
@@ -132,6 +132,18 @@ pub struct Context {
 }
 
 impl Context {
+  pub fn default_global() -> Self {
+    let mut ctx = Context {
+      bindings: HashMap::new(),
+    };
+    for (name, signature) in built_in_functions() {
+      ctx.bind(
+        name,
+        TypeState::Known(TyntType::Function(Box::new(signature))),
+      );
+    }
+    ctx
+  }
   pub fn bind(&mut self, name: &str, t: TypeState) {
     if !self.bindings.contains_key(name) {
       self.bindings.insert(name.to_string(), vec![]);
@@ -157,7 +169,7 @@ impl Context {
       self
         .bindings
         .get_mut(name)
-        .ok_or(CompileError::UnboundName)?
+        .ok_or_else(|| CompileError::UnboundName(name.to_string()))?
         .last_mut()
         .unwrap(),
     )

@@ -38,6 +38,12 @@ use super::{
   util::compile_word,
 };
 
+pub enum ExpressionCompilationContext {
+  Return,
+  InnerLine,
+  InnerExpression,
+}
+
 impl<D: Debug + Clone + PartialEq> Exp<D> {
   fn map_exp(self, f: impl Fn(ExpKind<D>) -> ExpKind<D>) -> Self {
     Self {
@@ -342,7 +348,7 @@ impl TypedExp {
     Ok(match &mut self.kind {
       Name(name) => {
         if !ctx.is_bound(name) {
-          return Err(CompileError::UnboundName);
+          return Err(CompileError::UnboundName(name.clone()));
         }
         self.data.mutually_constrain(ctx.get_typestate_mut(name)?)?
       }
@@ -422,8 +428,8 @@ impl TypedExp {
       Match(_, _) => todo!("I haven't implemented match blocks yet!!!"),
     })
   }
-  pub fn compile(self) -> String {
-    match self.kind {
+  pub fn compile(self, ctx: ExpressionCompilationContext) -> String {
+    let main = match self.kind {
       Name(name) => compile_word(name),
       NumberLiteral(num) => match num {
         Number::Int(i) => format!("{i}"),
@@ -432,16 +438,21 @@ impl TypedExp {
       BooleanLiteral(b) => format!("{b}"),
       Function(_, _) => panic!("Attempting to compile internal function"),
       Application(f, args) => {
-        let f_str = f.compile();
+        let f_str = f.compile(ExpressionCompilationContext::InnerExpression);
         let args_str = args
           .into_iter()
-          .map(|arg| arg.compile())
+          .map(|arg| arg.compile(ExpressionCompilationContext::InnerExpression))
           .collect::<Vec<String>>()
           .join(", ");
         format!("{f_str}({args_str})")
       }
       Let(_, _) => todo!("I haven't implemented let blocks yet!!!"),
       Match(_, _) => todo!("I haven't implemented match blocks yet!!!"),
+    };
+    match ctx {
+      ExpressionCompilationContext::Return => format!("\nreturn {main};"),
+      ExpressionCompilationContext::InnerLine => format!("\n{main};"),
+      ExpressionCompilationContext::InnerExpression => main,
     }
   }
 }

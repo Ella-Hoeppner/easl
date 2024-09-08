@@ -15,8 +15,9 @@ Feature goals:
   * sum types (probably, eventually)
 
 ## todo
-* finish basic type inference
-* finish basic compilation
+* support multiple distinct signatures for the same type, e.g. all the different signatures for `vec4f`
+
+* treat accessors as functions, handle types accordingly
 
 * support `let` expressions
 
