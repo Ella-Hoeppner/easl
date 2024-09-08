@@ -1,14 +1,19 @@
+use crate::compiler::util::compile_word;
+
 use super::{
-  error::CompileError, expression::TypedExp, metadata::Metadata,
-  types::TyntType,
+  error::CompileError,
+  expression::{ExpKind, TypedExp},
+  metadata::Metadata,
+  types::{TyntType, TypeState},
 };
 
+#[derive(Debug)]
 pub struct TopLevelFunction {
   pub name: String,
   pub arg_metadata: Vec<Option<Metadata>>,
   pub return_metadata: Option<Metadata>,
   pub metadata: Option<Metadata>,
-  pub exp: TypedExp,
+  pub body: TypedExp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +29,39 @@ pub struct BuiltInFunction {
 
 impl TopLevelFunction {
   pub fn compile(self) -> Result<String, CompileError> {
-    todo!()
+    let TypedExp { data, kind } = self.body;
+    let (arg_types, return_type) =
+      if let TypeState::Known(TyntType::Function(signature)) = data {
+        (signature.arg_types, signature.return_type)
+      } else {
+        panic!("attempted to compile function with invalid type data")
+      };
+    let (arg_names, body) = if let ExpKind::Function(arg_names, body) = kind {
+      (arg_names, *body)
+    } else {
+      panic!("attempted to compile function with invalid ExpKind")
+    };
+    let name = compile_word(self.name);
+    let args = arg_names
+      .into_iter()
+      .zip(arg_types.into_iter())
+      .zip(self.arg_metadata.into_iter())
+      .map(|((name, arg_type), metadata)| {
+        format!(
+          "{}{}: {}",
+          Metadata::compile_optional(metadata),
+          compile_word(name),
+          arg_type.compile()
+        )
+      })
+      .collect::<Vec<String>>()
+      .join(", ");
+
+    Ok(format!(
+      "fn {name}({args}) -> {}{} {{\n{}}}",
+      Metadata::compile_optional(self.return_metadata),
+      return_type.compile(),
+      body.compile()
+    ))
   }
 }

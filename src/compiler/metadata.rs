@@ -45,6 +45,26 @@ impl Metadata {
       )),
     }
   }
+  pub fn compile(self) -> String {
+    match self {
+      Metadata::Singular(value) => format!("@{value}"),
+      Metadata::Map(pairs) => {
+        pairs
+          .into_iter()
+          .map(|(property, value)| format!("@{property}({value})"))
+          .collect::<Vec<String>>()
+          .join(" ")
+          + " "
+      }
+    }
+  }
+  pub fn compile_optional(maybe_self: Option<Self>) -> String {
+    if let Some(metadata) = maybe_self {
+      metadata.compile()
+    } else {
+      String::new()
+    }
+  }
 }
 
 pub fn extract_metadata(

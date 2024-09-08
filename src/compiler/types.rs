@@ -5,7 +5,10 @@ use sse::syntax::EncloserOrOperator;
 
 use crate::parse::{Operator, TyntTree};
 
-use super::{error::CompileError, functions::FunctionSignature};
+use super::{
+  error::CompileError, functions::FunctionSignature, structs::Struct,
+  util::compile_word,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TyntType {
@@ -24,15 +27,15 @@ impl TyntType {
   ) -> Result<Self, CompileError> {
     use TyntType::*;
     Ok(match name.as_str() {
-      "F32" => F32,
-      "I32" => I32,
-      "U32" => U32,
+      "F32" | "f32" => F32,
+      "I32" | "i32" => I32,
+      "U32" | "u32" => U32,
       "Bool" => Bool,
       _ => {
         if struct_names.contains(&name) {
           Struct(name)
         } else {
-          return Err(CompileError::UnrecognizedTypeName);
+          return Err(CompileError::UnrecognizedTypeName(name));
         }
       }
     })
@@ -47,24 +50,45 @@ impl TyntType {
       Err(CompileError::InvalidType)
     }
   }
+  pub fn compile(self) -> String {
+    match self {
+      TyntType::None => panic!("Attempted to compile None type"),
+      TyntType::F32 => "f32".to_string(),
+      TyntType::I32 => "i32".to_string(),
+      TyntType::U32 => "u32".to_string(),
+      TyntType::Bool => "bool".to_string(),
+      TyntType::Struct(name) => compile_word(name),
+      TyntType::Function(_) => panic!("Attempted to compile Function type"),
+    }
+  }
 }
 
-pub fn extract_type_annotation(
+pub fn extract_type_annotation_ast(
   exp: TyntTree,
-  struct_names: &Vec<String>,
-) -> Result<(Option<TyntType>, TyntTree), CompileError> {
+) -> Result<(Option<TyntTree>, TyntTree), CompileError> {
   Ok(
     if let TyntTree::Inner(
       (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
       mut children,
     ) = exp
     {
-      let t = TyntType::from_tynt_tree(children.remove(1), struct_names)?;
-      (Some(t), children.remove(0))
+      (Some(children.remove(1)), children.remove(0))
     } else {
       (None, exp)
     },
   )
+}
+
+pub fn extract_type_annotation(
+  exp: TyntTree,
+  struct_names: &Vec<String>,
+) -> Result<(Option<TyntType>, TyntTree), CompileError> {
+  let (t, value) = extract_type_annotation_ast(exp)?;
+  Ok((
+    t.map(|t| TyntType::from_tynt_tree(t, struct_names))
+      .map_or(Ok(None), |v| v.map(Some))?,
+    value,
+  ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +128,7 @@ impl TypeState {
 }
 
 pub struct Context {
-  bindings: HashMap<String, Vec<TypeState>>,
+  pub bindings: HashMap<String, Vec<TypeState>>,
 }
 
 impl Context {
@@ -125,7 +149,33 @@ impl Context {
   pub fn is_bound(&self, name: &str) -> bool {
     self.bindings.contains_key(name)
   }
-  pub fn get_typestate_mut(&mut self, name: &str) -> &mut TypeState {
-    self.bindings.get_mut(name).unwrap().last_mut().unwrap()
+  pub fn get_typestate_mut(
+    &mut self,
+    name: &str,
+  ) -> Result<&mut TypeState, CompileError> {
+    Ok(
+      self
+        .bindings
+        .get_mut(name)
+        .ok_or(CompileError::UnboundName)?
+        .last_mut()
+        .unwrap(),
+    )
+  }
+  pub fn with_struct_constructors(mut self, structs: &Vec<Struct>) -> Self {
+    for s in structs {
+      self.bind(
+        &s.name,
+        TypeState::Known(TyntType::Function(Box::new(FunctionSignature {
+          arg_types: s
+            .fields
+            .iter()
+            .map(|field| field.field_type.clone())
+            .collect(),
+          return_type: TyntType::Struct(s.name.clone()),
+        }))),
+      )
+    }
+    self
   }
 }

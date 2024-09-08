@@ -15,8 +15,7 @@
 @fragment
 (def fragment 
   (fn [in: VertexOutput]: @{location 0} vec4f
-    (let [pos (/ in.vertex-pos.xy dimensions)
-          osc (+ (* (sin (* time 9.)) 0.5) 0.5)]
-      (vec4f (pow (vec3f pos osc)
-                  (vec3f 2.2))
-             1.))))
+    (vec4f (pow (vec3f (/ in.vertex-pos.xy dimensions)
+                       (+ (* (sin (* time 9.)) 0.5) 0.5))
+                (vec3f 2.2))
+           1.)))

@@ -35,6 +35,7 @@ use super::{
     Context, TyntType,
     TypeState::{self, *},
   },
+  util::compile_word,
 };
 
 impl<D: Debug + Clone + PartialEq> Exp<D> {
@@ -184,10 +185,11 @@ impl TypedExp {
         use sse::syntax::EncloserOrOperator::*;
         let mut children_iter = children.into_iter();
         match encloser_or_operator {
-          Encloser(e) => match e {
-            Parens => {
-              if let Some(first_child) = children_iter.next() {
-                match &first_child {
+          Encloser(e) => {
+            match e {
+              Parens => {
+                if let Some(first_child) = children_iter.next() {
+                  match &first_child {
                   TyntTree::Leaf(_, first_child_name) => {
                     match first_child_name.as_str() {
                       "fn" => {
@@ -246,18 +248,10 @@ impl TypedExp {
                               todo!("multi-form fn body")
                             }
                           } else {
-                            return Err(CompileError::InvalidFunction(
-                              "invalid argument list for fn: args list not \
-                              square-bracket-enclosed"
-                                .to_string(),
-                            ));
+                            return Err(CompileError::FunctionSignatureNotSquareBrackets);
                           }
                         } else {
-                          return Err(CompileError::InvalidFunction(
-                            "invalid argument list for fn: args list isn't a \
-                            metadata annotation"
-                              .to_string(),
-                          ));
+                          return Err(CompileError::FunctionSignatureMissingReturnType);
                         }
                       }
                       "let" => todo!("let block"),
@@ -279,13 +273,14 @@ impl TypedExp {
                   ),
                   data: Unknown,
                 })
-              } else {
-                return Err(CompileError::EmptyList);
+                } else {
+                  return Err(CompileError::EmptyList);
+                }
               }
+              Square => todo!("array"),
+              Curly => todo!("anonymous struct"),
             }
-            Square => todo!("array"),
-            Curly => todo!("anonymous struct"),
-          },
+          }
           Operator(o) => match o {
             MetadataAnnotation => {
               todo!("Encountered metadata in internal expression")
@@ -349,7 +344,7 @@ impl TypedExp {
         if !ctx.is_bound(name) {
           return Err(CompileError::UnboundName);
         }
-        self.data.mutually_constrain(ctx.get_typestate_mut(name))?
+        self.data.mutually_constrain(ctx.get_typestate_mut(name)?)?
       }
       NumberLiteral(num) => {
         self.data.constrain(TypeState::Known(match num {
@@ -416,11 +411,37 @@ impl TypedExp {
             return Err(CompileError::AppliedNonFunction);
           }
         } else {
-          todo!("I haven't implemented function type inference yet!!!")
+          if let Name(name) = &(**f).kind {
+            f.data.mutually_constrain(ctx.get_typestate_mut(name)?)?
+          } else {
+            todo!("I haven't implemented function type inference yet!!!")
+          }
         }
       }
       Let(_, _) => todo!("I haven't implemented let blocks yet!!!"),
       Match(_, _) => todo!("I haven't implemented match blocks yet!!!"),
     })
+  }
+  pub fn compile(self) -> String {
+    match self.kind {
+      Name(name) => compile_word(name),
+      NumberLiteral(num) => match num {
+        Number::Int(i) => format!("{i}"),
+        Number::Float(f) => format!("{f}f"),
+      },
+      BooleanLiteral(b) => format!("{b}"),
+      Function(_, _) => panic!("Attempting to compile internal function"),
+      Application(f, args) => {
+        let f_str = f.compile();
+        let args_str = args
+          .into_iter()
+          .map(|arg| arg.compile())
+          .collect::<Vec<String>>()
+          .join(", ");
+        format!("{f_str}({args_str})")
+      }
+      Let(_, _) => todo!("I haven't implemented let blocks yet!!!"),
+      Match(_, _) => todo!("I haven't implemented match blocks yet!!!"),
+    }
   }
 }

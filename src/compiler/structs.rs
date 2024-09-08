@@ -1,6 +1,13 @@
 use sse::syntax::EncloserOrOperator;
 
-use crate::{compiler::util::read_type_annotated_name, parse::TyntTree};
+use crate::{
+  compiler::{
+    metadata::extract_metadata,
+    types::extract_type_annotation_ast,
+    util::{compile_word, read_leaf},
+  },
+  parse::TyntTree,
+};
 
 use super::{error::CompileError, metadata::Metadata, types::TyntType};
 
@@ -11,23 +18,14 @@ pub struct UntypedStructField {
 }
 
 impl UntypedStructField {
-  fn from_field_tree(exp: TyntTree) -> Result<Self, CompileError> {
-    use crate::parse::Operator::*;
-    use EncloserOrOperator::*;
-    let mut metadata = None;
-    let inner_ast = match exp {
-      TyntTree::Inner((_, Operator(MetadataAnnotation)), mut children) => {
-        let field_ast = children.remove(1);
-        metadata = Some(Metadata::from_metadata_tree(children.remove(0))?);
-        field_ast
-      }
-      other => other,
-    };
-    let (name, type_name) = read_type_annotated_name(inner_ast)?;
+  fn from_field_tree(ast: TyntTree) -> Result<Self, CompileError> {
+    let (type_ast, inner_ast) = extract_type_annotation_ast(ast)?;
+    let type_ast = type_ast.ok_or(CompileError::StructFieldMissingType)?;
+    let (metadata, name) = extract_metadata(inner_ast)?;
     Ok(Self {
       metadata,
-      name,
-      field_type_name: type_name,
+      name: read_leaf(name)?,
+      field_type_name: read_leaf(type_ast)?,
     })
   }
   pub fn assign_type(
@@ -75,19 +73,41 @@ impl UntypedStruct {
   }
 }
 
+#[derive(Debug)]
 pub struct StructField {
   metadata: Option<Metadata>,
   name: String,
-  field_type: TyntType,
+  pub field_type: TyntType,
 }
 
+impl StructField {
+  pub fn compile(self) -> String {
+    let metadata = if let Some(metadata) = self.metadata {
+      metadata.compile()
+    } else {
+      String::new()
+    };
+    let name = compile_word(self.name);
+    let field_type = self.field_type.compile();
+    format!("  {metadata}{name}: {field_type}")
+  }
+}
+
+#[derive(Debug)]
 pub struct Struct {
-  name: String,
-  fields: Vec<StructField>,
+  pub name: String,
+  pub fields: Vec<StructField>,
 }
 
 impl Struct {
   pub fn compile(self) -> String {
-    todo!()
+    let name = compile_word(self.name);
+    let fields = self
+      .fields
+      .into_iter()
+      .map(|field| field.compile())
+      .collect::<Vec<String>>()
+      .join("\n");
+    format!("struct {name} {{\n{fields}\n}}")
   }
 }

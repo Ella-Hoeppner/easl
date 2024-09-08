@@ -3,14 +3,14 @@ use sse::ParseError;
 #[derive(Clone, Debug)]
 pub enum CompileError {
   Parse(ParseError),
-  UnrecognizedTypeName,
+  UnrecognizedTypeName(String),
   InvalidMetadata(String),
   ExpectedTypeAnnotatedName,
-  InvalidStructField,
+  StructFieldMissingType,
   InvalidStructName,
   InvalidTopLevelVar(String),
   InvalidDef(String),
-  InvalidFunction(String),
+  InvalidFunction,
   UnrecognizedTopLevelForm,
   EmptyList,
   InvalidType,
@@ -21,6 +21,12 @@ pub enum CompileError {
   UnboundName,
   AppliedNonFunction,
   WrongArity,
+  ExpectedLeaf,
+  InvalidFunctionArgumentList,
+  InvalidFunctionSignature,
+  FunctionSignatureMissingArgumentList,
+  FunctionSignatureNotSquareBrackets,
+  FunctionSignatureMissingReturnType,
 }
 
 impl From<ParseError> for CompileError {

@@ -1,5 +1,8 @@
+use crate::compiler::util::compile_word;
+
 use super::{metadata::Metadata, types::TyntType};
 
+#[derive(Debug)]
 pub struct TopLevelVar {
   pub name: String,
   pub metadata: Option<Metadata>,
@@ -9,6 +12,14 @@ pub struct TopLevelVar {
 
 impl TopLevelVar {
   pub fn compile(self) -> String {
-    todo!()
+    let metadata = Metadata::compile_optional(self.metadata);
+    let attributes = if self.attributes.is_empty() {
+      String::new()
+    } else {
+      format!("<{}>", self.attributes.join(", "))
+    };
+    let name = compile_word(self.name);
+    let var_type = self.var_type.compile();
+    format!("{metadata}var{attributes} {name}: {var_type}")
   }
 }

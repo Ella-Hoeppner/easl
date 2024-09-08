@@ -7,6 +7,7 @@ use crate::{
 };
 
 use super::{
+  builtins::built_in_structs,
   error::CompileError,
   expression::Exp,
   functions::TopLevelFunction,
@@ -16,6 +17,7 @@ use super::{
   vars::TopLevelVar,
 };
 
+#[derive(Debug)]
 pub struct Program {
   structs: Vec<Struct>,
   top_level_vars: Vec<TopLevelVar>,
@@ -32,20 +34,20 @@ impl Program {
       use crate::parse::Encloser::*;
       use sse::syntax::EncloserOrOperator::*;
       let (metadata, tree_body) = extract_metadata(tree.clone())?;
-      if let TyntTree::Inner((_, Encloser(Parens)), children) = tree_body {
+      if let TyntTree::Inner((_, Encloser(Parens)), children) = &tree_body {
         let mut children_iter = children.into_iter();
         if let Some(TyntTree::Leaf(_, first_child)) = children_iter.next() {
-          if &first_child == "struct" {
+          if first_child == "struct" {
             if let Some(TyntTree::Leaf(_, struct_name)) = children_iter.next() {
               untyped_structs.push(UntypedStruct::from_field_trees(
-                struct_name,
-                children_iter.collect(),
+                struct_name.clone(),
+                children_iter.cloned().collect(),
               )?);
             } else {
               return Err(CompileError::InvalidStructName);
             }
           } else {
-            non_struct_trees.push((metadata, tree))
+            non_struct_trees.push((metadata, tree_body))
           }
         } else {
           return Err(CompileError::UnrecognizedTopLevelForm);
@@ -54,8 +56,9 @@ impl Program {
         return Err(CompileError::UnrecognizedTopLevelForm);
       }
     }
-    let struct_names: Vec<String> =
-      untyped_structs.iter().map(|s| s.name.clone()).collect();
+    let mut struct_names: Vec<String> = built_in_structs();
+    struct_names
+      .append(&mut untyped_structs.iter().map(|s| s.name.clone()).collect());
     let structs = untyped_structs
       .into_iter()
       .map(|untyped_struct| untyped_struct.assign_types(&struct_names))
@@ -131,14 +134,12 @@ impl Program {
                     value_children,
                   ) => {
                     let mut value_children_iter = value_children.into_iter();
-                    if let Some(TyntTree::Leaf(_, first_leaf)) =
+                    if let Some(TyntTree::Leaf(fn_symbol_range, first_leaf)) =
                       value_children_iter.next()
                     {
                       if first_leaf == "fn".to_string() {
                         let signature_ast = value_children_iter.next().ok_or(
-                          CompileError::InvalidFunction(
-                            "Missing Argument List".to_string(),
-                          ),
+                          CompileError::FunctionSignatureMissingArgumentList,
                         )?;
                         if let TyntTree::Inner(
                           (signature_range, Operator(TypeAnnotation)),
@@ -162,16 +163,23 @@ impl Program {
                               .collect::<Result<_, CompileError>>()?;
                             let metadata_stripped_fn_ast = TyntTree::Inner(
                               (fn_range, Encloser(Parens)),
-                              std::iter::once(TyntTree::Inner(
-                                (signature_range, Operator(TypeAnnotation)),
-                                vec![
-                                  TyntTree::Inner(
-                                    (arg_list_range, Encloser(Square)),
-                                    arg_asts,
-                                  ),
-                                  return_type_ast,
-                                ],
-                              ))
+                              vec![
+                                TyntTree::Leaf(
+                                  fn_symbol_range,
+                                  "fn".to_string(),
+                                ),
+                                TyntTree::Inner(
+                                  (signature_range, Operator(TypeAnnotation)),
+                                  vec![
+                                    TyntTree::Inner(
+                                      (arg_list_range, Encloser(Square)),
+                                      arg_asts,
+                                    ),
+                                    return_type_ast,
+                                  ],
+                                ),
+                              ]
+                              .into_iter()
                               .chain(value_children_iter)
                               .collect(),
                             );
@@ -180,20 +188,18 @@ impl Program {
                               arg_metadata,
                               return_metadata,
                               metadata,
-                              exp: Exp::try_from_tynt_tree(
+                              body: Exp::try_from_tynt_tree(
                                 metadata_stripped_fn_ast,
                                 &struct_names,
                               )?,
                             })
                           } else {
-                            return Err(CompileError::InvalidFunction(
-                              "Invalid Argument List".to_string(),
-                            ));
+                            return Err(
+                              CompileError::InvalidFunctionArgumentList,
+                            );
                           }
                         } else {
-                          return Err(CompileError::InvalidFunction(
-                            "Invalid Signature".to_string(),
-                          ));
+                          return Err(CompileError::InvalidFunctionSignature);
                         }
                       } else {
                         panic!("only fns are supported in def for now!!")
@@ -210,7 +216,10 @@ impl Program {
                 ));
               }
             }
-            _ => return Err(CompileError::UnrecognizedTopLevelForm),
+            _ => {
+              panic!("here!!");
+              return Err(CompileError::UnrecognizedTopLevelForm);
+            }
           }
         } else {
           return Err(CompileError::UnrecognizedTopLevelForm);
@@ -226,12 +235,13 @@ impl Program {
     })
   }
   fn propagate_types(&mut self) -> Result<bool, CompileError> {
-    let mut base_context = Context::base();
+    let mut base_context =
+      Context::default_global().with_struct_constructors(&self.structs);
     self.top_level_functions.iter_mut().try_fold(
       false,
       |did_type_states_change_so_far, f| {
         let did_f_type_states_change =
-          f.exp.propagate_types(&mut base_context)?;
+          f.body.propagate_types(&mut base_context)?;
         Ok(did_type_states_change_so_far || did_f_type_states_change)
       },
     )
@@ -241,7 +251,7 @@ impl Program {
       .top_level_functions
       .iter()
       .fold(true, |fully_typed_so_far, f| {
-        fully_typed_so_far && f.exp.is_fully_typed()
+        fully_typed_so_far && f.body.is_fully_typed()
       })
   }
   pub fn fully_infer_types(mut self) -> Result<Self, CompileError> {
