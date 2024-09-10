@@ -1,5 +1,3 @@
-use sse::syntax::EncloserOrOperator;
-
 use crate::{
   compiler::{
     metadata::extract_metadata,

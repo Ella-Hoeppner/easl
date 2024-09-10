@@ -6,8 +6,11 @@ use sse::syntax::EncloserOrOperator;
 use crate::parse::{Operator, TyntTree};
 
 use super::{
-  builtins::built_in_functions, error::CompileError,
-  functions::FunctionSignature, structs::Struct, util::compile_word,
+  builtins::{built_in_functions, built_in_multi_signature_functions},
+  error::CompileError,
+  functions::FunctionSignature,
+  structs::Struct,
+  util::compile_word,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +97,7 @@ pub fn extract_type_annotation(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeState {
   Unknown,
+  OneOf(Vec<TyntType>),
   Known(TyntType),
 }
 
@@ -103,14 +107,43 @@ impl TypeState {
     mut other: TypeState,
   ) -> Result<bool, CompileError> {
     Ok(match (&self, &other) {
-      (TypeState::Unknown, TypeState::Unknown) => false,
-      (TypeState::Unknown, TypeState::Known(_)) => {
+      (_, TypeState::Unknown) => false,
+      (TypeState::Unknown, _) => {
         std::mem::swap(self, &mut other);
         true
       }
-      (TypeState::Known(_), TypeState::Unknown) => false,
       (TypeState::Known(current_type), TypeState::Known(new_type)) => {
         if current_type != new_type {
+          return Err(CompileError::IncompatibleTypes);
+        }
+        false
+      }
+      (
+        TypeState::OneOf(possibilities),
+        TypeState::OneOf(other_possibilities),
+      ) => {
+        let mut new_possibilities = vec![];
+        let mut changed = false;
+        for possibility in possibilities {
+          if other_possibilities.contains(possibility) {
+            new_possibilities.push(possibility.clone());
+          } else {
+            changed = true;
+          }
+        }
+        std::mem::swap(self, &mut TypeState::OneOf(new_possibilities));
+        changed
+      }
+      (TypeState::OneOf(possibilities), TypeState::Known(t)) => {
+        if possibilities.contains(t) {
+          std::mem::swap(self, &mut TypeState::Known(t.clone()));
+          true
+        } else {
+          return Err(CompileError::IncompatibleTypes);
+        }
+      }
+      (TypeState::Known(t), TypeState::OneOf(possibilities)) => {
+        if !possibilities.contains(t) {
           return Err(CompileError::IncompatibleTypes);
         }
         false
@@ -125,15 +158,78 @@ impl TypeState {
     let other_changed = other.constrain(self.clone())?;
     Ok(self_changed || other_changed)
   }
+  pub fn constrain_fn_by_argument_types(
+    &mut self,
+    arg_types: Vec<TypeState>,
+  ) -> Result<bool, CompileError> {
+    match self {
+      TypeState::OneOf(possibilities) => {
+        let mut new_possibilities = possibilities
+          .iter()
+          .filter_map(|t| match t {
+            TyntType::Function(signature) => {
+              if signature.are_args_compatible(&arg_types) {
+                Some(t.clone())
+              } else {
+                None
+              }
+            }
+            _ => panic!("tried to constrain fn on non-fn"),
+          })
+          .collect::<Vec<_>>();
+        if new_possibilities.len() == possibilities.len() {
+          Ok(false)
+        } else {
+          if new_possibilities.is_empty() {
+            Err(CompileError::IncompatibleTypes)
+          } else {
+            std::mem::swap(
+              self,
+              &mut if new_possibilities.len() == 1 {
+                TypeState::Known(new_possibilities.remove(0))
+              } else {
+                TypeState::OneOf(new_possibilities)
+              },
+            );
+            Ok(true)
+          }
+        }
+      }
+      TypeState::Known(t) => match t {
+        TyntType::Function(signature) => {
+          if signature.are_args_compatible(&arg_types) {
+            Ok(false)
+          } else {
+            Err(CompileError::IncompatibleTypes)
+          }
+        }
+        _ => panic!("tried to constrain fn on non-fn"),
+      },
+      TypeState::Unknown => Ok(false),
+    }
+  }
+  pub fn is_compatible(&self, t: &TyntType) -> bool {
+    match self {
+      TypeState::Unknown => true,
+      TypeState::OneOf(possibilities) => possibilities.contains(t),
+      TypeState::Known(known_t) => known_t == t,
+    }
+  }
 }
 
 pub struct Context {
+  pub multi_signature_functions: HashMap<String, Vec<FunctionSignature>>,
   pub bindings: HashMap<String, Vec<TypeState>>,
 }
 
 impl Context {
   pub fn default_global() -> Self {
+    let mut multi_signature_functions = HashMap::new();
+    for (name, signatures) in built_in_multi_signature_functions() {
+      multi_signature_functions.insert(name.to_string(), signatures);
+    }
     let mut ctx = Context {
+      multi_signature_functions,
       bindings: HashMap::new(),
     };
     for (name, signature) in built_in_functions() {
@@ -160,6 +256,7 @@ impl Context {
   }
   pub fn is_bound(&self, name: &str) -> bool {
     self.bindings.contains_key(name)
+      || self.multi_signature_functions.contains_key(name)
   }
   pub fn get_typestate_mut(
     &mut self,
@@ -189,5 +286,22 @@ impl Context {
       )
     }
     self
+  }
+  pub fn constrain_name_type(
+    &mut self,
+    name: &str,
+    t: &mut TypeState,
+  ) -> Result<bool, CompileError> {
+    if let Some(signatures) = self.multi_signature_functions.get(name) {
+      t.constrain(TypeState::OneOf(
+        signatures
+          .iter()
+          .cloned()
+          .map(|signature| TyntType::Function(Box::new(signature)))
+          .collect(),
+      ))
+    } else {
+      t.mutually_constrain(self.get_typestate_mut(name)?)
+    }
   }
 }

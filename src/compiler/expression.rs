@@ -350,7 +350,7 @@ impl TypedExp {
         if !ctx.is_bound(name) {
           return Err(CompileError::UnboundName(name.clone()));
         }
-        self.data.mutually_constrain(ctx.get_typestate_mut(name)?)?
+        ctx.constrain_name_type(name, &mut self.data)?
       }
       NumberLiteral(num) => {
         self.data.constrain(TypeState::Known(match num {
@@ -371,14 +371,13 @@ impl TypedExp {
                 ctx.bind(name, TypeState::Known(t))
               }
               let body_types_changed = body.propagate_types(ctx)?;
-              for name in arg_names.iter() {
-                ctx.unbind(name);
-                // todo! once we're inferring fn types, the type returned here
-                // from .unbind should be used to constrain the type in the
-                // signature. This will let constraints inferred further down
-                // in the tree propagate back up and constraint the fn type
-              }
-              body_types_changed
+              let argument_types = arg_names
+                .iter()
+                .map(|name| ctx.unbind(name))
+                .collect::<Vec<_>>();
+              let fn_type_changed =
+                self.data.constrain_fn_by_argument_types(argument_types)?;
+              body_types_changed || fn_type_changed
             } else {
               return Err(CompileError::IncompatibleTypes);
             }
@@ -390,39 +389,38 @@ impl TypedExp {
         }
       }
       Application(f, args) => {
+        let mut anything_changed = false;
+        if let Name(name) = &f.kind {
+          anything_changed |= ctx.constrain_name_type(name, &mut f.data)?;
+        } else {
+          todo!("I haven't implemented function type inference yet!!!")
+        }
         if let TypeState::Known(f_type) = &f.data {
           if let TyntType::Function(signature) = f_type {
             if args.len() == signature.arg_types.len() {
-              let mut anything_changed = self
+              anything_changed |= self
                 .data
                 .constrain(TypeState::Known(signature.return_type.clone()))?;
               for (arg, t) in
                 args.iter_mut().zip(signature.arg_types.iter().cloned())
               {
-                let arg_type_changed =
-                  arg.data.constrain(TypeState::Known(t))?;
-                anything_changed |= arg_type_changed;
-                let arg_changed = arg.propagate_types(ctx)?;
-                anything_changed |= arg_changed;
+                anything_changed |= arg.data.constrain(TypeState::Known(t))?;
               }
-              // todo! once we're inferring fn types, the now-updated argument
-              // types should be used to constrain the type of f
-              let f_changed = f.propagate_types(ctx)?;
-              anything_changed |= f_changed;
-              anything_changed
             } else {
               return Err(CompileError::WrongArity);
             }
           } else {
             return Err(CompileError::AppliedNonFunction);
           }
-        } else {
-          if let Name(name) = &(**f).kind {
-            f.data.mutually_constrain(ctx.get_typestate_mut(name)?)?
-          } else {
-            todo!("I haven't implemented function type inference yet!!!")
-          }
         }
+        for arg in args.iter_mut() {
+          anything_changed |= arg.propagate_types(ctx)?;
+        }
+        anything_changed |= f.data.constrain_fn_by_argument_types(
+          args.iter().map(|arg| arg.data.clone()).collect(),
+        )?;
+        anything_changed |= f.propagate_types(ctx)?;
+        anything_changed
       }
       Let(_, _) => todo!("I haven't implemented let blocks yet!!!"),
       Match(_, _) => todo!("I haven't implemented match blocks yet!!!"),

@@ -217,7 +217,6 @@ impl Program {
               }
             }
             _ => {
-              panic!("here!!");
               return Err(CompileError::UnrecognizedTopLevelForm);
             }
           }

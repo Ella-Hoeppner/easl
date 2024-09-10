@@ -23,6 +23,20 @@ pub struct FunctionSignature {
   pub return_type: TyntType,
 }
 
+impl FunctionSignature {
+  pub fn are_args_compatible(&self, args: &Vec<TypeState>) -> bool {
+    if args.len() != self.arg_types.len() {
+      return false;
+    }
+    for i in 0..args.len() {
+      if !args[i].is_compatible(&self.arg_types[i]) {
+        return false;
+      }
+    }
+    true
+  }
+}
+
 pub struct BuiltInFunction {
   pub name: String,
   pub signature: FunctionSignature,
