@@ -61,6 +61,7 @@ impl UntypedStruct {
     struct_names: &Vec<String>,
   ) -> Result<Struct, CompileError> {
     Ok(Struct {
+      has_normal_constructor: true,
       name: self.name,
       fields: self
         .fields
@@ -71,10 +72,10 @@ impl UntypedStruct {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StructField {
-  metadata: Option<Metadata>,
-  name: String,
+  pub metadata: Option<Metadata>,
+  pub name: String,
   pub field_type: TyntType,
 }
 
@@ -91,8 +92,9 @@ impl StructField {
   }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Struct {
+  pub has_normal_constructor: bool,
   pub name: String,
   pub fields: Vec<StructField>,
 }

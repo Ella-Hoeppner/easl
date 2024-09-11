@@ -47,7 +47,7 @@ impl Metadata {
   }
   pub fn compile(self) -> String {
     match self {
-      Metadata::Singular(value) => format!("@{value}"),
+      Metadata::Singular(value) => format!("@{value} "),
       Metadata::Map(pairs) => {
         pairs
           .into_iter()

@@ -15,12 +15,26 @@ Feature goals:
   * sum types (probably, eventually)
 
 ## todo
-* treat accessors as functions, handle types accordingly
-
 * support `let` expressions
 
+* swizzling accessors
+
+* add `block` expressions
+  * like clojures `do`. I think `block` is a better name (?)
+  * if the body of `let` or `fn` has multiple expressions, treat it as a `block`
+
+* parametrically polymorphic functions, e.g. ==
+
+* asignment operators
+  * assigning into accesses
+  * have a `@var` tag that can appear on bindings to declare them as mutable/variable
+
+* parametrically polymorphic structs, e.g. vec
+  * `vec<n>f` should just be an alias to particular instance of this type
+  * should make sure `vec<n><>`
+
 * add typeclasses
-  * support generic variables bound by typeclass
+  * support generic arguments bound by typeclass
     * monomorphization
     * account for ambiguity of function type variables in type inference
   * core built-in number typeclasses: Add, Subtract, Negate, Multiply, Divide
@@ -33,13 +47,7 @@ Feature goals:
 * add mutability and assignment functions
   * `=` will be the most important assignment operator at first
   * the type system should track whether each variable is mutable. This will be indicated with a "mut" metadata tag in a let block, e.g. `(let [@mut a: T] ...)`
-    * assignment operators like `=` will check that their first 
-* add `block` expressions
-  * like clojures `do`. I think `block` is a better name (?)
-  * support multiple expressions in the body of a `let`, read as a `block`
-* add syntax for reading struct fields
-  * same syntax as kudzu, ideally
-  * will want to make sure assignment (and mutability checking) work with these, too
+    * assignment operators like `=` will check that their first
 
 * add macros and syntactic conveniences
   * shadowing

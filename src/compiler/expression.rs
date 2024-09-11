@@ -1,4 +1,5 @@
 use core::fmt::Debug;
+use std::str::pattern::Pattern;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Number {
@@ -19,6 +20,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   BooleanLiteral(bool),
   Function(Vec<String>, Box<Exp<D>>),
   Application(Box<Exp<D>>, Vec<Exp<D>>),
+  Accessor(String, Box<Exp<D>>),
   Let(Vec<(String, Exp<D>)>, Box<Exp<D>>),
   Match(Box<Exp<D>>, Vec<(Exp<D>, Exp<D>)>),
 }
@@ -45,7 +47,7 @@ pub enum ExpressionCompilationContext {
 }
 
 impl<D: Debug + Clone + PartialEq> Exp<D> {
-  fn map_exp(self, f: impl Fn(ExpKind<D>) -> ExpKind<D>) -> Self {
+  /*fn map_exp(self, f: impl Fn(ExpKind<D>) -> ExpKind<D>) -> Self {
     Self {
       data: self.data,
       kind: f(self.kind),
@@ -151,7 +153,7 @@ impl<D: Debug + Clone + PartialEq> Exp<D> {
   }
   fn lift_internal_lets(self) -> Self {
     todo!()
-  }
+  }*/
 }
 
 pub type TypedExp = Exp<TypeState>;
@@ -191,78 +193,94 @@ impl TypedExp {
         use sse::syntax::EncloserOrOperator::*;
         let mut children_iter = children.into_iter();
         match encloser_or_operator {
-          Encloser(e) => {
-            match e {
-              Parens => {
-                if let Some(first_child) = children_iter.next() {
-                  match &first_child {
+          Encloser(e) => match e {
+            Parens => {
+              if let Some(first_child) = children_iter.next() {
+                match &first_child {
                   TyntTree::Leaf(_, first_child_name) => {
-                    match first_child_name.as_str() {
-                      "fn" => {
-                        if let Some(TyntTree::Inner(
-                          (_, Operator(TypeAnnotation)),
-                          mut args_and_return_type,
-                        )) = children_iter.next()
-                        {
-                          let return_type = TyntType::from_tynt_tree(
-                            args_and_return_type.remove(1),
-                            struct_names,
-                          )?;
-                          if let TyntTree::Inner(
-                            (_, Encloser(Square)),
-                            arg_asts,
-                          ) = args_and_return_type.remove(0)
+                    if ".".is_prefix_of(&first_child_name) {
+                      if children_iter.len() == 1 {
+                        Some(Exp {
+                          data: TypeState::Unknown,
+                          kind: ExpKind::Accessor(
+                            first_child_name.chars().skip(1).collect::<String>(),
+                            Box::new(Self::try_from_tynt_tree(
+                              children_iter.next().unwrap(),
+                              struct_names)?
+                            )
+                          )
+                        })
+                      } else {
+                        return Err(CompileError::AccessorHadMultipleArguments);
+                      }
+                    } else {
+                      match first_child_name.as_str() {
+                        "fn" => {
+                          if let Some(TyntTree::Inner(
+                            (_, Operator(TypeAnnotation)),
+                            mut args_and_return_type,
+                          )) = children_iter.next()
                           {
-                            if children_iter.len() == 1 {
-                              let body = children_iter.next().unwrap();
-                              let (arg_types, arg_names) = arg_asts
-                                .into_iter()
-                                .map(|arg| -> Result<_, CompileError> {
-                                  let (maybe_t, arg_name_ast) =
-                                    extract_type_annotation(arg, struct_names)?;
-                                  let t = maybe_t.ok_or(
-                                    CompileError::FunctionArgMissingType,
-                                  )?;
-                                  if let TyntTree::Leaf(_, arg_name) =
-                                    arg_name_ast
-                                  {
-                                    Ok((t, arg_name))
-                                  } else {
-                                    Err(CompileError::InvalidArgumentName)
-                                  }
+                            let return_type = TyntType::from_tynt_tree(
+                              args_and_return_type.remove(1),
+                              struct_names,
+                            )?;
+                            if let TyntTree::Inner(
+                              (_, Encloser(Square)),
+                              arg_asts,
+                            ) = args_and_return_type.remove(0)
+                            {
+                              if children_iter.len() == 1 {
+                                let body = children_iter.next().unwrap();
+                                let (arg_types, arg_names) = arg_asts
+                                  .into_iter()
+                                  .map(|arg| -> Result<_, CompileError> {
+                                    let (maybe_t, arg_name_ast) =
+                                      extract_type_annotation(arg, struct_names)?;
+                                    let t = maybe_t.ok_or(
+                                      CompileError::FunctionArgMissingType,
+                                    )?;
+                                    if let TyntTree::Leaf(_, arg_name) =
+                                      arg_name_ast
+                                    {
+                                      Ok((t, arg_name))
+                                    } else {
+                                      Err(CompileError::InvalidArgumentName)
+                                    }
+                                  })
+                                  .collect::<Result<
+                                    (Vec<TyntType>, Vec<String>),
+                                    CompileError,
+                                  >>()?;
+                                Some(Exp {
+                                  data: Known(TyntType::Function(Box::new(
+                                    FunctionSignature {
+                                      arg_types,
+                                      return_type,
+                                    },
+                                  ))),
+                                  kind: ExpKind::Function(
+                                    arg_names,
+                                    Box::new(Self::try_from_tynt_tree(
+                                      body,
+                                      struct_names,
+                                    )?),
+                                  ),
                                 })
-                                .collect::<Result<
-                                  (Vec<TyntType>, Vec<String>),
-                                  CompileError,
-                                >>()?;
-                              Some(Exp {
-                                data: Known(TyntType::Function(Box::new(
-                                  FunctionSignature {
-                                    arg_types,
-                                    return_type,
-                                  },
-                                ))),
-                                kind: ExpKind::Function(
-                                  arg_names,
-                                  Box::new(Self::try_from_tynt_tree(
-                                    body,
-                                    struct_names,
-                                  )?),
-                                ),
-                              })
+                              } else {
+                                todo!("multi-form fn body")
+                              }
                             } else {
-                              todo!("multi-form fn body")
+                              return Err(CompileError::FunctionSignatureNotSquareBrackets);
                             }
                           } else {
-                            return Err(CompileError::FunctionSignatureNotSquareBrackets);
+                            return Err(CompileError::FunctionSignatureMissingReturnType);
                           }
-                        } else {
-                          return Err(CompileError::FunctionSignatureMissingReturnType);
                         }
+                        "let" => todo!("let"),
+                        "match" => todo!("match block"),
+                        _ => None,
                       }
-                      "let" => todo!("let block"),
-                      "match" => todo!("match block"),
-                      _ => None,
                     }
                   }
                   _ => None,
@@ -279,14 +297,13 @@ impl TypedExp {
                   ),
                   data: Unknown,
                 })
-                } else {
-                  return Err(CompileError::EmptyList);
-                }
+              } else {
+                return Err(CompileError::EmptyList);
               }
-              Square => todo!("array"),
-              Curly => todo!("anonymous struct"),
             }
-          }
+            Square => todo!("array"),
+            Curly => todo!("anonymous struct"),
+          },
           Operator(o) => match o {
             MetadataAnnotation => {
               todo!("Encountered metadata in internal expression")
@@ -322,6 +339,7 @@ impl TypedExp {
           .fold(f.is_fully_typed(), |fully_typed_so_far, arg| {
             fully_typed_so_far && arg.is_fully_typed()
           }),
+        Accessor(_, exp) => exp.is_fully_typed(),
         Let(bindings, body) => bindings.iter().fold(
           body.is_fully_typed(),
           |fully_typed_so_far, (_, binding_value)| {
@@ -422,11 +440,77 @@ impl TypedExp {
         anything_changed |= f.propagate_types(ctx)?;
         anything_changed
       }
-      Let(_, _) => todo!("I haven't implemented let blocks yet!!!"),
+      Accessor(field_name, subexp) => {
+        let mut anything_changed = false;
+        let (field_possibilities, struct_possibilities): (
+          Vec<TyntType>,
+          Vec<TyntType>,
+        ) = ctx
+          .structs
+          .iter()
+          .filter_map(|s| {
+            s.fields.iter().find(|field| field.name == *field_name).map(
+              |field| {
+                (field.field_type.clone(), TyntType::Struct(s.name.clone()))
+              },
+            )
+          })
+          .collect();
+        anything_changed |=
+          self.data.constrain(TypeState::OneOf(field_possibilities))?;
+        anything_changed |= subexp
+          .data
+          .constrain(TypeState::OneOf(struct_possibilities))?;
+        anything_changed |= subexp.propagate_types(ctx)?;
+        let field_type_possibilities = match &subexp.data {
+          Unknown => unreachable!(),
+          OneOf(possibilities) => possibilities
+            .iter()
+            .map(|t| -> Result<TyntType, CompileError> {
+              Ok(match t {
+                TyntType::Struct(struct_name) => ctx
+                  .structs
+                  .iter()
+                  .find(|s| s.name == *struct_name)
+                  .unwrap()
+                  .fields
+                  .iter()
+                  .find(|f| f.name == *field_name)
+                  .ok_or(CompileError::NoSuchField)?
+                  .field_type
+                  .clone(),
+                _ => unreachable!(),
+              })
+            })
+            .collect::<Result<Vec<TyntType>, CompileError>>()?,
+          Known(subexp_type) => match subexp_type {
+            TyntType::Struct(struct_name) => {
+              vec![ctx
+                .structs
+                .iter()
+                .find(|s| s.name == *struct_name)
+                .unwrap()
+                .fields
+                .iter()
+                .find(|f| f.name == *field_name)
+                .ok_or(CompileError::NoSuchField)?
+                .field_type
+                .clone()]
+            }
+            _ => unreachable!(),
+          },
+        };
+        anything_changed |= self.data.constrain(
+          TypeState::OneOf(field_type_possibilities).simplified()?,
+        )?;
+        anything_changed
+      }
+      Let(_, _) => todo!("let"),
       Match(_, _) => todo!("I haven't implemented match blocks yet!!!"),
     })
   }
   pub fn compile(self, ctx: ExpressionCompilationContext) -> String {
+    use ExpressionCompilationContext::*;
     let main = match self.kind {
       Name(name) => compile_word(name),
       NumberLiteral(num) => match num {
@@ -436,21 +520,28 @@ impl TypedExp {
       BooleanLiteral(b) => format!("{b}"),
       Function(_, _) => panic!("Attempting to compile internal function"),
       Application(f, args) => {
-        let f_str = f.compile(ExpressionCompilationContext::InnerExpression);
+        let f_str = f.compile(InnerExpression);
         let args_str = args
           .into_iter()
-          .map(|arg| arg.compile(ExpressionCompilationContext::InnerExpression))
+          .map(|arg| arg.compile(InnerExpression))
           .collect::<Vec<String>>()
           .join(", ");
         format!("{f_str}({args_str})")
       }
-      Let(_, _) => todo!("I haven't implemented let blocks yet!!!"),
+      Accessor(field, subexp) => {
+        format!(
+          "{}.{}",
+          subexp.compile(InnerExpression),
+          compile_word(field)
+        )
+      }
+      Let(_, _) => todo!("let"),
       Match(_, _) => todo!("I haven't implemented match blocks yet!!!"),
     };
     match ctx {
-      ExpressionCompilationContext::Return => format!("\nreturn {main};"),
-      ExpressionCompilationContext::InnerLine => format!("\n{main};"),
-      ExpressionCompilationContext::InnerExpression => main,
+      Return => format!("\nreturn {main};"),
+      InnerLine => format!("\n{main};"),
+      InnerExpression => main,
     }
   }
 }

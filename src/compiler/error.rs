@@ -27,6 +27,8 @@ pub enum CompileError {
   FunctionSignatureMissingArgumentList,
   FunctionSignatureNotSquareBrackets,
   FunctionSignatureMissingReturnType,
+  NoSuchField,
+  AccessorHadMultipleArguments,
 }
 
 impl From<ParseError> for CompileError {

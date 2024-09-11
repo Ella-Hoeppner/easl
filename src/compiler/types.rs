@@ -106,7 +106,7 @@ impl TypeState {
     &mut self,
     mut other: TypeState,
   ) -> Result<bool, CompileError> {
-    Ok(match (&self, &other) {
+    let changed = match (&self, &other) {
       (_, TypeState::Unknown) => false,
       (TypeState::Unknown, _) => {
         std::mem::swap(self, &mut other);
@@ -131,7 +131,10 @@ impl TypeState {
             changed = true;
           }
         }
-        std::mem::swap(self, &mut TypeState::OneOf(new_possibilities));
+        std::mem::swap(
+          self,
+          &mut TypeState::OneOf(new_possibilities).simplified()?,
+        );
         changed
       }
       (TypeState::OneOf(possibilities), TypeState::Known(t)) => {
@@ -148,7 +151,9 @@ impl TypeState {
         }
         false
       }
-    })
+    };
+    self.simplify()?;
+    Ok(changed)
   }
   pub fn mutually_constrain(
     &mut self,
@@ -215,9 +220,36 @@ impl TypeState {
       TypeState::Known(known_t) => known_t == t,
     }
   }
+  pub fn simplify(&mut self) -> Result<(), CompileError> {
+    Ok(if let TypeState::OneOf(mut possibilities) = self.clone() {
+      possibilities.dedup();
+      std::mem::swap(
+        self,
+        &mut match possibilities.len() {
+          0 => return Err(CompileError::IncompatibleTypes),
+          1 => TypeState::Known(possibilities.remove(0)),
+          _ => TypeState::OneOf(possibilities),
+        },
+      )
+    })
+  }
+  pub fn simplified(self) -> Result<Self, CompileError> {
+    Ok(if let TypeState::OneOf(mut possibilities) = self {
+      possibilities.dedup();
+      match possibilities.len() {
+        0 => return Err(CompileError::IncompatibleTypes),
+        1 => TypeState::Known(possibilities.remove(0)),
+        _ => TypeState::OneOf(possibilities),
+      }
+    } else {
+      self
+    })
+  }
 }
 
+#[derive(Debug, Clone)]
 pub struct Context {
+  pub structs: Vec<Struct>,
   pub multi_signature_functions: HashMap<String, Vec<FunctionSignature>>,
   pub bindings: HashMap<String, Vec<TypeState>>,
 }
@@ -229,6 +261,7 @@ impl Context {
       multi_signature_functions.insert(name.to_string(), signatures);
     }
     let mut ctx = Context {
+      structs: vec![],
       multi_signature_functions,
       bindings: HashMap::new(),
     };
@@ -271,20 +304,23 @@ impl Context {
         .unwrap(),
     )
   }
-  pub fn with_struct_constructors(mut self, structs: &Vec<Struct>) -> Self {
-    for s in structs {
-      self.bind(
-        &s.name,
-        TypeState::Known(TyntType::Function(Box::new(FunctionSignature {
-          arg_types: s
-            .fields
-            .iter()
-            .map(|field| field.field_type.clone())
-            .collect(),
-          return_type: TyntType::Struct(s.name.clone()),
-        }))),
-      )
+  pub fn with_structs(mut self, structs: Vec<Struct>) -> Self {
+    for s in &structs {
+      if s.has_normal_constructor {
+        self.bind(
+          &s.name,
+          TypeState::Known(TyntType::Function(Box::new(FunctionSignature {
+            arg_types: s
+              .fields
+              .iter()
+              .map(|field| field.field_type.clone())
+              .collect(),
+            return_type: TyntType::Struct(s.name.clone()),
+          }))),
+        )
+      }
     }
+    self.structs = structs;
     self
   }
   pub fn constrain_name_type(

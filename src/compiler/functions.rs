@@ -73,7 +73,8 @@ impl TopLevelFunction {
       .join(", ");
 
     Ok(format!(
-      "fn {name}({args}) -> {}{} {{{}\n}}",
+      "{}fn {name}({args}) -> {}{} {{{}\n}}",
+      Metadata::compile_optional(self.metadata),
       Metadata::compile_optional(self.return_metadata),
       return_type.compile(),
       indent(body.compile(ExpressionCompilationContext::Return))

@@ -19,7 +19,7 @@ use super::{
 
 #[derive(Debug)]
 pub struct Program {
-  structs: Vec<Struct>,
+  global_context: Context,
   top_level_vars: Vec<TopLevelVar>,
   top_level_functions: Vec<TopLevelFunction>,
 }
@@ -56,13 +56,17 @@ impl Program {
         return Err(CompileError::UnrecognizedTopLevelForm);
       }
     }
-    let mut struct_names: Vec<String> = built_in_structs();
-    struct_names
-      .append(&mut untyped_structs.iter().map(|s| s.name.clone()).collect());
-    let structs = untyped_structs
-      .into_iter()
-      .map(|untyped_struct| untyped_struct.assign_types(&struct_names))
-      .collect::<Result<Vec<Struct>, CompileError>>()?;
+    let mut structs = built_in_structs();
+    let mut struct_names: Vec<String> =
+      untyped_structs.iter().map(|s| s.name.clone()).collect();
+    struct_names.append(&mut structs.iter().map(|s| s.name.clone()).collect());
+    structs.append(
+      &mut untyped_structs
+        .into_iter()
+        .map(|untyped_struct| untyped_struct.assign_types(&struct_names))
+        .collect::<Result<Vec<Struct>, CompileError>>()?,
+    );
+    let global_context = Context::default_global().with_structs(structs);
     let mut top_level_vars = vec![];
     let mut top_level_functions = vec![];
     for (metadata, tree) in non_struct_trees.into_iter() {
@@ -228,14 +232,13 @@ impl Program {
       }
     }
     Ok(Self {
-      structs,
+      global_context,
       top_level_vars,
       top_level_functions,
     })
   }
   fn propagate_types(&mut self) -> Result<bool, CompileError> {
-    let mut base_context =
-      Context::default_global().with_struct_constructors(&self.structs);
+    let mut base_context = self.global_context.clone();
     self.top_level_functions.iter_mut().try_fold(
       false,
       |did_type_states_change_so_far, f| {
@@ -272,7 +275,13 @@ impl Program {
       wgsl += "\n";
     }
     wgsl += "\n";
-    for s in self.structs {
+    let default_structs = built_in_structs();
+    for s in self
+      .global_context
+      .structs
+      .into_iter()
+      .filter(|s| !default_structs.contains(s))
+    {
       wgsl += &s.compile();
       wgsl += "\n\n";
     }
