@@ -29,6 +29,10 @@ pub enum CompileError {
   FunctionSignatureMissingReturnType,
   NoSuchField,
   AccessorHadMultipleArguments,
+  NotEnoughLetBlockChildren,
+  LetBindingsNotSquareBracketed,
+  OddNumberOfChildrenInLetBindings,
+  ExpectedBindingName,
 }
 
 impl From<ParseError> for CompileError {

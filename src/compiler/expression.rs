@@ -27,7 +27,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
 use ExpKind::*;
 
 use crate::{
-  compiler::{functions::FunctionSignature, types::extract_type_annotation},
+  compiler::{functions::FunctionSignature, types::extract_type_annotation, util::indent},
   parse::TyntTree,
 };
 
@@ -40,6 +40,7 @@ use super::{
   util::compile_word,
 };
 
+#[derive(Clone, Copy)]
 pub enum ExpressionCompilationContext {
   Return,
   InnerLine,
@@ -277,7 +278,46 @@ impl TypedExp {
                             return Err(CompileError::FunctionSignatureMissingReturnType);
                           }
                         }
-                        "let" => todo!("let"),
+                        "let" => {
+                          if children_iter.len() < 2 {
+                            return Err(CompileError::NotEnoughLetBlockChildren);
+                          }
+                          let bindings_ast = children_iter.next().unwrap();
+                          let body_ast = 
+                          if children_iter.len()==1 {
+                            children_iter.next().unwrap()
+                          } else {
+                            panic!("I haven't supported multi-line bindings")
+                          };
+                          if let TyntTree::Inner((_, Encloser(Square)), binding_asts) = bindings_ast {
+                            if binding_asts.len()%2 == 0 {
+                              let mut binding_asts_iter = binding_asts.into_iter();
+                              let mut bindings = vec![];
+                              while let Some(name_ast) = binding_asts_iter.next() {
+                                let value_ast = binding_asts_iter.next().unwrap();
+                                if let TyntTree::Leaf(_, name) = name_ast {
+                                  bindings.push((name, Self::try_from_tynt_tree(value_ast, struct_names)?));
+                                } else {
+                                  return Err(CompileError::ExpectedBindingName)
+                                }
+                              }
+                              Some(Exp {
+                                data: Unknown,
+                                kind: ExpKind::Let(
+                                  bindings,
+                                  Box::new(Self::try_from_tynt_tree(
+                                    body_ast, 
+                                    struct_names
+                                  )?)
+                                )
+                              })
+                            } else {
+                              return Err(CompileError::OddNumberOfChildrenInLetBindings)
+                            }
+                          } else {
+                            return Err(CompileError::LetBindingsNotSquareBracketed)
+                          }
+                        },
                         "match" => todo!("match block"),
                         _ => None,
                       }
@@ -505,19 +545,37 @@ impl TypedExp {
         )?;
         anything_changed
       }
-      Let(_, _) => todo!("let"),
+      Let(bindings, body) => {
+        let mut anything_changed = body.data.mutually_constrain(&mut self.data)?;
+        for (name, value) in bindings.iter_mut() {
+          anything_changed |= value.propagate_types(ctx)?;
+          ctx.bind(name, value.data.clone());
+        }
+        anything_changed |= body.propagate_types(ctx)?;
+        for (name, value) in bindings.iter_mut() {
+          anything_changed |= value.data.constrain(ctx.unbind(name))?;
+        }
+        anything_changed
+      },
       Match(_, _) => todo!("I haven't implemented match blocks yet!!!"),
     })
   }
   pub fn compile(self, ctx: ExpressionCompilationContext) -> String {
     use ExpressionCompilationContext::*;
-    let main = match self.kind {
-      Name(name) => compile_word(name),
-      NumberLiteral(num) => match num {
+    let wrap = |s: String| -> String {
+      match ctx {
+        Return => format!("\nreturn {s};"),
+        InnerLine => format!("\n{s};"),
+        InnerExpression => s,
+      }
+    };
+    match self.kind {
+      Name(name) => wrap(compile_word(name)),
+      NumberLiteral(num) => wrap(match num {
         Number::Int(i) => format!("{i}"),
         Number::Float(f) => format!("{f}f"),
-      },
-      BooleanLiteral(b) => format!("{b}"),
+      }),
+      BooleanLiteral(b) => wrap(format!("{b}")),
       Function(_, _) => panic!("Attempting to compile internal function"),
       Application(f, args) => {
         let f_str = f.compile(InnerExpression);
@@ -526,22 +584,26 @@ impl TypedExp {
           .map(|arg| arg.compile(InnerExpression))
           .collect::<Vec<String>>()
           .join(", ");
-        format!("{f_str}({args_str})")
+        wrap(format!("{f_str}({args_str})"))
       }
       Accessor(field, subexp) => {
-        format!(
+        wrap(format!(
           "{}.{}",
           subexp.compile(InnerExpression),
           compile_word(field)
-        )
+        ))
       }
-      Let(_, _) => todo!("let"),
+      Let(bindings, body) => {
+        let binding_lines:Vec<String> = bindings
+          .into_iter()
+          .map(|(name, value_exp)|
+            format!("let {name} = {};", value_exp.compile(InnerExpression))
+          )
+          .collect();
+        let value_line = body.compile(ctx);
+        format!("\n{{{}\n}}", indent("\n".to_string()+&binding_lines.join("\n")+&value_line))
+      },
       Match(_, _) => todo!("I haven't implemented match blocks yet!!!"),
-    };
-    match ctx {
-      Return => format!("\nreturn {main};"),
-      InnerLine => format!("\n{main};"),
-      InnerExpression => main,
     }
   }
 }

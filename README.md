@@ -17,21 +17,25 @@ Feature goals:
 ## todo
 * support `let` expressions
 
+* parse integer literals with ambiguous types, to allow them to be treated as floats
+
+* treat inline accessor syntax like `a.x` as an accessor
+
 * swizzling accessors
 
 * add `block` expressions
   * like clojures `do`. I think `block` is a better name (?)
   * if the body of `let` or `fn` has multiple expressions, treat it as a `block`
 
-* parametrically polymorphic functions, e.g. ==
-
 * asignment operators
   * assigning into accesses
   * have a `@var` tag that can appear on bindings to declare them as mutable/variable
 
-* parametrically polymorphic structs, e.g. vec
-  * `vec<n>f` should just be an alias to particular instance of this type
-  * should make sure `vec<n><>`
+* parametrically polymorphic functions, e.g. ==
+
+* generic/parametrically polymorphic structs, e.g. vec
+  * `vec<n>f` should just be an alias to particular specifications of this type
+  * To describe a particular specification of a generic type you'll just use parentheses as if you were calling a type-level function, e.g. `(vec4 f32)`
 
 * add typeclasses
   * support generic arguments bound by typeclass
