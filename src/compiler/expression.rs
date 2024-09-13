@@ -23,6 +23,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Accessor(String, Box<Exp<D>>),
   Let(Vec<(String, Exp<D>)>, Box<Exp<D>>),
   Match(Box<Exp<D>>, Vec<(Exp<D>, Exp<D>)>),
+  Block(Vec<Exp<D>>)
 }
 use ExpKind::*;
 
@@ -231,46 +232,51 @@ impl TypedExp {
                               arg_asts,
                             ) = args_and_return_type.remove(0)
                             {
+                              let mut children = children_iter.clone().map(|child| Self::try_from_tynt_tree(
+                                child,
+                                struct_names,
+                              )).collect::<Result<Vec<_>,CompileError>>()?;
+                              let body = 
                               if children_iter.len() == 1 {
-                                let body = children_iter.next().unwrap();
-                                let (arg_types, arg_names) = arg_asts
-                                  .into_iter()
-                                  .map(|arg| -> Result<_, CompileError> {
-                                    let (maybe_t, arg_name_ast) =
-                                      extract_type_annotation(arg, struct_names)?;
-                                    let t = maybe_t.ok_or(
-                                      CompileError::FunctionArgMissingType,
-                                    )?;
-                                    if let TyntTree::Leaf(_, arg_name) =
-                                      arg_name_ast
-                                    {
-                                      Ok((t, arg_name))
-                                    } else {
-                                      Err(CompileError::InvalidArgumentName)
-                                    }
-                                  })
-                                  .collect::<Result<
-                                    (Vec<TyntType>, Vec<String>),
-                                    CompileError,
-                                  >>()?;
-                                Some(Exp {
-                                  data: Known(TyntType::Function(Box::new(
-                                    FunctionSignature {
-                                      arg_types,
-                                      return_type,
-                                    },
-                                  ))),
-                                  kind: ExpKind::Function(
-                                    arg_names,
-                                    Box::new(Self::try_from_tynt_tree(
-                                      body,
-                                      struct_names,
-                                    )?),
-                                  ),
-                                })
+                                children.remove(0)
                               } else {
-                                todo!("multi-form fn body")
-                              }
+                                Exp {
+                                  data: Unknown,
+                                  kind: ExpKind::Block(children)
+                                }
+                              };
+                              let (arg_types, arg_names) = arg_asts
+                                .into_iter()
+                                .map(|arg| -> Result<_, CompileError> {
+                                  let (maybe_t, arg_name_ast) =
+                                    extract_type_annotation(arg, struct_names)?;
+                                  let t = maybe_t.ok_or(
+                                    CompileError::FunctionArgMissingType,
+                                  )?;
+                                  if let TyntTree::Leaf(_, arg_name) =
+                                    arg_name_ast
+                                  {
+                                    Ok((t, arg_name))
+                                  } else {
+                                    Err(CompileError::InvalidArgumentName)
+                                  }
+                                })
+                                .collect::<Result<
+                                  (Vec<TyntType>, Vec<String>),
+                                  CompileError,
+                                >>()?;
+                              Some(Exp {
+                                data: Known(TyntType::Function(Box::new(
+                                  FunctionSignature {
+                                    arg_types,
+                                    return_type,
+                                  },
+                                ))),
+                                kind: ExpKind::Function(
+                                  arg_names,
+                                  Box::new(body),
+                                ),
+                              })
                             } else {
                               return Err(CompileError::FunctionSignatureNotSquareBrackets);
                             }
@@ -283,11 +289,18 @@ impl TypedExp {
                             return Err(CompileError::NotEnoughLetBlockChildren);
                           }
                           let bindings_ast = children_iter.next().unwrap();
-                          let body_ast = 
-                          if children_iter.len()==1 {
-                            children_iter.next().unwrap()
+                          let mut child_exps = children_iter.clone().map(|child| Self::try_from_tynt_tree(
+                            child, 
+                            struct_names
+                          )).collect::<Result<Vec<Self>,CompileError>>()?;
+                          let body_exp = 
+                          if child_exps.len()==1 {
+                            child_exps.remove(0)
                           } else {
-                            panic!("I haven't supported multi-line bindings")
+                            Exp {
+                              data: Unknown,
+                              kind: ExpKind::Block(child_exps)
+                            }
                           };
                           if let TyntTree::Inner((_, Encloser(Square)), binding_asts) = bindings_ast {
                             if binding_asts.len()%2 == 0 {
@@ -305,10 +318,7 @@ impl TypedExp {
                                 data: Unknown,
                                 kind: ExpKind::Let(
                                   bindings,
-                                  Box::new(Self::try_from_tynt_tree(
-                                    body_ast, 
-                                    struct_names
-                                  )?)
+                                  Box::new(body_exp)
                                 )
                               })
                             } else {
@@ -317,6 +327,19 @@ impl TypedExp {
                           } else {
                             return Err(CompileError::LetBindingsNotSquareBracketed)
                           }
+                        },
+                        "block" => {
+                          if children_iter.is_empty() {
+                            return Err(CompileError::EmptyBlock);
+                          }
+                          let child_exps = children_iter.clone().map(|child| Self::try_from_tynt_tree(
+                            child, 
+                            struct_names
+                          )).collect::<Result<Vec<Self>,CompileError>>()?;
+                          Some(Exp {
+                            data: Unknown,
+                            kind: ExpKind::Block(child_exps)
+                          })
                         },
                         "match" => todo!("match block"),
                         _ => None,
@@ -394,6 +417,7 @@ impl TypedExp {
               && arm_body.is_fully_typed()
           },
         ),
+        Block(children) => children.iter().map(|child| child.is_fully_typed()).reduce(|a, b| a&&b).unwrap_or(true),
       }
     } else {
       false
@@ -558,6 +582,14 @@ impl TypedExp {
         anything_changed
       },
       Match(_, _) => todo!("I haven't implemented match blocks yet!!!"),
+      Block(children) => {
+        let mut anything_changed = false;
+        for child in children.iter_mut() {
+          anything_changed|=child.propagate_types(ctx)?;
+        }
+        anything_changed|=self.data.mutually_constrain(&mut children.last_mut().ok_or(CompileError::EmptyBlock)?.data)?;
+        anything_changed
+      },
     })
   }
   pub fn compile(self, ctx: ExpressionCompilationContext) -> String {
@@ -597,13 +629,26 @@ impl TypedExp {
         let binding_lines:Vec<String> = bindings
           .into_iter()
           .map(|(name, value_exp)|
-            format!("let {name} = {};", value_exp.compile(InnerExpression))
+            format!(
+              "let {name}: {} = {};",
+              value_exp.data.compile(),
+              value_exp.compile(InnerExpression)
+            )
           )
           .collect();
         let value_line = body.compile(ctx);
         format!("\n{{{}\n}}", indent("\n".to_string()+&binding_lines.join("\n")+&value_line))
       },
       Match(_, _) => todo!("I haven't implemented match blocks yet!!!"),
+      Block(children) => {
+        let child_count = children.len();
+        let child_strings:Vec<String> = children.into_iter().enumerate().map(|(i, child)| child.compile(if i == child_count - 1 {
+          ctx
+        } else {
+          ExpressionCompilationContext::InnerLine
+        })).collect();
+        format!("\n{{{}\n}}", indent(child_strings.join("")))
+      },
     }
   }
 }

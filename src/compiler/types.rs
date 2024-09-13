@@ -53,14 +53,14 @@ impl TyntType {
       Err(CompileError::InvalidType)
     }
   }
-  pub fn compile(self) -> String {
+  pub fn compile(&self) -> String {
     match self {
       TyntType::None => panic!("Attempted to compile None type"),
       TyntType::F32 => "f32".to_string(),
       TyntType::I32 => "i32".to_string(),
       TyntType::U32 => "u32".to_string(),
       TyntType::Bool => "bool".to_string(),
-      TyntType::Struct(name) => compile_word(name),
+      TyntType::Struct(name) => compile_word(name.clone()),
       TyntType::Function(_) => panic!("Attempted to compile Function type"),
     }
   }
@@ -244,6 +244,13 @@ impl TypeState {
     } else {
       self
     })
+  }
+  pub fn compile(&self) -> String {
+    if let TypeState::Known(t) = self {
+      t.compile()
+    } else {
+      panic!("attempted to compile TypeState that wasn't Known")
+    }
   }
 }
 

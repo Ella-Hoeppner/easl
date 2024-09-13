@@ -33,6 +33,7 @@ pub enum CompileError {
   LetBindingsNotSquareBracketed,
   OddNumberOfChildrenInLetBindings,
   ExpectedBindingName,
+  EmptyBlock,
 }
 
 impl From<ParseError> for CompileError {

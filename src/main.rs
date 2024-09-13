@@ -2,7 +2,7 @@ use std::fs;
 use tynt::compiler::compile_tynt_to_wgsl;
 
 fn main() {
-  for filename in ["simplest", "variadic_vec", "accessor", "let"] {
+  for filename in ["simplest", "variadic_vec", "accessor", "let", "block"] {
     println!("compiling {filename}...");
     let tynt_source = fs::read_to_string(&format!("./data/{filename}.tynt"))
       .expect(&format!("Unable to read {filename}.tynt"));

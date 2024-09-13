@@ -15,23 +15,16 @@ Feature goals:
   * sum types (probably, eventually)
 
 ## todo
-* support `let` expressions
-
-* parse integer literals with ambiguous types, to allow them to be treated as floats
-
-* treat inline accessor syntax like `a.x` as an accessor
-
-* swizzling accessors
-
-* add `block` expressions
-  * like clojures `do`. I think `block` is a better name (?)
-  * if the body of `let` or `fn` has multiple expressions, treat it as a `block`
+### steps to get to expressive parity with wgsl/glsl
+* parametrically polymorphic functions, e.g. ==
 
 * asignment operators
+  * left hand side must be a name, or an accessor over a name (or an accessor over accessor over a name, etc)
+  * just = for now since the rest will need a typeclass restriction
   * assigning into accesses
   * have a `@var` tag that can appear on bindings to declare them as mutable/variable
 
-* parametrically polymorphic functions, e.g. ==
+* swizzling accessors
 
 * generic/parametrically polymorphic structs, e.g. vec
   * `vec<n>f` should just be an alias to particular specifications of this type
@@ -48,25 +41,36 @@ Feature goals:
   * treat if statements a special case of match blocks
   * want logic for exhaustivity checking. For now the only exhaustible type is `Bool`, so basically for everything other than `Bool` there should be a requirement to have an "other" arm in the match block
     * eventually I'll probably try to support sum types, and for those I'll want exhaustivity checking to, so maybe have like an `is_exhaustable` fn on TyntType or smth that for now just only returns true for `Bool`
-* add mutability and assignment functions
-  * `=` will be the most important assignment operator at first
-  * the type system should track whether each variable is mutable. This will be indicated with a "mut" metadata tag in a let block, e.g. `(let [@mut a: T] ...)`
-    * assignment operators like `=` will check that their first
-
-* add macros and syntactic conveniences
-  * shadowing
-  * internal lets (lets inside function applications)
-  * threading macros
-  * convert + and * calls with >2 args to chains of 2-arg calls
-  * convert - and / calls with 1 arg to calls to negate and invert, respectively
 
 * loops
+  * `loop`
   * `for`
   * `while`
   * `break` and `continue`
 
-* add typeclass combination aliases, e.g. Arithmetic as a combination of Add, Subtract, Negate, Multiply, Divide
-  * Arithmetic should be built-in, but should also support user-defined aliases
+* add macros and syntactic conveniences
+  * parse integer literals with ambiguous types, to allow them to be treated as floats
+  * handle inline accessor syntax like `a.x`
+  * shadowing
+  * internal lets (lets inside applications)
+  * threading macros
+  * have a special case for associative functions like +, *, min, and max, allowing them to be called with n arguments
+  * convert - and / calls with 1 arg to calls to negate and invert, respectively
+  * add typeclass combination aliases, e.g. Arithmetic as a combination of Add, Subtract, Negate, Multiply, Divide
+    * Arithmetic should be built-in, but should also support user-defined aliases
+
+* add source tracing and helpful error messages for all compilation errors
+
+### extra features, once core language is solid
+* support higher-order functions
+  * any invocation of one of these functions will need to have that argument inlined
+    * for now there can be a restriction that the values for these arguments must always be constant, support non-constant fn args via dynamic dispatch later
+
+* Support anonymous structs
+  * each anonymous struct compiles to a concrete struct with a name derived from its field and types
+
+* Support tuples
+  * compile to structs
 
 * support impl'ing typeclasses on types
     * can test this by impl'ing Add on bool
@@ -74,15 +78,6 @@ Feature goals:
     * this should require providing a signature for all functions in each typeclass within the alias
 
 * support user-defined typeclasses
-
-* support higher-order functions
-  * any invocation of one of these functions will need to have that argument inlined
-    * for now there can be a restriction that the values for these arguments must always be constant, support non-constant fn args via dynamic dispatch later
-
-* Support anonymous structs
-  * each anonymous struct compiles to a concrete struct with a name derived from its field and types
-* Support tuples
-  * compile to structs
 
 * clj-style `loop` construct
 
