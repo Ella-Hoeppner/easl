@@ -8,7 +8,7 @@ use crate::parse::{Operator, TyntTree};
 use super::{
   builtins::{built_in_functions, built_in_multi_signature_functions},
   error::CompileError,
-  functions::FunctionSignature,
+  functions::{AbstractFunctionSignature, ConcreteFunctionSignature},
   structs::Struct,
   util::compile_word,
 };
@@ -21,9 +21,40 @@ pub enum TyntType {
   U32,
   Bool,
   Struct(String),
-  Function(Box<FunctionSignature>),
+  AbstractFunction(Box<AbstractFunctionSignature>),
+  ConcreteFunction(Box<ConcreteFunctionSignature>),
+  GenericVariable(String),
 }
 impl TyntType {
+  pub fn compatible(&self, other: &Self, ctx: &UnificationContext) -> bool {
+    match (self, other) {
+      (TyntType::AbstractFunction(a), TyntType::ConcreteFunction(b)) => {
+        a.is_concrete_signature_compatible(b.as_ref(), ctx)
+      }
+      (TyntType::ConcreteFunction(a), TyntType::AbstractFunction(b)) => {
+        b.is_concrete_signature_compatible(a.as_ref(), ctx)
+      }
+      (a, b) => a == b,
+    }
+  }
+  pub fn compatible_with_any(
+    &self,
+    others: &[Self],
+    ctx: &UnificationContext,
+  ) -> bool {
+    others.iter().find(|x| self.compatible(x, ctx)).is_some()
+  }
+  pub fn filter_compatibles(
+    &self,
+    others: &[Self],
+    ctx: &UnificationContext,
+  ) -> Vec<Self> {
+    others
+      .iter()
+      .filter(|x| self.compatible(x, ctx))
+      .cloned()
+      .collect()
+  }
   pub fn from_name(
     name: String,
     struct_names: &Vec<String>,
@@ -33,7 +64,7 @@ impl TyntType {
       "F32" | "f32" => F32,
       "I32" | "i32" => I32,
       "U32" | "u32" => U32,
-      "Bool" => Bool,
+      "Bool" | "bool" => Bool,
       _ => {
         if struct_names.contains(&name) {
           Struct(name)
@@ -61,7 +92,15 @@ impl TyntType {
       TyntType::U32 => "u32".to_string(),
       TyntType::Bool => "bool".to_string(),
       TyntType::Struct(name) => compile_word(name.clone()),
-      TyntType::Function(_) => panic!("Attempted to compile Function type"),
+      TyntType::AbstractFunction(_) => {
+        panic!("Attempted to compile AbstractFunction type")
+      }
+      TyntType::ConcreteFunction(_) => {
+        panic!("Attempted to compile ConcreteFunction type")
+      }
+      TyntType::GenericVariable(_) => {
+        panic!("Attempted to compile GenericVariable type")
+      }
     }
   }
 }
@@ -99,12 +138,33 @@ pub enum TypeState {
   Unknown,
   OneOf(Vec<TyntType>),
   Known(TyntType),
+  UnificationVariable(usize),
 }
 
 impl TypeState {
+  pub fn are_compatible<'a>(
+    a: &'a Self,
+    b: &'a Self,
+    ctx: &'a UnificationContext,
+  ) -> bool {
+    use TypeState::*;
+    let a = ctx.dereference_variable(a);
+    let b = ctx.dereference_variable(b);
+    match (a, b) {
+      (Unknown, _) => true,
+      (_, Unknown) => true,
+      (UnificationVariable(_), _) => unreachable!(),
+      (_, UnificationVariable(_)) => unreachable!(),
+      (Known(a), Known(b)) => a == b,
+      (OneOf(a), Known(b)) => a.contains(b),
+      (Known(a), OneOf(b)) => b.contains(a),
+      (OneOf(a), OneOf(b)) => a.iter().find(|a| b.contains(a)).is_some(),
+    }
+  }
   pub fn constrain(
     &mut self,
     mut other: TypeState,
+    ctx: &mut UnificationContext,
   ) -> Result<bool, CompileError> {
     let changed = match (&self, &other) {
       (_, TypeState::Unknown) => false,
@@ -113,7 +173,7 @@ impl TypeState {
         true
       }
       (TypeState::Known(current_type), TypeState::Known(new_type)) => {
-        if current_type != new_type {
+        if current_type.compatible(new_type, ctx) {
           return Err(CompileError::IncompatibleTypes);
         }
         false
@@ -125,7 +185,7 @@ impl TypeState {
         let mut new_possibilities = vec![];
         let mut changed = false;
         for possibility in possibilities {
-          if other_possibilities.contains(possibility) {
+          if possibility.compatible_with_any(other_possibilities, ctx) {
             new_possibilities.push(possibility.clone());
           } else {
             changed = true;
@@ -138,7 +198,7 @@ impl TypeState {
         changed
       }
       (TypeState::OneOf(possibilities), TypeState::Known(t)) => {
-        if possibilities.contains(t) {
+        if t.compatible_with_any(&possibilities, ctx) {
           std::mem::swap(self, &mut TypeState::Known(t.clone()));
           true
         } else {
@@ -146,11 +206,27 @@ impl TypeState {
         }
       }
       (TypeState::Known(t), TypeState::OneOf(possibilities)) => {
-        if !possibilities.contains(t) {
+        if !t.compatible_with_any(&possibilities, ctx) {
           return Err(CompileError::IncompatibleTypes);
         }
         false
       }
+      (TypeState::OneOf(_), TypeState::UnificationVariable(_)) => {
+        todo!("unification")
+      }
+      (TypeState::Known(_), TypeState::UnificationVariable(_)) => {
+        todo!("unification")
+      }
+      (TypeState::UnificationVariable(_), TypeState::OneOf(_)) => {
+        todo!("unification")
+      }
+      (TypeState::UnificationVariable(_), TypeState::Known(_)) => {
+        todo!("unification")
+      }
+      (
+        TypeState::UnificationVariable(_),
+        TypeState::UnificationVariable(_),
+      ) => todo!("unification"),
     };
     self.simplify()?;
     Ok(changed)
@@ -158,29 +234,45 @@ impl TypeState {
   pub fn mutually_constrain(
     &mut self,
     other: &mut TypeState,
+    ctx: &mut UnificationContext,
   ) -> Result<bool, CompileError> {
-    let self_changed = self.constrain(other.clone())?;
-    let other_changed = other.constrain(self.clone())?;
+    let self_changed = self.constrain(other.clone(), ctx)?;
+    let other_changed = other.constrain(self.clone(), ctx)?;
     Ok(self_changed || other_changed)
   }
   pub fn constrain_fn_by_argument_types(
     &mut self,
-    arg_types: Vec<TypeState>,
+    mut arg_types: Vec<TypeState>,
+    ctx: &mut UnificationContext,
   ) -> Result<bool, CompileError> {
     match self {
       TypeState::OneOf(possibilities) => {
         let mut new_possibilities = possibilities
-          .iter()
-          .filter_map(|t| match t {
-            TyntType::Function(signature) => {
-              if signature.are_args_compatible(&arg_types) {
-                Some(t.clone())
-              } else {
-                None
+          .iter_mut()
+          .map(|t| {
+            Ok(match t {
+              TyntType::ConcreteFunction(signature) => {
+                if signature
+                  .mutually_constrain_arguments(&mut arg_types, ctx)?
+                {
+                  Some(t.clone())
+                } else {
+                  None
+                }
               }
-            }
-            _ => panic!("tried to constrain fn on non-fn"),
+              TyntType::AbstractFunction(signature) => {
+                if signature.are_args_compatible(&arg_types) {
+                  Some(t.clone())
+                } else {
+                  None
+                }
+              }
+              _ => panic!("tried to constrain fn on non-fn"),
+            })
           })
+          .collect::<Result<Vec<_>, CompileError>>()?
+          .into_iter()
+          .filter_map(|x| x)
           .collect::<Vec<_>>();
         if new_possibilities.len() == possibilities.len() {
           Ok(false)
@@ -201,8 +293,8 @@ impl TypeState {
         }
       }
       TypeState::Known(t) => match t {
-        TyntType::Function(signature) => {
-          if signature.are_args_compatible(&arg_types) {
+        TyntType::ConcreteFunction(signature) => {
+          if signature.mutually_constrain_arguments(&mut arg_types, ctx)? {
             Ok(false)
           } else {
             Err(CompileError::IncompatibleTypes)
@@ -211,6 +303,7 @@ impl TypeState {
         _ => panic!("tried to constrain fn on non-fn"),
       },
       TypeState::Unknown => Ok(false),
+      TypeState::UnificationVariable(_) => todo!("unification"),
     }
   }
   pub fn is_compatible(&self, t: &TyntType) -> bool {
@@ -218,6 +311,7 @@ impl TypeState {
       TypeState::Unknown => true,
       TypeState::OneOf(possibilities) => possibilities.contains(t),
       TypeState::Known(known_t) => known_t == t,
+      TypeState::UnificationVariable(_) => todo!("unification"),
     }
   }
   pub fn simplify(&mut self) -> Result<(), CompileError> {
@@ -255,30 +349,51 @@ impl TypeState {
 }
 
 #[derive(Debug, Clone)]
-pub struct Context {
-  pub structs: Vec<Struct>,
-  pub multi_signature_functions: HashMap<String, Vec<FunctionSignature>>,
-  pub bindings: HashMap<String, Vec<TypeState>>,
+pub struct UnificationContext {
+  pub unification_variables: Vec<TypeState>,
 }
 
-impl Context {
+impl UnificationContext {
+  pub fn new() -> Self {
+    Self {
+      unification_variables: vec![],
+    }
+  }
+  pub fn constrain(
+    &mut self,
+    _index: usize,
+    _t: &TypeState,
+  ) -> Result<bool, CompileError> {
+    todo!()
+  }
+  pub fn dereference_variable<'a>(
+    &'a self,
+    mut t: &'a TypeState,
+  ) -> &'a TypeState {
+    while let TypeState::UnificationVariable(var) = t {
+      t = &self.unification_variables[*var];
+    }
+    t
+  }
+}
+
+#[derive(Debug, Clone)]
+pub struct Bindings {
+  pub bindings: HashMap<String, Vec<TypeState>>,
+  pub multi_signature_functions:
+    HashMap<String, Vec<AbstractFunctionSignature>>,
+}
+
+impl Bindings {
   pub fn default_global() -> Self {
     let mut multi_signature_functions = HashMap::new();
     for (name, signatures) in built_in_multi_signature_functions() {
       multi_signature_functions.insert(name.to_string(), signatures);
     }
-    let mut ctx = Context {
-      structs: vec![],
-      multi_signature_functions,
+    Self {
       bindings: HashMap::new(),
-    };
-    for (name, signature) in built_in_functions() {
-      ctx.bind(
-        name,
-        TypeState::Known(TyntType::Function(Box::new(signature))),
-      );
+      multi_signature_functions,
     }
-    ctx
   }
   pub fn bind(&mut self, name: &str, t: TypeState) {
     if !self.bindings.contains_key(name) {
@@ -311,19 +426,59 @@ impl Context {
         .unwrap(),
     )
   }
+}
+
+#[derive(Debug, Clone)]
+pub struct Context {
+  pub structs: Vec<Struct>,
+  pub bindings: Bindings,
+  pub unification_context: UnificationContext,
+}
+
+impl Context {
+  pub fn default_global() -> Self {
+    let mut multi_signature_functions = HashMap::new();
+    for (name, signatures) in built_in_multi_signature_functions() {
+      multi_signature_functions.insert(name.to_string(), signatures);
+    }
+    let mut ctx = Context {
+      structs: vec![],
+      bindings: Bindings::default_global(),
+      unification_context: UnificationContext::new(),
+    };
+    for (name, signature) in built_in_functions() {
+      ctx.bindings.bind(
+        name,
+        TypeState::Known(TyntType::AbstractFunction(Box::new(signature))),
+      );
+    }
+    ctx
+  }
+  pub fn init_unification_variable(&mut self) -> TypeState {
+    self
+      .unification_context
+      .unification_variables
+      .push(TypeState::Unknown);
+    TypeState::UnificationVariable(
+      self.unification_context.unification_variables.len() - 1,
+    )
+  }
   pub fn with_structs(mut self, structs: Vec<Struct>) -> Self {
     for s in &structs {
       if s.has_normal_constructor {
-        self.bind(
+        self.bindings.bind(
           &s.name,
-          TypeState::Known(TyntType::Function(Box::new(FunctionSignature {
-            arg_types: s
-              .fields
-              .iter()
-              .map(|field| field.field_type.clone())
-              .collect(),
-            return_type: TyntType::Struct(s.name.clone()),
-          }))),
+          TypeState::Known(TyntType::AbstractFunction(Box::new(
+            AbstractFunctionSignature {
+              generic_args: vec![],
+              arg_types: s
+                .fields
+                .iter()
+                .map(|field| field.field_type.clone())
+                .collect(),
+              return_type: TyntType::Struct(s.name.clone()),
+            },
+          ))),
         )
       }
     }
@@ -335,16 +490,28 @@ impl Context {
     name: &str,
     t: &mut TypeState,
   ) -> Result<bool, CompileError> {
-    if let Some(signatures) = self.multi_signature_functions.get(name) {
-      t.constrain(TypeState::OneOf(
-        signatures
-          .iter()
-          .cloned()
-          .map(|signature| TyntType::Function(Box::new(signature)))
-          .collect(),
-      ))
+    println!(
+      "constraining name type: {name}\n{:#?}",
+      self.bindings.get_typestate_mut(name)
+    );
+    let x = if let Some(signatures) =
+      self.bindings.multi_signature_functions.get(name)
+    {
+      t.constrain(
+        TypeState::OneOf(
+          signatures
+            .iter()
+            .cloned()
+            .map(|signature| TyntType::AbstractFunction(Box::new(signature)))
+            .collect(),
+        ),
+        &mut self.unification_context,
+      )
     } else {
-      t.mutually_constrain(self.get_typestate_mut(name)?)
-    }
+      let x = self.bindings.get_typestate_mut(name)?;
+      t.mutually_constrain(x, &mut self.unification_context)
+    };
+    println!("constrain_name_type result: {x:#?}");
+    x
   }
 }

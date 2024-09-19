@@ -1,6 +1,8 @@
 use crate::compiler::structs::StructField;
 
-use super::{functions::FunctionSignature, structs::Struct, types::TyntType};
+use super::{
+  functions::AbstractFunctionSignature, structs::Struct, types::TyntType,
+};
 
 fn n_sums(n: u8) -> Vec<Vec<u8>> {
   let mut matches = vec![];
@@ -21,10 +23,11 @@ fn n_sums(n: u8) -> Vec<Vec<u8>> {
   }
 }
 
-fn multi_signature_vec_constructors(n: u8) -> Vec<FunctionSignature> {
+fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
   n_sums(n)
     .into_iter()
-    .map(|nums| FunctionSignature {
+    .map(|nums| AbstractFunctionSignature {
+      generic_args: vec![],
       arg_types: nums
         .into_iter()
         .map(|n| match n {
@@ -109,7 +112,7 @@ pub fn built_in_structs() -> Vec<Struct> {
 }
 
 pub fn built_in_multi_signature_functions(
-) -> Vec<(&'static str, Vec<FunctionSignature>)> {
+) -> Vec<(&'static str, Vec<AbstractFunctionSignature>)> {
   vec![
     ("vec4f", multi_signature_vec_constructors(4)),
     ("vec3f", multi_signature_vec_constructors(3)),
@@ -117,6 +120,26 @@ pub fn built_in_multi_signature_functions(
   ]
 }
 
-pub fn built_in_functions() -> Vec<(&'static str, FunctionSignature)> {
-  vec![]
+pub fn built_in_functions() -> Vec<(&'static str, AbstractFunctionSignature)> {
+  vec![
+    (
+      "&&",
+      AbstractFunctionSignature {
+        generic_args: vec![],
+        arg_types: vec![TyntType::Bool, TyntType::Bool],
+        return_type: TyntType::Bool,
+      },
+    ),
+    (
+      "==",
+      AbstractFunctionSignature {
+        generic_args: vec!["T".to_string()],
+        arg_types: vec![
+          TyntType::GenericVariable("T".to_string()),
+          TyntType::GenericVariable("T".to_string()),
+        ],
+        return_type: TyntType::Bool,
+      },
+    ),
+  ]
 }
