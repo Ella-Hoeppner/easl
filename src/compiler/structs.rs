@@ -7,7 +7,11 @@ use crate::{
   parse::TyntTree,
 };
 
-use super::{error::CompileError, metadata::Metadata, types::TyntType};
+use super::{
+  error::{CompileError, CompileErrorKind::*, CompileResult},
+  metadata::Metadata,
+  types::TyntType,
+};
 
 pub struct UntypedStructField {
   metadata: Option<Metadata>,
@@ -16,9 +20,10 @@ pub struct UntypedStructField {
 }
 
 impl UntypedStructField {
-  fn from_field_tree(ast: TyntTree) -> Result<Self, CompileError> {
+  fn from_field_tree(ast: TyntTree) -> CompileResult<Self> {
     let (type_ast, inner_ast) = extract_type_annotation_ast(ast)?;
-    let type_ast = type_ast.ok_or(CompileError::StructFieldMissingType)?;
+    let type_ast =
+      type_ast.ok_or(CompileError::from(StructFieldMissingType))?;
     let (metadata, name) = extract_metadata(inner_ast)?;
     Ok(Self {
       metadata,
@@ -29,7 +34,7 @@ impl UntypedStructField {
   pub fn assign_type(
     self,
     struct_names: &Vec<String>,
-  ) -> Result<StructField, CompileError> {
+  ) -> CompileResult<StructField> {
     Ok(StructField {
       metadata: self.metadata,
       name: self.name,
@@ -47,19 +52,19 @@ impl UntypedStruct {
   pub fn from_field_trees(
     name: String,
     field_asts: Vec<TyntTree>,
-  ) -> Result<Self, CompileError> {
+  ) -> CompileResult<Self> {
     Ok(Self {
       name,
       fields: field_asts
         .into_iter()
         .map(UntypedStructField::from_field_tree)
-        .collect::<Result<_, CompileError>>()?,
+        .collect::<CompileResult<_>>()?,
     })
   }
   pub fn assign_types(
     self,
     struct_names: &Vec<String>,
-  ) -> Result<Struct, CompileError> {
+  ) -> CompileResult<Struct> {
     Ok(Struct {
       has_normal_constructor: true,
       name: self.name,
@@ -67,7 +72,7 @@ impl UntypedStruct {
         .fields
         .into_iter()
         .map(|field| field.assign_type(struct_names))
-        .collect::<Result<_, CompileError>>()?,
+        .collect::<CompileResult<_>>()?,
     })
   }
 }

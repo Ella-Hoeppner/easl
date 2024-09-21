@@ -2,23 +2,23 @@ use sse::syntax::EncloserOrOperator;
 
 use crate::parse::{Operator, TyntTree};
 
-use super::error::CompileError;
+use super::error::{err, CompileErrorKind::*, CompileResult};
 
 pub fn indent(s: String) -> String {
   s.replace("\n", "\n  ")
 }
 
-pub fn read_leaf(ast: TyntTree) -> Result<String, CompileError> {
+pub fn read_leaf(ast: TyntTree) -> CompileResult<String> {
   if let TyntTree::Leaf(_, word) = ast {
     Ok(word)
   } else {
-    Err(CompileError::ExpectedLeaf)
+    err(ExpectedLeaf)
   }
 }
 
 pub fn read_type_annotated_name(
   exp: TyntTree,
-) -> Result<(String, String), CompileError> {
+) -> CompileResult<(String, String)> {
   if let TyntTree::Inner(
     (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
     mut children,
@@ -29,13 +29,13 @@ pub fn read_type_annotated_name(
       if let TyntTree::Leaf(_, name) = x {
         Ok((name, type_name))
       } else {
-        Err(CompileError::ExpectedTypeAnnotatedName)
+        err(ExpectedTypeAnnotatedName)
       }
     } else {
-      Err(CompileError::ExpectedTypeAnnotatedName)
+      err(ExpectedTypeAnnotatedName)
     }
   } else {
-    Err(CompileError::ExpectedTypeAnnotatedName)
+    err(ExpectedTypeAnnotatedName)
   }
 }
 

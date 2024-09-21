@@ -2,6 +2,8 @@ use sse::{
   document::Document, standard_whitespace_chars, DocumentSyntaxTree,
   Encloser as SSEEncloser, Operator as SSEOperator, ParseError, SyntaxGraph,
 };
+
+use crate::compiler::error::{CompileError, CompileErrorKind, CompileResult};
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Encloser {
   Parens,
@@ -70,7 +72,7 @@ impl SSEOperator for Operator {
 
 pub fn parse_tynt(
   tynt_source: &str,
-) -> Result<Document<(), Encloser, Operator>, ParseError> {
+) -> CompileResult<Document<(), Encloser, Operator>> {
   Document::from_text_with_syntax(
     SyntaxGraph::contextless(
       vec![Encloser::Parens, Encloser::Square, Encloser::Curly],
@@ -79,6 +81,7 @@ pub fn parse_tynt(
     ),
     tynt_source,
   )
+  .map_err(|e| CompileErrorKind::ParsingFailed(e).into())
 }
 
 pub type TyntTree = DocumentSyntaxTree<Encloser, Operator>;

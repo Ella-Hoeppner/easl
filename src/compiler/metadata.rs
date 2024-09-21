@@ -3,7 +3,7 @@ use sse::syntax::EncloserOrOperator::{self, *};
 use crate::parse::TyntTree;
 use crate::parse::{Encloser::*, Operator};
 
-use super::error::CompileError;
+use super::error::{err, CompileErrorKind::*, CompileResult};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Metadata {
@@ -12,7 +12,7 @@ pub enum Metadata {
 }
 
 impl Metadata {
-  pub fn from_metadata_tree(ast: TyntTree) -> Result<Self, CompileError> {
+  pub fn from_metadata_tree(ast: TyntTree) -> CompileResult<Self> {
     match ast {
       TyntTree::Leaf(_, singular) => Ok(Self::Singular(singular)),
       TyntTree::Inner((_, Encloser(Curly)), map_fields) => {
@@ -24,25 +24,19 @@ impl Metadata {
                 if let TyntTree::Leaf(_, field_string) = field {
                   Ok(field_string)
                 } else {
-                  Err(CompileError::InvalidMetadata(
-                    "fields must all be leaves".to_string(),
-                  ))
+                  err(InvalidMetadata("fields must all be leaves".to_string()))
                 }
               })
-              .collect::<Result<Vec<String>, CompileError>>()?
+              .collect::<CompileResult<Vec<String>>>()?
               .chunks(2)
               .map(|arr| (arr[0].clone(), arr[1].clone()))
               .collect(),
           ))
         } else {
-          Err(CompileError::InvalidMetadata(
-            "fields must all be leaves".to_string(),
-          ))
+          err(InvalidMetadata("fields must all be leaves".to_string()))
         }
       }
-      _ => Err(CompileError::InvalidMetadata(
-        "fields must all be leaves".to_string(),
-      )),
+      _ => err(InvalidMetadata("fields must all be leaves".to_string())),
     }
   }
   pub fn compile(self) -> String {
@@ -69,7 +63,7 @@ impl Metadata {
 
 pub fn extract_metadata(
   exp: TyntTree,
-) -> Result<(Option<Metadata>, TyntTree), CompileError> {
+) -> CompileResult<(Option<Metadata>, TyntTree)> {
   Ok(
     if let TyntTree::Inner(
       (_, EncloserOrOperator::Operator(Operator::MetadataAnnotation)),

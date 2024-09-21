@@ -7,7 +7,7 @@ use crate::parse::{Operator, TyntTree};
 
 use super::{
   builtins::{built_in_functions, built_in_multi_signature_functions},
-  error::CompileError,
+  error::{err, CompileErrorKind::*, CompileResult},
   functions::{AbstractFunctionSignature, ConcreteFunctionSignature},
   structs::Struct,
   util::compile_word,
@@ -58,7 +58,7 @@ impl TyntType {
   pub fn from_name(
     name: String,
     struct_names: &Vec<String>,
-  ) -> Result<Self, CompileError> {
+  ) -> CompileResult<Self> {
     use TyntType::*;
     Ok(match name.as_str() {
       "F32" | "f32" => F32,
@@ -69,7 +69,7 @@ impl TyntType {
         if struct_names.contains(&name) {
           Struct(name)
         } else {
-          return Err(CompileError::UnrecognizedTypeName(name));
+          return err(UnrecognizedTypeName(name));
         }
       }
     })
@@ -77,11 +77,11 @@ impl TyntType {
   pub fn from_tynt_tree(
     tree: TyntTree,
     struct_names: &Vec<String>,
-  ) -> Result<Self, CompileError> {
+  ) -> CompileResult<Self> {
     if let TyntTree::Leaf(_, type_name) = tree {
       Ok(TyntType::from_name(type_name, struct_names)?)
     } else {
-      Err(CompileError::InvalidType)
+      err(InvalidType)
     }
   }
   pub fn compile(&self) -> String {
@@ -107,7 +107,7 @@ impl TyntType {
 
 pub fn extract_type_annotation_ast(
   exp: TyntTree,
-) -> Result<(Option<TyntTree>, TyntTree), CompileError> {
+) -> CompileResult<(Option<TyntTree>, TyntTree)> {
   Ok(
     if let TyntTree::Inner(
       (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
@@ -124,7 +124,7 @@ pub fn extract_type_annotation_ast(
 pub fn extract_type_annotation(
   exp: TyntTree,
   struct_names: &Vec<String>,
-) -> Result<(Option<TyntType>, TyntTree), CompileError> {
+) -> CompileResult<(Option<TyntType>, TyntTree)> {
   let (t, value) = extract_type_annotation_ast(exp)?;
   Ok((
     t.map(|t| TyntType::from_tynt_tree(t, struct_names))
@@ -165,7 +165,7 @@ impl TypeState {
     &mut self,
     mut other: TypeState,
     ctx: &mut UnificationContext,
-  ) -> Result<bool, CompileError> {
+  ) -> CompileResult<bool> {
     let changed = match (&self, &other) {
       (_, TypeState::Unknown) => false,
       (TypeState::Unknown, _) => {
@@ -174,7 +174,7 @@ impl TypeState {
       }
       (TypeState::Known(current_type), TypeState::Known(new_type)) => {
         if current_type.compatible(new_type, ctx) {
-          return Err(CompileError::IncompatibleTypes);
+          return err(IncompatibleTypes);
         }
         false
       }
@@ -202,12 +202,12 @@ impl TypeState {
           std::mem::swap(self, &mut TypeState::Known(t.clone()));
           true
         } else {
-          return Err(CompileError::IncompatibleTypes);
+          return err(IncompatibleTypes);
         }
       }
       (TypeState::Known(t), TypeState::OneOf(possibilities)) => {
         if !t.compatible_with_any(&possibilities, ctx) {
-          return Err(CompileError::IncompatibleTypes);
+          return err(IncompatibleTypes);
         }
         false
       }
@@ -235,7 +235,7 @@ impl TypeState {
     &mut self,
     other: &mut TypeState,
     ctx: &mut UnificationContext,
-  ) -> Result<bool, CompileError> {
+  ) -> CompileResult<bool> {
     let self_changed = self.constrain(other.clone(), ctx)?;
     let other_changed = other.constrain(self.clone(), ctx)?;
     Ok(self_changed || other_changed)
@@ -244,7 +244,7 @@ impl TypeState {
     &mut self,
     mut arg_types: Vec<TypeState>,
     ctx: &mut UnificationContext,
-  ) -> Result<bool, CompileError> {
+  ) -> CompileResult<bool> {
     match self {
       TypeState::OneOf(possibilities) => {
         let mut new_possibilities = possibilities
@@ -270,7 +270,7 @@ impl TypeState {
               _ => panic!("tried to constrain fn on non-fn"),
             })
           })
-          .collect::<Result<Vec<_>, CompileError>>()?
+          .collect::<CompileResult<Vec<_>>>()?
           .into_iter()
           .filter_map(|x| x)
           .collect::<Vec<_>>();
@@ -278,7 +278,7 @@ impl TypeState {
           Ok(false)
         } else {
           if new_possibilities.is_empty() {
-            Err(CompileError::IncompatibleTypes)
+            err(IncompatibleTypes)
           } else {
             std::mem::swap(
               self,
@@ -297,7 +297,7 @@ impl TypeState {
           if signature.mutually_constrain_arguments(&mut arg_types, ctx)? {
             Ok(false)
           } else {
-            Err(CompileError::IncompatibleTypes)
+            err(IncompatibleTypes)
           }
         }
         _ => panic!("tried to constrain fn on non-fn"),
@@ -314,24 +314,24 @@ impl TypeState {
       TypeState::UnificationVariable(_) => todo!("unification"),
     }
   }
-  pub fn simplify(&mut self) -> Result<(), CompileError> {
+  pub fn simplify(&mut self) -> CompileResult<()> {
     Ok(if let TypeState::OneOf(mut possibilities) = self.clone() {
       possibilities.dedup();
       std::mem::swap(
         self,
         &mut match possibilities.len() {
-          0 => return Err(CompileError::IncompatibleTypes),
+          0 => return err(IncompatibleTypes),
           1 => TypeState::Known(possibilities.remove(0)),
           _ => TypeState::OneOf(possibilities),
         },
       )
     })
   }
-  pub fn simplified(self) -> Result<Self, CompileError> {
+  pub fn simplified(self) -> CompileResult<Self> {
     Ok(if let TypeState::OneOf(mut possibilities) = self {
       possibilities.dedup();
       match possibilities.len() {
-        0 => return Err(CompileError::IncompatibleTypes),
+        0 => return err(IncompatibleTypes),
         1 => TypeState::Known(possibilities.remove(0)),
         _ => TypeState::OneOf(possibilities),
       }
@@ -363,7 +363,7 @@ impl UnificationContext {
     &mut self,
     _index: usize,
     _t: &TypeState,
-  ) -> Result<bool, CompileError> {
+  ) -> CompileResult<bool> {
     todo!()
   }
   pub fn dereference_variable<'a>(
@@ -416,12 +416,12 @@ impl Bindings {
   pub fn get_typestate_mut(
     &mut self,
     name: &str,
-  ) -> Result<&mut TypeState, CompileError> {
+  ) -> CompileResult<&mut TypeState> {
     Ok(
       self
         .bindings
         .get_mut(name)
-        .ok_or_else(|| CompileError::UnboundName(name.to_string()))?
+        .ok_or_else(|| UnboundName(name.to_string()))?
         .last_mut()
         .unwrap(),
     )
@@ -489,7 +489,7 @@ impl Context {
     &mut self,
     name: &str,
     t: &mut TypeState,
-  ) -> Result<bool, CompileError> {
+  ) -> CompileResult<bool> {
     println!(
       "constraining name type: {name}\n{:#?}",
       self.bindings.get_typestate_mut(name)

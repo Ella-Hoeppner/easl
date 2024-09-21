@@ -23,17 +23,22 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Accessor(String, Box<Exp<D>>),
   Let(Vec<(String, Exp<D>)>, Box<Exp<D>>),
   Match(Box<Exp<D>>, Vec<(Exp<D>, Exp<D>)>),
-  Block(Vec<Exp<D>>)
+  Block(Vec<Exp<D>>),
 }
 use ExpKind::*;
 
 use crate::{
-  compiler::{functions::AbstractFunctionSignature, types::extract_type_annotation, util::indent},
+  compiler::{
+    error::{err, CompileError},
+    functions::AbstractFunctionSignature,
+    types::extract_type_annotation,
+    util::indent,
+  },
   parse::TyntTree,
 };
 
 use super::{
-  error::CompileError,
+  error::{CompileErrorKind::*, CompileResult},
   types::{
     Context, TyntType,
     TypeState::{self, *},
@@ -48,123 +53,13 @@ pub enum ExpressionCompilationContext {
   InnerExpression,
 }
 
-impl<D: Debug + Clone + PartialEq> Exp<D> {
-  /*fn map_exp(self, f: impl Fn(ExpKind<D>) -> ExpKind<D>) -> Self {
-    Self {
-      data: self.data,
-      kind: f(self.kind),
-    }
-  }
-  pub fn walk<NewD: Debug + Clone + PartialEq, E>(
-    self,
-    prewalk_transformer: &mut impl FnMut(Self) -> Result<Self, E>,
-    postwalk_transformer: &mut impl FnMut(
-      Box<ExpKind<NewD>>,
-      D,
-    ) -> Result<Exp<NewD>, E>,
-  ) -> Result<Exp<NewD>, E> {
-    let prewalked_node = prewalk_transformer(self)?;
-    let new_exp: ExpKind<NewD> = match prewalked_node.kind {
-      Function(arg_names, body) => Function(
-        arg_names,
-        Box::new(body.walk(prewalk_transformer, postwalk_transformer)?),
-      ),
-      Application(f_expression, args) => Application(
-        Box::new(f_expression.walk(prewalk_transformer, postwalk_transformer)?),
-        args
-          .into_iter()
-          .map(|exp| exp.walk(prewalk_transformer, postwalk_transformer))
-          .collect::<Result<_, E>>()?,
-      ),
-      Let(bindings, body) => Let(
-        bindings
-          .into_iter()
-          .map(|(name, value)| -> Result<_, E> {
-            Ok((name, value.walk(prewalk_transformer, postwalk_transformer)?))
-          })
-          .collect::<Result<_, E>>()?,
-        Box::new(body.walk(prewalk_transformer, postwalk_transformer)?),
-      ),
-      Match(exp, cases) => Match(
-        Box::new(exp.walk(prewalk_transformer, postwalk_transformer)?),
-        cases
-          .into_iter()
-          .map(|(pattern, arm_bodies)| {
-            Ok((
-              pattern.walk(prewalk_transformer, postwalk_transformer)?,
-              arm_bodies.walk(prewalk_transformer, postwalk_transformer)?,
-            ))
-          })
-          .collect::<Result<_, E>>()?,
-      ),
-      Name(name) => Name(name),
-      NumberLiteral(num) => NumberLiteral(num),
-      BooleanLiteral(b) => BooleanLiteral(b),
-    };
-    postwalk_transformer(Box::new(new_exp), prewalked_node.data)
-  }
-  pub fn try_replace_data<NewD: Debug + Clone + PartialEq, E>(
-    self,
-    data_deriver: &mut impl FnMut(&ExpKind<NewD>, D) -> Result<NewD, E>,
-  ) -> Result<Exp<NewD>, E> {
-    self.walk(&mut |node| Ok(node), &mut |kind, data| {
-      let new_data = data_deriver(&kind, data)?;
-      Ok(Exp {
-        kind: *kind,
-        data: new_data,
-      })
-    })
-  }
-  fn replace_name(self, old_name: String, new_name: String) -> Self {
-    self
-      .walk(
-        &mut |node| {
-          Ok::<_, !>(node.map_exp(|exp| {
-            match exp {
-              Name(name) => Name(if name == old_name {
-                new_name.clone()
-              } else {
-                name
-              }),
-              Let(bindings, args) => Let(
-                bindings
-                  .into_iter()
-                  .map(|(name, value)| {
-                    (
-                      if name == old_name {
-                        new_name.clone()
-                      } else {
-                        name
-                      },
-                      value,
-                    )
-                  })
-                  .collect(),
-                args,
-              ),
-              other => other,
-            }
-          }))
-        },
-        &mut |kind, data| Ok(Self { kind: *kind, data }),
-      )
-      .unwrap()
-  }
-  fn deshadow_bindings(self) -> Self {
-    todo!()
-  }
-  fn lift_internal_lets(self) -> Self {
-    todo!()
-  }*/
-}
-
 pub type TypedExp = Exp<TypeState>;
 
 impl TypedExp {
   pub fn try_from_tynt_tree(
     tree: TyntTree,
     struct_names: &Vec<String>,
-  ) -> Result<Self, CompileError> {
+  ) -> CompileResult<Self> {
     Ok(match tree {
       TyntTree::Leaf(_, leaf) => {
         if leaf == "true" || leaf == "false" {
@@ -205,15 +100,18 @@ impl TypedExp {
                         Some(Exp {
                           data: TypeState::Unknown,
                           kind: ExpKind::Accessor(
-                            first_child_name.chars().skip(1).collect::<String>(),
+                            first_child_name
+                              .chars()
+                              .skip(1)
+                              .collect::<String>(),
                             Box::new(Self::try_from_tynt_tree(
                               children_iter.next().unwrap(),
-                              struct_names)?
-                            )
-                          )
+                              struct_names,
+                            )?),
+                          ),
                         })
                       } else {
-                        return Err(CompileError::AccessorHadMultipleArguments);
+                        return err(AccessorHadMultipleArguments);
                       }
                     } else {
                       match first_child_name.as_str() {
@@ -232,116 +130,133 @@ impl TypedExp {
                               arg_asts,
                             ) = args_and_return_type.remove(0)
                             {
-                              let mut children = children_iter.clone().map(|child| Self::try_from_tynt_tree(
-                                child,
-                                struct_names,
-                              )).collect::<Result<Vec<_>,CompileError>>()?;
-                              let body = 
-                              if children_iter.len() == 1 {
+                              let mut children = children_iter
+                                .clone()
+                                .map(|child| {
+                                  Self::try_from_tynt_tree(child, struct_names)
+                                })
+                                .collect::<CompileResult<Vec<_>>>()?;
+                              let body = if children_iter.len() == 1 {
                                 children.remove(0)
                               } else {
                                 Exp {
                                   data: Unknown,
-                                  kind: ExpKind::Block(children)
+                                  kind: ExpKind::Block(children),
                                 }
                               };
                               let (arg_types, arg_names) = arg_asts
                                 .into_iter()
-                                .map(|arg| -> Result<_, CompileError> {
+                                .map(|arg| -> CompileResult<_> {
                                   let (maybe_t, arg_name_ast) =
                                     extract_type_annotation(arg, struct_names)?;
                                   let t = maybe_t.ok_or(
-                                    CompileError::FunctionArgMissingType,
+                                    CompileError::from(FunctionArgMissingType),
                                   )?;
                                   if let TyntTree::Leaf(_, arg_name) =
                                     arg_name_ast
                                   {
                                     Ok((t, arg_name))
                                   } else {
-                                    Err(CompileError::InvalidArgumentName)
+                                    err(InvalidArgumentName)
                                   }
                                 })
-                                .collect::<Result<
+                                .collect::<CompileResult<
                                   (Vec<TyntType>, Vec<String>),
-                                  CompileError,
                                 >>()?;
                               Some(Exp {
-                                data: Known(TyntType::AbstractFunction(Box::new(
-                                  AbstractFunctionSignature {
+                                data: Known(TyntType::AbstractFunction(
+                                  Box::new(AbstractFunctionSignature {
                                     generic_args: vec![],
                                     arg_types,
                                     return_type,
-                                  },
-                                ))),
+                                  }),
+                                )),
                                 kind: ExpKind::Function(
                                   arg_names,
                                   Box::new(body),
                                 ),
                               })
                             } else {
-                              return Err(CompileError::FunctionSignatureNotSquareBrackets);
+                              return err(FunctionSignatureNotSquareBrackets);
                             }
                           } else {
-                            return Err(CompileError::FunctionSignatureMissingReturnType);
+                            return err(FunctionSignatureMissingReturnType);
                           }
                         }
                         "let" => {
                           if children_iter.len() < 2 {
-                            return Err(CompileError::NotEnoughLetBlockChildren);
+                            return err(NotEnoughLetBlockChildren);
                           }
                           let bindings_ast = children_iter.next().unwrap();
-                          let mut child_exps = children_iter.clone().map(|child| Self::try_from_tynt_tree(
-                            child, 
-                            struct_names
-                          )).collect::<Result<Vec<Self>,CompileError>>()?;
-                          let body_exp = 
-                          if child_exps.len()==1 {
+                          let mut child_exps = children_iter
+                            .clone()
+                            .map(|child| {
+                              Self::try_from_tynt_tree(child, struct_names)
+                            })
+                            .collect::<CompileResult<Vec<Self>>>()?;
+                          let body_exp = if child_exps.len() == 1 {
                             child_exps.remove(0)
                           } else {
                             Exp {
                               data: Unknown,
-                              kind: ExpKind::Block(child_exps)
+                              kind: ExpKind::Block(child_exps),
                             }
                           };
-                          if let TyntTree::Inner((_, Encloser(Square)), binding_asts) = bindings_ast {
-                            if binding_asts.len()%2 == 0 {
-                              let mut binding_asts_iter = binding_asts.into_iter();
+                          if let TyntTree::Inner(
+                            (_, Encloser(Square)),
+                            binding_asts,
+                          ) = bindings_ast
+                          {
+                            if binding_asts.len() % 2 == 0 {
+                              let mut binding_asts_iter =
+                                binding_asts.into_iter();
                               let mut bindings = vec![];
-                              while let Some(name_ast) = binding_asts_iter.next() {
-                                let value_ast = binding_asts_iter.next().unwrap();
+                              while let Some(name_ast) =
+                                binding_asts_iter.next()
+                              {
+                                let value_ast =
+                                  binding_asts_iter.next().unwrap();
                                 if let TyntTree::Leaf(_, name) = name_ast {
-                                  bindings.push((name, Self::try_from_tynt_tree(value_ast, struct_names)?));
+                                  bindings.push((
+                                    name,
+                                    Self::try_from_tynt_tree(
+                                      value_ast,
+                                      struct_names,
+                                    )?,
+                                  ));
                                 } else {
-                                  return Err(CompileError::ExpectedBindingName)
+                                  return err(ExpectedBindingName);
                                 }
                               }
                               Some(Exp {
                                 data: Unknown,
                                 kind: ExpKind::Let(
                                   bindings,
-                                  Box::new(body_exp)
-                                )
+                                  Box::new(body_exp),
+                                ),
                               })
                             } else {
-                              return Err(CompileError::OddNumberOfChildrenInLetBindings)
+                              return err(OddNumberOfChildrenInLetBindings);
                             }
                           } else {
-                            return Err(CompileError::LetBindingsNotSquareBracketed)
+                            return err(LetBindingsNotSquareBracketed);
                           }
-                        },
+                        }
                         "block" => {
                           if children_iter.is_empty() {
-                            return Err(CompileError::EmptyBlock);
+                            return err(EmptyBlock);
                           }
-                          let child_exps = children_iter.clone().map(|child| Self::try_from_tynt_tree(
-                            child, 
-                            struct_names
-                          )).collect::<Result<Vec<Self>,CompileError>>()?;
+                          let child_exps = children_iter
+                            .clone()
+                            .map(|child| {
+                              Self::try_from_tynt_tree(child, struct_names)
+                            })
+                            .collect::<CompileResult<Vec<Self>>>()?;
                           Some(Exp {
                             data: Unknown,
-                            kind: ExpKind::Block(child_exps)
+                            kind: ExpKind::Block(child_exps),
                           })
-                        },
+                        }
                         "match" => todo!("match block"),
                         _ => None,
                       }
@@ -357,12 +272,12 @@ impl TypedExp {
                     )?),
                     children_iter
                       .map(|arg| Self::try_from_tynt_tree(arg, struct_names))
-                      .collect::<Result<_, _>>()?,
+                      .collect::<CompileResult<_>>()?,
                   ),
                   data: Unknown,
                 })
               } else {
-                return Err(CompileError::EmptyList);
+                return err(EmptyList);
               }
             }
             Square => todo!("array"),
@@ -383,7 +298,7 @@ impl TypedExp {
                 exp.data = Known(TyntType::from_name(type_name, struct_names)?);
                 exp
               } else {
-                return Err(CompileError::InvalidType);
+                return err(InvalidType);
               }
             }
           },
@@ -418,52 +333,57 @@ impl TypedExp {
               && arm_body.is_fully_typed()
           },
         ),
-        Block(children) => children.iter().map(|child| child.is_fully_typed()).reduce(|a, b| a&&b).unwrap_or(true),
+        Block(children) => children
+          .iter()
+          .map(|child| child.is_fully_typed())
+          .reduce(|a, b| a && b)
+          .unwrap_or(true),
       }
     } else {
       false
     }
   }
-  pub fn propagate_types(
-    &mut self,
-    ctx: &mut Context,
-  ) -> Result<bool, CompileError> {
+  pub fn propagate_types(&mut self, ctx: &mut Context) -> CompileResult<bool> {
     println!("propagate_types\n{:#?}", self);
     Ok(match &mut self.kind {
       Name(name) => {
         if !ctx.bindings.is_bound(name) {
-          return Err(CompileError::UnboundName(name.clone()));
+          return err(UnboundName(name.clone()));
         }
         ctx.constrain_name_type(name, &mut self.data)?
       }
-      NumberLiteral(num) => {
-        self.data.constrain(TypeState::Known(match num {
+      NumberLiteral(num) => self.data.constrain(
+        TypeState::Known(match num {
           Number::Int(_) => TyntType::I32,
           Number::Float(_) => TyntType::F32,
-        }), &mut ctx.unification_context)?
-      }
-      BooleanLiteral(_) => {
-        self.data.constrain(
-          TypeState::Known(TyntType::Bool),
-          &mut ctx.unification_context
-        )?
-      }
+        }),
+        &mut ctx.unification_context,
+      )?,
+      BooleanLiteral(_) => self.data.constrain(
+        TypeState::Known(TyntType::Bool),
+        &mut ctx.unification_context,
+      )?,
       Function(arg_names, body) => {
         if let TypeState::Known(f_type) = &mut self.data {
-          let (arg_count, arg_type_states): (usize, Vec<TypeState>) = 
-          match f_type {
-            TyntType::ConcreteFunction(signature) => {
-              (signature.arg_types.len(), signature.arg_types.iter().cloned().collect())
-            }
-            TyntType::AbstractFunction(signature) => {
-              (signature.arg_types.len(), signature.arg_types.iter().cloned().map(|t| TypeState::Known(t)).collect())
-            }
-            _ => return Err(CompileError::IncompatibleTypes)
-          };
+          let (arg_count, arg_type_states): (usize, Vec<TypeState>) =
+            match f_type {
+              TyntType::ConcreteFunction(signature) => (
+                signature.arg_types.len(),
+                signature.arg_types.iter().cloned().collect(),
+              ),
+              TyntType::AbstractFunction(signature) => (
+                signature.arg_types.len(),
+                signature
+                  .arg_types
+                  .iter()
+                  .cloned()
+                  .map(|t| TypeState::Known(t))
+                  .collect(),
+              ),
+              _ => return err(IncompatibleTypes),
+            };
           if arg_count == arg_names.len() {
-            for (name, t) in
-              arg_names.iter().zip(arg_type_states)
-            {
+            for (name, t) in arg_names.iter().zip(arg_type_states) {
               ctx.bindings.bind(name, t)
             }
             let body_types_changed = body.propagate_types(ctx)?;
@@ -471,14 +391,13 @@ impl TypedExp {
               .iter()
               .map(|name| ctx.bindings.unbind(name))
               .collect::<Vec<_>>();
-            let fn_type_changed =
-              self.data.constrain_fn_by_argument_types(
-                argument_types,
-                &mut ctx.unification_context
-              )?;
+            let fn_type_changed = self.data.constrain_fn_by_argument_types(
+              argument_types,
+              &mut ctx.unification_context,
+            )?;
             body_types_changed || fn_type_changed
           } else {
-            return Err(CompileError::IncompatibleTypes);
+            return err(IncompatibleTypes);
           }
         } else {
           todo!("I haven't implemented function type inference yet!!!")
@@ -491,45 +410,42 @@ impl TypedExp {
         } else {
           todo!("I haven't implemented function type inference yet!!!")
         }
-        let replacement_concrete_signature = if let TypeState::Known(f_type) = &mut f.data {
-          match f_type {
-            TyntType::ConcreteFunction(signature) => {
-              if args.len() == signature.arg_types.len() {
-                anything_changed |= self
-                  .data
-                  .mutually_constrain(
+        let replacement_concrete_signature =
+          if let TypeState::Known(f_type) = &mut f.data {
+            match f_type {
+              TyntType::ConcreteFunction(signature) => {
+                if args.len() == signature.arg_types.len() {
+                  anything_changed |= self.data.mutually_constrain(
                     &mut signature.return_type,
-                    &mut ctx.unification_context
+                    &mut ctx.unification_context,
                   )?;
-                for (arg, t) in
-                  args.iter_mut().zip(signature.arg_types.iter().cloned())
-                {
-                  anything_changed |= arg.data.constrain(
-                    t,
-                    &mut ctx.unification_context
-                  )?;
+                  for (arg, t) in
+                    args.iter_mut().zip(signature.arg_types.iter().cloned())
+                  {
+                    anything_changed |=
+                      arg.data.constrain(t, &mut ctx.unification_context)?;
+                  }
+                  None
+                } else {
+                  return err(WrongArity);
                 }
-                None
-              } else {
-                return Err(CompileError::WrongArity);
+              }
+              TyntType::AbstractFunction(signature) => {
+                Some(signature.concretize(ctx))
+              }
+              _ => {
+                return err(AppliedNonFunction);
               }
             }
-            TyntType::AbstractFunction(signature) => {
-              Some(signature.concretize(ctx))
-            },
-            _ => {
-              return Err(CompileError::AppliedNonFunction);
-            }
-          }
-        } else {
-          None
-        };
+          } else {
+            None
+          };
         if let Some(concrete_signature) = replacement_concrete_signature {
           std::mem::swap(
-            &mut f.data, 
-            &mut TypeState::Known(
-              TyntType::ConcreteFunction(Box::new(concrete_signature))
-            )
+            &mut f.data,
+            &mut TypeState::Known(TyntType::ConcreteFunction(Box::new(
+              concrete_signature,
+            ))),
           );
         }
         for arg in args.iter_mut() {
@@ -537,7 +453,7 @@ impl TypedExp {
         }
         anything_changed |= f.data.constrain_fn_by_argument_types(
           args.iter().map(|arg| arg.data.clone()).collect(),
-          &mut ctx.unification_context
+          &mut ctx.unification_context,
         )?;
         anything_changed |= f.propagate_types(ctx)?;
         anything_changed
@@ -558,17 +474,20 @@ impl TypedExp {
             )
           })
           .collect();
-        anything_changed |=
-          self.data.constrain(TypeState::OneOf(field_possibilities),&mut ctx.unification_context)?;
-        anything_changed |= subexp
-          .data
-          .constrain(TypeState::OneOf(struct_possibilities),&mut ctx.unification_context)?;
+        anything_changed |= self.data.constrain(
+          TypeState::OneOf(field_possibilities),
+          &mut ctx.unification_context,
+        )?;
+        anything_changed |= subexp.data.constrain(
+          TypeState::OneOf(struct_possibilities),
+          &mut ctx.unification_context,
+        )?;
         anything_changed |= subexp.propagate_types(ctx)?;
         let field_type_possibilities = match &subexp.data {
           Unknown => unreachable!(),
           OneOf(possibilities) => possibilities
             .iter()
-            .map(|t| -> Result<TyntType, CompileError> {
+            .map(|t| -> CompileResult<TyntType> {
               Ok(match t {
                 TyntType::Struct(struct_name) => ctx
                   .structs
@@ -578,13 +497,13 @@ impl TypedExp {
                   .fields
                   .iter()
                   .find(|f| f.name == *field_name)
-                  .ok_or(CompileError::NoSuchField)?
+                  .ok_or(NoSuchField)?
                   .field_type
                   .clone(),
                 _ => unreachable!(),
               })
             })
-            .collect::<Result<Vec<TyntType>, CompileError>>()?,
+            .collect::<CompileResult<Vec<TyntType>>>()?,
           Known(subexp_type) => match subexp_type {
             TyntType::Struct(struct_name) => {
               vec![ctx
@@ -595,41 +514,49 @@ impl TypedExp {
                 .fields
                 .iter()
                 .find(|f| f.name == *field_name)
-                .ok_or(CompileError::NoSuchField)?
+                .ok_or(NoSuchField)?
                 .field_type
                 .clone()]
             }
             _ => unreachable!(),
           },
-          UnificationVariable(_) => todo!("unification")
+          UnificationVariable(_) => todo!("unification"),
         };
         anything_changed |= self.data.constrain(
           TypeState::OneOf(field_type_possibilities).simplified()?,
-          &mut ctx.unification_context
+          &mut ctx.unification_context,
         )?;
         anything_changed
       }
       Let(bindings, body) => {
-        let mut anything_changed = body.data.mutually_constrain(&mut self.data, &mut ctx.unification_context)?;
+        let mut anything_changed = body
+          .data
+          .mutually_constrain(&mut self.data, &mut ctx.unification_context)?;
         for (name, value) in bindings.iter_mut() {
           anything_changed |= value.propagate_types(ctx)?;
           ctx.bindings.bind(name, value.data.clone());
         }
         anything_changed |= body.propagate_types(ctx)?;
         for (name, value) in bindings.iter_mut() {
-          anything_changed |= value.data.constrain(ctx.bindings.unbind(name), &mut ctx.unification_context)?;
+          anything_changed |= value.data.constrain(
+            ctx.bindings.unbind(name),
+            &mut ctx.unification_context,
+          )?;
         }
         anything_changed
-      },
+      }
       Match(_, _) => todo!("I haven't implemented match blocks yet!!!"),
       Block(children) => {
         let mut anything_changed = false;
         for child in children.iter_mut() {
-          anything_changed|=child.propagate_types(ctx)?;
+          anything_changed |= child.propagate_types(ctx)?;
         }
-        anything_changed|=self.data.mutually_constrain(&mut children.last_mut().ok_or(CompileError::EmptyBlock)?.data, &mut ctx.unification_context)?;
+        anything_changed |= self.data.mutually_constrain(
+          &mut children.last_mut().ok_or(EmptyBlock)?.data,
+          &mut ctx.unification_context,
+        )?;
         anything_changed
-      },
+      }
     })
   }
   pub fn compile(self, ctx: ExpressionCompilationContext) -> String {
@@ -658,37 +585,44 @@ impl TypedExp {
           .join(", ");
         wrap(format!("{f_str}({args_str})"))
       }
-      Accessor(field, subexp) => {
-        wrap(format!(
-          "{}.{}",
-          subexp.compile(InnerExpression),
-          compile_word(field)
-        ))
-      }
+      Accessor(field, subexp) => wrap(format!(
+        "{}.{}",
+        subexp.compile(InnerExpression),
+        compile_word(field)
+      )),
       Let(bindings, body) => {
-        let binding_lines:Vec<String> = bindings
+        let binding_lines: Vec<String> = bindings
           .into_iter()
-          .map(|(name, value_exp)|
+          .map(|(name, value_exp)| {
             format!(
               "let {name}: {} = {};",
               value_exp.data.compile(),
               value_exp.compile(InnerExpression)
             )
-          )
+          })
           .collect();
         let value_line = body.compile(ctx);
-        format!("\n{{{}\n}}", indent("\n".to_string()+&binding_lines.join("\n")+&value_line))
-      },
+        format!(
+          "\n{{{}\n}}",
+          indent("\n".to_string() + &binding_lines.join("\n") + &value_line)
+        )
+      }
       Match(_, _) => todo!("I haven't implemented match blocks yet!!!"),
       Block(children) => {
         let child_count = children.len();
-        let child_strings:Vec<String> = children.into_iter().enumerate().map(|(i, child)| child.compile(if i == child_count - 1 {
-          ctx
-        } else {
-          ExpressionCompilationContext::InnerLine
-        })).collect();
+        let child_strings: Vec<String> = children
+          .into_iter()
+          .enumerate()
+          .map(|(i, child)| {
+            child.compile(if i == child_count - 1 {
+              ctx
+            } else {
+              ExpressionCompilationContext::InnerLine
+            })
+          })
+          .collect();
         format!("\n{{{}\n}}", indent(child_strings.join("")))
-      },
+      }
     }
   }
 }

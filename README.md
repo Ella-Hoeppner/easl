@@ -17,8 +17,6 @@ Feature goals:
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
 * parametrically polymorphic functions, e.g. ==
-  * current issue: TypeState::constrain returns an error when comparing a concrete function to an abstract function
-    * need to not use equality of `.contains()`, instead have a custom equivalence check for types
 
 * asignment operators
   * left hand side must be a name, or an accessor over a name (or an accessor over accessor over a name, etc)

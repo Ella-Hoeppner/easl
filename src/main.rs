@@ -2,6 +2,7 @@ use std::fs;
 use tynt::compiler::compile_tynt_to_wgsl;
 
 fn main() {
+  std::env::set_var("RUST_BACKTRACE", "1");
   for filename in [
     "simplest",
     "variadic_vec",

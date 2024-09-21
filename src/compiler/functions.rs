@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::compiler::util::compile_word;
 
 use super::{
-  error::CompileError,
+  error::{err, CompileErrorKind::*, CompileResult},
   expression::{ExpKind, ExpressionCompilationContext, TypedExp},
   metadata::Metadata,
   types::{Context, TyntType, TypeState, UnificationContext},
@@ -108,7 +108,7 @@ impl ConcreteFunctionSignature {
     &mut self,
     args: &mut Vec<TypeState>,
     ctx: &mut UnificationContext,
-  ) -> Result<bool, CompileError> {
+  ) -> CompileResult<bool> {
     if args.len() == self.arg_types.len() {
       let mut any_arg_changed = false;
       for i in 0..args.len() {
@@ -117,7 +117,7 @@ impl ConcreteFunctionSignature {
       }
       Ok(any_arg_changed)
     } else {
-      Err(CompileError::WrongArity)
+      err(WrongArity)
     }
   }
 }
@@ -128,7 +128,7 @@ pub struct BuiltInFunction {
 }
 
 impl TopLevelFunction {
-  pub fn compile(self) -> Result<String, CompileError> {
+  pub fn compile(self) -> CompileResult<String> {
     let TypedExp { data, kind } = self.body;
     let (arg_types, return_type) =
       if let TypeState::Known(TyntType::AbstractFunction(signature)) = data {
