@@ -143,3 +143,6 @@ pub fn built_in_functions() -> Vec<(&'static str, AbstractFunctionSignature)> {
     ),
   ]
 }
+
+pub const INFIX_OPS: [&'static str; 11] =
+  ["==", "||", "&&", "+", "-", "*", "/", "+=", "-=", "*=", "/="];

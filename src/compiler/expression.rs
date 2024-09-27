@@ -29,6 +29,7 @@ use ExpKind::*;
 
 use crate::{
   compiler::{
+    builtins::INFIX_OPS,
     error::{err, CompileError},
     functions::AbstractFunctionSignature,
     types::extract_type_annotation,
@@ -565,12 +566,20 @@ impl TypedExp {
       Function(_, _) => panic!("Attempting to compile internal function"),
       Application(f, args) => {
         let f_str = f.compile(InnerExpression);
-        let args_str = args
+        let arg_strs: Vec<String> = args
           .into_iter()
           .map(|arg| arg.compile(InnerExpression))
-          .collect::<Vec<String>>()
-          .join(", ");
-        wrap(format!("{f_str}({args_str})"))
+          .collect();
+        wrap(if INFIX_OPS.contains(&f_str.as_str()) {
+          if arg_strs.len() == 2 {
+            format!("({} {} {})", arg_strs[0], f_str, arg_strs[1])
+          } else {
+            panic!("{} arguments to infix op, expected 2", arg_strs.len())
+          }
+        } else {
+          let args_str = arg_strs.join(", ");
+          format!("{f_str}({args_str})")
+        })
       }
       Accessor(field, subexp) => wrap(format!(
         "{}.{}",

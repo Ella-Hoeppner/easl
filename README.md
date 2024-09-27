@@ -16,9 +16,6 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* compile infix operators properly
-  * ==, =, +, -, *, /, &&, ||
-
 * asignment operators
   * left hand side must be a name, or an accessor over a name (or an accessor over accessor over a name, etc)
   * just = for now since the rest will need a typeclass restriction
