@@ -6,7 +6,7 @@ use super::{
   error::{err, CompileErrorKind::*, CompileResult},
   expression::{ExpKind, ExpressionCompilationContext, TypedExp},
   metadata::Metadata,
-  types::{Context, TyntType, TypeState, UnificationContext},
+  types::{Context, TyntType, TypeState},
   util::indent,
 };
 
@@ -39,12 +39,10 @@ impl AbstractFunctionSignature {
     true
   }
   pub fn concretize(&self, ctx: &mut Context) -> ConcreteFunctionSignature {
-    println!("concretizing AbstractFunctionSignature");
-    //println!("concretizing! {:#?}", self);
     let generic_variables: HashMap<String, TypeState> = self
       .generic_args
       .iter()
-      .map(|name| (name.clone(), ctx.init_unification_variable()))
+      .map(|name| (name.clone(), TypeState::fresh_unification_variable()))
       .collect();
     let convert_type = |t: &TyntType| {
       if let TyntType::GenericVariable(name) = t {
@@ -56,13 +54,6 @@ impl AbstractFunctionSignature {
         TypeState::Known(t.clone())
       }
     };
-    /*println!(
-      "concretized to: {:#?}",
-      ConcreteFunctionSignature {
-        arg_types: self.arg_types.iter().map(convert_type).collect(),
-        return_type: convert_type(&self.return_type),
-      }
-    );*/
     ConcreteFunctionSignature {
       arg_types: self.arg_types.iter().map(convert_type).collect(),
       return_type: convert_type(&self.return_type),
@@ -71,29 +62,37 @@ impl AbstractFunctionSignature {
   pub fn is_concrete_signature_compatible(
     &self,
     concrete_signature: &ConcreteFunctionSignature,
-    ctx: &UnificationContext,
   ) -> bool {
     if self.arg_types.len() != concrete_signature.arg_types.len() {
       return false;
     }
     let mut assignments: HashMap<String, TypeState> = HashMap::new();
-    for i in 0..self.arg_types.len() {
-      let t = &concrete_signature.arg_types[i];
-      if let TyntType::GenericVariable(generic_name) = &self.arg_types[i] {
-        if let Some(assignment) = assignments.get(generic_name) {
-          if !TypeState::are_compatible(t, assignment, ctx) {
-            return false;
+    let mut check_compatibility =
+      |t: &TyntType, typestate: &TypeState| -> bool {
+        if let TyntType::GenericVariable(generic_name) = t {
+          if let Some(assignment) = assignments.get(generic_name) {
+            if !TypeState::are_compatible(typestate, assignment) {
+              return false;
+            }
+          } else {
+            assignments.insert(generic_name.clone(), typestate.clone());
           }
         } else {
-          assignments.insert(generic_name.clone(), t.clone());
+          if !typestate.is_compatible(t) {
+            return false;
+          }
         }
-      } else {
-        if !t.is_compatible(&self.arg_types[i]) {
-          return false;
-        }
+        true
+      };
+    for i in 0..self.arg_types.len() {
+      if !check_compatibility(
+        &self.arg_types[i],
+        &concrete_signature.arg_types[i],
+      ) {
+        return false;
       }
     }
-    todo!()
+    check_compatibility(&self.return_type, &concrete_signature.return_type)
   }
 }
 
@@ -107,13 +106,12 @@ impl ConcreteFunctionSignature {
   pub fn mutually_constrain_arguments(
     &mut self,
     args: &mut Vec<TypeState>,
-    ctx: &mut UnificationContext,
   ) -> CompileResult<bool> {
     if args.len() == self.arg_types.len() {
       let mut any_arg_changed = false;
       for i in 0..args.len() {
         any_arg_changed |=
-          args[i].mutually_constrain(&mut self.arg_types[i], ctx)?;
+          args[i].mutually_constrain(&mut self.arg_types[i])?;
       }
       Ok(any_arg_changed)
     } else {

@@ -252,7 +252,6 @@ impl Program {
   }
   pub fn fully_infer_types(mut self) -> CompileResult<Self> {
     loop {
-      println!("\n\npropagation outer loop");
       let did_type_states_change = self.propagate_types()?;
       if !did_type_states_change {
         return if self.is_fully_typed() {

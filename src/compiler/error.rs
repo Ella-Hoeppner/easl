@@ -1,6 +1,8 @@
 use sse::ParseError;
 use std::{backtrace::Backtrace, rc::Rc};
 
+use super::types::{TyntType, TypeState};
+
 #[derive(Clone, Debug)]
 pub enum CompileErrorKind {
   ParsingFailed(ParseError),
@@ -18,7 +20,9 @@ pub enum CompileErrorKind {
   FunctionArgMissingType,
   InvalidArgumentName,
   CouldntInferTypes,
-  IncompatibleTypes,
+  IncompatibleTypes(TypeState, TypeState),
+  FunctionArgumentTypesIncompatible(TypeState, Vec<TypeState>),
+  FunctionExpressionHasNonFunctionType(TyntType),
   UnboundName(String),
   AppliedNonFunction,
   WrongArity,

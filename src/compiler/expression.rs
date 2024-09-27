@@ -344,7 +344,6 @@ impl TypedExp {
     }
   }
   pub fn propagate_types(&mut self, ctx: &mut Context) -> CompileResult<bool> {
-    println!("propagate_types\n{:#?}", self);
     Ok(match &mut self.kind {
       Name(name) => {
         if !ctx.bindings.is_bound(name) {
@@ -352,17 +351,15 @@ impl TypedExp {
         }
         ctx.constrain_name_type(name, &mut self.data)?
       }
-      NumberLiteral(num) => self.data.constrain(
-        TypeState::Known(match num {
+      NumberLiteral(num) => {
+        self.data.constrain(TypeState::Known(match num {
           Number::Int(_) => TyntType::I32,
           Number::Float(_) => TyntType::F32,
-        }),
-        &mut ctx.unification_context,
-      )?,
-      BooleanLiteral(_) => self.data.constrain(
-        TypeState::Known(TyntType::Bool),
-        &mut ctx.unification_context,
-      )?,
+        }))?
+      }
+      BooleanLiteral(_) => {
+        self.data.constrain(TypeState::Known(TyntType::Bool))?
+      }
       Function(arg_names, body) => {
         if let TypeState::Known(f_type) = &mut self.data {
           let (arg_count, arg_type_states): (usize, Vec<TypeState>) =
@@ -380,7 +377,11 @@ impl TypedExp {
                   .map(|t| TypeState::Known(t))
                   .collect(),
               ),
-              _ => return err(IncompatibleTypes),
+              _ => {
+                return err(FunctionExpressionHasNonFunctionType(
+                  f_type.clone(),
+                ))
+              }
             };
           if arg_count == arg_names.len() {
             for (name, t) in arg_names.iter().zip(arg_type_states) {
@@ -391,13 +392,11 @@ impl TypedExp {
               .iter()
               .map(|name| ctx.bindings.unbind(name))
               .collect::<Vec<_>>();
-            let fn_type_changed = self.data.constrain_fn_by_argument_types(
-              argument_types,
-              &mut ctx.unification_context,
-            )?;
+            let fn_type_changed =
+              self.data.constrain_fn_by_argument_types(argument_types)?;
             body_types_changed || fn_type_changed
           } else {
-            return err(IncompatibleTypes);
+            return err(WrongArity);
           }
         } else {
           todo!("I haven't implemented function type inference yet!!!")
@@ -415,15 +414,12 @@ impl TypedExp {
             match f_type {
               TyntType::ConcreteFunction(signature) => {
                 if args.len() == signature.arg_types.len() {
-                  anything_changed |= self.data.mutually_constrain(
-                    &mut signature.return_type,
-                    &mut ctx.unification_context,
-                  )?;
+                  anything_changed |=
+                    self.data.mutually_constrain(&mut signature.return_type)?;
                   for (arg, t) in
                     args.iter_mut().zip(signature.arg_types.iter().cloned())
                   {
-                    anything_changed |=
-                      arg.data.constrain(t, &mut ctx.unification_context)?;
+                    anything_changed |= arg.data.constrain(t)?;
                   }
                   None
                 } else {
@@ -453,7 +449,6 @@ impl TypedExp {
         }
         anything_changed |= f.data.constrain_fn_by_argument_types(
           args.iter().map(|arg| arg.data.clone()).collect(),
-          &mut ctx.unification_context,
         )?;
         anything_changed |= f.propagate_types(ctx)?;
         anything_changed
@@ -474,14 +469,11 @@ impl TypedExp {
             )
           })
           .collect();
-        anything_changed |= self.data.constrain(
-          TypeState::OneOf(field_possibilities),
-          &mut ctx.unification_context,
-        )?;
-        anything_changed |= subexp.data.constrain(
-          TypeState::OneOf(struct_possibilities),
-          &mut ctx.unification_context,
-        )?;
+        anything_changed |=
+          self.data.constrain(TypeState::OneOf(field_possibilities))?;
+        anything_changed |= subexp
+          .data
+          .constrain(TypeState::OneOf(struct_possibilities))?;
         anything_changed |= subexp.propagate_types(ctx)?;
         let field_type_possibilities = match &subexp.data {
           Unknown => unreachable!(),
@@ -524,24 +516,20 @@ impl TypedExp {
         };
         anything_changed |= self.data.constrain(
           TypeState::OneOf(field_type_possibilities).simplified()?,
-          &mut ctx.unification_context,
         )?;
         anything_changed
       }
       Let(bindings, body) => {
-        let mut anything_changed = body
-          .data
-          .mutually_constrain(&mut self.data, &mut ctx.unification_context)?;
+        let mut anything_changed =
+          body.data.mutually_constrain(&mut self.data)?;
         for (name, value) in bindings.iter_mut() {
           anything_changed |= value.propagate_types(ctx)?;
           ctx.bindings.bind(name, value.data.clone());
         }
         anything_changed |= body.propagate_types(ctx)?;
         for (name, value) in bindings.iter_mut() {
-          anything_changed |= value.data.constrain(
-            ctx.bindings.unbind(name),
-            &mut ctx.unification_context,
-          )?;
+          anything_changed |=
+            value.data.constrain(ctx.bindings.unbind(name))?;
         }
         anything_changed
       }
@@ -553,7 +541,6 @@ impl TypedExp {
         }
         anything_changed |= self.data.mutually_constrain(
           &mut children.last_mut().ok_or(EmptyBlock)?.data,
-          &mut ctx.unification_context,
         )?;
         anything_changed
       }

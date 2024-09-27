@@ -1,5 +1,5 @@
 use core::fmt::Debug;
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use sse::syntax::EncloserOrOperator;
 
@@ -26,32 +26,25 @@ pub enum TyntType {
   GenericVariable(String),
 }
 impl TyntType {
-  pub fn compatible(&self, other: &Self, ctx: &UnificationContext) -> bool {
-    match (self, other) {
+  pub fn compatible(&self, other: &Self) -> bool {
+    let b = match (self, other) {
       (TyntType::AbstractFunction(a), TyntType::ConcreteFunction(b)) => {
-        a.is_concrete_signature_compatible(b.as_ref(), ctx)
+        a.is_concrete_signature_compatible(b.as_ref())
       }
       (TyntType::ConcreteFunction(a), TyntType::AbstractFunction(b)) => {
-        b.is_concrete_signature_compatible(a.as_ref(), ctx)
+        b.is_concrete_signature_compatible(a.as_ref())
       }
       (a, b) => a == b,
-    }
+    };
+    b
   }
-  pub fn compatible_with_any(
-    &self,
-    others: &[Self],
-    ctx: &UnificationContext,
-  ) -> bool {
-    others.iter().find(|x| self.compatible(x, ctx)).is_some()
+  pub fn compatible_with_any(&self, others: &[Self]) -> bool {
+    others.iter().find(|x| self.compatible(x)).is_some()
   }
-  pub fn filter_compatibles(
-    &self,
-    others: &[Self],
-    ctx: &UnificationContext,
-  ) -> Vec<Self> {
+  pub fn filter_compatibles(&self, others: &[Self]) -> Vec<Self> {
     others
       .iter()
-      .filter(|x| self.compatible(x, ctx))
+      .filter(|x| self.compatible(x))
       .cloned()
       .collect()
   }
@@ -138,123 +131,128 @@ pub enum TypeState {
   Unknown,
   OneOf(Vec<TyntType>),
   Known(TyntType),
-  UnificationVariable(usize),
+  UnificationVariable(Rc<RefCell<TypeState>>),
 }
 
 impl TypeState {
-  pub fn are_compatible<'a>(
-    a: &'a Self,
-    b: &'a Self,
-    ctx: &'a UnificationContext,
-  ) -> bool {
-    use TypeState::*;
-    let a = ctx.dereference_variable(a);
-    let b = ctx.dereference_variable(b);
-    match (a, b) {
-      (Unknown, _) => true,
-      (_, Unknown) => true,
-      (UnificationVariable(_), _) => unreachable!(),
-      (_, UnificationVariable(_)) => unreachable!(),
-      (Known(a), Known(b)) => a == b,
-      (OneOf(a), Known(b)) => a.contains(b),
-      (Known(a), OneOf(b)) => b.contains(a),
-      (OneOf(a), OneOf(b)) => a.iter().find(|a| b.contains(a)).is_some(),
+  pub fn fresh_unification_variable() -> Self {
+    TypeState::UnificationVariable(Rc::new(RefCell::new(TypeState::Unknown)))
+  }
+  pub fn with_dereferenced<T>(&self, f: impl FnOnce(&Self) -> T) -> T {
+    match self {
+      TypeState::UnificationVariable(var) => {
+        (&*var.borrow()).with_dereferenced(f)
+      }
+      other => f(other),
     }
   }
-  pub fn constrain(
+  pub fn with_dereferenced_mut<T>(
     &mut self,
-    mut other: TypeState,
-    ctx: &mut UnificationContext,
-  ) -> CompileResult<bool> {
-    let changed = match (&self, &other) {
-      (_, TypeState::Unknown) => false,
-      (TypeState::Unknown, _) => {
-        std::mem::swap(self, &mut other);
-        true
+    f: impl FnOnce(&mut Self) -> T,
+  ) -> T {
+    match self {
+      TypeState::UnificationVariable(var) => {
+        (&mut *var.borrow_mut()).with_dereferenced_mut(f)
       }
-      (TypeState::Known(current_type), TypeState::Known(new_type)) => {
-        if current_type.compatible(new_type, ctx) {
-          return err(IncompatibleTypes);
+      other => f(other),
+    }
+  }
+  pub fn are_compatible<'a>(a: &'a Self, b: &'a Self) -> bool {
+    use TypeState::*;
+    a.with_dereferenced(|a| {
+      b.with_dereferenced(|b| match (a, b) {
+        (Unknown, _) => true,
+        (_, Unknown) => true,
+        (UnificationVariable(_), _) => unreachable!(),
+        (_, UnificationVariable(_)) => unreachable!(),
+        (Known(a), Known(b)) => a.compatible(b),
+        (OneOf(a), Known(b)) => b.compatible_with_any(a),
+        (Known(a), OneOf(b)) => a.compatible_with_any(b),
+        (OneOf(a), OneOf(b)) => {
+          a.iter().find(|a| a.compatible_with_any(b)).is_some()
         }
-        false
-      }
-      (
-        TypeState::OneOf(possibilities),
-        TypeState::OneOf(other_possibilities),
-      ) => {
-        let mut new_possibilities = vec![];
-        let mut changed = false;
-        for possibility in possibilities {
-          if possibility.compatible_with_any(other_possibilities, ctx) {
-            new_possibilities.push(possibility.clone());
-          } else {
-            changed = true;
+      })
+    })
+  }
+  fn constrain_inner(&mut self, mut other: TypeState) -> CompileResult<bool> {
+    self.with_dereferenced_mut(move |this| {
+      other.with_dereferenced_mut(|other| {
+        let changed = match (&this, &other) {
+          (TypeState::UnificationVariable(_), _) => unreachable!(),
+          (_, TypeState::UnificationVariable(_)) => unreachable!(),
+          (_, TypeState::Unknown) => false,
+          (TypeState::Unknown, _) => {
+            std::mem::swap(this, other);
+            true
           }
-        }
-        std::mem::swap(
-          self,
-          &mut TypeState::OneOf(new_possibilities).simplified()?,
-        );
-        changed
-      }
-      (TypeState::OneOf(possibilities), TypeState::Known(t)) => {
-        if t.compatible_with_any(&possibilities, ctx) {
-          std::mem::swap(self, &mut TypeState::Known(t.clone()));
-          true
-        } else {
-          return err(IncompatibleTypes);
-        }
-      }
-      (TypeState::Known(t), TypeState::OneOf(possibilities)) => {
-        if !t.compatible_with_any(&possibilities, ctx) {
-          return err(IncompatibleTypes);
-        }
-        false
-      }
-      (TypeState::OneOf(_), TypeState::UnificationVariable(_)) => {
-        todo!("unification")
-      }
-      (TypeState::Known(_), TypeState::UnificationVariable(_)) => {
-        todo!("unification")
-      }
-      (TypeState::UnificationVariable(_), TypeState::OneOf(_)) => {
-        todo!("unification")
-      }
-      (TypeState::UnificationVariable(_), TypeState::Known(_)) => {
-        todo!("unification")
-      }
-      (
-        TypeState::UnificationVariable(_),
-        TypeState::UnificationVariable(_),
-      ) => todo!("unification"),
-    };
-    self.simplify()?;
-    Ok(changed)
+          (TypeState::Known(current_type), TypeState::Known(new_type)) => {
+            if !current_type.compatible(new_type) {
+              return err(IncompatibleTypes(this.clone(), other.clone()));
+            }
+            false
+          }
+          (
+            TypeState::OneOf(possibilities),
+            TypeState::OneOf(other_possibilities),
+          ) => {
+            let mut new_possibilities = vec![];
+            let mut changed = false;
+            for possibility in possibilities {
+              if possibility.compatible_with_any(other_possibilities) {
+                new_possibilities.push(possibility.clone());
+              } else {
+                changed = true;
+              }
+            }
+            std::mem::swap(
+              this,
+              &mut TypeState::OneOf(new_possibilities).simplified()?,
+            );
+            changed
+          }
+          (TypeState::OneOf(possibilities), TypeState::Known(t)) => {
+            if t.compatible_with_any(&possibilities) {
+              std::mem::swap(this, &mut TypeState::Known(t.clone()));
+              true
+            } else {
+              return err(IncompatibleTypes(this.clone(), other.clone()));
+            }
+          }
+          (TypeState::Known(t), TypeState::OneOf(possibilities)) => {
+            if !t.compatible_with_any(&possibilities) {
+              return err(IncompatibleTypes(this.clone(), other.clone()));
+            }
+            false
+          }
+        };
+        this.simplify()?;
+        Ok(changed)
+      })
+    })
+  }
+  pub fn constrain(&mut self, other: TypeState) -> CompileResult<bool> {
+    self.constrain_inner(other)
   }
   pub fn mutually_constrain(
     &mut self,
     other: &mut TypeState,
-    ctx: &mut UnificationContext,
   ) -> CompileResult<bool> {
-    let self_changed = self.constrain(other.clone(), ctx)?;
-    let other_changed = other.constrain(self.clone(), ctx)?;
+    let self_changed = self.constrain(other.clone())?;
+    let other_changed = other.constrain(self.clone())?;
     Ok(self_changed || other_changed)
   }
   pub fn constrain_fn_by_argument_types(
     &mut self,
     mut arg_types: Vec<TypeState>,
-    ctx: &mut UnificationContext,
   ) -> CompileResult<bool> {
-    match self {
+    self.with_dereferenced_mut(|x| match x {
       TypeState::OneOf(possibilities) => {
         let mut new_possibilities = possibilities
           .iter_mut()
           .map(|t| {
             Ok(match t {
               TyntType::ConcreteFunction(signature) => {
-                if signature
-                  .mutually_constrain_arguments(&mut arg_types, ctx)?
-                {
+                if signature.mutually_constrain_arguments(&mut arg_types)? {
                   Some(t.clone())
                 } else {
                   None
@@ -278,10 +276,10 @@ impl TypeState {
           Ok(false)
         } else {
           if new_possibilities.is_empty() {
-            err(IncompatibleTypes)
+            err(FunctionArgumentTypesIncompatible(x.clone(), arg_types))
           } else {
             std::mem::swap(
-              self,
+              x,
               &mut if new_possibilities.len() == 1 {
                 TypeState::Known(new_possibilities.remove(0))
               } else {
@@ -294,25 +292,24 @@ impl TypeState {
       }
       TypeState::Known(t) => match t {
         TyntType::ConcreteFunction(signature) => {
-          if signature.mutually_constrain_arguments(&mut arg_types, ctx)? {
-            Ok(false)
-          } else {
-            err(IncompatibleTypes)
-          }
+          Ok(signature.mutually_constrain_arguments(&mut arg_types)?)
         }
-        _ => panic!("tried to constrain fn on non-fn"),
+        TyntType::AbstractFunction(_) => Ok(false),
+        other => panic!(
+          "tried to constrain fn on non-fn \n\n{arg_types:#?} \n\n{other:#?}"
+        ),
       },
       TypeState::Unknown => Ok(false),
-      TypeState::UnificationVariable(_) => todo!("unification"),
-    }
+      TypeState::UnificationVariable(_) => unreachable!(),
+    })
   }
   pub fn is_compatible(&self, t: &TyntType) -> bool {
-    match self {
+    self.with_dereferenced(|x| match x {
       TypeState::Unknown => true,
       TypeState::OneOf(possibilities) => possibilities.contains(t),
       TypeState::Known(known_t) => known_t == t,
-      TypeState::UnificationVariable(_) => todo!("unification"),
-    }
+      TypeState::UnificationVariable(_) => unreachable!(),
+    })
   }
   pub fn simplify(&mut self) -> CompileResult<()> {
     Ok(if let TypeState::OneOf(mut possibilities) = self.clone() {
@@ -320,24 +317,16 @@ impl TypeState {
       std::mem::swap(
         self,
         &mut match possibilities.len() {
-          0 => return err(IncompatibleTypes),
+          0 => unreachable!(),
           1 => TypeState::Known(possibilities.remove(0)),
           _ => TypeState::OneOf(possibilities),
         },
       )
     })
   }
-  pub fn simplified(self) -> CompileResult<Self> {
-    Ok(if let TypeState::OneOf(mut possibilities) = self {
-      possibilities.dedup();
-      match possibilities.len() {
-        0 => return err(IncompatibleTypes),
-        1 => TypeState::Known(possibilities.remove(0)),
-        _ => TypeState::OneOf(possibilities),
-      }
-    } else {
-      self
-    })
+  pub fn simplified(mut self) -> CompileResult<Self> {
+    self.simplify()?;
+    Ok(self)
   }
   pub fn compile(&self) -> String {
     if let TypeState::Known(t) = self {
@@ -345,35 +334,6 @@ impl TypeState {
     } else {
       panic!("attempted to compile TypeState that wasn't Known")
     }
-  }
-}
-
-#[derive(Debug, Clone)]
-pub struct UnificationContext {
-  pub unification_variables: Vec<TypeState>,
-}
-
-impl UnificationContext {
-  pub fn new() -> Self {
-    Self {
-      unification_variables: vec![],
-    }
-  }
-  pub fn constrain(
-    &mut self,
-    _index: usize,
-    _t: &TypeState,
-  ) -> CompileResult<bool> {
-    todo!()
-  }
-  pub fn dereference_variable<'a>(
-    &'a self,
-    mut t: &'a TypeState,
-  ) -> &'a TypeState {
-    while let TypeState::UnificationVariable(var) = t {
-      t = &self.unification_variables[*var];
-    }
-    t
   }
 }
 
@@ -432,7 +392,6 @@ impl Bindings {
 pub struct Context {
   pub structs: Vec<Struct>,
   pub bindings: Bindings,
-  pub unification_context: UnificationContext,
 }
 
 impl Context {
@@ -444,7 +403,6 @@ impl Context {
     let mut ctx = Context {
       structs: vec![],
       bindings: Bindings::default_global(),
-      unification_context: UnificationContext::new(),
     };
     for (name, signature) in built_in_functions() {
       ctx.bindings.bind(
@@ -453,15 +411,6 @@ impl Context {
       );
     }
     ctx
-  }
-  pub fn init_unification_variable(&mut self) -> TypeState {
-    self
-      .unification_context
-      .unification_variables
-      .push(TypeState::Unknown);
-    TypeState::UnificationVariable(
-      self.unification_context.unification_variables.len() - 1,
-    )
   }
   pub fn with_structs(mut self, structs: Vec<Struct>) -> Self {
     for s in &structs {
@@ -490,28 +439,17 @@ impl Context {
     name: &str,
     t: &mut TypeState,
   ) -> CompileResult<bool> {
-    println!(
-      "constraining name type: {name}\n{:#?}",
-      self.bindings.get_typestate_mut(name)
-    );
-    let x = if let Some(signatures) =
-      self.bindings.multi_signature_functions.get(name)
+    if let Some(signatures) = self.bindings.multi_signature_functions.get(name)
     {
-      t.constrain(
-        TypeState::OneOf(
-          signatures
-            .iter()
-            .cloned()
-            .map(|signature| TyntType::AbstractFunction(Box::new(signature)))
-            .collect(),
-        ),
-        &mut self.unification_context,
-      )
+      t.constrain(TypeState::OneOf(
+        signatures
+          .iter()
+          .cloned()
+          .map(|signature| TyntType::AbstractFunction(Box::new(signature)))
+          .collect(),
+      ))
     } else {
-      let x = self.bindings.get_typestate_mut(name)?;
-      t.mutually_constrain(x, &mut self.unification_context)
-    };
-    println!("constrain_name_type result: {x:#?}");
-    x
+      t.mutually_constrain(self.bindings.get_typestate_mut(name)?)
+    }
   }
 }
