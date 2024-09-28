@@ -4,7 +4,7 @@ use crate::compiler::util::compile_word;
 
 use super::{
   error::{err, CompileErrorKind::*, CompileResult},
-  expression::{ExpKind, ExpressionCompilationContext, TypedExp},
+  expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
   types::{Context, TyntType, TypeState},
   util::indent,
@@ -160,7 +160,7 @@ impl TopLevelFunction {
       Metadata::compile_optional(self.metadata),
       Metadata::compile_optional(self.return_metadata),
       return_type.compile(),
-      indent(body.compile(ExpressionCompilationContext::Return))
+      indent(body.compile(ExpressionCompilationPosition::Return))
     ))
   }
 }

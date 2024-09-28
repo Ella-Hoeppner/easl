@@ -365,8 +365,8 @@ impl Variable {
       kind: VariableKind::Let,
     }
   }
-  pub fn with_kind_var(mut self) -> Self {
-    self.kind = VariableKind::Var;
+  pub fn with_kind(mut self, kind: VariableKind) -> Self {
+    self.kind = kind;
     self
   }
 }
@@ -406,6 +406,9 @@ impl Bindings {
   pub fn is_bound(&self, name: &str) -> bool {
     self.bindings.contains_key(name)
       || self.multi_signature_functions.contains_key(name)
+  }
+  pub fn get_variable_kind(&self, name: &str) -> &VariableKind {
+    &self.bindings.get(name).unwrap().last().unwrap().kind
   }
   pub fn get_typestate_mut(
     &mut self,

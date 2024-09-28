@@ -13,7 +13,7 @@ use super::{
   functions::TopLevelFunction,
   metadata::Metadata,
   structs::Struct,
-  types::{Context, TyntType},
+  types::{Bindings, Context, TyntType},
   vars::TopLevelVar,
 };
 
@@ -264,7 +264,8 @@ impl Program {
   }
   pub fn check_typed_program(self) -> CompileResult<Self> {
     for f in self.top_level_functions.iter() {
-      f.body.check_assignment_validity()?;
+      f.body
+        .check_assignment_validity(&mut Bindings::default_global())?;
     }
     Ok(self)
   }

@@ -42,7 +42,7 @@ use crate::{
 use super::{
   error::{CompileErrorKind::*, CompileResult},
   types::{
-    Context, TyntType,
+    Bindings, Context, TyntType,
     TypeState::{self, *},
     Variable, VariableKind,
   },
@@ -50,7 +50,7 @@ use super::{
 };
 
 #[derive(Clone, Copy)]
-pub enum ExpressionCompilationContext {
+pub enum ExpressionCompilationPosition {
   Return,
   InnerLine,
   InnerExpression,
@@ -571,10 +571,10 @@ impl TypedExp {
       }
     })
   }
-  pub fn compile(self, ctx: ExpressionCompilationContext) -> String {
-    use ExpressionCompilationContext::*;
+  pub fn compile(self, position: ExpressionCompilationPosition) -> String {
+    use ExpressionCompilationPosition::*;
     let wrap = |s: String| -> String {
-      match ctx {
+      match position {
         Return => format!("\nreturn {s};"),
         InnerLine => format!("\n{s};"),
         InnerExpression => s,
@@ -628,7 +628,7 @@ impl TypedExp {
             )
           })
           .collect();
-        let value_line = body.compile(ctx);
+        let value_line = body.compile(position);
         format!(
           "\n{{{}\n}}",
           indent("\n".to_string() + &binding_lines.join("\n") + &value_line)
@@ -642,9 +642,9 @@ impl TypedExp {
           .enumerate()
           .map(|(i, child)| {
             child.compile(if i == child_count - 1 {
-              ctx
+              position
             } else {
-              ExpressionCompilationContext::InnerLine
+              ExpressionCompilationPosition::InnerLine
             })
           })
           .collect();
@@ -652,20 +652,26 @@ impl TypedExp {
       }
     }
   }
-  pub fn check_assignment_validity(&self) -> CompileResult<()> {
+  pub fn check_assignment_validity(
+    &self,
+    bindings: &mut Bindings,
+  ) -> CompileResult<()> {
     match &self.kind {
       Application(f, args) => {
         if let ExpKind::Name(f_name) = &f.kind {
           if ASSIGNMENT_OPS.contains(&f_name.as_str()) {
             let mut var = &args[0];
             loop {
-              if let ExpKind::Accessor(field_name, inner_exp) = &var.kind {
+              if let ExpKind::Accessor(_, inner_exp) = &var.kind {
                 var = inner_exp;
               } else {
                 break;
               }
             }
             if let ExpKind::Name(var_name) = &var.kind {
+              if bindings.get_variable_kind(var_name) != &VariableKind::Var {
+                return err(AssignmentTargetMustBeVariable);
+              }
               //todo! check if the variable is mutable
             } else {
               return err(InvalidAssignmentTarget);
@@ -673,28 +679,37 @@ impl TypedExp {
           }
         }
         for arg in args {
-          arg.check_assignment_validity()?;
+          arg.check_assignment_validity(bindings)?;
         }
-        f.check_assignment_validity()
+        f.check_assignment_validity(bindings)
       }
-      Function(_, body) => body.check_assignment_validity(),
-      Accessor(_, subexp) => subexp.check_assignment_validity(),
-      Let(bindings, body) => {
-        for (_, _, value) in bindings {
-          value.check_assignment_validity()?;
+      Function(_, body) => body.check_assignment_validity(bindings),
+      Accessor(_, subexp) => subexp.check_assignment_validity(bindings),
+      Let(binding_names_and_values, body) => {
+        for (name, kind, value) in binding_names_and_values {
+          value.check_assignment_validity(bindings)?;
+          bindings.bind(
+            name,
+            Variable::new(value.data.clone()).with_kind(kind.clone()),
+          )
         }
-        body.check_assignment_validity()
+        body.check_assignment_validity(bindings)?;
+        for (name, _, value) in binding_names_and_values {
+          value.check_assignment_validity(bindings)?;
+          bindings.unbind(name);
+        }
+        Ok(())
       }
       Match(scrutinee, arms) => {
         for (pattern, value) in arms {
-          pattern.check_assignment_validity()?;
-          value.check_assignment_validity()?;
+          pattern.check_assignment_validity(bindings)?;
+          value.check_assignment_validity(bindings)?;
         }
-        scrutinee.check_assignment_validity()
+        scrutinee.check_assignment_validity(bindings)
       }
       Block(subexps) => {
         for subexp in subexps {
-          subexp.check_assignment_validity()?;
+          subexp.check_assignment_validity(bindings)?;
         }
         Ok(())
       }

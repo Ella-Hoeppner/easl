@@ -16,8 +16,6 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* only allow assignments on `var` variables
-
 * swizzling accessors
 
 * generic/parametrically polymorphic structs, e.g. vec

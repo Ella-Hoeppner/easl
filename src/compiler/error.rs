@@ -44,6 +44,7 @@ pub enum CompileErrorKind {
   EmptyBlock,
   InvalidVariableMetadata(Metadata),
   InvalidAssignmentTarget,
+  AssignmentTargetMustBeVariable,
 }
 
 #[derive(Clone, Debug)]
