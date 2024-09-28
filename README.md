@@ -16,8 +16,6 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* swizzling accessors
-
 * generic/parametrically polymorphic structs, e.g. vec
   * `vec<n>f` should just be an alias to particular specifications of this type
   * To describe a particular specification of a generic type you'll just use parentheses as if you were calling a type-level function, e.g. `(vec4 f32)`

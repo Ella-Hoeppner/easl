@@ -14,13 +14,89 @@ pub struct Exp<D: Debug + Clone + PartialEq> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum SwizzleField {
+  X,
+  Y,
+  Z,
+  W,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Accessor {
+  Field(String),
+  Swizzle(Vec<SwizzleField>),
+}
+
+pub fn swizzle_accessor_typestate(fields: &Vec<SwizzleField>) -> TypeState {
+  TypeState::Known(match fields.len() {
+    2 => TyntType::Struct("vec2f".to_string()),
+    3 => TyntType::Struct("vec3f".to_string()),
+    4 => TyntType::Struct("vec4f".to_string()),
+    n => unreachable!("swizzle with {n} elements, expected 2-4"),
+  })
+}
+
+pub fn swizzle_accessed_possibilities(fields: &Vec<SwizzleField>) -> TypeState {
+  let max_accessed_index = fields.iter().fold(0, |max_so_far, field| {
+    max_so_far.max(match field {
+      SwizzleField::X => 1,
+      SwizzleField::Y => 2,
+      SwizzleField::Z => 3,
+      SwizzleField::W => 4,
+    })
+  });
+  TypeState::OneOf(
+    ["vec4f", "vec3f", "vec2f"]
+      .iter()
+      .take(3.min(5 - max_accessed_index))
+      .map(|name| TyntType::Struct(name.to_string()))
+      .collect::<Vec<TyntType>>(),
+  )
+  .simplified()
+  .unwrap()
+}
+
+impl Accessor {
+  pub fn new(name: String) -> Self {
+    let chars: Vec<char> = name.chars().collect();
+    (chars.len() >= 2 && chars.len() <= 4)
+      .then(|| {
+        use SwizzleField::*;
+        chars
+          .into_iter()
+          .map(|char| match char {
+            'x' => Some(X),
+            'y' => Some(Y),
+            'z' => Some(Z),
+            'w' => Some(W),
+            _ => None,
+          })
+          .collect::<Option<Vec<SwizzleField>>>()
+      })
+      .flatten()
+      .map(|indeces| Self::Swizzle(indeces))
+      .unwrap_or(Accessor::Field(name))
+  }
+  pub fn compile(self) -> String {
+    match self {
+      Accessor::Field(field_name) => field_name,
+      Accessor::Swizzle(field_indeces) => field_indeces
+        .into_iter()
+        .map(|index| ["x", "y", "z", "w"][index as usize])
+        .collect::<Vec<&str>>()
+        .join(""),
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Name(String),
   NumberLiteral(Number),
   BooleanLiteral(bool),
   Function(Vec<String>, Box<Exp<D>>),
   Application(Box<Exp<D>>, Vec<Exp<D>>),
-  Accessor(String, Box<Exp<D>>),
+  Access(Accessor, Box<Exp<D>>),
   Let(Vec<(String, VariableKind, Exp<D>)>, Box<Exp<D>>),
   Match(Box<Exp<D>>, Vec<(Exp<D>, Exp<D>)>),
   Block(Vec<Exp<D>>),
@@ -102,11 +178,13 @@ impl TypedExp {
                       if children_iter.len() == 1 {
                         Some(Exp {
                           data: TypeState::Unknown,
-                          kind: ExpKind::Accessor(
-                            first_child_name
-                              .chars()
-                              .skip(1)
-                              .collect::<String>(),
+                          kind: ExpKind::Access(
+                            Accessor::new(
+                              first_child_name
+                                .chars()
+                                .skip(1)
+                                .collect::<String>(),
+                            ),
                             Box::new(Self::try_from_tynt_tree(
                               children_iter.next().unwrap(),
                               struct_names,
@@ -343,7 +421,7 @@ impl TypedExp {
           .fold(f.is_fully_typed(), |fully_typed_so_far, arg| {
             fully_typed_so_far && arg.is_fully_typed()
           }),
-        Accessor(_, exp) => exp.is_fully_typed(),
+        Access(_, exp) => exp.is_fully_typed(),
         Let(bindings, body) => bindings.iter().fold(
           body.is_fully_typed(),
           |fully_typed_so_far, (_, _, binding_value)| {
@@ -478,35 +556,57 @@ impl TypedExp {
         anything_changed |= f.propagate_types(ctx)?;
         anything_changed
       }
-      Accessor(field_name, subexp) => {
-        let mut anything_changed = false;
-        let (field_possibilities, struct_possibilities): (
-          Vec<TyntType>,
-          Vec<TyntType>,
-        ) = ctx
-          .structs
-          .iter()
-          .filter_map(|s| {
-            s.fields.iter().find(|field| field.name == *field_name).map(
-              |field| {
-                (field.field_type.clone(), TyntType::Struct(s.name.clone()))
-              },
-            )
-          })
-          .collect();
-        anything_changed |=
-          self.data.constrain(TypeState::OneOf(field_possibilities))?;
-        anything_changed |= subexp
-          .data
-          .constrain(TypeState::OneOf(struct_possibilities))?;
-        anything_changed |= subexp.propagate_types(ctx)?;
-        let field_type_possibilities = match &subexp.data {
-          Unknown => unreachable!(),
-          OneOf(possibilities) => possibilities
+      Access(accessor, subexp) => match accessor {
+        Accessor::Field(field_name) => {
+          let mut anything_changed = false;
+          let (field_possibilities, struct_possibilities): (
+            Vec<TyntType>,
+            Vec<TyntType>,
+          ) = ctx
+            .structs
             .iter()
-            .map(|t| -> CompileResult<TyntType> {
-              Ok(match t {
-                TyntType::Struct(struct_name) => ctx
+            .filter_map(|s| {
+              s.fields.iter().find(|field| field.name == *field_name).map(
+                |field| {
+                  (field.field_type.clone(), TyntType::Struct(s.name.clone()))
+                },
+              )
+            })
+            .collect();
+          if field_possibilities.len() == 0 {
+            return err(NoSuchField);
+          }
+          anything_changed |= self
+            .data
+            .constrain(TypeState::OneOf(field_possibilities).simplified()?)?;
+          anything_changed |= subexp
+            .data
+            .constrain(TypeState::OneOf(struct_possibilities).simplified()?)?;
+          anything_changed |= subexp.propagate_types(ctx)?;
+          let field_type_possibilities = match &subexp.data {
+            Unknown => unreachable!(),
+            OneOf(possibilities) => possibilities
+              .iter()
+              .map(|t| -> CompileResult<TyntType> {
+                Ok(match t {
+                  TyntType::Struct(struct_name) => ctx
+                    .structs
+                    .iter()
+                    .find(|s| s.name == *struct_name)
+                    .unwrap()
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *field_name)
+                    .ok_or(NoSuchField)?
+                    .field_type
+                    .clone(),
+                  _ => unreachable!(),
+                })
+              })
+              .collect::<CompileResult<Vec<TyntType>>>()?,
+            Known(subexp_type) => match subexp_type {
+              TyntType::Struct(struct_name) => {
+                vec![ctx
                   .structs
                   .iter()
                   .find(|s| s.name == *struct_name)
@@ -516,34 +616,27 @@ impl TypedExp {
                   .find(|f| f.name == *field_name)
                   .ok_or(NoSuchField)?
                   .field_type
-                  .clone(),
-                _ => unreachable!(),
-              })
-            })
-            .collect::<CompileResult<Vec<TyntType>>>()?,
-          Known(subexp_type) => match subexp_type {
-            TyntType::Struct(struct_name) => {
-              vec![ctx
-                .structs
-                .iter()
-                .find(|s| s.name == *struct_name)
-                .unwrap()
-                .fields
-                .iter()
-                .find(|f| f.name == *field_name)
-                .ok_or(NoSuchField)?
-                .field_type
-                .clone()]
-            }
-            _ => unreachable!(),
-          },
-          UnificationVariable(_) => todo!("unification"),
-        };
-        anything_changed |= self.data.constrain(
-          TypeState::OneOf(field_type_possibilities).simplified()?,
-        )?;
-        anything_changed
-      }
+                  .clone()]
+              }
+              _ => unreachable!(),
+            },
+            UnificationVariable(_) => todo!("unification"),
+          };
+          anything_changed |= self.data.constrain(
+            TypeState::OneOf(field_type_possibilities).simplified()?,
+          )?;
+          anything_changed
+        }
+        Accessor::Swizzle(fields) => {
+          let mut anything_changed =
+            self.data.constrain(swizzle_accessor_typestate(fields))?;
+          anything_changed |= subexp
+            .data
+            .constrain(swizzle_accessed_possibilities(fields))?;
+          anything_changed |= subexp.propagate_types(ctx)?;
+          anything_changed
+        }
+      },
       Let(bindings, body) => {
         let mut anything_changed =
           body.data.mutually_constrain(&mut self.data)?;
@@ -611,10 +704,10 @@ impl TypedExp {
           format!("{f_str}({args_str})")
         })
       }
-      Accessor(field, subexp) => wrap(format!(
+      Access(accessor, subexp) => wrap(format!(
         "{}.{}",
         subexp.compile(InnerExpression),
-        compile_word(field)
+        compile_word(accessor.compile())
       )),
       Let(bindings, body) => {
         let binding_lines: Vec<String> = bindings
@@ -662,7 +755,7 @@ impl TypedExp {
           if ASSIGNMENT_OPS.contains(&f_name.as_str()) {
             let mut var = &args[0];
             loop {
-              if let ExpKind::Accessor(_, inner_exp) = &var.kind {
+              if let ExpKind::Access(_, inner_exp) = &var.kind {
                 var = inner_exp;
               } else {
                 break;
@@ -684,7 +777,7 @@ impl TypedExp {
         f.check_assignment_validity(bindings)
       }
       Function(_, body) => body.check_assignment_validity(bindings),
-      Accessor(_, subexp) => subexp.check_assignment_validity(bindings),
+      Access(_, subexp) => subexp.check_assignment_validity(bindings),
       Let(binding_names_and_values, body) => {
         for (name, kind, value) in binding_names_and_values {
           value.check_assignment_validity(bindings)?;
