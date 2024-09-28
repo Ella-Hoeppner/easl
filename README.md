@@ -4,7 +4,7 @@ WIP shader language with a lispy syntax (using [SSE](https://github.com/Ella-Hoe
 
 Feature goals:
   * full feature parity with WGSL - anything that can be expressed with WGSL will also be expressible with tynt
-  * fully expression-based, including scoped `let` blocks that return the values they produce, and inline `if` statements
+  * fully expression-based, including scoped `let` blocks that return values, and inline `if` and `match` statements
   * full type inference, including for function arg types and return types
   * support for macros/preprocessing, defined in rust
   * closures and higher-order functions
@@ -16,11 +16,7 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* asignment operators
-  * left hand side must be a name, or an accessor over a name (or an accessor over accessor over a name, etc)
-  * just = for now since the rest will need a typeclass restriction
-  * assigning into accesses
-  * have a `@var` tag that can appear on bindings to declare them as mutable/variable
+* only allow assignments on `var` variables
 
 * swizzling accessors
 
@@ -50,7 +46,7 @@ Feature goals:
   * parse integer literals with ambiguous types, to allow them to be treated as floats
   * handle inline accessor syntax like `a.x`
   * shadowing
-  * internal lets (lets inside applications)
+  * internal lets (i.e. lets inside applications) and blocks
   * threading macros
   * have a special case for associative functions like +, *, min, and max, allowing them to be called with n arguments
   * convert - and / calls with 1 arg to calls to negate and invert, respectively

@@ -337,9 +337,43 @@ impl TypeState {
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum VariableKind {
+  Let,
+  Var,
+}
+
+impl VariableKind {
+  pub fn compile(self) -> &'static str {
+    match self {
+      VariableKind::Let => "let",
+      VariableKind::Var => "var",
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Variable {
+  pub kind: VariableKind,
+  pub typestate: TypeState,
+}
+
+impl Variable {
+  pub fn new(typestate: TypeState) -> Self {
+    Self {
+      typestate,
+      kind: VariableKind::Let,
+    }
+  }
+  pub fn with_kind_var(mut self) -> Self {
+    self.kind = VariableKind::Var;
+    self
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Bindings {
-  pub bindings: HashMap<String, Vec<TypeState>>,
+  pub bindings: HashMap<String, Vec<Variable>>,
   pub multi_signature_functions:
     HashMap<String, Vec<AbstractFunctionSignature>>,
 }
@@ -355,19 +389,19 @@ impl Bindings {
       multi_signature_functions,
     }
   }
-  pub fn bind(&mut self, name: &str, t: TypeState) {
+  pub fn bind(&mut self, name: &str, v: Variable) {
     if !self.bindings.contains_key(name) {
       self.bindings.insert(name.to_string(), vec![]);
     }
-    self.bindings.get_mut(name).unwrap().push(t);
+    self.bindings.get_mut(name).unwrap().push(v);
   }
-  pub fn unbind(&mut self, name: &str) -> TypeState {
+  pub fn unbind(&mut self, name: &str) -> Variable {
     let name_bindings = self.bindings.get_mut(name).unwrap();
-    let t = name_bindings.pop().unwrap();
+    let v = name_bindings.pop().unwrap();
     if name_bindings.is_empty() {
       self.bindings.remove(name);
     }
-    t
+    v
   }
   pub fn is_bound(&self, name: &str) -> bool {
     self.bindings.contains_key(name)
@@ -378,12 +412,13 @@ impl Bindings {
     name: &str,
   ) -> CompileResult<&mut TypeState> {
     Ok(
-      self
+      &mut self
         .bindings
         .get_mut(name)
         .ok_or_else(|| UnboundName(name.to_string()))?
         .last_mut()
-        .unwrap(),
+        .unwrap()
+        .typestate,
     )
   }
 }
@@ -407,7 +442,9 @@ impl Context {
     for (name, signature) in built_in_functions() {
       ctx.bindings.bind(
         name,
-        TypeState::Known(TyntType::AbstractFunction(Box::new(signature))),
+        Variable::new(TypeState::Known(TyntType::AbstractFunction(Box::new(
+          signature,
+        )))),
       );
     }
     ctx
@@ -417,8 +454,8 @@ impl Context {
       if s.has_normal_constructor {
         self.bindings.bind(
           &s.name,
-          TypeState::Known(TyntType::AbstractFunction(Box::new(
-            AbstractFunctionSignature {
+          Variable::new(TypeState::Known(TyntType::AbstractFunction(
+            Box::new(AbstractFunctionSignature {
               generic_args: vec![],
               arg_types: s
                 .fields
@@ -426,7 +463,7 @@ impl Context {
                 .map(|field| field.field_type.clone())
                 .collect(),
               return_type: TyntType::Struct(s.name.clone()),
-            },
+            }),
           ))),
         )
       }

@@ -21,7 +21,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Function(Vec<String>, Box<Exp<D>>),
   Application(Box<Exp<D>>, Vec<Exp<D>>),
   Accessor(String, Box<Exp<D>>),
-  Let(Vec<(String, Exp<D>)>, Box<Exp<D>>),
+  Let(Vec<(String, VariableKind, Exp<D>)>, Box<Exp<D>>),
   Match(Box<Exp<D>>, Vec<(Exp<D>, Exp<D>)>),
   Block(Vec<Exp<D>>),
 }
@@ -29,9 +29,10 @@ use ExpKind::*;
 
 use crate::{
   compiler::{
-    builtins::INFIX_OPS,
+    builtins::{ASSIGNMENT_OPS, INFIX_OPS},
     error::{err, CompileError},
     functions::AbstractFunctionSignature,
+    metadata::{extract_metadata, Metadata},
     types::extract_type_annotation,
     util::indent,
   },
@@ -43,6 +44,7 @@ use super::{
   types::{
     Context, TyntType,
     TypeState::{self, *},
+    Variable, VariableKind,
   },
   util::compile_word,
 };
@@ -217,9 +219,31 @@ impl TypedExp {
                               {
                                 let value_ast =
                                   binding_asts_iter.next().unwrap();
+                                let (name_metadata, name_ast) =
+                                  extract_metadata(name_ast)?;
                                 if let TyntTree::Leaf(_, name) = name_ast {
                                   bindings.push((
                                     name,
+                                    match name_metadata {
+                                      None => VariableKind::Let,
+                                      Some(Metadata::Singular(tag)) => {
+                                        match tag.as_str() {
+                                          "var" => VariableKind::Var,
+                                          _ => {
+                                            return err(
+                                              InvalidVariableMetadata(
+                                                Metadata::Singular(tag),
+                                              ),
+                                            )
+                                          }
+                                        }
+                                      }
+                                      Some(metadata) => {
+                                        return err(InvalidVariableMetadata(
+                                          metadata,
+                                        ))
+                                      }
+                                    },
                                     Self::try_from_tynt_tree(
                                       value_ast,
                                       struct_names,
@@ -322,7 +346,7 @@ impl TypedExp {
         Accessor(_, exp) => exp.is_fully_typed(),
         Let(bindings, body) => bindings.iter().fold(
           body.is_fully_typed(),
-          |fully_typed_so_far, (_, binding_value)| {
+          |fully_typed_so_far, (_, _, binding_value)| {
             fully_typed_so_far && binding_value.is_fully_typed()
           },
         ),
@@ -386,12 +410,12 @@ impl TypedExp {
             };
           if arg_count == arg_names.len() {
             for (name, t) in arg_names.iter().zip(arg_type_states) {
-              ctx.bindings.bind(name, t)
+              ctx.bindings.bind(name, Variable::new(t))
             }
             let body_types_changed = body.propagate_types(ctx)?;
             let argument_types = arg_names
               .iter()
-              .map(|name| ctx.bindings.unbind(name))
+              .map(|name| ctx.bindings.unbind(name).typestate)
               .collect::<Vec<_>>();
             let fn_type_changed =
               self.data.constrain_fn_by_argument_types(argument_types)?;
@@ -523,14 +547,14 @@ impl TypedExp {
       Let(bindings, body) => {
         let mut anything_changed =
           body.data.mutually_constrain(&mut self.data)?;
-        for (name, value) in bindings.iter_mut() {
+        for (name, _, value) in bindings.iter_mut() {
           anything_changed |= value.propagate_types(ctx)?;
-          ctx.bindings.bind(name, value.data.clone());
+          ctx.bindings.bind(name, Variable::new(value.data.clone()));
         }
         anything_changed |= body.propagate_types(ctx)?;
-        for (name, value) in bindings.iter_mut() {
+        for (name, _, value) in bindings.iter_mut() {
           anything_changed |=
-            value.data.constrain(ctx.bindings.unbind(name))?;
+            value.data.constrain(ctx.bindings.unbind(name).typestate)?;
         }
         anything_changed
       }
@@ -570,7 +594,13 @@ impl TypedExp {
           .into_iter()
           .map(|arg| arg.compile(InnerExpression))
           .collect();
-        wrap(if INFIX_OPS.contains(&f_str.as_str()) {
+        wrap(if ASSIGNMENT_OPS.contains(&f_str.as_str()) {
+          if arg_strs.len() == 2 {
+            format!("{} {} {}", arg_strs[0], f_str, arg_strs[1])
+          } else {
+            panic!("{} arguments to assignment op, expected 2", arg_strs.len())
+          }
+        } else if INFIX_OPS.contains(&f_str.as_str()) {
           if arg_strs.len() == 2 {
             format!("({} {} {})", arg_strs[0], f_str, arg_strs[1])
           } else {
@@ -589,9 +619,10 @@ impl TypedExp {
       Let(bindings, body) => {
         let binding_lines: Vec<String> = bindings
           .into_iter()
-          .map(|(name, value_exp)| {
+          .map(|(name, variable_kind, value_exp)| {
             format!(
-              "let {name}: {} = {};",
+              "{} {name}: {} = {};",
+              variable_kind.compile(),
               value_exp.data.compile(),
               value_exp.compile(InnerExpression)
             )
@@ -619,6 +650,55 @@ impl TypedExp {
           .collect();
         format!("\n{{{}\n}}", indent(child_strings.join("")))
       }
+    }
+  }
+  pub fn check_assignment_validity(&self) -> CompileResult<()> {
+    match &self.kind {
+      Application(f, args) => {
+        if let ExpKind::Name(f_name) = &f.kind {
+          if ASSIGNMENT_OPS.contains(&f_name.as_str()) {
+            let mut var = &args[0];
+            loop {
+              if let ExpKind::Accessor(field_name, inner_exp) = &var.kind {
+                var = inner_exp;
+              } else {
+                break;
+              }
+            }
+            if let ExpKind::Name(var_name) = &var.kind {
+              //todo! check if the variable is mutable
+            } else {
+              return err(InvalidAssignmentTarget);
+            }
+          }
+        }
+        for arg in args {
+          arg.check_assignment_validity()?;
+        }
+        f.check_assignment_validity()
+      }
+      Function(_, body) => body.check_assignment_validity(),
+      Accessor(_, subexp) => subexp.check_assignment_validity(),
+      Let(bindings, body) => {
+        for (_, _, value) in bindings {
+          value.check_assignment_validity()?;
+        }
+        body.check_assignment_validity()
+      }
+      Match(scrutinee, arms) => {
+        for (pattern, value) in arms {
+          pattern.check_assignment_validity()?;
+          value.check_assignment_validity()?;
+        }
+        scrutinee.check_assignment_validity()
+      }
+      Block(subexps) => {
+        for subexp in subexps {
+          subexp.check_assignment_validity()?;
+        }
+        Ok(())
+      }
+      _ => Ok(()),
     }
   }
 }

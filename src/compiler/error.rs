@@ -1,7 +1,10 @@
 use sse::ParseError;
 use std::{backtrace::Backtrace, rc::Rc};
 
-use super::types::{TyntType, TypeState};
+use super::{
+  metadata::Metadata,
+  types::{TyntType, TypeState},
+};
 
 #[derive(Clone, Debug)]
 pub enum CompileErrorKind {
@@ -39,6 +42,8 @@ pub enum CompileErrorKind {
   OddNumberOfChildrenInLetBindings,
   ExpectedBindingName,
   EmptyBlock,
+  InvalidVariableMetadata(Metadata),
+  InvalidAssignmentTarget,
 }
 
 #[derive(Clone, Debug)]

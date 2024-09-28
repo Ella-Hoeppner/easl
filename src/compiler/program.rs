@@ -262,6 +262,12 @@ impl Program {
       }
     }
   }
+  pub fn check_typed_program(self) -> CompileResult<Self> {
+    for f in self.top_level_functions.iter() {
+      f.body.check_assignment_validity()?;
+    }
+    Ok(self)
+  }
   pub fn compile_to_wgsl(self) -> CompileResult<String> {
     let mut wgsl = String::new();
     for v in self.top_level_vars {

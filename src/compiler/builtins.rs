@@ -141,8 +141,20 @@ pub fn built_in_functions() -> Vec<(&'static str, AbstractFunctionSignature)> {
         return_type: TyntType::Bool,
       },
     ),
+    (
+      "=",
+      AbstractFunctionSignature {
+        generic_args: vec!["T".to_string()],
+        arg_types: vec![
+          TyntType::GenericVariable("T".to_string()),
+          TyntType::GenericVariable("T".to_string()),
+        ],
+        return_type: TyntType::None,
+      },
+    ),
   ]
 }
 
-pub const INFIX_OPS: [&'static str; 11] =
-  ["==", "||", "&&", "+", "-", "*", "/", "+=", "-=", "*=", "/="];
+pub const ASSIGNMENT_OPS: [&'static str; 5] = ["=", "+=", "-=", "*=", "/="];
+
+pub const INFIX_OPS: [&'static str; 7] = ["==", "||", "&&", "+", "-", "*", "/"];
