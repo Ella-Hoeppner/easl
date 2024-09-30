@@ -19,7 +19,7 @@ pub struct TopLevelFunction {
   pub body: TypedExp,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AbstractFunctionSignature {
   pub generic_args: Vec<String>,
   pub arg_types: Vec<TyntType>,
@@ -96,7 +96,7 @@ impl AbstractFunctionSignature {
   }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConcreteFunctionSignature {
   pub arg_types: Vec<TypeState>,
   pub return_type: TypeState,

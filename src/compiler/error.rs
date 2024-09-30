@@ -14,6 +14,7 @@ pub enum CompileErrorKind {
   ExpectedTypeAnnotatedName,
   StructFieldMissingType,
   InvalidStructName,
+  InvalidStructDefinition,
   InvalidTopLevelVar(String),
   InvalidDef(String),
   InvalidFunction,

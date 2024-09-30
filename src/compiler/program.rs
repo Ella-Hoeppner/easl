@@ -12,7 +12,7 @@ use super::{
   expression::Exp,
   functions::TopLevelFunction,
   metadata::Metadata,
-  structs::Struct,
+  structs::{AbstractStruct, ConcreteStruct},
   types::{Bindings, Context, TyntType},
   vars::TopLevelVar,
 };
@@ -36,13 +36,19 @@ impl Program {
         let mut children_iter = children.into_iter();
         if let Some(TyntTree::Leaf(_, first_child)) = children_iter.next() {
           if first_child == "struct" {
-            if let Some(TyntTree::Leaf(_, struct_name)) = children_iter.next() {
-              untyped_structs.push(UntypedStruct::from_field_trees(
-                struct_name.clone(),
-                children_iter.cloned().collect(),
-              )?);
+            if let Some(struct_name) = children_iter.next() {
+              match struct_name {
+                TyntTree::Leaf(_, struct_name) => {
+                  untyped_structs.push(UntypedStruct::from_field_trees(
+                    struct_name.clone(),
+                    vec![],
+                    children_iter.cloned().collect(),
+                  )?)
+                }
+                _ => return err(InvalidStructName),
+              }
             } else {
-              return err(InvalidStructName);
+              return err(InvalidStructDefinition);
             }
           } else {
             non_struct_trees.push((metadata, tree_body))
@@ -62,7 +68,7 @@ impl Program {
       &mut untyped_structs
         .into_iter()
         .map(|untyped_struct| untyped_struct.assign_types(&struct_names))
-        .collect::<CompileResult<Vec<Struct>>>()?,
+        .collect::<CompileResult<Vec<AbstractStruct>>>()?,
     );
     let global_context = Context::default_global().with_structs(structs);
     let mut top_level_vars = vec![];
@@ -277,7 +283,7 @@ impl Program {
     }
     wgsl += "\n";
     let default_structs = built_in_structs();
-    for s in self
+    /*for s in self
       .global_context
       .structs
       .into_iter()
@@ -285,7 +291,7 @@ impl Program {
     {
       wgsl += &s.compile();
       wgsl += "\n\n";
-    }
+    }*/
     for f in self.top_level_functions {
       wgsl += &f.compile()?;
       wgsl += "\n\n";

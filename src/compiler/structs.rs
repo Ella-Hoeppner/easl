@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{
   compiler::{
     metadata::extract_metadata,
@@ -10,7 +12,7 @@ use crate::{
 use super::{
   error::{CompileError, CompileErrorKind::*, CompileResult},
   metadata::Metadata,
-  types::TyntType,
+  types::{Context, TyntType, TypeState},
 };
 
 pub struct UntypedStructField {
@@ -34,8 +36,8 @@ impl UntypedStructField {
   pub fn assign_type(
     self,
     struct_names: &Vec<String>,
-  ) -> CompileResult<StructField> {
-    Ok(StructField {
+  ) -> CompileResult<AbstractStructField> {
+    Ok(AbstractStructField {
       metadata: self.metadata,
       name: self.name,
       field_type: TyntType::from_name(self.field_type_name, struct_names)?,
@@ -46,15 +48,18 @@ impl UntypedStructField {
 pub struct UntypedStruct {
   pub name: String,
   pub fields: Vec<UntypedStructField>,
+  pub generic_args: Vec<String>,
 }
 
 impl UntypedStruct {
   pub fn from_field_trees(
     name: String,
+    generic_args: Vec<String>,
     field_asts: Vec<TyntTree>,
   ) -> CompileResult<Self> {
     Ok(Self {
       name,
+      generic_args,
       fields: field_asts
         .into_iter()
         .map(UntypedStructField::from_field_tree)
@@ -64,27 +69,34 @@ impl UntypedStruct {
   pub fn assign_types(
     self,
     struct_names: &Vec<String>,
-  ) -> CompileResult<Struct> {
-    Ok(Struct {
-      has_normal_constructor: true,
+  ) -> CompileResult<AbstractStruct> {
+    Ok(AbstractStruct {
+      generic_args: self.generic_args,
       name: self.name,
       fields: self
         .fields
         .into_iter()
         .map(|field| field.assign_type(struct_names))
-        .collect::<CompileResult<_>>()?,
+        .collect::<CompileResult<Vec<AbstractStructField>>>()?,
     })
   }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct StructField {
+pub struct AbstractStructField {
   pub metadata: Option<Metadata>,
   pub name: String,
   pub field_type: TyntType,
 }
 
-impl StructField {
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConcreteStructField {
+  pub metadata: Option<Metadata>,
+  pub name: String,
+  pub field_type: TypeState,
+}
+
+impl ConcreteStructField {
   pub fn compile(self) -> String {
     let metadata = if let Some(metadata) = self.metadata {
       metadata.compile()
@@ -98,13 +110,51 @@ impl StructField {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Struct {
-  pub has_normal_constructor: bool,
+pub struct AbstractStruct {
   pub name: String,
-  pub fields: Vec<StructField>,
+  pub fields: Vec<AbstractStructField>,
+  pub generic_args: Vec<String>,
 }
 
-impl Struct {
+impl AbstractStruct {
+  pub fn concretize(&self, ctx: &mut Context) -> ConcreteStruct {
+    let generic_variables: HashMap<String, TypeState> = self
+      .generic_args
+      .iter()
+      .map(|name| (name.clone(), TypeState::fresh_unification_variable()))
+      .collect();
+    let convert_type = |t: &TyntType| {
+      if let TyntType::GenericVariable(name) = t {
+        generic_variables
+          .get(name)
+          .expect("found unrecognized generic name while concretizing ")
+          .clone()
+      } else {
+        TypeState::Known(t.clone())
+      }
+    };
+    ConcreteStruct {
+      name: self.name.clone(),
+      fields: self
+        .fields
+        .iter()
+        .map(|field| ConcreteStructField {
+          metadata: field.metadata.clone(),
+          name: field.name.clone(),
+          field_type: convert_type(&field.field_type),
+        })
+        .collect(),
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConcreteStruct {
+  pub name: String,
+  pub fields: Vec<ConcreteStructField>,
+}
+
+impl ConcreteStruct {
   pub fn compile(self) -> String {
     let name = compile_word(self.name);
     let fields = self

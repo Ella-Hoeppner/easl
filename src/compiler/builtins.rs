@@ -1,7 +1,9 @@
-use crate::compiler::structs::StructField;
+use crate::compiler::structs::AbstractStructField;
 
 use super::{
-  functions::AbstractFunctionSignature, structs::Struct, types::TyntType,
+  functions::AbstractFunctionSignature,
+  structs::{AbstractStruct, ConcreteStruct},
+  types::TyntType,
 };
 
 fn n_sums(n: u8) -> Vec<Vec<u8>> {
@@ -43,65 +45,65 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
     .collect()
 }
 
-pub fn built_in_structs() -> Vec<Struct> {
+pub fn built_in_structs() -> Vec<AbstractStruct> {
   vec![
-    Struct {
-      has_normal_constructor: false,
+    AbstractStruct {
       name: "vec2f".to_string(),
+      generic_args: vec![],
       fields: vec![
-        StructField {
+        AbstractStructField {
           metadata: None,
           name: "x".to_string(),
           field_type: TyntType::F32,
         },
-        StructField {
+        AbstractStructField {
           metadata: None,
           name: "y".to_string(),
           field_type: TyntType::F32,
         },
       ],
     },
-    Struct {
-      has_normal_constructor: false,
+    AbstractStruct {
       name: "vec3f".to_string(),
+      generic_args: vec![],
       fields: vec![
-        StructField {
+        AbstractStructField {
           metadata: None,
           name: "x".to_string(),
           field_type: TyntType::F32,
         },
-        StructField {
+        AbstractStructField {
           metadata: None,
           name: "y".to_string(),
           field_type: TyntType::F32,
         },
-        StructField {
+        AbstractStructField {
           metadata: None,
           name: "z".to_string(),
           field_type: TyntType::F32,
         },
       ],
     },
-    Struct {
-      has_normal_constructor: false,
+    AbstractStruct {
       name: "vec4f".to_string(),
+      generic_args: vec![],
       fields: vec![
-        StructField {
+        AbstractStructField {
           metadata: None,
           name: "x".to_string(),
           field_type: TyntType::F32,
         },
-        StructField {
+        AbstractStructField {
           metadata: None,
           name: "y".to_string(),
           field_type: TyntType::F32,
         },
-        StructField {
+        AbstractStructField {
           metadata: None,
           name: "z".to_string(),
           field_type: TyntType::F32,
         },
-        StructField {
+        AbstractStructField {
           metadata: None,
           name: "w".to_string(),
           field_type: TyntType::F32,
@@ -158,3 +160,6 @@ pub fn built_in_functions() -> Vec<(&'static str, AbstractFunctionSignature)> {
 pub const ASSIGNMENT_OPS: [&'static str; 5] = ["=", "+=", "-=", "*=", "/="];
 
 pub const INFIX_OPS: [&'static str; 7] = ["==", "||", "&&", "+", "-", "*", "/"];
+
+pub const ABNORMAL_CONSTRUCTOR_STRUCTS: [&'static str; 3] =
+  ["vec2f", "vec3f", "vec4f"];

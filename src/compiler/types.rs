@@ -6,14 +6,17 @@ use sse::syntax::EncloserOrOperator;
 use crate::parse::{Operator, TyntTree};
 
 use super::{
-  builtins::{built_in_functions, built_in_multi_signature_functions},
+  builtins::{
+    built_in_functions, built_in_multi_signature_functions,
+    ABNORMAL_CONSTRUCTOR_STRUCTS,
+  },
   error::{err, CompileErrorKind::*, CompileResult},
   functions::{AbstractFunctionSignature, ConcreteFunctionSignature},
-  structs::Struct,
+  structs::{AbstractStruct, ConcreteStruct},
   util::compile_word,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TyntType {
   None,
   F32,
@@ -126,7 +129,7 @@ pub fn extract_type_annotation(
   ))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TypeState {
   Unknown,
   OneOf(Vec<TyntType>),
@@ -428,7 +431,7 @@ impl Bindings {
 
 #[derive(Debug, Clone)]
 pub struct Context {
-  pub structs: Vec<Struct>,
+  pub structs: Vec<AbstractStruct>,
   pub bindings: Bindings,
 }
 
@@ -452,9 +455,9 @@ impl Context {
     }
     ctx
   }
-  pub fn with_structs(mut self, structs: Vec<Struct>) -> Self {
+  pub fn with_structs(mut self, structs: Vec<AbstractStruct>) -> Self {
     for s in &structs {
-      if s.has_normal_constructor {
+      if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&s.name.as_str()) {
         self.bindings.bind(
           &s.name,
           Variable::new(TypeState::Known(TyntType::AbstractFunction(
