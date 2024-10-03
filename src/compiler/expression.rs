@@ -29,9 +29,9 @@ pub enum Accessor {
 
 pub fn swizzle_accessor_typestate(fields: &Vec<SwizzleField>) -> TypeState {
   TypeState::Known(match fields.len() {
-    2 => TyntType::Struct("vec2f".to_string()),
-    3 => TyntType::Struct("vec3f".to_string()),
-    4 => TyntType::Struct("vec4f".to_string()),
+    2 => TyntType::AbstractStruct(get_builtin_struct("vec2f")),
+    3 => TyntType::AbstractStruct(get_builtin_struct("vec3f")),
+    4 => TyntType::AbstractStruct(get_builtin_struct("vec4f")),
     n => unreachable!("swizzle with {n} elements, expected 2-4"),
   })
 }
@@ -49,7 +49,7 @@ pub fn swizzle_accessed_possibilities(fields: &Vec<SwizzleField>) -> TypeState {
     ["vec4f", "vec3f", "vec2f"]
       .iter()
       .take(3.min(5 - max_accessed_index))
-      .map(|name| TyntType::Struct(name.to_string()))
+      .map(|name| TyntType::AbstractStruct(get_builtin_struct(name)))
       .collect::<Vec<TyntType>>(),
   )
   .simplified()
@@ -116,7 +116,9 @@ use crate::{
 };
 
 use super::{
+  builtins::get_builtin_struct,
   error::{CompileErrorKind::*, CompileResult},
+  structs::AbstractStruct,
   types::{
     Bindings, Context, TyntType,
     TypeState::{self, *},
@@ -137,7 +139,7 @@ pub type TypedExp = Exp<TypeState>;
 impl TypedExp {
   pub fn try_from_tynt_tree(
     tree: TyntTree,
-    struct_names: &Vec<String>,
+    structs: &Vec<AbstractStruct>,
   ) -> CompileResult<Self> {
     Ok(match tree {
       TyntTree::Leaf(_, leaf) => {
@@ -187,7 +189,7 @@ impl TypedExp {
                             ),
                             Box::new(Self::try_from_tynt_tree(
                               children_iter.next().unwrap(),
-                              struct_names,
+                              structs,
                             )?),
                           ),
                         })
@@ -204,7 +206,7 @@ impl TypedExp {
                           {
                             let return_type = TyntType::from_tynt_tree(
                               args_and_return_type.remove(1),
-                              struct_names,
+                              structs,
                             )?;
                             if let TyntTree::Inner(
                               (_, Encloser(Square)),
@@ -214,7 +216,7 @@ impl TypedExp {
                               let mut children = children_iter
                                 .clone()
                                 .map(|child| {
-                                  Self::try_from_tynt_tree(child, struct_names)
+                                  Self::try_from_tynt_tree(child, structs)
                                 })
                                 .collect::<CompileResult<Vec<_>>>()?;
                               let body = if children_iter.len() == 1 {
@@ -229,7 +231,7 @@ impl TypedExp {
                                 .into_iter()
                                 .map(|arg| -> CompileResult<_> {
                                   let (maybe_t, arg_name_ast) =
-                                    extract_type_annotation(arg, struct_names)?;
+                                    extract_type_annotation(arg, structs)?;
                                   let t = maybe_t.ok_or(
                                     CompileError::from(FunctionArgMissingType),
                                   )?;
@@ -272,7 +274,7 @@ impl TypedExp {
                           let mut child_exps = children_iter
                             .clone()
                             .map(|child| {
-                              Self::try_from_tynt_tree(child, struct_names)
+                              Self::try_from_tynt_tree(child, structs)
                             })
                             .collect::<CompileResult<Vec<Self>>>()?;
                           let body_exp = if child_exps.len() == 1 {
@@ -323,8 +325,7 @@ impl TypedExp {
                                       }
                                     },
                                     Self::try_from_tynt_tree(
-                                      value_ast,
-                                      struct_names,
+                                      value_ast, structs,
                                     )?,
                                   ));
                                 } else {
@@ -352,7 +353,7 @@ impl TypedExp {
                           let child_exps = children_iter
                             .clone()
                             .map(|child| {
-                              Self::try_from_tynt_tree(child, struct_names)
+                              Self::try_from_tynt_tree(child, structs)
                             })
                             .collect::<CompileResult<Vec<Self>>>()?;
                           Some(Exp {
@@ -369,12 +370,9 @@ impl TypedExp {
                 }
                 .unwrap_or(Exp {
                   kind: Application(
-                    Box::new(Self::try_from_tynt_tree(
-                      first_child,
-                      struct_names,
-                    )?),
+                    Box::new(Self::try_from_tynt_tree(first_child, structs)?),
                     children_iter
-                      .map(|arg| Self::try_from_tynt_tree(arg, struct_names))
+                      .map(|arg| Self::try_from_tynt_tree(arg, structs))
                       .collect::<CompileResult<_>>()?,
                   ),
                   data: Unknown,
@@ -393,12 +391,12 @@ impl TypedExp {
             TypeAnnotation => {
               let mut exp = Self::try_from_tynt_tree(
                 children_iter.next().unwrap(),
-                struct_names,
+                structs,
               )?;
               if let TyntTree::Leaf(_, type_name) =
                 children_iter.next().unwrap()
               {
-                exp.data = Known(TyntType::from_name(type_name, struct_names)?);
+                exp.data = Known(TyntType::from_name(type_name, structs)?);
                 exp
               } else {
                 return err(InvalidType);
@@ -530,7 +528,7 @@ impl TypedExp {
                 }
               }
               TyntType::AbstractFunction(signature) => {
-                Some(signature.concretize(ctx))
+                Some(signature.concretize())
               }
               _ => {
                 return err(AppliedNonFunction);
@@ -556,7 +554,7 @@ impl TypedExp {
         anything_changed |= f.propagate_types(ctx)?;
         anything_changed
       }
-      Access(accessor, subexp) => match accessor {
+      Access(accessor, subexp) => todo!()/*match accessor {
         Accessor::Field(field_name) => {
           let mut anything_changed = false;
           let (field_possibilities, struct_possibilities): (
@@ -568,7 +566,10 @@ impl TypedExp {
             .filter_map(|s| {
               s.fields.iter().find(|field| field.name == *field_name).map(
                 |field| {
-                  (field.field_type.clone(), TyntType::Struct(s.name.clone()))
+                  (
+                    field.field_type.clone(),
+                    TyntType::AbstractStruct(s.clone()),
+                  )
                 },
               )
             })
@@ -589,10 +590,10 @@ impl TypedExp {
               .iter()
               .map(|t| -> CompileResult<TyntType> {
                 Ok(match t {
-                  TyntType::Struct(struct_name) => ctx
+                  TyntType::Struct(concrete_struct) => ctx
                     .structs
                     .iter()
-                    .find(|s| s.name == *struct_name)
+                    .find(|s| s.name == *concrete_struct.name)
                     .unwrap()
                     .fields
                     .iter()
@@ -605,11 +606,11 @@ impl TypedExp {
               })
               .collect::<CompileResult<Vec<TyntType>>>()?,
             Known(subexp_type) => match subexp_type {
-              TyntType::Struct(struct_name) => {
+              TyntType::Struct(concrete_struct) => {
                 vec![ctx
                   .structs
                   .iter()
-                  .find(|s| s.name == *struct_name)
+                  .find(|s| s.name == concrete_struct.name)
                   .unwrap()
                   .fields
                   .iter()
@@ -636,7 +637,7 @@ impl TypedExp {
           anything_changed |= subexp.propagate_types(ctx)?;
           anything_changed
         }
-      },
+      }*/,
       Let(bindings, body) => {
         let mut anything_changed =
           body.data.mutually_constrain(&mut self.data)?;

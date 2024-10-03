@@ -23,12 +23,56 @@ pub enum TyntType {
   I32,
   U32,
   Bool,
-  Struct(String),
+  AbstractStruct(AbstractStruct),
+  ConcreteStruct(ConcreteStruct),
   AbstractFunction(Box<AbstractFunctionSignature>),
   ConcreteFunction(Box<ConcreteFunctionSignature>),
   GenericVariable(String),
 }
 impl TyntType {
+  pub fn concretize_abstract(
+    &self,
+    generic_variables: &HashMap<String, TypeState>,
+  ) -> TypeState {
+    match self {
+      TyntType::GenericVariable(name) => generic_variables
+        .get(name)
+        .expect("found unrecognized generic name while concretizing function")
+        .clone(),
+      TyntType::AbstractStruct(s) => TypeState::Known(
+        TyntType::ConcreteStruct(s.concretize(&generic_variables)),
+      ),
+      other => TypeState::Known(other.clone()),
+    }
+  }
+  pub fn is_concrete_compatible(
+    &self,
+    concrete_typestate: &TypeState,
+    generic_assignments: &mut HashMap<String, TypeState>,
+  ) -> bool {
+    match self {
+      TyntType::GenericVariable(generic_name) => {
+        if let Some(assignment) = generic_assignments.get(generic_name) {
+          if !TypeState::are_compatible(concrete_typestate, assignment) {
+            return false;
+          }
+        } else {
+          generic_assignments
+            .insert(generic_name.clone(), concrete_typestate.clone());
+        }
+      }
+      TyntType::AbstractStruct(abstract_struct) => {
+        // todo! this should against a concrete struct in concrete_typestate,
+        // but that gets tricky since it isn't always Known...
+      }
+      other => {
+        if !concrete_typestate.is_compatible(other) {
+          return false;
+        }
+      }
+    }
+    true
+  }
   pub fn compatible(&self, other: &Self) -> bool {
     let b = match (self, other) {
       (TyntType::AbstractFunction(a), TyntType::ConcreteFunction(b)) => {
@@ -53,7 +97,7 @@ impl TyntType {
   }
   pub fn from_name(
     name: String,
-    struct_names: &Vec<String>,
+    structs: &Vec<AbstractStruct>,
   ) -> CompileResult<Self> {
     use TyntType::*;
     Ok(match name.as_str() {
@@ -62,8 +106,8 @@ impl TyntType {
       "U32" | "u32" => U32,
       "Bool" | "bool" => Bool,
       _ => {
-        if struct_names.contains(&name) {
-          Struct(name)
+        if let Some(s) = structs.iter().find(|s| s.name == name) {
+          AbstractStruct(s.clone())
         } else {
           return err(UnrecognizedTypeName(name));
         }
@@ -72,10 +116,10 @@ impl TyntType {
   }
   pub fn from_tynt_tree(
     tree: TyntTree,
-    struct_names: &Vec<String>,
+    structs: &Vec<AbstractStruct>,
   ) -> CompileResult<Self> {
     if let TyntTree::Leaf(_, type_name) = tree {
-      Ok(TyntType::from_name(type_name, struct_names)?)
+      Ok(TyntType::from_name(type_name, structs)?)
     } else {
       err(InvalidType)
     }
@@ -87,7 +131,8 @@ impl TyntType {
       TyntType::I32 => "i32".to_string(),
       TyntType::U32 => "u32".to_string(),
       TyntType::Bool => "bool".to_string(),
-      TyntType::Struct(name) => compile_word(name.clone()),
+      TyntType::AbstractStruct(s) => compile_word(s.name.clone()),
+      TyntType::ConcreteStruct(s) => compile_word(s.name.clone()),
       TyntType::AbstractFunction(_) => {
         panic!("Attempted to compile AbstractFunction type")
       }
@@ -119,11 +164,11 @@ pub fn extract_type_annotation_ast(
 
 pub fn extract_type_annotation(
   exp: TyntTree,
-  struct_names: &Vec<String>,
+  structs: &Vec<AbstractStruct>,
 ) -> CompileResult<(Option<TyntType>, TyntTree)> {
   let (t, value) = extract_type_annotation_ast(exp)?;
   Ok((
-    t.map(|t| TyntType::from_tynt_tree(t, struct_names))
+    t.map(|t| TyntType::from_tynt_tree(t, structs))
       .map_or(Ok(None), |v| v.map(Some))?,
     value,
   ))
@@ -461,6 +506,7 @@ impl Context {
         self.bindings.bind(
           &s.name,
           Variable::new(TypeState::Known(TyntType::AbstractFunction(
+            //todo!("generic"),
             Box::new(AbstractFunctionSignature {
               generic_args: vec![],
               arg_types: s
@@ -468,8 +514,21 @@ impl Context {
                 .iter()
                 .map(|field| field.field_type.clone())
                 .collect(),
-              return_type: TyntType::Struct(s.name.clone()),
-            }),
+              return_type: TyntType::AbstractStruct(s.clone()),
+            }), // the below doesn't work because it can only concretize the struct
+                // a single time, such that a generic struct could only ever be
+                // specified in a single way across all the code. I think solving
+                // this will require a new specialized kind of abstract function
+                // signature
+                /*Box::new(AbstractFunctionSignature {
+                  generic_args: vec![],
+                  arg_types: s
+                    .fields
+                    .iter()
+                    .map(|field| field.field_type.clone())
+                    .collect(),
+                  return_type: TyntType::Struct(s.concretize()),
+                }),*/
           ))),
         )
       }

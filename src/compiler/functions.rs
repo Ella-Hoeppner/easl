@@ -38,25 +38,19 @@ impl AbstractFunctionSignature {
     }
     true
   }
-  pub fn concretize(&self, ctx: &mut Context) -> ConcreteFunctionSignature {
+  pub fn concretize(&self) -> ConcreteFunctionSignature {
     let generic_variables: HashMap<String, TypeState> = self
       .generic_args
       .iter()
       .map(|name| (name.clone(), TypeState::fresh_unification_variable()))
       .collect();
-    let convert_type = |t: &TyntType| {
-      if let TyntType::GenericVariable(name) = t {
-        generic_variables
-          .get(name)
-          .expect("found unrecognized generic name while concretizing ")
-          .clone()
-      } else {
-        TypeState::Known(t.clone())
-      }
-    };
     ConcreteFunctionSignature {
-      arg_types: self.arg_types.iter().map(convert_type).collect(),
-      return_type: convert_type(&self.return_type),
+      arg_types: self
+        .arg_types
+        .iter()
+        .map(|t| t.concretize_abstract(&generic_variables))
+        .collect(),
+      return_type: self.return_type.concretize_abstract(&generic_variables),
     }
   }
   pub fn is_concrete_signature_compatible(
@@ -66,33 +60,19 @@ impl AbstractFunctionSignature {
     if self.arg_types.len() != concrete_signature.arg_types.len() {
       return false;
     }
-    let mut assignments: HashMap<String, TypeState> = HashMap::new();
-    let mut check_compatibility =
-      |t: &TyntType, typestate: &TypeState| -> bool {
-        if let TyntType::GenericVariable(generic_name) = t {
-          if let Some(assignment) = assignments.get(generic_name) {
-            if !TypeState::are_compatible(typestate, assignment) {
-              return false;
-            }
-          } else {
-            assignments.insert(generic_name.clone(), typestate.clone());
-          }
-        } else {
-          if !typestate.is_compatible(t) {
-            return false;
-          }
-        }
-        true
-      };
+    let mut generic_assignments: HashMap<String, TypeState> = HashMap::new();
     for i in 0..self.arg_types.len() {
-      if !check_compatibility(
-        &self.arg_types[i],
+      if !self.arg_types[i].is_concrete_compatible(
         &concrete_signature.arg_types[i],
+        &mut generic_assignments,
       ) {
         return false;
       }
     }
-    check_compatibility(&self.return_type, &concrete_signature.return_type)
+    self.return_type.is_concrete_compatible(
+      &concrete_signature.return_type,
+      &mut generic_assignments,
+    )
   }
 }
 

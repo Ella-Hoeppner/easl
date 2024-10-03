@@ -64,13 +64,13 @@ impl Program {
     let mut struct_names: Vec<String> =
       untyped_structs.iter().map(|s| s.name.clone()).collect();
     struct_names.append(&mut structs.iter().map(|s| s.name.clone()).collect());
-    structs.append(
-      &mut untyped_structs
-        .into_iter()
-        .map(|untyped_struct| untyped_struct.assign_types(&struct_names))
-        .collect::<CompileResult<Vec<AbstractStruct>>>()?,
-    );
-    let global_context = Context::default_global().with_structs(structs);
+    // todo! in order for this to reliably work when structs contain one
+    // another, I need to topologically sort untyped_structs before this loop
+    while let Some(untyped_struct) = untyped_structs.pop() {
+      structs.push(untyped_struct.assign_types(&structs)?);
+    }
+    let global_context =
+      Context::default_global().with_structs(structs.clone());
     let mut top_level_vars = vec![];
     let mut top_level_functions = vec![];
     for (metadata, tree) in non_struct_trees.into_iter() {
@@ -125,7 +125,7 @@ impl Program {
                 name,
                 metadata,
                 attributes,
-                var_type: TyntType::from_name(type_name, &struct_names)?,
+                var_type: TyntType::from_name(type_name, &structs)?,
               })
             }
             "def" => {
@@ -198,7 +198,7 @@ impl Program {
                               metadata,
                               body: Exp::try_from_tynt_tree(
                                 metadata_stripped_fn_ast,
-                                &struct_names,
+                                &structs,
                               )?,
                             })
                           } else {

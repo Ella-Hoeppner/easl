@@ -35,12 +35,12 @@ impl UntypedStructField {
   }
   pub fn assign_type(
     self,
-    struct_names: &Vec<String>,
+    structs: &Vec<AbstractStruct>,
   ) -> CompileResult<AbstractStructField> {
     Ok(AbstractStructField {
       metadata: self.metadata,
       name: self.name,
-      field_type: TyntType::from_name(self.field_type_name, struct_names)?,
+      field_type: TyntType::from_name(self.field_type_name, structs)?,
     })
   }
 }
@@ -68,7 +68,7 @@ impl UntypedStruct {
   }
   pub fn assign_types(
     self,
-    struct_names: &Vec<String>,
+    structs: &Vec<AbstractStruct>,
   ) -> CompileResult<AbstractStruct> {
     Ok(AbstractStruct {
       generic_args: self.generic_args,
@@ -76,7 +76,7 @@ impl UntypedStruct {
       fields: self
         .fields
         .into_iter()
-        .map(|field| field.assign_type(struct_names))
+        .map(|field| field.assign_type(structs))
         .collect::<CompileResult<Vec<AbstractStructField>>>()?,
     })
   }
@@ -117,22 +117,10 @@ pub struct AbstractStruct {
 }
 
 impl AbstractStruct {
-  pub fn concretize(&self, ctx: &mut Context) -> ConcreteStruct {
-    let generic_variables: HashMap<String, TypeState> = self
-      .generic_args
-      .iter()
-      .map(|name| (name.clone(), TypeState::fresh_unification_variable()))
-      .collect();
-    let convert_type = |t: &TyntType| {
-      if let TyntType::GenericVariable(name) = t {
-        generic_variables
-          .get(name)
-          .expect("found unrecognized generic name while concretizing ")
-          .clone()
-      } else {
-        TypeState::Known(t.clone())
-      }
-    };
+  pub fn concretize(
+    &self,
+    generic_variables: &HashMap<String, TypeState>,
+  ) -> ConcreteStruct {
     ConcreteStruct {
       name: self.name.clone(),
       fields: self
@@ -141,10 +129,13 @@ impl AbstractStruct {
         .map(|field| ConcreteStructField {
           metadata: field.metadata.clone(),
           name: field.name.clone(),
-          field_type: convert_type(&field.field_type),
+          field_type: field.field_type.concretize_abstract(generic_variables),
         })
         .collect(),
     }
+  }
+  pub fn is_concrete_struct_compatible(&self, s: ConcreteStruct) -> bool {
+    todo!()
   }
 }
 

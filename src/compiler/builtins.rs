@@ -25,22 +25,23 @@ fn n_sums(n: u8) -> Vec<Vec<u8>> {
   }
 }
 
+fn vec_n_type(n: u8) -> TyntType {
+  match n {
+    1 => TyntType::F32,
+    2 => TyntType::AbstractStruct(get_builtin_struct("vec2f")),
+    3 => TyntType::AbstractStruct(get_builtin_struct("vec3f")),
+    4 => TyntType::AbstractStruct(get_builtin_struct("vec4f")),
+    _ => unreachable!(),
+  }
+}
+
 fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
   n_sums(n)
     .into_iter()
     .map(|nums| AbstractFunctionSignature {
       generic_args: vec![],
-      arg_types: nums
-        .into_iter()
-        .map(|n| match n {
-          1 => TyntType::F32,
-          2 => TyntType::Struct("vec2f".to_string()),
-          3 => TyntType::Struct("vec3f".to_string()),
-          4 => TyntType::Struct("vec4f".to_string()),
-          _ => unreachable!(),
-        })
-        .collect(),
-      return_type: TyntType::Struct(format!("vec{n}f")),
+      arg_types: nums.into_iter().map(vec_n_type).collect(),
+      return_type: vec_n_type(n),
     })
     .collect()
 }
@@ -111,6 +112,13 @@ pub fn built_in_structs() -> Vec<AbstractStruct> {
       ],
     },
   ]
+}
+
+pub fn get_builtin_struct(name: &str) -> AbstractStruct {
+  built_in_structs()
+    .into_iter()
+    .find(|s| s.name == name)
+    .unwrap()
 }
 
 pub fn built_in_multi_signature_functions(
