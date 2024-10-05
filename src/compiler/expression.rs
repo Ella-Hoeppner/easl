@@ -29,9 +29,9 @@ pub enum Accessor {
 
 pub fn swizzle_accessor_typestate(fields: &Vec<SwizzleField>) -> TypeState {
   TypeState::Known(match fields.len() {
-    2 => TyntType::Struct(get_builtin_struct("vec2f")),
-    3 => TyntType::Struct(get_builtin_struct("vec3f")),
-    4 => TyntType::Struct(get_builtin_struct("vec4f")),
+    2 => Type::Struct(get_builtin_struct("vec2f")),
+    3 => Type::Struct(get_builtin_struct("vec3f")),
+    4 => Type::Struct(get_builtin_struct("vec4f")),
     n => unreachable!("swizzle with {n} elements, expected 2-4"),
   })
 }
@@ -49,8 +49,8 @@ pub fn swizzle_accessed_possibilities(fields: &Vec<SwizzleField>) -> TypeState {
     ["vec4f", "vec3f", "vec2f"]
       .iter()
       .take(3.min(5 - max_accessed_index))
-      .map(|name| TyntType::Struct(get_builtin_struct(name)))
-      .collect::<Vec<TyntType>>(),
+      .map(|name| Type::Struct(get_builtin_struct(name)))
+      .collect::<Vec<Type>>(),
   )
   .simplified()
   .unwrap()
@@ -120,7 +120,7 @@ use super::{
   error::{CompileErrorKind::*, CompileResult},
   structs::Struct,
   types::{
-    Bindings, Context, TyntType,
+    Bindings, Context, Type,
     TypeState::{self, *},
     Variable, VariableKind,
   },
@@ -146,17 +146,17 @@ impl TypedExp {
         if leaf == "true" || leaf == "false" {
           Exp {
             kind: ExpKind::BooleanLiteral(leaf == "true"),
-            data: Known(TyntType::Bool),
+            data: Known(Type::Bool),
           }
         } else if let Ok(i) = leaf.parse::<i64>() {
           Exp {
             kind: ExpKind::NumberLiteral(Number::Int(i)),
-            data: Known(TyntType::I32),
+            data: Known(Type::I32),
           }
         } else if let Ok(f) = leaf.parse::<f64>() {
           Exp {
             kind: ExpKind::NumberLiteral(Number::Float(f)),
-            data: Known(TyntType::F32),
+            data: Known(Type::F32),
           }
         } else {
           Exp {
@@ -204,7 +204,7 @@ impl TypedExp {
                             mut args_and_return_type,
                           )) = children_iter.next()
                           {
-                            let return_type = TyntType::from_tynt_tree(
+                            let return_type = Type::from_tynt_tree(
                               args_and_return_type.remove(1),
                               structs,
                             )?;
@@ -244,16 +244,16 @@ impl TypedExp {
                                   }
                                 })
                                 .collect::<CompileResult<
-                                  (Vec<TyntType>, Vec<String>),
+                                  (Vec<Type>, Vec<String>),
                                 >>()?;
                               Some(Exp {
-                                data: Known(TyntType::AbstractFunction(
-                                  Box::new(AbstractFunctionSignature {
+                                data: Known(Type::AbstractFunction(Box::new(
+                                  AbstractFunctionSignature {
                                     generic_args: vec![],
                                     arg_types,
                                     return_type,
-                                  }),
-                                )),
+                                  },
+                                ))),
                                 kind: ExpKind::Function(
                                   arg_names,
                                   Box::new(body),
@@ -396,7 +396,7 @@ impl TypedExp {
               if let TyntTree::Leaf(_, type_name) =
                 children_iter.next().unwrap()
               {
-                exp.data = Known(TyntType::from_name(type_name, structs)?);
+                exp.data = Known(Type::from_name(type_name, structs)?);
                 exp
               } else {
                 return err(InvalidType);
@@ -454,22 +454,20 @@ impl TypedExp {
       }
       NumberLiteral(num) => {
         self.data.constrain(TypeState::Known(match num {
-          Number::Int(_) => TyntType::I32,
-          Number::Float(_) => TyntType::F32,
+          Number::Int(_) => Type::I32,
+          Number::Float(_) => Type::F32,
         }))?
       }
-      BooleanLiteral(_) => {
-        self.data.constrain(TypeState::Known(TyntType::Bool))?
-      }
+      BooleanLiteral(_) => self.data.constrain(TypeState::Known(Type::Bool))?,
       Function(arg_names, body) => {
         if let TypeState::Known(f_type) = &mut self.data {
           let (arg_count, arg_type_states): (usize, Vec<TypeState>) =
             match f_type {
-              TyntType::ConcreteFunction(signature) => (
+              Type::ConcreteFunction(signature) => (
                 signature.arg_types.len(),
                 signature.arg_types.iter().cloned().collect(),
               ),
-              TyntType::AbstractFunction(signature) => (
+              Type::AbstractFunction(signature) => (
                 signature.arg_types.len(),
                 signature
                   .arg_types
@@ -513,7 +511,7 @@ impl TypedExp {
         let replacement_concrete_signature =
           if let TypeState::Known(f_type) = &mut f.data {
             match f_type {
-              TyntType::ConcreteFunction(signature) => {
+              Type::ConcreteFunction(signature) => {
                 if args.len() == signature.arg_types.len() {
                   anything_changed |=
                     self.data.mutually_constrain(&mut signature.return_type)?;
@@ -527,9 +525,7 @@ impl TypedExp {
                   return err(WrongArity);
                 }
               }
-              TyntType::AbstractFunction(signature) => {
-                Some(signature.concretize())
-              }
+              Type::AbstractFunction(signature) => Some(signature.concretize()),
               _ => {
                 return err(AppliedNonFunction);
               }
@@ -540,7 +536,7 @@ impl TypedExp {
         if let Some(concrete_signature) = replacement_concrete_signature {
           std::mem::swap(
             &mut f.data,
-            &mut TypeState::Known(TyntType::ConcreteFunction(Box::new(
+            &mut TypeState::Known(Type::ConcreteFunction(Box::new(
               concrete_signature,
             ))),
           );
@@ -559,13 +555,13 @@ impl TypedExp {
           let mut anything_changed = false;
           let (field_possibilities, struct_possibilities): (
             Vec<TypeState>,
-            Vec<TyntType>,
+            Vec<Type>,
           ) = ctx
             .structs
             .iter()
             .filter_map(|s| {
               s.fields.iter().find(|field| field.name == *field_name).map(
-                |field| (field.field_type.clone(), TyntType::Struct(s.clone())),
+                |field| (field.field_type.clone(), Type::Struct(s.clone())),
               )
             })
             .collect();
@@ -585,7 +581,7 @@ impl TypedExp {
               .iter()
               .map(|t| -> CompileResult<TypeState> {
                 Ok(match t {
-                  TyntType::Struct(s) => ctx
+                  Type::Struct(s) => ctx
                     .structs
                     .iter()
                     .find(|s| s.name == *s.name)
@@ -601,7 +597,7 @@ impl TypedExp {
               })
               .collect::<CompileResult<Vec<TypeState>>>()?,
             Known(subexp_type) => match subexp_type {
-              TyntType::Struct(s) => {
+              Type::Struct(s) => {
                 vec![ctx
                   .structs
                   .iter()

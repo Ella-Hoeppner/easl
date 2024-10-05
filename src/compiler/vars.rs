@@ -1,13 +1,13 @@
 use crate::compiler::util::compile_word;
 
-use super::{metadata::Metadata, types::TyntType};
+use super::{metadata::Metadata, types::Type};
 
 #[derive(Debug)]
 pub struct TopLevelVar {
   pub name: String,
   pub metadata: Option<Metadata>,
   pub attributes: Vec<String>,
-  pub var_type: TyntType,
+  pub var_type: Type,
 }
 
 impl TopLevelVar {

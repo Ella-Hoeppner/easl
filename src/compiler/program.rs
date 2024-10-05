@@ -13,7 +13,7 @@ use super::{
   functions::TopLevelFunction,
   metadata::Metadata,
   structs::Struct,
-  types::{Bindings, Context, TyntType},
+  types::{Bindings, Context, Type},
   vars::TopLevelVar,
 };
 
@@ -125,7 +125,7 @@ impl Program {
                 name,
                 metadata,
                 attributes,
-                var_type: TyntType::from_name(type_name, &structs)?,
+                var_type: Type::from_name(type_name, &structs)?,
               })
             }
             "def" => {

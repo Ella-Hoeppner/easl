@@ -3,7 +3,7 @@ use crate::compiler::types::TypeState;
 use super::{
   functions::AbstractFunctionSignature,
   structs::{Struct, StructField},
-  types::TyntType,
+  types::Type,
 };
 
 fn n_sums(n: u8) -> Vec<Vec<u8>> {
@@ -25,12 +25,12 @@ fn n_sums(n: u8) -> Vec<Vec<u8>> {
   }
 }
 
-fn vec_n_type(n: u8) -> TyntType {
+fn vec_n_type(n: u8) -> Type {
   match n {
-    1 => TyntType::F32,
-    2 => TyntType::Struct(get_builtin_struct("vec2f")),
-    3 => TyntType::Struct(get_builtin_struct("vec3f")),
-    4 => TyntType::Struct(get_builtin_struct("vec4f")),
+    1 => Type::F32,
+    2 => Type::Struct(get_builtin_struct("vec2f")),
+    3 => Type::Struct(get_builtin_struct("vec3f")),
+    4 => Type::Struct(get_builtin_struct("vec4f")),
     _ => unreachable!(),
   }
 }
@@ -54,12 +54,12 @@ pub fn built_in_structs() -> Vec<Struct> {
         StructField {
           metadata: None,
           name: "x".to_string(),
-          field_type: TypeState::Known(TyntType::F32),
+          field_type: TypeState::Known(Type::F32),
         },
         StructField {
           metadata: None,
           name: "y".to_string(),
-          field_type: TypeState::Known(TyntType::F32),
+          field_type: TypeState::Known(Type::F32),
         },
       ],
     },
@@ -69,17 +69,17 @@ pub fn built_in_structs() -> Vec<Struct> {
         StructField {
           metadata: None,
           name: "x".to_string(),
-          field_type: TypeState::Known(TyntType::F32),
+          field_type: TypeState::Known(Type::F32),
         },
         StructField {
           metadata: None,
           name: "y".to_string(),
-          field_type: TypeState::Known(TyntType::F32),
+          field_type: TypeState::Known(Type::F32),
         },
         StructField {
           metadata: None,
           name: "z".to_string(),
-          field_type: TypeState::Known(TyntType::F32),
+          field_type: TypeState::Known(Type::F32),
         },
       ],
     },
@@ -89,22 +89,22 @@ pub fn built_in_structs() -> Vec<Struct> {
         StructField {
           metadata: None,
           name: "x".to_string(),
-          field_type: TypeState::Known(TyntType::F32),
+          field_type: TypeState::Known(Type::F32),
         },
         StructField {
           metadata: None,
           name: "y".to_string(),
-          field_type: TypeState::Known(TyntType::F32),
+          field_type: TypeState::Known(Type::F32),
         },
         StructField {
           metadata: None,
           name: "z".to_string(),
-          field_type: TypeState::Known(TyntType::F32),
+          field_type: TypeState::Known(Type::F32),
         },
         StructField {
           metadata: None,
           name: "w".to_string(),
-          field_type: TypeState::Known(TyntType::F32),
+          field_type: TypeState::Known(Type::F32),
         },
       ],
     },
@@ -133,8 +133,8 @@ pub fn built_in_functions() -> Vec<(&'static str, AbstractFunctionSignature)> {
       "&&",
       AbstractFunctionSignature {
         generic_args: vec![],
-        arg_types: vec![TyntType::Bool, TyntType::Bool],
-        return_type: TyntType::Bool,
+        arg_types: vec![Type::Bool, Type::Bool],
+        return_type: Type::Bool,
       },
     ),
     (
@@ -142,10 +142,10 @@ pub fn built_in_functions() -> Vec<(&'static str, AbstractFunctionSignature)> {
       AbstractFunctionSignature {
         generic_args: vec!["T".to_string()],
         arg_types: vec![
-          TyntType::GenericVariable("T".to_string()),
-          TyntType::GenericVariable("T".to_string()),
+          Type::GenericVariable("T".to_string()),
+          Type::GenericVariable("T".to_string()),
         ],
-        return_type: TyntType::Bool,
+        return_type: Type::Bool,
       },
     ),
     (
@@ -153,10 +153,10 @@ pub fn built_in_functions() -> Vec<(&'static str, AbstractFunctionSignature)> {
       AbstractFunctionSignature {
         generic_args: vec!["T".to_string()],
         arg_types: vec![
-          TyntType::GenericVariable("T".to_string()),
-          TyntType::GenericVariable("T".to_string()),
+          Type::GenericVariable("T".to_string()),
+          Type::GenericVariable("T".to_string()),
         ],
-        return_type: TyntType::None,
+        return_type: Type::None,
       },
     ),
   ]

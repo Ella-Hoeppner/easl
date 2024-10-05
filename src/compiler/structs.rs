@@ -12,7 +12,7 @@ use crate::{
 use super::{
   error::{CompileError, CompileErrorKind::*, CompileResult},
   metadata::Metadata,
-  types::{TyntType, TypeState},
+  types::{Type, TypeState},
 };
 
 pub struct UntypedStructField {
@@ -40,7 +40,7 @@ impl UntypedStructField {
     Ok(StructField {
       metadata: self.metadata,
       name: self.name,
-      field_type: TypeState::Known(TyntType::from_name(
+      field_type: TypeState::Known(Type::from_name(
         self.field_type_name,
         structs,
       )?),
@@ -116,7 +116,7 @@ impl Struct {
       .fields
       .into_iter()
       .map(|mut field| {
-        if let TypeState::Known(TyntType::GenericVariable(var_name)) =
+        if let TypeState::Known(Type::GenericVariable(var_name)) =
           field.field_type
         {
           field.field_type = generics

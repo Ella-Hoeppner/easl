@@ -17,7 +17,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum TyntType {
+pub enum Type {
   None,
   F32,
   I32,
@@ -28,18 +28,18 @@ pub enum TyntType {
   ConcreteFunction(Box<ConcreteFunctionSignature>),
   GenericVariable(String),
 }
-impl TyntType {
+impl Type {
   pub fn fill_generics(
     self,
     generic_variables: &HashMap<String, TypeState>,
   ) -> TypeState {
     match self {
-      TyntType::GenericVariable(name) => generic_variables
+      Type::GenericVariable(name) => generic_variables
         .get(&name)
         .expect("found unrecognized generic name while concretizing function")
         .clone(),
-      TyntType::Struct(s) => {
-        TypeState::Known(TyntType::Struct(s.fill_generics(&generic_variables)))
+      Type::Struct(s) => {
+        TypeState::Known(Type::Struct(s.fill_generics(&generic_variables)))
       }
       other => TypeState::Known(other),
     }
@@ -50,7 +50,7 @@ impl TyntType {
     generic_assignments: &mut HashMap<String, TypeState>,
   ) -> bool {
     match self {
-      TyntType::GenericVariable(generic_name) => {
+      Type::GenericVariable(generic_name) => {
         if let Some(assignment) = generic_assignments.get(generic_name) {
           if !TypeState::are_compatible(concrete_typestate, assignment) {
             return false;
@@ -60,7 +60,7 @@ impl TyntType {
             .insert(generic_name.clone(), concrete_typestate.clone());
         }
       }
-      TyntType::Struct(s) => {
+      Type::Struct(s) => {
         if !concrete_typestate.with_dereferenced(|concrete_typestate| -> bool {
           match concrete_typestate {
             TypeState::Unknown => true,
@@ -68,7 +68,7 @@ impl TyntType {
               let mut any_compatible = false;
               for possibility in possibilities {
                 any_compatible |=
-                  if let TyntType::Struct(concrete_struct) = possibility {
+                  if let Type::Struct(concrete_struct) = possibility {
                     s.name == concrete_struct.name
                   } else {
                     false
@@ -77,7 +77,7 @@ impl TyntType {
               any_compatible
             }
             TypeState::Known(t) => {
-              if let TyntType::Struct(concrete_struct) = t {
+              if let Type::Struct(concrete_struct) = t {
                 s.name == concrete_struct.name
               } else {
                 false
@@ -99,10 +99,10 @@ impl TyntType {
   }
   pub fn compatible(&self, other: &Self) -> bool {
     let b = match (self, other) {
-      (TyntType::AbstractFunction(a), TyntType::ConcreteFunction(b)) => {
+      (Type::AbstractFunction(a), Type::ConcreteFunction(b)) => {
         a.is_concrete_signature_compatible(b.as_ref())
       }
-      (TyntType::ConcreteFunction(a), TyntType::AbstractFunction(b)) => {
+      (Type::ConcreteFunction(a), Type::AbstractFunction(b)) => {
         b.is_concrete_signature_compatible(a.as_ref())
       }
       (a, b) => a == b,
@@ -120,7 +120,7 @@ impl TyntType {
       .collect()
   }
   pub fn from_name(name: String, structs: &Vec<Struct>) -> CompileResult<Self> {
-    use TyntType::*;
+    use Type::*;
     Ok(match name.as_str() {
       "F32" | "f32" => F32,
       "I32" | "i32" => I32,
@@ -140,26 +140,26 @@ impl TyntType {
     structs: &Vec<Struct>,
   ) -> CompileResult<Self> {
     if let TyntTree::Leaf(_, type_name) = tree {
-      Ok(TyntType::from_name(type_name, structs)?)
+      Ok(Type::from_name(type_name, structs)?)
     } else {
       err(InvalidType)
     }
   }
   pub fn compile(&self) -> String {
     match self {
-      TyntType::None => panic!("Attempted to compile None type"),
-      TyntType::F32 => "f32".to_string(),
-      TyntType::I32 => "i32".to_string(),
-      TyntType::U32 => "u32".to_string(),
-      TyntType::Bool => "bool".to_string(),
-      TyntType::Struct(s) => compile_word(s.name.clone()),
-      TyntType::AbstractFunction(_) => {
+      Type::None => panic!("Attempted to compile None type"),
+      Type::F32 => "f32".to_string(),
+      Type::I32 => "i32".to_string(),
+      Type::U32 => "u32".to_string(),
+      Type::Bool => "bool".to_string(),
+      Type::Struct(s) => compile_word(s.name.clone()),
+      Type::AbstractFunction(_) => {
         panic!("Attempted to compile AbstractFunction type")
       }
-      TyntType::ConcreteFunction(_) => {
+      Type::ConcreteFunction(_) => {
         panic!("Attempted to compile ConcreteFunction type")
       }
-      TyntType::GenericVariable(_) => {
+      Type::GenericVariable(_) => {
         panic!("Attempted to compile GenericVariable type")
       }
     }
@@ -185,10 +185,10 @@ pub fn extract_type_annotation_ast(
 pub fn extract_type_annotation(
   exp: TyntTree,
   structs: &Vec<Struct>,
-) -> CompileResult<(Option<TyntType>, TyntTree)> {
+) -> CompileResult<(Option<Type>, TyntTree)> {
   let (t, value) = extract_type_annotation_ast(exp)?;
   Ok((
-    t.map(|t| TyntType::from_tynt_tree(t, structs))
+    t.map(|t| Type::from_tynt_tree(t, structs))
       .map_or(Ok(None), |v| v.map(Some))?,
     value,
   ))
@@ -197,8 +197,8 @@ pub fn extract_type_annotation(
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeState {
   Unknown,
-  OneOf(Vec<TyntType>),
-  Known(TyntType),
+  OneOf(Vec<Type>),
+  Known(Type),
   UnificationVariable(Rc<RefCell<TypeState>>),
 }
 
@@ -335,14 +335,14 @@ impl TypeState {
           .iter_mut()
           .map(|t| {
             Ok(match t {
-              TyntType::ConcreteFunction(signature) => {
+              Type::ConcreteFunction(signature) => {
                 if signature.mutually_constrain_arguments(&mut arg_types)? {
                   Some(t.clone())
                 } else {
                   None
                 }
               }
-              TyntType::AbstractFunction(signature) => {
+              Type::AbstractFunction(signature) => {
                 if signature.are_args_compatible(&arg_types) {
                   Some(t.clone())
                 } else {
@@ -375,10 +375,10 @@ impl TypeState {
         }
       }
       TypeState::Known(t) => match t {
-        TyntType::ConcreteFunction(signature) => {
+        Type::ConcreteFunction(signature) => {
           Ok(signature.mutually_constrain_arguments(&mut arg_types)?)
         }
-        TyntType::AbstractFunction(_) => Ok(false),
+        Type::AbstractFunction(_) => Ok(false),
         other => panic!(
           "tried to constrain fn on non-fn \n\n{arg_types:#?} \n\n{other:#?}"
         ),
@@ -387,7 +387,7 @@ impl TypeState {
       TypeState::UnificationVariable(_) => unreachable!(),
     })
   }
-  pub fn is_compatible(&self, t: &TyntType) -> bool {
+  pub fn is_compatible(&self, t: &Type) -> bool {
     self.with_dereferenced(|x| match x {
       TypeState::Unknown => true,
       TypeState::OneOf(possibilities) => possibilities.contains(t),
@@ -529,7 +529,7 @@ impl Context {
     for (name, signature) in built_in_functions() {
       ctx.bindings.bind(
         name,
-        Variable::new(TypeState::Known(TyntType::AbstractFunction(Box::new(
+        Variable::new(TypeState::Known(Type::AbstractFunction(Box::new(
           signature,
         )))),
       );
@@ -541,7 +541,7 @@ impl Context {
       if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&s.name.as_str()) {
         self.bindings.bind(
           &s.name,
-          Variable::new(TypeState::Known(TyntType::AbstractFunction(
+          Variable::new(TypeState::Known(Type::AbstractFunction(
             Box::new(AbstractFunctionSignature {
               generic_args: vec![],
               arg_types: s
@@ -553,7 +553,7 @@ impl Context {
                   unreachable!("struct provided to with_structs has a non-Known typestate")
                 })
                 .collect(),
-              return_type: TyntType::Struct(s.clone()),
+              return_type: Type::Struct(s.clone()),
             }),
           ))),
         )
@@ -573,7 +573,7 @@ impl Context {
         signatures
           .iter()
           .cloned()
-          .map(|signature| TyntType::AbstractFunction(Box::new(signature)))
+          .map(|signature| Type::AbstractFunction(Box::new(signature)))
           .collect(),
       ))
     } else {

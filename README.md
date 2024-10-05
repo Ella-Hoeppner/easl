@@ -30,7 +30,7 @@ Feature goals:
 * support `match` expressions
   * treat if statements a special case of match blocks
   * want logic for exhaustivity checking. For now the only exhaustible type is `Bool`, so basically for everything other than `Bool` there should be a requirement to have an "other" arm in the match block
-    * eventually I'll probably try to support sum types, and for those I'll want exhaustivity checking to, so maybe have like an `is_exhaustable` fn on TyntType or smth that for now just only returns true for `Bool`
+    * eventually I'll probably try to support sum types, and for those I'll want exhaustivity checking to, so maybe have like an `is_exhaustable` fn on Type or smth that for now just only returns true for `Bool`
 
 * loops
   * `loop`

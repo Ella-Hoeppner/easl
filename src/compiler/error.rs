@@ -3,7 +3,7 @@ use std::{backtrace::Backtrace, rc::Rc};
 
 use super::{
   metadata::Metadata,
-  types::{TyntType, TypeState},
+  types::{Type, TypeState},
 };
 
 #[derive(Clone, Debug)]
@@ -26,7 +26,7 @@ pub enum CompileErrorKind {
   CouldntInferTypes,
   IncompatibleTypes(TypeState, TypeState),
   FunctionArgumentTypesIncompatible(TypeState, Vec<TypeState>),
-  FunctionExpressionHasNonFunctionType(TyntType),
+  FunctionExpressionHasNonFunctionType(Type),
   UnboundName(String),
   AppliedNonFunction,
   WrongArity,

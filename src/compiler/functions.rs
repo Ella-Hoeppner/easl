@@ -6,7 +6,7 @@ use super::{
   error::{err, CompileErrorKind::*, CompileResult},
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
-  types::{Context, TyntType, TypeState},
+  types::{Context, Type, TypeState},
   util::indent,
 };
 
@@ -22,8 +22,8 @@ pub struct TopLevelFunction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractFunctionSignature {
   pub generic_args: Vec<String>,
-  pub arg_types: Vec<TyntType>,
-  pub return_type: TyntType,
+  pub arg_types: Vec<Type>,
+  pub return_type: Type,
 }
 
 impl AbstractFunctionSignature {
@@ -110,7 +110,7 @@ impl TopLevelFunction {
   pub fn compile(self) -> CompileResult<String> {
     let TypedExp { data, kind } = self.body;
     let (arg_types, return_type) =
-      if let TypeState::Known(TyntType::AbstractFunction(signature)) = data {
+      if let TypeState::Known(Type::AbstractFunction(signature)) = data {
         (signature.arg_types, signature.return_type)
       } else {
         panic!("attempted to compile function with invalid type data")
