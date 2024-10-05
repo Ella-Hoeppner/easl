@@ -761,7 +761,6 @@ impl TypedExp {
               if bindings.get_variable_kind(var_name) != &VariableKind::Var {
                 return err(AssignmentTargetMustBeVariable);
               }
-              //todo! check if the variable is mutable
             } else {
               return err(InvalidAssignmentTarget);
             }

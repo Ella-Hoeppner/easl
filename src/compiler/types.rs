@@ -61,8 +61,33 @@ impl TyntType {
         }
       }
       TyntType::Struct(s) => {
-        // todo! this should against a concrete struct in concrete_typestate,
-        // but that gets tricky since it isn't always Known...
+        if !concrete_typestate.with_dereferenced(|concrete_typestate| -> bool {
+          match concrete_typestate {
+            TypeState::Unknown => true,
+            TypeState::OneOf(possibilities) => {
+              let mut any_compatible = false;
+              for possibility in possibilities {
+                any_compatible |=
+                  if let TyntType::Struct(concrete_struct) = possibility {
+                    s.name == concrete_struct.name
+                  } else {
+                    false
+                  };
+              }
+              any_compatible
+            }
+            TypeState::Known(t) => {
+              if let TyntType::Struct(concrete_struct) = t {
+                s.name == concrete_struct.name
+              } else {
+                false
+              }
+            }
+            TypeState::UnificationVariable(_) => unreachable!(),
+          }
+        }) {
+          return false;
+        }
       }
       other => {
         if !concrete_typestate.is_compatible(other) {

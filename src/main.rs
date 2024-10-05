@@ -12,7 +12,7 @@ fn main() {
     "equality",
     "variable",
     "swizzle",
-    //"generic_struct",
+    "generic_struct",
   ] {
     println!("compiling {filename}...");
     let tynt_source = fs::read_to_string(&format!("./data/{filename}.tynt"))
