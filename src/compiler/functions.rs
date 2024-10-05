@@ -48,9 +48,10 @@ impl AbstractFunctionSignature {
       arg_types: self
         .arg_types
         .iter()
-        .map(|t| t.concretize_abstract(&generic_variables))
+        .cloned()
+        .map(|t| t.fill_generics(&generic_variables))
         .collect(),
-      return_type: self.return_type.concretize_abstract(&generic_variables),
+      return_type: self.return_type.clone().fill_generics(&generic_variables),
     }
   }
   pub fn is_concrete_signature_compatible(

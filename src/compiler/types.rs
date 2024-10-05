@@ -12,7 +12,7 @@ use super::{
   },
   error::{err, CompileErrorKind::*, CompileResult},
   functions::{AbstractFunctionSignature, ConcreteFunctionSignature},
-  structs::{AbstractStruct, ConcreteStruct},
+  structs::Struct,
   util::compile_word,
 };
 
@@ -23,26 +23,25 @@ pub enum TyntType {
   I32,
   U32,
   Bool,
-  AbstractStruct(AbstractStruct),
-  ConcreteStruct(ConcreteStruct),
+  Struct(Struct),
   AbstractFunction(Box<AbstractFunctionSignature>),
   ConcreteFunction(Box<ConcreteFunctionSignature>),
   GenericVariable(String),
 }
 impl TyntType {
-  pub fn concretize_abstract(
-    &self,
+  pub fn fill_generics(
+    self,
     generic_variables: &HashMap<String, TypeState>,
   ) -> TypeState {
     match self {
       TyntType::GenericVariable(name) => generic_variables
-        .get(name)
+        .get(&name)
         .expect("found unrecognized generic name while concretizing function")
         .clone(),
-      TyntType::AbstractStruct(s) => TypeState::Known(
-        TyntType::ConcreteStruct(s.concretize(&generic_variables)),
-      ),
-      other => TypeState::Known(other.clone()),
+      TyntType::Struct(s) => {
+        TypeState::Known(TyntType::Struct(s.fill_generics(&generic_variables)))
+      }
+      other => TypeState::Known(other),
     }
   }
   pub fn is_concrete_compatible(
@@ -61,7 +60,7 @@ impl TyntType {
             .insert(generic_name.clone(), concrete_typestate.clone());
         }
       }
-      TyntType::AbstractStruct(abstract_struct) => {
+      TyntType::Struct(s) => {
         // todo! this should against a concrete struct in concrete_typestate,
         // but that gets tricky since it isn't always Known...
       }
@@ -95,10 +94,7 @@ impl TyntType {
       .cloned()
       .collect()
   }
-  pub fn from_name(
-    name: String,
-    structs: &Vec<AbstractStruct>,
-  ) -> CompileResult<Self> {
+  pub fn from_name(name: String, structs: &Vec<Struct>) -> CompileResult<Self> {
     use TyntType::*;
     Ok(match name.as_str() {
       "F32" | "f32" => F32,
@@ -107,7 +103,7 @@ impl TyntType {
       "Bool" | "bool" => Bool,
       _ => {
         if let Some(s) = structs.iter().find(|s| s.name == name) {
-          AbstractStruct(s.clone())
+          Struct(s.clone())
         } else {
           return err(UnrecognizedTypeName(name));
         }
@@ -116,7 +112,7 @@ impl TyntType {
   }
   pub fn from_tynt_tree(
     tree: TyntTree,
-    structs: &Vec<AbstractStruct>,
+    structs: &Vec<Struct>,
   ) -> CompileResult<Self> {
     if let TyntTree::Leaf(_, type_name) = tree {
       Ok(TyntType::from_name(type_name, structs)?)
@@ -131,8 +127,7 @@ impl TyntType {
       TyntType::I32 => "i32".to_string(),
       TyntType::U32 => "u32".to_string(),
       TyntType::Bool => "bool".to_string(),
-      TyntType::AbstractStruct(s) => compile_word(s.name.clone()),
-      TyntType::ConcreteStruct(s) => compile_word(s.name.clone()),
+      TyntType::Struct(s) => compile_word(s.name.clone()),
       TyntType::AbstractFunction(_) => {
         panic!("Attempted to compile AbstractFunction type")
       }
@@ -164,7 +159,7 @@ pub fn extract_type_annotation_ast(
 
 pub fn extract_type_annotation(
   exp: TyntTree,
-  structs: &Vec<AbstractStruct>,
+  structs: &Vec<Struct>,
 ) -> CompileResult<(Option<TyntType>, TyntTree)> {
   let (t, value) = extract_type_annotation_ast(exp)?;
   Ok((
@@ -183,6 +178,22 @@ pub enum TypeState {
 }
 
 impl TypeState {
+  pub fn any_of(possibilities: Vec<TypeState>) -> CompileResult<Self> {
+    let mut type_possibilities = vec![];
+    for possibility in possibilities {
+      match possibility {
+        TypeState::Unknown => {}
+        TypeState::OneOf(mut new_possibilities) => {
+          type_possibilities.append(&mut new_possibilities);
+        }
+        TypeState::Known(t) => type_possibilities.push(t),
+        TypeState::UnificationVariable(_) => {
+          panic!("can't handle UnificationVariable in any_of :(")
+        }
+      }
+    }
+    Self::OneOf(type_possibilities).simplified()
+  }
   pub fn fresh_unification_variable() -> Self {
     TypeState::UnificationVariable(Rc::new(RefCell::new(TypeState::Unknown)))
   }
@@ -476,7 +487,7 @@ impl Bindings {
 
 #[derive(Debug, Clone)]
 pub struct Context {
-  pub structs: Vec<AbstractStruct>,
+  pub structs: Vec<Struct>,
   pub bindings: Bindings,
 }
 
@@ -500,35 +511,25 @@ impl Context {
     }
     ctx
   }
-  pub fn with_structs(mut self, structs: Vec<AbstractStruct>) -> Self {
+  pub fn with_structs(mut self, structs: Vec<Struct>) -> Self {
     for s in &structs {
       if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&s.name.as_str()) {
         self.bindings.bind(
           &s.name,
           Variable::new(TypeState::Known(TyntType::AbstractFunction(
-            //todo!("generic"),
             Box::new(AbstractFunctionSignature {
               generic_args: vec![],
               arg_types: s
                 .fields
                 .iter()
-                .map(|field| field.field_type.clone())
+                .map(|field| if let TypeState::Known(t) = &field.field_type {
+                  t.clone()
+                } else {
+                  unreachable!("struct provided to with_structs has a non-Known typestate")
+                })
                 .collect(),
-              return_type: TyntType::AbstractStruct(s.clone()),
-            }), // the below doesn't work because it can only concretize the struct
-                // a single time, such that a generic struct could only ever be
-                // specified in a single way across all the code. I think solving
-                // this will require a new specialized kind of abstract function
-                // signature
-                /*Box::new(AbstractFunctionSignature {
-                  generic_args: vec![],
-                  arg_types: s
-                    .fields
-                    .iter()
-                    .map(|field| field.field_type.clone())
-                    .collect(),
-                  return_type: TyntType::Struct(s.concretize()),
-                }),*/
+              return_type: TyntType::Struct(s.clone()),
+            }),
           ))),
         )
       }

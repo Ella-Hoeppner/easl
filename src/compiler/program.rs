@@ -12,7 +12,7 @@ use super::{
   expression::Exp,
   functions::TopLevelFunction,
   metadata::Metadata,
-  structs::{AbstractStruct, ConcreteStruct},
+  structs::Struct,
   types::{Bindings, Context, TyntType},
   vars::TopLevelVar,
 };

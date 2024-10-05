@@ -29,9 +29,9 @@ pub enum Accessor {
 
 pub fn swizzle_accessor_typestate(fields: &Vec<SwizzleField>) -> TypeState {
   TypeState::Known(match fields.len() {
-    2 => TyntType::AbstractStruct(get_builtin_struct("vec2f")),
-    3 => TyntType::AbstractStruct(get_builtin_struct("vec3f")),
-    4 => TyntType::AbstractStruct(get_builtin_struct("vec4f")),
+    2 => TyntType::Struct(get_builtin_struct("vec2f")),
+    3 => TyntType::Struct(get_builtin_struct("vec3f")),
+    4 => TyntType::Struct(get_builtin_struct("vec4f")),
     n => unreachable!("swizzle with {n} elements, expected 2-4"),
   })
 }
@@ -49,7 +49,7 @@ pub fn swizzle_accessed_possibilities(fields: &Vec<SwizzleField>) -> TypeState {
     ["vec4f", "vec3f", "vec2f"]
       .iter()
       .take(3.min(5 - max_accessed_index))
-      .map(|name| TyntType::AbstractStruct(get_builtin_struct(name)))
+      .map(|name| TyntType::Struct(get_builtin_struct(name)))
       .collect::<Vec<TyntType>>(),
   )
   .simplified()
@@ -118,7 +118,7 @@ use crate::{
 use super::{
   builtins::get_builtin_struct,
   error::{CompileErrorKind::*, CompileResult},
-  structs::AbstractStruct,
+  structs::Struct,
   types::{
     Bindings, Context, TyntType,
     TypeState::{self, *},
@@ -139,7 +139,7 @@ pub type TypedExp = Exp<TypeState>;
 impl TypedExp {
   pub fn try_from_tynt_tree(
     tree: TyntTree,
-    structs: &Vec<AbstractStruct>,
+    structs: &Vec<Struct>,
   ) -> CompileResult<Self> {
     Ok(match tree {
       TyntTree::Leaf(_, leaf) => {
@@ -554,23 +554,18 @@ impl TypedExp {
         anything_changed |= f.propagate_types(ctx)?;
         anything_changed
       }
-      Access(accessor, subexp) => todo!()/*match accessor {
+      Access(accessor, subexp) => match accessor {
         Accessor::Field(field_name) => {
           let mut anything_changed = false;
           let (field_possibilities, struct_possibilities): (
-            Vec<TyntType>,
+            Vec<TypeState>,
             Vec<TyntType>,
           ) = ctx
             .structs
             .iter()
             .filter_map(|s| {
               s.fields.iter().find(|field| field.name == *field_name).map(
-                |field| {
-                  (
-                    field.field_type.clone(),
-                    TyntType::AbstractStruct(s.clone()),
-                  )
-                },
+                |field| (field.field_type.clone(), TyntType::Struct(s.clone())),
               )
             })
             .collect();
@@ -579,21 +574,21 @@ impl TypedExp {
           }
           anything_changed |= self
             .data
-            .constrain(TypeState::OneOf(field_possibilities).simplified()?)?;
+            .constrain(TypeState::any_of(field_possibilities)?)?;
           anything_changed |= subexp
             .data
             .constrain(TypeState::OneOf(struct_possibilities).simplified()?)?;
           anything_changed |= subexp.propagate_types(ctx)?;
-          let field_type_possibilities = match &subexp.data {
+          let field_type_possibilities: Vec<TypeState> = match &subexp.data {
             Unknown => unreachable!(),
             OneOf(possibilities) => possibilities
               .iter()
-              .map(|t| -> CompileResult<TyntType> {
+              .map(|t| -> CompileResult<TypeState> {
                 Ok(match t {
-                  TyntType::Struct(concrete_struct) => ctx
+                  TyntType::Struct(s) => ctx
                     .structs
                     .iter()
-                    .find(|s| s.name == *concrete_struct.name)
+                    .find(|s| s.name == *s.name)
                     .unwrap()
                     .fields
                     .iter()
@@ -604,13 +599,13 @@ impl TypedExp {
                   _ => unreachable!(),
                 })
               })
-              .collect::<CompileResult<Vec<TyntType>>>()?,
+              .collect::<CompileResult<Vec<TypeState>>>()?,
             Known(subexp_type) => match subexp_type {
-              TyntType::Struct(concrete_struct) => {
+              TyntType::Struct(s) => {
                 vec![ctx
                   .structs
                   .iter()
-                  .find(|s| s.name == concrete_struct.name)
+                  .find(|other_s| other_s.name == s.name)
                   .unwrap()
                   .fields
                   .iter()
@@ -623,9 +618,9 @@ impl TypedExp {
             },
             UnificationVariable(_) => todo!("unification"),
           };
-          anything_changed |= self.data.constrain(
-            TypeState::OneOf(field_type_possibilities).simplified()?,
-          )?;
+          anything_changed |= self
+            .data
+            .constrain(TypeState::any_of(field_type_possibilities)?)?;
           anything_changed
         }
         Accessor::Swizzle(fields) => {
@@ -637,7 +632,7 @@ impl TypedExp {
           anything_changed |= subexp.propagate_types(ctx)?;
           anything_changed
         }
-      }*/,
+      },
       Let(bindings, body) => {
         let mut anything_changed =
           body.data.mutually_constrain(&mut self.data)?;

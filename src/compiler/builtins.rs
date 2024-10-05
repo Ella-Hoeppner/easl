@@ -1,8 +1,8 @@
-use crate::compiler::structs::AbstractStructField;
+use crate::compiler::types::TypeState;
 
 use super::{
   functions::AbstractFunctionSignature,
-  structs::{AbstractStruct, ConcreteStruct},
+  structs::{Struct, StructField},
   types::TyntType,
 };
 
@@ -28,9 +28,9 @@ fn n_sums(n: u8) -> Vec<Vec<u8>> {
 fn vec_n_type(n: u8) -> TyntType {
   match n {
     1 => TyntType::F32,
-    2 => TyntType::AbstractStruct(get_builtin_struct("vec2f")),
-    3 => TyntType::AbstractStruct(get_builtin_struct("vec3f")),
-    4 => TyntType::AbstractStruct(get_builtin_struct("vec4f")),
+    2 => TyntType::Struct(get_builtin_struct("vec2f")),
+    3 => TyntType::Struct(get_builtin_struct("vec3f")),
+    4 => TyntType::Struct(get_builtin_struct("vec4f")),
     _ => unreachable!(),
   }
 }
@@ -46,75 +46,72 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
     .collect()
 }
 
-pub fn built_in_structs() -> Vec<AbstractStruct> {
+pub fn built_in_structs() -> Vec<Struct> {
   vec![
-    AbstractStruct {
+    Struct {
       name: "vec2f".to_string(),
-      generic_args: vec![],
       fields: vec![
-        AbstractStructField {
+        StructField {
           metadata: None,
           name: "x".to_string(),
-          field_type: TyntType::F32,
+          field_type: TypeState::Known(TyntType::F32),
         },
-        AbstractStructField {
+        StructField {
           metadata: None,
           name: "y".to_string(),
-          field_type: TyntType::F32,
+          field_type: TypeState::Known(TyntType::F32),
         },
       ],
     },
-    AbstractStruct {
+    Struct {
       name: "vec3f".to_string(),
-      generic_args: vec![],
       fields: vec![
-        AbstractStructField {
+        StructField {
           metadata: None,
           name: "x".to_string(),
-          field_type: TyntType::F32,
+          field_type: TypeState::Known(TyntType::F32),
         },
-        AbstractStructField {
+        StructField {
           metadata: None,
           name: "y".to_string(),
-          field_type: TyntType::F32,
+          field_type: TypeState::Known(TyntType::F32),
         },
-        AbstractStructField {
+        StructField {
           metadata: None,
           name: "z".to_string(),
-          field_type: TyntType::F32,
+          field_type: TypeState::Known(TyntType::F32),
         },
       ],
     },
-    AbstractStruct {
+    Struct {
       name: "vec4f".to_string(),
-      generic_args: vec![],
       fields: vec![
-        AbstractStructField {
+        StructField {
           metadata: None,
           name: "x".to_string(),
-          field_type: TyntType::F32,
+          field_type: TypeState::Known(TyntType::F32),
         },
-        AbstractStructField {
+        StructField {
           metadata: None,
           name: "y".to_string(),
-          field_type: TyntType::F32,
+          field_type: TypeState::Known(TyntType::F32),
         },
-        AbstractStructField {
+        StructField {
           metadata: None,
           name: "z".to_string(),
-          field_type: TyntType::F32,
+          field_type: TypeState::Known(TyntType::F32),
         },
-        AbstractStructField {
+        StructField {
           metadata: None,
           name: "w".to_string(),
-          field_type: TyntType::F32,
+          field_type: TypeState::Known(TyntType::F32),
         },
       ],
     },
   ]
 }
 
-pub fn get_builtin_struct(name: &str) -> AbstractStruct {
+pub fn get_builtin_struct(name: &str) -> Struct {
   built_in_structs()
     .into_iter()
     .find(|s| s.name == name)
