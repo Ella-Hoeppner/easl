@@ -33,10 +33,17 @@ impl Type {
     self,
     generic_variables: &HashMap<String, TypeState>,
   ) -> TypeState {
+    let self_clone = self.clone();
     match self {
       Type::GenericVariable(name) => generic_variables
         .get(&name)
-        .expect("found unrecognized generic name while concretizing function")
+        .expect(
+          format!(
+            "found unrecognized generic name while filling generics: {}, {:?}, {self_clone:?}",
+            name, generic_variables
+          )
+          .as_str(),
+        )
         .clone(),
       Type::Struct(s) => {
         TypeState::Known(Type::Struct(s.fill_generics(&generic_variables)))
@@ -119,7 +126,11 @@ impl Type {
       .cloned()
       .collect()
   }
-  pub fn from_name(name: String, structs: &Vec<Struct>) -> CompileResult<Self> {
+  pub fn from_name(
+    name: String,
+    generic_variables: &Vec<String>,
+    structs: &Vec<Struct>,
+  ) -> CompileResult<Self> {
     use Type::*;
     Ok(match name.as_str() {
       "F32" | "f32" => F32,
@@ -127,20 +138,25 @@ impl Type {
       "U32" | "u32" => U32,
       "Bool" | "bool" => Bool,
       _ => {
-        if let Some(s) = structs.iter().find(|s| s.name == name) {
-          Struct(s.clone())
+        if generic_variables.contains(&name) {
+          Type::GenericVariable(name)
         } else {
-          return err(UnrecognizedTypeName(name));
+          if let Some(s) = structs.iter().find(|s| s.name == name) {
+            Struct(s.clone())
+          } else {
+            return err(UnrecognizedTypeName(name));
+          }
         }
       }
     })
   }
   pub fn from_tynt_tree(
     tree: TyntTree,
+    generic_variables: &Vec<String>,
     structs: &Vec<Struct>,
   ) -> CompileResult<Self> {
     if let TyntTree::Leaf(_, type_name) = tree {
-      Ok(Type::from_name(type_name, structs)?)
+      Ok(Type::from_name(type_name, generic_variables, structs)?)
     } else {
       err(InvalidType)
     }
@@ -184,11 +200,12 @@ pub fn extract_type_annotation_ast(
 
 pub fn extract_type_annotation(
   exp: TyntTree,
+  generic_variables: &Vec<String>,
   structs: &Vec<Struct>,
 ) -> CompileResult<(Option<Type>, TyntTree)> {
   let (t, value) = extract_type_annotation_ast(exp)?;
   Ok((
-    t.map(|t| Type::from_tynt_tree(t, structs))
+    t.map(|t| Type::from_tynt_tree(t, generic_variables, structs))
       .map_or(Ok(None), |v| v.map(Some))?,
     value,
   ))
@@ -543,7 +560,7 @@ impl Context {
           &s.name,
           Variable::new(TypeState::Known(Type::AbstractFunction(
             Box::new(AbstractFunctionSignature {
-              generic_args: vec![],
+              generic_args: s.generic_args.clone(),
               arg_types: s
                 .fields
                 .iter()

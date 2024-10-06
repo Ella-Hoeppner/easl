@@ -15,6 +15,7 @@ use super::{
   types::{Type, TypeState},
 };
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct UntypedStructField {
   metadata: Option<Metadata>,
   name: String,
@@ -35,6 +36,7 @@ impl UntypedStructField {
   }
   pub fn assign_type(
     self,
+    generic_variables: &Vec<String>,
     structs: &Vec<Struct>,
   ) -> CompileResult<StructField> {
     Ok(StructField {
@@ -42,12 +44,14 @@ impl UntypedStructField {
       name: self.name,
       field_type: TypeState::Known(Type::from_name(
         self.field_type_name,
+        generic_variables,
         structs,
       )?),
     })
   }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct UntypedStruct {
   pub name: String,
   pub fields: Vec<UntypedStructField>,
@@ -75,8 +79,9 @@ impl UntypedStruct {
       fields: self
         .fields
         .into_iter()
-        .map(|field| field.assign_type(structs))
+        .map(|field| field.assign_type(&self.generic_args, structs))
         .collect::<CompileResult<Vec<StructField>>>()?,
+      generic_args: self.generic_args,
     })
   }
 }
@@ -105,6 +110,7 @@ impl StructField {
 pub struct Struct {
   pub name: String,
   pub fields: Vec<StructField>,
+  pub generic_args: Vec<String>,
 }
 
 impl Struct {
@@ -130,6 +136,15 @@ impl Struct {
       })
       .collect();
     self
+  }
+  pub fn fill_generics_ordered(self, generics: Vec<TypeState>) -> Self {
+    let generics_map = self
+      .generic_args
+      .iter()
+      .cloned()
+      .zip(generics.into_iter())
+      .collect();
+    self.fill_generics(&generics_map)
   }
   pub fn compile(self) -> String {
     let name = compile_word(self.name);

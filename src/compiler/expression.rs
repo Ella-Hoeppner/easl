@@ -206,6 +206,7 @@ impl TypedExp {
                           {
                             let return_type = Type::from_tynt_tree(
                               args_and_return_type.remove(1),
+                              &vec![],
                               structs,
                             )?;
                             if let TyntTree::Inner(
@@ -231,7 +232,11 @@ impl TypedExp {
                                 .into_iter()
                                 .map(|arg| -> CompileResult<_> {
                                   let (maybe_t, arg_name_ast) =
-                                    extract_type_annotation(arg, structs)?;
+                                    extract_type_annotation(
+                                      arg,
+                                      &vec![], 
+                                      structs
+                                    )?;
                                   let t = maybe_t.ok_or(
                                     CompileError::from(FunctionArgMissingType),
                                   )?;
@@ -393,14 +398,48 @@ impl TypedExp {
                 children_iter.next().unwrap(),
                 structs,
               )?;
-              if let TyntTree::Leaf(_, type_name) =
-                children_iter.next().unwrap()
-              {
-                exp.data = Known(Type::from_name(type_name, structs)?);
-                exp
-              } else {
-                return err(InvalidType);
-              }
+              exp.data = TypeState::Known(match children_iter.next().unwrap() {
+                TyntTree::Leaf(_, type_name) => {
+                  Type::from_name(type_name, &vec![], structs)?
+                }
+                TyntTree::Inner(
+                  (_, Encloser(Parens)),
+                  struct_signature_children
+                ) => {
+                  let mut signature_leaves = struct_signature_children
+                    .into_iter();
+                  if let Some(TyntTree::Leaf(_, struct_name)) = signature_leaves.next() {
+                    if signature_leaves.is_empty() {
+                      return err(InvalidStructName);
+                    } else {
+                      let generic_args: Vec<TypeState> = signature_leaves
+                        .map(|signature_arg| Ok(TypeState::Known(
+                            Type::from_tynt_tree(
+                              signature_arg,
+                              &vec![],
+                              structs
+                            )?
+                          ))
+                        )
+                        .collect::<CompileResult<Vec<TypeState>>>()?;
+                      if let Some(s) = structs
+                        .iter()
+                        .find(|s| s.name == struct_name)
+                      {
+                        Type::Struct(s.clone().fill_generics_ordered(generic_args))
+                      } else {
+                        return err(UnknownStructName)
+                      }
+                    }
+                  } else {
+                    return err(InvalidStructName);
+                  }
+                }
+                _ => {
+                  return err(InvalidType);
+                }
+              });
+              exp
             }
           },
         }
@@ -584,7 +623,7 @@ impl TypedExp {
                   Type::Struct(s) => ctx
                     .structs
                     .iter()
-                    .find(|s| s.name == *s.name)
+                    .find(|other_struct| s.name == *other_struct.name)
                     .unwrap()
                     .fields
                     .iter()

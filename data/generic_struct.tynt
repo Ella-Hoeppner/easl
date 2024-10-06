@@ -5,6 +5,6 @@
 (def f
   (fn [a: f32]: vec2f
     (let [two (TwoOf a a): (TwoOf f32)]
-      (vec2f two.first
-             two.second))))
+      (vec2f (.first two)
+             (.second two)))))
 

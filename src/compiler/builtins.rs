@@ -62,6 +62,7 @@ pub fn built_in_structs() -> Vec<Struct> {
           field_type: TypeState::Known(Type::F32),
         },
       ],
+      generic_args: vec![],
     },
     Struct {
       name: "vec3f".to_string(),
@@ -82,6 +83,7 @@ pub fn built_in_structs() -> Vec<Struct> {
           field_type: TypeState::Known(Type::F32),
         },
       ],
+      generic_args: vec![],
     },
     Struct {
       name: "vec4f".to_string(),
@@ -107,6 +109,7 @@ pub fn built_in_structs() -> Vec<Struct> {
           field_type: TypeState::Known(Type::F32),
         },
       ],
+      generic_args: vec![],
     },
   ]
 }

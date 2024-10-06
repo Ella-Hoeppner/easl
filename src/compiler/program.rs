@@ -1,6 +1,10 @@
+use sse::syntax::EncloserOrOperator;
+
 use crate::{
   compiler::{
-    error::err, metadata::extract_metadata, structs::UntypedStruct,
+    error::{err, CompileError},
+    metadata::extract_metadata,
+    structs::UntypedStruct,
     util::read_type_annotated_name,
   },
   parse::TyntTree,
@@ -44,6 +48,29 @@ impl Program {
                     vec![],
                     children_iter.cloned().collect(),
                   )?)
+                }
+                TyntTree::Inner((_, Encloser(Parens)), signature_children) => {
+                  let mut signature_leaves = signature_children
+                    .into_iter()
+                    .map(|child| match child {
+                      TyntTree::Leaf(_, name) => Ok(name.clone()),
+                      _ => err(InvalidStructName),
+                    })
+                    .collect::<CompileResult<Vec<String>>>()?
+                    .into_iter();
+                  if let Some(struct_name) = signature_leaves.next() {
+                    if signature_leaves.is_empty() {
+                      return err(InvalidStructName);
+                    } else {
+                      untyped_structs.push(UntypedStruct::from_field_trees(
+                        struct_name,
+                        signature_leaves.collect(),
+                        children_iter.cloned().collect(),
+                      )?)
+                    }
+                  } else {
+                    return err(InvalidStructName);
+                  }
                 }
                 _ => return err(InvalidStructName),
               }
@@ -125,7 +152,7 @@ impl Program {
                 name,
                 metadata,
                 attributes,
-                var_type: Type::from_name(type_name, &structs)?,
+                var_type: Type::from_name(type_name, &vec![], &structs)?,
               })
             }
             "def" => {
