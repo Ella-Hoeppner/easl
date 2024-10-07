@@ -112,6 +112,9 @@ impl Type {
       (Type::ConcreteFunction(a), Type::AbstractFunction(b)) => {
         b.is_concrete_signature_compatible(a.as_ref())
       }
+      (Type::Struct(a), Type::Struct(b)) => a.compatible(b),
+      (Type::GenericVariable(_), _) => true,
+      (_, Type::GenericVariable(_)) => true,
       (a, b) => a == b,
     };
     b
@@ -594,6 +597,10 @@ impl Context {
           .collect(),
       ))
     } else {
+      /*println!(
+        "constraining\n\n{t:#?}\n\nagainst\n\n{:#?}",
+        self.bindings.get_typestate_mut(name)
+      );*/
       t.mutually_constrain(self.bindings.get_typestate_mut(name)?)
     }
   }

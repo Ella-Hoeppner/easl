@@ -446,41 +446,50 @@ impl TypedExp {
       }
     })
   }
-  pub fn is_fully_typed(&self) -> bool {
+  pub fn find_untyped(&self) -> Vec<TypedExp> {
+    let mut children_untyped = match &self.kind {
+      Name(_) => vec![],
+      NumberLiteral(_) => vec![],
+      BooleanLiteral(_) => vec![],
+      Function(_, body) => body.find_untyped(),
+      Application(f, args) => args
+        .iter()
+        .fold(f.find_untyped(), |mut untyped_so_far, arg| {
+          untyped_so_far.append(&mut arg.find_untyped());
+          untyped_so_far
+        }),
+      Access(_, exp) => exp.find_untyped(),
+      Let(bindings, body) => bindings.iter().fold(
+        body.find_untyped(),
+        |mut untyped_so_far, (_, _, binding_value)| {
+          untyped_so_far.append(&mut binding_value.find_untyped());
+          untyped_so_far
+        },
+      ),
+      Match(scrutinee, arms) => arms.iter().fold(
+        scrutinee.find_untyped(),
+        |mut untyped_so_far, (pattern, arm_body)| {
+          untyped_so_far.append(&mut pattern.find_untyped());
+          untyped_so_far.append(&mut arm_body.find_untyped());
+          untyped_so_far
+        },
+      ),
+      Block(children) => children
+        .iter()
+        .map(|child| child.find_untyped())
+        .fold(
+          vec![],
+          |mut a, mut b| {
+            a.append(&mut b);
+            a
+          }
+        )
+    };
     if let Known(_) = self.data {
-      match &self.kind {
-        Name(_) => true,
-        NumberLiteral(_) => true,
-        BooleanLiteral(_) => true,
-        Function(_, body) => body.is_fully_typed(),
-        Application(f, args) => args
-          .iter()
-          .fold(f.is_fully_typed(), |fully_typed_so_far, arg| {
-            fully_typed_so_far && arg.is_fully_typed()
-          }),
-        Access(_, exp) => exp.is_fully_typed(),
-        Let(bindings, body) => bindings.iter().fold(
-          body.is_fully_typed(),
-          |fully_typed_so_far, (_, _, binding_value)| {
-            fully_typed_so_far && binding_value.is_fully_typed()
-          },
-        ),
-        Match(scrutinee, arms) => arms.iter().fold(
-          scrutinee.is_fully_typed(),
-          |fully_typed_so_far, (pattern, arm_body)| {
-            fully_typed_so_far
-              && pattern.is_fully_typed()
-              && arm_body.is_fully_typed()
-          },
-        ),
-        Block(children) => children
-          .iter()
-          .map(|child| child.is_fully_typed())
-          .reduce(|a, b| a && b)
-          .unwrap_or(true),
-      }
+      children_untyped
     } else {
-      false
+      children_untyped.push(self.clone());
+      children_untyped
     }
   }
   pub fn propagate_types(&mut self, ctx: &mut Context) -> CompileResult<bool> {

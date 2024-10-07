@@ -1,10 +1,6 @@
-use sse::syntax::EncloserOrOperator;
-
 use crate::{
   compiler::{
-    error::{err, CompileError},
-    metadata::extract_metadata,
-    structs::UntypedStruct,
+    error::err, metadata::extract_metadata, structs::UntypedStruct,
     util::read_type_annotated_name,
   },
   parse::TyntTree,
@@ -13,10 +9,9 @@ use crate::{
 use super::{
   builtins::built_in_structs,
   error::{CompileErrorKind::*, CompileResult},
-  expression::Exp,
+  expression::{Exp, TypedExp},
   functions::TopLevelFunction,
   metadata::Metadata,
-  structs::Struct,
   types::{Bindings, Context, Type},
   vars::TopLevelVar,
 };
@@ -275,22 +270,24 @@ impl Program {
       },
     )
   }
-  fn is_fully_typed(&self) -> bool {
+  fn find_untyped(&self) -> Vec<TypedExp> {
     self
       .top_level_functions
       .iter()
-      .fold(true, |fully_typed_so_far, f| {
-        fully_typed_so_far && f.body.is_fully_typed()
+      .fold(vec![], |mut untyped_so_far, f| {
+        untyped_so_far.append(&mut f.body.find_untyped());
+        untyped_so_far
       })
   }
   pub fn fully_infer_types(mut self) -> CompileResult<Self> {
     loop {
       let did_type_states_change = self.propagate_types()?;
       if !did_type_states_change {
-        return if self.is_fully_typed() {
+        let untyped_expressions = self.find_untyped();
+        return if untyped_expressions.is_empty() {
           Ok(self)
         } else {
-          err(CouldntInferTypes)
+          err(CouldntInferTypes(untyped_expressions))
         };
       }
     }

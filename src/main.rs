@@ -6,7 +6,6 @@ fn main() {
   for filename in [
     "simple_shader",
     "variadic_vec",
-    "accessor",
     "let",
     "block",
     "equality",

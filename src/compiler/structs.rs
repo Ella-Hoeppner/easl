@@ -146,6 +146,27 @@ impl Struct {
       .collect();
     self.fill_generics(&generics_map)
   }
+  pub fn compatible(&self, other: &Self) -> bool {
+    self.fields.iter().zip(other.fields.iter()).fold(
+      self.name == other.name,
+      |compatible_so_far, (field, other_field)| {
+        field.field_type.with_dereferenced(|typestate| {
+          compatible_so_far
+            && if let TypeState::Known(t) = typestate {
+              other_field.field_type.with_dereferenced(|other_typestate| {
+                if let TypeState::Known(other_t) = other_typestate {
+                  t.compatible(other_t)
+                } else {
+                  true
+                }
+              })
+            } else {
+              true
+            }
+        })
+      },
+    )
+  }
   pub fn compile(self) -> String {
     let name = compile_word(self.name);
     let fields = self

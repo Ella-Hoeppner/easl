@@ -2,6 +2,7 @@ use sse::ParseError;
 use std::{backtrace::Backtrace, rc::Rc};
 
 use super::{
+  expression::TypedExp,
   metadata::Metadata,
   types::{Type, TypeState},
 };
@@ -24,7 +25,7 @@ pub enum CompileErrorKind {
   InvalidType,
   FunctionArgMissingType,
   InvalidArgumentName,
-  CouldntInferTypes,
+  CouldntInferTypes(Vec<TypedExp>),
   IncompatibleTypes(TypeState, TypeState),
   FunctionArgumentTypesIncompatible(TypeState, Vec<TypeState>),
   FunctionExpressionHasNonFunctionType(Type),
@@ -38,6 +39,7 @@ pub enum CompileErrorKind {
   FunctionSignatureNotSquareBrackets,
   FunctionSignatureMissingReturnType,
   NoSuchField,
+  AccessorOnNonStruct,
   AccessorHadMultipleArguments,
   NotEnoughLetBlockChildren,
   LetBindingsNotSquareBracketed,
