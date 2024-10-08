@@ -1,9 +1,9 @@
 use sse::{
   document::Document, standard_whitespace_chars, DocumentSyntaxTree,
-  Encloser as SSEEncloser, Operator as SSEOperator, ParseError, SyntaxGraph,
+  Encloser as SSEEncloser, Operator as SSEOperator, SyntaxGraph,
 };
 
-use crate::compiler::error::{CompileError, CompileErrorKind, CompileResult};
+use crate::compiler::error::{CompileErrorKind, CompileResult};
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Encloser {
   Parens,

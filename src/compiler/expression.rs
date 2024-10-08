@@ -116,7 +116,7 @@ use crate::{
   compiler::{
     builtins::{ASSIGNMENT_OPS, INFIX_OPS},
     error::{err, CompileError},
-    functions::{AbstractFunctionSignature, ConcreteFunctionSignature},
+    functions::FunctionSignature,
     metadata::{extract_metadata, Metadata},
     types::extract_type_annotation,
     util::indent,
@@ -127,7 +127,7 @@ use crate::{
 use super::{
   builtins::get_builtin_struct,
   error::{CompileErrorKind::*, CompileResult},
-  structs::{AbstractStruct, Struct},
+  structs::AbstractStruct,
   types::{
     Bindings, Context, Type,
     TypeState::{self, *},
@@ -260,7 +260,7 @@ impl TypedExp {
                                   )>>()?;
                               Some(Exp {
                                 data: Known(Type::Function(Box::new(
-                                  ConcreteFunctionSignature {
+                                  FunctionSignature {
                                     arg_types,
                                     return_type: TypeState::Known(return_type),
                                   },

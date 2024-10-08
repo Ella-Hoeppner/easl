@@ -6,7 +6,7 @@ use super::{
   error::{err, CompileErrorKind::*, CompileResult},
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
-  structs::{AbstractStruct, TypeOrAbstractStruct},
+  structs::TypeOrAbstractStruct,
   types::{GenericOr, Type, TypeState},
   util::indent,
 };
@@ -28,26 +28,13 @@ pub struct AbstractFunctionSignature {
 }
 
 impl AbstractFunctionSignature {
-  pub fn are_args_compatible(&self, args: &Vec<TypeState>) -> bool {
-    if args.len() != self.arg_types.len() {
-      return false;
-    }
-    for i in 0..args.len() {
-      if let GenericOr::NonGeneric(t) = &self.arg_types[i] {
-        if !args[i].is_compatible(t) {
-          return false;
-        }
-      }
-    }
-    true
-  }
-  pub fn concretize(&self) -> ConcreteFunctionSignature {
+  pub fn concretize(&self) -> FunctionSignature {
     let generic_variables: HashMap<String, TypeState> = self
       .generic_args
       .iter()
       .map(|name| (name.clone(), TypeState::fresh_unification_variable()))
       .collect();
-    ConcreteFunctionSignature {
+    FunctionSignature {
       arg_types: self
         .arg_types
         .iter()
@@ -81,37 +68,15 @@ impl AbstractFunctionSignature {
       },
     }
   }
-  pub fn is_concrete_signature_compatible(
-    &self,
-    concrete_signature: &ConcreteFunctionSignature,
-  ) -> bool {
-    todo!()
-    /*if self.arg_types.len() != concrete_signature.arg_types.len() {
-      return false;
-    }
-    let mut generic_assignments: HashMap<String, TypeState> = HashMap::new();
-    for i in 0..self.arg_types.len() {
-      if !self.arg_types[i].is_concrete_compatible(
-        &concrete_signature.arg_types[i],
-        &mut generic_assignments,
-      ) {
-        return false;
-      }
-    }
-    self.return_type.is_concrete_compatible(
-      &concrete_signature.return_type,
-      &mut generic_assignments,
-    )*/
-  }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ConcreteFunctionSignature {
+pub struct FunctionSignature {
   pub arg_types: Vec<TypeState>,
   pub return_type: TypeState,
 }
 
-impl ConcreteFunctionSignature {
+impl FunctionSignature {
   pub fn compatible(&self, other: &Self) -> bool {
     if self.arg_types.len() != other.arg_types.len() {
       return false;

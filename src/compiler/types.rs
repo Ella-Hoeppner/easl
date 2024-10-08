@@ -1,5 +1,5 @@
 use core::fmt::Debug;
-use std::{any, cell::RefCell, collections::HashMap, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use sse::syntax::EncloserOrOperator;
 
@@ -11,7 +11,7 @@ use super::{
     ABNORMAL_CONSTRUCTOR_STRUCTS,
   },
   error::{err, CompileErrorKind::*, CompileResult},
-  functions::{AbstractFunctionSignature, ConcreteFunctionSignature},
+  functions::{AbstractFunctionSignature, FunctionSignature},
   structs::{AbstractStruct, Struct, TypeOrAbstractStruct},
   util::compile_word,
 };
@@ -45,7 +45,7 @@ pub enum Type {
   U32,
   Bool,
   Struct(Struct),
-  Function(Box<ConcreteFunctionSignature>),
+  Function(Box<FunctionSignature>),
 }
 impl Type {
   pub fn compatible(&self, other: &Self) -> bool {
@@ -313,15 +313,6 @@ impl TypeState {
       TypeState::Unknown => Ok(false),
       TypeState::UnificationVariable(_) => unreachable!(),
     })
-  }
-  pub fn is_compatible(&self, t: &TypeOrAbstractStruct) -> bool {
-    todo!()
-    /*self.with_dereferenced(|x| match x {
-      TypeState::Unknown => true,
-      TypeState::OneOf(possibilities) => possibilities.contains(t),
-      TypeState::Known(known_t) => known_t == t,
-      TypeState::UnificationVariable(_) => unreachable!(),
-    })*/
   }
   pub fn simplify(&mut self) -> CompileResult<()> {
     Ok(if let TypeState::OneOf(mut possibilities) = self.clone() {

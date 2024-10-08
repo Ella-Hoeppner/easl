@@ -1,13 +1,10 @@
 use std::collections::HashMap;
 
-use crate::compiler::{
-  structs::{AbstractStructField, TypeOrAbstractStruct},
-  types::TypeState,
-};
+use crate::compiler::structs::{AbstractStructField, TypeOrAbstractStruct};
 
 use super::{
   functions::AbstractFunctionSignature,
-  structs::{AbstractStruct, Struct, StructField},
+  structs::AbstractStruct,
   types::{GenericOr, Type},
 };
 
