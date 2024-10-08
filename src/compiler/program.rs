@@ -299,6 +299,12 @@ impl Program {
     }
     Ok(self)
   }
+  pub fn monomorphize_structs(mut self) -> Self {
+    for f in self.top_level_functions.iter_mut() {
+      f.monomorphize_structs(&mut self.global_context);
+    }
+    self
+  }
   pub fn compile_to_wgsl(self) -> CompileResult<String> {
     let mut wgsl = String::new();
     for v in self.top_level_vars {
@@ -307,15 +313,17 @@ impl Program {
     }
     wgsl += "\n";
     let default_structs = built_in_structs();
-    /*for s in self
+    for s in self
       .global_context
       .structs
       .into_iter()
       .filter(|s| !default_structs.contains(s))
     {
-      wgsl += &s.compile();
-      wgsl += "\n\n";
-    }*/
+      if let Some(compiled_struct) = s.compile_if_non_generic() {
+        wgsl += &compiled_struct;
+        wgsl += "\n\n";
+      }
+    }
     for f in self.top_level_functions {
       wgsl += &f.compile()?;
       wgsl += "\n\n";

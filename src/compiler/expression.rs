@@ -611,70 +611,6 @@ impl TypedExp {
               return err(AccessorOnNonStruct)?;
             }
           }
-          /*let (field_possibilities, struct_possibilities): (
-            Vec<TypeState>,
-            Vec<Type>,
-          ) = ctx
-            .structs
-            .iter()
-            .filter_map(|s| {
-              s.fields.iter().find(|field| field.name == *field_name).map(
-                |field| (field.field_type.clone(), Type::Struct(s.clone())),
-              )
-            })
-            .collect();
-          if field_possibilities.len() == 0 {
-            return err(NoSuchField);
-          }
-          anything_changed |= self
-            .data
-            .constrain(TypeState::any_of(field_possibilities)?)?;
-          anything_changed |= subexp
-            .data
-            .constrain(TypeState::OneOf(struct_possibilities).simplified()?)?;
-          anything_changed |= subexp.propagate_types(ctx)?;
-          let field_type_possibilities: Vec<TypeState> = match &subexp.data {
-            Unknown => unreachable!(),
-            OneOf(possibilities) => possibilities
-              .iter()
-              .map(|t| -> CompileResult<TypeState> {
-                Ok(match t {
-                  Type::Struct(s) => ctx
-                    .structs
-                    .iter()
-                    .find(|other_struct| s.name == *other_struct.name)
-                    .unwrap()
-                    .fields
-                    .iter()
-                    .find(|f| f.name == *field_name)
-                    .ok_or(NoSuchField)?
-                    .field_type
-                    .clone(),
-                  _ => unreachable!(),
-                })
-              })
-              .collect::<CompileResult<Vec<TypeState>>>()?,
-            Known(subexp_type) => match subexp_type {
-              Type::Struct(s) => {
-                vec![ctx
-                  .structs
-                  .iter()
-                  .find(|other_s| other_s.name == s.name)
-                  .unwrap()
-                  .fields
-                  .iter()
-                  .find(|f| f.name == *field_name)
-                  .ok_or(NoSuchField)?
-                  .field_type
-                  .clone()]
-              }
-              _ => unreachable!(),
-            },
-            UnificationVariable(_) => todo!("unification"),
-          };
-          anything_changed |= self
-            .data
-            .constrain(TypeState::any_of(field_type_possibilities)?)?;*/
           anything_changed
         }
         Accessor::Swizzle(fields) => {
@@ -856,6 +792,60 @@ impl TypedExp {
         Ok(())
       }
       _ => Ok(()),
+    }
+  }
+  pub fn monomorphize_structs(&mut self, ctx: &mut Context) {
+    match &mut self.kind {
+      Application(f, args) => {
+        if let ExpKind::Name(f_name) = &mut f.kind {
+          if let Some(abstract_struct) =
+            ctx.structs.iter().find(|s| s.name == *f_name)
+          {
+            if let Some(monomorphized_struct) = abstract_struct
+              .generate_monomorphized(
+                args
+                  .iter()
+                  .map(|arg| {
+                    if let Known(t) = &arg.data {
+                      t.clone()
+                    } else {
+                      panic!("type wasn't Known while monomorphizing struct")
+                    }
+                  })
+                  .collect(),
+              )
+            {
+              std::mem::swap(f_name, &mut monomorphized_struct.name.clone());
+              ctx.add_monomorphized_struct(monomorphized_struct);
+            }
+          }
+        }
+        f.monomorphize_structs(ctx);
+        for arg in args {
+          arg.monomorphize_structs(ctx);
+        }
+      }
+      Function(_, body) => body.monomorphize_structs(ctx),
+      Access(_, body) => body.monomorphize_structs(ctx),
+      Let(bindings, body) => {
+        for (_, _, value) in bindings {
+          value.monomorphize_structs(ctx)
+        }
+        body.monomorphize_structs(ctx)
+      }
+      Match(scrutinee, arms) => {
+        scrutinee.monomorphize_structs(ctx);
+        for (pattern, value) in arms {
+          pattern.monomorphize_structs(ctx);
+          value.monomorphize_structs(ctx);
+        }
+      }
+      Block(subexps) => {
+        for subexp in subexps {
+          subexp.monomorphize_structs(ctx);
+        }
+      }
+      _ => {}
     }
   }
 }

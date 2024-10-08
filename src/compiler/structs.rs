@@ -139,6 +139,66 @@ pub enum TypeOrAbstractStruct {
 }
 
 impl AbstractStruct {
+  pub fn compile_if_non_generic(self) -> Option<String> {
+    self
+      .generic_args
+      .is_empty()
+      .then(|| self.fill_generics_ordered(vec![]).compile())
+  }
+  pub fn generate_monomorphized(
+    &self,
+    field_types: Vec<Type>,
+  ) -> Option<AbstractStruct> {
+    if self.generic_args.is_empty() {
+      return None;
+    }
+    let generic_args: Vec<Type> = self
+      .generic_args
+      .iter()
+      .cloned()
+      .map(|var| {
+        let var = GenericOr::Generic(var);
+        let first_usage_index = self
+          .fields
+          .iter()
+          .enumerate()
+          .find_map(|(index, field)| (field.field_type == var).then(|| index))
+          .expect("unused generic variable");
+        field_types[first_usage_index].clone()
+      })
+      .collect();
+    let name = generic_args
+      .iter()
+      .fold(self.name.clone(), |current_name, arg| {
+        current_name + "_" + &arg.compile()
+      });
+    Some(AbstractStruct {
+      name,
+      generic_args: vec![],
+      fields: self
+        .fields
+        .iter()
+        .map(|field| {
+          let mut new_field = field.clone();
+          if let GenericOr::Generic(generic_var) = &new_field.field_type {
+            new_field.field_type =
+              GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+                generic_args[self
+                  .generic_args
+                  .iter()
+                  .enumerate()
+                  .find_map(|(index, generic_arg)| {
+                    (generic_var == generic_arg).then(|| index)
+                  })
+                  .expect("unrecognized generic variable")]
+                .clone(),
+              ))
+          }
+          new_field
+        })
+        .collect(),
+    })
+  }
   pub fn fill_generics(self, generics: &HashMap<String, TypeState>) -> Struct {
     let new_fields: Vec<_> = self
       .fields

@@ -497,4 +497,14 @@ impl Context {
       t.mutually_constrain(self.bindings.get_typestate_mut(name)?)
     }
   }
+  pub fn add_monomorphized_struct(&mut self, s: AbstractStruct) {
+    if self
+      .structs
+      .iter()
+      .find(|existing_struct| existing_struct.name == s.name)
+      .is_none()
+    {
+      self.structs.push(s);
+    }
+  }
 }

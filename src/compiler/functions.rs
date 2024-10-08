@@ -7,7 +7,7 @@ use super::{
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
   structs::TypeOrAbstractStruct,
-  types::{GenericOr, Type, TypeState},
+  types::{Context, GenericOr, Type, TypeState},
   util::indent,
 };
 
@@ -122,6 +122,9 @@ pub struct BuiltInFunction {
 }
 
 impl TopLevelFunction {
+  pub fn monomorphize_structs(&mut self, ctx: &mut Context) {
+    self.body.monomorphize_structs(ctx)
+  }
   pub fn compile(self) -> CompileResult<String> {
     let TypedExp { data, kind } = self.body;
     let (arg_types, return_type) =
