@@ -1,5 +1,5 @@
 use core::fmt::Debug;
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{any, cell::RefCell, collections::HashMap, rc::Rc};
 
 use sse::syntax::EncloserOrOperator;
 
@@ -12,9 +12,30 @@ use super::{
   },
   error::{err, CompileErrorKind::*, CompileResult},
   functions::{AbstractFunctionSignature, ConcreteFunctionSignature},
-  structs::Struct,
+  structs::{AbstractStruct, Struct, TypeOrAbstractStruct},
   util::compile_word,
 };
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum GenericOr<T> {
+  Generic(String),
+  NonGeneric(T),
+}
+
+impl GenericOr<Type> {
+  pub fn to_typestate(
+    self,
+    generic_variables: &HashMap<String, TypeState>,
+  ) -> TypeState {
+    match self {
+      GenericOr::Generic(name) => generic_variables
+        .get(&name)
+        .expect("unrecognized generic variable")
+        .clone(),
+      GenericOr::NonGeneric(t) => TypeState::Known(t),
+    }
+  }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
@@ -24,97 +45,13 @@ pub enum Type {
   U32,
   Bool,
   Struct(Struct),
-  AbstractFunction(Box<AbstractFunctionSignature>),
-  ConcreteFunction(Box<ConcreteFunctionSignature>),
-  GenericVariable(String),
+  Function(Box<ConcreteFunctionSignature>),
 }
 impl Type {
-  pub fn fill_generics(
-    self,
-    generic_variables: &HashMap<String, TypeState>,
-  ) -> TypeState {
-    let self_clone = self.clone();
-    match self {
-      Type::GenericVariable(name) => generic_variables
-        .get(&name)
-        .expect(
-          format!(
-            "found unrecognized generic name while filling generics: {}, {:?}, {self_clone:?}",
-            name, generic_variables
-          )
-          .as_str(),
-        )
-        .clone(),
-      Type::Struct(s) => {
-        TypeState::Known(Type::Struct(s.fill_generics(&generic_variables)))
-      }
-      other => TypeState::Known(other),
-    }
-  }
-  pub fn is_concrete_compatible(
-    &self,
-    concrete_typestate: &TypeState,
-    generic_assignments: &mut HashMap<String, TypeState>,
-  ) -> bool {
-    match self {
-      Type::GenericVariable(generic_name) => {
-        if let Some(assignment) = generic_assignments.get(generic_name) {
-          if !TypeState::are_compatible(concrete_typestate, assignment) {
-            return false;
-          }
-        } else {
-          generic_assignments
-            .insert(generic_name.clone(), concrete_typestate.clone());
-        }
-      }
-      Type::Struct(s) => {
-        if !concrete_typestate.with_dereferenced(|concrete_typestate| -> bool {
-          match concrete_typestate {
-            TypeState::Unknown => true,
-            TypeState::OneOf(possibilities) => {
-              let mut any_compatible = false;
-              for possibility in possibilities {
-                any_compatible |=
-                  if let Type::Struct(concrete_struct) = possibility {
-                    s.name == concrete_struct.name
-                  } else {
-                    false
-                  };
-              }
-              any_compatible
-            }
-            TypeState::Known(t) => {
-              if let Type::Struct(concrete_struct) = t {
-                s.name == concrete_struct.name
-              } else {
-                false
-              }
-            }
-            TypeState::UnificationVariable(_) => unreachable!(),
-          }
-        }) {
-          return false;
-        }
-      }
-      other => {
-        if !concrete_typestate.is_compatible(other) {
-          return false;
-        }
-      }
-    }
-    true
-  }
   pub fn compatible(&self, other: &Self) -> bool {
     let b = match (self, other) {
-      (Type::AbstractFunction(a), Type::ConcreteFunction(b)) => {
-        a.is_concrete_signature_compatible(b.as_ref())
-      }
-      (Type::ConcreteFunction(a), Type::AbstractFunction(b)) => {
-        b.is_concrete_signature_compatible(a.as_ref())
-      }
+      (Type::Function(a), Type::Function(b)) => a.compatible(b),
       (Type::Struct(a), Type::Struct(b)) => a.compatible(b),
-      (Type::GenericVariable(_), _) => true,
-      (_, Type::GenericVariable(_)) => true,
       (a, b) => a == b,
     };
     b
@@ -131,8 +68,7 @@ impl Type {
   }
   pub fn from_name(
     name: String,
-    generic_variables: &Vec<String>,
-    structs: &Vec<Struct>,
+    structs: &Vec<AbstractStruct>,
   ) -> CompileResult<Self> {
     use Type::*;
     Ok(match name.as_str() {
@@ -141,25 +77,20 @@ impl Type {
       "U32" | "u32" => U32,
       "Bool" | "bool" => Bool,
       _ => {
-        if generic_variables.contains(&name) {
-          Type::GenericVariable(name)
+        if let Some(s) = structs.iter().find(|s| s.name == name) {
+          Struct(s.clone().fill_generics_with_unification_variables())
         } else {
-          if let Some(s) = structs.iter().find(|s| s.name == name) {
-            Struct(s.clone())
-          } else {
-            return err(UnrecognizedTypeName(name));
-          }
+          return err(UnrecognizedTypeName(name));
         }
       }
     })
   }
   pub fn from_tynt_tree(
     tree: TyntTree,
-    generic_variables: &Vec<String>,
-    structs: &Vec<Struct>,
+    structs: &Vec<AbstractStruct>,
   ) -> CompileResult<Self> {
     if let TyntTree::Leaf(_, type_name) = tree {
-      Ok(Type::from_name(type_name, generic_variables, structs)?)
+      Ok(Type::from_name(type_name, structs)?)
     } else {
       err(InvalidType)
     }
@@ -172,14 +103,8 @@ impl Type {
       Type::U32 => "u32".to_string(),
       Type::Bool => "bool".to_string(),
       Type::Struct(s) => compile_word(s.name.clone()),
-      Type::AbstractFunction(_) => {
-        panic!("Attempted to compile AbstractFunction type")
-      }
-      Type::ConcreteFunction(_) => {
+      Type::Function(_) => {
         panic!("Attempted to compile ConcreteFunction type")
-      }
-      Type::GenericVariable(_) => {
-        panic!("Attempted to compile GenericVariable type")
       }
     }
   }
@@ -203,12 +128,11 @@ pub fn extract_type_annotation_ast(
 
 pub fn extract_type_annotation(
   exp: TyntTree,
-  generic_variables: &Vec<String>,
-  structs: &Vec<Struct>,
+  structs: &Vec<AbstractStruct>,
 ) -> CompileResult<(Option<Type>, TyntTree)> {
   let (t, value) = extract_type_annotation_ast(exp)?;
   Ok((
-    t.map(|t| Type::from_tynt_tree(t, generic_variables, structs))
+    t.map(|t| Type::from_tynt_tree(t, structs))
       .map_or(Ok(None), |v| v.map(Some))?,
     value,
   ))
@@ -349,56 +273,39 @@ impl TypeState {
     &mut self,
     mut arg_types: Vec<TypeState>,
   ) -> CompileResult<bool> {
-    self.with_dereferenced_mut(|x| match x {
+    self.with_dereferenced_mut(|typestate| match typestate {
       TypeState::OneOf(possibilities) => {
-        let mut new_possibilities = possibilities
-          .iter_mut()
-          .map(|t| {
-            Ok(match t {
-              Type::ConcreteFunction(signature) => {
-                if signature.mutually_constrain_arguments(&mut arg_types)? {
-                  Some(t.clone())
-                } else {
-                  None
-                }
-              }
-              Type::AbstractFunction(signature) => {
-                if signature.are_args_compatible(&arg_types) {
-                  Some(t.clone())
-                } else {
-                  None
-                }
-              }
-              _ => panic!("tried to constrain fn on non-fn"),
-            })
-          })
-          .collect::<CompileResult<Vec<_>>>()?
-          .into_iter()
-          .filter_map(|x| x)
-          .collect::<Vec<_>>();
-        if new_possibilities.len() == possibilities.len() {
-          Ok(false)
-        } else {
-          if new_possibilities.is_empty() {
-            err(FunctionArgumentTypesIncompatible(x.clone(), arg_types))
-          } else {
-            std::mem::swap(
-              x,
-              &mut if new_possibilities.len() == 1 {
-                TypeState::Known(new_possibilities.remove(0))
+        let mut anything_changed = false;
+        let mut new_possibilities: Vec<Type> = vec![];
+        for possibility in possibilities {
+          match possibility {
+            Type::Function(signature) => {
+              if signature.are_args_compatible(&arg_types) {
+                new_possibilities.push(Type::Function(signature.clone()))
               } else {
-                TypeState::OneOf(new_possibilities)
-              },
-            );
-            Ok(true)
+                anything_changed = true;
+              }
+            }
+            _ => panic!("tried to constrain fn on non-fn"),
           }
+        }
+        if new_possibilities.is_empty() {
+          err(FunctionArgumentTypesIncompatible(
+            typestate.clone(),
+            arg_types,
+          ))
+        } else {
+          std::mem::swap(
+            typestate,
+            &mut TypeState::OneOf(new_possibilities).simplified()?,
+          );
+          Ok(anything_changed)
         }
       }
       TypeState::Known(t) => match t {
-        Type::ConcreteFunction(signature) => {
+        Type::Function(signature) => {
           Ok(signature.mutually_constrain_arguments(&mut arg_types)?)
         }
-        Type::AbstractFunction(_) => Ok(false),
         other => panic!(
           "tried to constrain fn on non-fn \n\n{arg_types:#?} \n\n{other:#?}"
         ),
@@ -407,13 +314,14 @@ impl TypeState {
       TypeState::UnificationVariable(_) => unreachable!(),
     })
   }
-  pub fn is_compatible(&self, t: &Type) -> bool {
-    self.with_dereferenced(|x| match x {
+  pub fn is_compatible(&self, t: &TypeOrAbstractStruct) -> bool {
+    todo!()
+    /*self.with_dereferenced(|x| match x {
       TypeState::Unknown => true,
       TypeState::OneOf(possibilities) => possibilities.contains(t),
       TypeState::Known(known_t) => known_t == t,
       TypeState::UnificationVariable(_) => unreachable!(),
-    })
+    })*/
   }
   pub fn simplify(&mut self) -> CompileResult<()> {
     Ok(if let TypeState::OneOf(mut possibilities) = self.clone() {
@@ -477,42 +385,48 @@ impl Variable {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bindings {
-  pub bindings: HashMap<String, Vec<Variable>>,
-  pub multi_signature_functions:
-    HashMap<String, Vec<AbstractFunctionSignature>>,
+  pub variables: HashMap<String, Vec<Variable>>,
+  pub abstract_functions: HashMap<String, Vec<AbstractFunctionSignature>>,
 }
 
 impl Bindings {
   pub fn default_global() -> Self {
-    let mut multi_signature_functions = HashMap::new();
+    let mut abstract_functions = HashMap::new();
     for (name, signatures) in built_in_multi_signature_functions() {
-      multi_signature_functions.insert(name.to_string(), signatures);
+      abstract_functions.insert(name.to_string(), signatures);
     }
     Self {
-      bindings: HashMap::new(),
-      multi_signature_functions,
+      variables: HashMap::new(),
+      abstract_functions,
     }
   }
   pub fn bind(&mut self, name: &str, v: Variable) {
-    if !self.bindings.contains_key(name) {
-      self.bindings.insert(name.to_string(), vec![]);
+    if !self.variables.contains_key(name) {
+      self.variables.insert(name.to_string(), vec![]);
     }
-    self.bindings.get_mut(name).unwrap().push(v);
+    self.variables.get_mut(name).unwrap().push(v);
   }
   pub fn unbind(&mut self, name: &str) -> Variable {
-    let name_bindings = self.bindings.get_mut(name).unwrap();
+    let name_bindings = self.variables.get_mut(name).unwrap();
     let v = name_bindings.pop().unwrap();
     if name_bindings.is_empty() {
-      self.bindings.remove(name);
+      self.variables.remove(name);
     }
     v
   }
+  pub fn add_abstract_function(
+    &mut self,
+    name: String,
+    signatures: Vec<AbstractFunctionSignature>,
+  ) {
+    self.abstract_functions.insert(name, signatures);
+  }
   pub fn is_bound(&self, name: &str) -> bool {
-    self.bindings.contains_key(name)
-      || self.multi_signature_functions.contains_key(name)
+    self.variables.contains_key(name)
+      || self.abstract_functions.contains_key(name)
   }
   pub fn get_variable_kind(&self, name: &str) -> &VariableKind {
-    &self.bindings.get(name).unwrap().last().unwrap().kind
+    &self.variables.get(name).unwrap().last().unwrap().kind
   }
   pub fn get_typestate_mut(
     &mut self,
@@ -520,7 +434,7 @@ impl Bindings {
   ) -> CompileResult<&mut TypeState> {
     Ok(
       &mut self
-        .bindings
+        .variables
         .get_mut(name)
         .ok_or_else(|| UnboundName(name.to_string()))?
         .last_mut()
@@ -532,7 +446,7 @@ impl Bindings {
 
 #[derive(Debug, Clone)]
 pub struct Context {
-  pub structs: Vec<Struct>,
+  pub structs: Vec<AbstractStruct>,
   pub bindings: Bindings,
 }
 
@@ -547,36 +461,29 @@ impl Context {
       bindings: Bindings::default_global(),
     };
     for (name, signature) in built_in_functions() {
-      ctx.bindings.bind(
-        name,
-        Variable::new(TypeState::Known(Type::AbstractFunction(Box::new(
-          signature,
-        )))),
-      );
+      ctx
+        .bindings
+        .add_abstract_function(name.to_string(), vec![signature]);
     }
     ctx
   }
-  pub fn with_structs(mut self, structs: Vec<Struct>) -> Self {
+  pub fn with_structs(mut self, structs: Vec<AbstractStruct>) -> Self {
     for s in &structs {
       if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&s.name.as_str()) {
-        self.bindings.bind(
-          &s.name,
-          Variable::new(TypeState::Known(Type::AbstractFunction(
-            Box::new(AbstractFunctionSignature {
-              generic_args: s.generic_args.clone(),
-              arg_types: s
-                .fields
-                .iter()
-                .map(|field| if let TypeState::Known(t) = &field.field_type {
-                  t.clone()
-                } else {
-                  unreachable!("struct provided to with_structs has a non-Known typestate")
-                })
-                .collect(),
-              return_type: Type::Struct(s.clone()),
-            }),
-          ))),
-        )
+        self.bindings.add_abstract_function(
+          s.name.clone(),
+          vec![AbstractFunctionSignature {
+            generic_args: s.generic_args.clone(),
+            arg_types: s
+              .fields
+              .iter()
+              .map(|field| field.field_type.clone())
+              .collect(),
+            return_type: GenericOr::NonGeneric(
+              TypeOrAbstractStruct::AbstractStruct(s.clone()),
+            ),
+          }],
+        );
       }
     }
     self.structs = structs;
@@ -587,20 +494,15 @@ impl Context {
     name: &str,
     t: &mut TypeState,
   ) -> CompileResult<bool> {
-    if let Some(signatures) = self.bindings.multi_signature_functions.get(name)
-    {
+    if let Some(signatures) = self.bindings.abstract_functions.get(name) {
       t.constrain(TypeState::OneOf(
         signatures
           .iter()
           .cloned()
-          .map(|signature| Type::AbstractFunction(Box::new(signature)))
+          .map(|signature| Type::Function(Box::new(signature.concretize())))
           .collect(),
       ))
     } else {
-      /*println!(
-        "constraining\n\n{t:#?}\n\nagainst\n\n{:#?}",
-        self.bindings.get_typestate_mut(name)
-      );*/
       t.mutually_constrain(self.bindings.get_typestate_mut(name)?)
     }
   }

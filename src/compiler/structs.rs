@@ -12,7 +12,7 @@ use crate::{
 use super::{
   error::{CompileError, CompileErrorKind::*, CompileResult},
   metadata::Metadata,
-  types::{Type, TypeState},
+  types::{GenericOr, Type, TypeState},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,26 +36,22 @@ impl UntypedStructField {
   }
   pub fn assign_type(
     self,
-    generic_variables: &Vec<String>,
-    structs: &Vec<Struct>,
-  ) -> CompileResult<StructField> {
-    Ok(StructField {
+    generic_args: &Vec<String>,
+    structs: &Vec<AbstractStruct>,
+  ) -> CompileResult<AbstractStructField> {
+    Ok(AbstractStructField {
       metadata: self.metadata,
       name: self.name,
-      field_type: TypeState::Known(Type::from_name(
-        self.field_type_name,
-        generic_variables,
-        structs,
-      )?),
+      field_type: if generic_args.contains(&self.field_type_name) {
+        GenericOr::Generic(self.field_type_name)
+      } else {
+        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
+          self.field_type_name,
+          structs,
+        )?))
+      },
     })
   }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct UntypedStruct {
-  pub name: String,
-  pub fields: Vec<UntypedStructField>,
-  pub generic_args: Vec<String>,
 }
 
 impl UntypedStruct {
@@ -73,16 +69,104 @@ impl UntypedStruct {
         .collect::<CompileResult<_>>()?,
     })
   }
-  pub fn assign_types(self, structs: &Vec<Struct>) -> CompileResult<Struct> {
-    Ok(Struct {
+  pub fn assign_types(
+    self,
+    structs: &Vec<AbstractStruct>,
+  ) -> CompileResult<AbstractStruct> {
+    Ok(AbstractStruct {
       name: self.name,
       fields: self
         .fields
         .into_iter()
         .map(|field| field.assign_type(&self.generic_args, structs))
-        .collect::<CompileResult<Vec<StructField>>>()?,
+        .collect::<CompileResult<Vec<AbstractStructField>>>()?,
       generic_args: self.generic_args,
     })
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UntypedStruct {
+  pub name: String,
+  pub fields: Vec<UntypedStructField>,
+  pub generic_args: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AbstractStructField {
+  pub metadata: Option<Metadata>,
+  pub name: String,
+  pub field_type: GenericOr<TypeOrAbstractStruct>,
+}
+
+impl AbstractStructField {
+  pub fn fill_generics(
+    self,
+    generics: &HashMap<String, TypeState>,
+  ) -> StructField {
+    StructField {
+      metadata: self.metadata,
+      name: self.name,
+      field_type: match self.field_type {
+        GenericOr::Generic(var_name) => generics
+          .get(&var_name)
+          .expect("unrecognized generic name in struct")
+          .clone(),
+        GenericOr::NonGeneric(type_or_struct) => {
+          TypeState::Known(match type_or_struct {
+            TypeOrAbstractStruct::Type(t) => t,
+            TypeOrAbstractStruct::AbstractStruct(s) => {
+              Type::Struct(s.fill_generics(generics))
+            }
+          })
+        }
+      },
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AbstractStruct {
+  pub name: String,
+  pub fields: Vec<AbstractStructField>,
+  pub generic_args: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeOrAbstractStruct {
+  Type(Type),
+  AbstractStruct(AbstractStruct),
+}
+
+impl AbstractStruct {
+  pub fn fill_generics(self, generics: &HashMap<String, TypeState>) -> Struct {
+    let new_fields: Vec<_> = self
+      .fields
+      .into_iter()
+      .map(|field| field.fill_generics(generics))
+      .collect();
+    Struct {
+      name: self.name,
+      fields: new_fields,
+    }
+  }
+  pub fn fill_generics_ordered(self, generics: Vec<TypeState>) -> Struct {
+    let generics_map = self
+      .generic_args
+      .iter()
+      .cloned()
+      .zip(generics.into_iter())
+      .collect();
+    self.fill_generics(&generics_map)
+  }
+  pub fn fill_generics_with_unification_variables(self) -> Struct {
+    let generic_count = self.generic_args.len();
+    self.fill_generics_ordered(
+      (0..generic_count)
+        .into_iter()
+        .map(|_| TypeState::fresh_unification_variable())
+        .collect(),
+    )
   }
 }
 
@@ -110,42 +194,9 @@ impl StructField {
 pub struct Struct {
   pub name: String,
   pub fields: Vec<StructField>,
-  pub generic_args: Vec<String>,
 }
 
 impl Struct {
-  pub fn fill_generics(
-    mut self,
-    generics: &HashMap<String, TypeState>,
-  ) -> Self {
-    self.fields = self
-      .fields
-      .into_iter()
-      .map(|mut field| {
-        if let TypeState::Known(Type::GenericVariable(var_name)) =
-          field.field_type
-        {
-          field.field_type = generics
-            .get(&var_name)
-            .expect("unrecognized generic name in struct")
-            .clone();
-          field
-        } else {
-          field
-        }
-      })
-      .collect();
-    self
-  }
-  pub fn fill_generics_ordered(self, generics: Vec<TypeState>) -> Self {
-    let generics_map = self
-      .generic_args
-      .iter()
-      .cloned()
-      .zip(generics.into_iter())
-      .collect();
-    self.fill_generics(&generics_map)
-  }
   pub fn compatible(&self, other: &Self) -> bool {
     self.fields.iter().zip(other.fields.iter()).fold(
       self.name == other.name,

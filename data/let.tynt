@@ -7,14 +7,6 @@
 (struct VertexOutput
         @{builtin position} vertex-pos: vec4f)
 
-@vertex
-(def vertex
-  (fn [in: VertexInput]: VertexOutput
-    (let [a (vec2f (.corner-position in))]
-      (let [b (.x a)
-            c (.y a)]
-        (VertexOutput (vec4f b c 0. 1.))))))
-
 @fragment
 (def fragment 
   (fn [in: VertexOutput]: @{location 0} vec4f

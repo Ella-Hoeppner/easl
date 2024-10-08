@@ -1,5 +1,5 @@
 use core::fmt::Debug;
-use std::str::pattern::Pattern;
+use std::{collections::HashMap, str::pattern::Pattern};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Number {
@@ -28,10 +28,17 @@ pub enum Accessor {
 }
 
 pub fn swizzle_accessor_typestate(fields: &Vec<SwizzleField>) -> TypeState {
+  let empty_generics = HashMap::new();
   TypeState::Known(match fields.len() {
-    2 => Type::Struct(get_builtin_struct("vec2f")),
-    3 => Type::Struct(get_builtin_struct("vec3f")),
-    4 => Type::Struct(get_builtin_struct("vec4f")),
+    2 => {
+      Type::Struct(get_builtin_struct("vec2f").fill_generics(&empty_generics))
+    }
+    3 => {
+      Type::Struct(get_builtin_struct("vec3f").fill_generics(&empty_generics))
+    }
+    4 => {
+      Type::Struct(get_builtin_struct("vec4f").fill_generics(&empty_generics))
+    }
     n => unreachable!("swizzle with {n} elements, expected 2-4"),
   })
 }
@@ -49,7 +56,9 @@ pub fn swizzle_accessed_possibilities(fields: &Vec<SwizzleField>) -> TypeState {
     ["vec4f", "vec3f", "vec2f"]
       .iter()
       .take(3.min(5 - max_accessed_index))
-      .map(|name| Type::Struct(get_builtin_struct(name)))
+      .map(|name| {
+        Type::Struct(get_builtin_struct(name).fill_generics(&HashMap::new()))
+      })
       .collect::<Vec<Type>>(),
   )
   .simplified()
@@ -107,7 +116,7 @@ use crate::{
   compiler::{
     builtins::{ASSIGNMENT_OPS, INFIX_OPS},
     error::{err, CompileError},
-    functions::AbstractFunctionSignature,
+    functions::{AbstractFunctionSignature, ConcreteFunctionSignature},
     metadata::{extract_metadata, Metadata},
     types::extract_type_annotation,
     util::indent,
@@ -118,7 +127,7 @@ use crate::{
 use super::{
   builtins::get_builtin_struct,
   error::{CompileErrorKind::*, CompileResult},
-  structs::Struct,
+  structs::{AbstractStruct, Struct},
   types::{
     Bindings, Context, Type,
     TypeState::{self, *},
@@ -139,7 +148,7 @@ pub type TypedExp = Exp<TypeState>;
 impl TypedExp {
   pub fn try_from_tynt_tree(
     tree: TyntTree,
-    structs: &Vec<Struct>,
+    structs: &Vec<AbstractStruct>,
   ) -> CompileResult<Self> {
     Ok(match tree {
       TyntTree::Leaf(_, leaf) => {
@@ -206,7 +215,6 @@ impl TypedExp {
                           {
                             let return_type = Type::from_tynt_tree(
                               args_and_return_type.remove(1),
-                              &vec![],
                               structs,
                             )?;
                             if let TyntTree::Inner(
@@ -228,35 +236,33 @@ impl TypedExp {
                                   kind: ExpKind::Block(children),
                                 }
                               };
-                              let (arg_types, arg_names) = arg_asts
-                                .into_iter()
-                                .map(|arg| -> CompileResult<_> {
-                                  let (maybe_t, arg_name_ast) =
-                                    extract_type_annotation(
-                                      arg,
-                                      &vec![], 
-                                      structs
-                                    )?;
-                                  let t = maybe_t.ok_or(
-                                    CompileError::from(FunctionArgMissingType),
-                                  )?;
-                                  if let TyntTree::Leaf(_, arg_name) =
-                                    arg_name_ast
-                                  {
-                                    Ok((t, arg_name))
-                                  } else {
-                                    err(InvalidArgumentName)
-                                  }
-                                })
-                                .collect::<CompileResult<
-                                  (Vec<Type>, Vec<String>),
-                                >>()?;
+                              let (arg_types, arg_names) =
+                                arg_asts
+                                  .into_iter()
+                                  .map(|arg| -> CompileResult<_> {
+                                    let (maybe_t, arg_name_ast) =
+                                      extract_type_annotation(arg, structs)?;
+                                    let t =
+                                      maybe_t.ok_or(CompileError::from(
+                                        FunctionArgMissingType,
+                                      ))?;
+                                    if let TyntTree::Leaf(_, arg_name) =
+                                      arg_name_ast
+                                    {
+                                      Ok((TypeState::Known(t), arg_name))
+                                    } else {
+                                      err(InvalidArgumentName)
+                                    }
+                                  })
+                                  .collect::<CompileResult<(
+                                    Vec<TypeState>,
+                                    Vec<String>,
+                                  )>>()?;
                               Some(Exp {
-                                data: Known(Type::AbstractFunction(Box::new(
-                                  AbstractFunctionSignature {
-                                    generic_args: vec![],
+                                data: Known(Type::Function(Box::new(
+                                  ConcreteFunctionSignature {
                                     arg_types,
-                                    return_type,
+                                    return_type: TypeState::Known(return_type),
                                   },
                                 ))),
                                 kind: ExpKind::Function(
@@ -398,47 +404,49 @@ impl TypedExp {
                 children_iter.next().unwrap(),
                 structs,
               )?;
-              exp.data = TypeState::Known(match children_iter.next().unwrap() {
-                TyntTree::Leaf(_, type_name) => {
-                  Type::from_name(type_name, &vec![], structs)?
-                }
-                TyntTree::Inner(
-                  (_, Encloser(Parens)),
-                  struct_signature_children
-                ) => {
-                  let mut signature_leaves = struct_signature_children
-                    .into_iter();
-                  if let Some(TyntTree::Leaf(_, struct_name)) = signature_leaves.next() {
-                    if signature_leaves.is_empty() {
-                      return err(InvalidStructName);
-                    } else {
-                      let generic_args: Vec<TypeState> = signature_leaves
-                        .map(|signature_arg| Ok(TypeState::Known(
-                            Type::from_tynt_tree(
-                              signature_arg,
-                              &vec![],
-                              structs
-                            )?
-                          ))
-                        )
-                        .collect::<CompileResult<Vec<TypeState>>>()?;
-                      if let Some(s) = structs
-                        .iter()
-                        .find(|s| s.name == struct_name)
-                      {
-                        Type::Struct(s.clone().fill_generics_ordered(generic_args))
-                      } else {
-                        return err(UnknownStructName)
-                      }
-                    }
-                  } else {
-                    return err(InvalidStructName);
+              exp.data =
+                TypeState::Known(match children_iter.next().unwrap() {
+                  TyntTree::Leaf(_, type_name) => {
+                    Type::from_name(type_name, structs)?
                   }
-                }
-                _ => {
-                  return err(InvalidType);
-                }
-              });
+                  TyntTree::Inner(
+                    (_, Encloser(Parens)),
+                    struct_signature_children,
+                  ) => {
+                    let mut signature_leaves =
+                      struct_signature_children.into_iter();
+                    if let Some(TyntTree::Leaf(_, struct_name)) =
+                      signature_leaves.next()
+                    {
+                      if signature_leaves.is_empty() {
+                        return err(InvalidStructName);
+                      } else {
+                        let generic_args: Vec<TypeState> = signature_leaves
+                          .map(|signature_arg| {
+                            Ok(TypeState::Known(Type::from_tynt_tree(
+                              signature_arg,
+                              structs,
+                            )?))
+                          })
+                          .collect::<CompileResult<Vec<TypeState>>>()?;
+                        if let Some(s) =
+                          structs.iter().find(|s| s.name == struct_name)
+                        {
+                          Type::Struct(
+                            s.clone().fill_generics_ordered(generic_args),
+                          )
+                        } else {
+                          return err(UnknownStructName);
+                        }
+                      }
+                    } else {
+                      return err(InvalidStructName);
+                    }
+                  }
+                  _ => {
+                    return err(InvalidType);
+                  }
+                });
               exp
             }
           },
@@ -452,12 +460,14 @@ impl TypedExp {
       NumberLiteral(_) => vec![],
       BooleanLiteral(_) => vec![],
       Function(_, body) => body.find_untyped(),
-      Application(f, args) => args
-        .iter()
-        .fold(f.find_untyped(), |mut untyped_so_far, arg| {
-          untyped_so_far.append(&mut arg.find_untyped());
-          untyped_so_far
-        }),
+      Application(f, args) => {
+        args
+          .iter()
+          .fold(f.find_untyped(), |mut untyped_so_far, arg| {
+            untyped_so_far.append(&mut arg.find_untyped());
+            untyped_so_far
+          })
+      }
       Access(_, exp) => exp.find_untyped(),
       Let(bindings, body) => bindings.iter().fold(
         body.find_untyped(),
@@ -477,13 +487,10 @@ impl TypedExp {
       Block(children) => children
         .iter()
         .map(|child| child.find_untyped())
-        .fold(
-          vec![],
-          |mut a, mut b| {
-            a.append(&mut b);
-            a
-          }
-        )
+        .fold(vec![], |mut a, mut b| {
+          a.append(&mut b);
+          a
+        }),
     };
     if let Known(_) = self.data {
       children_untyped
@@ -511,18 +518,9 @@ impl TypedExp {
         if let TypeState::Known(f_type) = &mut self.data {
           let (arg_count, arg_type_states): (usize, Vec<TypeState>) =
             match f_type {
-              Type::ConcreteFunction(signature) => (
+              Type::Function(signature) => (
                 signature.arg_types.len(),
                 signature.arg_types.iter().cloned().collect(),
-              ),
-              Type::AbstractFunction(signature) => (
-                signature.arg_types.len(),
-                signature
-                  .arg_types
-                  .iter()
-                  .cloned()
-                  .map(|t| TypeState::Known(t))
-                  .collect(),
               ),
               _ => {
                 return err(FunctionExpressionHasNonFunctionType(
@@ -559,7 +557,7 @@ impl TypedExp {
         let replacement_concrete_signature =
           if let TypeState::Known(f_type) = &mut f.data {
             match f_type {
-              Type::ConcreteFunction(signature) => {
+              Type::Function(signature) => {
                 if args.len() == signature.arg_types.len() {
                   anything_changed |=
                     self.data.mutually_constrain(&mut signature.return_type)?;
@@ -573,7 +571,6 @@ impl TypedExp {
                   return err(WrongArity);
                 }
               }
-              Type::AbstractFunction(signature) => Some(signature.concretize()),
               _ => {
                 return err(AppliedNonFunction);
               }
@@ -584,9 +581,7 @@ impl TypedExp {
         if let Some(concrete_signature) = replacement_concrete_signature {
           std::mem::swap(
             &mut f.data,
-            &mut TypeState::Known(Type::ConcreteFunction(Box::new(
-              concrete_signature,
-            ))),
+            &mut TypeState::Known(Type::Function(Box::new(concrete_signature))),
           );
         }
         for arg in args.iter_mut() {
@@ -601,7 +596,22 @@ impl TypedExp {
       Access(accessor, subexp) => match accessor {
         Accessor::Field(field_name) => {
           let mut anything_changed = false;
-          let (field_possibilities, struct_possibilities): (
+          anything_changed |= subexp.propagate_types(ctx)?;
+          if let Known(t) = &mut subexp.data {
+            if let Type::Struct(s) = t {
+              anything_changed |= self.data.mutually_constrain({
+                &mut s
+                  .fields
+                  .iter_mut()
+                  .find(|f| f.name == *field_name)
+                  .ok_or(CompileError::new(NoSuchField))?
+                  .field_type
+              })?;
+            } else {
+              return err(AccessorOnNonStruct)?;
+            }
+          }
+          /*let (field_possibilities, struct_possibilities): (
             Vec<TypeState>,
             Vec<Type>,
           ) = ctx
@@ -664,7 +674,7 @@ impl TypedExp {
           };
           anything_changed |= self
             .data
-            .constrain(TypeState::any_of(field_type_possibilities)?)?;
+            .constrain(TypeState::any_of(field_type_possibilities)?)?;*/
           anything_changed
         }
         Accessor::Swizzle(fields) => {

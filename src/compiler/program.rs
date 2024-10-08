@@ -147,7 +147,7 @@ impl Program {
                 name,
                 metadata,
                 attributes,
-                var_type: Type::from_name(type_name, &vec![], &structs)?,
+                var_type: Type::from_name(type_name, &structs)?,
               })
             }
             "def" => {

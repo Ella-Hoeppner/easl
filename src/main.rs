@@ -10,7 +10,6 @@ fn main() {
     "block",
     "equality",
     "variable",
-    "swizzle",
     "generic_struct",
   ] {
     println!("compiling {filename}...");

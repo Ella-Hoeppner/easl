@@ -6,7 +6,8 @@ use super::{
   error::{err, CompileErrorKind::*, CompileResult},
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
-  types::{Context, Type, TypeState},
+  structs::{AbstractStruct, TypeOrAbstractStruct},
+  types::{GenericOr, Type, TypeState},
   util::indent,
 };
 
@@ -22,8 +23,8 @@ pub struct TopLevelFunction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractFunctionSignature {
   pub generic_args: Vec<String>,
-  pub arg_types: Vec<Type>,
-  pub return_type: Type,
+  pub arg_types: Vec<GenericOr<TypeOrAbstractStruct>>,
+  pub return_type: GenericOr<TypeOrAbstractStruct>,
 }
 
 impl AbstractFunctionSignature {
@@ -32,8 +33,10 @@ impl AbstractFunctionSignature {
       return false;
     }
     for i in 0..args.len() {
-      if !args[i].is_compatible(&self.arg_types[i]) {
-        return false;
+      if let GenericOr::NonGeneric(t) = &self.arg_types[i] {
+        if !args[i].is_compatible(t) {
+          return false;
+        }
       }
     }
     true
@@ -49,16 +52,41 @@ impl AbstractFunctionSignature {
         .arg_types
         .iter()
         .cloned()
-        .map(|t| t.fill_generics(&generic_variables))
+        .map(|t| match t {
+          GenericOr::Generic(var_name) => generic_variables
+            .get(&var_name)
+            .expect("unrecognized generic")
+            .clone(),
+          GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => {
+            TypeState::Known(t)
+          }
+          GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => {
+            TypeState::Known(Type::Struct(s.fill_generics(&generic_variables)))
+          }
+        })
         .collect(),
-      return_type: self.return_type.clone().fill_generics(&generic_variables),
+      return_type: match &self.return_type {
+        GenericOr::Generic(var_name) => generic_variables
+          .get(var_name)
+          .expect("unrecognized generic")
+          .clone(),
+        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => {
+          TypeState::Known(Type::Struct(
+            s.clone().fill_generics(&generic_variables),
+          ))
+        }
+        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => {
+          TypeState::Known(t.clone())
+        }
+      },
     }
   }
   pub fn is_concrete_signature_compatible(
     &self,
     concrete_signature: &ConcreteFunctionSignature,
   ) -> bool {
-    if self.arg_types.len() != concrete_signature.arg_types.len() {
+    todo!()
+    /*if self.arg_types.len() != concrete_signature.arg_types.len() {
       return false;
     }
     let mut generic_assignments: HashMap<String, TypeState> = HashMap::new();
@@ -73,7 +101,7 @@ impl AbstractFunctionSignature {
     self.return_type.is_concrete_compatible(
       &concrete_signature.return_type,
       &mut generic_assignments,
-    )
+    )*/
   }
 }
 
@@ -84,6 +112,28 @@ pub struct ConcreteFunctionSignature {
 }
 
 impl ConcreteFunctionSignature {
+  pub fn compatible(&self, other: &Self) -> bool {
+    if self.arg_types.len() != other.arg_types.len() {
+      return false;
+    }
+    !self
+      .arg_types
+      .iter()
+      .zip(other.arg_types.iter())
+      .find(|(a, b)| !TypeState::are_compatible(a, b))
+      .is_some()
+  }
+  pub fn are_args_compatible(&self, arg_types: &Vec<TypeState>) -> bool {
+    if arg_types.len() != self.arg_types.len() {
+      return false;
+    }
+    for i in 0..arg_types.len() {
+      if !TypeState::are_compatible(&self.arg_types[i], &arg_types[i]) {
+        return false;
+      }
+    }
+    true
+  }
   pub fn mutually_constrain_arguments(
     &mut self,
     args: &mut Vec<TypeState>,
@@ -110,7 +160,7 @@ impl TopLevelFunction {
   pub fn compile(self) -> CompileResult<String> {
     let TypedExp { data, kind } = self.body;
     let (arg_types, return_type) =
-      if let TypeState::Known(Type::AbstractFunction(signature)) = data {
+      if let TypeState::Known(Type::Function(signature)) = data {
         (signature.arg_types, signature.return_type)
       } else {
         panic!("attempted to compile function with invalid type data")
