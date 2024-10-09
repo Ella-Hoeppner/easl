@@ -851,32 +851,31 @@ impl TypedExp {
   pub fn monomorphize_structs(&mut self, ctx: &mut Context) {
     match &mut self.kind {
       Application(f, args) => {
+        f.monomorphize_structs(ctx);
+        for arg in args.iter_mut() {
+          arg.monomorphize_structs(ctx);
+        }
         if let ExpKind::Name(f_name) = &mut f.kind {
           if let Some(abstract_struct) =
             ctx.structs.iter().find(|s| s.name == *f_name)
           {
             if let Some(monomorphized_struct) = abstract_struct
               .generate_monomorphized(
-                args
-                  .iter()
-                  .map(|arg| {
-                    if let Known(t) = &arg.data {
-                      t.clone()
-                    } else {
-                      panic!("type wasn't Known while monomorphizing struct")
-                    }
-                  })
-                  .collect(),
+                args.iter().map(|arg| arg.data.unwrap_known()).collect(),
               )
             {
               std::mem::swap(f_name, &mut monomorphized_struct.name.clone());
+              self.data.with_dereferenced_mut(|typestate| {
+                std::mem::swap(
+                  typestate,
+                  &mut TypeState::Known(Type::Struct(
+                    monomorphized_struct.clone().fill_generics_ordered(vec![]),
+                  )),
+                );
+              });
               ctx.add_monomorphized_struct(monomorphized_struct);
             }
           }
-        }
-        f.monomorphize_structs(ctx);
-        for arg in args {
-          arg.monomorphize_structs(ctx);
         }
       }
       Function(_, body) => body.monomorphize_structs(ctx),

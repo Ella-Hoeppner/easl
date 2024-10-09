@@ -184,6 +184,15 @@ pub enum TypeState {
 }
 
 impl TypeState {
+  pub fn unwrap_known(&self) -> Type {
+    self.with_dereferenced(|typestate| {
+      if let TypeState::Known(t) = typestate {
+        t.clone()
+      } else {
+        panic!("unwrapped non-Known TypeState")
+      }
+    })
+  }
   pub fn any_of(possibilities: Vec<TypeState>) -> CompileResult<Self> {
     let mut type_possibilities = vec![];
     for possibility in possibilities {
@@ -369,11 +378,7 @@ impl TypeState {
     Ok(self)
   }
   pub fn compile(&self) -> String {
-    if let TypeState::Known(t) = self {
-      t.compile()
-    } else {
-      panic!("attempted to compile TypeState that wasn't Known")
-    }
+    self.unwrap_known().compile()
   }
 }
 

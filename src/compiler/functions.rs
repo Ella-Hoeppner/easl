@@ -128,7 +128,7 @@ impl TopLevelFunction {
   pub fn compile(self) -> CompileResult<String> {
     let TypedExp { data, kind } = self.body;
     let (arg_types, return_type) =
-      if let TypeState::Known(Type::Function(signature)) = data {
+      if let Type::Function(signature) = data.unwrap_known() {
         (signature.arg_types, signature.return_type)
       } else {
         panic!("attempted to compile function with invalid type data")
