@@ -42,14 +42,11 @@ impl UntypedStructField {
     Ok(AbstractStructField {
       metadata: self.metadata,
       name: self.name,
-      field_type: if generic_args.contains(&self.field_type_name) {
-        GenericOr::Generic(self.field_type_name)
-      } else {
-        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
-          self.field_type_name,
-          structs,
-        )?))
-      },
+      field_type: GenericOr::from_name(
+        self.field_type_name,
+        generic_args,
+        structs,
+      )?,
     })
   }
 }

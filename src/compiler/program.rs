@@ -242,6 +242,43 @@ impl Program {
                 return err(InvalidDef("Invalid Name".to_string()));
               }
             }
+            "defn" => {
+              let name_ast = children_iter
+                .next()
+                .ok_or(InvalidDefn("Missing Name".to_string()))?;
+              let (name, generic_args): (String, Vec<String>) = match name_ast {
+                TyntTree::Leaf(_, name) => (name, vec![]),
+                TyntTree::Inner((_, Encloser(Parens)), subtrees) => {
+                  let mut subtrees_iter = subtrees.into_iter();
+                  if let Some(TyntTree::Leaf(_, name)) = subtrees_iter.next() {
+                    (
+                      name,
+                      subtrees_iter
+                        .map(|subtree| {
+                          if let TyntTree::Leaf(_, generic_name) = subtree {
+                            Ok(generic_name)
+                          } else {
+                            err(InvalidDefn("Invalid generic name".to_string()))
+                          }
+                        })
+                        .collect::<CompileResult<_>>()?,
+                    )
+                  } else {
+                    return err(InvalidDefn("Invalid name".to_string()));
+                  }
+                }
+                _ => {
+                  return err(InvalidDefn(
+                    "Expected name or parens with name and generic arguments"
+                      .to_string(),
+                  ))
+                }
+              };
+              let arg_list_ast = children_iter
+                .next()
+                .ok_or(InvalidDefn("Missing Argument List".to_string()))?;
+              todo!()
+            }
             _ => {
               return err(UnrecognizedTopLevelForm);
             }

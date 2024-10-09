@@ -16,11 +16,7 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* monomorphize the usage of generic structs
-
-* make vectors generic
-  * `vec<n>f` should be an alias to `(vec<n> f32)`
-    * so I'll need to implement aliases as part of this
+* generic functions
 
 * add typeclasses
   * support generic arguments bound by typeclass
@@ -39,6 +35,10 @@ Feature goals:
   * `for`
   * `while`
   * `break` and `continue`
+
+* make vectors generic
+  * `vec<n>f` should be an alias to `(vec<n> f32)`
+    * so I'll need to implement aliases as part of this
 
 * add macros and syntactic conveniences
   * parse integer literals with ambiguous types, to allow them to be treated as floats

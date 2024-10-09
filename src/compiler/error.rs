@@ -19,6 +19,7 @@ pub enum CompileErrorKind {
   InvalidStructDefinition,
   InvalidTopLevelVar(String),
   InvalidDef(String),
+  InvalidDefn(String),
   InvalidFunction,
   UnrecognizedTopLevelForm,
   EmptyList,

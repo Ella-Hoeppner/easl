@@ -37,6 +37,22 @@ impl GenericOr<Type> {
   }
 }
 
+impl GenericOr<TypeOrAbstractStruct> {
+  pub fn from_name(
+    name: String,
+    generic_args: &Vec<String>,
+    structs: &Vec<AbstractStruct>,
+  ) -> CompileResult<Self> {
+    Ok(if generic_args.contains(&name) {
+      GenericOr::Generic(name)
+    } else {
+      GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
+        name, structs,
+      )?))
+    })
+  }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
   None,
@@ -137,6 +153,27 @@ pub fn extract_type_annotation(
     value,
   ))
 }
+
+/*pub fn parse_abstract_type(
+  tree: TyntTree,
+  generic_args: &Vec<String>,
+  structs: &Vec<AbstractStruct>,
+) -> CompileResult<GenericOr<TypeOrAbstractStruct>> {
+  todo!()
+}
+
+pub fn extract_abstract_type_annotation(
+  exp: TyntTree,
+  generic_args: &Vec<String>,
+  structs: &Vec<AbstractStruct>,
+) -> CompileResult<(Option<GenericOr<TypeOrAbstractStruct>>, TyntTree)> {
+  let (t, value) = extract_type_annotation_ast(exp)?;
+  Ok((
+    t.map(|t| parse_abstract_type(t, generic_args, structs))
+      .map_or(Ok(None), |v| v.map(Some))?,
+    value,
+  ))
+}*/
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeState {

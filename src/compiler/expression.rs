@@ -1,6 +1,28 @@
 use core::fmt::Debug;
 use std::{collections::HashMap, str::pattern::Pattern};
 
+use crate::{
+  compiler::{
+    builtins::{get_builtin_struct, ASSIGNMENT_OPS, INFIX_OPS},
+    error::{err, CompileError, CompileErrorKind::*, CompileResult},
+    functions::FunctionSignature,
+    metadata::{extract_metadata, Metadata},
+    structs::AbstractStruct,
+    types::{
+      //extract_abstract_type_annotation
+      extract_type_annotation,
+      Bindings,
+      Context,
+      Type,
+      TypeState::{self, *},
+      Variable,
+      VariableKind,
+    },
+    util::{compile_word, indent},
+  },
+  parse::TyntTree,
+};
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Number {
   Int(i64),
@@ -112,29 +134,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
 }
 use ExpKind::*;
 
-use crate::{
-  compiler::{
-    builtins::{ASSIGNMENT_OPS, INFIX_OPS},
-    error::{err, CompileError},
-    functions::FunctionSignature,
-    metadata::{extract_metadata, Metadata},
-    types::extract_type_annotation,
-    util::indent,
-  },
-  parse::TyntTree,
-};
-
-use super::{
-  builtins::get_builtin_struct,
-  error::{CompileErrorKind::*, CompileResult},
-  structs::AbstractStruct,
-  types::{
-    Bindings, Context, Type,
-    TypeState::{self, *},
-    Variable, VariableKind,
-  },
-  util::compile_word,
-};
+use super::{structs::TypeOrAbstractStruct, types::GenericOr};
 
 #[derive(Clone, Copy)]
 pub enum ExpressionCompilationPosition {
@@ -144,6 +144,95 @@ pub enum ExpressionCompilationPosition {
 }
 
 pub type TypedExp = Exp<TypeState>;
+
+/*pub fn abstract_arg_list_and_return_type_from_tynt_tree(
+  tree: TyntTree,
+  generic_args: &Vec<String>,
+  structs: &Vec<AbstractStruct>,
+) -> CompileResult<(
+  Vec<String>,
+  Vec<GenericOr<TypeOrAbstractStruct>>,
+  GenericOr<TypeOrAbstractStruct>,
+)> {
+  use crate::parse::Encloser::*;
+  use crate::parse::Operator::*;
+  use sse::syntax::EncloserOrOperator::*;
+  if let TyntTree::Inner(
+    (_, Operator(TypeAnnotation)),
+    mut args_and_return_type,
+  ) = tree
+  {
+    let return_type = GenericOr::from_name(
+      if let TyntTree::Leaf(_, name) = args_and_return_type.remove(1) {
+        name
+      } else {
+        return err(InvalidArgumentName);
+      },
+      generic_args,
+      structs,
+    )?;
+    if let TyntTree::Inner((_, Encloser(Square)), arg_asts) =
+      args_and_return_type.remove(0)
+    {
+      let (arg_names, arg_types) = arg_asts
+        .into_iter()
+        .map(|arg| -> CompileResult<_> {
+          let (maybe_t, arg_name_ast) =
+            extract_abstract_type_annotation(arg, generic_args, structs)?;
+          let t = maybe_t.ok_or(CompileError::from(FunctionArgMissingType))?;
+          if let TyntTree::Leaf(_, arg_name) = arg_name_ast {
+            Ok((arg_name, t))
+          } else {
+            err(InvalidArgumentName)
+          }
+        })
+        .collect::<CompileResult<_>>()?;
+      Ok((arg_names, arg_types, return_type))
+    } else {
+      return err(FunctionSignatureNotSquareBrackets);
+    }
+  } else {
+    return err(FunctionSignatureMissingReturnType);
+  }
+}*/
+
+pub fn arg_list_and_return_type_from_tynt_tree(
+  tree: TyntTree,
+  structs: &Vec<AbstractStruct>,
+) -> CompileResult<(Vec<String>, Vec<Type>, Type)> {
+  use crate::parse::Encloser::*;
+  use crate::parse::Operator::*;
+  use sse::syntax::EncloserOrOperator::*;
+  if let TyntTree::Inner(
+    (_, Operator(TypeAnnotation)),
+    mut args_and_return_type,
+  ) = tree
+  {
+    let return_type =
+      Type::from_tynt_tree(args_and_return_type.remove(1), structs)?;
+    if let TyntTree::Inner((_, Encloser(Square)), arg_asts) =
+      args_and_return_type.remove(0)
+    {
+      let (arg_types, arg_names) = arg_asts
+        .into_iter()
+        .map(|arg| -> CompileResult<_> {
+          let (maybe_t, arg_name_ast) = extract_type_annotation(arg, structs)?;
+          let t = maybe_t.ok_or(CompileError::from(FunctionArgMissingType))?;
+          if let TyntTree::Leaf(_, arg_name) = arg_name_ast {
+            Ok((t, arg_name))
+          } else {
+            err(InvalidArgumentName)
+          }
+        })
+        .collect::<CompileResult<(Vec<Type>, Vec<String>)>>()?;
+      Ok((arg_names, arg_types, return_type))
+    } else {
+      return err(FunctionSignatureNotSquareBrackets);
+    }
+  } else {
+    return err(FunctionSignatureMissingReturnType);
+  }
+}
 
 impl TypedExp {
   pub fn try_from_tynt_tree(
@@ -208,74 +297,39 @@ impl TypedExp {
                     } else {
                       match first_child_name.as_str() {
                         "fn" => {
-                          if let Some(TyntTree::Inner(
-                            (_, Operator(TypeAnnotation)),
-                            mut args_and_return_type,
-                          )) = children_iter.next()
-                          {
-                            let return_type = Type::from_tynt_tree(
-                              args_and_return_type.remove(1),
+                          let (arg_names, arg_types, return_type) =
+                            arg_list_and_return_type_from_tynt_tree(
+                              children_iter
+                                .next()
+                                .ok_or(CompileError::from(InvalidFunction))?,
                               structs,
                             )?;
-                            if let TyntTree::Inner(
-                              (_, Encloser(Square)),
-                              arg_asts,
-                            ) = args_and_return_type.remove(0)
-                            {
-                              let mut children = children_iter
-                                .clone()
-                                .map(|child| {
-                                  Self::try_from_tynt_tree(child, structs)
-                                })
-                                .collect::<CompileResult<Vec<_>>>()?;
-                              let body = if children_iter.len() == 1 {
-                                children.remove(0)
-                              } else {
-                                Exp {
-                                  data: Unknown,
-                                  kind: ExpKind::Block(children),
-                                }
-                              };
-                              let (arg_types, arg_names) =
-                                arg_asts
-                                  .into_iter()
-                                  .map(|arg| -> CompileResult<_> {
-                                    let (maybe_t, arg_name_ast) =
-                                      extract_type_annotation(arg, structs)?;
-                                    let t =
-                                      maybe_t.ok_or(CompileError::from(
-                                        FunctionArgMissingType,
-                                      ))?;
-                                    if let TyntTree::Leaf(_, arg_name) =
-                                      arg_name_ast
-                                    {
-                                      Ok((TypeState::Known(t), arg_name))
-                                    } else {
-                                      err(InvalidArgumentName)
-                                    }
-                                  })
-                                  .collect::<CompileResult<(
-                                    Vec<TypeState>,
-                                    Vec<String>,
-                                  )>>()?;
-                              Some(Exp {
-                                data: Known(Type::Function(Box::new(
-                                  FunctionSignature {
-                                    arg_types,
-                                    return_type: TypeState::Known(return_type),
-                                  },
-                                ))),
-                                kind: ExpKind::Function(
-                                  arg_names,
-                                  Box::new(body),
-                                ),
-                              })
-                            } else {
-                              return err(FunctionSignatureNotSquareBrackets);
-                            }
+                          let mut children = children_iter
+                            .clone()
+                            .map(|child| {
+                              Self::try_from_tynt_tree(child, structs)
+                            })
+                            .collect::<CompileResult<Vec<_>>>()?;
+                          let body = if children_iter.len() == 1 {
+                            children.remove(0)
                           } else {
-                            return err(FunctionSignatureMissingReturnType);
-                          }
+                            Exp {
+                              data: Unknown,
+                              kind: ExpKind::Block(children),
+                            }
+                          };
+                          Some(Exp {
+                            data: Known(Type::Function(Box::new(
+                              FunctionSignature {
+                                arg_types: arg_types
+                                  .into_iter()
+                                  .map(|t| TypeState::Known(t))
+                                  .collect(),
+                                return_type: TypeState::Known(return_type),
+                              },
+                            ))),
+                            kind: ExpKind::Function(arg_names, Box::new(body)),
+                          })
                         }
                         "let" => {
                           if children_iter.len() < 2 {
