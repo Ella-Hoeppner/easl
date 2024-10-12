@@ -31,7 +31,6 @@ Feature goals:
     * eventually I'll probably try to support sum types, and for those I'll want exhaustivity checking to, so maybe have like an `is_exhaustable` fn on Type or smth that for now just only returns true for `Bool`
 
 * loops
-  * `loop`
   * `for`
   * `while`
   * `break` and `continue`

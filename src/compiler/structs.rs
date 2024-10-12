@@ -97,6 +97,22 @@ pub struct AbstractStructField {
 }
 
 impl AbstractStructField {
+  pub fn fill_generics_abstractly(
+    self,
+    generic_args: &HashMap<String, GenericOr<TypeOrAbstractStruct>>,
+  ) -> AbstractStructField {
+    AbstractStructField {
+      metadata: self.metadata,
+      name: self.name,
+      field_type: match self.field_type {
+        GenericOr::Generic(var_name) => generic_args
+          .get(&var_name)
+          .expect("unrecognized generic name in struct")
+          .clone(),
+        non_generic => non_generic,
+      },
+    }
+  }
   pub fn fill_generics(
     self,
     generics: &HashMap<String, TypeState>,
@@ -215,6 +231,33 @@ impl AbstractStruct {
       .zip(generics.into_iter())
       .collect();
     self.fill_generics(&generics_map)
+  }
+  pub fn fill_generics_abstractly(
+    self,
+    generics: &HashMap<String, GenericOr<TypeOrAbstractStruct>>,
+  ) -> AbstractStruct {
+    let new_fields: Vec<_> = self
+      .fields
+      .into_iter()
+      .map(|field| field.fill_generics_abstractly(generics))
+      .collect();
+    AbstractStruct {
+      name: self.name,
+      fields: new_fields,
+      generic_args: vec![],
+    }
+  }
+  pub fn fill_generics_ordered_abstractly(
+    self,
+    generics: Vec<GenericOr<TypeOrAbstractStruct>>,
+  ) -> AbstractStruct {
+    let generics_map = self
+      .generic_args
+      .iter()
+      .cloned()
+      .zip(generics.into_iter())
+      .collect();
+    self.fill_generics_abstractly(&generics_map)
   }
   pub fn fill_generics_with_unification_variables(self) -> Struct {
     let generic_count = self.generic_args.len();

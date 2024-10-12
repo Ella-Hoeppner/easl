@@ -3,7 +3,10 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use sse::syntax::EncloserOrOperator;
 
-use crate::parse::{Operator, TyntTree};
+use crate::{
+  compiler::error::CompileError,
+  parse::{Encloser, Operator, TyntTree},
+};
 
 use super::{
   builtins::{
@@ -154,12 +157,51 @@ pub fn extract_type_annotation(
   ))
 }
 
-/*pub fn parse_abstract_type(
+pub fn parse_abstract_type(
   tree: TyntTree,
   generic_args: &Vec<String>,
   structs: &Vec<AbstractStruct>,
 ) -> CompileResult<GenericOr<TypeOrAbstractStruct>> {
-  todo!()
+  match tree {
+    TyntTree::Leaf(_, leaf) => {
+      if generic_args.contains(&leaf) {
+        Ok(GenericOr::Generic(leaf))
+      } else {
+        if let Some(s) = structs.iter().find(|s| s.name == leaf) {
+          Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+            s.clone(),
+          )))
+        } else {
+          Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+            Type::from_name(leaf, &vec![])?,
+          )))
+        }
+      }
+    }
+    TyntTree::Inner(
+      (_, EncloserOrOperator::Encloser(Encloser::Parens)),
+      children,
+    ) => {
+      let mut children_iter = children.into_iter();
+      let type_name = if let Some(TyntTree::Leaf(_, x)) = children_iter.next() {
+        x
+      } else {
+        return err(InvalidType);
+      };
+      let type_args: Vec<_> = children_iter
+        .map(|arg_tree| parse_abstract_type(arg_tree, generic_args, structs))
+        .collect::<CompileResult<Vec<_>>>()?;
+      Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+        structs
+          .iter()
+          .find(|s| s.name == type_name)
+          .ok_or(CompileError::new(InvalidType))?
+          .clone()
+          .fill_generics_ordered_abstractly(type_args),
+      )))
+    }
+    _ => err(InvalidType),
+  }
 }
 
 pub fn extract_abstract_type_annotation(
@@ -173,7 +215,7 @@ pub fn extract_abstract_type_annotation(
       .map_or(Ok(None), |v| v.map(Some))?,
     value,
   ))
-}*/
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeState {

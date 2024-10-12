@@ -12,6 +12,16 @@ use super::{
 };
 
 #[derive(Debug)]
+pub struct TopLevelGenericFunction {
+  pub name: String,
+  pub generic_args: Vec<String>,
+  pub arg_metadata: Vec<Option<Metadata>>,
+  pub return_metadata: Option<Metadata>,
+  pub metadata: Option<Metadata>,
+  pub body: TypedExp,
+}
+
+#[derive(Debug)]
 pub struct TopLevelFunction {
   pub name: String,
   pub arg_metadata: Vec<Option<Metadata>>,

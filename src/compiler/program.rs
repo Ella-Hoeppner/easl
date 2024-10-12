@@ -1,6 +1,7 @@
 use crate::{
   compiler::{
-    error::err, metadata::extract_metadata, structs::UntypedStruct,
+    error::err, expression::abstract_arg_list_and_return_type_from_tynt_tree,
+    metadata::extract_metadata, structs::UntypedStruct,
     util::read_type_annotated_name,
   },
   parse::TyntTree,
@@ -10,7 +11,7 @@ use super::{
   builtins::built_in_structs,
   error::{CompileErrorKind::*, CompileResult},
   expression::{Exp, TypedExp},
-  functions::TopLevelFunction,
+  functions::{TopLevelFunction, TopLevelGenericFunction},
   metadata::Metadata,
   types::{Bindings, Context, Type},
   vars::TopLevelVar,
@@ -21,6 +22,7 @@ pub struct Program {
   global_context: Context,
   top_level_vars: Vec<TopLevelVar>,
   top_level_functions: Vec<TopLevelFunction>,
+  top_level_generic_functions: Vec<TopLevelGenericFunction>,
 }
 
 impl Program {
@@ -95,6 +97,7 @@ impl Program {
       Context::default_global().with_structs(structs.clone());
     let mut top_level_vars = vec![];
     let mut top_level_functions = vec![];
+    let mut top_level_generic_functions = vec![];
     for (metadata, tree) in non_struct_trees.into_iter() {
       use crate::parse::Encloser::*;
       use crate::parse::Operator::*;
@@ -277,7 +280,21 @@ impl Program {
               let arg_list_ast = children_iter
                 .next()
                 .ok_or(InvalidDefn("Missing Argument List".to_string()))?;
-              todo!()
+              let (arg_names, arg_types, return_type) =
+                abstract_arg_list_and_return_type_from_tynt_tree(
+                  arg_list_ast,
+                  &generic_args,
+                  &structs,
+                )?;
+              let body_ast = children_iter.next().ok_or(FunctionMissingBody);
+              top_level_generic_functions.push(TopLevelGenericFunction {
+                name,
+                arg_metadata: vec![],  // todo!
+                return_metadata: None, // todo!
+                metadata,
+                body: Exp::try_from_tynt_tree(todo!(), &structs)?,
+                generic_args,
+              });
             }
             _ => {
               return err(UnrecognizedTopLevelForm);
@@ -294,6 +311,7 @@ impl Program {
       global_context,
       top_level_vars,
       top_level_functions,
+      top_level_generic_functions,
     })
   }
   fn propagate_types(&mut self) -> CompileResult<bool> {

@@ -25,8 +25,7 @@ pub fn read_type_annotated_name(
   ) = exp
   {
     if let TyntTree::Leaf(_, type_name) = children.remove(1) {
-      let x = children.remove(0);
-      if let TyntTree::Leaf(_, name) = x {
+      if let TyntTree::Leaf(_, name) = children.remove(0) {
         Ok((name, type_name))
       } else {
         err(ExpectedTypeAnnotatedName)
