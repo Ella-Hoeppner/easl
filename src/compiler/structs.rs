@@ -38,6 +38,7 @@ impl UntypedStructField {
     self,
     generic_args: &Vec<String>,
     structs: &Vec<AbstractStruct>,
+    skolems: &Vec<String>,
   ) -> CompileResult<AbstractStructField> {
     Ok(AbstractStructField {
       metadata: self.metadata,
@@ -46,6 +47,7 @@ impl UntypedStructField {
         self.field_type_name,
         generic_args,
         structs,
+        skolems,
       )?,
     })
   }
@@ -75,7 +77,7 @@ impl UntypedStruct {
       fields: self
         .fields
         .into_iter()
-        .map(|field| field.assign_type(&self.generic_args, structs))
+        .map(|field| field.assign_type(&self.generic_args, structs, &vec![]))
         .collect::<CompileResult<Vec<AbstractStructField>>>()?,
       generic_args: self.generic_args,
     })
@@ -143,12 +145,6 @@ pub struct AbstractStruct {
   pub name: String,
   pub fields: Vec<AbstractStructField>,
   pub generic_args: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum TypeOrAbstractStruct {
-  Type(Type),
-  AbstractStruct(AbstractStruct),
 }
 
 impl AbstractStruct {
@@ -268,6 +264,12 @@ impl AbstractStruct {
         .collect(),
     )
   }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeOrAbstractStruct {
+  Type(Type),
+  AbstractStruct(AbstractStruct),
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1,7 +1,7 @@
 use crate::{
   compiler::{
-    error::err, expression::abstract_arg_list_and_return_type_from_tynt_tree,
-    metadata::extract_metadata, structs::UntypedStruct,
+    error::err, expression::arg_list_and_return_type_from_tynt_tree,
+    metadata::extract_metadata, structs::UntypedStruct, types::TypeState,
     util::read_type_annotated_name,
   },
   parse::TyntTree,
@@ -150,7 +150,7 @@ impl Program {
                 name,
                 metadata,
                 attributes,
-                var_type: Type::from_name(type_name, &structs)?,
+                var_type: Type::from_name(type_name, &structs, &vec![])?,
               })
             }
             "def" => {
@@ -224,6 +224,7 @@ impl Program {
                               body: Exp::try_from_tynt_tree(
                                 metadata_stripped_fn_ast,
                                 &structs,
+                                &vec![],
                               )?,
                             })
                           } else {
@@ -280,21 +281,28 @@ impl Program {
               let arg_list_ast = children_iter
                 .next()
                 .ok_or(InvalidDefn("Missing Argument List".to_string()))?;
+
               let (arg_names, arg_types, return_type) =
-                abstract_arg_list_and_return_type_from_tynt_tree(
+                arg_list_and_return_type_from_tynt_tree(
                   arg_list_ast,
-                  &generic_args,
                   &structs,
+                  &generic_args,
                 )?;
-              let body_ast = children_iter.next().ok_or(FunctionMissingBody);
               top_level_generic_functions.push(TopLevelGenericFunction {
                 name,
                 arg_metadata: vec![],  // todo!
                 return_metadata: None, // todo!
                 metadata,
-                body: Exp::try_from_tynt_tree(todo!(), &structs)?,
+                body: TypedExp::function_from_body_tree(
+                  children_iter.collect(),
+                  TypeState::Known(return_type),
+                  arg_names,
+                  arg_types.into_iter().map(|t| TypeState::Known(t)).collect(),
+                  &structs,
+                  &generic_args,
+                )?,
                 generic_args,
-              });
+              })
             }
             _ => {
               return err(UnrecognizedTopLevelForm);

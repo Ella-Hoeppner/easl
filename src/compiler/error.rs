@@ -1,6 +1,8 @@
 use sse::ParseError;
 use std::{backtrace::Backtrace, rc::Rc};
 
+use crate::parse::TyntTree;
+
 use super::{
   expression::TypedExp,
   metadata::Metadata,
@@ -17,6 +19,7 @@ pub enum CompileErrorKind {
   InvalidStructName,
   UnknownStructName,
   InvalidStructDefinition,
+  UnrecognizedGeneric(String),
   InvalidTopLevelVar(String),
   InvalidDef(String),
   InvalidDefn(String),
@@ -24,7 +27,9 @@ pub enum CompileErrorKind {
   FunctionMissingBody,
   UnrecognizedTopLevelForm,
   EmptyList,
-  InvalidType,
+  MissingType,
+  InvalidType(TyntTree),
+  InvalidTypeName(String),
   FunctionArgMissingType,
   InvalidArgumentName,
   CouldntInferTypes(Vec<TypedExp>),

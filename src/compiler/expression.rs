@@ -142,7 +142,7 @@ pub enum ExpressionCompilationPosition {
 
 pub type TypedExp = Exp<TypeState>;
 
-pub fn abstract_arg_list_and_return_type_from_tynt_tree(
+/*pub fn abstract_arg_list_and_return_type_from_tynt_tree(
   tree: TyntTree,
   generic_args: &Vec<String>,
   structs: &Vec<AbstractStruct>,
@@ -185,11 +185,12 @@ pub fn abstract_arg_list_and_return_type_from_tynt_tree(
   } else {
     return err(FunctionSignatureNotSquareBrackets);
   }
-}
+}*/
 
 pub fn arg_list_and_return_type_from_tynt_tree(
   tree: TyntTree,
   structs: &Vec<AbstractStruct>,
+  skolems: &Vec<String>,
 ) -> CompileResult<(Vec<String>, Vec<Type>, Type)> {
   use crate::parse::Encloser::*;
   use crate::parse::Operator::*;
@@ -200,14 +201,15 @@ pub fn arg_list_and_return_type_from_tynt_tree(
   ) = tree
   {
     let return_type =
-      Type::from_tynt_tree(args_and_return_type.remove(1), structs)?;
+      Type::from_tynt_tree(args_and_return_type.remove(1), structs, skolems)?;
     if let TyntTree::Inner((_, Encloser(Square)), arg_asts) =
       args_and_return_type.remove(0)
     {
       let (arg_types, arg_names) = arg_asts
         .into_iter()
         .map(|arg| -> CompileResult<_> {
-          let (maybe_t, arg_name_ast) = extract_type_annotation(arg, structs)?;
+          let (maybe_t, arg_name_ast) =
+            extract_type_annotation(arg, structs, skolems)?;
           let t = maybe_t.ok_or(CompileError::from(FunctionArgMissingType))?;
           if let TyntTree::Leaf(_, arg_name) = arg_name_ast {
             Ok((t, arg_name))
@@ -226,9 +228,38 @@ pub fn arg_list_and_return_type_from_tynt_tree(
 }
 
 impl TypedExp {
+  pub fn function_from_body_tree(
+    body_trees: Vec<TyntTree>,
+    return_type: TypeState,
+    arg_names: Vec<String>,
+    arg_types: Vec<TypeState>,
+    structs: &Vec<AbstractStruct>,
+    skolems: &Vec<String>,
+  ) -> CompileResult<Self> {
+    let mut body_exps = body_trees
+      .into_iter()
+      .map(|t| Self::try_from_tynt_tree(t, structs, skolems))
+      .collect::<CompileResult<Vec<TypedExp>>>()?;
+    let body = if body_exps.len() == 1 {
+      body_exps.remove(0)
+    } else {
+      Exp {
+        data: Unknown,
+        kind: ExpKind::Block(body_exps),
+      }
+    };
+    Ok(Exp {
+      data: Known(Type::Function(Box::new(FunctionSignature {
+        arg_types,
+        return_type,
+      }))),
+      kind: ExpKind::Function(arg_names, Box::new(body)),
+    })
+  }
   pub fn try_from_tynt_tree(
     tree: TyntTree,
     structs: &Vec<AbstractStruct>,
+    skolems: &Vec<String>,
   ) -> CompileResult<Self> {
     Ok(match tree {
       TyntTree::Leaf(_, leaf) => {
@@ -279,6 +310,7 @@ impl TypedExp {
                             Box::new(Self::try_from_tynt_tree(
                               children_iter.next().unwrap(),
                               structs,
+                              skolems,
                             )?),
                           ),
                         })
@@ -294,33 +326,19 @@ impl TypedExp {
                                 .next()
                                 .ok_or(CompileError::from(InvalidFunction))?,
                               structs,
+                              &vec![],
                             )?;
-                          let mut children = children_iter
-                            .clone()
-                            .map(|child| {
-                              Self::try_from_tynt_tree(child, structs)
-                            })
-                            .collect::<CompileResult<Vec<_>>>()?;
-                          let body = if children_iter.len() == 1 {
-                            children.remove(0)
-                          } else {
-                            Exp {
-                              data: Unknown,
-                              kind: ExpKind::Block(children),
-                            }
-                          };
-                          Some(Exp {
-                            data: Known(Type::Function(Box::new(
-                              FunctionSignature {
-                                arg_types: arg_types
-                                  .into_iter()
-                                  .map(|t| TypeState::Known(t))
-                                  .collect(),
-                                return_type: TypeState::Known(return_type),
-                              },
-                            ))),
-                            kind: ExpKind::Function(arg_names, Box::new(body)),
-                          })
+                          Some(Self::function_from_body_tree(
+                            children_iter.clone().collect(),
+                            TypeState::Known(return_type),
+                            arg_names,
+                            arg_types
+                              .into_iter()
+                              .map(|t| TypeState::Known(t))
+                              .collect(),
+                            structs,
+                            skolems,
+                          )?)
                         }
                         "let" => {
                           if children_iter.len() < 2 {
@@ -330,7 +348,7 @@ impl TypedExp {
                           let mut child_exps = children_iter
                             .clone()
                             .map(|child| {
-                              Self::try_from_tynt_tree(child, structs)
+                              Self::try_from_tynt_tree(child, structs, skolems)
                             })
                             .collect::<CompileResult<Vec<Self>>>()?;
                           let body_exp = if child_exps.len() == 1 {
@@ -381,7 +399,7 @@ impl TypedExp {
                                       }
                                     },
                                     Self::try_from_tynt_tree(
-                                      value_ast, structs,
+                                      value_ast, structs, skolems,
                                     )?,
                                   ));
                                 } else {
@@ -409,7 +427,7 @@ impl TypedExp {
                           let child_exps = children_iter
                             .clone()
                             .map(|child| {
-                              Self::try_from_tynt_tree(child, structs)
+                              Self::try_from_tynt_tree(child, structs, skolems)
                             })
                             .collect::<CompileResult<Vec<Self>>>()?;
                           Some(Exp {
@@ -426,9 +444,15 @@ impl TypedExp {
                 }
                 .unwrap_or(Exp {
                   kind: Application(
-                    Box::new(Self::try_from_tynt_tree(first_child, structs)?),
+                    Box::new(Self::try_from_tynt_tree(
+                      first_child,
+                      structs,
+                      skolems,
+                    )?),
                     children_iter
-                      .map(|arg| Self::try_from_tynt_tree(arg, structs))
+                      .map(|arg| {
+                        Self::try_from_tynt_tree(arg, structs, skolems)
+                      })
                       .collect::<CompileResult<_>>()?,
                   ),
                   data: Unknown,
@@ -448,11 +472,12 @@ impl TypedExp {
               let mut exp = Self::try_from_tynt_tree(
                 children_iter.next().unwrap(),
                 structs,
+                skolems,
               )?;
               exp.data =
                 TypeState::Known(match children_iter.next().unwrap() {
                   TyntTree::Leaf(_, type_name) => {
-                    Type::from_name(type_name, structs)?
+                    Type::from_name(type_name, structs, skolems)?
                   }
                   TyntTree::Inner(
                     (_, Encloser(Parens)),
@@ -471,6 +496,7 @@ impl TypedExp {
                             Ok(TypeState::Known(Type::from_tynt_tree(
                               signature_arg,
                               structs,
+                              skolems,
                             )?))
                           })
                           .collect::<CompileResult<Vec<TypeState>>>()?;
@@ -488,8 +514,8 @@ impl TypedExp {
                       return err(InvalidStructName);
                     }
                   }
-                  _ => {
-                    return err(InvalidType);
+                  other => {
+                    return err(InvalidType(other));
                   }
                 });
               exp

@@ -45,12 +45,13 @@ impl GenericOr<TypeOrAbstractStruct> {
     name: String,
     generic_args: &Vec<String>,
     structs: &Vec<AbstractStruct>,
+    skolems: &Vec<String>,
   ) -> CompileResult<Self> {
     Ok(if generic_args.contains(&name) {
       GenericOr::Generic(name)
     } else {
       GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
-        name, structs,
+        name, structs, skolems,
       )?))
     })
   }
@@ -65,6 +66,7 @@ pub enum Type {
   Bool,
   Struct(Struct),
   Function(Box<FunctionSignature>),
+  Skolem(String),
 }
 impl Type {
   pub fn compatible(&self, other: &Self) -> bool {
@@ -88,6 +90,7 @@ impl Type {
   pub fn from_name(
     name: String,
     structs: &Vec<AbstractStruct>,
+    skolems: &Vec<String>,
   ) -> CompileResult<Self> {
     use Type::*;
     Ok(match name.as_str() {
@@ -96,7 +99,9 @@ impl Type {
       "U32" | "u32" => U32,
       "Bool" | "bool" => Bool,
       _ => {
-        if let Some(s) = structs.iter().find(|s| s.name == name) {
+        if skolems.contains(&name) {
+          Skolem(name)
+        } else if let Some(s) = structs.iter().find(|s| s.name == name) {
           Struct(s.clone().fill_generics_with_unification_variables())
         } else {
           return err(UnrecognizedTypeName(name));
@@ -107,11 +112,37 @@ impl Type {
   pub fn from_tynt_tree(
     tree: TyntTree,
     structs: &Vec<AbstractStruct>,
+    skolems: &Vec<String>,
   ) -> CompileResult<Self> {
-    if let TyntTree::Leaf(_, type_name) = tree {
-      Ok(Type::from_name(type_name, structs)?)
-    } else {
-      err(InvalidType)
+    match &tree {
+      TyntTree::Leaf(_, type_name) => {
+        Ok(Type::from_name(type_name.clone(), structs, skolems)?)
+      }
+      TyntTree::Inner(
+        (_, EncloserOrOperator::Encloser(Encloser::Parens)),
+        children,
+      ) => {
+        let mut children_iter = children.into_iter();
+        if let Some(TyntTree::Leaf(_, type_name)) = children_iter.next() {
+          if let Some(s) = structs.iter().find(|s| s.name == *type_name) {
+            let generic_args = children_iter
+              .map(|t| {
+                Ok(TypeState::Known(Type::from_tynt_tree(
+                  t.clone(),
+                  structs,
+                  skolems,
+                )?))
+              })
+              .collect::<CompileResult<Vec<TypeState>>>()?;
+            Ok(Type::Struct(s.clone().fill_generics_ordered(generic_args)))
+          } else {
+            err(InvalidTypeName(type_name.clone()))
+          }
+        } else {
+          err(InvalidType(tree))
+        }
+      }
+      _ => err(InvalidType(tree)),
     }
   }
   pub fn compile(&self) -> String {
@@ -124,6 +155,9 @@ impl Type {
       Type::Struct(s) => compile_word(s.name.clone()),
       Type::Function(_) => {
         panic!("Attempted to compile ConcreteFunction type")
+      }
+      Type::Skolem(_) => {
+        panic!("Attempted to compile Skolem")
       }
     }
   }
@@ -148,10 +182,11 @@ pub fn extract_type_annotation_ast(
 pub fn extract_type_annotation(
   exp: TyntTree,
   structs: &Vec<AbstractStruct>,
+  skolems: &Vec<String>,
 ) -> CompileResult<(Option<Type>, TyntTree)> {
   let (t, value) = extract_type_annotation_ast(exp)?;
   Ok((
-    t.map(|t| Type::from_tynt_tree(t, structs))
+    t.map(|t| Type::from_tynt_tree(t, structs, skolems))
       .map_or(Ok(None), |v| v.map(Some))?,
     value,
   ))
@@ -161,6 +196,7 @@ pub fn parse_abstract_type(
   tree: TyntTree,
   generic_args: &Vec<String>,
   structs: &Vec<AbstractStruct>,
+  skolems: &Vec<String>,
 ) -> CompileResult<GenericOr<TypeOrAbstractStruct>> {
   match tree {
     TyntTree::Leaf(_, leaf) => {
@@ -173,7 +209,7 @@ pub fn parse_abstract_type(
           )))
         } else {
           Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-            Type::from_name(leaf, &vec![])?,
+            Type::from_name(leaf, &vec![], skolems)?,
           )))
         }
       }
@@ -183,24 +219,30 @@ pub fn parse_abstract_type(
       children,
     ) => {
       let mut children_iter = children.into_iter();
-      let type_name = if let Some(TyntTree::Leaf(_, x)) = children_iter.next() {
-        x
+      let type_name = if let Some(type_name_tree) = children_iter.next() {
+        if let TyntTree::Leaf(_, name) = type_name_tree {
+          name
+        } else {
+          return err(InvalidType(type_name_tree));
+        }
       } else {
-        return err(InvalidType);
+        return err(MissingType);
       };
       let type_args: Vec<_> = children_iter
-        .map(|arg_tree| parse_abstract_type(arg_tree, generic_args, structs))
+        .map(|arg_tree| {
+          parse_abstract_type(arg_tree, generic_args, structs, skolems)
+        })
         .collect::<CompileResult<Vec<_>>>()?;
       Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
         structs
           .iter()
           .find(|s| s.name == type_name)
-          .ok_or(CompileError::new(InvalidType))?
+          .ok_or(CompileError::new(InvalidTypeName(type_name)))?
           .clone()
           .fill_generics_ordered_abstractly(type_args),
       )))
     }
-    _ => err(InvalidType),
+    other => err(InvalidType(other)),
   }
 }
 
@@ -208,10 +250,11 @@ pub fn extract_abstract_type_annotation(
   exp: TyntTree,
   generic_args: &Vec<String>,
   structs: &Vec<AbstractStruct>,
+  skolems: &Vec<String>,
 ) -> CompileResult<(Option<GenericOr<TypeOrAbstractStruct>>, TyntTree)> {
   let (t, value) = extract_type_annotation_ast(exp)?;
   Ok((
-    t.map(|t| parse_abstract_type(t, generic_args, structs))
+    t.map(|t| parse_abstract_type(t, generic_args, structs, skolems))
       .map_or(Ok(None), |v| v.map(Some))?,
     value,
   ))
