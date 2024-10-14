@@ -15,6 +15,7 @@ fn main() {
     "generic_struct",
     "nested_generic_struct",
     "generic_fn",
+    "monomorphized_fn",
   ] {
     println!("compiling {filename}...");
     let tynt_source = fs::read_to_string(&format!("./data/{filename}.tynt"))

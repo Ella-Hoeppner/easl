@@ -206,17 +206,9 @@ impl AbstractStruct {
         .collect::<CompileResult<Vec<_>>>()?,
     })
   }
-  pub fn monomorphized_name(&self) -> String {
-    self
-      .filled_generics
-      .iter()
-      .fold(self.name.clone(), |name_so_far, t| {
-        name_so_far + "_" + &t.compile()
-      })
-  }
   pub fn compile_if_non_generic(self) -> Option<String> {
     self.generic_args.is_empty().then(|| {
-      let name = self.monomorphized_name();
+      let name = self.name;
       let fields = self
         .fields
         .into_iter()
@@ -248,8 +240,13 @@ impl AbstractStruct {
         field_types[first_usage_index].clone()
       })
       .collect();
+    let monomorphized_name = generic_args
+      .iter()
+      .fold(self.name.clone(), |name_so_far, t| {
+        name_so_far + "_" + &t.monomorphization_parameter_name()
+      });
     Some(AbstractStruct {
-      name: self.name.clone(),
+      name: monomorphized_name,
       filled_generics: generic_args.clone(),
       generic_args: vec![],
       fields: self
@@ -305,8 +302,6 @@ impl AbstractStruct {
         .collect(),
     )
   }
-
-  //
 
   fn fill_abstract_generics_inner(
     self,

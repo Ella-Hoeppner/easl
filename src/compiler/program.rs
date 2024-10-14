@@ -304,7 +304,6 @@ impl Program {
               )?;
               let implementation =
                 FunctionImplementationKind::Composite(TopLevelFunction {
-                  name: name.clone(),
                   arg_metadata,
                   return_metadata,
                   metadata,
@@ -325,7 +324,6 @@ impl Program {
                     &structs,
                     &generic_args,
                   )?,
-                  generic_args: generic_args.clone(),
                 });
               global_context.abstract_functions.push(
                 AbstractFunctionSignature {
@@ -418,15 +416,25 @@ impl Program {
     Ok(self)
   }
   pub fn monomorphize(mut self) -> Self {
-    for f in self.global_context.abstract_functions.iter_mut() {
-      if let FunctionImplementationKind::Composite(implementation) =
-        &mut f.implementation
-      {
-        implementation
-          .body
-          .monomorphize(&mut self.global_context.structs);
+    let mut monomorphized_ctx = Context::empty();
+    for f in self.global_context.abstract_functions.iter() {
+      if f.generic_args.is_empty() {
+        if let FunctionImplementationKind::Composite(implementation) =
+          &f.implementation
+        {
+          let mut new_implementation = implementation.clone();
+          new_implementation
+            .body
+            .monomorphize(&self.global_context, &mut monomorphized_ctx);
+          let mut new_f = f.clone();
+          new_f.implementation =
+            FunctionImplementationKind::Composite(new_implementation);
+          monomorphized_ctx.add_abstract_function(new_f);
+        }
       }
     }
+    monomorphized_ctx.variables = self.global_context.variables;
+    self.global_context = monomorphized_ctx;
     self
   }
   pub fn compile_to_wgsl(self) -> CompileResult<String> {
@@ -440,7 +448,6 @@ impl Program {
     for s in self
       .global_context
       .structs
-      .0
       .into_iter()
       .filter(|s| !default_structs.contains(s))
     {
@@ -453,8 +460,8 @@ impl Program {
       if let FunctionImplementationKind::Composite(implementation) =
         f.implementation
       {
-        if implementation.generic_args.is_empty() {
-          wgsl += &implementation.compile()?;
+        if f.generic_args.is_empty() {
+          wgsl += &implementation.compile(&f.name)?;
           wgsl += "\n\n";
         }
       }

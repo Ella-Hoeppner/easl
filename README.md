@@ -18,6 +18,9 @@ Feature goals:
 ### steps to get to expressive parity with wgsl/glsl
 * monomorphize generic functions
 
+* make `def` work
+  * should just compile to a const, I guess?
+
 * add typeclasses
   * support generic arguments bound by typeclass
     * monomorphization

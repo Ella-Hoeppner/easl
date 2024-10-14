@@ -13,8 +13,6 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TopLevelFunction {
-  pub name: String,
-  pub generic_args: Vec<String>,
   pub arg_metadata: Vec<Option<Metadata>>,
   pub return_metadata: Option<Metadata>,
   pub metadata: Option<Metadata>,
@@ -42,7 +40,7 @@ impl AbstractFunctionSignature {
     &self,
     original_name: String,
     field_types: Vec<Type>,
-  ) -> Option<(String, Self)> {
+  ) -> Option<Self> {
     if self.generic_args.is_empty() {
       return None;
     }
@@ -144,7 +142,7 @@ pub struct BuiltInFunction {
 }
 
 impl TopLevelFunction {
-  pub fn compile(self) -> CompileResult<String> {
+  pub fn compile(self, name: &str) -> CompileResult<String> {
     let TypedExp { data, kind } = self.body;
     let (arg_types, return_type) =
       if let Type::Function(signature) = data.unwrap_known() {
@@ -157,7 +155,6 @@ impl TopLevelFunction {
     } else {
       panic!("attempted to compile function with invalid ExpKind")
     };
-    let name = compile_word(self.name);
     let args = arg_names
       .into_iter()
       .zip(arg_types.into_iter())

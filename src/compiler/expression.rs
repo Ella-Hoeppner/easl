@@ -129,7 +129,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
 }
 use ExpKind::*;
 
-use super::types::{AbstractType, StructList};
+use super::{functions::FunctionImplementationKind, types::AbstractType};
 
 #[derive(Clone, Copy)]
 pub enum ExpressionCompilationPosition {
@@ -852,53 +852,75 @@ impl TypedExp {
       _ => Ok(()),
     }
   }
-  pub fn monomorphize(&mut self, structs: &mut StructList) {
+  pub fn monomorphize(&mut self, base_ctx: &Context, new_ctx: &mut Context) {
     match &mut self.kind {
       Application(f, args) => {
-        f.monomorphize(structs);
+        f.monomorphize(base_ctx, new_ctx);
         for arg in args.iter_mut() {
-          arg.monomorphize(structs);
+          arg.monomorphize(base_ctx, new_ctx);
         }
         if let ExpKind::Name(f_name) = &mut f.kind {
-          if let Some(abstract_struct) =
-            structs.0.iter().find(|s| s.name == *f_name)
+          if let Some(abstract_signature) =
+            if let TypeState::Known(Type::Function(f)) = &f.data {
+              &f.abstract_ancestor
+            } else {
+              unreachable!("encountered applied non-fn in monomorphization")
+            }
           {
-            if let Some(monomorphized_struct) = abstract_struct
-              .generate_monomorphized(
-                args.iter().map(|arg| arg.data.unwrap_known()).collect(),
-              )
-            {
-              self.data.with_dereferenced_mut(|typestate| {
-                std::mem::swap(
-                  typestate,
-                  &mut TypeState::Known(Type::Struct(
-                    monomorphized_struct.clone().fill_generics_ordered(vec![]),
-                  )),
-                );
-              });
-              structs.add_monomorphized_struct(monomorphized_struct);
+            match abstract_signature.implementation {
+              FunctionImplementationKind::Builtin => {}
+              FunctionImplementationKind::Constructor => {
+                if let Some(abstract_struct) =
+                  base_ctx.structs.iter().find(|s| s.name == *f_name)
+                {
+                  let arg_types: Vec<Type> =
+                    args.iter().map(|arg| arg.data.unwrap_known()).collect();
+                  if let Some(monomorphized_struct) =
+                    abstract_struct.generate_monomorphized(arg_types.clone())
+                  {
+                    std::mem::swap(
+                      f_name,
+                      &mut monomorphized_struct.name.clone(),
+                    );
+                    self.data.with_dereferenced_mut(|typestate| {
+                      std::mem::swap(
+                        typestate,
+                        &mut TypeState::Known(Type::Struct(
+                          monomorphized_struct
+                            .clone()
+                            .fill_generics_ordered(vec![]),
+                        )),
+                      )
+                    });
+                    new_ctx.add_monomorphized_struct(monomorphized_struct);
+                  }
+                }
+              }
+              FunctionImplementationKind::Composite(_) => {
+                todo!("fn monomorphization")
+              }
             }
           }
         }
       }
-      Function(_, body) => body.monomorphize(structs),
-      Access(_, body) => body.monomorphize(structs),
+      Function(_, body) => body.monomorphize(base_ctx, new_ctx),
+      Access(_, body) => body.monomorphize(base_ctx, new_ctx),
       Let(bindings, body) => {
         for (_, _, value) in bindings {
-          value.monomorphize(structs)
+          value.monomorphize(base_ctx, new_ctx)
         }
-        body.monomorphize(structs)
+        body.monomorphize(base_ctx, new_ctx)
       }
       Match(scrutinee, arms) => {
-        scrutinee.monomorphize(structs);
+        scrutinee.monomorphize(base_ctx, new_ctx);
         for (pattern, value) in arms {
-          pattern.monomorphize(structs);
-          value.monomorphize(structs);
+          pattern.monomorphize(base_ctx, new_ctx);
+          value.monomorphize(base_ctx, new_ctx);
         }
       }
       Block(subexps) => {
         for subexp in subexps {
-          subexp.monomorphize(structs);
+          subexp.monomorphize(base_ctx, new_ctx);
         }
       }
       _ => {}

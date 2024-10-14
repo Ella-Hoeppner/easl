@@ -192,6 +192,14 @@ impl Type {
       }
     }
   }
+  pub fn monomorphization_parameter_name(&self) -> String {
+    match self {
+      Type::Skolem(name) => {
+        format!("<{name}>")
+      }
+      other => other.compile(),
+    }
+  }
 }
 
 pub fn extract_type_annotation_ast(
@@ -465,44 +473,23 @@ impl Variable {
 }
 
 #[derive(Debug, Clone)]
-pub struct StructList(pub Vec<AbstractStruct>);
-
-impl StructList {
-  pub fn empty() -> Self {
-    Self(vec![])
-  }
-  pub fn add_monomorphized_struct(&mut self, s: AbstractStruct) {
-    if self
-      .0
-      .iter()
-      .find(|existing_struct| {
-        existing_struct.name == s.name
-          && existing_struct.filled_generics == s.filled_generics
-      })
-      .is_none()
-    {
-      self.0.push(s);
-    }
-  }
-}
-
-impl From<Vec<AbstractStruct>> for StructList {
-  fn from(value: Vec<AbstractStruct>) -> Self {
-    Self(value)
-  }
-}
-
-#[derive(Debug, Clone)]
 pub struct Context {
-  pub structs: StructList,
+  pub structs: Vec<AbstractStruct>,
   pub variables: HashMap<String, Vec<Variable>>,
   pub abstract_functions: Vec<AbstractFunctionSignature>,
 }
 
 impl Context {
+  pub fn empty() -> Self {
+    Self {
+      structs: vec![],
+      variables: HashMap::new(),
+      abstract_functions: vec![],
+    }
+  }
   pub fn default_global() -> Self {
     Self {
-      structs: StructList::empty(),
+      structs: vec![],
       variables: HashMap::new(),
       abstract_functions: built_in_functions(),
     }
@@ -527,6 +514,19 @@ impl Context {
     }
     self.structs = structs.into();
     self
+  }
+  pub fn add_monomorphized_struct(&mut self, s: AbstractStruct) {
+    if self
+      .structs
+      .iter()
+      .find(|existing_struct| {
+        existing_struct.name == s.name
+          && existing_struct.filled_generics == s.filled_generics
+      })
+      .is_none()
+    {
+      self.structs.push(s);
+    }
   }
   pub fn get_abstract_function_signatures(
     &self,
@@ -601,5 +601,22 @@ impl Context {
         .unwrap()
         .typestate,
     )
+  }
+  pub fn merge(mut self, mut other: Context) -> Self {
+    self.structs.append(&mut other.structs);
+    self.structs.dedup();
+    self
+      .abstract_functions
+      .append(&mut other.abstract_functions);
+    self.abstract_functions.dedup();
+    self.variables.extend(other.variables.into_iter());
+    self
+  }
+  pub fn find_matching_abstract_function(
+    &self,
+    name: &str,
+    signatgure: &FunctionSignature,
+  ) -> AbstractFunctionSignature {
+    todo!()
   }
 }
