@@ -48,6 +48,7 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
   n_sums(n)
     .into_iter()
     .map(|nums| AbstractFunctionSignature {
+      name: format!("vec{n}f"),
       generic_args: vec![],
       arg_types: nums
         .into_iter()
@@ -158,57 +159,46 @@ pub fn get_builtin_struct(name: &str) -> AbstractStruct {
     .unwrap()
 }
 
-pub fn built_in_multi_signature_functions(
-) -> Vec<(&'static str, Vec<AbstractFunctionSignature>)> {
-  vec![
-    ("vec4f", multi_signature_vec_constructors(4)),
-    ("vec3f", multi_signature_vec_constructors(3)),
-    ("vec2f", multi_signature_vec_constructors(2)),
-  ]
-}
-
-pub fn built_in_functions() -> Vec<(&'static str, AbstractFunctionSignature)> {
-  vec![
-    (
-      "&&",
-      AbstractFunctionSignature {
-        generic_args: vec![],
-        arg_types: vec![
-          GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::Bool)),
-          GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::Bool)),
-        ],
-        return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-          Type::Bool,
-        )),
-      },
-    ),
-    (
-      "==",
-      AbstractFunctionSignature {
-        generic_args: vec!["T".to_string()],
-        arg_types: vec![
-          GenericOr::Generic("T".to_string()),
-          GenericOr::Generic("T".to_string()),
-        ],
-        return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-          Type::Bool,
-        )),
-      },
-    ),
-    (
-      "=",
-      AbstractFunctionSignature {
-        generic_args: vec!["T".to_string()],
-        arg_types: vec![
-          GenericOr::Generic("T".to_string()),
-          GenericOr::Generic("T".to_string()),
-        ],
-        return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-          Type::None,
-        )),
-      },
-    ),
-  ]
+pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
+  let mut signatures = vec![
+    AbstractFunctionSignature {
+      name: "&&".to_string(),
+      generic_args: vec![],
+      arg_types: vec![
+        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::Bool)),
+        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::Bool)),
+      ],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+        Type::Bool,
+      )),
+    },
+    AbstractFunctionSignature {
+      name: "==".to_string(),
+      generic_args: vec!["T".to_string()],
+      arg_types: vec![
+        GenericOr::Generic("T".to_string()),
+        GenericOr::Generic("T".to_string()),
+      ],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+        Type::Bool,
+      )),
+    },
+    AbstractFunctionSignature {
+      name: "=".to_string(),
+      generic_args: vec!["T".to_string()],
+      arg_types: vec![
+        GenericOr::Generic("T".to_string()),
+        GenericOr::Generic("T".to_string()),
+      ],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+        Type::None,
+      )),
+    },
+  ];
+  signatures.append(&mut multi_signature_vec_constructors(4));
+  signatures.append(&mut multi_signature_vec_constructors(3));
+  signatures.append(&mut multi_signature_vec_constructors(2));
+  signatures
 }
 
 pub const ASSIGNMENT_OPS: [&'static str; 5] = ["=", "+=", "-=", "*=", "/="];

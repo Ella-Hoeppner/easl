@@ -13,6 +13,7 @@ fn main() {
     "equality",
     "variable",
     "generic_struct",
+    "nested_generic_struct",
     "generic_fn",
   ] {
     println!("compiling {filename}...");

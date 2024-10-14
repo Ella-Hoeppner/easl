@@ -9,13 +9,13 @@ use crate::{
     metadata::{extract_metadata, Metadata},
     structs::AbstractStruct,
     types::{
-      extract_type_annotation, Bindings, Context, Type,
+      extract_type_annotation, Context, Type,
       TypeState::{self, *},
       Variable, VariableKind,
     },
     util::{compile_word, indent},
   },
-  parse::{Encloser, TyntTree},
+  parse::TyntTree,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -127,10 +127,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Match(Box<Exp<D>>, Vec<(Exp<D>, Exp<D>)>),
   Block(Vec<Exp<D>>),
 }
-use sse::syntax::EncloserOrOperator;
 use ExpKind::*;
-
-use super::{structs::TypeOrAbstractStruct, types::GenericOr};
 
 #[derive(Clone, Copy)]
 pub enum ExpressionCompilationPosition {
@@ -528,7 +525,7 @@ impl TypedExp {
   pub fn propagate_types(&mut self, ctx: &mut Context) -> CompileResult<bool> {
     Ok(match &mut self.kind {
       Name(name) => {
-        if !ctx.bindings.is_bound(name) {
+        if !ctx.is_bound(name) {
           return err(UnboundName(name.clone()));
         }
         ctx.constrain_name_type(name, &mut self.data)?
@@ -556,12 +553,12 @@ impl TypedExp {
             };
           if arg_count == arg_names.len() {
             for (name, t) in arg_names.iter().zip(arg_type_states) {
-              ctx.bindings.bind(name, Variable::new(t))
+              ctx.bind(name, Variable::new(t))
             }
             let body_types_changed = body.propagate_types(ctx)?;
             let argument_types = arg_names
               .iter()
-              .map(|name| ctx.bindings.unbind(name).typestate)
+              .map(|name| ctx.unbind(name).typestate)
               .collect::<Vec<_>>();
             let fn_type_changed =
               self.data.constrain_fn_by_argument_types(argument_types)?;
@@ -654,12 +651,12 @@ impl TypedExp {
           body.data.mutually_constrain(&mut self.data)?;
         for (name, _, value) in bindings.iter_mut() {
           anything_changed |= value.propagate_types(ctx)?;
-          ctx.bindings.bind(name, Variable::new(value.data.clone()));
+          ctx.bind(name, Variable::new(value.data.clone()));
         }
         anything_changed |= body.propagate_types(ctx)?;
         for (name, _, value) in bindings.iter_mut() {
           anything_changed |=
-            value.data.constrain(ctx.bindings.unbind(name).typestate)?;
+            value.data.constrain(ctx.unbind(name).typestate)?;
         }
         anything_changed
       }
@@ -759,7 +756,7 @@ impl TypedExp {
   }
   pub fn check_assignment_validity(
     &self,
-    bindings: &mut Bindings,
+    ctx: &mut Context,
   ) -> CompileResult<()> {
     match &self.kind {
       Application(f, args) => {
@@ -774,7 +771,7 @@ impl TypedExp {
               }
             }
             if let ExpKind::Name(var_name) = &var.kind {
-              if bindings.get_variable_kind(var_name) != &VariableKind::Var {
+              if ctx.get_variable_kind(var_name) != &VariableKind::Var {
                 return err(AssignmentTargetMustBeVariable);
               }
             } else {
@@ -783,37 +780,37 @@ impl TypedExp {
           }
         }
         for arg in args {
-          arg.check_assignment_validity(bindings)?;
+          arg.check_assignment_validity(ctx)?;
         }
-        f.check_assignment_validity(bindings)
+        f.check_assignment_validity(ctx)
       }
-      Function(_, body) => body.check_assignment_validity(bindings),
-      Access(_, subexp) => subexp.check_assignment_validity(bindings),
+      Function(_, body) => body.check_assignment_validity(ctx),
+      Access(_, subexp) => subexp.check_assignment_validity(ctx),
       Let(binding_names_and_values, body) => {
         for (name, kind, value) in binding_names_and_values {
-          value.check_assignment_validity(bindings)?;
-          bindings.bind(
+          value.check_assignment_validity(ctx)?;
+          ctx.bind(
             name,
             Variable::new(value.data.clone()).with_kind(kind.clone()),
           )
         }
-        body.check_assignment_validity(bindings)?;
+        body.check_assignment_validity(ctx)?;
         for (name, _, value) in binding_names_and_values {
-          value.check_assignment_validity(bindings)?;
-          bindings.unbind(name);
+          value.check_assignment_validity(ctx)?;
+          ctx.unbind(name);
         }
         Ok(())
       }
       Match(scrutinee, arms) => {
         for (pattern, value) in arms {
-          pattern.check_assignment_validity(bindings)?;
-          value.check_assignment_validity(bindings)?;
+          pattern.check_assignment_validity(ctx)?;
+          value.check_assignment_validity(ctx)?;
         }
-        scrutinee.check_assignment_validity(bindings)
+        scrutinee.check_assignment_validity(ctx)
       }
       Block(subexps) => {
         for subexp in subexps {
-          subexp.check_assignment_validity(bindings)?;
+          subexp.check_assignment_validity(ctx)?;
         }
         Ok(())
       }

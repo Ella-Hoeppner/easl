@@ -16,7 +16,7 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* generic functions
+* monomorphize generic functions
 
 * add typeclasses
   * support generic arguments bound by typeclass

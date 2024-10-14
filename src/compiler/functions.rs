@@ -7,7 +7,7 @@ use super::{
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
   structs::TypeOrAbstractStruct,
-  types::{Context, GenericOr, Type, TypeState},
+  types::{GenericOr, Type, TypeState},
   util::indent,
 };
 
@@ -23,6 +23,7 @@ pub struct TopLevelFunction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractFunctionSignature {
+  pub name: String,
   pub generic_args: Vec<String>,
   pub arg_types: Vec<GenericOr<TypeOrAbstractStruct>>,
   pub return_type: GenericOr<TypeOrAbstractStruct>,

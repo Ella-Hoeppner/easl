@@ -3,17 +3,11 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use sse::syntax::EncloserOrOperator;
 
-use crate::{
-  compiler::error::CompileError,
-  parse::{Encloser, Operator, TyntTree},
-};
+use crate::parse::{Encloser, Operator, TyntTree};
 
 use super::{
-  builtins::{
-    built_in_functions, built_in_multi_signature_functions,
-    ABNORMAL_CONSTRUCTOR_STRUCTS,
-  },
-  error::{err, CompileErrorKind::*, CompileResult},
+  builtins::{built_in_functions, ABNORMAL_CONSTRUCTOR_STRUCTS},
+  error::{err, CompileError, CompileErrorKind::*, CompileResult},
   functions::{AbstractFunctionSignature, FunctionSignature},
   structs::{AbstractStruct, Struct, TypeOrAbstractStruct},
   util::compile_word,
@@ -433,21 +427,81 @@ impl Variable {
   }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Bindings {
+#[derive(Debug, Clone)]
+pub struct Context {
+  pub structs: Vec<AbstractStruct>,
   pub variables: HashMap<String, Vec<Variable>>,
-  pub abstract_functions: HashMap<String, Vec<AbstractFunctionSignature>>,
+  pub abstract_functions: Vec<AbstractFunctionSignature>,
 }
 
-impl Bindings {
+impl Context {
   pub fn default_global() -> Self {
-    let mut abstract_functions = HashMap::new();
-    for (name, signatures) in built_in_multi_signature_functions() {
-      abstract_functions.insert(name.to_string(), signatures);
-    }
     Self {
+      structs: vec![],
       variables: HashMap::new(),
-      abstract_functions,
+      abstract_functions: built_in_functions(),
+    }
+  }
+  pub fn with_structs(mut self, structs: Vec<AbstractStruct>) -> Self {
+    for s in &structs {
+      if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&s.name.as_str()) {
+        self.add_abstract_function(AbstractFunctionSignature {
+          name: s.name.clone(),
+          generic_args: s.generic_args.clone(),
+          arg_types: s
+            .fields
+            .iter()
+            .map(|field| field.field_type.clone())
+            .collect(),
+          return_type: GenericOr::NonGeneric(
+            TypeOrAbstractStruct::AbstractStruct(s.clone()),
+          ),
+        });
+      }
+    }
+    self.structs = structs;
+    self
+  }
+  pub fn get_abstract_function_signatures(
+    &self,
+    name: &str,
+  ) -> Vec<AbstractFunctionSignature> {
+    self
+      .abstract_functions
+      .iter()
+      .filter(|f| f.name == name)
+      .cloned()
+      .collect()
+  }
+  pub fn constrain_name_type(
+    &mut self,
+    name: &str,
+    t: &mut TypeState,
+  ) -> CompileResult<bool> {
+    let abstract_signatures = self.get_abstract_function_signatures(name);
+    if abstract_signatures.is_empty() {
+      t.mutually_constrain(self.get_typestate_mut(name)?)
+    } else {
+      t.constrain(TypeState::OneOf(
+        abstract_signatures
+          .iter()
+          .cloned()
+          .map(|signature| Type::Function(Box::new(signature.concretize())))
+          .collect(),
+      ))
+    }
+  }
+  pub fn add_monomorphized_struct(&mut self, s: AbstractStruct) {
+    if self
+      .structs
+      .iter()
+      .find(|existing_struct| {
+        existing_struct.name == s.name
+          && existing_struct.filled_generics == s.filled_generics
+      })
+      .is_none()
+    {
+      self.structs.push(s);
     }
   }
   pub fn bind(&mut self, name: &str, v: Variable) {
@@ -466,14 +520,17 @@ impl Bindings {
   }
   pub fn add_abstract_function(
     &mut self,
-    name: String,
-    signatures: Vec<AbstractFunctionSignature>,
+    signatures: AbstractFunctionSignature,
   ) {
-    self.abstract_functions.insert(name, signatures);
+    self.abstract_functions.push(signatures);
   }
   pub fn is_bound(&self, name: &str) -> bool {
     self.variables.contains_key(name)
-      || self.abstract_functions.contains_key(name)
+      || self
+        .abstract_functions
+        .iter()
+        .find(|f| f.name == name)
+        .is_some()
   }
   pub fn get_variable_kind(&self, name: &str) -> &VariableKind {
     &self.variables.get(name).unwrap().last().unwrap().kind
@@ -491,82 +548,5 @@ impl Bindings {
         .unwrap()
         .typestate,
     )
-  }
-}
-
-#[derive(Debug, Clone)]
-pub struct Context {
-  pub structs: Vec<AbstractStruct>,
-  pub bindings: Bindings,
-}
-
-impl Context {
-  pub fn default_global() -> Self {
-    let mut multi_signature_functions = HashMap::new();
-    for (name, signatures) in built_in_multi_signature_functions() {
-      multi_signature_functions.insert(name.to_string(), signatures);
-    }
-    let mut ctx = Context {
-      structs: vec![],
-      bindings: Bindings::default_global(),
-    };
-    for (name, signature) in built_in_functions() {
-      ctx
-        .bindings
-        .add_abstract_function(name.to_string(), vec![signature]);
-    }
-    ctx
-  }
-  pub fn with_structs(mut self, structs: Vec<AbstractStruct>) -> Self {
-    for s in &structs {
-      if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&s.name.as_str()) {
-        self.bindings.add_abstract_function(
-          s.name.clone(),
-          vec![AbstractFunctionSignature {
-            generic_args: s.generic_args.clone(),
-            arg_types: s
-              .fields
-              .iter()
-              .map(|field| field.field_type.clone())
-              .collect(),
-            return_type: GenericOr::NonGeneric(
-              TypeOrAbstractStruct::AbstractStruct(s.clone()),
-            ),
-          }],
-        );
-      }
-    }
-    self.structs = structs;
-    self
-  }
-  pub fn constrain_name_type(
-    &mut self,
-    name: &str,
-    t: &mut TypeState,
-  ) -> CompileResult<bool> {
-    if let Some(signatures) = self.bindings.abstract_functions.get(name) {
-      t.constrain(TypeState::OneOf(
-        signatures
-          .iter()
-          .cloned()
-          .map(|signature| Type::Function(Box::new(signature.concretize())))
-          .collect(),
-      ))
-    } else {
-      t.mutually_constrain(self.bindings.get_typestate_mut(name)?)
-    }
-  }
-  pub fn add_monomorphized_struct(&mut self, s: AbstractStruct) {
-    if self
-      .structs
-      .iter()
-      .find(|existing_struct| {
-        existing_struct.name == s.name
-          && existing_struct.filled_generics == s.filled_generics
-      })
-      .is_none()
-    {
-      self.structs.push(s);
-    }
   }
 }

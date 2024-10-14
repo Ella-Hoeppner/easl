@@ -13,7 +13,7 @@ use super::{
   expression::{Exp, TypedExp},
   functions::TopLevelFunction,
   metadata::Metadata,
-  types::{Bindings, Context, Type},
+  types::{Context, Type},
   vars::TopLevelVar,
 };
 
@@ -356,7 +356,7 @@ impl Program {
   pub fn check_typed_program(self) -> CompileResult<Self> {
     for f in self.top_level_functions.iter() {
       f.body
-        .check_assignment_validity(&mut Bindings::default_global())?;
+        .check_assignment_validity(&mut Context::default_global())?;
     }
     Ok(self)
   }
