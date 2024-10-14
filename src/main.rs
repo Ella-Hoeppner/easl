@@ -13,7 +13,6 @@ fn main() {
     "equality",
     "variable",
     "generic_struct",
-    "nested_generic_struct",
     "generic_fn",
   ] {
     println!("compiling {filename}...");
@@ -22,7 +21,7 @@ fn main() {
     match compile_tynt_to_wgsl(&tynt_source) {
       Ok(wgsl) => {
         fs::create_dir_all("./out/").expect("Unable to create out directory");
-        fs::write(&format!("./out/{filename}_compiled.wgsl"), wgsl)
+        fs::write(&format!("./out/{filename}.wgsl"), wgsl)
           .expect("Unable to write file");
       }
       Err(e) => {

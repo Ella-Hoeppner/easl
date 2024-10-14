@@ -11,7 +11,7 @@ use super::{
   builtins::built_in_structs,
   error::{CompileErrorKind::*, CompileResult},
   expression::{Exp, TypedExp},
-  functions::{TopLevelFunction, TopLevelGenericFunction},
+  functions::TopLevelFunction,
   metadata::Metadata,
   types::{Bindings, Context, Type},
   vars::TopLevelVar,
@@ -22,7 +22,6 @@ pub struct Program {
   global_context: Context,
   top_level_vars: Vec<TopLevelVar>,
   top_level_functions: Vec<TopLevelFunction>,
-  top_level_generic_functions: Vec<TopLevelGenericFunction>,
 }
 
 impl Program {
@@ -97,7 +96,6 @@ impl Program {
       Context::default_global().with_structs(structs.clone());
     let mut top_level_vars = vec![];
     let mut top_level_functions = vec![];
-    let mut top_level_generic_functions = vec![];
     for (metadata, tree) in non_struct_trees.into_iter() {
       use crate::parse::Encloser::*;
       use crate::parse::Operator::*;
@@ -226,6 +224,7 @@ impl Program {
                                 &structs,
                                 &vec![],
                               )?,
+                              generic_args: vec![],
                             })
                           } else {
                             return err(InvalidFunctionArgumentList);
@@ -288,7 +287,7 @@ impl Program {
                   &structs,
                   &generic_args,
                 )?;
-              top_level_generic_functions.push(TopLevelGenericFunction {
+              top_level_functions.push(TopLevelFunction {
                 name,
                 arg_metadata: vec![],  // todo!
                 return_metadata: None, // todo!
@@ -319,7 +318,6 @@ impl Program {
       global_context,
       top_level_vars,
       top_level_functions,
-      top_level_generic_functions,
     })
   }
   fn propagate_types(&mut self) -> CompileResult<bool> {
@@ -362,9 +360,9 @@ impl Program {
     }
     Ok(self)
   }
-  pub fn monomorphize_structs(mut self) -> Self {
+  pub fn monomorphize(mut self) -> Self {
     for f in self.top_level_functions.iter_mut() {
-      f.monomorphize_structs(&mut self.global_context);
+      f.body.monomorphize(&mut self.global_context);
     }
     self
   }
@@ -388,8 +386,10 @@ impl Program {
       }
     }
     for f in self.top_level_functions {
-      wgsl += &f.compile()?;
-      wgsl += "\n\n";
+      if f.generic_args.is_empty() {
+        wgsl += &f.compile()?;
+        wgsl += "\n\n";
+      }
     }
     Ok(wgsl)
   }

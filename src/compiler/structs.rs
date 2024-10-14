@@ -80,6 +80,7 @@ impl UntypedStruct {
         .map(|field| field.assign_type(&self.generic_args, structs, &vec![]))
         .collect::<CompileResult<Vec<AbstractStructField>>>()?,
       generic_args: self.generic_args,
+      filled_generics: vec![],
     })
   }
 }
@@ -99,22 +100,6 @@ pub struct AbstractStructField {
 }
 
 impl AbstractStructField {
-  pub fn fill_generics_abstractly(
-    self,
-    generic_args: &HashMap<String, GenericOr<TypeOrAbstractStruct>>,
-  ) -> AbstractStructField {
-    AbstractStructField {
-      metadata: self.metadata,
-      name: self.name,
-      field_type: match self.field_type {
-        GenericOr::Generic(var_name) => generic_args
-          .get(&var_name)
-          .expect("unrecognized generic name in struct")
-          .clone(),
-        non_generic => non_generic,
-      },
-    }
-  }
   pub fn fill_generics(
     self,
     generics: &HashMap<String, TypeState>,
@@ -138,21 +123,54 @@ impl AbstractStructField {
       },
     }
   }
+  pub fn compile(self) -> String {
+    let metadata = if let Some(metadata) = self.metadata {
+      metadata.compile()
+    } else {
+      String::new()
+    };
+    let name = compile_word(self.name);
+    let field_type = match self.field_type {
+      GenericOr::Generic(_) => {
+        panic!("attempted to compile generic struct field")
+      }
+      GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => t.compile(),
+      GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(t)) => t
+        .compile_if_non_generic()
+        .expect("failed to compile abstract structs"),
+    };
+    format!("  {metadata}{name}: {field_type}")
+  }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractStruct {
   pub name: String,
+  pub filled_generics: Vec<Type>,
   pub fields: Vec<AbstractStructField>,
   pub generic_args: Vec<String>,
 }
 
 impl AbstractStruct {
-  pub fn compile_if_non_generic(self) -> Option<String> {
+  pub fn monomorphized_name(&self) -> String {
     self
-      .generic_args
-      .is_empty()
-      .then(|| self.fill_generics_ordered(vec![]).compile())
+      .filled_generics
+      .iter()
+      .fold(self.name.clone(), |name_so_far, t| {
+        name_so_far + "_" + &t.compile()
+      })
+  }
+  pub fn compile_if_non_generic(self) -> Option<String> {
+    self.generic_args.is_empty().then(|| {
+      let name = self.monomorphized_name();
+      let fields = self
+        .fields
+        .into_iter()
+        .map(|field| field.compile())
+        .collect::<Vec<String>>()
+        .join("\n");
+      format!("struct {name} {{\n{fields}\n}}")
+    })
   }
   pub fn generate_monomorphized(
     &self,
@@ -176,13 +194,9 @@ impl AbstractStruct {
         field_types[first_usage_index].clone()
       })
       .collect();
-    let name = generic_args
-      .iter()
-      .fold(self.name.clone(), |current_name, arg| {
-        current_name + "_" + &arg.compile()
-      });
     Some(AbstractStruct {
-      name,
+      name: self.name.clone(),
+      filled_generics: generic_args.clone(),
       generic_args: vec![],
       fields: self
         .fields
@@ -227,33 +241,6 @@ impl AbstractStruct {
       .zip(generics.into_iter())
       .collect();
     self.fill_generics(&generics_map)
-  }
-  pub fn fill_generics_abstractly(
-    self,
-    generics: &HashMap<String, GenericOr<TypeOrAbstractStruct>>,
-  ) -> AbstractStruct {
-    let new_fields: Vec<_> = self
-      .fields
-      .into_iter()
-      .map(|field| field.fill_generics_abstractly(generics))
-      .collect();
-    AbstractStruct {
-      name: self.name,
-      fields: new_fields,
-      generic_args: vec![],
-    }
-  }
-  pub fn fill_generics_ordered_abstractly(
-    self,
-    generics: Vec<GenericOr<TypeOrAbstractStruct>>,
-  ) -> AbstractStruct {
-    let generics_map = self
-      .generic_args
-      .iter()
-      .cloned()
-      .zip(generics.into_iter())
-      .collect();
-    self.fill_generics_abstractly(&generics_map)
   }
   pub fn fill_generics_with_unification_variables(self) -> Struct {
     let generic_count = self.generic_args.len();
@@ -319,15 +306,5 @@ impl Struct {
         })
       },
     )
-  }
-  pub fn compile(self) -> String {
-    let name = compile_word(self.name);
-    let fields = self
-      .fields
-      .into_iter()
-      .map(|field| field.compile())
-      .collect::<Vec<String>>()
-      .join("\n");
-    format!("struct {name} {{\n{fields}\n}}")
   }
 }

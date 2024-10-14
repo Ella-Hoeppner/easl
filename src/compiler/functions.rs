@@ -12,18 +12,9 @@ use super::{
 };
 
 #[derive(Debug)]
-pub struct TopLevelGenericFunction {
-  pub name: String,
-  pub generic_args: Vec<String>,
-  pub arg_metadata: Vec<Option<Metadata>>,
-  pub return_metadata: Option<Metadata>,
-  pub metadata: Option<Metadata>,
-  pub body: TypedExp,
-}
-
-#[derive(Debug)]
 pub struct TopLevelFunction {
   pub name: String,
+  pub generic_args: Vec<String>,
   pub arg_metadata: Vec<Option<Metadata>>,
   pub return_metadata: Option<Metadata>,
   pub metadata: Option<Metadata>,
@@ -38,6 +29,16 @@ pub struct AbstractFunctionSignature {
 }
 
 impl AbstractFunctionSignature {
+  pub fn generate_monomorphized(
+    &self,
+    original_name: String,
+    field_types: Vec<Type>,
+  ) -> Option<(String, Self)> {
+    if self.generic_args.is_empty() {
+      return None;
+    }
+    todo!()
+  }
   pub fn concretize(&self) -> FunctionSignature {
     let generic_variables: HashMap<String, TypeState> = self
       .generic_args
@@ -45,6 +46,7 @@ impl AbstractFunctionSignature {
       .map(|name| (name.clone(), TypeState::fresh_unification_variable()))
       .collect();
     FunctionSignature {
+      abstract_ancestor: Some(self.clone()),
       arg_types: self
         .arg_types
         .iter()
@@ -82,6 +84,7 @@ impl AbstractFunctionSignature {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionSignature {
+  pub abstract_ancestor: Option<AbstractFunctionSignature>,
   pub arg_types: Vec<TypeState>,
   pub return_type: TypeState,
 }
@@ -132,9 +135,6 @@ pub struct BuiltInFunction {
 }
 
 impl TopLevelFunction {
-  pub fn monomorphize_structs(&mut self, ctx: &mut Context) {
-    self.body.monomorphize_structs(ctx)
-  }
   pub fn compile(self) -> CompileResult<String> {
     let TypedExp { data, kind } = self.body;
     let (arg_types, return_type) =

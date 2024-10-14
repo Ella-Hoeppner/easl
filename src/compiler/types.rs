@@ -192,74 +192,6 @@ pub fn extract_type_annotation(
   ))
 }
 
-pub fn parse_abstract_type(
-  tree: TyntTree,
-  generic_args: &Vec<String>,
-  structs: &Vec<AbstractStruct>,
-  skolems: &Vec<String>,
-) -> CompileResult<GenericOr<TypeOrAbstractStruct>> {
-  match tree {
-    TyntTree::Leaf(_, leaf) => {
-      if generic_args.contains(&leaf) {
-        Ok(GenericOr::Generic(leaf))
-      } else {
-        if let Some(s) = structs.iter().find(|s| s.name == leaf) {
-          Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
-            s.clone(),
-          )))
-        } else {
-          Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-            Type::from_name(leaf, &vec![], skolems)?,
-          )))
-        }
-      }
-    }
-    TyntTree::Inner(
-      (_, EncloserOrOperator::Encloser(Encloser::Parens)),
-      children,
-    ) => {
-      let mut children_iter = children.into_iter();
-      let type_name = if let Some(type_name_tree) = children_iter.next() {
-        if let TyntTree::Leaf(_, name) = type_name_tree {
-          name
-        } else {
-          return err(InvalidType(type_name_tree));
-        }
-      } else {
-        return err(MissingType);
-      };
-      let type_args: Vec<_> = children_iter
-        .map(|arg_tree| {
-          parse_abstract_type(arg_tree, generic_args, structs, skolems)
-        })
-        .collect::<CompileResult<Vec<_>>>()?;
-      Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
-        structs
-          .iter()
-          .find(|s| s.name == type_name)
-          .ok_or(CompileError::new(InvalidTypeName(type_name)))?
-          .clone()
-          .fill_generics_ordered_abstractly(type_args),
-      )))
-    }
-    other => err(InvalidType(other)),
-  }
-}
-
-pub fn extract_abstract_type_annotation(
-  exp: TyntTree,
-  generic_args: &Vec<String>,
-  structs: &Vec<AbstractStruct>,
-  skolems: &Vec<String>,
-) -> CompileResult<(Option<GenericOr<TypeOrAbstractStruct>>, TyntTree)> {
-  let (t, value) = extract_type_annotation_ast(exp)?;
-  Ok((
-    t.map(|t| parse_abstract_type(t, generic_args, structs, skolems))
-      .map_or(Ok(None), |v| v.map(Some))?,
-    value,
-  ))
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeState {
   Unknown,
@@ -628,7 +560,10 @@ impl Context {
     if self
       .structs
       .iter()
-      .find(|existing_struct| existing_struct.name == s.name)
+      .find(|existing_struct| {
+        existing_struct.name == s.name
+          && existing_struct.filled_generics == s.filled_generics
+      })
       .is_none()
     {
       self.structs.push(s);

@@ -9,8 +9,7 @@ use crate::{
     metadata::{extract_metadata, Metadata},
     structs::AbstractStruct,
     types::{
-      extract_abstract_type_annotation, extract_type_annotation, Bindings,
-      Context, Type,
+      extract_type_annotation, Bindings, Context, Type,
       TypeState::{self, *},
       Variable, VariableKind,
     },
@@ -142,51 +141,6 @@ pub enum ExpressionCompilationPosition {
 
 pub type TypedExp = Exp<TypeState>;
 
-/*pub fn abstract_arg_list_and_return_type_from_tynt_tree(
-  tree: TyntTree,
-  generic_args: &Vec<String>,
-  structs: &Vec<AbstractStruct>,
-) -> CompileResult<(
-  Vec<String>,
-  Vec<GenericOr<TypeOrAbstractStruct>>,
-  GenericOr<TypeOrAbstractStruct>,
-)> {
-  let (return_type, arg_list_tree) =
-    extract_abstract_type_annotation(tree, generic_args, structs)?;
-  if let TyntTree::Inner(
-    (_, EncloserOrOperator::Encloser(Encloser::Square)),
-    children,
-  ) = arg_list_tree
-  {
-    let (arg_types, arg_name_trees) = children
-      .into_iter()
-      .map(|child| {
-        extract_abstract_type_annotation(child, generic_args, structs)
-      })
-      .collect::<CompileResult<(Vec<_>, Vec<_>)>>()?;
-    Ok((
-      arg_name_trees
-        .into_iter()
-        .map(|arg_name_tree| {
-          if let TyntTree::Leaf(_, name) = arg_name_tree {
-            Ok(name)
-          } else {
-            err(InvalidFunctionArgumentName)
-          }
-        })
-        .collect::<CompileResult<Vec<String>>>()?,
-      arg_types
-        .into_iter()
-        .map(|t| t.ok_or(CompileError::new(FunctionArgMissingType)))
-        .collect::<CompileResult<Vec<_>>>()?,
-      return_type
-        .ok_or(CompileError::new(FunctionSignatureMissingReturnType))?,
-    ))
-  } else {
-    return err(FunctionSignatureNotSquareBrackets);
-  }
-}*/
-
 pub fn arg_list_and_return_type_from_tynt_tree(
   tree: TyntTree,
   structs: &Vec<AbstractStruct>,
@@ -250,6 +204,7 @@ impl TypedExp {
     };
     Ok(Exp {
       data: Known(Type::Function(Box::new(FunctionSignature {
+        abstract_ancestor: None,
         arg_types,
         return_type,
       }))),
@@ -865,12 +820,12 @@ impl TypedExp {
       _ => Ok(()),
     }
   }
-  pub fn monomorphize_structs(&mut self, ctx: &mut Context) {
+  pub fn monomorphize(&mut self, ctx: &mut Context) {
     match &mut self.kind {
       Application(f, args) => {
-        f.monomorphize_structs(ctx);
+        f.monomorphize(ctx);
         for arg in args.iter_mut() {
-          arg.monomorphize_structs(ctx);
+          arg.monomorphize(ctx);
         }
         if let ExpKind::Name(f_name) = &mut f.kind {
           if let Some(abstract_struct) =
@@ -881,7 +836,6 @@ impl TypedExp {
                 args.iter().map(|arg| arg.data.unwrap_known()).collect(),
               )
             {
-              std::mem::swap(f_name, &mut monomorphized_struct.name.clone());
               self.data.with_dereferenced_mut(|typestate| {
                 std::mem::swap(
                   typestate,
@@ -893,26 +847,55 @@ impl TypedExp {
               ctx.add_monomorphized_struct(monomorphized_struct);
             }
           }
+          /*if let Type::Function(signature) = f.data.unwrap_known() {
+            if let Some((mut new_name, monomorphized_signature)) = signature
+              .abstract_ancestor
+              .map(|f| {
+                f.generate_monomorphized(
+                  f_name.clone(),
+                  args.iter().map(|a| a.data.unwrap_known()).collect(),
+                )
+              })
+              .flatten()
+            {
+              std::mem::swap(f_name, &mut new_name);
+              //ctx.add_monomorphized_function(monomorphized_signature);
+              todo!("add to ctx if not redundant or built-in")
+            }
+          } else {
+            panic!("ecountered non-function while monomorphizing application");
+          }*/
+          /*if let Some(abstract_function) = ctx
+            .bindings
+            .abstract_functions
+            .iter()
+            .find_map(|(name, signature)| (name == f_name).then(|| signature))
+          {
+            if let Some(monomorphize_function) =
+            &self,
+            field_types: Vec<Type>,.gener
+            todo!()
+          }*/
         }
       }
-      Function(_, body) => body.monomorphize_structs(ctx),
-      Access(_, body) => body.monomorphize_structs(ctx),
+      Function(_, body) => body.monomorphize(ctx),
+      Access(_, body) => body.monomorphize(ctx),
       Let(bindings, body) => {
         for (_, _, value) in bindings {
-          value.monomorphize_structs(ctx)
+          value.monomorphize(ctx)
         }
-        body.monomorphize_structs(ctx)
+        body.monomorphize(ctx)
       }
       Match(scrutinee, arms) => {
-        scrutinee.monomorphize_structs(ctx);
+        scrutinee.monomorphize(ctx);
         for (pattern, value) in arms {
-          pattern.monomorphize_structs(ctx);
-          value.monomorphize_structs(ctx);
+          pattern.monomorphize(ctx);
+          value.monomorphize(ctx);
         }
       }
       Block(subexps) => {
         for subexp in subexps {
-          subexp.monomorphize_structs(ctx);
+          subexp.monomorphize(ctx);
         }
       }
       _ => {}

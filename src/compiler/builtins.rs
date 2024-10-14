@@ -83,6 +83,7 @@ pub fn built_in_structs() -> Vec<AbstractStruct> {
         },
       ],
       generic_args: vec![],
+      filled_generics: vec![],
     },
     AbstractStruct {
       name: "vec3f".to_string(),
@@ -110,6 +111,7 @@ pub fn built_in_structs() -> Vec<AbstractStruct> {
         },
       ],
       generic_args: vec![],
+      filled_generics: vec![],
     },
     AbstractStruct {
       name: "vec4f".to_string(),
@@ -144,6 +146,7 @@ pub fn built_in_structs() -> Vec<AbstractStruct> {
         },
       ],
       generic_args: vec![],
+      filled_generics: vec![],
     },
   ]
 }
