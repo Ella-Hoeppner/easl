@@ -1,8 +1,8 @@
 use crate::{
   compiler::{
     error::err, expression::arg_list_and_return_type_from_tynt_tree,
-    metadata::extract_metadata, structs::UntypedStruct, types::TypeState,
-    util::read_type_annotated_name,
+    functions::AbstractFunctionSignature, metadata::extract_metadata,
+    structs::UntypedStruct, types::TypeState, util::read_type_annotated_name,
   },
   parse::TyntTree,
 };
@@ -11,7 +11,7 @@ use super::{
   builtins::built_in_structs,
   error::{CompileErrorKind::*, CompileResult},
   expression::{Exp, TypedExp},
-  functions::TopLevelFunction,
+  functions::{FunctionImplementationKind, TopLevelFunction},
   metadata::Metadata,
   types::{Context, Type},
   vars::TopLevelVar,
@@ -21,7 +21,6 @@ use super::{
 pub struct Program {
   global_context: Context,
   top_level_vars: Vec<TopLevelVar>,
-  top_level_functions: Vec<TopLevelFunction>,
 }
 
 impl Program {
@@ -92,10 +91,10 @@ impl Program {
     while let Some(untyped_struct) = untyped_structs.pop() {
       structs.push(untyped_struct.assign_types(&structs)?);
     }
-    let global_context =
+    let mut global_context =
       Context::default_global().with_structs(structs.clone());
     let mut top_level_vars = vec![];
-    let mut top_level_functions = vec![];
+    //let mut top_level_functions = vec![];
     for (metadata, tree) in non_struct_trees.into_iter() {
       use crate::parse::Encloser::*;
       use crate::parse::Operator::*;
@@ -152,7 +151,8 @@ impl Program {
               })
             }
             "def" => {
-              let name_ast = children_iter
+              todo!()
+              /*let name_ast = children_iter
                 .next()
                 .ok_or(InvalidDef("Missing Name".to_string()))?;
               if let TyntTree::Leaf(_, name) = name_ast {
@@ -214,18 +214,29 @@ impl Program {
                               .chain(value_children_iter)
                               .collect(),
                             );
-                            top_level_functions.push(TopLevelFunction {
-                              name,
-                              arg_metadata,
-                              return_metadata,
-                              metadata,
-                              body: Exp::try_from_tynt_tree(
-                                metadata_stripped_fn_ast,
-                                &structs,
-                                &vec![],
-                              )?,
-                              generic_args: vec![],
-                            })
+                            global_context.abstract_functions.push(
+                              AbstractFunctionSignature {
+                                name,
+                                generic_args: vec![],
+                                arg_types: todo!(),
+                                return_type: todo!(),
+                                implementation:
+                                  FunctionImplementationKind::Composite(
+                                    TopLevelFunction {
+                                      name,
+                                      arg_metadata,
+                                      return_metadata,
+                                      metadata,
+                                      body: Exp::try_from_tynt_tree(
+                                        metadata_stripped_fn_ast,
+                                        &structs,
+                                        &vec![],
+                                      )?,
+                                      generic_args: vec![],
+                                    },
+                                  ),
+                              },
+                            );
                           } else {
                             return err(InvalidFunctionArgumentList);
                           }
@@ -243,7 +254,7 @@ impl Program {
                 }
               } else {
                 return err(InvalidDef("Invalid Name".to_string()));
-              }
+              }*/
             }
             "defn" => {
               let name_ast = children_iter
@@ -280,28 +291,51 @@ impl Program {
               let arg_list_ast = children_iter
                 .next()
                 .ok_or(InvalidDefn("Missing Argument List".to_string()))?;
-
-              let (arg_names, arg_types, return_type) =
-                arg_list_and_return_type_from_tynt_tree(
-                  arg_list_ast,
-                  &structs,
-                  &generic_args,
-                )?;
-              top_level_functions.push(TopLevelFunction {
-                name,
-                arg_metadata: vec![],  // todo!
-                return_metadata: None, // todo!
-                metadata,
-                body: TypedExp::function_from_body_tree(
-                  children_iter.collect(),
-                  TypeState::Known(return_type),
-                  arg_names,
-                  arg_types.into_iter().map(|t| TypeState::Known(t)).collect(),
-                  &structs,
-                  &generic_args,
-                )?,
-                generic_args,
-              })
+              let (
+                arg_names,
+                arg_types,
+                arg_metadata,
+                return_type,
+                return_metadata,
+              ) = arg_list_and_return_type_from_tynt_tree(
+                arg_list_ast,
+                &structs,
+                &generic_args,
+              )?;
+              let implementation =
+                FunctionImplementationKind::Composite(TopLevelFunction {
+                  name: name.clone(),
+                  arg_metadata,
+                  return_metadata,
+                  metadata,
+                  body: TypedExp::function_from_body_tree(
+                    children_iter.collect(),
+                    TypeState::Known(
+                      return_type.concretize(&structs, &generic_args)?,
+                    ),
+                    arg_names,
+                    arg_types
+                      .iter()
+                      .map(|t| {
+                        Ok(TypeState::Known(
+                          t.concretize(&structs, &generic_args)?,
+                        ))
+                      })
+                      .collect::<CompileResult<Vec<TypeState>>>()?,
+                    &structs,
+                    &generic_args,
+                  )?,
+                  generic_args: generic_args.clone(),
+                });
+              global_context.abstract_functions.push(
+                AbstractFunctionSignature {
+                  name,
+                  generic_args,
+                  arg_types,
+                  return_type,
+                  implementation,
+                },
+              );
             }
             _ => {
               return err(UnrecognizedTopLevelForm);
@@ -317,28 +351,46 @@ impl Program {
     Ok(Self {
       global_context,
       top_level_vars,
-      top_level_functions,
+      //top_level_functions,
     })
   }
   fn propagate_types(&mut self) -> CompileResult<bool> {
     let mut base_context = self.global_context.clone();
-    self.top_level_functions.iter_mut().try_fold(
+    self.global_context.abstract_functions.iter_mut().try_fold(
+      false,
+      |did_type_states_change_so_far, f| {
+        let did_f_type_states_change =
+          if let FunctionImplementationKind::Composite(implementation) =
+            &mut f.implementation
+          {
+            implementation.body.propagate_types(&mut base_context)?
+          } else {
+            false
+          };
+        Ok(did_type_states_change_so_far || did_f_type_states_change)
+      },
+    )
+    /*self.top_level_functions.iter_mut().try_fold(
       false,
       |did_type_states_change_so_far, f| {
         let did_f_type_states_change =
           f.body.propagate_types(&mut base_context)?;
         Ok(did_type_states_change_so_far || did_f_type_states_change)
       },
-    )
+    )*/
   }
   fn find_untyped(&self) -> Vec<TypedExp> {
-    self
-      .top_level_functions
-      .iter()
-      .fold(vec![], |mut untyped_so_far, f| {
-        untyped_so_far.append(&mut f.body.find_untyped());
+    self.global_context.abstract_functions.iter().fold(
+      vec![],
+      |mut untyped_so_far, f| {
+        if let FunctionImplementationKind::Composite(implementation) =
+          &f.implementation
+        {
+          untyped_so_far.append(&mut implementation.body.find_untyped());
+        }
         untyped_so_far
-      })
+      },
+    )
   }
   pub fn fully_infer_types(mut self) -> CompileResult<Self> {
     loop {
@@ -354,15 +406,26 @@ impl Program {
     }
   }
   pub fn check_typed_program(self) -> CompileResult<Self> {
-    for f in self.top_level_functions.iter() {
-      f.body
-        .check_assignment_validity(&mut Context::default_global())?;
+    for f in self.global_context.abstract_functions.iter() {
+      if let FunctionImplementationKind::Composite(implementation) =
+        &f.implementation
+      {
+        implementation
+          .body
+          .check_assignment_validity(&mut Context::default_global())?;
+      }
     }
     Ok(self)
   }
   pub fn monomorphize(mut self) -> Self {
-    for f in self.top_level_functions.iter_mut() {
-      f.body.monomorphize(&mut self.global_context);
+    for f in self.global_context.abstract_functions.iter_mut() {
+      if let FunctionImplementationKind::Composite(implementation) =
+        &mut f.implementation
+      {
+        implementation
+          .body
+          .monomorphize(&mut self.global_context.structs);
+      }
     }
     self
   }
@@ -377,6 +440,7 @@ impl Program {
     for s in self
       .global_context
       .structs
+      .0
       .into_iter()
       .filter(|s| !default_structs.contains(s))
     {
@@ -385,10 +449,14 @@ impl Program {
         wgsl += "\n\n";
       }
     }
-    for f in self.top_level_functions {
-      if f.generic_args.is_empty() {
-        wgsl += &f.compile()?;
-        wgsl += "\n\n";
+    for f in self.global_context.abstract_functions {
+      if let FunctionImplementationKind::Composite(implementation) =
+        f.implementation
+      {
+        if implementation.generic_args.is_empty() {
+          wgsl += &implementation.compile()?;
+          wgsl += "\n\n";
+        }
       }
     }
     Ok(wgsl)

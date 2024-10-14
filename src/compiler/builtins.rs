@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::compiler::structs::{AbstractStructField, TypeOrAbstractStruct};
 
 use super::{
-  functions::AbstractFunctionSignature,
+  functions::{AbstractFunctionSignature, FunctionImplementationKind},
   structs::AbstractStruct,
   types::{GenericOr, Type},
 };
@@ -59,6 +59,7 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
       return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
         vec_n_type(n),
       )),
+      implementation: FunctionImplementationKind::Builtin,
     })
     .collect()
 }
@@ -171,6 +172,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
       return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
         Type::Bool,
       )),
+      implementation: FunctionImplementationKind::Builtin,
     },
     AbstractFunctionSignature {
       name: "==".to_string(),
@@ -182,6 +184,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
       return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
         Type::Bool,
       )),
+      implementation: FunctionImplementationKind::Builtin,
     },
     AbstractFunctionSignature {
       name: "=".to_string(),
@@ -193,6 +196,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
       return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
         Type::None,
       )),
+      implementation: FunctionImplementationKind::Builtin,
     },
   ];
   signatures.append(&mut multi_signature_vec_constructors(4));

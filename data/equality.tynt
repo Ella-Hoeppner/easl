@@ -1,6 +1,5 @@
-(def all-equal
-  (fn [a: f32
-       b: f32
-       c: f32]: bool
-    (&& (== a b)
-        (== b c))))
+(defn all-equal [a: f32
+                 b: f32
+                 c: f32]: bool
+  (&& (== a b)
+      (== b c)))

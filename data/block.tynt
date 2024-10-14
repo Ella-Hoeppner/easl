@@ -8,19 +8,17 @@
         @{builtin position} vertex-pos: vec4f)
 
 @vertex
-(def vertex
-  (fn [in: VertexInput]: VertexOutput
-    (let [a (vec2f (.corner-position in))]
-      (let [b (.x a)
-            c (.y a)]
-        (VertexOutput (vec4f b c 0. 1.))))))
+(defn vertex [in: VertexInput]: VertexOutput
+  (let [a (vec2f (.corner-position in))]
+    (let [b (.x a)
+          c (.y a)]
+      (VertexOutput (vec4f b c 0. 1.)))))
 
 @fragment
-(def fragment 
-  (fn [in: VertexOutput]: @{location 0} vec4f
-    (vec2f 5. 2.)
-    (let [a (vec2f 0. 0.)]
-      (block
-       (vec2f 0. 0.)
-       (vec3f 1. 0. 0.)
-       (vec4f (vec3f 0. 0. 0.) (.x a))))))
+(defn fragment [in: VertexOutput]: @{location 0} vec4f
+  (vec2f 5. 2.)
+  (let [a (vec2f 0. 0.)]
+    (block
+      (vec2f 0. 0.)
+      (vec3f 1. 0. 0.)
+      (vec4f (vec3f 0. 0. 0.) (.x a)))))

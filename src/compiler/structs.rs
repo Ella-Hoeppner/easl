@@ -12,7 +12,7 @@ use crate::{
 use super::{
   error::{CompileError, CompileErrorKind::*, CompileResult},
   metadata::Metadata,
-  types::{GenericOr, Type, TypeState},
+  types::{AbstractType, GenericOr, Type, TypeState},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,6 +100,19 @@ pub struct AbstractStructField {
 }
 
 impl AbstractStructField {
+  pub fn concretize(
+    &self,
+    structs: &Vec<AbstractStruct>,
+    skolems: &Vec<String>,
+  ) -> CompileResult<StructField> {
+    Ok(StructField {
+      metadata: self.metadata.clone(),
+      name: self.name.clone(),
+      field_type: TypeState::Known(
+        self.field_type.concretize(structs, skolems)?,
+      ),
+    })
+  }
   pub fn fill_generics(
     self,
     generics: &HashMap<String, TypeState>,
@@ -117,6 +130,33 @@ impl AbstractStructField {
             TypeOrAbstractStruct::Type(t) => t,
             TypeOrAbstractStruct::AbstractStruct(s) => {
               Type::Struct(s.fill_generics(generics))
+            }
+          })
+        }
+      },
+    }
+  }
+  fn fill_abstract_generics(self, generics: &Vec<(String, Type)>) -> Self {
+    AbstractStructField {
+      metadata: self.metadata,
+      name: self.name,
+      field_type: match self.field_type {
+        GenericOr::Generic(var_name) => {
+          AbstractType::NonGeneric(TypeOrAbstractStruct::Type(
+            generics
+              .iter()
+              .find_map(|(name, t)| (*name == var_name).then(|| t))
+              .expect("unrecognized generic name in struct")
+              .clone(),
+          ))
+        }
+        GenericOr::NonGeneric(type_or_struct) => {
+          AbstractType::NonGeneric(match type_or_struct {
+            TypeOrAbstractStruct::Type(t) => TypeOrAbstractStruct::Type(t),
+            TypeOrAbstractStruct::AbstractStruct(s) => {
+              TypeOrAbstractStruct::AbstractStruct(
+                s.fill_abstract_generics_inner(generics),
+              )
             }
           })
         }
@@ -152,6 +192,20 @@ pub struct AbstractStruct {
 }
 
 impl AbstractStruct {
+  pub fn concretize(
+    &self,
+    structs: &Vec<AbstractStruct>,
+    skolems: &Vec<String>,
+  ) -> CompileResult<Struct> {
+    Ok(Struct {
+      name: self.name.clone(),
+      fields: self
+        .fields
+        .iter()
+        .map(|f| f.concretize(structs, skolems))
+        .collect::<CompileResult<Vec<_>>>()?,
+    })
+  }
   pub fn monomorphized_name(&self) -> String {
     self
       .filled_generics
@@ -250,6 +304,34 @@ impl AbstractStruct {
         .map(|_| TypeState::fresh_unification_variable())
         .collect(),
     )
+  }
+
+  //
+
+  fn fill_abstract_generics_inner(
+    self,
+    generics: &Vec<(String, Type)>,
+  ) -> AbstractStruct {
+    let new_fields: Vec<_> = self
+      .fields
+      .into_iter()
+      .map(|field| field.fill_abstract_generics(generics))
+      .collect();
+    AbstractStruct {
+      name: self.name,
+      fields: new_fields,
+      filled_generics: generics.iter().map(|(_, t)| t.clone()).collect(),
+      generic_args: vec![],
+    }
+  }
+  pub fn fill_abstract_generics(self, generics: Vec<Type>) -> AbstractStruct {
+    let generics_map: Vec<(String, Type)> = self
+      .generic_args
+      .iter()
+      .cloned()
+      .zip(generics.into_iter())
+      .collect();
+    self.fill_abstract_generics_inner(&generics_map)
   }
 }
 

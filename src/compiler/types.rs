@@ -8,7 +8,9 @@ use crate::parse::{Encloser, Operator, TyntTree};
 use super::{
   builtins::{built_in_functions, ABNORMAL_CONSTRUCTOR_STRUCTS},
   error::{err, CompileError, CompileErrorKind::*, CompileResult},
-  functions::{AbstractFunctionSignature, FunctionSignature},
+  functions::{
+    AbstractFunctionSignature, FunctionImplementationKind, FunctionSignature,
+  },
   structs::{AbstractStruct, Struct, TypeOrAbstractStruct},
   util::compile_word,
 };
@@ -34,7 +36,46 @@ impl GenericOr<Type> {
   }
 }
 
-impl GenericOr<TypeOrAbstractStruct> {
+pub type AbstractType = GenericOr<TypeOrAbstractStruct>;
+
+impl AbstractType {
+  pub fn from_tynt_tree(
+    tree: TyntTree,
+    structs: &Vec<AbstractStruct>,
+    skolems: &Vec<String>,
+  ) -> CompileResult<Self> {
+    match &tree {
+      TyntTree::Leaf(_, type_name) => Ok(Self::from_name(
+        type_name.clone(),
+        &vec![],
+        structs,
+        skolems,
+      )?),
+      TyntTree::Inner(
+        (_, EncloserOrOperator::Encloser(Encloser::Parens)),
+        children,
+      ) => {
+        let mut children_iter = children.into_iter();
+        if let Some(TyntTree::Leaf(_, type_name)) = children_iter.next() {
+          if let Some(s) = structs.iter().find(|s| s.name == *type_name) {
+            let generic_args = children_iter
+              .map(|t| Ok(Type::from_tynt_tree(t.clone(), structs, skolems)?))
+              .collect::<CompileResult<Vec<Type>>>()?;
+            Ok(AbstractType::NonGeneric(
+              TypeOrAbstractStruct::AbstractStruct(
+                s.clone().fill_abstract_generics(generic_args),
+              ),
+            ))
+          } else {
+            err(InvalidTypeName(type_name.clone()))
+          }
+        } else {
+          err(InvalidType(tree))
+        }
+      }
+      _ => err(InvalidType(tree)),
+    }
+  }
   pub fn from_name(
     name: String,
     generic_args: &Vec<String>,
@@ -48,6 +89,25 @@ impl GenericOr<TypeOrAbstractStruct> {
         name, structs, skolems,
       )?))
     })
+  }
+  pub fn concretize(
+    &self,
+    structs: &Vec<AbstractStruct>,
+    skolems: &Vec<String>,
+  ) -> CompileResult<Type> {
+    match self {
+      GenericOr::Generic(name) => {
+        if skolems.contains(name) {
+          Ok(Type::Skolem(name.clone()))
+        } else {
+          err(UnrecognizedGeneric(name.clone()))
+        }
+      }
+      GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => {
+        Ok(Type::Struct(s.concretize(structs, skolems)?))
+      }
+      GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => Ok(t.clone()),
+    }
   }
 }
 
@@ -63,6 +123,19 @@ pub enum Type {
   Skolem(String),
 }
 impl Type {
+  pub fn from_tynt_tree(
+    tree: TyntTree,
+    structs: &Vec<AbstractStruct>,
+    skolems: &Vec<String>,
+  ) -> CompileResult<Self> {
+    if let AbstractType::NonGeneric(TypeOrAbstractStruct::Type(t)) =
+      AbstractType::from_tynt_tree(tree.clone(), structs, skolems)?
+    {
+      Ok(t)
+    } else {
+      err(InvalidType(tree))
+    }
+  }
   pub fn compatible(&self, other: &Self) -> bool {
     let b = match (self, other) {
       (Type::Function(a), Type::Function(b)) => a.compatible(b),
@@ -103,42 +176,6 @@ impl Type {
       }
     })
   }
-  pub fn from_tynt_tree(
-    tree: TyntTree,
-    structs: &Vec<AbstractStruct>,
-    skolems: &Vec<String>,
-  ) -> CompileResult<Self> {
-    match &tree {
-      TyntTree::Leaf(_, type_name) => {
-        Ok(Type::from_name(type_name.clone(), structs, skolems)?)
-      }
-      TyntTree::Inner(
-        (_, EncloserOrOperator::Encloser(Encloser::Parens)),
-        children,
-      ) => {
-        let mut children_iter = children.into_iter();
-        if let Some(TyntTree::Leaf(_, type_name)) = children_iter.next() {
-          if let Some(s) = structs.iter().find(|s| s.name == *type_name) {
-            let generic_args = children_iter
-              .map(|t| {
-                Ok(TypeState::Known(Type::from_tynt_tree(
-                  t.clone(),
-                  structs,
-                  skolems,
-                )?))
-              })
-              .collect::<CompileResult<Vec<TypeState>>>()?;
-            Ok(Type::Struct(s.clone().fill_generics_ordered(generic_args)))
-          } else {
-            err(InvalidTypeName(type_name.clone()))
-          }
-        } else {
-          err(InvalidType(tree))
-        }
-      }
-      _ => err(InvalidType(tree)),
-    }
-  }
   pub fn compile(&self) -> String {
     match self {
       Type::None => panic!("Attempted to compile None type"),
@@ -177,10 +214,10 @@ pub fn extract_type_annotation(
   exp: TyntTree,
   structs: &Vec<AbstractStruct>,
   skolems: &Vec<String>,
-) -> CompileResult<(Option<Type>, TyntTree)> {
+) -> CompileResult<(Option<AbstractType>, TyntTree)> {
   let (t, value) = extract_type_annotation_ast(exp)?;
   Ok((
-    t.map(|t| Type::from_tynt_tree(t, structs, skolems))
+    t.map(|t| AbstractType::from_tynt_tree(t, structs, skolems))
       .map_or(Ok(None), |v| v.map(Some))?,
     value,
   ))
@@ -428,8 +465,36 @@ impl Variable {
 }
 
 #[derive(Debug, Clone)]
+pub struct StructList(pub Vec<AbstractStruct>);
+
+impl StructList {
+  pub fn empty() -> Self {
+    Self(vec![])
+  }
+  pub fn add_monomorphized_struct(&mut self, s: AbstractStruct) {
+    if self
+      .0
+      .iter()
+      .find(|existing_struct| {
+        existing_struct.name == s.name
+          && existing_struct.filled_generics == s.filled_generics
+      })
+      .is_none()
+    {
+      self.0.push(s);
+    }
+  }
+}
+
+impl From<Vec<AbstractStruct>> for StructList {
+  fn from(value: Vec<AbstractStruct>) -> Self {
+    Self(value)
+  }
+}
+
+#[derive(Debug, Clone)]
 pub struct Context {
-  pub structs: Vec<AbstractStruct>,
+  pub structs: StructList,
   pub variables: HashMap<String, Vec<Variable>>,
   pub abstract_functions: Vec<AbstractFunctionSignature>,
 }
@@ -437,7 +502,7 @@ pub struct Context {
 impl Context {
   pub fn default_global() -> Self {
     Self {
-      structs: vec![],
+      structs: StructList::empty(),
       variables: HashMap::new(),
       abstract_functions: built_in_functions(),
     }
@@ -456,10 +521,11 @@ impl Context {
           return_type: GenericOr::NonGeneric(
             TypeOrAbstractStruct::AbstractStruct(s.clone()),
           ),
+          implementation: FunctionImplementationKind::Constructor,
         });
       }
     }
-    self.structs = structs;
+    self.structs = structs.into();
     self
   }
   pub fn get_abstract_function_signatures(
@@ -489,19 +555,6 @@ impl Context {
           .map(|signature| Type::Function(Box::new(signature.concretize())))
           .collect(),
       ))
-    }
-  }
-  pub fn add_monomorphized_struct(&mut self, s: AbstractStruct) {
-    if self
-      .structs
-      .iter()
-      .find(|existing_struct| {
-        existing_struct.name == s.name
-          && existing_struct.filled_generics == s.filled_generics
-      })
-      .is_none()
-    {
-      self.structs.push(s);
     }
   }
   pub fn bind(&mut self, name: &str, v: Variable) {

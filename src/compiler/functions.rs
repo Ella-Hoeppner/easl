@@ -11,7 +11,7 @@ use super::{
   util::indent,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TopLevelFunction {
   pub name: String,
   pub generic_args: Vec<String>,
@@ -22,11 +22,19 @@ pub struct TopLevelFunction {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum FunctionImplementationKind {
+  Builtin,
+  Constructor,
+  Composite(TopLevelFunction),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct AbstractFunctionSignature {
   pub name: String,
   pub generic_args: Vec<String>,
   pub arg_types: Vec<GenericOr<TypeOrAbstractStruct>>,
   pub return_type: GenericOr<TypeOrAbstractStruct>,
+  pub implementation: FunctionImplementationKind,
 }
 
 impl AbstractFunctionSignature {

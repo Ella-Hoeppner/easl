@@ -8,11 +8,9 @@
         @{builtin position} vertex-pos: vec4f)
 
 @vertex
-(def vertex
-  (fn [in: VertexInput]: VertexOutput
-    (VertexOutput (vec4f 0. 0. 0. 1.))))
+(defn vertex [in: VertexInput]: VertexOutput
+  (VertexOutput (vec4f 0. 0. 0. 1.)))
 
 @fragment
-(def fragment 
-  (fn [in: VertexOutput]: @{location 0} vec4f
-    (vec4f (vec3f 0. 0. 0.) 1.)))
+(defn fragment [in: VertexOutput]: @{location 0} vec4f
+  (vec4f (vec3f 0. 0. 0.) 1.))

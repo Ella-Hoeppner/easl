@@ -2,9 +2,8 @@
         first: T
         second: T)
 
-(def f
-  (fn [a: f32]: vec2f
-    (let [two (TwoOf a a)]
-      (vec2f (.first two)
-             (.second two)))))
+(defn f [a: f32]: vec2f
+  (let [two (TwoOf a a)]
+    (vec2f (.first two)
+            (.second two))))
 

@@ -1,5 +1,4 @@
-(def f
-  (fn [a: f32]: f32
-    (let [@var b a]
-      (= b 4.)
-      b)))
+(defn f [a: f32]: f32
+  (let [@var b a]
+    (= b 4.)
+    b))
