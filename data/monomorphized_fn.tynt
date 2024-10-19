@@ -6,5 +6,5 @@
   (let [two (TwoOf a a)]
     two))
 
-(defn duplicate-f32 [a: f32]: (TwoOf f32)
-  (make-two-of a))
+(defn duplicate-f32 [b: f32]: (TwoOf f32)
+  (make-two-of b))

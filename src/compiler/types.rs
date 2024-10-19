@@ -42,13 +42,14 @@ impl AbstractType {
   pub fn from_tynt_tree(
     tree: TyntTree,
     structs: &Vec<AbstractStruct>,
+    generic_args: &Vec<String>,
     skolems: &Vec<String>,
   ) -> CompileResult<Self> {
     match &tree {
       TyntTree::Leaf(_, type_name) => Ok(Self::from_name(
         type_name.clone(),
-        &vec![],
         structs,
+        generic_args,
         skolems,
       )?),
       TyntTree::Inner(
@@ -58,12 +59,19 @@ impl AbstractType {
         let mut children_iter = children.into_iter();
         if let Some(TyntTree::Leaf(_, type_name)) = children_iter.next() {
           if let Some(s) = structs.iter().find(|s| s.name == *type_name) {
-            let generic_args = children_iter
-              .map(|t| Ok(Type::from_tynt_tree(t.clone(), structs, skolems)?))
-              .collect::<CompileResult<Vec<Type>>>()?;
+            let struct_generic_args = children_iter
+              .map(|t| {
+                Ok(Self::from_tynt_tree(
+                  t.clone(),
+                  structs,
+                  generic_args,
+                  skolems,
+                )?)
+              })
+              .collect::<CompileResult<Vec<Self>>>()?;
             Ok(AbstractType::NonGeneric(
               TypeOrAbstractStruct::AbstractStruct(
-                s.clone().fill_abstract_generics(generic_args),
+                s.clone().fill_abstract_generics(struct_generic_args),
               ),
             ))
           } else {
@@ -78,8 +86,8 @@ impl AbstractType {
   }
   pub fn from_name(
     name: String,
-    generic_args: &Vec<String>,
     structs: &Vec<AbstractStruct>,
+    generic_args: &Vec<String>,
     skolems: &Vec<String>,
   ) -> CompileResult<Self> {
     Ok(if generic_args.contains(&name) {
@@ -109,6 +117,39 @@ impl AbstractType {
       GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => Ok(t.clone()),
     }
   }
+  pub fn extract_generic_bindings(
+    &self,
+    concrete_type: &Type,
+    generic_bindings: &mut HashMap<String, Type>,
+  ) {
+    match self {
+      GenericOr::Generic(generic) => {
+        if let Some(existing_binding) = generic_bindings.get(generic) {
+          if existing_binding != concrete_type {
+            panic!("incompatible generic bindings")
+          }
+        }
+        generic_bindings.insert(generic.clone(), concrete_type.clone());
+      }
+      GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+        abstract_struct,
+      )) => {
+        if let Type::Struct(s) = concrete_type {
+          for i in 0..s.fields.len() {
+            abstract_struct.fields[i]
+              .field_type
+              .extract_generic_bindings(
+                &s.fields[i].field_type.unwrap_known(),
+                generic_bindings,
+              );
+          }
+        } else {
+          panic!("incompatible types in extract_generic_bindings")
+        }
+      }
+      _ => {}
+    }
+  }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -129,7 +170,7 @@ impl Type {
     skolems: &Vec<String>,
   ) -> CompileResult<Self> {
     if let AbstractType::NonGeneric(TypeOrAbstractStruct::Type(t)) =
-      AbstractType::from_tynt_tree(tree.clone(), structs, skolems)?
+      AbstractType::from_tynt_tree(tree.clone(), structs, &vec![], skolems)?
     {
       Ok(t)
     } else {
@@ -138,7 +179,10 @@ impl Type {
   }
   pub fn compatible(&self, other: &Self) -> bool {
     let b = match (self, other) {
-      (Type::Function(a), Type::Function(b)) => a.compatible(b),
+      (Type::Function(a), Type::Function(b)) => {
+        let x = a.compatible(b);
+        x
+      }
       (Type::Struct(a), Type::Struct(b)) => a.compatible(b),
       (a, b) => a == b,
     };
@@ -187,8 +231,36 @@ impl Type {
       Type::Function(_) => {
         panic!("Attempted to compile ConcreteFunction type")
       }
-      Type::Skolem(_) => {
-        panic!("Attempted to compile Skolem")
+      Type::Skolem(name) => {
+        panic!("Attempted to compile Skolem \"{name}\"")
+      }
+    }
+  }
+  pub fn replace_skolems(&mut self, skolems: &Vec<(String, Type)>) {
+    if let Type::Skolem(s) = &self {
+      std::mem::swap(
+        self,
+        &mut skolems
+          .iter()
+          .find_map(|(skolem_name, t)| (skolem_name == s).then(|| t.clone()))
+          .unwrap(),
+      )
+    } else {
+      match self {
+        Type::Struct(s) => {
+          for field in s.fields.iter_mut() {
+            field
+              .field_type
+              .as_known_mut(|t| t.replace_skolems(skolems));
+          }
+        }
+        Type::Function(f) => {
+          f.return_type.as_known_mut(|t| t.replace_skolems(skolems));
+          for arg_type in f.arg_types.iter_mut() {
+            arg_type.as_known_mut(|t| t.replace_skolems(skolems))
+          }
+        }
+        _ => {}
       }
     }
   }
@@ -221,11 +293,12 @@ pub fn extract_type_annotation_ast(
 pub fn extract_type_annotation(
   exp: TyntTree,
   structs: &Vec<AbstractStruct>,
+  generic_args: &Vec<String>,
   skolems: &Vec<String>,
 ) -> CompileResult<(Option<AbstractType>, TyntTree)> {
   let (t, value) = extract_type_annotation_ast(exp)?;
   Ok((
-    t.map(|t| AbstractType::from_tynt_tree(t, structs, skolems))
+    t.map(|t| AbstractType::from_tynt_tree(t, structs, generic_args, skolems))
       .map_or(Ok(None), |v| v.map(Some))?,
     value,
   ))
@@ -245,7 +318,16 @@ impl TypeState {
       if let TypeState::Known(t) = typestate {
         t.clone()
       } else {
-        panic!("unwrapped non-Known TypeState")
+        panic!("unwrapped non-Known TypeState \"{typestate:?}\"")
+      }
+    })
+  }
+  pub fn as_known_mut(&mut self, f: impl FnOnce(&mut Type)) {
+    self.with_dereferenced_mut(|typestate| {
+      if let TypeState::Known(t) = typestate {
+        f(t);
+      } else {
+        panic!("as_known_mut on a non-Known TypeState")
       }
     })
   }
@@ -304,7 +386,7 @@ impl TypeState {
       })
     })
   }
-  fn constrain_inner(&mut self, mut other: TypeState) -> CompileResult<bool> {
+  pub fn constrain(&mut self, mut other: TypeState) -> CompileResult<bool> {
     self.with_dereferenced_mut(move |this| {
       other.with_dereferenced_mut(|other| {
         let changed = match (&this, &other) {
@@ -359,9 +441,6 @@ impl TypeState {
         Ok(changed)
       })
     })
-  }
-  pub fn constrain(&mut self, other: TypeState) -> CompileResult<bool> {
-    self.constrain_inner(other)
   }
   pub fn mutually_constrain(
     &mut self,
@@ -611,12 +690,5 @@ impl Context {
     self.abstract_functions.dedup();
     self.variables.extend(other.variables.into_iter());
     self
-  }
-  pub fn find_matching_abstract_function(
-    &self,
-    name: &str,
-    signatgure: &FunctionSignature,
-  ) -> AbstractFunctionSignature {
-    todo!()
   }
 }

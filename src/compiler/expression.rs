@@ -143,7 +143,7 @@ pub type TypedExp = Exp<TypeState>;
 pub fn arg_list_and_return_type_from_tynt_tree(
   tree: TyntTree,
   structs: &Vec<AbstractStruct>,
-  skolems: &Vec<String>,
+  generic_args: &Vec<String>,
 ) -> CompileResult<(
   Vec<String>,
   Vec<AbstractType>,
@@ -161,8 +161,12 @@ pub fn arg_list_and_return_type_from_tynt_tree(
   {
     let return_type_ast = args_and_return_type.remove(1);
     let (return_metadata, return_type_ast) = extract_metadata(return_type_ast)?;
-    let return_type =
-      AbstractType::from_tynt_tree(return_type_ast, structs, skolems)?;
+    let return_type = AbstractType::from_tynt_tree(
+      return_type_ast,
+      structs,
+      generic_args,
+      &vec![],
+    )?;
     if let TyntTree::Inner((_, Encloser(Square)), arg_asts) =
       args_and_return_type.remove(0)
     {
@@ -173,7 +177,12 @@ pub fn arg_list_and_return_type_from_tynt_tree(
           let t_ast =
             maybe_t_ast.ok_or(CompileError::from(FunctionArgMissingType))?;
           let (arg_metadata, t_ast) = extract_metadata(t_ast)?;
-          let t = AbstractType::from_tynt_tree(t_ast, structs, skolems)?;
+          let t = AbstractType::from_tynt_tree(
+            t_ast,
+            structs,
+            generic_args,
+            &vec![],
+          )?;
           if let TyntTree::Leaf(_, arg_name) = arg_name_ast {
             Ok(((t, arg_metadata), arg_name))
           } else {
@@ -481,6 +490,7 @@ impl TypedExp {
                               AbstractType::from_tynt_tree(
                                 signature_arg,
                                 structs,
+                                &vec![],
                                 skolems,
                               )?
                               .concretize(structs, skolems)?,
@@ -614,24 +624,21 @@ impl TypedExp {
         }
         let replacement_concrete_signature =
           if let TypeState::Known(f_type) = &mut f.data {
-            match f_type {
-              Type::Function(signature) => {
-                if args.len() == signature.arg_types.len() {
-                  anything_changed |=
-                    self.data.mutually_constrain(&mut signature.return_type)?;
-                  for (arg, t) in
-                    args.iter_mut().zip(signature.arg_types.iter().cloned())
-                  {
-                    anything_changed |= arg.data.constrain(t)?;
-                  }
-                  None
-                } else {
-                  return err(WrongArity);
+            if let Type::Function(signature) = f_type {
+              if args.len() == signature.arg_types.len() {
+                anything_changed |=
+                  self.data.mutually_constrain(&mut signature.return_type)?;
+                for (arg, t) in
+                  args.iter_mut().zip(signature.arg_types.iter().cloned())
+                {
+                  anything_changed |= arg.data.constrain(t)?;
                 }
+                None
+              } else {
+                return err(WrongArity);
               }
-              _ => {
-                return err(AppliedNonFunction);
-              }
+            } else {
+              return err(AppliedNonFunction);
             }
           } else {
             None
@@ -852,6 +859,40 @@ impl TypedExp {
       _ => Ok(()),
     }
   }
+  pub fn replace_skolems(&mut self, skolems: &Vec<(String, Type)>) {
+    if let Known(t) = &mut self.data {
+      t.replace_skolems(skolems)
+    }
+    match &mut self.kind {
+      Application(f, args) => {
+        f.replace_skolems(skolems);
+        for arg in args.iter_mut() {
+          arg.replace_skolems(skolems);
+        }
+      }
+      Function(_, body) => body.replace_skolems(skolems),
+      Access(_, body) => body.replace_skolems(skolems),
+      Let(bindings, body) => {
+        for (_, _, value) in bindings {
+          value.replace_skolems(skolems);
+        }
+        body.replace_skolems(skolems);
+      }
+      Match(scrutinee, arms) => {
+        scrutinee.replace_skolems(skolems);
+        for (pattern, value) in arms {
+          pattern.replace_skolems(skolems);
+          value.replace_skolems(skolems);
+        }
+      }
+      Block(subexps) => {
+        for subexp in subexps {
+          subexp.replace_skolems(skolems);
+        }
+      }
+      _ => {}
+    }
+  }
   pub fn monomorphize(&mut self, base_ctx: &Context, new_ctx: &mut Context) {
     match &mut self.kind {
       Application(f, args) => {
@@ -867,7 +908,7 @@ impl TypedExp {
               unreachable!("encountered applied non-fn in monomorphization")
             }
           {
-            match abstract_signature.implementation {
+            match &abstract_signature.implementation {
               FunctionImplementationKind::Builtin => {}
               FunctionImplementationKind::Constructor => {
                 if let Some(abstract_struct) =
@@ -896,8 +937,16 @@ impl TypedExp {
                   }
                 }
               }
-              FunctionImplementationKind::Composite(_) => {
-                todo!("fn monomorphization")
+              FunctionImplementationKind::Composite(f) => {
+                if !abstract_signature.generic_args.is_empty() {
+                  let monomorphized = abstract_signature
+                    .generate_monomorphized(
+                      args.iter().map(|arg| arg.data.unwrap_known()).collect(),
+                      self.data.unwrap_known().clone(),
+                    );
+                  std::mem::swap(f_name, &mut monomorphized.name.clone());
+                  new_ctx.add_abstract_function(monomorphized);
+                }
               }
             }
           }

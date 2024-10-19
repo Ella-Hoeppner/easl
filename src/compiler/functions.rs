@@ -38,13 +38,35 @@ pub struct AbstractFunctionSignature {
 impl AbstractFunctionSignature {
   pub fn generate_monomorphized(
     &self,
-    original_name: String,
-    field_types: Vec<Type>,
-  ) -> Option<Self> {
-    if self.generic_args.is_empty() {
-      return None;
+    arg_types: Vec<Type>,
+    return_type: Type,
+  ) -> Self {
+    //println!("monomorphizing {}", self.name);
+    let mut monomorphized = self.clone();
+    let mut generic_bindings = HashMap::new();
+    for i in 0..self.arg_types.len() {
+      self.arg_types[i]
+        .extract_generic_bindings(&arg_types[i], &mut generic_bindings);
     }
-    todo!()
+    self
+      .return_type
+      .extract_generic_bindings(&return_type, &mut generic_bindings);
+    monomorphized.generic_args = vec![];
+    if let FunctionImplementationKind::Composite(monomorphized_fn) =
+      &mut monomorphized.implementation
+    {
+      let replacement_pairs: Vec<_> = self
+        .generic_args
+        .iter()
+        .cloned()
+        .zip(arg_types.into_iter())
+        .collect();
+      //println!("trying to replace skolems... {replacement_pairs:?}");
+      monomorphized_fn.body.replace_skolems(&replacement_pairs)
+    } else {
+      panic!("attempted to monomorphize non-composite abstract function")
+    }
+    monomorphized
   }
   pub fn concretize(&self) -> FunctionSignature {
     let generic_variables: HashMap<String, TypeState> = self
@@ -143,6 +165,7 @@ pub struct BuiltInFunction {
 
 impl TopLevelFunction {
   pub fn compile(self, name: &str) -> CompileResult<String> {
+    //println!("compiling: {self:#?}");
     let TypedExp { data, kind } = self.body;
     let (arg_types, return_type) =
       if let Type::Function(signature) = data.unwrap_known() {

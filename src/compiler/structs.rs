@@ -36,8 +36,8 @@ impl UntypedStructField {
   }
   pub fn assign_type(
     self,
-    generic_args: &Vec<String>,
     structs: &Vec<AbstractStruct>,
+    generic_args: &Vec<String>,
     skolems: &Vec<String>,
   ) -> CompileResult<AbstractStructField> {
     Ok(AbstractStructField {
@@ -45,8 +45,8 @@ impl UntypedStructField {
       name: self.name,
       field_type: GenericOr::from_name(
         self.field_type_name,
-        generic_args,
         structs,
+        generic_args,
         skolems,
       )?,
     })
@@ -77,7 +77,7 @@ impl UntypedStruct {
       fields: self
         .fields
         .into_iter()
-        .map(|field| field.assign_type(&self.generic_args, structs, &vec![]))
+        .map(|field| field.assign_type(structs, &self.generic_args, &vec![]))
         .collect::<CompileResult<Vec<AbstractStructField>>>()?,
       generic_args: self.generic_args,
       filled_generics: vec![],
@@ -136,20 +136,19 @@ impl AbstractStructField {
       },
     }
   }
-  fn fill_abstract_generics(self, generics: &Vec<(String, Type)>) -> Self {
+  fn fill_abstract_generics(
+    self,
+    generics: &Vec<(String, AbstractType)>,
+  ) -> Self {
     AbstractStructField {
       metadata: self.metadata,
       name: self.name,
       field_type: match self.field_type {
-        GenericOr::Generic(var_name) => {
-          AbstractType::NonGeneric(TypeOrAbstractStruct::Type(
-            generics
-              .iter()
-              .find_map(|(name, t)| (*name == var_name).then(|| t))
-              .expect("unrecognized generic name in struct")
-              .clone(),
-          ))
-        }
+        GenericOr::Generic(var_name) => generics
+          .iter()
+          .find_map(|(name, t)| (*name == var_name).then(|| t))
+          .expect("unrecognized generic name in struct")
+          .clone(),
         GenericOr::NonGeneric(type_or_struct) => {
           AbstractType::NonGeneric(match type_or_struct {
             TypeOrAbstractStruct::Type(t) => TypeOrAbstractStruct::Type(t),
@@ -186,7 +185,7 @@ impl AbstractStructField {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractStruct {
   pub name: String,
-  pub filled_generics: Vec<Type>,
+  pub filled_generics: Vec<AbstractType>,
   pub fields: Vec<AbstractStructField>,
   pub generic_args: Vec<String>,
 }
@@ -247,7 +246,12 @@ impl AbstractStruct {
       });
     Some(AbstractStruct {
       name: monomorphized_name,
-      filled_generics: generic_args.clone(),
+      filled_generics: generic_args
+        .iter()
+        .map(|t| {
+          AbstractType::NonGeneric(TypeOrAbstractStruct::Type(t.clone()))
+        })
+        .collect(),
       generic_args: vec![],
       fields: self
         .fields
@@ -305,7 +309,7 @@ impl AbstractStruct {
 
   fn fill_abstract_generics_inner(
     self,
-    generics: &Vec<(String, Type)>,
+    generics: &Vec<(String, AbstractType)>,
   ) -> AbstractStruct {
     let new_fields: Vec<_> = self
       .fields
@@ -319,8 +323,11 @@ impl AbstractStruct {
       generic_args: vec![],
     }
   }
-  pub fn fill_abstract_generics(self, generics: Vec<Type>) -> AbstractStruct {
-    let generics_map: Vec<(String, Type)> = self
+  pub fn fill_abstract_generics(
+    self,
+    generics: Vec<AbstractType>,
+  ) -> AbstractStruct {
+    let generics_map: Vec<(String, AbstractType)> = self
       .generic_args
       .iter()
       .cloned()
