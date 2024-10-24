@@ -1,3 +1,5 @@
+use std::{cell::RefCell, rc::Rc};
+
 use crate::{
   compiler::{
     error::err, expression::arg_list_and_return_type_from_tynt_tree,
@@ -302,8 +304,8 @@ impl Program {
                 &structs,
                 &generic_args,
               )?;
-              let implementation =
-                FunctionImplementationKind::Composite(TopLevelFunction {
+              let implementation = FunctionImplementationKind::Composite(
+                Rc::new(RefCell::new(TopLevelFunction {
                   arg_metadata,
                   return_metadata,
                   metadata,
@@ -324,7 +326,8 @@ impl Program {
                     &structs,
                     &generic_args,
                   )?,
-                });
+                })),
+              );
               global_context.abstract_functions.push(
                 AbstractFunctionSignature {
                   name,
@@ -361,7 +364,10 @@ impl Program {
           if let FunctionImplementationKind::Composite(implementation) =
             &mut f.implementation
           {
-            implementation.body.propagate_types(&mut base_context)?
+            implementation
+              .borrow_mut()
+              .body
+              .propagate_types(&mut base_context)?
           } else {
             false
           };
@@ -384,7 +390,8 @@ impl Program {
         if let FunctionImplementationKind::Composite(implementation) =
           &f.implementation
         {
-          untyped_so_far.append(&mut implementation.body.find_untyped());
+          untyped_so_far
+            .append(&mut implementation.borrow_mut().body.find_untyped());
         }
         untyped_so_far
       },
@@ -409,6 +416,7 @@ impl Program {
         &f.implementation
       {
         implementation
+          .borrow_mut()
           .body
           .check_assignment_validity(&mut Context::default_global())?;
       }
@@ -422,13 +430,13 @@ impl Program {
         if let FunctionImplementationKind::Composite(implementation) =
           &f.implementation
         {
-          let mut new_implementation = implementation.clone();
-          new_implementation
+          implementation
+            .borrow_mut()
             .body
             .monomorphize(&self.global_context, &mut monomorphized_ctx);
           let mut new_f = f.clone();
           new_f.implementation =
-            FunctionImplementationKind::Composite(new_implementation);
+            FunctionImplementationKind::Composite(implementation.clone());
           monomorphized_ctx.add_abstract_function(new_f);
         }
       }
@@ -461,7 +469,7 @@ impl Program {
         f.implementation
       {
         if f.generic_args.is_empty() {
-          wgsl += &implementation.compile(&f.name)?;
+          wgsl += &implementation.borrow().clone().compile(&f.name)?;
           wgsl += "\n\n";
         }
       }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use crate::compiler::util::compile_word;
 
@@ -23,7 +23,7 @@ pub struct TopLevelFunction {
 pub enum FunctionImplementationKind {
   Builtin,
   Constructor,
-  Composite(TopLevelFunction),
+  Composite(Rc<RefCell<TopLevelFunction>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -62,7 +62,10 @@ impl AbstractFunctionSignature {
         .zip(arg_types.into_iter())
         .collect();
       //println!("trying to replace skolems... {replacement_pairs:?}");
-      monomorphized_fn.body.replace_skolems(&replacement_pairs)
+      monomorphized_fn
+        .borrow_mut()
+        .body
+        .replace_skolems(&replacement_pairs)
     } else {
       panic!("attempted to monomorphize non-composite abstract function")
     }
@@ -194,8 +197,9 @@ impl TopLevelFunction {
       .join(", ");
 
     Ok(format!(
-      "{}fn {name}({args}) -> {}{} {{{}\n}}",
+      "{}fn {}({args}) -> {}{} {{{}\n}}",
       Metadata::compile_optional(self.metadata),
+      compile_word(name.to_string()),
       Metadata::compile_optional(self.return_metadata),
       return_type.compile(),
       indent(body.compile(ExpressionCompilationPosition::Return))
