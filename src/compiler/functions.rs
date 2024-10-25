@@ -41,7 +41,7 @@ impl AbstractFunctionSignature {
     arg_types: Vec<Type>,
     return_type: Type,
   ) -> Self {
-    //println!("monomorphizing {}", self.name);
+    //println!("monomorphizing fn {} -> {:?}", self.name, return_type);
     let mut monomorphized = self.clone();
     let mut generic_bindings = HashMap::new();
     for i in 0..self.arg_types.len() {
@@ -51,17 +51,18 @@ impl AbstractFunctionSignature {
     self
       .return_type
       .extract_generic_bindings(&return_type, &mut generic_bindings);
+    monomorphized.name =
+      self.generic_args.iter().fold(monomorphized.name, |s, arg| {
+        s + "_" + &generic_bindings.get(arg).unwrap().monomorphized_name()
+      });
     monomorphized.generic_args = vec![];
     if let FunctionImplementationKind::Composite(monomorphized_fn) =
       &mut monomorphized.implementation
     {
-      let replacement_pairs: Vec<_> = self
-        .generic_args
+      let replacement_pairs: Vec<_> = generic_bindings
         .iter()
-        .cloned()
-        .zip(arg_types.into_iter())
+        .map(|(x, y)| (x.clone(), y.clone()))
         .collect();
-      //println!("trying to replace skolems... {replacement_pairs:?}");
       monomorphized_fn
         .borrow_mut()
         .body
@@ -168,7 +169,6 @@ pub struct BuiltInFunction {
 
 impl TopLevelFunction {
   pub fn compile(self, name: &str) -> CompileResult<String> {
-    //println!("compiling: {self:#?}");
     let TypedExp { data, kind } = self.body;
     let (arg_types, return_type) =
       if let Type::Function(signature) = data.unwrap_known() {

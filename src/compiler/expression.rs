@@ -894,6 +894,7 @@ impl TypedExp {
     }
   }
   pub fn monomorphize(&mut self, base_ctx: &Context, new_ctx: &mut Context) {
+    //println!("TypedExp::monomorphize");
     match &mut self.kind {
       Application(f, args) => {
         f.monomorphize(base_ctx, new_ctx);
@@ -911,6 +912,7 @@ impl TypedExp {
             match &abstract_signature.implementation {
               FunctionImplementationKind::Builtin => {}
               FunctionImplementationKind::Constructor => {
+                //println!("encountered Constructor in TypedExp::monomorphize");
                 if let Some(abstract_struct) =
                   base_ctx.structs.iter().find(|s| s.name == *f_name)
                 {
@@ -939,11 +941,18 @@ impl TypedExp {
               }
               FunctionImplementationKind::Composite(f) => {
                 if !abstract_signature.generic_args.is_empty() {
-                  let monomorphized = abstract_signature
+                  let mut monomorphized = abstract_signature
                     .generate_monomorphized(
                       args.iter().map(|arg| arg.data.unwrap_known()).collect(),
                       self.data.unwrap_known().clone(),
                     );
+                  if let FunctionImplementationKind::Composite(f) =
+                    &mut monomorphized.implementation
+                  {
+                    f.borrow_mut().body.monomorphize(base_ctx, new_ctx);
+                  } else {
+                    panic!("monomorphized function wasn't composite")
+                  }
                   std::mem::swap(f_name, &mut monomorphized.name.clone());
                   new_ctx.add_abstract_function(monomorphized);
                 }

@@ -227,7 +227,10 @@ impl Type {
       Type::I32 => "i32".to_string(),
       Type::U32 => "u32".to_string(),
       Type::Bool => "bool".to_string(),
-      Type::Struct(s) => compile_word(s.monomorphized_name()),
+      Type::Struct(s) => {
+        //println!("compiling struct");
+        compile_word(s.monomorphized_name())
+      }
       Type::Function(_) => {
         panic!("Attempted to compile ConcreteFunction type")
       }

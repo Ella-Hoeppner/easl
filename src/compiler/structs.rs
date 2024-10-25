@@ -81,7 +81,7 @@ impl UntypedStruct {
         .collect::<CompileResult<Vec<AbstractStructField>>>()?,
       generic_args: self.generic_args.clone(),
       filled_generics: vec![],
-      original_generic_args: self.generic_args,
+      abstract_ancestor: None,
     })
   }
 }
@@ -189,10 +189,17 @@ pub struct AbstractStruct {
   pub filled_generics: Vec<AbstractType>,
   pub fields: Vec<AbstractStructField>,
   pub generic_args: Vec<String>,
-  pub original_generic_args: Vec<String>,
+  pub abstract_ancestor: Option<Box<Self>>,
 }
 
 impl AbstractStruct {
+  pub fn original_ancestor(&self) -> &Self {
+    &self
+      .abstract_ancestor
+      .as_ref()
+      .map(|ancestor| ancestor.original_ancestor())
+      .unwrap_or(&self)
+  }
   pub fn concretize(
     &self,
     structs: &Vec<AbstractStruct>,
@@ -233,31 +240,52 @@ impl AbstractStruct {
       .map_or(Ok(None), |v| v.map(Some))
   }
   pub fn monomorphized_name(&self, field_types: &Vec<Type>) -> String {
-    let generic_args: Vec<Type> = self
-      .original_generic_args
+    let mut generic_bindings = HashMap::new();
+    for (field, field_type) in self
+      .original_ancestor()
+      .fields
       .iter()
-      .cloned()
-      .map(|var| {
-        let var = GenericOr::Generic(var);
-        let first_usage_index = self
-          .fields
-          .iter()
-          .enumerate()
-          .find_map(|(index, field)| (field.field_type == var).then(|| index))
-          .expect("unused generic variable");
-        field_types[first_usage_index].clone()
-      })
-      .collect();
-    generic_args
-      .iter()
-      .fold(self.name.clone(), |name_so_far, t| {
-        name_so_far + "_" + &t.monomorphized_name()
-      })
+      .zip(field_types.iter())
+    {
+      field
+        .field_type
+        .extract_generic_bindings(field_type, &mut generic_bindings);
+    }
+    /*let generic_args: Vec<Type> = self
+    .original_generic_args
+    .iter()
+    .cloned()
+    .map(|var| {
+      let var = GenericOr::Generic(var);
+      let first_usage_index = self
+        .fields
+        .iter()
+        .enumerate()
+        .find_map(|(index, field)| (field.field_type == var).then(|| index))
+        .expect("unused generic variable");
+      field_types[first_usage_index].clone()
+    })
+    .collect();*/
+    self.original_ancestor().generic_args.iter().fold(
+      self.name.clone(),
+      |name_so_far, generic_arg_name| {
+        name_so_far
+          + "_"
+          + &generic_bindings
+            .get(generic_arg_name)
+            .unwrap()
+            .monomorphized_name()
+      },
+    )
   }
   pub fn generate_monomorphized(
     &self,
     field_types: Vec<Type>,
   ) -> Option<AbstractStruct> {
+    /*println!(
+      "generating monomorphized struct for {}: {:?}",
+      self.name, field_types
+    );*/
     if self.generic_args.is_empty() {
       return None;
     }
@@ -281,6 +309,10 @@ impl AbstractStruct {
       .fold(self.name.clone(), |name_so_far, t| {
         name_so_far + "_" + &t.monomorphized_name()
       });
+    /*println!(
+      "named monomorphized struct {}: {monomorphized_name}",
+      self.name
+    );*/
     Some(AbstractStruct {
       name: monomorphized_name,
       filled_generics: generic_args
@@ -312,7 +344,7 @@ impl AbstractStruct {
           new_field
         })
         .collect(),
-      original_generic_args: vec![],
+      abstract_ancestor: Some(self.clone().into()),
     })
   }
   pub fn fill_generics(self, generics: &HashMap<String, TypeState>) -> Struct {
@@ -353,15 +385,15 @@ impl AbstractStruct {
   ) -> AbstractStruct {
     let new_fields: Vec<_> = self
       .fields
-      .into_iter()
-      .map(|field| field.fill_abstract_generics(generics))
+      .iter()
+      .map(|field| field.clone().fill_abstract_generics(generics))
       .collect();
     AbstractStruct {
-      name: self.name,
+      name: self.name.clone(),
       fields: new_fields,
       filled_generics: generics.iter().map(|(_, t)| t.clone()).collect(),
       generic_args: vec![],
-      original_generic_args: vec![],
+      abstract_ancestor: Some(self.into()),
     }
   }
   pub fn fill_abstract_generics(

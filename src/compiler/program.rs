@@ -415,6 +415,7 @@ impl Program {
     Ok(self)
   }
   pub fn monomorphize(mut self) -> Self {
+    //println!("monomorphizing program...");
     let mut monomorphized_ctx = Context::empty();
     for f in self.global_context.abstract_functions.iter() {
       if f.generic_args.is_empty() {
@@ -432,6 +433,7 @@ impl Program {
         }
       }
     }
+    //println!("finished monomporphizing\n");
     monomorphized_ctx.variables = self.global_context.variables;
     self.global_context = monomorphized_ctx;
     self
