@@ -85,6 +85,7 @@ pub fn built_in_structs() -> Vec<AbstractStruct> {
         },
       ],
       generic_args: vec![],
+      original_generic_args: vec![],
       filled_generics: vec![],
     },
     AbstractStruct {
@@ -113,6 +114,7 @@ pub fn built_in_structs() -> Vec<AbstractStruct> {
         },
       ],
       generic_args: vec![],
+      original_generic_args: vec![],
       filled_generics: vec![],
     },
     AbstractStruct {
@@ -148,6 +150,7 @@ pub fn built_in_structs() -> Vec<AbstractStruct> {
         },
       ],
       generic_args: vec![],
+      original_generic_args: vec![],
       filled_generics: vec![],
     },
   ]

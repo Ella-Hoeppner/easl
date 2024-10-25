@@ -227,7 +227,7 @@ impl Type {
       Type::I32 => "i32".to_string(),
       Type::U32 => "u32".to_string(),
       Type::Bool => "bool".to_string(),
-      Type::Struct(s) => compile_word(s.name.clone()),
+      Type::Struct(s) => compile_word(s.monomorphized_name()),
       Type::Function(_) => {
         panic!("Attempted to compile ConcreteFunction type")
       }
@@ -264,7 +264,7 @@ impl Type {
       }
     }
   }
-  pub fn monomorphization_parameter_name(&self) -> String {
+  pub fn monomorphized_name(&self) -> String {
     match self {
       Type::Skolem(name) => {
         format!("<{name}>")

@@ -352,7 +352,6 @@ impl Program {
     Ok(Self {
       global_context,
       top_level_vars,
-      //top_level_functions,
     })
   }
   fn propagate_types(&mut self) -> CompileResult<bool> {
@@ -374,14 +373,6 @@ impl Program {
         Ok(did_type_states_change_so_far || did_f_type_states_change)
       },
     )
-    /*self.top_level_functions.iter_mut().try_fold(
-      false,
-      |did_type_states_change_so_far, f| {
-        let did_f_type_states_change =
-          f.body.propagate_types(&mut base_context)?;
-        Ok(did_type_states_change_so_far || did_f_type_states_change)
-      },
-    )*/
   }
   fn find_untyped(&self) -> Vec<TypedExp> {
     self.global_context.abstract_functions.iter().fold(
@@ -456,10 +447,13 @@ impl Program {
     for s in self
       .global_context
       .structs
-      .into_iter()
+      .iter()
+      .cloned()
       .filter(|s| !default_structs.contains(s))
     {
-      if let Some(compiled_struct) = s.compile_if_non_generic() {
+      if let Some(compiled_struct) =
+        s.compile_if_non_generic(&self.global_context.structs)?
+      {
         wgsl += &compiled_struct;
         wgsl += "\n\n";
       }

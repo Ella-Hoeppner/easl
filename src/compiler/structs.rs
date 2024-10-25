@@ -79,8 +79,9 @@ impl UntypedStruct {
         .into_iter()
         .map(|field| field.assign_type(structs, &self.generic_args, &vec![]))
         .collect::<CompileResult<Vec<AbstractStructField>>>()?,
-      generic_args: self.generic_args,
+      generic_args: self.generic_args.clone(),
       filled_generics: vec![],
+      original_generic_args: self.generic_args,
     })
   }
 }
@@ -162,7 +163,7 @@ impl AbstractStructField {
       },
     }
   }
-  pub fn compile(self) -> String {
+  pub fn compile(self, structs: &Vec<AbstractStruct>) -> CompileResult<String> {
     let metadata = if let Some(metadata) = self.metadata {
       metadata.compile()
     } else {
@@ -175,10 +176,10 @@ impl AbstractStructField {
       }
       GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => t.compile(),
       GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(t)) => t
-        .compile_if_non_generic()
+        .compile_if_non_generic(structs)?
         .expect("failed to compile abstract structs"),
     };
-    format!("  {metadata}{name}: {field_type}")
+    Ok(format!("  {metadata}{name}: {field_type}"))
   }
 }
 
@@ -188,6 +189,7 @@ pub struct AbstractStruct {
   pub filled_generics: Vec<AbstractType>,
   pub fields: Vec<AbstractStructField>,
   pub generic_args: Vec<String>,
+  pub original_generic_args: Vec<String>,
 }
 
 impl AbstractStruct {
@@ -197,6 +199,7 @@ impl AbstractStruct {
     skolems: &Vec<String>,
   ) -> CompileResult<Struct> {
     Ok(Struct {
+      abstract_ancestor: self.clone(),
       name: self.name.clone(),
       fields: self
         .fields
@@ -205,17 +208,51 @@ impl AbstractStruct {
         .collect::<CompileResult<Vec<_>>>()?,
     })
   }
-  pub fn compile_if_non_generic(self) -> Option<String> {
-    self.generic_args.is_empty().then(|| {
-      let name = self.name;
-      let fields = self
-        .fields
-        .into_iter()
-        .map(|field| field.compile())
-        .collect::<Vec<String>>()
-        .join("\n");
-      format!("struct {name} {{\n{fields}\n}}")
-    })
+  pub fn compile_if_non_generic(
+    self,
+    structs: &Vec<AbstractStruct>,
+  ) -> CompileResult<Option<String>> {
+    self
+      .generic_args
+      .is_empty()
+      .then(|| {
+        let field_types: Vec<Type> = self
+          .fields
+          .iter()
+          .map(|f| f.field_type.concretize(structs, &vec![]))
+          .collect::<CompileResult<Vec<Type>>>()?;
+        let monomorphized_name = self.monomorphized_name(&field_types);
+        let fields = self
+          .fields
+          .into_iter()
+          .map(|field| field.compile(structs))
+          .collect::<CompileResult<Vec<String>>>()?
+          .join("\n");
+        Ok(format!("struct {monomorphized_name} {{\n{fields}\n}}"))
+      })
+      .map_or(Ok(None), |v| v.map(Some))
+  }
+  pub fn monomorphized_name(&self, field_types: &Vec<Type>) -> String {
+    let generic_args: Vec<Type> = self
+      .original_generic_args
+      .iter()
+      .cloned()
+      .map(|var| {
+        let var = GenericOr::Generic(var);
+        let first_usage_index = self
+          .fields
+          .iter()
+          .enumerate()
+          .find_map(|(index, field)| (field.field_type == var).then(|| index))
+          .expect("unused generic variable");
+        field_types[first_usage_index].clone()
+      })
+      .collect();
+    generic_args
+      .iter()
+      .fold(self.name.clone(), |name_so_far, t| {
+        name_so_far + "_" + &t.monomorphized_name()
+      })
   }
   pub fn generate_monomorphized(
     &self,
@@ -242,7 +279,7 @@ impl AbstractStruct {
     let monomorphized_name = generic_args
       .iter()
       .fold(self.name.clone(), |name_so_far, t| {
-        name_so_far + "_" + &t.monomorphization_parameter_name()
+        name_so_far + "_" + &t.monomorphized_name()
       });
     Some(AbstractStruct {
       name: monomorphized_name,
@@ -275,15 +312,18 @@ impl AbstractStruct {
           new_field
         })
         .collect(),
+      original_generic_args: vec![],
     })
   }
   pub fn fill_generics(self, generics: &HashMap<String, TypeState>) -> Struct {
+    let abstract_ancestor = self.clone();
     let new_fields: Vec<_> = self
       .fields
       .into_iter()
       .map(|field| field.fill_generics(generics))
       .collect();
     Struct {
+      abstract_ancestor,
       name: self.name,
       fields: new_fields,
     }
@@ -321,6 +361,7 @@ impl AbstractStruct {
       fields: new_fields,
       filled_generics: generics.iter().map(|(_, t)| t.clone()).collect(),
       generic_args: vec![],
+      original_generic_args: vec![],
     }
   }
   pub fn fill_abstract_generics(
@@ -367,6 +408,7 @@ impl StructField {
 pub struct Struct {
   pub name: String,
   pub fields: Vec<StructField>,
+  pub abstract_ancestor: AbstractStruct,
 }
 
 impl Struct {
@@ -389,6 +431,15 @@ impl Struct {
             }
         })
       },
+    )
+  }
+  pub fn monomorphized_name(&self) -> String {
+    self.abstract_ancestor.monomorphized_name(
+      &self
+        .fields
+        .iter()
+        .map(|f| f.field_type.unwrap_known())
+        .collect(),
     )
   }
 }
