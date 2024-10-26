@@ -7,7 +7,7 @@ use super::{
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
   structs::TypeOrAbstractStruct,
-  types::{GenericOr, Type, TypeState},
+  types::{Context, GenericOr, Type, TypeState},
   util::indent,
 };
 
@@ -40,8 +40,9 @@ impl AbstractFunctionSignature {
     &self,
     arg_types: Vec<Type>,
     return_type: Type,
-  ) -> Self {
-    //println!("monomorphizing fn {} -> {:?}", self.name, return_type);
+    base_ctx: &Context,
+    new_ctx: &mut Context,
+  ) -> CompileResult<Self> {
     let mut monomorphized = self.clone();
     let mut generic_bindings = HashMap::new();
     for i in 0..self.arg_types.len() {
@@ -59,18 +60,18 @@ impl AbstractFunctionSignature {
     if let FunctionImplementationKind::Composite(monomorphized_fn) =
       &mut monomorphized.implementation
     {
+      let mut new_fn = monomorphized_fn.borrow().clone();
       let replacement_pairs: Vec<_> = generic_bindings
         .iter()
         .map(|(x, y)| (x.clone(), y.clone()))
         .collect();
-      monomorphized_fn
-        .borrow_mut()
-        .body
-        .replace_skolems(&replacement_pairs)
+      new_fn.body.replace_skolems(&replacement_pairs);
+      new_fn.body.monomorphize(base_ctx, new_ctx)?;
+      std::mem::swap(monomorphized_fn, &mut Rc::new(RefCell::new(new_fn)));
     } else {
       panic!("attempted to monomorphize non-composite abstract function")
     }
-    monomorphized
+    Ok(monomorphized)
   }
   pub fn concretize(&self) -> FunctionSignature {
     let generic_variables: HashMap<String, TypeState> = self

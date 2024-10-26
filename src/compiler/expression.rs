@@ -893,13 +893,16 @@ impl TypedExp {
       _ => {}
     }
   }
-  pub fn monomorphize(&mut self, base_ctx: &Context, new_ctx: &mut Context) {
-    //println!("TypedExp::monomorphize");
+  pub fn monomorphize(
+    &mut self,
+    base_ctx: &Context,
+    new_ctx: &mut Context,
+  ) -> CompileResult<()> {
     match &mut self.kind {
       Application(f, args) => {
-        f.monomorphize(base_ctx, new_ctx);
+        f.monomorphize(base_ctx, new_ctx)?;
         for arg in args.iter_mut() {
-          arg.monomorphize(base_ctx, new_ctx);
+          arg.monomorphize(base_ctx, new_ctx)?;
         }
         if let ExpKind::Name(f_name) = &mut f.kind {
           if let Some(abstract_signature) =
@@ -912,7 +915,6 @@ impl TypedExp {
             match &abstract_signature.implementation {
               FunctionImplementationKind::Builtin => {}
               FunctionImplementationKind::Constructor => {
-                //println!("encountered Constructor in TypedExp::monomorphize");
                 if let Some(abstract_struct) =
                   base_ctx.structs.iter().find(|s| s.name == *f_name)
                 {
@@ -923,7 +925,8 @@ impl TypedExp {
                   {
                     std::mem::swap(
                       f_name,
-                      &mut monomorphized_struct.name.clone(),
+                      &mut monomorphized_struct
+                        .concretized_name(&base_ctx.structs)?,
                     );
                     self.data.with_dereferenced_mut(|typestate| {
                       std::mem::swap(
@@ -939,20 +942,15 @@ impl TypedExp {
                   }
                 }
               }
-              FunctionImplementationKind::Composite(f) => {
+              FunctionImplementationKind::Composite(_) => {
                 if !abstract_signature.generic_args.is_empty() {
-                  let mut monomorphized = abstract_signature
+                  let monomorphized = abstract_signature
                     .generate_monomorphized(
                       args.iter().map(|arg| arg.data.unwrap_known()).collect(),
                       self.data.unwrap_known().clone(),
-                    );
-                  if let FunctionImplementationKind::Composite(f) =
-                    &mut monomorphized.implementation
-                  {
-                    f.borrow_mut().body.monomorphize(base_ctx, new_ctx);
-                  } else {
-                    panic!("monomorphized function wasn't composite")
-                  }
+                      base_ctx,
+                      new_ctx,
+                    )?;
                   std::mem::swap(f_name, &mut monomorphized.name.clone());
                   new_ctx.add_abstract_function(monomorphized);
                 }
@@ -961,27 +959,28 @@ impl TypedExp {
           }
         }
       }
-      Function(_, body) => body.monomorphize(base_ctx, new_ctx),
-      Access(_, body) => body.monomorphize(base_ctx, new_ctx),
+      Function(_, body) => body.monomorphize(base_ctx, new_ctx)?,
+      Access(_, body) => body.monomorphize(base_ctx, new_ctx)?,
       Let(bindings, body) => {
         for (_, _, value) in bindings {
-          value.monomorphize(base_ctx, new_ctx)
+          value.monomorphize(base_ctx, new_ctx)?
         }
-        body.monomorphize(base_ctx, new_ctx)
+        body.monomorphize(base_ctx, new_ctx)?
       }
       Match(scrutinee, arms) => {
-        scrutinee.monomorphize(base_ctx, new_ctx);
+        scrutinee.monomorphize(base_ctx, new_ctx)?;
         for (pattern, value) in arms {
-          pattern.monomorphize(base_ctx, new_ctx);
-          value.monomorphize(base_ctx, new_ctx);
+          pattern.monomorphize(base_ctx, new_ctx)?;
+          value.monomorphize(base_ctx, new_ctx)?;
         }
       }
       Block(subexps) => {
         for subexp in subexps {
-          subexp.monomorphize(base_ctx, new_ctx);
+          subexp.monomorphize(base_ctx, new_ctx)?;
         }
       }
       _ => {}
     }
+    Ok(())
   }
 }

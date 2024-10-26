@@ -16,7 +16,13 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* monomorphize generic functions
+* typecheck the return annotation of a function against the inferred return type
+  * right now it seems like you can just put anything as the return type of a function and it will compile just fine
+
+* `match` expressions
+  * treat if statements a special case of match blocks
+  * want logic for exhaustivity checking. For now the only exhaustible type is `Bool`, so basically for everything other than `Bool` there should be a requirement to have an "other" arm in the match block
+    * eventually I'll probably try to support sum types, and for those I'll want exhaustivity checking to, so maybe have like an `is_exhaustable` fn on Type or smth that for now just only returns true for `Bool`
 
 * make `def` work
   * should just compile to a const, I guess?
@@ -27,11 +33,6 @@ Feature goals:
     * account for ambiguity of function type variables in type inference
   * core built-in number typeclasses: Add, Subtract, Negate, Multiply, Divide
     * these will be automatically defined on the built in number + vector types
-
-* support `match` expressions
-  * treat if statements a special case of match blocks
-  * want logic for exhaustivity checking. For now the only exhaustible type is `Bool`, so basically for everything other than `Bool` there should be a requirement to have an "other" arm in the match block
-    * eventually I'll probably try to support sum types, and for those I'll want exhaustivity checking to, so maybe have like an `is_exhaustable` fn on Type or smth that for now just only returns true for `Bool`
 
 * loops
   * `for`

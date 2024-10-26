@@ -12,9 +12,8 @@ use crate::{
 use super::{
   builtins::built_in_structs,
   error::{CompileErrorKind::*, CompileResult},
-  expression::{Exp, TypedExp},
+  expression::TypedExp,
   functions::{FunctionImplementationKind, TopLevelFunction},
-  metadata::Metadata,
   types::{Context, Type},
   vars::TopLevelVar,
 };
@@ -96,10 +95,8 @@ impl Program {
     let mut global_context =
       Context::default_global().with_structs(structs.clone());
     let mut top_level_vars = vec![];
-    //let mut top_level_functions = vec![];
     for (metadata, tree) in non_struct_trees.into_iter() {
       use crate::parse::Encloser::*;
-      use crate::parse::Operator::*;
       use sse::syntax::EncloserOrOperator::*;
       if let TyntTree::Inner((_, Encloser(Parens)), children) = tree {
         let mut children_iter = children.into_iter();
@@ -414,8 +411,7 @@ impl Program {
     }
     Ok(self)
   }
-  pub fn monomorphize(mut self) -> Self {
-    //println!("monomorphizing program...");
+  pub fn monomorphize(mut self) -> CompileResult<Self> {
     let mut monomorphized_ctx = Context::empty();
     for f in self.global_context.abstract_functions.iter() {
       if f.generic_args.is_empty() {
@@ -425,7 +421,7 @@ impl Program {
           implementation
             .borrow_mut()
             .body
-            .monomorphize(&self.global_context, &mut monomorphized_ctx);
+            .monomorphize(&self.global_context, &mut monomorphized_ctx)?;
           let mut new_f = f.clone();
           new_f.implementation =
             FunctionImplementationKind::Composite(implementation.clone());
@@ -433,10 +429,9 @@ impl Program {
         }
       }
     }
-    //println!("finished monomporphizing\n");
     monomorphized_ctx.variables = self.global_context.variables;
     self.global_context = monomorphized_ctx;
-    self
+    Ok(self)
   }
   pub fn compile_to_wgsl(self) -> CompileResult<String> {
     let mut wgsl = String::new();

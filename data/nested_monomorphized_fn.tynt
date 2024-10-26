@@ -1,0 +1,10 @@
+(struct (TwoOf T)
+        first: T
+        second: T)
+
+(defn (make-two-of T) [a: T]: (TwoOf T)
+  (let [two (TwoOf a a)]
+    two))
+
+(defn quadruple-f32 [b: f32]: (TwoOf (TwoOf f32))
+  (make-two-of (make-two-of b)))

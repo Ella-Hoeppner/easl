@@ -227,10 +227,7 @@ impl Type {
       Type::I32 => "i32".to_string(),
       Type::U32 => "u32".to_string(),
       Type::Bool => "bool".to_string(),
-      Type::Struct(s) => {
-        //println!("compiling struct");
-        compile_word(s.monomorphized_name())
-      }
+      Type::Struct(s) => compile_word(s.monomorphized_name()),
       Type::Function(_) => {
         panic!("Attempted to compile ConcreteFunction type")
       }
@@ -241,13 +238,11 @@ impl Type {
   }
   pub fn replace_skolems(&mut self, skolems: &Vec<(String, Type)>) {
     if let Type::Skolem(s) = &self {
-      std::mem::swap(
-        self,
-        &mut skolems
-          .iter()
-          .find_map(|(skolem_name, t)| (skolem_name == s).then(|| t.clone()))
-          .unwrap(),
-      )
+      let x = &mut skolems
+        .iter()
+        .find_map(|(skolem_name, t)| (skolem_name == s).then(|| t.clone()))
+        .unwrap();
+      std::mem::swap(self, x)
     } else {
       match self {
         Type::Struct(s) => {

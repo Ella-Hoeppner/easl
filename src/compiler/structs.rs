@@ -251,21 +251,6 @@ impl AbstractStruct {
         .field_type
         .extract_generic_bindings(field_type, &mut generic_bindings);
     }
-    /*let generic_args: Vec<Type> = self
-    .original_generic_args
-    .iter()
-    .cloned()
-    .map(|var| {
-      let var = GenericOr::Generic(var);
-      let first_usage_index = self
-        .fields
-        .iter()
-        .enumerate()
-        .find_map(|(index, field)| (field.field_type == var).then(|| index))
-        .expect("unused generic variable");
-      field_types[first_usage_index].clone()
-    })
-    .collect();*/
     self.original_ancestor().generic_args.iter().fold(
       self.name.clone(),
       |name_so_far, generic_arg_name| {
@@ -278,14 +263,24 @@ impl AbstractStruct {
       },
     )
   }
+  pub fn concretized_name(
+    &self,
+    structs: &Vec<AbstractStruct>,
+  ) -> CompileResult<String> {
+    let s = self.concretize(structs, &vec![])?;
+    Ok(
+      self.monomorphized_name(
+        &s.fields
+          .iter()
+          .map(|f| f.field_type.unwrap_known())
+          .collect(),
+      ),
+    )
+  }
   pub fn generate_monomorphized(
     &self,
     field_types: Vec<Type>,
   ) -> Option<AbstractStruct> {
-    /*println!(
-      "generating monomorphized struct for {}: {:?}",
-      self.name, field_types
-    );*/
     if self.generic_args.is_empty() {
       return None;
     }
@@ -304,17 +299,8 @@ impl AbstractStruct {
         field_types[first_usage_index].clone()
       })
       .collect();
-    let monomorphized_name = generic_args
-      .iter()
-      .fold(self.name.clone(), |name_so_far, t| {
-        name_so_far + "_" + &t.monomorphized_name()
-      });
-    /*println!(
-      "named monomorphized struct {}: {monomorphized_name}",
-      self.name
-    );*/
     Some(AbstractStruct {
-      name: monomorphized_name,
+      name: self.name.clone(),
       filled_generics: generic_args
         .iter()
         .map(|t| {
