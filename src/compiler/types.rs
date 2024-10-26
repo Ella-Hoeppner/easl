@@ -124,11 +124,6 @@ impl AbstractType {
   ) {
     match self {
       GenericOr::Generic(generic) => {
-        if let Some(existing_binding) = generic_bindings.get(generic) {
-          if existing_binding != concrete_type {
-            panic!("incompatible generic bindings")
-          }
-        }
         generic_bindings.insert(generic.clone(), concrete_type.clone());
       }
       GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(

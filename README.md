@@ -16,9 +16,6 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* typecheck the return annotation of a function against the inferred return type
-  * right now it seems like you can just put anything as the return type of a function and it will compile just fine
-
 * `match` expressions
   * treat if statements a special case of match blocks
   * want logic for exhaustivity checking. For now the only exhaustible type is `Bool`, so basically for everything other than `Bool` there should be a requirement to have an "other" arm in the match block

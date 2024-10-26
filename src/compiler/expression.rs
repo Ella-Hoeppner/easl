@@ -584,21 +584,25 @@ impl TypedExp {
       BooleanLiteral(_) => self.data.constrain(TypeState::Known(Type::Bool))?,
       Function(arg_names, body) => {
         if let TypeState::Known(f_type) = &mut self.data {
-          let (arg_count, arg_type_states): (usize, Vec<TypeState>) =
-            match f_type {
-              Type::Function(signature) => (
-                signature.arg_types.len(),
-                signature.arg_types.iter().cloned().collect(),
-              ),
-              _ => {
-                return err(FunctionExpressionHasNonFunctionType(
-                  f_type.clone(),
-                ))
-              }
-            };
+          let (arg_count, arg_type_states, return_type_state): (
+            usize,
+            &Vec<TypeState>,
+            &mut TypeState,
+          ) = match f_type {
+            Type::Function(signature) => (
+              signature.arg_types.len(),
+              &signature.arg_types.clone(),
+              &mut signature.return_type,
+            ),
+            _ => {
+              return err(FunctionExpressionHasNonFunctionType(f_type.clone()))
+            }
+          };
+          let return_type_changed =
+            body.data.mutually_constrain(return_type_state)?;
           if arg_count == arg_names.len() {
             for (name, t) in arg_names.iter().zip(arg_type_states) {
-              ctx.bind(name, Variable::new(t))
+              ctx.bind(name, Variable::new(t.clone()))
             }
             let body_types_changed = body.propagate_types(ctx)?;
             let argument_types = arg_names
@@ -607,7 +611,7 @@ impl TypedExp {
               .collect::<Vec<_>>();
             let fn_type_changed =
               self.data.constrain_fn_by_argument_types(argument_types)?;
-            body_types_changed || fn_type_changed
+            return_type_changed || body_types_changed || fn_type_changed
           } else {
             return err(WrongArity);
           }
