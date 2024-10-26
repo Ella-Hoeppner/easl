@@ -17,7 +17,6 @@ Feature goals:
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
 * `match` expressions
-  * treat if statements a special case of match blocks
   * want logic for exhaustivity checking. For now the only exhaustible type is `Bool`, so basically for everything other than `Bool` there should be a requirement to have an "other" arm in the match block
     * eventually I'll probably try to support sum types, and for those I'll want exhaustivity checking to, so maybe have like an `is_exhaustable` fn on Type or smth that for now just only returns true for `Bool`
 
@@ -41,6 +40,7 @@ Feature goals:
     * so I'll need to implement aliases as part of this
 
 * add macros and syntactic conveniences
+  * `if` statements as sugar over `match`
   * parse integer literals with ambiguous types, to allow them to be treated as floats
   * handle inline accessor syntax like `a.x`
   * shadowing

@@ -57,6 +57,9 @@ pub enum CompileErrorKind {
   InvalidVariableMetadata(Metadata),
   InvalidAssignmentTarget,
   AssignmentTargetMustBeVariable,
+  MatchMissingScrutinee,
+  MatchMissingArms,
+  MatchIncompleteArm,
 }
 
 #[derive(Clone, Debug)]

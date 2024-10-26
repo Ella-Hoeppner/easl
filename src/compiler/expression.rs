@@ -131,7 +131,7 @@ use ExpKind::*;
 
 use super::{functions::FunctionImplementationKind, types::AbstractType};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ExpressionCompilationPosition {
   Return,
   InnerLine,
@@ -428,7 +428,39 @@ impl TypedExp {
                             kind: ExpKind::Block(child_exps),
                           })
                         }
-                        "match" => todo!("match block"),
+                        "match" => {
+                          let scrutinee = Self::try_from_tynt_tree(
+                            children_iter
+                              .next()
+                              .ok_or(MatchMissingScrutinee)?,
+                            structs,
+                            skolems,
+                          )?;
+                          let mut arms = vec![];
+                          while let Some(case_subtree) = children_iter.next() {
+                            let value_subtree =
+                              children_iter.next().ok_or(MatchIncompleteArm)?;
+                            arms.push((
+                              Self::try_from_tynt_tree(
+                                case_subtree,
+                                structs,
+                                skolems,
+                              )?,
+                              Self::try_from_tynt_tree(
+                                value_subtree,
+                                structs,
+                                skolems,
+                              )?,
+                            ));
+                          }
+                          if arms.is_empty() {
+                            return err(MatchMissingArms);
+                          }
+                          Some(Exp {
+                            kind: Match(Box::new(scrutinee), arms),
+                            data: Unknown,
+                          })
+                        }
                         _ => None,
                       }
                     }
@@ -706,7 +738,15 @@ impl TypedExp {
         }
         anything_changed
       }
-      Match(_, _) => todo!("I haven't implemented match blocks yet!!!"),
+      Match(scrutinee, arms) => {
+        let mut anything_changed = false;
+        for (case, value) in arms.iter_mut() {
+          anything_changed |=
+            case.data.mutually_constrain(&mut scrutinee.data)?;
+          anything_changed |= value.data.mutually_constrain(&mut self.data)?;
+        }
+        anything_changed
+      }
       Block(children) => {
         let mut anything_changed = false;
         for child in children.iter_mut() {
@@ -782,7 +822,44 @@ impl TypedExp {
           indent("\n".to_string() + &binding_lines.join("\n") + &value_line)
         )
       }
-      Match(_, _) => todo!("I haven't implemented match blocks yet!!!"),
+      Match(scrutinee, arms) => {
+        if scrutinee.data.unwrap_known() == Type::Bool {
+          let mut true_value = None;
+          let mut false_value = None;
+          for (case, value) in arms {
+            if let ExpKind::BooleanLiteral(b) = case.kind {
+              if b {
+                true_value = Some(value);
+              } else {
+                false_value = Some(value);
+              }
+            } else {
+              panic!("case of a Bool match block wasn't a BooleanLiteral")
+            }
+          }
+          let true_value =
+            true_value.expect("no 'true' case in match block on Bool");
+          let false_value =
+            false_value.expect("no 'false' case in match block on Bool");
+          if position == InnerExpression {
+            format!(
+              "select({}, {}, {})",
+              false_value.compile(InnerExpression),
+              true_value.compile(InnerExpression),
+              scrutinee.compile(InnerExpression)
+            )
+          } else {
+            format!(
+              "\nif ({}) {{\n  {}\n}} else {{\n  {}\n}}",
+              scrutinee.compile(InnerExpression),
+              true_value.compile(InnerExpression),
+              false_value.compile(InnerExpression),
+            )
+          }
+        } else {
+          todo!("match block on non-bool scrutinee not yet supported")
+        }
+      }
       Block(children) => {
         let child_count = children.len();
         let child_strings: Vec<String> = children

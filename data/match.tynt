@@ -1,0 +1,10 @@
+(defn one-or-zero [b: bool]: f32
+  (match b
+    true 1.
+    false 0.))
+
+(defn two-or-one [b: bool]: f32
+  (let [x (match b
+            true 2.
+            false 1.)]
+    x))
