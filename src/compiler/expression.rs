@@ -117,6 +117,7 @@ impl Accessor {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExpKind<D: Debug + Clone + PartialEq> {
+  Wildcard,
   Name(String),
   NumberLiteral(Number),
   BooleanLiteral(bool),
@@ -208,6 +209,12 @@ pub fn arg_list_and_return_type_from_tynt_tree(
   }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SyntaxTreeContext {
+  Default,
+  MatchPattern,
+}
+
 impl TypedExp {
   pub fn function_from_body_tree(
     body_trees: Vec<TyntTree>,
@@ -219,7 +226,14 @@ impl TypedExp {
   ) -> CompileResult<Self> {
     let mut body_exps = body_trees
       .into_iter()
-      .map(|t| Self::try_from_tynt_tree(t, structs, skolems))
+      .map(|t| {
+        Self::try_from_tynt_tree(
+          t,
+          structs,
+          skolems,
+          SyntaxTreeContext::Default,
+        )
+      })
       .collect::<CompileResult<Vec<TypedExp>>>()?;
     let body = if body_exps.len() == 1 {
       body_exps.remove(0)
@@ -242,6 +256,7 @@ impl TypedExp {
     tree: TyntTree,
     structs: &Vec<AbstractStruct>,
     skolems: &Vec<String>,
+    ctx: SyntaxTreeContext,
   ) -> CompileResult<Self> {
     Ok(match tree {
       TyntTree::Leaf(_, leaf) => {
@@ -259,6 +274,11 @@ impl TypedExp {
           Exp {
             kind: ExpKind::NumberLiteral(Number::Float(f)),
             data: Known(Type::F32),
+          }
+        } else if leaf == "_".to_string() {
+          Exp {
+            kind: ExpKind::Wildcard,
+            data: Unknown,
           }
         } else {
           Exp {
@@ -293,6 +313,7 @@ impl TypedExp {
                               children_iter.next().unwrap(),
                               structs,
                               skolems,
+                              ctx,
                             )?),
                           ),
                         })
@@ -341,7 +362,9 @@ impl TypedExp {
                           let mut child_exps = children_iter
                             .clone()
                             .map(|child| {
-                              Self::try_from_tynt_tree(child, structs, skolems)
+                              Self::try_from_tynt_tree(
+                                child, structs, skolems, ctx,
+                              )
                             })
                             .collect::<CompileResult<Vec<Self>>>()?;
                           let body_exp = if child_exps.len() == 1 {
@@ -392,7 +415,7 @@ impl TypedExp {
                                       }
                                     },
                                     Self::try_from_tynt_tree(
-                                      value_ast, structs, skolems,
+                                      value_ast, structs, skolems, ctx,
                                     )?,
                                   ));
                                 } else {
@@ -420,7 +443,9 @@ impl TypedExp {
                           let child_exps = children_iter
                             .clone()
                             .map(|child| {
-                              Self::try_from_tynt_tree(child, structs, skolems)
+                              Self::try_from_tynt_tree(
+                                child, structs, skolems, ctx,
+                              )
                             })
                             .collect::<CompileResult<Vec<Self>>>()?;
                           Some(Exp {
@@ -435,21 +460,25 @@ impl TypedExp {
                               .ok_or(MatchMissingScrutinee)?,
                             structs,
                             skolems,
+                            ctx,
                           )?;
                           let mut arms = vec![];
-                          while let Some(case_subtree) = children_iter.next() {
+                          while let Some(pattern_subtree) = children_iter.next()
+                          {
                             let value_subtree =
                               children_iter.next().ok_or(MatchIncompleteArm)?;
                             arms.push((
                               Self::try_from_tynt_tree(
-                                case_subtree,
+                                pattern_subtree,
                                 structs,
                                 skolems,
+                                SyntaxTreeContext::MatchPattern,
                               )?,
                               Self::try_from_tynt_tree(
                                 value_subtree,
                                 structs,
                                 skolems,
+                                ctx,
                               )?,
                             ));
                           }
@@ -473,10 +502,11 @@ impl TypedExp {
                       first_child,
                       structs,
                       skolems,
+                      ctx,
                     )?),
                     children_iter
                       .map(|arg| {
-                        Self::try_from_tynt_tree(arg, structs, skolems)
+                        Self::try_from_tynt_tree(arg, structs, skolems, ctx)
                       })
                       .collect::<CompileResult<_>>()?,
                   ),
@@ -498,6 +528,7 @@ impl TypedExp {
                 children_iter.next().unwrap(),
                 structs,
                 skolems,
+                ctx,
               )?;
               exp.data =
                 TypeState::Known(match children_iter.next().unwrap() {
@@ -556,6 +587,7 @@ impl TypedExp {
   }
   pub fn find_untyped(&self) -> Vec<TypedExp> {
     let mut children_untyped = match &self.kind {
+      Wildcard => vec![],
       Name(_) => vec![],
       NumberLiteral(_) => vec![],
       BooleanLiteral(_) => vec![],
@@ -601,6 +633,7 @@ impl TypedExp {
   }
   pub fn propagate_types(&mut self, ctx: &mut Context) -> CompileResult<bool> {
     Ok(match &mut self.kind {
+      Wildcard => false,
       Name(name) => {
         if !ctx.is_bound(name) {
           return err(UnboundName(name.clone()));
@@ -741,6 +774,8 @@ impl TypedExp {
       Match(scrutinee, arms) => {
         let mut anything_changed = false;
         for (case, value) in arms.iter_mut() {
+          anything_changed |= case.propagate_types(ctx)?;
+          anything_changed |= value.propagate_types(ctx)?;
           anything_changed |=
             case.data.mutually_constrain(&mut scrutinee.data)?;
           anything_changed |= value.data.mutually_constrain(&mut self.data)?;
@@ -769,6 +804,7 @@ impl TypedExp {
       }
     };
     match self.kind {
+      Wildcard => panic!("compiling wildcard"),
       Name(name) => wrap(compile_word(name)),
       NumberLiteral(num) => wrap(match num {
         Number::Int(i) => format!("{i}"),
@@ -823,41 +859,81 @@ impl TypedExp {
         )
       }
       Match(scrutinee, arms) => {
-        if scrutinee.data.unwrap_known() == Type::Bool {
-          let mut true_value = None;
-          let mut false_value = None;
-          for (case, value) in arms {
-            if let ExpKind::BooleanLiteral(b) = case.kind {
-              if b {
-                true_value = Some(value);
-              } else {
-                false_value = Some(value);
-              }
-            } else {
-              panic!("case of a Bool match block wasn't a BooleanLiteral")
-            }
-          }
-          let true_value =
-            true_value.expect("no 'true' case in match block on Bool");
-          let false_value =
-            false_value.expect("no 'false' case in match block on Bool");
+        if let ExpKind::Wildcard = arms.last().unwrap().0.kind {
           if position == InnerExpression {
-            format!(
-              "select({}, {}, {})",
-              false_value.compile(InnerExpression),
-              true_value.compile(InnerExpression),
-              scrutinee.compile(InnerExpression)
+            let mut arms_iter = arms.into_iter().rev();
+            let default = arms_iter.next().unwrap().1.compile(position);
+            let scrutinee_string = scrutinee.compile(position);
+            arms_iter.into_iter().fold(
+              default,
+              |subexpression, (pattern_subtree, value_subtree)| {
+                format!(
+                  "select({}, {}, {} == {})",
+                  subexpression,
+                  value_subtree.compile(position),
+                  pattern_subtree.compile(position),
+                  &scrutinee_string
+                )
+              },
             )
           } else {
             format!(
-              "\nif ({}) {{\n  {}\n}} else {{\n  {}\n}}",
+              "\nswitch ({}) {{\n  {}\n}}",
               scrutinee.compile(InnerExpression),
-              true_value.compile(InnerExpression),
-              false_value.compile(InnerExpression),
+              indent(
+                arms
+                  .into_iter()
+                  .map(|(pattern, value)| format!(
+                    "{}: {{{}\n}}",
+                    if pattern.kind == Wildcard {
+                      "default".to_string()
+                    } else {
+                      "case ".to_string() + &pattern.compile(InnerExpression)
+                    },
+                    indent(value.compile(position))
+                  ))
+                  .collect::<Vec<String>>()
+                  .join("\n")
+              )
             )
           }
         } else {
-          todo!("match block on non-bool scrutinee not yet supported")
+          if scrutinee.data.unwrap_known() == Type::Bool {
+            let mut true_value = None;
+            let mut false_value = None;
+            for (pattern, value) in arms {
+              if let ExpKind::BooleanLiteral(b) = pattern.kind {
+                if b {
+                  true_value = Some(value);
+                } else {
+                  false_value = Some(value);
+                }
+              } else {
+                panic!("case of a Bool match block wasn't a BooleanLiteral")
+              }
+            }
+            let true_value =
+              true_value.expect("no 'true' case in match block on Bool");
+            let false_value =
+              false_value.expect("no 'false' case in match block on Bool");
+            if position == InnerExpression {
+              format!(
+                "select({}, {}, {})",
+                false_value.compile(InnerExpression),
+                true_value.compile(InnerExpression),
+                scrutinee.compile(InnerExpression)
+              )
+            } else {
+              format!(
+                "\nif ({}) {{\n  {}\n}} else {{\n  {}\n}}",
+                scrutinee.compile(InnerExpression),
+                true_value.compile(InnerExpression),
+                false_value.compile(InnerExpression),
+              )
+            }
+          } else {
+            todo!("match block on non-bool scrutinee not yet supported")
+          }
         }
       }
       Block(children) => {

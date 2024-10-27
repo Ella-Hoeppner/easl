@@ -3,8 +3,8 @@
     true 1.
     false 0.))
 
-(defn two-or-one [b: bool]: f32
+(defn inner-one-or-zero [b: bool]: f32
   (let [x (match b
-            true 2.
-            false 1.)]
+            true 1.
+            false 0.)]
     x))

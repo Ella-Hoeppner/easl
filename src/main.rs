@@ -17,7 +17,8 @@ fn main() {
     "generic_fn",
     "monomorphized_fn",
     "nested_monomorphized_fn",
-    "match",
+    "bool_match",
+    "int_match",
   ] {
     println!("compiling {filename}...");
     let tynt_source = fs::read_to_string(&format!("./data/{filename}.tynt"))
