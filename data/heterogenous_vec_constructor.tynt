@@ -1,0 +1,2 @@
+(defn f [x: f32]: (vec4 f32)
+  (vec4 x 1u 1i 1f))

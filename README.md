@@ -16,6 +16,14 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
+* support heterogenous arguments to vector constructors
+  * e.g. `(vec2f 1i 2u)` should work
+  * this will mean each argument to a vec constructor needs an independent generic type, along with the generic type parameterizing the returned vector type
+
+* add aliases, make `vec<n>f` be an alias for `(vec<n> f32)`
+  * need the `vec<n>f` constructors work too
+  * and `vec<n>i` and `vec<n>u` work too
+
 * make `def` work
   * should just compile to a const, I guess?
 

@@ -23,6 +23,69 @@ pub enum Number {
   Int(i64),
   Float(f64),
 }
+use lazy_static::lazy_static;
+use regex::Regex;
+
+lazy_static! {
+  static ref NUM_REGEX: Regex =
+    Regex::new(r"^(-?\d+\.?\d*|\.\d+)(i|u|f)?$").unwrap();
+}
+
+fn parse_number(num_str: &str) -> Option<TypedExp> {
+  if let Some(captures) = NUM_REGEX.captures(num_str) {
+    let num_str = captures.get(1).unwrap().as_str();
+    let contains_decimal = num_str.contains('.');
+    if let Some(suffix) = captures.get(2).map(|m| m.as_str()) {
+      match suffix {
+        "f" => {
+          return Some(Exp {
+            kind: ExpKind::NumberLiteral(Number::Float(
+              num_str.parse::<f64>().unwrap(),
+            )),
+            data: Known(Type::F32),
+          });
+        }
+        "i" | "u" => {
+          if !contains_decimal {
+            return Some(Exp {
+              kind: ExpKind::NumberLiteral(Number::Float(
+                num_str.parse::<f64>().unwrap(),
+              )),
+              data: Known(match suffix {
+                "i" => Type::I32,
+                "u" => Type::U32,
+                _ => unreachable!(),
+              }),
+            });
+          }
+        }
+        _ => unreachable!(),
+      }
+    } else {
+      if contains_decimal {
+        return Some(Exp {
+          kind: ExpKind::NumberLiteral(Number::Float(
+            num_str.parse::<f64>().unwrap(),
+          )),
+          data: Known(Type::F32),
+        });
+      } else {
+        return Some(Exp {
+          kind: ExpKind::NumberLiteral(Number::Int(
+            num_str.parse::<i64>().unwrap(),
+          )),
+          data: OneOf(if num_str.contains('-') {
+            vec![Type::F32, Type::I32]
+          } else {
+            vec![Type::F32, Type::I32, Type::U32]
+          }),
+        });
+      }
+    }
+  }
+
+  None
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Exp<D: Debug + Clone + PartialEq> {
@@ -289,16 +352,8 @@ impl TypedExp {
             kind: ExpKind::BooleanLiteral(leaf == "true"),
             data: Known(Type::Bool),
           }
-        } else if let Ok(i) = leaf.parse::<i64>() {
-          Exp {
-            kind: ExpKind::NumberLiteral(Number::Int(i)),
-            data: Known(Type::I32),
-          }
-        } else if let Ok(f) = leaf.parse::<f64>() {
-          Exp {
-            kind: ExpKind::NumberLiteral(Number::Float(f)),
-            data: Known(Type::F32),
-          }
+        } else if let Some(num_exp) = parse_number(&leaf) {
+          num_exp
         } else if leaf == "_".to_string() {
           Exp {
             kind: ExpKind::Wildcard,
