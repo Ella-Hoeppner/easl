@@ -16,9 +16,15 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* `match` expressions
-  * want logic for exhaustivity checking. For now the only exhaustible type is `Bool`, so basically for everything other than `Bool` there should be a requirement to have an "other" arm in the match block
-    * eventually I'll probably try to support sum types, and for those I'll want exhaustivity checking to, so maybe have like an `is_exhaustable` fn on Type or smth that for now just only returns true for `Bool`
+* compile vecs properly - as `vec4<t>` rather than `vec4_<type>`
+
+* add aliases, make `vec<n>f` be an alias for `(vec<n> f32)`
+  * need the `vec<n>f` constructors work too
+  * and `vec<n>i` and `vec<n>u` work too
+
+* better validation of match blocks
+  * return errors rather than panicking in `TypedExp::compile` when a match block is invald
+  * check that there's only one wildcard arm 
 
 * make `def` work
   * should just compile to a const, I guess?
@@ -34,10 +40,6 @@ Feature goals:
   * `for`
   * `while`
   * `break` and `continue`
-
-* make vectors generic
-  * `vec<n>f` should be an alias to `(vec<n> f32)`
-    * so I'll need to implement aliases as part of this
 
 * add macros and syntactic conveniences
   * `if` statements as sugar over `match`

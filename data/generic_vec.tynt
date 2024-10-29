@@ -1,0 +1,3 @@
+(defn vertex [in: f32]: f32
+  (let [x (vec2 1. in)]
+    (.x x)))

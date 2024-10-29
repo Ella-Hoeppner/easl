@@ -19,7 +19,7 @@ use super::{
 pub struct UntypedStructField {
   metadata: Option<Metadata>,
   name: String,
-  field_type_name: String,
+  type_ast: TyntTree,
 }
 
 impl UntypedStructField {
@@ -31,7 +31,7 @@ impl UntypedStructField {
     Ok(Self {
       metadata,
       name: read_leaf(name)?,
-      field_type_name: read_leaf(type_ast)?,
+      type_ast,
     })
   }
   pub fn assign_type(
@@ -43,8 +43,8 @@ impl UntypedStructField {
     Ok(AbstractStructField {
       metadata: self.metadata,
       name: self.name,
-      field_type: GenericOr::from_name(
-        self.field_type_name,
+      field_type: GenericOr::from_ast(
+        self.type_ast,
         structs,
         generic_args,
         skolems,

@@ -5,7 +5,7 @@ use crate::compiler::structs::{AbstractStructField, TypeOrAbstractStruct};
 use super::{
   functions::{AbstractFunctionSignature, FunctionImplementationKind},
   structs::AbstractStruct,
-  types::{GenericOr, Type},
+  types::{AbstractType, GenericOr, Type},
 };
 
 fn n_sums(n: u8) -> Vec<Vec<u8>> {
@@ -27,19 +27,18 @@ fn n_sums(n: u8) -> Vec<Vec<u8>> {
   }
 }
 
-fn vec_n_type(n: u8) -> Type {
-  let empty_generics = HashMap::new();
+fn vec_n_type(n: u8) -> AbstractType {
   match n {
-    1 => Type::F32,
-    2 => {
-      Type::Struct(get_builtin_struct("vec2f").fill_generics(&empty_generics))
-    }
-    3 => {
-      Type::Struct(get_builtin_struct("vec3f").fill_generics(&empty_generics))
-    }
-    4 => {
-      Type::Struct(get_builtin_struct("vec4f").fill_generics(&empty_generics))
-    }
+    1 => GenericOr::Generic("T".to_string()),
+    2 => GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+      get_builtin_struct("vec2"),
+    )),
+    3 => GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+      get_builtin_struct("vec3"),
+    )),
+    4 => GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+      get_builtin_struct("vec4"),
+    )),
     _ => unreachable!(),
   }
 }
@@ -48,17 +47,10 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
   n_sums(n)
     .into_iter()
     .map(|nums| AbstractFunctionSignature {
-      name: format!("vec{n}f"),
-      generic_args: vec![],
-      arg_types: nums
-        .into_iter()
-        .map(|n| {
-          GenericOr::NonGeneric(TypeOrAbstractStruct::Type(vec_n_type(n)))
-        })
-        .collect(),
-      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-        vec_n_type(n),
-      )),
+      name: format!("vec{n}"),
+      generic_args: vec!["T".to_string()],
+      arg_types: nums.into_iter().map(|n| vec_n_type(n)).collect(),
+      return_type: vec_n_type(n),
       implementation: FunctionImplementationKind::Builtin,
     })
     .collect()
@@ -67,89 +59,71 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
 pub fn built_in_structs() -> Vec<AbstractStruct> {
   vec![
     AbstractStruct {
-      name: "vec2f".to_string(),
+      name: "vec2".to_string(),
       fields: vec![
         AbstractStructField {
           metadata: None,
           name: "x".to_string(),
-          field_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-            Type::F32,
-          )),
+          field_type: GenericOr::Generic("T".to_string()),
         },
         AbstractStructField {
           metadata: None,
           name: "y".to_string(),
-          field_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-            Type::F32,
-          )),
+          field_type: GenericOr::Generic("T".to_string()),
         },
       ],
-      generic_args: vec![],
+      generic_args: vec!["T".to_string()],
       filled_generics: vec![],
       abstract_ancestor: None,
     },
     AbstractStruct {
-      name: "vec3f".to_string(),
+      name: "vec3".to_string(),
       fields: vec![
         AbstractStructField {
           metadata: None,
           name: "x".to_string(),
-          field_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-            Type::F32,
-          )),
+          field_type: GenericOr::Generic("T".to_string()),
         },
         AbstractStructField {
           metadata: None,
           name: "y".to_string(),
-          field_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-            Type::F32,
-          )),
+          field_type: GenericOr::Generic("T".to_string()),
         },
         AbstractStructField {
           metadata: None,
           name: "z".to_string(),
-          field_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-            Type::F32,
-          )),
+          field_type: GenericOr::Generic("T".to_string()),
         },
       ],
-      generic_args: vec![],
+      generic_args: vec!["T".to_string()],
       filled_generics: vec![],
       abstract_ancestor: None,
     },
     AbstractStruct {
-      name: "vec4f".to_string(),
+      name: "vec4".to_string(),
       fields: vec![
         AbstractStructField {
           metadata: None,
           name: "x".to_string(),
-          field_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-            Type::F32,
-          )),
+          field_type: GenericOr::Generic("T".to_string()),
         },
         AbstractStructField {
           metadata: None,
           name: "y".to_string(),
-          field_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-            Type::F32,
-          )),
+          field_type: GenericOr::Generic("T".to_string()),
         },
         AbstractStructField {
           metadata: None,
           name: "z".to_string(),
-          field_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-            Type::F32,
-          )),
+          field_type: GenericOr::Generic("T".to_string()),
         },
         AbstractStructField {
           metadata: None,
           name: "w".to_string(),
-          field_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-            Type::F32,
-          )),
+          field_type: GenericOr::Generic("T".to_string()),
         },
       ],
-      generic_args: vec![],
+      generic_args: vec!["T".to_string()],
       filled_generics: vec![],
       abstract_ancestor: None,
     },
@@ -213,4 +187,4 @@ pub const ASSIGNMENT_OPS: [&'static str; 5] = ["=", "+=", "-=", "*=", "/="];
 pub const INFIX_OPS: [&'static str; 7] = ["==", "||", "&&", "+", "-", "*", "/"];
 
 pub const ABNORMAL_CONSTRUCTOR_STRUCTS: [&'static str; 3] =
-  ["vec2f", "vec3f", "vec4f"];
+  ["vec2", "vec3", "vec4"];

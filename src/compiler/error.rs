@@ -60,6 +60,7 @@ pub enum CompileErrorKind {
   MatchMissingScrutinee,
   MatchMissingArms,
   MatchIncompleteArm,
+  InvalidStructFieldType,
 }
 
 #[derive(Clone, Debug)]

@@ -2,9 +2,13 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::{
   compiler::{
-    error::err, expression::arg_list_and_return_type_from_tynt_tree,
-    functions::AbstractFunctionSignature, metadata::extract_metadata,
-    structs::UntypedStruct, types::TypeState, util::read_type_annotated_name,
+    error::err,
+    expression::arg_list_and_return_type_from_tynt_tree,
+    functions::AbstractFunctionSignature,
+    metadata::extract_metadata,
+    structs::UntypedStruct,
+    types::{AbstractType, TypeState},
+    util::read_type_annotated_name,
   },
   parse::TyntTree,
 };
@@ -140,13 +144,19 @@ impl Program {
                   ))
                 }
               };
-              let (name, type_name) =
+              let (name, type_ast) =
                 read_type_annotated_name(name_and_type_ast)?;
               top_level_vars.push(TopLevelVar {
                 name,
                 metadata,
                 attributes,
-                var_type: Type::from_name(type_name, &structs, &vec![])?,
+                var_type: AbstractType::from_ast(
+                  type_ast,
+                  &structs,
+                  &vec![],
+                  &vec![],
+                )?
+                .concretize(&structs, &vec![])?,
               })
             }
             "def" => {

@@ -18,18 +18,16 @@ pub fn read_leaf(ast: TyntTree) -> CompileResult<String> {
 
 pub fn read_type_annotated_name(
   exp: TyntTree,
-) -> CompileResult<(String, String)> {
+) -> CompileResult<(String, TyntTree)> {
   if let TyntTree::Inner(
     (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
     mut children,
   ) = exp
   {
-    if let TyntTree::Leaf(_, type_name) = children.remove(1) {
-      if let TyntTree::Leaf(_, name) = children.remove(0) {
-        Ok((name, type_name))
-      } else {
-        err(ExpectedTypeAnnotatedName)
-      }
+    let type_ast = children.remove(1);
+    let name_ast = children.remove(0);
+    if let TyntTree::Leaf(_, name) = name_ast {
+      Ok((name, type_ast))
     } else {
       err(ExpectedTypeAnnotatedName)
     }

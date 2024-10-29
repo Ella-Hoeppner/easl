@@ -19,6 +19,7 @@ fn main() {
     "nested_monomorphized_fn",
     "bool_match",
     "int_match",
+    "generic_vec",
   ] {
     println!("compiling {filename}...");
     let tynt_source = fs::read_to_string(&format!("./data/{filename}.tynt"))

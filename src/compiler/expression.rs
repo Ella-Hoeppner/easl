@@ -44,20 +44,39 @@ pub enum Accessor {
   Swizzle(Vec<SwizzleField>),
 }
 
-pub fn swizzle_accessor_typestate(fields: &Vec<SwizzleField>) -> TypeState {
-  let empty_generics = HashMap::new();
-  TypeState::Known(match fields.len() {
-    2 => {
-      Type::Struct(get_builtin_struct("vec2f").fill_generics(&empty_generics))
-    }
-    3 => {
-      Type::Struct(get_builtin_struct("vec3f").fill_generics(&empty_generics))
-    }
-    4 => {
-      Type::Struct(get_builtin_struct("vec4f").fill_generics(&empty_generics))
-    }
+pub fn swizzle_accessor_typestate(
+  accessed_typestate: &TypeState,
+  fields: &Vec<SwizzleField>,
+) -> TypeState {
+  let vec_struct = match fields.len() {
+    2 => get_builtin_struct("vec2"),
+    3 => get_builtin_struct("vec3"),
+    4 => get_builtin_struct("vec4"),
     n => unreachable!("swizzle with {n} elements, expected 2-4"),
-  })
+  };
+  if let TypeState::Known(accessed_type) = accessed_typestate {
+    if let Type::Struct(s) = accessed_type {
+      if &s.name != "vec" {
+        TypeState::Known(Type::Struct(vec_struct.fill_generics_ordered(vec![
+          match &s.fields[0].field_type {
+            TypeState::UnificationVariable(uvar) => {
+              TypeState::UnificationVariable(uvar.clone())
+            }
+            TypeState::Known(inner_type) => {
+              TypeState::Known(inner_type.clone())
+            }
+            _ => panic!("1???? {:?} ", s.fields[0].field_type),
+          },
+        ])))
+      } else {
+        panic!("2???")
+      }
+    } else {
+      panic!("3???")
+    }
+  } else {
+    TypeState::Unknown
+  }
 }
 
 pub fn swizzle_accessed_possibilities(fields: &Vec<SwizzleField>) -> TypeState {
@@ -70,11 +89,13 @@ pub fn swizzle_accessed_possibilities(fields: &Vec<SwizzleField>) -> TypeState {
     })
   });
   TypeState::OneOf(
-    ["vec4f", "vec3f", "vec2f"]
+    ["vec4", "vec3", "vec2"]
       .iter()
       .take(3.min(5 - max_accessed_index))
       .map(|name| {
-        Type::Struct(get_builtin_struct(name).fill_generics(&HashMap::new()))
+        Type::Struct(
+          get_builtin_struct(name).fill_generics_with_unification_variables(),
+        )
       })
       .collect::<Vec<Type>>(),
   )
@@ -748,8 +769,9 @@ impl TypedExp {
           anything_changed
         }
         Accessor::Swizzle(fields) => {
-          let mut anything_changed =
-            self.data.constrain(swizzle_accessor_typestate(fields))?;
+          let mut anything_changed = self
+            .data
+            .constrain(swizzle_accessor_typestate(&subexp.data, fields))?;
           anything_changed |= subexp
             .data
             .constrain(swizzle_accessed_possibilities(fields))?;
@@ -872,7 +894,7 @@ impl TypedExp {
                   subexpression,
                   value_subtree.compile(position),
                   pattern_subtree.compile(position),
-                  &scrutinee_string
+                  scrutinee_string
                 )
               },
             )

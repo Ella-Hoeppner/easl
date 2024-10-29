@@ -98,6 +98,48 @@ impl AbstractType {
       )?))
     })
   }
+  pub fn from_ast(
+    ast: TyntTree,
+    structs: &Vec<AbstractStruct>,
+    generic_args: &Vec<String>,
+    skolems: &Vec<String>,
+  ) -> CompileResult<Self> {
+    match ast {
+      TyntTree::Leaf(_, leaf) => Ok(if generic_args.contains(&leaf) {
+        GenericOr::Generic(leaf)
+      } else {
+        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
+          leaf, structs, skolems,
+        )?))
+      }),
+      TyntTree::Inner(
+        (_, EncloserOrOperator::Encloser(Encloser::Parens)),
+        children,
+      ) => {
+        let mut children_iter = children.into_iter();
+        let generic_struct_name =
+          if let Some(TyntTree::Leaf(_, leaf)) = children_iter.next() {
+            Ok(leaf)
+          } else {
+            err(InvalidStructName)
+          }?;
+        let generic_struct = structs
+          .iter()
+          .find(|s| s.name == generic_struct_name)
+          .ok_or(InvalidFunctionArgumentName)?
+          .clone();
+        let generic_args = children_iter
+          .map(|subtree: TyntTree| {
+            Self::from_ast(subtree, structs, generic_args, skolems)
+          })
+          .collect::<CompileResult<Vec<_>>>()?;
+        Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+          generic_struct.fill_abstract_generics(generic_args),
+        )))
+      }
+      _ => err(InvalidStructFieldType),
+    }
+  }
   pub fn concretize(
     &self,
     structs: &Vec<AbstractStruct>,
