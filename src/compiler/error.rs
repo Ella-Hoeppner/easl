@@ -65,16 +65,16 @@ pub enum CompileErrorKind {
 
 #[derive(Clone, Debug)]
 pub struct CompileError {
-  kind: CompileErrorKind,
+  _kind: CompileErrorKind,
   context: Vec<String>,
-  backtrace: Rc<Backtrace>,
+  _backtrace: Rc<Backtrace>,
 }
 impl CompileError {
   pub fn new(kind: CompileErrorKind) -> Self {
     Self {
-      kind,
+      _kind: kind,
       context: vec![],
-      backtrace: Rc::new(Backtrace::capture()),
+      _backtrace: Rc::new(Backtrace::capture()),
     }
   }
 }

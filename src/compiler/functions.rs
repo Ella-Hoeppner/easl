@@ -54,7 +54,7 @@ impl AbstractFunctionSignature {
       .extract_generic_bindings(&return_type, &mut generic_bindings);
     monomorphized.name =
       self.generic_args.iter().fold(monomorphized.name, |s, arg| {
-        s + "_" + &generic_bindings.get(arg).unwrap().monomorphized_name()
+        s + "_" + &generic_bindings.get(arg).unwrap().compile()
       });
     monomorphized.generic_args = vec![];
     if let FunctionImplementationKind::Composite(monomorphized_fn) =

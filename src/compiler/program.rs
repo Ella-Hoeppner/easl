@@ -18,7 +18,7 @@ use super::{
   error::{CompileErrorKind::*, CompileResult},
   expression::TypedExp,
   functions::{FunctionImplementationKind, TopLevelFunction},
-  types::{Context, Type},
+  types::Context,
   vars::TopLevelVar,
 };
 

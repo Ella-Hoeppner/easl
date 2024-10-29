@@ -53,6 +53,13 @@ impl UntypedStructField {
   }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct UntypedStruct {
+  pub name: String,
+  pub fields: Vec<UntypedStructField>,
+  pub generic_args: Vec<String>,
+}
+
 impl UntypedStruct {
   pub fn from_field_trees(
     name: String,
@@ -86,11 +93,17 @@ impl UntypedStruct {
   }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct UntypedStruct {
-  pub name: String,
-  pub fields: Vec<UntypedStructField>,
-  pub generic_args: Vec<String>,
+pub fn compiled_vec_name(
+  base_struct_name: &str,
+  inner_type: Type,
+) -> Option<String> {
+  match inner_type {
+    Type::F32 => Some("f"),
+    Type::I32 => Some("i"),
+    Type::U32 => Some("u"),
+    _ => None,
+  }
+  .map(|suffix| format!("{base_struct_name}{}", suffix))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -251,17 +264,26 @@ impl AbstractStruct {
         .field_type
         .extract_generic_bindings(field_type, &mut generic_bindings);
     }
-    self.original_ancestor().generic_args.iter().fold(
-      self.name.clone(),
-      |name_so_far, generic_arg_name| {
-        name_so_far
-          + "_"
-          + &generic_bindings
-            .get(generic_arg_name)
-            .unwrap()
-            .monomorphized_name()
-      },
-    )
+
+    let name = &self.name;
+    generic_bindings
+      .get("T")
+      .map(|t| {
+        (name == "vec2" || name == "vec3" || name == "vec4")
+          .then(|| compiled_vec_name(name, t.clone()))
+          .flatten()
+      })
+      .flatten()
+      .unwrap_or_else(|| {
+        self.original_ancestor().generic_args.iter().fold(
+          self.name.clone(),
+          |name_so_far, generic_arg_name| {
+            name_so_far
+              + "_"
+              + &generic_bindings.get(generic_arg_name).unwrap().compile()
+          },
+        )
+      })
   }
   pub fn concretized_name(
     &self,

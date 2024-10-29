@@ -7,7 +7,7 @@ use crate::parse::{Encloser, Operator, TyntTree};
 
 use super::{
   builtins::{built_in_functions, ABNORMAL_CONSTRUCTOR_STRUCTS},
-  error::{err, CompileError, CompileErrorKind::*, CompileResult},
+  error::{err, CompileErrorKind::*, CompileResult},
   functions::{
     AbstractFunctionSignature, FunctionImplementationKind, FunctionSignature,
   },
@@ -216,10 +216,7 @@ impl Type {
   }
   pub fn compatible(&self, other: &Self) -> bool {
     let b = match (self, other) {
-      (Type::Function(a), Type::Function(b)) => {
-        let x = a.compatible(b);
-        x
-      }
+      (Type::Function(a), Type::Function(b)) => a.compatible(b),
       (Type::Struct(a), Type::Struct(b)) => a.compatible(b),
       (a, b) => a == b,
     };
@@ -275,11 +272,13 @@ impl Type {
   }
   pub fn replace_skolems(&mut self, skolems: &Vec<(String, Type)>) {
     if let Type::Skolem(s) = &self {
-      let x = &mut skolems
-        .iter()
-        .find_map(|(skolem_name, t)| (skolem_name == s).then(|| t.clone()))
-        .unwrap();
-      std::mem::swap(self, x)
+      std::mem::swap(
+        self,
+        &mut skolems
+          .iter()
+          .find_map(|(skolem_name, t)| (skolem_name == s).then(|| t.clone()))
+          .unwrap(),
+      )
     } else {
       match self {
         Type::Struct(s) => {
@@ -297,14 +296,6 @@ impl Type {
         }
         _ => {}
       }
-    }
-  }
-  pub fn monomorphized_name(&self) -> String {
-    match self {
-      Type::Skolem(name) => {
-        format!("<{name}>")
-      }
-      other => other.compile(),
     }
   }
 }

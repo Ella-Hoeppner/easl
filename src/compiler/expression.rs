@@ -1,5 +1,5 @@
 use core::fmt::Debug;
-use std::{collections::HashMap, str::pattern::Pattern};
+use std::str::pattern::Pattern;
 
 use crate::{
   compiler::{
@@ -151,7 +151,10 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
 }
 use ExpKind::*;
 
-use super::{functions::FunctionImplementationKind, types::AbstractType};
+use super::{
+  functions::FunctionImplementationKind, structs::compiled_vec_name,
+  types::AbstractType,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ExpressionCompilationPosition {
@@ -1092,7 +1095,26 @@ impl TypedExp {
             }
           {
             match &abstract_signature.implementation {
-              FunctionImplementationKind::Builtin => {}
+              FunctionImplementationKind::Builtin => {
+                std::mem::swap(
+                  f_name,
+                  &mut (f_name == "vec2"
+                    || f_name == "vec3"
+                    || f_name == "vec4")
+                    .then(|| {
+                      if let TypeState::Known(Type::Struct(s)) = &self.data {
+                        compiled_vec_name(
+                          &f_name,
+                          s.fields[0].field_type.unwrap_known(),
+                        )
+                      } else {
+                        unreachable!("")
+                      }
+                    })
+                    .flatten()
+                    .unwrap_or(f_name.clone()),
+                );
+              }
               FunctionImplementationKind::Constructor => {
                 if let Some(abstract_struct) =
                   base_ctx.structs.iter().find(|s| s.name == *f_name)

@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::compiler::structs::{AbstractStructField, TypeOrAbstractStruct};
 
 use super::{
