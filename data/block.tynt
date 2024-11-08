@@ -9,16 +9,16 @@
 
 @vertex
 (defn vertex [in: VertexInput]: VertexOutput
-  (let [a (vec2 (.corner-position in))]
+  (let [a (vec2 (.corner-position in)): (vec2 f32)]
     (let [b (.x a)
           c (.y a)]
       (VertexOutput (vec4 b c 0. 1.)))))
 
 @fragment
 (defn fragment [in: VertexOutput]: @{location 0} (vec4 f32)
-  (vec2 5. 2.)
-  (let [a (vec2 0. 0.)]
+  (vec2 5. 2.): (vec2 f32)
+  (let [a (vec2 0. 0.): (vec2 f32)]
     (block
-      (vec2 0. 0.)
-      (vec3 1. 0. 0.)
-      (vec4 (vec3 0. 0. 0.) (.x a)))))
+      (vec2 0. 0.): (vec2 f32)
+      (vec3 1. 0. 0.): (vec3 f32)
+      (vec4 (vec3 0. 0. 0.): (vec3 f32) (.x a)))))

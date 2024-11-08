@@ -3,6 +3,7 @@ use tynt::compiler::compile_tynt_to_wgsl;
 
 fn main() {
   std::env::set_var("RUST_BACKTRACE", "1");
+  fs::create_dir_all("./out/").expect("Unable to create out directory");
   for filename in [
     "simple_shader",
     "variadic_vec",
@@ -28,12 +29,13 @@ fn main() {
       .expect(&format!("Unable to read {filename}.tynt"));
     match compile_tynt_to_wgsl(&tynt_source) {
       Ok(wgsl) => {
-        fs::create_dir_all("./out/").expect("Unable to create out directory");
         fs::write(&format!("./out/{filename}.wgsl"), wgsl)
           .expect("Unable to write file");
       }
       Err(e) => {
-        panic!("failed to compile tynt source\n{e:#?}");
+        fs::write(&format!("./out/_failure.txt"), format!("{e:#?}"))
+          .expect("Unable to write file");
+        println!("   failed!\n");
       }
     }
   }

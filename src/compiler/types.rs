@@ -187,6 +187,38 @@ impl AbstractType {
       _ => {}
     }
   }
+  pub fn rename_generic(self, old_name: &str, new_name: &str) -> Self {
+    match self {
+      GenericOr::Generic(name) => GenericOr::Generic(if name == old_name {
+        new_name.to_string()
+      } else {
+        name
+      }),
+      GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(mut s)) => {
+        s.generic_args = s
+          .generic_args
+          .into_iter()
+          .map(|name| {
+            if name == old_name {
+              new_name.to_string()
+            } else {
+              name
+            }
+          })
+          .collect();
+        s.fields = s
+          .fields
+          .into_iter()
+          .map(|mut f| {
+            f.field_type = f.field_type.rename_generic(old_name, new_name);
+            f
+          })
+          .collect();
+        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s))
+      }
+      other => other,
+    }
+  }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -339,6 +371,30 @@ pub enum TypeState {
 }
 
 impl TypeState {
+  pub fn is_fully_known(&self) -> bool {
+    self.with_dereferenced(|typestate| {
+      if let TypeState::Known(t) = typestate {
+        match t {
+          Type::Struct(s) => !s
+            .fields
+            .iter()
+            .find(|field| !field.field_type.is_fully_known())
+            .is_some(),
+          Type::Function(function_signature) => {
+            function_signature.arg_types.iter().fold(
+              function_signature.return_type.is_fully_known(),
+              |typed_so_far, arg_type| {
+                typed_so_far && arg_type.is_fully_known()
+              },
+            )
+          }
+          _ => true,
+        }
+      } else {
+        false
+      }
+    })
+  }
   pub fn unwrap_known(&self) -> Type {
     self.with_dereferenced(|typestate| {
       if let TypeState::Known(t) = typestate {
@@ -413,9 +469,12 @@ impl TypeState {
     })
   }
   pub fn constrain(&mut self, mut other: TypeState) -> CompileResult<bool> {
-    self.with_dereferenced_mut(move |this| {
-      other.with_dereferenced_mut(|other| {
-        let changed = match (&this, &other) {
+    if *self == other {
+      return Ok(false);
+    }
+    self.with_dereferenced_mut(move |mut this| {
+      other.with_dereferenced_mut(|mut other| {
+        let changed = match (&mut this, &mut other) {
           (TypeState::UnificationVariable(_), _) => unreachable!(),
           (_, TypeState::UnificationVariable(_)) => unreachable!(),
           (_, TypeState::Unknown) => false,
@@ -423,11 +482,36 @@ impl TypeState {
             std::mem::swap(this, other);
             true
           }
-          (TypeState::Known(current_type), TypeState::Known(new_type)) => {
-            if !current_type.compatible(new_type) {
+          (TypeState::Known(current_type), TypeState::Known(other_type)) => {
+            if !current_type.compatible(&other_type) {
               return err(IncompatibleTypes(this.clone(), other.clone()));
             }
-            false
+            match (current_type, other_type) {
+              (Type::Function(signature), Type::Function(other_signature)) => {
+                let mut changed = signature
+                  .return_type
+                  .constrain(other_signature.return_type.clone())?;
+                for (t, other_t) in signature
+                  .arg_types
+                  .iter_mut()
+                  .zip(other_signature.arg_types.iter_mut())
+                {
+                  changed |= t.constrain(other_t.clone())?;
+                }
+                changed
+              }
+              (Type::Struct(s), Type::Struct(other_s)) => {
+                let mut changed = false;
+                for (t, other_t) in
+                  s.fields.iter_mut().zip(other_s.fields.iter_mut())
+                {
+                  changed |=
+                    t.field_type.constrain(other_t.field_type.clone())?;
+                }
+                changed
+              }
+              _ => false,
+            }
           }
           (
             TypeState::OneOf(possibilities),

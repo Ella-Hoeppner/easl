@@ -7,8 +7,8 @@
 
 (defn inner-rotate [i: i32]: i32
   (let [x (match i
-        0 1
-        1 2
-        2 0
-        _ -1)]
+            0 1
+            1 2
+            2 0
+            _ -1)]
     x))

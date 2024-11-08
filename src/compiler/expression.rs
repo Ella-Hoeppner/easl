@@ -48,8 +48,8 @@ fn parse_number(num_str: &str) -> Option<TypedExp> {
         "i" | "u" => {
           if !contains_decimal {
             return Some(Exp {
-              kind: ExpKind::NumberLiteral(Number::Float(
-                num_str.parse::<f64>().unwrap(),
+              kind: ExpKind::NumberLiteral(Number::Int(
+                num_str.parse::<i64>().unwrap(),
               )),
               data: Known(match suffix {
                 "i" => Type::I32,
@@ -703,7 +703,7 @@ impl TypedExp {
           a
         }),
     };
-    if let Known(_) = self.data {
+    if self.data.is_fully_known() {
       children_untyped
     } else {
       children_untyped.push(self.clone());
@@ -719,12 +719,10 @@ impl TypedExp {
         }
         ctx.constrain_name_type(name, &mut self.data)?
       }
-      NumberLiteral(num) => {
-        self.data.constrain(TypeState::Known(match num {
-          Number::Int(_) => Type::I32,
-          Number::Float(_) => Type::F32,
-        }))?
-      }
+      NumberLiteral(num) => self.data.constrain(match num {
+        Number::Int(_) => TypeState::OneOf(vec![Type::I32, Type::U32]),
+        Number::Float(_) => TypeState::Known(Type::F32),
+      })?,
       BooleanLiteral(_) => self.data.constrain(TypeState::Known(Type::Bool))?,
       Function(arg_names, body) => {
         if let TypeState::Known(f_type) = &mut self.data {
@@ -770,32 +768,22 @@ impl TypedExp {
         } else {
           todo!("I haven't implemented function type inference yet!!!")
         }
-        let replacement_concrete_signature =
-          if let TypeState::Known(f_type) = &mut f.data {
-            if let Type::Function(signature) = f_type {
-              if args.len() == signature.arg_types.len() {
-                anything_changed |=
-                  self.data.mutually_constrain(&mut signature.return_type)?;
-                for (arg, t) in
-                  args.iter_mut().zip(signature.arg_types.iter().cloned())
-                {
-                  anything_changed |= arg.data.constrain(t)?;
-                }
-                None
-              } else {
-                return err(WrongArity);
+        if let TypeState::Known(f_type) = &mut f.data {
+          if let Type::Function(signature) = f_type {
+            if args.len() == signature.arg_types.len() {
+              anything_changed |=
+                self.data.mutually_constrain(&mut signature.return_type)?;
+              for (arg, t) in
+                args.iter_mut().zip(signature.arg_types.iter().cloned())
+              {
+                anything_changed |= arg.data.constrain(t)?;
               }
             } else {
-              return err(AppliedNonFunction);
+              return err(WrongArity);
             }
           } else {
-            None
-          };
-        if let Some(concrete_signature) = replacement_concrete_signature {
-          std::mem::swap(
-            &mut f.data,
-            &mut TypeState::Known(Type::Function(Box::new(concrete_signature))),
-          );
+            return err(AppliedNonFunction);
+          }
         }
         for arg in args.iter_mut() {
           anything_changed |= arg.propagate_types(ctx)?;
@@ -887,7 +875,14 @@ impl TypedExp {
       Wildcard => panic!("compiling wildcard"),
       Name(name) => wrap(compile_word(name)),
       NumberLiteral(num) => wrap(match num {
-        Number::Int(i) => format!("{i}"),
+        Number::Int(i) => format!(
+          "{i}{}",
+          match self.data {
+            Known(Type::I32) => "",
+            Known(Type::U32) => "u",
+            _ => unreachable!(),
+          }
+        ),
         Number::Float(f) => format!("{f}f"),
       }),
       BooleanLiteral(b) => wrap(format!("{b}")),

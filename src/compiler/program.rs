@@ -408,7 +408,7 @@ impl Program {
       }
     }
   }
-  pub fn check_typed_program(self) -> CompileResult<Self> {
+  pub fn check_assignment_validity(self) -> CompileResult<Self> {
     for f in self.global_context.abstract_functions.iter() {
       if let FunctionImplementationKind::Composite(implementation) =
         &f.implementation

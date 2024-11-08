@@ -16,16 +16,9 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* support heterogenous arguments to vector constructors
-  * e.g. `(vec2f 1i 2u)` should work
-  * this will mean each argument to a vec constructor needs an independent generic type, along with the generic type parameterizing the returned vector type
-
 * add aliases, make `vec<n>f` be an alias for `(vec<n> f32)`
   * need the `vec<n>f` constructors work too
   * and `vec<n>i` and `vec<n>u` work too
-
-* make `def` work
-  * should just compile to a const, I guess?
 
 * add typeclasses
   * support generic arguments bound by typeclass
@@ -33,6 +26,12 @@ Feature goals:
     * account for ambiguity of function type variables in type inference
   * core built-in number typeclasses: Add, Subtract, Negate, Multiply, Divide
     * these will be automatically defined on the built in number + vector types
+
+* make vec constructor arguments be bound by an `(Into T)` typeclass that ensures the arg can be converted into the type of the type contained within the vector
+  * right now, because we need to be able to support `(vec2 1i 2u)` cases like `(vec2 1i (vec4 1i))` don't give good errors, since there's nothing preventing the latter arg type variable from being filled in with `(vec4 ...)`
+
+* make `def` work
+  * should just compile to a const, I guess?
 
 * loops
   * `for`
