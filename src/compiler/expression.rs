@@ -841,6 +841,7 @@ impl TypedExp {
       }
       Match(scrutinee, arms) => {
         let mut anything_changed = false;
+        anything_changed |= scrutinee.propagate_types(ctx)?;
         for (case, value) in arms.iter_mut() {
           anything_changed |= case.propagate_types(ctx)?;
           anything_changed |= value.propagate_types(ctx)?;
