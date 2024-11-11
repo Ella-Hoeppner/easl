@@ -1,16 +1,16 @@
-@{group 0 binding 0} (var [uniform] dimensions: (vec2 f32))
+@{group 0 binding 0} (var [uniform] dimensions: vec2f)
 @{group 0 binding 1} (var [uniform] time: f32)
 
 (struct VertexInput
-        @{location 0} corner-position: (vec2 f32))
+        @{location 0} corner-position: vec2f)
 
 (struct VertexOutput
-        @{builtin position} vertex-pos: (vec4 f32))
+        @{builtin position} vertex-pos: vec4f)
 
 @vertex
 (defn vertex [in: VertexInput]: VertexOutput
   (VertexOutput (vec4 (.corner-position in) 0. 1.)))
 
 @fragment
-(defn fragment [in: VertexOutput]: @{location 0} (vec4 f32)
-  (vec4 (vec3 0. 0. 0.): (vec3 f32) (.x (vec2 0. 0.): (vec2 f32))))
+(defn fragment [in: VertexOutput]: @{location 0} vec4f
+  (vec4 (vec3 0. 0. 0.): vec3f (.x (vec2 0. 0.): vec2f)))

@@ -1,2 +1,2 @@
-(defn f [x: f32]: (vec4 f32)
+(defn f [x: f32]: vec4f
   (vec4f x))

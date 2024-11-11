@@ -16,10 +16,6 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* add aliases, make `vec<n>f` be an alias for `(vec<n> f32)`
-  * need the `vec<n>f` constructors work too
-  * and `vec<n>i` and `vec<n>u` should work too
-
 * add typeclasses
   * support generic arguments bound by typeclass
     * monomorphization

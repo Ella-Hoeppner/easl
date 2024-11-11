@@ -6,7 +6,10 @@ use sse::syntax::EncloserOrOperator;
 use crate::parse::{Encloser, Operator, TyntTree};
 
 use super::{
-  builtins::{built_in_functions, ABNORMAL_CONSTRUCTOR_STRUCTS},
+  builtins::{
+    built_in_functions, built_in_structs, built_in_type_aliases,
+    ABNORMAL_CONSTRUCTOR_STRUCTS,
+  },
   error::{err, CompileErrorKind::*, CompileResult},
   functions::{
     AbstractFunctionSignature, FunctionImplementationKind, FunctionSignature,
@@ -42,6 +45,7 @@ impl AbstractType {
   pub fn from_tynt_tree(
     tree: TyntTree,
     structs: &Vec<AbstractStruct>,
+    aliases: &Vec<(String, AbstractStruct)>,
     generic_args: &Vec<String>,
     skolems: &Vec<String>,
   ) -> CompileResult<Self> {
@@ -49,6 +53,7 @@ impl AbstractType {
       TyntTree::Leaf(_, type_name) => Ok(Self::from_name(
         type_name.clone(),
         structs,
+        aliases,
         generic_args,
         skolems,
       )?),
@@ -64,6 +69,7 @@ impl AbstractType {
                 Ok(Self::from_tynt_tree(
                   t.clone(),
                   structs,
+                  aliases,
                   generic_args,
                   skolems,
                 )?)
@@ -87,6 +93,7 @@ impl AbstractType {
   pub fn from_name(
     name: String,
     structs: &Vec<AbstractStruct>,
+    aliases: &Vec<(String, AbstractStruct)>,
     generic_args: &Vec<String>,
     skolems: &Vec<String>,
   ) -> CompileResult<Self> {
@@ -94,13 +101,14 @@ impl AbstractType {
       GenericOr::Generic(name)
     } else {
       GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
-        name, structs, skolems,
+        name, structs, aliases, skolems,
       )?))
     })
   }
   pub fn from_ast(
     ast: TyntTree,
     structs: &Vec<AbstractStruct>,
+    aliases: &Vec<(String, AbstractStruct)>,
     generic_args: &Vec<String>,
     skolems: &Vec<String>,
   ) -> CompileResult<Self> {
@@ -109,7 +117,7 @@ impl AbstractType {
         GenericOr::Generic(leaf)
       } else {
         GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
-          leaf, structs, skolems,
+          leaf, structs, aliases, skolems,
         )?))
       }),
       TyntTree::Inner(
@@ -130,7 +138,7 @@ impl AbstractType {
           .clone();
         let generic_args = children_iter
           .map(|subtree: TyntTree| {
-            Self::from_ast(subtree, structs, generic_args, skolems)
+            Self::from_ast(subtree, structs, aliases, generic_args, skolems)
           })
           .collect::<CompileResult<Vec<_>>>()?;
         Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
@@ -236,10 +244,17 @@ impl Type {
   pub fn from_tynt_tree(
     tree: TyntTree,
     structs: &Vec<AbstractStruct>,
+    aliases: &Vec<(String, AbstractStruct)>,
     skolems: &Vec<String>,
   ) -> CompileResult<Self> {
     if let AbstractType::NonGeneric(TypeOrAbstractStruct::Type(t)) =
-      AbstractType::from_tynt_tree(tree.clone(), structs, &vec![], skolems)?
+      AbstractType::from_tynt_tree(
+        tree.clone(),
+        structs,
+        aliases,
+        &vec![],
+        skolems,
+      )?
     {
       Ok(t)
     } else {
@@ -267,6 +282,7 @@ impl Type {
   pub fn from_name(
     name: String,
     structs: &Vec<AbstractStruct>,
+    type_aliases: &Vec<(String, AbstractStruct)>,
     skolems: &Vec<String>,
   ) -> CompileResult<Self> {
     use Type::*;
@@ -279,6 +295,11 @@ impl Type {
         if skolems.contains(&name) {
           Skolem(name)
         } else if let Some(s) = structs.iter().find(|s| s.name == name) {
+          Struct(s.clone().fill_generics_with_unification_variables())
+        } else if let Some(s) = type_aliases
+          .iter()
+          .find_map(|(alias, s)| (*alias == name).then(|| s))
+        {
           Struct(s.clone().fill_generics_with_unification_variables())
         } else {
           return err(UnrecognizedTypeName(name));
@@ -351,13 +372,16 @@ pub fn extract_type_annotation_ast(
 pub fn extract_type_annotation(
   exp: TyntTree,
   structs: &Vec<AbstractStruct>,
+  aliases: &Vec<(String, AbstractStruct)>,
   generic_args: &Vec<String>,
   skolems: &Vec<String>,
 ) -> CompileResult<(Option<AbstractType>, TyntTree)> {
   let (t, value) = extract_type_annotation_ast(exp)?;
   Ok((
-    t.map(|t| AbstractType::from_tynt_tree(t, structs, generic_args, skolems))
-      .map_or(Ok(None), |v| v.map(Some))?,
+    t.map(|t| {
+      AbstractType::from_tynt_tree(t, structs, aliases, generic_args, skolems)
+    })
+    .map_or(Ok(None), |v| v.map(Some))?,
     value,
   ))
 }
@@ -666,24 +690,33 @@ pub struct Context {
   pub structs: Vec<AbstractStruct>,
   pub variables: HashMap<String, Vec<Variable>>,
   pub abstract_functions: Vec<AbstractFunctionSignature>,
+  pub type_aliases: Vec<(String, AbstractStruct)>,
 }
 
 impl Context {
-  pub fn empty() -> Self {
+  fn empty() -> Self {
     Self {
       structs: vec![],
       variables: HashMap::new(),
       abstract_functions: vec![],
+      type_aliases: vec![],
     }
   }
   pub fn default_global() -> Self {
-    Self {
-      structs: vec![],
-      variables: HashMap::new(),
-      abstract_functions: built_in_functions(),
-    }
+    Self::empty()
+      .with_functions(built_in_functions())
+      .with_structs(built_in_structs())
+      .with_type_aliases(built_in_type_aliases())
   }
-  pub fn with_structs(mut self, structs: Vec<AbstractStruct>) -> Self {
+  pub fn with_functions(
+    mut self,
+    mut functions: Vec<AbstractFunctionSignature>,
+  ) -> Self {
+    self.abstract_functions.append(&mut functions);
+    self.structs.dedup();
+    self
+  }
+  pub fn with_structs(mut self, mut structs: Vec<AbstractStruct>) -> Self {
     for s in &structs {
       if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&s.name.as_str()) {
         self.add_abstract_function(AbstractFunctionSignature {
@@ -701,7 +734,15 @@ impl Context {
         });
       }
     }
-    self.structs = structs.into();
+    self.structs.append(&mut structs);
+    self.structs.dedup();
+    self
+  }
+  pub fn with_type_aliases(
+    mut self,
+    mut aliases: Vec<(String, AbstractStruct)>,
+  ) -> Self {
+    self.type_aliases.append(&mut aliases);
     self
   }
   pub fn add_monomorphized_struct(&mut self, s: AbstractStruct) {

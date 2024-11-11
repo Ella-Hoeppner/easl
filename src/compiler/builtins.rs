@@ -61,77 +61,126 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
     .collect()
 }
 
+pub fn vec2() -> AbstractStruct {
+  AbstractStruct {
+    name: "vec2".to_string(),
+    fields: vec![
+      AbstractStructField {
+        metadata: None,
+        name: "x".to_string(),
+        field_type: GenericOr::Generic("T".to_string()),
+      },
+      AbstractStructField {
+        metadata: None,
+        name: "y".to_string(),
+        field_type: GenericOr::Generic("T".to_string()),
+      },
+    ],
+    generic_args: vec!["T".to_string()],
+    filled_generics: vec![],
+    abstract_ancestor: None,
+  }
+}
+
+pub fn vec3() -> AbstractStruct {
+  AbstractStruct {
+    name: "vec3".to_string(),
+    fields: vec![
+      AbstractStructField {
+        metadata: None,
+        name: "x".to_string(),
+        field_type: GenericOr::Generic("T".to_string()),
+      },
+      AbstractStructField {
+        metadata: None,
+        name: "y".to_string(),
+        field_type: GenericOr::Generic("T".to_string()),
+      },
+      AbstractStructField {
+        metadata: None,
+        name: "z".to_string(),
+        field_type: GenericOr::Generic("T".to_string()),
+      },
+    ],
+    generic_args: vec!["T".to_string()],
+    filled_generics: vec![],
+    abstract_ancestor: None,
+  }
+}
+
+pub fn vec4() -> AbstractStruct {
+  AbstractStruct {
+    name: "vec4".to_string(),
+    fields: vec![
+      AbstractStructField {
+        metadata: None,
+        name: "x".to_string(),
+        field_type: GenericOr::Generic("T".to_string()),
+      },
+      AbstractStructField {
+        metadata: None,
+        name: "y".to_string(),
+        field_type: GenericOr::Generic("T".to_string()),
+      },
+      AbstractStructField {
+        metadata: None,
+        name: "z".to_string(),
+        field_type: GenericOr::Generic("T".to_string()),
+      },
+      AbstractStructField {
+        metadata: None,
+        name: "w".to_string(),
+        field_type: GenericOr::Generic("T".to_string()),
+      },
+    ],
+    generic_args: vec!["T".to_string()],
+    filled_generics: vec![],
+    abstract_ancestor: None,
+  }
+}
+
 pub fn built_in_structs() -> Vec<AbstractStruct> {
+  vec![vec2(), vec3(), vec4()]
+}
+
+pub fn built_in_type_aliases() -> Vec<(String, AbstractStruct)> {
   vec![
-    AbstractStruct {
-      name: "vec2".to_string(),
-      fields: vec![
-        AbstractStructField {
-          metadata: None,
-          name: "x".to_string(),
-          field_type: GenericOr::Generic("T".to_string()),
-        },
-        AbstractStructField {
-          metadata: None,
-          name: "y".to_string(),
-          field_type: GenericOr::Generic("T".to_string()),
-        },
-      ],
-      generic_args: vec!["T".to_string()],
-      filled_generics: vec![],
-      abstract_ancestor: None,
-    },
-    AbstractStruct {
-      name: "vec3".to_string(),
-      fields: vec![
-        AbstractStructField {
-          metadata: None,
-          name: "x".to_string(),
-          field_type: GenericOr::Generic("T".to_string()),
-        },
-        AbstractStructField {
-          metadata: None,
-          name: "y".to_string(),
-          field_type: GenericOr::Generic("T".to_string()),
-        },
-        AbstractStructField {
-          metadata: None,
-          name: "z".to_string(),
-          field_type: GenericOr::Generic("T".to_string()),
-        },
-      ],
-      generic_args: vec!["T".to_string()],
-      filled_generics: vec![],
-      abstract_ancestor: None,
-    },
-    AbstractStruct {
-      name: "vec4".to_string(),
-      fields: vec![
-        AbstractStructField {
-          metadata: None,
-          name: "x".to_string(),
-          field_type: GenericOr::Generic("T".to_string()),
-        },
-        AbstractStructField {
-          metadata: None,
-          name: "y".to_string(),
-          field_type: GenericOr::Generic("T".to_string()),
-        },
-        AbstractStructField {
-          metadata: None,
-          name: "z".to_string(),
-          field_type: GenericOr::Generic("T".to_string()),
-        },
-        AbstractStructField {
-          metadata: None,
-          name: "w".to_string(),
-          field_type: GenericOr::Generic("T".to_string()),
-        },
-      ],
-      generic_args: vec!["T".to_string()],
-      filled_generics: vec![],
-      abstract_ancestor: None,
-    },
+    (
+      "vec2f".to_string(),
+      vec2().generate_monomorphized(vec![Type::F32]).unwrap(),
+    ),
+    (
+      "vec3f".to_string(),
+      vec3().generate_monomorphized(vec![Type::F32]).unwrap(),
+    ),
+    (
+      "vec4f".to_string(),
+      vec4().generate_monomorphized(vec![Type::F32]).unwrap(),
+    ),
+    (
+      "vec2i".to_string(),
+      vec2().generate_monomorphized(vec![Type::I32]).unwrap(),
+    ),
+    (
+      "vec3i".to_string(),
+      vec3().generate_monomorphized(vec![Type::I32]).unwrap(),
+    ),
+    (
+      "vec4i".to_string(),
+      vec4().generate_monomorphized(vec![Type::I32]).unwrap(),
+    ),
+    (
+      "vec2u".to_string(),
+      vec2().generate_monomorphized(vec![Type::U32]).unwrap(),
+    ),
+    (
+      "vec3u".to_string(),
+      vec3().generate_monomorphized(vec![Type::U32]).unwrap(),
+    ),
+    (
+      "vec4u".to_string(),
+      vec4().generate_monomorphized(vec![Type::U32]).unwrap(),
+    ),
   ]
 }
 

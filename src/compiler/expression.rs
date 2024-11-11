@@ -231,6 +231,7 @@ pub type TypedExp = Exp<TypeState>;
 pub fn arg_list_and_return_type_from_tynt_tree(
   tree: TyntTree,
   structs: &Vec<AbstractStruct>,
+  aliases: &Vec<(String, AbstractStruct)>,
   generic_args: &Vec<String>,
 ) -> CompileResult<(
   Vec<String>,
@@ -252,6 +253,7 @@ pub fn arg_list_and_return_type_from_tynt_tree(
     let return_type = AbstractType::from_tynt_tree(
       return_type_ast,
       structs,
+      aliases,
       generic_args,
       &vec![],
     )?;
@@ -268,6 +270,7 @@ pub fn arg_list_and_return_type_from_tynt_tree(
           let t = AbstractType::from_tynt_tree(
             t_ast,
             structs,
+            aliases,
             generic_args,
             &vec![],
           )?;
@@ -309,6 +312,7 @@ impl TypedExp {
     arg_names: Vec<String>,
     arg_types: Vec<TypeState>,
     structs: &Vec<AbstractStruct>,
+    aliases: &Vec<(String, AbstractStruct)>,
     skolems: &Vec<String>,
   ) -> CompileResult<Self> {
     let mut body_exps = body_trees
@@ -317,6 +321,7 @@ impl TypedExp {
         Self::try_from_tynt_tree(
           t,
           structs,
+          aliases,
           skolems,
           SyntaxTreeContext::Default,
         )
@@ -342,6 +347,7 @@ impl TypedExp {
   pub fn try_from_tynt_tree(
     tree: TyntTree,
     structs: &Vec<AbstractStruct>,
+    aliases: &Vec<(String, AbstractStruct)>,
     skolems: &Vec<String>,
     ctx: SyntaxTreeContext,
   ) -> CompileResult<Self> {
@@ -391,6 +397,7 @@ impl TypedExp {
                             Box::new(Self::try_from_tynt_tree(
                               children_iter.next().unwrap(),
                               structs,
+                              aliases,
                               skolems,
                               ctx,
                             )?),
@@ -413,6 +420,7 @@ impl TypedExp {
                               .next()
                               .ok_or(CompileError::from(InvalidFunction))?,
                             structs,
+                            aliases,
                             &vec![],
                           )?;
                           Some(Self::function_from_body_tree(
@@ -430,6 +438,7 @@ impl TypedExp {
                               })
                               .collect::<CompileResult<Vec<TypeState>>>()?,
                             structs,
+                            aliases,
                             skolems,
                           )?)
                         }
@@ -442,7 +451,7 @@ impl TypedExp {
                             .clone()
                             .map(|child| {
                               Self::try_from_tynt_tree(
-                                child, structs, skolems, ctx,
+                                child, structs, aliases, skolems, ctx,
                               )
                             })
                             .collect::<CompileResult<Vec<Self>>>()?;
@@ -494,7 +503,7 @@ impl TypedExp {
                                       }
                                     },
                                     Self::try_from_tynt_tree(
-                                      value_ast, structs, skolems, ctx,
+                                      value_ast, structs, aliases, skolems, ctx,
                                     )?,
                                   ));
                                 } else {
@@ -523,7 +532,7 @@ impl TypedExp {
                             .clone()
                             .map(|child| {
                               Self::try_from_tynt_tree(
-                                child, structs, skolems, ctx,
+                                child, structs, aliases, skolems, ctx,
                               )
                             })
                             .collect::<CompileResult<Vec<Self>>>()?;
@@ -538,6 +547,7 @@ impl TypedExp {
                               .next()
                               .ok_or(MatchMissingScrutinee)?,
                             structs,
+                            aliases,
                             skolems,
                             ctx,
                           )?;
@@ -550,12 +560,14 @@ impl TypedExp {
                               Self::try_from_tynt_tree(
                                 pattern_subtree,
                                 structs,
+                                aliases,
                                 skolems,
                                 SyntaxTreeContext::MatchPattern,
                               )?,
                               Self::try_from_tynt_tree(
                                 value_subtree,
                                 structs,
+                                aliases,
                                 skolems,
                                 ctx,
                               )?,
@@ -580,12 +592,15 @@ impl TypedExp {
                     Box::new(Self::try_from_tynt_tree(
                       first_child,
                       structs,
+                      aliases,
                       skolems,
                       ctx,
                     )?),
                     children_iter
                       .map(|arg| {
-                        Self::try_from_tynt_tree(arg, structs, skolems, ctx)
+                        Self::try_from_tynt_tree(
+                          arg, structs, aliases, skolems, ctx,
+                        )
                       })
                       .collect::<CompileResult<_>>()?,
                   ),
@@ -606,13 +621,14 @@ impl TypedExp {
               let mut exp = Self::try_from_tynt_tree(
                 children_iter.next().unwrap(),
                 structs,
+                aliases,
                 skolems,
                 ctx,
               )?;
               exp.data =
                 TypeState::Known(match children_iter.next().unwrap() {
                   TyntTree::Leaf(_, type_name) => {
-                    Type::from_name(type_name, structs, skolems)?
+                    Type::from_name(type_name, structs, aliases, skolems)?
                   }
                   TyntTree::Inner(
                     (_, Encloser(Parens)),
@@ -632,6 +648,7 @@ impl TypedExp {
                               AbstractType::from_tynt_tree(
                                 signature_arg,
                                 structs,
+                                aliases,
                                 &vec![],
                                 skolems,
                               )?

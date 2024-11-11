@@ -2,7 +2,7 @@
         first: T
         second: T)
 
-(defn f [a: f32]: (vec2 f32)
+(defn f [a: f32]: vec2f
   (let [two (TwoOf a a)]
     (vec2 (.first two)
           (.second two))))

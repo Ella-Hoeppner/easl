@@ -37,6 +37,7 @@ impl UntypedStructField {
   pub fn assign_type(
     self,
     structs: &Vec<AbstractStruct>,
+    aliases: &Vec<(String, AbstractStruct)>,
     generic_args: &Vec<String>,
     skolems: &Vec<String>,
   ) -> CompileResult<AbstractStructField> {
@@ -46,6 +47,7 @@ impl UntypedStructField {
       field_type: GenericOr::from_ast(
         self.type_ast,
         structs,
+        aliases,
         generic_args,
         skolems,
       )?,
@@ -78,13 +80,16 @@ impl UntypedStruct {
   pub fn assign_types(
     self,
     structs: &Vec<AbstractStruct>,
+    aliases: &Vec<(String, AbstractStruct)>,
   ) -> CompileResult<AbstractStruct> {
     Ok(AbstractStruct {
       name: self.name,
       fields: self
         .fields
         .into_iter()
-        .map(|field| field.assign_type(structs, &self.generic_args, &vec![]))
+        .map(|field| {
+          field.assign_type(structs, aliases, &self.generic_args, &vec![])
+        })
         .collect::<CompileResult<Vec<AbstractStructField>>>()?,
       generic_args: self.generic_args.clone(),
       filled_generics: vec![],

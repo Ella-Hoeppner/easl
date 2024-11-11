@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::{
-  builtins::built_in_structs,
+  builtins::{built_in_structs, built_in_type_aliases},
   error::{CompileErrorKind::*, CompileResult},
   expression::TypedExp,
   functions::{FunctionImplementationKind, TopLevelFunction},
@@ -94,7 +94,8 @@ impl Program {
     // todo! in order for this to reliably work when structs contain one
     // another, I need to topologically sort untyped_structs before this loop
     while let Some(untyped_struct) = untyped_structs.pop() {
-      structs.push(untyped_struct.assign_types(&structs)?);
+      structs
+        .push(untyped_struct.assign_types(&structs, &built_in_type_aliases())?);
     }
     let mut global_context =
       Context::default_global().with_structs(structs.clone());
@@ -153,6 +154,7 @@ impl Program {
                 var_type: AbstractType::from_ast(
                   type_ast,
                   &structs,
+                  &global_context.type_aliases,
                   &vec![],
                   &vec![],
                 )?
@@ -309,6 +311,7 @@ impl Program {
               ) = arg_list_and_return_type_from_tynt_tree(
                 arg_list_ast,
                 &structs,
+                &global_context.type_aliases,
                 &generic_args,
               )?;
               let implementation = FunctionImplementationKind::Composite(
@@ -331,6 +334,7 @@ impl Program {
                       })
                       .collect::<CompileResult<Vec<TypeState>>>()?,
                     &structs,
+                    &global_context.type_aliases,
                     &generic_args,
                   )?,
                 })),
@@ -422,7 +426,7 @@ impl Program {
     Ok(self)
   }
   pub fn monomorphize(mut self) -> CompileResult<Self> {
-    let mut monomorphized_ctx = Context::empty();
+    let mut monomorphized_ctx = Context::default_global();
     for f in self.global_context.abstract_functions.iter() {
       if f.generic_args.is_empty() {
         if let FunctionImplementationKind::Composite(implementation) =
