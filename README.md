@@ -16,15 +16,17 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* add typeclasses
-  * support generic arguments bound by typeclass
-    * monomorphization
-    * account for ambiguity of function type variables in type inference
-  * core built-in number typeclasses: Add, Subtract, Negate, Multiply, Divide
-    * these will be automatically defined on the built in number + vector types
+* add comments
+  * both expression-level comments with `#_` and line-level comments with `;`
 
-* make vec constructor arguments be bound by an `(Into T)` typeclass that ensures the arg can be converted into the type of the type contained within the vector
-  * right now, because we need to be able to support `(vec2 1i 2u)` cases like `(vec2 1i (vec4 1i))` don't give good errors, since there's nothing preventing the latter arg type variable from being filled in with `(vec4 ...)`
+* support declaring custom type constraints
+  * each constraint is just defined by a function
+  * `(constraint T: Add (fn + [a: T b: T]: T))`
+  * `(constraint Add (fn + [a: _ b: _]: _))`
+  * `(constraint Add (defn + [a: _ b: _]: _))`
+
+* restrict vec constructor with an `(Into T)` constraint that ensures the arg can be converted into the type of the type contained within the vector
+  * right now, because we need to be able to support `(vec2 1i 2u)`, cases like `(vec2 1i (vec4 1i))` don't give good errors, since the constructor just looks like `(vec2 T1 T2)` and there's nothing preventing `T2` from being filled in with `vec4`
 
 * make `def` work
   * should just compile to a const, I guess?
@@ -50,17 +52,23 @@ Feature goals:
   * add typeclass combination aliases, e.g. Arithmetic as a combination of Add, Subtract, Negate, Multiply, Divide
     * Arithmetic should be built-in, but should also support user-defined aliases
 
+
+* write a bunch of tests
+  * the current shaders can be converted into tests, but there should also be test cases for invalid programs that ensure the right kinds of errors are returned
+
 * add source tracing and helpful error messages for all compilation errors
 
 ### extra features, once core language is solid
+* support arrays
+
 * support higher-order functions
   * any invocation of one of these functions will need to have that argument inlined
     * for now there can be a restriction that the values for these arguments must always be constant, support non-constant fn args via dynamic dispatch later
 
-* Support anonymous structs
+* support anonymous structs/structural
   * each anonymous struct compiles to a concrete struct with a name derived from its field and types
 
-* Support tuples
+* support tuples
   * compile to structs
 
 * support impl'ing typeclasses on types

@@ -49,6 +49,7 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
       generic_args: (0..nums.len())
         .map(|i| format!("T{i}"))
         .chain(std::iter::once("T".to_string()))
+        .map(|name| (name, vec![]))
         .collect(),
       arg_types: nums
         .into_iter()
@@ -207,7 +208,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
     },
     AbstractFunctionSignature {
       name: "==".to_string(),
-      generic_args: vec!["T".to_string()],
+      generic_args: vec![("T".to_string(), vec![])],
       arg_types: vec![
         GenericOr::Generic("T".to_string()),
         GenericOr::Generic("T".to_string()),
@@ -219,7 +220,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
     },
     AbstractFunctionSignature {
       name: "=".to_string(),
-      generic_args: vec!["T".to_string()],
+      generic_args: vec![("T".to_string(), vec![])],
       arg_types: vec![
         GenericOr::Generic("T".to_string()),
         GenericOr::Generic("T".to_string()),

@@ -6,7 +6,7 @@ use crate::parse::TyntTree;
 use super::{
   expression::TypedExp,
   metadata::Metadata,
-  types::{Type, TypeState},
+  types::{Type, TypeConstraint, TypeState},
 };
 
 #[derive(Clone, Debug)]
@@ -61,6 +61,8 @@ pub enum CompileErrorKind {
   MatchMissingArms,
   MatchIncompleteArm,
   InvalidStructFieldType,
+  InvalidTypeBound,
+  UnsatisfiedTypeBound(TypeConstraint),
 }
 
 #[derive(Clone, Debug)]

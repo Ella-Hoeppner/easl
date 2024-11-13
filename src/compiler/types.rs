@@ -3,7 +3,10 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use sse::syntax::EncloserOrOperator;
 
-use crate::parse::{Encloser, Operator, TyntTree};
+use crate::{
+  compiler::error::CompileError,
+  parse::{Encloser, Operator, TyntTree},
+};
 
 use super::{
   builtins::{
@@ -241,6 +244,14 @@ pub enum Type {
   Skolem(String),
 }
 impl Type {
+  pub fn satisfies_bounds(&self, constraint: &TypeConstraint) -> bool {
+    match constraint.name.as_str() {
+      "Scalar" => {
+        *self == Type::I32 || *self == Type::F32 || *self == Type::U32
+      }
+      other => todo!(),
+    }
+  }
   pub fn from_tynt_tree(
     tree: TyntTree,
     structs: &Vec<AbstractStruct>,
@@ -685,6 +696,90 @@ impl Variable {
   }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeConstraint {
+  name: String,
+  args: Vec<AbstractType>,
+}
+
+pub fn parse_type_bound(
+  ast: TyntTree,
+  structs: &Vec<AbstractStruct>,
+  aliases: &Vec<(String, AbstractStruct)>,
+  generic_args: &Vec<String>,
+) -> CompileResult<TypeConstraint> {
+  match ast {
+    TyntTree::Leaf(_, name) => Ok(TypeConstraint { name, args: vec![] }),
+    TyntTree::Inner(
+      (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
+      children,
+    ) => {
+      let mut children_iter = children.into_iter();
+      let name = if let TyntTree::Leaf(_, name) = children_iter
+        .next()
+        .ok_or(CompileError::new(InvalidTypeBound))?
+      {
+        name
+      } else {
+        return err(InvalidTypeBound);
+      };
+      let args = children_iter
+        .map(|child_ast| {
+          AbstractType::from_ast(
+            child_ast,
+            structs,
+            aliases,
+            generic_args,
+            &vec![],
+          )
+        })
+        .collect::<CompileResult<Vec<AbstractType>>>()?;
+      Ok(TypeConstraint { name, args })
+    }
+    _ => err(InvalidTypeBound),
+  }
+}
+
+pub fn parse_generic_argument(
+  ast: TyntTree,
+  structs: &Vec<AbstractStruct>,
+  aliases: &Vec<(String, AbstractStruct)>,
+  generic_args: &Vec<String>,
+) -> CompileResult<(String, Vec<TypeConstraint>)> {
+  match ast {
+    TyntTree::Leaf(_, generic_name) => Ok((generic_name, vec![])),
+    TyntTree::Inner(
+      (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
+      mut children,
+    ) => {
+      let bounds_tree = children.remove(1);
+      if let TyntTree::Leaf(_, generic_name) = children.remove(0) {
+        match bounds_tree {
+          TyntTree::Inner(
+            (_, EncloserOrOperator::Encloser(Encloser::Square)),
+            bound_children,
+          ) => Ok((
+            generic_name,
+            bound_children
+              .into_iter()
+              .map(|child_ast| {
+                parse_type_bound(child_ast, structs, aliases, generic_args)
+              })
+              .collect::<CompileResult<_>>()?,
+          )),
+          other => Ok((
+            generic_name,
+            vec![parse_type_bound(other, structs, aliases, generic_args)?],
+          )),
+        }
+      } else {
+        err(InvalidDefn("Invalid generic name".to_string()))
+      }
+    }
+    _ => err(InvalidDefn("Invalid generic name".to_string())),
+  }
+}
+
 #[derive(Debug, Clone)]
 pub struct Context {
   pub structs: Vec<AbstractStruct>,
@@ -721,7 +816,11 @@ impl Context {
       if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&s.name.as_str()) {
         self.add_abstract_function(AbstractFunctionSignature {
           name: s.name.clone(),
-          generic_args: s.generic_args.clone(),
+          generic_args: s
+            .generic_args
+            .iter()
+            .map(|name| (name.clone(), vec![]))
+            .collect(),
           arg_types: s
             .fields
             .iter()

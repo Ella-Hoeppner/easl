@@ -215,8 +215,9 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
 use ExpKind::*;
 
 use super::{
-  functions::FunctionImplementationKind, structs::compiled_vec_name,
-  types::AbstractType,
+  functions::FunctionImplementationKind,
+  structs::compiled_vec_name,
+  types::{AbstractType, TypeConstraint},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]

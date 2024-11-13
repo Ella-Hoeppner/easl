@@ -7,7 +7,7 @@ use super::{
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
   structs::TypeOrAbstractStruct,
-  types::{Context, GenericOr, Type, TypeState},
+  types::{AbstractType, Context, GenericOr, Type, TypeConstraint, TypeState},
   util::indent,
 };
 
@@ -29,7 +29,7 @@ pub enum FunctionImplementationKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractFunctionSignature {
   pub name: String,
-  pub generic_args: Vec<String>,
+  pub generic_args: Vec<(String, Vec<TypeConstraint>)>,
   pub arg_types: Vec<GenericOr<TypeOrAbstractStruct>>,
   pub return_type: GenericOr<TypeOrAbstractStruct>,
   pub implementation: FunctionImplementationKind,
@@ -52,10 +52,20 @@ impl AbstractFunctionSignature {
     self
       .return_type
       .extract_generic_bindings(&return_type, &mut generic_bindings);
-    monomorphized.name =
-      self.generic_args.iter().fold(monomorphized.name, |s, arg| {
-        s + "_" + &generic_bindings.get(arg).unwrap().compile()
-      });
+    monomorphized.name = self.generic_args.iter().fold(
+      Ok(monomorphized.name),
+      |full_name: CompileResult<String>, (arg, bounds)| {
+        let generic_type = generic_bindings.get(arg).unwrap();
+        if let Some(unsatisfied_bound) = bounds
+          .iter()
+          .find(|constraint| !generic_type.satisfies_bounds(constraint))
+        {
+          err(UnsatisfiedTypeBound(unsatisfied_bound.clone()))
+        } else {
+          full_name.map(|full_name| full_name + "_" + &generic_type.compile())
+        }
+      },
+    )?;
     monomorphized.generic_args = vec![];
     if let FunctionImplementationKind::Composite(monomorphized_fn) =
       &mut monomorphized.implementation
@@ -77,7 +87,9 @@ impl AbstractFunctionSignature {
     let generic_variables: HashMap<String, TypeState> = self
       .generic_args
       .iter()
-      .map(|name| (name.clone(), TypeState::fresh_unification_variable()))
+      .map(|(name, _bounds)| {
+        (name.clone(), TypeState::fresh_unification_variable())
+      })
       .collect();
     FunctionSignature {
       abstract_ancestor: Some(self.clone()),

@@ -23,6 +23,7 @@ fn main() {
     "generic_vec",
     "heterogenous_vec_constructor",
     //"specialized_vec_constructor",
+    "generic_constraint",
   ] {
     println!("compiling {filename}...");
     let tynt_source = fs::read_to_string(&format!("./data/{filename}.tynt"))

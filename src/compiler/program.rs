@@ -7,7 +7,7 @@ use crate::{
     functions::AbstractFunctionSignature,
     metadata::extract_metadata,
     structs::UntypedStruct,
-    types::{AbstractType, TypeState},
+    types::{parse_generic_argument, AbstractType, TypeConstraint, TypeState},
     util::read_type_annotated_name,
   },
   parse::TyntTree,
@@ -271,7 +271,10 @@ impl Program {
               let name_ast = children_iter
                 .next()
                 .ok_or(InvalidDefn("Missing Name".to_string()))?;
-              let (name, generic_args): (String, Vec<String>) = match name_ast {
+              let (name, generic_args): (
+                String,
+                Vec<(String, Vec<TypeConstraint>)>,
+              ) = match name_ast {
                 TyntTree::Leaf(_, name) => (name, vec![]),
                 TyntTree::Inner((_, Encloser(Parens)), subtrees) => {
                   let mut subtrees_iter = subtrees.into_iter();
@@ -280,11 +283,12 @@ impl Program {
                       name,
                       subtrees_iter
                         .map(|subtree| {
-                          if let TyntTree::Leaf(_, generic_name) = subtree {
-                            Ok(generic_name)
-                          } else {
-                            err(InvalidDefn("Invalid generic name".to_string()))
-                          }
+                          parse_generic_argument(
+                            subtree,
+                            &structs,
+                            &global_context.type_aliases,
+                            &vec![],
+                          )
                         })
                         .collect::<CompileResult<_>>()?,
                     )
@@ -302,6 +306,8 @@ impl Program {
               let arg_list_ast = children_iter
                 .next()
                 .ok_or(InvalidDefn("Missing Argument List".to_string()))?;
+              let generic_arg_names: Vec<String> =
+                generic_args.iter().map(|(name, _)| name.clone()).collect();
               let (
                 arg_names,
                 arg_types,
@@ -312,7 +318,7 @@ impl Program {
                 arg_list_ast,
                 &structs,
                 &global_context.type_aliases,
-                &generic_args,
+                &generic_arg_names,
               )?;
               let implementation = FunctionImplementationKind::Composite(
                 Rc::new(RefCell::new(TopLevelFunction {
@@ -322,20 +328,20 @@ impl Program {
                   body: TypedExp::function_from_body_tree(
                     children_iter.collect(),
                     TypeState::Known(
-                      return_type.concretize(&structs, &generic_args)?,
+                      return_type.concretize(&structs, &generic_arg_names)?,
                     ),
                     arg_names,
                     arg_types
                       .iter()
                       .map(|t| {
                         Ok(TypeState::Known(
-                          t.concretize(&structs, &generic_args)?,
+                          t.concretize(&structs, &generic_arg_names)?,
                         ))
                       })
                       .collect::<CompileResult<Vec<TypeState>>>()?,
                     &structs,
                     &global_context.type_aliases,
-                    &generic_args,
+                    &generic_arg_names,
                   )?,
                 })),
               );
@@ -444,6 +450,7 @@ impl Program {
       }
     }
     monomorphized_ctx.variables = self.global_context.variables;
+    monomorphized_ctx.type_aliases = self.global_context.type_aliases;
     self.global_context = monomorphized_ctx;
     Ok(self)
   }
