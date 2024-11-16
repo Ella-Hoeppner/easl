@@ -25,7 +25,7 @@ pub enum CompileErrorKind {
   InvalidDefn(String),
   InvalidFunction,
   FunctionMissingBody,
-  UnrecognizedTopLevelForm,
+  UnrecognizedTopLevelForm(TyntTree),
   EmptyList,
   MissingType,
   InvalidType(TyntTree),

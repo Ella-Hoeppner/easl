@@ -7,7 +7,7 @@ use super::{
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
   structs::TypeOrAbstractStruct,
-  types::{AbstractType, Context, GenericOr, Type, TypeConstraint, TypeState},
+  types::{Context, GenericOr, Type, TypeConstraint, TypeState},
   util::indent,
 };
 

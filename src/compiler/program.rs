@@ -1,5 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
+use sse::syntax::EncloserOrOperator;
+
 use crate::{
   compiler::{
     error::err,
@@ -32,6 +34,7 @@ impl Program {
   pub fn init_from_tynt_trees(trees: Vec<TyntTree>) -> CompileResult<Self> {
     let mut non_struct_trees = vec![];
     let mut untyped_structs = vec![];
+
     for tree in trees.into_iter() {
       use crate::parse::Encloser::*;
       use sse::syntax::EncloserOrOperator::*;
@@ -81,10 +84,10 @@ impl Program {
             non_struct_trees.push((metadata, tree_body))
           }
         } else {
-          return err(UnrecognizedTopLevelForm);
+          return err(UnrecognizedTopLevelForm(tree_body));
         }
       } else {
-        return err(UnrecognizedTopLevelForm);
+        return err(UnrecognizedTopLevelForm(tree_body));
       }
     }
     let mut structs = built_in_structs();
@@ -100,12 +103,15 @@ impl Program {
     let mut global_context =
       Context::default_global().with_structs(structs.clone());
     let mut top_level_vars = vec![];
+
     for (metadata, tree) in non_struct_trees.into_iter() {
       use crate::parse::Encloser::*;
       use sse::syntax::EncloserOrOperator::*;
-      if let TyntTree::Inner((_, Encloser(Parens)), children) = tree {
+      if let TyntTree::Inner((parens_span, Encloser(Parens)), children) = tree {
         let mut children_iter = children.into_iter();
-        if let Some(TyntTree::Leaf(_, first_child)) = children_iter.next() {
+        let first_child = children_iter.next();
+        if let Some(TyntTree::Leaf(first_child_span, first_child)) = first_child
+        {
           match first_child.as_str() {
             "var" => {
               let (attributes, name_and_type_ast) = match children_iter.len() {
@@ -356,14 +362,22 @@ impl Program {
               );
             }
             _ => {
-              return err(UnrecognizedTopLevelForm);
+              return err(UnrecognizedTopLevelForm(TyntTree::Leaf(
+                first_child_span,
+                first_child,
+              )));
             }
           }
         } else {
-          return err(UnrecognizedTopLevelForm);
+          return err(UnrecognizedTopLevelForm(first_child.unwrap_or(
+            TyntTree::Inner(
+              (parens_span, EncloserOrOperator::Encloser(Parens)),
+              vec![],
+            ),
+          )));
         }
       } else {
-        return err(UnrecognizedTopLevelForm);
+        return err(UnrecognizedTopLevelForm(tree));
       }
     }
     Ok(Self {

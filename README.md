@@ -16,9 +16,6 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* add comments
-  * both expression-level comments with `#_` and line-level comments with `;`
-
 * add source tracing and helpful error messages for all compilation errors
 
 * loops

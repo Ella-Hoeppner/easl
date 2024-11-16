@@ -8,3 +8,7 @@
 
 (defn make-two-floats [a: f32]: (TwoOf f32)
   (make-two-of a))
+
+; the following function will cause a type error, since bool doesn't satisfy Scalar
+#_(defn make-two-bools [a: bool]: (TwoOf bool)
+    (make-two-of a))

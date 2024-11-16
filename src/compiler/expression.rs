@@ -613,6 +613,8 @@ impl TypedExp {
             }
             Square => todo!("array"),
             Curly => todo!("anonymous struct"),
+            LineComment => todo!("comments"),
+            BlockComment => todo!("comments"),
           },
           Operator(o) => match o {
             MetadataAnnotation => {
@@ -677,6 +679,7 @@ impl TypedExp {
                 });
               exp
             }
+            ExpressionComment => todo!("comments"),
           },
         }
       }
