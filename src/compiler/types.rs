@@ -702,6 +702,15 @@ pub struct TypeConstraint {
   args: Vec<AbstractType>,
 }
 
+impl TypeConstraint {
+  pub fn scalar() -> Self {
+    Self {
+      name: "Scalar".to_string(),
+      args: vec![],
+    }
+  }
+}
+
 pub fn parse_type_bound(
   ast: TyntTree,
   structs: &Vec<AbstractStruct>,

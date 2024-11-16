@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, hash::Hash};
 
 use crate::{
   compiler::{
@@ -92,7 +92,7 @@ impl UntypedStruct {
         })
         .collect::<CompileResult<Vec<AbstractStructField>>>()?,
       generic_args: self.generic_args.clone(),
-      filled_generics: vec![],
+      filled_generics: HashMap::new(),
       abstract_ancestor: None,
     })
   }
@@ -157,7 +157,7 @@ impl AbstractStructField {
   }
   fn fill_abstract_generics(
     self,
-    generics: &Vec<(String, AbstractType)>,
+    generics: &HashMap<String, AbstractType>,
   ) -> Self {
     AbstractStructField {
       metadata: self.metadata,
@@ -173,7 +173,7 @@ impl AbstractStructField {
             TypeOrAbstractStruct::Type(t) => TypeOrAbstractStruct::Type(t),
             TypeOrAbstractStruct::AbstractStruct(s) => {
               TypeOrAbstractStruct::AbstractStruct(
-                s.fill_abstract_generics_inner(generics),
+                s.partially_fill_abstract_generics(generics.clone()),
               )
             }
           })
@@ -204,7 +204,7 @@ impl AbstractStructField {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractStruct {
   pub name: String,
-  pub filled_generics: Vec<AbstractType>,
+  pub filled_generics: HashMap<String, AbstractType>,
   pub fields: Vec<AbstractStructField>,
   pub generic_args: Vec<String>,
   pub abstract_ancestor: Option<Box<Self>>,
@@ -330,8 +330,12 @@ impl AbstractStruct {
       name: self.name.clone(),
       filled_generics: generic_args
         .iter()
-        .map(|t| {
-          AbstractType::NonGeneric(TypeOrAbstractStruct::Type(t.clone()))
+        .zip(self.generic_args.iter().cloned())
+        .map(|(t, name)| {
+          (
+            name,
+            AbstractType::NonGeneric(TypeOrAbstractStruct::Type(t.clone())),
+          )
         })
         .collect(),
       generic_args: vec![],
@@ -392,34 +396,42 @@ impl AbstractStruct {
     )
   }
 
-  fn fill_abstract_generics_inner(
+  pub fn partially_fill_abstract_generics(
     self,
-    generics: &Vec<(String, AbstractType)>,
+    generics: HashMap<String, AbstractType>,
   ) -> AbstractStruct {
-    let new_fields: Vec<_> = self
-      .fields
-      .iter()
-      .map(|field| field.clone().fill_abstract_generics(generics))
-      .collect();
+    let abstract_ancestor = self.clone().into();
     AbstractStruct {
       name: self.name.clone(),
-      fields: new_fields,
-      filled_generics: generics.iter().map(|(_, t)| t.clone()).collect(),
-      generic_args: vec![],
-      abstract_ancestor: Some(self.into()),
+      generic_args: self
+        .generic_args
+        .into_iter()
+        .filter(|name| generics.contains_key(name))
+        .collect(),
+      fields: self
+        .fields
+        .iter()
+        .map(|field| field.clone().fill_abstract_generics(&generics))
+        .collect(),
+      filled_generics: self
+        .filled_generics
+        .into_iter()
+        .chain(generics.into_iter())
+        .collect(),
+      abstract_ancestor: Some(abstract_ancestor),
     }
   }
   pub fn fill_abstract_generics(
     self,
     generics: Vec<AbstractType>,
   ) -> AbstractStruct {
-    let generics_map: Vec<(String, AbstractType)> = self
+    let generics_map: HashMap<String, AbstractType> = self
       .generic_args
       .iter()
       .cloned()
       .zip(generics.into_iter())
       .collect();
-    self.fill_abstract_generics_inner(&generics_map)
+    self.partially_fill_abstract_generics(generics_map)
   }
 }
 

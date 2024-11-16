@@ -8,6 +8,3 @@
 
 (defn make-two-floats [a: f32]: (TwoOf f32)
   (make-two-of a))
-
-(defn make-two-bools [a: bool]: (TwoOf bool)
-  (make-two-of a))

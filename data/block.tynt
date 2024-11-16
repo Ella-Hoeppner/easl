@@ -9,7 +9,7 @@
 
 @vertex
 (defn vertex [in: VertexInput]: VertexOutput
-  (let [a (vec2 (.corner-position in)): vec2f]
+  (let [a (.corner-position in)]
     (let [b (.x a)
           c (.y a)]
       (VertexOutput (vec4 b c 0. 1.)))))

@@ -22,7 +22,7 @@ fn main() {
     "int_match",
     "generic_vec",
     "heterogenous_vec_constructor",
-    //"specialized_vec_constructor",
+    "specialized_vec_constructor",
     "generic_constraint",
   ] {
     println!("compiling {filename}...");
