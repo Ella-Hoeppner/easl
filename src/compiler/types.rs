@@ -13,7 +13,7 @@ use super::{
     built_in_functions, built_in_structs, built_in_type_aliases,
     ABNORMAL_CONSTRUCTOR_STRUCTS,
   },
-  error::{err, CompileErrorKind::*, CompileResult},
+  error::{err, CompileErrorKind::*, CompileResult, SourceTrace},
   functions::{
     AbstractFunctionSignature, FunctionImplementationKind, FunctionSignature,
   },
@@ -88,16 +88,16 @@ impl AbstractType {
           } else {
             err(
               InvalidTypeName(type_name.clone()),
-              vec![position.path.clone()],
+              position.path.clone().into(),
             )
           }
         } else {
-          err(InvalidType(tree.clone()), vec![position.path.clone()])
+          err(InvalidType(tree.clone()), position.path.clone().into())
         }
       }
       _ => err(
         InvalidType(tree.clone()),
-        vec![tree.position().path.clone()],
+        tree.position().path.clone().into(),
       ),
     }
   }
@@ -145,13 +145,13 @@ impl AbstractType {
           if let Some(TyntTree::Leaf(_, leaf)) = children_iter.next() {
             leaf
           } else {
-            return err(InvalidStructName, vec![position.path]);
+            return err(InvalidStructName, position.path.into());
           };
         let generic_struct = structs
           .iter()
           .find(|s| s.name == generic_struct_name)
           .ok_or_else(|| {
-            CompileError::new(InvalidFunctionArgumentName, vec![position.path])
+            CompileError::new(InvalidFunctionArgumentName, position.path.into())
           })?
           .clone();
         let generic_args = children_iter
@@ -163,25 +163,25 @@ impl AbstractType {
           generic_struct.fill_abstract_generics(generic_args),
         )))
       }
-      _ => err(InvalidStructFieldType, vec![ast.position().path.clone()]),
+      _ => err(InvalidStructFieldType, ast.position().path.clone().into()),
     }
   }
   pub fn concretize(
     &self,
     structs: &Vec<AbstractStruct>,
     skolems: &Vec<String>,
-    source_paths: Vec<Vec<usize>>,
+    source_trace: SourceTrace,
   ) -> CompileResult<Type> {
     match self {
       GenericOr::Generic(name) => {
         if skolems.contains(name) {
           Ok(Type::Skolem(name.clone()))
         } else {
-          err(UnrecognizedGeneric(name.clone()), source_paths)
+          err(UnrecognizedGeneric(name.clone()), source_trace)
         }
       }
       GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => Ok(
-        Type::Struct(s.concretize(structs, skolems, source_paths)?),
+        Type::Struct(s.concretize(structs, skolems, source_trace)?),
       ),
       GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => Ok(t.clone()),
     }
@@ -287,7 +287,7 @@ impl Type {
     } else {
       err(
         InvalidType(tree.clone()),
-        vec![tree.position().path.clone()],
+        tree.position().path.clone().into(),
       )
     }
   }
@@ -333,7 +333,7 @@ impl Type {
         {
           Struct(s.clone().fill_generics_with_unification_variables())
         } else {
-          return err(UnrecognizedTypeName(name), vec![source_path]);
+          return err(UnrecognizedTypeName(name), source_path.into());
         }
       }
     })
@@ -526,7 +526,7 @@ impl TypeState {
   pub fn constrain(
     &mut self,
     mut other: TypeState,
-    source_paths: Vec<Vec<usize>>,
+    source_trace: SourceTrace,
   ) -> CompileResult<bool> {
     if *self == other {
       return Ok(false);
@@ -545,14 +545,14 @@ impl TypeState {
             if !current_type.compatible(&other_type) {
               return err(
                 IncompatibleTypes(this.clone(), other.clone()),
-                source_paths,
+                source_trace,
               );
             }
             match (current_type, other_type) {
               (Type::Function(signature), Type::Function(other_signature)) => {
                 let mut changed = signature.return_type.constrain(
                   other_signature.return_type.clone(),
-                  source_paths.clone(),
+                  source_trace.clone(),
                 )?;
                 for (t, other_t) in signature
                   .arg_types
@@ -560,7 +560,7 @@ impl TypeState {
                   .zip(other_signature.arg_types.iter_mut())
                 {
                   changed |=
-                    t.constrain(other_t.clone(), source_paths.clone())?;
+                    t.constrain(other_t.clone(), source_trace.clone())?;
                 }
                 changed
               }
@@ -571,7 +571,7 @@ impl TypeState {
                 {
                   changed |= t.field_type.constrain(
                     other_t.field_type.clone(),
-                    source_paths.clone(),
+                    source_trace.clone(),
                   )?;
                 }
                 changed
@@ -605,7 +605,7 @@ impl TypeState {
             } else {
               return err(
                 IncompatibleTypes(this.clone(), other.clone()),
-                source_paths,
+                source_trace,
               );
             }
           }
@@ -613,7 +613,7 @@ impl TypeState {
             if !t.compatible_with_any(&possibilities) {
               return err(
                 IncompatibleTypes(this.clone(), other.clone()),
-                source_paths,
+                source_trace,
               );
             }
             false
@@ -627,16 +627,16 @@ impl TypeState {
   pub fn mutually_constrain(
     &mut self,
     other: &mut TypeState,
-    source_paths: Vec<Vec<usize>>,
+    source_trace: SourceTrace,
   ) -> CompileResult<bool> {
-    let self_changed = self.constrain(other.clone(), source_paths.clone())?;
-    let other_changed = other.constrain(self.clone(), source_paths)?;
+    let self_changed = self.constrain(other.clone(), source_trace.clone())?;
+    let other_changed = other.constrain(self.clone(), source_trace)?;
     Ok(self_changed || other_changed)
   }
   pub fn constrain_fn_by_argument_types(
     &mut self,
     mut arg_types: Vec<TypeState>,
-    source_paths: Vec<Vec<usize>>,
+    source_trace: SourceTrace,
   ) -> CompileResult<bool> {
     self.with_dereferenced_mut(|typestate| match typestate {
       TypeState::OneOf(possibilities) => {
@@ -657,7 +657,7 @@ impl TypeState {
         if new_possibilities.is_empty() {
           err(
             FunctionArgumentTypesIncompatible(typestate.clone(), arg_types),
-            source_paths,
+            source_trace,
           )
         } else {
           std::mem::swap(
@@ -670,7 +670,7 @@ impl TypeState {
       TypeState::Known(t) => match t {
         Type::Function(signature) => Ok(
           signature
-            .mutually_constrain_arguments(&mut arg_types, source_paths)?,
+            .mutually_constrain_arguments(&mut arg_types, source_trace)?,
         ),
         other => panic!(
           "tried to constrain fn on non-fn \n\n{arg_types:#?} \n\n{other:#?}"
@@ -763,14 +763,15 @@ pub fn parse_type_bound(
       (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
       children,
     ) => {
+      let source_trace: SourceTrace = position.path.into();
       let mut children_iter = children.into_iter();
       let name = if let TyntTree::Leaf(_, name) =
         children_iter.next().ok_or_else(|| {
-          CompileError::new(InvalidTypeBound, vec![position.path.clone()])
+          CompileError::new(InvalidTypeBound, source_trace.clone())
         })? {
         name
       } else {
-        return err(InvalidTypeBound, vec![position.path]);
+        return err(InvalidTypeBound, source_trace);
       };
       let args = children_iter
         .map(|child_ast| {
@@ -785,7 +786,7 @@ pub fn parse_type_bound(
         .collect::<CompileResult<Vec<AbstractType>>>()?;
       Ok(TypeConstraint { name, args })
     }
-    _ => err(InvalidTypeBound, vec![ast.position().path.clone()]),
+    _ => err(InvalidTypeBound, ast.position().path.clone().into()),
   }
 }
 
@@ -804,7 +805,7 @@ pub fn parse_generic_argument(
       if children.len() < 2 {
         return err(
           InvalidDefn("Invalid generic name".to_string()),
-          vec![position.path],
+          position.path.into(),
         );
       }
       let bounds_tree = children.remove(1);
@@ -830,13 +831,13 @@ pub fn parse_generic_argument(
       } else {
         err(
           InvalidDefn("Invalid generic name".to_string()),
-          vec![position.path],
+          position.path.into(),
         )
       }
     }
     _ => err(
       InvalidDefn("Invalid generic name".to_string()),
-      vec![ast.position().path.clone()],
+      ast.position().path.clone().into(),
     ),
   }
 }
@@ -932,14 +933,14 @@ impl Context {
   pub fn constrain_name_type(
     &mut self,
     name: &str,
-    source_paths: Vec<Vec<usize>>,
+    source_trace: SourceTrace,
     t: &mut TypeState,
   ) -> CompileResult<bool> {
     let abstract_signatures = self.get_abstract_function_signatures(name);
     if abstract_signatures.is_empty() {
       t.mutually_constrain(
-        self.get_typestate_mut(name, source_paths.clone())?,
-        source_paths,
+        self.get_typestate_mut(name, source_trace.clone())?,
+        source_trace,
       )
     } else {
       t.constrain(
@@ -950,7 +951,7 @@ impl Context {
             .map(|signature| Type::Function(Box::new(signature.concretize())))
             .collect(),
         ),
-        source_paths,
+        source_trace,
       )
     }
   }
@@ -988,14 +989,14 @@ impl Context {
   pub fn get_typestate_mut(
     &mut self,
     name: &str,
-    source_paths: Vec<Vec<usize>>,
+    source_trace: SourceTrace,
   ) -> CompileResult<&mut TypeState> {
     Ok(
       &mut self
         .variables
         .get_mut(name)
         .ok_or_else(|| {
-          CompileError::new(UnboundName(name.to_string()), source_paths)
+          CompileError::new(UnboundName(name.to_string()), source_trace)
         })?
         .last_mut()
         .unwrap()

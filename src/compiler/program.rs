@@ -4,7 +4,7 @@ use sse::syntax::EncloserOrOperator;
 
 use crate::{
   compiler::{
-    error::{err, CompileError},
+    error::{err, CompileError, SourceTrace},
     expression::arg_list_and_return_type_from_tynt_tree,
     functions::AbstractFunctionSignature,
     metadata::extract_metadata,
@@ -42,10 +42,12 @@ impl Program {
       if let TyntTree::Inner((position, Encloser(Parens)), children) =
         &tree_body
       {
+        let source_trace: SourceTrace = position.path.clone().into();
         let mut children_iter = children.into_iter();
         if let Some(TyntTree::Leaf(position, first_child)) =
           children_iter.next()
         {
+          let source_trace: SourceTrace = position.path.clone().into();
           if first_child == "struct" {
             if let Some(struct_name) = children_iter.next() {
               match struct_name {
@@ -54,45 +56,46 @@ impl Program {
                     struct_name.clone(),
                     vec![],
                     children_iter.cloned().collect(),
-                    vec![position.path.clone()],
+                    source_trace,
                   )?)
                 }
                 TyntTree::Inner(
                   (position, Encloser(Parens)),
                   signature_children,
                 ) => {
+                  let source_trace: SourceTrace = position.path.clone().into();
                   let mut signature_leaves = signature_children
                     .into_iter()
                     .map(|child| match child {
                       TyntTree::Leaf(_, name) => Ok(name.clone()),
-                      _ => err(InvalidStructName, vec![]),
+                      _ => err(
+                        InvalidStructName,
+                        child.position().path.clone().into(),
+                      ),
                     })
                     .collect::<CompileResult<Vec<String>>>()?
                     .into_iter();
                   if let Some(struct_name) = signature_leaves.next() {
                     if signature_leaves.is_empty() {
-                      return err(
-                        InvalidStructName,
-                        vec![position.path.clone()],
-                      );
+                      return err(InvalidStructName, source_trace);
                     } else {
                       untyped_structs.push(UntypedStruct::from_field_trees(
                         struct_name,
                         signature_leaves.collect(),
                         children_iter.cloned().collect(),
-                        vec![position.path.clone()],
+                        source_trace,
                       )?)
                     }
                   } else {
-                    return err(InvalidStructName, vec![position.path.clone()]);
+                    return err(InvalidStructName, source_trace);
                   }
                 }
                 TyntTree::Inner((position, _), _) => {
-                  return err(InvalidStructName, vec![position.path.clone()])
+                  return err(InvalidStructName, position.path.clone().into())
                 }
               }
             } else {
-              return err(InvalidStructDefinition, vec![position.path.clone()]);
+              return err(InvalidStructDefinition, source_trace);
             }
           } else {
             non_struct_trees.push((metadata, tree_body))
@@ -100,13 +103,13 @@ impl Program {
         } else {
           return err(
             UnrecognizedTopLevelForm(tree_body.clone()),
-            vec![position.path.clone()],
+            source_trace,
           );
         }
       } else {
         return err(
           UnrecognizedTopLevelForm(tree_body),
-          vec![tree.position().path.clone()],
+          tree.position().path.clone().into(),
         );
       }
     }
@@ -130,11 +133,15 @@ impl Program {
       if let TyntTree::Inner((parens_position, Encloser(Parens)), children) =
         tree
       {
+        let parens_source_trace: SourceTrace =
+          parens_position.path.clone().into();
         let mut children_iter = children.into_iter();
         let first_child = children_iter.next();
         if let Some(TyntTree::Leaf(first_child_position, first_child)) =
           first_child
         {
+          let first_child_source_trace: SourceTrace =
+            first_child_position.path.clone().into();
           match first_child.as_str() {
             "var" => {
               let (attributes, name_and_type_ast) = match children_iter.len() {
@@ -159,7 +166,7 @@ impl Program {
                               "Expected leaf for attribute, found inner form"
                                 .to_string(),
                             ),
-                            vec![position.path.clone()],
+                            position.path.clone().into(),
                           )
                         }
                       })
@@ -171,7 +178,7 @@ impl Program {
                         "Expected square-bracket enclosed attributes"
                           .to_string(),
                       ),
-                      vec![first_child_position.path.clone()],
+                      first_child_source_trace,
                     );
                   }
                 }
@@ -180,7 +187,7 @@ impl Program {
                     InvalidTopLevelVar(
                       "Invalid number of inner forms".to_string(),
                     ),
-                    vec![first_child_position.path.clone()],
+                    first_child_source_trace,
                   )
                 }
               };
@@ -201,7 +208,7 @@ impl Program {
                 .concretize(
                   &structs,
                   &vec![],
-                  vec![type_source_path],
+                  type_source_path.into(),
                 )?,
               })
             }
@@ -212,7 +219,7 @@ impl Program {
               let name_ast = children_iter.next().ok_or_else(|| {
                 CompileError::new(
                   InvalidDefn("Missing Name".to_string()),
-                  vec![parens_position.path.clone()],
+                  parens_source_trace.clone(),
                 )
               })?;
               let (name, generic_args): (
@@ -239,7 +246,7 @@ impl Program {
                   } else {
                     return err(
                       InvalidDefn("Invalid name".to_string()),
-                      vec![first_child_position.path.clone()],
+                      first_child_source_trace,
                     );
                   }
                 }
@@ -249,14 +256,14 @@ impl Program {
                       "Expected name or parens with name and generic arguments"
                         .to_string(),
                     ),
-                    vec![first_child_position.path.clone()],
+                    first_child_source_trace,
                   )
                 }
               };
               let arg_list_ast = children_iter.next().ok_or_else(|| {
                 CompileError::new(
                   InvalidDefn("Missing Argument List".to_string()),
-                  vec![parens_position.path],
+                  parens_source_trace.clone(),
                 )
               })?;
               let generic_arg_names: Vec<String> =
@@ -285,7 +292,7 @@ impl Program {
                     TypeState::Known(return_type.concretize(
                       &structs,
                       &generic_arg_names,
-                      vec![source_path.clone()],
+                      source_path.clone().into(),
                     )?),
                     arg_names,
                     arg_types
@@ -294,7 +301,7 @@ impl Program {
                         Ok(TypeState::Known(t.concretize(
                           &structs,
                           &generic_arg_names,
-                          vec![source_path.clone()],
+                          source_path.clone().into(),
                         )?))
                       })
                       .collect::<CompileResult<Vec<TypeState>>>()?,
@@ -320,7 +327,7 @@ impl Program {
                   first_child_position.clone(),
                   first_child,
                 )),
-                vec![first_child_position.path],
+                first_child_source_trace,
               );
             }
           }
@@ -333,13 +340,13 @@ impl Program {
               ),
               vec![],
             ))),
-            vec![parens_position.path],
+            parens_source_trace,
           );
         }
       } else {
         return err(
           UnrecognizedTopLevelForm(tree.clone()),
-          vec![tree.position().path.clone()],
+          tree.position().path.clone().into(),
         );
       }
     }
@@ -390,12 +397,11 @@ impl Program {
         return if untyped_expressions.is_empty() {
           Ok(self)
         } else {
-          let source_paths = untyped_expressions
+          let source_trace = untyped_expressions
             .iter()
-            .map(|exp| exp.source_paths.clone())
-            .flatten()
+            .map(|exp| exp.source_trace.clone())
             .collect();
-          err(CouldntInferTypes(untyped_expressions), source_paths)
+          err(CouldntInferTypes(untyped_expressions), source_trace)
         };
       }
     }

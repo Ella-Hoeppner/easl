@@ -9,6 +9,47 @@ use super::{
   types::{Type, TypeConstraint, TypeState},
 };
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum SourceTraceKind {
+  Empty,
+  Singular(Vec<usize>),
+  Combination(Vec<SourceTrace>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceTrace {
+  kind: Rc<SourceTraceKind>,
+}
+
+impl SourceTrace {
+  pub fn empty() -> Self {
+    Self {
+      kind: Rc::new(SourceTraceKind::Empty),
+    }
+  }
+  pub fn combine_with(self, other: Self) -> Self {
+    Self {
+      kind: Rc::new(SourceTraceKind::Combination(vec![self, other])),
+    }
+  }
+}
+
+impl From<Vec<usize>> for SourceTrace {
+  fn from(value: Vec<usize>) -> Self {
+    Self {
+      kind: Rc::new(SourceTraceKind::Singular(value)),
+    }
+  }
+}
+
+impl FromIterator<SourceTrace> for SourceTrace {
+  fn from_iter<T: IntoIterator<Item = SourceTrace>>(iter: T) -> Self {
+    SourceTrace {
+      kind: Rc::new(SourceTraceKind::Combination(iter.into_iter().collect())),
+    }
+  }
+}
+
 #[derive(Clone, Debug)]
 pub enum CompileErrorKind {
   ParsingFailed(ParseError),
@@ -70,15 +111,15 @@ pub struct CompileError {
   pub kind: CompileErrorKind,
   pub context: Vec<String>,
   _backtrace: Rc<Backtrace>,
-  pub source_paths: Vec<Vec<usize>>,
+  pub source_trace: SourceTrace,
 }
 impl CompileError {
-  pub fn new(kind: CompileErrorKind, source_paths: Vec<Vec<usize>>) -> Self {
+  pub fn new(kind: CompileErrorKind, source_trace: SourceTrace) -> Self {
     Self {
       kind,
       context: vec![],
       _backtrace: Rc::new(Backtrace::capture()),
-      source_paths,
+      source_trace,
     }
   }
 }
@@ -87,13 +128,13 @@ pub type CompileResult<T> = Result<T, CompileError>;
 
 impl From<ParseError> for CompileError {
   fn from(err: ParseError) -> Self {
-    Self::new(CompileErrorKind::ParsingFailed(err), vec![])
+    Self::new(CompileErrorKind::ParsingFailed(err), SourceTrace::empty())
   }
 }
 
 pub fn err<T>(
   kind: CompileErrorKind,
-  source_paths: Vec<Vec<usize>>,
+  source_trace: SourceTrace,
 ) -> CompileResult<T> {
-  Err(CompileError::new(kind, source_paths))
+  Err(CompileError::new(kind, source_trace))
 }

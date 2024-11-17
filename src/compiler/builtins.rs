@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::compiler::structs::{AbstractStructField, TypeOrAbstractStruct};
+use crate::compiler::{
+  error::SourceTrace,
+  structs::{AbstractStructField, TypeOrAbstractStruct},
+};
 
 use super::{
   functions::{AbstractFunctionSignature, FunctionImplementationKind},
@@ -163,7 +166,7 @@ pub fn vec2() -> AbstractStruct {
     generic_args: vec!["T".to_string()],
     filled_generics: HashMap::new(),
     abstract_ancestor: None,
-    source_paths: vec![],
+    source_trace: SourceTrace::empty(),
   }
 }
 
@@ -190,7 +193,7 @@ pub fn vec3() -> AbstractStruct {
     generic_args: vec!["T".to_string()],
     filled_generics: HashMap::new(),
     abstract_ancestor: None,
-    source_paths: vec![],
+    source_trace: SourceTrace::empty(),
   }
 }
 
@@ -222,7 +225,7 @@ pub fn vec4() -> AbstractStruct {
     generic_args: vec!["T".to_string()],
     filled_generics: HashMap::new(),
     abstract_ancestor: None,
-    source_paths: vec![],
+    source_trace: SourceTrace::empty(),
   }
 }
 
@@ -235,55 +238,55 @@ pub fn built_in_type_aliases() -> Vec<(String, AbstractStruct)> {
     (
       "vec2f".to_string(),
       vec2()
-        .generate_monomorphized(vec![Type::F32], vec![])
+        .generate_monomorphized(vec![Type::F32], SourceTrace::empty())
         .unwrap(),
     ),
     (
       "vec3f".to_string(),
       vec3()
-        .generate_monomorphized(vec![Type::F32], vec![])
+        .generate_monomorphized(vec![Type::F32], SourceTrace::empty())
         .unwrap(),
     ),
     (
       "vec4f".to_string(),
       vec4()
-        .generate_monomorphized(vec![Type::F32], vec![])
+        .generate_monomorphized(vec![Type::F32], SourceTrace::empty())
         .unwrap(),
     ),
     (
       "vec2i".to_string(),
       vec2()
-        .generate_monomorphized(vec![Type::I32], vec![])
+        .generate_monomorphized(vec![Type::I32], SourceTrace::empty())
         .unwrap(),
     ),
     (
       "vec3i".to_string(),
       vec3()
-        .generate_monomorphized(vec![Type::I32], vec![])
+        .generate_monomorphized(vec![Type::I32], SourceTrace::empty())
         .unwrap(),
     ),
     (
       "vec4i".to_string(),
       vec4()
-        .generate_monomorphized(vec![Type::I32], vec![])
+        .generate_monomorphized(vec![Type::I32], SourceTrace::empty())
         .unwrap(),
     ),
     (
       "vec2u".to_string(),
       vec2()
-        .generate_monomorphized(vec![Type::U32], vec![])
+        .generate_monomorphized(vec![Type::U32], SourceTrace::empty())
         .unwrap(),
     ),
     (
       "vec3u".to_string(),
       vec3()
-        .generate_monomorphized(vec![Type::U32], vec![])
+        .generate_monomorphized(vec![Type::U32], SourceTrace::empty())
         .unwrap(),
     ),
     (
       "vec4u".to_string(),
       vec4()
-        .generate_monomorphized(vec![Type::U32], vec![])
+        .generate_monomorphized(vec![Type::U32], SourceTrace::empty())
         .unwrap(),
     ),
   ]

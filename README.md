@@ -16,11 +16,6 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* optimize source path tracking
-  * right now I'm just `.clone()`ing a bunch, should go back and try to avoid that as much as possible.
-  * if nothing else, at the very least `source_paths` could change from `Vec<Vec<usize>>` to `Vec<Rc<Vec<usize>>>` (or really probably wrap it into a wrapper type so that it would be like `Vec<SourceTrace>`), since the inner source paths are immutable once parsing is done so cloning them so much is silly
-    * really most of the time there's probably only one source that that's relevant to most errosr. Instead of passing around `Vec<SourceTrace>`s everywhere, `SourceTrace` could be a sum type with like `Singular` and `Combination` cases, such that when multiple source traces need to be combined and passed around they can all just be combined into a nice singular `SourceTrace`
-
 * loops
   * `for`
   * `while`

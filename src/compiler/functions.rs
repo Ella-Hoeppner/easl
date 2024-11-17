@@ -3,7 +3,7 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use crate::compiler::util::compile_word;
 
 use super::{
-  error::{err, CompileErrorKind::*, CompileResult},
+  error::{err, CompileErrorKind::*, CompileResult, SourceTrace},
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
   structs::TypeOrAbstractStruct,
@@ -42,7 +42,7 @@ impl AbstractFunctionSignature {
     return_type: Type,
     base_ctx: &Context,
     new_ctx: &mut Context,
-    source_paths: Vec<Vec<usize>>,
+    source_trace: SourceTrace,
   ) -> CompileResult<Self> {
     let mut monomorphized = self.clone();
     let mut generic_bindings = HashMap::new();
@@ -63,7 +63,7 @@ impl AbstractFunctionSignature {
         {
           err(
             UnsatisfiedTypeBound(unsatisfied_bound.clone()),
-            source_paths.clone(),
+            source_trace.clone(),
           )
         } else {
           full_name.map(|full_name| full_name + "_" + &generic_type.compile())
@@ -165,17 +165,17 @@ impl FunctionSignature {
   pub fn mutually_constrain_arguments(
     &mut self,
     args: &mut Vec<TypeState>,
-    source_paths: Vec<Vec<usize>>,
+    source_trace: SourceTrace,
   ) -> CompileResult<bool> {
     if args.len() == self.arg_types.len() {
       let mut any_arg_changed = false;
       for i in 0..args.len() {
         any_arg_changed |= args[i]
-          .mutually_constrain(&mut self.arg_types[i], source_paths.clone())?;
+          .mutually_constrain(&mut self.arg_types[i], source_trace.clone())?;
       }
       Ok(any_arg_changed)
     } else {
-      err(WrongArity, source_paths)
+      err(WrongArity, source_trace)
     }
   }
 }

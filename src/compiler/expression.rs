@@ -32,7 +32,7 @@ lazy_static! {
     Regex::new(r"^(-?\d+\.?\d*|\.\d+)(i|u|f)?$").unwrap();
 }
 
-fn parse_number(num_str: &str, source_path: &Vec<usize>) -> Option<TypedExp> {
+fn parse_number(num_str: &str, source_trace: SourceTrace) -> Option<TypedExp> {
   if let Some(captures) = NUM_REGEX.captures(num_str) {
     let num_str = captures.get(1).unwrap().as_str();
     let contains_decimal = num_str.contains('.');
@@ -44,7 +44,7 @@ fn parse_number(num_str: &str, source_path: &Vec<usize>) -> Option<TypedExp> {
               num_str.parse::<f64>().unwrap(),
             )),
             data: Known(Type::F32),
-            source_paths: vec![source_path.clone()],
+            source_trace,
           });
         }
         "i" | "u" => {
@@ -58,7 +58,7 @@ fn parse_number(num_str: &str, source_path: &Vec<usize>) -> Option<TypedExp> {
                 "u" => Type::U32,
                 _ => unreachable!(),
               }),
-              source_paths: vec![source_path.clone()],
+              source_trace,
             });
           }
         }
@@ -71,7 +71,7 @@ fn parse_number(num_str: &str, source_path: &Vec<usize>) -> Option<TypedExp> {
             num_str.parse::<f64>().unwrap(),
           )),
           data: Known(Type::F32),
-          source_paths: vec![source_path.clone()],
+          source_trace,
         });
       } else {
         return Some(Exp {
@@ -83,7 +83,7 @@ fn parse_number(num_str: &str, source_path: &Vec<usize>) -> Option<TypedExp> {
           } else {
             vec![Type::F32, Type::I32, Type::U32]
           }),
-          source_paths: vec![source_path.clone()],
+          source_trace,
         });
       }
     }
@@ -96,7 +96,7 @@ fn parse_number(num_str: &str, source_path: &Vec<usize>) -> Option<TypedExp> {
 pub struct Exp<D: Debug + Clone + PartialEq> {
   pub data: D,
   pub kind: ExpKind<D>,
-  pub source_paths: Vec<Vec<usize>>,
+  pub source_trace: SourceTrace,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -221,6 +221,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
 use ExpKind::*;
 
 use super::{
+  error::SourceTrace,
   functions::FunctionImplementationKind,
   structs::compiled_vec_name,
   types::{AbstractType, TypeConstraint},
@@ -241,7 +242,7 @@ pub fn arg_list_and_return_type_from_tynt_tree(
   aliases: &Vec<(String, AbstractStruct)>,
   generic_args: &Vec<String>,
 ) -> CompileResult<(
-  Vec<usize>,
+  SourceTrace,
   Vec<String>,
   Vec<AbstractType>,
   Vec<Option<Metadata>>,
@@ -268,13 +269,14 @@ pub fn arg_list_and_return_type_from_tynt_tree(
     if let TyntTree::Inner((position, Encloser(Square)), arg_asts) =
       args_and_return_type.remove(0)
     {
+      let source_path: SourceTrace = position.path.into();
       let ((arg_types, arg_metadata), arg_names) = arg_asts
         .into_iter()
         .map(|arg| -> CompileResult<_> {
           let (maybe_t_ast, arg_name_ast) = extract_type_annotation_ast(arg)?;
           let t_ast = maybe_t_ast.ok_or(CompileError::new(
             FunctionArgMissingType,
-            vec![position.path.clone()],
+            source_path.clone(),
           ))?;
           let (arg_metadata, t_ast) = extract_metadata(t_ast)?;
           let t = AbstractType::from_tynt_tree(
@@ -287,7 +289,7 @@ pub fn arg_list_and_return_type_from_tynt_tree(
           if let TyntTree::Leaf(_, arg_name) = arg_name_ast {
             Ok(((t, arg_metadata), arg_name))
           } else {
-            err(InvalidArgumentName, vec![position.path.clone()])
+            err(InvalidArgumentName, source_path.clone())
           }
         })
         .collect::<CompileResult<(
@@ -295,7 +297,7 @@ pub fn arg_list_and_return_type_from_tynt_tree(
           Vec<String>,
         )>>()?;
       Ok((
-        position.path,
+        source_path,
         arg_names,
         arg_types,
         arg_metadata,
@@ -303,15 +305,12 @@ pub fn arg_list_and_return_type_from_tynt_tree(
         return_metadata,
       ))
     } else {
-      err(
-        FunctionSignatureNotSquareBrackets,
-        vec![position.path.clone()],
-      )
+      err(FunctionSignatureNotSquareBrackets, position.path.into())
     }
   } else {
     err(
       FunctionSignatureMissingReturnType,
-      vec![tree.position().path.clone()],
+      tree.position().path.clone().into(),
     )
   }
 }
@@ -324,7 +323,7 @@ pub enum SyntaxTreeContext {
 
 impl TypedExp {
   pub fn function_from_body_tree(
-    source_path: Vec<usize>,
+    source_trace: SourceTrace,
     body_trees: Vec<TyntTree>,
     return_type: TypeState,
     arg_names: Vec<String>,
@@ -350,10 +349,9 @@ impl TypedExp {
     } else {
       Exp {
         data: Unknown,
-        source_paths: body_exps
+        source_trace: body_exps
           .iter()
-          .map(|body_exp| body_exp.source_paths.clone())
-          .flatten()
+          .map(|body_exp| body_exp.source_trace.clone())
           .collect(),
         kind: ExpKind::Block(body_exps),
       }
@@ -365,7 +363,7 @@ impl TypedExp {
         return_type,
       }))),
       kind: ExpKind::Function(arg_names, Box::new(body)),
-      source_paths: vec![source_path],
+      source_trace,
     })
   }
   pub fn try_from_tynt_tree(
@@ -377,25 +375,27 @@ impl TypedExp {
   ) -> CompileResult<Self> {
     Ok(match tree {
       TyntTree::Leaf(DocumentPosition { path, .. }, leaf) => {
+        let source_trace: SourceTrace = path.into();
         if leaf == "true" || leaf == "false" {
           Exp {
             kind: ExpKind::BooleanLiteral(leaf == "true"),
             data: Known(Type::Bool),
-            source_paths: vec![path],
+            source_trace,
           }
-        } else if let Some(num_exp) = parse_number(&leaf, &path) {
+        } else if let Some(num_exp) = parse_number(&leaf, source_trace.clone())
+        {
           num_exp
         } else if leaf == "_".to_string() {
           Exp {
             kind: ExpKind::Wildcard,
             data: Unknown,
-            source_paths: vec![path],
+            source_trace,
           }
         } else {
           Exp {
             kind: ExpKind::Name(leaf),
             data: Unknown,
-            source_paths: vec![path],
+            source_trace,
           }
         }
       }
@@ -403,6 +403,7 @@ impl TypedExp {
         use crate::parse::Encloser::*;
         use crate::parse::Operator::*;
         use sse::syntax::EncloserOrOperator::*;
+        let source_trace: SourceTrace = position.path.into();
         let mut children_iter = children.into_iter();
         match encloser_or_operator {
           Encloser(e) => match e {
@@ -410,6 +411,8 @@ impl TypedExp {
               if let Some(first_child) = children_iter.next() {
                 match &first_child {
                   TyntTree::Leaf(position, first_child_name) => {
+                    let source_trace: SourceTrace =
+                      position.path.clone().into();
                     if ".".is_prefix_of(&first_child_name) {
                       if children_iter.len() == 1 {
                         Some(Exp {
@@ -429,19 +432,16 @@ impl TypedExp {
                               ctx,
                             )?),
                           ),
-                          source_paths: vec![position.path.clone()],
+                          source_trace,
                         })
                       } else {
-                        return err(
-                          AccessorHadMultipleArguments,
-                          vec![position.path.clone()],
-                        );
+                        return err(AccessorHadMultipleArguments, source_trace);
                       }
                     } else {
                       match first_child_name.as_str() {
                         "fn" => {
                           let (
-                            source_path,
+                            source_trace,
                             arg_names,
                             arg_types,
                             _arg_metadata,
@@ -450,19 +450,19 @@ impl TypedExp {
                           ) = arg_list_and_return_type_from_tynt_tree(
                             children_iter.next().ok_or(CompileError::new(
                               InvalidFunction,
-                              vec![position.path.clone()],
+                              source_trace,
                             ))?,
                             structs,
                             aliases,
                             &vec![],
                           )?;
                           Some(Self::function_from_body_tree(
-                            source_path.clone(),
+                            source_trace.clone(),
                             children_iter.clone().collect(),
                             TypeState::Known(return_type.concretize(
                               structs,
                               skolems,
-                              vec![source_path.clone()],
+                              source_trace.clone(),
                             )?),
                             arg_names,
                             arg_types
@@ -471,7 +471,7 @@ impl TypedExp {
                                 Ok(TypeState::Known(t.concretize(
                                   structs,
                                   skolems,
-                                  vec![source_path.clone()],
+                                  source_trace.clone(),
                                 )?))
                               })
                               .collect::<CompileResult<Vec<TypeState>>>()?,
@@ -484,7 +484,7 @@ impl TypedExp {
                           if children_iter.len() < 2 {
                             return err(
                               NotEnoughLetBlockChildren,
-                              vec![position.path.clone()],
+                              source_trace,
                             );
                           }
                           let bindings_ast = children_iter.next().unwrap();
@@ -502,14 +502,16 @@ impl TypedExp {
                             Exp {
                               data: Unknown,
                               kind: ExpKind::Block(child_exps),
-                              source_paths: vec![position.path.clone()],
+                              source_trace: source_trace.clone(),
                             }
                           };
                           if let TyntTree::Inner(
-                            (_, Encloser(Square)),
+                            (position, Encloser(Square)),
                             binding_asts,
                           ) = bindings_ast
                           {
+                            let source_trace: SourceTrace =
+                              position.path.into();
                             if binding_asts.len() % 2 == 0 {
                               let mut binding_asts_iter =
                                 binding_asts.into_iter();
@@ -523,6 +525,8 @@ impl TypedExp {
                                   extract_metadata(name_ast)?;
                                 match name_ast {
                                   TyntTree::Leaf(position, name) => {
+                                    let source_trace =
+                                      position.path.clone().into();
                                     bindings.push((
                                       name,
                                       match name_metadata {
@@ -535,7 +539,7 @@ impl TypedExp {
                                                 InvalidVariableMetadata(
                                                   Metadata::Singular(tag),
                                                 ),
-                                                vec![position.path],
+                                                source_trace,
                                               )
                                             }
                                           }
@@ -543,7 +547,7 @@ impl TypedExp {
                                         Some(metadata) => {
                                           return err(
                                             InvalidVariableMetadata(metadata),
-                                            vec![position.path],
+                                            source_trace,
                                           )
                                         }
                                       },
@@ -556,7 +560,7 @@ impl TypedExp {
                                   TyntTree::Inner((position, _), _) => {
                                     return err(
                                       ExpectedBindingName,
-                                      vec![position.path],
+                                      position.path.into(),
                                     );
                                   }
                                 }
@@ -567,27 +571,24 @@ impl TypedExp {
                                   bindings,
                                   Box::new(body_exp),
                                 ),
-                                source_paths: vec![position.path.clone()],
+                                source_trace,
                               })
                             } else {
                               return err(
                                 OddNumberOfChildrenInLetBindings,
-                                vec![position.path.clone()],
+                                source_trace,
                               );
                             }
                           } else {
                             return err(
                               LetBindingsNotSquareBracketed,
-                              vec![position.path.clone()],
+                              source_trace,
                             );
                           }
                         }
                         "block" => {
                           if children_iter.is_empty() {
-                            return err(
-                              EmptyBlock,
-                              vec![position.path.clone()],
-                            );
+                            return err(EmptyBlock, source_trace);
                           }
                           let child_exps = children_iter
                             .clone()
@@ -600,15 +601,17 @@ impl TypedExp {
                           Some(Exp {
                             data: Unknown,
                             kind: ExpKind::Block(child_exps),
-                            source_paths: vec![position.path.clone()],
+                            source_trace,
                           })
                         }
                         "match" => {
                           let scrutinee = Self::try_from_tynt_tree(
-                            children_iter.next().ok_or(CompileError::new(
-                              MatchMissingScrutinee,
-                              vec![position.path.clone()],
-                            ))?,
+                            children_iter.next().ok_or_else(|| {
+                              CompileError::new(
+                                MatchMissingScrutinee,
+                                source_trace.clone(),
+                              )
+                            })?,
                             structs,
                             aliases,
                             skolems,
@@ -620,7 +623,7 @@ impl TypedExp {
                             let value_subtree =
                               children_iter.next().ok_or(CompileError::new(
                                 MatchIncompleteArm,
-                                vec![position.path.clone()],
+                                source_trace.clone(),
                               ))?;
                             arms.push((
                               Self::try_from_tynt_tree(
@@ -640,15 +643,12 @@ impl TypedExp {
                             ));
                           }
                           if arms.is_empty() {
-                            return err(
-                              MatchMissingArms,
-                              vec![position.path.clone()],
-                            );
+                            return err(MatchMissingArms, source_trace);
                           }
                           Some(Exp {
                             kind: Match(Box::new(scrutinee), arms),
                             data: Unknown,
-                            source_paths: vec![position.path.clone()],
+                            source_trace,
                           })
                         }
                         _ => None,
@@ -675,10 +675,10 @@ impl TypedExp {
                       .collect::<CompileResult<_>>()?,
                   ),
                   data: Unknown,
-                  source_paths: vec![position.path],
+                  source_trace,
                 })
               } else {
-                return err(EmptyList, vec![position.path.clone()]);
+                return err(EmptyList, source_trace);
               }
             }
             Square => todo!("array"),
@@ -711,13 +711,14 @@ impl TypedExp {
                     (position, Encloser(Parens)),
                     struct_signature_children,
                   ) => {
+                    let source_trace: SourceTrace = position.path.into();
                     let mut signature_leaves =
                       struct_signature_children.into_iter();
                     if let Some(TyntTree::Leaf(_, struct_name)) =
                       signature_leaves.next()
                     {
                       if signature_leaves.is_empty() {
-                        return err(InvalidStructName, vec![position.path]);
+                        return err(InvalidStructName, source_trace);
                       } else {
                         let generic_args: Vec<TypeState> = signature_leaves
                           .map(|signature_arg| {
@@ -732,7 +733,7 @@ impl TypedExp {
                               .concretize(
                                 structs,
                                 skolems,
-                                vec![position.path.clone()],
+                                source_trace.clone(),
                               )?,
                             ))
                           })
@@ -744,15 +745,15 @@ impl TypedExp {
                             s.clone().fill_generics_ordered(generic_args),
                           )
                         } else {
-                          return err(UnknownStructName, vec![position.path]);
+                          return err(UnknownStructName, source_trace);
                         }
                       }
                     } else {
-                      return err(InvalidStructName, vec![position.path]);
+                      return err(InvalidStructName, source_trace);
                     }
                   }
                   other => {
-                    return err(InvalidType(other), vec![position.path]);
+                    return err(InvalidType(other), source_trace);
                   }
                 });
               exp
@@ -816,11 +817,11 @@ impl TypedExp {
       Wildcard => false,
       Name(name) => {
         if !ctx.is_bound(name) {
-          return err(UnboundName(name.clone()), self.source_paths.clone());
+          return err(UnboundName(name.clone()), self.source_trace.clone());
         }
         ctx.constrain_name_type(
           name,
-          self.source_paths.clone(),
+          self.source_trace.clone(),
           &mut self.data,
         )?
       }
@@ -829,11 +830,11 @@ impl TypedExp {
           Number::Int(_) => TypeState::OneOf(vec![Type::I32, Type::U32]),
           Number::Float(_) => TypeState::Known(Type::F32),
         },
-        self.source_paths.clone(),
+        self.source_trace.clone(),
       )?,
       BooleanLiteral(_) => self
         .data
-        .constrain(TypeState::Known(Type::Bool), self.source_paths.clone())?,
+        .constrain(TypeState::Known(Type::Bool), self.source_trace.clone())?,
       Function(arg_names, body) => {
         if let TypeState::Known(f_type) = &mut self.data {
           let (arg_count, arg_type_states, return_type_state): (
@@ -849,13 +850,13 @@ impl TypedExp {
             _ => {
               return err(
                 FunctionExpressionHasNonFunctionType(f_type.clone()),
-                self.source_paths.clone(),
+                self.source_trace.clone(),
               )
             }
           };
           let return_type_changed = body
             .data
-            .mutually_constrain(return_type_state, self.source_paths.clone())?;
+            .mutually_constrain(return_type_state, self.source_trace.clone())?;
           if arg_count == arg_names.len() {
             for (name, t) in arg_names.iter().zip(arg_type_states) {
               ctx.bind(name, Variable::new(t.clone()))
@@ -867,11 +868,11 @@ impl TypedExp {
               .collect::<Vec<_>>();
             let fn_type_changed = self.data.constrain_fn_by_argument_types(
               argument_types,
-              self.source_paths.clone(),
+              self.source_trace.clone(),
             )?;
             return_type_changed || body_types_changed || fn_type_changed
           } else {
-            return err(WrongArity, self.source_paths.clone());
+            return err(WrongArity, self.source_trace.clone());
           }
         } else {
           todo!("I haven't implemented function type inference yet!!!")
@@ -882,7 +883,7 @@ impl TypedExp {
         if let Name(name) = &f.kind {
           anything_changed |= ctx.constrain_name_type(
             name,
-            self.source_paths.clone(),
+            self.source_trace.clone(),
             &mut f.data,
           )?;
         } else {
@@ -893,19 +894,19 @@ impl TypedExp {
             if args.len() == signature.arg_types.len() {
               anything_changed |= self.data.mutually_constrain(
                 &mut signature.return_type,
-                self.source_paths.clone(),
+                self.source_trace.clone(),
               )?;
               for (arg, t) in
                 args.iter_mut().zip(signature.arg_types.iter().cloned())
               {
                 anything_changed |=
-                  arg.data.constrain(t, self.source_paths.clone())?;
+                  arg.data.constrain(t, self.source_trace.clone())?;
               }
             } else {
-              return err(WrongArity, self.source_paths.clone());
+              return err(WrongArity, self.source_trace.clone());
             }
           } else {
-            return err(AppliedNonFunction, self.source_paths.clone());
+            return err(AppliedNonFunction, self.source_trace.clone());
           }
         }
         for arg in args.iter_mut() {
@@ -913,7 +914,7 @@ impl TypedExp {
         }
         anything_changed |= f.data.constrain_fn_by_argument_types(
           args.iter().map(|arg| arg.data.clone()).collect(),
-          self.source_paths.clone(),
+          self.source_trace.clone(),
         )?;
         anything_changed |= f.propagate_types(ctx)?;
         anything_changed
@@ -932,14 +933,14 @@ impl TypedExp {
                     .find(|f| f.name == *field_name)
                     .ok_or(CompileError::new(
                       NoSuchField,
-                      self.source_paths.clone(),
+                      self.source_trace.clone(),
                     ))?
                     .field_type
                 },
-                self.source_paths.clone(),
+                self.source_trace.clone(),
               )?;
             } else {
-              return err(AccessorOnNonStruct, self.source_paths.clone())?;
+              return err(AccessorOnNonStruct, self.source_trace.clone())?;
             }
           }
           anything_changed
@@ -947,11 +948,11 @@ impl TypedExp {
         Accessor::Swizzle(fields) => {
           let mut anything_changed = self.data.constrain(
             swizzle_accessor_typestate(&subexp.data, fields),
-            self.source_paths.clone(),
+            self.source_trace.clone(),
           )?;
           anything_changed |= subexp.data.constrain(
             swizzle_accessed_possibilities(fields),
-            self.source_paths.clone(),
+            self.source_trace.clone(),
           )?;
           anything_changed |= subexp.propagate_types(ctx)?;
           anything_changed
@@ -960,7 +961,7 @@ impl TypedExp {
       Let(bindings, body) => {
         let mut anything_changed = body
           .data
-          .mutually_constrain(&mut self.data, self.source_paths.clone())?;
+          .mutually_constrain(&mut self.data, self.source_trace.clone())?;
         for (name, _, value) in bindings.iter_mut() {
           anything_changed |= value.propagate_types(ctx)?;
           ctx.bind(name, Variable::new(value.data.clone()));
@@ -969,7 +970,7 @@ impl TypedExp {
         for (name, _, value) in bindings.iter_mut() {
           anything_changed |= value
             .data
-            .constrain(ctx.unbind(name).typestate, self.source_paths.clone())?;
+            .constrain(ctx.unbind(name).typestate, self.source_trace.clone())?;
         }
         anything_changed
       }
@@ -981,11 +982,11 @@ impl TypedExp {
           anything_changed |= value.propagate_types(ctx)?;
           anything_changed |= case.data.mutually_constrain(
             &mut scrutinee.data,
-            self.source_paths.clone(),
+            self.source_trace.clone(),
           )?;
           anything_changed |= value
             .data
-            .mutually_constrain(&mut self.data, self.source_paths.clone())?;
+            .mutually_constrain(&mut self.data, self.source_trace.clone())?;
         }
         anything_changed
       }
@@ -997,9 +998,9 @@ impl TypedExp {
         anything_changed |= self.data.mutually_constrain(
           &mut children
             .last_mut()
-            .ok_or(CompileError::new(EmptyBlock, self.source_paths.clone()))?
+            .ok_or(CompileError::new(EmptyBlock, self.source_trace.clone()))?
             .data,
-          self.source_paths.clone(),
+          self.source_trace.clone(),
         )?;
         anything_changed
       }
@@ -1191,11 +1192,11 @@ impl TypedExp {
               if ctx.get_variable_kind(var_name) != &VariableKind::Var {
                 return err(
                   AssignmentTargetMustBeVariable,
-                  self.source_paths.clone(),
+                  self.source_trace.clone(),
                 );
               }
             } else {
-              return err(InvalidAssignmentTarget, self.source_paths.clone());
+              return err(InvalidAssignmentTarget, self.source_trace.clone());
             }
           }
         }
@@ -1320,14 +1321,14 @@ impl TypedExp {
                   if let Some(monomorphized_struct) = abstract_struct
                     .generate_monomorphized(
                       arg_types.clone(),
-                      self.source_paths.clone(),
+                      self.source_trace.clone(),
                     )
                   {
                     std::mem::swap(
                       f_name,
                       &mut monomorphized_struct.concretized_name(
                         &base_ctx.structs,
-                        self.source_paths.clone(),
+                        self.source_trace.clone(),
                       )?,
                     );
                     self.data.with_dereferenced_mut(|typestate| {
@@ -1352,7 +1353,7 @@ impl TypedExp {
                       self.data.unwrap_known().clone(),
                       base_ctx,
                       new_ctx,
-                      f.borrow().body.source_paths.clone(),
+                      f.borrow().body.source_trace.clone(),
                     )?;
                   std::mem::swap(f_name, &mut monomorphized.name.clone());
                   new_ctx.add_abstract_function(monomorphized);
