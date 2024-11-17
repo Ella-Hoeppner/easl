@@ -170,21 +170,19 @@ impl AbstractType {
     &self,
     structs: &Vec<AbstractStruct>,
     skolems: &Vec<String>,
+    source_paths: Vec<Vec<usize>>,
   ) -> CompileResult<Type> {
     match self {
       GenericOr::Generic(name) => {
         if skolems.contains(name) {
           Ok(Type::Skolem(name.clone()))
         } else {
-          err(
-            UnrecognizedGeneric(name.clone()),
-            vec![/*todo!("source paths")*/],
-          )
+          err(UnrecognizedGeneric(name.clone()), source_paths)
         }
       }
-      GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => {
-        Ok(Type::Struct(s.concretize(structs, skolems)?))
-      }
+      GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => Ok(
+        Type::Struct(s.concretize(structs, skolems, source_paths)?),
+      ),
       GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => Ok(t.clone()),
     }
   }
@@ -525,7 +523,11 @@ impl TypeState {
       })
     })
   }
-  pub fn constrain(&mut self, mut other: TypeState) -> CompileResult<bool> {
+  pub fn constrain(
+    &mut self,
+    mut other: TypeState,
+    source_paths: Vec<Vec<usize>>,
+  ) -> CompileResult<bool> {
     if *self == other {
       return Ok(false);
     }
@@ -543,20 +545,22 @@ impl TypeState {
             if !current_type.compatible(&other_type) {
               return err(
                 IncompatibleTypes(this.clone(), other.clone()),
-                vec![/*todo!("source paths")*/],
+                source_paths,
               );
             }
             match (current_type, other_type) {
               (Type::Function(signature), Type::Function(other_signature)) => {
-                let mut changed = signature
-                  .return_type
-                  .constrain(other_signature.return_type.clone())?;
+                let mut changed = signature.return_type.constrain(
+                  other_signature.return_type.clone(),
+                  source_paths.clone(),
+                )?;
                 for (t, other_t) in signature
                   .arg_types
                   .iter_mut()
                   .zip(other_signature.arg_types.iter_mut())
                 {
-                  changed |= t.constrain(other_t.clone())?;
+                  changed |=
+                    t.constrain(other_t.clone(), source_paths.clone())?;
                 }
                 changed
               }
@@ -565,8 +569,10 @@ impl TypeState {
                 for (t, other_t) in
                   s.fields.iter_mut().zip(other_s.fields.iter_mut())
                 {
-                  changed |=
-                    t.field_type.constrain(other_t.field_type.clone())?;
+                  changed |= t.field_type.constrain(
+                    other_t.field_type.clone(),
+                    source_paths.clone(),
+                  )?;
                 }
                 changed
               }
@@ -599,7 +605,7 @@ impl TypeState {
             } else {
               return err(
                 IncompatibleTypes(this.clone(), other.clone()),
-                vec![/*todo!("source paths")*/],
+                source_paths,
               );
             }
           }
@@ -607,7 +613,7 @@ impl TypeState {
             if !t.compatible_with_any(&possibilities) {
               return err(
                 IncompatibleTypes(this.clone(), other.clone()),
-                vec![/*todo!("source paths")*/],
+                source_paths,
               );
             }
             false
@@ -621,14 +627,16 @@ impl TypeState {
   pub fn mutually_constrain(
     &mut self,
     other: &mut TypeState,
+    source_paths: Vec<Vec<usize>>,
   ) -> CompileResult<bool> {
-    let self_changed = self.constrain(other.clone())?;
-    let other_changed = other.constrain(self.clone())?;
+    let self_changed = self.constrain(other.clone(), source_paths.clone())?;
+    let other_changed = other.constrain(self.clone(), source_paths)?;
     Ok(self_changed || other_changed)
   }
   pub fn constrain_fn_by_argument_types(
     &mut self,
     mut arg_types: Vec<TypeState>,
+    source_paths: Vec<Vec<usize>>,
   ) -> CompileResult<bool> {
     self.with_dereferenced_mut(|typestate| match typestate {
       TypeState::OneOf(possibilities) => {
@@ -649,7 +657,7 @@ impl TypeState {
         if new_possibilities.is_empty() {
           err(
             FunctionArgumentTypesIncompatible(typestate.clone(), arg_types),
-            vec![/*todo!("source paths")*/],
+            source_paths,
           )
         } else {
           std::mem::swap(
@@ -660,9 +668,10 @@ impl TypeState {
         }
       }
       TypeState::Known(t) => match t {
-        Type::Function(signature) => {
-          Ok(signature.mutually_constrain_arguments(&mut arg_types)?)
-        }
+        Type::Function(signature) => Ok(
+          signature
+            .mutually_constrain_arguments(&mut arg_types, source_paths)?,
+        ),
         other => panic!(
           "tried to constrain fn on non-fn \n\n{arg_types:#?} \n\n{other:#?}"
         ),
@@ -928,15 +937,21 @@ impl Context {
   ) -> CompileResult<bool> {
     let abstract_signatures = self.get_abstract_function_signatures(name);
     if abstract_signatures.is_empty() {
-      t.mutually_constrain(self.get_typestate_mut(name, source_paths)?)
+      t.mutually_constrain(
+        self.get_typestate_mut(name, source_paths.clone())?,
+        source_paths,
+      )
     } else {
-      t.constrain(TypeState::OneOf(
-        abstract_signatures
-          .iter()
-          .cloned()
-          .map(|signature| Type::Function(Box::new(signature.concretize())))
-          .collect(),
-      ))
+      t.constrain(
+        TypeState::OneOf(
+          abstract_signatures
+            .iter()
+            .cloned()
+            .map(|signature| Type::Function(Box::new(signature.concretize())))
+            .collect(),
+        ),
+        source_paths,
+      )
     }
   }
   pub fn bind(&mut self, name: &str, v: Variable) {

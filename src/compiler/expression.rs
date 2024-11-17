@@ -457,18 +457,22 @@ impl TypedExp {
                             &vec![],
                           )?;
                           Some(Self::function_from_body_tree(
-                            source_path,
+                            source_path.clone(),
                             children_iter.clone().collect(),
-                            TypeState::Known(
-                              return_type.concretize(structs, skolems)?,
-                            ),
+                            TypeState::Known(return_type.concretize(
+                              structs,
+                              skolems,
+                              vec![source_path.clone()],
+                            )?),
                             arg_names,
                             arg_types
                               .into_iter()
                               .map(|t| {
-                                Ok(TypeState::Known(
-                                  t.concretize(structs, skolems)?,
-                                ))
+                                Ok(TypeState::Known(t.concretize(
+                                  structs,
+                                  skolems,
+                                  vec![source_path.clone()],
+                                )?))
                               })
                               .collect::<CompileResult<Vec<TypeState>>>()?,
                             structs,
@@ -725,7 +729,11 @@ impl TypedExp {
                                 &vec![],
                                 skolems,
                               )?
-                              .concretize(structs, skolems)?,
+                              .concretize(
+                                structs,
+                                skolems,
+                                vec![position.path.clone()],
+                              )?,
                             ))
                           })
                           .collect::<CompileResult<Vec<TypeState>>>()?;
@@ -749,7 +757,9 @@ impl TypedExp {
                 });
               exp
             }
-            ExpressionComment => todo!("comments"),
+            ExpressionComment => unreachable!(
+              "expression comment encountered, this should have been stripped"
+            ),
           },
         }
       }
@@ -814,11 +824,16 @@ impl TypedExp {
           &mut self.data,
         )?
       }
-      NumberLiteral(num) => self.data.constrain(match num {
-        Number::Int(_) => TypeState::OneOf(vec![Type::I32, Type::U32]),
-        Number::Float(_) => TypeState::Known(Type::F32),
-      })?,
-      BooleanLiteral(_) => self.data.constrain(TypeState::Known(Type::Bool))?,
+      NumberLiteral(num) => self.data.constrain(
+        match num {
+          Number::Int(_) => TypeState::OneOf(vec![Type::I32, Type::U32]),
+          Number::Float(_) => TypeState::Known(Type::F32),
+        },
+        self.source_paths.clone(),
+      )?,
+      BooleanLiteral(_) => self
+        .data
+        .constrain(TypeState::Known(Type::Bool), self.source_paths.clone())?,
       Function(arg_names, body) => {
         if let TypeState::Known(f_type) = &mut self.data {
           let (arg_count, arg_type_states, return_type_state): (
@@ -838,8 +853,9 @@ impl TypedExp {
               )
             }
           };
-          let return_type_changed =
-            body.data.mutually_constrain(return_type_state)?;
+          let return_type_changed = body
+            .data
+            .mutually_constrain(return_type_state, self.source_paths.clone())?;
           if arg_count == arg_names.len() {
             for (name, t) in arg_names.iter().zip(arg_type_states) {
               ctx.bind(name, Variable::new(t.clone()))
@@ -849,8 +865,10 @@ impl TypedExp {
               .iter()
               .map(|name| ctx.unbind(name).typestate)
               .collect::<Vec<_>>();
-            let fn_type_changed =
-              self.data.constrain_fn_by_argument_types(argument_types)?;
+            let fn_type_changed = self.data.constrain_fn_by_argument_types(
+              argument_types,
+              self.source_paths.clone(),
+            )?;
             return_type_changed || body_types_changed || fn_type_changed
           } else {
             return err(WrongArity, self.source_paths.clone());
@@ -873,12 +891,15 @@ impl TypedExp {
         if let TypeState::Known(f_type) = &mut f.data {
           if let Type::Function(signature) = f_type {
             if args.len() == signature.arg_types.len() {
-              anything_changed |=
-                self.data.mutually_constrain(&mut signature.return_type)?;
+              anything_changed |= self.data.mutually_constrain(
+                &mut signature.return_type,
+                self.source_paths.clone(),
+              )?;
               for (arg, t) in
                 args.iter_mut().zip(signature.arg_types.iter().cloned())
               {
-                anything_changed |= arg.data.constrain(t)?;
+                anything_changed |=
+                  arg.data.constrain(t, self.source_paths.clone())?;
               }
             } else {
               return err(WrongArity, self.source_paths.clone());
@@ -892,6 +913,7 @@ impl TypedExp {
         }
         anything_changed |= f.data.constrain_fn_by_argument_types(
           args.iter().map(|arg| arg.data.clone()).collect(),
+          self.source_paths.clone(),
         )?;
         anything_changed |= f.propagate_types(ctx)?;
         anything_changed
@@ -902,17 +924,20 @@ impl TypedExp {
           anything_changed |= subexp.propagate_types(ctx)?;
           if let Known(t) = &mut subexp.data {
             if let Type::Struct(s) = t {
-              anything_changed |= self.data.mutually_constrain({
-                &mut s
-                  .fields
-                  .iter_mut()
-                  .find(|f| f.name == *field_name)
-                  .ok_or(CompileError::new(
-                    NoSuchField,
-                    self.source_paths.clone(),
-                  ))?
-                  .field_type
-              })?;
+              anything_changed |= self.data.mutually_constrain(
+                {
+                  &mut s
+                    .fields
+                    .iter_mut()
+                    .find(|f| f.name == *field_name)
+                    .ok_or(CompileError::new(
+                      NoSuchField,
+                      self.source_paths.clone(),
+                    ))?
+                    .field_type
+                },
+                self.source_paths.clone(),
+              )?;
             } else {
               return err(AccessorOnNonStruct, self.source_paths.clone())?;
             }
@@ -920,27 +945,31 @@ impl TypedExp {
           anything_changed
         }
         Accessor::Swizzle(fields) => {
-          let mut anything_changed = self
-            .data
-            .constrain(swizzle_accessor_typestate(&subexp.data, fields))?;
-          anything_changed |= subexp
-            .data
-            .constrain(swizzle_accessed_possibilities(fields))?;
+          let mut anything_changed = self.data.constrain(
+            swizzle_accessor_typestate(&subexp.data, fields),
+            self.source_paths.clone(),
+          )?;
+          anything_changed |= subexp.data.constrain(
+            swizzle_accessed_possibilities(fields),
+            self.source_paths.clone(),
+          )?;
           anything_changed |= subexp.propagate_types(ctx)?;
           anything_changed
         }
       },
       Let(bindings, body) => {
-        let mut anything_changed =
-          body.data.mutually_constrain(&mut self.data)?;
+        let mut anything_changed = body
+          .data
+          .mutually_constrain(&mut self.data, self.source_paths.clone())?;
         for (name, _, value) in bindings.iter_mut() {
           anything_changed |= value.propagate_types(ctx)?;
           ctx.bind(name, Variable::new(value.data.clone()));
         }
         anything_changed |= body.propagate_types(ctx)?;
         for (name, _, value) in bindings.iter_mut() {
-          anything_changed |=
-            value.data.constrain(ctx.unbind(name).typestate)?;
+          anything_changed |= value
+            .data
+            .constrain(ctx.unbind(name).typestate, self.source_paths.clone())?;
         }
         anything_changed
       }
@@ -950,9 +979,13 @@ impl TypedExp {
         for (case, value) in arms.iter_mut() {
           anything_changed |= case.propagate_types(ctx)?;
           anything_changed |= value.propagate_types(ctx)?;
-          anything_changed |=
-            case.data.mutually_constrain(&mut scrutinee.data)?;
-          anything_changed |= value.data.mutually_constrain(&mut self.data)?;
+          anything_changed |= case.data.mutually_constrain(
+            &mut scrutinee.data,
+            self.source_paths.clone(),
+          )?;
+          anything_changed |= value
+            .data
+            .mutually_constrain(&mut self.data, self.source_paths.clone())?;
         }
         anything_changed
       }
@@ -966,6 +999,7 @@ impl TypedExp {
             .last_mut()
             .ok_or(CompileError::new(EmptyBlock, self.source_paths.clone()))?
             .data,
+          self.source_paths.clone(),
         )?;
         anything_changed
       }
@@ -1283,13 +1317,18 @@ impl TypedExp {
                 {
                   let arg_types: Vec<Type> =
                     args.iter().map(|arg| arg.data.unwrap_known()).collect();
-                  if let Some(monomorphized_struct) =
-                    abstract_struct.generate_monomorphized(arg_types.clone())
+                  if let Some(monomorphized_struct) = abstract_struct
+                    .generate_monomorphized(
+                      arg_types.clone(),
+                      self.source_paths.clone(),
+                    )
                   {
                     std::mem::swap(
                       f_name,
-                      &mut monomorphized_struct
-                        .concretized_name(&base_ctx.structs)?,
+                      &mut monomorphized_struct.concretized_name(
+                        &base_ctx.structs,
+                        self.source_paths.clone(),
+                      )?,
                     );
                     self.data.with_dereferenced_mut(|typestate| {
                       std::mem::swap(
@@ -1305,7 +1344,7 @@ impl TypedExp {
                   }
                 }
               }
-              FunctionImplementationKind::Composite(_) => {
+              FunctionImplementationKind::Composite(f) => {
                 if !abstract_signature.generic_args.is_empty() {
                   let monomorphized = abstract_signature
                     .generate_monomorphized(
@@ -1313,6 +1352,7 @@ impl TypedExp {
                       self.data.unwrap_known().clone(),
                       base_ctx,
                       new_ctx,
+                      f.borrow().body.source_paths.clone(),
                     )?;
                   std::mem::swap(f_name, &mut monomorphized.name.clone());
                   new_ctx.add_abstract_function(monomorphized);

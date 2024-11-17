@@ -61,6 +61,7 @@ pub struct UntypedStruct {
   pub name: String,
   pub fields: Vec<UntypedStructField>,
   pub generic_args: Vec<String>,
+  source_paths: Vec<Vec<usize>>,
 }
 
 impl UntypedStruct {
@@ -68,6 +69,7 @@ impl UntypedStruct {
     name: String,
     generic_args: Vec<String>,
     field_asts: Vec<TyntTree>,
+    source_paths: Vec<Vec<usize>>,
   ) -> CompileResult<Self> {
     Ok(Self {
       name,
@@ -76,6 +78,7 @@ impl UntypedStruct {
         .into_iter()
         .map(UntypedStructField::from_field_tree)
         .collect::<CompileResult<_>>()?,
+      source_paths,
     })
   }
   pub fn assign_types(
@@ -95,6 +98,7 @@ impl UntypedStruct {
       generic_args: self.generic_args.clone(),
       filled_generics: HashMap::new(),
       abstract_ancestor: None,
+      source_paths: self.source_paths,
     })
   }
 }
@@ -124,13 +128,16 @@ impl AbstractStructField {
     &self,
     structs: &Vec<AbstractStruct>,
     skolems: &Vec<String>,
+    source_paths: Vec<Vec<usize>>,
   ) -> CompileResult<StructField> {
     Ok(StructField {
       metadata: self.metadata.clone(),
       name: self.name.clone(),
-      field_type: TypeState::Known(
-        self.field_type.concretize(structs, skolems)?,
-      ),
+      field_type: TypeState::Known(self.field_type.concretize(
+        structs,
+        skolems,
+        source_paths,
+      )?),
     })
   }
   pub fn fill_generics(
@@ -209,6 +216,7 @@ pub struct AbstractStruct {
   pub fields: Vec<AbstractStructField>,
   pub generic_args: Vec<String>,
   pub abstract_ancestor: Option<Box<Self>>,
+  pub source_paths: Vec<Vec<usize>>,
 }
 
 impl AbstractStruct {
@@ -223,6 +231,7 @@ impl AbstractStruct {
     &self,
     structs: &Vec<AbstractStruct>,
     skolems: &Vec<String>,
+    source_paths: Vec<Vec<usize>>,
   ) -> CompileResult<Struct> {
     Ok(Struct {
       abstract_ancestor: self.clone(),
@@ -230,7 +239,7 @@ impl AbstractStruct {
       fields: self
         .fields
         .iter()
-        .map(|f| f.concretize(structs, skolems))
+        .map(|f| f.concretize(structs, skolems, source_paths.clone()))
         .collect::<CompileResult<Vec<_>>>()?,
     })
   }
@@ -245,7 +254,10 @@ impl AbstractStruct {
         let field_types: Vec<Type> = self
           .fields
           .iter()
-          .map(|f| f.field_type.concretize(structs, &vec![]))
+          .map(|f| {
+            f.field_type
+              .concretize(structs, &vec![], self.source_paths.clone())
+          })
           .collect::<CompileResult<Vec<Type>>>()?;
         let monomorphized_name = self.monomorphized_name(&field_types);
         let fields = self
@@ -294,8 +306,9 @@ impl AbstractStruct {
   pub fn concretized_name(
     &self,
     structs: &Vec<AbstractStruct>,
+    source_paths: Vec<Vec<usize>>,
   ) -> CompileResult<String> {
-    let s = self.concretize(structs, &vec![])?;
+    let s = self.concretize(structs, &vec![], source_paths)?;
     Ok(
       self.monomorphized_name(
         &s.fields
@@ -308,6 +321,7 @@ impl AbstractStruct {
   pub fn generate_monomorphized(
     &self,
     field_types: Vec<Type>,
+    mut source_paths: Vec<Vec<usize>>,
   ) -> Option<AbstractStruct> {
     if self.generic_args.is_empty() {
       return None;
@@ -327,6 +341,7 @@ impl AbstractStruct {
         field_types[first_usage_index].clone()
       })
       .collect();
+    source_paths.append(&mut self.source_paths.clone());
     Some(AbstractStruct {
       name: self.name.clone(),
       filled_generics: generic_args
@@ -363,6 +378,7 @@ impl AbstractStruct {
         })
         .collect(),
       abstract_ancestor: Some(self.clone().into()),
+      source_paths: self.source_paths.clone(),
     })
   }
   pub fn fill_generics(self, generics: &HashMap<String, TypeState>) -> Struct {
@@ -420,6 +436,7 @@ impl AbstractStruct {
         .chain(generics.into_iter())
         .collect(),
       abstract_ancestor: Some(abstract_ancestor),
+      source_paths: self.source_paths,
     }
   }
   pub fn fill_abstract_generics(

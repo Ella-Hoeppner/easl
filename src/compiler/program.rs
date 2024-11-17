@@ -54,6 +54,7 @@ impl Program {
                     struct_name.clone(),
                     vec![],
                     children_iter.cloned().collect(),
+                    vec![position.path.clone()],
                   )?)
                 }
                 TyntTree::Inner(
@@ -79,6 +80,7 @@ impl Program {
                         struct_name,
                         signature_leaves.collect(),
                         children_iter.cloned().collect(),
+                        vec![position.path.clone()],
                       )?)
                     }
                   } else {
@@ -184,6 +186,7 @@ impl Program {
               };
               let (name, type_ast) =
                 read_type_annotated_name(name_and_type_ast)?;
+              let type_source_path = type_ast.position().path.clone();
               top_level_vars.push(TopLevelVar {
                 name,
                 metadata,
@@ -195,7 +198,11 @@ impl Program {
                   &vec![],
                   &vec![],
                 )?
-                .concretize(&structs, &vec![])?,
+                .concretize(
+                  &structs,
+                  &vec![],
+                  vec![type_source_path],
+                )?,
               })
             }
             "def" => {
@@ -273,18 +280,22 @@ impl Program {
                   return_metadata,
                   metadata,
                   body: TypedExp::function_from_body_tree(
-                    source_path,
+                    source_path.clone(),
                     children_iter.collect(),
-                    TypeState::Known(
-                      return_type.concretize(&structs, &generic_arg_names)?,
-                    ),
+                    TypeState::Known(return_type.concretize(
+                      &structs,
+                      &generic_arg_names,
+                      vec![source_path.clone()],
+                    )?),
                     arg_names,
                     arg_types
                       .iter()
                       .map(|t| {
-                        Ok(TypeState::Known(
-                          t.concretize(&structs, &generic_arg_names)?,
-                        ))
+                        Ok(TypeState::Known(t.concretize(
+                          &structs,
+                          &generic_arg_names,
+                          vec![source_path.clone()],
+                        )?))
                       })
                       .collect::<CompileResult<Vec<TypeState>>>()?,
                     &structs,
