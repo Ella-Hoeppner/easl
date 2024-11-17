@@ -15,7 +15,7 @@ impl Metadata {
   pub fn from_metadata_tree(ast: TyntTree) -> CompileResult<Self> {
     match ast {
       TyntTree::Leaf(_, singular) => Ok(Self::Singular(singular)),
-      TyntTree::Inner((_, Encloser(Curly)), map_fields) => {
+      TyntTree::Inner((position, Encloser(Curly)), map_fields) => {
         if map_fields.len() % 2 == 0 {
           Ok(Self::Map(
             map_fields
@@ -24,7 +24,10 @@ impl Metadata {
                 if let TyntTree::Leaf(_, field_string) = field {
                   Ok(field_string)
                 } else {
-                  err(InvalidMetadata("fields must all be leaves".to_string()))
+                  err(
+                    InvalidMetadata("fields must all be leaves".to_string()),
+                    vec![position.path.clone()],
+                  )
                 }
               })
               .collect::<CompileResult<Vec<String>>>()?
@@ -33,10 +36,16 @@ impl Metadata {
               .collect(),
           ))
         } else {
-          err(InvalidMetadata("fields must all be leaves".to_string()))
+          err(
+            InvalidMetadata("fields must all be leaves".to_string()),
+            vec![position.path.clone()],
+          )
         }
       }
-      _ => err(InvalidMetadata("fields must all be leaves".to_string())),
+      _ => err(
+        InvalidMetadata("fields must all be leaves".to_string()),
+        vec![ast.position().path.clone()],
+      ),
     }
   }
   pub fn compile(self) -> String {

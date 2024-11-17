@@ -24,9 +24,10 @@ pub struct UntypedStructField {
 
 impl UntypedStructField {
   fn from_field_tree(ast: TyntTree) -> CompileResult<Self> {
+    let path = ast.position().path.clone();
     let (type_ast, inner_ast) = extract_type_annotation_ast(ast)?;
     let type_ast =
-      type_ast.ok_or(CompileError::from(StructFieldMissingType))?;
+      type_ast.ok_or(CompileError::new(StructFieldMissingType, vec![path]))?;
     let (metadata, name) = extract_metadata(inner_ast)?;
     Ok(Self {
       metadata,

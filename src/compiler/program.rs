@@ -4,7 +4,7 @@ use sse::syntax::EncloserOrOperator;
 
 use crate::{
   compiler::{
-    error::err,
+    error::{err, CompileError},
     expression::arg_list_and_return_type_from_tynt_tree,
     functions::AbstractFunctionSignature,
     metadata::extract_metadata,
@@ -39,9 +39,13 @@ impl Program {
       use crate::parse::Encloser::*;
       use sse::syntax::EncloserOrOperator::*;
       let (metadata, tree_body) = extract_metadata(tree.clone())?;
-      if let TyntTree::Inner((_, Encloser(Parens)), children) = &tree_body {
+      if let TyntTree::Inner((position, Encloser(Parens)), children) =
+        &tree_body
+      {
         let mut children_iter = children.into_iter();
-        if let Some(TyntTree::Leaf(_, first_child)) = children_iter.next() {
+        if let Some(TyntTree::Leaf(position, first_child)) =
+          children_iter.next()
+        {
           if first_child == "struct" {
             if let Some(struct_name) = children_iter.next() {
               match struct_name {
@@ -52,18 +56,24 @@ impl Program {
                     children_iter.cloned().collect(),
                   )?)
                 }
-                TyntTree::Inner((_, Encloser(Parens)), signature_children) => {
+                TyntTree::Inner(
+                  (position, Encloser(Parens)),
+                  signature_children,
+                ) => {
                   let mut signature_leaves = signature_children
                     .into_iter()
                     .map(|child| match child {
                       TyntTree::Leaf(_, name) => Ok(name.clone()),
-                      _ => err(InvalidStructName),
+                      _ => err(InvalidStructName, vec![]),
                     })
                     .collect::<CompileResult<Vec<String>>>()?
                     .into_iter();
                   if let Some(struct_name) = signature_leaves.next() {
                     if signature_leaves.is_empty() {
-                      return err(InvalidStructName);
+                      return err(
+                        InvalidStructName,
+                        vec![position.path.clone()],
+                      );
                     } else {
                       untyped_structs.push(UntypedStruct::from_field_trees(
                         struct_name,
@@ -72,22 +82,30 @@ impl Program {
                       )?)
                     }
                   } else {
-                    return err(InvalidStructName);
+                    return err(InvalidStructName, vec![position.path.clone()]);
                   }
                 }
-                _ => return err(InvalidStructName),
+                TyntTree::Inner((position, _), _) => {
+                  return err(InvalidStructName, vec![position.path.clone()])
+                }
               }
             } else {
-              return err(InvalidStructDefinition);
+              return err(InvalidStructDefinition, vec![position.path.clone()]);
             }
           } else {
             non_struct_trees.push((metadata, tree_body))
           }
         } else {
-          return err(UnrecognizedTopLevelForm(tree_body));
+          return err(
+            UnrecognizedTopLevelForm(tree_body.clone()),
+            vec![position.path.clone()],
+          );
         }
       } else {
-        return err(UnrecognizedTopLevelForm(tree_body));
+        return err(
+          UnrecognizedTopLevelForm(tree_body),
+          vec![tree.position().path.clone()],
+        );
       }
     }
     let mut structs = built_in_structs();
@@ -107,10 +125,13 @@ impl Program {
     for (metadata, tree) in non_struct_trees.into_iter() {
       use crate::parse::Encloser::*;
       use sse::syntax::EncloserOrOperator::*;
-      if let TyntTree::Inner((parens_span, Encloser(Parens)), children) = tree {
+      if let TyntTree::Inner((parens_position, Encloser(Parens)), children) =
+        tree
+      {
         let mut children_iter = children.into_iter();
         let first_child = children_iter.next();
-        if let Some(TyntTree::Leaf(first_child_span, first_child)) = first_child
+        if let Some(TyntTree::Leaf(first_child_position, first_child)) =
+          first_child
         {
           match first_child.as_str() {
             "var" => {
@@ -119,7 +140,7 @@ impl Program {
                 2 => {
                   let attributes_ast = children_iter.next().unwrap();
                   if let TyntTree::Inner(
-                    (_, Encloser(Square)),
+                    (position, Encloser(Square)),
                     attribute_asts,
                   ) = attributes_ast
                   {
@@ -131,24 +152,34 @@ impl Program {
                         {
                           Ok(attribute_string)
                         } else {
-                          err(InvalidTopLevelVar(
-                            "Expected leaf for attribute, found inner form"
-                              .to_string(),
-                          ))
+                          err(
+                            InvalidTopLevelVar(
+                              "Expected leaf for attribute, found inner form"
+                                .to_string(),
+                            ),
+                            vec![position.path.clone()],
+                          )
                         }
                       })
                       .collect::<CompileResult<_>>()?;
                     (attributes, children_iter.next().unwrap())
                   } else {
-                    return err(InvalidTopLevelVar(
-                      "Expected square-bracket enclosed attributes".to_string(),
-                    ));
+                    return err(
+                      InvalidTopLevelVar(
+                        "Expected square-bracket enclosed attributes"
+                          .to_string(),
+                      ),
+                      vec![first_child_position.path.clone()],
+                    );
                   }
                 }
                 _ => {
-                  return err(InvalidTopLevelVar(
-                    "Invalid number of inner forms".to_string(),
-                  ))
+                  return err(
+                    InvalidTopLevelVar(
+                      "Invalid number of inner forms".to_string(),
+                    ),
+                    vec![first_child_position.path.clone()],
+                  )
                 }
               };
               let (name, type_ast) =
@@ -169,114 +200,14 @@ impl Program {
             }
             "def" => {
               todo!()
-              /*let name_ast = children_iter
-                .next()
-                .ok_or(InvalidDef("Missing Name".to_string()))?;
-              if let TyntTree::Leaf(_, name) = name_ast {
-                let value_ast = children_iter
-                  .next()
-                  .ok_or(InvalidDef("Missing Value".to_string()))?;
-                match value_ast {
-                  TyntTree::Inner(
-                    (fn_range, Encloser(Parens)),
-                    value_children,
-                  ) => {
-                    let mut value_children_iter = value_children.into_iter();
-                    if let Some(TyntTree::Leaf(fn_symbol_range, first_leaf)) =
-                      value_children_iter.next()
-                    {
-                      if first_leaf == "fn".to_string() {
-                        let signature_ast = value_children_iter
-                          .next()
-                          .ok_or(FunctionSignatureMissingArgumentList)?;
-                        if let TyntTree::Inner(
-                          (signature_range, Operator(TypeAnnotation)),
-                          args_and_return_type,
-                        ) = signature_ast
-                        {
-                          let (return_metadata, return_type_ast) =
-                            extract_metadata(args_and_return_type[1].clone())?;
-                          let arg_list = args_and_return_type[0].clone();
-                          if let TyntTree::Inner(
-                            (arg_list_range, Encloser(Square)),
-                            arg_children,
-                          ) = arg_list
-                          {
-                            let (arg_metadata, arg_asts): (
-                              Vec<Option<Metadata>>,
-                              Vec<TyntTree>,
-                            ) = arg_children
-                              .into_iter()
-                              .map(|arg| extract_metadata(arg))
-                              .collect::<CompileResult<_>>()?;
-                            let metadata_stripped_fn_ast = TyntTree::Inner(
-                              (fn_range, Encloser(Parens)),
-                              vec![
-                                TyntTree::Leaf(
-                                  fn_symbol_range,
-                                  "fn".to_string(),
-                                ),
-                                TyntTree::Inner(
-                                  (signature_range, Operator(TypeAnnotation)),
-                                  vec![
-                                    TyntTree::Inner(
-                                      (arg_list_range, Encloser(Square)),
-                                      arg_asts,
-                                    ),
-                                    return_type_ast,
-                                  ],
-                                ),
-                              ]
-                              .into_iter()
-                              .chain(value_children_iter)
-                              .collect(),
-                            );
-                            global_context.abstract_functions.push(
-                              AbstractFunctionSignature {
-                                name,
-                                generic_args: vec![],
-                                arg_types: todo!(),
-                                return_type: todo!(),
-                                implementation:
-                                  FunctionImplementationKind::Composite(
-                                    TopLevelFunction {
-                                      name,
-                                      arg_metadata,
-                                      return_metadata,
-                                      metadata,
-                                      body: Exp::try_from_tynt_tree(
-                                        metadata_stripped_fn_ast,
-                                        &structs,
-                                        &vec![],
-                                      )?,
-                                      generic_args: vec![],
-                                    },
-                                  ),
-                              },
-                            );
-                          } else {
-                            return err(InvalidFunctionArgumentList);
-                          }
-                        } else {
-                          return err(InvalidFunctionSignature);
-                        }
-                      } else {
-                        panic!("only fns are supported in def for now!!")
-                      }
-                    } else {
-                      panic!("only fns are supported in def for now!!")
-                    }
-                  }
-                  _ => panic!("only fns are supported in def for now!!"),
-                }
-              } else {
-                return err(InvalidDef("Invalid Name".to_string()));
-              }*/
             }
             "defn" => {
-              let name_ast = children_iter
-                .next()
-                .ok_or(InvalidDefn("Missing Name".to_string()))?;
+              let name_ast = children_iter.next().ok_or_else(|| {
+                CompileError::new(
+                  InvalidDefn("Missing Name".to_string()),
+                  vec![parens_position.path.clone()],
+                )
+              })?;
               let (name, generic_args): (
                 String,
                 Vec<(String, Vec<TypeConstraint>)>,
@@ -299,22 +230,32 @@ impl Program {
                         .collect::<CompileResult<_>>()?,
                     )
                   } else {
-                    return err(InvalidDefn("Invalid name".to_string()));
+                    return err(
+                      InvalidDefn("Invalid name".to_string()),
+                      vec![first_child_position.path.clone()],
+                    );
                   }
                 }
                 _ => {
-                  return err(InvalidDefn(
-                    "Expected name or parens with name and generic arguments"
-                      .to_string(),
-                  ))
+                  return err(
+                    InvalidDefn(
+                      "Expected name or parens with name and generic arguments"
+                        .to_string(),
+                    ),
+                    vec![first_child_position.path.clone()],
+                  )
                 }
               };
-              let arg_list_ast = children_iter
-                .next()
-                .ok_or(InvalidDefn("Missing Argument List".to_string()))?;
+              let arg_list_ast = children_iter.next().ok_or_else(|| {
+                CompileError::new(
+                  InvalidDefn("Missing Argument List".to_string()),
+                  vec![parens_position.path],
+                )
+              })?;
               let generic_arg_names: Vec<String> =
                 generic_args.iter().map(|(name, _)| name.clone()).collect();
               let (
+                source_path,
                 arg_names,
                 arg_types,
                 arg_metadata,
@@ -332,6 +273,7 @@ impl Program {
                   return_metadata,
                   metadata,
                   body: TypedExp::function_from_body_tree(
+                    source_path,
                     children_iter.collect(),
                     TypeState::Known(
                       return_type.concretize(&structs, &generic_arg_names)?,
@@ -362,22 +304,32 @@ impl Program {
               );
             }
             _ => {
-              return err(UnrecognizedTopLevelForm(TyntTree::Leaf(
-                first_child_span,
-                first_child,
-              )));
+              return err(
+                UnrecognizedTopLevelForm(TyntTree::Leaf(
+                  first_child_position.clone(),
+                  first_child,
+                )),
+                vec![first_child_position.path],
+              );
             }
           }
         } else {
-          return err(UnrecognizedTopLevelForm(first_child.unwrap_or(
-            TyntTree::Inner(
-              (parens_span, EncloserOrOperator::Encloser(Parens)),
+          return err(
+            UnrecognizedTopLevelForm(first_child.unwrap_or(TyntTree::Inner(
+              (
+                parens_position.clone(),
+                EncloserOrOperator::Encloser(Parens),
+              ),
               vec![],
-            ),
-          )));
+            ))),
+            vec![parens_position.path],
+          );
         }
       } else {
-        return err(UnrecognizedTopLevelForm(tree));
+        return err(
+          UnrecognizedTopLevelForm(tree.clone()),
+          vec![tree.position().path.clone()],
+        );
       }
     }
     Ok(Self {
@@ -427,7 +379,12 @@ impl Program {
         return if untyped_expressions.is_empty() {
           Ok(self)
         } else {
-          err(CouldntInferTypes(untyped_expressions))
+          let source_paths = untyped_expressions
+            .iter()
+            .map(|exp| exp.source_paths.clone())
+            .flatten()
+            .collect();
+          err(CouldntInferTypes(untyped_expressions), source_paths)
         };
       }
     }

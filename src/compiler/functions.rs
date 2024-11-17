@@ -60,7 +60,10 @@ impl AbstractFunctionSignature {
           .iter()
           .find(|constraint| !generic_type.satisfies_bounds(constraint))
         {
-          err(UnsatisfiedTypeBound(unsatisfied_bound.clone()))
+          err(
+            UnsatisfiedTypeBound(unsatisfied_bound.clone()),
+            vec![/*todo!("source paths")*/],
+          )
         } else {
           full_name.map(|full_name| full_name + "_" + &generic_type.compile())
         }
@@ -170,7 +173,7 @@ impl FunctionSignature {
       }
       Ok(any_arg_changed)
     } else {
-      err(WrongArity)
+      err(WrongArity, vec![/*todo!("source paths")*/])
     }
   }
 }
@@ -182,7 +185,7 @@ pub struct BuiltInFunction {
 
 impl TopLevelFunction {
   pub fn compile(self, name: &str) -> CompileResult<String> {
-    let TypedExp { data, kind } = self.body;
+    let TypedExp { data, kind, .. } = self.body;
     let (arg_types, return_type) =
       if let Type::Function(signature) = data.unwrap_known() {
         (signature.arg_types, signature.return_type)

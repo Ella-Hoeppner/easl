@@ -21,7 +21,7 @@ impl SSEContext for Context {
   }
 }
 
-use crate::compiler::error::{CompileErrorKind, CompileResult};
+use crate::compiler::error::{CompileError, CompileErrorKind, CompileResult};
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Encloser {
   Parens,
@@ -146,7 +146,7 @@ pub fn parse_tynt(
     .into(),
   );
   Document::from_text_with_syntax(syntax_graph, tynt_source)
-    .map_err(|e| CompileErrorKind::ParsingFailed(e).into())
+    .map_err(|e| CompileError::new(CompileErrorKind::ParsingFailed(e), vec![]))
     .map(|mut doc| {
       doc.strip_comments();
       doc

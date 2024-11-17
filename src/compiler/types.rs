@@ -55,17 +55,19 @@ impl AbstractType {
     match &tree {
       TyntTree::Leaf(_, type_name) => Ok(Self::from_name(
         type_name.clone(),
+        tree.position().path.clone(),
         structs,
         aliases,
         generic_args,
         skolems,
       )?),
       TyntTree::Inner(
-        (_, EncloserOrOperator::Encloser(Encloser::Parens)),
+        (position, EncloserOrOperator::Encloser(Encloser::Parens)),
         children,
       ) => {
         let mut children_iter = children.into_iter();
-        if let Some(TyntTree::Leaf(_, type_name)) = children_iter.next() {
+        if let Some(TyntTree::Leaf(position, type_name)) = children_iter.next()
+        {
           if let Some(s) = structs.iter().find(|s| s.name == *type_name) {
             let struct_generic_args = children_iter
               .map(|t| {
@@ -84,17 +86,24 @@ impl AbstractType {
               ),
             ))
           } else {
-            err(InvalidTypeName(type_name.clone()))
+            err(
+              InvalidTypeName(type_name.clone()),
+              vec![position.path.clone()],
+            )
           }
         } else {
-          err(InvalidType(tree))
+          err(InvalidType(tree.clone()), vec![position.path.clone()])
         }
       }
-      _ => err(InvalidType(tree)),
+      _ => err(
+        InvalidType(tree.clone()),
+        vec![tree.position().path.clone()],
+      ),
     }
   }
   pub fn from_name(
     name: String,
+    position: Vec<usize>,
     structs: &Vec<AbstractStruct>,
     aliases: &Vec<(String, AbstractStruct)>,
     generic_args: &Vec<String>,
@@ -104,7 +113,7 @@ impl AbstractType {
       GenericOr::Generic(name)
     } else {
       GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
-        name, structs, aliases, skolems,
+        name, position, structs, aliases, skolems,
       )?))
     })
   }
@@ -116,28 +125,34 @@ impl AbstractType {
     skolems: &Vec<String>,
   ) -> CompileResult<Self> {
     match ast {
-      TyntTree::Leaf(_, leaf) => Ok(if generic_args.contains(&leaf) {
+      TyntTree::Leaf(position, leaf) => Ok(if generic_args.contains(&leaf) {
         GenericOr::Generic(leaf)
       } else {
         GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
-          leaf, structs, aliases, skolems,
+          leaf,
+          position.path.clone(),
+          structs,
+          aliases,
+          skolems,
         )?))
       }),
       TyntTree::Inner(
-        (_, EncloserOrOperator::Encloser(Encloser::Parens)),
+        (position, EncloserOrOperator::Encloser(Encloser::Parens)),
         children,
       ) => {
         let mut children_iter = children.into_iter();
         let generic_struct_name =
           if let Some(TyntTree::Leaf(_, leaf)) = children_iter.next() {
-            Ok(leaf)
+            leaf
           } else {
-            err(InvalidStructName)
-          }?;
+            return err(InvalidStructName, vec![position.path]);
+          };
         let generic_struct = structs
           .iter()
           .find(|s| s.name == generic_struct_name)
-          .ok_or(InvalidFunctionArgumentName)?
+          .ok_or_else(|| {
+            CompileError::new(InvalidFunctionArgumentName, vec![position.path])
+          })?
           .clone();
         let generic_args = children_iter
           .map(|subtree: TyntTree| {
@@ -148,7 +163,7 @@ impl AbstractType {
           generic_struct.fill_abstract_generics(generic_args),
         )))
       }
-      _ => err(InvalidStructFieldType),
+      _ => err(InvalidStructFieldType, vec![ast.position().path.clone()]),
     }
   }
   pub fn concretize(
@@ -161,7 +176,10 @@ impl AbstractType {
         if skolems.contains(name) {
           Ok(Type::Skolem(name.clone()))
         } else {
-          err(UnrecognizedGeneric(name.clone()))
+          err(
+            UnrecognizedGeneric(name.clone()),
+            vec![/*todo!("source paths")*/],
+          )
         }
       }
       GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => {
@@ -249,7 +267,7 @@ impl Type {
       "Scalar" => {
         *self == Type::I32 || *self == Type::F32 || *self == Type::U32
       }
-      other => todo!(),
+      _ => todo!(),
     }
   }
   pub fn from_tynt_tree(
@@ -269,7 +287,10 @@ impl Type {
     {
       Ok(t)
     } else {
-      err(InvalidType(tree))
+      err(
+        InvalidType(tree.clone()),
+        vec![tree.position().path.clone()],
+      )
     }
   }
   pub fn compatible(&self, other: &Self) -> bool {
@@ -292,6 +313,7 @@ impl Type {
   }
   pub fn from_name(
     name: String,
+    source_path: Vec<usize>,
     structs: &Vec<AbstractStruct>,
     type_aliases: &Vec<(String, AbstractStruct)>,
     skolems: &Vec<String>,
@@ -313,7 +335,7 @@ impl Type {
         {
           Struct(s.clone().fill_generics_with_unification_variables())
         } else {
-          return err(UnrecognizedTypeName(name));
+          return err(UnrecognizedTypeName(name), vec![source_path]);
         }
       }
     })
@@ -519,7 +541,10 @@ impl TypeState {
           }
           (TypeState::Known(current_type), TypeState::Known(other_type)) => {
             if !current_type.compatible(&other_type) {
-              return err(IncompatibleTypes(this.clone(), other.clone()));
+              return err(
+                IncompatibleTypes(this.clone(), other.clone()),
+                vec![/*todo!("source paths")*/],
+              );
             }
             match (current_type, other_type) {
               (Type::Function(signature), Type::Function(other_signature)) => {
@@ -572,12 +597,18 @@ impl TypeState {
               std::mem::swap(this, &mut TypeState::Known(t.clone()));
               true
             } else {
-              return err(IncompatibleTypes(this.clone(), other.clone()));
+              return err(
+                IncompatibleTypes(this.clone(), other.clone()),
+                vec![/*todo!("source paths")*/],
+              );
             }
           }
           (TypeState::Known(t), TypeState::OneOf(possibilities)) => {
             if !t.compatible_with_any(&possibilities) {
-              return err(IncompatibleTypes(this.clone(), other.clone()));
+              return err(
+                IncompatibleTypes(this.clone(), other.clone()),
+                vec![/*todo!("source paths")*/],
+              );
             }
             false
           }
@@ -616,10 +647,10 @@ impl TypeState {
           }
         }
         if new_possibilities.is_empty() {
-          err(FunctionArgumentTypesIncompatible(
-            typestate.clone(),
-            arg_types,
-          ))
+          err(
+            FunctionArgumentTypesIncompatible(typestate.clone(), arg_types),
+            vec![/*todo!("source paths")*/],
+          )
         } else {
           std::mem::swap(
             typestate,
@@ -720,17 +751,17 @@ pub fn parse_type_bound(
   match ast {
     TyntTree::Leaf(_, name) => Ok(TypeConstraint { name, args: vec![] }),
     TyntTree::Inner(
-      (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
+      (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
       children,
     ) => {
       let mut children_iter = children.into_iter();
-      let name = if let TyntTree::Leaf(_, name) = children_iter
-        .next()
-        .ok_or(CompileError::new(InvalidTypeBound))?
-      {
+      let name = if let TyntTree::Leaf(_, name) =
+        children_iter.next().ok_or_else(|| {
+          CompileError::new(InvalidTypeBound, vec![position.path.clone()])
+        })? {
         name
       } else {
-        return err(InvalidTypeBound);
+        return err(InvalidTypeBound, vec![position.path]);
       };
       let args = children_iter
         .map(|child_ast| {
@@ -745,7 +776,7 @@ pub fn parse_type_bound(
         .collect::<CompileResult<Vec<AbstractType>>>()?;
       Ok(TypeConstraint { name, args })
     }
-    _ => err(InvalidTypeBound),
+    _ => err(InvalidTypeBound, vec![ast.position().path.clone()]),
   }
 }
 
@@ -758,9 +789,15 @@ pub fn parse_generic_argument(
   match ast {
     TyntTree::Leaf(_, generic_name) => Ok((generic_name, vec![])),
     TyntTree::Inner(
-      (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
+      (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
       mut children,
     ) => {
+      if children.len() < 2 {
+        return err(
+          InvalidDefn("Invalid generic name".to_string()),
+          vec![position.path],
+        );
+      }
       let bounds_tree = children.remove(1);
       if let TyntTree::Leaf(_, generic_name) = children.remove(0) {
         match bounds_tree {
@@ -782,10 +819,16 @@ pub fn parse_generic_argument(
           )),
         }
       } else {
-        err(InvalidDefn("Invalid generic name".to_string()))
+        err(
+          InvalidDefn("Invalid generic name".to_string()),
+          vec![position.path],
+        )
       }
     }
-    _ => err(InvalidDefn("Invalid generic name".to_string())),
+    _ => err(
+      InvalidDefn("Invalid generic name".to_string()),
+      vec![ast.position().path.clone()],
+    ),
   }
 }
 
@@ -880,11 +923,12 @@ impl Context {
   pub fn constrain_name_type(
     &mut self,
     name: &str,
+    source_paths: Vec<Vec<usize>>,
     t: &mut TypeState,
   ) -> CompileResult<bool> {
     let abstract_signatures = self.get_abstract_function_signatures(name);
     if abstract_signatures.is_empty() {
-      t.mutually_constrain(self.get_typestate_mut(name)?)
+      t.mutually_constrain(self.get_typestate_mut(name, source_paths)?)
     } else {
       t.constrain(TypeState::OneOf(
         abstract_signatures
@@ -929,12 +973,15 @@ impl Context {
   pub fn get_typestate_mut(
     &mut self,
     name: &str,
+    source_paths: Vec<Vec<usize>>,
   ) -> CompileResult<&mut TypeState> {
     Ok(
       &mut self
         .variables
         .get_mut(name)
-        .ok_or_else(|| UnboundName(name.to_string()))?
+        .ok_or_else(|| {
+          CompileError::new(UnboundName(name.to_string()), source_paths)
+        })?
         .last_mut()
         .unwrap()
         .typestate,

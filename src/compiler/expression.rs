@@ -1,4 +1,5 @@
 use core::fmt::Debug;
+use sse::document::DocumentPosition;
 use std::str::pattern::Pattern;
 
 use crate::{
@@ -31,7 +32,7 @@ lazy_static! {
     Regex::new(r"^(-?\d+\.?\d*|\.\d+)(i|u|f)?$").unwrap();
 }
 
-fn parse_number(num_str: &str) -> Option<TypedExp> {
+fn parse_number(num_str: &str, source_path: &Vec<usize>) -> Option<TypedExp> {
   if let Some(captures) = NUM_REGEX.captures(num_str) {
     let num_str = captures.get(1).unwrap().as_str();
     let contains_decimal = num_str.contains('.');
@@ -43,6 +44,7 @@ fn parse_number(num_str: &str) -> Option<TypedExp> {
               num_str.parse::<f64>().unwrap(),
             )),
             data: Known(Type::F32),
+            source_paths: vec![source_path.clone()],
           });
         }
         "i" | "u" => {
@@ -56,6 +58,7 @@ fn parse_number(num_str: &str) -> Option<TypedExp> {
                 "u" => Type::U32,
                 _ => unreachable!(),
               }),
+              source_paths: vec![source_path.clone()],
             });
           }
         }
@@ -68,6 +71,7 @@ fn parse_number(num_str: &str) -> Option<TypedExp> {
             num_str.parse::<f64>().unwrap(),
           )),
           data: Known(Type::F32),
+          source_paths: vec![source_path.clone()],
         });
       } else {
         return Some(Exp {
@@ -79,6 +83,7 @@ fn parse_number(num_str: &str) -> Option<TypedExp> {
           } else {
             vec![Type::F32, Type::I32, Type::U32]
           }),
+          source_paths: vec![source_path.clone()],
         });
       }
     }
@@ -91,6 +96,7 @@ fn parse_number(num_str: &str) -> Option<TypedExp> {
 pub struct Exp<D: Debug + Clone + PartialEq> {
   pub data: D,
   pub kind: ExpKind<D>,
+  pub source_paths: Vec<Vec<usize>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -235,6 +241,7 @@ pub fn arg_list_and_return_type_from_tynt_tree(
   aliases: &Vec<(String, AbstractStruct)>,
   generic_args: &Vec<String>,
 ) -> CompileResult<(
+  Vec<usize>,
   Vec<String>,
   Vec<AbstractType>,
   Vec<Option<Metadata>>,
@@ -245,7 +252,7 @@ pub fn arg_list_and_return_type_from_tynt_tree(
   use crate::parse::Operator::*;
   use sse::syntax::EncloserOrOperator::*;
   if let TyntTree::Inner(
-    (_, Operator(TypeAnnotation)),
+    (position, Operator(TypeAnnotation)),
     mut args_and_return_type,
   ) = tree
   {
@@ -258,15 +265,17 @@ pub fn arg_list_and_return_type_from_tynt_tree(
       generic_args,
       &vec![],
     )?;
-    if let TyntTree::Inner((_, Encloser(Square)), arg_asts) =
+    if let TyntTree::Inner((position, Encloser(Square)), arg_asts) =
       args_and_return_type.remove(0)
     {
       let ((arg_types, arg_metadata), arg_names) = arg_asts
         .into_iter()
         .map(|arg| -> CompileResult<_> {
           let (maybe_t_ast, arg_name_ast) = extract_type_annotation_ast(arg)?;
-          let t_ast =
-            maybe_t_ast.ok_or(CompileError::from(FunctionArgMissingType))?;
+          let t_ast = maybe_t_ast.ok_or(CompileError::new(
+            FunctionArgMissingType,
+            vec![position.path.clone()],
+          ))?;
           let (arg_metadata, t_ast) = extract_metadata(t_ast)?;
           let t = AbstractType::from_tynt_tree(
             t_ast,
@@ -278,7 +287,7 @@ pub fn arg_list_and_return_type_from_tynt_tree(
           if let TyntTree::Leaf(_, arg_name) = arg_name_ast {
             Ok(((t, arg_metadata), arg_name))
           } else {
-            err(InvalidArgumentName)
+            err(InvalidArgumentName, vec![position.path.clone()])
           }
         })
         .collect::<CompileResult<(
@@ -286,6 +295,7 @@ pub fn arg_list_and_return_type_from_tynt_tree(
           Vec<String>,
         )>>()?;
       Ok((
+        position.path,
         arg_names,
         arg_types,
         arg_metadata,
@@ -293,10 +303,16 @@ pub fn arg_list_and_return_type_from_tynt_tree(
         return_metadata,
       ))
     } else {
-      return err(FunctionSignatureNotSquareBrackets);
+      err(
+        FunctionSignatureNotSquareBrackets,
+        vec![position.path.clone()],
+      )
     }
   } else {
-    return err(FunctionSignatureMissingReturnType);
+    err(
+      FunctionSignatureMissingReturnType,
+      vec![tree.position().path.clone()],
+    )
   }
 }
 
@@ -308,6 +324,7 @@ pub enum SyntaxTreeContext {
 
 impl TypedExp {
   pub fn function_from_body_tree(
+    source_path: Vec<usize>,
     body_trees: Vec<TyntTree>,
     return_type: TypeState,
     arg_names: Vec<String>,
@@ -333,6 +350,11 @@ impl TypedExp {
     } else {
       Exp {
         data: Unknown,
+        source_paths: body_exps
+          .iter()
+          .map(|body_exp| body_exp.source_paths.clone())
+          .flatten()
+          .collect(),
         kind: ExpKind::Block(body_exps),
       }
     };
@@ -343,6 +365,7 @@ impl TypedExp {
         return_type,
       }))),
       kind: ExpKind::Function(arg_names, Box::new(body)),
+      source_paths: vec![source_path],
     })
   }
   pub fn try_from_tynt_tree(
@@ -353,27 +376,30 @@ impl TypedExp {
     ctx: SyntaxTreeContext,
   ) -> CompileResult<Self> {
     Ok(match tree {
-      TyntTree::Leaf(_, leaf) => {
+      TyntTree::Leaf(DocumentPosition { path, .. }, leaf) => {
         if leaf == "true" || leaf == "false" {
           Exp {
             kind: ExpKind::BooleanLiteral(leaf == "true"),
             data: Known(Type::Bool),
+            source_paths: vec![path],
           }
-        } else if let Some(num_exp) = parse_number(&leaf) {
+        } else if let Some(num_exp) = parse_number(&leaf, &path) {
           num_exp
         } else if leaf == "_".to_string() {
           Exp {
             kind: ExpKind::Wildcard,
             data: Unknown,
+            source_paths: vec![path],
           }
         } else {
           Exp {
             kind: ExpKind::Name(leaf),
             data: Unknown,
+            source_paths: vec![path],
           }
         }
       }
-      TyntTree::Inner((_, encloser_or_operator), children) => {
+      TyntTree::Inner((position, encloser_or_operator), children) => {
         use crate::parse::Encloser::*;
         use crate::parse::Operator::*;
         use sse::syntax::EncloserOrOperator::*;
@@ -383,7 +409,7 @@ impl TypedExp {
             Parens => {
               if let Some(first_child) = children_iter.next() {
                 match &first_child {
-                  TyntTree::Leaf(_, first_child_name) => {
+                  TyntTree::Leaf(position, first_child_name) => {
                     if ".".is_prefix_of(&first_child_name) {
                       if children_iter.len() == 1 {
                         Some(Exp {
@@ -403,28 +429,35 @@ impl TypedExp {
                               ctx,
                             )?),
                           ),
+                          source_paths: vec![position.path.clone()],
                         })
                       } else {
-                        return err(AccessorHadMultipleArguments);
+                        return err(
+                          AccessorHadMultipleArguments,
+                          vec![position.path.clone()],
+                        );
                       }
                     } else {
                       match first_child_name.as_str() {
                         "fn" => {
                           let (
+                            source_path,
                             arg_names,
                             arg_types,
                             _arg_metadata,
                             return_type,
                             _return_metadata,
                           ) = arg_list_and_return_type_from_tynt_tree(
-                            children_iter
-                              .next()
-                              .ok_or(CompileError::from(InvalidFunction))?,
+                            children_iter.next().ok_or(CompileError::new(
+                              InvalidFunction,
+                              vec![position.path.clone()],
+                            ))?,
                             structs,
                             aliases,
                             &vec![],
                           )?;
                           Some(Self::function_from_body_tree(
+                            source_path,
                             children_iter.clone().collect(),
                             TypeState::Known(
                               return_type.concretize(structs, skolems)?,
@@ -445,7 +478,10 @@ impl TypedExp {
                         }
                         "let" => {
                           if children_iter.len() < 2 {
-                            return err(NotEnoughLetBlockChildren);
+                            return err(
+                              NotEnoughLetBlockChildren,
+                              vec![position.path.clone()],
+                            );
                           }
                           let bindings_ast = children_iter.next().unwrap();
                           let mut child_exps = children_iter
@@ -462,6 +498,7 @@ impl TypedExp {
                             Exp {
                               data: Unknown,
                               kind: ExpKind::Block(child_exps),
+                              source_paths: vec![position.path.clone()],
                             }
                           };
                           if let TyntTree::Inner(
@@ -480,35 +517,44 @@ impl TypedExp {
                                   binding_asts_iter.next().unwrap();
                                 let (name_metadata, name_ast) =
                                   extract_metadata(name_ast)?;
-                                if let TyntTree::Leaf(_, name) = name_ast {
-                                  bindings.push((
-                                    name,
-                                    match name_metadata {
-                                      None => VariableKind::Let,
-                                      Some(Metadata::Singular(tag)) => {
-                                        match tag.as_str() {
-                                          "var" => VariableKind::Var,
-                                          _ => {
-                                            return err(
-                                              InvalidVariableMetadata(
-                                                Metadata::Singular(tag),
-                                              ),
-                                            )
+                                match name_ast {
+                                  TyntTree::Leaf(position, name) => {
+                                    bindings.push((
+                                      name,
+                                      match name_metadata {
+                                        None => VariableKind::Let,
+                                        Some(Metadata::Singular(tag)) => {
+                                          match tag.as_str() {
+                                            "var" => VariableKind::Var,
+                                            _ => {
+                                              return err(
+                                                InvalidVariableMetadata(
+                                                  Metadata::Singular(tag),
+                                                ),
+                                                vec![position.path],
+                                              )
+                                            }
                                           }
                                         }
-                                      }
-                                      Some(metadata) => {
-                                        return err(InvalidVariableMetadata(
-                                          metadata,
-                                        ))
-                                      }
-                                    },
-                                    Self::try_from_tynt_tree(
-                                      value_ast, structs, aliases, skolems, ctx,
-                                    )?,
-                                  ));
-                                } else {
-                                  return err(ExpectedBindingName);
+                                        Some(metadata) => {
+                                          return err(
+                                            InvalidVariableMetadata(metadata),
+                                            vec![position.path],
+                                          )
+                                        }
+                                      },
+                                      Self::try_from_tynt_tree(
+                                        value_ast, structs, aliases, skolems,
+                                        ctx,
+                                      )?,
+                                    ));
+                                  }
+                                  TyntTree::Inner((position, _), _) => {
+                                    return err(
+                                      ExpectedBindingName,
+                                      vec![position.path],
+                                    );
+                                  }
                                 }
                               }
                               Some(Exp {
@@ -517,17 +563,27 @@ impl TypedExp {
                                   bindings,
                                   Box::new(body_exp),
                                 ),
+                                source_paths: vec![position.path.clone()],
                               })
                             } else {
-                              return err(OddNumberOfChildrenInLetBindings);
+                              return err(
+                                OddNumberOfChildrenInLetBindings,
+                                vec![position.path.clone()],
+                              );
                             }
                           } else {
-                            return err(LetBindingsNotSquareBracketed);
+                            return err(
+                              LetBindingsNotSquareBracketed,
+                              vec![position.path.clone()],
+                            );
                           }
                         }
                         "block" => {
                           if children_iter.is_empty() {
-                            return err(EmptyBlock);
+                            return err(
+                              EmptyBlock,
+                              vec![position.path.clone()],
+                            );
                           }
                           let child_exps = children_iter
                             .clone()
@@ -540,13 +596,15 @@ impl TypedExp {
                           Some(Exp {
                             data: Unknown,
                             kind: ExpKind::Block(child_exps),
+                            source_paths: vec![position.path.clone()],
                           })
                         }
                         "match" => {
                           let scrutinee = Self::try_from_tynt_tree(
-                            children_iter
-                              .next()
-                              .ok_or(MatchMissingScrutinee)?,
+                            children_iter.next().ok_or(CompileError::new(
+                              MatchMissingScrutinee,
+                              vec![position.path.clone()],
+                            ))?,
                             structs,
                             aliases,
                             skolems,
@@ -556,7 +614,10 @@ impl TypedExp {
                           while let Some(pattern_subtree) = children_iter.next()
                           {
                             let value_subtree =
-                              children_iter.next().ok_or(MatchIncompleteArm)?;
+                              children_iter.next().ok_or(CompileError::new(
+                                MatchIncompleteArm,
+                                vec![position.path.clone()],
+                              ))?;
                             arms.push((
                               Self::try_from_tynt_tree(
                                 pattern_subtree,
@@ -575,11 +636,15 @@ impl TypedExp {
                             ));
                           }
                           if arms.is_empty() {
-                            return err(MatchMissingArms);
+                            return err(
+                              MatchMissingArms,
+                              vec![position.path.clone()],
+                            );
                           }
                           Some(Exp {
                             kind: Match(Box::new(scrutinee), arms),
                             data: Unknown,
+                            source_paths: vec![position.path.clone()],
                           })
                         }
                         _ => None,
@@ -606,9 +671,10 @@ impl TypedExp {
                       .collect::<CompileResult<_>>()?,
                   ),
                   data: Unknown,
+                  source_paths: vec![position.path],
                 })
               } else {
-                return err(EmptyList);
+                return err(EmptyList, vec![position.path.clone()]);
               }
             }
             Square => todo!("array"),
@@ -630,11 +696,15 @@ impl TypedExp {
               )?;
               exp.data =
                 TypeState::Known(match children_iter.next().unwrap() {
-                  TyntTree::Leaf(_, type_name) => {
-                    Type::from_name(type_name, structs, aliases, skolems)?
-                  }
+                  TyntTree::Leaf(position, type_name) => Type::from_name(
+                    type_name,
+                    position.path,
+                    structs,
+                    aliases,
+                    skolems,
+                  )?,
                   TyntTree::Inner(
-                    (_, Encloser(Parens)),
+                    (position, Encloser(Parens)),
                     struct_signature_children,
                   ) => {
                     let mut signature_leaves =
@@ -643,7 +713,7 @@ impl TypedExp {
                       signature_leaves.next()
                     {
                       if signature_leaves.is_empty() {
-                        return err(InvalidStructName);
+                        return err(InvalidStructName, vec![position.path]);
                       } else {
                         let generic_args: Vec<TypeState> = signature_leaves
                           .map(|signature_arg| {
@@ -666,15 +736,15 @@ impl TypedExp {
                             s.clone().fill_generics_ordered(generic_args),
                           )
                         } else {
-                          return err(UnknownStructName);
+                          return err(UnknownStructName, vec![position.path]);
                         }
                       }
                     } else {
-                      return err(InvalidStructName);
+                      return err(InvalidStructName, vec![position.path]);
                     }
                   }
                   other => {
-                    return err(InvalidType(other));
+                    return err(InvalidType(other), vec![position.path]);
                   }
                 });
               exp
@@ -736,9 +806,13 @@ impl TypedExp {
       Wildcard => false,
       Name(name) => {
         if !ctx.is_bound(name) {
-          return err(UnboundName(name.clone()));
+          return err(UnboundName(name.clone()), self.source_paths.clone());
         }
-        ctx.constrain_name_type(name, &mut self.data)?
+        ctx.constrain_name_type(
+          name,
+          self.source_paths.clone(),
+          &mut self.data,
+        )?
       }
       NumberLiteral(num) => self.data.constrain(match num {
         Number::Int(_) => TypeState::OneOf(vec![Type::I32, Type::U32]),
@@ -758,7 +832,10 @@ impl TypedExp {
               &mut signature.return_type,
             ),
             _ => {
-              return err(FunctionExpressionHasNonFunctionType(f_type.clone()))
+              return err(
+                FunctionExpressionHasNonFunctionType(f_type.clone()),
+                self.source_paths.clone(),
+              )
             }
           };
           let return_type_changed =
@@ -776,7 +853,7 @@ impl TypedExp {
               self.data.constrain_fn_by_argument_types(argument_types)?;
             return_type_changed || body_types_changed || fn_type_changed
           } else {
-            return err(WrongArity);
+            return err(WrongArity, self.source_paths.clone());
           }
         } else {
           todo!("I haven't implemented function type inference yet!!!")
@@ -785,7 +862,11 @@ impl TypedExp {
       Application(f, args) => {
         let mut anything_changed = false;
         if let Name(name) = &f.kind {
-          anything_changed |= ctx.constrain_name_type(name, &mut f.data)?;
+          anything_changed |= ctx.constrain_name_type(
+            name,
+            self.source_paths.clone(),
+            &mut f.data,
+          )?;
         } else {
           todo!("I haven't implemented function type inference yet!!!")
         }
@@ -800,10 +881,10 @@ impl TypedExp {
                 anything_changed |= arg.data.constrain(t)?;
               }
             } else {
-              return err(WrongArity);
+              return err(WrongArity, self.source_paths.clone());
             }
           } else {
-            return err(AppliedNonFunction);
+            return err(AppliedNonFunction, self.source_paths.clone());
           }
         }
         for arg in args.iter_mut() {
@@ -826,11 +907,14 @@ impl TypedExp {
                   .fields
                   .iter_mut()
                   .find(|f| f.name == *field_name)
-                  .ok_or(CompileError::new(NoSuchField))?
+                  .ok_or(CompileError::new(
+                    NoSuchField,
+                    self.source_paths.clone(),
+                  ))?
                   .field_type
               })?;
             } else {
-              return err(AccessorOnNonStruct)?;
+              return err(AccessorOnNonStruct, self.source_paths.clone())?;
             }
           }
           anything_changed
@@ -878,7 +962,10 @@ impl TypedExp {
           anything_changed |= child.propagate_types(ctx)?;
         }
         anything_changed |= self.data.mutually_constrain(
-          &mut children.last_mut().ok_or(EmptyBlock)?.data,
+          &mut children
+            .last_mut()
+            .ok_or(CompileError::new(EmptyBlock, self.source_paths.clone()))?
+            .data,
         )?;
         anything_changed
       }
@@ -1068,10 +1155,13 @@ impl TypedExp {
             }
             if let ExpKind::Name(var_name) = &var.kind {
               if ctx.get_variable_kind(var_name) != &VariableKind::Var {
-                return err(AssignmentTargetMustBeVariable);
+                return err(
+                  AssignmentTargetMustBeVariable,
+                  self.source_paths.clone(),
+                );
               }
             } else {
-              return err(InvalidAssignmentTarget);
+              return err(InvalidAssignmentTarget, self.source_paths.clone());
             }
           }
         }

@@ -67,51 +67,33 @@ pub enum CompileErrorKind {
 
 #[derive(Clone, Debug)]
 pub struct CompileError {
-  _kind: CompileErrorKind,
-  context: Vec<String>,
+  pub kind: CompileErrorKind,
+  pub context: Vec<String>,
   _backtrace: Rc<Backtrace>,
+  pub source_paths: Vec<Vec<usize>>,
 }
 impl CompileError {
-  pub fn new(kind: CompileErrorKind) -> Self {
+  pub fn new(kind: CompileErrorKind, source_paths: Vec<Vec<usize>>) -> Self {
     Self {
-      _kind: kind,
+      kind,
       context: vec![],
       _backtrace: Rc::new(Backtrace::capture()),
+      source_paths,
     }
-  }
-}
-
-impl From<CompileErrorKind> for CompileError {
-  fn from(kind: CompileErrorKind) -> Self {
-    Self::new(kind)
   }
 }
 
 pub type CompileResult<T> = Result<T, CompileError>;
 
-pub trait WithContext {
-  fn with_context(self, context: String) -> Self;
-}
-
-impl WithContext for CompileError {
-  fn with_context(mut self, context: String) -> Self {
-    self.context.push(context);
-    self
-  }
-}
-
-impl<T> WithContext for CompileResult<T> {
-  fn with_context(self, context: String) -> Self {
-    self.map_err(|err| err.with_context(context))
-  }
-}
-
 impl From<ParseError> for CompileError {
   fn from(err: ParseError) -> Self {
-    CompileErrorKind::ParsingFailed(err).into()
+    Self::new(CompileErrorKind::ParsingFailed(err), vec![])
   }
 }
 
-pub fn err<T, E: Into<CompileError>>(e: E) -> CompileResult<T> {
-  Err(e.into())
+pub fn err<T>(
+  kind: CompileErrorKind,
+  source_paths: Vec<Vec<usize>>,
+) -> CompileResult<T> {
+  Err(CompileError::new(kind, source_paths))
 }

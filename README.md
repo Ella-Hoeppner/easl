@@ -17,6 +17,8 @@ Feature goals:
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
 * add source tracing and helpful error messages for all compilation errors
+  * this is mostly done, there are just a few places where I'd need to refactor to get the proper info to the errors
+    * areas that need to be fixed are marked with `/*todo!("source paths")*/`
 
 * loops
   * `for`
