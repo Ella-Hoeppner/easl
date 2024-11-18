@@ -16,10 +16,9 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* loops
-  * `for`
-  * `while`
-  * `break` and `continue`
+* special control flow operations like `return`, `break`, `continue`
+
+* allow arguments to be declared as `@var`
 
 * strengthen type inference for struct arguments
   * right now trying to construct vectors like `(vec2f x: (vec2 ...))` doesn't work, as the type inferrer can't figure tell whether to use the `vec2` constructor that accepts a scalar or the one that accepts a vec2, since those are both single-argument cases. It should be able to exclude the scalar case by telling that the argument is a vector tho
@@ -47,8 +46,6 @@ Feature goals:
 
 * restrict vec constructor with an `(Into T)` constraint that ensures the arg can be converted into the type of the type contained within the vector
   * right now all the generics are restricted with `Scalar`, which works well enough for all the built-in vec types, but doing `(Into T)` instead should make it possible to have the same convenience with vectors of custom types (e.g. complex numbers)
-
-
 
 
 

@@ -1,6 +1,6 @@
 use core::fmt::Debug;
-use sse::document::DocumentPosition;
-use std::str::pattern::Pattern;
+use sse::{document::DocumentPosition, syntax::EncloserOrOperator};
+use std::{any, str::pattern::Pattern};
 
 use crate::{
   compiler::{
@@ -216,7 +216,22 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Access(Accessor, Box<Exp<D>>),
   Let(Vec<(String, VariableKind, Exp<D>)>, Box<Exp<D>>),
   Match(Box<Exp<D>>, Vec<(Exp<D>, Exp<D>)>),
-  Block(Vec<Exp<D>>),
+  Block {
+    expressions: Vec<Exp<D>>,
+    bracketed: bool,
+  },
+  ForLoop {
+    increment_variable_name: String,
+    increment_variable_type: Type,
+    increment_variable_initial_value_expression: Box<Exp<D>>,
+    continue_condition_expression: Box<Exp<D>>,
+    update_condition_expression: Box<Exp<D>>,
+    body_expression: Box<Exp<D>>,
+  },
+  WhileLoop {
+    condition_expression: Box<Exp<D>>,
+    body_expression: Box<Exp<D>>,
+  },
 }
 use ExpKind::*;
 
@@ -353,7 +368,10 @@ impl TypedExp {
           .iter()
           .map(|body_exp| body_exp.source_trace.clone())
           .collect(),
-        kind: ExpKind::Block(body_exps),
+        kind: ExpKind::Block {
+          expressions: body_exps,
+          bracketed: false,
+        },
       }
     };
     Ok(Exp {
@@ -501,7 +519,10 @@ impl TypedExp {
                           } else {
                             Exp {
                               data: Unknown,
-                              kind: ExpKind::Block(child_exps),
+                              kind: ExpKind::Block {
+                                expressions: child_exps,
+                                bracketed: false,
+                              },
                               source_trace: source_trace.clone(),
                             }
                           };
@@ -600,7 +621,10 @@ impl TypedExp {
                             .collect::<CompileResult<Vec<Self>>>()?;
                           Some(Exp {
                             data: Unknown,
-                            kind: ExpKind::Block(child_exps),
+                            kind: ExpKind::Block {
+                              expressions: child_exps,
+                              bracketed: true,
+                            },
                             source_trace,
                           })
                         }
@@ -651,6 +675,167 @@ impl TypedExp {
                             source_trace,
                           })
                         }
+                        "for" => {
+                          let header_tree =
+                            children_iter.next().ok_or_else(|| {
+                              CompileError::new(
+                                InvalidForLoopHeader,
+                                source_trace.clone(),
+                              )
+                            })?;
+                          let (
+                            increment_variable_name,
+                            increment_variable_type,
+                            increment_variable_initial_value_expression,
+                            continue_condition_expression,
+                            update_condition_expression,
+                          ) = if let TyntTree::Inner(
+                            (
+                              header_source_position,
+                              EncloserOrOperator::Encloser(Square),
+                            ),
+                            mut header_subtrees,
+                          ) = header_tree
+                          {
+                            if header_subtrees.len() == 4 {
+                              let var_name_subtree = header_subtrees.remove(0);
+                              let increment_variable_initial_value_subtree =
+                                header_subtrees.remove(0);
+                              let continue_condition_subtree =
+                                header_subtrees.remove(0);
+                              let update_condition_subtree =
+                                header_subtrees.remove(0);
+                              let (var_type_subtree, var_name_subtree) =
+                                extract_type_annotation_ast(var_name_subtree)?;
+                              (
+                                if let TyntTree::Leaf(_, name) =
+                                  var_name_subtree
+                                {
+                                  name
+                                } else {
+                                  panic!()
+                                },
+                                var_type_subtree
+                                  .map(|var_type_subtree| {
+                                    Type::from_tynt_tree(
+                                      var_type_subtree,
+                                      structs,
+                                      aliases,
+                                      skolems,
+                                    )
+                                  })
+                                  .unwrap_or(Ok(Type::I32))?,
+                                TypedExp::try_from_tynt_tree(
+                                  increment_variable_initial_value_subtree,
+                                  structs,
+                                  aliases,
+                                  skolems,
+                                  ctx,
+                                )?,
+                                TypedExp::try_from_tynt_tree(
+                                  continue_condition_subtree,
+                                  structs,
+                                  aliases,
+                                  skolems,
+                                  ctx,
+                                )?,
+                                TypedExp::try_from_tynt_tree(
+                                  update_condition_subtree,
+                                  structs,
+                                  aliases,
+                                  skolems,
+                                  ctx,
+                                )?,
+                              )
+                            } else {
+                              return Err(CompileError::new(
+                                InvalidForLoopHeader,
+                                header_source_position.path.into(),
+                              ));
+                            }
+                          } else {
+                            return Err(CompileError::new(
+                              InvalidForLoopHeader,
+                              source_trace,
+                            ));
+                          };
+                          let body_expressions = children_iter
+                            .clone()
+                            .map(|child| {
+                              TypedExp::try_from_tynt_tree(
+                                child, structs, aliases, skolems, ctx,
+                              )
+                            })
+                            .collect::<CompileResult<Vec<TypedExp>>>()?;
+                          let body_source_trace: SourceTrace = body_expressions
+                            .iter()
+                            .map(|exp| exp.source_trace.clone())
+                            .collect();
+                          Some(Exp {
+                            kind: ForLoop {
+                              increment_variable_name,
+                              increment_variable_type,
+                              increment_variable_initial_value_expression:
+                                Box::new(
+                                  increment_variable_initial_value_expression,
+                                ),
+                              continue_condition_expression: Box::new(
+                                continue_condition_expression,
+                              ),
+                              update_condition_expression: Box::new(
+                                update_condition_expression,
+                              ),
+                              body_expression: Box::new(TypedExp {
+                                data: TypeState::Known(Type::None),
+                                kind: ExpKind::Block {
+                                  expressions: body_expressions,
+                                  bracketed: false,
+                                },
+                                source_trace: body_source_trace,
+                              }),
+                            },
+                            data: Known(Type::None),
+                            source_trace,
+                          })
+                        }
+                        "while" => {
+                          let mut sub_expressions = children_iter
+                            .clone()
+                            .map(|child| {
+                              TypedExp::try_from_tynt_tree(
+                                child, structs, aliases, skolems, ctx,
+                              )
+                            })
+                            .collect::<CompileResult<Vec<TypedExp>>>()?;
+                          if sub_expressions.len() < 1 {
+                            return Err(CompileError::new(
+                              InvalidWhileLoop,
+                              source_trace,
+                            ));
+                          }
+                          let condition_expression = sub_expressions.remove(0);
+                          let body_source_trace: SourceTrace = sub_expressions
+                            .iter()
+                            .map(|exp| exp.source_trace.clone())
+                            .collect();
+                          Some(Exp {
+                            kind: ExpKind::WhileLoop {
+                              condition_expression: Box::new(
+                                condition_expression,
+                              ),
+                              body_expression: Box::new(TypedExp {
+                                data: TypeState::Known(Type::None),
+                                kind: ExpKind::Block {
+                                  expressions: sub_expressions,
+                                  bracketed: false,
+                                },
+                                source_trace: body_source_trace,
+                              }),
+                            },
+                            data: Known(Type::None),
+                            source_trace,
+                          })
+                        }
                         _ => None,
                       }
                     }
@@ -698,64 +883,12 @@ impl TypedExp {
                 skolems,
                 ctx,
               )?;
-              exp.data =
-                TypeState::Known(match children_iter.next().unwrap() {
-                  TyntTree::Leaf(position, type_name) => Type::from_name(
-                    type_name,
-                    position.path,
-                    structs,
-                    aliases,
-                    skolems,
-                  )?,
-                  TyntTree::Inner(
-                    (position, Encloser(Parens)),
-                    struct_signature_children,
-                  ) => {
-                    let source_trace: SourceTrace = position.path.into();
-                    let mut signature_leaves =
-                      struct_signature_children.into_iter();
-                    if let Some(TyntTree::Leaf(_, struct_name)) =
-                      signature_leaves.next()
-                    {
-                      if signature_leaves.is_empty() {
-                        return err(InvalidStructName, source_trace);
-                      } else {
-                        let generic_args: Vec<TypeState> = signature_leaves
-                          .map(|signature_arg| {
-                            Ok(TypeState::Known(
-                              AbstractType::from_tynt_tree(
-                                signature_arg,
-                                structs,
-                                aliases,
-                                &vec![],
-                                skolems,
-                              )?
-                              .concretize(
-                                structs,
-                                skolems,
-                                source_trace.clone(),
-                              )?,
-                            ))
-                          })
-                          .collect::<CompileResult<Vec<TypeState>>>()?;
-                        if let Some(s) =
-                          structs.iter().find(|s| s.name == struct_name)
-                        {
-                          Type::Struct(
-                            s.clone().fill_generics_ordered(generic_args),
-                          )
-                        } else {
-                          return err(UnknownStructName, source_trace);
-                        }
-                      }
-                    } else {
-                      return err(InvalidStructName, source_trace);
-                    }
-                  }
-                  other => {
-                    return err(InvalidType(other), source_trace);
-                  }
-                });
+              exp.data = TypeState::Known(Type::from_tynt_tree(
+                children_iter.next().unwrap(),
+                structs,
+                aliases,
+                skolems,
+              )?);
               exp
             }
             ExpressionComment => unreachable!(
@@ -797,13 +930,34 @@ impl TypedExp {
           untyped_so_far
         },
       ),
-      Block(children) => children
+      Block { expressions, .. } => expressions
         .iter()
         .map(|child| child.find_untyped())
         .fold(vec![], |mut a, mut b| {
           a.append(&mut b);
           a
         }),
+      ForLoop {
+        increment_variable_initial_value_expression,
+        continue_condition_expression,
+        update_condition_expression,
+        body_expression,
+        ..
+      } => increment_variable_initial_value_expression
+        .find_untyped()
+        .into_iter()
+        .chain(continue_condition_expression.find_untyped().into_iter())
+        .chain(update_condition_expression.find_untyped().into_iter())
+        .chain(body_expression.find_untyped().into_iter())
+        .collect(),
+      WhileLoop {
+        condition_expression,
+        body_expression,
+      } => condition_expression
+        .find_untyped()
+        .into_iter()
+        .chain(body_expression.find_untyped().into_iter())
+        .collect(),
     };
     if self.data.is_fully_known() {
       children_untyped
@@ -990,18 +1144,77 @@ impl TypedExp {
         }
         anything_changed
       }
-      Block(children) => {
+      Block { expressions, .. } => {
         let mut anything_changed = false;
-        for child in children.iter_mut() {
+        for child in expressions.iter_mut() {
           anything_changed |= child.propagate_types(ctx)?;
         }
         anything_changed |= self.data.mutually_constrain(
-          &mut children
+          &mut expressions
             .last_mut()
             .ok_or(CompileError::new(EmptyBlock, self.source_trace.clone()))?
             .data,
           self.source_trace.clone(),
         )?;
+        anything_changed
+      }
+      ForLoop {
+        increment_variable_name,
+        increment_variable_type,
+        increment_variable_initial_value_expression,
+        continue_condition_expression,
+        update_condition_expression,
+        body_expression,
+      } => {
+        let mut anything_changed = false;
+        let mut variable_typestate =
+          TypeState::Known(increment_variable_type.clone());
+        anything_changed |= increment_variable_initial_value_expression
+          .data
+          .mutually_constrain(
+            &mut variable_typestate,
+            increment_variable_initial_value_expression
+              .source_trace
+              .clone(),
+          )?;
+        anything_changed |=
+          increment_variable_initial_value_expression.propagate_types(ctx)?;
+        ctx.bind(
+          increment_variable_name,
+          Variable {
+            kind: VariableKind::Var,
+            typestate: variable_typestate,
+          },
+        );
+        anything_changed |= continue_condition_expression.data.constrain(
+          TypeState::Known(Type::Bool),
+          continue_condition_expression.source_trace.clone(),
+        )?;
+        anything_changed |= update_condition_expression.data.constrain(
+          TypeState::Known(Type::None),
+          update_condition_expression.source_trace.clone(),
+        )?;
+        anything_changed |=
+          continue_condition_expression.propagate_types(ctx)?;
+        anything_changed |= update_condition_expression.propagate_types(ctx)?;
+        anything_changed |= body_expression.propagate_types(ctx)?;
+        ctx.unbind(&increment_variable_name);
+        anything_changed
+      }
+      WhileLoop {
+        condition_expression,
+        body_expression,
+      } => {
+        let mut anything_changed = condition_expression.data.constrain(
+          TypeState::Known(Type::Bool),
+          condition_expression.source_trace.clone(),
+        )?;
+        anything_changed |= body_expression.data.constrain(
+          TypeState::Known(Type::None),
+          condition_expression.source_trace.clone(),
+        )?;
+        anything_changed |= condition_expression.propagate_types(ctx)?;
+        anything_changed |= body_expression.propagate_types(ctx)?;
         anything_changed
       }
     })
@@ -1072,10 +1285,7 @@ impl TypedExp {
           })
           .collect();
         let value_line = body.compile(position);
-        format!(
-          "\n{{{}\n}}",
-          indent("\n".to_string() + &binding_lines.join("\n") + &value_line)
-        )
+        format!("\n{}{}", binding_lines.join("\n"), value_line)
       }
       Match(scrutinee, arms) => {
         if let ExpKind::Wildcard = arms.last().unwrap().0.kind {
@@ -1155,9 +1365,12 @@ impl TypedExp {
           }
         }
       }
-      Block(children) => {
-        let child_count = children.len();
-        let child_strings: Vec<String> = children
+      Block {
+        expressions,
+        bracketed,
+      } => {
+        let child_count = expressions.len();
+        let child_strings: Vec<String> = expressions
           .into_iter()
           .enumerate()
           .map(|(i, child)| {
@@ -1168,8 +1381,44 @@ impl TypedExp {
             })
           })
           .collect();
-        format!("\n{{{}\n}}", indent(child_strings.join("")))
+        if bracketed {
+          format!("\n{{{}\n}}", indent(child_strings.join("")))
+        } else {
+          format!("{}", child_strings.join(""))
+        }
       }
+      ForLoop {
+        increment_variable_name,
+        increment_variable_type,
+        increment_variable_initial_value_expression,
+        continue_condition_expression,
+        update_condition_expression,
+        body_expression,
+      } => format!(
+        "\nfor (var {}: {} = {}; {}; {}) {{{}\n}}",
+        increment_variable_name,
+        increment_variable_type.compile(),
+        increment_variable_initial_value_expression
+          .compile(ExpressionCompilationPosition::InnerExpression),
+        continue_condition_expression
+          .compile(ExpressionCompilationPosition::InnerExpression),
+        update_condition_expression
+          .compile(ExpressionCompilationPosition::InnerExpression),
+        indent(
+          body_expression.compile(ExpressionCompilationPosition::InnerLine)
+        )
+      ),
+      WhileLoop {
+        condition_expression,
+        body_expression,
+      } => format!(
+        "\nwhile ({}) {{{}\n}}",
+        condition_expression
+          .compile(ExpressionCompilationPosition::InnerExpression),
+        indent(
+          body_expression.compile(ExpressionCompilationPosition::InnerLine)
+        )
+      ),
     }
   }
   pub fn check_assignment_validity(
@@ -1229,8 +1478,8 @@ impl TypedExp {
         }
         scrutinee.check_assignment_validity(ctx)
       }
-      Block(subexps) => {
-        for subexp in subexps {
+      Block { expressions, .. } => {
+        for subexp in expressions {
           subexp.check_assignment_validity(ctx)?;
         }
         Ok(())
@@ -1264,8 +1513,8 @@ impl TypedExp {
           value.replace_skolems(skolems);
         }
       }
-      Block(subexps) => {
-        for subexp in subexps {
+      Block { expressions, .. } => {
+        for subexp in expressions {
           subexp.replace_skolems(skolems);
         }
       }
@@ -1378,8 +1627,8 @@ impl TypedExp {
           value.monomorphize(base_ctx, new_ctx)?;
         }
       }
-      Block(subexps) => {
-        for subexp in subexps {
+      Block { expressions, .. } => {
+        for subexp in expressions {
           subexp.monomorphize(base_ctx, new_ctx)?;
         }
       }

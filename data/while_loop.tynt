@@ -1,0 +1,5 @@
+(defn make-two-floats [a: f32]: f32
+  (let [@var b a]
+    (while (== b 1.)
+      (= b 0.))
+    5.))

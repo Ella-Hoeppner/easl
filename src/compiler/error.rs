@@ -44,8 +44,13 @@ impl From<Vec<usize>> for SourceTrace {
 
 impl FromIterator<SourceTrace> for SourceTrace {
   fn from_iter<T: IntoIterator<Item = SourceTrace>>(iter: T) -> Self {
-    SourceTrace {
-      kind: Rc::new(SourceTraceKind::Combination(iter.into_iter().collect())),
+    let mut subtraces: Vec<SourceTrace> = iter.into_iter().collect();
+    match subtraces.len() {
+      0 => SourceTrace::empty(),
+      1 => subtraces.remove(0),
+      _ => SourceTrace {
+        kind: Rc::new(SourceTraceKind::Combination(subtraces)),
+      },
     }
   }
 }
@@ -104,6 +109,8 @@ pub enum CompileErrorKind {
   InvalidStructFieldType,
   InvalidTypeBound,
   UnsatisfiedTypeBound(TypeConstraint),
+  InvalidForLoopHeader,
+  InvalidWhileLoop,
 }
 
 #[derive(Clone, Debug)]

@@ -24,6 +24,8 @@ fn main() {
     "heterogenous_vec_constructor",
     "specialized_vec_constructor",
     "generic_constraint",
+    "for_loop",
+    "while_loop",
   ] {
     println!("compiling {filename}...");
     let tynt_source = fs::read_to_string(&format!("./data/{filename}.tynt"))

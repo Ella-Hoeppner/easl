@@ -274,21 +274,52 @@ impl Type {
     aliases: &Vec<(String, AbstractStruct)>,
     skolems: &Vec<String>,
   ) -> CompileResult<Self> {
-    if let AbstractType::NonGeneric(TypeOrAbstractStruct::Type(t)) =
-      AbstractType::from_tynt_tree(
-        tree.clone(),
-        structs,
-        aliases,
-        &vec![],
-        skolems,
-      )?
-    {
-      Ok(t)
-    } else {
-      err(
-        InvalidType(tree.clone()),
-        tree.position().path.clone().into(),
-      )
+    match tree {
+      TyntTree::Leaf(position, type_name) => {
+        Type::from_name(type_name, position.path, structs, aliases, skolems)
+      }
+      TyntTree::Inner(
+        (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+        struct_signature_children,
+      ) => {
+        let source_trace: SourceTrace = position.path.into();
+        let mut signature_leaves = struct_signature_children.into_iter();
+        if let Some(TyntTree::Leaf(_, struct_name)) = signature_leaves.next() {
+          if signature_leaves.is_empty() {
+            return err(InvalidStructName, source_trace);
+          } else {
+            let generic_args: Vec<TypeState> = signature_leaves
+              .map(|signature_arg| {
+                Ok(TypeState::Known(
+                  AbstractType::from_tynt_tree(
+                    signature_arg,
+                    structs,
+                    aliases,
+                    &vec![],
+                    skolems,
+                  )?
+                  .concretize(
+                    structs,
+                    skolems,
+                    source_trace.clone(),
+                  )?,
+                ))
+              })
+              .collect::<CompileResult<Vec<TypeState>>>()?;
+            if let Some(s) = structs.iter().find(|s| s.name == struct_name) {
+              Ok(Type::Struct(s.clone().fill_generics_ordered(generic_args)))
+            } else {
+              return err(UnknownStructName, source_trace);
+            }
+          }
+        } else {
+          return err(InvalidStructName, source_trace);
+        }
+      }
+      other => {
+        let source_trace = other.position().path.clone().into();
+        return err(InvalidType(other), source_trace);
+      }
     }
   }
   pub fn compatible(&self, other: &Self) -> bool {
