@@ -26,6 +26,7 @@ fn main() {
     "generic_constraint",
     "for_loop",
     "while_loop",
+    "return",
   ] {
     println!("compiling {filename}...");
     let tynt_source = fs::read_to_string(&format!("./data/{filename}.tynt"))

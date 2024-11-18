@@ -111,6 +111,9 @@ pub enum CompileErrorKind {
   UnsatisfiedTypeBound(TypeConstraint),
   InvalidForLoopHeader,
   InvalidWhileLoop,
+  ReturnOutsideFunction,
+  EnclosingFunctionTypeWasntFunction,
+  InvalidReturn,
 }
 
 #[derive(Clone, Debug)]

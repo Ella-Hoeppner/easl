@@ -16,7 +16,7 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* special control flow operations like `return`, `break`, `continue`
+* ensure `break` and `continue` can only be used inside a loop
 
 * allow arguments to be declared as `@var`
 

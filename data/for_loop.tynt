@@ -2,4 +2,7 @@
   (let [@var b a]
     (for [i 0 true (= i 0)]
       (= a a))
+    (for [i 10 false (= i 0)]
+      (= a a)
+      break)
     5.))

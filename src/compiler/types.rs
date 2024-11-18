@@ -4,7 +4,7 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use sse::syntax::EncloserOrOperator;
 
 use crate::{
-  compiler::error::CompileError,
+  compiler::error::{CompileError, CompileErrorKind},
   parse::{Encloser, Operator, TyntTree},
 };
 
@@ -457,6 +457,20 @@ pub enum TypeState {
 }
 
 impl TypeState {
+  pub fn as_fn_type_if_known(
+    &mut self,
+    err_fn: impl Fn() -> CompileError,
+  ) -> CompileResult<Option<&mut FunctionSignature>> {
+    if let TypeState::Known(t) = self {
+      if let Type::Function(signature) = t {
+        Ok(Some(signature))
+      } else {
+        Err(err_fn())
+      }
+    } else {
+      Ok(None)
+    }
+  }
   pub fn is_fully_known(&self) -> bool {
     self.with_dereferenced(|typestate| {
       if let TypeState::Known(t) = typestate {
@@ -879,6 +893,7 @@ pub struct Context {
   pub variables: HashMap<String, Vec<Variable>>,
   pub abstract_functions: Vec<AbstractFunctionSignature>,
   pub type_aliases: Vec<(String, AbstractStruct)>,
+  pub enclosing_function_types: Vec<TypeState>,
 }
 
 impl Context {
@@ -888,7 +903,17 @@ impl Context {
       variables: HashMap::new(),
       abstract_functions: vec![],
       type_aliases: vec![],
+      enclosing_function_types: vec![],
     }
+  }
+  pub fn push_enclosing_function_type(&mut self, typestate: TypeState) {
+    self.enclosing_function_types.push(typestate);
+  }
+  pub fn pop_enclosing_function_type(&mut self) {
+    self.enclosing_function_types.pop();
+  }
+  pub fn enclosing_function_type(&mut self) -> Option<&mut TypeState> {
+    self.enclosing_function_types.last_mut()
   }
   pub fn default_global() -> Self {
     Self::empty()

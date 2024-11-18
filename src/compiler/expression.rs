@@ -232,11 +232,14 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
     condition_expression: Box<Exp<D>>,
     body_expression: Box<Exp<D>>,
   },
+  Break,
+  Continue,
+  Return(Box<Exp<D>>),
 }
 use ExpKind::*;
 
 use super::{
-  error::SourceTrace,
+  error::{CompileErrorKind, SourceTrace},
   functions::FunctionImplementationKind,
   structs::compiled_vec_name,
   types::{AbstractType, TypeConstraint},
@@ -394,7 +397,19 @@ impl TypedExp {
     Ok(match tree {
       TyntTree::Leaf(DocumentPosition { path, .. }, leaf) => {
         let source_trace: SourceTrace = path.into();
-        if leaf == "true" || leaf == "false" {
+        if leaf == "break" {
+          Exp {
+            kind: ExpKind::Break,
+            data: Known(Type::None),
+            source_trace,
+          }
+        } else if leaf == "continue" {
+          Exp {
+            kind: ExpKind::Continue,
+            data: Known(Type::None),
+            source_trace,
+          }
+        } else if leaf == "true" || leaf == "false" {
           Exp {
             kind: ExpKind::BooleanLiteral(leaf == "true"),
             data: Known(Type::Bool),
@@ -836,6 +851,27 @@ impl TypedExp {
                             source_trace,
                           })
                         }
+                        "return" => {
+                          if children_iter.len() == 1 {
+                            let exp = TypedExp::try_from_tynt_tree(
+                              children_iter.next().unwrap(),
+                              structs,
+                              aliases,
+                              skolems,
+                              ctx,
+                            )?;
+                            Some(Exp {
+                              kind: ExpKind::Return(Box::new(exp)),
+                              data: TypeState::Known(Type::None),
+                              source_trace,
+                            })
+                          } else {
+                            return Err(CompileError::new(
+                              InvalidReturn,
+                              source_trace,
+                            ));
+                          }
+                        }
                         _ => None,
                       }
                     }
@@ -958,6 +994,9 @@ impl TypedExp {
         .into_iter()
         .chain(body_expression.find_untyped().into_iter())
         .collect(),
+      Break => vec![],
+      Continue => vec![],
+      Return(exp) => exp.find_untyped(),
     };
     if self.data.is_fully_known() {
       children_untyped
@@ -990,7 +1029,8 @@ impl TypedExp {
         .data
         .constrain(TypeState::Known(Type::Bool), self.source_trace.clone())?,
       Function(arg_names, body) => {
-        if let TypeState::Known(f_type) = &mut self.data {
+        ctx.push_enclosing_function_type(self.data.clone());
+        let changed = if let TypeState::Known(f_type) = &mut self.data {
           let (arg_count, arg_type_states, return_type_state): (
             usize,
             &Vec<TypeState>,
@@ -1030,7 +1070,9 @@ impl TypedExp {
           }
         } else {
           todo!("I haven't implemented function type inference yet!!!")
-        }
+        };
+        ctx.pop_enclosing_function_type();
+        changed
       }
       Application(f, args) => {
         let mut anything_changed = false;
@@ -1217,6 +1259,25 @@ impl TypedExp {
         anything_changed |= body_expression.propagate_types(ctx)?;
         anything_changed
       }
+      Break => false,
+      Continue => false,
+      Return(exp) => exp.data.mutually_constrain(
+        &mut ctx
+          .enclosing_function_type()
+          .ok_or(CompileError::new(
+            ReturnOutsideFunction,
+            self.source_trace.clone(),
+          ))?
+          .as_fn_type_if_known(|| {
+            CompileError::new(
+              CompileErrorKind::EnclosingFunctionTypeWasntFunction,
+              self.source_trace.clone(),
+            )
+          })?
+          .map(|fn_type| &mut fn_type.return_type)
+          .unwrap_or(&mut TypeState::Unknown),
+        self.source_trace.clone(),
+      )?,
     })
   }
   pub fn compile(self, position: ExpressionCompilationPosition) -> String {
@@ -1418,6 +1479,12 @@ impl TypedExp {
         indent(
           body_expression.compile(ExpressionCompilationPosition::InnerLine)
         )
+      ),
+      Break => "\nbreak;".to_string(),
+      Continue => "\ncontinue;".to_string(),
+      ExpKind::Return(exp) => format!(
+        "\nreturn {};",
+        exp.compile(ExpressionCompilationPosition::InnerExpression)
       ),
     }
   }
