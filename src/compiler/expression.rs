@@ -345,7 +345,7 @@ impl TypedExp {
     body_trees: Vec<TyntTree>,
     return_type: TypeState,
     arg_names: Vec<String>,
-    arg_types: Vec<TypeState>,
+    arg_types: Vec<(TypeState, Vec<TypeConstraint>)>,
     structs: &Vec<AbstractStruct>,
     aliases: &Vec<(String, AbstractStruct)>,
     skolems: &Vec<String>,
@@ -473,7 +473,8 @@ impl TypedExp {
                     } else {
                       match first_child_name.as_str() {
                         "fn" => {
-                          let (
+                          todo!("fn")
+                          /*let (
                             source_trace,
                             arg_names,
                             arg_types,
@@ -511,7 +512,7 @@ impl TypedExp {
                             structs,
                             aliases,
                             skolems,
-                          )?)
+                          )?)*/
                         }
                         "let" => {
                           if children_iter.len() < 2 {
@@ -1038,7 +1039,7 @@ impl TypedExp {
           ) = match f_type {
             Type::Function(signature) => (
               signature.arg_types.len(),
-              &signature.arg_types.clone(),
+              &signature.arg_types.iter().map(|(t, _)| t.clone()).collect(),
               &mut signature.return_type,
             ),
             _ => {
@@ -1092,7 +1093,7 @@ impl TypedExp {
                 &mut signature.return_type,
                 self.source_trace.clone(),
               )?;
-              for (arg, t) in
+              for (arg, (t, _)) in
                 args.iter_mut().zip(signature.arg_types.iter().cloned())
               {
                 anything_changed |=

@@ -59,10 +59,10 @@ impl AbstractFunctionSignature {
         let generic_type = generic_bindings.get(arg).unwrap();
         if let Some(unsatisfied_bound) = bounds
           .iter()
-          .find(|constraint| !generic_type.satisfies_bounds(constraint))
+          .find(|constraint| !generic_type.satisfies_constraints(constraint))
         {
           err(
-            UnsatisfiedTypeBound(unsatisfied_bound.clone()),
+            UnsatisfiedTypeConstraint(unsatisfied_bound.clone()),
             source_trace.clone(),
           )
         } else {
@@ -88,11 +88,17 @@ impl AbstractFunctionSignature {
     Ok(monomorphized)
   }
   pub fn concretize(&self) -> FunctionSignature {
-    let generic_variables: HashMap<String, TypeState> = self
+    let (generic_variables, generic_constraints): (
+      HashMap<String, TypeState>,
+      HashMap<String, Vec<TypeConstraint>>,
+    ) = self
       .generic_args
       .iter()
-      .map(|(name, _bounds)| {
-        (name.clone(), TypeState::fresh_unification_variable())
+      .map(|(name, bounds)| {
+        (
+          (name.clone(), TypeState::fresh_unification_variable()),
+          (name.clone(), bounds.clone()),
+        )
       })
       .collect();
     FunctionSignature {
@@ -102,16 +108,23 @@ impl AbstractFunctionSignature {
         .iter()
         .cloned()
         .map(|t| match t {
-          GenericOr::Generic(var_name) => generic_variables
-            .get(&var_name)
-            .expect("unrecognized generic")
-            .clone(),
+          GenericOr::Generic(var_name) => (
+            generic_variables
+              .get(&var_name)
+              .expect("unrecognized generic")
+              .clone(),
+            generic_constraints
+              .get(&var_name)
+              .expect("unrecognized generic")
+              .clone(),
+          ),
           GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => {
-            TypeState::Known(t)
+            (TypeState::Known(t), vec![])
           }
-          GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => {
-            TypeState::Known(Type::Struct(s.fill_generics(&generic_variables)))
-          }
+          GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => (
+            TypeState::Known(Type::Struct(s.fill_generics(&generic_variables))),
+            vec![],
+          ),
         })
         .collect(),
       return_type: match &self.return_type {
@@ -135,7 +148,7 @@ impl AbstractFunctionSignature {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionSignature {
   pub abstract_ancestor: Option<AbstractFunctionSignature>,
-  pub arg_types: Vec<TypeState>,
+  pub arg_types: Vec<(TypeState, Vec<TypeConstraint>)>,
   pub return_type: TypeState,
 }
 
@@ -148,7 +161,12 @@ impl FunctionSignature {
       .arg_types
       .iter()
       .zip(other.arg_types.iter())
-      .find(|(a, b)| !TypeState::are_compatible(a, b))
+      .find(
+        |((a_typestate, a_constraints), (b_typestate, b_constraints))| {
+          !TypeState::are_compatible(a_typestate, b_typestate)
+            || a_constraints != b_constraints
+        },
+      )
       .is_some()
   }
   pub fn are_args_compatible(&self, arg_types: &Vec<TypeState>) -> bool {
@@ -156,8 +174,16 @@ impl FunctionSignature {
       return false;
     }
     for i in 0..arg_types.len() {
-      if !TypeState::are_compatible(&self.arg_types[i], &arg_types[i]) {
+      let (arg_typestate, arg_constraints) = &self.arg_types[i];
+      if !TypeState::are_compatible(arg_typestate, &arg_types[i]) {
         return false;
+      }
+      if let TypeState::Known(t) = &arg_types[i] {
+        for constraint in arg_constraints {
+          if !t.satisfies_constraints(constraint) {
+            return false;
+          }
+        }
       }
     }
     true
@@ -171,7 +197,7 @@ impl FunctionSignature {
       let mut any_arg_changed = false;
       for i in 0..args.len() {
         any_arg_changed |= args[i]
-          .mutually_constrain(&mut self.arg_types[i], source_trace.clone())?;
+          .mutually_constrain(&mut self.arg_types[i].0, source_trace.clone())?;
       }
       Ok(any_arg_changed)
     } else {
@@ -208,7 +234,7 @@ impl TopLevelFunction {
           "{}{}: {}",
           Metadata::compile_optional(metadata),
           compile_word(name),
-          arg_type.compile()
+          arg_type.0.compile()
         )
       })
       .collect::<Vec<String>>()

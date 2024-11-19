@@ -260,7 +260,7 @@ pub enum Type {
   Skolem(String),
 }
 impl Type {
-  pub fn satisfies_bounds(&self, constraint: &TypeConstraint) -> bool {
+  pub fn satisfies_constraints(&self, constraint: &TypeConstraint) -> bool {
     match constraint.name.as_str() {
       "Scalar" => {
         *self == Type::I32 || *self == Type::F32 || *self == Type::U32
@@ -405,7 +405,7 @@ impl Type {
         }
         Type::Function(f) => {
           f.return_type.as_known_mut(|t| t.replace_skolems(skolems));
-          for arg_type in f.arg_types.iter_mut() {
+          for (arg_type, _) in f.arg_types.iter_mut() {
             arg_type.as_known_mut(|t| t.replace_skolems(skolems))
           }
         }
@@ -483,7 +483,7 @@ impl TypeState {
           Type::Function(function_signature) => {
             function_signature.arg_types.iter().fold(
               function_signature.return_type.is_fully_known(),
-              |typed_so_far, arg_type| {
+              |typed_so_far, (arg_type, _)| {
                 typed_so_far && arg_type.is_fully_known()
               },
             )
@@ -599,7 +599,7 @@ impl TypeState {
                   other_signature.return_type.clone(),
                   source_trace.clone(),
                 )?;
-                for (t, other_t) in signature
+                for ((t, _), (other_t, _)) in signature
                   .arg_types
                   .iter_mut()
                   .zip(other_signature.arg_types.iter_mut())

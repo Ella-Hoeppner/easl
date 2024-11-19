@@ -20,9 +20,6 @@ Feature goals:
 
 * allow arguments to be declared as `@var`
 
-* strengthen type inference for struct arguments
-  * right now trying to construct vectors like `(vec2f x: (vec2 ...))` doesn't work, as the type inferrer can't figure tell whether to use the `vec2` constructor that accepts a scalar or the one that accepts a vec2, since those are both single-argument cases. It should be able to exclude the scalar case by telling that the argument is a vector tho
-
 * better validation of match blocks
   * return errors rather than panicking in `TypedExp::compile` when a match block is invald
   * check that there's only one wildcard arm

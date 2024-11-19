@@ -108,7 +108,7 @@ pub enum CompileErrorKind {
   MatchIncompleteArm,
   InvalidStructFieldType,
   InvalidTypeBound,
-  UnsatisfiedTypeBound(TypeConstraint),
+  UnsatisfiedTypeConstraint(TypeConstraint),
   InvalidForLoopHeader,
   InvalidWhileLoop,
   ReturnOutsideFunction,

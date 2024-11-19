@@ -1,0 +1,7 @@
+(defn make-two-floats [a: f32]: f32
+  (let [@var b a
+        @var c (vec4f 0. 0. 0. 0.)]
+    (= b (+ b 0.1))
+    (= c (+ c (vec4f (vec4f 1. 1. 1. 1.))))
+    (+= c (vec4f 0.))
+    5.))

@@ -9,7 +9,10 @@ use crate::{
     functions::AbstractFunctionSignature,
     metadata::extract_metadata,
     structs::UntypedStruct,
-    types::{parse_generic_argument, AbstractType, TypeConstraint, TypeState},
+    types::{
+      parse_generic_argument, AbstractType, GenericOr, TypeConstraint,
+      TypeState,
+    },
     util::read_type_annotated_name,
   },
   parse::TyntTree,
@@ -281,36 +284,53 @@ impl Program {
                 &global_context.type_aliases,
                 &generic_arg_names,
               )?;
-              let implementation = FunctionImplementationKind::Composite(
-                Rc::new(RefCell::new(TopLevelFunction {
-                  arg_metadata,
-                  return_metadata,
-                  metadata,
-                  body: TypedExp::function_from_body_tree(
-                    source_path.clone(),
-                    children_iter.collect(),
-                    TypeState::Known(return_type.concretize(
-                      &structs,
-                      &generic_arg_names,
-                      source_path.clone().into(),
-                    )?),
-                    arg_names,
-                    arg_types
-                      .iter()
-                      .map(|t| {
-                        Ok(TypeState::Known(t.concretize(
+              let implementation =
+                FunctionImplementationKind::Composite(Rc::new(RefCell::new(
+                  TopLevelFunction {
+                    arg_metadata,
+                    return_metadata,
+                    metadata,
+                    body:
+                      TypedExp::function_from_body_tree(
+                        source_path.clone(),
+                        children_iter.collect(),
+                        TypeState::Known(return_type.concretize(
                           &structs,
                           &generic_arg_names,
                           source_path.clone().into(),
-                        )?))
-                      })
-                      .collect::<CompileResult<Vec<TypeState>>>()?,
-                    &structs,
-                    &global_context.type_aliases,
-                    &generic_arg_names,
-                  )?,
-                })),
-              );
+                        )?),
+                        arg_names,
+                        arg_types
+                          .iter()
+                          .map(|t| {
+                            Ok((
+                              TypeState::Known(t.concretize(
+                                &structs,
+                                &generic_arg_names,
+                                source_path.clone().into(),
+                              )?),
+                              if let GenericOr::Generic(generic_name) = t {
+                                generic_args
+                                  .iter()
+                                  .find_map(|(name, constraints)| {
+                                    (generic_name == name)
+                                      .then(|| constraints.clone())
+                                  })
+                                  .unwrap_or(vec![])
+                              } else {
+                                vec![]
+                              },
+                            ))
+                          })
+                          .collect::<CompileResult<
+                            Vec<(TypeState, Vec<TypeConstraint>)>,
+                          >>()?,
+                        &structs,
+                        &global_context.type_aliases,
+                        &generic_arg_names,
+                      )?,
+                  },
+                )));
               global_context.abstract_functions.push(
                 AbstractFunctionSignature {
                   name,
