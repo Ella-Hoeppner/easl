@@ -16,9 +16,11 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* ensure `break` and `continue` can only be used inside a loop
+* `constrain` and `mutually_constrain` should probably be combined into one thing, I don't think there are really any circumstances where we need to just do one-sided constraining, and having `mutually_constrain` do it both ways when that will usually be wasted effort just seems silly
 
-* allow arguments to be declared as `@var`
+* throw an error if control flow expressions are used outside their proper context
+  * `break` and `continue` can only be used inside a loop
+  * `discard` can only be used inside a `@fragment` function
 
 * better validation of match blocks
   * return errors rather than panicking in `TypedExp::compile` when a match block is invald
@@ -29,6 +31,9 @@ Feature goals:
   * parse integer literals with ambiguous types, to allow them to be treated as floats
   * handle inline accessor syntax like `a.x`
   * threading macros
+  * have a special case for associative functions like +, *, min, and max, allowing them to be called with n arguments
+  * convert / calls with 1 arg to calls to negate and invert, respectively
+  * shadowing (might already work actually? not sure, needs testing)
 
 
 
@@ -48,17 +53,7 @@ Feature goals:
 
 * support lifting internal lets
 
-* more syntactic conveniences
-  * have a special case for associative functions like +, *, min, and max, allowing them to be called with n arguments
-  * convert - and / calls with 1 arg to calls to negate and invert, respectively
-  * shadowing (might already work actually? not sure, needs testing)
-
-* as a special case of some kind, have there be a way to declare aliases for `vec` for any type, so that you could e.g. if you had a complex number type, you could do `(vec-alias-suffix c Complex)` and automatically get `vec2c`, `vec3c`, and `vec4c` types, and their variadic constructors
-
 * as a special case, when there are nested `vec` constructors like `(vec4f (vec3 0) 1)`, allow the typechecker to assume that the inner `vec3` is a `vec3f`. Similarly
-
-* make `def` work
-  * should just compile to a const, I guess?
 
 
 
@@ -67,6 +62,11 @@ Feature goals:
   * maybe the tests should like actually feed the output into a wgsl compiler? Could even use hollow to like open a window that shows all the different things so that it can be visually checked whether everything is working
 
 ### extra features, once core language is solid
+* allow arguments to be declared as `@var`
+  * oh huh wgsl doesn't actually support this... I guess this could be supported by just sorta macroexpanding `@var` arguments into functions with a let block that shadows the arg
+
+* as a special case of some kind, have there be a way to declare aliases for `vec` for any type, so that you could e.g. if you had a complex number type, you could do `(vec-alias-suffix c Complex)` and automatically get `vec2c`, `vec3c`, and `vec4c` types, and their variadic constructors
+
 * support arrays
 
 * support higher-order functions

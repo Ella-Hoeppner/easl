@@ -234,6 +234,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   },
   Break,
   Continue,
+  Discard,
   Return(Box<Exp<D>>),
 }
 use ExpKind::*;
@@ -407,6 +408,12 @@ impl TypedExp {
           Exp {
             kind: ExpKind::Continue,
             data: Known(Type::None),
+            source_trace,
+          }
+        } else if leaf == "discard" {
+          Exp {
+            kind: ExpKind::Discard,
+            data: TypeState::fresh_unification_variable(),
             source_trace,
           }
         } else if leaf == "true" || leaf == "false" {
@@ -997,6 +1004,7 @@ impl TypedExp {
         .collect(),
       Break => vec![],
       Continue => vec![],
+      Discard => vec![],
       Return(exp) => exp.find_untyped(),
     };
     if self.data.is_fully_known() {
@@ -1129,7 +1137,10 @@ impl TypedExp {
                     .iter_mut()
                     .find(|f| f.name == *field_name)
                     .ok_or(CompileError::new(
-                      NoSuchField,
+                      NoSuchField {
+                        struct_name: s.abstract_ancestor.name.clone(),
+                        field_name: field_name.clone(),
+                      },
                       self.source_trace.clone(),
                     ))?
                     .field_type
@@ -1262,6 +1273,7 @@ impl TypedExp {
       }
       Break => false,
       Continue => false,
+      Discard => false,
       Return(exp) => exp.data.mutually_constrain(
         &mut ctx
           .enclosing_function_type()
@@ -1321,6 +1333,8 @@ impl TypedExp {
         } else if INFIX_OPS.contains(&f_str.as_str()) {
           if arg_strs.len() == 2 {
             format!("({} {} {})", arg_strs[0], f_str, arg_strs[1])
+          } else if arg_strs.len() == 1 && &f_str == "-" {
+            format!("(-{})", arg_strs[0])
           } else {
             panic!("{} arguments to infix op, expected 2", arg_strs.len())
           }
@@ -1339,8 +1353,9 @@ impl TypedExp {
           .into_iter()
           .map(|(name, variable_kind, value_exp)| {
             format!(
-              "{} {name}: {} = {};",
+              "{} {}: {} = {};",
               variable_kind.compile(),
+              compile_word(name),
               value_exp.data.compile(),
               value_exp.compile(InnerExpression)
             )
@@ -1416,10 +1431,10 @@ impl TypedExp {
               )
             } else {
               format!(
-                "\nif ({}) {{\n  {}\n}} else {{\n  {}\n}}",
+                "\nif ({}) {{{}\n}} else {{{}\n}}",
                 scrutinee.compile(InnerExpression),
-                true_value.compile(InnerExpression),
-                false_value.compile(InnerExpression),
+                indent(true_value.compile(position)),
+                indent(false_value.compile(position)),
               )
             }
           } else {
@@ -1483,6 +1498,7 @@ impl TypedExp {
       ),
       Break => "\nbreak;".to_string(),
       Continue => "\ncontinue;".to_string(),
+      Discard => "\ndiscard;".to_string(),
       ExpKind::Return(exp) => format!(
         "\nreturn {};",
         exp.compile(ExpressionCompilationPosition::InnerExpression)

@@ -5,13 +5,13 @@ use sse::syntax::EncloserOrOperator;
 use crate::{
   compiler::{
     error::{err, CompileError, SourceTrace},
-    expression::arg_list_and_return_type_from_tynt_tree,
+    expression::{arg_list_and_return_type_from_tynt_tree, Exp},
     functions::AbstractFunctionSignature,
     metadata::extract_metadata,
     structs::UntypedStruct,
     types::{
-      parse_generic_argument, AbstractType, GenericOr, TypeConstraint,
-      TypeState,
+      parse_generic_argument, AbstractType, GenericOr, Type, TypeConstraint,
+      TypeState, Variable, VariableKind,
     },
     util::read_type_annotated_name,
   },
@@ -30,7 +30,6 @@ use super::{
 #[derive(Debug)]
 pub struct Program {
   global_context: Context,
-  top_level_vars: Vec<TopLevelVar>,
 }
 
 impl Program {
@@ -128,7 +127,6 @@ impl Program {
     }
     let mut global_context =
       Context::default_global().with_structs(structs.clone());
-    let mut top_level_vars = vec![];
 
     for (metadata, tree) in non_struct_trees.into_iter() {
       use crate::parse::Encloser::*;
@@ -197,26 +195,61 @@ impl Program {
               let (name, type_ast) =
                 read_type_annotated_name(name_and_type_ast)?;
               let type_source_path = type_ast.position().path.clone();
-              top_level_vars.push(TopLevelVar {
+              global_context.top_level_vars.push(TopLevelVar {
                 name,
                 metadata,
                 attributes,
-                var_type: AbstractType::from_ast(
-                  type_ast,
-                  &structs,
-                  &global_context.type_aliases,
-                  &vec![],
-                  &vec![],
-                )?
-                .concretize(
-                  &structs,
-                  &vec![],
-                  type_source_path.into(),
-                )?,
+                var: Variable::new(TypeState::Known(
+                  AbstractType::from_ast(
+                    type_ast,
+                    &structs,
+                    &global_context.type_aliases,
+                    &vec![],
+                    &vec![],
+                  )?
+                  .concretize(
+                    &structs,
+                    &vec![],
+                    type_source_path.into(),
+                  )?,
+                ))
+                .with_kind(VariableKind::Var),
+                value: None,
+                source_trace: parens_source_trace,
               })
             }
             "def" => {
-              todo!()
+              if children_iter.len() == 2 {
+                let (name, type_ast) =
+                  read_type_annotated_name(children_iter.next().unwrap())?;
+                let value_expression = TypedExp::try_from_tynt_tree(
+                  children_iter.next().unwrap(),
+                  &structs,
+                  &vec![],
+                  &vec![],
+                  crate::compiler::expression::SyntaxTreeContext::Default,
+                )?;
+                global_context.top_level_vars.push(TopLevelVar {
+                  name,
+                  metadata: None,
+                  attributes: vec![],
+                  var: Variable::new(TypeState::Known(Type::from_tynt_tree(
+                    type_ast,
+                    &structs,
+                    &global_context.type_aliases,
+                    &vec![],
+                  )?)),
+                  value: Some(value_expression),
+                  source_trace: parens_source_trace,
+                })
+              } else {
+                return err(
+                  InvalidTopLevelVar(
+                    "Expected two forms inside \"def\"".to_string(),
+                  ),
+                  first_child_source_trace,
+                );
+              }
             }
             "defn" => {
               let name_ast = children_iter.next().ok_or_else(|| {
@@ -370,30 +403,30 @@ impl Program {
         );
       }
     }
-    Ok(Self {
-      global_context,
-      top_level_vars,
-    })
+    Ok(Self { global_context })
   }
   fn propagate_types(&mut self) -> CompileResult<bool> {
     let mut base_context = self.global_context.clone();
-    self.global_context.abstract_functions.iter_mut().try_fold(
-      false,
-      |did_type_states_change_so_far, f| {
-        let did_f_type_states_change =
-          if let FunctionImplementationKind::Composite(implementation) =
-            &mut f.implementation
-          {
-            implementation
-              .borrow_mut()
-              .body
-              .propagate_types(&mut base_context)?
-          } else {
-            false
-          };
-        Ok(did_type_states_change_so_far || did_f_type_states_change)
-      },
-    )
+    let mut anything_changed = false;
+    for var in self.global_context.top_level_vars.iter_mut() {
+      if let Some(value_expression) = &mut var.value {
+        anything_changed |= var.var.typestate.mutually_constrain(
+          &mut value_expression.data,
+          var.source_trace.clone(),
+        )?;
+      }
+    }
+    for f in self.global_context.abstract_functions.iter_mut() {
+      if let FunctionImplementationKind::Composite(implementation) =
+        &mut f.implementation
+      {
+        anything_changed |= implementation
+          .borrow_mut()
+          .body
+          .propagate_types(&mut base_context)?;
+      }
+    }
+    Ok(anything_changed)
   }
   fn find_untyped(&self) -> Vec<TypedExp> {
     self.global_context.abstract_functions.iter().fold(
@@ -457,6 +490,8 @@ impl Program {
         }
       }
     }
+    monomorphized_ctx.structs = self.global_context.structs;
+    monomorphized_ctx.top_level_vars = self.global_context.top_level_vars;
     monomorphized_ctx.variables = self.global_context.variables;
     monomorphized_ctx.type_aliases = self.global_context.type_aliases;
     self.global_context = monomorphized_ctx;
@@ -464,9 +499,9 @@ impl Program {
   }
   pub fn compile_to_wgsl(self) -> CompileResult<String> {
     let mut wgsl = String::new();
-    for v in self.top_level_vars {
+    for v in self.global_context.top_level_vars {
       wgsl += &v.compile();
-      wgsl += "\n";
+      wgsl += ";\n";
     }
     wgsl += "\n";
     let default_structs = built_in_structs();

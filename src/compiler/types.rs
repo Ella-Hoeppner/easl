@@ -19,6 +19,7 @@ use super::{
   },
   structs::{AbstractStruct, Struct, TypeOrAbstractStruct},
   util::compile_word,
+  vars::TopLevelVar,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -583,7 +584,7 @@ impl TypeState {
           (_, TypeState::UnificationVariable(_)) => unreachable!(),
           (_, TypeState::Unknown) => false,
           (TypeState::Unknown, _) => {
-            std::mem::swap(this, other);
+            std::mem::swap(this, &mut other.clone());
             true
           }
           (TypeState::Known(current_type), TypeState::Known(other_type)) => {
@@ -894,6 +895,7 @@ pub struct Context {
   pub abstract_functions: Vec<AbstractFunctionSignature>,
   pub type_aliases: Vec<(String, AbstractStruct)>,
   pub enclosing_function_types: Vec<TypeState>,
+  pub top_level_vars: Vec<TopLevelVar>,
 }
 
 impl Context {
@@ -904,6 +906,7 @@ impl Context {
       abstract_functions: vec![],
       type_aliases: vec![],
       enclosing_function_types: vec![],
+      top_level_vars: vec![],
     }
   }
   pub fn push_enclosing_function_type(&mut self, typestate: TypeState) {
@@ -1038,6 +1041,11 @@ impl Context {
         .iter()
         .find(|f| f.name == name)
         .is_some()
+      || self
+        .top_level_vars
+        .iter()
+        .find(|top_level_var| top_level_var.name == name)
+        .is_some()
   }
   pub fn get_variable_kind(&self, name: &str) -> &VariableKind {
     &self.variables.get(name).unwrap().last().unwrap().kind
@@ -1047,17 +1055,27 @@ impl Context {
     name: &str,
     source_trace: SourceTrace,
   ) -> CompileResult<&mut TypeState> {
-    Ok(
-      &mut self
-        .variables
-        .get_mut(name)
-        .ok_or_else(|| {
-          CompileError::new(UnboundName(name.to_string()), source_trace)
-        })?
-        .last_mut()
-        .unwrap()
-        .typestate,
-    )
+    /*
+    .or_else(|| {
+      self
+        .top_level_vars
+        .iter_mut()
+        .find_map(|var| (var.name == name).then(|| &mut var.var_type))
+    }) */
+    if let Some(var) = self.variables.get_mut(name) {
+      Ok(&mut var.last_mut().unwrap().typestate)
+    } else {
+      if let Some(top_level_var) =
+        self.top_level_vars.iter_mut().find(|var| var.name == name)
+      {
+        Ok(&mut top_level_var.var.typestate)
+      } else {
+        Err(CompileError::new(
+          UnboundName(name.to_string()),
+          source_trace,
+        ))
+      }
+    }
   }
   pub fn merge(mut self, mut other: Context) -> Self {
     self.structs.append(&mut other.structs);

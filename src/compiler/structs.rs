@@ -265,7 +265,7 @@ impl AbstractStruct {
           .into_iter()
           .map(|field| field.compile(structs))
           .collect::<CompileResult<Vec<String>>>()?
-          .join("\n");
+          .join(",\n");
         Ok(format!("struct {monomorphized_name} {{\n{fields}\n}}"))
       })
       .map_or(Ok(None), |v| v.map(Some))

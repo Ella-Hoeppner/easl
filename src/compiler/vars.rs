@@ -1,13 +1,20 @@
-use crate::compiler::util::compile_word;
+use crate::compiler::{
+  expression::ExpressionCompilationPosition, types::VariableKind,
+  util::compile_word,
+};
 
-use super::{metadata::Metadata, types::Type};
+use super::{
+  error::SourceTrace, expression::TypedExp, metadata::Metadata, types::Variable,
+};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TopLevelVar {
   pub name: String,
   pub metadata: Option<Metadata>,
   pub attributes: Vec<String>,
-  pub var_type: Type,
+  pub var: Variable,
+  pub value: Option<TypedExp>,
+  pub source_trace: SourceTrace,
 }
 
 impl TopLevelVar {
@@ -19,7 +26,19 @@ impl TopLevelVar {
       format!("<{}>", self.attributes.join(", "))
     };
     let name = compile_word(self.name);
-    let var_type = self.var_type.compile();
-    format!("{metadata}var{attributes} {name}: {var_type}")
+    let typ = self.var.typestate.compile();
+    let var_or_const = match self.var.kind {
+      VariableKind::Let => "const",
+      VariableKind::Var => "var",
+    };
+    let assignment = if let Some(value) = self.value {
+      format!(
+        " = {}",
+        value.compile(ExpressionCompilationPosition::InnerExpression)
+      )
+    } else {
+      String::new()
+    };
+    format!("{metadata}{var_or_const}{attributes} {name}: {typ}{assignment}")
   }
 }

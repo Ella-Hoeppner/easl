@@ -92,7 +92,10 @@ pub enum CompileErrorKind {
   FunctionSignatureMissingArgumentList,
   FunctionSignatureNotSquareBrackets,
   FunctionSignatureMissingReturnType,
-  NoSuchField,
+  NoSuchField {
+    struct_name: String,
+    field_name: String,
+  },
   AccessorOnNonStruct,
   AccessorHadMultipleArguments,
   NotEnoughLetBlockChildren,

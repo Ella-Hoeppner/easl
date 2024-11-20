@@ -299,7 +299,7 @@ pub fn get_builtin_struct(name: &str) -> AbstractStruct {
     .unwrap()
 }
 
-pub fn arithmetic_functions(name: &str) -> Vec<AbstractFunctionSignature> {
+fn arithmetic_functions(name: &str) -> Vec<AbstractFunctionSignature> {
   let assignment_name = format!("{}=", name);
   vec![
     AbstractFunctionSignature {
@@ -313,154 +313,10 @@ pub fn arithmetic_functions(name: &str) -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin,
     },
     AbstractFunctionSignature {
-      name: name.to_string(),
-      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
-      arg_types: vec![
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec2())),
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec2())),
-      ],
-      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
-        vec2(),
-      )),
-      implementation: FunctionImplementationKind::Builtin,
-    },
-    AbstractFunctionSignature {
-      name: name.to_string(),
-      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
-      arg_types: vec![
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec2())),
-        GenericOr::Generic("T".to_string()),
-      ],
-      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
-        vec2(),
-      )),
-      implementation: FunctionImplementationKind::Builtin,
-    },
-    AbstractFunctionSignature {
-      name: name.to_string(),
-      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
-      arg_types: vec![
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec3())),
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec3())),
-      ],
-      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
-        vec3(),
-      )),
-      implementation: FunctionImplementationKind::Builtin,
-    },
-    AbstractFunctionSignature {
-      name: name.to_string(),
-      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
-      arg_types: vec![
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec3())),
-        GenericOr::Generic("T".to_string()),
-      ],
-      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
-        vec3(),
-      )),
-      implementation: FunctionImplementationKind::Builtin,
-    },
-    AbstractFunctionSignature {
-      name: name.to_string(),
-      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
-      arg_types: vec![
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec4())),
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec4())),
-      ],
-      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
-        vec4(),
-      )),
-      implementation: FunctionImplementationKind::Builtin,
-    },
-    AbstractFunctionSignature {
-      name: name.to_string(),
-      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
-      arg_types: vec![
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec4())),
-        GenericOr::Generic("T".to_string()),
-      ],
-      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
-        vec4(),
-      )),
-      implementation: FunctionImplementationKind::Builtin,
-    },
-    AbstractFunctionSignature {
       name: assignment_name.clone(),
       generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
       arg_types: vec![
         GenericOr::Generic("T".to_string()),
-        GenericOr::Generic("T".to_string()),
-      ],
-      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-        Type::None,
-      )),
-      implementation: FunctionImplementationKind::Builtin,
-    },
-    AbstractFunctionSignature {
-      name: assignment_name.clone(),
-      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
-      arg_types: vec![
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec2())),
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec2())),
-      ],
-      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-        Type::None,
-      )),
-      implementation: FunctionImplementationKind::Builtin,
-    },
-    AbstractFunctionSignature {
-      name: assignment_name.clone(),
-      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
-      arg_types: vec![
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec2())),
-        GenericOr::Generic("T".to_string()),
-      ],
-      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-        Type::None,
-      )),
-      implementation: FunctionImplementationKind::Builtin,
-    },
-    AbstractFunctionSignature {
-      name: assignment_name.clone(),
-      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
-      arg_types: vec![
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec3())),
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec3())),
-      ],
-      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-        Type::None,
-      )),
-      implementation: FunctionImplementationKind::Builtin,
-    },
-    AbstractFunctionSignature {
-      name: assignment_name.clone(),
-      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
-      arg_types: vec![
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec3())),
-        GenericOr::Generic("T".to_string()),
-      ],
-      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-        Type::None,
-      )),
-      implementation: FunctionImplementationKind::Builtin,
-    },
-    AbstractFunctionSignature {
-      name: assignment_name.clone(),
-      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
-      arg_types: vec![
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec4())),
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec4())),
-      ],
-      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-        Type::None,
-      )),
-      implementation: FunctionImplementationKind::Builtin,
-    },
-    AbstractFunctionSignature {
-      name: assignment_name.clone(),
-      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
-      arg_types: vec![
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(vec4())),
         GenericOr::Generic("T".to_string()),
       ],
       return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
@@ -469,22 +325,160 @@ pub fn arithmetic_functions(name: &str) -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin,
     },
   ]
+  .into_iter()
+  .chain(foreach_vec_type(|vec| {
+    vec![
+      AbstractFunctionSignature {
+        name: name.to_string(),
+        generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
+        arg_types: vec![
+          GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+            vec.clone(),
+          )),
+          GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+            vec.clone(),
+          )),
+        ],
+        return_type: GenericOr::NonGeneric(
+          TypeOrAbstractStruct::AbstractStruct(vec.clone()),
+        ),
+        implementation: FunctionImplementationKind::Builtin,
+      },
+      AbstractFunctionSignature {
+        name: name.to_string(),
+        generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
+        arg_types: vec![
+          GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+            vec.clone(),
+          )),
+          GenericOr::Generic("T".to_string()),
+        ],
+        return_type: GenericOr::NonGeneric(
+          TypeOrAbstractStruct::AbstractStruct(vec.clone()),
+        ),
+        implementation: FunctionImplementationKind::Builtin,
+      },
+      AbstractFunctionSignature {
+        name: name.to_string(),
+        generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
+        arg_types: vec![
+          GenericOr::Generic("T".to_string()),
+          GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+            vec.clone(),
+          )),
+        ],
+        return_type: GenericOr::NonGeneric(
+          TypeOrAbstractStruct::AbstractStruct(vec.clone()),
+        ),
+        implementation: FunctionImplementationKind::Builtin,
+      },
+      AbstractFunctionSignature {
+        name: assignment_name.clone(),
+        generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
+        arg_types: vec![
+          GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+            vec.clone(),
+          )),
+          GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+            vec.clone(),
+          )),
+        ],
+        return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+          Type::None,
+        )),
+        implementation: FunctionImplementationKind::Builtin,
+      },
+      AbstractFunctionSignature {
+        name: assignment_name.clone(),
+        generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
+        arg_types: vec![
+          GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+            vec.clone(),
+          )),
+          GenericOr::Generic("T".to_string()),
+        ],
+        return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+          Type::None,
+        )),
+        implementation: FunctionImplementationKind::Builtin,
+      },
+    ]
+  }))
+  .collect()
 }
 
-pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
-  let mut signatures = vec![
+fn trigonometry_functions() -> Vec<AbstractFunctionSignature> {
+  vec![AbstractFunctionSignature {
+    name: "atan2".to_string(),
+    generic_args: vec![],
+    arg_types: vec![
+      GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
+      GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
+    ],
+    return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
+    implementation: FunctionImplementationKind::Builtin,
+  }]
+}
+
+fn exp_functions() -> Vec<AbstractFunctionSignature> {
+  vec![AbstractFunctionSignature {
+    name: "log".to_string(),
+    generic_args: vec![],
+    arg_types: vec![GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+      Type::F32,
+    ))],
+    return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
+    implementation: FunctionImplementationKind::Builtin,
+  }]
+}
+
+fn negation_functions() -> Vec<AbstractFunctionSignature> {
+  vec![
     AbstractFunctionSignature {
-      name: "&&".to_string(),
-      generic_args: vec![],
-      arg_types: vec![
-        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::Bool)),
-        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::Bool)),
-      ],
-      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-        Type::Bool,
+      name: "-".to_string(),
+      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
+      arg_types: vec![GenericOr::Generic("T".to_string())],
+      return_type: GenericOr::Generic("T".to_string()),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+    AbstractFunctionSignature {
+      name: "-".to_string(),
+      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
+      arg_types: vec![GenericOr::NonGeneric(
+        TypeOrAbstractStruct::AbstractStruct(vec2()),
+      )],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+        vec2(),
       )),
       implementation: FunctionImplementationKind::Builtin,
     },
+    AbstractFunctionSignature {
+      name: "-".to_string(),
+      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
+      arg_types: vec![GenericOr::NonGeneric(
+        TypeOrAbstractStruct::AbstractStruct(vec3()),
+      )],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+        vec3(),
+      )),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+    AbstractFunctionSignature {
+      name: "-".to_string(),
+      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
+      arg_types: vec![GenericOr::NonGeneric(
+        TypeOrAbstractStruct::AbstractStruct(vec4()),
+      )],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+        vec4(),
+      )),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+  ]
+}
+
+fn comparison_functions() -> Vec<AbstractFunctionSignature> {
+  vec![
     AbstractFunctionSignature {
       name: "==".to_string(),
       generic_args: vec![("T".to_string(), vec![])],
@@ -498,31 +492,226 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin,
     },
     AbstractFunctionSignature {
-      name: "=".to_string(),
-      generic_args: vec![("T".to_string(), vec![])],
+      name: ">=".to_string(),
+      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
       arg_types: vec![
         GenericOr::Generic("T".to_string()),
         GenericOr::Generic("T".to_string()),
       ],
       return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-        Type::None,
+        Type::Bool,
       )),
       implementation: FunctionImplementationKind::Builtin,
     },
-  ];
-  signatures.append(&mut multi_signature_vec_constructors(4));
-  signatures.append(&mut multi_signature_vec_constructors(3));
-  signatures.append(&mut multi_signature_vec_constructors(2));
+    AbstractFunctionSignature {
+      name: ">".to_string(),
+      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
+      arg_types: vec![
+        GenericOr::Generic("T".to_string()),
+        GenericOr::Generic("T".to_string()),
+      ],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+        Type::Bool,
+      )),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+    AbstractFunctionSignature {
+      name: "<=".to_string(),
+      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
+      arg_types: vec![
+        GenericOr::Generic("T".to_string()),
+        GenericOr::Generic("T".to_string()),
+      ],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+        Type::Bool,
+      )),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+    AbstractFunctionSignature {
+      name: "<".to_string(),
+      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
+      arg_types: vec![
+        GenericOr::Generic("T".to_string()),
+        GenericOr::Generic("T".to_string()),
+      ],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+        Type::Bool,
+      )),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+  ]
+}
+
+fn assignment_function() -> Vec<AbstractFunctionSignature> {
+  vec![AbstractFunctionSignature {
+    name: "=".to_string(),
+    generic_args: vec![("T".to_string(), vec![])],
+    arg_types: vec![
+      GenericOr::Generic("T".to_string()),
+      GenericOr::Generic("T".to_string()),
+    ],
+    return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::None)),
+    implementation: FunctionImplementationKind::Builtin,
+  }]
+}
+
+fn boolean_functions() -> Vec<AbstractFunctionSignature> {
+  vec![
+    AbstractFunctionSignature {
+      name: "&&".to_string(),
+      generic_args: vec![],
+      arg_types: vec![
+        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::Bool)),
+        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::Bool)),
+      ],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+        Type::Bool,
+      )),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+    AbstractFunctionSignature {
+      name: "||".to_string(),
+      generic_args: vec![],
+      arg_types: vec![
+        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::Bool)),
+        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::Bool)),
+      ],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+        Type::Bool,
+      )),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+  ]
+}
+
+fn foreach_vec_type(
+  f: impl Fn(AbstractStruct) -> Vec<AbstractFunctionSignature>,
+) -> Vec<AbstractFunctionSignature> {
+  [vec2(), vec3(), vec4()]
+    .into_iter()
+    .map(f)
+    .flatten()
+    .collect()
+}
+
+fn vector_functions() -> Vec<AbstractFunctionSignature> {
+  foreach_vec_type(|vec| {
+    vec![
+      AbstractFunctionSignature {
+        name: "length".to_string(),
+        generic_args: vec![],
+        arg_types: vec![GenericOr::NonGeneric(
+          TypeOrAbstractStruct::AbstractStruct(
+            vec
+              .generate_monomorphized(vec![Type::F32], SourceTrace::empty())
+              .unwrap(),
+          ),
+        )],
+        return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+          Type::F32,
+        )),
+        implementation: FunctionImplementationKind::Builtin,
+      },
+      AbstractFunctionSignature {
+        name: "normalize".to_string(),
+        generic_args: vec![],
+        arg_types: vec![GenericOr::NonGeneric(
+          TypeOrAbstractStruct::AbstractStruct(
+            vec
+              .generate_monomorphized(vec![Type::F32], SourceTrace::empty())
+              .unwrap(),
+          ),
+        )],
+        return_type: GenericOr::NonGeneric(
+          TypeOrAbstractStruct::AbstractStruct(
+            vec
+              .generate_monomorphized(vec![Type::F32], SourceTrace::empty())
+              .unwrap(),
+          ),
+        ),
+        implementation: FunctionImplementationKind::Builtin,
+      },
+    ]
+  })
+}
+
+fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
+  vec![
+    AbstractFunctionSignature {
+      name: "i32".to_string(),
+      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
+      arg_types: vec![GenericOr::Generic("T".to_string())],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::I32)),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+    AbstractFunctionSignature {
+      name: "f32".to_string(),
+      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
+      arg_types: vec![GenericOr::Generic("T".to_string())],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+    AbstractFunctionSignature {
+      name: "u32".to_string(),
+      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
+      arg_types: vec![GenericOr::Generic("T".to_string())],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::U32)),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+  ]
+}
+
+fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
+  vec![
+    AbstractFunctionSignature {
+      name: "floor".to_string(),
+      generic_args: vec![],
+      arg_types: vec![GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+        Type::F32,
+      ))],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+    AbstractFunctionSignature {
+      name: "ceil".to_string(),
+      generic_args: vec![],
+      arg_types: vec![GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+        Type::F32,
+      ))],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+  ]
+}
+
+pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
+  let mut signatures = vec![];
+  signatures.append(&mut assignment_function());
+  signatures.append(&mut boolean_functions());
+  signatures.append(&mut comparison_functions());
   signatures.append(&mut arithmetic_functions("+"));
   signatures.append(&mut arithmetic_functions("*"));
   signatures.append(&mut arithmetic_functions("-"));
+  signatures.append(&mut negation_functions());
   signatures.append(&mut arithmetic_functions("/"));
+  signatures.append(&mut arithmetic_functions("%"));
+  signatures.append(&mut multi_signature_vec_constructors(4));
+  signatures.append(&mut multi_signature_vec_constructors(3));
+  signatures.append(&mut multi_signature_vec_constructors(2));
+  signatures.append(&mut vector_functions());
+  signatures.append(&mut trigonometry_functions());
+  signatures.append(&mut exp_functions());
+  signatures.append(&mut scalar_conversion_functions());
+  signatures.append(&mut misc_math_functions());
   signatures
 }
 
-pub const ASSIGNMENT_OPS: [&'static str; 5] = ["=", "+=", "-=", "*=", "/="];
+pub const ASSIGNMENT_OPS: [&'static str; 6] =
+  ["=", "+=", "-=", "*=", "/=", "%="];
 
-pub const INFIX_OPS: [&'static str; 7] = ["==", "||", "&&", "+", "-", "*", "/"];
+pub const INFIX_OPS: [&'static str; 12] = [
+  "==", ">=", ">", "<=", "<", "||", "&&", "+", "-", "*", "/", "%",
+];
 
 pub const ABNORMAL_CONSTRUCTOR_STRUCTS: [&'static str; 3] =
   ["vec2", "vec3", "vec4"];
