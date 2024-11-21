@@ -431,6 +431,27 @@ impl TypedExp {
             data: Unknown,
             source_trace,
           }
+        } else if leaf.contains('.') && leaf.chars().next() != Some('.') {
+          let mut segments = leaf.split('.');
+          if let Some(root_name) = segments.next() {
+            segments.fold(
+              Exp {
+                kind: ExpKind::Name(root_name.to_string()),
+                data: Unknown,
+                source_trace: source_trace.clone(),
+              },
+              |inner_expression, accessor_name| Exp {
+                kind: ExpKind::Access(
+                  Accessor::new(accessor_name.to_string()),
+                  Box::new(inner_expression),
+                ),
+                data: Unknown,
+                source_trace: source_trace.clone(),
+              },
+            )
+          } else {
+            return err(InvalidToken(leaf), source_trace);
+          }
         } else {
           Exp {
             kind: ExpKind::Name(leaf),
@@ -1029,7 +1050,9 @@ impl TypedExp {
       }
       NumberLiteral(num) => self.data.constrain(
         match num {
-          Number::Int(_) => TypeState::OneOf(vec![Type::I32, Type::U32]),
+          Number::Int(_) => {
+            TypeState::OneOf(vec![Type::I32, Type::U32, Type::F32])
+          }
           Number::Float(_) => TypeState::Known(Type::F32),
         },
         self.source_trace.clone(),
@@ -1311,6 +1334,7 @@ impl TypedExp {
           match self.data {
             Known(Type::I32) => "",
             Known(Type::U32) => "u",
+            Known(Type::F32) => "f",
             _ => unreachable!(),
           }
         ),

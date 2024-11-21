@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use sse::syntax::EncloserOrOperator;
 
@@ -20,9 +20,13 @@ use crate::{
 
 use super::{
   builtins::{built_in_structs, built_in_type_aliases},
-  error::{CompileErrorKind::*, CompileResult},
+  error::{
+    CompileErrorKind::{self, *},
+    CompileResult,
+  },
   expression::TypedExp,
   functions::{FunctionImplementationKind, TopLevelFunction},
+  macros::{macroexpand, Macro},
   types::Context,
   vars::TopLevelVar,
 };
@@ -33,7 +37,18 @@ pub struct Program {
 }
 
 impl Program {
-  pub fn init_from_tynt_trees(trees: Vec<TyntTree>) -> CompileResult<Self> {
+  pub fn init_from_tynt_trees(
+    trees: Vec<TyntTree>,
+    macros: Vec<Macro>,
+  ) -> CompileResult<Self> {
+    let trees = trees
+      .into_iter()
+      .map(|tree| macroexpand(tree, &macros))
+      .collect::<Result<Vec<TyntTree>, (SourceTrace, String)>>()
+      .map_err(|(source_trace, err_str)| {
+        CompileError::new(MacroError(err_str), source_trace)
+      })?;
+
     let mut non_struct_trees = vec![];
     let mut untyped_structs = vec![];
 

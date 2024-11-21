@@ -9,8 +9,8 @@
 
 @vertex
 (defn vertex [in: VertexInput]: VertexOutput
-  (VertexOutput (vec4 (.corner-position in) 0. 1.)))
+  (VertexOutput (vec4 in.corner-position 0. 1.)))
 
 @fragment
 (defn fragment [in: VertexOutput]: @{location 0} vec4f
-  (vec4 (vec3 0. 0. 0.): vec3f (.x (vec2 0. 0.): vec2f)))
+  (vec4 (vec3f 0. 0. 0.) (.x (vec2f 0. 0.))))

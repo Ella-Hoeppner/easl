@@ -66,6 +66,7 @@ pub enum CompileErrorKind {
   UnknownStructName,
   InvalidStructDefinition,
   UnrecognizedGeneric(String),
+  InvalidToken(String),
   InvalidTopLevelVar(String),
   InvalidDef(String),
   InvalidDefn(String),
@@ -117,6 +118,7 @@ pub enum CompileErrorKind {
   ReturnOutsideFunction,
   EnclosingFunctionTypeWasntFunction,
   InvalidReturn,
+  MacroError(String),
 }
 
 #[derive(Clone, Debug)]

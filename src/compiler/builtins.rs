@@ -1,12 +1,18 @@
 use std::collections::HashMap;
 
-use crate::compiler::{
-  error::SourceTrace,
-  structs::{AbstractStructField, TypeOrAbstractStruct},
+use sse::{document::DocumentPosition, syntax::EncloserOrOperator};
+
+use crate::{
+  compiler::{
+    error::SourceTrace,
+    structs::{AbstractStructField, TypeOrAbstractStruct},
+  },
+  parse::{Encloser, TyntTree},
 };
 
 use super::{
   functions::{AbstractFunctionSignature, FunctionImplementationKind},
+  macros::Macro,
   structs::AbstractStruct,
   types::{AbstractType, GenericOr, Type, TypeConstraint},
 };
@@ -681,6 +687,13 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
       return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
       implementation: FunctionImplementationKind::Builtin,
     },
+    AbstractFunctionSignature {
+      name: "abs".to_string(),
+      generic_args: vec![("T".to_string(), vec![TypeConstraint::scalar()])],
+      arg_types: vec![GenericOr::Generic("T".to_string())],
+      return_type: GenericOr::Generic("T".to_string()),
+      implementation: FunctionImplementationKind::Builtin,
+    },
   ]
 }
 
@@ -715,3 +728,250 @@ pub const INFIX_OPS: [&'static str; 12] = [
 
 pub const ABNORMAL_CONSTRUCTOR_STRUCTS: [&'static str; 3] =
   ["vec2", "vec3", "vec4"];
+
+pub fn built_in_macros() -> Vec<Macro> {
+  let if_macro = Macro(Box::new(|tree| match tree {
+    TyntTree::Inner(
+      (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+      mut children,
+    ) => {
+      if children.is_empty() {
+        Err(TyntTree::Inner(
+          (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+          children,
+        ))
+      } else {
+        if let TyntTree::Leaf(_, leaf) = &children[0] {
+          if leaf.as_str() == "if" {
+            if children.len() == 4 {
+              let false_branch = children.remove(3);
+              let true_branch = children.remove(2);
+              let condition = children.remove(1);
+              Ok(Ok(TyntTree::Inner(
+                (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+                vec![
+                  TyntTree::Leaf(
+                    DocumentPosition {
+                      span: 0..0,
+                      path: vec![],
+                    },
+                    "match".to_string(),
+                  ),
+                  condition,
+                  TyntTree::Leaf(
+                    DocumentPosition {
+                      span: 0..0,
+                      path: vec![],
+                    },
+                    "true".to_string(),
+                  ),
+                  true_branch,
+                  TyntTree::Leaf(
+                    DocumentPosition {
+                      span: 0..0,
+                      path: vec![],
+                    },
+                    "false".to_string(),
+                  ),
+                  false_branch,
+                ],
+              )))
+            } else {
+              Ok(Err((
+                SourceTrace::from(position.path),
+                format!(
+                  "\"if\" statement expects 3 arguments, found {}",
+                  children.len()
+                ),
+              )))
+            }
+          } else {
+            Err(TyntTree::Inner(
+              (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+              children,
+            ))
+          }
+        } else {
+          Err(TyntTree::Inner(
+            (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+            children,
+          ))
+        }
+      }
+    }
+    other => Err(other),
+  }));
+  let thread_macro = Macro(Box::new(|tree| match tree {
+    TyntTree::Inner(
+      (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+      children,
+    ) => {
+      if children.is_empty() {
+        Err(TyntTree::Inner(
+          (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+          children,
+        ))
+      } else {
+        if let TyntTree::Leaf(_, leaf) = &children[0] {
+          if leaf.as_str() == "->" {
+            if children.len() <= 1 {
+              return Ok(Err((
+                SourceTrace::from(position.path),
+                format!("\"->\" macro expects at least one inner form",),
+              )));
+            }
+            let mut children_iter = children.into_iter();
+            children_iter.next();
+            let original_expression = children_iter.next().unwrap();
+            Ok(children_iter.fold(
+              Ok(original_expression),
+              |maybe_previous_expression: Result<
+                TyntTree,
+                (SourceTrace, String),
+              >,
+               thread_expression| {
+                maybe_previous_expression
+                    .map(|previous_expression| {
+                      fn walk_thread_expression(
+                        tree: TyntTree,
+                        inner_expression: Option<TyntTree>,
+                        mut positioner_traces: Vec<SourceTrace>,
+                      ) -> (TyntTree, Option<TyntTree>, Vec<SourceTrace>)
+                      {
+                        match tree {
+                          TyntTree::Leaf(position, leaf) => {
+                            if leaf.as_str() == "<>" {
+                              positioner_traces
+                                .push(SourceTrace::from(position.path.clone()));
+                              if let Some(inner_expression) = inner_expression {
+                                (inner_expression, None, positioner_traces)
+                              } else {
+                                (
+                                  TyntTree::Leaf(position, leaf),
+                                  None,
+                                  positioner_traces,
+                                )
+                              }
+                            } else {
+                              (
+                                TyntTree::Leaf(position, leaf),
+                                inner_expression,
+                                positioner_traces,
+                              )
+                            }
+                          }
+                          TyntTree::Inner((position, kind), subtrees) => {
+                            let (
+                              new_subtrees,
+                              inner_expression,
+                              position_traces,
+                            ) = subtrees.into_iter().fold(
+                              (vec![], inner_expression, positioner_traces),
+                              |(
+                                mut new_subtrees,
+                                inner_expression,
+                                positioner_traces,
+                              ),
+                               subtree| {
+                                let (
+                                  new_subtree,
+                                  new_inner_expression,
+                                  new_positioner_traces,
+                                ) = walk_thread_expression(
+                                  subtree,
+                                  inner_expression,
+                                  positioner_traces,
+                                );
+                                new_subtrees.push(new_subtree);
+                                (
+                                  new_subtrees,
+                                  new_inner_expression,
+                                  new_positioner_traces,
+                                )
+                              },
+                            );
+                            (
+                              TyntTree::Inner((position, kind), new_subtrees),
+                              inner_expression,
+                              position_traces,
+                            )
+                          }
+                        }
+                      }
+                      let (
+                        new_thread_expression,
+                        previous_expression,
+                        positioner_traces,
+                      ) = walk_thread_expression(
+                        thread_expression,
+                        Some(previous_expression),
+                        vec![],
+                      );
+                      match positioner_traces.len() {
+                        0 => match new_thread_expression {
+                          TyntTree::Inner(
+                            (
+                              paren_position,
+                              EncloserOrOperator::Encloser(Encloser::Parens),
+                            ),
+                            mut subtrees,
+                          ) => {
+                            subtrees.insert(1, previous_expression.unwrap());
+                            Ok(TyntTree::Inner(
+                              (
+                                paren_position,
+                                EncloserOrOperator::Encloser(Encloser::Parens),
+                              ),
+                              subtrees,
+                            ))
+                          }
+                          sse::Sexp::Inner((paren_position, _), _) => Err((
+                            SourceTrace::from(paren_position.path),
+                            format!(
+                              "\"->\" macro expects at least one inner form",
+                            ),
+                          )),
+                          TyntTree::Leaf(leaf_position, leaf_string) => Ok({
+                            TyntTree::Inner(
+                              (
+                                leaf_position.clone(),
+                                EncloserOrOperator::Encloser(Encloser::Parens),
+                              ),
+                              vec![
+                                TyntTree::Leaf(leaf_position, leaf_string),
+                                previous_expression.unwrap(),
+                              ],
+                            )
+                          }),
+                        },
+                        1 => Ok(new_thread_expression),
+                        n => Err((
+                          positioner_traces.into_iter().collect(),
+                          format!(
+                          "\"->\" expression must contain zero or one \"<>\" \
+                          subexpressions, found {n}"
+                        ),
+                        )),
+                      }
+                    })
+                    .flatten()
+              },
+            ))
+          } else {
+            Err(TyntTree::Inner(
+              (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+              children,
+            ))
+          }
+        } else {
+          Err(TyntTree::Inner(
+            (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+            children,
+          ))
+        }
+      }
+    }
+    other => Err(other),
+  }));
+  vec![if_macro, thread_macro]
+}

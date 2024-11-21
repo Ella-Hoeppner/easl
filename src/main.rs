@@ -28,6 +28,8 @@ fn main() {
     "while_loop",
     "return",
     "math",
+    "if_macro",
+    "thread_macro",
   ] {
     println!("compiling {filename}...");
     let tynt_source = fs::read_to_string(&format!("./data/{filename}.tynt"))
