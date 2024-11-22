@@ -1,0 +1,3 @@
+@vertex
+(defn v [@{builtin vertex-index} vertex-index: u32]: f32
+  5)

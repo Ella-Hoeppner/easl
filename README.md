@@ -16,8 +16,6 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* support metadata on function arguments
-
 * clean up/simplify type parsing, I've got `Type::from_tynt_tree`, `AbstractType::from_tynt_tree`, and `AbstractType::from_ast` that all seem like they have pretty overlapping functionality, probably don't need all three
 
 * allow type annotation on binding names in let blocks, e.g. `(let [x: f32 0] ...)` currently crashes because it can't handle the type annotation on `x`

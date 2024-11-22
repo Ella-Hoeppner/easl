@@ -316,7 +316,6 @@ pub fn arg_list_and_return_type_from_tynt_tree(
             FunctionArgMissingType,
             source_path.clone(),
           ))?;
-          let (arg_metadata, t_ast) = extract_metadata(t_ast)?;
           let t = AbstractType::from_tynt_tree(
             t_ast,
             structs,
@@ -324,6 +323,7 @@ pub fn arg_list_and_return_type_from_tynt_tree(
             generic_args,
             &vec![],
           )?;
+          let (arg_metadata, arg_name_ast) = extract_metadata(arg_name_ast)?;
           if let TyntTree::Leaf(_, arg_name) = arg_name_ast {
             Ok(((t, arg_metadata), arg_name))
           } else {
