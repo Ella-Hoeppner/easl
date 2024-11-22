@@ -28,38 +28,45 @@ use crate::compiler::error::{
 pub enum Encloser {
   Parens,
   Square,
+  ArrayLookup,
   Curly,
   LineComment,
   BlockComment,
 }
 impl SSEEncloser for Encloser {
   fn id_str(&self) -> &str {
+    use Encloser::*;
     match self {
-      Encloser::Parens => "",
-      Encloser::Square => ":square-brackets:",
-      Encloser::Curly => ":cury-brackets:",
-      Encloser::LineComment => ":line-comment:",
-      Encloser::BlockComment => ":block-comment:",
+      Parens => "",
+      Square => ":square-brackets:",
+      ArrayLookup => ":array-lookup:",
+      Curly => ":cury-brackets:",
+      LineComment => ":line-comment:",
+      BlockComment => ":block-comment:",
     }
   }
 
   fn opening_encloser_str(&self) -> &str {
+    use Encloser::*;
     match self {
-      Encloser::Parens => "(",
-      Encloser::Square => "[",
-      Encloser::Curly => "{",
-      Encloser::LineComment => ";",
-      Encloser::BlockComment => ";*",
+      Parens => "(",
+      Square => "[",
+      ArrayLookup => "@[",
+      Curly => "{",
+      LineComment => ";",
+      BlockComment => ";*",
     }
   }
 
   fn closing_encloser_str(&self) -> &str {
+    use Encloser::*;
     match self {
-      Encloser::Parens => ")",
-      Encloser::Square => "]",
-      Encloser::Curly => "}",
-      Encloser::LineComment => "\n",
-      Encloser::BlockComment => "*;",
+      Parens => ")",
+      Square => "]",
+      ArrayLookup => "]",
+      Curly => "}",
+      LineComment => "\n",
+      BlockComment => "*;",
     }
   }
 }
@@ -110,6 +117,7 @@ pub fn parse_tynt(
     vec![
       Encloser::Parens,
       Encloser::Square,
+      Encloser::ArrayLookup,
       Encloser::Curly,
       Encloser::LineComment,
       Encloser::BlockComment,
@@ -135,6 +143,7 @@ pub fn parse_tynt(
     [
       (Encloser::Parens, Context::Default),
       (Encloser::Square, Context::Default),
+      (Encloser::ArrayLookup, Context::Default),
       (Encloser::Curly, Context::Default),
       (Encloser::LineComment, Context::UnstructuredComment),
       (Encloser::BlockComment, Context::UnstructuredComment),

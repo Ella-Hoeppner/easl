@@ -90,7 +90,7 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
         AbstractFunctionSignature {
           name: format!("vec{n}"),
           generic_args: (0..nums.len())
-            .map(|i| format!("T{i}"))
+            .map(|i| format!("A{i}"))
             .chain(std::iter::once("T".to_string()))
             .map(|name| (name, vec![TypeConstraint::scalar()]))
             .collect(),
@@ -98,7 +98,7 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
             .iter()
             .copied()
             .enumerate()
-            .map(|(i, n)| vec_n_type(n).rename_generic("T", &format!("T{i}")))
+            .map(|(i, n)| vec_n_type(n).rename_generic("T", &format!("A{i}")))
             .collect(),
           return_type: vec_n_type(n),
           implementation: FunctionImplementationKind::Builtin,
@@ -106,14 +106,14 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
         AbstractFunctionSignature {
           name: format!("vec{n}f"),
           generic_args: (0..nums.len())
-            .map(|i| format!("T{i}"))
+            .map(|i| format!("A{i}"))
             .map(|name| (name, vec![TypeConstraint::scalar()]))
             .collect(),
           arg_types: nums
             .iter()
             .copied()
             .enumerate()
-            .map(|(i, n)| vec_n_type(n).rename_generic("T", &format!("T{i}")))
+            .map(|(i, n)| vec_n_type(n).rename_generic("T", &format!("A{i}")))
             .collect(),
           return_type: specialized_vec_n_type(n, "f"),
           implementation: FunctionImplementationKind::Builtin,
@@ -121,14 +121,14 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
         AbstractFunctionSignature {
           name: format!("vec{n}i"),
           generic_args: (0..nums.len())
-            .map(|i| format!("T{i}"))
+            .map(|i| format!("A{i}"))
             .map(|name| (name, vec![TypeConstraint::scalar()]))
             .collect(),
           arg_types: nums
             .iter()
             .copied()
             .enumerate()
-            .map(|(i, n)| vec_n_type(n).rename_generic("T", &format!("T{i}")))
+            .map(|(i, n)| vec_n_type(n).rename_generic("T", &format!("A{i}")))
             .collect(),
           return_type: specialized_vec_n_type(n, "i"),
           implementation: FunctionImplementationKind::Builtin,
@@ -136,14 +136,14 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
         AbstractFunctionSignature {
           name: format!("vec{n}u"),
           generic_args: (0..nums.len())
-            .map(|i| format!("T{i}"))
+            .map(|i| format!("A{i}"))
             .map(|name| (name, vec![TypeConstraint::scalar()]))
             .collect(),
           arg_types: nums
             .iter()
             .copied()
             .enumerate()
-            .map(|(i, n)| vec_n_type(n).rename_generic("T", &format!("T{i}")))
+            .map(|(i, n)| vec_n_type(n).rename_generic("T", &format!("A{i}")))
             .collect(),
           return_type: specialized_vec_n_type(n, "u"),
           implementation: FunctionImplementationKind::Builtin,
@@ -235,8 +235,30 @@ pub fn vec4() -> AbstractStruct {
   }
 }
 
+pub fn texture_2d() -> AbstractStruct {
+  AbstractStruct {
+    name: "texture-2d".to_string(),
+    fields: vec![],
+    generic_args: vec!["T".to_string()],
+    filled_generics: HashMap::new(),
+    abstract_ancestor: None,
+    source_trace: SourceTrace::empty(),
+  }
+}
+
+pub fn sampler() -> AbstractStruct {
+  AbstractStruct {
+    name: "sampler".to_string(),
+    fields: vec![],
+    generic_args: vec![],
+    filled_generics: HashMap::new(),
+    abstract_ancestor: None,
+    source_trace: SourceTrace::empty(),
+  }
+}
+
 pub fn built_in_structs() -> Vec<AbstractStruct> {
-  vec![vec2(), vec3(), vec4()]
+  vec![vec2(), vec3(), vec4(), texture_2d(), sampler()]
 }
 
 pub fn built_in_type_aliases() -> Vec<(String, AbstractStruct)> {

@@ -122,6 +122,7 @@ pub enum SwizzleField {
 pub enum Accessor {
   Field(String),
   Swizzle(Vec<SwizzleField>),
+  ArrayIndex(Box<TypedExp>),
 }
 
 pub fn swizzle_accessor_typestate(
@@ -206,12 +207,19 @@ impl Accessor {
   }
   pub fn compile(self) -> String {
     match self {
-      Accessor::Field(field_name) => field_name,
-      Accessor::Swizzle(field_indeces) => field_indeces
-        .into_iter()
-        .map(|index| ["x", "y", "z", "w"][index as usize])
+      Accessor::Field(field_name) => format!(".{field_name}"),
+      Accessor::Swizzle(field_indeces) => std::iter::once(".")
+        .chain(
+          field_indeces
+            .into_iter()
+            .map(|index| ["x", "y", "z", "w"][index as usize]),
+        )
         .collect::<Vec<&str>>()
         .join(""),
+      Accessor::ArrayIndex(exp) => format!(
+        "[{}]",
+        exp.compile(ExpressionCompilationPosition::InnerExpression)
+      ),
     }
   }
 }
@@ -942,6 +950,34 @@ impl TypedExp {
                 return err(EmptyList, source_trace);
               }
             }
+            ArrayLookup => {
+              if children_iter.len() == 2 {
+                let array_expression = TypedExp::try_from_tynt_tree(
+                  children_iter.next().unwrap(),
+                  structs,
+                  aliases,
+                  skolems,
+                  ctx,
+                )?;
+                let index_expression = TypedExp::try_from_tynt_tree(
+                  children_iter.next().unwrap(),
+                  structs,
+                  aliases,
+                  skolems,
+                  ctx,
+                )?;
+                Exp {
+                  kind: Access(
+                    Accessor::ArrayIndex(Box::new(index_expression)),
+                    Box::new(array_expression),
+                  ),
+                  data: TypeState::Unknown,
+                  source_trace,
+                }
+              } else {
+                return err(InvalidArrayAccessSyntax, source_trace);
+              }
+            }
             Square => todo!("array"),
             Curly => todo!("anonymous struct"),
             LineComment => todo!("comments"),
@@ -1202,6 +1238,15 @@ impl TypedExp {
           anything_changed |= subexp.propagate_types(ctx)?;
           anything_changed
         }
+        Accessor::ArrayIndex(index_expression) => {
+          let mut anything_changed = index_expression.data.constrain(
+            TypeState::OneOf(vec![Type::I32, Type::U32]),
+            self.source_trace.clone(),
+          )?;
+          anything_changed |= index_expression.propagate_types(ctx)?;
+          anything_changed |= subexp.propagate_types(ctx)?;
+          anything_changed
+        }
       },
       Let(bindings, body) => {
         let mut anything_changed = body
@@ -1388,7 +1433,7 @@ impl TypedExp {
         })
       }
       Access(accessor, subexp) => wrap(format!(
-        "{}.{}",
+        "{}{}",
         subexp.compile(InnerExpression),
         compile_word(accessor.compile())
       )),
@@ -1444,23 +1489,28 @@ impl TypedExp {
                   unreachable!()
                 }
               }
-              if let Some(true_case) = true_case {
-                format!(
-                  "\nif ({}) {{{}\n}} else {{{}\n}}",
-                  scrutinee.compile(InnerExpression),
+              let (true_case, false_case) = if let Some(true_case) = true_case {
+                (
                   indent(true_case.compile(position)),
                   indent(
-                    false_case.or(wildcard_case).unwrap().compile(position)
+                    false_case.or(wildcard_case).unwrap().compile(position),
                   ),
                 )
               } else {
-                format!(
-                  "\nif ({}) {{{}\n}} else {{{}\n}}",
-                  scrutinee.compile(InnerExpression),
+                (
                   indent(
-                    true_case.or(wildcard_case).unwrap().compile(position)
+                    true_case.or(wildcard_case).unwrap().compile(position),
                   ),
                   indent(false_case.unwrap().compile(position)),
+                )
+              };
+              let condition = scrutinee.compile(InnerExpression);
+              if position == InnerExpression {
+                format!("select({false_case}, {true_case}, {condition})")
+              } else {
+                format!(
+                  "\nif ({condition}) {{{true_case}\n}} \
+                  else {{{false_case}\n}}",
                 )
               }
             }

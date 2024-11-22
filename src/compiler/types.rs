@@ -153,7 +153,10 @@ impl AbstractType {
           .iter()
           .find(|s| s.name == generic_struct_name)
           .ok_or_else(|| {
-            CompileError::new(InvalidFunctionArgumentName, position.path.into())
+            CompileError::new(
+              NoStructNamed(generic_struct_name),
+              position.path.into(),
+            )
           })?
           .clone();
         let generic_args = children_iter
@@ -164,6 +167,45 @@ impl AbstractType {
         Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
           generic_struct.fill_abstract_generics(generic_args),
         )))
+      }
+      TyntTree::Inner(
+        (position, EncloserOrOperator::Encloser(Encloser::Square)),
+        array_children,
+      ) => {
+        let source_trace: SourceTrace = position.path.clone().into();
+        if array_children.len() == 1 {
+          if let TyntTree::Inner(
+            (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
+            mut type_annotation_children,
+          ) = array_children.iter().next().unwrap().clone()
+          {
+            let source_trace: SourceTrace = position.path.into();
+            if let TyntTree::Leaf(position, num_str) =
+              type_annotation_children.remove(0)
+            {
+              let source_trace: SourceTrace = position.path.into();
+              if let Ok(array_size) = num_str.parse::<u32>() {
+                let inner_type = Type::from_tynt_tree(
+                  type_annotation_children.remove(0),
+                  structs,
+                  aliases,
+                  skolems,
+                )?;
+                Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+                  Type::Array(array_size, Box::new(inner_type)),
+                )))
+              } else {
+                return err(InvalidArraySignature, source_trace);
+              }
+            } else {
+              return err(InvalidArraySignature, source_trace);
+            }
+          } else {
+            return err(InvalidArraySignature, source_trace);
+          }
+        } else {
+          return err(InvalidArraySignature, source_trace);
+        }
       }
       _ => err(InvalidStructFieldType, ast.position().path.clone().into()),
     }
@@ -260,6 +302,7 @@ pub enum Type {
   Struct(Struct),
   Function(Box<FunctionSignature>),
   Skolem(String),
+  Array(u32, Box<Type>),
 }
 impl Type {
   pub fn satisfies_constraints(&self, constraint: &TypeConstraint) -> bool {
@@ -316,6 +359,43 @@ impl Type {
           }
         } else {
           return err(InvalidStructName, source_trace);
+        }
+      }
+      TyntTree::Inner(
+        (position, EncloserOrOperator::Encloser(Encloser::Square)),
+        array_children,
+      ) => {
+        let source_trace: SourceTrace = position.path.into();
+        if array_children.len() == 1 {
+          if let TyntTree::Inner(
+            (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
+            mut type_annotation_children,
+          ) = array_children.into_iter().next().unwrap()
+          {
+            let source_trace: SourceTrace = position.path.into();
+            if let TyntTree::Leaf(position, num_str) =
+              type_annotation_children.remove(0)
+            {
+              let source_trace: SourceTrace = position.path.into();
+              if let Ok(array_size) = num_str.parse::<u32>() {
+                let inner_type = Type::from_tynt_tree(
+                  type_annotation_children.remove(0),
+                  structs,
+                  aliases,
+                  skolems,
+                )?;
+                Ok(Type::Array(array_size, Box::new(inner_type)))
+              } else {
+                return err(InvalidArraySignature, source_trace);
+              }
+            } else {
+              return err(InvalidArraySignature, source_trace);
+            }
+          } else {
+            return err(InvalidArraySignature, source_trace);
+          }
+        } else {
+          return err(InvalidArraySignature, source_trace);
         }
       }
       other => {
@@ -379,6 +459,9 @@ impl Type {
       Type::U32 => "u32".to_string(),
       Type::Bool => "bool".to_string(),
       Type::Struct(s) => compile_word(s.monomorphized_name()),
+      Type::Array(n, inner_type) => {
+        format!("array<{}, {n}>", inner_type.compile())
+      }
       Type::Function(_) => {
         panic!("Attempted to compile ConcreteFunction type")
       }

@@ -16,11 +16,9 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* add a special case for inferring the type of vectors/scalars when it would normally get stuck due to being inside another vector constructor
-  * e.g. right now `(vec4f 1)` fails because it can't tell if the `1` is a float, int, or uint - it could be any since vec4f can accept any of those. But since it will be converted to a float regardless, its type doesn't actually affect the semantics of the program, so it's silly to throw a type inference error. It should just infer it to be a float, or more generally, ambiguous number literals can be inferred to be the same type as the surrounding vector
-  * this isn't just an issue for scalars though, since `(vec4f (vec3 0f) 1f)` would also fail to compile due to not being able to infer the type of `(vec3 0f)` - just as with a scalar it could be a float, int, or uint vector, and would be converted to a float vector either way, so the type ambiguity doesn't affect the semantics and it should just be assumed to be the same type as the outer vector
-  * I think the inference rule that really needs to be implemented is:
-    * If an expression is a vector with generic type T1 constructor, and one of it's types is either a number literal of unknown type T2 or a vector constructor with unknown generic type T2, constrain T1 with T2
+* support metadata on function arguments
+
+* clean up/simplify type parsing, I've got `Type::from_tynt_tree`, `AbstractType::from_tynt_tree`, and `AbstractType::from_ast` that all seem like they have pretty overlapping functionality, probably don't need all three
 
 * allow type annotation on binding names in let blocks, e.g. `(let [x: f32 0] ...)` currently crashes because it can't handle the type annotation on `x`
 
@@ -31,9 +29,6 @@ Feature goals:
     * all patterns are just literals
     * no patterns are repeated
     * the wildcard doesn't appear if the other patterns would already be exhaustive, i.e. you can't have `true` and `false` and a wildcard case when matching a bool
-
-* support arrays
-  * need const generics I guess :|
 
 * mark some functions like `+`, `*`, `min`, and `max` as "associative", allowing them to be called with n arguments
   * the type system should potentially handle this for any binary function it would be cool to have this as a thing that can be exposed to the user from within the language, e.g. `(defn @associative f [] ...)`
@@ -63,6 +58,15 @@ Feature goals:
 
 * restrict vec constructor with an `(Into T)` constraint that ensures the arg can be converted into the type of the type contained within the vector
   * right now all the generics are restricted with `Scalar`, which works well enough for all the built-in vec types, but doing `(Into T)` instead should make it possible to have the same convenience with vectors of custom types (e.g. complex numbers)
+
+* add a special case for inferring the type of vectors/scalars when it would normally get stuck due to being inside another vector constructor
+  * e.g. right now `(vec4f 1)` fails because it can't tell if the `1` is a float, int, or uint - it could be any since vec4f can accept any of those. But since it will be converted to a float regardless, its type doesn't actually affect the semantics of the program, so it's silly to throw a type inference error. It should just infer it to be a float, or more generally, ambiguous number literals can be inferred to be the same type as the surrounding vector
+  * this isn't just an issue for scalars though, since `(vec4f (vec3 0f) 1f)` would also fail to compile due to not being able to infer the type of `(vec3 0f)` - just as with a scalar it could be a float, int, or uint vector, and would be converted to a float vector either way, so the type ambiguity doesn't affect the semantics and it should just be assumed to be the same type as the outer vector
+  * I think the inference rule that really needs to be implemented is:
+    * If an expression is a vector with generic type T1 constructor, and one of it's types is either a number literal of unknown type T2 or a vector constructor with unknown generic type T2, constrain T1 with T2
+  * hmm as I think about this more, there might be a more general inference rule that could solve this, one that works on `(Into T)` rather than on vectors
+    * once `(Into T)` exists, the signature for a vector constructor will change from looking like `(fn (vec4f T A: Scalar) [a: A]: (vec4f T))` to `(fn (vec4f T A: (Into T)) [a: A]: (vec4f T))`. All scalars will implement `into` for one another, so this will feel exactly like the current approach. But it will also get stuck in the same place, because all the scalars satisfy `(Into ...)` for whatever the type of the vector is. But this could be resolved by a special inference rule: If type inference stalls with the type of a function argument being narrowed down to one `OneOf` several possibilities including some particular type `T`, and that function argument is constrained by `(Into T)`, collapse the `OneOf` into `Known(T)`
+      * a practical benefit of this is that it'll work on custom vector types, like if someone defined `vecc` as a vector of complex numbers, and implemented `(Into Complex)` for floats, then `(vecc 1.)` work automatically. It'll also work on any custom types that expect `(Into ...)` that could run into ambiguity
 
 * support lifting internal lets
 

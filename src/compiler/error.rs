@@ -63,7 +63,9 @@ pub enum CompileErrorKind {
   ExpectedTypeAnnotatedName,
   StructFieldMissingType,
   InvalidStructName,
+  NoStructNamed(String),
   UnknownStructName,
+  InvalidArraySignature,
   InvalidStructDefinition,
   UnrecognizedGeneric(String),
   InvalidToken(String),
@@ -87,7 +89,6 @@ pub enum CompileErrorKind {
   AppliedNonFunction,
   WrongArity,
   ExpectedLeaf,
-  InvalidFunctionArgumentName,
   InvalidFunctionArgumentList,
   InvalidFunctionSignature,
   FunctionSignatureMissingArgumentList,
@@ -119,6 +120,7 @@ pub enum CompileErrorKind {
   EnclosingFunctionTypeWasntFunction,
   InvalidReturn,
   MacroError(String),
+  InvalidArrayAccessSyntax,
 }
 
 #[derive(Clone, Debug)]
