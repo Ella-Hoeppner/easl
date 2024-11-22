@@ -14,6 +14,7 @@ use super::{
     ABNORMAL_CONSTRUCTOR_STRUCTS,
   },
   error::{err, CompileErrorKind::*, CompileResult, SourceTrace},
+  expression::{ExpKind, TypedExp},
   functions::{
     AbstractFunctionSignature, FunctionImplementationKind, FunctionSignature,
   },
@@ -412,6 +413,32 @@ impl Type {
         }
         _ => {}
       }
+    }
+  }
+  pub fn do_patterns_exhaust<'a>(
+    &self,
+    patterns: impl Iterator<Item = &'a TypedExp> + Clone,
+  ) -> bool {
+    for pattern in patterns.clone() {
+      if pattern.kind == ExpKind::Wildcard {
+        return true;
+      }
+    }
+    if *self == Type::Bool {
+      let mut found_true = false;
+      let mut found_false = false;
+      for pattern in patterns {
+        if let ExpKind::BooleanLiteral(b) = pattern.kind {
+          if b {
+            found_true = true;
+          } else {
+            found_false = true;
+          }
+        }
+      }
+      found_true && found_false
+    } else {
+      false
     }
   }
 }

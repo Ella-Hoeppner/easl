@@ -22,9 +22,15 @@ Feature goals:
   * I think the inference rule that really needs to be implemented is:
     * If an expression is a vector with generic type T1 constructor, and one of it's types is either a number literal of unknown type T2 or a vector constructor with unknown generic type T2, constrain T1 with T2
 
-* allow non-exhaustive match blocks, type them as `None`, and compile them to `switch` with no default or `if` with no `else`
+* allow type annotation on binding names in let blocks, e.g. `(let [x: f32 0] ...)` currently crashes because it can't handle the type annotation on `x`
 
-* `when` macro that compiles to a non-exhaustive match block
+* implement `TypedExp::validate_match_blocks`
+  * ensure that
+    * there's only one wildcard
+    * the wildcard appears at the end
+    * all patterns are just literals
+    * no patterns are repeated
+    * the wildcard doesn't appear if the other patterns would already be exhaustive, i.e. you can't have `true` and `false` and a wildcard case when matching a bool
 
 * support arrays
   * need const generics I guess :|

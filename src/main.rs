@@ -30,6 +30,7 @@ fn main() {
     "math",
     "if_macro",
     "thread_macro",
+    "when_macro",
   ] {
     println!("compiling {filename}...");
     let tynt_source = fs::read_to_string(&format!("./data/{filename}.tynt"))

@@ -92,6 +92,17 @@ fn parse_number(num_str: &str, source_trace: SourceTrace) -> Option<TypedExp> {
   None
 }
 
+pub fn is_match_exhaustive(
+  scrutinee_type: &TypeState,
+  arms: &Vec<(TypedExp, TypedExp)>,
+) -> Option<bool> {
+  if let TypeState::Known(t) = &scrutinee_type {
+    Some(t.do_patterns_exhaust(arms.iter().map(|(pattern, _)| pattern)))
+  } else {
+    None
+  }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Exp<D: Debug + Clone + PartialEq> {
   pub data: D,
@@ -1035,6 +1046,9 @@ impl TypedExp {
       children_untyped
     }
   }
+  pub fn validate_match_blocks(&mut self) -> CompileResult<()> {
+    Ok(()) // todo!
+  }
   pub fn propagate_types(&mut self, ctx: &mut Context) -> CompileResult<bool> {
     Ok(match &mut self.kind {
       Wildcard => false,
@@ -1208,6 +1222,12 @@ impl TypedExp {
       Match(scrutinee, arms) => {
         let mut anything_changed = false;
         anything_changed |= scrutinee.propagate_types(ctx)?;
+        if let Some(false) = is_match_exhaustive(&scrutinee.data, &arms) {
+          self.data.constrain(
+            TypeState::Known(Type::None),
+            self.source_trace.clone(),
+          )?;
+        }
         for (case, value) in arms.iter_mut() {
           anything_changed |= case.propagate_types(ctx)?;
           anything_changed |= value.propagate_types(ctx)?;
@@ -1389,7 +1409,64 @@ impl TypedExp {
         format!("\n{}{}", binding_lines.join("\n"), value_line)
       }
       Match(scrutinee, arms) => {
-        if let ExpKind::Wildcard = arms.last().unwrap().0.kind {
+        if scrutinee.data.unwrap_known() == Type::Bool {
+          match arms.len() {
+            1 => {
+              let (pattern, case) = arms.into_iter().next().unwrap();
+              let compiled_case = case.compile(position);
+              match pattern.kind {
+                ExpKind::Wildcard => compiled_case,
+                ExpKind::BooleanLiteral(true) => format!(
+                  "\nif ({}) {{{}\n}}",
+                  scrutinee.compile(InnerExpression),
+                  indent(compiled_case),
+                ),
+                ExpKind::BooleanLiteral(false) => format!(
+                  "\nif (!{}) {{{}\n}}",
+                  scrutinee.compile(InnerExpression),
+                  indent(compiled_case),
+                ),
+                _ => unreachable!(),
+              }
+            }
+            2 => {
+              let mut true_case = None;
+              let mut false_case = None;
+              let mut wildcard_case = None;
+              for (pattern, case) in arms {
+                if pattern.kind == ExpKind::Wildcard {
+                  wildcard_case = Some(case);
+                } else if pattern.kind == ExpKind::BooleanLiteral(true) {
+                  true_case = Some(case);
+                } else if pattern.kind == ExpKind::BooleanLiteral(false) {
+                  false_case = Some(case);
+                } else {
+                  unreachable!()
+                }
+              }
+              if let Some(true_case) = true_case {
+                format!(
+                  "\nif ({}) {{{}\n}} else {{{}\n}}",
+                  scrutinee.compile(InnerExpression),
+                  indent(true_case.compile(position)),
+                  indent(
+                    false_case.or(wildcard_case).unwrap().compile(position)
+                  ),
+                )
+              } else {
+                format!(
+                  "\nif ({}) {{{}\n}} else {{{}\n}}",
+                  scrutinee.compile(InnerExpression),
+                  indent(
+                    true_case.or(wildcard_case).unwrap().compile(position)
+                  ),
+                  indent(false_case.unwrap().compile(position)),
+                )
+              }
+            }
+            _ => unreachable!(),
+          }
+        } else {
           if position == InnerExpression {
             let mut arms_iter = arms.into_iter().rev();
             let default = arms_iter.next().unwrap().1.compile(position);
@@ -1426,43 +1503,6 @@ impl TypedExp {
                   .join("\n")
               )
             )
-          }
-        } else {
-          if scrutinee.data.unwrap_known() == Type::Bool {
-            let mut true_value = None;
-            let mut false_value = None;
-            for (pattern, value) in arms {
-              if let ExpKind::BooleanLiteral(b) = pattern.kind {
-                if b {
-                  true_value = Some(value);
-                } else {
-                  false_value = Some(value);
-                }
-              } else {
-                panic!("case of a Bool match block wasn't a BooleanLiteral")
-              }
-            }
-            let true_value =
-              true_value.expect("no 'true' case in match block on Bool");
-            let false_value =
-              false_value.expect("no 'false' case in match block on Bool");
-            if position == InnerExpression {
-              format!(
-                "select({}, {}, {})",
-                false_value.compile(InnerExpression),
-                true_value.compile(InnerExpression),
-                scrutinee.compile(InnerExpression)
-              )
-            } else {
-              format!(
-                "\nif ({}) {{{}\n}} else {{{}\n}}",
-                scrutinee.compile(InnerExpression),
-                indent(true_value.compile(position)),
-                indent(false_value.compile(position)),
-              )
-            }
-          } else {
-            todo!("match block on non-bool scrutinee not yet supported")
           }
         }
       }

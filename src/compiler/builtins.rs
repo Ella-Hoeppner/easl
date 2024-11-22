@@ -801,6 +801,85 @@ pub fn built_in_macros() -> Vec<Macro> {
     }
     other => Err(other),
   }));
+  let when_macro = Macro(Box::new(|tree| match tree {
+    TyntTree::Inner(
+      (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+      mut children,
+    ) => {
+      if children.is_empty() {
+        Err(TyntTree::Inner(
+          (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+          children,
+        ))
+      } else {
+        if let TyntTree::Leaf(_, leaf) = &children[0] {
+          if leaf.as_str() == "when" {
+            if children.len() > 2 {
+              let condition = children.remove(1);
+              std::mem::swap(
+                &mut children[0],
+                &mut TyntTree::Leaf(
+                  DocumentPosition {
+                    span: 0..0,
+                    path: vec![],
+                  },
+                  "block".to_string(),
+                ),
+              );
+              Ok(Ok(TyntTree::Inner(
+                (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+                vec![
+                  TyntTree::Leaf(
+                    DocumentPosition {
+                      span: 0..0,
+                      path: vec![],
+                    },
+                    "match".to_string(),
+                  ),
+                  condition,
+                  TyntTree::Leaf(
+                    DocumentPosition {
+                      span: 0..0,
+                      path: vec![],
+                    },
+                    "true".to_string(),
+                  ),
+                  TyntTree::Inner(
+                    (
+                      DocumentPosition {
+                        span: 0..0,
+                        path: vec![],
+                      },
+                      EncloserOrOperator::Encloser(Encloser::Parens),
+                    ),
+                    children,
+                  ),
+                ],
+              )))
+            } else {
+              Ok(Err((
+                SourceTrace::from(position.path),
+                "\"when\" statement expects a condition and at least 1 body \
+                statement"
+                  .to_string(),
+              )))
+            }
+          } else {
+            Err(TyntTree::Inner(
+              (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+              children,
+            ))
+          }
+        } else {
+          Err(TyntTree::Inner(
+            (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+            children,
+          ))
+        }
+      }
+    }
+    other => Err(other),
+  }));
   let thread_macro = Macro(Box::new(|tree| match tree {
     TyntTree::Inner(
       (position, EncloserOrOperator::Encloser(Encloser::Parens)),
@@ -973,5 +1052,5 @@ pub fn built_in_macros() -> Vec<Macro> {
     }
     other => Err(other),
   }));
-  vec![if_macro, thread_macro]
+  vec![if_macro, when_macro, thread_macro]
 }

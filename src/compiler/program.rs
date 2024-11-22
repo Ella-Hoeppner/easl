@@ -457,6 +457,19 @@ impl Program {
       },
     )
   }
+  pub fn validate_match_blocks(mut self) -> CompileResult<Self> {
+    for abstract_function in self.global_context.abstract_functions.iter_mut() {
+      if let FunctionImplementationKind::Composite(implementation) =
+        &mut abstract_function.implementation
+      {
+        (**implementation)
+          .borrow_mut()
+          .body
+          .validate_match_blocks()?;
+      }
+    }
+    Ok(self)
+  }
   pub fn fully_infer_types(mut self) -> CompileResult<Self> {
     loop {
       let did_type_states_change = self.propagate_types()?;
