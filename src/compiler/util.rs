@@ -29,13 +29,10 @@ pub fn read_type_annotated_name(
     if let TyntTree::Leaf(_, name) = name_ast {
       Ok((name, type_ast))
     } else {
-      err(ExpectedTypeAnnotatedName, position.path.into())
+      err(ExpectedTypeAnnotatedName, position.into())
     }
   } else {
-    err(
-      ExpectedTypeAnnotatedName,
-      ast.position().path.clone().into(),
-    )
+    err(ExpectedTypeAnnotatedName, ast.position().clone().into())
   }
 }
 

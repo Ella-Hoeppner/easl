@@ -836,7 +836,7 @@ pub fn built_in_macros() -> Vec<Macro> {
               )))
             } else {
               Ok(Err((
-                SourceTrace::from(position.path),
+                SourceTrace::from(position),
                 format!(
                   "\"if\" statement expects 3 arguments, found {}",
                   children.len()
@@ -916,7 +916,7 @@ pub fn built_in_macros() -> Vec<Macro> {
               )))
             } else {
               Ok(Err((
-                SourceTrace::from(position.path),
+                SourceTrace::from(position),
                 "\"when\" statement expects a condition and at least 1 body \
                 statement"
                   .to_string(),
@@ -953,7 +953,7 @@ pub fn built_in_macros() -> Vec<Macro> {
           if leaf.as_str() == "->" {
             if children.len() <= 1 {
               return Ok(Err((
-                SourceTrace::from(position.path),
+                SourceTrace::from(position),
                 format!("\"->\" macro expects at least one inner form",),
               )));
             }
@@ -979,7 +979,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                           TyntTree::Leaf(position, leaf) => {
                             if leaf.as_str() == "<>" {
                               positioner_traces
-                                .push(SourceTrace::from(position.path.clone()));
+                                .push(SourceTrace::from(position.clone()));
                               if let Some(inner_expression) = inner_expression {
                                 (inner_expression, None, positioner_traces)
                               } else {
@@ -1063,7 +1063,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                             ))
                           }
                           sse::Sexp::Inner((paren_position, _), _) => Err((
-                            SourceTrace::from(paren_position.path),
+                            SourceTrace::from(paren_position),
                             format!(
                               "\"->\" macro expects at least one inner form",
                             ),

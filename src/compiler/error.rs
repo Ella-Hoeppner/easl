@@ -1,4 +1,4 @@
-use sse::ParseError;
+use sse::{document::DocumentPosition, ParseError};
 use std::{backtrace::Backtrace, rc::Rc};
 
 use crate::parse::TyntTree;
@@ -6,13 +6,14 @@ use crate::parse::TyntTree;
 use super::{
   expression::TypedExp,
   metadata::Metadata,
+  program::TyntDocument,
   types::{Type, TypeConstraint, TypeState},
 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SourceTraceKind {
   Empty,
-  Singular(Vec<usize>),
+  Singular(DocumentPosition),
   Combination(Vec<SourceTrace>),
 }
 
@@ -32,12 +33,23 @@ impl SourceTrace {
       kind: Rc::new(SourceTraceKind::Combination(vec![self, other])),
     }
   }
+  pub fn all_document_positions(&self) -> Vec<&DocumentPosition> {
+    match &*self.kind {
+      SourceTraceKind::Empty => vec![],
+      SourceTraceKind::Singular(pos) => vec![&pos],
+      SourceTraceKind::Combination(subtraces) => subtraces
+        .iter()
+        .map(|subtrace| subtrace.all_document_positions())
+        .flatten()
+        .collect(),
+    }
+  }
 }
 
-impl From<Vec<usize>> for SourceTrace {
-  fn from(value: Vec<usize>) -> Self {
+impl From<DocumentPosition> for SourceTrace {
+  fn from(position: DocumentPosition) -> Self {
     Self {
-      kind: Rc::new(SourceTraceKind::Singular(value)),
+      kind: Rc::new(SourceTraceKind::Singular(position)),
     }
   }
 }
@@ -129,7 +141,7 @@ pub struct CompileError {
   pub context: Vec<String>,
   _backtrace: Rc<Backtrace>,
   pub source_trace: SourceTrace,
-  pub source: Option<String>,
+  pub source: Option<Vec<String>>,
 }
 impl CompileError {
   pub fn new(kind: CompileErrorKind, source_trace: SourceTrace) -> Self {
@@ -140,6 +152,17 @@ impl CompileError {
       source_trace,
       source: None,
     }
+  }
+  pub fn attach_error_source(mut self, document: &TyntDocument<'_>) -> Self {
+    self.source = Some(
+      self
+        .source_trace
+        .all_document_positions()
+        .into_iter()
+        .map(|position| document.text[position.span.clone()].to_string())
+        .collect(),
+    );
+    self
   }
 }
 

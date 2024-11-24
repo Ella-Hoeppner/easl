@@ -1,7 +1,7 @@
 use core::fmt::Debug;
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use sse::syntax::EncloserOrOperator;
+use sse::{document::DocumentPosition, syntax::EncloserOrOperator};
 
 use crate::{
   compiler::error::{CompileError, CompileErrorKind},
@@ -57,7 +57,7 @@ impl AbstractType {
     match &tree {
       TyntTree::Leaf(_, type_name) => Ok(Self::from_name(
         type_name.clone(),
-        tree.position().path.clone(),
+        tree.position().clone(),
         structs,
         aliases,
         generic_args,
@@ -88,24 +88,18 @@ impl AbstractType {
               ),
             ))
           } else {
-            err(
-              InvalidTypeName(type_name.clone()),
-              position.path.clone().into(),
-            )
+            err(InvalidTypeName(type_name.clone()), position.clone().into())
           }
         } else {
-          err(InvalidType(tree.clone()), position.path.clone().into())
+          err(InvalidType(tree.clone()), position.clone().into())
         }
       }
-      _ => err(
-        InvalidType(tree.clone()),
-        tree.position().path.clone().into(),
-      ),
+      _ => err(InvalidType(tree.clone()), tree.position().clone().into()),
     }
   }
   pub fn from_name(
     name: String,
-    position: Vec<usize>,
+    position: DocumentPosition,
     structs: &Vec<AbstractStruct>,
     aliases: &Vec<(String, AbstractStruct)>,
     generic_args: &Vec<String>,
@@ -132,7 +126,7 @@ impl AbstractType {
       } else {
         GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
           leaf,
-          position.path.clone(),
+          position.clone(),
           structs,
           aliases,
           skolems,
@@ -147,7 +141,7 @@ impl AbstractType {
           if let Some(TyntTree::Leaf(_, leaf)) = children_iter.next() {
             leaf
           } else {
-            return err(InvalidStructName, position.path.into());
+            return err(InvalidStructName, position.into());
           };
         let generic_struct = structs
           .iter()
@@ -155,7 +149,7 @@ impl AbstractType {
           .ok_or_else(|| {
             CompileError::new(
               NoStructNamed(generic_struct_name),
-              position.path.into(),
+              position.into(),
             )
           })?
           .clone();
@@ -172,18 +166,18 @@ impl AbstractType {
         (position, EncloserOrOperator::Encloser(Encloser::Square)),
         array_children,
       ) => {
-        let source_trace: SourceTrace = position.path.clone().into();
+        let source_trace: SourceTrace = position.clone().into();
         if array_children.len() == 1 {
           if let TyntTree::Inner(
             (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
             mut type_annotation_children,
           ) = array_children.iter().next().unwrap().clone()
           {
-            let source_trace: SourceTrace = position.path.into();
+            let source_trace: SourceTrace = position.into();
             if let TyntTree::Leaf(position, num_str) =
               type_annotation_children.remove(0)
             {
-              let source_trace: SourceTrace = position.path.into();
+              let source_trace: SourceTrace = position.into();
               if let Ok(array_size) = num_str.parse::<u32>() {
                 let inner_type = Type::from_tynt_tree(
                   type_annotation_children.remove(0),
@@ -207,7 +201,7 @@ impl AbstractType {
           return err(InvalidArraySignature, source_trace);
         }
       }
-      _ => err(InvalidStructFieldType, ast.position().path.clone().into()),
+      _ => err(InvalidStructFieldType, ast.position().clone().into()),
     }
   }
   pub fn concretize(
@@ -321,13 +315,13 @@ impl Type {
   ) -> CompileResult<Self> {
     match tree {
       TyntTree::Leaf(position, type_name) => {
-        Type::from_name(type_name, position.path, structs, aliases, skolems)
+        Type::from_name(type_name, position, structs, aliases, skolems)
       }
       TyntTree::Inner(
         (position, EncloserOrOperator::Encloser(Encloser::Parens)),
         struct_signature_children,
       ) => {
-        let source_trace: SourceTrace = position.path.into();
+        let source_trace: SourceTrace = position.into();
         let mut signature_leaves = struct_signature_children.into_iter();
         if let Some(TyntTree::Leaf(_, struct_name)) = signature_leaves.next() {
           if signature_leaves.is_empty() {
@@ -365,18 +359,18 @@ impl Type {
         (position, EncloserOrOperator::Encloser(Encloser::Square)),
         array_children,
       ) => {
-        let source_trace: SourceTrace = position.path.into();
+        let source_trace: SourceTrace = position.into();
         if array_children.len() == 1 {
           if let TyntTree::Inner(
             (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
             mut type_annotation_children,
           ) = array_children.into_iter().next().unwrap()
           {
-            let source_trace: SourceTrace = position.path.into();
+            let source_trace: SourceTrace = position.into();
             if let TyntTree::Leaf(position, num_str) =
               type_annotation_children.remove(0)
             {
-              let source_trace: SourceTrace = position.path.into();
+              let source_trace: SourceTrace = position.into();
               if let Ok(array_size) = num_str.parse::<u32>() {
                 let inner_type = Type::from_tynt_tree(
                   type_annotation_children.remove(0),
@@ -399,7 +393,7 @@ impl Type {
         }
       }
       other => {
-        let source_trace = other.position().path.clone().into();
+        let source_trace = other.position().clone().into();
         return err(InvalidType(other), source_trace);
       }
     }
@@ -424,7 +418,7 @@ impl Type {
   }
   pub fn from_name(
     name: String,
-    source_path: Vec<usize>,
+    source_position: DocumentPosition,
     structs: &Vec<AbstractStruct>,
     type_aliases: &Vec<(String, AbstractStruct)>,
     skolems: &Vec<String>,
@@ -446,7 +440,7 @@ impl Type {
         {
           Struct(s.clone().fill_generics_with_unification_variables())
         } else {
-          return err(UnrecognizedTypeName(name), source_path.into());
+          return err(UnrecognizedTypeName(name), source_position.into());
         }
       }
     })
@@ -919,7 +913,7 @@ pub fn parse_type_bound(
       (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
       children,
     ) => {
-      let source_trace: SourceTrace = position.path.into();
+      let source_trace: SourceTrace = position.into();
       let mut children_iter = children.into_iter();
       let name = if let TyntTree::Leaf(_, name) =
         children_iter.next().ok_or_else(|| {
@@ -942,7 +936,7 @@ pub fn parse_type_bound(
         .collect::<CompileResult<Vec<AbstractType>>>()?;
       Ok(TypeConstraint { name, args })
     }
-    _ => err(InvalidTypeBound, ast.position().path.clone().into()),
+    _ => err(InvalidTypeBound, ast.position().clone().into()),
   }
 }
 
@@ -961,7 +955,7 @@ pub fn parse_generic_argument(
       if children.len() < 2 {
         return err(
           InvalidDefn("Invalid generic name".to_string()),
-          position.path.into(),
+          position.into(),
         );
       }
       let bounds_tree = children.remove(1);
@@ -987,13 +981,13 @@ pub fn parse_generic_argument(
       } else {
         err(
           InvalidDefn("Invalid generic name".to_string()),
-          position.path.into(),
+          position.into(),
         )
       }
     }
     _ => err(
       InvalidDefn("Invalid generic name".to_string()),
-      ast.position().path.clone().into(),
+      ast.position().clone().into(),
     ),
   }
 }

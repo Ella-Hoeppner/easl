@@ -307,7 +307,7 @@ pub fn arg_list_and_return_type_from_tynt_tree(
     if let TyntTree::Inner((position, Encloser(Square)), arg_asts) =
       args_and_return_type.remove(0)
     {
-      let source_path: SourceTrace = position.path.into();
+      let source_path: SourceTrace = position.into();
       let ((arg_types, arg_metadata), arg_names) = arg_asts
         .into_iter()
         .map(|arg| -> CompileResult<_> {
@@ -343,12 +343,12 @@ pub fn arg_list_and_return_type_from_tynt_tree(
         return_metadata,
       ))
     } else {
-      err(FunctionSignatureNotSquareBrackets, position.path.into())
+      err(FunctionSignatureNotSquareBrackets, position.into())
     }
   } else {
     err(
       FunctionSignatureMissingReturnType,
-      tree.position().path.clone().into(),
+      tree.position().clone().into(),
     )
   }
 }
@@ -415,8 +415,8 @@ impl TypedExp {
     ctx: SyntaxTreeContext,
   ) -> CompileResult<Self> {
     Ok(match tree {
-      TyntTree::Leaf(DocumentPosition { path, .. }, leaf) => {
-        let source_trace: SourceTrace = path.into();
+      TyntTree::Leaf(position, leaf) => {
+        let source_trace: SourceTrace = position.into();
         if leaf == "break" {
           Exp {
             kind: ExpKind::Break,
@@ -483,7 +483,7 @@ impl TypedExp {
         use crate::parse::Encloser::*;
         use crate::parse::Operator::*;
         use sse::syntax::EncloserOrOperator::*;
-        let source_trace: SourceTrace = position.path.into();
+        let source_trace: SourceTrace = position.into();
         let mut children_iter = children.into_iter();
         match encloser_or_operator {
           Encloser(e) => match e {
@@ -491,8 +491,7 @@ impl TypedExp {
               if let Some(first_child) = children_iter.next() {
                 match &first_child {
                   TyntTree::Leaf(position, first_child_name) => {
-                    let source_trace: SourceTrace =
-                      position.path.clone().into();
+                    let source_trace: SourceTrace = position.clone().into();
                     if ".".is_prefix_of(&first_child_name) {
                       if children_iter.len() == 1 {
                         Some(Exp {
@@ -594,8 +593,7 @@ impl TypedExp {
                             binding_asts,
                           ) = bindings_ast
                           {
-                            let source_trace: SourceTrace =
-                              position.path.into();
+                            let source_trace: SourceTrace = position.into();
                             if binding_asts.len() % 2 == 0 {
                               let mut binding_asts_iter =
                                 binding_asts.into_iter();
@@ -609,8 +607,7 @@ impl TypedExp {
                                   extract_metadata(name_ast)?;
                                 match name_ast {
                                   TyntTree::Leaf(position, name) => {
-                                    let source_trace =
-                                      position.path.clone().into();
+                                    let source_trace = position.clone().into();
                                     bindings.push((
                                       name,
                                       match name_metadata {
@@ -644,7 +641,7 @@ impl TypedExp {
                                   TyntTree::Inner((position, _), _) => {
                                     return err(
                                       ExpectedBindingName,
-                                      position.path.into(),
+                                      position.into(),
                                     );
                                   }
                                 }
@@ -813,7 +810,7 @@ impl TypedExp {
                             } else {
                               return Err(CompileError::new(
                                 InvalidForLoopHeader,
-                                header_source_position.path.into(),
+                                header_source_position.into(),
                               ));
                             }
                           } else {

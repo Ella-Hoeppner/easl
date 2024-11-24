@@ -16,7 +16,7 @@ impl Metadata {
     match ast {
       TyntTree::Leaf(_, singular) => Ok(Self::Singular(singular)),
       TyntTree::Inner((position, Encloser(Curly)), map_fields) => {
-        let source_trace: SourceTrace = position.path.into();
+        let source_trace: SourceTrace = position.into();
         if map_fields.len() % 2 == 0 {
           Ok(Self::Map(
             map_fields
@@ -45,7 +45,7 @@ impl Metadata {
       }
       _ => err(
         InvalidMetadata("fields must all be leaves".to_string()),
-        ast.position().path.clone().into(),
+        ast.position().clone().into(),
       ),
     }
   }

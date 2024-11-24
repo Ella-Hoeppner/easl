@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use sse::syntax::EncloserOrOperator;
+use sse::{document::Document, syntax::EncloserOrOperator};
 
 use crate::{
   compiler::{
@@ -15,15 +15,12 @@ use crate::{
     },
     util::read_type_annotated_name,
   },
-  parse::TyntTree,
+  parse::{parse_tynt, Context as SyntaxContext, Encloser, Operator, TyntTree},
 };
 
 use super::{
   builtins::{built_in_structs, built_in_type_aliases},
-  error::{
-    CompileErrorKind::{self, *},
-    CompileResult,
-  },
+  error::{CompileErrorKind::*, CompileResult},
   expression::TypedExp,
   functions::{FunctionImplementationKind, TopLevelFunction},
   macros::{macroexpand, Macro},
@@ -31,18 +28,22 @@ use super::{
   vars::TopLevelVar,
 };
 
+pub type TyntDocument<'s> = Document<'s, SyntaxContext, Encloser, Operator>;
+
 #[derive(Debug)]
 pub struct Program {
   global_context: Context,
 }
 
 impl Program {
-  pub fn init_from_tynt_trees(
-    trees: Vec<TyntTree>,
+  pub fn from_tynt_document(
+    document: &'_ TyntDocument,
     macros: Vec<Macro>,
   ) -> CompileResult<Self> {
-    let trees = trees
-      .into_iter()
+    let trees = document
+      .syntax_trees
+      .iter()
+      .cloned()
       .map(|tree| macroexpand(tree, &macros))
       .collect::<Result<Vec<TyntTree>, (SourceTrace, String)>>()
       .map_err(|(source_trace, err_str)| {
@@ -59,12 +60,12 @@ impl Program {
       if let TyntTree::Inner((position, Encloser(Parens)), children) =
         &tree_body
       {
-        let source_trace: SourceTrace = position.path.clone().into();
+        let source_trace: SourceTrace = position.clone().into();
         let mut children_iter = children.into_iter();
         if let Some(TyntTree::Leaf(position, first_child)) =
           children_iter.next()
         {
-          let source_trace: SourceTrace = position.path.clone().into();
+          let source_trace: SourceTrace = position.clone().into();
           if first_child == "struct" {
             if let Some(struct_name) = children_iter.next() {
               match struct_name {
@@ -80,15 +81,14 @@ impl Program {
                   (position, Encloser(Parens)),
                   signature_children,
                 ) => {
-                  let source_trace: SourceTrace = position.path.clone().into();
+                  let source_trace: SourceTrace = position.clone().into();
                   let mut signature_leaves = signature_children
                     .into_iter()
                     .map(|child| match child {
                       TyntTree::Leaf(_, name) => Ok(name.clone()),
-                      _ => err(
-                        InvalidStructName,
-                        child.position().path.clone().into(),
-                      ),
+                      _ => {
+                        err(InvalidStructName, child.position().clone().into())
+                      }
                     })
                     .collect::<CompileResult<Vec<String>>>()?
                     .into_iter();
@@ -108,7 +108,7 @@ impl Program {
                   }
                 }
                 TyntTree::Inner((position, _), _) => {
-                  return err(InvalidStructName, position.path.clone().into())
+                  return err(InvalidStructName, position.clone().into())
                 }
               }
             } else {
@@ -126,7 +126,7 @@ impl Program {
       } else {
         return err(
           UnrecognizedTopLevelForm(tree_body),
-          tree.position().path.clone().into(),
+          tree.position().clone().into(),
         );
       }
     }
@@ -149,15 +149,14 @@ impl Program {
       if let TyntTree::Inner((parens_position, Encloser(Parens)), children) =
         tree
       {
-        let parens_source_trace: SourceTrace =
-          parens_position.path.clone().into();
+        let parens_source_trace: SourceTrace = parens_position.clone().into();
         let mut children_iter = children.into_iter();
         let first_child = children_iter.next();
         if let Some(TyntTree::Leaf(first_child_position, first_child)) =
           first_child
         {
           let first_child_source_trace: SourceTrace =
-            first_child_position.path.clone().into();
+            first_child_position.clone().into();
           match first_child.as_str() {
             "var" => {
               let (attributes, name_and_type_ast) = match children_iter.len() {
@@ -182,7 +181,7 @@ impl Program {
                               "Expected leaf for attribute, found inner form"
                                 .to_string(),
                             ),
-                            position.path.clone().into(),
+                            position.clone().into(),
                           )
                         }
                       })
@@ -209,7 +208,7 @@ impl Program {
               };
               let (name, type_ast) =
                 read_type_annotated_name(name_and_type_ast)?;
-              let type_source_path = type_ast.position().path.clone();
+              let type_source_path = type_ast.position().clone();
               global_context.top_level_vars.push(TopLevelVar {
                 name,
                 metadata,
@@ -414,7 +413,7 @@ impl Program {
       } else {
         return err(
           UnrecognizedTopLevelForm(tree.clone()),
-          tree.position().path.clone().into(),
+          tree.position().clone().into(),
         );
       }
     }
