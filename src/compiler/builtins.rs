@@ -240,7 +240,7 @@ pub fn texture_2d() -> AbstractStruct {
     name: "Texture2D".to_string(),
     fields: vec![AbstractStructField {
       metadata: None,
-      name: "inner".to_string(),
+      name: "_".to_string(),
       field_type: GenericOr::Generic("T".to_string()),
     }],
     generic_args: vec!["T".to_string()],

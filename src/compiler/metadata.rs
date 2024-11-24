@@ -1,5 +1,6 @@
 use sse::syntax::EncloserOrOperator::{self, *};
 
+use crate::compiler::util::compile_word;
 use crate::parse::TyntTree;
 use crate::parse::{Encloser::*, Operator};
 
@@ -55,7 +56,9 @@ impl Metadata {
       Metadata::Map(pairs) => {
         pairs
           .into_iter()
-          .map(|(property, value)| format!("@{property}({value})"))
+          .map(|(property, value)| {
+            format!("@{}({})", compile_word(property), compile_word(value))
+          })
           .collect::<Vec<String>>()
           .join(" ")
           + " "

@@ -458,7 +458,13 @@ impl Type {
       Type::I32 => "i32".to_string(),
       Type::U32 => "u32".to_string(),
       Type::Bool => "bool".to_string(),
-      Type::Struct(s) => compile_word(s.monomorphized_name()),
+      Type::Struct(s) => match s.name.as_str() {
+        "Texture2D" => format!(
+          "texture_2d<{}>",
+          s.fields[0].field_type.unwrap_known().compile()
+        ),
+        _ => compile_word(s.monomorphized_name()),
+      },
       Type::Array(n, inner_type) => {
         format!("array<{}, {n}>", inner_type.compile())
       }
