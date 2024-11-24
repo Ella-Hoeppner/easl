@@ -1113,12 +1113,14 @@ impl TypedExp {
       Function(arg_names, body) => {
         ctx.push_enclosing_function_type(self.data.clone());
         let changed = if let TypeState::Known(f_type) = &mut self.data {
-          let (arg_count, arg_type_states, return_type_state): (
+          let (name, arg_count, arg_type_states, return_type_state): (
+            Option<String>,
             usize,
             &Vec<TypeState>,
             &mut TypeState,
           ) = match f_type {
             Type::Function(signature) => (
+              signature.name(),
               signature.arg_types.len(),
               &signature.arg_types.iter().map(|(t, _)| t.clone()).collect(),
               &mut signature.return_type,
@@ -1148,7 +1150,7 @@ impl TypedExp {
             )?;
             return_type_changed || body_types_changed || fn_type_changed
           } else {
-            return err(WrongArity, self.source_trace.clone());
+            return err(WrongArity(name), self.source_trace.clone());
           }
         } else {
           todo!("I haven't implemented function type inference yet!!!")
@@ -1181,7 +1183,10 @@ impl TypedExp {
                   arg.data.constrain(t, self.source_trace.clone())?;
               }
             } else {
-              return err(WrongArity, self.source_trace.clone());
+              return err(
+                WrongArity(signature.name()),
+                self.source_trace.clone(),
+              );
             }
           } else {
             return err(AppliedNonFunction, self.source_trace.clone());

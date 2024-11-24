@@ -33,6 +33,7 @@ fn main() {
     "when_macro",
     "array",
     "argument_metadata",
+    "texture",
   ] {
     println!("compiling {filename}...");
     let tynt_source = fs::read_to_string(&format!("./data/{filename}.tynt"))

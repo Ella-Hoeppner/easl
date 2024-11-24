@@ -87,7 +87,7 @@ pub enum CompileErrorKind {
   FunctionExpressionHasNonFunctionType(Type),
   UnboundName(String),
   AppliedNonFunction,
-  WrongArity,
+  WrongArity(Option<String>),
   ExpectedLeaf,
   InvalidFunctionArgumentList,
   InvalidFunctionSignature,
@@ -129,6 +129,7 @@ pub struct CompileError {
   pub context: Vec<String>,
   _backtrace: Rc<Backtrace>,
   pub source_trace: SourceTrace,
+  pub source: Option<String>,
 }
 impl CompileError {
   pub fn new(kind: CompileErrorKind, source_trace: SourceTrace) -> Self {
@@ -137,6 +138,7 @@ impl CompileError {
       context: vec![],
       _backtrace: Rc::new(Backtrace::capture()),
       source_trace,
+      source: None,
     }
   }
 }

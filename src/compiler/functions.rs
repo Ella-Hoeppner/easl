@@ -201,8 +201,14 @@ impl FunctionSignature {
       }
       Ok(any_arg_changed)
     } else {
-      err(WrongArity, source_trace)
+      err(WrongArity(self.name()), source_trace)
     }
+  }
+  pub fn name(&self) -> Option<String> {
+    self
+      .abstract_ancestor
+      .as_ref()
+      .map(|abstract_ancestor| abstract_ancestor.name.clone())
   }
 }
 
