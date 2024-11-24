@@ -1,12 +1,12 @@
 use sse::{document::DocumentPosition, ParseError};
 use std::{backtrace::Backtrace, rc::Rc};
 
-use crate::parse::TyntTree;
+use crate::parse::EaslTree;
 
 use super::{
   expression::TypedExp,
   metadata::Metadata,
-  program::TyntDocument,
+  program::EaslDocument,
   types::{Type, TypeConstraint, TypeState},
 };
 
@@ -86,10 +86,10 @@ pub enum CompileErrorKind {
   InvalidDefn(String),
   InvalidFunction,
   FunctionMissingBody,
-  UnrecognizedTopLevelForm(TyntTree),
+  UnrecognizedTopLevelForm(EaslTree),
   EmptyList,
   MissingType,
-  InvalidType(TyntTree),
+  InvalidType(EaslTree),
   InvalidTypeName(String),
   FunctionArgMissingType,
   InvalidArgumentName,
@@ -154,7 +154,7 @@ impl CompileError {
       source: None,
     }
   }
-  pub fn attach_error_source(mut self, document: &TyntDocument<'_>) -> Self {
+  pub fn attach_error_source(mut self, document: &EaslDocument<'_>) -> Self {
     self.source = Some(
       self
         .source_trace

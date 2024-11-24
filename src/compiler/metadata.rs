@@ -1,7 +1,7 @@
 use sse::syntax::EncloserOrOperator::{self, *};
 
 use crate::compiler::util::compile_word;
-use crate::parse::TyntTree;
+use crate::parse::EaslTree;
 use crate::parse::{Encloser::*, Operator};
 
 use super::error::{err, CompileErrorKind::*, CompileResult, SourceTrace};
@@ -13,17 +13,17 @@ pub enum Metadata {
 }
 
 impl Metadata {
-  pub fn from_metadata_tree(ast: TyntTree) -> CompileResult<Self> {
+  pub fn from_metadata_tree(ast: EaslTree) -> CompileResult<Self> {
     match ast {
-      TyntTree::Leaf(_, singular) => Ok(Self::Singular(singular)),
-      TyntTree::Inner((position, Encloser(Curly)), map_fields) => {
+      EaslTree::Leaf(_, singular) => Ok(Self::Singular(singular)),
+      EaslTree::Inner((position, Encloser(Curly)), map_fields) => {
         let source_trace: SourceTrace = position.into();
         if map_fields.len() % 2 == 0 {
           Ok(Self::Map(
             map_fields
               .into_iter()
               .map(|field| {
-                if let TyntTree::Leaf(_, field_string) = field {
+                if let EaslTree::Leaf(_, field_string) = field {
                   Ok(field_string)
                 } else {
                   err(
@@ -75,10 +75,10 @@ impl Metadata {
 }
 
 pub fn extract_metadata(
-  exp: TyntTree,
-) -> CompileResult<(Option<Metadata>, TyntTree)> {
+  exp: EaslTree,
+) -> CompileResult<(Option<Metadata>, EaslTree)> {
   Ok(
-    if let TyntTree::Inner(
+    if let EaslTree::Inner(
       (_, EncloserOrOperator::Operator(Operator::MetadataAnnotation)),
       mut children,
     ) = exp

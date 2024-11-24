@@ -6,7 +6,7 @@ use crate::{
     types::extract_type_annotation_ast,
     util::{compile_word, read_leaf},
   },
-  parse::TyntTree,
+  parse::EaslTree,
 };
 
 use super::{
@@ -19,11 +19,11 @@ use super::{
 pub struct UntypedStructField {
   metadata: Option<Metadata>,
   name: String,
-  type_ast: TyntTree,
+  type_ast: EaslTree,
 }
 
 impl UntypedStructField {
-  fn from_field_tree(ast: TyntTree) -> CompileResult<Self> {
+  fn from_field_tree(ast: EaslTree) -> CompileResult<Self> {
     let path = ast.position().clone();
     let (type_ast, inner_ast) = extract_type_annotation_ast(ast)?;
     let type_ast =
@@ -68,7 +68,7 @@ impl UntypedStruct {
   pub fn from_field_trees(
     name: String,
     generic_args: Vec<String>,
-    field_asts: Vec<TyntTree>,
+    field_asts: Vec<EaslTree>,
     source_trace: SourceTrace,
   ) -> CompileResult<Self> {
     Ok(Self {

@@ -5,7 +5,7 @@ use sse::{document::Document, syntax::EncloserOrOperator};
 use crate::{
   compiler::{
     error::{err, CompileError, SourceTrace},
-    expression::{arg_list_and_return_type_from_tynt_tree, Exp},
+    expression::{arg_list_and_return_type_from_easl_tree, Exp},
     functions::AbstractFunctionSignature,
     metadata::extract_metadata,
     structs::UntypedStruct,
@@ -15,7 +15,7 @@ use crate::{
     },
     util::read_type_annotated_name,
   },
-  parse::{parse_tynt, Context as SyntaxContext, Encloser, Operator, TyntTree},
+  parse::{parse_easl, Context as SyntaxContext, EaslTree, Encloser, Operator},
 };
 
 use super::{
@@ -28,7 +28,7 @@ use super::{
   vars::TopLevelVar,
 };
 
-pub type TyntDocument<'s> = Document<'s, SyntaxContext, Encloser, Operator>;
+pub type EaslDocument<'s> = Document<'s, SyntaxContext, Encloser, Operator>;
 
 #[derive(Debug)]
 pub struct Program {
@@ -36,8 +36,8 @@ pub struct Program {
 }
 
 impl Program {
-  pub fn from_tynt_document(
-    document: &'_ TyntDocument,
+  pub fn from_easl_document(
+    document: &'_ EaslDocument,
     macros: Vec<Macro>,
   ) -> CompileResult<Self> {
     let trees = document
@@ -45,7 +45,7 @@ impl Program {
       .iter()
       .cloned()
       .map(|tree| macroexpand(tree, &macros))
-      .collect::<Result<Vec<TyntTree>, (SourceTrace, String)>>()
+      .collect::<Result<Vec<EaslTree>, (SourceTrace, String)>>()
       .map_err(|(source_trace, err_str)| {
         CompileError::new(MacroError(err_str), source_trace)
       })?;
@@ -57,19 +57,19 @@ impl Program {
       use crate::parse::Encloser::*;
       use sse::syntax::EncloserOrOperator::*;
       let (metadata, tree_body) = extract_metadata(tree.clone())?;
-      if let TyntTree::Inner((position, Encloser(Parens)), children) =
+      if let EaslTree::Inner((position, Encloser(Parens)), children) =
         &tree_body
       {
         let source_trace: SourceTrace = position.clone().into();
         let mut children_iter = children.into_iter();
-        if let Some(TyntTree::Leaf(position, first_child)) =
+        if let Some(EaslTree::Leaf(position, first_child)) =
           children_iter.next()
         {
           let source_trace: SourceTrace = position.clone().into();
           if first_child == "struct" {
             if let Some(struct_name) = children_iter.next() {
               match struct_name {
-                TyntTree::Leaf(_, struct_name) => {
+                EaslTree::Leaf(_, struct_name) => {
                   untyped_structs.push(UntypedStruct::from_field_trees(
                     struct_name.clone(),
                     vec![],
@@ -77,7 +77,7 @@ impl Program {
                     source_trace,
                   )?)
                 }
-                TyntTree::Inner(
+                EaslTree::Inner(
                   (position, Encloser(Parens)),
                   signature_children,
                 ) => {
@@ -85,7 +85,7 @@ impl Program {
                   let mut signature_leaves = signature_children
                     .into_iter()
                     .map(|child| match child {
-                      TyntTree::Leaf(_, name) => Ok(name.clone()),
+                      EaslTree::Leaf(_, name) => Ok(name.clone()),
                       _ => {
                         err(InvalidStructName, child.position().clone().into())
                       }
@@ -107,7 +107,7 @@ impl Program {
                     return err(InvalidStructName, source_trace);
                   }
                 }
-                TyntTree::Inner((position, _), _) => {
+                EaslTree::Inner((position, _), _) => {
                   return err(InvalidStructName, position.clone().into())
                 }
               }
@@ -146,13 +146,13 @@ impl Program {
     for (metadata, tree) in non_struct_trees.into_iter() {
       use crate::parse::Encloser::*;
       use sse::syntax::EncloserOrOperator::*;
-      if let TyntTree::Inner((parens_position, Encloser(Parens)), children) =
+      if let EaslTree::Inner((parens_position, Encloser(Parens)), children) =
         tree
       {
         let parens_source_trace: SourceTrace = parens_position.clone().into();
         let mut children_iter = children.into_iter();
         let first_child = children_iter.next();
-        if let Some(TyntTree::Leaf(first_child_position, first_child)) =
+        if let Some(EaslTree::Leaf(first_child_position, first_child)) =
           first_child
         {
           let first_child_source_trace: SourceTrace =
@@ -163,7 +163,7 @@ impl Program {
                 1 => (vec![], children_iter.next().unwrap()),
                 2 => {
                   let attributes_ast = children_iter.next().unwrap();
-                  if let TyntTree::Inner(
+                  if let EaslTree::Inner(
                     (position, Encloser(Square)),
                     attribute_asts,
                   ) = attributes_ast
@@ -171,7 +171,7 @@ impl Program {
                     let attributes: Vec<String> = attribute_asts
                       .into_iter()
                       .map(|attribute_ast| {
-                        if let TyntTree::Leaf(_, attribute_string) =
+                        if let EaslTree::Leaf(_, attribute_string) =
                           attribute_ast
                         {
                           Ok(attribute_string)
@@ -236,7 +236,7 @@ impl Program {
               if children_iter.len() == 2 {
                 let (name, type_ast) =
                   read_type_annotated_name(children_iter.next().unwrap())?;
-                let value_expression = TypedExp::try_from_tynt_tree(
+                let value_expression = TypedExp::try_from_easl_tree(
                   children_iter.next().unwrap(),
                   &structs,
                   &vec![],
@@ -247,7 +247,7 @@ impl Program {
                   name,
                   metadata: None,
                   attributes: vec![],
-                  var: Variable::new(TypeState::Known(Type::from_tynt_tree(
+                  var: Variable::new(TypeState::Known(Type::from_easl_tree(
                     type_ast,
                     &structs,
                     &global_context.type_aliases,
@@ -276,10 +276,10 @@ impl Program {
                 String,
                 Vec<(String, Vec<TypeConstraint>)>,
               ) = match name_ast {
-                TyntTree::Leaf(_, name) => (name, vec![]),
-                TyntTree::Inner((_, Encloser(Parens)), subtrees) => {
+                EaslTree::Leaf(_, name) => (name, vec![]),
+                EaslTree::Inner((_, Encloser(Parens)), subtrees) => {
                   let mut subtrees_iter = subtrees.into_iter();
-                  if let Some(TyntTree::Leaf(_, name)) = subtrees_iter.next() {
+                  if let Some(EaslTree::Leaf(_, name)) = subtrees_iter.next() {
                     (
                       name,
                       subtrees_iter
@@ -325,7 +325,7 @@ impl Program {
                 arg_metadata,
                 return_type,
                 return_metadata,
-              ) = arg_list_and_return_type_from_tynt_tree(
+              ) = arg_list_and_return_type_from_easl_tree(
                 arg_list_ast,
                 &structs,
                 &global_context.type_aliases,
@@ -390,7 +390,7 @@ impl Program {
             }
             _ => {
               return err(
-                UnrecognizedTopLevelForm(TyntTree::Leaf(
+                UnrecognizedTopLevelForm(EaslTree::Leaf(
                   first_child_position.clone(),
                   first_child,
                 )),
@@ -400,7 +400,7 @@ impl Program {
           }
         } else {
           return err(
-            UnrecognizedTopLevelForm(first_child.unwrap_or(TyntTree::Inner(
+            UnrecognizedTopLevelForm(first_child.unwrap_or(EaslTree::Inner(
               (
                 parens_position.clone(),
                 EncloserOrOperator::Encloser(Parens),

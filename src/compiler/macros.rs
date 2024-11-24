@@ -1,26 +1,26 @@
-use crate::parse::TyntTree;
+use crate::parse::EaslTree;
 
 use super::error::SourceTrace;
 
 pub struct Macro(
   pub  Box<
     dyn Fn(
-      TyntTree,
-    ) -> Result<Result<TyntTree, (SourceTrace, String)>, TyntTree>,
+      EaslTree,
+    ) -> Result<Result<EaslTree, (SourceTrace, String)>, EaslTree>,
   >,
 );
 
 pub fn macroexpand(
-  tree: TyntTree,
+  tree: EaslTree,
   macros: &Vec<Macro>,
-) -> Result<TyntTree, (SourceTrace, String)> {
+) -> Result<EaslTree, (SourceTrace, String)> {
   let new_tree = match tree {
-    TyntTree::Inner(data, children) => TyntTree::Inner(
+    EaslTree::Inner(data, children) => EaslTree::Inner(
       data,
       children
         .into_iter()
         .map(|subtree| macroexpand(subtree, macros))
-        .collect::<Result<Vec<TyntTree>, (SourceTrace, String)>>()?,
+        .collect::<Result<Vec<EaslTree>, (SourceTrace, String)>>()?,
     ),
     leaf => leaf,
   };

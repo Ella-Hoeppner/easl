@@ -1,5 +1,5 @@
+use easl::compiler::compile_easl_to_wgsl;
 use std::fs;
-use tynt::compiler::compile_tynt_to_wgsl;
 
 fn main() {
   std::env::set_var("RUST_BACKTRACE", "1");
@@ -36,9 +36,9 @@ fn main() {
     "texture",
   ] {
     println!("compiling {filename}...");
-    let tynt_source = fs::read_to_string(&format!("./data/{filename}.tynt"))
-      .expect(&format!("Unable to read {filename}.tynt"));
-    match compile_tynt_to_wgsl(&tynt_source) {
+    let easl_source = fs::read_to_string(&format!("./data/{filename}.easl"))
+      .expect(&format!("Unable to read {filename}.easl"));
+    match compile_easl_to_wgsl(&easl_source) {
       Ok(wgsl) => {
         fs::write(&format!("./out/{filename}.wgsl"), wgsl)
           .expect("Unable to write file");

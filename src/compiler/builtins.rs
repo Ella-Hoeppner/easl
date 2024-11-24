@@ -7,7 +7,7 @@ use crate::{
     error::SourceTrace,
     structs::{AbstractStructField, TypeOrAbstractStruct},
   },
-  parse::{Encloser, TyntTree},
+  parse::{EaslTree, Encloser},
 };
 
 use super::{
@@ -789,26 +789,26 @@ pub const ABNORMAL_CONSTRUCTOR_STRUCTS: [&'static str; 3] =
 
 pub fn built_in_macros() -> Vec<Macro> {
   let if_macro = Macro(Box::new(|tree| match tree {
-    TyntTree::Inner(
+    EaslTree::Inner(
       (position, EncloserOrOperator::Encloser(Encloser::Parens)),
       mut children,
     ) => {
       if children.is_empty() {
-        Err(TyntTree::Inner(
+        Err(EaslTree::Inner(
           (position, EncloserOrOperator::Encloser(Encloser::Parens)),
           children,
         ))
       } else {
-        if let TyntTree::Leaf(_, leaf) = &children[0] {
+        if let EaslTree::Leaf(_, leaf) = &children[0] {
           if leaf.as_str() == "if" {
             if children.len() == 4 {
               let false_branch = children.remove(3);
               let true_branch = children.remove(2);
               let condition = children.remove(1);
-              Ok(Ok(TyntTree::Inner(
+              Ok(Ok(EaslTree::Inner(
                 (position, EncloserOrOperator::Encloser(Encloser::Parens)),
                 vec![
-                  TyntTree::Leaf(
+                  EaslTree::Leaf(
                     DocumentPosition {
                       span: 0..0,
                       path: vec![],
@@ -816,7 +816,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                     "match".to_string(),
                   ),
                   condition,
-                  TyntTree::Leaf(
+                  EaslTree::Leaf(
                     DocumentPosition {
                       span: 0..0,
                       path: vec![],
@@ -824,7 +824,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                     "true".to_string(),
                   ),
                   true_branch,
-                  TyntTree::Leaf(
+                  EaslTree::Leaf(
                     DocumentPosition {
                       span: 0..0,
                       path: vec![],
@@ -844,13 +844,13 @@ pub fn built_in_macros() -> Vec<Macro> {
               )))
             }
           } else {
-            Err(TyntTree::Inner(
+            Err(EaslTree::Inner(
               (position, EncloserOrOperator::Encloser(Encloser::Parens)),
               children,
             ))
           }
         } else {
-          Err(TyntTree::Inner(
+          Err(EaslTree::Inner(
             (position, EncloserOrOperator::Encloser(Encloser::Parens)),
             children,
           ))
@@ -860,23 +860,23 @@ pub fn built_in_macros() -> Vec<Macro> {
     other => Err(other),
   }));
   let when_macro = Macro(Box::new(|tree| match tree {
-    TyntTree::Inner(
+    EaslTree::Inner(
       (position, EncloserOrOperator::Encloser(Encloser::Parens)),
       mut children,
     ) => {
       if children.is_empty() {
-        Err(TyntTree::Inner(
+        Err(EaslTree::Inner(
           (position, EncloserOrOperator::Encloser(Encloser::Parens)),
           children,
         ))
       } else {
-        if let TyntTree::Leaf(_, leaf) = &children[0] {
+        if let EaslTree::Leaf(_, leaf) = &children[0] {
           if leaf.as_str() == "when" {
             if children.len() > 2 {
               let condition = children.remove(1);
               std::mem::swap(
                 &mut children[0],
-                &mut TyntTree::Leaf(
+                &mut EaslTree::Leaf(
                   DocumentPosition {
                     span: 0..0,
                     path: vec![],
@@ -884,10 +884,10 @@ pub fn built_in_macros() -> Vec<Macro> {
                   "block".to_string(),
                 ),
               );
-              Ok(Ok(TyntTree::Inner(
+              Ok(Ok(EaslTree::Inner(
                 (position, EncloserOrOperator::Encloser(Encloser::Parens)),
                 vec![
-                  TyntTree::Leaf(
+                  EaslTree::Leaf(
                     DocumentPosition {
                       span: 0..0,
                       path: vec![],
@@ -895,14 +895,14 @@ pub fn built_in_macros() -> Vec<Macro> {
                     "match".to_string(),
                   ),
                   condition,
-                  TyntTree::Leaf(
+                  EaslTree::Leaf(
                     DocumentPosition {
                       span: 0..0,
                       path: vec![],
                     },
                     "true".to_string(),
                   ),
-                  TyntTree::Inner(
+                  EaslTree::Inner(
                     (
                       DocumentPosition {
                         span: 0..0,
@@ -923,13 +923,13 @@ pub fn built_in_macros() -> Vec<Macro> {
               )))
             }
           } else {
-            Err(TyntTree::Inner(
+            Err(EaslTree::Inner(
               (position, EncloserOrOperator::Encloser(Encloser::Parens)),
               children,
             ))
           }
         } else {
-          Err(TyntTree::Inner(
+          Err(EaslTree::Inner(
             (position, EncloserOrOperator::Encloser(Encloser::Parens)),
             children,
           ))
@@ -939,17 +939,17 @@ pub fn built_in_macros() -> Vec<Macro> {
     other => Err(other),
   }));
   let thread_macro = Macro(Box::new(|tree| match tree {
-    TyntTree::Inner(
+    EaslTree::Inner(
       (position, EncloserOrOperator::Encloser(Encloser::Parens)),
       children,
     ) => {
       if children.is_empty() {
-        Err(TyntTree::Inner(
+        Err(EaslTree::Inner(
           (position, EncloserOrOperator::Encloser(Encloser::Parens)),
           children,
         ))
       } else {
-        if let TyntTree::Leaf(_, leaf) = &children[0] {
+        if let EaslTree::Leaf(_, leaf) = &children[0] {
           if leaf.as_str() == "->" {
             if children.len() <= 1 {
               return Ok(Err((
@@ -963,20 +963,20 @@ pub fn built_in_macros() -> Vec<Macro> {
             Ok(children_iter.fold(
               Ok(original_expression),
               |maybe_previous_expression: Result<
-                TyntTree,
+                EaslTree,
                 (SourceTrace, String),
               >,
                thread_expression| {
                 maybe_previous_expression
                     .map(|previous_expression| {
                       fn walk_thread_expression(
-                        tree: TyntTree,
-                        inner_expression: Option<TyntTree>,
+                        tree: EaslTree,
+                        inner_expression: Option<EaslTree>,
                         mut positioner_traces: Vec<SourceTrace>,
-                      ) -> (TyntTree, Option<TyntTree>, Vec<SourceTrace>)
+                      ) -> (EaslTree, Option<EaslTree>, Vec<SourceTrace>)
                       {
                         match tree {
-                          TyntTree::Leaf(position, leaf) => {
+                          EaslTree::Leaf(position, leaf) => {
                             if leaf.as_str() == "<>" {
                               positioner_traces
                                 .push(SourceTrace::from(position.clone()));
@@ -984,20 +984,20 @@ pub fn built_in_macros() -> Vec<Macro> {
                                 (inner_expression, None, positioner_traces)
                               } else {
                                 (
-                                  TyntTree::Leaf(position, leaf),
+                                  EaslTree::Leaf(position, leaf),
                                   None,
                                   positioner_traces,
                                 )
                               }
                             } else {
                               (
-                                TyntTree::Leaf(position, leaf),
+                                EaslTree::Leaf(position, leaf),
                                 inner_expression,
                                 positioner_traces,
                               )
                             }
                           }
-                          TyntTree::Inner((position, kind), subtrees) => {
+                          EaslTree::Inner((position, kind), subtrees) => {
                             let (
                               new_subtrees,
                               inner_expression,
@@ -1028,7 +1028,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                               },
                             );
                             (
-                              TyntTree::Inner((position, kind), new_subtrees),
+                              EaslTree::Inner((position, kind), new_subtrees),
                               inner_expression,
                               position_traces,
                             )
@@ -1046,7 +1046,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                       );
                       match positioner_traces.len() {
                         0 => match new_thread_expression {
-                          TyntTree::Inner(
+                          EaslTree::Inner(
                             (
                               paren_position,
                               EncloserOrOperator::Encloser(Encloser::Parens),
@@ -1054,7 +1054,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                             mut subtrees,
                           ) => {
                             subtrees.insert(1, previous_expression.unwrap());
-                            Ok(TyntTree::Inner(
+                            Ok(EaslTree::Inner(
                               (
                                 paren_position,
                                 EncloserOrOperator::Encloser(Encloser::Parens),
@@ -1068,14 +1068,14 @@ pub fn built_in_macros() -> Vec<Macro> {
                               "\"->\" macro expects at least one inner form",
                             ),
                           )),
-                          TyntTree::Leaf(leaf_position, leaf_string) => Ok({
-                            TyntTree::Inner(
+                          EaslTree::Leaf(leaf_position, leaf_string) => Ok({
+                            EaslTree::Inner(
                               (
                                 leaf_position.clone(),
                                 EncloserOrOperator::Encloser(Encloser::Parens),
                               ),
                               vec![
-                                TyntTree::Leaf(leaf_position, leaf_string),
+                                EaslTree::Leaf(leaf_position, leaf_string),
                                 previous_expression.unwrap(),
                               ],
                             )
@@ -1095,13 +1095,13 @@ pub fn built_in_macros() -> Vec<Macro> {
               },
             ))
           } else {
-            Err(TyntTree::Inner(
+            Err(EaslTree::Inner(
               (position, EncloserOrOperator::Encloser(Encloser::Parens)),
               children,
             ))
           }
         } else {
-          Err(TyntTree::Inner(
+          Err(EaslTree::Inner(
             (position, EncloserOrOperator::Encloser(Encloser::Parens)),
             children,
           ))

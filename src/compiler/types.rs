@@ -5,7 +5,7 @@ use sse::{document::DocumentPosition, syntax::EncloserOrOperator};
 
 use crate::{
   compiler::error::{CompileError, CompileErrorKind},
-  parse::{Encloser, Operator, TyntTree},
+  parse::{Encloser, Operator, EaslTree},
 };
 
 use super::{
@@ -47,15 +47,15 @@ impl GenericOr<Type> {
 pub type AbstractType = GenericOr<TypeOrAbstractStruct>;
 
 impl AbstractType {
-  pub fn from_tynt_tree(
-    tree: TyntTree,
+  pub fn from_easl_tree(
+    tree: EaslTree,
     structs: &Vec<AbstractStruct>,
     aliases: &Vec<(String, AbstractStruct)>,
     generic_args: &Vec<String>,
     skolems: &Vec<String>,
   ) -> CompileResult<Self> {
     match &tree {
-      TyntTree::Leaf(_, type_name) => Ok(Self::from_name(
+      EaslTree::Leaf(_, type_name) => Ok(Self::from_name(
         type_name.clone(),
         tree.position().clone(),
         structs,
@@ -63,17 +63,17 @@ impl AbstractType {
         generic_args,
         skolems,
       )?),
-      TyntTree::Inner(
+      EaslTree::Inner(
         (position, EncloserOrOperator::Encloser(Encloser::Parens)),
         children,
       ) => {
         let mut children_iter = children.into_iter();
-        if let Some(TyntTree::Leaf(position, type_name)) = children_iter.next()
+        if let Some(EaslTree::Leaf(position, type_name)) = children_iter.next()
         {
           if let Some(s) = structs.iter().find(|s| s.name == *type_name) {
             let struct_generic_args = children_iter
               .map(|t| {
-                Ok(Self::from_tynt_tree(
+                Ok(Self::from_easl_tree(
                   t.clone(),
                   structs,
                   aliases,
@@ -114,14 +114,14 @@ impl AbstractType {
     })
   }
   pub fn from_ast(
-    ast: TyntTree,
+    ast: EaslTree,
     structs: &Vec<AbstractStruct>,
     aliases: &Vec<(String, AbstractStruct)>,
     generic_args: &Vec<String>,
     skolems: &Vec<String>,
   ) -> CompileResult<Self> {
     match ast {
-      TyntTree::Leaf(position, leaf) => Ok(if generic_args.contains(&leaf) {
+      EaslTree::Leaf(position, leaf) => Ok(if generic_args.contains(&leaf) {
         GenericOr::Generic(leaf)
       } else {
         GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
@@ -132,13 +132,13 @@ impl AbstractType {
           skolems,
         )?))
       }),
-      TyntTree::Inner(
+      EaslTree::Inner(
         (position, EncloserOrOperator::Encloser(Encloser::Parens)),
         children,
       ) => {
         let mut children_iter = children.into_iter();
         let generic_struct_name =
-          if let Some(TyntTree::Leaf(_, leaf)) = children_iter.next() {
+          if let Some(EaslTree::Leaf(_, leaf)) = children_iter.next() {
             leaf
           } else {
             return err(InvalidStructName, position.into());
@@ -154,7 +154,7 @@ impl AbstractType {
           })?
           .clone();
         let generic_args = children_iter
-          .map(|subtree: TyntTree| {
+          .map(|subtree: EaslTree| {
             Self::from_ast(subtree, structs, aliases, generic_args, skolems)
           })
           .collect::<CompileResult<Vec<_>>>()?;
@@ -162,24 +162,24 @@ impl AbstractType {
           generic_struct.fill_abstract_generics(generic_args),
         )))
       }
-      TyntTree::Inner(
+      EaslTree::Inner(
         (position, EncloserOrOperator::Encloser(Encloser::Square)),
         array_children,
       ) => {
         let source_trace: SourceTrace = position.clone().into();
         if array_children.len() == 1 {
-          if let TyntTree::Inner(
+          if let EaslTree::Inner(
             (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
             mut type_annotation_children,
           ) = array_children.iter().next().unwrap().clone()
           {
             let source_trace: SourceTrace = position.into();
-            if let TyntTree::Leaf(position, num_str) =
+            if let EaslTree::Leaf(position, num_str) =
               type_annotation_children.remove(0)
             {
               let source_trace: SourceTrace = position.into();
               if let Ok(array_size) = num_str.parse::<u32>() {
-                let inner_type = Type::from_tynt_tree(
+                let inner_type = Type::from_easl_tree(
                   type_annotation_children.remove(0),
                   structs,
                   aliases,
@@ -310,30 +310,30 @@ impl Type {
       _ => todo!(),
     }
   }
-  pub fn from_tynt_tree(
-    tree: TyntTree,
+  pub fn from_easl_tree(
+    tree: EaslTree,
     structs: &Vec<AbstractStruct>,
     aliases: &Vec<(String, AbstractStruct)>,
     skolems: &Vec<String>,
   ) -> CompileResult<Self> {
     match tree {
-      TyntTree::Leaf(position, type_name) => {
+      EaslTree::Leaf(position, type_name) => {
         Type::from_name(type_name, position, structs, aliases, skolems)
       }
-      TyntTree::Inner(
+      EaslTree::Inner(
         (position, EncloserOrOperator::Encloser(Encloser::Parens)),
         struct_signature_children,
       ) => {
         let source_trace: SourceTrace = position.into();
         let mut signature_leaves = struct_signature_children.into_iter();
-        if let Some(TyntTree::Leaf(_, struct_name)) = signature_leaves.next() {
+        if let Some(EaslTree::Leaf(_, struct_name)) = signature_leaves.next() {
           if signature_leaves.is_empty() {
             return err(InvalidStructName, source_trace);
           } else {
             let generic_args: Vec<TypeState> = signature_leaves
               .map(|signature_arg| {
                 Ok(TypeState::Known(
-                  AbstractType::from_tynt_tree(
+                  AbstractType::from_easl_tree(
                     signature_arg,
                     structs,
                     aliases,
@@ -358,24 +358,24 @@ impl Type {
           return err(InvalidStructName, source_trace);
         }
       }
-      TyntTree::Inner(
+      EaslTree::Inner(
         (position, EncloserOrOperator::Encloser(Encloser::Square)),
         array_children,
       ) => {
         let source_trace: SourceTrace = position.into();
         if array_children.len() == 1 {
-          if let TyntTree::Inner(
+          if let EaslTree::Inner(
             (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
             mut type_annotation_children,
           ) = array_children.into_iter().next().unwrap()
           {
             let source_trace: SourceTrace = position.into();
-            if let TyntTree::Leaf(position, num_str) =
+            if let EaslTree::Leaf(position, num_str) =
               type_annotation_children.remove(0)
             {
               let source_trace: SourceTrace = position.into();
               if let Ok(array_size) = num_str.parse::<u32>() {
-                let inner_type = Type::from_tynt_tree(
+                let inner_type = Type::from_easl_tree(
                   type_annotation_children.remove(0),
                   structs,
                   aliases,
@@ -533,10 +533,10 @@ impl Type {
 }
 
 pub fn extract_type_annotation_ast(
-  exp: TyntTree,
-) -> CompileResult<(Option<TyntTree>, TyntTree)> {
+  exp: EaslTree,
+) -> CompileResult<(Option<EaslTree>, EaslTree)> {
   Ok(
-    if let TyntTree::Inner(
+    if let EaslTree::Inner(
       (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
       mut children,
     ) = exp
@@ -549,16 +549,16 @@ pub fn extract_type_annotation_ast(
 }
 
 pub fn extract_type_annotation(
-  exp: TyntTree,
+  exp: EaslTree,
   structs: &Vec<AbstractStruct>,
   aliases: &Vec<(String, AbstractStruct)>,
   generic_args: &Vec<String>,
   skolems: &Vec<String>,
-) -> CompileResult<(Option<AbstractType>, TyntTree)> {
+) -> CompileResult<(Option<AbstractType>, EaslTree)> {
   let (t, value) = extract_type_annotation_ast(exp)?;
   Ok((
     t.map(|t| {
-      AbstractType::from_tynt_tree(t, structs, aliases, generic_args, skolems)
+      AbstractType::from_easl_tree(t, structs, aliases, generic_args, skolems)
     })
     .map_or(Ok(None), |v| v.map(Some))?,
     value,
@@ -914,20 +914,20 @@ impl TypeConstraint {
 }
 
 pub fn parse_type_bound(
-  ast: TyntTree,
+  ast: EaslTree,
   structs: &Vec<AbstractStruct>,
   aliases: &Vec<(String, AbstractStruct)>,
   generic_args: &Vec<String>,
 ) -> CompileResult<TypeConstraint> {
   match ast {
-    TyntTree::Leaf(_, name) => Ok(TypeConstraint { name, args: vec![] }),
-    TyntTree::Inner(
+    EaslTree::Leaf(_, name) => Ok(TypeConstraint { name, args: vec![] }),
+    EaslTree::Inner(
       (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
       children,
     ) => {
       let source_trace: SourceTrace = position.into();
       let mut children_iter = children.into_iter();
-      let name = if let TyntTree::Leaf(_, name) =
+      let name = if let EaslTree::Leaf(_, name) =
         children_iter.next().ok_or_else(|| {
           CompileError::new(InvalidTypeBound, source_trace.clone())
         })? {
@@ -953,14 +953,14 @@ pub fn parse_type_bound(
 }
 
 pub fn parse_generic_argument(
-  ast: TyntTree,
+  ast: EaslTree,
   structs: &Vec<AbstractStruct>,
   aliases: &Vec<(String, AbstractStruct)>,
   generic_args: &Vec<String>,
 ) -> CompileResult<(String, Vec<TypeConstraint>)> {
   match ast {
-    TyntTree::Leaf(_, generic_name) => Ok((generic_name, vec![])),
-    TyntTree::Inner(
+    EaslTree::Leaf(_, generic_name) => Ok((generic_name, vec![])),
+    EaslTree::Inner(
       (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
       mut children,
     ) => {
@@ -971,9 +971,9 @@ pub fn parse_generic_argument(
         );
       }
       let bounds_tree = children.remove(1);
-      if let TyntTree::Leaf(_, generic_name) = children.remove(0) {
+      if let EaslTree::Leaf(_, generic_name) = children.remove(0) {
         match bounds_tree {
-          TyntTree::Inner(
+          EaslTree::Inner(
             (_, EncloserOrOperator::Encloser(Encloser::Square)),
             bound_children,
           ) => Ok((

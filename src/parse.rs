@@ -110,8 +110,8 @@ impl SSEOperator for Operator {
   }
 }
 
-pub fn parse_tynt(
-  tynt_source: &str,
+pub fn parse_easl(
+  easl_source: &str,
 ) -> CompileResult<Document<Context, Encloser, Operator>> {
   let default_context = SyntaxContext::new(
     vec![
@@ -156,7 +156,7 @@ pub fn parse_tynt(
     ]
     .into(),
   );
-  Document::from_text_with_syntax(syntax_graph, tynt_source)
+  Document::from_text_with_syntax(syntax_graph, easl_source)
     .map_err(|e| {
       CompileError::new(
         CompileErrorKind::ParsingFailed(e),
@@ -169,4 +169,4 @@ pub fn parse_tynt(
     })
 }
 
-pub type TyntTree = DocumentSyntaxTree<Encloser, Operator>;
+pub type EaslTree = DocumentSyntaxTree<Encloser, Operator>;

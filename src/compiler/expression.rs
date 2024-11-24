@@ -16,7 +16,7 @@ use crate::{
     },
     util::{compile_word, indent},
   },
-  parse::TyntTree,
+  parse::EaslTree,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -274,8 +274,8 @@ pub enum ExpressionCompilationPosition {
 
 pub type TypedExp = Exp<TypeState>;
 
-pub fn arg_list_and_return_type_from_tynt_tree(
-  tree: TyntTree,
+pub fn arg_list_and_return_type_from_easl_tree(
+  tree: EaslTree,
   structs: &Vec<AbstractStruct>,
   aliases: &Vec<(String, AbstractStruct)>,
   generic_args: &Vec<String>,
@@ -290,21 +290,21 @@ pub fn arg_list_and_return_type_from_tynt_tree(
   use crate::parse::Encloser::*;
   use crate::parse::Operator::*;
   use sse::syntax::EncloserOrOperator::*;
-  if let TyntTree::Inner(
+  if let EaslTree::Inner(
     (position, Operator(TypeAnnotation)),
     mut args_and_return_type,
   ) = tree
   {
     let return_type_ast = args_and_return_type.remove(1);
     let (return_metadata, return_type_ast) = extract_metadata(return_type_ast)?;
-    let return_type = AbstractType::from_tynt_tree(
+    let return_type = AbstractType::from_easl_tree(
       return_type_ast,
       structs,
       aliases,
       generic_args,
       &vec![],
     )?;
-    if let TyntTree::Inner((position, Encloser(Square)), arg_asts) =
+    if let EaslTree::Inner((position, Encloser(Square)), arg_asts) =
       args_and_return_type.remove(0)
     {
       let source_path: SourceTrace = position.into();
@@ -316,7 +316,7 @@ pub fn arg_list_and_return_type_from_tynt_tree(
             FunctionArgMissingType,
             source_path.clone(),
           ))?;
-          let t = AbstractType::from_tynt_tree(
+          let t = AbstractType::from_easl_tree(
             t_ast,
             structs,
             aliases,
@@ -324,7 +324,7 @@ pub fn arg_list_and_return_type_from_tynt_tree(
             &vec![],
           )?;
           let (arg_metadata, arg_name_ast) = extract_metadata(arg_name_ast)?;
-          if let TyntTree::Leaf(_, arg_name) = arg_name_ast {
+          if let EaslTree::Leaf(_, arg_name) = arg_name_ast {
             Ok(((t, arg_metadata), arg_name))
           } else {
             err(InvalidArgumentName, source_path.clone())
@@ -362,7 +362,7 @@ pub enum SyntaxTreeContext {
 impl TypedExp {
   pub fn function_from_body_tree(
     source_trace: SourceTrace,
-    body_trees: Vec<TyntTree>,
+    body_trees: Vec<EaslTree>,
     return_type: TypeState,
     arg_names: Vec<String>,
     arg_types: Vec<(TypeState, Vec<TypeConstraint>)>,
@@ -373,7 +373,7 @@ impl TypedExp {
     let mut body_exps = body_trees
       .into_iter()
       .map(|t| {
-        Self::try_from_tynt_tree(
+        Self::try_from_easl_tree(
           t,
           structs,
           aliases,
@@ -407,15 +407,15 @@ impl TypedExp {
       source_trace,
     })
   }
-  pub fn try_from_tynt_tree(
-    tree: TyntTree,
+  pub fn try_from_easl_tree(
+    tree: EaslTree,
     structs: &Vec<AbstractStruct>,
     aliases: &Vec<(String, AbstractStruct)>,
     skolems: &Vec<String>,
     ctx: SyntaxTreeContext,
   ) -> CompileResult<Self> {
     Ok(match tree {
-      TyntTree::Leaf(position, leaf) => {
+      EaslTree::Leaf(position, leaf) => {
         let source_trace: SourceTrace = position.into();
         if leaf == "break" {
           Exp {
@@ -479,7 +479,7 @@ impl TypedExp {
           }
         }
       }
-      TyntTree::Inner((position, encloser_or_operator), children) => {
+      EaslTree::Inner((position, encloser_or_operator), children) => {
         use crate::parse::Encloser::*;
         use crate::parse::Operator::*;
         use sse::syntax::EncloserOrOperator::*;
@@ -490,7 +490,7 @@ impl TypedExp {
             Parens => {
               if let Some(first_child) = children_iter.next() {
                 match &first_child {
-                  TyntTree::Leaf(position, first_child_name) => {
+                  EaslTree::Leaf(position, first_child_name) => {
                     let source_trace: SourceTrace = position.clone().into();
                     if ".".is_prefix_of(&first_child_name) {
                       if children_iter.len() == 1 {
@@ -503,7 +503,7 @@ impl TypedExp {
                                 .skip(1)
                                 .collect::<String>(),
                             ),
-                            Box::new(Self::try_from_tynt_tree(
+                            Box::new(Self::try_from_easl_tree(
                               children_iter.next().unwrap(),
                               structs,
                               aliases,
@@ -527,7 +527,7 @@ impl TypedExp {
                             _arg_metadata,
                             return_type,
                             _return_metadata,
-                          ) = arg_list_and_return_type_from_tynt_tree(
+                          ) = arg_list_and_return_type_from_easl_tree(
                             children_iter.next().ok_or(CompileError::new(
                               InvalidFunction,
                               source_trace,
@@ -571,7 +571,7 @@ impl TypedExp {
                           let mut child_exps = children_iter
                             .clone()
                             .map(|child| {
-                              Self::try_from_tynt_tree(
+                              Self::try_from_easl_tree(
                                 child, structs, aliases, skolems, ctx,
                               )
                             })
@@ -588,7 +588,7 @@ impl TypedExp {
                               source_trace: source_trace.clone(),
                             }
                           };
-                          if let TyntTree::Inner(
+                          if let EaslTree::Inner(
                             (position, Encloser(Square)),
                             binding_asts,
                           ) = bindings_ast
@@ -606,7 +606,7 @@ impl TypedExp {
                                 let (name_metadata, name_ast) =
                                   extract_metadata(name_ast)?;
                                 match name_ast {
-                                  TyntTree::Leaf(position, name) => {
+                                  EaslTree::Leaf(position, name) => {
                                     let source_trace = position.clone().into();
                                     bindings.push((
                                       name,
@@ -632,13 +632,13 @@ impl TypedExp {
                                           )
                                         }
                                       },
-                                      Self::try_from_tynt_tree(
+                                      Self::try_from_easl_tree(
                                         value_ast, structs, aliases, skolems,
                                         ctx,
                                       )?,
                                     ));
                                   }
-                                  TyntTree::Inner((position, _), _) => {
+                                  EaslTree::Inner((position, _), _) => {
                                     return err(
                                       ExpectedBindingName,
                                       position.into(),
@@ -674,7 +674,7 @@ impl TypedExp {
                           let child_exps = children_iter
                             .clone()
                             .map(|child| {
-                              Self::try_from_tynt_tree(
+                              Self::try_from_easl_tree(
                                 child, structs, aliases, skolems, ctx,
                               )
                             })
@@ -689,7 +689,7 @@ impl TypedExp {
                           })
                         }
                         "match" => {
-                          let scrutinee = Self::try_from_tynt_tree(
+                          let scrutinee = Self::try_from_easl_tree(
                             children_iter.next().ok_or_else(|| {
                               CompileError::new(
                                 MatchMissingScrutinee,
@@ -710,14 +710,14 @@ impl TypedExp {
                                 source_trace.clone(),
                               ))?;
                             arms.push((
-                              Self::try_from_tynt_tree(
+                              Self::try_from_easl_tree(
                                 pattern_subtree,
                                 structs,
                                 aliases,
                                 skolems,
                                 SyntaxTreeContext::MatchPattern,
                               )?,
-                              Self::try_from_tynt_tree(
+                              Self::try_from_easl_tree(
                                 value_subtree,
                                 structs,
                                 aliases,
@@ -749,7 +749,7 @@ impl TypedExp {
                             increment_variable_initial_value_expression,
                             continue_condition_expression,
                             update_condition_expression,
-                          ) = if let TyntTree::Inner(
+                          ) = if let EaslTree::Inner(
                             (
                               header_source_position,
                               EncloserOrOperator::Encloser(Square),
@@ -768,7 +768,7 @@ impl TypedExp {
                               let (var_type_subtree, var_name_subtree) =
                                 extract_type_annotation_ast(var_name_subtree)?;
                               (
-                                if let TyntTree::Leaf(_, name) =
+                                if let EaslTree::Leaf(_, name) =
                                   var_name_subtree
                                 {
                                   name
@@ -777,7 +777,7 @@ impl TypedExp {
                                 },
                                 var_type_subtree
                                   .map(|var_type_subtree| {
-                                    Type::from_tynt_tree(
+                                    Type::from_easl_tree(
                                       var_type_subtree,
                                       structs,
                                       aliases,
@@ -785,21 +785,21 @@ impl TypedExp {
                                     )
                                   })
                                   .unwrap_or(Ok(Type::I32))?,
-                                TypedExp::try_from_tynt_tree(
+                                TypedExp::try_from_easl_tree(
                                   increment_variable_initial_value_subtree,
                                   structs,
                                   aliases,
                                   skolems,
                                   ctx,
                                 )?,
-                                TypedExp::try_from_tynt_tree(
+                                TypedExp::try_from_easl_tree(
                                   continue_condition_subtree,
                                   structs,
                                   aliases,
                                   skolems,
                                   ctx,
                                 )?,
-                                TypedExp::try_from_tynt_tree(
+                                TypedExp::try_from_easl_tree(
                                   update_condition_subtree,
                                   structs,
                                   aliases,
@@ -822,7 +822,7 @@ impl TypedExp {
                           let body_expressions = children_iter
                             .clone()
                             .map(|child| {
-                              TypedExp::try_from_tynt_tree(
+                              TypedExp::try_from_easl_tree(
                                 child, structs, aliases, skolems, ctx,
                               )
                             })
@@ -862,7 +862,7 @@ impl TypedExp {
                           let mut sub_expressions = children_iter
                             .clone()
                             .map(|child| {
-                              TypedExp::try_from_tynt_tree(
+                              TypedExp::try_from_easl_tree(
                                 child, structs, aliases, skolems, ctx,
                               )
                             })
@@ -898,7 +898,7 @@ impl TypedExp {
                         }
                         "return" => {
                           if children_iter.len() == 1 {
-                            let exp = TypedExp::try_from_tynt_tree(
+                            let exp = TypedExp::try_from_easl_tree(
                               children_iter.next().unwrap(),
                               structs,
                               aliases,
@@ -925,7 +925,7 @@ impl TypedExp {
                 }
                 .unwrap_or(Exp {
                   kind: Application(
-                    Box::new(Self::try_from_tynt_tree(
+                    Box::new(Self::try_from_easl_tree(
                       first_child,
                       structs,
                       aliases,
@@ -934,7 +934,7 @@ impl TypedExp {
                     )?),
                     children_iter
                       .map(|arg| {
-                        Self::try_from_tynt_tree(
+                        Self::try_from_easl_tree(
                           arg, structs, aliases, skolems, ctx,
                         )
                       })
@@ -949,14 +949,14 @@ impl TypedExp {
             }
             ArrayLookup => {
               if children_iter.len() == 2 {
-                let array_expression = TypedExp::try_from_tynt_tree(
+                let array_expression = TypedExp::try_from_easl_tree(
                   children_iter.next().unwrap(),
                   structs,
                   aliases,
                   skolems,
                   ctx,
                 )?;
-                let index_expression = TypedExp::try_from_tynt_tree(
+                let index_expression = TypedExp::try_from_easl_tree(
                   children_iter.next().unwrap(),
                   structs,
                   aliases,
@@ -985,14 +985,14 @@ impl TypedExp {
               todo!("Encountered metadata in internal expression")
             }
             TypeAnnotation => {
-              let mut exp = Self::try_from_tynt_tree(
+              let mut exp = Self::try_from_easl_tree(
                 children_iter.next().unwrap(),
                 structs,
                 aliases,
                 skolems,
                 ctx,
               )?;
-              exp.data = TypeState::Known(Type::from_tynt_tree(
+              exp.data = TypeState::Known(Type::from_easl_tree(
                 children_iter.next().unwrap(),
                 structs,
                 aliases,

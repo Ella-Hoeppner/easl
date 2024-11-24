@@ -1,9 +1,9 @@
-# tynt
+# easl
 
 WIP shader language with a lispy syntax (using [SSE](https://github.com/Ella-Hoeppner/SSE)) that compiles to WGSL.
 
 Feature goals:
-  * full feature parity with WGSL - anything that can be expressed with WGSL will also be expressible with tynt
+  * full feature parity with WGSL - anything that can be expressed with WGSL will also be expressible with easl
   * fully expression-based, including scoped `let` blocks that return values, and inline `if` and `match` statements
   * full type inference, including for function arg types and return types
   * support for macros/preprocessing, defined in rust
@@ -16,12 +16,7 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
-* special casing around `Texture2D`
-  * right now I've made it so it has a field `inner: T`, because monomorphization needs there to be at least one field, but this is kinda weird
-  * you definitely shouldn't be able to access the `inner` field, and you shouldn't be allowed to construct it
-  * might need this for other types too? Maybe have a like `external_only` or `opaque` type that prevents it from being constructed or from having it's fields accessed 
-
-* clean up/simplify type parsing, I've got `Type::from_tynt_tree`, `AbstractType::from_tynt_tree`, and `AbstractType::from_ast` that all seem like they have pretty overlapping functionality, probably don't need all three
+* clean up/simplify type parsing, I've got `Type::from_easl_tree`, `AbstractType::from_easl_tree`, and `AbstractType::from_ast` that all seem like they have pretty overlapping functionality, probably don't need all three
 
 * allow type annotation on binding names in let blocks, e.g. `(let [x: f32 0] ...)` currently crashes because it can't handle the type annotation on `x`
 
@@ -76,6 +71,10 @@ Feature goals:
 * matrices
 
 ### extra features, once core language is solid
+* special casing around `Texture2D`
+  * right now I've made it so it has a field `_: T`, because monomorphization needs there to be at least one field, but this is kinda weird
+  * you definitely shouldn't be able to access the `_` field, and you shouldn't be allowed to construct it
+  * might need this for other types too? Maybe have a like `external_only` or `opaque` type that prevents it from being constructed or from having it's fields accessed 
 
 * Optimize
   * probably using `Rc<str>` in place of `String` in most places would be a significant improvement

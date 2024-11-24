@@ -1,10 +1,10 @@
-use crate::{compiler::program::Program, parse::parse_tynt};
+use crate::{compiler::program::Program, parse::parse_easl};
 
 use super::{builtins::built_in_macros, error::CompileResult};
 
-pub fn compile_tynt_to_wgsl(tynt_source: &str) -> CompileResult<String> {
-  let document = parse_tynt(tynt_source)?;
-  Program::from_tynt_document(&document, built_in_macros())
+pub fn compile_easl_to_wgsl(easl_source: &str) -> CompileResult<String> {
+  let document = parse_easl(easl_source)?;
+  Program::from_easl_document(&document, built_in_macros())
     .map_err(|e| e.attach_error_source(&document))?
     .fully_infer_types()
     .map_err(|e| e.attach_error_source(&document))?

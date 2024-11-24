@@ -12,6 +12,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "easl"
+version = "0.0.0"
+dependencies = [
+ "lazy_static",
+ "regex",
+ "sse",
+ "take_mut",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -66,16 +76,6 @@ name = "take_mut"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f764005d11ee5f36500a149ace24e00e3da98b0158b3e2d53a7495660d3f4d60"
-
-[[package]]
-name = "tynt"
-version = "0.0.0"
-dependencies = [
- "lazy_static",
- "regex",
- "sse",
- "take_mut",
-]
 
 [[package]]
 name = "unicode-segmentation"
