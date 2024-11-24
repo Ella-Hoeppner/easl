@@ -133,6 +133,7 @@ pub enum CompileErrorKind {
   InvalidReturn,
   MacroError(String),
   InvalidArrayAccessSyntax,
+  ArrayAccessOnNonArray,
 }
 
 #[derive(Clone, Debug)]

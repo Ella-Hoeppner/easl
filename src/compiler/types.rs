@@ -186,7 +186,10 @@ impl AbstractType {
                   skolems,
                 )?;
                 Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-                  Type::Array(array_size, Box::new(inner_type)),
+                  Type::Array(
+                    array_size,
+                    Box::new(TypeState::Known(inner_type)),
+                  ),
                 )))
               } else {
                 return err(InvalidArraySignature, source_trace);
@@ -296,7 +299,7 @@ pub enum Type {
   Struct(Struct),
   Function(Box<FunctionSignature>),
   Skolem(String),
-  Array(u32, Box<Type>),
+  Array(u32, Box<TypeState>),
 }
 impl Type {
   pub fn satisfies_constraints(&self, constraint: &TypeConstraint) -> bool {
@@ -378,7 +381,10 @@ impl Type {
                   aliases,
                   skolems,
                 )?;
-                Ok(Type::Array(array_size, Box::new(inner_type)))
+                Ok(Type::Array(
+                  array_size,
+                  Box::new(TypeState::Known(inner_type)),
+                ))
               } else {
                 return err(InvalidArraySignature, source_trace);
               }

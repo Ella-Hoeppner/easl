@@ -1241,6 +1241,16 @@ impl TypedExp {
           anything_changed
         }
         Accessor::ArrayIndex(index_expression) => {
+          if let TypeState::Known(t) = &mut subexp.data {
+            if let Type::Array(_, inner_type) = t {
+              self.data.mutually_constrain(
+                inner_type.as_mut(),
+                self.source_trace.clone(),
+              )?;
+            } else {
+              return err(ArrayAccessOnNonArray, self.source_trace.clone());
+            }
+          }
           let mut anything_changed = index_expression.data.constrain(
             TypeState::OneOf(vec![Type::I32, Type::U32]),
             self.source_trace.clone(),
