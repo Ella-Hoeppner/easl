@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use sse::{document::DocumentPosition, syntax::EncloserOrOperator};
+use sse::{document::DocumentPosition, syntax::EncloserOrOperator, Ast};
 
 use crate::{
   compiler::{
@@ -1062,7 +1062,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                               subtrees,
                             ))
                           }
-                          sse::Sexp::Inner((paren_position, _), _) => Err((
+                          Ast::Inner((paren_position, _), _) => Err((
                             SourceTrace::from(paren_position),
                             format!(
                               "\"->\" macro expects at least one inner form",
