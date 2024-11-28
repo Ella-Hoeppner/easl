@@ -4,7 +4,7 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use sse::{document::DocumentPosition, syntax::EncloserOrOperator};
 
 use crate::{
-  compiler::error::{CompileError, CompileErrorKind},
+  compiler::error::CompileError,
   parse::{EaslTree, Encloser, Operator},
 };
 
@@ -1030,7 +1030,7 @@ pub fn parse_generic_argument(
 pub struct Context {
   pub structs: Vec<Rc<AbstractStruct>>,
   pub variables: HashMap<Rc<str>, Vec<Variable>>,
-  pub abstract_functions: Vec<Rc<AbstractFunctionSignature>>,
+  pub abstract_functions: HashMap<Rc<str>, Vec<Rc<AbstractFunctionSignature>>>,
   pub type_aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
   pub enclosing_function_types: Vec<TypeState>,
   pub top_level_vars: Vec<TopLevelVar>,
@@ -1041,7 +1041,7 @@ impl Context {
     Self {
       structs: vec![],
       variables: HashMap::new(),
-      abstract_functions: vec![],
+      abstract_functions: HashMap::new(),
       type_aliases: vec![],
       enclosing_function_types: vec![],
       top_level_vars: vec![],
@@ -1068,10 +1068,16 @@ impl Context {
     mut self,
     functions: Vec<AbstractFunctionSignature>,
   ) -> Self {
-    self
-      .abstract_functions
-      .append(&mut functions.into_iter().map(|f| Rc::new(f)).collect());
-    self.structs.dedup();
+    for f in functions {
+      if let Some(bucket) = self.abstract_functions.get_mut(&f.name) {
+        bucket.push(f.into());
+      } else {
+        self
+          .abstract_functions
+          .insert(f.name.clone(), vec![f.into()]);
+      }
+    }
+    //self.structs.dedup();
     self
   }
   pub fn with_structs(mut self, mut structs: Vec<Rc<AbstractStruct>>) -> Self {
@@ -1122,27 +1128,28 @@ impl Context {
   }
   pub fn constrain_name_type(
     &mut self,
-    name: &str,
+    name: Rc<str>,
     source_trace: SourceTrace,
     t: &mut TypeState,
   ) -> CompileResult<bool> {
-    let abstract_signatures: Vec<_> = self
-      .abstract_functions
-      .iter()
-      .filter(|f| &*f.name == name)
-      .map(|signature| {
-        Type::Function(Box::new(AbstractFunctionSignature::concretize(
-          signature.clone(),
-        )))
-      })
-      .collect();
-    if abstract_signatures.is_empty() {
+    let abstract_signatures: Option<Vec<_>> =
+      self.abstract_functions.get(&name).map(|signatures| {
+        signatures
+          .into_iter()
+          .map(|signature| {
+            Type::Function(Box::new(AbstractFunctionSignature::concretize(
+              signature.clone(),
+            )))
+          })
+          .collect::<Vec<_>>()
+      });
+    if let Some(abstract_signatures) = abstract_signatures {
+      t.constrain(TypeState::OneOf(abstract_signatures), source_trace)
+    } else {
       t.mutually_constrain(
-        self.get_typestate_mut(name, source_trace.clone())?,
+        self.get_typestate_mut(&name, source_trace.clone())?,
         source_trace,
       )
-    } else {
-      t.constrain(TypeState::OneOf(abstract_signatures), source_trace)
     }
   }
   pub fn bind(&mut self, name: &str, v: Variable) {
@@ -1163,15 +1170,18 @@ impl Context {
     &mut self,
     signature: Rc<AbstractFunctionSignature>,
   ) {
-    self.abstract_functions.push(signature);
+    if let Some(bucket) = self.abstract_functions.get_mut(&signature.name) {
+      bucket.push(signature.into());
+    } else {
+      self
+        .abstract_functions
+        .insert(signature.name.clone(), vec![signature.into()]);
+    }
   }
   pub fn is_bound(&self, name: &str) -> bool {
+    let name_rc: Rc<str> = name.to_string().into();
     self.variables.contains_key(name)
-      || self
-        .abstract_functions
-        .iter()
-        .find(|f| &*f.name == name)
-        .is_some()
+      || self.abstract_functions.contains_key(&name_rc)
       || self
         .top_level_vars
         .iter()
@@ -1200,14 +1210,22 @@ impl Context {
       }
     }
   }
-  pub fn merge(mut self, mut other: Context) -> Self {
-    self.structs.append(&mut other.structs);
-    self.structs.dedup();
+  pub fn abstract_functions_iter(
+    &self,
+  ) -> impl Iterator<Item = &Rc<AbstractFunctionSignature>> {
     self
       .abstract_functions
-      .append(&mut other.abstract_functions);
-    self.abstract_functions.dedup();
-    self.variables.extend(other.variables.into_iter());
+      .values()
+      .map(|fs| fs.iter())
+      .flatten()
+  }
+  pub fn abstract_functions_iter_mut(
+    &mut self,
+  ) -> impl Iterator<Item = &mut Rc<AbstractFunctionSignature>> {
     self
+      .abstract_functions
+      .values_mut()
+      .map(|fs| fs.iter_mut())
+      .flatten()
   }
 }

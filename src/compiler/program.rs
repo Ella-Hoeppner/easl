@@ -1,11 +1,11 @@
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
 use sse::{document::Document, syntax::EncloserOrOperator};
 
 use crate::{
   compiler::{
     error::{err, CompileError, SourceTrace},
-    expression::{arg_list_and_return_type_from_easl_tree, Exp},
+    expression::arg_list_and_return_type_from_easl_tree,
     functions::AbstractFunctionSignature,
     metadata::extract_metadata,
     structs::UntypedStruct,
@@ -15,7 +15,7 @@ use crate::{
     },
     util::read_type_annotated_name,
   },
-  parse::{parse_easl, Context as SyntaxContext, EaslTree, Encloser, Operator},
+  parse::{Context as SyntaxContext, EaslTree, Encloser, Operator},
 };
 
 use super::{
@@ -380,7 +380,7 @@ impl Program {
                       )?,
                   },
                 )));
-              global_context.abstract_functions.push(Rc::new(
+              global_context.add_abstract_function(Rc::new(
                 AbstractFunctionSignature {
                   name,
                   generic_args,
@@ -432,7 +432,7 @@ impl Program {
         )?;
       }
     }
-    for f in self.global_context.abstract_functions.iter_mut() {
+    for f in self.global_context.abstract_functions_iter_mut() {
       if let FunctionImplementationKind::Composite(implementation) =
         &f.implementation
       {
@@ -445,7 +445,7 @@ impl Program {
     Ok(anything_changed)
   }
   fn find_untyped(&self) -> Vec<TypedExp> {
-    self.global_context.abstract_functions.iter().fold(
+    self.global_context.abstract_functions_iter().fold(
       vec![],
       |mut untyped_so_far, f| {
         if let FunctionImplementationKind::Composite(implementation) =
@@ -458,8 +458,8 @@ impl Program {
       },
     )
   }
-  pub fn validate_match_blocks(mut self) -> CompileResult<Self> {
-    for abstract_function in self.global_context.abstract_functions.iter_mut() {
+  pub fn validate_match_blocks(self) -> CompileResult<Self> {
+    for abstract_function in self.global_context.abstract_functions_iter() {
       if let FunctionImplementationKind::Composite(implementation) =
         &abstract_function.implementation
       {
@@ -489,7 +489,7 @@ impl Program {
     }
   }
   pub fn check_assignment_validity(self) -> CompileResult<Self> {
-    for f in self.global_context.abstract_functions.iter() {
+    for f in self.global_context.abstract_functions_iter() {
       if let FunctionImplementationKind::Composite(implementation) =
         &f.implementation
       {
@@ -503,7 +503,7 @@ impl Program {
   }
   pub fn monomorphize(mut self) -> CompileResult<Self> {
     let mut monomorphized_ctx = Context::default_global();
-    for f in self.global_context.abstract_functions.iter() {
+    for f in self.global_context.abstract_functions_iter() {
       if f.generic_args.is_empty() {
         if let FunctionImplementationKind::Composite(implementation) =
           &f.implementation
@@ -528,8 +528,8 @@ impl Program {
   }
   pub fn compile_to_wgsl(self) -> CompileResult<String> {
     let mut wgsl = String::new();
-    for v in self.global_context.top_level_vars {
-      wgsl += &v.compile();
+    for v in self.global_context.top_level_vars.iter() {
+      wgsl += &v.clone().compile();
       wgsl += ";\n";
     }
     wgsl += "\n";
@@ -548,8 +548,8 @@ impl Program {
         wgsl += "\n\n";
       }
     }
-    for f in self.global_context.abstract_functions {
-      let f = Rc::unwrap_or_clone(f);
+    for f in self.global_context.abstract_functions_iter() {
+      let f = Rc::unwrap_or_clone(f.clone());
       if let FunctionImplementationKind::Composite(implementation) =
         f.implementation
       {

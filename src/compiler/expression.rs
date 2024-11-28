@@ -1095,7 +1095,7 @@ impl TypedExp {
           return err(UnboundName(name.clone()), self.source_trace.clone());
         }
         ctx.constrain_name_type(
-          name,
+          name.clone(),
           self.source_trace.clone(),
           &mut self.data,
         )?
@@ -1164,7 +1164,7 @@ impl TypedExp {
         let mut anything_changed = false;
         if let Name(name) = &f.kind {
           anything_changed |= ctx.constrain_name_type(
-            name,
+            name.clone(),
             self.source_trace.clone(),
             &mut f.data,
           )?;
