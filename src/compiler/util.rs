@@ -1,6 +1,8 @@
+use std::rc::Rc;
+
 use sse::syntax::EncloserOrOperator;
 
-use crate::parse::{Operator, EaslTree};
+use crate::parse::{EaslTree, Operator};
 
 use super::error::{err, CompileErrorKind::*, CompileResult, SourceTrace};
 
@@ -8,9 +10,9 @@ pub fn indent(s: String) -> String {
   s.replace("\n", "\n  ")
 }
 
-pub fn read_leaf(ast: EaslTree) -> CompileResult<String> {
+pub fn read_leaf(ast: EaslTree) -> CompileResult<Rc<str>> {
   if let EaslTree::Leaf(_, word) = ast {
-    Ok(word)
+    Ok(word.into())
   } else {
     err(ExpectedLeaf, SourceTrace::empty())
   }
@@ -18,7 +20,7 @@ pub fn read_leaf(ast: EaslTree) -> CompileResult<String> {
 
 pub fn read_type_annotated_name(
   ast: EaslTree,
-) -> CompileResult<(String, EaslTree)> {
+) -> CompileResult<(Rc<str>, EaslTree)> {
   if let EaslTree::Inner(
     (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
     mut children,
@@ -27,7 +29,7 @@ pub fn read_type_annotated_name(
     let type_ast = children.remove(1);
     let name_ast = children.remove(0);
     if let EaslTree::Leaf(_, name) = name_ast {
-      Ok((name, type_ast))
+      Ok((name.into(), type_ast))
     } else {
       err(ExpectedTypeAnnotatedName, position.into())
     }
@@ -36,9 +38,9 @@ pub fn read_type_annotated_name(
   }
 }
 
-pub fn compile_word(word: String) -> String {
-  if &word == "-" {
-    word
+pub fn compile_word(word: Rc<str>) -> String {
+  if &*word == "-" {
+    word.to_string()
   } else {
     word.replace("-", "_")
   }

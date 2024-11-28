@@ -34,19 +34,22 @@ fn main() {
     "array",
     "argument_metadata",
     "texture",
+    "cast",
   ] {
-    println!("compiling {filename}...");
+    print!("compiling {filename}...   ");
+    let t = std::time::Instant::now();
     let easl_source = fs::read_to_string(&format!("./data/{filename}.easl"))
       .expect(&format!("Unable to read {filename}.easl"));
     match compile_easl_to_wgsl(&easl_source) {
       Ok(wgsl) => {
+        println!("{:?}", t.elapsed());
         fs::write(&format!("./out/{filename}.wgsl"), wgsl)
           .expect("Unable to write file");
       }
       Err(e) => {
         fs::write(&format!("./out/_failure.txt"), format!("{e:#?}"))
           .expect("Unable to write file");
-        println!("   failed!\n");
+        println!("failed!\n");
       }
     }
   }

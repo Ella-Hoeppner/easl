@@ -1,6 +1,6 @@
 use core::fmt::Debug;
-use sse::{document::DocumentPosition, syntax::EncloserOrOperator};
-use std::{any, str::pattern::Pattern};
+use sse::syntax::EncloserOrOperator;
+use std::{rc::Rc, str::pattern::Pattern};
 
 use crate::{
   compiler::{
@@ -120,7 +120,7 @@ pub enum SwizzleField {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Accessor {
-  Field(String),
+  Field(Rc<str>),
   Swizzle(Vec<SwizzleField>),
   ArrayIndex(Box<TypedExp>),
 }
@@ -137,9 +137,10 @@ pub fn swizzle_accessor_typestate(
   };
   if let TypeState::Known(accessed_type) = accessed_typestate {
     if let Type::Struct(s) = accessed_type {
-      if &s.name != "vec" {
-        TypeState::Known(Type::Struct(vec_struct.fill_generics_ordered(vec![
-          match &s.fields[0].field_type {
+      if &*s.name != "vec" {
+        TypeState::Known(Type::Struct(AbstractStruct::fill_generics_ordered(
+          vec_struct.into(),
+          vec![match &s.fields[0].field_type {
             TypeState::UnificationVariable(uvar) => {
               TypeState::UnificationVariable(uvar.clone())
             }
@@ -147,8 +148,8 @@ pub fn swizzle_accessor_typestate(
               TypeState::Known(inner_type.clone())
             }
             _ => panic!("1???? {:?} ", s.fields[0].field_type),
-          },
-        ])))
+          }],
+        )))
       } else {
         panic!("2???")
       }
@@ -174,9 +175,9 @@ pub fn swizzle_accessed_possibilities(fields: &Vec<SwizzleField>) -> TypeState {
       .iter()
       .take(3.min(5 - max_accessed_index))
       .map(|name| {
-        Type::Struct(
-          get_builtin_struct(name).fill_generics_with_unification_variables(),
-        )
+        Type::Struct(AbstractStruct::fill_generics_with_unification_variables(
+          get_builtin_struct(name).into(),
+        ))
       })
       .collect::<Vec<Type>>(),
   )
@@ -185,7 +186,7 @@ pub fn swizzle_accessed_possibilities(fields: &Vec<SwizzleField>) -> TypeState {
 }
 
 impl Accessor {
-  pub fn new(name: String) -> Self {
+  pub fn new(name: Rc<str>) -> Self {
     let chars: Vec<char> = name.chars().collect();
     (chars.len() >= 2 && chars.len() <= 4)
       .then(|| {
@@ -205,9 +206,9 @@ impl Accessor {
       .map(|indeces| Self::Swizzle(indeces))
       .unwrap_or(Accessor::Field(name))
   }
-  pub fn compile(self) -> String {
+  pub fn compile(self) -> Rc<str> {
     match self {
-      Accessor::Field(field_name) => format!(".{field_name}"),
+      Accessor::Field(field_name) => format!(".{field_name}").into(),
       Accessor::Swizzle(field_indeces) => std::iter::once(".")
         .chain(
           field_indeces
@@ -215,11 +216,13 @@ impl Accessor {
             .map(|index| ["x", "y", "z", "w"][index as usize]),
         )
         .collect::<Vec<&str>>()
-        .join(""),
+        .join("")
+        .into(),
       Accessor::ArrayIndex(exp) => format!(
         "[{}]",
         exp.compile(ExpressionCompilationPosition::InnerExpression)
-      ),
+      )
+      .into(),
     }
   }
 }
@@ -227,20 +230,20 @@ impl Accessor {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Wildcard,
-  Name(String),
+  Name(Rc<str>),
   NumberLiteral(Number),
   BooleanLiteral(bool),
-  Function(Vec<String>, Box<Exp<D>>),
+  Function(Vec<Rc<str>>, Box<Exp<D>>),
   Application(Box<Exp<D>>, Vec<Exp<D>>),
   Access(Accessor, Box<Exp<D>>),
-  Let(Vec<(String, VariableKind, Exp<D>)>, Box<Exp<D>>),
+  Let(Vec<(Rc<str>, VariableKind, Exp<D>)>, Box<Exp<D>>),
   Match(Box<Exp<D>>, Vec<(Exp<D>, Exp<D>)>),
   Block {
     expressions: Vec<Exp<D>>,
     bracketed: bool,
   },
   ForLoop {
-    increment_variable_name: String,
+    increment_variable_name: Rc<str>,
     increment_variable_type: Type,
     increment_variable_initial_value_expression: Box<Exp<D>>,
     continue_condition_expression: Box<Exp<D>>,
@@ -276,12 +279,12 @@ pub type TypedExp = Exp<TypeState>;
 
 pub fn arg_list_and_return_type_from_easl_tree(
   tree: EaslTree,
-  structs: &Vec<AbstractStruct>,
-  aliases: &Vec<(String, AbstractStruct)>,
-  generic_args: &Vec<String>,
+  structs: &Vec<Rc<AbstractStruct>>,
+  aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+  generic_args: &Vec<Rc<str>>,
 ) -> CompileResult<(
   SourceTrace,
-  Vec<String>,
+  Vec<Rc<str>>,
   Vec<AbstractType>,
   Vec<Option<Metadata>>,
   AbstractType,
@@ -325,14 +328,14 @@ pub fn arg_list_and_return_type_from_easl_tree(
           )?;
           let (arg_metadata, arg_name_ast) = extract_metadata(arg_name_ast)?;
           if let EaslTree::Leaf(_, arg_name) = arg_name_ast {
-            Ok(((t, arg_metadata), arg_name))
+            Ok(((t, arg_metadata), arg_name.into()))
           } else {
             err(InvalidArgumentName, source_path.clone())
           }
         })
         .collect::<CompileResult<(
           (Vec<AbstractType>, Vec<Option<Metadata>>),
-          Vec<String>,
+          Vec<Rc<str>>,
         )>>()?;
       Ok((
         source_path,
@@ -364,11 +367,11 @@ impl TypedExp {
     source_trace: SourceTrace,
     body_trees: Vec<EaslTree>,
     return_type: TypeState,
-    arg_names: Vec<String>,
+    arg_names: Vec<Rc<str>>,
     arg_types: Vec<(TypeState, Vec<TypeConstraint>)>,
-    structs: &Vec<AbstractStruct>,
-    aliases: &Vec<(String, AbstractStruct)>,
-    skolems: &Vec<String>,
+    structs: &Vec<Rc<AbstractStruct>>,
+    aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    skolems: &Vec<Rc<str>>,
   ) -> CompileResult<Self> {
     let mut body_exps = body_trees
       .into_iter()
@@ -409,42 +412,43 @@ impl TypedExp {
   }
   pub fn try_from_easl_tree(
     tree: EaslTree,
-    structs: &Vec<AbstractStruct>,
-    aliases: &Vec<(String, AbstractStruct)>,
-    skolems: &Vec<String>,
+    structs: &Vec<Rc<AbstractStruct>>,
+    aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    skolems: &Vec<Rc<str>>,
     ctx: SyntaxTreeContext,
   ) -> CompileResult<Self> {
     Ok(match tree {
       EaslTree::Leaf(position, leaf) => {
+        let leaf: Rc<str> = leaf.into();
         let source_trace: SourceTrace = position.into();
-        if leaf == "break" {
+        if &*leaf == "break" {
           Exp {
             kind: ExpKind::Break,
             data: Known(Type::None),
             source_trace,
           }
-        } else if leaf == "continue" {
+        } else if &*leaf == "continue" {
           Exp {
             kind: ExpKind::Continue,
             data: Known(Type::None),
             source_trace,
           }
-        } else if leaf == "discard" {
+        } else if &*leaf == "discard" {
           Exp {
             kind: ExpKind::Discard,
             data: TypeState::fresh_unification_variable(),
             source_trace,
           }
-        } else if leaf == "true" || leaf == "false" {
+        } else if &*leaf == "true" || &*leaf == "false" {
           Exp {
-            kind: ExpKind::BooleanLiteral(leaf == "true"),
+            kind: ExpKind::BooleanLiteral(&*leaf == "true"),
             data: Known(Type::Bool),
             source_trace,
           }
         } else if let Some(num_exp) = parse_number(&leaf, source_trace.clone())
         {
           num_exp
-        } else if leaf == "_".to_string() {
+        } else if &*leaf == "_".to_string() {
           Exp {
             kind: ExpKind::Wildcard,
             data: Unknown,
@@ -455,13 +459,13 @@ impl TypedExp {
           if let Some(root_name) = segments.next() {
             segments.fold(
               Exp {
-                kind: ExpKind::Name(root_name.to_string()),
+                kind: ExpKind::Name(root_name.into()),
                 data: Unknown,
                 source_trace: source_trace.clone(),
               },
               |inner_expression, accessor_name| Exp {
                 kind: ExpKind::Access(
-                  Accessor::new(accessor_name.to_string()),
+                  Accessor::new(accessor_name.into()),
                   Box::new(inner_expression),
                 ),
                 data: Unknown,
@@ -501,7 +505,8 @@ impl TypedExp {
                               first_child_name
                                 .chars()
                                 .skip(1)
-                                .collect::<String>(),
+                                .collect::<String>()
+                                .into(),
                             ),
                             Box::new(Self::try_from_easl_tree(
                               children_iter.next().unwrap(),
@@ -609,11 +614,11 @@ impl TypedExp {
                                   EaslTree::Leaf(position, name) => {
                                     let source_trace = position.clone().into();
                                     bindings.push((
-                                      name,
+                                      name.into(),
                                       match name_metadata {
                                         None => VariableKind::Let,
                                         Some(Metadata::Singular(tag)) => {
-                                          match tag.as_str() {
+                                          match &*tag {
                                             "var" => VariableKind::Var,
                                             _ => {
                                               return err(
@@ -771,7 +776,7 @@ impl TypedExp {
                                 if let EaslTree::Leaf(_, name) =
                                   var_name_subtree
                                 {
-                                  name
+                                  name.into()
                                 } else {
                                   panic!()
                                 },
@@ -1079,7 +1084,7 @@ impl TypedExp {
       children_untyped
     }
   }
-  pub fn validate_match_blocks(&mut self) -> CompileResult<()> {
+  pub fn validate_match_blocks(&self) -> CompileResult<()> {
     Ok(()) // todo!
   }
   pub fn propagate_types(&mut self, ctx: &mut Context) -> CompileResult<bool> {
@@ -1111,7 +1116,7 @@ impl TypedExp {
         ctx.push_enclosing_function_type(self.data.clone());
         let changed = if let TypeState::Known(f_type) = &mut self.data {
           let (name, arg_count, arg_type_states, return_type_state): (
-            Option<String>,
+            Option<Rc<str>>,
             usize,
             &Vec<TypeState>,
             &mut TypeState,
@@ -1638,7 +1643,7 @@ impl TypedExp {
     match &self.kind {
       Application(f, args) => {
         if let ExpKind::Name(f_name) = &f.kind {
-          if ASSIGNMENT_OPS.contains(&f_name.as_str()) {
+          if ASSIGNMENT_OPS.contains(&&**f_name) {
             let mut var = &args[0];
             loop {
               if let ExpKind::Access(_, inner_exp) = &var.kind {
@@ -1697,7 +1702,7 @@ impl TypedExp {
       _ => Ok(()),
     }
   }
-  pub fn replace_skolems(&mut self, skolems: &Vec<(String, Type)>) {
+  pub fn replace_skolems(&mut self, skolems: &Vec<(Rc<str>, Type)>) {
     if let Known(t) = &mut self.data {
       t.replace_skolems(skolems)
     }
@@ -1754,9 +1759,9 @@ impl TypedExp {
               FunctionImplementationKind::Builtin => {
                 std::mem::swap(
                   f_name,
-                  &mut (f_name == "vec2"
-                    || f_name == "vec3"
-                    || f_name == "vec4")
+                  &mut (&**f_name == "vec2"
+                    || &**f_name == "vec3"
+                    || &**f_name == "vec4")
                     .then(|| {
                       if let TypeState::Known(Type::Struct(s)) = &self.data {
                         compiled_vec_name(
@@ -1783,9 +1788,11 @@ impl TypedExp {
                       self.source_trace.clone(),
                     )
                   {
+                    let monomorphized_struct = Rc::new(monomorphized_struct);
                     std::mem::swap(
                       f_name,
-                      &mut monomorphized_struct.concretized_name(
+                      &mut AbstractStruct::concretized_name(
+                        monomorphized_struct.clone(),
                         &base_ctx.structs,
                         self.source_trace.clone(),
                       )?,
@@ -1794,13 +1801,15 @@ impl TypedExp {
                       std::mem::swap(
                         typestate,
                         &mut TypeState::Known(Type::Struct(
-                          monomorphized_struct
-                            .clone()
-                            .fill_generics_ordered(vec![]),
+                          AbstractStruct::fill_generics_ordered(
+                            monomorphized_struct.clone(),
+                            vec![],
+                          ),
                         )),
                       )
                     });
-                    new_ctx.add_monomorphized_struct(monomorphized_struct);
+                    new_ctx
+                      .add_monomorphized_struct(monomorphized_struct.into());
                   }
                 }
               }
@@ -1815,7 +1824,7 @@ impl TypedExp {
                       f.borrow().body.source_trace.clone(),
                     )?;
                   std::mem::swap(f_name, &mut monomorphized.name.clone());
-                  new_ctx.add_abstract_function(monomorphized);
+                  new_ctx.add_abstract_function(Rc::new(monomorphized));
                 }
               }
             }

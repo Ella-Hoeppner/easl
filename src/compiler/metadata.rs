@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use sse::syntax::EncloserOrOperator::{self, *};
 
 use crate::compiler::util::compile_word;
@@ -8,14 +10,14 @@ use super::error::{err, CompileErrorKind::*, CompileResult, SourceTrace};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Metadata {
-  Singular(String),
-  Map(Vec<(String, String)>),
+  Singular(Rc<str>),
+  Map(Vec<(Rc<str>, Rc<str>)>),
 }
 
 impl Metadata {
   pub fn from_metadata_tree(ast: EaslTree) -> CompileResult<Self> {
     match ast {
-      EaslTree::Leaf(_, singular) => Ok(Self::Singular(singular)),
+      EaslTree::Leaf(_, singular) => Ok(Self::Singular(singular.into())),
       EaslTree::Inner((position, Encloser(Curly)), map_fields) => {
         let source_trace: SourceTrace = position.into();
         if map_fields.len() % 2 == 0 {
@@ -24,28 +26,28 @@ impl Metadata {
               .into_iter()
               .map(|field| {
                 if let EaslTree::Leaf(_, field_string) = field {
-                  Ok(field_string)
+                  Ok(field_string.into())
                 } else {
                   err(
-                    InvalidMetadata("fields must all be leaves".to_string()),
+                    InvalidMetadata("fields must all be leaves".into()),
                     source_trace.clone(),
                   )
                 }
               })
-              .collect::<CompileResult<Vec<String>>>()?
+              .collect::<CompileResult<Vec<Rc<str>>>>()?
               .chunks(2)
               .map(|arr| (arr[0].clone(), arr[1].clone()))
               .collect(),
           ))
         } else {
           err(
-            InvalidMetadata("fields must all be leaves".to_string()),
+            InvalidMetadata("fields must all be leaves".into()),
             source_trace,
           )
         }
       }
       _ => err(
-        InvalidMetadata("fields must all be leaves".to_string()),
+        InvalidMetadata("fields must all be leaves".into()),
         ast.position().clone().into(),
       ),
     }

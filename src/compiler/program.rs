@@ -24,6 +24,7 @@ use super::{
   expression::TypedExp,
   functions::{FunctionImplementationKind, TopLevelFunction},
   macros::{macroexpand, Macro},
+  structs::AbstractStruct,
   types::Context,
   vars::TopLevelVar,
 };
@@ -45,7 +46,7 @@ impl Program {
       .iter()
       .cloned()
       .map(|tree| macroexpand(tree, &macros))
-      .collect::<Result<Vec<EaslTree>, (SourceTrace, String)>>()
+      .collect::<Result<Vec<EaslTree>, (SourceTrace, Rc<str>)>>()
       .map_err(|(source_trace, err_str)| {
         CompileError::new(MacroError(err_str), source_trace)
       })?;
@@ -71,7 +72,7 @@ impl Program {
               match struct_name {
                 EaslTree::Leaf(_, struct_name) => {
                   untyped_structs.push(UntypedStruct::from_field_trees(
-                    struct_name.clone(),
+                    struct_name.clone().into(),
                     vec![],
                     children_iter.cloned().collect(),
                     source_trace,
@@ -85,12 +86,12 @@ impl Program {
                   let mut signature_leaves = signature_children
                     .into_iter()
                     .map(|child| match child {
-                      EaslTree::Leaf(_, name) => Ok(name.clone()),
+                      EaslTree::Leaf(_, name) => Ok(name.clone().into()),
                       _ => {
                         err(InvalidStructName, child.position().clone().into())
                       }
                     })
-                    .collect::<CompileResult<Vec<String>>>()?
+                    .collect::<CompileResult<Vec<Rc<str>>>>()?
                     .into_iter();
                   if let Some(struct_name) = signature_leaves.next() {
                     if signature_leaves.is_empty() {
@@ -130,15 +131,19 @@ impl Program {
         );
       }
     }
-    let mut structs = built_in_structs();
-    let mut struct_names: Vec<String> =
+    let mut structs: Vec<Rc<AbstractStruct>> =
+      built_in_structs().into_iter().map(|s| Rc::new(s)).collect();
+    let mut struct_names: Vec<Rc<str>> =
       untyped_structs.iter().map(|s| s.name.clone()).collect();
     struct_names.append(&mut structs.iter().map(|s| s.name.clone()).collect());
     // todo! in order for this to reliably work when structs contain one
     // another, I need to topologically sort untyped_structs before this loop
     while let Some(untyped_struct) = untyped_structs.pop() {
-      structs
-        .push(untyped_struct.assign_types(&structs, &built_in_type_aliases())?);
+      structs.push(
+        untyped_struct
+          .assign_types(&structs, &built_in_type_aliases())?
+          .into(),
+      );
     }
     let mut global_context =
       Context::default_global().with_structs(structs.clone());
@@ -168,18 +173,18 @@ impl Program {
                     attribute_asts,
                   ) = attributes_ast
                   {
-                    let attributes: Vec<String> = attribute_asts
+                    let attributes: Vec<Rc<str>> = attribute_asts
                       .into_iter()
                       .map(|attribute_ast| {
                         if let EaslTree::Leaf(_, attribute_string) =
                           attribute_ast
                         {
-                          Ok(attribute_string)
+                          Ok(attribute_string.into())
                         } else {
                           err(
                             InvalidTopLevelVar(
                               "Expected leaf for attribute, found inner form"
-                                .to_string(),
+                                .into(),
                             ),
                             position.clone().into(),
                           )
@@ -190,8 +195,7 @@ impl Program {
                   } else {
                     return err(
                       InvalidTopLevelVar(
-                        "Expected square-bracket enclosed attributes"
-                          .to_string(),
+                        "Expected square-bracket enclosed attributes".into(),
                       ),
                       first_child_source_trace,
                     );
@@ -199,9 +203,7 @@ impl Program {
                 }
                 _ => {
                   return err(
-                    InvalidTopLevelVar(
-                      "Invalid number of inner forms".to_string(),
-                    ),
+                    InvalidTopLevelVar("Invalid number of inner forms".into()),
                     first_child_source_trace,
                   )
                 }
@@ -259,7 +261,7 @@ impl Program {
               } else {
                 return err(
                   InvalidTopLevelVar(
-                    "Expected two forms inside \"def\"".to_string(),
+                    "Expected two forms inside \"def\"".into(),
                   ),
                   first_child_source_trace,
                 );
@@ -268,20 +270,20 @@ impl Program {
             "defn" => {
               let name_ast = children_iter.next().ok_or_else(|| {
                 CompileError::new(
-                  InvalidDefn("Missing Name".to_string()),
+                  InvalidDefn("Missing Name".into()),
                   parens_source_trace.clone(),
                 )
               })?;
               let (name, generic_args): (
-                String,
-                Vec<(String, Vec<TypeConstraint>)>,
+                Rc<str>,
+                Vec<(Rc<str>, Vec<TypeConstraint>)>,
               ) = match name_ast {
-                EaslTree::Leaf(_, name) => (name, vec![]),
+                EaslTree::Leaf(_, name) => (name.into(), vec![]),
                 EaslTree::Inner((_, Encloser(Parens)), subtrees) => {
                   let mut subtrees_iter = subtrees.into_iter();
                   if let Some(EaslTree::Leaf(_, name)) = subtrees_iter.next() {
                     (
-                      name,
+                      name.into(),
                       subtrees_iter
                         .map(|subtree| {
                           parse_generic_argument(
@@ -295,7 +297,7 @@ impl Program {
                     )
                   } else {
                     return err(
-                      InvalidDefn("Invalid name".to_string()),
+                      InvalidDefn("Invalid name".into()),
                       first_child_source_trace,
                     );
                   }
@@ -304,7 +306,7 @@ impl Program {
                   return err(
                     InvalidDefn(
                       "Expected name or parens with name and generic arguments"
-                        .to_string(),
+                        .into(),
                     ),
                     first_child_source_trace,
                   )
@@ -312,11 +314,11 @@ impl Program {
               };
               let arg_list_ast = children_iter.next().ok_or_else(|| {
                 CompileError::new(
-                  InvalidDefn("Missing Argument List".to_string()),
+                  InvalidDefn("Missing Argument List".into()),
                   parens_source_trace.clone(),
                 )
               })?;
-              let generic_arg_names: Vec<String> =
+              let generic_arg_names: Vec<Rc<str>> =
                 generic_args.iter().map(|(name, _)| name.clone()).collect();
               let (
                 source_path,
@@ -378,7 +380,7 @@ impl Program {
                       )?,
                   },
                 )));
-              global_context.abstract_functions.push(
+              global_context.abstract_functions.push(Rc::new(
                 AbstractFunctionSignature {
                   name,
                   generic_args,
@@ -386,7 +388,7 @@ impl Program {
                   return_type,
                   implementation,
                 },
-              );
+              ));
             }
             _ => {
               return err(
@@ -432,7 +434,7 @@ impl Program {
     }
     for f in self.global_context.abstract_functions.iter_mut() {
       if let FunctionImplementationKind::Composite(implementation) =
-        &mut f.implementation
+        &f.implementation
       {
         anything_changed |= implementation
           .borrow_mut()
@@ -459,7 +461,7 @@ impl Program {
   pub fn validate_match_blocks(mut self) -> CompileResult<Self> {
     for abstract_function in self.global_context.abstract_functions.iter_mut() {
       if let FunctionImplementationKind::Composite(implementation) =
-        &mut abstract_function.implementation
+        &abstract_function.implementation
       {
         (**implementation)
           .borrow_mut()
@@ -510,10 +512,10 @@ impl Program {
             .borrow_mut()
             .body
             .monomorphize(&self.global_context, &mut monomorphized_ctx)?;
-          let mut new_f = f.clone();
+          let mut new_f = (**f).clone();
           new_f.implementation =
             FunctionImplementationKind::Composite(implementation.clone());
-          monomorphized_ctx.add_abstract_function(new_f);
+          monomorphized_ctx.add_abstract_function(Rc::new(new_f));
         }
       }
     }
@@ -539,14 +541,15 @@ impl Program {
       .cloned()
       .filter(|s| !default_structs.contains(s))
     {
-      if let Some(compiled_struct) =
-        s.compile_if_non_generic(&self.global_context.structs)?
+      if let Some(compiled_struct) = Rc::unwrap_or_clone(s)
+        .compile_if_non_generic(&self.global_context.structs)?
       {
         wgsl += &compiled_struct;
         wgsl += "\n\n";
       }
     }
     for f in self.global_context.abstract_functions {
+      let f = Rc::unwrap_or_clone(f);
       if let FunctionImplementationKind::Composite(implementation) =
         f.implementation
       {

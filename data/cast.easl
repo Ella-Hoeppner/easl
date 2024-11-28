@@ -1,0 +1,264 @@
+(def char-inverse-aspect-ratio: f32 2.19166)
+(def char-glyph-rows: u32 16)
+(def char-glyph-cols: u32 16)
+
+@{group 0 binding 0} (var [uniform] dimensions: vec2f)
+@{group 0 binding 1} (var [uniform] mouse: vec2f)
+@{group 0 binding 2} (var [uniform] background-color: vec3f)
+@{group 0 binding 3} (var [uniform] time: f32)
+@{group 0 binding 4} (var [uniform] char-offsets: [256: vec4f])
+@{group 0 binding 5} (var char-tex: (Texture2D f32))
+@{group 0 binding 6} (var char-sampler: sampler)
+@{group 1 binding 0} (var [uniform] view: vec3f)
+
+(defn square [x: f32]: f32
+  (* x x))
+
+(defn view-adjustment [pos: vec2f]: vec2f
+  (-> pos
+      (- view.xy)
+      (/ view.z)))
+
+
+
+; Background
+
+(struct BackgroundVertexOutput
+  @{builtin position} vertex-pos: vec4f
+  @{location 0} screen-pos: vec2f)
+
+@vertex
+(defn background-vertex
+  [@{builtin vertex-index} vertex-index: u32]: BackgroundVertexOutput
+  (let [vertex-pos (vec4f (if (== vertex-index 0u)
+                            (vec2f 3. -1.)
+                            (if (== vertex-index 1u)
+                              (vec2f -1. 3.)
+                              (vec2f -1. -1.)))
+                          0.
+                          1.)]
+    (BackgroundVertexOutput vertex-pos
+                            (* vertex-pos.xy dimensions))))
+
+@fragment
+(defn background-fragment [in: BackgroundVertexOutput]: @{location 0} vec4f
+  (vec4f background-color
+         1.))
+
+
+
+; Forms
+
+(struct FormVertexInput
+  @{location 0} corner-position: vec2f
+  @{location 1} form-circle: vec3f
+  @{location 2} form-color: vec3f
+  @{location 3} form-thickness: f32)
+
+(struct FormVertexOutput
+  @{builtin position} vertex-pos: vec4f
+  @{location 0} pos-in-form: vec2f
+  @{location 1} form-color: vec3f
+  @{location 2} form-thickness: f32)
+
+@vertex
+(defn form-vertex [in: FormVertexInput]: FormVertexOutput
+  (FormVertexOutput
+   (vec4f (-> in.form-circle.xy
+              (+ (* in.corner-position
+                    in.form-circle.z))
+              view-adjustment
+              (/ dimensions))
+          0.
+          1.)
+   in.corner-position
+   in.form-color
+   in.form-thickness))
+
+@fragment
+(defn form-fragment-simple [in: FormVertexOutput]: @{location 0} vec4f
+  (let [center-dist (length in.pos-in-form)]
+    (if (|| (> center-dist 1.)
+            (< center-dist (- 1 in.form-thickness)))
+      discard
+      (vec4f (pow in.form-color
+                  (vec3f 2.4))
+             1.))))
+
+(defn ring-height [pos: vec2f
+                   thickness: f32
+                   should-discard: bool]: f32
+  (let [center-dist (length pos)
+        ring-middle (- 1 (* thickness 0.5))
+        ring-thickness (* thickness 0.5)
+        multiplier 1.]
+    (if (< thickness 1)
+      (let [@var sd-ring (/ (- (abs (- ring-middle center-dist))
+                               ring-thickness)
+                            ring-thickness)]
+        (when (> sd-ring 0)
+          (if should-discard
+            discard
+            (= sd-ring 0)))
+        (* multiplier
+           (* (sqrt (- 1 (square (+ 1 sd-ring))))
+              ring-thickness)))
+      (let [@var sd-ring (- center-dist 1)]
+        (when (> sd-ring 0)
+          (if should-discard
+            discard
+            (= sd-ring 0)))
+        (* multiplier
+           (pow (sqrt (- 1 (square (+ 1 sd-ring))))
+                0.125))))))
+
+(def diffuse-min: f32 0.15)
+(def diffuse-max: f32 0.8)
+(def specular-lower-threshold: f32 0.85)
+(def specular-upper-threshold: f32 0.975)
+(def specular-factor: f32 0.5)
+
+@fragment
+(defn form-fragment-fancy [in: FormVertexOutput]: @{location 0} vec4f
+  (let [height (ring-height in.pos-in-form
+                            in.form-thickness
+                            true)
+        height-gradient (vec2f (/ (- (ring-height (+ in.pos-in-form
+                                                     (vec2f 0.001 0.))
+                                                  in.form-thickness
+                                                  true)
+                                     height)
+                                  0.001)
+                               (/ (- (ring-height (+ in.pos-in-form
+                                                     (vec2f 0. 0.001))
+                                                  in.form-thickness
+                                                  true)
+                                     height)
+                                  0.001))
+          surface-normal (normalize (vec3f height-gradient 1.))
+          light-dir (normalize (vec3f -2. -1.5 3.))
+          light-dot (max 0. (dot surface-normal light-dir))
+          light-factor (+ (mix diffuse-min diffuse-max light-dot)
+                          (* specular-factor
+                             (smoothstep specular-lower-threshold
+                                         specular-upper-threshold
+                                         light-dot)))]
+    (vec4f (pow (* in.form-color light-factor)
+                (vec3f 2.4))
+           1.)))
+
+
+
+; Char
+
+(struct CharVertexInput
+  @{location 0} corner-position: vec2f
+  @{location 1} character-box: vec3f
+  @{location 2} character-code: u32)
+
+(struct CharVertexOutput
+  @{builtin position} vertex-pos: vec4f
+  @{location 0} pos-in-char: vec2f
+  @{location 1} character-coords: vec2u)
+
+@vertex
+(defn char-vertex [in: CharVertexInput
+                   @{builtin vertex-index} vertex-index: u32]: CharVertexOutput
+  (CharVertexOutput
+   (vec4 (-> (vec2f (+ in.character-box.x
+                                       (* in.corner-position.x
+                                          in.character-box.z))
+                                    (+ in.character-box.y
+                                       (* (* in.corner-position.y
+                                             in.character-box.z)
+                                          char-inverse-aspect-ratio)))
+             view-adjustment
+             (/ dimensions))
+         0.
+         1.)
+   (+ (.xy @[char-offsets in.character-code])
+      (* 0.5
+         (vec2f (+ 1. in.corner-position.x)
+                (- 1. in.corner-position.y))))
+   (vec2u (% in.character-code
+             char-glyph-cols)
+          (/ in.character-code
+             char-glyph-cols))))
+
+@fragment
+(defn char-fragment [in: CharVertexOutput]: @{location 0} vec4f
+  (let [char-code-debug-color (vec3f 0.
+                                     (/ (f32 (% in.character-coords.x
+                                                32u))
+                                        32.)
+                                     1.)
+        char-tex-alpha (if (|| (<= in.pos-in-char.x 0.)
+                               (|| (<= in.pos-in-char.y 0.)
+                                   (|| (>= in.pos-in-char.x 1.)
+                                       (>= in.pos-in-char.y 1.))))
+                         0.
+                         (.x (textureSample char-tex
+                                            char-sampler
+                                            (/ (+ (vec2f in.character-coords)
+                                                  (clamp in.pos-in-char
+                                                         (vec2f 0.)
+                                                         (vec2f 1.)))
+                                               16.))))]
+    (if (<= char-tex-alpha 0.5)
+      discard
+      (vec4f (vec3f 0.) 1.))))
+
+
+
+; UI
+
+(struct UIVertexInput
+  @{location 0} corner-position: vec2f
+  @{location 1} element-pos: vec2f
+  @{location 2} element-size: vec2f
+  @{location 3} element-radius: f32
+  @{location 4} element-thickness: f32
+  @{location 5} element-color: vec3f)
+
+(struct UIVertexOutput
+  @{builtin position} vertex-pos: vec4f
+  @{location 0} screen-pos: vec2f
+  @{location 1} element-pos: vec2f
+  @{location 2} element-size: vec2f
+  @{location 3} element-radius: f32
+  @{location 4} element-thickness: f32
+  @{location 5} element-color: vec3f)
+
+@vertex
+(defn ui-vertex [in: UIVertexInput
+                 @{builtin vertex-index} vertex-index: u32]: UIVertexOutput
+  (let [element-pos in.element-pos
+        element-size (/ in.element-size view.z)
+        element-radius (/ in.element-radius view.z)
+        screen-pos (+ element-pos
+                      (* in.corner-position
+                         (+ element-size
+                            element-radius)))
+        vertex-pos (vec4f (/ screen-pos dimensions)
+                          0.
+                          1.)]
+    (UIVertexOutput vertex-pos
+                    screen-pos
+                    element-pos
+                    element-size
+                    element-radius
+                    in.element-thickness
+                    in.element-color)))
+
+@fragment
+(defn ui-fragment [in: UIVertexOutput]: @{location 0} vec4f
+  (let [d (- (length (max (- (abs (- in.screen-pos in.element-pos))
+                             in.element-size)
+                          (vec2f 0.)))
+             in.element-radius)]
+    (if (|| (> d 0)
+            (< d (- in.element-thickness)))
+      discard
+      (vec4f (pow in.element-color
+                  (vec3f 2.4))
+             1.))))

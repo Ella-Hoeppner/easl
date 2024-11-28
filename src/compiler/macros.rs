@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::parse::EaslTree;
 
 use super::error::SourceTrace;
@@ -6,21 +8,21 @@ pub struct Macro(
   pub  Box<
     dyn Fn(
       EaslTree,
-    ) -> Result<Result<EaslTree, (SourceTrace, String)>, EaslTree>,
+    ) -> Result<Result<EaslTree, (SourceTrace, Rc<str>)>, EaslTree>,
   >,
 );
 
 pub fn macroexpand(
   tree: EaslTree,
   macros: &Vec<Macro>,
-) -> Result<EaslTree, (SourceTrace, String)> {
+) -> Result<EaslTree, (SourceTrace, Rc<str>)> {
   let new_tree = match tree {
     EaslTree::Inner(data, children) => EaslTree::Inner(
       data,
       children
         .into_iter()
         .map(|subtree| macroexpand(subtree, macros))
-        .collect::<Result<Vec<EaslTree>, (SourceTrace, String)>>()?,
+        .collect::<Result<Vec<EaslTree>, (SourceTrace, Rc<str>)>>()?,
     ),
     leaf => leaf,
   };

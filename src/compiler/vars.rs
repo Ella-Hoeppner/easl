@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::compiler::{
   expression::ExpressionCompilationPosition, types::VariableKind,
   util::compile_word,
@@ -9,9 +11,9 @@ use super::{
 
 #[derive(Debug, Clone)]
 pub struct TopLevelVar {
-  pub name: String,
+  pub name: Rc<str>,
   pub metadata: Option<Metadata>,
-  pub attributes: Vec<String>,
+  pub attributes: Vec<Rc<str>>,
   pub var: Variable,
   pub value: Option<TypedExp>,
   pub source_trace: SourceTrace,

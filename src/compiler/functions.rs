@@ -6,7 +6,7 @@ use super::{
   error::{err, CompileErrorKind::*, CompileResult, SourceTrace},
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
-  structs::TypeOrAbstractStruct,
+  structs::{AbstractStruct, TypeOrAbstractStruct},
   types::{Context, GenericOr, Type, TypeConstraint, TypeState},
   util::indent,
 };
@@ -28,8 +28,8 @@ pub enum FunctionImplementationKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractFunctionSignature {
-  pub name: String,
-  pub generic_args: Vec<(String, Vec<TypeConstraint>)>,
+  pub name: Rc<str>,
+  pub generic_args: Vec<(Rc<str>, Vec<TypeConstraint>)>,
   pub arg_types: Vec<GenericOr<TypeOrAbstractStruct>>,
   pub return_type: GenericOr<TypeOrAbstractStruct>,
   pub implementation: FunctionImplementationKind,
@@ -53,23 +53,27 @@ impl AbstractFunctionSignature {
     self
       .return_type
       .extract_generic_bindings(&return_type, &mut generic_bindings);
-    monomorphized.name = self.generic_args.iter().fold(
-      Ok(monomorphized.name),
-      |full_name: CompileResult<String>, (arg, bounds)| {
-        let generic_type = generic_bindings.get(arg).unwrap();
-        if let Some(unsatisfied_bound) = bounds
-          .iter()
-          .find(|constraint| !generic_type.satisfies_constraints(constraint))
-        {
-          err(
-            UnsatisfiedTypeConstraint(unsatisfied_bound.clone()),
-            source_trace.clone(),
-          )
-        } else {
-          full_name.map(|full_name| full_name + "_" + &generic_type.compile())
-        }
-      },
-    )?;
+    monomorphized.name = self
+      .generic_args
+      .iter()
+      .fold(
+        Ok(monomorphized.name.to_string()),
+        |full_name: CompileResult<String>, (arg, bounds)| {
+          let generic_type = generic_bindings.get(arg).unwrap();
+          if let Some(unsatisfied_bound) = bounds
+            .iter()
+            .find(|constraint| !generic_type.satisfies_constraints(constraint))
+          {
+            err(
+              UnsatisfiedTypeConstraint(unsatisfied_bound.clone()),
+              source_trace.clone(),
+            )
+          } else {
+            full_name.map(|full_name| full_name + "_" + &generic_type.compile())
+          }
+        },
+      )?
+      .into();
     monomorphized.generic_args = vec![];
     if let FunctionImplementationKind::Composite(monomorphized_fn) =
       &mut monomorphized.implementation
@@ -87,11 +91,11 @@ impl AbstractFunctionSignature {
     }
     Ok(monomorphized)
   }
-  pub fn concretize(&self) -> FunctionSignature {
+  pub fn concretize(f: Rc<Self>) -> FunctionSignature {
     let (generic_variables, generic_constraints): (
-      HashMap<String, TypeState>,
-      HashMap<String, Vec<TypeConstraint>>,
-    ) = self
+      HashMap<Rc<str>, TypeState>,
+      HashMap<Rc<str>, Vec<TypeConstraint>>,
+    ) = f
       .generic_args
       .iter()
       .map(|(name, bounds)| {
@@ -102,52 +106,55 @@ impl AbstractFunctionSignature {
       })
       .collect();
     FunctionSignature {
-      abstract_ancestor: Some(self.clone()),
-      arg_types: self
+      arg_types: f
         .arg_types
         .iter()
-        .cloned()
         .map(|t| match t {
           GenericOr::Generic(var_name) => (
             generic_variables
-              .get(&var_name)
+              .get(var_name)
               .expect("unrecognized generic")
               .clone(),
             generic_constraints
-              .get(&var_name)
+              .get(var_name)
               .expect("unrecognized generic")
               .clone(),
           ),
           GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => {
-            (TypeState::Known(t), vec![])
+            (TypeState::Known(t.clone()), vec![])
           }
           GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => (
-            TypeState::Known(Type::Struct(s.fill_generics(&generic_variables))),
+            TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
+              s.clone(),
+              &generic_variables,
+            ))),
             vec![],
           ),
         })
         .collect(),
-      return_type: match &self.return_type {
+      return_type: match &f.return_type {
         GenericOr::Generic(var_name) => generic_variables
           .get(var_name)
           .expect("unrecognized generic")
           .clone(),
         GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => {
-          TypeState::Known(Type::Struct(
-            s.clone().fill_generics(&generic_variables),
-          ))
+          TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
+            s.clone(),
+            &generic_variables,
+          )))
         }
         GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => {
           TypeState::Known(t.clone())
         }
       },
+      abstract_ancestor: Some(f),
     }
   }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionSignature {
-  pub abstract_ancestor: Option<AbstractFunctionSignature>,
+  pub abstract_ancestor: Option<Rc<AbstractFunctionSignature>>,
   pub arg_types: Vec<(TypeState, Vec<TypeConstraint>)>,
   pub return_type: TypeState,
 }
@@ -204,7 +211,7 @@ impl FunctionSignature {
       err(WrongArity(self.name()), source_trace)
     }
   }
-  pub fn name(&self) -> Option<String> {
+  pub fn name(&self) -> Option<Rc<str>> {
     self
       .abstract_ancestor
       .as_ref()
@@ -213,7 +220,7 @@ impl FunctionSignature {
 }
 
 pub struct BuiltInFunction {
-  pub name: String,
+  pub name: Rc<str>,
   pub signature: AbstractFunctionSignature,
 }
 
@@ -249,7 +256,7 @@ impl TopLevelFunction {
     Ok(format!(
       "{}fn {}({args}) -> {}{} {{{}\n}}",
       Metadata::compile_optional(self.metadata),
-      compile_word(name.to_string()),
+      compile_word(name.into()),
       Metadata::compile_optional(self.return_metadata),
       return_type.compile(),
       indent(body.compile(ExpressionCompilationPosition::Return))

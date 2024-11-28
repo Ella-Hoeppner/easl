@@ -5,7 +5,7 @@ use sse::{document::DocumentPosition, syntax::EncloserOrOperator};
 
 use crate::{
   compiler::error::{CompileError, CompileErrorKind},
-  parse::{Encloser, Operator, EaslTree},
+  parse::{EaslTree, Encloser, Operator},
 };
 
 use super::{
@@ -25,14 +25,14 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GenericOr<T> {
-  Generic(String),
+  Generic(Rc<str>),
   NonGeneric(T),
 }
 
 impl GenericOr<Type> {
   pub fn to_typestate(
     self,
-    generic_variables: &HashMap<String, TypeState>,
+    generic_variables: &HashMap<Rc<str>, TypeState>,
   ) -> TypeState {
     match self {
       GenericOr::Generic(name) => generic_variables
@@ -49,14 +49,14 @@ pub type AbstractType = GenericOr<TypeOrAbstractStruct>;
 impl AbstractType {
   pub fn from_easl_tree(
     tree: EaslTree,
-    structs: &Vec<AbstractStruct>,
-    aliases: &Vec<(String, AbstractStruct)>,
-    generic_args: &Vec<String>,
-    skolems: &Vec<String>,
+    structs: &Vec<Rc<AbstractStruct>>,
+    aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    generic_args: &Vec<Rc<str>>,
+    skolems: &Vec<Rc<str>>,
   ) -> CompileResult<Self> {
     match &tree {
       EaslTree::Leaf(_, type_name) => Ok(Self::from_name(
-        type_name.clone(),
+        type_name.as_str().into(),
         tree.position().clone(),
         structs,
         aliases,
@@ -70,7 +70,7 @@ impl AbstractType {
         let mut children_iter = children.into_iter();
         if let Some(EaslTree::Leaf(position, type_name)) = children_iter.next()
         {
-          if let Some(s) = structs.iter().find(|s| s.name == *type_name) {
+          if let Some(s) = structs.iter().find(|s| &*s.name == *type_name) {
             let struct_generic_args = children_iter
               .map(|t| {
                 Ok(Self::from_easl_tree(
@@ -83,12 +83,15 @@ impl AbstractType {
               })
               .collect::<CompileResult<Vec<Self>>>()?;
             Ok(AbstractType::NonGeneric(
-              TypeOrAbstractStruct::AbstractStruct(
-                s.clone().fill_abstract_generics(struct_generic_args),
-              ),
+              TypeOrAbstractStruct::AbstractStruct(Rc::new(
+                (**s).clone().fill_abstract_generics(struct_generic_args),
+              )),
             ))
           } else {
-            err(InvalidTypeName(type_name.clone()), position.clone().into())
+            err(
+              InvalidTypeName(type_name.clone().into()),
+              position.clone().into(),
+            )
           }
         } else {
           err(InvalidType(tree.clone()), position.clone().into())
@@ -98,15 +101,15 @@ impl AbstractType {
     }
   }
   pub fn from_name(
-    name: String,
+    name: Rc<str>,
     position: DocumentPosition,
-    structs: &Vec<AbstractStruct>,
-    aliases: &Vec<(String, AbstractStruct)>,
-    generic_args: &Vec<String>,
-    skolems: &Vec<String>,
+    structs: &Vec<Rc<AbstractStruct>>,
+    aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    generic_args: &Vec<Rc<str>>,
+    skolems: &Vec<Rc<str>>,
   ) -> CompileResult<Self> {
     Ok(if generic_args.contains(&name) {
-      GenericOr::Generic(name)
+      GenericOr::Generic(name.into())
     } else {
       GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
         name, position, structs, aliases, skolems,
@@ -115,23 +118,26 @@ impl AbstractType {
   }
   pub fn from_ast(
     ast: EaslTree,
-    structs: &Vec<AbstractStruct>,
-    aliases: &Vec<(String, AbstractStruct)>,
-    generic_args: &Vec<String>,
-    skolems: &Vec<String>,
+    structs: &Vec<Rc<AbstractStruct>>,
+    aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    generic_args: &Vec<Rc<str>>,
+    skolems: &Vec<Rc<str>>,
   ) -> CompileResult<Self> {
     match ast {
-      EaslTree::Leaf(position, leaf) => Ok(if generic_args.contains(&leaf) {
-        GenericOr::Generic(leaf)
-      } else {
-        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
-          leaf,
-          position.clone(),
-          structs,
-          aliases,
-          skolems,
-        )?))
-      }),
+      EaslTree::Leaf(position, leaf) => {
+        let leaf_rc: Rc<str> = leaf.into();
+        Ok(if generic_args.contains(&leaf_rc) {
+          GenericOr::Generic(leaf_rc)
+        } else {
+          GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
+            leaf_rc,
+            position.clone(),
+            structs,
+            aliases,
+            skolems,
+          )?))
+        })
+      }
       EaslTree::Inner(
         (position, EncloserOrOperator::Encloser(Encloser::Parens)),
         children,
@@ -145,10 +151,10 @@ impl AbstractType {
           };
         let generic_struct = structs
           .iter()
-          .find(|s| s.name == generic_struct_name)
+          .find(|s| &*s.name == generic_struct_name.as_str())
           .ok_or_else(|| {
             CompileError::new(
-              NoStructNamed(generic_struct_name),
+              NoStructNamed(generic_struct_name.into()),
               position.into(),
             )
           })?
@@ -159,7 +165,10 @@ impl AbstractType {
           })
           .collect::<CompileResult<Vec<_>>>()?;
         Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
-          generic_struct.fill_abstract_generics(generic_args),
+          Rc::new(
+            Rc::unwrap_or_clone(generic_struct)
+              .fill_abstract_generics(generic_args),
+          ),
         )))
       }
       EaslTree::Inner(
@@ -209,28 +218,33 @@ impl AbstractType {
   }
   pub fn concretize(
     &self,
-    structs: &Vec<AbstractStruct>,
-    skolems: &Vec<String>,
+    structs: &Vec<Rc<AbstractStruct>>,
+    skolems: &Vec<Rc<str>>,
     source_trace: SourceTrace,
   ) -> CompileResult<Type> {
     match self {
       GenericOr::Generic(name) => {
         if skolems.contains(name) {
-          Ok(Type::Skolem(name.clone()))
+          Ok(Type::Skolem(Rc::clone(name)))
         } else {
-          err(UnrecognizedGeneric(name.clone()), source_trace)
+          err(UnrecognizedGeneric(name.clone().into()), source_trace)
         }
       }
-      GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => Ok(
-        Type::Struct(s.concretize(structs, skolems, source_trace)?),
-      ),
+      GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => {
+        Ok(Type::Struct(AbstractStruct::concretize(
+          s.clone(),
+          structs,
+          skolems,
+          source_trace,
+        )?))
+      }
       GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => Ok(t.clone()),
     }
   }
   pub fn extract_generic_bindings(
     &self,
     concrete_type: &Type,
-    generic_bindings: &mut HashMap<String, Type>,
+    generic_bindings: &mut HashMap<Rc<str>, Type>,
   ) {
     match self {
       GenericOr::Generic(generic) => {
@@ -257,18 +271,19 @@ impl AbstractType {
   }
   pub fn rename_generic(self, old_name: &str, new_name: &str) -> Self {
     match self {
-      GenericOr::Generic(name) => GenericOr::Generic(if name == old_name {
-        new_name.to_string()
+      GenericOr::Generic(name) => GenericOr::Generic(if &*name == old_name {
+        new_name.into()
       } else {
         name
       }),
-      GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(mut s)) => {
+      GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => {
+        let mut s = Rc::unwrap_or_clone(s);
         s.generic_args = s
           .generic_args
           .into_iter()
           .map(|name| {
-            if name == old_name {
-              new_name.to_string()
+            if &*name == old_name {
+              new_name.into()
             } else {
               name
             }
@@ -282,7 +297,7 @@ impl AbstractType {
             f
           })
           .collect();
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s))
+        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(Rc::new(s)))
       }
       other => other,
     }
@@ -298,12 +313,12 @@ pub enum Type {
   Bool,
   Struct(Struct),
   Function(Box<FunctionSignature>),
-  Skolem(String),
+  Skolem(Rc<str>),
   Array(u32, Box<TypeState>),
 }
 impl Type {
   pub fn satisfies_constraints(&self, constraint: &TypeConstraint) -> bool {
-    match constraint.name.as_str() {
+    match &*constraint.name {
       "Scalar" => {
         *self == Type::I32 || *self == Type::F32 || *self == Type::U32
       }
@@ -312,13 +327,13 @@ impl Type {
   }
   pub fn from_easl_tree(
     tree: EaslTree,
-    structs: &Vec<AbstractStruct>,
-    aliases: &Vec<(String, AbstractStruct)>,
-    skolems: &Vec<String>,
+    structs: &Vec<Rc<AbstractStruct>>,
+    aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    skolems: &Vec<Rc<str>>,
   ) -> CompileResult<Self> {
     match tree {
       EaslTree::Leaf(position, type_name) => {
-        Type::from_name(type_name, position, structs, aliases, skolems)
+        Type::from_name(type_name.into(), position, structs, aliases, skolems)
       }
       EaslTree::Inner(
         (position, EncloserOrOperator::Encloser(Encloser::Parens)),
@@ -348,8 +363,11 @@ impl Type {
                 ))
               })
               .collect::<CompileResult<Vec<TypeState>>>()?;
-            if let Some(s) = structs.iter().find(|s| s.name == struct_name) {
-              Ok(Type::Struct(s.clone().fill_generics_ordered(generic_args)))
+            if let Some(s) = structs.iter().find(|s| &*s.name == struct_name) {
+              Ok(Type::Struct(AbstractStruct::fill_generics_ordered(
+                s.clone(),
+                generic_args,
+              )))
             } else {
               return err(UnknownStructName, source_trace);
             }
@@ -423,14 +441,14 @@ impl Type {
       .collect()
   }
   pub fn from_name(
-    name: String,
+    name: Rc<str>,
     source_position: DocumentPosition,
-    structs: &Vec<AbstractStruct>,
-    type_aliases: &Vec<(String, AbstractStruct)>,
-    skolems: &Vec<String>,
+    structs: &Vec<Rc<AbstractStruct>>,
+    type_aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    skolems: &Vec<Rc<str>>,
   ) -> CompileResult<Self> {
     use Type::*;
-    Ok(match name.as_str() {
+    Ok(match &*name {
       "F32" | "f32" => F32,
       "I32" | "i32" => I32,
       "U32" | "u32" => U32,
@@ -439,12 +457,16 @@ impl Type {
         if skolems.contains(&name) {
           Skolem(name)
         } else if let Some(s) = structs.iter().find(|s| s.name == name) {
-          Struct(s.clone().fill_generics_with_unification_variables())
+          Struct(AbstractStruct::fill_generics_with_unification_variables(
+            s.clone(),
+          ))
         } else if let Some(s) = type_aliases
           .iter()
           .find_map(|(alias, s)| (*alias == name).then(|| s))
         {
-          Struct(s.clone().fill_generics_with_unification_variables())
+          Struct(AbstractStruct::fill_generics_with_unification_variables(
+            s.clone(),
+          ))
         } else {
           return err(UnrecognizedTypeName(name), source_position.into());
         }
@@ -458,7 +480,7 @@ impl Type {
       Type::I32 => "i32".to_string(),
       Type::U32 => "u32".to_string(),
       Type::Bool => "bool".to_string(),
-      Type::Struct(s) => match s.name.as_str() {
+      Type::Struct(s) => match &*s.name {
         "Texture2D" => format!(
           "texture_2d<{}>",
           s.fields[0].field_type.unwrap_known().compile()
@@ -476,7 +498,7 @@ impl Type {
       }
     }
   }
-  pub fn replace_skolems(&mut self, skolems: &Vec<(String, Type)>) {
+  pub fn replace_skolems(&mut self, skolems: &Vec<(Rc<str>, Type)>) {
     if let Type::Skolem(s) = &self {
       std::mem::swap(
         self,
@@ -550,10 +572,10 @@ pub fn extract_type_annotation_ast(
 
 pub fn extract_type_annotation(
   exp: EaslTree,
-  structs: &Vec<AbstractStruct>,
-  aliases: &Vec<(String, AbstractStruct)>,
-  generic_args: &Vec<String>,
-  skolems: &Vec<String>,
+  structs: &Vec<Rc<AbstractStruct>>,
+  aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+  generic_args: &Vec<Rc<str>>,
+  skolems: &Vec<Rc<str>>,
 ) -> CompileResult<(Option<AbstractType>, EaslTree)> {
   let (t, value) = extract_type_annotation_ast(exp)?;
   Ok((
@@ -900,14 +922,14 @@ impl Variable {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeConstraint {
-  name: String,
+  name: Rc<str>,
   args: Vec<AbstractType>,
 }
 
 impl TypeConstraint {
   pub fn scalar() -> Self {
     Self {
-      name: "Scalar".to_string(),
+      name: "Scalar".into(),
       args: vec![],
     }
   }
@@ -915,12 +937,15 @@ impl TypeConstraint {
 
 pub fn parse_type_bound(
   ast: EaslTree,
-  structs: &Vec<AbstractStruct>,
-  aliases: &Vec<(String, AbstractStruct)>,
-  generic_args: &Vec<String>,
+  structs: &Vec<Rc<AbstractStruct>>,
+  aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+  generic_args: &Vec<Rc<str>>,
 ) -> CompileResult<TypeConstraint> {
   match ast {
-    EaslTree::Leaf(_, name) => Ok(TypeConstraint { name, args: vec![] }),
+    EaslTree::Leaf(_, name) => Ok(TypeConstraint {
+      name: name.into(),
+      args: vec![],
+    }),
     EaslTree::Inner(
       (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
       children,
@@ -931,7 +956,7 @@ pub fn parse_type_bound(
         children_iter.next().ok_or_else(|| {
           CompileError::new(InvalidTypeBound, source_trace.clone())
         })? {
-        name
+        name.into()
       } else {
         return err(InvalidTypeBound, source_trace);
       };
@@ -954,19 +979,19 @@ pub fn parse_type_bound(
 
 pub fn parse_generic_argument(
   ast: EaslTree,
-  structs: &Vec<AbstractStruct>,
-  aliases: &Vec<(String, AbstractStruct)>,
-  generic_args: &Vec<String>,
-) -> CompileResult<(String, Vec<TypeConstraint>)> {
+  structs: &Vec<Rc<AbstractStruct>>,
+  aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+  generic_args: &Vec<Rc<str>>,
+) -> CompileResult<(Rc<str>, Vec<TypeConstraint>)> {
   match ast {
-    EaslTree::Leaf(_, generic_name) => Ok((generic_name, vec![])),
+    EaslTree::Leaf(_, generic_name) => Ok((generic_name.into(), vec![])),
     EaslTree::Inner(
       (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
       mut children,
     ) => {
       if children.len() < 2 {
         return err(
-          InvalidDefn("Invalid generic name".to_string()),
+          InvalidDefn("Invalid generic name".into()),
           position.into(),
         );
       }
@@ -977,7 +1002,7 @@ pub fn parse_generic_argument(
             (_, EncloserOrOperator::Encloser(Encloser::Square)),
             bound_children,
           ) => Ok((
-            generic_name,
+            generic_name.into(),
             bound_children
               .into_iter()
               .map(|child_ast| {
@@ -986,19 +1011,16 @@ pub fn parse_generic_argument(
               .collect::<CompileResult<_>>()?,
           )),
           other => Ok((
-            generic_name,
+            generic_name.into(),
             vec![parse_type_bound(other, structs, aliases, generic_args)?],
           )),
         }
       } else {
-        err(
-          InvalidDefn("Invalid generic name".to_string()),
-          position.into(),
-        )
+        err(InvalidDefn("Invalid generic name".into()), position.into())
       }
     }
     _ => err(
-      InvalidDefn("Invalid generic name".to_string()),
+      InvalidDefn("Invalid generic name".into()),
       ast.position().clone().into(),
     ),
   }
@@ -1006,10 +1028,10 @@ pub fn parse_generic_argument(
 
 #[derive(Debug, Clone)]
 pub struct Context {
-  pub structs: Vec<AbstractStruct>,
-  pub variables: HashMap<String, Vec<Variable>>,
-  pub abstract_functions: Vec<AbstractFunctionSignature>,
-  pub type_aliases: Vec<(String, AbstractStruct)>,
+  pub structs: Vec<Rc<AbstractStruct>>,
+  pub variables: HashMap<Rc<str>, Vec<Variable>>,
+  pub abstract_functions: Vec<Rc<AbstractFunctionSignature>>,
+  pub type_aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
   pub enclosing_function_types: Vec<TypeState>,
   pub top_level_vars: Vec<TopLevelVar>,
 }
@@ -1037,21 +1059,25 @@ impl Context {
   pub fn default_global() -> Self {
     Self::empty()
       .with_functions(built_in_functions())
-      .with_structs(built_in_structs())
+      .with_structs(
+        built_in_structs().into_iter().map(|s| Rc::new(s)).collect(),
+      )
       .with_type_aliases(built_in_type_aliases())
   }
   pub fn with_functions(
     mut self,
-    mut functions: Vec<AbstractFunctionSignature>,
+    functions: Vec<AbstractFunctionSignature>,
   ) -> Self {
-    self.abstract_functions.append(&mut functions);
+    self
+      .abstract_functions
+      .append(&mut functions.into_iter().map(|f| Rc::new(f)).collect());
     self.structs.dedup();
     self
   }
-  pub fn with_structs(mut self, mut structs: Vec<AbstractStruct>) -> Self {
+  pub fn with_structs(mut self, mut structs: Vec<Rc<AbstractStruct>>) -> Self {
     for s in &structs {
-      if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&s.name.as_str()) {
-        self.add_abstract_function(AbstractFunctionSignature {
+      if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&&*s.name) {
+        self.add_abstract_function(Rc::new(AbstractFunctionSignature {
           name: s.name.clone(),
           generic_args: s
             .generic_args
@@ -1067,7 +1093,7 @@ impl Context {
             TypeOrAbstractStruct::AbstractStruct(s.clone()),
           ),
           implementation: FunctionImplementationKind::Constructor,
-        });
+        }));
       }
     }
     self.structs.append(&mut structs);
@@ -1076,12 +1102,12 @@ impl Context {
   }
   pub fn with_type_aliases(
     mut self,
-    mut aliases: Vec<(String, AbstractStruct)>,
+    mut aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
   ) -> Self {
     self.type_aliases.append(&mut aliases);
     self
   }
-  pub fn add_monomorphized_struct(&mut self, s: AbstractStruct) {
+  pub fn add_monomorphized_struct(&mut self, s: Rc<AbstractStruct>) {
     if self
       .structs
       .iter()
@@ -1094,45 +1120,34 @@ impl Context {
       self.structs.push(s);
     }
   }
-  pub fn get_abstract_function_signatures(
-    &self,
-    name: &str,
-  ) -> Vec<AbstractFunctionSignature> {
-    self
-      .abstract_functions
-      .iter()
-      .filter(|f| f.name == name)
-      .cloned()
-      .collect()
-  }
   pub fn constrain_name_type(
     &mut self,
     name: &str,
     source_trace: SourceTrace,
     t: &mut TypeState,
   ) -> CompileResult<bool> {
-    let abstract_signatures = self.get_abstract_function_signatures(name);
+    let abstract_signatures: Vec<_> = self
+      .abstract_functions
+      .iter()
+      .filter(|f| &*f.name == name)
+      .map(|signature| {
+        Type::Function(Box::new(AbstractFunctionSignature::concretize(
+          signature.clone(),
+        )))
+      })
+      .collect();
     if abstract_signatures.is_empty() {
       t.mutually_constrain(
         self.get_typestate_mut(name, source_trace.clone())?,
         source_trace,
       )
     } else {
-      t.constrain(
-        TypeState::OneOf(
-          abstract_signatures
-            .iter()
-            .cloned()
-            .map(|signature| Type::Function(Box::new(signature.concretize())))
-            .collect(),
-        ),
-        source_trace,
-      )
+      t.constrain(TypeState::OneOf(abstract_signatures), source_trace)
     }
   }
   pub fn bind(&mut self, name: &str, v: Variable) {
     if !self.variables.contains_key(name) {
-      self.variables.insert(name.to_string(), vec![]);
+      self.variables.insert(name.into(), vec![]);
     }
     self.variables.get_mut(name).unwrap().push(v);
   }
@@ -1146,21 +1161,21 @@ impl Context {
   }
   pub fn add_abstract_function(
     &mut self,
-    signatures: AbstractFunctionSignature,
+    signature: Rc<AbstractFunctionSignature>,
   ) {
-    self.abstract_functions.push(signatures);
+    self.abstract_functions.push(signature);
   }
   pub fn is_bound(&self, name: &str) -> bool {
     self.variables.contains_key(name)
       || self
         .abstract_functions
         .iter()
-        .find(|f| f.name == name)
+        .find(|f| &*f.name == name)
         .is_some()
       || self
         .top_level_vars
         .iter()
-        .find(|top_level_var| top_level_var.name == name)
+        .find(|top_level_var| &*top_level_var.name == name)
         .is_some()
   }
   pub fn get_variable_kind(&self, name: &str) -> &VariableKind {
@@ -1171,25 +1186,17 @@ impl Context {
     name: &str,
     source_trace: SourceTrace,
   ) -> CompileResult<&mut TypeState> {
-    /*
-    .or_else(|| {
-      self
-        .top_level_vars
-        .iter_mut()
-        .find_map(|var| (var.name == name).then(|| &mut var.var_type))
-    }) */
     if let Some(var) = self.variables.get_mut(name) {
       Ok(&mut var.last_mut().unwrap().typestate)
     } else {
-      if let Some(top_level_var) =
-        self.top_level_vars.iter_mut().find(|var| var.name == name)
+      if let Some(top_level_var) = self
+        .top_level_vars
+        .iter_mut()
+        .find(|var| &*var.name == name)
       {
         Ok(&mut top_level_var.var.typestate)
       } else {
-        Err(CompileError::new(
-          UnboundName(name.to_string()),
-          source_trace,
-        ))
+        Err(CompileError::new(UnboundName(name.into()), source_trace))
       }
     }
   }

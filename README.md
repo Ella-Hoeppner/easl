@@ -16,6 +16,12 @@ Feature goals:
 
 ## todo
 ### steps to get to expressive parity with wgsl/glsl
+* optimize
+  * cast shaders take ~1 second to compile which is ridiculously slow. Should be like <10ms
+  * keep an `is_fully_typed` flag at every point in the expression tree, and in `propagate_types`, don't descend on any subexpressions that have the flag set to true. This should make the later loops of type inference hugely faster than the first, might help a ton with the current performance problems
+    * I guess this'll require changing `TypeState` to be a record with this `is_fully_typed` field, moving the existing `TypeState` implementation into a new `TypeStateKind`
+  * split `propagate_types` into two functions, one which happens only once, and one which gets called repeatedly. Much of the logic in `propagate_types` needs to happen once but is wasteful if done repeatedly
+
 * clean up/simplify type parsing, I've got `Type::from_easl_tree`, `AbstractType::from_easl_tree`, and `AbstractType::from_ast` that all seem like they have pretty overlapping functionality, probably don't need all three
 
 * allow type annotation on binding names in let blocks, e.g. `(let [x: f32 0] ...)` currently crashes because it can't handle the type annotation on `x`
