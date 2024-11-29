@@ -10,8 +10,8 @@ use crate::{
     metadata::extract_metadata,
     structs::UntypedStruct,
     types::{
-      parse_generic_argument, AbstractType, GenericOr, Type, TypeConstraint,
-      TypeState, Variable, VariableKind,
+      parse_generic_argument, AbstractType, ExpTypeInfo, GenericOr, Type,
+      TypeConstraint, TypeState, Variable, VariableKind,
     },
     util::read_type_annotated_name,
   },
@@ -215,20 +215,23 @@ impl Program {
                 name,
                 metadata,
                 attributes,
-                var: Variable::new(TypeState::Known(
-                  AbstractType::from_ast(
-                    type_ast,
-                    &structs,
-                    &global_context.type_aliases,
-                    &vec![],
-                    &vec![],
-                  )?
-                  .concretize(
-                    &structs,
-                    &vec![],
-                    type_source_path.into(),
-                  )?,
-                ))
+                var: Variable::new(
+                  TypeState::Known(
+                    AbstractType::from_ast(
+                      type_ast,
+                      &structs,
+                      &global_context.type_aliases,
+                      &vec![],
+                      &vec![],
+                    )?
+                    .concretize(
+                      &structs,
+                      &vec![],
+                      type_source_path.into(),
+                    )?,
+                  )
+                  .into(),
+                )
                 .with_kind(VariableKind::Var),
                 value: None,
                 source_trace: parens_source_trace,
@@ -249,12 +252,15 @@ impl Program {
                   name,
                   metadata: None,
                   attributes: vec![],
-                  var: Variable::new(TypeState::Known(Type::from_easl_tree(
-                    type_ast,
-                    &structs,
-                    &global_context.type_aliases,
-                    &vec![],
-                  )?)),
+                  var: Variable::new(
+                    TypeState::Known(Type::from_easl_tree(
+                      type_ast,
+                      &structs,
+                      &global_context.type_aliases,
+                      &vec![],
+                    )?)
+                    .into(),
+                  ),
                   value: Some(value_expression),
                   source_trace: parens_source_trace,
                 })
@@ -333,53 +339,54 @@ impl Program {
                 &global_context.type_aliases,
                 &generic_arg_names,
               )?;
-              let implementation =
-                FunctionImplementationKind::Composite(Rc::new(RefCell::new(
-                  TopLevelFunction {
-                    arg_metadata,
-                    return_metadata,
-                    metadata,
-                    body:
-                      TypedExp::function_from_body_tree(
-                        source_path.clone(),
-                        children_iter.collect(),
-                        TypeState::Known(return_type.concretize(
-                          &structs,
-                          &generic_arg_names,
-                          source_path.clone().into(),
-                        )?),
-                        arg_names,
-                        arg_types
-                          .iter()
-                          .map(|t| {
-                            Ok((
-                              TypeState::Known(t.concretize(
-                                &structs,
-                                &generic_arg_names,
-                                source_path.clone().into(),
-                              )?),
-                              if let GenericOr::Generic(generic_name) = t {
-                                generic_args
-                                  .iter()
-                                  .find_map(|(name, constraints)| {
-                                    (generic_name == name)
-                                      .then(|| constraints.clone())
-                                  })
-                                  .unwrap_or(vec![])
-                              } else {
-                                vec![]
-                              },
-                            ))
-                          })
-                          .collect::<CompileResult<
-                            Vec<(TypeState, Vec<TypeConstraint>)>,
-                          >>()?,
+              let implementation = FunctionImplementationKind::Composite(
+                Rc::new(RefCell::new(TopLevelFunction {
+                  arg_metadata,
+                  return_metadata,
+                  metadata,
+                  body:
+                    TypedExp::function_from_body_tree(
+                      source_path.clone(),
+                      children_iter.collect(),
+                      TypeState::Known(return_type.concretize(
                         &structs,
-                        &global_context.type_aliases,
                         &generic_arg_names,
-                      )?,
-                  },
-                )));
+                        source_path.clone().into(),
+                      )?)
+                      .into(),
+                      arg_names,
+                      arg_types
+                        .iter()
+                        .map(|t| {
+                          Ok((
+                            TypeState::Known(t.concretize(
+                              &structs,
+                              &generic_arg_names,
+                              source_path.clone().into(),
+                            )?)
+                            .into(),
+                            if let GenericOr::Generic(generic_name) = t {
+                              generic_args
+                                .iter()
+                                .find_map(|(name, constraints)| {
+                                  (generic_name == name)
+                                    .then(|| constraints.clone())
+                                })
+                                .unwrap_or(vec![])
+                            } else {
+                              vec![]
+                            },
+                          ))
+                        })
+                        .collect::<CompileResult<
+                          Vec<(ExpTypeInfo, Vec<TypeConstraint>)>,
+                        >>()?,
+                      &structs,
+                      &global_context.type_aliases,
+                      &generic_arg_names,
+                    )?,
+                })),
+              );
               global_context.add_abstract_function(Rc::new(
                 AbstractFunctionSignature {
                   name,

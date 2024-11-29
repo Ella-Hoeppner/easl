@@ -12,7 +12,7 @@ use crate::{
 use super::{
   error::{CompileError, CompileErrorKind::*, CompileResult, SourceTrace},
   metadata::Metadata,
-  types::{AbstractType, GenericOr, Type, TypeState},
+  types::{AbstractType, ExpTypeInfo, GenericOr, Type, TypeState},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -137,12 +137,13 @@ impl AbstractStructField {
         structs,
         skolems,
         source_trace,
-      )?),
+      )?)
+      .into(),
     })
   }
   pub fn fill_generics(
     &self,
-    generics: &HashMap<Rc<str>, TypeState>,
+    generics: &HashMap<Rc<str>, ExpTypeInfo>,
   ) -> StructField {
     StructField {
       metadata: self.metadata.clone(),
@@ -159,6 +160,7 @@ impl AbstractStructField {
               Type::Struct(AbstractStruct::fill_generics(s.clone(), generics))
             }
           })
+          .into()
         }
       },
     }
@@ -395,7 +397,7 @@ impl AbstractStruct {
   }
   pub fn fill_generics(
     s: Rc<Self>,
-    generics: &HashMap<Rc<str>, TypeState>,
+    generics: &HashMap<Rc<str>, ExpTypeInfo>,
   ) -> Struct {
     let new_fields: Vec<_> = s
       .fields
@@ -410,7 +412,7 @@ impl AbstractStruct {
   }
   pub fn fill_generics_ordered(
     s: Rc<Self>,
-    generics: Vec<TypeState>,
+    generics: Vec<ExpTypeInfo>,
   ) -> Struct {
     let generics_map = s
       .generic_args
@@ -426,7 +428,7 @@ impl AbstractStruct {
       s,
       (0..generic_count)
         .into_iter()
-        .map(|_| TypeState::fresh_unification_variable())
+        .map(|_| TypeState::fresh_unification_variable().into())
         .collect(),
     )
   }
@@ -481,7 +483,7 @@ pub enum TypeOrAbstractStruct {
 pub struct StructField {
   pub metadata: Option<Metadata>,
   pub name: Rc<str>,
-  pub field_type: TypeState,
+  pub field_type: ExpTypeInfo,
 }
 
 impl StructField {

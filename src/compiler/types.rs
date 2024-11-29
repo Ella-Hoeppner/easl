@@ -1,5 +1,10 @@
 use core::fmt::Debug;
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+  cell::RefCell,
+  collections::HashMap,
+  ops::{Deref, DerefMut},
+  rc::Rc,
+};
 
 use sse::{document::DocumentPosition, syntax::EncloserOrOperator};
 
@@ -345,24 +350,27 @@ impl Type {
           if signature_leaves.is_empty() {
             return err(InvalidStructName, source_trace);
           } else {
-            let generic_args: Vec<TypeState> = signature_leaves
+            let generic_args: Vec<ExpTypeInfo> = signature_leaves
               .map(|signature_arg| {
-                Ok(TypeState::Known(
-                  AbstractType::from_easl_tree(
-                    signature_arg,
-                    structs,
-                    aliases,
-                    &vec![],
-                    skolems,
-                  )?
-                  .concretize(
-                    structs,
-                    skolems,
-                    source_trace.clone(),
-                  )?,
-                ))
+                Ok(
+                  TypeState::Known(
+                    AbstractType::from_easl_tree(
+                      signature_arg,
+                      structs,
+                      aliases,
+                      &vec![],
+                      skolems,
+                    )?
+                    .concretize(
+                      structs,
+                      skolems,
+                      source_trace.clone(),
+                    )?,
+                  )
+                  .into(),
+                )
               })
-              .collect::<CompileResult<Vec<TypeState>>>()?;
+              .collect::<CompileResult<Vec<ExpTypeInfo>>>()?;
             if let Some(s) = structs.iter().find(|s| &*s.name == struct_name) {
               Ok(Type::Struct(AbstractStruct::fill_generics_ordered(
                 s.clone(),
@@ -588,6 +596,49 @@ pub fn extract_type_annotation(
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ExpTypeInfo {
+  pub kind: TypeState,
+  pub subtree_fully_typed: bool,
+  pub fully_known_cached: bool,
+}
+
+impl Deref for ExpTypeInfo {
+  type Target = TypeState;
+
+  fn deref(&self) -> &Self::Target {
+    &self.kind
+  }
+}
+
+impl DerefMut for ExpTypeInfo {
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    &mut self.kind
+  }
+}
+
+impl From<TypeState> for ExpTypeInfo {
+  fn from(kind: TypeState) -> Self {
+    ExpTypeInfo {
+      kind,
+      subtree_fully_typed: false,
+      fully_known_cached: false,
+    }
+  }
+}
+
+impl ExpTypeInfo {
+  pub fn is_fully_known(&mut self) -> bool {
+    if self.fully_known_cached {
+      return true;
+    }
+    if self.check_is_fully_known() {
+      self.fully_known_cached = true;
+    }
+    self.fully_known_cached
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum TypeState {
   Unknown,
   OneOf(Vec<Type>),
@@ -610,20 +661,20 @@ impl TypeState {
       Ok(None)
     }
   }
-  pub fn is_fully_known(&self) -> bool {
+  pub fn check_is_fully_known(&self) -> bool {
     self.with_dereferenced(|typestate| {
       if let TypeState::Known(t) = typestate {
         match t {
           Type::Struct(s) => !s
             .fields
             .iter()
-            .find(|field| !field.field_type.is_fully_known())
+            .find(|field| !field.field_type.check_is_fully_known())
             .is_some(),
           Type::Function(function_signature) => {
             function_signature.arg_types.iter().fold(
-              function_signature.return_type.is_fully_known(),
+              function_signature.return_type.check_is_fully_known(),
               |typed_so_far, (arg_type, _)| {
-                typed_so_far && arg_type.is_fully_known()
+                typed_so_far && arg_type.check_is_fully_known()
               },
             )
           }
@@ -735,7 +786,7 @@ impl TypeState {
             match (current_type, other_type) {
               (Type::Function(signature), Type::Function(other_signature)) => {
                 let mut changed = signature.return_type.constrain(
-                  other_signature.return_type.clone(),
+                  other_signature.return_type.kind.clone(),
                   source_trace.clone(),
                 )?;
                 for ((t, _), (other_t, _)) in signature
@@ -744,7 +795,7 @@ impl TypeState {
                   .zip(other_signature.arg_types.iter_mut())
                 {
                   changed |=
-                    t.constrain(other_t.clone(), source_trace.clone())?;
+                    t.constrain(other_t.kind.clone(), source_trace.clone())?;
                 }
                 changed
               }
@@ -754,7 +805,7 @@ impl TypeState {
                   s.fields.iter_mut().zip(other_s.fields.iter_mut())
                 {
                   changed |= t.field_type.constrain(
-                    other_t.field_type.clone(),
+                    other_t.field_type.kind.clone(),
                     source_trace.clone(),
                   )?;
                 }
@@ -904,11 +955,11 @@ impl VariableKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Variable {
   pub kind: VariableKind,
-  pub typestate: TypeState,
+  pub typestate: ExpTypeInfo,
 }
 
 impl Variable {
-  pub fn new(typestate: TypeState) -> Self {
+  pub fn new(typestate: ExpTypeInfo) -> Self {
     Self {
       typestate,
       kind: VariableKind::Let,

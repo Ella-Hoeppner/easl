@@ -7,7 +7,7 @@ use super::{
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
   structs::{AbstractStruct, TypeOrAbstractStruct},
-  types::{Context, GenericOr, Type, TypeConstraint, TypeState},
+  types::{Context, GenericOr, Type, TypeConstraint, ExpTypeInfo, TypeState},
   util::indent,
 };
 
@@ -93,14 +93,17 @@ impl AbstractFunctionSignature {
   }
   pub fn concretize(f: Rc<Self>) -> FunctionSignature {
     let (generic_variables, generic_constraints): (
-      HashMap<Rc<str>, TypeState>,
+      HashMap<Rc<str>, ExpTypeInfo>,
       HashMap<Rc<str>, Vec<TypeConstraint>>,
     ) = f
       .generic_args
       .iter()
       .map(|(name, bounds)| {
         (
-          (name.clone(), TypeState::fresh_unification_variable()),
+          (
+            name.clone(),
+            TypeState::fresh_unification_variable().into(),
+          ),
           (name.clone(), bounds.clone()),
         )
       })
@@ -121,13 +124,14 @@ impl AbstractFunctionSignature {
               .clone(),
           ),
           GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => {
-            (TypeState::Known(t.clone()), vec![])
+            (TypeState::Known(t.clone()).into(), vec![])
           }
           GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => (
             TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
               s.clone(),
               &generic_variables,
-            ))),
+            )))
+            .into(),
             vec![],
           ),
         })
@@ -142,9 +146,10 @@ impl AbstractFunctionSignature {
             s.clone(),
             &generic_variables,
           )))
+          .into()
         }
         GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => {
-          TypeState::Known(t.clone())
+          TypeState::Known(t.clone()).into()
         }
       },
       abstract_ancestor: Some(f),
@@ -155,8 +160,8 @@ impl AbstractFunctionSignature {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionSignature {
   pub abstract_ancestor: Option<Rc<AbstractFunctionSignature>>,
-  pub arg_types: Vec<(TypeState, Vec<TypeConstraint>)>,
-  pub return_type: TypeState,
+  pub arg_types: Vec<(ExpTypeInfo, Vec<TypeConstraint>)>,
+  pub return_type: ExpTypeInfo,
 }
 
 impl FunctionSignature {

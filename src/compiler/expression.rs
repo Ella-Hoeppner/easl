@@ -10,7 +10,7 @@ use crate::{
     metadata::{extract_metadata, Metadata},
     structs::AbstractStruct,
     types::{
-      extract_type_annotation_ast, Context, Type,
+      extract_type_annotation_ast, Context, ExpTypeInfo, Type,
       TypeState::{self, *},
       Variable, VariableKind,
     },
@@ -43,7 +43,7 @@ fn parse_number(num_str: &str, source_trace: SourceTrace) -> Option<TypedExp> {
             kind: ExpKind::NumberLiteral(Number::Float(
               num_str.parse::<f64>().unwrap(),
             )),
-            data: Known(Type::F32),
+            data: Known(Type::F32).into(),
             source_trace,
           });
         }
@@ -57,7 +57,8 @@ fn parse_number(num_str: &str, source_trace: SourceTrace) -> Option<TypedExp> {
                 "i" => Type::I32,
                 "u" => Type::U32,
                 _ => unreachable!(),
-              }),
+              })
+              .into(),
               source_trace,
             });
           }
@@ -70,7 +71,7 @@ fn parse_number(num_str: &str, source_trace: SourceTrace) -> Option<TypedExp> {
           kind: ExpKind::NumberLiteral(Number::Float(
             num_str.parse::<f64>().unwrap(),
           )),
-          data: Known(Type::F32),
+          data: Known(Type::F32).into(),
           source_trace,
         });
       } else {
@@ -82,7 +83,8 @@ fn parse_number(num_str: &str, source_trace: SourceTrace) -> Option<TypedExp> {
             vec![Type::F32, Type::I32]
           } else {
             vec![Type::F32, Type::I32, Type::U32]
-          }),
+          })
+          .into(),
           source_trace,
         });
       }
@@ -93,10 +95,10 @@ fn parse_number(num_str: &str, source_trace: SourceTrace) -> Option<TypedExp> {
 }
 
 pub fn is_match_exhaustive(
-  scrutinee_type: &TypeState,
+  scrutinee_type: &ExpTypeInfo,
   arms: &Vec<(TypedExp, TypedExp)>,
 ) -> Option<bool> {
-  if let TypeState::Known(t) = &scrutinee_type {
+  if let TypeState::Known(t) = &scrutinee_type.kind {
     Some(t.do_patterns_exhaust(arms.iter().map(|(pattern, _)| pattern)))
   } else {
     None
@@ -126,30 +128,31 @@ pub enum Accessor {
 }
 
 pub fn swizzle_accessor_typestate(
-  accessed_typestate: &TypeState,
+  accessed_typestate: &ExpTypeInfo,
   fields: &Vec<SwizzleField>,
-) -> TypeState {
+) -> ExpTypeInfo {
   let vec_struct = match fields.len() {
     2 => get_builtin_struct("vec2"),
     3 => get_builtin_struct("vec3"),
     4 => get_builtin_struct("vec4"),
     n => unreachable!("swizzle with {n} elements, expected 2-4"),
   };
-  if let TypeState::Known(accessed_type) = accessed_typestate {
+  if let TypeState::Known(accessed_type) = &accessed_typestate.kind {
     if let Type::Struct(s) = accessed_type {
       if &*s.name != "vec" {
         TypeState::Known(Type::Struct(AbstractStruct::fill_generics_ordered(
           vec_struct.into(),
-          vec![match &s.fields[0].field_type {
+          vec![match &s.fields[0].field_type.kind {
             TypeState::UnificationVariable(uvar) => {
-              TypeState::UnificationVariable(uvar.clone())
+              TypeState::UnificationVariable(uvar.clone()).into()
             }
             TypeState::Known(inner_type) => {
-              TypeState::Known(inner_type.clone())
+              TypeState::Known(inner_type.clone()).into()
             }
             _ => panic!("1???? {:?} ", s.fields[0].field_type),
           }],
         )))
+        .into()
       } else {
         panic!("2???")
       }
@@ -157,11 +160,13 @@ pub fn swizzle_accessor_typestate(
       panic!("3???")
     }
   } else {
-    TypeState::Unknown
+    TypeState::Unknown.into()
   }
 }
 
-pub fn swizzle_accessed_possibilities(fields: &Vec<SwizzleField>) -> TypeState {
+pub fn swizzle_accessed_possibilities(
+  fields: &Vec<SwizzleField>,
+) -> ExpTypeInfo {
   let max_accessed_index = fields.iter().fold(0, |max_so_far, field| {
     max_so_far.max(match field {
       SwizzleField::X => 1,
@@ -183,6 +188,7 @@ pub fn swizzle_accessed_possibilities(fields: &Vec<SwizzleField>) -> TypeState {
   )
   .simplified()
   .unwrap()
+  .into()
 }
 
 impl Accessor {
@@ -275,7 +281,7 @@ pub enum ExpressionCompilationPosition {
   InnerExpression,
 }
 
-pub type TypedExp = Exp<TypeState>;
+pub type TypedExp = Exp<ExpTypeInfo>;
 
 pub fn arg_list_and_return_type_from_easl_tree(
   tree: EaslTree,
@@ -366,9 +372,9 @@ impl TypedExp {
   pub fn function_from_body_tree(
     source_trace: SourceTrace,
     body_trees: Vec<EaslTree>,
-    return_type: TypeState,
+    return_type: ExpTypeInfo,
     arg_names: Vec<Rc<str>>,
-    arg_types: Vec<(TypeState, Vec<TypeConstraint>)>,
+    arg_types: Vec<(ExpTypeInfo, Vec<TypeConstraint>)>,
     structs: &Vec<Rc<AbstractStruct>>,
     aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
     skolems: &Vec<Rc<str>>,
@@ -389,7 +395,7 @@ impl TypedExp {
       body_exps.remove(0)
     } else {
       Exp {
-        data: Unknown,
+        data: Unknown.into(),
         source_trace: body_exps
           .iter()
           .map(|body_exp| body_exp.source_trace.clone())
@@ -405,7 +411,8 @@ impl TypedExp {
         abstract_ancestor: None,
         arg_types,
         return_type,
-      }))),
+      })))
+      .into(),
       kind: ExpKind::Function(arg_names, Box::new(body)),
       source_trace,
     })
@@ -424,25 +431,25 @@ impl TypedExp {
         if &*leaf == "break" {
           Exp {
             kind: ExpKind::Break,
-            data: Known(Type::None),
+            data: Known(Type::None).into(),
             source_trace,
           }
         } else if &*leaf == "continue" {
           Exp {
             kind: ExpKind::Continue,
-            data: Known(Type::None),
+            data: Known(Type::None).into(),
             source_trace,
           }
         } else if &*leaf == "discard" {
           Exp {
             kind: ExpKind::Discard,
-            data: TypeState::fresh_unification_variable(),
+            data: TypeState::fresh_unification_variable().into(),
             source_trace,
           }
         } else if &*leaf == "true" || &*leaf == "false" {
           Exp {
             kind: ExpKind::BooleanLiteral(&*leaf == "true"),
-            data: Known(Type::Bool),
+            data: Known(Type::Bool).into(),
             source_trace,
           }
         } else if let Some(num_exp) = parse_number(&leaf, source_trace.clone())
@@ -451,7 +458,7 @@ impl TypedExp {
         } else if &*leaf == "_".to_string() {
           Exp {
             kind: ExpKind::Wildcard,
-            data: Unknown,
+            data: Unknown.into(),
             source_trace,
           }
         } else if leaf.contains('.') && leaf.chars().next() != Some('.') {
@@ -460,7 +467,7 @@ impl TypedExp {
             segments.fold(
               Exp {
                 kind: ExpKind::Name(root_name.into()),
-                data: Unknown,
+                data: Unknown.into(),
                 source_trace: source_trace.clone(),
               },
               |inner_expression, accessor_name| Exp {
@@ -468,7 +475,7 @@ impl TypedExp {
                   Accessor::new(accessor_name.into()),
                   Box::new(inner_expression),
                 ),
-                data: Unknown,
+                data: Unknown.into(),
                 source_trace: source_trace.clone(),
               },
             )
@@ -478,7 +485,7 @@ impl TypedExp {
         } else {
           Exp {
             kind: ExpKind::Name(leaf),
-            data: Unknown,
+            data: Unknown.into(),
             source_trace,
           }
         }
@@ -499,7 +506,7 @@ impl TypedExp {
                     if ".".is_prefix_of(&first_child_name) {
                       if children_iter.len() == 1 {
                         Some(Exp {
-                          data: TypeState::Unknown,
+                          data: Unknown.into(),
                           kind: ExpKind::Access(
                             Accessor::new(
                               first_child_name
@@ -559,7 +566,7 @@ impl TypedExp {
                                   source_trace.clone(),
                                 )?))
                               })
-                              .collect::<CompileResult<Vec<TypeState>>>()?,
+                              .collect::<CompileResult<Vec<ExpTypeInfo>>>()?,
                             structs,
                             aliases,
                             skolems,
@@ -585,7 +592,7 @@ impl TypedExp {
                             child_exps.remove(0)
                           } else {
                             Exp {
-                              data: Unknown,
+                              data: Unknown.into(),
                               kind: ExpKind::Block {
                                 expressions: child_exps,
                                 bracketed: false,
@@ -652,7 +659,7 @@ impl TypedExp {
                                 }
                               }
                               Some(Exp {
-                                data: Unknown,
+                                data: Unknown.into(),
                                 kind: ExpKind::Let(
                                   bindings,
                                   Box::new(body_exp),
@@ -685,7 +692,7 @@ impl TypedExp {
                             })
                             .collect::<CompileResult<Vec<Self>>>()?;
                           Some(Exp {
-                            data: Unknown,
+                            data: Unknown.into(),
                             kind: ExpKind::Block {
                               expressions: child_exps,
                               bracketed: true,
@@ -736,7 +743,7 @@ impl TypedExp {
                           }
                           Some(Exp {
                             kind: Match(Box::new(scrutinee), arms),
-                            data: Unknown,
+                            data: Unknown.into(),
                             source_trace,
                           })
                         }
@@ -851,7 +858,7 @@ impl TypedExp {
                                 update_condition_expression,
                               ),
                               body_expression: Box::new(TypedExp {
-                                data: TypeState::Known(Type::None),
+                                data: TypeState::Known(Type::None).into(),
                                 kind: ExpKind::Block {
                                   expressions: body_expressions,
                                   bracketed: false,
@@ -859,7 +866,7 @@ impl TypedExp {
                                 source_trace: body_source_trace,
                               }),
                             },
-                            data: Known(Type::None),
+                            data: Known(Type::None).into(),
                             source_trace,
                           })
                         }
@@ -889,7 +896,7 @@ impl TypedExp {
                                 condition_expression,
                               ),
                               body_expression: Box::new(TypedExp {
-                                data: TypeState::Known(Type::None),
+                                data: TypeState::Known(Type::None).into(),
                                 kind: ExpKind::Block {
                                   expressions: sub_expressions,
                                   bracketed: false,
@@ -897,7 +904,7 @@ impl TypedExp {
                                 source_trace: body_source_trace,
                               }),
                             },
-                            data: Known(Type::None),
+                            data: Known(Type::None).into(),
                             source_trace,
                           })
                         }
@@ -912,7 +919,7 @@ impl TypedExp {
                             )?;
                             Some(Exp {
                               kind: ExpKind::Return(Box::new(exp)),
-                              data: TypeState::Known(Type::None),
+                              data: TypeState::Known(Type::None).into(),
                               source_trace,
                             })
                           } else {
@@ -945,7 +952,7 @@ impl TypedExp {
                       })
                       .collect::<CompileResult<_>>()?,
                   ),
-                  data: Unknown,
+                  data: Unknown.into(),
                   source_trace,
                 })
               } else {
@@ -973,7 +980,7 @@ impl TypedExp {
                     Accessor::ArrayIndex(Box::new(index_expression)),
                     Box::new(array_expression),
                   ),
-                  data: TypeState::Unknown,
+                  data: TypeState::Unknown.into(),
                   source_trace,
                 }
               } else {
@@ -1002,7 +1009,8 @@ impl TypedExp {
                 structs,
                 aliases,
                 skolems,
-              )?);
+              )?)
+              .into();
               exp
             }
             ExpressionComment => unreachable!(
@@ -1013,8 +1021,8 @@ impl TypedExp {
       }
     })
   }
-  pub fn find_untyped(&self) -> Vec<TypedExp> {
-    let mut children_untyped = match &self.kind {
+  pub fn find_untyped(&mut self) -> Vec<TypedExp> {
+    let mut children_untyped = match &mut self.kind {
       Wildcard => vec![],
       Name(_) => vec![],
       NumberLiteral(_) => vec![],
@@ -1022,21 +1030,21 @@ impl TypedExp {
       Function(_, body) => body.find_untyped(),
       Application(f, args) => {
         args
-          .iter()
+          .iter_mut()
           .fold(f.find_untyped(), |mut untyped_so_far, arg| {
             untyped_so_far.append(&mut arg.find_untyped());
             untyped_so_far
           })
       }
       Access(_, exp) => exp.find_untyped(),
-      Let(bindings, body) => bindings.iter().fold(
+      Let(bindings, body) => bindings.iter_mut().fold(
         body.find_untyped(),
         |mut untyped_so_far, (_, _, binding_value)| {
           untyped_so_far.append(&mut binding_value.find_untyped());
           untyped_so_far
         },
       ),
-      Match(scrutinee, arms) => arms.iter().fold(
+      Match(scrutinee, arms) => arms.iter_mut().fold(
         scrutinee.find_untyped(),
         |mut untyped_so_far, (pattern, arm_body)| {
           untyped_so_far.append(&mut pattern.find_untyped());
@@ -1045,7 +1053,7 @@ impl TypedExp {
         },
       ),
       Block { expressions, .. } => expressions
-        .iter()
+        .iter_mut()
         .map(|child| child.find_untyped())
         .fold(vec![], |mut a, mut b| {
           a.append(&mut b);
@@ -1088,38 +1096,52 @@ impl TypedExp {
     Ok(()) // todo!
   }
   pub fn propagate_types(&mut self, ctx: &mut Context) -> CompileResult<bool> {
-    Ok(match &mut self.kind {
-      Wildcard => false,
+    if self.data.subtree_fully_typed {
+      return Ok(false);
+    }
+    let changed = match &mut self.kind {
+      Wildcard => {
+        self.data.subtree_fully_typed = true;
+        false
+      }
       Name(name) => {
+        self.data.subtree_fully_typed = true;
         if !ctx.is_bound(name) {
           return err(UnboundName(name.clone()), self.source_trace.clone());
         }
-        ctx.constrain_name_type(
+        let changed = ctx.constrain_name_type(
           name.clone(),
           self.source_trace.clone(),
           &mut self.data,
+        )?;
+        changed
+      }
+      NumberLiteral(num) => {
+        self.data.subtree_fully_typed = true;
+        self.data.constrain(
+          match num {
+            Number::Int(_) => {
+              TypeState::OneOf(vec![Type::I32, Type::U32, Type::F32])
+            }
+            Number::Float(_) => TypeState::Known(Type::F32),
+          },
+          self.source_trace.clone(),
         )?
       }
-      NumberLiteral(num) => self.data.constrain(
-        match num {
-          Number::Int(_) => {
-            TypeState::OneOf(vec![Type::I32, Type::U32, Type::F32])
-          }
-          Number::Float(_) => TypeState::Known(Type::F32),
-        },
-        self.source_trace.clone(),
-      )?,
-      BooleanLiteral(_) => self
-        .data
-        .constrain(TypeState::Known(Type::Bool), self.source_trace.clone())?,
+      BooleanLiteral(_) => {
+        self.data.subtree_fully_typed = true;
+        self
+          .data
+          .constrain(TypeState::Known(Type::Bool), self.source_trace.clone())?
+      }
       Function(arg_names, body) => {
-        ctx.push_enclosing_function_type(self.data.clone());
-        let changed = if let TypeState::Known(f_type) = &mut self.data {
+        ctx.push_enclosing_function_type(self.data.clone().kind);
+        let changed = if let TypeState::Known(f_type) = &mut self.data.kind {
           let (name, arg_count, arg_type_states, return_type_state): (
             Option<Rc<str>>,
             usize,
-            &Vec<TypeState>,
-            &mut TypeState,
+            &Vec<ExpTypeInfo>,
+            &mut ExpTypeInfo,
           ) = match f_type {
             Type::Function(signature) => (
               signature.name(),
@@ -1144,12 +1166,13 @@ impl TypedExp {
             let body_types_changed = body.propagate_types(ctx)?;
             let argument_types = arg_names
               .iter()
-              .map(|name| ctx.unbind(name).typestate)
+              .map(|name| ctx.unbind(name).typestate.kind)
               .collect::<Vec<_>>();
             let fn_type_changed = self.data.constrain_fn_by_argument_types(
               argument_types,
               self.source_trace.clone(),
             )?;
+            self.data.subtree_fully_typed = body.data.subtree_fully_typed;
             return_type_changed || body_types_changed || fn_type_changed
           } else {
             return err(WrongArity(name), self.source_trace.clone());
@@ -1171,7 +1194,7 @@ impl TypedExp {
         } else {
           todo!("I haven't implemented function type inference yet!!!")
         }
-        if let TypeState::Known(f_type) = &mut f.data {
+        if let TypeState::Known(f_type) = &mut f.data.kind {
           if let Type::Function(signature) = f_type {
             if args.len() == signature.arg_types.len() {
               anything_changed |= self.data.mutually_constrain(
@@ -1182,7 +1205,7 @@ impl TypedExp {
                 args.iter_mut().zip(signature.arg_types.iter().cloned())
               {
                 anything_changed |=
-                  arg.data.constrain(t, self.source_trace.clone())?;
+                  arg.data.constrain(t.kind, self.source_trace.clone())?;
               }
             } else {
               return err(
@@ -1198,73 +1221,81 @@ impl TypedExp {
           anything_changed |= arg.propagate_types(ctx)?;
         }
         anything_changed |= f.data.constrain_fn_by_argument_types(
-          args.iter().map(|arg| arg.data.clone()).collect(),
+          args.iter().map(|arg| arg.data.kind.clone()).collect(),
           self.source_trace.clone(),
         )?;
         anything_changed |= f.propagate_types(ctx)?;
+        self.data.subtree_fully_typed =
+          args.iter().fold(f.data.subtree_fully_typed, |acc, arg| {
+            acc && arg.data.subtree_fully_typed
+          });
         anything_changed
       }
-      Access(accessor, subexp) => match accessor {
-        Accessor::Field(field_name) => {
-          let mut anything_changed = false;
-          anything_changed |= subexp.propagate_types(ctx)?;
-          if let Known(t) = &mut subexp.data {
-            if let Type::Struct(s) = t {
-              anything_changed |= self.data.mutually_constrain(
-                {
-                  &mut s
-                    .fields
-                    .iter_mut()
-                    .find(|f| f.name == *field_name)
-                    .ok_or(CompileError::new(
-                      NoSuchField {
-                        struct_name: s.abstract_ancestor.name.clone(),
-                        field_name: field_name.clone(),
-                      },
-                      self.source_trace.clone(),
-                    ))?
-                    .field_type
-                },
-                self.source_trace.clone(),
-              )?;
-            } else {
-              return err(AccessorOnNonStruct, self.source_trace.clone())?;
+      Access(accessor, subexp) => {
+        let changed = match accessor {
+          Accessor::Field(field_name) => {
+            let mut anything_changed = false;
+            anything_changed |= subexp.propagate_types(ctx)?;
+            if let Known(t) = &mut subexp.data.kind {
+              if let Type::Struct(s) = t {
+                anything_changed |= self.data.mutually_constrain(
+                  {
+                    &mut s
+                      .fields
+                      .iter_mut()
+                      .find(|f| f.name == *field_name)
+                      .ok_or(CompileError::new(
+                        NoSuchField {
+                          struct_name: s.abstract_ancestor.name.clone(),
+                          field_name: field_name.clone(),
+                        },
+                        self.source_trace.clone(),
+                      ))?
+                      .field_type
+                  },
+                  self.source_trace.clone(),
+                )?;
+              } else {
+                return err(AccessorOnNonStruct, self.source_trace.clone())?;
+              }
             }
+            anything_changed
           }
-          anything_changed
-        }
-        Accessor::Swizzle(fields) => {
-          let mut anything_changed = self.data.constrain(
-            swizzle_accessor_typestate(&subexp.data, fields),
-            self.source_trace.clone(),
-          )?;
-          anything_changed |= subexp.data.constrain(
-            swizzle_accessed_possibilities(fields),
-            self.source_trace.clone(),
-          )?;
-          anything_changed |= subexp.propagate_types(ctx)?;
-          anything_changed
-        }
-        Accessor::ArrayIndex(index_expression) => {
-          if let TypeState::Known(t) = &mut subexp.data {
-            if let Type::Array(_, inner_type) = t {
-              self.data.mutually_constrain(
-                inner_type.as_mut(),
-                self.source_trace.clone(),
-              )?;
-            } else {
-              return err(ArrayAccessOnNonArray, self.source_trace.clone());
+          Accessor::Swizzle(fields) => {
+            let mut anything_changed = self.data.constrain(
+              swizzle_accessor_typestate(&subexp.data, fields).kind,
+              self.source_trace.clone(),
+            )?;
+            anything_changed |= subexp.data.constrain(
+              swizzle_accessed_possibilities(fields).kind,
+              self.source_trace.clone(),
+            )?;
+            anything_changed |= subexp.propagate_types(ctx)?;
+            anything_changed
+          }
+          Accessor::ArrayIndex(index_expression) => {
+            if let TypeState::Known(t) = &mut subexp.data.kind {
+              if let Type::Array(_, inner_type) = t {
+                self.data.mutually_constrain(
+                  inner_type.as_mut(),
+                  self.source_trace.clone(),
+                )?;
+              } else {
+                return err(ArrayAccessOnNonArray, self.source_trace.clone());
+              }
             }
+            let mut anything_changed = index_expression.data.constrain(
+              TypeState::OneOf(vec![Type::I32, Type::U32]),
+              self.source_trace.clone(),
+            )?;
+            anything_changed |= index_expression.propagate_types(ctx)?;
+            anything_changed |= subexp.propagate_types(ctx)?;
+            anything_changed
           }
-          let mut anything_changed = index_expression.data.constrain(
-            TypeState::OneOf(vec![Type::I32, Type::U32]),
-            self.source_trace.clone(),
-          )?;
-          anything_changed |= index_expression.propagate_types(ctx)?;
-          anything_changed |= subexp.propagate_types(ctx)?;
-          anything_changed
-        }
-      },
+        };
+        self.data.subtree_fully_typed = subexp.data.subtree_fully_typed;
+        changed
+      }
       Let(bindings, body) => {
         let mut anything_changed = body
           .data
@@ -1275,10 +1306,17 @@ impl TypedExp {
         }
         anything_changed |= body.propagate_types(ctx)?;
         for (name, _, value) in bindings.iter_mut() {
-          anything_changed |= value
-            .data
-            .constrain(ctx.unbind(name).typestate, self.source_trace.clone())?;
+          anything_changed |= value.data.constrain(
+            ctx.unbind(name).typestate.kind,
+            self.source_trace.clone(),
+          )?;
         }
+        self.data.subtree_fully_typed = bindings.iter().fold(
+          body.data.subtree_fully_typed,
+          |acc, (_, _, binding_value)| {
+            acc && binding_value.data.subtree_fully_typed
+          },
+        );
         anything_changed
       }
       Match(scrutinee, arms) => {
@@ -1301,6 +1339,14 @@ impl TypedExp {
             .data
             .mutually_constrain(&mut self.data, self.source_trace.clone())?;
         }
+        self.data.subtree_fully_typed = arms.iter().fold(
+          scrutinee.data.subtree_fully_typed,
+          |acc, (pattern, case)| {
+            acc
+              && pattern.data.subtree_fully_typed
+              && case.data.subtree_fully_typed
+          },
+        );
         anything_changed
       }
       Block { expressions, .. } => {
@@ -1315,6 +1361,9 @@ impl TypedExp {
             .data,
           self.source_trace.clone(),
         )?;
+        self.data.subtree_fully_typed = expressions
+          .iter()
+          .fold(true, |acc, exp| acc && exp.data.subtree_fully_typed);
         anything_changed
       }
       ForLoop {
@@ -1342,7 +1391,7 @@ impl TypedExp {
           increment_variable_name,
           Variable {
             kind: VariableKind::Var,
-            typestate: variable_typestate,
+            typestate: variable_typestate.into(),
           },
         );
         anything_changed |= continue_condition_expression.data.constrain(
@@ -1358,6 +1407,13 @@ impl TypedExp {
         anything_changed |= update_condition_expression.propagate_types(ctx)?;
         anything_changed |= body_expression.propagate_types(ctx)?;
         ctx.unbind(&increment_variable_name);
+        self.data.subtree_fully_typed =
+          increment_variable_initial_value_expression
+            .data
+            .subtree_fully_typed
+            && continue_condition_expression.data.subtree_fully_typed
+            && update_condition_expression.data.subtree_fully_typed
+            && body_expression.data.subtree_fully_typed;
         anything_changed
       }
       WhileLoop {
@@ -1374,29 +1430,47 @@ impl TypedExp {
         )?;
         anything_changed |= condition_expression.propagate_types(ctx)?;
         anything_changed |= body_expression.propagate_types(ctx)?;
+        self.data.subtree_fully_typed =
+          condition_expression.data.subtree_fully_typed
+            && body_expression.data.subtree_fully_typed;
         anything_changed
       }
-      Break => false,
-      Continue => false,
-      Discard => false,
-      Return(exp) => exp.data.mutually_constrain(
-        &mut ctx
-          .enclosing_function_type()
-          .ok_or(CompileError::new(
-            ReturnOutsideFunction,
-            self.source_trace.clone(),
-          ))?
-          .as_fn_type_if_known(|| {
-            CompileError::new(
-              CompileErrorKind::EnclosingFunctionTypeWasntFunction,
+      Break => {
+        self.data.subtree_fully_typed = true;
+        false
+      }
+      Continue => {
+        self.data.subtree_fully_typed = true;
+        false
+      }
+      Discard => {
+        self.data.subtree_fully_typed = true;
+        false
+      }
+      Return(exp) => {
+        let changed = exp.data.mutually_constrain(
+          &mut ctx
+            .enclosing_function_type()
+            .ok_or(CompileError::new(
+              ReturnOutsideFunction,
               self.source_trace.clone(),
-            )
-          })?
-          .map(|fn_type| &mut fn_type.return_type)
-          .unwrap_or(&mut TypeState::Unknown),
-        self.source_trace.clone(),
-      )?,
-    })
+            ))?
+            .as_fn_type_if_known(|| {
+              CompileError::new(
+                CompileErrorKind::EnclosingFunctionTypeWasntFunction,
+                self.source_trace.clone(),
+              )
+            })?
+            .map(|fn_type| &mut fn_type.return_type)
+            .unwrap_or(&mut TypeState::Unknown.into()),
+          self.source_trace.clone(),
+        )?;
+        self.data.subtree_fully_typed = exp.data.subtree_fully_typed;
+        changed
+      }
+    };
+    self.data.subtree_fully_typed &= self.data.check_is_fully_known();
+    Ok(changed)
   }
   pub fn compile(self, position: ExpressionCompilationPosition) -> String {
     use ExpressionCompilationPosition::*;
@@ -1413,7 +1487,7 @@ impl TypedExp {
       NumberLiteral(num) => wrap(match num {
         Number::Int(i) => format!(
           "{i}{}",
-          match self.data {
+          match self.data.kind {
             Known(Type::I32) => "",
             Known(Type::U32) => "u",
             Known(Type::F32) => "f",
@@ -1703,7 +1777,7 @@ impl TypedExp {
     }
   }
   pub fn replace_skolems(&mut self, skolems: &Vec<(Rc<str>, Type)>) {
-    if let Known(t) = &mut self.data {
+    if let Known(t) = &mut self.data.kind {
       t.replace_skolems(skolems)
     }
     match &mut self.kind {
@@ -1749,7 +1823,7 @@ impl TypedExp {
         }
         if let ExpKind::Name(f_name) = &mut f.kind {
           if let Some(abstract_signature) =
-            if let TypeState::Known(Type::Function(f)) = &f.data {
+            if let TypeState::Known(Type::Function(f)) = &f.data.kind {
               &f.abstract_ancestor
             } else {
               unreachable!("encountered applied non-fn in monomorphization")
@@ -1763,7 +1837,8 @@ impl TypedExp {
                     || &**f_name == "vec3"
                     || &**f_name == "vec4")
                     .then(|| {
-                      if let TypeState::Known(Type::Struct(s)) = &self.data {
+                      if let TypeState::Known(Type::Struct(s)) = &self.data.kind
+                      {
                         compiled_vec_name(
                           &f_name,
                           s.fields[0].field_type.unwrap_known(),
