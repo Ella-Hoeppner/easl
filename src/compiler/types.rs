@@ -1131,8 +1131,8 @@ impl Context {
     }
     self
   }
-  pub fn with_structs(mut self, mut structs: Vec<Rc<AbstractStruct>>) -> Self {
-    for s in &structs {
+  pub fn with_struct(mut self, s: Rc<AbstractStruct>) -> Self {
+    if !self.structs.contains(&s) {
       if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&&*s.name) {
         self.add_abstract_function(Rc::new(AbstractFunctionSignature {
           name: s.name.clone(),
@@ -1152,10 +1152,13 @@ impl Context {
           implementation: FunctionImplementationKind::Constructor,
         }));
       }
+      self.structs.push(s);
+      self.structs.dedup();
     }
-    self.structs.append(&mut structs);
-    self.structs.dedup();
     self
+  }
+  pub fn with_structs(self, structs: Vec<Rc<AbstractStruct>>) -> Self {
+    structs.into_iter().fold(self, |ctx, s| ctx.with_struct(s))
   }
   pub fn with_type_aliases(
     mut self,

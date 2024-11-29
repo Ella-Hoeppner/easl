@@ -35,6 +35,17 @@ impl UntypedStructField {
       type_ast,
     })
   }
+  pub fn references_type_name(&self, name: &Rc<str>) -> bool {
+    fn contains_name_leaf(name: &Rc<str>, tree: &EaslTree) -> bool {
+      match &tree {
+        EaslTree::Leaf(_, leaf) => leaf == &**name,
+        EaslTree::Inner(_, children) => children
+          .iter()
+          .fold(false, |acc, child| acc || contains_name_leaf(name, child)),
+      }
+    }
+    contains_name_leaf(&name, &self.type_ast)
+  }
   pub fn assign_type(
     self,
     structs: &Vec<Rc<AbstractStruct>>,
@@ -80,6 +91,12 @@ impl UntypedStruct {
         .collect::<CompileResult<_>>()?,
       source_trace,
     })
+  }
+  pub fn references_type_name(&self, name: &Rc<str>) -> bool {
+    self
+      .fields
+      .iter()
+      .fold(false, |acc, field| acc || field.references_type_name(name))
   }
   pub fn assign_types(
     self,

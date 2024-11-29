@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, cmp::Ordering, rc::Rc};
 
 use sse::{document::Document, syntax::EncloserOrOperator};
 
@@ -131,22 +131,22 @@ impl Program {
         );
       }
     }
-    let mut structs: Vec<Rc<AbstractStruct>> =
-      built_in_structs().into_iter().map(|s| Rc::new(s)).collect();
-    let mut struct_names: Vec<Rc<str>> =
-      untyped_structs.iter().map(|s| s.name.clone()).collect();
-    struct_names.append(&mut structs.iter().map(|s| s.name.clone()).collect());
-    // todo! in order for this to reliably work when structs contain one
-    // another, I need to topologically sort untyped_structs before this loop
-    while let Some(untyped_struct) = untyped_structs.pop() {
-      structs.push(
-        untyped_struct
-          .assign_types(&structs, &built_in_type_aliases())?
-          .into(),
-      );
+    untyped_structs.sort_by(|a, b| {
+      if a.references_type_name(&b.name) {
+        Ordering::Greater
+      } else if b.references_type_name(&a.name) {
+        Ordering::Less
+      } else {
+        Ordering::Equal
+      }
+    });
+    let mut global_context = Context::default_global();
+    for untyped_struct in untyped_structs {
+      let new_struct = untyped_struct
+        .assign_types(&global_context.structs, &built_in_type_aliases())?
+        .into();
+      global_context = global_context.with_struct(new_struct);
     }
-    let mut global_context =
-      Context::default_global().with_structs(structs.clone());
 
     for (metadata, tree) in non_struct_trees.into_iter() {
       use crate::parse::Encloser::*;
@@ -219,13 +219,13 @@ impl Program {
                   TypeState::Known(
                     AbstractType::from_ast(
                       type_ast,
-                      &structs,
+                      &global_context.structs,
                       &global_context.type_aliases,
                       &vec![],
                       &vec![],
                     )?
                     .concretize(
-                      &structs,
+                      &global_context.structs,
                       &vec![],
                       type_source_path.into(),
                     )?,
@@ -243,7 +243,7 @@ impl Program {
                   read_type_annotated_name(children_iter.next().unwrap())?;
                 let value_expression = TypedExp::try_from_easl_tree(
                   children_iter.next().unwrap(),
-                  &structs,
+                  &global_context.structs,
                   &vec![],
                   &vec![],
                   crate::compiler::expression::SyntaxTreeContext::Default,
@@ -255,7 +255,7 @@ impl Program {
                   var: Variable::new(
                     TypeState::Known(Type::from_easl_tree(
                       type_ast,
-                      &structs,
+                      &global_context.structs,
                       &global_context.type_aliases,
                       &vec![],
                     )?)
@@ -294,7 +294,7 @@ impl Program {
                         .map(|subtree| {
                           parse_generic_argument(
                             subtree,
-                            &structs,
+                            &global_context.structs,
                             &global_context.type_aliases,
                             &vec![],
                           )
@@ -335,7 +335,7 @@ impl Program {
                 return_metadata,
               ) = arg_list_and_return_type_from_easl_tree(
                 arg_list_ast,
-                &structs,
+                &global_context.structs,
                 &global_context.type_aliases,
                 &generic_arg_names,
               )?;
@@ -349,7 +349,7 @@ impl Program {
                       source_path.clone(),
                       children_iter.collect(),
                       TypeState::Known(return_type.concretize(
-                        &structs,
+                        &global_context.structs,
                         &generic_arg_names,
                         source_path.clone().into(),
                       )?)
@@ -360,7 +360,7 @@ impl Program {
                         .map(|t| {
                           Ok((
                             TypeState::Known(t.concretize(
-                              &structs,
+                              &global_context.structs,
                               &generic_arg_names,
                               source_path.clone().into(),
                             )?)
@@ -381,7 +381,7 @@ impl Program {
                         .collect::<CompileResult<
                           Vec<(ExpTypeInfo, Vec<TypeConstraint>)>,
                         >>()?,
-                      &structs,
+                      &global_context.structs,
                       &global_context.type_aliases,
                       &generic_arg_names,
                     )?,
