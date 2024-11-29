@@ -1,4 +1,9 @@
-use std::{collections::HashMap, rc::Rc};
+use std::{
+  collections::{HashMap, HashSet},
+  rc::Rc,
+};
+
+use lazy_static::lazy_static;
 
 use sse::{document::DocumentPosition, syntax::EncloserOrOperator, Ast};
 
@@ -806,15 +811,16 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures
 }
 
-pub const ASSIGNMENT_OPS: [&'static str; 6] =
-  ["=", "+=", "-=", "*=", "/=", "%="];
-
-pub const INFIX_OPS: [&'static str; 12] = [
-  "==", ">=", ">", "<=", "<", "||", "&&", "+", "-", "*", "/", "%",
-];
-
-pub const ABNORMAL_CONSTRUCTOR_STRUCTS: [&'static str; 3] =
-  ["vec2", "vec3", "vec4"];
+lazy_static! {
+  pub static ref ASSIGNMENT_OPS: HashSet<&'static str> =
+    ["=", "+=", "-=", "*=", "/=", "%="].into_iter().collect();
+  pub static ref INFIX_OPS: HashSet<&'static str> =
+    ["==", ">=", ">", "<=", "<", "||", "&&", "+", "-", "*", "/", "%",]
+      .into_iter()
+      .collect();
+  pub static ref ABNORMAL_CONSTRUCTOR_STRUCTS: HashSet<&'static str> =
+    ["vec2", "vec3", "vec4"].into_iter().collect();
+}
 
 pub fn built_in_macros() -> Vec<Macro> {
   let if_macro = Macro(Box::new(|tree| match tree {

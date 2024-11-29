@@ -1081,7 +1081,7 @@ pub fn parse_generic_argument(
 pub struct Context {
   pub structs: Vec<Rc<AbstractStruct>>,
   pub variables: HashMap<Rc<str>, Vec<Variable>>,
-  pub abstract_functions: HashMap<Rc<str>, Vec<Rc<AbstractFunctionSignature>>>,
+  abstract_functions: HashMap<Rc<str>, Vec<Rc<AbstractFunctionSignature>>>,
   pub type_aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
   pub enclosing_function_types: Vec<TypeState>,
   pub top_level_vars: Vec<TopLevelVar>,
@@ -1108,27 +1108,27 @@ impl Context {
     self.enclosing_function_types.last_mut()
   }
   pub fn default_global() -> Self {
-    Self::empty()
-      .with_functions(built_in_functions())
-      .with_structs(
-        built_in_structs().into_iter().map(|s| Rc::new(s)).collect(),
-      )
-      .with_type_aliases(built_in_type_aliases())
+    DEFAULT_GLOBAL_CONTEXT.with_borrow(|ctx| ctx.clone())
+  }
+  pub fn add_abstract_function(
+    &mut self,
+    signature: Rc<AbstractFunctionSignature>,
+  ) {
+    if let Some(bucket) = self.abstract_functions.get_mut(&signature.name) {
+      bucket.push(signature.into());
+    } else {
+      self
+        .abstract_functions
+        .insert(signature.name.clone(), vec![signature.into()]);
+    }
   }
   pub fn with_functions(
     mut self,
     functions: Vec<AbstractFunctionSignature>,
   ) -> Self {
     for f in functions {
-      if let Some(bucket) = self.abstract_functions.get_mut(&f.name) {
-        bucket.push(f.into());
-      } else {
-        self
-          .abstract_functions
-          .insert(f.name.clone(), vec![f.into()]);
-      }
+      self.add_abstract_function(f.into());
     }
-    //self.structs.dedup();
     self
   }
   pub fn with_structs(mut self, mut structs: Vec<Rc<AbstractStruct>>) -> Self {
@@ -1177,28 +1177,32 @@ impl Context {
       self.structs.push(s);
     }
   }
+  pub fn concrete_signatures(
+    &mut self,
+    fn_name: &Rc<str>,
+  ) -> Option<Vec<Type>> {
+    self.abstract_functions.get(fn_name).map(|signatures| {
+      signatures
+        .into_iter()
+        .map(|signature| {
+          Type::Function(Box::new(AbstractFunctionSignature::concretize(
+            signature.clone(),
+          )))
+        })
+        .collect::<Vec<_>>()
+    })
+  }
   pub fn constrain_name_type(
     &mut self,
-    name: Rc<str>,
+    name: &Rc<str>,
     source_trace: SourceTrace,
     t: &mut TypeState,
   ) -> CompileResult<bool> {
-    let abstract_signatures: Option<Vec<_>> =
-      self.abstract_functions.get(&name).map(|signatures| {
-        signatures
-          .into_iter()
-          .map(|signature| {
-            Type::Function(Box::new(AbstractFunctionSignature::concretize(
-              signature.clone(),
-            )))
-          })
-          .collect::<Vec<_>>()
-      });
-    if let Some(abstract_signatures) = abstract_signatures {
-      t.constrain(TypeState::OneOf(abstract_signatures), source_trace)
+    if let Some(signatures) = self.concrete_signatures(name) {
+      t.constrain(TypeState::OneOf(signatures), source_trace)
     } else {
       t.mutually_constrain(
-        self.get_typestate_mut(&name, source_trace.clone())?,
+        self.get_typestate_mut(name, source_trace.clone())?,
         source_trace,
       )
     }
@@ -1216,18 +1220,6 @@ impl Context {
       self.variables.remove(name);
     }
     v
-  }
-  pub fn add_abstract_function(
-    &mut self,
-    signature: Rc<AbstractFunctionSignature>,
-  ) {
-    if let Some(bucket) = self.abstract_functions.get_mut(&signature.name) {
-      bucket.push(signature.into());
-    } else {
-      self
-        .abstract_functions
-        .insert(signature.name.clone(), vec![signature.into()]);
-    }
   }
   pub fn is_bound(&self, name: &str) -> bool {
     let name_rc: Rc<str> = name.to_string().into();
@@ -1279,4 +1271,15 @@ impl Context {
       .map(|fs| fs.iter_mut())
       .flatten()
   }
+}
+
+thread_local! {
+  static DEFAULT_GLOBAL_CONTEXT: RefCell<Context> =
+    RefCell::new(
+      Context::empty()
+        .with_functions(built_in_functions())
+        .with_structs(
+          built_in_structs().into_iter().map(|s| Rc::new(s)).collect(),
+        )
+        .with_type_aliases(built_in_type_aliases()));
 }
