@@ -15,10 +15,7 @@ Feature goals:
   * sum types (probably, eventually)
 
 ## todo
-### steps to get to expressive parity with wgsl/glsl
-* optimize
-  * split `propagate_types` into two functions, one which happens only once, and one which gets called repeatedly. Much of the logic in `propagate_types` needs to happen once but is wasteful if done repeatedly
-
+### high priority
 * clean up/simplify type parsing, I've got `Type::from_easl_tree`, `AbstractType::from_easl_tree`, and `AbstractType::from_ast` that all seem like they have pretty overlapping functionality, probably don't need all three
 
 * allow type annotation on binding names in let blocks, e.g. `(let [x: f32 0] ...)` currently crashes because it can't handle the type annotation on `x`
@@ -40,7 +37,7 @@ Feature goals:
 * shadowing
   * seems to typecheck fine but wgsl actually doesn't allow shadowing within the same scope, so I guess during compilation we could track bindings and change shadowed names
 
-* throw an error if control flow expressions are used outside their proper context
+* return an error if control flow expressions are used outside their proper context
   * `break` and `continue` can only be used inside a loop
   * `discard` can only be used inside a `@fragment` function
 
@@ -69,11 +66,14 @@ Feature goals:
     * once `(Into T)` exists, the signature for a vector constructor will change from looking like `(fn (vec4f T A: Scalar) [a: A]: (vec4f T))` to `(fn (vec4f T A: (Into T)) [a: A]: (vec4f T))`. All scalars will implement `into` for one another, so this will feel exactly like the current approach. But it will also get stuck in the same place, because all the scalars satisfy `(Into ...)` for whatever the type of the vector is. But this could be resolved by a special inference rule: If type inference stalls with the type of a function argument being narrowed down to one `OneOf` several possibilities including some particular type `T`, and that function argument is constrained by `(Into T)`, collapse the `OneOf` into `Known(T)`
       * a practical benefit of this is that it'll work on custom vector types, like if someone defined `vecc` as a vector of complex numbers, and implemented `(Into Complex)` for floats, then `(vecc 1.)` work automatically. It'll also work on any custom types that expect `(Into ...)` that could run into ambiguity
 
-* support lifting internal lets
+* support lifting internal `let`s and `if`s
 
 * matrices
 
-### extra features, once core language is solid
+### low-priority extra features, once core language is solid
+* optimize
+  * split `propagate_types` into two functions, one which happens only once, and one which gets called repeatedly. Much of the logic in `propagate_types` needs to happen once but is wasteful if done repeatedly
+
 * special casing around `Texture2D`
   * right now I've made it so it has a field `_: T`, because monomorphization needs there to be at least one field, but this is kinda weird
   * you definitely shouldn't be able to access the `_` field, and you shouldn't be allowed to construct it
