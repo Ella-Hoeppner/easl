@@ -425,16 +425,45 @@ fn arithmetic_functions(name: &str) -> Vec<AbstractFunctionSignature> {
 }
 
 fn trigonometry_functions() -> Vec<AbstractFunctionSignature> {
-  vec![AbstractFunctionSignature {
-    name: "atan2".into(),
-    generic_args: vec![],
-    arg_types: vec![
-      GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
-      GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
-    ],
-    return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
-    implementation: FunctionImplementationKind::Builtin,
-  }]
+  vec![
+    AbstractFunctionSignature {
+      name: "atan2".into(),
+      generic_args: vec![],
+      arg_types: vec![
+        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
+        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
+      ],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+    AbstractFunctionSignature {
+      name: "cos".into(),
+      generic_args: vec![],
+      arg_types: vec![GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+        Type::F32,
+      ))],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+    AbstractFunctionSignature {
+      name: "sin".into(),
+      generic_args: vec![],
+      arg_types: vec![GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+        Type::F32,
+      ))],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+    AbstractFunctionSignature {
+      name: "tan".into(),
+      generic_args: vec![],
+      arg_types: vec![GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+        Type::F32,
+      ))],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::F32)),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+  ]
 }
 
 fn exp_functions() -> Vec<AbstractFunctionSignature> {

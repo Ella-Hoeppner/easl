@@ -1,5 +1,7 @@
 # easl
 
+Enhanced Abstraction Shader Language
+
 WIP shader language with a lispy syntax (using [SSE](https://github.com/Ella-Hoeppner/SSE)) that compiles to WGSL.
 
 Feature goals:
@@ -109,8 +111,6 @@ Feature goals:
     * can test this by impl'ing Add on bool
   * support impl'ing on typeclass combination aliases
     * this should require providing a signature for all functions in each typeclass within the alias
-
-* support user-defined typeclasses
 
 * clj-style `loop` construct
 

@@ -1,4 +1,4 @@
-use easl::compiler::compile_easl_to_wgsl;
+use easl::compiler::compile_easl_source_to_wgsl;
 use std::fs;
 
 fn main() {
@@ -40,7 +40,7 @@ fn main() {
     let t = std::time::Instant::now();
     let easl_source = fs::read_to_string(&format!("./data/{filename}.easl"))
       .expect(&format!("Unable to read {filename}.easl"));
-    match compile_easl_to_wgsl(&easl_source) {
+    match compile_easl_source_to_wgsl(&easl_source) {
       Ok(wgsl) => {
         println!("{:?}", t.elapsed());
         fs::write(&format!("./out/{filename}.wgsl"), wgsl)

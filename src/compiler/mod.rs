@@ -11,4 +11,4 @@ pub mod types;
 pub mod util;
 pub mod vars;
 
-pub use core::compile_easl_to_wgsl;
+pub use core::compile_easl_source_to_wgsl;
