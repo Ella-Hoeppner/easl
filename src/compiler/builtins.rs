@@ -604,6 +604,17 @@ fn assignment_function() -> Vec<AbstractFunctionSignature> {
 fn boolean_functions() -> Vec<AbstractFunctionSignature> {
   vec![
     AbstractFunctionSignature {
+      name: "!".into(),
+      generic_args: vec![],
+      arg_types: vec![GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+        Type::Bool,
+      ))],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+        Type::Bool,
+      )),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+    AbstractFunctionSignature {
       name: "&&".into(),
       generic_args: vec![],
       arg_types: vec![
@@ -700,6 +711,12 @@ fn vector_functions() -> Vec<AbstractFunctionSignature> {
       ("distance", vec![vec.clone(), vec.clone()], float.clone()),
       ("normalize", vec![vec.clone()], vec.clone()),
       ("dot", vec![vec.clone(), vec.clone()], float.clone()),
+      ("reflect", vec![vec.clone(), vec.clone()], vec.clone()),
+      (
+        "refract",
+        vec![vec.clone(), vec.clone(), float.clone()],
+        vec.clone(),
+      ),
     ]
     .into_iter()
     .map(|(name, arg_types, return_type)| AbstractFunctionSignature {
@@ -758,6 +775,7 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
       [
         ("floor", 1),
         ("ceil", 1),
+        ("fract", 1),
         ("sqrt", 1),
         ("pow", 2),
         ("mix", 3),
@@ -792,29 +810,52 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
 }
 
 fn texture_functions() -> Vec<AbstractFunctionSignature> {
-  vec![AbstractFunctionSignature {
-    name: "textureSample".into(),
-    generic_args: vec![("T".into(), vec![])],
-    arg_types: vec![
-      GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
-        texture_2d().into(),
-      )),
-      GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
-        sampler().into(),
-      )),
-      GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
-        vec2()
-          .fill_abstract_generics(vec![AbstractType::NonGeneric(
-            TypeOrAbstractStruct::Type(Type::F32),
-          )])
-          .into(),
-      )),
-    ],
-    return_type: AbstractType::NonGeneric(
-      TypeOrAbstractStruct::AbstractStruct(vec4().into()),
-    ),
-    implementation: FunctionImplementationKind::Builtin,
-  }]
+  vec![
+    AbstractFunctionSignature {
+      name: "textureSample".into(),
+      generic_args: vec![("T".into(), vec![])],
+      arg_types: vec![
+        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+          texture_2d().into(),
+        )),
+        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+          sampler().into(),
+        )),
+        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+          vec2()
+            .fill_abstract_generics(vec![AbstractType::NonGeneric(
+              TypeOrAbstractStruct::Type(Type::F32),
+            )])
+            .into(),
+        )),
+      ],
+      return_type: AbstractType::NonGeneric(
+        TypeOrAbstractStruct::AbstractStruct(vec4().into()),
+      ),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+    AbstractFunctionSignature {
+      name: "textureLoad".into(),
+      generic_args: vec![("T".into(), vec![])],
+      arg_types: vec![
+        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+          texture_2d().into(),
+        )),
+        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+          vec2()
+            .fill_abstract_generics(vec![AbstractType::NonGeneric(
+              TypeOrAbstractStruct::Type(Type::I32),
+            )])
+            .into(),
+        )),
+        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::I32)),
+      ],
+      return_type: AbstractType::NonGeneric(
+        TypeOrAbstractStruct::AbstractStruct(vec4().into()),
+      ),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+  ]
 }
 
 pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {

@@ -182,37 +182,46 @@ impl AbstractType {
       ) => {
         let source_trace: SourceTrace = position.clone().into();
         if array_children.len() == 1 {
-          if let EaslTree::Inner(
-            (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
-            mut type_annotation_children,
-          ) = array_children.iter().next().unwrap().clone()
-          {
-            let source_trace: SourceTrace = position.into();
-            if let EaslTree::Leaf(position, num_str) =
-              type_annotation_children.remove(0)
-            {
+          match array_children.iter().next().unwrap().clone() {
+            EaslTree::Inner(
+              (
+                position,
+                EncloserOrOperator::Operator(Operator::TypeAnnotation),
+              ),
+              mut type_annotation_children,
+            ) => {
               let source_trace: SourceTrace = position.into();
-              if let Ok(array_size) = num_str.parse::<u32>() {
-                let inner_type = Type::from_easl_tree(
-                  type_annotation_children.remove(0),
-                  structs,
-                  aliases,
-                  skolems,
-                )?;
-                Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-                  Type::Array(
-                    array_size,
-                    Box::new(TypeState::Known(inner_type)),
-                  ),
-                )))
+              if let EaslTree::Leaf(position, num_str) =
+                type_annotation_children.remove(0)
+              {
+                let source_trace: SourceTrace = position.into();
+                if let Ok(array_size) = num_str.parse::<u32>() {
+                  let inner_type = Type::from_easl_tree(
+                    type_annotation_children.remove(0),
+                    structs,
+                    aliases,
+                    skolems,
+                  )?;
+                  Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+                    Type::Array(
+                      Some(array_size),
+                      Box::new(TypeState::Known(inner_type)),
+                    ),
+                  )))
+                } else {
+                  return err(InvalidArraySignature, source_trace);
+                }
               } else {
                 return err(InvalidArraySignature, source_trace);
               }
-            } else {
-              return err(InvalidArraySignature, source_trace);
             }
-          } else {
-            return err(InvalidArraySignature, source_trace);
+            other => {
+              let inner_type =
+                Type::from_easl_tree(other, structs, aliases, generic_args)?;
+              Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+                Type::Array(None, Box::new(TypeState::Known(inner_type))),
+              )))
+            }
           }
         } else {
           return err(InvalidArraySignature, source_trace);
@@ -319,7 +328,7 @@ pub enum Type {
   Struct(Struct),
   Function(Box<FunctionSignature>),
   Skolem(Rc<str>),
-  Array(u32, Box<TypeState>),
+  Array(Option<u32>, Box<TypeState>),
 }
 impl Type {
   pub fn satisfies_constraints(&self, constraint: &TypeConstraint) -> bool {
@@ -408,7 +417,7 @@ impl Type {
                   skolems,
                 )?;
                 Ok(Type::Array(
-                  array_size,
+                  Some(array_size),
                   Box::new(TypeState::Known(inner_type)),
                 ))
               } else {
@@ -457,6 +466,7 @@ impl Type {
   ) -> CompileResult<Self> {
     use Type::*;
     Ok(match &*name {
+      "None" => None,
       "F32" | "f32" => F32,
       "I32" | "i32" => I32,
       "U32" | "u32" => U32,
@@ -496,7 +506,11 @@ impl Type {
         _ => compile_word(s.monomorphized_name()),
       },
       Type::Array(n, inner_type) => {
-        format!("array<{}, {n}>", inner_type.compile())
+        format!(
+          "array<{}{}>",
+          inner_type.compile(),
+          n.map(|n| format!(", {n}")).unwrap_or(String::new())
+        )
       }
       Type::Function(_) => {
         panic!("Attempted to compile ConcreteFunction type")
@@ -1234,8 +1248,18 @@ impl Context {
         .find(|top_level_var| &*top_level_var.name == name)
         .is_some()
   }
-  pub fn get_variable_kind(&self, name: &str) -> &VariableKind {
-    &self.variables.get(name).unwrap().last().unwrap().kind
+  pub fn get_variable_kind(&self, name: &str) -> VariableKind {
+    self
+      .variables
+      .get(name)
+      .map(|vars| vars.last().unwrap().kind.clone())
+      .or(
+        self
+          .top_level_vars
+          .iter()
+          .find_map(|v| (&*v.name == name).then(|| v.var.kind.clone())),
+      )
+      .unwrap()
   }
   pub fn get_typestate_mut(
     &mut self,

@@ -497,13 +497,14 @@ impl Program {
   }
   pub fn check_assignment_validity(self) -> CompileResult<Self> {
     for f in self.global_context.abstract_functions_iter() {
+      let mut ctx = self.global_context.clone();
       if let FunctionImplementationKind::Composite(implementation) =
         &f.implementation
       {
         implementation
           .borrow_mut()
           .body
-          .check_assignment_validity(&mut Context::default_global())?;
+          .check_assignment_validity(&mut ctx)?;
       }
     }
     Ok(self)

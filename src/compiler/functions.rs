@@ -7,7 +7,7 @@ use super::{
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
   structs::{AbstractStruct, TypeOrAbstractStruct},
-  types::{Context, GenericOr, Type, TypeConstraint, ExpTypeInfo, TypeState},
+  types::{Context, ExpTypeInfo, GenericOr, Type, TypeConstraint, TypeState},
   util::indent,
 };
 
@@ -100,10 +100,7 @@ impl AbstractFunctionSignature {
       .iter()
       .map(|(name, bounds)| {
         (
-          (
-            name.clone(),
-            TypeState::fresh_unification_variable().into(),
-          ),
+          (name.clone(), TypeState::fresh_unification_variable().into()),
           (name.clone(), bounds.clone()),
         )
       })
@@ -259,12 +256,25 @@ impl TopLevelFunction {
       .join(", ");
 
     Ok(format!(
-      "{}fn {}({args}) -> {}{} {{{}\n}}",
+      "{}fn {}({args}){} {{{}\n}}",
       Metadata::compile_optional(self.metadata),
       compile_word(name.into()),
-      Metadata::compile_optional(self.return_metadata),
-      return_type.compile(),
-      indent(body.compile(ExpressionCompilationPosition::Return))
+      if return_type.kind.unwrap_known() == Type::None {
+        "".to_string()
+      } else {
+        format!(
+          " -> {}{}",
+          Metadata::compile_optional(self.return_metadata),
+          return_type.compile()
+        )
+      },
+      indent(
+        body.compile(if return_type.kind.unwrap_known() == Type::None {
+          ExpressionCompilationPosition::InnerLine
+        } else {
+          ExpressionCompilationPosition::Return
+        })
+      )
     ))
   }
 }

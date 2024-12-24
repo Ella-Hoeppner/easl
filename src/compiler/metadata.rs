@@ -59,7 +59,11 @@ impl Metadata {
         pairs
           .into_iter()
           .map(|(property, value)| {
-            format!("@{}({})", compile_word(property), compile_word(value))
+            if &*property == "entry" {
+              format!("@{value}")
+            } else {
+              format!("@{}({})", compile_word(property), compile_word(value))
+            }
           })
           .collect::<Vec<String>>()
           .join(" ")

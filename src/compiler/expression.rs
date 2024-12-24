@@ -1491,7 +1491,7 @@ impl TypedExp {
             Known(Type::I32) => "",
             Known(Type::U32) => "u",
             Known(Type::F32) => "f",
-            _ => unreachable!(),
+            _ => panic!("{:?}", self.data.kind),
           }
         ),
         Number::Float(f) => format!("{f}f"),
@@ -1727,7 +1727,7 @@ impl TypedExp {
               }
             }
             if let ExpKind::Name(var_name) = &var.kind {
-              if ctx.get_variable_kind(var_name) != &VariableKind::Var {
+              if ctx.get_variable_kind(var_name) != VariableKind::Var {
                 return err(
                   AssignmentTargetMustBeVariable,
                   self.source_trace.clone(),
