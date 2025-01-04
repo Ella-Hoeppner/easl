@@ -1830,27 +1830,29 @@ impl TypedExp {
             }
           {
             match &abstract_signature.implementation {
-              FunctionImplementationKind::Builtin => {
-                std::mem::swap(
+              FunctionImplementationKind::Builtin => match &**f_name {
+                "vec2" | "vec3" | "vec4" => {
+                  if let Type::Struct(s) = &self.data.kind.unwrap_known() {
+                    if let Some(mut compiled_name) = compiled_vec_name(
+                      &f_name,
+                      s.fields[0].field_type.unwrap_known(),
+                    ) {
+                      std::mem::swap(f_name, &mut compiled_name);
+                    }
+                  } else {
+                    unreachable!("")
+                  }
+                }
+                "bitcast" => std::mem::swap(
                   f_name,
-                  &mut (&**f_name == "vec2"
-                    || &**f_name == "vec3"
-                    || &**f_name == "vec4")
-                    .then(|| {
-                      if let TypeState::Known(Type::Struct(s)) = &self.data.kind
-                      {
-                        compiled_vec_name(
-                          &f_name,
-                          s.fields[0].field_type.unwrap_known(),
-                        )
-                      } else {
-                        unreachable!("")
-                      }
-                    })
-                    .flatten()
-                    .unwrap_or(f_name.clone()),
-                );
-              }
+                  &mut format!(
+                    "bitcast<{}>",
+                    self.data.kind.unwrap_known().compile()
+                  )
+                  .into(),
+                ),
+                _ => {}
+              },
               FunctionImplementationKind::Constructor => {
                 if let Some(abstract_struct) =
                   base_ctx.structs.iter().find(|s| s.name == *f_name)

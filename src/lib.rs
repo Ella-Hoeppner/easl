@@ -4,6 +4,8 @@
 #![feature(result_flattening)]
 
 pub mod compiler;
+pub mod format;
+pub mod macros;
 pub mod parse;
 
 #[cfg(test)]

@@ -336,6 +336,7 @@ impl Type {
       "Scalar" => {
         *self == Type::I32 || *self == Type::F32 || *self == Type::U32
       }
+      "Integer" => *self == Type::I32 || *self == Type::U32,
       _ => todo!(),
     }
   }
@@ -995,6 +996,12 @@ impl TypeConstraint {
   pub fn scalar() -> Self {
     Self {
       name: "Scalar".into(),
+      args: vec![],
+    }
+  }
+  pub fn integer() -> Self {
+    Self {
+      name: "Integer".into(),
       args: vec![],
     }
   }

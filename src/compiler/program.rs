@@ -24,7 +24,6 @@ use super::{
   expression::TypedExp,
   functions::{FunctionImplementationKind, TopLevelFunction},
   macros::{macroexpand, Macro},
-  structs::AbstractStruct,
   types::Context,
   vars::TopLevelVar,
 };
@@ -33,7 +32,7 @@ pub type EaslDocument<'s> = Document<'s, SyntaxContext, Encloser, Operator>;
 
 #[derive(Debug)]
 pub struct Program {
-  global_context: Context,
+  pub global_context: Context,
 }
 
 impl Program {
@@ -568,5 +567,11 @@ impl Program {
       }
     }
     Ok(wgsl)
+  }
+  pub fn process_raw_program(self) -> Result<Self, CompileError> {
+    self
+      .fully_infer_types()?
+      .check_assignment_validity()?
+      .monomorphize()
   }
 }

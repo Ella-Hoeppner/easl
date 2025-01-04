@@ -424,6 +424,79 @@ fn arithmetic_functions(name: &str) -> Vec<AbstractFunctionSignature> {
   .collect()
 }
 
+fn bitwise_functions(name: &str) -> Vec<AbstractFunctionSignature> {
+  let assignment_name: Rc<str> = format!("{}=", name).into();
+  vec![
+    AbstractFunctionSignature {
+      name: name.into(),
+      generic_args: vec![("T".into(), vec![TypeConstraint::integer()])],
+      arg_types: vec![
+        GenericOr::Generic("T".into()),
+        GenericOr::Generic("T".into()),
+      ],
+      return_type: GenericOr::Generic("T".into()),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+    AbstractFunctionSignature {
+      name: Rc::clone(&assignment_name),
+      generic_args: vec![("T".into(), vec![TypeConstraint::integer()])],
+      arg_types: vec![
+        GenericOr::Generic("T".into()),
+        GenericOr::Generic("T".into()),
+      ],
+      return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+        Type::None,
+      )),
+      implementation: FunctionImplementationKind::Builtin,
+    },
+  ]
+  .into_iter()
+  .chain(foreach_vec_type(|vec| {
+    let vec = Rc::new(vec);
+    [
+      (false, vec![[true, true], [true, false], [false, true]]),
+      (true, vec![[true, true], [true, false]]),
+    ]
+    .into_iter()
+    .map(|(assignment_fn, arg_vecs_or_scalars)| {
+      arg_vecs_or_scalars
+        .into_iter()
+        .map(|arg_vecs_or_scalars| AbstractFunctionSignature {
+          name: if assignment_fn {
+            Rc::clone(&assignment_name)
+          } else {
+            name.into()
+          },
+          generic_args: vec![("T".into(), vec![TypeConstraint::integer()])],
+          arg_types: arg_vecs_or_scalars
+            .into_iter()
+            .map(|vec_or_scalar| {
+              if vec_or_scalar {
+                GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+                  vec.clone(),
+                ))
+              } else {
+                GenericOr::Generic("T".into())
+              }
+            })
+            .collect(),
+          return_type: if assignment_fn {
+            GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::None))
+          } else {
+            GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+              vec.clone(),
+            ))
+          },
+          implementation: FunctionImplementationKind::Builtin,
+        })
+        .collect::<Vec<_>>()
+    })
+    .flatten()
+    .collect()
+  }))
+  .collect()
+}
+
 fn trigonometry_functions() -> Vec<AbstractFunctionSignature> {
   vec![
     AbstractFunctionSignature {
@@ -753,6 +826,16 @@ fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
       return_type: GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::U32)),
       implementation: FunctionImplementationKind::Builtin,
     },
+    AbstractFunctionSignature {
+      name: "bitcast".into(),
+      generic_args: vec![
+        ("T".into(), vec![TypeConstraint::scalar()]),
+        ("S".into(), vec![TypeConstraint::scalar()]),
+      ],
+      arg_types: vec![GenericOr::Generic("T".into())],
+      return_type: GenericOr::Generic("S".into()),
+      implementation: FunctionImplementationKind::Builtin,
+    },
   ]
 }
 
@@ -869,6 +952,9 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut negation_functions());
   signatures.append(&mut arithmetic_functions("/"));
   signatures.append(&mut arithmetic_functions("%"));
+  signatures.append(&mut bitwise_functions("^"));
+  signatures.append(&mut bitwise_functions(">>"));
+  signatures.append(&mut bitwise_functions("<<"));
   signatures.append(&mut multi_signature_vec_constructors(4));
   signatures.append(&mut multi_signature_vec_constructors(3));
   signatures.append(&mut multi_signature_vec_constructors(2));
@@ -883,11 +969,15 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
 
 lazy_static! {
   pub static ref ASSIGNMENT_OPS: HashSet<&'static str> =
-    ["=", "+=", "-=", "*=", "/=", "%="].into_iter().collect();
-  pub static ref INFIX_OPS: HashSet<&'static str> =
-    ["==", ">=", ">", "<=", "<", "||", "&&", "+", "-", "*", "/", "%",]
+    ["=", "+=", "-=", "*=", "/=", "%=", "^=", ">>=", "<<="]
       .into_iter()
       .collect();
+  pub static ref INFIX_OPS: HashSet<&'static str> = [
+    "==", ">=", ">", "<=", "<", "||", "&&", "+", "-", "*", "/", "%", "^", ">>",
+    "<<"
+  ]
+  .into_iter()
+  .collect();
   pub static ref ABNORMAL_CONSTRUCTOR_STRUCTS: HashSet<&'static str> =
     ["vec2", "vec3", "vec4"].into_iter().collect();
 }

@@ -1,7 +1,12 @@
+use std::collections::HashMap;
+
 use sse::{
-  document::Document, standard_whitespace_chars, syntax::Context as SSEContext,
-  DocumentSyntaxTree, Encloser as SSEEncloser, Operator as SSEOperator,
-  SyntaxContext, SyntaxGraph,
+  document::{Document, DocumentPosition},
+  formatting::Formatter,
+  standard_whitespace_chars,
+  syntax::Context as SSEContext,
+  DocumentSyntaxTree, Encloser as SSEEncloser, EncloserOrOperator,
+  Operator as SSEOperator, SyntaxContext, SyntaxGraph,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -110,9 +115,9 @@ impl SSEOperator for Operator {
   }
 }
 
-pub fn parse_easl(
-  easl_source: &str,
-) -> CompileResult<Document<Context, Encloser, Operator>> {
+pub type EaslSynaxGraph = SyntaxGraph<Context, Encloser, Operator>;
+
+pub fn easl_syntax_graph() -> EaslSynaxGraph {
   let default_context = SyntaxContext::new(
     vec![
       Encloser::Parens,
@@ -132,7 +137,7 @@ pub fn parse_easl(
   );
   let unstructured_comment_context =
     SyntaxContext::new(vec![], vec![], None, vec![]);
-  let syntax_graph = SyntaxGraph::new(
+  EaslSynaxGraph::new(
     Context::Default,
     [
       (Context::Default, default_context.clone()),
@@ -155,8 +160,13 @@ pub fn parse_easl(
       (Operator::ExpressionComment, Context::StructuredComment),
     ]
     .into(),
-  );
-  Document::from_text_with_syntax(syntax_graph, easl_source)
+  )
+}
+
+pub fn parse_easl(
+  easl_source: &str,
+) -> CompileResult<Document<Context, Encloser, Operator>> {
+  Document::from_text_with_syntax(easl_syntax_graph(), easl_source)
     .map_err(|e| {
       CompileError::new(
         CompileErrorKind::ParsingFailed(e),

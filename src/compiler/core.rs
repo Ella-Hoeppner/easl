@@ -12,11 +12,7 @@ pub fn compile_easl_document_to_wgsl(
 ) -> CompileResult<String> {
   Program::from_easl_document(&document, built_in_macros())
     .map_err(|e| e.attach_error_source(&document))?
-    .fully_infer_types()
-    .map_err(|e| e.attach_error_source(&document))?
-    .check_assignment_validity()
-    .map_err(|e| e.attach_error_source(&document))?
-    .monomorphize()
+    .process_raw_program()
     .map_err(|e| e.attach_error_source(&document))?
     .compile_to_wgsl()
 }
