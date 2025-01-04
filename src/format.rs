@@ -57,7 +57,7 @@ impl EaslFormatter {
     }
     s
   }
-  fn format(self, ast: EaslTree) -> String {
+  pub fn format(self, ast: EaslTree) -> String {
     match ast {
       EaslTree::Leaf(_, leaf) => leaf,
       EaslTree::Inner((_, encloser_or_operator), mut children) => {
