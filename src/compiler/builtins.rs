@@ -1249,20 +1249,34 @@ pub fn built_in_macros() -> Vec<Macro> {
                             ),
                             mut subtrees,
                           ) => {
-                            subtrees.insert(1, previous_expression.unwrap());
-                            Ok(EaslTree::Inner(
-                              (
-                                paren_position,
-                                EncloserOrOperator::Encloser(Encloser::Parens),
-                              ),
-                              subtrees,
-                            ))
+                            if subtrees.is_empty() {
+                              Err((
+                                SourceTrace::from(paren_position),
+                                format!(
+                                  "forms inside \"->\" macro must have at least
+                                  one inner form",
+                                )
+                                .into(),
+                              ))
+                            } else {
+                              subtrees.insert(1, previous_expression.unwrap());
+                              Ok(EaslTree::Inner(
+                                (
+                                  paren_position,
+                                  EncloserOrOperator::Encloser(
+                                    Encloser::Parens,
+                                  ),
+                                ),
+                                subtrees,
+                              ))
+                            }
                           }
-                          Ast::Inner((paren_position, _), _) => Err((
-                            SourceTrace::from(paren_position),
+                          EaslTree::Inner((inner_position, _), _) => Err((
+                            SourceTrace::from(inner_position),
                             format!(
-                              "\"->\" macro expects at least one inner form",
-                            ).into(),
+                              "\"->\" macro expects parenthesized forms",
+                            )
+                            .into(),
                           )),
                           EaslTree::Leaf(leaf_position, leaf_string) => Ok({
                             EaslTree::Inner(
@@ -1283,7 +1297,8 @@ pub fn built_in_macros() -> Vec<Macro> {
                           format!(
                           "\"->\" expression must contain zero or one \"<>\" \
                           subexpressions, found {n}"
-                        ).into(),
+                        )
+                          .into(),
                         )),
                       }
                     })
@@ -1306,5 +1321,76 @@ pub fn built_in_macros() -> Vec<Macro> {
     }
     other => Err(other),
   }));
-  vec![if_macro, when_macro, thread_macro]
+  let repeated_array_macro = Macro(Box::new(|tree| match tree {
+    Ast::Inner(
+      (pos, EncloserOrOperator::Encloser(Encloser::Parens)),
+      mut children,
+    ) => {
+      if !children.is_empty() {
+        match &children[0] {
+          Ast::Leaf(_, leaf) => {
+            if leaf == "repeat" {
+              if children.len() == 3 {
+                let value_tree = children.remove(2);
+                let count_tree = children.remove(1);
+                if let Ast::Leaf(_, count_string) = count_tree {
+                  if let Ok(count) = count_string.parse::<u32>() {
+                    Ok(Ok(Ast::Inner(
+                      (pos, EncloserOrOperator::Encloser(Encloser::Square)),
+                      std::iter::repeat(value_tree)
+                        .take(count as usize)
+                        .collect(),
+                    )))
+                  } else {
+                    Ok(Err((
+                      pos.into(),
+                      format!(
+                        "first argument to `repeat` macro must be an integer \
+                          literal"
+                      )
+                      .into(),
+                    )))
+                  }
+                } else {
+                  Ok(Err((
+                    pos.into(),
+                    format!(
+                      "first argument to `repeat` macro must be an integer \
+                      literal"
+                    )
+                    .into(),
+                  )))
+                }
+              } else {
+                Ok(Err((
+                  pos.into(),
+                  format!(
+                    "`repeat` macro needs 3 arguments, got {}",
+                    children.len()
+                  )
+                  .into(),
+                )))
+              }
+            } else {
+              Err(Ast::Inner(
+                (pos, EncloserOrOperator::Encloser(Encloser::Parens)),
+                children,
+              ))
+            }
+          }
+          Ast::Inner(_, _) => Err(Ast::Inner(
+            (pos, EncloserOrOperator::Encloser(Encloser::Parens)),
+            children,
+          )),
+        }
+      } else {
+        Err(Ast::Inner(
+          (pos, EncloserOrOperator::Encloser(Encloser::Parens)),
+          children,
+        ))
+      }
+    }
+    other => Err(other),
+  }));
+  vec![if_macro, when_macro, thread_macro, repeated_array_macro]
 }

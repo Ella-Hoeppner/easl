@@ -35,6 +35,7 @@ fn main() {
     "argument_metadata",
     "texture",
     "cast",
+    "array_literal",
   ] {
     print!("compiling {filename}...   ");
     let t = std::time::Instant::now();

@@ -19,7 +19,7 @@ pub enum SourceTraceKind {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceTrace {
-  kind: Rc<SourceTraceKind>,
+  pub kind: Rc<SourceTraceKind>,
 }
 
 impl SourceTrace {
@@ -134,6 +134,11 @@ pub enum CompileErrorKind {
   MacroError(Rc<str>),
   InvalidArrayAccessSyntax,
   ArrayAccessOnNonArray,
+  ApplicationsMustUseNames,
+  AnonymousFunctionsNotYetSupported,
+  AnonymousStructsNotYetSupported,
+  EncounteredCommentInSource,
+  EncounteredMetadataInInternalExpression,
 }
 
 #[derive(Clone, Debug)]

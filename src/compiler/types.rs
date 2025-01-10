@@ -337,7 +337,7 @@ impl Type {
         *self == Type::I32 || *self == Type::F32 || *self == Type::U32
       }
       "Integer" => *self == Type::I32 || *self == Type::U32,
-      _ => todo!(),
+      _ => todo!("custom constraints not yet supported"),
     }
   }
   pub fn from_easl_tree(
@@ -444,6 +444,9 @@ impl Type {
     let b = match (self, other) {
       (Type::Function(a), Type::Function(b)) => a.compatible(b),
       (Type::Struct(a), Type::Struct(b)) => a.compatible(b),
+      (Type::Array(count_a, a), Type::Array(count_b, b)) => {
+        count_a == count_b && TypeState::are_compatible(a, b)
+      }
       (a, b) => a == b,
     };
     b
@@ -693,6 +696,7 @@ impl TypeState {
               },
             )
           }
+          Type::Array(_, inner_type) => inner_type.check_is_fully_known(),
           _ => true,
         }
       } else {
@@ -709,10 +713,10 @@ impl TypeState {
       }
     })
   }
-  pub fn as_known_mut(&mut self, f: impl FnOnce(&mut Type)) {
+  pub fn as_known_mut<O>(&mut self, f: impl FnOnce(&mut Type) -> O) -> O {
     self.with_dereferenced_mut(|typestate| {
       if let TypeState::Known(t) = typestate {
-        f(t);
+        f(t)
       } else {
         panic!("as_known_mut on a non-Known TypeState")
       }
@@ -825,6 +829,18 @@ impl TypeState {
                   )?;
                 }
                 changed
+              }
+              (
+                Type::Array(length_1, inner_type_1),
+                Type::Array(length_2, inner_type_2),
+              ) => {
+                if length_1 != length_2 {
+                  return err(
+                    IncompatibleTypes(this.clone(), other.clone()),
+                    source_trace,
+                  );
+                }
+                inner_type_1.mutually_constrain(inner_type_2, source_trace)?
               }
               _ => false,
             }

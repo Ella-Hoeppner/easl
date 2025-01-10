@@ -214,7 +214,9 @@ impl Accessor {
   }
   pub fn compile(self) -> Rc<str> {
     match self {
-      Accessor::Field(field_name) => format!(".{field_name}").into(),
+      Accessor::Field(field_name) => {
+        format!(".{}", compile_word(field_name)).into()
+      }
       Accessor::Swizzle(field_indeces) => std::iter::once(".")
         .chain(
           field_indeces
@@ -264,11 +266,12 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Continue,
   Discard,
   Return(Box<Exp<D>>),
+  ArrayLiteral(Vec<Exp<D>>),
 }
 use ExpKind::*;
 
 use super::{
-  error::{CompileErrorKind, SourceTrace},
+  error::{CompileErrorKind, SourceTrace, SourceTraceKind},
   functions::FunctionImplementationKind,
   structs::compiled_vec_name,
   types::{AbstractType, TypeConstraint},
@@ -531,7 +534,10 @@ impl TypedExp {
                     } else {
                       match first_child_name.as_str() {
                         "fn" => {
-                          todo!("fn")
+                          return err(
+                            AnonymousFunctionsNotYetSupported,
+                            source_trace,
+                          );
                           /*let (
                             source_trace,
                             arg_names,
@@ -987,14 +993,34 @@ impl TypedExp {
                 return err(InvalidArrayAccessSyntax, source_trace);
               }
             }
-            Square => todo!("array"),
-            Curly => todo!("anonymous struct"),
-            LineComment => todo!("comments"),
-            BlockComment => todo!("comments"),
+            Square => Exp {
+              data: TypeState::Known(Type::Array(
+                Some(children_iter.len() as u32),
+                TypeState::Unknown.into(),
+              ))
+              .into(),
+              kind: ArrayLiteral(
+                children_iter
+                  .map(|ast| {
+                    TypedExp::try_from_easl_tree(
+                      ast, structs, aliases, skolems, ctx,
+                    )
+                  })
+                  .collect::<CompileResult<Vec<TypedExp>>>()?,
+              ),
+              source_trace,
+            },
+            Curly => return err(AnonymousStructsNotYetSupported, source_trace),
+            LineComment => {
+              return err(EncounteredCommentInSource, source_trace)
+            }
+            BlockComment => {
+              return err(EncounteredCommentInSource, source_trace)
+            }
           },
           Operator(o) => match o {
             MetadataAnnotation => {
-              todo!("Encountered metadata in internal expression")
+              return err(EncounteredMetadataInInternalExpression, source_trace)
             }
             TypeAnnotation => {
               let mut exp = Self::try_from_easl_tree(
@@ -1036,7 +1062,13 @@ impl TypedExp {
             untyped_so_far
           })
       }
-      Access(_, exp) => exp.find_untyped(),
+      Access(accessor, exp) => {
+        let mut untyped = exp.find_untyped();
+        if let Accessor::ArrayIndex(index_exp) = accessor {
+          untyped.append(&mut index_exp.find_untyped());
+        }
+        untyped
+      }
       Let(bindings, body) => bindings.iter_mut().fold(
         body.find_untyped(),
         |mut untyped_so_far, (_, _, binding_value)| {
@@ -1084,6 +1116,11 @@ impl TypedExp {
       Continue => vec![],
       Discard => vec![],
       Return(exp) => exp.find_untyped(),
+      ArrayLiteral(children) => children
+        .iter_mut()
+        .map(|child| child.find_untyped())
+        .flatten()
+        .collect(),
     };
     if self.data.is_fully_known() {
       children_untyped
@@ -1178,13 +1215,16 @@ impl TypedExp {
             return err(WrongArity(name), self.source_trace.clone());
           }
         } else {
-          todo!("I haven't implemented function type inference yet!!!")
+          false
         };
         ctx.pop_enclosing_function_type();
         changed
       }
       Application(f, args) => {
         let mut anything_changed = false;
+        for arg in args.iter_mut() {
+          anything_changed |= arg.propagate_types(ctx)?;
+        }
         if let Name(name) = &f.kind {
           anything_changed |= ctx.constrain_name_type(
             name,
@@ -1192,7 +1232,17 @@ impl TypedExp {
             &mut f.data,
           )?;
         } else {
-          todo!("I haven't implemented function type inference yet!!!")
+          anything_changed |= f.data.constrain(
+            TypeState::Known(Type::Function(Box::new(FunctionSignature {
+              abstract_ancestor: None,
+              arg_types: args
+                .iter()
+                .map(|arg| (arg.data.clone(), vec![]))
+                .collect(),
+              return_type: self.data.clone(),
+            }))),
+            f.source_trace.clone(),
+          )?;
         }
         if let TypeState::Known(f_type) = &mut f.data.kind {
           if let Type::Function(signature) = f_type {
@@ -1217,9 +1267,6 @@ impl TypedExp {
             return err(AppliedNonFunction, self.source_trace.clone());
           }
         }
-        for arg in args.iter_mut() {
-          anything_changed |= arg.propagate_types(ctx)?;
-        }
         anything_changed |= f.data.constrain_fn_by_argument_types(
           args.iter().map(|arg| arg.data.kind.clone()).collect(),
           self.source_trace.clone(),
@@ -1229,73 +1276,74 @@ impl TypedExp {
           args.iter().fold(f.data.subtree_fully_typed, |acc, arg| {
             acc && arg.data.subtree_fully_typed
           });
+
         anything_changed
       }
-      Access(accessor, subexp) => {
-        let changed = match accessor {
-          Accessor::Field(field_name) => {
-            let mut anything_changed = false;
-            anything_changed |= subexp.propagate_types(ctx)?;
-            if let Known(t) = &mut subexp.data.kind {
-              if let Type::Struct(s) = t {
-                anything_changed |= self.data.mutually_constrain(
-                  {
-                    &mut s
-                      .fields
-                      .iter_mut()
-                      .find(|f| f.name == *field_name)
-                      .ok_or(CompileError::new(
-                        NoSuchField {
-                          struct_name: s.abstract_ancestor.name.clone(),
-                          field_name: field_name.clone(),
-                        },
-                        self.source_trace.clone(),
-                      ))?
-                      .field_type
-                  },
-                  self.source_trace.clone(),
-                )?;
-              } else {
-                return err(AccessorOnNonStruct, self.source_trace.clone())?;
-              }
+      Access(accessor, subexp) => match accessor {
+        Accessor::Field(field_name) => {
+          let mut anything_changed = false;
+          anything_changed |= subexp.propagate_types(ctx)?;
+          if let Known(t) = &mut subexp.data.kind {
+            if let Type::Struct(s) = t {
+              anything_changed |= self.data.mutually_constrain(
+                {
+                  &mut s
+                    .fields
+                    .iter_mut()
+                    .find(|f| f.name == *field_name)
+                    .ok_or(CompileError::new(
+                      NoSuchField {
+                        struct_name: s.abstract_ancestor.name.clone(),
+                        field_name: field_name.clone(),
+                      },
+                      self.source_trace.clone(),
+                    ))?
+                    .field_type
+                },
+                self.source_trace.clone(),
+              )?;
+            } else {
+              return err(AccessorOnNonStruct, self.source_trace.clone())?;
             }
-            anything_changed
           }
-          Accessor::Swizzle(fields) => {
-            let mut anything_changed = self.data.constrain(
-              swizzle_accessor_typestate(&subexp.data, fields).kind,
-              self.source_trace.clone(),
-            )?;
-            anything_changed |= subexp.data.constrain(
-              swizzle_accessed_possibilities(fields).kind,
-              self.source_trace.clone(),
-            )?;
-            anything_changed |= subexp.propagate_types(ctx)?;
-            anything_changed
-          }
-          Accessor::ArrayIndex(index_expression) => {
-            if let TypeState::Known(t) = &mut subexp.data.kind {
-              if let Type::Array(_, inner_type) = t {
-                self.data.mutually_constrain(
-                  inner_type.as_mut(),
-                  self.source_trace.clone(),
-                )?;
-              } else {
-                return err(ArrayAccessOnNonArray, self.source_trace.clone());
-              }
+          self.data.subtree_fully_typed = subexp.data.subtree_fully_typed;
+          anything_changed
+        }
+        Accessor::Swizzle(fields) => {
+          let mut anything_changed = self.data.constrain(
+            swizzle_accessor_typestate(&subexp.data, fields).kind,
+            self.source_trace.clone(),
+          )?;
+          anything_changed |= subexp.data.constrain(
+            swizzle_accessed_possibilities(fields).kind,
+            self.source_trace.clone(),
+          )?;
+          anything_changed |= subexp.propagate_types(ctx)?;
+          self.data.subtree_fully_typed = subexp.data.subtree_fully_typed;
+          anything_changed
+        }
+        Accessor::ArrayIndex(index_expression) => {
+          let mut anything_changed = index_expression.data.constrain(
+            TypeState::OneOf(vec![Type::I32, Type::U32]),
+            self.source_trace.clone(),
+          )?;
+          if let TypeState::Known(t) = &mut subexp.data.kind {
+            if let Type::Array(_, inner_type) = t {
+              anything_changed |= self.data.mutually_constrain(
+                inner_type.as_mut(),
+                self.source_trace.clone(),
+              )?;
+            } else {
+              return err(ArrayAccessOnNonArray, self.source_trace.clone());
             }
-            let mut anything_changed = index_expression.data.constrain(
-              TypeState::OneOf(vec![Type::I32, Type::U32]),
-              self.source_trace.clone(),
-            )?;
-            anything_changed |= index_expression.propagate_types(ctx)?;
-            anything_changed |= subexp.propagate_types(ctx)?;
-            anything_changed
           }
-        };
-        self.data.subtree_fully_typed = subexp.data.subtree_fully_typed;
-        changed
-      }
+          anything_changed |= index_expression.propagate_types(ctx)?;
+          anything_changed |= subexp.propagate_types(ctx)?;
+          self.data.subtree_fully_typed = subexp.data.subtree_fully_typed
+            && index_expression.data.subtree_fully_typed;
+          anything_changed
+        }
+      },
       Let(bindings, body) => {
         let mut anything_changed = body
           .data
@@ -1468,6 +1516,30 @@ impl TypedExp {
         self.data.subtree_fully_typed = exp.data.subtree_fully_typed;
         changed
       }
+      ArrayLiteral(children) => {
+        let mut changed = false;
+        for child in children.iter_mut() {
+          self.data.as_known_mut(|array_type| {
+            if let Type::Array(_, inner_type) = array_type {
+              changed |= child.data.mutually_constrain(
+                inner_type.as_mut(),
+                SourceTrace {
+                  kind: SourceTraceKind::Combination(vec![
+                    child.source_trace.clone(),
+                    self.source_trace.clone(),
+                  ])
+                  .into(),
+                },
+              )?;
+              changed |= child.propagate_types(ctx)?;
+              Ok::<(), CompileError>(())
+            } else {
+              unreachable!()
+            }
+          })?
+        }
+        changed
+      }
     };
     self.data.subtree_fully_typed &= self.data.check_is_fully_known();
     Ok(changed)
@@ -1526,7 +1598,7 @@ impl TypedExp {
       Access(accessor, subexp) => wrap(format!(
         "{}{}",
         subexp.compile(InnerExpression),
-        compile_word(accessor.compile())
+        accessor.compile()
       )),
       Let(bindings, body) => {
         let binding_lines: Vec<String> = bindings
@@ -1707,6 +1779,14 @@ impl TypedExp {
       ExpKind::Return(exp) => format!(
         "\nreturn {};",
         exp.compile(ExpressionCompilationPosition::InnerExpression)
+      ),
+      ArrayLiteral(children) => format!(
+        "array({})",
+        children
+          .into_iter()
+          .map(|child| child.compile(position))
+          .collect::<Vec<String>>()
+          .join(", ")
       ),
     }
   }

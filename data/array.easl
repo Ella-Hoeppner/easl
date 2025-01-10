@@ -1,5 +1,14 @@
-@{group 0 binding 0} (var [uniform] a: [256: vec4f])
-@{group 0 binding 1} (var [storage read] b: [vec4f])
+@{group 0 binding 0}
+(var [uniform] a: [256: vec4f])
+
+@{group 0 binding 1}
+(var [storage
+  read] b: [vec4f])
 
 (defn f [i: u32]: vec4f
-  @[a i])
+  (+ @[a
+       (- i
+          1)]
+     @[a
+       (+ i
+          1)]))

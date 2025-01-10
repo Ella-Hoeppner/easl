@@ -1,0 +1,5 @@
+(defn f [i: u32]: vec4f
+  (let [a [(vec4f 1.)
+           (vec4f 2.)]]
+    @[a
+      0u]))
