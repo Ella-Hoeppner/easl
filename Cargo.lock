@@ -65,6 +65,7 @@ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 [[package]]
 name = "sse"
 version = "0.0.0"
+source = "git+https://github.com/Ella-Hoeppner/SSE.git#3ddce310d0d156c8fff5c6efd6ca84b621c63ee1"
 dependencies = [
  "take_mut",
  "unicode-segmentation",
