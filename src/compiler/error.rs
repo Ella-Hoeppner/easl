@@ -139,6 +139,9 @@ pub enum CompileErrorKind {
   AnonymousStructsNotYetSupported,
   EncounteredCommentInSource,
   EncounteredMetadataInInternalExpression,
+  InvalidFunctionType,
+  CantInlineFunctionWithoutAbstractAncestor,
+  NoArgNamesForFunction,
 }
 
 #[derive(Clone, Debug)]

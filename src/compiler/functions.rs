@@ -1,6 +1,8 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use crate::compiler::util::compile_word;
+use take_mut::take;
+
+use crate::compiler::{types::AbstractType, util::compile_word};
 
 use super::{
   error::{err, CompileErrorKind::*, CompileResult, SourceTrace},
@@ -13,6 +15,7 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TopLevelFunction {
+  pub arg_names: Vec<Rc<str>>,
   pub arg_metadata: Vec<Option<Metadata>>,
   pub return_metadata: Option<Metadata>,
   pub metadata: Option<Metadata>,
@@ -36,6 +39,36 @@ pub struct AbstractFunctionSignature {
 }
 
 impl AbstractFunctionSignature {
+  pub fn arg_names(
+    &self,
+    source_trace: SourceTrace,
+  ) -> CompileResult<Vec<Rc<str>>> {
+    if let FunctionImplementationKind::Composite(f) = &self.implementation {
+      Ok(f.borrow().arg_names.clone())
+    } else {
+      err(NoArgNamesForFunction, source_trace)
+    }
+  }
+  pub fn arg_metadata(
+    &self,
+    source_trace: SourceTrace,
+  ) -> CompileResult<Vec<Option<Metadata>>> {
+    if let FunctionImplementationKind::Composite(f) = &self.implementation {
+      Ok(f.borrow().arg_metadata.clone())
+    } else {
+      err(NoArgNamesForFunction, source_trace)
+    }
+  }
+  pub fn implementation(
+    &self,
+    source_trace: SourceTrace,
+  ) -> CompileResult<TopLevelFunction> {
+    if let FunctionImplementationKind::Composite(f) = &self.implementation {
+      Ok(f.borrow().clone())
+    } else {
+      err(NoArgNamesForFunction, source_trace)
+    }
+  }
   pub fn generate_monomorphized(
     &self,
     arg_types: Vec<Type>,
@@ -90,6 +123,88 @@ impl AbstractFunctionSignature {
       panic!("attempted to monomorphize non-composite abstract function")
     }
     Ok(monomorphized)
+  }
+  pub fn generate_higher_order_functions_inlined_version(
+    &self,
+    fn_args: Vec<TypedExp>,
+    source_trace: SourceTrace,
+  ) -> CompileResult<Self> {
+    let mut implementation = self.implementation(source_trace.clone())?;
+    let (fn_parameter_names, remaining_parameters) = self
+      .arg_types
+      .iter()
+      .cloned()
+      .zip(implementation.arg_names.into_iter())
+      .zip(implementation.arg_metadata.into_iter())
+      .map(|((t, name), metadata)| {
+        if let GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+          Type::Function(_),
+        )) = t
+        {
+          (Some(name.clone()), None)
+        } else {
+          (None, Some((name.clone(), (metadata.clone(), t))))
+        }
+      })
+      .collect::<(
+        Vec<Option<Rc<str>>>,
+        Vec<Option<(Rc<str>, (Option<Metadata>, AbstractType))>>,
+      )>();
+    let (new_parameter_names, (new_parameter_metadata, new_parameter_types)): (
+      Vec<_>,
+      (Vec<_>, Vec<_>),
+    ) = remaining_parameters.into_iter().filter_map(|x| x).collect();
+    let (retained_argument_indeces, removed_param_names): (
+      Vec<usize>,
+      Vec<Rc<str>>,
+    ) = fn_parameter_names
+      .into_iter()
+      .enumerate()
+      .filter_map(|(i, x)| x.map(|x| (i, x)))
+      .collect();
+    take(&mut implementation.body, |mut body| {
+      body.kind = if let ExpKind::Function(_, body_exp) = body.kind {
+        ExpKind::Function(new_parameter_names.clone(), body_exp)
+      } else {
+        unreachable!()
+      };
+      if let TypeState::Known(Type::Function(signature)) = &mut body.data.kind {
+        for i in retained_argument_indeces.into_iter().rev() {
+          signature.arg_types.remove(i);
+        }
+      } else {
+        unreachable!()
+      }
+      body
+    });
+    implementation
+      .body
+      .inline_args(&removed_param_names, &fn_args);
+    implementation.arg_names = new_parameter_names;
+    implementation.arg_metadata = new_parameter_metadata;
+    let f = AbstractFunctionSignature {
+      name: (self.name.to_string()
+        + "__"
+        + &fn_args
+          .iter()
+          .map(|arg| {
+            if let ExpKind::Name(name) = &arg.kind {
+              &**name
+            } else {
+              panic!("element of fn_args wasn't a Name")
+            }
+          })
+          .collect::<Vec<&str>>()
+          .join("_"))
+        .into(),
+      generic_args: self.generic_args.clone(),
+      arg_types: new_parameter_types,
+      return_type: self.return_type.clone(),
+      implementation: FunctionImplementationKind::Composite(Rc::new(
+        RefCell::new(implementation),
+      )),
+    };
+    Ok(f)
   }
   pub fn concretize(f: Rc<Self>) -> FunctionSignature {
     let (generic_variables, generic_constraints): (

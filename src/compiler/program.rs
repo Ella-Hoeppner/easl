@@ -24,6 +24,7 @@ use super::{
   expression::TypedExp,
   functions::{FunctionImplementationKind, TopLevelFunction},
   macros::{macroexpand, Macro},
+  structs::TypeOrAbstractStruct,
   types::Context,
   vars::TopLevelVar,
 };
@@ -216,7 +217,7 @@ impl Program {
                 attributes,
                 var: Variable::new(
                   TypeState::Known(
-                    AbstractType::from_ast(
+                    AbstractType::from_easl_tree(
                       type_ast,
                       &global_context.structs,
                       &global_context.type_aliases,
@@ -340,6 +341,7 @@ impl Program {
               )?;
               let implementation = FunctionImplementationKind::Composite(
                 Rc::new(RefCell::new(TopLevelFunction {
+                  arg_names: arg_names.clone(),
                   arg_metadata,
                   return_metadata,
                   metadata,
@@ -533,6 +535,61 @@ impl Program {
     self.global_context = monomorphized_ctx;
     Ok(self)
   }
+  pub fn inline_all_higher_order_arguments(self) -> CompileResult<Self> {
+    let (new_program, changed) = self.inline_higher_order_arguments()?;
+    if changed {
+      new_program.inline_all_higher_order_arguments()
+    } else {
+      Ok(new_program)
+    }
+  }
+  pub fn inline_higher_order_arguments(
+    mut self,
+  ) -> CompileResult<(Self, bool)> {
+    let mut changed = false;
+    let mut inlined_ctx = Context::default_global();
+    for f in self.global_context.abstract_functions_iter() {
+      if f.generic_args.is_empty()
+        && f
+          .arg_types
+          .iter()
+          .find(|t| {
+            if let GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+              Type::Function(_),
+            )) = t
+            {
+              true
+            } else {
+              false
+            }
+          })
+          .is_none()
+      {
+        if let FunctionImplementationKind::Composite(implementation) =
+          &f.implementation
+        {
+          let added_new_function = implementation
+            .borrow_mut()
+            .body
+            .inline_higher_order_arguments(
+              &self.global_context,
+              &mut inlined_ctx,
+            )?;
+          changed |= added_new_function;
+          let mut new_f = (**f).clone();
+          new_f.implementation =
+            FunctionImplementationKind::Composite(implementation.clone());
+          inlined_ctx.add_abstract_function(Rc::new(new_f));
+        }
+      }
+    }
+    inlined_ctx.structs = self.global_context.structs;
+    inlined_ctx.top_level_vars = self.global_context.top_level_vars;
+    inlined_ctx.variables = self.global_context.variables;
+    inlined_ctx.type_aliases = self.global_context.type_aliases;
+    self.global_context = inlined_ctx;
+    Ok((self, changed))
+  }
   pub fn compile_to_wgsl(self) -> CompileResult<String> {
     let mut wgsl = String::new();
     for v in self.global_context.top_level_vars.iter() {
@@ -572,6 +629,7 @@ impl Program {
     self
       .fully_infer_types()?
       .check_assignment_validity()?
-      .monomorphize()
+      .monomorphize()?
+      .inline_all_higher_order_arguments()
   }
 }

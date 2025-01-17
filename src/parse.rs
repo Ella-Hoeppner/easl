@@ -1,12 +1,7 @@
-use std::collections::HashMap;
-
 use sse::{
-  document::{Document, DocumentPosition},
-  formatting::Formatter,
-  standard_whitespace_chars,
-  syntax::Context as SSEContext,
-  DocumentSyntaxTree, Encloser as SSEEncloser, EncloserOrOperator,
-  Operator as SSEOperator, SyntaxContext, SyntaxGraph,
+  document::Document, standard_whitespace_chars, syntax::Context as SSEContext,
+  DocumentSyntaxTree, Encloser as SSEEncloser, Operator as SSEOperator,
+  SyntaxContext, SyntaxGraph,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

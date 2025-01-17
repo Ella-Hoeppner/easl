@@ -28,12 +28,6 @@ impl EaslFormatter {
       _ => 0,
     }
   }
-  fn is_top_level(&self) -> bool {
-    match self {
-      TopLevel => true,
-      _ => false,
-    }
-  }
   fn indented_newline(&self) -> String {
     "\n".to_string() + &" ".repeat(self.indentation())
   }
@@ -47,7 +41,7 @@ impl EaslFormatter {
       let next_child_string = self.format(next_child);
       s += &next_child_string;
       if let Some(next_child) = child_iter.next() {
-        let mut secondary_formatter = self.indent(next_child_string.len() + 1);
+        let secondary_formatter = self.indent(next_child_string.len() + 1);
         s += " ";
         s += &secondary_formatter.format(next_child);
       }
@@ -100,10 +94,10 @@ impl EaslFormatter {
                     "defn" => {
                       let name_string =
                         inner_formatter.format(children.remove(0));
-                      let mut arg_formatter = inner_formatter.indent(
+                      let arg_formatter = inner_formatter.indent(
                         first_child_string.len() + name_string.len() + 2,
                       );
-                      let mut body_formatter = inner_formatter.indent(1);
+                      let body_formatter = inner_formatter.indent(1);
                       first_child_string
                         + " "
                         + &name_string
@@ -137,7 +131,7 @@ impl EaslFormatter {
                       } else {
                         String::new()
                       };
-                      let mut body_formatter = inner_formatter.indent(1);
+                      let body_formatter = inner_formatter.indent(1);
                       first_child_string
                         + &bindings_string
                         + &body_formatter.indented_newline()
@@ -148,7 +142,7 @@ impl EaslFormatter {
                           .join(&body_formatter.indented_newline())
                     }
                     _ => {
-                      let mut inner_inner_formatter =
+                      let inner_inner_formatter =
                         inner_formatter.indent(first_child_string.len() + 1);
                       first_child_string
                         + " "

@@ -1,0 +1,35 @@
+(defn double [a: f32]: f32
+  (* a
+     2.))
+
+(defn triple [a: f32]: f32
+  (* a
+     3.))
+
+(defn quadruple [a: f32]: f32
+  (* a
+     4.))
+
+(defn do-both [f1: (Fn [f32]
+                   f32)
+               f2: (Fn [f32]
+                   f32)
+               x: f32]: f32
+  (f1 (f2 x)))
+
+(defn do-three [f1: (Fn [f32]
+                    f32)
+                f2: (Fn [f32]
+                    f32)
+                f3: (Fn [f32]
+                    f32)
+                x: f32]: f32
+  (f1 (do-both f2
+               f3
+               x)))
+
+(defn main []: f32
+  (do-three double
+            triple
+            quadruple
+            1.))

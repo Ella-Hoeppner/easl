@@ -59,76 +59,7 @@ impl AbstractType {
     generic_args: &Vec<Rc<str>>,
     skolems: &Vec<Rc<str>>,
   ) -> CompileResult<Self> {
-    match &tree {
-      EaslTree::Leaf(_, type_name) => Ok(Self::from_name(
-        type_name.as_str().into(),
-        tree.position().clone(),
-        structs,
-        aliases,
-        generic_args,
-        skolems,
-      )?),
-      EaslTree::Inner(
-        (position, EncloserOrOperator::Encloser(Encloser::Parens)),
-        children,
-      ) => {
-        let mut children_iter = children.into_iter();
-        if let Some(EaslTree::Leaf(position, type_name)) = children_iter.next()
-        {
-          if let Some(s) = structs.iter().find(|s| &*s.name == *type_name) {
-            let struct_generic_args = children_iter
-              .map(|t| {
-                Ok(Self::from_easl_tree(
-                  t.clone(),
-                  structs,
-                  aliases,
-                  generic_args,
-                  skolems,
-                )?)
-              })
-              .collect::<CompileResult<Vec<Self>>>()?;
-            Ok(AbstractType::NonGeneric(
-              TypeOrAbstractStruct::AbstractStruct(Rc::new(
-                (**s).clone().fill_abstract_generics(struct_generic_args),
-              )),
-            ))
-          } else {
-            err(
-              InvalidTypeName(type_name.clone().into()),
-              position.clone().into(),
-            )
-          }
-        } else {
-          err(InvalidType(tree.clone()), position.clone().into())
-        }
-      }
-      _ => err(InvalidType(tree.clone()), tree.position().clone().into()),
-    }
-  }
-  pub fn from_name(
-    name: Rc<str>,
-    position: DocumentPosition,
-    structs: &Vec<Rc<AbstractStruct>>,
-    aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
-    generic_args: &Vec<Rc<str>>,
-    skolems: &Vec<Rc<str>>,
-  ) -> CompileResult<Self> {
-    Ok(if generic_args.contains(&name) {
-      GenericOr::Generic(name.into())
-    } else {
-      GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
-        name, position, structs, aliases, skolems,
-      )?))
-    })
-  }
-  pub fn from_ast(
-    ast: EaslTree,
-    structs: &Vec<Rc<AbstractStruct>>,
-    aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
-    generic_args: &Vec<Rc<str>>,
-    skolems: &Vec<Rc<str>>,
-  ) -> CompileResult<Self> {
-    match ast {
+    match tree {
       EaslTree::Leaf(position, leaf) => {
         let leaf_rc: Rc<str> = leaf.into();
         Ok(if generic_args.contains(&leaf_rc) {
@@ -147,34 +78,61 @@ impl AbstractType {
         (position, EncloserOrOperator::Encloser(Encloser::Parens)),
         children,
       ) => {
-        let mut children_iter = children.into_iter();
+        let mut children_iter = children.iter();
         let generic_struct_name =
           if let Some(EaslTree::Leaf(_, leaf)) = children_iter.next() {
             leaf
           } else {
             return err(InvalidStructName, position.into());
           };
-        let generic_struct = structs
-          .iter()
-          .find(|s| &*s.name == generic_struct_name.as_str())
-          .ok_or_else(|| {
-            CompileError::new(
-              NoStructNamed(generic_struct_name.into()),
-              position.into(),
-            )
-          })?
-          .clone();
-        let generic_args = children_iter
-          .map(|subtree: EaslTree| {
-            Self::from_ast(subtree, structs, aliases, generic_args, skolems)
-          })
-          .collect::<CompileResult<Vec<_>>>()?;
-        Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
-          Rc::new(
-            Rc::unwrap_or_clone(generic_struct)
-              .fill_abstract_generics(generic_args),
-          ),
-        )))
+        if generic_struct_name.as_str() == "Fn" {
+          Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
+            Type::from_easl_tree(
+              EaslTree::Inner(
+                (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+                children,
+              ),
+              structs,
+              aliases,
+              skolems,
+            )?,
+          )))
+        } else {
+          let mut children_iter = children.into_iter();
+          let generic_struct_name =
+            if let EaslTree::Leaf(_, leaf) = children_iter.next().unwrap() {
+              leaf
+            } else {
+              unreachable!()
+            };
+          let generic_struct = structs
+            .iter()
+            .find(|s| &*s.name == generic_struct_name.as_str())
+            .ok_or_else(|| {
+              CompileError::new(
+                NoStructNamed(generic_struct_name.clone().into()),
+                position.into(),
+              )
+            })?
+            .clone();
+          let generic_args = children_iter
+            .map(|subtree: EaslTree| {
+              Self::from_easl_tree(
+                subtree,
+                structs,
+                aliases,
+                generic_args,
+                skolems,
+              )
+            })
+            .collect::<CompileResult<Vec<_>>>()?;
+          Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
+            Rc::new(
+              Rc::unwrap_or_clone(generic_struct)
+                .fill_abstract_generics(generic_args),
+            ),
+          )))
+        }
       }
       EaslTree::Inner(
         (position, EncloserOrOperator::Encloser(Encloser::Square)),
@@ -227,8 +185,24 @@ impl AbstractType {
           return err(InvalidArraySignature, source_trace);
         }
       }
-      _ => err(InvalidStructFieldType, ast.position().clone().into()),
+      _ => err(InvalidStructFieldType, tree.position().clone().into()),
     }
+  }
+  pub fn from_name(
+    name: Rc<str>,
+    position: DocumentPosition,
+    structs: &Vec<Rc<AbstractStruct>>,
+    aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    generic_args: &Vec<Rc<str>>,
+    skolems: &Vec<Rc<str>>,
+  ) -> CompileResult<Self> {
+    Ok(if generic_args.contains(&name) {
+      GenericOr::Generic(name.into())
+    } else {
+      GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
+        name, position, structs, aliases, skolems,
+      )?))
+    })
   }
   pub fn concretize(
     &self,
@@ -356,42 +330,98 @@ impl Type {
       ) => {
         let source_trace: SourceTrace = position.into();
         let mut signature_leaves = struct_signature_children.into_iter();
-        if let Some(EaslTree::Leaf(_, struct_name)) = signature_leaves.next() {
-          if signature_leaves.is_empty() {
-            return err(InvalidStructName, source_trace);
-          } else {
-            let generic_args: Vec<ExpTypeInfo> = signature_leaves
-              .map(|signature_arg| {
-                Ok(
-                  TypeState::Known(
-                    AbstractType::from_easl_tree(
-                      signature_arg,
-                      structs,
-                      aliases,
-                      &vec![],
-                      skolems,
-                    )?
-                    .concretize(
-                      structs,
-                      skolems,
-                      source_trace.clone(),
-                    )?,
-                  )
-                  .into(),
-                )
-              })
-              .collect::<CompileResult<Vec<ExpTypeInfo>>>()?;
-            if let Some(s) = structs.iter().find(|s| &*s.name == struct_name) {
-              Ok(Type::Struct(AbstractStruct::fill_generics_ordered(
-                s.clone(),
-                generic_args,
-              )))
+        match signature_leaves.next() {
+          Some(EaslTree::Leaf(_, struct_name))
+            if struct_name.as_str() == "Fn" =>
+          {
+            match (
+              signature_leaves.len(),
+              signature_leaves.next(),
+              signature_leaves.next(),
+            ) {
+              (
+                2,
+                Some(EaslTree::Inner(
+                  (_, EncloserOrOperator::Encloser(Encloser::Square)),
+                  arg_type_asts,
+                )),
+                Some(return_type_ast),
+              ) => Ok(Self::Function(Box::new(FunctionSignature {
+                abstract_ancestor: None,
+                arg_types: arg_type_asts
+                  .into_iter()
+                  .map(|arg_type_ast| {
+                    Ok((
+                      TypeState::Known(Self::from_easl_tree(
+                        arg_type_ast,
+                        structs,
+                        aliases,
+                        skolems,
+                      )?)
+                      .into(),
+                      vec![],
+                    ))
+                  })
+                  .collect::<CompileResult<Vec<_>>>()?,
+                return_type: TypeState::Known(Self::from_easl_tree(
+                  return_type_ast,
+                  structs,
+                  aliases,
+                  skolems,
+                )?)
+                .into(),
+              }))),
+              _ => err(InvalidFunctionType, source_trace),
+            }
+            /*let args = signature_leaves.next().ok_or_else(|| {
+              CompileError::new(InvalidFunctionType, source_trace.clone())
+            })?;
+            let return_type = signature_leaves.next().ok_or_else(|| {
+              CompileError::new(InvalidFunctionType, source_trace.clone())
+            })?;
+            if signature_leaves.is_empty() {
+              todo!()
             } else {
-              return err(UnknownStructName, source_trace);
+              err(InvalidFunctionType, source_trace)
+            }*/
+          }
+          Some(EaslTree::Leaf(_, struct_name)) => {
+            if signature_leaves.is_empty() {
+              return err(InvalidStructName, source_trace);
+            } else {
+              let generic_args: Vec<ExpTypeInfo> = signature_leaves
+                .map(|signature_arg| {
+                  Ok(
+                    TypeState::Known(
+                      AbstractType::from_easl_tree(
+                        signature_arg,
+                        structs,
+                        aliases,
+                        &vec![],
+                        skolems,
+                      )?
+                      .concretize(
+                        structs,
+                        skolems,
+                        source_trace.clone(),
+                      )?,
+                    )
+                    .into(),
+                  )
+                })
+                .collect::<CompileResult<Vec<ExpTypeInfo>>>()?;
+              if let Some(s) = structs.iter().find(|s| &*s.name == struct_name)
+              {
+                Ok(Type::Struct(AbstractStruct::fill_generics_ordered(
+                  s.clone(),
+                  generic_args,
+                )))
+              } else {
+                return err(UnknownStructName, source_trace);
+              }
             }
           }
-        } else {
-          return err(InvalidStructName, source_trace);
+          _ => return err(InvalidStructName, source_trace),
         }
       }
       EaslTree::Inner(
@@ -1050,7 +1080,7 @@ pub fn parse_type_bound(
       };
       let args = children_iter
         .map(|child_ast| {
-          AbstractType::from_ast(
+          AbstractType::from_easl_tree(
             child_ast,
             structs,
             aliases,

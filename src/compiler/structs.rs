@@ -56,7 +56,7 @@ impl UntypedStructField {
     Ok(AbstractStructField {
       metadata: self.metadata,
       name: self.name,
-      field_type: GenericOr::from_ast(
+      field_type: GenericOr::from_easl_tree(
         self.type_ast,
         structs,
         aliases,

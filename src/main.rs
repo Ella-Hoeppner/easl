@@ -36,6 +36,8 @@ fn main() {
     "texture",
     "cast",
     "array_literal",
+    "fn_inlining",
+    "nested_fn_inlining",
   ] {
     print!("compiling {filename}...   ");
     let t = std::time::Instant::now();

@@ -2012,4 +2012,167 @@ impl TypedExp {
     }
     Ok(())
   }
+  pub fn inline_higher_order_arguments(
+    &mut self,
+    base_ctx: &Context,
+    new_ctx: &mut Context,
+  ) -> CompileResult<bool> {
+    Ok(match &mut self.kind {
+      Application(f, args) => {
+        f.inline_higher_order_arguments(base_ctx, new_ctx)?;
+        for arg in args.iter_mut() {
+          arg.inline_higher_order_arguments(base_ctx, new_ctx)?;
+        }
+        if let ExpKind::Name(f_name) = &mut f.kind {
+          if let Some(abstract_signature) =
+            if let TypeState::Known(Type::Function(f)) = &f.data.kind {
+              &f.abstract_ancestor
+            } else {
+              unreachable!(
+                "encountered application of non-fn during function inlining"
+              )
+            }
+          {
+            match &abstract_signature.implementation {
+              FunctionImplementationKind::Composite(f) => {
+                let (function_arg_positions, function_args) = args
+                  .iter()
+                  .enumerate()
+                  .filter_map(|(i, arg)| {
+                    if let Type::Function(_) = arg.data.kind.unwrap_known() {
+                      Some(Ok((i, arg.clone())))
+                    } else {
+                      None
+                    }
+                  })
+                  .collect::<CompileResult<(Vec<usize>, Vec<TypedExp>)>>()?;
+                if function_args.is_empty() {
+                  false
+                } else {
+                  let inlined = abstract_signature
+                    .generate_higher_order_functions_inlined_version(
+                      function_args,
+                      f.borrow().body.source_trace.clone(),
+                    )?;
+                  std::mem::swap(f_name, &mut inlined.name.clone());
+                  for fn_arg_index in function_arg_positions.iter().rev() {
+                    args.remove(*fn_arg_index);
+                  }
+                  new_ctx.add_abstract_function(Rc::new(inlined));
+                  true
+                }
+              }
+              _ => false,
+            }
+          } else {
+            false
+          }
+        } else {
+          todo!()
+        }
+      }
+      Function(_, body) => {
+        body.inline_higher_order_arguments(base_ctx, new_ctx)?
+      }
+      Access(_, body) => {
+        body.inline_higher_order_arguments(base_ctx, new_ctx)?
+      }
+      Let(bindings, body) => {
+        let mut changed = false;
+        for (_, _, value) in bindings {
+          changed |= value.inline_higher_order_arguments(base_ctx, new_ctx)?;
+        }
+        changed |= body.inline_higher_order_arguments(base_ctx, new_ctx)?;
+        changed
+      }
+      Match(scrutinee, arms) => {
+        let mut changed = false;
+        scrutinee.inline_higher_order_arguments(base_ctx, new_ctx)?;
+        for (pattern, value) in arms {
+          changed |=
+            pattern.inline_higher_order_arguments(base_ctx, new_ctx)?;
+          changed |= value.inline_higher_order_arguments(base_ctx, new_ctx)?;
+        }
+        changed
+      }
+      Block { expressions, .. } => {
+        let mut changed = false;
+        for subexp in expressions {
+          changed |= subexp.inline_higher_order_arguments(base_ctx, new_ctx)?;
+        }
+        changed
+      }
+      _ => false,
+    })
+  }
+  pub fn inline_args(
+    &mut self,
+    param_names: &Vec<Rc<str>>,
+    arg_values: &Vec<TypedExp>,
+  ) {
+    match &mut self.kind {
+      Name(original_name) => {
+        if let Some(mut value) = (0..param_names.len()).find_map(|i| {
+          (param_names[i] == *original_name).then(|| arg_values[i].clone())
+        }) {
+          std::mem::swap(self, &mut value /*&mut new_name*/);
+        }
+      }
+      Application(f, args) => {
+        f.inline_args(param_names, arg_values);
+        for arg in args.iter_mut() {
+          arg.inline_args(param_names, arg_values);
+        }
+      }
+      Function(_, body) => body.inline_args(param_names, arg_values),
+      Access(_, body) => body.inline_args(param_names, arg_values),
+      Let(bindings, body) => {
+        for (_, _, value) in bindings {
+          value.inline_args(param_names, arg_values)
+        }
+        body.inline_args(param_names, arg_values)
+      }
+      Match(scrutinee, arms) => {
+        scrutinee.inline_args(param_names, arg_values);
+        for (pattern, value) in arms {
+          pattern.inline_args(param_names, arg_values);
+          value.inline_args(param_names, arg_values);
+        }
+      }
+      Block { expressions, .. } => {
+        for subexp in expressions {
+          subexp.inline_args(param_names, arg_values);
+        }
+      }
+      ForLoop {
+        increment_variable_initial_value_expression,
+        continue_condition_expression,
+        update_condition_expression,
+        body_expression,
+        ..
+      } => {
+        increment_variable_initial_value_expression
+          .inline_args(param_names, arg_values);
+        continue_condition_expression.inline_args(param_names, arg_values);
+        update_condition_expression.inline_args(param_names, arg_values);
+        body_expression.inline_args(param_names, arg_values);
+      }
+      WhileLoop {
+        condition_expression,
+        body_expression,
+      } => {
+        condition_expression.inline_args(param_names, arg_values);
+        body_expression.inline_args(param_names, arg_values);
+      }
+      Return(exp) => {
+        exp.inline_args(param_names, arg_values);
+      }
+      ArrayLiteral(children) => {
+        for child in children {
+          child.inline_args(param_names, arg_values);
+        }
+      }
+      _ => {}
+    }
+  }
 }
