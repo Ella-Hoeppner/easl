@@ -2102,6 +2102,36 @@ impl TypedExp {
         }
         changed
       }
+      ForLoop {
+        increment_variable_initial_value_expression,
+        continue_condition_expression,
+        update_condition_expression,
+        body_expression,
+        ..
+      } => {
+        increment_variable_initial_value_expression
+          .inline_higher_order_arguments(base_ctx, new_ctx)?
+          | continue_condition_expression
+            .inline_higher_order_arguments(base_ctx, new_ctx)?
+          | update_condition_expression
+            .inline_higher_order_arguments(base_ctx, new_ctx)?
+          | body_expression.inline_higher_order_arguments(base_ctx, new_ctx)?
+      }
+      WhileLoop {
+        condition_expression,
+        body_expression,
+      } => {
+        condition_expression.inline_higher_order_arguments(base_ctx, new_ctx)?
+          | body_expression.inline_higher_order_arguments(base_ctx, new_ctx)?
+      }
+      Return(exp) => exp.inline_higher_order_arguments(base_ctx, new_ctx)?,
+      ArrayLiteral(children) => {
+        let mut changed = false;
+        for child in children {
+          changed |= child.inline_higher_order_arguments(base_ctx, new_ctx)?;
+        }
+        changed
+      }
       _ => false,
     })
   }
