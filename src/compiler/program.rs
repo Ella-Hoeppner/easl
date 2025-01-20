@@ -571,10 +571,7 @@ impl Program {
           let added_new_function = implementation
             .borrow_mut()
             .body
-            .inline_higher_order_arguments(
-              &self.global_context,
-              &mut inlined_ctx,
-            )?;
+            .inline_higher_order_arguments(&mut inlined_ctx)?;
           changed |= added_new_function;
           let mut new_f = (**f).clone();
           new_f.implementation =

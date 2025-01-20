@@ -1047,87 +1047,389 @@ impl TypedExp {
       }
     })
   }
-  pub fn find_untyped(&mut self) -> Vec<TypedExp> {
-    let mut children_untyped = match &mut self.kind {
-      Wildcard => vec![],
-      Name(_) => vec![],
-      NumberLiteral(_) => vec![],
-      BooleanLiteral(_) => vec![],
-      Function(_, body) => body.find_untyped(),
-      Application(f, args) => {
-        args
-          .iter_mut()
-          .fold(f.find_untyped(), |mut untyped_so_far, arg| {
-            untyped_so_far.append(&mut arg.find_untyped());
-            untyped_so_far
-          })
-      }
-      Access(accessor, exp) => {
-        let mut untyped = exp.find_untyped();
-        if let Accessor::ArrayIndex(index_exp) = accessor {
-          untyped.append(&mut index_exp.find_untyped());
+  pub fn walk(
+    &self,
+    custom_handler: &mut impl FnMut(&Self) -> CompileResult<bool>,
+  ) -> CompileResult<()> {
+    if custom_handler(self)? {
+      match &self.kind {
+        Application(f, args) => {
+          f.walk(custom_handler)?;
+          for arg in args.iter() {
+            arg.walk(custom_handler)?;
+          }
         }
-        untyped
+        Function(_, body) => body.walk(custom_handler)?,
+        Access(_, body) => body.walk(custom_handler)?,
+        Let(bindings, body) => {
+          for (_, _, value) in bindings {
+            value.walk(custom_handler)?;
+          }
+          body.walk(custom_handler)?;
+        }
+        Match(scrutinee, arms) => {
+          scrutinee.walk(custom_handler)?;
+          for (pattern, value) in arms {
+            pattern.walk(custom_handler)?;
+            value.walk(custom_handler)?;
+          }
+        }
+        Block { expressions, .. } => {
+          for subexp in expressions {
+            subexp.walk(custom_handler)?;
+          }
+        }
+        ForLoop {
+          increment_variable_initial_value_expression,
+          continue_condition_expression,
+          update_condition_expression,
+          body_expression,
+          ..
+        } => {
+          increment_variable_initial_value_expression.walk(custom_handler)?;
+          continue_condition_expression.walk(custom_handler)?;
+          update_condition_expression.walk(custom_handler)?;
+          body_expression.walk(custom_handler)?;
+        }
+        WhileLoop {
+          condition_expression,
+          body_expression,
+        } => {
+          condition_expression.walk(custom_handler)?;
+          body_expression.walk(custom_handler)?;
+        }
+        Return(exp) => exp.walk(custom_handler)?,
+        ArrayLiteral(children) => {
+          for child in children {
+            child.walk(custom_handler)?;
+          }
+        }
+        _ => {}
       }
-      Let(bindings, body) => bindings.iter_mut().fold(
-        body.find_untyped(),
-        |mut untyped_so_far, (_, _, binding_value)| {
-          untyped_so_far.append(&mut binding_value.find_untyped());
-          untyped_so_far
-        },
-      ),
-      Match(scrutinee, arms) => arms.iter_mut().fold(
-        scrutinee.find_untyped(),
-        |mut untyped_so_far, (pattern, arm_body)| {
-          untyped_so_far.append(&mut pattern.find_untyped());
-          untyped_so_far.append(&mut arm_body.find_untyped());
-          untyped_so_far
-        },
-      ),
-      Block { expressions, .. } => expressions
-        .iter_mut()
-        .map(|child| child.find_untyped())
-        .fold(vec![], |mut a, mut b| {
-          a.append(&mut b);
-          a
-        }),
+    }
+    Ok(())
+  }
+  pub fn walk_mut(
+    &mut self,
+    custom_handler: &mut impl FnMut(&mut Self) -> CompileResult<bool>,
+  ) -> CompileResult<()> {
+    if custom_handler(self)? {
+      match &mut self.kind {
+        Application(f, args) => {
+          f.walk_mut(custom_handler)?;
+          for arg in args.iter_mut() {
+            arg.walk_mut(custom_handler)?;
+          }
+        }
+        Function(_, body) => body.walk_mut(custom_handler)?,
+        Access(_, body) => body.walk_mut(custom_handler)?,
+        Let(bindings, body) => {
+          for (_, _, value) in bindings {
+            value.walk_mut(custom_handler)?;
+          }
+          body.walk_mut(custom_handler)?;
+        }
+        Match(scrutinee, arms) => {
+          scrutinee.walk_mut(custom_handler)?;
+          for (pattern, value) in arms {
+            pattern.walk_mut(custom_handler)?;
+            value.walk_mut(custom_handler)?;
+          }
+        }
+        Block { expressions, .. } => {
+          for subexp in expressions {
+            subexp.walk_mut(custom_handler)?;
+          }
+        }
+        ForLoop {
+          increment_variable_initial_value_expression,
+          continue_condition_expression,
+          update_condition_expression,
+          body_expression,
+          ..
+        } => {
+          increment_variable_initial_value_expression
+            .walk_mut(custom_handler)?;
+          continue_condition_expression.walk_mut(custom_handler)?;
+          update_condition_expression.walk_mut(custom_handler)?;
+          body_expression.walk_mut(custom_handler)?;
+        }
+        WhileLoop {
+          condition_expression,
+          body_expression,
+        } => {
+          condition_expression.walk_mut(custom_handler)?;
+          body_expression.walk_mut(custom_handler)?;
+        }
+        Return(exp) => exp.walk_mut(custom_handler)?,
+        ArrayLiteral(children) => {
+          for child in children {
+            child.walk_mut(custom_handler)?;
+          }
+        }
+        _ => {}
+      }
+    }
+    Ok(())
+  }
+  pub fn compile(self, position: ExpressionCompilationPosition) -> String {
+    use ExpressionCompilationPosition::*;
+    let wrap = |s: String| -> String {
+      match position {
+        Return => format!("\nreturn {s};"),
+        InnerLine => format!("\n{s};"),
+        InnerExpression => s,
+      }
+    };
+    match self.kind {
+      Wildcard => panic!("compiling wildcard"),
+      Name(name) => wrap(compile_word(name)),
+      NumberLiteral(num) => wrap(match num {
+        Number::Int(i) => format!(
+          "{i}{}",
+          match self.data.kind {
+            Known(Type::I32) => "",
+            Known(Type::U32) => "u",
+            Known(Type::F32) => "f",
+            _ => panic!("{:?}", self.data.kind),
+          }
+        ),
+        Number::Float(f) => format!("{f}f"),
+      }),
+      BooleanLiteral(b) => wrap(format!("{b}")),
+      Function(_, _) => panic!("Attempting to compile internal function"),
+      Application(f, args) => {
+        let f_str = f.compile(InnerExpression);
+        let arg_strs: Vec<String> = args
+          .into_iter()
+          .map(|arg| arg.compile(InnerExpression))
+          .collect();
+        wrap(if ASSIGNMENT_OPS.contains(&f_str.as_str()) {
+          if arg_strs.len() == 2 {
+            format!("{} {} {}", arg_strs[0], f_str, arg_strs[1])
+          } else {
+            panic!("{} arguments to assignment op, expected 2", arg_strs.len())
+          }
+        } else if INFIX_OPS.contains(&f_str.as_str()) {
+          if arg_strs.len() == 2 {
+            format!("({} {} {})", arg_strs[0], f_str, arg_strs[1])
+          } else if arg_strs.len() == 1 && &f_str == "-" {
+            format!("(-{})", arg_strs[0])
+          } else {
+            panic!("{} arguments to infix op, expected 2", arg_strs.len())
+          }
+        } else {
+          let args_str = arg_strs.join(", ");
+          format!("{f_str}({args_str})")
+        })
+      }
+      Access(accessor, subexp) => wrap(format!(
+        "{}{}",
+        subexp.compile(InnerExpression),
+        accessor.compile()
+      )),
+      Let(bindings, body) => {
+        let binding_lines: Vec<String> = bindings
+          .into_iter()
+          .map(|(name, variable_kind, value_exp)| {
+            format!(
+              "{} {}: {} = {};",
+              variable_kind.compile(),
+              compile_word(name),
+              value_exp.data.compile(),
+              value_exp.compile(InnerExpression)
+            )
+          })
+          .collect();
+        let value_line = body.compile(position);
+        format!("\n{}{}", binding_lines.join("\n"), value_line)
+      }
+      Match(scrutinee, arms) => {
+        if scrutinee.data.unwrap_known() == Type::Bool {
+          match arms.len() {
+            1 => {
+              let (pattern, case) = arms.into_iter().next().unwrap();
+              let compiled_case = case.compile(position);
+              match pattern.kind {
+                ExpKind::Wildcard => compiled_case,
+                ExpKind::BooleanLiteral(true) => format!(
+                  "\nif ({}) {{{}\n}}",
+                  scrutinee.compile(InnerExpression),
+                  indent(compiled_case),
+                ),
+                ExpKind::BooleanLiteral(false) => format!(
+                  "\nif (!{}) {{{}\n}}",
+                  scrutinee.compile(InnerExpression),
+                  indent(compiled_case),
+                ),
+                _ => unreachable!(),
+              }
+            }
+            2 => {
+              let mut true_case = None;
+              let mut false_case = None;
+              let mut wildcard_case = None;
+              for (pattern, case) in arms {
+                if pattern.kind == ExpKind::Wildcard {
+                  wildcard_case = Some(case);
+                } else if pattern.kind == ExpKind::BooleanLiteral(true) {
+                  true_case = Some(case);
+                } else if pattern.kind == ExpKind::BooleanLiteral(false) {
+                  false_case = Some(case);
+                } else {
+                  unreachable!()
+                }
+              }
+              let (true_case, false_case) = if let Some(true_case) = true_case {
+                (
+                  indent(true_case.compile(position)),
+                  indent(
+                    false_case.or(wildcard_case).unwrap().compile(position),
+                  ),
+                )
+              } else {
+                (
+                  indent(
+                    true_case.or(wildcard_case).unwrap().compile(position),
+                  ),
+                  indent(false_case.unwrap().compile(position)),
+                )
+              };
+              let condition = scrutinee.compile(InnerExpression);
+              if position == InnerExpression {
+                format!("select({false_case}, {true_case}, {condition})")
+              } else {
+                format!(
+                  "\nif ({condition}) {{{true_case}\n}} \
+                  else {{{false_case}\n}}",
+                )
+              }
+            }
+            _ => unreachable!(),
+          }
+        } else {
+          if position == InnerExpression {
+            let mut arms_iter = arms.into_iter().rev();
+            let default = arms_iter.next().unwrap().1.compile(position);
+            let scrutinee_string = scrutinee.compile(position);
+            arms_iter.into_iter().fold(
+              default,
+              |subexpression, (pattern_subtree, value_subtree)| {
+                format!(
+                  "select({}, {}, {} == {})",
+                  subexpression,
+                  value_subtree.compile(position),
+                  pattern_subtree.compile(position),
+                  scrutinee_string
+                )
+              },
+            )
+          } else {
+            format!(
+              "\nswitch ({}) {{\n  {}\n}}",
+              scrutinee.compile(InnerExpression),
+              indent(
+                arms
+                  .into_iter()
+                  .map(|(pattern, value)| format!(
+                    "{}: {{{}\n}}",
+                    if pattern.kind == Wildcard {
+                      "default".to_string()
+                    } else {
+                      "case ".to_string() + &pattern.compile(InnerExpression)
+                    },
+                    indent(value.compile(position))
+                  ))
+                  .collect::<Vec<String>>()
+                  .join("\n")
+              )
+            )
+          }
+        }
+      }
+      Block {
+        expressions,
+        bracketed,
+      } => {
+        let child_count = expressions.len();
+        let child_strings: Vec<String> = expressions
+          .into_iter()
+          .enumerate()
+          .map(|(i, child)| {
+            child.compile(if i == child_count - 1 {
+              position
+            } else {
+              ExpressionCompilationPosition::InnerLine
+            })
+          })
+          .collect();
+        if bracketed {
+          format!("\n{{{}\n}}", indent(child_strings.join("")))
+        } else {
+          format!("{}", child_strings.join(""))
+        }
+      }
       ForLoop {
+        increment_variable_name,
+        increment_variable_type,
         increment_variable_initial_value_expression,
         continue_condition_expression,
         update_condition_expression,
         body_expression,
-        ..
-      } => increment_variable_initial_value_expression
-        .find_untyped()
-        .into_iter()
-        .chain(continue_condition_expression.find_untyped().into_iter())
-        .chain(update_condition_expression.find_untyped().into_iter())
-        .chain(body_expression.find_untyped().into_iter())
-        .collect(),
+      } => format!(
+        "\nfor (var {}: {} = {}; {}; {}) {{{}\n}}",
+        increment_variable_name,
+        increment_variable_type.compile(),
+        increment_variable_initial_value_expression
+          .compile(ExpressionCompilationPosition::InnerExpression),
+        continue_condition_expression
+          .compile(ExpressionCompilationPosition::InnerExpression),
+        update_condition_expression
+          .compile(ExpressionCompilationPosition::InnerExpression),
+        indent(
+          body_expression.compile(ExpressionCompilationPosition::InnerLine)
+        )
+      ),
       WhileLoop {
         condition_expression,
         body_expression,
-      } => condition_expression
-        .find_untyped()
-        .into_iter()
-        .chain(body_expression.find_untyped().into_iter())
-        .collect(),
-      Break => vec![],
-      Continue => vec![],
-      Discard => vec![],
-      Return(exp) => exp.find_untyped(),
-      ArrayLiteral(children) => children
-        .iter_mut()
-        .map(|child| child.find_untyped())
-        .flatten()
-        .collect(),
-    };
-    if self.data.is_fully_known() {
-      children_untyped
-    } else {
-      children_untyped.push(self.clone());
-      children_untyped
+      } => format!(
+        "\nwhile ({}) {{{}\n}}",
+        condition_expression
+          .compile(ExpressionCompilationPosition::InnerExpression),
+        indent(
+          body_expression.compile(ExpressionCompilationPosition::InnerLine)
+        )
+      ),
+      Break => "\nbreak;".to_string(),
+      Continue => "\ncontinue;".to_string(),
+      Discard => "\ndiscard;".to_string(),
+      ExpKind::Return(exp) => format!(
+        "\nreturn {};",
+        exp.compile(ExpressionCompilationPosition::InnerExpression)
+      ),
+      ArrayLiteral(children) => format!(
+        "array({})",
+        children
+          .into_iter()
+          .map(|child| child.compile(position))
+          .collect::<Vec<String>>()
+          .join(", ")
+      ),
     }
+  }
+
+  pub fn find_untyped(&mut self) -> Vec<TypedExp> {
+    let mut untyped = vec![];
+    self
+      .walk_mut(&mut |exp| {
+        if !exp.data.is_fully_known() {
+          untyped.push(exp.clone());
+        }
+        Ok(true)
+      })
+      .unwrap();
+    untyped
   }
   pub fn validate_match_blocks(&self) -> CompileResult<()> {
     Ok(()) // todo!
@@ -1544,363 +1846,120 @@ impl TypedExp {
     self.data.subtree_fully_typed &= self.data.check_is_fully_known();
     Ok(changed)
   }
-  pub fn compile(self, position: ExpressionCompilationPosition) -> String {
-    use ExpressionCompilationPosition::*;
-    let wrap = |s: String| -> String {
-      match position {
-        Return => format!("\nreturn {s};"),
-        InnerLine => format!("\n{s};"),
-        InnerExpression => s,
-      }
-    };
-    match self.kind {
-      Wildcard => panic!("compiling wildcard"),
-      Name(name) => wrap(compile_word(name)),
-      NumberLiteral(num) => wrap(match num {
-        Number::Int(i) => format!(
-          "{i}{}",
-          match self.data.kind {
-            Known(Type::I32) => "",
-            Known(Type::U32) => "u",
-            Known(Type::F32) => "f",
-            _ => panic!("{:?}", self.data.kind),
-          }
-        ),
-        Number::Float(f) => format!("{f}f"),
-      }),
-      BooleanLiteral(b) => wrap(format!("{b}")),
-      Function(_, _) => panic!("Attempting to compile internal function"),
-      Application(f, args) => {
-        let f_str = f.compile(InnerExpression);
-        let arg_strs: Vec<String> = args
-          .into_iter()
-          .map(|arg| arg.compile(InnerExpression))
-          .collect();
-        wrap(if ASSIGNMENT_OPS.contains(&f_str.as_str()) {
-          if arg_strs.len() == 2 {
-            format!("{} {} {}", arg_strs[0], f_str, arg_strs[1])
-          } else {
-            panic!("{} arguments to assignment op, expected 2", arg_strs.len())
-          }
-        } else if INFIX_OPS.contains(&f_str.as_str()) {
-          if arg_strs.len() == 2 {
-            format!("({} {} {})", arg_strs[0], f_str, arg_strs[1])
-          } else if arg_strs.len() == 1 && &f_str == "-" {
-            format!("(-{})", arg_strs[0])
-          } else {
-            panic!("{} arguments to infix op, expected 2", arg_strs.len())
-          }
-        } else {
-          let args_str = arg_strs.join(", ");
-          format!("{f_str}({args_str})")
-        })
-      }
-      Access(accessor, subexp) => wrap(format!(
-        "{}{}",
-        subexp.compile(InnerExpression),
-        accessor.compile()
-      )),
-      Let(bindings, body) => {
-        let binding_lines: Vec<String> = bindings
-          .into_iter()
-          .map(|(name, variable_kind, value_exp)| {
-            format!(
-              "{} {}: {} = {};",
-              variable_kind.compile(),
-              compile_word(name),
-              value_exp.data.compile(),
-              value_exp.compile(InnerExpression)
-            )
-          })
-          .collect();
-        let value_line = body.compile(position);
-        format!("\n{}{}", binding_lines.join("\n"), value_line)
-      }
-      Match(scrutinee, arms) => {
-        if scrutinee.data.unwrap_known() == Type::Bool {
-          match arms.len() {
-            1 => {
-              let (pattern, case) = arms.into_iter().next().unwrap();
-              let compiled_case = case.compile(position);
-              match pattern.kind {
-                ExpKind::Wildcard => compiled_case,
-                ExpKind::BooleanLiteral(true) => format!(
-                  "\nif ({}) {{{}\n}}",
-                  scrutinee.compile(InnerExpression),
-                  indent(compiled_case),
-                ),
-                ExpKind::BooleanLiteral(false) => format!(
-                  "\nif (!{}) {{{}\n}}",
-                  scrutinee.compile(InnerExpression),
-                  indent(compiled_case),
-                ),
-                _ => unreachable!(),
-              }
-            }
-            2 => {
-              let mut true_case = None;
-              let mut false_case = None;
-              let mut wildcard_case = None;
-              for (pattern, case) in arms {
-                if pattern.kind == ExpKind::Wildcard {
-                  wildcard_case = Some(case);
-                } else if pattern.kind == ExpKind::BooleanLiteral(true) {
-                  true_case = Some(case);
-                } else if pattern.kind == ExpKind::BooleanLiteral(false) {
-                  false_case = Some(case);
-                } else {
-                  unreachable!()
-                }
-              }
-              let (true_case, false_case) = if let Some(true_case) = true_case {
-                (
-                  indent(true_case.compile(position)),
-                  indent(
-                    false_case.or(wildcard_case).unwrap().compile(position),
-                  ),
-                )
-              } else {
-                (
-                  indent(
-                    true_case.or(wildcard_case).unwrap().compile(position),
-                  ),
-                  indent(false_case.unwrap().compile(position)),
-                )
-              };
-              let condition = scrutinee.compile(InnerExpression);
-              if position == InnerExpression {
-                format!("select({false_case}, {true_case}, {condition})")
-              } else {
-                format!(
-                  "\nif ({condition}) {{{true_case}\n}} \
-                  else {{{false_case}\n}}",
-                )
-              }
-            }
-            _ => unreachable!(),
-          }
-        } else {
-          if position == InnerExpression {
-            let mut arms_iter = arms.into_iter().rev();
-            let default = arms_iter.next().unwrap().1.compile(position);
-            let scrutinee_string = scrutinee.compile(position);
-            arms_iter.into_iter().fold(
-              default,
-              |subexpression, (pattern_subtree, value_subtree)| {
-                format!(
-                  "select({}, {}, {} == {})",
-                  subexpression,
-                  value_subtree.compile(position),
-                  pattern_subtree.compile(position),
-                  scrutinee_string
-                )
-              },
-            )
-          } else {
-            format!(
-              "\nswitch ({}) {{\n  {}\n}}",
-              scrutinee.compile(InnerExpression),
-              indent(
-                arms
-                  .into_iter()
-                  .map(|(pattern, value)| format!(
-                    "{}: {{{}\n}}",
-                    if pattern.kind == Wildcard {
-                      "default".to_string()
-                    } else {
-                      "case ".to_string() + &pattern.compile(InnerExpression)
-                    },
-                    indent(value.compile(position))
-                  ))
-                  .collect::<Vec<String>>()
-                  .join("\n")
-              )
-            )
-          }
-        }
-      }
-      Block {
-        expressions,
-        bracketed,
-      } => {
-        let child_count = expressions.len();
-        let child_strings: Vec<String> = expressions
-          .into_iter()
-          .enumerate()
-          .map(|(i, child)| {
-            child.compile(if i == child_count - 1 {
-              position
-            } else {
-              ExpressionCompilationPosition::InnerLine
-            })
-          })
-          .collect();
-        if bracketed {
-          format!("\n{{{}\n}}", indent(child_strings.join("")))
-        } else {
-          format!("{}", child_strings.join(""))
-        }
-      }
-      ForLoop {
-        increment_variable_name,
-        increment_variable_type,
-        increment_variable_initial_value_expression,
-        continue_condition_expression,
-        update_condition_expression,
-        body_expression,
-      } => format!(
-        "\nfor (var {}: {} = {}; {}; {}) {{{}\n}}",
-        increment_variable_name,
-        increment_variable_type.compile(),
-        increment_variable_initial_value_expression
-          .compile(ExpressionCompilationPosition::InnerExpression),
-        continue_condition_expression
-          .compile(ExpressionCompilationPosition::InnerExpression),
-        update_condition_expression
-          .compile(ExpressionCompilationPosition::InnerExpression),
-        indent(
-          body_expression.compile(ExpressionCompilationPosition::InnerLine)
-        )
-      ),
-      WhileLoop {
-        condition_expression,
-        body_expression,
-      } => format!(
-        "\nwhile ({}) {{{}\n}}",
-        condition_expression
-          .compile(ExpressionCompilationPosition::InnerExpression),
-        indent(
-          body_expression.compile(ExpressionCompilationPosition::InnerLine)
-        )
-      ),
-      Break => "\nbreak;".to_string(),
-      Continue => "\ncontinue;".to_string(),
-      Discard => "\ndiscard;".to_string(),
-      ExpKind::Return(exp) => format!(
-        "\nreturn {};",
-        exp.compile(ExpressionCompilationPosition::InnerExpression)
-      ),
-      ArrayLiteral(children) => format!(
-        "array({})",
-        children
-          .into_iter()
-          .map(|child| child.compile(position))
-          .collect::<Vec<String>>()
-          .join(", ")
-      ),
-    }
-  }
   pub fn check_assignment_validity(
     &self,
     ctx: &mut Context,
   ) -> CompileResult<()> {
-    match &self.kind {
-      Application(f, args) => {
-        if let ExpKind::Name(f_name) = &f.kind {
-          if ASSIGNMENT_OPS.contains(&&**f_name) {
-            let mut var = &args[0];
-            loop {
-              if let ExpKind::Access(_, inner_exp) = &var.kind {
-                var = inner_exp;
+    self.walk(&mut |exp| {
+      Ok(match &exp.kind {
+        Application(f, args) => {
+          if let ExpKind::Name(f_name) = &f.kind {
+            if ASSIGNMENT_OPS.contains(&&**f_name) {
+              let mut var = &args[0];
+              loop {
+                if let ExpKind::Access(_, inner_exp) = &var.kind {
+                  var = inner_exp;
+                } else {
+                  break;
+                }
+              }
+              if let ExpKind::Name(var_name) = &var.kind {
+                if ctx.get_variable_kind(var_name) != VariableKind::Var {
+                  return err(
+                    AssignmentTargetMustBeVariable(var_name.clone()),
+                    exp.source_trace.clone(),
+                  );
+                }
               } else {
-                break;
+                return err(InvalidAssignmentTarget, exp.source_trace.clone());
               }
-            }
-            if let ExpKind::Name(var_name) = &var.kind {
-              if ctx.get_variable_kind(var_name) != VariableKind::Var {
-                return err(
-                  AssignmentTargetMustBeVariable,
-                  self.source_trace.clone(),
-                );
-              }
-            } else {
-              return err(InvalidAssignmentTarget, self.source_trace.clone());
             }
           }
+          for arg in args {
+            arg.check_assignment_validity(ctx)?;
+          }
+          f.check_assignment_validity(ctx)?;
+          false
         }
-        for arg in args {
-          arg.check_assignment_validity(ctx)?;
+        Let(binding_names_and_values, body) => {
+          for (name, kind, value) in binding_names_and_values {
+            value.check_assignment_validity(ctx)?;
+            ctx.bind(
+              name,
+              Variable::new(value.data.clone()).with_kind(kind.clone()),
+            )
+          }
+          body.check_assignment_validity(ctx)?;
+          for (name, _, value) in binding_names_and_values {
+            value.check_assignment_validity(ctx)?;
+            ctx.unbind(name);
+          }
+          false
         }
-        f.check_assignment_validity(ctx)
-      }
-      Function(_, body) => body.check_assignment_validity(ctx),
-      Access(_, subexp) => subexp.check_assignment_validity(ctx),
-      Let(binding_names_and_values, body) => {
-        for (name, kind, value) in binding_names_and_values {
-          value.check_assignment_validity(ctx)?;
+        Function(arg_names, body_exp) => {
+          if let TypeState::Known(Type::Function(f)) = &exp.data.kind {
+            for (name, (ty, _)) in arg_names.iter().zip(f.arg_types.iter()) {
+              ctx.bind(
+                name,
+                Variable {
+                  kind: VariableKind::Let,
+                  typestate: ty.clone(),
+                },
+              );
+            }
+            body_exp.check_assignment_validity(ctx)?;
+            for name in arg_names {
+              ctx.unbind(name);
+            }
+            false
+          } else {
+            unreachable!()
+          }
+        }
+        ForLoop {
+          increment_variable_name,
+          increment_variable_type,
+          increment_variable_initial_value_expression,
+          continue_condition_expression,
+          update_condition_expression,
+          body_expression,
+        } => {
           ctx.bind(
-            name,
-            Variable::new(value.data.clone()).with_kind(kind.clone()),
-          )
+            increment_variable_name,
+            Variable::new(
+              TypeState::Known(increment_variable_type.clone()).into(),
+            )
+            .with_kind(VariableKind::Var),
+          );
+          increment_variable_initial_value_expression
+            .check_assignment_validity(ctx)?;
+          continue_condition_expression.check_assignment_validity(ctx)?;
+          update_condition_expression.check_assignment_validity(ctx)?;
+          body_expression.check_assignment_validity(ctx)?;
+          ctx.unbind(increment_variable_name);
+          false
         }
-        body.check_assignment_validity(ctx)?;
-        for (name, _, value) in binding_names_and_values {
-          value.check_assignment_validity(ctx)?;
-          ctx.unbind(name);
-        }
-        Ok(())
-      }
-      Match(scrutinee, arms) => {
-        for (pattern, value) in arms {
-          pattern.check_assignment_validity(ctx)?;
-          value.check_assignment_validity(ctx)?;
-        }
-        scrutinee.check_assignment_validity(ctx)
-      }
-      Block { expressions, .. } => {
-        for subexp in expressions {
-          subexp.check_assignment_validity(ctx)?;
-        }
-        Ok(())
-      }
-      _ => Ok(()),
-    }
+        _ => true,
+      })
+    })
   }
   pub fn replace_skolems(&mut self, skolems: &Vec<(Rc<str>, Type)>) {
-    if let Known(t) = &mut self.data.kind {
-      t.replace_skolems(skolems)
-    }
-    match &mut self.kind {
-      Application(f, args) => {
-        f.replace_skolems(skolems);
-        for arg in args.iter_mut() {
-          arg.replace_skolems(skolems);
+    self
+      .walk_mut(&mut |exp| {
+        if let Known(t) = &mut exp.data.kind {
+          t.replace_skolems(skolems);
         }
-      }
-      Function(_, body) => body.replace_skolems(skolems),
-      Access(_, body) => body.replace_skolems(skolems),
-      Let(bindings, body) => {
-        for (_, _, value) in bindings {
-          value.replace_skolems(skolems);
-        }
-        body.replace_skolems(skolems);
-      }
-      Match(scrutinee, arms) => {
-        scrutinee.replace_skolems(skolems);
-        for (pattern, value) in arms {
-          pattern.replace_skolems(skolems);
-          value.replace_skolems(skolems);
-        }
-      }
-      Block { expressions, .. } => {
-        for subexp in expressions {
-          subexp.replace_skolems(skolems);
-        }
-      }
-      _ => {}
-    }
+        Ok(true)
+      })
+      .unwrap()
   }
   pub fn monomorphize(
     &mut self,
     base_ctx: &Context,
     new_ctx: &mut Context,
   ) -> CompileResult<()> {
-    match &mut self.kind {
-      Application(f, args) => {
-        f.monomorphize(base_ctx, new_ctx)?;
-        for arg in args.iter_mut() {
-          arg.monomorphize(base_ctx, new_ctx)?;
-        }
+    self.walk_mut(&mut |exp: &mut TypedExp| {
+      if let Application(f, args) = &mut exp.kind {
         if let ExpKind::Name(f_name) = &mut f.kind {
           if let Some(abstract_signature) =
             if let TypeState::Known(Type::Function(f)) = &f.data.kind {
@@ -1912,7 +1971,7 @@ impl TypedExp {
             match &abstract_signature.implementation {
               FunctionImplementationKind::Builtin => match &**f_name {
                 "vec2" | "vec3" | "vec4" => {
-                  if let Type::Struct(s) = &self.data.kind.unwrap_known() {
+                  if let Type::Struct(s) = &exp.data.kind.unwrap_known() {
                     if let Some(mut compiled_name) = compiled_vec_name(
                       &f_name,
                       s.fields[0].field_type.unwrap_known(),
@@ -1927,7 +1986,7 @@ impl TypedExp {
                   f_name,
                   &mut format!(
                     "bitcast<{}>",
-                    self.data.kind.unwrap_known().compile()
+                    exp.data.kind.unwrap_known().compile()
                   )
                   .into(),
                 ),
@@ -1942,7 +2001,7 @@ impl TypedExp {
                   if let Some(monomorphized_struct) = abstract_struct
                     .generate_monomorphized(
                       arg_types.clone(),
-                      self.source_trace.clone(),
+                      exp.source_trace.clone(),
                     )
                   {
                     let monomorphized_struct = Rc::new(monomorphized_struct);
@@ -1951,10 +2010,10 @@ impl TypedExp {
                       &mut AbstractStruct::concretized_name(
                         monomorphized_struct.clone(),
                         &base_ctx.structs,
-                        self.source_trace.clone(),
+                        exp.source_trace.clone(),
                       )?,
                     );
-                    self.data.with_dereferenced_mut(|typestate| {
+                    exp.data.with_dereferenced_mut(|typestate| {
                       std::mem::swap(
                         typestate,
                         &mut TypeState::Known(Type::Struct(
@@ -1975,7 +2034,7 @@ impl TypedExp {
                   let monomorphized = abstract_signature
                     .generate_monomorphized(
                       args.iter().map(|arg| arg.data.unwrap_known()).collect(),
-                      self.data.unwrap_known().clone(),
+                      exp.data.unwrap_known().clone(),
                       base_ctx,
                       new_ctx,
                       f.borrow().body.source_trace.clone(),
@@ -1988,41 +2047,17 @@ impl TypedExp {
           }
         }
       }
-      Function(_, body) => body.monomorphize(base_ctx, new_ctx)?,
-      Access(_, body) => body.monomorphize(base_ctx, new_ctx)?,
-      Let(bindings, body) => {
-        for (_, _, value) in bindings {
-          value.monomorphize(base_ctx, new_ctx)?
-        }
-        body.monomorphize(base_ctx, new_ctx)?
-      }
-      Match(scrutinee, arms) => {
-        scrutinee.monomorphize(base_ctx, new_ctx)?;
-        for (pattern, value) in arms {
-          pattern.monomorphize(base_ctx, new_ctx)?;
-          value.monomorphize(base_ctx, new_ctx)?;
-        }
-      }
-      Block { expressions, .. } => {
-        for subexp in expressions {
-          subexp.monomorphize(base_ctx, new_ctx)?;
-        }
-      }
-      _ => {}
-    }
+      Ok(true)
+    })?;
     Ok(())
   }
   pub fn inline_higher_order_arguments(
     &mut self,
-    base_ctx: &Context,
     new_ctx: &mut Context,
   ) -> CompileResult<bool> {
-    Ok(match &mut self.kind {
-      Application(f, args) => {
-        f.inline_higher_order_arguments(base_ctx, new_ctx)?;
-        for arg in args.iter_mut() {
-          arg.inline_higher_order_arguments(base_ctx, new_ctx)?;
-        }
+    let mut changed = false;
+    self.walk_mut(&mut |exp: &mut TypedExp| {
+      if let Application(f, args) = &mut exp.kind {
         if let ExpKind::Name(f_name) = &mut f.kind {
           if let Some(abstract_signature) =
             if let TypeState::Known(Type::Function(f)) = &f.data.kind {
@@ -2046,9 +2081,7 @@ impl TypedExp {
                     }
                   })
                   .collect::<CompileResult<(Vec<usize>, Vec<TypedExp>)>>()?;
-                if function_args.is_empty() {
-                  false
-                } else {
+                if !function_args.is_empty() {
                   let inlined = abstract_signature
                     .generate_higher_order_functions_inlined_version(
                       function_args,
@@ -2059,150 +2092,36 @@ impl TypedExp {
                     args.remove(*fn_arg_index);
                   }
                   new_ctx.add_abstract_function(Rc::new(inlined));
-                  true
+                  changed = true;
                 }
               }
-              _ => false,
+              _ => {}
             }
-          } else {
-            false
           }
         } else {
-          todo!()
+          todo!("")
         }
       }
-      Function(_, body) => {
-        body.inline_higher_order_arguments(base_ctx, new_ctx)?
-      }
-      Access(_, body) => {
-        body.inline_higher_order_arguments(base_ctx, new_ctx)?
-      }
-      Let(bindings, body) => {
-        let mut changed = false;
-        for (_, _, value) in bindings {
-          changed |= value.inline_higher_order_arguments(base_ctx, new_ctx)?;
-        }
-        changed |= body.inline_higher_order_arguments(base_ctx, new_ctx)?;
-        changed
-      }
-      Match(scrutinee, arms) => {
-        let mut changed = false;
-        scrutinee.inline_higher_order_arguments(base_ctx, new_ctx)?;
-        for (pattern, value) in arms {
-          changed |=
-            pattern.inline_higher_order_arguments(base_ctx, new_ctx)?;
-          changed |= value.inline_higher_order_arguments(base_ctx, new_ctx)?;
-        }
-        changed
-      }
-      Block { expressions, .. } => {
-        let mut changed = false;
-        for subexp in expressions {
-          changed |= subexp.inline_higher_order_arguments(base_ctx, new_ctx)?;
-        }
-        changed
-      }
-      ForLoop {
-        increment_variable_initial_value_expression,
-        continue_condition_expression,
-        update_condition_expression,
-        body_expression,
-        ..
-      } => {
-        increment_variable_initial_value_expression
-          .inline_higher_order_arguments(base_ctx, new_ctx)?
-          | continue_condition_expression
-            .inline_higher_order_arguments(base_ctx, new_ctx)?
-          | update_condition_expression
-            .inline_higher_order_arguments(base_ctx, new_ctx)?
-          | body_expression.inline_higher_order_arguments(base_ctx, new_ctx)?
-      }
-      WhileLoop {
-        condition_expression,
-        body_expression,
-      } => {
-        condition_expression.inline_higher_order_arguments(base_ctx, new_ctx)?
-          | body_expression.inline_higher_order_arguments(base_ctx, new_ctx)?
-      }
-      Return(exp) => exp.inline_higher_order_arguments(base_ctx, new_ctx)?,
-      ArrayLiteral(children) => {
-        let mut changed = false;
-        for child in children {
-          changed |= child.inline_higher_order_arguments(base_ctx, new_ctx)?;
-        }
-        changed
-      }
-      _ => false,
-    })
+      Ok(true)
+    })?;
+    Ok(changed)
   }
   pub fn inline_args(
     &mut self,
     param_names: &Vec<Rc<str>>,
     arg_values: &Vec<TypedExp>,
   ) {
-    match &mut self.kind {
-      Name(original_name) => {
-        if let Some(mut value) = (0..param_names.len()).find_map(|i| {
-          (param_names[i] == *original_name).then(|| arg_values[i].clone())
-        }) {
-          std::mem::swap(self, &mut value /*&mut new_name*/);
+    self
+      .walk_mut(&mut |exp| {
+        if let Name(original_name) = &mut exp.kind {
+          if let Some(mut value) = (0..param_names.len()).find_map(|i| {
+            (param_names[i] == *original_name).then(|| arg_values[i].clone())
+          }) {
+            std::mem::swap(exp, &mut value);
+          }
         }
-      }
-      Application(f, args) => {
-        f.inline_args(param_names, arg_values);
-        for arg in args.iter_mut() {
-          arg.inline_args(param_names, arg_values);
-        }
-      }
-      Function(_, body) => body.inline_args(param_names, arg_values),
-      Access(_, body) => body.inline_args(param_names, arg_values),
-      Let(bindings, body) => {
-        for (_, _, value) in bindings {
-          value.inline_args(param_names, arg_values)
-        }
-        body.inline_args(param_names, arg_values)
-      }
-      Match(scrutinee, arms) => {
-        scrutinee.inline_args(param_names, arg_values);
-        for (pattern, value) in arms {
-          pattern.inline_args(param_names, arg_values);
-          value.inline_args(param_names, arg_values);
-        }
-      }
-      Block { expressions, .. } => {
-        for subexp in expressions {
-          subexp.inline_args(param_names, arg_values);
-        }
-      }
-      ForLoop {
-        increment_variable_initial_value_expression,
-        continue_condition_expression,
-        update_condition_expression,
-        body_expression,
-        ..
-      } => {
-        increment_variable_initial_value_expression
-          .inline_args(param_names, arg_values);
-        continue_condition_expression.inline_args(param_names, arg_values);
-        update_condition_expression.inline_args(param_names, arg_values);
-        body_expression.inline_args(param_names, arg_values);
-      }
-      WhileLoop {
-        condition_expression,
-        body_expression,
-      } => {
-        condition_expression.inline_args(param_names, arg_values);
-        body_expression.inline_args(param_names, arg_values);
-      }
-      Return(exp) => {
-        exp.inline_args(param_names, arg_values);
-      }
-      ArrayLiteral(children) => {
-        for child in children {
-          child.inline_args(param_names, arg_values);
-        }
-      }
-      _ => {}
-    }
+        Ok(true)
+      })
+      .unwrap()
   }
 }

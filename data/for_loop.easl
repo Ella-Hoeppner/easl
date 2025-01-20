@@ -1,8 +1,18 @@
-(defn make-two-floats [a: f32]: f32
+(defn f [a: f32]: f32
   (let [@var b a]
-    (for [i 0 true (= i 0)]
-      (= a a))
-    (for [i 10 false (= i 0)]
-      (= a a)
-      break)
+    (for [i
+          0
+          true
+          (= i
+             0)]
+         (= b
+            a))
+    (for [i
+          10
+          false
+          (= i
+             0)]
+         (= b
+            a)
+         break)
     5.))

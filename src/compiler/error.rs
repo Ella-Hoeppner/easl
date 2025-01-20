@@ -119,7 +119,7 @@ pub enum CompileErrorKind {
   EmptyBlock,
   InvalidVariableMetadata(Metadata),
   InvalidAssignmentTarget,
-  AssignmentTargetMustBeVariable,
+  AssignmentTargetMustBeVariable(Rc<str>),
   MatchMissingScrutinee,
   MatchMissingArms,
   MatchIncompleteArm,

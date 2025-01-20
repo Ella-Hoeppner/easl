@@ -18,9 +18,6 @@ Feature goals:
 
 ## todo
 ### high priority
-* create a general walk fn for `TypedExp`
-  * rn so many of it's functions need to walk over a mutable reference of the tree, and each of those functions needs to have a bunch of cases for the types of expressions they aren't operating on that just recurses. Should pull all that out into a shared abstraction (might need a few different closure inputs for like pre-walk modifications vs post-walk modifications, etc)
-
 * allow type annotation on binding names in let blocks, e.g. `(let [x: f32 0] ...)` currently crashes because it can't handle the type annotation on `x`
 
 * implement `TypedExp::validate_match_blocks`
