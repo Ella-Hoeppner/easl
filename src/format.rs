@@ -68,7 +68,7 @@ impl EaslFormatter {
                   let first_child_string =
                     inner_formatter.format(children.remove(0));
                   match first_child_string.as_str() {
-                    "var" => {
+                    "var" | "def" => {
                       first_child_string
                         + " "
                         + &children
