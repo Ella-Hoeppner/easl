@@ -224,8 +224,8 @@ impl Program {
                       &vec![],
                     )?
                     .concretize(
-                      &global_context.structs,
                       &vec![],
+                      &global_context.structs,
                       type_source_path.into(),
                     )?,
                   )
@@ -349,8 +349,8 @@ impl Program {
                       source_path.clone(),
                       children_iter.collect(),
                       TypeState::Known(return_type.concretize(
-                        &global_context.structs,
                         &generic_arg_names,
+                        &global_context.structs,
                         source_path.clone().into(),
                       )?)
                       .into(),
@@ -360,8 +360,8 @@ impl Program {
                         .map(|t| {
                           Ok((
                             TypeState::Known(t.concretize(
-                              &global_context.structs,
                               &generic_arg_names,
+                              &global_context.structs,
                               source_path.clone().into(),
                             )?)
                             .into(),

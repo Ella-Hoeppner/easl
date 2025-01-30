@@ -205,7 +205,11 @@ impl AbstractFunctionSignature {
     };
     Ok(f)
   }
-  pub fn concretize(f: Rc<Self>) -> FunctionSignature {
+  pub fn concretize(
+    f: Rc<Self>,
+    structs: &Vec<Rc<AbstractStruct>>,
+    source_trace: SourceTrace,
+  ) -> CompileResult<FunctionSignature> {
     let (generic_variables, generic_constraints): (
       HashMap<Rc<str>, ExpTypeInfo>,
       HashMap<Rc<str>, Vec<TypeConstraint>>,
@@ -219,45 +223,103 @@ impl AbstractFunctionSignature {
         )
       })
       .collect();
-    FunctionSignature {
+    Ok(FunctionSignature {
       arg_types: f
         .arg_types
         .iter()
-        .map(|t| match t {
-          AbstractType::Generic(var_name) => (
-            generic_variables
-              .get(var_name)
-              .expect("unrecognized generic")
-              .clone(),
-            generic_constraints
-              .get(var_name)
-              .expect("unrecognized generic")
-              .clone(),
-          ),
-          AbstractType::Type(t) => (TypeState::Known(t.clone()).into(), vec![]),
-          AbstractType::AbstractStruct(s) => (
-            TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
-              s.clone(),
-              &generic_variables,
-            )))
-            .into(),
-            vec![],
-          ),
+        .map(|t| {
+          Ok(match t {
+            AbstractType::Generic(var_name) => (
+              generic_variables
+                .get(var_name)
+                .expect("unrecognized generic")
+                .clone(),
+              generic_constraints
+                .get(var_name)
+                .expect("unrecognized generic")
+                .clone(),
+            ),
+            AbstractType::Type(t) => {
+              (TypeState::Known(t.clone()).into(), vec![])
+            }
+            AbstractType::AbstractStruct(s) => (
+              TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
+                s.clone(),
+                &generic_variables,
+                structs,
+                source_trace.clone(),
+              )?))
+              .into(),
+              vec![],
+            ),
+            AbstractType::AbstractArray { size, inner_type } => (
+              TypeState::Known(Type::Array(
+                size.clone(),
+                inner_type
+                  .fill_generics(
+                    &generic_variables,
+                    structs,
+                    source_trace.clone(),
+                  )?
+                  .into(),
+              ))
+              .into(),
+              vec![],
+            ),
+            AbstractType::Reference(abstract_type) => (
+              TypeState::Known(
+                Type::Reference(
+                  abstract_type
+                    .fill_generics(
+                      &generic_variables,
+                      structs,
+                      source_trace.clone(),
+                    )?
+                    .into(),
+                )
+                .into(),
+              )
+              .into(),
+              vec![],
+            ),
+          })
         })
-        .collect(),
+        .collect::<CompileResult<_>>()?,
       return_type: match &f.return_type {
         AbstractType::Generic(var_name) => generic_variables
           .get(var_name)
           .expect("unrecognized generic")
           .clone(),
-        AbstractType::AbstractStruct(s) => TypeState::Known(Type::Struct(
-          AbstractStruct::fill_generics(s.clone(), &generic_variables),
-        ))
-        .into(),
+        AbstractType::AbstractStruct(s) => {
+          TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
+            s.clone(),
+            &generic_variables,
+            structs,
+            source_trace,
+          )?))
+          .into()
+        }
         AbstractType::Type(t) => TypeState::Known(t.clone()).into(),
+        AbstractType::AbstractArray { size, inner_type } => {
+          TypeState::Known(Type::Array(
+            size.clone(),
+            inner_type
+              .fill_generics(&generic_variables, structs, source_trace)?
+              .into(),
+          ))
+          .into()
+        }
+        AbstractType::Reference(inner_type) => {
+          TypeState::Known(Type::Reference(
+            inner_type
+              .fill_generics(&generic_variables, structs, source_trace)?
+              .into(),
+          ))
+          .into()
+        }
       },
       abstract_ancestor: Some(f),
-    }
+    })
   }
 }
 

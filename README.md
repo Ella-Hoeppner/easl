@@ -5,19 +5,26 @@ Enhanced Abstraction Shader Language
 WIP shader language with a lispy syntax (using [SSE](https://github.com/Ella-Hoeppner/SSE)) that compiles to WGSL.
 
 Feature goals:
-  * full feature parity with WGSL - anything that can be expressed with WGSL will also be expressible with easl
+  * full feature parity with WGSL - anything that can be expressed with WGSL will also be directly expressible with easl
+  * sum types
   * fully expression-based, including scoped `let` blocks that return values, and inline `if` and `match` statements
-  * full type inference, including for function arg types and return types
-  * support for macros/preprocessing, defined in rust
+  * full type inference, including for function argument types and return types
   * closures and higher-order functions
   * tuples and anonymous structs
   * typeclasses
   * clojure-like loop construct for tail-recursion-style iteration
   * type holes
-  * sum types (probably, eventually)
 
 ## todo
 ### high priority
+* make
+  ```
+    structs: &Vec<Rc<AbstractStruct>>,
+    skolems: &Vec<Rc<str>>,
+    source_trace: SourceTrace,
+  ```
+  into something like "ConcretizationContext" or something, this exists in a bunch of places
+
 * allow type annotation on binding names in let blocks, e.g. `(let [x: f32 0] ...)` currently crashes because it can't handle the type annotation on `x`
 
 * implement `TypedExp::validate_match_blocks`

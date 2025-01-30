@@ -131,6 +131,7 @@ pub fn easl_syntax_graph() -> EaslSynaxGraph {
       Operator::MetadataAnnotation,
       Operator::TypeAnnotation,
       Operator::ExpressionComment,
+      Operator::Reference,
     ],
     None,
     standard_whitespace_chars(),
@@ -157,6 +158,7 @@ pub fn easl_syntax_graph() -> EaslSynaxGraph {
     [
       (Operator::MetadataAnnotation, Context::Default),
       (Operator::TypeAnnotation, Context::Default),
+      (Operator::Reference, Context::Default),
       (Operator::ExpressionComment, Context::StructuredComment),
     ]
     .into(),

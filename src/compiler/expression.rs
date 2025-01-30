@@ -4,7 +4,7 @@ use std::{rc::Rc, str::pattern::Pattern};
 
 use crate::{
   compiler::{
-    builtins::{get_builtin_struct, ASSIGNMENT_OPS, INFIX_OPS},
+    builtins::{get_builtin_struct, rename_builtin, ASSIGNMENT_OPS, INFIX_OPS},
     error::{err, CompileError, CompileErrorKind::*, CompileResult},
     functions::FunctionSignature,
     metadata::{extract_metadata, Metadata},
@@ -140,18 +140,23 @@ pub fn swizzle_accessor_typestate(
   if let TypeState::Known(accessed_type) = &accessed_typestate.kind {
     if let Type::Struct(s) = accessed_type {
       if &*s.name != "vec" {
-        TypeState::Known(Type::Struct(AbstractStruct::fill_generics_ordered(
-          vec_struct.into(),
-          vec![match &s.fields[0].field_type.kind {
-            TypeState::UnificationVariable(uvar) => {
-              TypeState::UnificationVariable(uvar.clone()).into()
-            }
-            TypeState::Known(inner_type) => {
-              TypeState::Known(inner_type.clone()).into()
-            }
-            _ => panic!("1???? {:?} ", s.fields[0].field_type),
-          }],
-        )))
+        TypeState::Known(Type::Struct(
+          AbstractStruct::fill_generics_ordered(
+            vec_struct.into(),
+            vec![match &s.fields[0].field_type.kind {
+              TypeState::UnificationVariable(uvar) => {
+                TypeState::UnificationVariable(uvar.clone()).into()
+              }
+              TypeState::Known(inner_type) => {
+                TypeState::Known(inner_type.clone()).into()
+              }
+              _ => panic!("1???? {:?} ", s.fields[0].field_type),
+            }],
+            &vec![],
+            SourceTrace::empty(),
+          )
+          .unwrap(),
+        ))
         .into()
       } else {
         panic!("2???")
@@ -180,9 +185,14 @@ pub fn swizzle_accessed_possibilities(
       .iter()
       .take(3.min(5 - max_accessed_index))
       .map(|name| {
-        Type::Struct(AbstractStruct::fill_generics_with_unification_variables(
-          get_builtin_struct(name).into(),
-        ))
+        Type::Struct(
+          AbstractStruct::fill_generics_with_unification_variables(
+            get_builtin_struct(name).into(),
+            &vec![],
+            SourceTrace::empty(),
+          )
+          .unwrap(),
+        )
       })
       .collect::<Vec<Type>>(),
   )
@@ -997,7 +1007,7 @@ impl TypedExp {
             Square => Exp {
               data: TypeState::Known(Type::Array(
                 Some(children_iter.len() as u32),
-                TypeState::Unknown.into(),
+                Box::new(TypeState::Unknown.into()),
               ))
               .into(),
               kind: ArrayLiteral(
@@ -1043,19 +1053,23 @@ impl TypedExp {
             ExpressionComment => unreachable!(
               "expression comment encountered, this should have been stripped"
             ),
-            Reference => {
-              let mut exp = Self::try_from_easl_tree(
-                children_iter.next().unwrap(),
-                structs,
-                aliases,
-                skolems,
-                ctx,
-              )?;
-              exp.data =
-                TypeState::Known(Type::Reference(TypeState::Unknown.into()))
-                  .into();
-              exp
-            }
+            Reference => TypedExp {
+              data: TypeState::Known(Type::Reference(Box::new(
+                TypeState::Unknown.into(),
+              )))
+              .into(),
+              kind: ExpKind::Reference(
+                Self::try_from_easl_tree(
+                  children_iter.next().unwrap(),
+                  structs,
+                  aliases,
+                  skolems,
+                  ctx,
+                )?
+                .into(),
+              ),
+              source_trace,
+            },
           },
         }
       }
@@ -1213,7 +1227,11 @@ impl TypedExp {
       BooleanLiteral(b) => wrap(format!("{b}")),
       Function(_, _) => panic!("Attempting to compile internal function"),
       Application(f, args) => {
-        let f_str = f.compile(InnerExpression);
+        let f_str = if let ExpKind::Name(name) = f.kind {
+          rename_builtin(&*name).unwrap_or_else(|| compile_word(name))
+        } else {
+          f.compile(InnerExpression)
+        };
         let arg_strs: Vec<String> = args
           .into_iter()
           .map(|arg| arg.compile(InnerExpression))
@@ -1862,7 +1880,8 @@ impl TypedExp {
       }
       Reference(exp) => {
         let mut changed = exp.propagate_types(ctx)?;
-        let Type::Reference(inner_type) = &mut self.data.unwrap_known() else {
+        let TypeState::Known(Type::Reference(inner_type)) = &mut self.data.kind
+        else {
           unreachable!()
         };
         changed |= exp
@@ -1986,6 +2005,7 @@ impl TypedExp {
     base_ctx: &Context,
     new_ctx: &mut Context,
   ) -> CompileResult<()> {
+    let source_trace = self.source_trace.clone();
     self.walk_mut(&mut |exp: &mut TypedExp| {
       if let Application(f, args) = &mut exp.kind {
         if let ExpKind::Name(f_name) = &mut f.kind {
@@ -2041,16 +2061,16 @@ impl TypedExp {
                         exp.source_trace.clone(),
                       )?,
                     );
+                    let mut new_typestate = TypeState::Known(Type::Struct(
+                      AbstractStruct::fill_generics_ordered(
+                        monomorphized_struct.clone(),
+                        vec![],
+                        &base_ctx.structs,
+                        source_trace.clone(),
+                      )?,
+                    ));
                     exp.data.with_dereferenced_mut(|typestate| {
-                      std::mem::swap(
-                        typestate,
-                        &mut TypeState::Known(Type::Struct(
-                          AbstractStruct::fill_generics_ordered(
-                            monomorphized_struct.clone(),
-                            vec![],
-                          ),
-                        )),
-                      )
+                      std::mem::swap(typestate, &mut new_typestate)
                     });
                     new_ctx
                       .add_monomorphized_struct(monomorphized_struct.into());

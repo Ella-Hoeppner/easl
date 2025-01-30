@@ -33,9 +33,142 @@ pub enum AbstractType {
   Generic(Rc<str>),
   Type(Type),
   AbstractStruct(Rc<AbstractStruct>),
+  AbstractArray {
+    size: Option<u32>,
+    inner_type: Box<Self>,
+  },
+  Reference(Box<Self>),
 }
 
 impl AbstractType {
+  pub fn fill_generics(
+    &self,
+    generics: &HashMap<Rc<str>, ExpTypeInfo>,
+    structs: &Vec<Rc<AbstractStruct>>,
+    source_trace: SourceTrace,
+  ) -> CompileResult<ExpTypeInfo> {
+    Ok(match self {
+      AbstractType::Generic(var_name) => generics
+        .get(var_name)
+        .expect("unrecognized generic name in struct")
+        .clone(),
+      AbstractType::Type(t) => TypeState::Known(t.clone()).into(),
+      AbstractType::AbstractStruct(s) => {
+        TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
+          s.clone(),
+          generics,
+          structs,
+          source_trace,
+        )?))
+        .into()
+      }
+      AbstractType::AbstractArray { size, inner_type } => {
+        TypeState::Known(Type::Array(
+          size.clone(),
+          inner_type
+            .fill_generics(generics, structs, source_trace)?
+            .into(),
+        ))
+        .into()
+      }
+      AbstractType::Reference(inner_type) => TypeState::Known(Type::Reference(
+        inner_type
+          .fill_generics(generics, structs, source_trace)?
+          .into(),
+      ))
+      .into(),
+    })
+  }
+  pub fn concretize(
+    &self,
+    skolems: &Vec<Rc<str>>,
+    structs: &Vec<Rc<AbstractStruct>>,
+    source_trace: SourceTrace,
+  ) -> CompileResult<Type> {
+    match self {
+      AbstractType::Generic(name) => {
+        if skolems.contains(name) {
+          Ok(Type::Skolem(Rc::clone(name)))
+        } else {
+          err(UnrecognizedGeneric(name.clone().into()), source_trace)
+        }
+      }
+      AbstractType::AbstractStruct(s) => Ok(Type::Struct(
+        AbstractStruct::concretize(s.clone(), structs, skolems, source_trace)?,
+      )),
+      AbstractType::Type(t) => Ok(t.clone()),
+      AbstractType::AbstractArray { size, inner_type } => Ok(Type::Array(
+        size.clone(),
+        Box::new(
+          TypeState::Known(inner_type.concretize(
+            skolems,
+            structs,
+            source_trace,
+          )?)
+          .into(),
+        ),
+      )),
+      AbstractType::Reference(inner_type) => Ok(Type::Reference(Box::new(
+        TypeState::Known(inner_type.concretize(
+          skolems,
+          structs,
+          source_trace,
+        )?)
+        .into(),
+      ))),
+    }
+  }
+  pub fn fill_abstract_generics(
+    self,
+    generics: &HashMap<Rc<str>, AbstractType>,
+  ) -> Self {
+    match self {
+      AbstractType::Generic(var_name) => generics
+        .iter()
+        .find_map(|(name, t)| (*name == var_name).then(|| t))
+        .expect("unrecognized generic name in struct")
+        .clone(),
+      AbstractType::Type(t) => AbstractType::Type(t),
+      AbstractType::AbstractStruct(s) => AbstractType::AbstractStruct(Rc::new(
+        (*s)
+          .clone()
+          .partially_fill_abstract_generics(generics.clone()),
+      )),
+      AbstractType::AbstractArray { size, inner_type } => {
+        AbstractType::AbstractArray {
+          size,
+          inner_type: inner_type.fill_abstract_generics(generics).into(),
+        }
+      }
+      AbstractType::Reference(inner_type) => AbstractType::Reference(
+        inner_type.fill_abstract_generics(generics).into(),
+      ),
+    }
+  }
+  pub fn compile(
+    self,
+    structs: &Vec<Rc<AbstractStruct>>,
+  ) -> CompileResult<String> {
+    Ok(match self {
+      AbstractType::Generic(_) => {
+        panic!("attempted to compile generic struct field")
+      }
+      AbstractType::Type(t) => t.compile(),
+      AbstractType::AbstractStruct(t) => Rc::unwrap_or_clone(t)
+        .compile_if_non_generic(structs)?
+        .expect("failed to compile abstract structs"),
+      AbstractType::AbstractArray { size, inner_type } => {
+        format!(
+          "array<{}{}>",
+          inner_type.compile(structs)?,
+          size.map(|n| format!(", {n}")).unwrap_or(String::new())
+        )
+      }
+      AbstractType::Reference(_) => {
+        unreachable!("compiling abstract reference type, this shouldn't happen")
+      }
+    })
+  }
   pub fn from_easl_tree(
     tree: EaslTree,
     structs: &Vec<Rc<AbstractStruct>>,
@@ -142,7 +275,7 @@ impl AbstractType {
                   )?;
                   Ok(AbstractType::Type(Type::Array(
                     Some(array_size),
-                    Box::new(TypeState::Known(inner_type)),
+                    Box::new(TypeState::Known(inner_type).into()),
                   )))
                 } else {
                   return err(InvalidArraySignature, source_trace);
@@ -156,7 +289,7 @@ impl AbstractType {
                 Type::from_easl_tree(other, structs, aliases, generic_args)?;
               Ok(AbstractType::Type(Type::Array(
                 None,
-                Box::new(TypeState::Known(inner_type)),
+                Box::new(TypeState::Known(inner_type).into()),
               )))
             }
           }
@@ -182,26 +315,6 @@ impl AbstractType {
         name, position, structs, aliases, skolems,
       )?)
     })
-  }
-  pub fn concretize(
-    &self,
-    structs: &Vec<Rc<AbstractStruct>>,
-    skolems: &Vec<Rc<str>>,
-    source_trace: SourceTrace,
-  ) -> CompileResult<Type> {
-    match self {
-      AbstractType::Generic(name) => {
-        if skolems.contains(name) {
-          Ok(Type::Skolem(Rc::clone(name)))
-        } else {
-          err(UnrecognizedGeneric(name.clone().into()), source_trace)
-        }
-      }
-      AbstractType::AbstractStruct(s) => Ok(Type::Struct(
-        AbstractStruct::concretize(s.clone(), structs, skolems, source_trace)?,
-      )),
-      AbstractType::Type(t) => Ok(t.clone()),
-    }
   }
   pub fn extract_generic_bindings(
     &self,
@@ -276,8 +389,8 @@ pub enum Type {
   Struct(Struct),
   Function(Box<FunctionSignature>),
   Skolem(Rc<str>),
-  Array(Option<u32>, Box<TypeState>),
-  Reference(Box<TypeState>),
+  Array(Option<u32>, Box<ExpTypeInfo>),
+  Reference(Box<ExpTypeInfo>),
 }
 impl Type {
   pub fn satisfies_constraints(&self, constraint: &TypeConstraint) -> bool {
@@ -376,8 +489,8 @@ impl Type {
                         skolems,
                       )?
                       .concretize(
-                        structs,
                         skolems,
+                        structs,
                         source_trace.clone(),
                       )?,
                     )
@@ -390,7 +503,9 @@ impl Type {
                 Ok(Type::Struct(AbstractStruct::fill_generics_ordered(
                   s.clone(),
                   generic_args,
-                )))
+                  structs,
+                  source_trace.clone(),
+                )?))
               } else {
                 return err(UnknownStructName, source_trace);
               }
@@ -424,7 +539,7 @@ impl Type {
                 )?;
                 Ok(Type::Array(
                   Some(array_size),
-                  Box::new(TypeState::Known(inner_type)),
+                  Box::new(TypeState::Known(inner_type).into()),
                 ))
               } else {
                 return err(InvalidArraySignature, source_trace);
@@ -452,6 +567,9 @@ impl Type {
       (Type::Array(count_a, a), Type::Array(count_b, b)) => {
         count_a == count_b && TypeState::are_compatible(a, b)
       }
+      (Type::Reference(a), Type::Reference(b)) => {
+        TypeState::are_compatible(a, b)
+      }
       (a, b) => a == b,
     };
     b
@@ -474,6 +592,7 @@ impl Type {
     skolems: &Vec<Rc<str>>,
   ) -> CompileResult<Self> {
     use Type::*;
+    let source_trace: SourceTrace = source_position.into();
     Ok(match &*name {
       "None" => None,
       "F32" | "f32" => F32,
@@ -486,16 +605,20 @@ impl Type {
         } else if let Some(s) = structs.iter().find(|s| s.name == name) {
           Struct(AbstractStruct::fill_generics_with_unification_variables(
             s.clone(),
-          ))
+            structs,
+            source_trace.clone(),
+          )?)
         } else if let Some(s) = type_aliases
           .iter()
           .find_map(|(alias, s)| (*alias == name).then(|| s))
         {
           Struct(AbstractStruct::fill_generics_with_unification_variables(
             s.clone(),
-          ))
+            structs,
+            source_trace.clone(),
+          )?)
         } else {
-          return err(UnrecognizedTypeName(name), source_position.into());
+          return err(UnrecognizedTypeName(name), source_trace);
         }
       }
     })
@@ -521,13 +644,15 @@ impl Type {
           n.map(|n| format!(", {n}")).unwrap_or(String::new())
         )
       }
+      Type::Reference(inner_type) => {
+        format!("ptr<storage, {}>", inner_type.compile())
+      }
       Type::Function(_) => {
         panic!("Attempted to compile ConcreteFunction type")
       }
       Type::Skolem(name) => {
         panic!("Attempted to compile Skolem \"{name}\"")
       }
-      Type::Reference(type_state) => todo!(),
     }
   }
   pub fn replace_skolems(&mut self, skolems: &Vec<(Rc<str>, Type)>) {
@@ -703,6 +828,7 @@ impl TypeState {
             )
           }
           Type::Array(_, inner_type) => inner_type.check_is_fully_known(),
+          Type::Reference(inner_type) => inner_type.check_is_fully_known(),
           _ => true,
         }
       } else {
@@ -837,17 +963,23 @@ impl TypeState {
                 changed
               }
               (
-                Type::Array(length_1, inner_type_1),
-                Type::Array(length_2, inner_type_2),
+                Type::Array(length, inner_type),
+                Type::Array(other_length, other_inner_type),
               ) => {
-                if length_1 != length_2 {
+                if length != other_length {
                   return err(
                     IncompatibleTypes(this.clone(), other.clone()),
                     source_trace,
                   );
                 }
-                inner_type_1.mutually_constrain(inner_type_2, source_trace)?
+                inner_type
+                  .constrain(other_inner_type.kind.clone(), source_trace)?
               }
+              (
+                Type::Reference(inner_type),
+                Type::Reference(other_inner_type),
+              ) => inner_type
+                .constrain(other_inner_type.kind.clone(), source_trace)?,
               _ => false,
             }
           }
@@ -1224,17 +1356,25 @@ impl Context {
   pub fn concrete_signatures(
     &mut self,
     fn_name: &Rc<str>,
-  ) -> Option<Vec<Type>> {
-    self.abstract_functions.get(fn_name).map(|signatures| {
+    source_trace: SourceTrace,
+  ) -> CompileResult<Option<Vec<Type>>> {
+    if let Some(signatures) = self.abstract_functions.get(fn_name) {
       signatures
         .into_iter()
         .map(|signature| {
-          Type::Function(Box::new(AbstractFunctionSignature::concretize(
-            signature.clone(),
+          Ok(Type::Function(Box::new(
+            AbstractFunctionSignature::concretize(
+              signature.clone(),
+              &self.structs,
+              source_trace.clone(),
+            )?,
           )))
         })
-        .collect::<Vec<_>>()
-    })
+        .collect::<CompileResult<Vec<_>>>()
+        .map(|x| Some(x))
+    } else {
+      Ok(None)
+    }
   }
   pub fn constrain_name_type(
     &mut self,
@@ -1242,7 +1382,9 @@ impl Context {
     source_trace: SourceTrace,
     t: &mut TypeState,
   ) -> CompileResult<bool> {
-    if let Some(signatures) = self.concrete_signatures(name) {
+    if let Some(signatures) =
+      self.concrete_signatures(name, source_trace.clone())?
+    {
       t.constrain(TypeState::OneOf(signatures), source_trace)
     } else {
       t.mutually_constrain(

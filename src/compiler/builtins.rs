@@ -632,7 +632,7 @@ fn boolean_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin,
     },
     AbstractFunctionSignature {
-      name: "&&".into(),
+      name: "and".into(),
       generic_args: vec![],
       arg_types: vec![
         AbstractType::Type(Type::Bool),
@@ -642,7 +642,7 @@ fn boolean_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin,
     },
     AbstractFunctionSignature {
-      name: "||".into(),
+      name: "or".into(),
       generic_args: vec![],
       arg_types: vec![
         AbstractType::Type(Type::Bool),
@@ -861,7 +861,13 @@ fn array_functions() -> Vec<AbstractFunctionSignature> {
   vec![AbstractFunctionSignature {
     name: "arrayLength".into(),
     generic_args: vec![("T".into(), vec![])],
-    arg_types: vec![todo!()],
+    arg_types: vec![AbstractType::Reference(
+      AbstractType::AbstractArray {
+        size: None,
+        inner_type: AbstractType::Generic("T".into()).into(),
+      }
+      .into(),
+    )],
     return_type: AbstractType::Type(Type::U32),
     implementation: FunctionImplementationKind::Builtin,
   }]
@@ -890,7 +896,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut scalar_conversion_functions());
   signatures.append(&mut misc_math_functions());
   signatures.append(&mut texture_functions());
-  //signatures.append(&mut array_functions());
+  signatures.append(&mut array_functions());
   signatures
 }
 
@@ -1320,4 +1326,13 @@ pub fn built_in_macros() -> Vec<Macro> {
     other => Err(other),
   }));
   vec![if_macro, when_macro, thread_macro, repeated_array_macro]
+}
+
+pub fn rename_builtin(name: &str) -> Option<String> {
+  match &*name {
+    "and" => Some("&&"),
+    "or" => Some("||"),
+    _ => None,
+  }
+  .map(|name| name.to_string())
 }

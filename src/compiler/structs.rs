@@ -151,8 +151,8 @@ impl AbstractStructField {
       metadata: self.metadata.clone(),
       name: Rc::clone(&self.name),
       field_type: TypeState::Known(self.field_type.concretize(
-        structs,
         skolems,
+        structs,
         source_trace,
       )?)
       .into(),
@@ -161,22 +161,18 @@ impl AbstractStructField {
   pub fn fill_generics(
     &self,
     generics: &HashMap<Rc<str>, ExpTypeInfo>,
-  ) -> StructField {
-    StructField {
+    structs: &Vec<Rc<AbstractStruct>>,
+    source_trace: SourceTrace,
+  ) -> CompileResult<StructField> {
+    Ok(StructField {
       metadata: self.metadata.clone(),
       name: self.name.clone(),
-      field_type: match &self.field_type {
-        AbstractType::Generic(var_name) => generics
-          .get(var_name)
-          .expect("unrecognized generic name in struct")
-          .clone(),
-        AbstractType::Type(t) => TypeState::Known(t.clone()).into(),
-        AbstractType::AbstractStruct(s) => TypeState::Known(Type::Struct(
-          AbstractStruct::fill_generics(s.clone(), generics),
-        ))
-        .into(),
-      },
-    }
+      field_type: self.field_type.fill_generics(
+        generics,
+        structs,
+        source_trace,
+      )?,
+    })
   }
   fn fill_abstract_generics(
     self,
@@ -185,21 +181,7 @@ impl AbstractStructField {
     AbstractStructField {
       metadata: self.metadata,
       name: self.name,
-      field_type: match self.field_type {
-        AbstractType::Generic(var_name) => generics
-          .iter()
-          .find_map(|(name, t)| (*name == var_name).then(|| t))
-          .expect("unrecognized generic name in struct")
-          .clone(),
-        AbstractType::Type(t) => AbstractType::Type(t),
-        AbstractType::AbstractStruct(s) => {
-          AbstractType::AbstractStruct(Rc::new(
-            (*s)
-              .clone()
-              .partially_fill_abstract_generics(generics.clone()),
-          ))
-        }
-      },
+      field_type: self.field_type.fill_abstract_generics(generics),
     }
   }
   pub fn compile(
@@ -212,15 +194,7 @@ impl AbstractStructField {
       String::new()
     };
     let name = compile_word(self.name);
-    let field_type = match self.field_type {
-      AbstractType::Generic(_) => {
-        panic!("attempted to compile generic struct field")
-      }
-      AbstractType::Type(t) => t.compile(),
-      AbstractType::AbstractStruct(t) => Rc::unwrap_or_clone(t)
-        .compile_if_non_generic(structs)?
-        .expect("failed to compile abstract structs"),
-    };
+    let field_type = self.field_type.compile(structs)?;
     Ok(format!("  {metadata}{name}: {field_type}"))
   }
 }
@@ -272,7 +246,7 @@ impl AbstractStruct {
           .iter()
           .map(|f| {
             f.field_type
-              .concretize(structs, &vec![], self.source_trace.clone())
+              .concretize(&vec![], structs, self.source_trace.clone())
           })
           .collect::<CompileResult<Vec<Type>>>()?;
         let monomorphized_name = self.monomorphized_name(&field_types);
@@ -399,31 +373,39 @@ impl AbstractStruct {
   pub fn fill_generics(
     s: Rc<Self>,
     generics: &HashMap<Rc<str>, ExpTypeInfo>,
-  ) -> Struct {
-    let new_fields: Vec<_> = s
+    structs: &Vec<Rc<AbstractStruct>>,
+    source_trace: SourceTrace,
+  ) -> CompileResult<Struct> {
+    let new_fields = s
       .fields
       .iter()
-      .map(|field| field.fill_generics(generics))
-      .collect();
-    Struct {
+      .map(|field| field.fill_generics(generics, structs, source_trace.clone()))
+      .collect::<CompileResult<Vec<_>>>()?;
+    Ok(Struct {
       name: s.name.clone(),
       abstract_ancestor: s,
       fields: new_fields,
-    }
+    })
   }
   pub fn fill_generics_ordered(
     s: Rc<Self>,
     generics: Vec<ExpTypeInfo>,
-  ) -> Struct {
+    structs: &Vec<Rc<AbstractStruct>>,
+    source_trace: SourceTrace,
+  ) -> CompileResult<Struct> {
     let generics_map = s
       .generic_args
       .iter()
       .cloned()
       .zip(generics.into_iter())
       .collect();
-    Self::fill_generics(s, &generics_map)
+    Self::fill_generics(s, &generics_map, structs, source_trace)
   }
-  pub fn fill_generics_with_unification_variables(s: Rc<Self>) -> Struct {
+  pub fn fill_generics_with_unification_variables(
+    s: Rc<Self>,
+    structs: &Vec<Rc<AbstractStruct>>,
+    source_trace: SourceTrace,
+  ) -> CompileResult<Struct> {
     let generic_count = s.generic_args.len();
     Self::fill_generics_ordered(
       s,
@@ -431,6 +413,8 @@ impl AbstractStruct {
         .into_iter()
         .map(|_| TypeState::fresh_unification_variable().into())
         .collect(),
+      structs,
+      source_trace,
     )
   }
 

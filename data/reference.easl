@@ -1,5 +1,7 @@
 @{group 0 binding 1}
-(var [storage read] b: [vec4f])
+(var [storage
+  read] a: [vec4f])
 
 (defn f []: u32
-  (arrayLength a)))
+  (let [x &a]
+    (arrayLength x)))
