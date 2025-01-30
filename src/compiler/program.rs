@@ -10,8 +10,8 @@ use crate::{
     metadata::extract_metadata,
     structs::UntypedStruct,
     types::{
-      parse_generic_argument, AbstractType, ExpTypeInfo, GenericOr, Type,
-      TypeConstraint, TypeState, Variable, VariableKind,
+      parse_generic_argument, AbstractType, ExpTypeInfo, Type, TypeConstraint,
+      TypeState, Variable, VariableKind,
     },
     util::read_type_annotated_name,
   },
@@ -24,7 +24,6 @@ use super::{
   expression::TypedExp,
   functions::{FunctionImplementationKind, TopLevelFunction},
   macros::{macroexpand, Macro},
-  structs::TypeOrAbstractStruct,
   types::Context,
   vars::TopLevelVar,
 };
@@ -366,7 +365,7 @@ impl Program {
                               source_path.clone().into(),
                             )?)
                             .into(),
-                            if let GenericOr::Generic(generic_name) = t {
+                            if let AbstractType::Generic(generic_name) = t {
                               generic_args
                                 .iter()
                                 .find_map(|(name, constraints)| {
@@ -554,10 +553,7 @@ impl Program {
           .arg_types
           .iter()
           .find(|t| {
-            if let GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-              Type::Function(_),
-            )) = t
-            {
+            if let AbstractType::Type(Type::Function(_)) = t {
               true
             } else {
               false

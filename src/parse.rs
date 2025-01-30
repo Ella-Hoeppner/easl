@@ -75,6 +75,7 @@ pub enum Operator {
   MetadataAnnotation,
   TypeAnnotation,
   ExpressionComment,
+  Reference,
 }
 impl SSEOperator for Operator {
   fn id_str(&self) -> &str {
@@ -82,6 +83,7 @@ impl SSEOperator for Operator {
       Operator::MetadataAnnotation => ":metadata:",
       Operator::TypeAnnotation => ":type-annotation:",
       Operator::ExpressionComment => ":expression-annotation:",
+      Operator::Reference => ":reference:",
     }
   }
 
@@ -90,6 +92,7 @@ impl SSEOperator for Operator {
       Operator::MetadataAnnotation => 0,
       Operator::TypeAnnotation => 1,
       Operator::ExpressionComment => 0,
+      Operator::Reference => 0,
     }
   }
 
@@ -98,6 +101,7 @@ impl SSEOperator for Operator {
       Operator::MetadataAnnotation => 2,
       Operator::TypeAnnotation => 1,
       Operator::ExpressionComment => 1,
+      Operator::Reference => 1,
     }
   }
 
@@ -106,6 +110,7 @@ impl SSEOperator for Operator {
       Operator::MetadataAnnotation => "@",
       Operator::TypeAnnotation => ":",
       Operator::ExpressionComment => "#_",
+      Operator::Reference => "&",
     }
   }
 }

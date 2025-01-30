@@ -267,6 +267,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Discard,
   Return(Box<Exp<D>>),
   ArrayLiteral(Vec<Exp<D>>),
+  Reference(Box<Exp<D>>),
 }
 use ExpKind::*;
 
@@ -1042,6 +1043,19 @@ impl TypedExp {
             ExpressionComment => unreachable!(
               "expression comment encountered, this should have been stripped"
             ),
+            Reference => {
+              let mut exp = Self::try_from_easl_tree(
+                children_iter.next().unwrap(),
+                structs,
+                aliases,
+                skolems,
+                ctx,
+              )?;
+              exp.data =
+                TypeState::Known(Type::Reference(TypeState::Unknown.into()))
+                  .into();
+              exp
+            }
           },
         }
       }
@@ -1415,6 +1429,10 @@ impl TypedExp {
           .map(|child| child.compile(position))
           .collect::<Vec<String>>()
           .join(", ")
+      ),
+      Reference(exp) => format!(
+        "&{}",
+        exp.compile(ExpressionCompilationPosition::InnerExpression)
       ),
     }
   }
@@ -1840,6 +1858,16 @@ impl TypedExp {
             }
           })?
         }
+        changed
+      }
+      Reference(exp) => {
+        let mut changed = exp.propagate_types(ctx)?;
+        let Type::Reference(inner_type) = &mut self.data.unwrap_known() else {
+          unreachable!()
+        };
+        changed |= exp
+          .data
+          .mutually_constrain(inner_type, self.source_trace.clone())?;
         changed
       }
     };

@@ -38,6 +38,7 @@ fn main() {
     "array_literal",
     "fn_inlining",
     "nested_fn_inlining",
+    //"reference",
   ] {
     print!("compiling {filename}...   ");
     let t = std::time::Instant::now();

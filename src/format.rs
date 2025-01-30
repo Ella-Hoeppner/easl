@@ -203,6 +203,7 @@ impl EaslFormatter {
             ExpressionComment => {
               "#_".to_string() + &self.format(children.remove(0))
             }
+            Reference => "$".to_string() + &self.format(children.remove(0)),
           },
         }
       }

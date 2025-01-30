@@ -23,33 +23,17 @@ use super::{
   functions::{
     AbstractFunctionSignature, FunctionImplementationKind, FunctionSignature,
   },
-  structs::{AbstractStruct, Struct, TypeOrAbstractStruct},
+  structs::{AbstractStruct, Struct},
   util::compile_word,
   vars::TopLevelVar,
 };
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum GenericOr<T> {
+pub enum AbstractType {
   Generic(Rc<str>),
-  NonGeneric(T),
+  Type(Type),
+  AbstractStruct(Rc<AbstractStruct>),
 }
-
-impl GenericOr<Type> {
-  pub fn to_typestate(
-    self,
-    generic_variables: &HashMap<Rc<str>, TypeState>,
-  ) -> TypeState {
-    match self {
-      GenericOr::Generic(name) => generic_variables
-        .get(&name)
-        .expect("unrecognized generic variable")
-        .clone(),
-      GenericOr::NonGeneric(t) => TypeState::Known(t),
-    }
-  }
-}
-
-pub type AbstractType = GenericOr<TypeOrAbstractStruct>;
 
 impl AbstractType {
   pub fn from_easl_tree(
@@ -63,15 +47,15 @@ impl AbstractType {
       EaslTree::Leaf(position, leaf) => {
         let leaf_rc: Rc<str> = leaf.into();
         Ok(if generic_args.contains(&leaf_rc) {
-          GenericOr::Generic(leaf_rc)
+          AbstractType::Generic(leaf_rc)
         } else {
-          GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
+          AbstractType::Type(Type::from_name(
             leaf_rc,
             position.clone(),
             structs,
             aliases,
             skolems,
-          )?))
+          )?)
         })
       }
       EaslTree::Inner(
@@ -86,17 +70,15 @@ impl AbstractType {
             return err(InvalidStructName, position.into());
           };
         if generic_struct_name.as_str() == "Fn" {
-          Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-            Type::from_easl_tree(
-              EaslTree::Inner(
-                (position, EncloserOrOperator::Encloser(Encloser::Parens)),
-                children,
-              ),
-              structs,
-              aliases,
-              skolems,
-            )?,
-          )))
+          Ok(AbstractType::Type(Type::from_easl_tree(
+            EaslTree::Inner(
+              (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+              children,
+            ),
+            structs,
+            aliases,
+            skolems,
+          )?))
         } else {
           let mut children_iter = children.into_iter();
           let generic_struct_name =
@@ -126,11 +108,9 @@ impl AbstractType {
               )
             })
             .collect::<CompileResult<Vec<_>>>()?;
-          Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
-            Rc::new(
-              Rc::unwrap_or_clone(generic_struct)
-                .fill_abstract_generics(generic_args),
-            ),
+          Ok(AbstractType::AbstractStruct(Rc::new(
+            Rc::unwrap_or_clone(generic_struct)
+              .fill_abstract_generics(generic_args),
           )))
         }
       }
@@ -160,11 +140,9 @@ impl AbstractType {
                     aliases,
                     skolems,
                   )?;
-                  Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-                    Type::Array(
-                      Some(array_size),
-                      Box::new(TypeState::Known(inner_type)),
-                    ),
+                  Ok(AbstractType::Type(Type::Array(
+                    Some(array_size),
+                    Box::new(TypeState::Known(inner_type)),
                   )))
                 } else {
                   return err(InvalidArraySignature, source_trace);
@@ -176,8 +154,9 @@ impl AbstractType {
             other => {
               let inner_type =
                 Type::from_easl_tree(other, structs, aliases, generic_args)?;
-              Ok(GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-                Type::Array(None, Box::new(TypeState::Known(inner_type))),
+              Ok(AbstractType::Type(Type::Array(
+                None,
+                Box::new(TypeState::Known(inner_type)),
               )))
             }
           }
@@ -197,11 +176,11 @@ impl AbstractType {
     skolems: &Vec<Rc<str>>,
   ) -> CompileResult<Self> {
     Ok(if generic_args.contains(&name) {
-      GenericOr::Generic(name.into())
+      AbstractType::Generic(name.into())
     } else {
-      GenericOr::NonGeneric(TypeOrAbstractStruct::Type(Type::from_name(
+      AbstractType::Type(Type::from_name(
         name, position, structs, aliases, skolems,
-      )?))
+      )?)
     })
   }
   pub fn concretize(
@@ -211,22 +190,17 @@ impl AbstractType {
     source_trace: SourceTrace,
   ) -> CompileResult<Type> {
     match self {
-      GenericOr::Generic(name) => {
+      AbstractType::Generic(name) => {
         if skolems.contains(name) {
           Ok(Type::Skolem(Rc::clone(name)))
         } else {
           err(UnrecognizedGeneric(name.clone().into()), source_trace)
         }
       }
-      GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => {
-        Ok(Type::Struct(AbstractStruct::concretize(
-          s.clone(),
-          structs,
-          skolems,
-          source_trace,
-        )?))
-      }
-      GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => Ok(t.clone()),
+      AbstractType::AbstractStruct(s) => Ok(Type::Struct(
+        AbstractStruct::concretize(s.clone(), structs, skolems, source_trace)?,
+      )),
+      AbstractType::Type(t) => Ok(t.clone()),
     }
   }
   pub fn extract_generic_bindings(
@@ -235,12 +209,10 @@ impl AbstractType {
     generic_bindings: &mut HashMap<Rc<str>, Type>,
   ) {
     match self {
-      GenericOr::Generic(generic) => {
+      AbstractType::Generic(generic) => {
         generic_bindings.insert(generic.clone(), concrete_type.clone());
       }
-      GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(
-        abstract_struct,
-      )) => {
+      AbstractType::AbstractStruct(abstract_struct) => {
         if let Type::Struct(s) = concrete_type {
           for i in 0..s.fields.len() {
             abstract_struct.fields[i]
@@ -259,12 +231,14 @@ impl AbstractType {
   }
   pub fn rename_generic(self, old_name: &str, new_name: &str) -> Self {
     match self {
-      GenericOr::Generic(name) => GenericOr::Generic(if &*name == old_name {
-        new_name.into()
-      } else {
-        name
-      }),
-      GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => {
+      AbstractType::Generic(name) => {
+        AbstractType::Generic(if &*name == old_name {
+          new_name.into()
+        } else {
+          name
+        })
+      }
+      AbstractType::AbstractStruct(s) => {
         let mut s = Rc::unwrap_or_clone(s);
         s.generic_args = s
           .generic_args
@@ -285,7 +259,7 @@ impl AbstractType {
             f
           })
           .collect();
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(Rc::new(s)))
+        AbstractType::AbstractStruct(Rc::new(s))
       }
       other => other,
     }
@@ -303,6 +277,7 @@ pub enum Type {
   Function(Box<FunctionSignature>),
   Skolem(Rc<str>),
   Array(Option<u32>, Box<TypeState>),
+  Reference(Box<TypeState>),
 }
 impl Type {
   pub fn satisfies_constraints(&self, constraint: &TypeConstraint) -> bool {
@@ -552,6 +527,7 @@ impl Type {
       Type::Skolem(name) => {
         panic!("Attempted to compile Skolem \"{name}\"")
       }
+      Type::Reference(type_state) => todo!(),
     }
   }
   pub fn replace_skolems(&mut self, skolems: &Vec<(Rc<str>, Type)>) {
@@ -1213,9 +1189,7 @@ impl Context {
             .iter()
             .map(|field| field.field_type.clone())
             .collect(),
-          return_type: GenericOr::NonGeneric(
-            TypeOrAbstractStruct::AbstractStruct(s.clone()),
-          ),
+          return_type: AbstractType::AbstractStruct(s.clone()),
           implementation: FunctionImplementationKind::Constructor,
         }));
       }

@@ -2,14 +2,16 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use take_mut::take;
 
-use crate::compiler::{types::AbstractType, util::compile_word};
+use crate::compiler::util::compile_word;
 
 use super::{
   error::{err, CompileErrorKind::*, CompileResult, SourceTrace},
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
-  structs::{AbstractStruct, TypeOrAbstractStruct},
-  types::{Context, ExpTypeInfo, GenericOr, Type, TypeConstraint, TypeState},
+  structs::AbstractStruct,
+  types::{
+    AbstractType, Context, ExpTypeInfo, Type, TypeConstraint, TypeState,
+  },
   util::indent,
 };
 
@@ -33,8 +35,8 @@ pub enum FunctionImplementationKind {
 pub struct AbstractFunctionSignature {
   pub name: Rc<str>,
   pub generic_args: Vec<(Rc<str>, Vec<TypeConstraint>)>,
-  pub arg_types: Vec<GenericOr<TypeOrAbstractStruct>>,
-  pub return_type: GenericOr<TypeOrAbstractStruct>,
+  pub arg_types: Vec<AbstractType>,
+  pub return_type: AbstractType,
   pub implementation: FunctionImplementationKind,
 }
 
@@ -137,10 +139,7 @@ impl AbstractFunctionSignature {
       .zip(implementation.arg_names.into_iter())
       .zip(implementation.arg_metadata.into_iter())
       .map(|((t, name), metadata)| {
-        if let GenericOr::NonGeneric(TypeOrAbstractStruct::Type(
-          Type::Function(_),
-        )) = t
-        {
+        if let AbstractType::Type(Type::Function(_)) = t {
           (Some(name.clone()), None)
         } else {
           (None, Some((name.clone(), (metadata.clone(), t))))
@@ -225,7 +224,7 @@ impl AbstractFunctionSignature {
         .arg_types
         .iter()
         .map(|t| match t {
-          GenericOr::Generic(var_name) => (
+          AbstractType::Generic(var_name) => (
             generic_variables
               .get(var_name)
               .expect("unrecognized generic")
@@ -235,10 +234,8 @@ impl AbstractFunctionSignature {
               .expect("unrecognized generic")
               .clone(),
           ),
-          GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => {
-            (TypeState::Known(t.clone()).into(), vec![])
-          }
-          GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => (
+          AbstractType::Type(t) => (TypeState::Known(t.clone()).into(), vec![]),
+          AbstractType::AbstractStruct(s) => (
             TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
               s.clone(),
               &generic_variables,
@@ -249,20 +246,15 @@ impl AbstractFunctionSignature {
         })
         .collect(),
       return_type: match &f.return_type {
-        GenericOr::Generic(var_name) => generic_variables
+        AbstractType::Generic(var_name) => generic_variables
           .get(var_name)
           .expect("unrecognized generic")
           .clone(),
-        GenericOr::NonGeneric(TypeOrAbstractStruct::AbstractStruct(s)) => {
-          TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
-            s.clone(),
-            &generic_variables,
-          )))
-          .into()
-        }
-        GenericOr::NonGeneric(TypeOrAbstractStruct::Type(t)) => {
-          TypeState::Known(t.clone()).into()
-        }
+        AbstractType::AbstractStruct(s) => TypeState::Known(Type::Struct(
+          AbstractStruct::fill_generics(s.clone(), &generic_variables),
+        ))
+        .into(),
+        AbstractType::Type(t) => TypeState::Known(t.clone()).into(),
       },
       abstract_ancestor: Some(f),
     }
