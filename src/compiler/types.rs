@@ -655,6 +655,48 @@ impl Type {
       }
     }
   }
+  pub fn display_name(&self) -> String {
+    match self {
+      Type::None => panic!("Attempted to compile None type"),
+      Type::F32 => "f32".to_string(),
+      Type::I32 => "i32".to_string(),
+      Type::U32 => "u32".to_string(),
+      Type::Bool => "bool".to_string(),
+      Type::Struct(s) => match &*s.name {
+        "Texture2D" => format!(
+          "(Texture2D {})",
+          s.fields[0].field_type.unwrap_known().display_name()
+        ),
+        _ => {
+          compile_word(s.monomorphized_name())
+          // todo! this should display a name more like the above one for
+          // Texture2D, using a kind of type-level function application syntax
+        }
+      },
+      Type::Array(n, inner_type) => {
+        format!(
+          "[{}: {}]",
+          n.map(|n| format!(", {n}")).unwrap_or(String::new()),
+          inner_type.display_name()
+        )
+      }
+      Type::Reference(inner_type) => {
+        format!("&{}", inner_type.display_name())
+      }
+      Type::Function(f) => {
+        format!(
+          "(Fn [{}]: {})",
+          f.arg_types
+            .iter()
+            .map(|(t, _)| t.kind.display_name())
+            .collect::<Vec<String>>()
+            .join(" "),
+          f.return_type.display_name()
+        )
+      }
+      Type::Skolem(name) => name.to_string(),
+    }
+  }
   pub fn replace_skolems(&mut self, skolems: &Vec<(Rc<str>, Type)>) {
     if let Type::Skolem(s) = &self {
       std::mem::swap(
@@ -809,6 +851,17 @@ impl TypeState {
     } else {
       Ok(None)
     }
+  }
+  pub fn display_name(&self) -> String {
+    self.with_dereferenced(|t| match t {
+      TypeState::Unknown => "???".to_string(),
+      TypeState::OneOf(items) => std::iter::once("   ".to_string())
+        .chain(items.into_iter().map(|t| t.display_name()))
+        .collect::<Vec<String>>()
+        .join("\nor "),
+      TypeState::Known(t) => t.display_name(),
+      TypeState::UnificationVariable(_) => unreachable!(),
+    })
   }
   pub fn check_is_fully_known(&self) -> bool {
     self.with_dereferenced(|typestate| {
@@ -1256,7 +1309,7 @@ pub fn parse_generic_argument(
 pub struct Context {
   pub structs: Vec<Rc<AbstractStruct>>,
   pub variables: HashMap<Rc<str>, Vec<Variable>>,
-  abstract_functions: HashMap<Rc<str>, Vec<Rc<AbstractFunctionSignature>>>,
+  pub abstract_functions: HashMap<Rc<str>, Vec<Rc<AbstractFunctionSignature>>>,
   pub type_aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
   pub enclosing_function_types: Vec<TypeState>,
   pub top_level_vars: Vec<TopLevelVar>,

@@ -1,6 +1,7 @@
 use std::{cell::RefCell, cmp::Ordering, rc::Rc};
 
 use sse::{document::Document, syntax::EncloserOrOperator};
+use take_mut::take;
 
 use crate::{
   compiler::{
@@ -478,13 +479,13 @@ impl Program {
     }
     Ok(self)
   }
-  pub fn fully_infer_types(mut self) -> CompileResult<Self> {
+  pub fn fully_infer_types(&mut self) -> CompileResult<()> {
     loop {
       let did_type_states_change = self.propagate_types()?;
       if !did_type_states_change {
         let untyped_expressions = self.find_untyped();
         return if untyped_expressions.is_empty() {
-          Ok(self)
+          Ok(())
         } else {
           let source_trace = untyped_expressions
             .iter()
@@ -495,7 +496,7 @@ impl Program {
       }
     }
   }
-  pub fn check_assignment_validity(self) -> CompileResult<Self> {
+  pub fn check_assignment_validity(&mut self) -> CompileResult<()> {
     for f in self.global_context.abstract_functions_iter() {
       let mut ctx = self.global_context.clone();
       if let FunctionImplementationKind::Composite(implementation) =
@@ -507,9 +508,9 @@ impl Program {
           .check_assignment_validity(&mut ctx)?;
       }
     }
-    Ok(self)
+    Ok(())
   }
-  pub fn monomorphize(mut self) -> CompileResult<Self> {
+  pub fn monomorphize(&mut self) -> CompileResult<()> {
     let mut monomorphized_ctx = Context::default_global();
     for f in self.global_context.abstract_functions_iter() {
       if f.generic_args.is_empty() {
@@ -527,24 +528,24 @@ impl Program {
         }
       }
     }
-    monomorphized_ctx.structs = self.global_context.structs;
-    monomorphized_ctx.top_level_vars = self.global_context.top_level_vars;
-    monomorphized_ctx.variables = self.global_context.variables;
-    monomorphized_ctx.type_aliases = self.global_context.type_aliases;
-    self.global_context = monomorphized_ctx;
-    Ok(self)
+    take(&mut self.global_context, |old_ctx| {
+      monomorphized_ctx.structs = old_ctx.structs;
+      monomorphized_ctx.top_level_vars = old_ctx.top_level_vars;
+      monomorphized_ctx.variables = old_ctx.variables;
+      monomorphized_ctx.type_aliases = old_ctx.type_aliases;
+      monomorphized_ctx
+    });
+    Ok(())
   }
-  pub fn inline_all_higher_order_arguments(self) -> CompileResult<Self> {
-    let (new_program, changed) = self.inline_higher_order_arguments()?;
+  pub fn inline_all_higher_order_arguments(&mut self) -> CompileResult<()> {
+    let changed = self.inline_higher_order_arguments()?;
     if changed {
-      new_program.inline_all_higher_order_arguments()
+      self.inline_all_higher_order_arguments()
     } else {
-      Ok(new_program)
+      Ok(())
     }
   }
-  pub fn inline_higher_order_arguments(
-    mut self,
-  ) -> CompileResult<(Self, bool)> {
+  pub fn inline_higher_order_arguments(&mut self) -> CompileResult<bool> {
     let mut changed = false;
     let mut inlined_ctx = Context::default_global();
     for f in self.global_context.abstract_functions_iter() {
@@ -576,12 +577,14 @@ impl Program {
         }
       }
     }
-    inlined_ctx.structs = self.global_context.structs;
-    inlined_ctx.top_level_vars = self.global_context.top_level_vars;
-    inlined_ctx.variables = self.global_context.variables;
-    inlined_ctx.type_aliases = self.global_context.type_aliases;
-    self.global_context = inlined_ctx;
-    Ok((self, changed))
+    take(&mut self.global_context, |old_ctx| {
+      inlined_ctx.structs = old_ctx.structs;
+      inlined_ctx.top_level_vars = old_ctx.top_level_vars;
+      inlined_ctx.variables = old_ctx.variables;
+      inlined_ctx.type_aliases = old_ctx.type_aliases;
+      inlined_ctx
+    });
+    Ok(changed)
   }
   pub fn compile_to_wgsl(self) -> CompileResult<String> {
     let mut wgsl = String::new();
@@ -618,11 +621,32 @@ impl Program {
     }
     Ok(wgsl)
   }
-  pub fn process_raw_program(self) -> Result<Self, CompileError> {
-    self
-      .fully_infer_types()?
-      .check_assignment_validity()?
-      .monomorphize()?
-      .inline_all_higher_order_arguments()
+  pub fn process_raw_program(&mut self) -> CompileResult<()> {
+    self.fully_infer_types()?;
+    self.check_assignment_validity()?;
+    self.monomorphize()?;
+    self.inline_all_higher_order_arguments()?;
+    Ok(())
+  }
+  pub fn gather_type_annotations(&self) -> Vec<(SourceTrace, TypeState)> {
+    let mut type_annotations = vec![];
+    for (_, signatures) in self.global_context.abstract_functions.iter() {
+      for signature in signatures {
+        if let FunctionImplementationKind::Composite(implementation) =
+          &(&**signature).implementation
+        {
+          implementation
+            .borrow()
+            .body
+            .walk(&mut |exp: &TypedExp| {
+              type_annotations
+                .push((exp.source_trace.clone(), exp.data.kind.clone()));
+              Ok(true)
+            })
+            .unwrap();
+        }
+      }
+    }
+    type_annotations
   }
 }

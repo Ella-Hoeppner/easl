@@ -5,10 +5,9 @@ use crate::compiler::{
 };
 
 fn derive_struct(doc: EaslDocument, struct_name: &str) -> String {
-  let program = Program::from_easl_document(&doc, built_in_macros())
-    .unwrap()
-    .process_raw_program()
-    .unwrap();
+  let mut program =
+    Program::from_easl_document(&doc, built_in_macros()).unwrap();
+  program.process_raw_program().unwrap();
   let s = program
     .global_context
     .structs
