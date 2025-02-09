@@ -56,6 +56,12 @@ impl From<DocumentPosition> for SourceTrace {
   }
 }
 
+impl From<&DocumentPosition> for SourceTrace {
+  fn from(position: &DocumentPosition) -> Self {
+    position.clone().into()
+  }
+}
+
 impl FromIterator<SourceTrace> for SourceTrace {
   fn from_iter<T: IntoIterator<Item = SourceTrace>>(iter: T) -> Self {
     let mut subtraces: Vec<SourceTrace> = iter.into_iter().collect();

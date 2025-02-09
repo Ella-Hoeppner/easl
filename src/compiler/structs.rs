@@ -11,7 +11,7 @@ use crate::{
 
 use super::{
   error::{CompileError, CompileErrorKind::*, CompileResult, SourceTrace},
-  metadata::Metadata,
+  metadata::{self, Metadata},
   types::{AbstractType, ExpTypeInfo, Type, TypeState},
 };
 
@@ -28,7 +28,10 @@ impl UntypedStructField {
     let (type_ast, inner_ast) = extract_type_annotation_ast(ast)?;
     let type_ast =
       type_ast.ok_or(CompileError::new(StructFieldMissingType, path.into()))?;
-    let (metadata, name) = extract_metadata(inner_ast)?;
+    let (name, metadata, metadata_error) = extract_metadata(inner_ast);
+    if let Some(e) = metadata_error {
+      return Err(e);
+    }
     Ok(Self {
       metadata,
       name: read_leaf(name)?,

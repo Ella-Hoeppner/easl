@@ -319,7 +319,11 @@ pub fn arg_list_and_return_type_from_easl_tree(
   ) = tree
   {
     let return_type_ast = args_and_return_type.remove(1);
-    let (return_metadata, return_type_ast) = extract_metadata(return_type_ast)?;
+    let (return_type_ast, return_metadata, metadata_error) =
+      extract_metadata(return_type_ast);
+    if let Some(metadata_error) = metadata_error {
+      return Err(metadata_error);
+    }
     let return_type = AbstractType::from_easl_tree(
       return_type_ast,
       structs,
@@ -346,7 +350,11 @@ pub fn arg_list_and_return_type_from_easl_tree(
             generic_args,
             &vec![],
           )?;
-          let (arg_metadata, arg_name_ast) = extract_metadata(arg_name_ast)?;
+          let (arg_name_ast, arg_metadata, metadata_error) =
+            extract_metadata(arg_name_ast);
+          if let Some(metadata_error) = metadata_error {
+            return Err(metadata_error);
+          }
           if let EaslTree::Leaf(_, arg_name) = arg_name_ast {
             Ok(((t, arg_metadata), arg_name.into()))
           } else {
@@ -549,45 +557,6 @@ impl TypedExp {
                             AnonymousFunctionsNotYetSupported,
                             source_trace,
                           );
-                          /*let (
-                            source_trace,
-                            arg_names,
-                            arg_types,
-                            _arg_metadata,
-                            return_type,
-                            _return_metadata,
-                          ) = arg_list_and_return_type_from_easl_tree(
-                            children_iter.next().ok_or(CompileError::new(
-                              InvalidFunction,
-                              source_trace,
-                            ))?,
-                            structs,
-                            aliases,
-                            &vec![],
-                          )?;
-                          Some(Self::function_from_body_tree(
-                            source_trace.clone(),
-                            children_iter.clone().collect(),
-                            TypeState::Known(return_type.concretize(
-                              structs,
-                              skolems,
-                              source_trace.clone(),
-                            )?),
-                            arg_names,
-                            arg_types
-                              .into_iter()
-                              .map(|t| {
-                                Ok(TypeState::Known(t.concretize(
-                                  structs,
-                                  skolems,
-                                  source_trace.clone(),
-                                )?))
-                              })
-                              .collect::<CompileResult<Vec<ExpTypeInfo>>>()?,
-                            structs,
-                            aliases,
-                            skolems,
-                          )?)*/
                         }
                         "let" => {
                           if children_iter.len() < 2 {
@@ -632,8 +601,11 @@ impl TypedExp {
                               {
                                 let value_ast =
                                   binding_asts_iter.next().unwrap();
-                                let (name_metadata, name_ast) =
-                                  extract_metadata(name_ast)?;
+                                let (name_ast, name_metadata, metadata_error) =
+                                  extract_metadata(name_ast);
+                                if let Some(metadata_error) = metadata_error {
+                                  return Err(metadata_error);
+                                }
                                 match name_ast {
                                   EaslTree::Leaf(position, name) => {
                                     let source_trace = position.clone().into();

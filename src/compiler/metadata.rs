@@ -7,7 +7,9 @@ use crate::compiler::util::compile_word;
 use crate::parse::EaslTree;
 use crate::parse::{Encloser::*, Operator};
 
-use super::error::{err, CompileErrorKind::*, CompileResult, SourceTrace};
+use super::error::{
+  err, CompileError, CompileErrorKind::*, CompileResult, SourceTrace,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Metadata {
@@ -98,17 +100,18 @@ impl Metadata {
 
 pub fn extract_metadata(
   exp: EaslTree,
-) -> CompileResult<(Option<Metadata>, EaslTree)> {
-  Ok(
-    if let EaslTree::Inner(
-      (_, EncloserOrOperator::Operator(Operator::MetadataAnnotation)),
-      mut children,
-    ) = exp
-    {
-      let exp = children.remove(1);
-      (Some(Metadata::from_metadata_tree(children.remove(0))?), exp)
-    } else {
-      (None, exp)
-    },
-  )
+) -> (EaslTree, Option<Metadata>, Option<CompileError>) {
+  if let EaslTree::Inner(
+    (_, EncloserOrOperator::Operator(Operator::MetadataAnnotation)),
+    mut children,
+  ) = exp
+  {
+    let exp = children.remove(1);
+    match Metadata::from_metadata_tree(children.remove(0)) {
+      Ok(metadata) => (exp, Some(metadata), None),
+      Err(err) => (exp, None, Some(err)),
+    }
+  } else {
+    (exp, None, None)
+  }
 }

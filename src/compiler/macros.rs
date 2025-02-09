@@ -5,34 +5,33 @@ use crate::parse::EaslTree;
 use super::error::SourceTrace;
 
 pub struct Macro(
-  pub  Box<
-    dyn Fn(
-      EaslTree,
-    ) -> Result<Result<EaslTree, (SourceTrace, Rc<str>)>, EaslTree>,
-  >,
+  pub Box<dyn Fn(&EaslTree) -> Option<Result<EaslTree, (SourceTrace, Rc<str>)>>>,
 );
 
 pub fn macroexpand(
   tree: EaslTree,
   macros: &Vec<Macro>,
-) -> Result<EaslTree, (SourceTrace, Rc<str>)> {
-  let new_tree = match tree {
-    EaslTree::Inner(data, children) => EaslTree::Inner(
-      data,
-      children
+) -> (EaslTree, Vec<(SourceTrace, Rc<str>)>) {
+  let (mut new_tree, mut child_errors) = match tree {
+    EaslTree::Inner(data, children) => {
+      let (new_tree, child_errors) = children
         .into_iter()
         .map(|subtree| macroexpand(subtree, macros))
-        .collect::<Result<Vec<EaslTree>, (SourceTrace, Rc<str>)>>()?,
-    ),
-    leaf => leaf,
+        .collect::<(Vec<EaslTree>, Vec<Vec<(SourceTrace, Rc<str>)>>)>();
+      (
+        EaslTree::Inner(data, new_tree),
+        child_errors.into_iter().flatten().collect(),
+      )
+    }
+    leaf => (leaf, vec![]),
   };
-  macros.iter().fold(Ok(new_tree), |tree_result, Macro(f)| {
-    tree_result
-      .map(|tree| match f(tree) {
-        Ok(Ok(new_tree)) => Ok(macroexpand(new_tree, macros)?),
-        Ok(Err(macro_failure)) => Err(macro_failure),
-        Err(original_tree) => Ok(original_tree),
-      })
-      .flatten()
-  })
+  for Macro(f) in macros {
+    if let Some(r) = f(&new_tree) {
+      match r {
+        Ok(replacement_tree) => new_tree = replacement_tree,
+        Err(err) => child_errors.push(err),
+      }
+    }
+  }
+  (new_tree, child_errors)
 }

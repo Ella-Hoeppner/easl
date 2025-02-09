@@ -40,16 +40,20 @@ impl Program {
   pub fn from_easl_document(
     document: &'_ EaslDocument,
     macros: Vec<Macro>,
-  ) -> CompileResult<Self> {
-    let trees = document
+  ) -> (Self, Vec<CompileError>) {
+    let (trees, macro_errors) = document
       .syntax_trees
       .iter()
       .cloned()
       .map(|tree| macroexpand(tree, &macros))
-      .collect::<Result<Vec<EaslTree>, (SourceTrace, Rc<str>)>>()
-      .map_err(|(source_trace, err_str)| {
+      .collect::<(Vec<EaslTree>, Vec<Vec<(SourceTrace, Rc<str>)>>)>();
+    let mut errors: Vec<CompileError> = macro_errors
+      .into_iter()
+      .flatten()
+      .map(|(source_trace, err_str)| {
         CompileError::new(MacroError(err_str), source_trace)
-      })?;
+      })
+      .collect();
 
     let mut non_struct_trees = vec![];
     let mut untyped_structs = vec![];
@@ -57,7 +61,11 @@ impl Program {
     for tree in trees.into_iter() {
       use crate::parse::Encloser::*;
       use sse::syntax::EncloserOrOperator::*;
-      let (metadata, tree_body) = extract_metadata(tree.clone())?;
+      let (tree_body, metadata, metadata_error) =
+        extract_metadata(tree.clone());
+      if let Some(e) = metadata_error {
+        errors.push(e);
+      }
       if let EaslTree::Inner((position, Encloser(Parens)), children) =
         &tree_body
       {
@@ -71,64 +79,97 @@ impl Program {
             if let Some(struct_name) = children_iter.next() {
               match struct_name {
                 EaslTree::Leaf(_, struct_name) => {
-                  untyped_structs.push(UntypedStruct::from_field_trees(
+                  match UntypedStruct::from_field_trees(
                     struct_name.clone().into(),
                     vec![],
                     children_iter.cloned().collect(),
                     source_trace,
-                  )?)
+                  ) {
+                    Ok(s) => untyped_structs.push(s),
+                    Err(e) => errors.push(e),
+                  }
                 }
                 EaslTree::Inner(
                   (position, Encloser(Parens)),
                   signature_children,
                 ) => {
                   let source_trace: SourceTrace = position.clone().into();
-                  let mut signature_leaves = signature_children
+                  let (signature_leaves, signature_errors) = signature_children
                     .into_iter()
                     .map(|child| match child {
-                      EaslTree::Leaf(_, name) => Ok(name.clone().into()),
-                      _ => {
-                        err(InvalidStructName, child.position().clone().into())
+                      EaslTree::Leaf(_, name) => {
+                        (Some(name.clone().into()), None)
                       }
+                      _ => (
+                        None,
+                        Some(CompileError::new(
+                          InvalidStructName,
+                          child.position().clone().into(),
+                        )),
+                      ),
                     })
-                    .collect::<CompileResult<Vec<Rc<str>>>>()?
-                    .into_iter();
-                  if let Some(struct_name) = signature_leaves.next() {
-                    if signature_leaves.is_empty() {
-                      return err(InvalidStructName, source_trace);
+                    .collect::<(Vec<Option<Rc<str>>>, Vec<Option<CompileError>>)>();
+                  let mut filtered_signature_errors: Vec<CompileError> =
+                    signature_errors.into_iter().filter_map(|x| x).collect();
+                  if filtered_signature_errors.is_empty() {
+                    let mut filtered_signature_leaves = signature_leaves
+                      .into_iter()
+                      .filter_map(|x| x)
+                      .collect::<Vec<_>>()
+                      .into_iter();
+                    if let Some(struct_name) = filtered_signature_leaves.next()
+                    {
+                      if filtered_signature_leaves.is_empty() {
+                        errors.push(CompileError::new(
+                          InvalidStructName,
+                          source_trace,
+                        ));
+                      } else {
+                        match UntypedStruct::from_field_trees(
+                          struct_name,
+                          filtered_signature_leaves.collect(),
+                          children_iter.cloned().collect(),
+                          source_trace,
+                        ) {
+                          Ok(s) => untyped_structs.push(s),
+                          Err(e) => errors.push(e),
+                        }
+                      }
                     } else {
-                      untyped_structs.push(UntypedStruct::from_field_trees(
-                        struct_name,
-                        signature_leaves.collect(),
-                        children_iter.cloned().collect(),
+                      errors.push(CompileError::new(
+                        InvalidStructName,
                         source_trace,
-                      )?)
+                      ));
                     }
                   } else {
-                    return err(InvalidStructName, source_trace);
+                    errors.append(&mut filtered_signature_errors);
                   }
                 }
                 EaslTree::Inner((position, _), _) => {
-                  return err(InvalidStructName, position.clone().into())
+                  errors.push(CompileError::new(
+                    InvalidStructName,
+                    position.clone().into(),
+                  ));
                 }
               }
             } else {
-              return err(InvalidStructDefinition, source_trace);
+              errors
+                .push(CompileError::new(InvalidStructDefinition, source_trace));
             }
           } else {
             non_struct_trees.push((metadata, tree_body))
           }
         } else {
-          return err(
+          errors.push(CompileError::new(
             UnrecognizedTopLevelForm(tree_body.clone()),
             source_trace,
-          );
+          ));
         }
       } else {
-        return err(
+        errors.push(CompileError::new(
           UnrecognizedTopLevelForm(tree_body),
           tree.position().clone().into(),
-        );
+        ));
       }
     }
     untyped_structs.sort_by(|a, b| {
@@ -142,10 +183,12 @@ impl Program {
     });
     let mut global_context = Context::default_global();
     for untyped_struct in untyped_structs {
-      let new_struct = untyped_struct
-        .assign_types(&global_context.structs, &built_in_type_aliases())?
-        .into();
-      global_context = global_context.with_struct(new_struct);
+      match untyped_struct
+        .assign_types(&global_context.structs, &built_in_type_aliases())
+      {
+        Ok(s) => global_context = global_context.with_struct(s.into()),
+        Err(e) => errors.push(e),
+      }
     }
 
     for (metadata, tree) in non_struct_trees.into_iter() {
@@ -164,8 +207,10 @@ impl Program {
             first_child_position.clone().into();
           match first_child.as_str() {
             "var" => {
-              let (attributes, name_and_type_ast) = match children_iter.len() {
-                1 => (vec![], children_iter.next().unwrap()),
+              if let Some((attributes, name_and_type_ast)) = match children_iter
+                .len()
+              {
+                1 => Some((vec![], children_iter.next().unwrap())),
                 2 => {
                   let attributes_ast = children_iter.next().unwrap();
                   if let EaslTree::Inner(
@@ -173,124 +218,146 @@ impl Program {
                     attribute_asts,
                   ) = attributes_ast
                   {
-                    let attributes: Vec<Rc<str>> = attribute_asts
-                      .into_iter()
-                      .map(|attribute_ast| {
-                        if let EaslTree::Leaf(_, attribute_string) =
-                          attribute_ast
-                        {
-                          Ok(attribute_string.into())
-                        } else {
-                          err(
+                    let (attributes, attribute_errors): (
+                      Vec<Option<Rc<str>>>,
+                      Vec<Option<CompileError>>,
+                    ) =
+                      attribute_asts
+                        .into_iter()
+                        .map(|attribute_ast| {
+                          if let EaslTree::Leaf(_, attribute_string) =
+                            attribute_ast
+                          {
+                            (Some(attribute_string.into()), None)
+                          } else {
+                            (None, Some( CompileError::new(
                             InvalidTopLevelVar(
                               "Expected leaf for attribute, found inner form"
                                 .into(),
                             ),
                             position.clone().into(),
-                          )
-                        }
-                      })
-                      .collect::<CompileResult<_>>()?;
-                    (attributes, children_iter.next().unwrap())
+                          )))
+                          }
+                        })
+                        .collect();
+                    let mut filtered_attribute_errors: Vec<CompileError> =
+                      attribute_errors.into_iter().filter_map(|x| x).collect();
+                    if !filtered_attribute_errors.is_empty() {
+                      errors.append(&mut filtered_attribute_errors);
+                    }
+                    Some((
+                      attributes.into_iter().filter_map(|x| x).collect(),
+                      children_iter.next().unwrap(),
+                    ))
                   } else {
-                    return err(
+                    errors.push(CompileError::new(
                       InvalidTopLevelVar(
                         "Expected square-bracket enclosed attributes".into(),
                       ),
                       first_child_source_trace,
-                    );
+                    ));
+                    None
                   }
                 }
                 _ => {
-                  return err(
+                  errors.push(CompileError::new(
                     InvalidTopLevelVar("Invalid number of inner forms".into()),
                     first_child_source_trace,
-                  )
+                  ));
+                  None
                 }
-              };
-              let (name, type_ast) =
-                read_type_annotated_name(name_and_type_ast)?;
-              let type_source_path = type_ast.position().clone();
-              global_context.top_level_vars.push(TopLevelVar {
-                name,
-                metadata,
-                attributes,
-                var: Variable::new(
-                  TypeState::Known(
-                    AbstractType::from_easl_tree(
+              } {
+                match read_type_annotated_name(name_and_type_ast) {
+                  Ok((name, type_ast)) => {
+                    let type_source_path = type_ast.position().clone();
+                    match AbstractType::from_easl_tree(
                       type_ast,
                       &global_context.structs,
                       &global_context.type_aliases,
                       &vec![],
                       &vec![],
-                    )?
-                    .concretize(
-                      &vec![],
-                      &global_context.structs,
-                      type_source_path.into(),
-                    )?,
-                  )
-                  .into(),
-                )
-                .with_kind(VariableKind::Var),
-                value: None,
-                source_trace: parens_source_trace,
-              })
+                    )
+                    .map(|t| {
+                      t.concretize(
+                        &vec![],
+                        &global_context.structs,
+                        type_source_path.into(),
+                      )
+                    })
+                    .flatten()
+                    {
+                      Ok(t) => {
+                        global_context.top_level_vars.push(TopLevelVar {
+                          name,
+                          metadata,
+                          attributes,
+                          var: Variable::new(TypeState::Known(t).into())
+                            .with_kind(VariableKind::Var),
+                          value: None,
+                          source_trace: parens_source_trace,
+                        })
+                      }
+                      Err(e) => errors.push(e),
+                    }
+                  }
+                  Err(e) => errors.push(e),
+                }
+              }
             }
             "def" => {
               if children_iter.len() == 2 {
-                let (name, type_ast) =
-                  read_type_annotated_name(children_iter.next().unwrap())?;
-                let value_expression = TypedExp::try_from_easl_tree(
-                  children_iter.next().unwrap(),
-                  &global_context.structs,
-                  &vec![],
-                  &vec![],
-                  crate::compiler::expression::SyntaxTreeContext::Default,
-                )?;
-                global_context.top_level_vars.push(TopLevelVar {
-                  name,
-                  metadata: None,
-                  attributes: vec![],
-                  var: Variable::new(
-                    TypeState::Known(Type::from_easl_tree(
-                      type_ast,
+                match read_type_annotated_name(children_iter.next().unwrap()) {
+                  Ok((name, type_ast)) => {
+                    match TypedExp::try_from_easl_tree(
+                      children_iter.next().unwrap(),
                       &global_context.structs,
-                      &global_context.type_aliases,
                       &vec![],
-                    )?)
-                    .into(),
-                  ),
-                  value: Some(value_expression),
-                  source_trace: parens_source_trace,
-                })
+                      &vec![],
+                      crate::compiler::expression::SyntaxTreeContext::Default,
+                    ) {
+                      Ok(value_expression) => {
+                        match Type::from_easl_tree(
+                          type_ast,
+                          &global_context.structs,
+                          &global_context.type_aliases,
+                          &vec![],
+                        ) {
+                          Ok(t) => {
+                            global_context.top_level_vars.push(TopLevelVar {
+                              name,
+                              metadata: None,
+                              attributes: vec![],
+                              var: Variable::new(TypeState::Known(t).into()),
+                              value: Some(value_expression),
+                              source_trace: parens_source_trace,
+                            })
+                          }
+                          Err(e) => errors.push(e),
+                        }
+                      }
+                      Err(e) => errors.push(e),
+                    }
+                  }
+                  Err(e) => errors.push(e),
+                }
               } else {
-                return err(
+                errors.push(CompileError::new(
                   InvalidTopLevelVar(
                     "Expected two forms inside \"def\"".into(),
                   ),
                   first_child_source_trace,
-                );
+                ));
               }
             }
-            "defn" => {
-              let name_ast = children_iter.next().ok_or_else(|| {
-                CompileError::new(
-                  InvalidDefn("Missing Name".into()),
-                  parens_source_trace.clone(),
-                )
-              })?;
-              let (name, generic_args): (
-                Rc<str>,
-                Vec<(Rc<str>, Vec<TypeConstraint>)>,
-              ) = match name_ast {
-                EaslTree::Leaf(_, name) => (name.into(), vec![]),
-                EaslTree::Inner((_, Encloser(Parens)), subtrees) => {
-                  let mut subtrees_iter = subtrees.into_iter();
-                  if let Some(EaslTree::Leaf(_, name)) = subtrees_iter.next() {
-                    (
-                      name.into(),
-                      subtrees_iter
+            "defn" => match children_iter.next() {
+              Some(name_ast) => {
+                if let Some((name, generic_args)) = match name_ast {
+                  EaslTree::Leaf(_, name) => Some((name.into(), vec![])),
+                  EaslTree::Inner((_, Encloser(Parens)), subtrees) => {
+                    let mut subtrees_iter = subtrees.into_iter();
+                    if let Some(EaslTree::Leaf(_, name)) = subtrees_iter.next()
+                    {
+                      match subtrees_iter
                         .map(|subtree| {
                           parse_generic_argument(
                             subtree,
@@ -299,117 +366,162 @@ impl Program {
                             &vec![],
                           )
                         })
-                        .collect::<CompileResult<_>>()?,
-                    )
-                  } else {
-                    return err(
-                      InvalidDefn("Invalid name".into()),
+                        .collect::<CompileResult<Vec<_>>>()
+                      {
+                        Ok(generic_args) => Some((name.into(), generic_args)),
+                        Err(e) => {
+                          errors.push(e);
+                          None
+                        }
+                      }
+                    } else {
+                      errors.push(CompileError::new(
+                        InvalidDefn("Invalid name".into()),
+                        first_child_source_trace,
+                      ));
+                      None
+                    }
+                  }
+                  _ => {
+                    errors.push(CompileError::new(
+                      InvalidDefn(
+                        "Expected name or parens with name and generic arguments"
+                          .into(),
+                      ),
                       first_child_source_trace,
-                    );
+                    ));
+                    None
+                  }
+                } {
+                  match children_iter.next() {
+                    Some(arg_list_ast) => {
+                      let generic_arg_names: Vec<Rc<str>> = generic_args
+                        .iter()
+                        .map(|(name, _)| name.clone())
+                        .collect();
+                      match arg_list_and_return_type_from_easl_tree(
+                        arg_list_ast,
+                        &global_context.structs,
+                        &global_context.type_aliases,
+                        &generic_arg_names,
+                      ) {
+                        Ok((
+                          source_path,
+                          arg_names,
+                          arg_types,
+                          arg_metadata,
+                          return_type,
+                          return_metadata,
+                        )) => {
+                          match return_type.concretize(
+                            &generic_arg_names,
+                            &global_context.structs,
+                            source_path.clone().into(),
+                          ) {
+                            Ok(concrete_return_type) => {
+                              match arg_types
+                                .iter()
+                                .map(|t| {
+                                  Ok((
+                                    TypeState::Known(t.concretize(
+                                      &generic_arg_names,
+                                      &global_context.structs,
+                                      source_path.clone().into(),
+                                    )?)
+                                    .into(),
+                                    if let AbstractType::Generic(generic_name) =
+                                      t
+                                    {
+                                      generic_args
+                                        .iter()
+                                        .find_map(|(name, constraints)| {
+                                          (generic_name == name)
+                                            .then(|| constraints.clone())
+                                        })
+                                        .unwrap_or(vec![])
+                                    } else {
+                                      vec![]
+                                    },
+                                  ))
+                                })
+                                .collect::<CompileResult<
+                                  Vec<(ExpTypeInfo, Vec<TypeConstraint>)>,
+                                >>() {
+                                Ok(concrete_arg_types) => {
+                                  match TypedExp::function_from_body_tree(
+                                    source_path.clone(),
+                                    children_iter.collect(),
+                                    TypeState::Known(concrete_return_type)
+                                      .into(),
+                                    arg_names.clone(),
+                                    concrete_arg_types,
+                                    &global_context.structs,
+                                    &global_context.type_aliases,
+                                    &generic_arg_names,
+                                  ) {
+                                    Ok(body) => {
+                                      let implementation =
+                                        FunctionImplementationKind::Composite(
+                                          Rc::new(RefCell::new(
+                                            TopLevelFunction {
+                                              arg_names,
+                                              arg_metadata,
+                                              return_metadata,
+                                              metadata,
+                                              body,
+                                            },
+                                          )),
+                                        );
+                                      global_context.add_abstract_function(
+                                        Rc::new(AbstractFunctionSignature {
+                                          name,
+                                          generic_args,
+                                          arg_types,
+                                          return_type,
+                                          implementation,
+                                        }),
+                                      );
+                                    }
+                                    Err(e) => errors.push(e),
+                                  }
+                                }
+                                Err(e) => {
+                                  errors.push(e);
+                                }
+                              }
+                            }
+                            Err(e) => {
+                              errors.push(e);
+                            }
+                          }
+                        }
+                        Err(e) => errors.push(e),
+                      }
+                    }
+                    None => errors.push(CompileError::new(
+                      InvalidDefn("Missing Argument List".into()),
+                      parens_source_trace.clone(),
+                    )),
                   }
                 }
-                _ => {
-                  return err(
-                    InvalidDefn(
-                      "Expected name or parens with name and generic arguments"
-                        .into(),
-                    ),
-                    first_child_source_trace,
-                  )
-                }
-              };
-              let arg_list_ast = children_iter.next().ok_or_else(|| {
-                CompileError::new(
-                  InvalidDefn("Missing Argument List".into()),
-                  parens_source_trace.clone(),
-                )
-              })?;
-              let generic_arg_names: Vec<Rc<str>> =
-                generic_args.iter().map(|(name, _)| name.clone()).collect();
-              let (
-                source_path,
-                arg_names,
-                arg_types,
-                arg_metadata,
-                return_type,
-                return_metadata,
-              ) = arg_list_and_return_type_from_easl_tree(
-                arg_list_ast,
-                &global_context.structs,
-                &global_context.type_aliases,
-                &generic_arg_names,
-              )?;
-              let implementation = FunctionImplementationKind::Composite(
-                Rc::new(RefCell::new(TopLevelFunction {
-                  arg_names: arg_names.clone(),
-                  arg_metadata,
-                  return_metadata,
-                  metadata,
-                  body:
-                    TypedExp::function_from_body_tree(
-                      source_path.clone(),
-                      children_iter.collect(),
-                      TypeState::Known(return_type.concretize(
-                        &generic_arg_names,
-                        &global_context.structs,
-                        source_path.clone().into(),
-                      )?)
-                      .into(),
-                      arg_names,
-                      arg_types
-                        .iter()
-                        .map(|t| {
-                          Ok((
-                            TypeState::Known(t.concretize(
-                              &generic_arg_names,
-                              &global_context.structs,
-                              source_path.clone().into(),
-                            )?)
-                            .into(),
-                            if let AbstractType::Generic(generic_name) = t {
-                              generic_args
-                                .iter()
-                                .find_map(|(name, constraints)| {
-                                  (generic_name == name)
-                                    .then(|| constraints.clone())
-                                })
-                                .unwrap_or(vec![])
-                            } else {
-                              vec![]
-                            },
-                          ))
-                        })
-                        .collect::<CompileResult<
-                          Vec<(ExpTypeInfo, Vec<TypeConstraint>)>,
-                        >>()?,
-                      &global_context.structs,
-                      &global_context.type_aliases,
-                      &generic_arg_names,
-                    )?,
-                })),
-              );
-              global_context.add_abstract_function(Rc::new(
-                AbstractFunctionSignature {
-                  name,
-                  generic_args,
-                  arg_types,
-                  return_type,
-                  implementation,
-                },
-              ));
-            }
+              }
+              None => errors.push(CompileError::new(
+                InvalidDefn("Missing Name".into()),
+                parens_source_trace.clone(),
+              )),
+            },
             _ => {
-              return err(
+              errors.push(CompileError::new(
                 UnrecognizedTopLevelForm(EaslTree::Leaf(
                   first_child_position.clone(),
                   first_child,
                 )),
                 first_child_source_trace,
-              );
+              ));
             }
           }
         } else {
-          return err(
+          errors.push(CompileError::new(
             UnrecognizedTopLevelForm(first_child.unwrap_or(EaslTree::Inner(
               (
                 parens_position.clone(),
@@ -418,16 +530,16 @@ impl Program {
               vec![],
             ))),
             parens_source_trace,
-          );
+          ));
         }
       } else {
-        return err(
+        errors.push(CompileError::new(
           UnrecognizedTopLevelForm(tree.clone()),
           tree.position().clone().into(),
-        );
+        ));
       }
     }
-    Ok(Self { global_context })
+    (Self { global_context }, errors)
   }
   fn propagate_types(&mut self) -> CompileResult<bool> {
     let mut base_context = self.global_context.clone();
@@ -621,7 +733,7 @@ impl Program {
     }
     Ok(wgsl)
   }
-  pub fn process_raw_program(&mut self) -> CompileResult<()> {
+  pub fn validate_raw_program(&mut self) -> CompileResult<()> {
     self.fully_infer_types()?;
     self.check_assignment_validity()?;
     self.monomorphize()?;

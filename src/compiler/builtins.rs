@@ -919,13 +919,11 @@ pub fn built_in_macros() -> Vec<Macro> {
   let if_macro = Macro(Box::new(|tree| match tree {
     EaslTree::Inner(
       (position, EncloserOrOperator::Encloser(Encloser::Parens)),
-      mut children,
+      children,
     ) => {
+      let mut children = children.clone();
       if children.is_empty() {
-        Err(EaslTree::Inner(
-          (position, EncloserOrOperator::Encloser(Encloser::Parens)),
-          children,
-        ))
+        None
       } else {
         if let EaslTree::Leaf(_, leaf) = &children[0] {
           if leaf.as_str() == "if" {
@@ -933,8 +931,11 @@ pub fn built_in_macros() -> Vec<Macro> {
               let false_branch = children.remove(3);
               let true_branch = children.remove(2);
               let condition = children.remove(1);
-              Ok(Ok(EaslTree::Inner(
-                (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+              Some(Ok(EaslTree::Inner(
+                (
+                  position.clone(),
+                  EncloserOrOperator::Encloser(Encloser::Parens),
+                ),
                 vec![
                   EaslTree::Leaf(
                     DocumentPosition {
@@ -963,7 +964,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                 ],
               )))
             } else {
-              Ok(Err((
+              Some(Err((
                 SourceTrace::from(position),
                 format!(
                   "\"if\" statement expects 3 arguments, found {}",
@@ -973,31 +974,23 @@ pub fn built_in_macros() -> Vec<Macro> {
               )))
             }
           } else {
-            Err(EaslTree::Inner(
-              (position, EncloserOrOperator::Encloser(Encloser::Parens)),
-              children,
-            ))
+            None
           }
         } else {
-          Err(EaslTree::Inner(
-            (position, EncloserOrOperator::Encloser(Encloser::Parens)),
-            children,
-          ))
+          None
         }
       }
     }
-    other => Err(other),
+    _ => None,
   }));
   let when_macro = Macro(Box::new(|tree| match tree {
     EaslTree::Inner(
       (position, EncloserOrOperator::Encloser(Encloser::Parens)),
-      mut children,
+      children,
     ) => {
+      let mut children = children.clone();
       if children.is_empty() {
-        Err(EaslTree::Inner(
-          (position, EncloserOrOperator::Encloser(Encloser::Parens)),
-          children,
-        ))
+        None
       } else {
         if let EaslTree::Leaf(_, leaf) = &children[0] {
           if leaf.as_str() == "when" {
@@ -1013,8 +1006,11 @@ pub fn built_in_macros() -> Vec<Macro> {
                   "block".into(),
                 ),
               );
-              Ok(Ok(EaslTree::Inner(
-                (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+              Some(Ok(EaslTree::Inner(
+                (
+                  position.clone(),
+                  EncloserOrOperator::Encloser(Encloser::Parens),
+                ),
                 vec![
                   EaslTree::Leaf(
                     DocumentPosition {
@@ -1044,7 +1040,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                 ],
               )))
             } else {
-              Ok(Err((
+              Some(Err((
                 SourceTrace::from(position),
                 "\"when\" statement expects a condition and at least 1 body \
                 statement"
@@ -1052,20 +1048,14 @@ pub fn built_in_macros() -> Vec<Macro> {
               )))
             }
           } else {
-            Err(EaslTree::Inner(
-              (position, EncloserOrOperator::Encloser(Encloser::Parens)),
-              children,
-            ))
+            None
           }
         } else {
-          Err(EaslTree::Inner(
-            (position, EncloserOrOperator::Encloser(Encloser::Parens)),
-            children,
-          ))
+          None
         }
       }
     }
-    other => Err(other),
+    _ => None,
   }));
   let thread_macro = Macro(Box::new(|tree| match tree {
     EaslTree::Inner(
@@ -1073,15 +1063,12 @@ pub fn built_in_macros() -> Vec<Macro> {
       children,
     ) => {
       if children.is_empty() {
-        Err(EaslTree::Inner(
-          (position, EncloserOrOperator::Encloser(Encloser::Parens)),
-          children,
-        ))
+        None
       } else {
         if let EaslTree::Leaf(_, leaf) = &children[0] {
           if leaf.as_str() == "->" {
             if children.len() <= 1 {
-              return Ok(Err((
+              return Some(Err((
                 SourceTrace::from(position),
                 format!("\"->\" macro expects at least one inner form").into(),
               )));
@@ -1089,8 +1076,8 @@ pub fn built_in_macros() -> Vec<Macro> {
             let mut children_iter = children.into_iter();
             children_iter.next();
             let original_expression = children_iter.next().unwrap();
-            Ok(children_iter.fold(
-              Ok(original_expression),
+            Some(children_iter.fold(
+              Ok(original_expression.clone()),
               |maybe_previous_expression: Result<
                 EaslTree,
                 (SourceTrace, Rc<str>),
@@ -1169,7 +1156,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                         previous_expression,
                         positioner_traces,
                       ) = walk_thread_expression(
-                        thread_expression,
+                        thread_expression.clone(),
                         Some(previous_expression),
                         vec![],
                       );
@@ -1239,26 +1226,21 @@ pub fn built_in_macros() -> Vec<Macro> {
               },
             ))
           } else {
-            Err(EaslTree::Inner(
-              (position, EncloserOrOperator::Encloser(Encloser::Parens)),
-              children,
-            ))
+            None
           }
         } else {
-          Err(EaslTree::Inner(
-            (position, EncloserOrOperator::Encloser(Encloser::Parens)),
-            children,
-          ))
+          None
         }
       }
     }
-    other => Err(other),
+    _ => None,
   }));
   let repeated_array_macro = Macro(Box::new(|tree| match tree {
     Ast::Inner(
       (pos, EncloserOrOperator::Encloser(Encloser::Parens)),
-      mut children,
+      children,
     ) => {
+      let mut children = children.clone();
       if !children.is_empty() {
         match &children[0] {
           Ast::Leaf(_, leaf) => {
@@ -1268,14 +1250,17 @@ pub fn built_in_macros() -> Vec<Macro> {
                 let count_tree = children.remove(1);
                 if let Ast::Leaf(_, count_string) = count_tree {
                   if let Ok(count) = count_string.parse::<u32>() {
-                    Ok(Ok(Ast::Inner(
-                      (pos, EncloserOrOperator::Encloser(Encloser::Square)),
+                    Some(Ok(Ast::Inner(
+                      (
+                        pos.clone(),
+                        EncloserOrOperator::Encloser(Encloser::Square),
+                      ),
                       std::iter::repeat(value_tree)
                         .take(count as usize)
                         .collect(),
                     )))
                   } else {
-                    Ok(Err((
+                    Some(Err((
                       pos.into(),
                       format!(
                         "first argument to `repeat` macro must be an integer \
@@ -1285,7 +1270,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                     )))
                   }
                 } else {
-                  Ok(Err((
+                  Some(Err((
                     pos.into(),
                     format!(
                       "first argument to `repeat` macro must be an integer \
@@ -1295,7 +1280,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                   )))
                 }
               } else {
-                Ok(Err((
+                Some(Err((
                   pos.into(),
                   format!(
                     "`repeat` macro needs 3 arguments, got {}",
@@ -1305,25 +1290,16 @@ pub fn built_in_macros() -> Vec<Macro> {
                 )))
               }
             } else {
-              Err(Ast::Inner(
-                (pos, EncloserOrOperator::Encloser(Encloser::Parens)),
-                children,
-              ))
+              None
             }
           }
-          Ast::Inner(_, _) => Err(Ast::Inner(
-            (pos, EncloserOrOperator::Encloser(Encloser::Parens)),
-            children,
-          )),
+          Ast::Inner(_, _) => None,
         }
       } else {
-        Err(Ast::Inner(
-          (pos, EncloserOrOperator::Encloser(Encloser::Parens)),
-          children,
-        ))
+        None
       }
     }
-    other => Err(other),
+    _ => None,
   }));
   vec![if_macro, when_macro, thread_macro, repeated_array_macro]
 }
