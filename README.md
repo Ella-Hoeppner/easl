@@ -17,6 +17,8 @@ Feature goals:
 
 ## todo
 ### high priority
+* Avoid fully quitting type inference when an error is encountered. Need to get rid of most `?`s and instead keep an explicit list of encountered errors. Right now type inference either succeeds or fails with a single error, even when there are multiple type errors in the program. Type inference should proceed as far as it can even in the presence of errors, and return a vector of errors.
+
 * make
   ```
     structs: &Vec<Rc<AbstractStruct>>,

@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::rc::Rc;
 
 use sse::syntax::EncloserOrOperator::{self, *};
@@ -12,6 +13,21 @@ use super::error::{err, CompileErrorKind::*, CompileResult, SourceTrace};
 pub enum Metadata {
   Singular(Rc<str>),
   Map(Vec<(Rc<str>, Rc<str>)>),
+}
+
+impl Display for Metadata {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Metadata::Singular(s) => write!(f, "{}", s),
+      Metadata::Map(items) => {
+        write!(f, "{{\n")?;
+        for (key, val) in items {
+          write!(f, "  {} {}\n", key, val)?;
+        }
+        write!(f, "\n}}")
+      }
+    }
+  }
 }
 
 impl Metadata {

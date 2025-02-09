@@ -2,6 +2,7 @@ use core::fmt::Debug;
 use std::{
   cell::RefCell,
   collections::HashMap,
+  fmt::Display,
   ops::{Deref, DerefMut},
   rc::Rc,
 };
@@ -507,7 +508,7 @@ impl Type {
                   source_trace.clone(),
                 )?))
               } else {
-                return err(UnknownStructName, source_trace);
+                return err(NoStructNamed(struct_name.into()), source_trace);
               }
             }
           }
@@ -655,48 +656,6 @@ impl Type {
       }
     }
   }
-  pub fn display_name(&self) -> String {
-    match self {
-      Type::None => panic!("Attempted to compile None type"),
-      Type::F32 => "f32".to_string(),
-      Type::I32 => "i32".to_string(),
-      Type::U32 => "u32".to_string(),
-      Type::Bool => "bool".to_string(),
-      Type::Struct(s) => match &*s.name {
-        "Texture2D" => format!(
-          "(Texture2D {})",
-          s.fields[0].field_type.unwrap_known().display_name()
-        ),
-        _ => {
-          compile_word(s.monomorphized_name())
-          // todo! this should display a name more like the above one for
-          // Texture2D, using a kind of type-level function application syntax
-        }
-      },
-      Type::Array(n, inner_type) => {
-        format!(
-          "[{}: {}]",
-          n.map(|n| format!(", {n}")).unwrap_or(String::new()),
-          inner_type.display_name()
-        )
-      }
-      Type::Reference(inner_type) => {
-        format!("&{}", inner_type.display_name())
-      }
-      Type::Function(f) => {
-        format!(
-          "(Fn [{}]: {})",
-          f.arg_types
-            .iter()
-            .map(|(t, _)| t.kind.display_name())
-            .collect::<Vec<String>>()
-            .join(" "),
-          f.return_type.display_name()
-        )
-      }
-      Type::Skolem(name) => name.to_string(),
-    }
-  }
   pub fn replace_skolems(&mut self, skolems: &Vec<(Rc<str>, Type)>) {
     if let Type::Skolem(s) = &self {
       std::mem::swap(
@@ -750,6 +709,55 @@ impl Type {
     } else {
       false
     }
+  }
+}
+
+impl Display for Type {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(
+      f,
+      "{}",
+      match self {
+        Type::None => panic!("Attempted to compile None type"),
+        Type::F32 => "f32".to_string(),
+        Type::I32 => "i32".to_string(),
+        Type::U32 => "u32".to_string(),
+        Type::Bool => "bool".to_string(),
+        Type::Struct(s) => match &*s.name {
+          "Texture2D" => format!(
+            "(Texture2D {})",
+            s.fields[0].field_type.unwrap_known().to_string()
+          ),
+          _ => {
+            compile_word(s.monomorphized_name())
+            // todo! this should display a name more like the above one for
+            // Texture2D, using a kind of type-level function application syntax
+          }
+        },
+        Type::Array(n, inner_type) => {
+          format!(
+            "[{}: {}]",
+            n.map(|n| format!(", {n}")).unwrap_or(String::new()),
+            inner_type.to_string()
+          )
+        }
+        Type::Reference(inner_type) => {
+          format!("&{}", inner_type.to_string())
+        }
+        Type::Function(f) => {
+          format!(
+            "(Fn [{}]: {})",
+            f.arg_types
+              .iter()
+              .map(|(t, _)| t.kind.to_string())
+              .collect::<Vec<String>>()
+              .join(" "),
+            f.return_type.to_string()
+          )
+        }
+        Type::Skolem(name) => name.to_string(),
+      }
+    )
   }
 }
 
@@ -851,17 +859,6 @@ impl TypeState {
     } else {
       Ok(None)
     }
-  }
-  pub fn display_name(&self) -> String {
-    self.with_dereferenced(|t| match t {
-      TypeState::Unknown => "???".to_string(),
-      TypeState::OneOf(items) => std::iter::once("   ".to_string())
-        .chain(items.into_iter().map(|t| t.display_name()))
-        .collect::<Vec<String>>()
-        .join("\nor "),
-      TypeState::Known(t) => t.display_name(),
-      TypeState::UnificationVariable(_) => unreachable!(),
-    })
   }
   pub fn check_is_fully_known(&self) -> bool {
     self.with_dereferenced(|typestate| {
@@ -1159,6 +1156,25 @@ impl TypeState {
   }
 }
 
+impl Display for TypeState {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(
+      f,
+      "{}",
+      self.with_dereferenced(|t| match t {
+        TypeState::Unknown => "?".to_string(),
+        TypeState::OneOf(items) => items
+          .into_iter()
+          .map(|t| t.to_string())
+          .collect::<Vec<String>>()
+          .join(" or "),
+        TypeState::Known(t) => t.to_string(),
+        TypeState::UnificationVariable(_) => unreachable!(),
+      })
+    )
+  }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum VariableKind {
   Let,
@@ -1197,6 +1213,12 @@ impl Variable {
 pub struct TypeConstraint {
   name: Rc<str>,
   args: Vec<AbstractType>,
+}
+
+impl Display for TypeConstraint {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", self.name)
+  }
 }
 
 impl TypeConstraint {

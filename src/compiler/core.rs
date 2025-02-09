@@ -10,11 +10,8 @@ use super::{builtins::built_in_macros, error::CompileResult};
 pub fn compile_easl_document_to_wgsl(
   document: Document<'_, Context, Encloser, Operator>,
 ) -> CompileResult<String> {
-  let mut program = Program::from_easl_document(&document, built_in_macros())
-    .map_err(|e| e.attach_error_source(&document))?;
-  program
-    .process_raw_program()
-    .map_err(|e| e.attach_error_source(&document))?;
+  let mut program = Program::from_easl_document(&document, built_in_macros())?;
+  program.process_raw_program()?;
   program.compile_to_wgsl()
 }
 
