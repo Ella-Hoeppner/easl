@@ -5,7 +5,7 @@ use take_mut::take;
 use crate::compiler::util::compile_word;
 
 use super::{
-  error::{err, CompileErrorKind::*, CompileResult, SourceTrace},
+  error::{err, CompileError, CompileErrorKind::*, CompileResult, SourceTrace},
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
   structs::AbstractStruct,
@@ -370,16 +370,22 @@ impl FunctionSignature {
     &mut self,
     args: &mut Vec<TypeState>,
     source_trace: SourceTrace,
-  ) -> CompileResult<bool> {
+  ) -> (bool, Vec<CompileError>) {
     if args.len() == self.arg_types.len() {
       let mut any_arg_changed = false;
+      let mut all_errors = vec![];
       for i in 0..args.len() {
-        any_arg_changed |= args[i]
-          .mutually_constrain(&mut self.arg_types[i].0, source_trace.clone())?;
+        let (changed, mut errors) = args[i]
+          .mutually_constrain(&mut self.arg_types[i].0, source_trace.clone());
+        any_arg_changed |= changed;
+        all_errors.append(&mut errors);
       }
-      Ok(any_arg_changed)
+      (any_arg_changed, all_errors)
     } else {
-      err(WrongArity(self.name()), source_trace)
+      (
+        false,
+        vec![CompileError::new(WrongArity(self.name()), source_trace)],
+      )
     }
   }
   pub fn name(&self) -> Option<Rc<str>> {

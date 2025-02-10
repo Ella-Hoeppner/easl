@@ -122,7 +122,7 @@ pub enum CompileErrorKind {
   #[error("Invalid argument name")]
   InvalidArgumentName,
   #[error("Couldn't infer types")]
-  CouldntInferTypes(Vec<TypedExp>),
+  CouldntInferTypes(TypedExp),
   #[error("Incompatible types: expected {0}, found {1}")]
   IncompatibleTypes(TypeState, TypeState),
   #[error("Function argument types incompatible: expected {0:?}, found {1:?}")]

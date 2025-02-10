@@ -541,28 +541,33 @@ impl Program {
     }
     (Self { global_context }, errors)
   }
-  fn propagate_types(&mut self) -> CompileResult<bool> {
+  fn propagate_types(&mut self) -> (bool, Vec<CompileError>) {
+    let mut errors = vec![];
     let mut base_context = self.global_context.clone();
     let mut anything_changed = false;
     for var in self.global_context.top_level_vars.iter_mut() {
       if let Some(value_expression) = &mut var.value {
-        anything_changed |= var.var.typestate.mutually_constrain(
+        let (changed, mut sub_errors) = var.var.typestate.mutually_constrain(
           &mut value_expression.data,
           var.source_trace.clone(),
-        )?;
+        );
+        anything_changed |= changed;
+        errors.append(&mut sub_errors);
       }
     }
     for f in self.global_context.abstract_functions_iter_mut() {
       if let FunctionImplementationKind::Composite(implementation) =
         &f.implementation
       {
-        anything_changed |= implementation
+        let (changed, mut f_errors) = implementation
           .borrow_mut()
           .body
-          .propagate_types(&mut base_context)?;
+          .propagate_types(&mut base_context);
+        anything_changed |= changed;
+        errors.append(&mut f_errors);
       }
     }
-    Ok(anything_changed)
+    (anything_changed, errors)
   }
   fn find_untyped(&self) -> Vec<TypedExp> {
     self.global_context.abstract_functions_iter().fold(
@@ -591,52 +596,67 @@ impl Program {
     }
     Ok(self)
   }
-  pub fn fully_infer_types(&mut self) -> CompileResult<()> {
+  pub fn fully_infer_types(&mut self) -> Vec<CompileError> {
+    let mut errors = vec![];
     loop {
-      let did_type_states_change = self.propagate_types()?;
+      let (did_type_states_change, mut current_errors) = self.propagate_types();
+      errors.append(&mut current_errors);
       if !did_type_states_change {
         let untyped_expressions = self.find_untyped();
         return if untyped_expressions.is_empty() {
-          Ok(())
+          break;
         } else {
-          let source_trace = untyped_expressions
-            .iter()
-            .map(|exp| exp.source_trace.clone())
-            .collect();
-          err(CouldntInferTypes(untyped_expressions), source_trace)
+          untyped_expressions
+            .into_iter()
+            .map(|exp| {
+              let source_trace = exp.source_trace.clone();
+              CompileError::new(CouldntInferTypes(exp), source_trace)
+            })
+            .collect()
         };
       }
     }
+    errors
   }
-  pub fn check_assignment_validity(&mut self) -> CompileResult<()> {
+  pub fn check_assignment_validity(&mut self) -> Vec<CompileError> {
+    let mut errors = vec![];
     for f in self.global_context.abstract_functions_iter() {
       let mut ctx = self.global_context.clone();
       if let FunctionImplementationKind::Composite(implementation) =
         &f.implementation
       {
-        implementation
+        if let Err(e) = implementation
           .borrow_mut()
           .body
-          .check_assignment_validity(&mut ctx)?;
+          .check_assignment_validity(&mut ctx)
+        {
+          errors.push(e);
+        }
       }
     }
-    Ok(())
+    errors
   }
-  pub fn monomorphize(&mut self) -> CompileResult<()> {
+  pub fn monomorphize(&mut self) -> Vec<CompileError> {
+    let mut errors = vec![];
     let mut monomorphized_ctx = Context::default_global();
     for f in self.global_context.abstract_functions_iter() {
       if f.generic_args.is_empty() {
         if let FunctionImplementationKind::Composite(implementation) =
           &f.implementation
         {
-          implementation
+          match implementation
             .borrow_mut()
             .body
-            .monomorphize(&self.global_context, &mut monomorphized_ctx)?;
-          let mut new_f = (**f).clone();
-          new_f.implementation =
-            FunctionImplementationKind::Composite(implementation.clone());
-          monomorphized_ctx.add_abstract_function(Rc::new(new_f));
+            .monomorphize(&self.global_context, &mut monomorphized_ctx)
+          {
+            Ok(_) => {
+              let mut new_f = (**f).clone();
+              new_f.implementation =
+                FunctionImplementationKind::Composite(implementation.clone());
+              monomorphized_ctx.add_abstract_function(Rc::new(new_f));
+            }
+            Err(e) => errors.push(e),
+          }
         }
       }
     }
@@ -647,18 +667,22 @@ impl Program {
       monomorphized_ctx.type_aliases = old_ctx.type_aliases;
       monomorphized_ctx
     });
-    Ok(())
+    errors
   }
-  pub fn inline_all_higher_order_arguments(&mut self) -> CompileResult<()> {
-    let changed = self.inline_higher_order_arguments()?;
+  pub fn inline_all_higher_order_arguments(&mut self) -> Vec<CompileError> {
+    let (changed, errors) = self.inline_higher_order_arguments();
+    if !errors.is_empty() {
+      return errors;
+    }
     if changed {
       self.inline_all_higher_order_arguments()
     } else {
-      Ok(())
+      vec![]
     }
   }
-  pub fn inline_higher_order_arguments(&mut self) -> CompileResult<bool> {
+  pub fn inline_higher_order_arguments(&mut self) -> (bool, Vec<CompileError>) {
     let mut changed = false;
+    let mut errors = vec![];
     let mut inlined_ctx = Context::default_global();
     for f in self.global_context.abstract_functions_iter() {
       if f.generic_args.is_empty()
@@ -677,15 +701,20 @@ impl Program {
         if let FunctionImplementationKind::Composite(implementation) =
           &f.implementation
         {
-          let added_new_function = implementation
+          match implementation
             .borrow_mut()
             .body
-            .inline_higher_order_arguments(&mut inlined_ctx)?;
-          changed |= added_new_function;
-          let mut new_f = (**f).clone();
-          new_f.implementation =
-            FunctionImplementationKind::Composite(implementation.clone());
-          inlined_ctx.add_abstract_function(Rc::new(new_f));
+            .inline_higher_order_arguments(&mut inlined_ctx)
+          {
+            Ok(added_new_function) => {
+              changed |= added_new_function;
+              let mut new_f = (**f).clone();
+              new_f.implementation =
+                FunctionImplementationKind::Composite(implementation.clone());
+              inlined_ctx.add_abstract_function(Rc::new(new_f));
+            }
+            Err(e) => errors.push(e),
+          }
         }
       }
     }
@@ -696,7 +725,7 @@ impl Program {
       inlined_ctx.type_aliases = old_ctx.type_aliases;
       inlined_ctx
     });
-    Ok(changed)
+    (changed, errors)
   }
   pub fn compile_to_wgsl(self) -> CompileResult<String> {
     let mut wgsl = String::new();
@@ -733,12 +762,24 @@ impl Program {
     }
     Ok(wgsl)
   }
-  pub fn validate_raw_program(&mut self) -> CompileResult<()> {
-    self.fully_infer_types()?;
-    self.check_assignment_validity()?;
-    self.monomorphize()?;
-    self.inline_all_higher_order_arguments()?;
-    Ok(())
+  pub fn validate_raw_program(&mut self) -> Vec<CompileError> {
+    let errors = self.fully_infer_types();
+    if !errors.is_empty() {
+      return errors;
+    }
+    let errors = self.check_assignment_validity();
+    if !errors.is_empty() {
+      return errors;
+    }
+    let errors = self.monomorphize();
+    if !errors.is_empty() {
+      return errors;
+    }
+    let errors = self.inline_all_higher_order_arguments();
+    if !errors.is_empty() {
+      return errors;
+    }
+    vec![]
   }
   pub fn gather_type_annotations(&self) -> Vec<(SourceTrace, TypeState)> {
     let mut type_annotations = vec![];

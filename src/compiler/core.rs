@@ -15,7 +15,10 @@ pub fn compile_easl_document_to_wgsl(
   if !errors.is_empty() {
     return Err(errors);
   }
-  program.validate_raw_program().map_err(|e| vec![e])?;
+  let errors = program.validate_raw_program();
+  if !errors.is_empty() {
+    return Err(errors);
+  }
   program.compile_to_wgsl().map_err(|e| vec![e])
 }
 
