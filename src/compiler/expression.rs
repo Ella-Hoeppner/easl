@@ -10,7 +10,7 @@ use crate::{
     metadata::{extract_metadata, Metadata},
     structs::AbstractStruct,
     types::{
-      extract_type_annotation_ast, Context, ExpTypeInfo, Type,
+      extract_type_annotation_ast, ArraySize, Context, ExpTypeInfo, Type,
       TypeState::{self, *},
       Variable, VariableKind,
     },
@@ -277,6 +277,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Return(Box<Exp<D>>),
   ArrayLiteral(Vec<Exp<D>>),
   Reference(Box<Exp<D>>),
+  ZeroedArray,
 }
 use ExpKind::*;
 
@@ -917,6 +918,24 @@ impl TypedExp {
                             ));
                           }
                         }
+                        "zeroed-array" => {
+                          if children_iter.is_empty() {
+                            Some(TypedExp {
+                              data: TypeState::Known(Type::Array(
+                                None,
+                                Box::new(TypeState::Unknown.into()),
+                              ))
+                              .into(),
+                              kind: ExpKind::ZeroedArray,
+                              source_trace,
+                            })
+                          } else {
+                            return Err(CompileError::new(
+                              ZeroedArrayShouldntHaveChildren,
+                              source_trace,
+                            ));
+                          }
+                        }
                         _ => None,
                       }
                     }
@@ -977,7 +996,7 @@ impl TypedExp {
             }
             Square => Exp {
               data: TypeState::Known(Type::Array(
-                Some(children_iter.len() as u32),
+                Some(ArraySize::Constant(children_iter.len() as u32)),
                 Box::new(TypeState::Unknown.into()),
               ))
               .into(),
@@ -1184,15 +1203,17 @@ impl TypedExp {
       Wildcard => panic!("compiling wildcard"),
       Name(name) => wrap(compile_word(name)),
       NumberLiteral(num) => wrap(match num {
-        Number::Int(i) => format!(
-          "{i}{}",
-          match self.data.kind {
-            Known(Type::I32) => "",
-            Known(Type::U32) => "u",
-            Known(Type::F32) => "f",
-            _ => panic!("{:?}", self.data.kind),
-          }
-        ),
+        Number::Int(i) => {
+          format!(
+            "{i}{}",
+            match self.data.kind {
+              Known(Type::I32) => "",
+              Known(Type::U32) => "u",
+              Known(Type::F32) => "f",
+              _ => panic!("{:?}", self.data.kind),
+            }
+          )
+        }
         Number::Float(f) => format!("{f}f"),
       }),
       BooleanLiteral(b) => wrap(format!("{b}")),
@@ -1423,6 +1444,7 @@ impl TypedExp {
         "&{}",
         exp.compile(ExpressionCompilationPosition::InnerExpression)
       ),
+      ZeroedArray => self.data.kind.compile() + "()",
     }
   }
 
@@ -1693,7 +1715,7 @@ impl TypedExp {
           errors.append(&mut index_errors);
           if let TypeState::Known(t) = &mut subexp.data.kind {
             if let Type::Array(_, inner_type) = t {
-              let (mut changed, mut sub_errors) = self.data.mutually_constrain(
+              let (changed, mut sub_errors) = self.data.mutually_constrain(
                 inner_type.as_mut(),
                 self.source_trace.clone(),
               );
@@ -1971,6 +1993,16 @@ impl TypedExp {
             }
           });
         }
+        self.data.subtree_fully_typed =
+          if let Known(Type::Array(Some(_), _)) = self.data.kind {
+            true
+          } else {
+            false
+          } && children
+            .iter()
+            .map(|child| child.data.subtree_fully_typed)
+            .reduce(|a, b| a && b)
+            .unwrap_or(true);
         anything_changed
       }
       Reference(exp) => {
@@ -1985,7 +2017,12 @@ impl TypedExp {
           .mutually_constrain(inner_type, self.source_trace.clone());
         anything_changed |= changed;
         errors.append(&mut sub_errors);
+        self.data.subtree_fully_typed = exp.data.subtree_fully_typed;
         anything_changed
+      }
+      ZeroedArray => {
+        self.data.subtree_fully_typed = true;
+        false
       }
     };
     self.data.subtree_fully_typed &= self.data.check_is_fully_known();

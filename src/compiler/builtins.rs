@@ -8,7 +8,9 @@ use lazy_static::lazy_static;
 use sse::{document::DocumentPosition, syntax::EncloserOrOperator, Ast};
 
 use crate::{
-  compiler::{error::SourceTrace, structs::AbstractStructField},
+  compiler::{
+    error::SourceTrace, structs::AbstractStructField, types::ArraySize,
+  },
   parse::{EaslTree, Encloser},
 };
 
@@ -863,7 +865,7 @@ fn array_functions() -> Vec<AbstractFunctionSignature> {
     generic_args: vec![("T".into(), vec![])],
     arg_types: vec![AbstractType::Reference(
       AbstractType::AbstractArray {
-        size: None,
+        size: ArraySize::Unsized,
         inner_type: AbstractType::Generic("T".into()).into(),
       }
       .into(),
@@ -1235,73 +1237,7 @@ pub fn built_in_macros() -> Vec<Macro> {
     }
     _ => None,
   }));
-  let repeated_array_macro = Macro(Box::new(|tree| match tree {
-    Ast::Inner(
-      (pos, EncloserOrOperator::Encloser(Encloser::Parens)),
-      children,
-    ) => {
-      let mut children = children.clone();
-      if !children.is_empty() {
-        match &children[0] {
-          Ast::Leaf(_, leaf) => {
-            if leaf == "repeat" {
-              if children.len() == 3 {
-                let value_tree = children.remove(2);
-                let count_tree = children.remove(1);
-                if let Ast::Leaf(_, count_string) = count_tree {
-                  if let Ok(count) = count_string.parse::<u32>() {
-                    Some(Ok(Ast::Inner(
-                      (
-                        pos.clone(),
-                        EncloserOrOperator::Encloser(Encloser::Square),
-                      ),
-                      std::iter::repeat(value_tree)
-                        .take(count as usize)
-                        .collect(),
-                    )))
-                  } else {
-                    Some(Err((
-                      pos.into(),
-                      format!(
-                        "first argument to `repeat` macro must be an integer \
-                          literal"
-                      )
-                      .into(),
-                    )))
-                  }
-                } else {
-                  Some(Err((
-                    pos.into(),
-                    format!(
-                      "first argument to `repeat` macro must be an integer \
-                      literal"
-                    )
-                    .into(),
-                  )))
-                }
-              } else {
-                Some(Err((
-                  pos.into(),
-                  format!(
-                    "`repeat` macro needs 3 arguments, got {}",
-                    children.len()
-                  )
-                  .into(),
-                )))
-              }
-            } else {
-              None
-            }
-          }
-          Ast::Inner(_, _) => None,
-        }
-      } else {
-        None
-      }
-    }
-    _ => None,
-  }));
-  vec![if_macro, when_macro, thread_macro, repeated_array_macro]
+  vec![if_macro, when_macro, thread_macro]
 }
 
 pub fn rename_builtin(name: &str) -> Option<String> {

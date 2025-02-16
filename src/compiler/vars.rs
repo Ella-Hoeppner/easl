@@ -29,9 +29,10 @@ impl TopLevelVar {
     };
     let name = compile_word(self.name);
     let typ = self.var.typestate.compile();
-    let var_or_const = match self.var.kind {
+    let kind_name = match self.var.kind {
       VariableKind::Let => "const",
       VariableKind::Var => "var",
+      VariableKind::Override => "override",
     };
     let assignment = if let Some(value) = self.value {
       format!(
@@ -41,6 +42,6 @@ impl TopLevelVar {
     } else {
       String::new()
     };
-    format!("{metadata}{var_or_const}{attributes} {name}: {typ}{assignment}")
+    format!("{metadata}{kind_name}{attributes} {name}: {typ}{assignment}")
   }
 }

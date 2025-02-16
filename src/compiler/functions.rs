@@ -254,7 +254,7 @@ impl AbstractFunctionSignature {
             ),
             AbstractType::AbstractArray { size, inner_type } => (
               TypeState::Known(Type::Array(
-                size.clone(),
+                Some(size.clone()),
                 inner_type
                   .fill_generics(
                     &generic_variables,
@@ -302,7 +302,7 @@ impl AbstractFunctionSignature {
         AbstractType::Type(t) => TypeState::Known(t.clone()).into(),
         AbstractType::AbstractArray { size, inner_type } => {
           TypeState::Known(Type::Array(
-            size.clone(),
+            Some(size.clone()),
             inner_type
               .fill_generics(&generic_variables, structs, source_trace)?
               .into(),

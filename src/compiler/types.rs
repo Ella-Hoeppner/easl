@@ -35,7 +35,7 @@ pub enum AbstractType {
   Type(Type),
   AbstractStruct(Rc<AbstractStruct>),
   AbstractArray {
-    size: Option<u32>,
+    size: ArraySize,
     inner_type: Box<Self>,
   },
   Reference(Box<Self>),
@@ -65,7 +65,7 @@ impl AbstractType {
       }
       AbstractType::AbstractArray { size, inner_type } => {
         TypeState::Known(Type::Array(
-          size.clone(),
+          Some(size.clone()),
           inner_type
             .fill_generics(generics, structs, source_trace)?
             .into(),
@@ -99,7 +99,7 @@ impl AbstractType {
       )),
       AbstractType::Type(t) => Ok(t.clone()),
       AbstractType::AbstractArray { size, inner_type } => Ok(Type::Array(
-        size.clone(),
+        Some(size.clone()),
         Box::new(
           TypeState::Known(inner_type.concretize(
             skolems,
@@ -162,7 +162,7 @@ impl AbstractType {
         format!(
           "array<{}{}>",
           inner_type.compile(structs)?,
-          size.map(|n| format!(", {n}")).unwrap_or(String::new())
+          format!("{}", size.compile_type())
         )
       }
       AbstractType::Reference(_) => {
@@ -266,21 +266,20 @@ impl AbstractType {
               if let EaslTree::Leaf(position, num_str) =
                 type_annotation_children.remove(0)
               {
-                let source_trace: SourceTrace = position.into();
-                if let Ok(array_size) = num_str.parse::<u32>() {
-                  let inner_type = Type::from_easl_tree(
-                    type_annotation_children.remove(0),
-                    structs,
-                    aliases,
-                    skolems,
-                  )?;
-                  Ok(AbstractType::Type(Type::Array(
-                    Some(array_size),
-                    Box::new(TypeState::Known(inner_type).into()),
-                  )))
-                } else {
-                  return err(InvalidArraySignature, source_trace);
-                }
+                let inner_type = Type::from_easl_tree(
+                  type_annotation_children.remove(0),
+                  structs,
+                  aliases,
+                  skolems,
+                )?;
+                Ok(AbstractType::Type(Type::Array(
+                  Some(if let Ok(array_size) = num_str.parse::<u32>() {
+                    ArraySize::Constant(array_size)
+                  } else {
+                    ArraySize::Override(num_str.into())
+                  }),
+                  Box::new(TypeState::Known(inner_type).into()),
+                )))
               } else {
                 return err(InvalidArraySignature, source_trace);
               }
@@ -289,7 +288,7 @@ impl AbstractType {
               let inner_type =
                 Type::from_easl_tree(other, structs, aliases, generic_args)?;
               Ok(AbstractType::Type(Type::Array(
-                None,
+                Some(ArraySize::Unsized),
                 Box::new(TypeState::Known(inner_type).into()),
               )))
             }
@@ -380,6 +379,37 @@ impl AbstractType {
   }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArraySize {
+  Constant(u32),
+  Override(Rc<str>),
+  Unsized,
+}
+
+impl ArraySize {
+  pub fn compile_type(&self) -> String {
+    match self {
+      ArraySize::Constant(size) => format!(", {size}"),
+      ArraySize::Override(name) => format!(", {name}"),
+      ArraySize::Unsized => String::new(),
+    }
+  }
+}
+
+impl Display for ArraySize {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(
+      f,
+      "{}",
+      match self {
+        ArraySize::Constant(size) => format!("{size}"),
+        ArraySize::Override(name) => format!("{name}"),
+        ArraySize::Unsized => String::new(),
+      }
+    )
+  }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
   None,
@@ -390,7 +420,7 @@ pub enum Type {
   Struct(Struct),
   Function(Box<FunctionSignature>),
   Skolem(Rc<str>),
-  Array(Option<u32>, Box<ExpTypeInfo>),
+  Array(Option<ArraySize>, Box<ExpTypeInfo>),
   Reference(Box<ExpTypeInfo>),
 }
 impl Type {
@@ -530,21 +560,20 @@ impl Type {
             if let EaslTree::Leaf(position, num_str) =
               type_annotation_children.remove(0)
             {
-              let source_trace: SourceTrace = position.into();
-              if let Ok(array_size) = num_str.parse::<u32>() {
-                let inner_type = Type::from_easl_tree(
-                  type_annotation_children.remove(0),
-                  structs,
-                  aliases,
-                  skolems,
-                )?;
-                Ok(Type::Array(
-                  Some(array_size),
-                  Box::new(TypeState::Known(inner_type).into()),
-                ))
-              } else {
-                return err(InvalidArraySignature, source_trace);
-              }
+              let inner_type = Type::from_easl_tree(
+                type_annotation_children.remove(0),
+                structs,
+                aliases,
+                skolems,
+              )?;
+              Ok(Type::Array(
+                Some(if let Ok(array_size) = num_str.parse::<u32>() {
+                  ArraySize::Constant(array_size)
+                } else {
+                  ArraySize::Override(num_str.into())
+                }),
+                Box::new(TypeState::Known(inner_type).into()),
+              ))
             } else {
               return err(InvalidArraySignature, source_trace);
             }
@@ -566,7 +595,8 @@ impl Type {
       (Type::Function(a), Type::Function(b)) => a.compatible(b),
       (Type::Struct(a), Type::Struct(b)) => a.compatible(b),
       (Type::Array(count_a, a), Type::Array(count_b, b)) => {
-        count_a == count_b && TypeState::are_compatible(a, b)
+        (count_a.is_none() || count_b.is_none() || count_a == count_b)
+          && TypeState::are_compatible(a, b)
       }
       (Type::Reference(a), Type::Reference(b)) => {
         TypeState::are_compatible(a, b)
@@ -638,11 +668,14 @@ impl Type {
         ),
         _ => compile_word(s.monomorphized_name()),
       },
-      Type::Array(n, inner_type) => {
+      Type::Array(size, inner_type) => {
         format!(
           "array<{}{}>",
           inner_type.compile(),
-          n.map(|n| format!(", {n}")).unwrap_or(String::new())
+          size
+            .clone()
+            .map(|size| format!("{}", size.compile_type()))
+            .unwrap_or(String::new())
         )
       }
       Type::Reference(inner_type) => {
@@ -734,12 +767,12 @@ impl Display for Type {
             // Texture2D, using a kind of type-level function application syntax
           }
         },
-        Type::Array(n, inner_type) => {
-          format!(
-            "[{}: {}]",
-            n.map(|n| format!(", {n}")).unwrap_or(String::new()),
-            inner_type.to_string()
-          )
+        Type::Array(size, inner_type) => {
+          if let Some(size) = size {
+            format!("[{}: {}]", size, inner_type.to_string())
+          } else {
+            format!("[{}]", inner_type.to_string())
+          }
         }
         Type::Reference(inner_type) => {
           format!("&{}", inner_type.to_string())
@@ -879,7 +912,9 @@ impl TypeState {
               },
             )
           }
-          Type::Array(_, inner_type) => inner_type.check_is_fully_known(),
+          Type::Array(size, inner_type) => {
+            size.is_some() && inner_type.check_is_fully_known()
+          }
           Type::Reference(inner_type) => inner_type.check_is_fully_known(),
           _ => true,
         }
@@ -1027,19 +1062,25 @@ impl TypeState {
                   (anything_changed, errors)
                 }
                 (
-                  Type::Array(length, inner_type),
-                  Type::Array(other_length, other_inner_type),
+                  Type::Array(size, inner_type),
+                  Type::Array(other_size, other_inner_type),
                 ) => {
                   let mut errors = vec![];
                   let (changed, mut sub_errors) = inner_type.constrain(
                     other_inner_type.kind.clone(),
                     source_trace.clone(),
                   );
-                  if length != other_length {
-                    errors.push(CompileError::new(
-                      IncompatibleTypes(this.clone(), other.clone()),
-                      source_trace,
-                    ));
+                  if let Some(other_size) = other_size {
+                    if let Some(size) = &size {
+                      if size != other_size {
+                        errors.push(CompileError::new(
+                          IncompatibleTypes(this.clone(), other.clone()),
+                          source_trace,
+                        ));
+                      }
+                    } else {
+                      std::mem::swap(size, &mut Some(other_size.clone()))
+                    }
                   }
                   errors.append(&mut sub_errors);
                   (changed, errors)
@@ -1212,6 +1253,7 @@ impl Display for TypeState {
 pub enum VariableKind {
   Let,
   Var,
+  Override,
 }
 
 impl VariableKind {
@@ -1219,6 +1261,7 @@ impl VariableKind {
     match self {
       VariableKind::Let => "let",
       VariableKind::Var => "var",
+      VariableKind::Override => "override",
     }
   }
 }

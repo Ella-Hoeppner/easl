@@ -216,6 +216,8 @@ pub enum CompileErrorKind {
   CantInlineFunctionWithoutAbstractAncestor,
   #[error("No argument names for function")]
   NoArgNamesForFunction,
+  #[error("zeroed-array shouldn't have any children")]
+  ZeroedArrayShouldntHaveChildren,
 }
 
 #[derive(Clone, Debug)]

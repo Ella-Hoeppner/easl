@@ -21,8 +21,9 @@ impl SSEContext for Context {
   }
 }
 
-use crate::compiler::error::{
-  CompileError, CompileErrorKind, CompileResult, SourceTrace,
+use crate::compiler::{
+  error::{CompileError, CompileErrorKind, CompileResult, SourceTrace},
+  program::EaslDocument,
 };
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Encloser {
@@ -165,9 +166,7 @@ pub fn easl_syntax_graph() -> EaslSynaxGraph {
   )
 }
 
-pub fn parse_easl(
-  easl_source: &str,
-) -> CompileResult<Document<Context, Encloser, Operator>> {
+pub fn parse_easl(easl_source: &str) -> CompileResult<EaslDocument> {
   Document::from_text_with_syntax(easl_syntax_graph(), easl_source)
     .map_err(|e| {
       CompileError::new(

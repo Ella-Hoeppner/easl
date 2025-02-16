@@ -5,7 +5,7 @@ use take_mut::take;
 
 use crate::{
   compiler::{
-    error::{err, CompileError, SourceTrace},
+    error::{CompileError, SourceTrace},
     expression::arg_list_and_return_type_from_easl_tree,
     functions::AbstractFunctionSignature,
     metadata::extract_metadata,
@@ -304,7 +304,7 @@ impl Program {
                 }
               }
             }
-            "def" => {
+            "def" | "override" => {
               if children_iter.len() == 2 {
                 match read_type_annotated_name(children_iter.next().unwrap()) {
                   Ok((name, type_ast)) => {
@@ -323,11 +323,16 @@ impl Program {
                           &vec![],
                         ) {
                           Ok(t) => {
+                            let mut var =
+                              Variable::new(TypeState::Known(t).into());
+                            if first_child.as_str() == "override" {
+                              var = var.with_kind(VariableKind::Override)
+                            }
                             global_context.top_level_vars.push(TopLevelVar {
                               name,
                               metadata: None,
                               attributes: vec![],
-                              var: Variable::new(TypeState::Known(t).into()),
+                              var,
                               value: Some(value_expression),
                               source_trace: parens_source_trace,
                             })
@@ -567,21 +572,40 @@ impl Program {
         errors.append(&mut f_errors);
       }
     }
+    for var in self.global_context.top_level_vars.iter_mut() {
+      if let Some(value) = &mut var.value {
+        value
+          .data
+          .constrain(var.var.typestate.kind.clone(), var.source_trace.clone());
+        value.propagate_types(&mut base_context);
+      }
+    }
     (anything_changed, errors)
   }
-  fn find_untyped(&self) -> Vec<TypedExp> {
-    self.global_context.abstract_functions_iter().fold(
-      vec![],
-      |mut untyped_so_far, f| {
+  fn find_untyped(&mut self) -> Vec<TypedExp> {
+    self
+      .global_context
+      .abstract_functions_iter()
+      .map(|f| {
         if let FunctionImplementationKind::Composite(implementation) =
           &f.implementation
         {
-          untyped_so_far
-            .append(&mut implementation.borrow_mut().body.find_untyped());
+          implementation.borrow_mut().body.find_untyped()
+        } else {
+          vec![]
         }
-        untyped_so_far
-      },
-    )
+      })
+      .collect::<Vec<_>>()
+      .into_iter()
+      .chain(self.global_context.top_level_vars.iter_mut().map(|v| {
+        if let Some(value) = &mut v.value {
+          value.find_untyped()
+        } else {
+          vec![]
+        }
+      }))
+      .flatten()
+      .collect()
   }
   pub fn validate_match_blocks(self) -> CompileResult<Self> {
     for abstract_function in self.global_context.abstract_functions_iter() {

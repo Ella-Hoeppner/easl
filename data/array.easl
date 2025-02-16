@@ -5,6 +5,13 @@
 (var [storage
   read] b: [vec4f])
 
+(def c: [4: u32] [1
+  2
+  3
+  4])
+
+(def d: [4: u32] (zeroed-array ))
+
 (defn f [i: u32]: vec4f
   (+ @[a
        (- i
