@@ -218,6 +218,8 @@ pub enum CompileErrorKind {
   NoArgNamesForFunction,
   #[error("zeroed-array shouldn't have any children")]
   ZeroedArrayShouldntHaveChildren,
+  #[error("expected function, found non-function value")]
+  ExpectedFunctionFoundNonFunction,
 }
 
 #[derive(Clone, Debug)]

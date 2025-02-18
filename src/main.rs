@@ -40,7 +40,7 @@ fn main() {
     "nested_fn_inlining",
     "reference",
   ] {
-    print!("compiling {filename}...   ");
+    print!("compiling {filename}...");
     let t = std::time::Instant::now();
     let easl_source = fs::read_to_string(&format!("./data/{filename}.easl"))
       .expect(&format!("Unable to read {filename}.easl"));

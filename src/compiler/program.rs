@@ -552,10 +552,13 @@ impl Program {
     let mut anything_changed = false;
     for var in self.global_context.top_level_vars.iter_mut() {
       if let Some(value_expression) = &mut var.value {
-        let (changed, mut sub_errors) = var.var.typestate.mutually_constrain(
-          &mut value_expression.data,
-          var.source_trace.clone(),
-        );
+        let (changed, mut sub_errors) = value_expression
+          .data
+          .constrain(var.var.typestate.kind.clone(), var.source_trace.clone());
+        anything_changed |= changed;
+        errors.append(&mut sub_errors);
+        let (changed, mut sub_errors) =
+          value_expression.propagate_types(&mut base_context);
         anything_changed |= changed;
         errors.append(&mut sub_errors);
       }
@@ -570,14 +573,6 @@ impl Program {
           .propagate_types(&mut base_context);
         anything_changed |= changed;
         errors.append(&mut f_errors);
-      }
-    }
-    for var in self.global_context.top_level_vars.iter_mut() {
-      if let Some(value) = &mut var.value {
-        value
-          .data
-          .constrain(var.var.typestate.kind.clone(), var.source_trace.clone());
-        value.propagate_types(&mut base_context);
       }
     }
     (anything_changed, errors)

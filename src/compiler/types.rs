@@ -403,7 +403,7 @@ impl Display for ArraySize {
       "{}",
       match self {
         ArraySize::Constant(size) => format!("{size}"),
-        ArraySize::Override(name) => format!("{name}"),
+        ArraySize::Override(name) => compile_word(name.clone()),
         ArraySize::Unsized => String::new(),
       }
     )
@@ -492,17 +492,6 @@ impl Type {
               }))),
               _ => err(InvalidFunctionType, source_trace),
             }
-            /*let args = signature_leaves.next().ok_or_else(|| {
-              CompileError::new(InvalidFunctionType, source_trace.clone())
-            })?;
-            let return_type = signature_leaves.next().ok_or_else(|| {
-              CompileError::new(InvalidFunctionType, source_trace.clone())
-            })?;
-            if signature_leaves.is_empty() {
-              todo!()
-            } else {
-              err(InvalidFunctionType, source_trace)
-            }*/
           }
           Some(EaslTree::Leaf(_, struct_name)) => {
             if signature_leaves.is_empty() {
@@ -1165,6 +1154,7 @@ impl TypeState {
   ) -> (bool, Vec<CompileError>) {
     self.with_dereferenced_mut(|typestate| match typestate {
       TypeState::OneOf(possibilities) => {
+        let mut errors = vec![];
         let mut anything_changed = false;
         let mut new_possibilities: Vec<Type> = vec![];
         for possibility in possibilities {
@@ -1176,32 +1166,36 @@ impl TypeState {
                 anything_changed = true;
               }
             }
-            _ => panic!("tried to constrain fn on non-fn"),
+            _ => errors.push(CompileError::new(
+              ExpectedFunctionFoundNonFunction,
+              source_trace.clone(),
+            )),
           }
         }
         if new_possibilities.is_empty() {
-          (
-            false,
-            vec![CompileError::new(
-              FunctionArgumentTypesIncompatible(typestate.clone(), arg_types),
-              source_trace,
-            )],
-          )
+          errors.push(CompileError::new(
+            FunctionArgumentTypesIncompatible(typestate.clone(), arg_types),
+            source_trace,
+          ));
+          (false, errors)
         } else {
           std::mem::swap(
             typestate,
             &mut TypeState::OneOf(new_possibilities).simplified(),
           );
-          (anything_changed, vec![])
+          (anything_changed, errors)
         }
       }
       TypeState::Known(t) => match t {
         Type::Function(signature) => {
           signature.mutually_constrain_arguments(&mut arg_types, source_trace)
         }
-
-        other => panic!(
-          "tried to constrain fn on non-fn \n\n{arg_types:#?} \n\n{other:#?}"
+        _ => (
+          false,
+          vec![CompileError::new(
+            ExpectedFunctionFoundNonFunction,
+            source_trace,
+          )],
         ),
       },
       TypeState::Unknown => (false, vec![]),

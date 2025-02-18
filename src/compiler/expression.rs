@@ -150,7 +150,7 @@ pub fn swizzle_accessor_typestate(
               TypeState::Known(inner_type) => {
                 TypeState::Known(inner_type.clone()).into()
               }
-              _ => panic!("1???? {:?} ", s.fields[0].field_type),
+              _ => unreachable!(),
             }],
             &vec![],
             SourceTrace::empty(),
@@ -159,10 +159,10 @@ pub fn swizzle_accessor_typestate(
         ))
         .into()
       } else {
-        panic!("2???")
+        unreachable!()
       }
     } else {
-      panic!("3???")
+      unreachable!()
     }
   } else {
     TypeState::Unknown.into()
@@ -774,7 +774,10 @@ impl TypedExp {
                                 {
                                   name.into()
                                 } else {
-                                  panic!()
+                                  return Err(CompileError::new(
+                                    InvalidForLoopHeader,
+                                    header_source_position.into(),
+                                  ));
                                 },
                                 var_type_subtree
                                   .map(|var_type_subtree| {
