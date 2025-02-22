@@ -794,6 +794,7 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
       [
         ("floor", 1),
         ("ceil", 1),
+        ("round", 1),
         ("fract", 1),
         ("sqrt", 1),
         ("pow", 2),
