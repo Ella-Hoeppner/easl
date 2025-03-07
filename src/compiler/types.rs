@@ -494,7 +494,7 @@ impl Type {
             }
           }
           Some(EaslTree::Leaf(_, struct_name)) => {
-            if signature_leaves.is_empty() {
+            if signature_leaves.len() == 0 {
               return err(InvalidStructName, source_trace);
             } else {
               let generic_args: Vec<ExpTypeInfo> = signature_leaves

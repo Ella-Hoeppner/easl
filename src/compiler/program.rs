@@ -119,7 +119,7 @@ impl Program {
                       .into_iter();
                     if let Some(struct_name) = filtered_signature_leaves.next()
                     {
-                      if filtered_signature_leaves.is_empty() {
+                      if filtered_signature_leaves.len() == 0 {
                         errors.push(CompileError::new(
                           InvalidStructName,
                           source_trace,
@@ -283,10 +283,9 @@ impl Program {
                         &global_context.structs,
                         type_source_path.into(),
                       )
-                    })
-                    .flatten()
-                    {
-                      Ok(t) => {
+                    }) {
+                      Err(e) | Ok(Err(e)) => errors.push(e),
+                      Ok(Ok(t)) => {
                         global_context.top_level_vars.push(TopLevelVar {
                           name,
                           metadata,
@@ -297,7 +296,6 @@ impl Program {
                           source_trace: parens_source_trace,
                         })
                       }
-                      Err(e) => errors.push(e),
                     }
                   }
                   Err(e) => errors.push(e),

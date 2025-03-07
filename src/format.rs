@@ -45,7 +45,7 @@ impl EaslFormatter {
         s += " ";
         s += &secondary_formatter.format(next_child);
       }
-      if !child_iter.is_empty() {
+      if !child_iter.len() == 0 {
         s += &self.indented_newline()
       }
     }

@@ -1,6 +1,6 @@
 use core::fmt::Debug;
 use sse::syntax::EncloserOrOperator;
-use std::{rc::Rc, str::pattern::Pattern};
+use std::rc::Rc;
 
 use crate::{
   compiler::{
@@ -525,7 +525,7 @@ impl TypedExp {
                 match &first_child {
                   EaslTree::Leaf(position, first_child_name) => {
                     let source_trace: SourceTrace = position.clone().into();
-                    if ".".is_prefix_of(&first_child_name) {
+                    if first_child_name.starts_with(".") {
                       if children_iter.len() == 1 {
                         Some(Exp {
                           data: Unknown.into(),
@@ -669,7 +669,7 @@ impl TypedExp {
                           }
                         }
                         "block" => {
-                          if children_iter.is_empty() {
+                          if children_iter.len() == 0 {
                             return err(EmptyBlock, source_trace);
                           }
                           let child_exps = children_iter
@@ -922,7 +922,7 @@ impl TypedExp {
                           }
                         }
                         "zeroed-array" => {
-                          if children_iter.is_empty() {
+                          if children_iter.len() == 0 {
                             Some(TypedExp {
                               data: TypeState::Known(Type::Array(
                                 None,
