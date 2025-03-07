@@ -277,12 +277,13 @@ impl AbstractStruct {
     }
 
     let name = &*self.name;
-    generic_bindings
-      .get("T")
-      .map(|t| {
-        (name == "vec2" || name == "vec3" || name == "vec4")
-          .then(|| compiled_vec_name(name, t.clone()))
-          .flatten()
+
+    (name == "vec2" || name == "vec3" || name == "vec4")
+      .then(|| {
+        compiled_vec_name(
+          name,
+          generic_bindings.values().next().unwrap().clone(),
+        )
       })
       .flatten()
       .unwrap_or_else(|| {
