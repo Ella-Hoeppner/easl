@@ -737,6 +737,23 @@ fn vector_functions() -> Vec<AbstractFunctionSignature> {
     })
     .collect()
   })
+  .into_iter()
+  .chain({
+    let vec3 = AbstractType::AbstractStruct(
+      vec3()
+        .generate_monomorphized(vec![Type::F32], SourceTrace::empty())
+        .unwrap()
+        .into(),
+    );
+    std::iter::once(AbstractFunctionSignature {
+      name: "cross".into(),
+      generic_args: vec![],
+      arg_types: vec![vec3.clone(), vec3.clone()],
+      return_type: vec3,
+      implementation: FunctionImplementationKind::Builtin,
+    })
+  })
+  .collect()
 }
 
 fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
