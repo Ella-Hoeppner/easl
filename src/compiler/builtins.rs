@@ -796,7 +796,7 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
   generic_and_vec_types()
     .into_iter()
     .map(|t| {
-      [("abs", 1), ("max", 2), ("min", 2)]
+      [("sign", 1), ("abs", 1), ("max", 2), ("min", 2)]
         .into_iter()
         .map(|(name, arg_count)| AbstractFunctionSignature {
           name: name.into(),
