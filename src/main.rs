@@ -1,10 +1,12 @@
-use easl::compiler::compile_easl_source_to_wgsl;
+use easl::{compiler::compile_easl_source_to_wgsl, parse::parse_easl};
 use std::fs;
 
 fn main() {
+  println!("{:?}", parse_easl("@a b: c").unwrap().syntax_trees[0]);
   std::env::set_var("RUST_BACKTRACE", "1");
   fs::create_dir_all("./out/").expect("Unable to create out directory");
   for filename in [
+    "assignment",
     "simple_shader",
     "variadic_vec",
     "let",

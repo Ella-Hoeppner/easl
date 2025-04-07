@@ -25,7 +25,7 @@ pub struct UntypedStructField {
 impl UntypedStructField {
   fn from_field_tree(ast: EaslTree) -> CompileResult<Self> {
     let path = ast.position().clone();
-    let (type_ast, inner_ast) = extract_type_annotation_ast(ast)?;
+    let (type_ast, inner_ast) = extract_type_annotation_ast(ast);
     let type_ast =
       type_ast.ok_or(CompileError::new(StructFieldMissingType, path.into()))?;
     let (name, metadata, metadata_error) = extract_metadata(inner_ast);

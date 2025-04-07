@@ -10,7 +10,8 @@ use crate::{
     metadata::{extract_metadata, Metadata},
     structs::AbstractStruct,
     types::{
-      extract_type_annotation_ast, ArraySize, Context, ExpTypeInfo, Type,
+      extract_type_annotation, extract_type_annotation_ast, ArraySize, Context,
+      ExpTypeInfo, Type,
       TypeState::{self, *},
       Variable, VariableKind,
     },
@@ -338,7 +339,7 @@ pub fn arg_list_and_return_type_from_easl_tree(
       let ((arg_types, arg_metadata), arg_names) = arg_asts
         .into_iter()
         .map(|arg| -> CompileResult<_> {
-          let (maybe_t_ast, arg_name_ast) = extract_type_annotation_ast(arg)?;
+          let (maybe_t_ast, arg_name_ast) = extract_type_annotation_ast(arg);
           let t_ast = maybe_t_ast.ok_or(CompileError::new(
             FunctionArgMissingType,
             source_path.clone(),
@@ -519,10 +520,11 @@ impl TypedExp {
         let source_trace: SourceTrace = position.into();
         let mut children_iter = children.into_iter();
         match encloser_or_operator {
-          Encloser(e) => match e {
-            Parens => {
-              if let Some(first_child) = children_iter.next() {
-                match &first_child {
+          Encloser(e) => {
+            match e {
+              Parens => {
+                if let Some(first_child) = children_iter.next() {
+                  match &first_child {
                   EaslTree::Leaf(position, first_child_name) => {
                     let source_trace: SourceTrace = position.clone().into();
                     if first_child_name.starts_with(".") {
@@ -601,6 +603,7 @@ impl TypedExp {
                               {
                                 let value_ast =
                                   binding_asts_iter.next().unwrap();
+                                let (ty, name_ast) = extract_type_annotation(name_ast, structs, aliases, &vec![], skolems)?;
                                 let (name_ast, name_metadata, metadata_error) =
                                   extract_metadata(name_ast);
                                 if let Some(metadata_error) = metadata_error {
@@ -633,10 +636,20 @@ impl TypedExp {
                                           )
                                         }
                                       },
-                                      Self::try_from_easl_tree(
-                                        value_ast, structs, aliases, skolems,
-                                        ctx,
-                                      )?,
+                                      {
+                                        let mut value_exp = Self::try_from_easl_tree(
+                                          value_ast, structs, aliases, skolems,
+                                          ctx,
+                                        )?;
+                                        if let Some(ty) = ty {
+                                          value_exp.data = TypeState::Known(ty.concretize(
+                                            skolems,
+                                            structs,
+                                            source_trace.clone()
+                                          )?).into();
+                                        }
+                                        value_exp
+                                      },
                                     ));
                                   }
                                   EaslTree::Inner((position, _), _) => {
@@ -767,7 +780,7 @@ impl TypedExp {
                               let update_condition_subtree =
                                 header_subtrees.remove(0);
                               let (var_type_subtree, var_name_subtree) =
-                                extract_type_annotation_ast(var_name_subtree)?;
+                                extract_type_annotation_ast(var_name_subtree);
                               (
                                 if let EaslTree::Leaf(_, name) =
                                   var_name_subtree
@@ -965,63 +978,66 @@ impl TypedExp {
                   data: Unknown.into(),
                   source_trace,
                 })
-              } else {
-                return err(EmptyList, source_trace);
-              }
-            }
-            ArrayLookup => {
-              if children_iter.len() == 2 {
-                let array_expression = TypedExp::try_from_easl_tree(
-                  children_iter.next().unwrap(),
-                  structs,
-                  aliases,
-                  skolems,
-                  ctx,
-                )?;
-                let index_expression = TypedExp::try_from_easl_tree(
-                  children_iter.next().unwrap(),
-                  structs,
-                  aliases,
-                  skolems,
-                  ctx,
-                )?;
-                Exp {
-                  kind: Access(
-                    Accessor::ArrayIndex(Box::new(index_expression)),
-                    Box::new(array_expression),
-                  ),
-                  data: TypeState::Unknown.into(),
-                  source_trace,
+                } else {
+                  return err(EmptyList, source_trace);
                 }
-              } else {
-                return err(InvalidArrayAccessSyntax, source_trace);
+              }
+              ArrayLookup => {
+                if children_iter.len() == 2 {
+                  let array_expression = TypedExp::try_from_easl_tree(
+                    children_iter.next().unwrap(),
+                    structs,
+                    aliases,
+                    skolems,
+                    ctx,
+                  )?;
+                  let index_expression = TypedExp::try_from_easl_tree(
+                    children_iter.next().unwrap(),
+                    structs,
+                    aliases,
+                    skolems,
+                    ctx,
+                  )?;
+                  Exp {
+                    kind: Access(
+                      Accessor::ArrayIndex(Box::new(index_expression)),
+                      Box::new(array_expression),
+                    ),
+                    data: TypeState::Unknown.into(),
+                    source_trace,
+                  }
+                } else {
+                  return err(InvalidArrayAccessSyntax, source_trace);
+                }
+              }
+              Square => Exp {
+                data: TypeState::Known(Type::Array(
+                  Some(ArraySize::Constant(children_iter.len() as u32)),
+                  Box::new(TypeState::Unknown.into()),
+                ))
+                .into(),
+                kind: ArrayLiteral(
+                  children_iter
+                    .map(|ast| {
+                      TypedExp::try_from_easl_tree(
+                        ast, structs, aliases, skolems, ctx,
+                      )
+                    })
+                    .collect::<CompileResult<Vec<TypedExp>>>()?,
+                ),
+                source_trace,
+              },
+              Curly => {
+                return err(AnonymousStructsNotYetSupported, source_trace)
+              }
+              LineComment => {
+                return err(EncounteredCommentInSource, source_trace)
+              }
+              BlockComment => {
+                return err(EncounteredCommentInSource, source_trace)
               }
             }
-            Square => Exp {
-              data: TypeState::Known(Type::Array(
-                Some(ArraySize::Constant(children_iter.len() as u32)),
-                Box::new(TypeState::Unknown.into()),
-              ))
-              .into(),
-              kind: ArrayLiteral(
-                children_iter
-                  .map(|ast| {
-                    TypedExp::try_from_easl_tree(
-                      ast, structs, aliases, skolems, ctx,
-                    )
-                  })
-                  .collect::<CompileResult<Vec<TypedExp>>>()?,
-              ),
-              source_trace,
-            },
-            Curly => return err(AnonymousStructsNotYetSupported, source_trace),
-            LineComment => {
-              return err(EncounteredCommentInSource, source_trace)
-            }
-            BlockComment => {
-              return err(EncounteredCommentInSource, source_trace)
-            }
-          },
+          }
           Operator(o) => match o {
             MetadataAnnotation => {
               return err(EncounteredMetadataInInternalExpression, source_trace)
@@ -1223,7 +1239,13 @@ impl TypedExp {
       Function(_, _) => panic!("Attempting to compile internal function"),
       Application(f, args) => {
         let f_str = if let ExpKind::Name(name) = f.kind {
-          rename_builtin(&*name).unwrap_or_else(|| compile_word(name))
+          rename_builtin(&*name).unwrap_or_else(|| {
+            if ASSIGNMENT_OPS.contains(name.as_ref()) {
+              name.to_string()
+            } else {
+              compile_word(name)
+            }
+          })
         } else {
           f.compile(InnerExpression)
         };

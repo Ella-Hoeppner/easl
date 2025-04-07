@@ -785,18 +785,16 @@ impl Display for Type {
 
 pub fn extract_type_annotation_ast(
   exp: EaslTree,
-) -> CompileResult<(Option<EaslTree>, EaslTree)> {
-  Ok(
-    if let EaslTree::Inner(
-      (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
-      mut children,
-    ) = exp
-    {
-      (Some(children.remove(1)), children.remove(0))
-    } else {
-      (None, exp)
-    },
-  )
+) -> (Option<EaslTree>, EaslTree) {
+  if let EaslTree::Inner(
+    (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
+    mut children,
+  ) = exp
+  {
+    (Some(children.remove(1)), children.remove(0))
+  } else {
+    (None, exp)
+  }
 }
 
 pub fn extract_type_annotation(
@@ -806,7 +804,7 @@ pub fn extract_type_annotation(
   generic_args: &Vec<Rc<str>>,
   skolems: &Vec<Rc<str>>,
 ) -> CompileResult<(Option<AbstractType>, EaslTree)> {
-  let (t, value) = extract_type_annotation_ast(exp)?;
+  let (t, value) = extract_type_annotation_ast(exp);
   Ok((
     t.map(|t| {
       AbstractType::from_easl_tree(t, structs, aliases, generic_args, skolems)

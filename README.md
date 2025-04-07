@@ -16,44 +16,40 @@ Feature goals:
 
 ## todo
 ### high priority
-* handle comments in let blocks better during formatting
-
-* allow type annotation on binding names in let blocks, e.g. `(let [x: f32 0] ...)` currently crashes because it can't handle the type annotation on `x`
-
 * improve type descriptions on mouse hover for `let` bindings, right now you don't get their types and instead just get the type of the whole `let` block
 
-* add a `poisoned: bool` field or smth to `ExpTypeInfo`, which gets set to true when an expression has already returned an error. Then make `constrain`/`mutually_constrain` and other things that can return type errors just skip their effects when the relevant typestates are poisoned, so that we aren't repeatedly generating the same errors.
-
-* mark some functions like `+`, `*`, `min`, and `max` as "associative", allowing them to be called with n arguments
+* mark some functions like `+`, `*`, `min`, `max`, `and`, and `or` as "associative", allowing them to be called with n arguments
   * it would be cool to have this as a thing that can be exposed to the user from within the language, e.g. `@associative (defn f [a b] ...)`
 
 * add a 1-argument arity to `/` that acts as `#(/ 1 %)`
 
-* support lifting internal `let`s and `match`s
+* `do`
+
+* support lifting internal `let`s, `do`s, `match`s, `for`s, and `while`s
+  * need to figure out how to deal with mutable variables with this... when a mutation of a variable crosses the scope over which a let would be lifted
+
+* implement compilation pre-checks and errors that aren't strictly about typechecking
+  * ensure that no variables have the `Type::None` type
+  * ensure control flow expressions are only used in their proper context
+    * `break` and `continue` can only be used inside a loop
+    * `discard` can only be used inside a `@fragment` function
+  * `TypedExp::validate_match_blocks`
+    * ensure that
+      * there's only one wildcard
+      * the wildcard appears at the end
+      * all patterns are just literals
+      * no patterns are repeated
+      * the wildcard doesn't appear if the other patterns would already be exhaustive, i.e. you can't have `true` and `false` and a wildcard case when matching a bool
+
+* matrices
+
+* add a `poisoned: bool` field or smth to `ExpTypeInfo`, which gets set to true when an expression has already returned an error. Then make `constrain`/`mutually_constrain` and other things that can return type errors just skip their effects when the relevant typestates are poisoned, so that we aren't repeatedly generating the same errors.
 
 * improve error messages
 
 * when a name is shadowed, replace it and references to the shadowed version with a new gensym'd name, since wgsl doesn't allow shadowing
 
-* make
-  ```
-    structs: &Vec<Rc<AbstractStruct>>,
-    skolems: &Vec<Rc<str>>,
-    source_trace: SourceTrace,
-  ```
-  into something like "ConcretizationContext" or something, this exists in a bunch of places
-
-* implement `TypedExp::validate_match_blocks`
-  * ensure that
-    * there's only one wildcard
-    * the wildcard appears at the end
-    * all patterns are just literals
-    * no patterns are repeated
-    * the wildcard doesn't appear if the other patterns would already be exhaustive, i.e. you can't have `true` and `false` and a wildcard case when matching a bool
-
-* return an error if control flow expressions are used outside their proper context
-  * `break` and `continue` can only be used inside a loop
-  * `discard` can only be used inside a `@fragment` function
+### medium priority, necessary to call the language 0.1
 
 * support declaring custom type constraints
   * each constraint is just defined by a function
@@ -65,6 +61,17 @@ Feature goals:
 * support declaring type constraints that are the combinations of others, e.g.:
   * `(constraint Arithmetic [Add Sub Mul Div])`
 
+* support reference types in userspace functions
+  * Main thing here is that functions should be able to take references as inputs, e.g. `(defn f [x: &i32] (+= (deref x) 1))`. The parser already has `&` as an operator, and this should be usable both at the type level and at the term level for constructing a reference from a variable, though only when that variable is mutable. I think just having `deref` for derefencing is fine? It's kinda verbose but I don't think it's worth using a symbol just for a dereferencing prefix, dereferences will be pretty uncommon
+  * Passing a reference to a mutable variable to a function should trigger the mutability special case of the `let`-lifter, just like if an assignment operator crossed the 
+
+* special casing around `Texture2D`
+  * right now I've made it so it has a field `_: T`, because monomorphization needs there to be at least one field, but this is kinda weird
+  * you definitely shouldn't be able to access the `_` field, and you shouldn't be allowed to construct it
+  * might need this for other types too? Maybe have a like `external_only` or `opaque` type that prevents it from being constructed or from having it's fields accessed 
+  * or maybe have something like rust's `PhantomData`?
+
+### low priority, extra features once core language is solid
 * restrict vec constructor with an `(Into T)` constraint that ensures the arg can be converted into the type of the type contained within the vector
   * right now all the generics are restricted with `Scalar`, which works well enough for all the built-in vec types, but doing `(Into T)` instead should make it possible to have the same convenience with vectors of custom types (e.g. complex numbers)
 
@@ -77,13 +84,13 @@ Feature goals:
     * once `(Into T)` exists, the signature for a vector constructor will change from looking like `(fn (vec4f T A: Scalar) [a: A]: (vec4f T))` to `(fn (vec4f T A: (Into T)) [a: A]: (vec4f T))`. All scalars will implement `into` for one another, so this will feel exactly like the current approach. But it will also get stuck in the same place, because all the scalars satisfy `(Into ...)` for whatever the type of the vector is. But this could be resolved by a special inference rule: If type inference stalls with the type of a function argument being narrowed down to one `OneOf` several possibilities including some particular type `T`, and that function argument is constrained by `(Into T)`, collapse the `OneOf` into `Known(T)`
       * a practical benefit of this is that it'll work on custom vector types, like if someone defined `vecc` as a vector of complex numbers, and implemented `(Into Complex)` for floats, then `(vecc 1.)` work automatically. It'll also work on any custom types that expect `(Into ...)` that could run into ambiguity
 
-* matrices
-
-### low-priority extra features, once core language is solid
-* special casing around `Texture2D`
-  * right now I've made it so it has a field `_: T`, because monomorphization needs there to be at least one field, but this is kinda weird
-  * you definitely shouldn't be able to access the `_` field, and you shouldn't be allowed to construct it
-  * might need this for other types too? Maybe have a like `external_only` or `opaque` type that prevents it from being constructed or from having it's fields accessed 
+* make
+  ```
+    structs: &Vec<Rc<AbstractStruct>>,
+    skolems: &Vec<Rc<str>>,
+    source_trace: SourceTrace,
+  ```
+  into something like "ConcretizationContext" or something, this exists in a bunch of places
 
 * write a bunch of tests
   * the current shaders can be converted into tests, but there should also be test cases for invalid programs that ensure the right kinds of errors are returned

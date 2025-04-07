@@ -14,6 +14,20 @@ fn indented_newline(indentation: usize) -> String {
   "\n".to_string() + &" ".repeat(indentation)
 }
 
+fn is_tree_comment(tree: &EaslTree) -> bool {
+  match &tree {
+    sse::Ast::Leaf(_, _) => false,
+    sse::Ast::Inner((_, encloser_or_operator), _) => match encloser_or_operator
+    {
+      EncloserOrOperator::Encloser(
+        Encloser::BlockComment | Encloser::LineComment,
+      ) => true,
+      EncloserOrOperator::Operator(Operator::ExpressionComment) => true,
+      _ => false,
+    },
+  }
+}
+
 pub enum Block {
   Leaf(String),
   Horizontal(Vec<Self>),
@@ -24,7 +38,7 @@ pub enum Block {
   MetadataVertical(Box<Self>, Box<Self>),
   Typed(Box<Self>, Box<Self>),
   ApplicationIndentation(String, Box<Self>),
-  Bindings(Vec<Self>),
+  Bindings(Vec<(Self, Option<Self>)>),
   IndentedBody {
     opener: String,
     prefix: Box<Self>,
@@ -53,24 +67,16 @@ impl Block {
       MetadataHorizontal(data, term) => data.width() + term.width() + 2,
       MetadataVertical(_, term) => term.last_line_width(),
       ApplicationIndentation(f, inner) => f.len() + 1 + inner.last_line_width(),
-      Bindings(blocks) => {
-        if blocks.len() % 2 == 1 {
-          blocks.last().unwrap().last_line_width()
-        } else {
-          if blocks.is_empty() {
-            0
+      Bindings(bindings) => bindings
+        .last()
+        .map(|(name, value)| {
+          if let Some(value) = value {
+            name.last_line_width() + 1 + value.last_line_width()
           } else {
-            let last_binding = &blocks[blocks.len() - 2];
-            if last_binding.height() == 1 {
-              last_binding.width()
-                + 1
-                + blocks.last().unwrap().last_line_width()
-            } else {
-              blocks.last().unwrap().last_line_width()
-            }
+            name.last_line_width()
           }
-        }
-      }
+        })
+        .unwrap_or(0),
       IndentedBody { bodies, .. } => {
         bodies
           .last()
@@ -101,18 +107,13 @@ impl Block {
       MetadataHorizontal(data, term) => data.width() + 2 + term.width(),
       MetadataVertical(data, term) => (data.width() + 1).max(term.width()),
       ApplicationIndentation(f, inner) => f.len() + 1 + inner.width(),
-      Bindings(blocks) => blocks
-        .chunks(2)
-        .map(|subblocks| {
-          if subblocks.len() == 2 {
-            let binding = &subblocks[0];
-            if binding.height() == 1 {
-              binding.width() + 1 + subblocks[1].width()
-            } else {
-              binding.width().max(subblocks[1].width())
-            }
+      Bindings(bindings) => bindings
+        .iter()
+        .map(|(name, value)| {
+          if let Some(value) = value {
+            name.width().max(name.last_line_width() + value.width())
           } else {
-            subblocks[0].width()
+            name.width()
           }
         })
         .max()
@@ -140,18 +141,13 @@ impl Block {
       MetadataVertical(data, term) => data.height() + term.width(),
       ApplicationIndentation(_, block) => block.height(),
       Enclosed(_, inner) | Prefixed(_, inner) => inner.height(),
-      Bindings(blocks) => blocks
-        .chunks(2)
-        .map(|subblocks| {
-          if subblocks.len() == 2 {
-            let binding = &subblocks[0];
-            if binding.height() == 1 {
-              subblocks[1].height()
-            } else {
-              binding.height() + subblocks[1].height()
-            }
+      Bindings(bindings) => bindings
+        .iter()
+        .map(|(name, value)| {
+          if let Some(value) = value {
+            name.height() + value.height() - 1
           } else {
-            subblocks[0].height()
+            name.height()
           }
         })
         .sum(),
@@ -195,39 +191,27 @@ impl Block {
       MetadataVertical(data, term) => {
         "@".to_string()
           + &data.print(indentation + 1)
-          + "\n"
+          + &indented_newline(indentation)
           + &term.print(indentation)
       }
       ApplicationIndentation(f, inner) => {
         let f_len = f.len();
         f + " " + &inner.print(indentation + f_len + 1)
       }
-      Bindings(blocks) => {
-        let mut s = String::new();
-        let mut blocks_iter = blocks.into_iter();
-        let mut first_loop = true;
-        while let Some(binding) = blocks_iter.next() {
-          if first_loop {
-            first_loop = false;
+      Bindings(bindings) => bindings
+        .into_iter()
+        .map(|(name, value)| {
+          if let Some(value) = value {
+            let name_last_line_width = name.last_line_width();
+            name.print(indentation)
+              + " "
+              + &value.print(indentation + name_last_line_width)
           } else {
-            s += &indented_newline(indentation);
+            name.print(indentation)
           }
-          if let Some(value) = blocks_iter.next() {
-            if binding.height() == 1 {
-              s += &binding.print(indentation);
-              s += " ";
-              s += &value.print(indentation);
-            } else {
-              s += &binding.print(indentation);
-              s += &indented_newline(indentation);
-              s += &value.print(indentation);
-            }
-          } else {
-            s += &binding.print(indentation);
-          }
-        }
-        s
-      }
+        })
+        .collect::<Vec<String>>()
+        .join(&indented_newline(indentation)),
       IndentedBody {
         opener,
         prefix,
@@ -236,7 +220,7 @@ impl Block {
         let opener_len = opener.len();
         opener
           + " "
-          + &prefix.print(indentation + opener_len)
+          + &prefix.print(indentation + opener_len + 1)
           + &indented_newline(indentation + 1)
           + &bodies
             .into_iter()
@@ -259,12 +243,42 @@ impl Block {
       }
     }
   }
+  fn bindings_from_trees(trees: Vec<EaslTree>) -> Vec<(Self, Option<Self>)> {
+    let mut trees = trees.into_iter();
+    let mut bindings = vec![];
+    while let Some(name) = trees.next() {
+      if is_tree_comment(&name) {
+        bindings.push((Self::from_tree(name), None));
+      } else {
+        bindings.push((
+          Self::from_tree(name),
+          Some({
+            let mut comments_and_values = vec![];
+            'outer: loop {
+              while let Some(comment_or_value) = trees.next() {
+                let is_comment = is_tree_comment(&comment_or_value);
+                comments_and_values.push(comment_or_value);
+                if !is_comment {
+                  break 'outer;
+                };
+              }
+            }
+            if comments_and_values.len() == 1 {
+              Self::from_tree(comments_and_values.remove(0))
+            } else {
+              Self::from_trees(comments_and_values, false)
+            }
+          }),
+        ));
+      };
+    }
+    bindings
+  }
   fn from_trees(mut trees: Vec<EaslTree>, application: bool) -> Self {
     if trees.len() == 1 {
       Self::from_tree(trees.remove(0))
     } else {
       let mut trees = trees.into_iter().peekable();
-      //let mut blocks = trees.into_iter().map(Self::from_tree).peekable();
       if let EaslTree::Leaf(_, _) = &trees
         .peek()
         .expect("Block::from_trees called with empty vec")
@@ -274,12 +288,41 @@ impl Block {
             unreachable!()
           };
           return match s.as_str() {
-            "struct" if trees.len() >= 1 => {
+            "struct" | "when" | "while" | "for" if trees.len() >= 1 => {
               let mut blocks = trees.map(Self::from_tree);
               IndentedBody {
                 opener: s,
                 prefix: blocks.next().unwrap().into(),
                 bodies: blocks.collect(),
+              }
+            }
+            "match" if trees.len() >= 1 => {
+              //let mut blocks = trees.map(Self::from_tree);
+              IndentedBody {
+                opener: s,
+                prefix: Self::from_tree(trees.next().unwrap()).into(),
+                bodies: vec![Bindings(Self::bindings_from_trees(
+                  trees.collect(),
+                ))],
+              }
+            }
+            "if" if trees.len() >= 1 => {
+              let mut blocks: Vec<Block> = trees.map(Self::from_tree).collect();
+              if blocks.iter().find(|b| b.height() > 1).is_some()
+                && blocks.iter().map(|b| b.width()).sum::<usize>()
+                  + blocks.len()
+                  + 2
+                  < MAX_EXPRESSION_WIDTH
+              {
+                Horizontal(
+                  std::iter::once(Leaf(s)).chain(blocks.into_iter()).collect(),
+                )
+              } else {
+                IndentedBody {
+                  opener: s,
+                  prefix: Box::new(blocks.remove(0)),
+                  bodies: blocks,
+                }
               }
             }
             "defn"
@@ -316,13 +359,12 @@ impl Block {
               else {
                 unreachable!()
               };
-              let subtree_blocks =
-                subtrees.into_iter().map(Self::from_tree).collect();
+
               IndentedBody {
                 opener: s,
                 prefix: Box::new(Enclosed(
                   Encloser::Square,
-                  Box::new(Bindings(subtree_blocks)),
+                  Box::new(Bindings(Self::bindings_from_trees(subtrees))),
                 )),
                 bodies: trees.map(Self::from_tree).collect(),
               }
@@ -365,21 +407,7 @@ impl Block {
           }
           EncloserOrOperator::Encloser(encloser) => Enclosed(encloser, {
             Box::new(match encloser {
-              Encloser::Curly => {
-                let blocks = asts
-                  .into_iter()
-                  .map(Self::from_tree)
-                  .collect::<Vec<Block>>();
-                if (blocks.iter().map(|block| block.width()).sum::<usize>()
-                  + blocks.len()
-                  - 1)
-                  < MAX_SINGLE_LINE_STRUCT_WIDTH
-                {
-                  Self::from_sub_blocks(blocks)
-                } else {
-                  Bindings(blocks)
-                }
-              }
+              Encloser::Curly => Bindings(Self::bindings_from_trees(asts)),
               Encloser::Parens => Self::from_trees(asts, true),
               _ => Self::from_trees(asts, false),
             })
