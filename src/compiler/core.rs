@@ -25,5 +25,7 @@ pub fn compile_easl_document_to_wgsl(
 pub fn compile_easl_source_to_wgsl(
   easl_source: &str,
 ) -> Result<String, Vec<CompileError>> {
-  compile_easl_document_to_wgsl(parse_easl(easl_source).map_err(|e| vec![e])?)
+  let mut doc = parse_easl(easl_source).map_err(|e| vec![e])?;
+  doc.strip_comments();
+  compile_easl_document_to_wgsl(doc)
 }

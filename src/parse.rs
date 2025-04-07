@@ -25,7 +25,7 @@ use crate::compiler::{
   error::{CompileError, CompileErrorKind, CompileResult, SourceTrace},
   program::EaslDocument,
 };
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Encloser {
   Parens,
   Square,
@@ -167,17 +167,22 @@ pub fn easl_syntax_graph() -> EaslSynaxGraph {
 }
 
 pub fn parse_easl(easl_source: &str) -> CompileResult<EaslDocument> {
-  Document::from_text_with_syntax(easl_syntax_graph(), easl_source)
-    .map_err(|e| {
+  Document::from_text_with_syntax(easl_syntax_graph(), easl_source).map_err(
+    |e| {
       CompileError::new(
         CompileErrorKind::ParsingFailed(e),
         SourceTrace::empty(),
       )
-    })
-    .map(|mut doc| {
-      doc.strip_comments();
-      doc
-    })
+    },
+  )
+}
+
+pub fn parse_easl_without_comments(
+  easl_source: &str,
+) -> CompileResult<EaslDocument> {
+  let mut doc = parse_easl(easl_source)?;
+  doc.strip_comments();
+  Ok(doc)
 }
 
 pub type EaslTree = DocumentSyntaxTree<Encloser, Operator>;
