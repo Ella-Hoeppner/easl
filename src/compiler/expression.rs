@@ -1,6 +1,6 @@
 use core::fmt::Debug;
 use sse::syntax::EncloserOrOperator;
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
 use crate::{
   compiler::{
@@ -2248,7 +2248,9 @@ impl TypedExp {
                       f.borrow().body.source_trace.clone(),
                     )?;
                   std::mem::swap(f_name, &mut monomorphized.name.clone());
-                  new_ctx.add_abstract_function(Rc::new(monomorphized));
+                  new_ctx.add_abstract_function(Rc::new(RefCell::new(
+                    monomorphized,
+                  )));
                 }
               }
             }
@@ -2299,7 +2301,7 @@ impl TypedExp {
                   for fn_arg_index in function_arg_positions.iter().rev() {
                     args.remove(*fn_arg_index);
                   }
-                  new_ctx.add_abstract_function(Rc::new(inlined));
+                  new_ctx.add_abstract_function(Rc::new(RefCell::new(inlined)));
                   changed = true;
                 }
               }

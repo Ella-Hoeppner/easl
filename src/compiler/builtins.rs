@@ -935,6 +935,9 @@ lazy_static! {
     ["vec2", "vec3", "vec4"].into_iter().collect();
 }
 
+pub const ASSOCIATIVE_BUILTINS: [&str; 6] =
+  ["+", "*", "min", "max", "and", "or"];
+
 pub fn built_in_macros() -> Vec<Macro> {
   let if_macro = Macro(Box::new(|tree| match tree {
     EaslTree::Inner(

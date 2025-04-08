@@ -1,0 +1,10 @@
+
+(defn f []: f32
+  (+ 1. 2. 3.))
+
+@associative
+(defn abstracted-+ [a: f32 b:f32]: f32
+  (+ a b))
+
+(defn f2 []: f32
+  (abstracted-+ 1. 2. 3.))

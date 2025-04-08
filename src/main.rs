@@ -6,6 +6,7 @@ fn main() {
   std::env::set_var("RUST_BACKTRACE", "1");
   fs::create_dir_all("./out/").expect("Unable to create out directory");
   for filename in [
+    "associative",
     "assignment",
     "simple_shader",
     "variadic_vec",

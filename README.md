@@ -16,10 +16,13 @@ Feature goals:
 
 ## todo
 ### high priority
-* improve type descriptions on mouse hover for `let` bindings, right now you don't get their types and instead just get the type of the whole `let` block
+* unify metadata system
+  * All metadata should ultimately desugar to associations between names and ASTs. When something is prefixed like `@word`, that should be translated to `@{word true}`
+  * only let specific instances of metadata pass through to output, e.g. `@fragment` and `@vertex`, `@group`, `@binding`. Return errors for invalid metadata
 
-* mark some functions like `+`, `*`, `min`, `max`, `and`, and `or` as "associative", allowing them to be called with n arguments
-  * it would be cool to have this as a thing that can be exposed to the user from within the language, e.g. `@associative (defn f [a b] ...)`
+* Allow functions to be marked as `@associative`
+
+* improve type descriptions on mouse hover for `let` bindings, right now you don't get their types and instead just get the type of the whole `let` block
 
 * add a 1-argument arity to `/` that acts as `#(/ 1 %)`
 
@@ -28,7 +31,7 @@ Feature goals:
 * support lifting internal `let`s, `do`s, `match`s, `for`s, and `while`s
   * need to figure out how to deal with mutable variables with this... when a mutation of a variable crosses the scope over which a let would be lifted
 
-* implement compilation pre-checks and errors that aren't strictly about typechecking
+* implement post-typechecking, pre-compilation validation checks and errors
   * ensure that no variables have the `Type::None` type
   * ensure control flow expressions are only used in their proper context
     * `break` and `continue` can only be used inside a loop
@@ -39,7 +42,7 @@ Feature goals:
       * the wildcard appears at the end
       * all patterns are just literals
       * no patterns are repeated
-      * the wildcard doesn't appear if the other patterns would already be exhaustive, i.e. you can't have `true` and `false` and a wildcard case when matching a bool
+      * the wildcard doesn't appear if the other patterns would already be exhaustive, i.e. you can't have `true` and `false` and a wildcard case when matching a bool 
 
 * matrices
 
@@ -48,6 +51,8 @@ Feature goals:
 * improve error messages
 
 * when a name is shadowed, replace it and references to the shadowed version with a new gensym'd name, since wgsl doesn't allow shadowing
+
+* disallow shadowing of top-level definitions
 
 ### medium priority, necessary to call the language 0.1
 

@@ -1,7 +1,7 @@
 use core::fmt::Debug;
 use std::{
   cell::RefCell,
-  collections::HashMap,
+  collections::{HashMap, HashSet},
   fmt::Display,
   ops::{Deref, DerefMut},
   rc::Rc,
@@ -17,7 +17,7 @@ use crate::{
 use super::{
   builtins::{
     built_in_functions, built_in_structs, built_in_type_aliases,
-    ABNORMAL_CONSTRUCTOR_STRUCTS,
+    ABNORMAL_CONSTRUCTOR_STRUCTS, ASSOCIATIVE_BUILTINS,
   },
   error::{err, CompileErrorKind::*, CompileResult, SourceTrace},
   expression::{ExpKind, TypedExp},
@@ -1399,10 +1399,12 @@ pub fn parse_generic_argument(
 pub struct Context {
   pub structs: Vec<Rc<AbstractStruct>>,
   pub variables: HashMap<Rc<str>, Vec<Variable>>,
-  pub abstract_functions: HashMap<Rc<str>, Vec<Rc<AbstractFunctionSignature>>>,
+  pub abstract_functions:
+    HashMap<Rc<str>, Vec<Rc<RefCell<AbstractFunctionSignature>>>>,
   pub type_aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
   pub enclosing_function_types: Vec<TypeState>,
   pub top_level_vars: Vec<TopLevelVar>,
+  pub associative_top_level_functions: HashSet<Rc<str>>,
 }
 
 impl Context {
@@ -1414,6 +1416,10 @@ impl Context {
       type_aliases: vec![],
       enclosing_function_types: vec![],
       top_level_vars: vec![],
+      associative_top_level_functions: ASSOCIATIVE_BUILTINS
+        .into_iter()
+        .map(|s| s.into())
+        .collect(),
     }
   }
   pub fn push_enclosing_function_type(&mut self, typestate: TypeState) {
@@ -1430,14 +1436,13 @@ impl Context {
   }
   pub fn add_abstract_function(
     &mut self,
-    signature: Rc<AbstractFunctionSignature>,
+    signature: Rc<RefCell<AbstractFunctionSignature>>,
   ) {
-    if let Some(bucket) = self.abstract_functions.get_mut(&signature.name) {
+    let name = Rc::clone(&signature.borrow().name);
+    if let Some(bucket) = self.abstract_functions.get_mut(&name) {
       bucket.push(signature.into());
     } else {
-      self
-        .abstract_functions
-        .insert(signature.name.clone(), vec![signature.into()]);
+      self.abstract_functions.insert(name, vec![signature.into()]);
     }
   }
   pub fn with_functions(
@@ -1445,28 +1450,30 @@ impl Context {
     functions: Vec<AbstractFunctionSignature>,
   ) -> Self {
     for f in functions {
-      self.add_abstract_function(f.into());
+      self.add_abstract_function(Rc::new(RefCell::new(f)));
     }
     self
   }
   pub fn with_struct(mut self, s: Rc<AbstractStruct>) -> Self {
     if !self.structs.contains(&s) {
       if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&&*s.name) {
-        self.add_abstract_function(Rc::new(AbstractFunctionSignature {
-          name: s.name.clone(),
-          generic_args: s
-            .generic_args
-            .iter()
-            .map(|name| (name.clone(), vec![]))
-            .collect(),
-          arg_types: s
-            .fields
-            .iter()
-            .map(|field| field.field_type.clone())
-            .collect(),
-          return_type: AbstractType::AbstractStruct(s.clone()),
-          implementation: FunctionImplementationKind::Constructor,
-        }));
+        self.add_abstract_function(Rc::new(RefCell::new(
+          AbstractFunctionSignature {
+            name: s.name.clone(),
+            generic_args: s
+              .generic_args
+              .iter()
+              .map(|name| (name.clone(), vec![]))
+              .collect(),
+            arg_types: s
+              .fields
+              .iter()
+              .map(|field| field.field_type.clone())
+              .collect(),
+            return_type: AbstractType::AbstractStruct(s.clone()),
+            implementation: FunctionImplementationKind::Constructor,
+          },
+        )));
       }
       self.structs.push(s);
       self.structs.dedup();
@@ -1507,7 +1514,7 @@ impl Context {
         .map(|signature| {
           Ok(Type::Function(Box::new(
             AbstractFunctionSignature::concretize(
-              signature.clone(),
+              Rc::new(RefCell::new(signature.borrow().clone())),
               &self.structs,
               source_trace.clone(),
             )?,
@@ -1594,7 +1601,7 @@ impl Context {
   }
   pub fn abstract_functions_iter(
     &self,
-  ) -> impl Iterator<Item = &Rc<AbstractFunctionSignature>> {
+  ) -> impl Iterator<Item = &Rc<RefCell<AbstractFunctionSignature>>> {
     self
       .abstract_functions
       .values()
@@ -1603,7 +1610,7 @@ impl Context {
   }
   pub fn abstract_functions_iter_mut(
     &mut self,
-  ) -> impl Iterator<Item = &mut Rc<AbstractFunctionSignature>> {
+  ) -> impl Iterator<Item = &mut Rc<RefCell<AbstractFunctionSignature>>> {
     self
       .abstract_functions
       .values_mut()

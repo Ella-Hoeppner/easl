@@ -206,7 +206,7 @@ impl AbstractFunctionSignature {
     Ok(f)
   }
   pub fn concretize(
-    f: Rc<Self>,
+    f: Rc<RefCell<Self>>,
     structs: &Vec<Rc<AbstractStruct>>,
     source_trace: SourceTrace,
   ) -> CompileResult<FunctionSignature> {
@@ -214,6 +214,7 @@ impl AbstractFunctionSignature {
       HashMap<Rc<str>, ExpTypeInfo>,
       HashMap<Rc<str>, Vec<TypeConstraint>>,
     ) = f
+      .borrow()
       .generic_args
       .iter()
       .map(|(name, bounds)| {
@@ -225,6 +226,7 @@ impl AbstractFunctionSignature {
       .collect();
     Ok(FunctionSignature {
       arg_types: f
+        .borrow()
         .arg_types
         .iter()
         .map(|t| {
@@ -285,7 +287,7 @@ impl AbstractFunctionSignature {
           })
         })
         .collect::<CompileResult<_>>()?,
-      return_type: match &f.return_type {
+      return_type: match &f.borrow().return_type {
         AbstractType::Generic(var_name) => generic_variables
           .get(var_name)
           .expect("unrecognized generic")
@@ -318,7 +320,7 @@ impl AbstractFunctionSignature {
           .into()
         }
       },
-      abstract_ancestor: Some(f),
+      abstract_ancestor: Some(Rc::new(f.borrow().clone())),
     })
   }
 }

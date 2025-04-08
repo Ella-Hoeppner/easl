@@ -6,7 +6,7 @@ use take_mut::take;
 use crate::{
   compiler::{
     error::{CompileError, SourceTrace},
-    expression::arg_list_and_return_type_from_easl_tree,
+    expression::{arg_list_and_return_type_from_easl_tree, Exp, ExpKind},
     functions::AbstractFunctionSignature,
     metadata::extract_metadata,
     structs::UntypedStruct,
@@ -476,13 +476,15 @@ impl Program {
                                           )),
                                         );
                                       global_context.add_abstract_function(
-                                        Rc::new(AbstractFunctionSignature {
-                                          name,
-                                          generic_args,
-                                          arg_types,
-                                          return_type,
-                                          implementation,
-                                        }),
+                                        Rc::new(RefCell::new(
+                                          AbstractFunctionSignature {
+                                            name,
+                                            generic_args,
+                                            arg_types,
+                                            return_type,
+                                            implementation,
+                                          },
+                                        )),
                                       );
                                     }
                                     Err(e) => errors.push(e),
@@ -563,7 +565,7 @@ impl Program {
     }
     for f in self.global_context.abstract_functions_iter_mut() {
       if let FunctionImplementationKind::Composite(implementation) =
-        &f.implementation
+        &f.borrow().implementation
       {
         let (changed, mut f_errors) = implementation
           .borrow_mut()
@@ -581,7 +583,7 @@ impl Program {
       .abstract_functions_iter()
       .map(|f| {
         if let FunctionImplementationKind::Composite(implementation) =
-          &f.implementation
+          &f.borrow().implementation
         {
           implementation.borrow_mut().body.find_untyped()
         } else {
@@ -603,7 +605,7 @@ impl Program {
   pub fn validate_match_blocks(self) -> CompileResult<Self> {
     for abstract_function in self.global_context.abstract_functions_iter() {
       if let FunctionImplementationKind::Composite(implementation) =
-        &abstract_function.implementation
+        &abstract_function.borrow().implementation
       {
         (**implementation)
           .borrow_mut()
@@ -640,7 +642,7 @@ impl Program {
     for f in self.global_context.abstract_functions_iter() {
       let mut ctx = self.global_context.clone();
       if let FunctionImplementationKind::Composite(implementation) =
-        &f.implementation
+        &f.borrow().implementation
       {
         if let Err(e) = implementation
           .borrow_mut()
@@ -657,9 +659,9 @@ impl Program {
     let mut errors = vec![];
     let mut monomorphized_ctx = Context::default_global();
     for f in self.global_context.abstract_functions_iter() {
-      if f.generic_args.is_empty() {
+      if f.borrow().generic_args.is_empty() {
         if let FunctionImplementationKind::Composite(implementation) =
-          &f.implementation
+          &f.borrow().implementation
         {
           match implementation
             .borrow_mut()
@@ -667,10 +669,11 @@ impl Program {
             .monomorphize(&self.global_context, &mut monomorphized_ctx)
           {
             Ok(_) => {
-              let mut new_f = (**f).clone();
+              let mut new_f = (**f).borrow().clone();
               new_f.implementation =
                 FunctionImplementationKind::Composite(implementation.clone());
-              monomorphized_ctx.add_abstract_function(Rc::new(new_f));
+              monomorphized_ctx
+                .add_abstract_function(Rc::new(RefCell::new(new_f)));
             }
             Err(e) => errors.push(e),
           }
@@ -702,8 +705,9 @@ impl Program {
     let mut errors = vec![];
     let mut inlined_ctx = Context::default_global();
     for f in self.global_context.abstract_functions_iter() {
-      if f.generic_args.is_empty()
+      if f.borrow().generic_args.is_empty()
         && f
+          .borrow()
           .arg_types
           .iter()
           .find(|t| {
@@ -716,7 +720,7 @@ impl Program {
           .is_none()
       {
         if let FunctionImplementationKind::Composite(implementation) =
-          &f.implementation
+          &f.borrow().implementation
         {
           match implementation
             .borrow_mut()
@@ -725,10 +729,10 @@ impl Program {
           {
             Ok(added_new_function) => {
               changed |= added_new_function;
-              let mut new_f = (**f).clone();
+              let mut new_f = (**f).borrow().clone();
               new_f.implementation =
                 FunctionImplementationKind::Composite(implementation.clone());
-              inlined_ctx.add_abstract_function(Rc::new(new_f));
+              inlined_ctx.add_abstract_function(Rc::new(RefCell::new(new_f)));
             }
             Err(e) => errors.push(e),
           }
@@ -767,7 +771,7 @@ impl Program {
       }
     }
     for f in self.global_context.abstract_functions_iter() {
-      let f = Rc::unwrap_or_clone(f.clone());
+      let f = f.borrow().clone();
       if let FunctionImplementationKind::Composite(implementation) =
         f.implementation
       {
@@ -779,7 +783,67 @@ impl Program {
     }
     Ok(wgsl)
   }
+  pub fn expand_associative_applications(&mut self) {
+    for f in self
+      .global_context
+      .abstract_functions
+      .iter_mut()
+      .map(|(_, fns)| fns.into_iter())
+      .flatten()
+    {
+      if let FunctionImplementationKind::Composite(f) =
+        &f.borrow().implementation
+      {
+        let x = &mut f.borrow_mut().body;
+        x.walk_mut(&mut |exp| {
+          let mut needs_restructuring = false;
+          if let ExpKind::Application(f, args) = &mut exp.kind {
+            if let ExpKind::Name(name) = &f.kind {
+              if self
+                .global_context
+                .associative_top_level_functions
+                .contains(name)
+              {
+                if args.len() > 2 {
+                  needs_restructuring = true;
+                }
+              }
+            }
+          }
+          if needs_restructuring {
+            take(&mut exp.kind, |exp_kind| {
+              let ExpKind::Application(f, args) = exp_kind else {
+                unreachable!()
+              };
+              let mut args_iter = args.into_iter().rev();
+              let mut new_exp = ExpKind::Application(
+                f.clone(),
+                vec![args_iter.next().unwrap(), args_iter.next().unwrap()],
+              );
+              while let Some(next_arg) = args_iter.next() {
+                new_exp = ExpKind::Application(
+                  f.clone(),
+                  vec![
+                    next_arg,
+                    Exp {
+                      data: exp.data.clone(),
+                      kind: new_exp,
+                      source_trace: exp.source_trace.clone(),
+                    },
+                  ],
+                );
+              }
+              new_exp
+            })
+          }
+          Ok(true)
+        })
+        .unwrap();
+      }
+    }
+  }
   pub fn validate_raw_program(&mut self) -> Vec<CompileError> {
+    self.expand_associative_applications();
     let errors = self.fully_infer_types();
     if !errors.is_empty() {
       return errors;
@@ -803,7 +867,7 @@ impl Program {
     for (_, signatures) in self.global_context.abstract_functions.iter() {
       for signature in signatures {
         if let FunctionImplementationKind::Composite(implementation) =
-          &(&**signature).implementation
+          &(&**signature).borrow().implementation
         {
           implementation
             .borrow()
