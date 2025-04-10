@@ -166,8 +166,12 @@ pub enum CompileErrorKind {
   ExpectedBindingName,
   #[error("Empty block")]
   EmptyBlock,
-  #[error("Invalid variable metadata: {0}")]
+  #[error("Top-level constants may not have metadata")]
+  ConstantMayNotHaveMetadata,
+  #[error("Invalid top-level variable metadata: {0}")]
   InvalidVariableMetadata(Metadata),
+  #[error("Invalid top-level function metadata: {0}")]
+  InvalidFunctionMetadata(Metadata),
   #[error("Invalid assignment target")]
   InvalidAssignmentTarget,
   #[error("Assignment target must be a variable: `{0}`")]

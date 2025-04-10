@@ -28,12 +28,12 @@ impl UntypedStructField {
     let (type_ast, inner_ast) = extract_type_annotation_ast(ast);
     let type_ast =
       type_ast.ok_or(CompileError::new(StructFieldMissingType, path.into()))?;
-    let (name, metadata, metadata_error) = extract_metadata(inner_ast);
-    if let Some(e) = metadata_error {
-      return Err(e);
+    let (name, metadata, metadata_errors) = extract_metadata(inner_ast);
+    if let Some(e) = metadata_errors.get(0) {
+      return Err(e.clone());
     }
     Ok(Self {
-      metadata,
+      metadata: metadata.map(|(a, _)| a),
       name: read_leaf(name)?,
       type_ast,
     })
@@ -53,7 +53,6 @@ impl UntypedStructField {
     self,
     structs: &Vec<Rc<AbstractStruct>>,
     aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
-    generic_args: &Vec<Rc<str>>,
     skolems: &Vec<Rc<str>>,
   ) -> CompileResult<AbstractStructField> {
     Ok(AbstractStructField {
@@ -63,7 +62,6 @@ impl UntypedStructField {
         self.type_ast,
         structs,
         aliases,
-        generic_args,
         skolems,
       )?,
     })
@@ -111,9 +109,7 @@ impl UntypedStruct {
       fields: self
         .fields
         .into_iter()
-        .map(|field| {
-          field.assign_type(structs, aliases, &self.generic_args, &vec![])
-        })
+        .map(|field| field.assign_type(structs, aliases, &self.generic_args))
         .collect::<CompileResult<Vec<AbstractStructField>>>()?,
       generic_args: self.generic_args.clone(),
       filled_generics: HashMap::new(),

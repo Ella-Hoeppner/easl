@@ -174,13 +174,12 @@ impl AbstractType {
     tree: EaslTree,
     structs: &Vec<Rc<AbstractStruct>>,
     aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
-    generic_args: &Vec<Rc<str>>,
     skolems: &Vec<Rc<str>>,
   ) -> CompileResult<Self> {
     match tree {
       EaslTree::Leaf(position, leaf) => {
         let leaf_rc: Rc<str> = leaf.into();
-        Ok(if generic_args.contains(&leaf_rc) {
+        Ok(if skolems.contains(&leaf_rc) {
           AbstractType::Generic(leaf_rc)
         } else {
           AbstractType::Type(Type::from_name(
@@ -233,13 +232,7 @@ impl AbstractType {
             .clone();
           let generic_args = children_iter
             .map(|subtree: EaslTree| {
-              Self::from_easl_tree(
-                subtree,
-                structs,
-                aliases,
-                generic_args,
-                skolems,
-              )
+              Self::from_easl_tree(subtree, structs, aliases, skolems)
             })
             .collect::<CompileResult<Vec<_>>>()?;
           Ok(AbstractType::AbstractStruct(Rc::new(
@@ -286,7 +279,7 @@ impl AbstractType {
             }
             other => {
               let inner_type =
-                Type::from_easl_tree(other, structs, aliases, generic_args)?;
+                Type::from_easl_tree(other, structs, aliases, skolems)?;
               Ok(AbstractType::Type(Type::Array(
                 Some(ArraySize::Unsized),
                 Box::new(TypeState::Known(inner_type).into()),
@@ -505,7 +498,6 @@ impl Type {
                         signature_arg,
                         structs,
                         aliases,
-                        &vec![],
                         skolems,
                       )?
                       .concretize(
@@ -801,15 +793,12 @@ pub fn extract_type_annotation(
   exp: EaslTree,
   structs: &Vec<Rc<AbstractStruct>>,
   aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
-  generic_args: &Vec<Rc<str>>,
   skolems: &Vec<Rc<str>>,
 ) -> CompileResult<(Option<AbstractType>, EaslTree)> {
   let (t, value) = extract_type_annotation_ast(exp);
   Ok((
-    t.map(|t| {
-      AbstractType::from_easl_tree(t, structs, aliases, generic_args, skolems)
-    })
-    .map_or(Ok(None), |v| v.map(Some))?,
+    t.map(|t| AbstractType::from_easl_tree(t, structs, aliases, skolems))
+      .map_or(Ok(None), |v| v.map(Some))?,
     value,
   ))
 }
@@ -1336,7 +1325,6 @@ pub fn parse_type_bound(
             structs,
             aliases,
             generic_args,
-            &vec![],
           )
         })
         .collect::<CompileResult<Vec<AbstractType>>>()?;

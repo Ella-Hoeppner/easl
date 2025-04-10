@@ -2,10 +2,10 @@ use easl::{compiler::compile_easl_source_to_wgsl, parse::parse_easl};
 use std::fs;
 
 fn main() {
-  println!("{:?}", parse_easl("@a b: c").unwrap().syntax_trees[0]);
   std::env::set_var("RUST_BACKTRACE", "1");
   fs::create_dir_all("./out/").expect("Unable to create out directory");
   for filename in [
+    "inversion",
     "associative",
     "assignment",
     "simple_shader",
@@ -42,6 +42,7 @@ fn main() {
     "fn_inlining",
     "nested_fn_inlining",
     "reference",
+    "generic_identity",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

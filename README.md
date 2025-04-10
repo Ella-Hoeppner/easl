@@ -16,22 +16,14 @@ Feature goals:
 
 ## todo
 ### high priority
-* unify metadata system
-  * All metadata should ultimately desugar to associations between names and ASTs. When something is prefixed like `@word`, that should be translated to `@{word true}`
-  * only let specific instances of metadata pass through to output, e.g. `@fragment` and `@vertex`, `@group`, `@binding`. Return errors for invalid metadata
+* formatter: 
+  * have a separate threshold for the max size allowed for top-level `(def ...)`
+    * a lot of things that would be perfectly readable on one line are getting split to multiple lines, feels like `def`s should almost always be one line unless they're 
+  * let top-level struct-like metadata appear on one line if it's under some threshold (probably should be another separate threshold)
 
-* Allow functions to be marked as `@associative`
-
-* improve type descriptions on mouse hover for `let` bindings, right now you don't get their types and instead just get the type of the whole `let` block
-
-* add a 1-argument arity to `/` that acts as `#(/ 1 %)`
-
-* `do`
-
-* support lifting internal `let`s, `do`s, `match`s, `for`s, and `while`s
-  * need to figure out how to deal with mutable variables with this... when a mutation of a variable crosses the scope over which a let would be lifted
-
-* implement post-typechecking, pre-compilation validation checks and errors
+* implement post-typechecking validations and errors
+  * ensure that all associative functions are of the signature `(Fn [T T] T)`
+    * I guess maybe the concept of "associativity" needs to be attached to a particular signature, rather than just a global list of names... current approach won't really work properly with overloading
   * ensure that no variables have the `Type::None` type
   * ensure control flow expressions are only used in their proper context
     * `break` and `continue` can only be used inside a loop
@@ -43,16 +35,23 @@ Feature goals:
       * all patterns are just literals
       * no patterns are repeated
       * the wildcard doesn't appear if the other patterns would already be exhaustive, i.e. you can't have `true` and `false` and a wildcard case when matching a bool 
+  * disallow shadowing of top-level definitions
+
+* `do`
+
+* make `->` compile to a series of nested `let`s rather than just inlining, and allow `<>` to be used more than one time
+  * need a gensym system for this I guess, might as well make a general one
+
+* when a name is shadowed, replace it and references to the shadowed version with a new gensym'd name, since wgsl doesn't allow shadowing
+
+* support lifting internal `let`s, `match`s, and `do`s
+  * need to figure out how to deal with mutable variables with this... when a mutation of a variable crosses the scope over which a let would be lifted
 
 * matrices
 
 * add a `poisoned: bool` field or smth to `ExpTypeInfo`, which gets set to true when an expression has already returned an error. Then make `constrain`/`mutually_constrain` and other things that can return type errors just skip their effects when the relevant typestates are poisoned, so that we aren't repeatedly generating the same errors.
 
 * improve error messages
-
-* when a name is shadowed, replace it and references to the shadowed version with a new gensym'd name, since wgsl doesn't allow shadowing
-
-* disallow shadowing of top-level definitions
 
 ### medium priority, necessary to call the language 0.1
 

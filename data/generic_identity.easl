@@ -1,0 +1,5 @@
+(defn (identity T) [x: T]: T x)
+
+(defn (fn-identity T)
+      [f: (Fn [T] T)]: (Fn [T] T)
+      f)

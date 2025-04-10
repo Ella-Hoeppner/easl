@@ -302,7 +302,7 @@ pub fn arg_list_and_return_type_from_easl_tree(
   tree: EaslTree,
   structs: &Vec<Rc<AbstractStruct>>,
   aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
-  generic_args: &Vec<Rc<str>>,
+  skolems: &Vec<Rc<str>>,
 ) -> CompileResult<(
   SourceTrace,
   Vec<Rc<str>>,
@@ -320,18 +320,13 @@ pub fn arg_list_and_return_type_from_easl_tree(
   ) = tree
   {
     let return_type_ast = args_and_return_type.remove(1);
-    let (return_type_ast, return_metadata, metadata_error) =
+    let (return_type_ast, return_metadata, metadata_errors) =
       extract_metadata(return_type_ast);
-    if let Some(metadata_error) = metadata_error {
-      return Err(metadata_error);
+    if let Some(metadata_error) = metadata_errors.get(0) {
+      return Err(metadata_error.clone());
     }
-    let return_type = AbstractType::from_easl_tree(
-      return_type_ast,
-      structs,
-      aliases,
-      generic_args,
-      &vec![],
-    )?;
+    let return_type =
+      AbstractType::from_easl_tree(return_type_ast, structs, aliases, skolems)?;
     if let EaslTree::Inner((position, Encloser(Square)), arg_asts) =
       args_and_return_type.remove(0)
     {
@@ -344,20 +339,15 @@ pub fn arg_list_and_return_type_from_easl_tree(
             FunctionArgMissingType,
             source_path.clone(),
           ))?;
-          let t = AbstractType::from_easl_tree(
-            t_ast,
-            structs,
-            aliases,
-            generic_args,
-            &vec![],
-          )?;
-          let (arg_name_ast, arg_metadata, metadata_error) =
+          let t =
+            AbstractType::from_easl_tree(t_ast, structs, aliases, skolems)?;
+          let (arg_name_ast, arg_metadata, metadata_errors) =
             extract_metadata(arg_name_ast);
-          if let Some(metadata_error) = metadata_error {
-            return Err(metadata_error);
+          if let Some(metadata_error) = metadata_errors.get(0) {
+            return Err(metadata_error.clone());
           }
           if let EaslTree::Leaf(_, arg_name) = arg_name_ast {
-            Ok(((t, arg_metadata), arg_name.into()))
+            Ok(((t, arg_metadata.map(|(a, _)| a)), arg_name.into()))
           } else {
             err(InvalidArgumentName, source_path.clone())
           }
@@ -372,7 +362,7 @@ pub fn arg_list_and_return_type_from_easl_tree(
         arg_types,
         arg_metadata,
         return_type,
-        return_metadata,
+        return_metadata.map(|(a, _)| a),
       ))
     } else {
       err(FunctionSignatureNotSquareBrackets, position.into())
@@ -520,11 +510,10 @@ impl TypedExp {
         let source_trace: SourceTrace = position.into();
         let mut children_iter = children.into_iter();
         match encloser_or_operator {
-          Encloser(e) => {
-            match e {
-              Parens => {
-                if let Some(first_child) = children_iter.next() {
-                  match &first_child {
+          Encloser(e) => match e {
+            Parens => {
+              if let Some(first_child) = children_iter.next() {
+                match &first_child {
                   EaslTree::Leaf(position, first_child_name) => {
                     let source_trace: SourceTrace = position.clone().into();
                     if first_child_name.starts_with(".") {
@@ -603,11 +592,15 @@ impl TypedExp {
                               {
                                 let value_ast =
                                   binding_asts_iter.next().unwrap();
-                                let (ty, name_ast) = extract_type_annotation(name_ast, structs, aliases, &vec![], skolems)?;
-                                let (name_ast, name_metadata, metadata_error) =
+                                let (ty, name_ast) = extract_type_annotation(
+                                  name_ast, structs, aliases, skolems,
+                                )?;
+                                let (name_ast, name_metadata, metadata_errors) =
                                   extract_metadata(name_ast);
-                                if let Some(metadata_error) = metadata_error {
-                                  return Err(metadata_error);
+                                if let Some(metadata_error) =
+                                  metadata_errors.get(0)
+                                {
+                                  return Err(metadata_error.clone());
                                 }
                                 match name_ast {
                                   EaslTree::Leaf(position, name) => {
@@ -616,7 +609,7 @@ impl TypedExp {
                                       name.into(),
                                       match name_metadata {
                                         None => VariableKind::Let,
-                                        Some(Metadata::Singular(tag)) => {
+                                        Some((Metadata::Singular(tag), _)) => {
                                           match &*tag {
                                             "var" => VariableKind::Var,
                                             _ => {
@@ -629,24 +622,30 @@ impl TypedExp {
                                             }
                                           }
                                         }
-                                        Some(metadata) => {
+                                        Some((
+                                          metadata,
+                                          metadata_source_trace,
+                                        )) => {
                                           return err(
                                             InvalidVariableMetadata(metadata),
-                                            source_trace,
+                                            metadata_source_trace,
                                           )
                                         }
                                       },
                                       {
-                                        let mut value_exp = Self::try_from_easl_tree(
-                                          value_ast, structs, aliases, skolems,
-                                          ctx,
-                                        )?;
+                                        let mut value_exp =
+                                          Self::try_from_easl_tree(
+                                            value_ast, structs, aliases,
+                                            skolems, ctx,
+                                          )?;
                                         if let Some(ty) = ty {
-                                          value_exp.data = TypeState::Known(ty.concretize(
-                                            skolems,
-                                            structs,
-                                            source_trace.clone()
-                                          )?).into();
+                                          value_exp.data =
+                                            TypeState::Known(ty.concretize(
+                                              skolems,
+                                              structs,
+                                              source_trace.clone(),
+                                            )?)
+                                            .into();
                                         }
                                         value_exp
                                       },
@@ -978,66 +977,63 @@ impl TypedExp {
                   data: Unknown.into(),
                   source_trace,
                 })
-                } else {
-                  return err(EmptyList, source_trace);
-                }
-              }
-              ArrayLookup => {
-                if children_iter.len() == 2 {
-                  let array_expression = TypedExp::try_from_easl_tree(
-                    children_iter.next().unwrap(),
-                    structs,
-                    aliases,
-                    skolems,
-                    ctx,
-                  )?;
-                  let index_expression = TypedExp::try_from_easl_tree(
-                    children_iter.next().unwrap(),
-                    structs,
-                    aliases,
-                    skolems,
-                    ctx,
-                  )?;
-                  Exp {
-                    kind: Access(
-                      Accessor::ArrayIndex(Box::new(index_expression)),
-                      Box::new(array_expression),
-                    ),
-                    data: TypeState::Unknown.into(),
-                    source_trace,
-                  }
-                } else {
-                  return err(InvalidArrayAccessSyntax, source_trace);
-                }
-              }
-              Square => Exp {
-                data: TypeState::Known(Type::Array(
-                  Some(ArraySize::Constant(children_iter.len() as u32)),
-                  Box::new(TypeState::Unknown.into()),
-                ))
-                .into(),
-                kind: ArrayLiteral(
-                  children_iter
-                    .map(|ast| {
-                      TypedExp::try_from_easl_tree(
-                        ast, structs, aliases, skolems, ctx,
-                      )
-                    })
-                    .collect::<CompileResult<Vec<TypedExp>>>()?,
-                ),
-                source_trace,
-              },
-              Curly => {
-                return err(AnonymousStructsNotYetSupported, source_trace)
-              }
-              LineComment => {
-                return err(EncounteredCommentInSource, source_trace)
-              }
-              BlockComment => {
-                return err(EncounteredCommentInSource, source_trace)
+              } else {
+                return err(EmptyList, source_trace);
               }
             }
-          }
+            ArrayLookup => {
+              if children_iter.len() == 2 {
+                let array_expression = TypedExp::try_from_easl_tree(
+                  children_iter.next().unwrap(),
+                  structs,
+                  aliases,
+                  skolems,
+                  ctx,
+                )?;
+                let index_expression = TypedExp::try_from_easl_tree(
+                  children_iter.next().unwrap(),
+                  structs,
+                  aliases,
+                  skolems,
+                  ctx,
+                )?;
+                Exp {
+                  kind: Access(
+                    Accessor::ArrayIndex(Box::new(index_expression)),
+                    Box::new(array_expression),
+                  ),
+                  data: TypeState::Unknown.into(),
+                  source_trace,
+                }
+              } else {
+                return err(InvalidArrayAccessSyntax, source_trace);
+              }
+            }
+            Square => Exp {
+              data: TypeState::Known(Type::Array(
+                Some(ArraySize::Constant(children_iter.len() as u32)),
+                Box::new(TypeState::Unknown.into()),
+              ))
+              .into(),
+              kind: ArrayLiteral(
+                children_iter
+                  .map(|ast| {
+                    TypedExp::try_from_easl_tree(
+                      ast, structs, aliases, skolems, ctx,
+                    )
+                  })
+                  .collect::<CompileResult<Vec<TypedExp>>>()?,
+              ),
+              source_trace,
+            },
+            Curly => return err(AnonymousStructsNotYetSupported, source_trace),
+            LineComment => {
+              return err(EncounteredCommentInSource, source_trace)
+            }
+            BlockComment => {
+              return err(EncounteredCommentInSource, source_trace)
+            }
+          },
           Operator(o) => match o {
             MetadataAnnotation => {
               return err(EncounteredMetadataInInternalExpression, source_trace)
@@ -1240,7 +1236,9 @@ impl TypedExp {
       Application(f, args) => {
         let f_str = if let ExpKind::Name(name) = f.kind {
           rename_builtin(&*name).unwrap_or_else(|| {
-            if ASSIGNMENT_OPS.contains(name.as_ref()) {
+            if ASSIGNMENT_OPS.contains(name.as_ref())
+              || INFIX_OPS.contains(name.as_ref())
+            {
               name.to_string()
             } else {
               compile_word(name)
@@ -1264,6 +1262,8 @@ impl TypedExp {
             format!("({} {} {})", arg_strs[0], f_str, arg_strs[1])
           } else if arg_strs.len() == 1 && &f_str == "-" {
             format!("(-{})", arg_strs[0])
+          } else if arg_strs.len() == 1 && &f_str == "/" {
+            format!("(1. / {})", arg_strs[0])
           } else {
             panic!("{} arguments to infix op, expected 2", arg_strs.len())
           }

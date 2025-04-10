@@ -325,10 +325,7 @@ impl Block {
                 }
               }
             }
-            "defn"
-              if trees.len() >= 2
-                && matches!(trees.peek().unwrap(), EaslTree::Leaf(_, _)) =>
-            {
+            "defn" if trees.len() >= 2 => {
               let mut blocks = trees.map(Self::from_tree);
               let Leaf(fn_name) = blocks.next().unwrap() else {
                 unreachable!()

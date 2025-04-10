@@ -1,5 +1,6 @@
 use std::fmt::Display;
 use std::rc::Rc;
+use std::str::FromStr;
 
 use sse::syntax::EncloserOrOperator::{self, *};
 
@@ -15,6 +16,7 @@ use super::error::{
 pub enum Metadata {
   Singular(Rc<str>),
   Map(Vec<(Rc<str>, Rc<str>)>),
+  Multiple(Vec<Self>),
 }
 
 impl Display for Metadata {
@@ -27,6 +29,13 @@ impl Display for Metadata {
           write!(f, "  {} {}\n", key, val)?;
         }
         write!(f, "\n}}")
+      }
+      Metadata::Multiple(sub_metadatas) => {
+        for metadata in sub_metadatas.iter() {
+          metadata.fmt(f);
+          write!(f, "\n")?
+        }
+        Ok(())
       }
     }
   }
@@ -87,6 +96,11 @@ impl Metadata {
           .join(" ")
           + " "
       }
+      Metadata::Multiple(sub_metadatas) => sub_metadatas
+        .into_iter()
+        .map(Self::compile)
+        .collect::<Vec<String>>()
+        .join(" "),
     }
   }
   pub fn compile_optional(maybe_self: Option<Self>) -> String {
@@ -96,22 +110,103 @@ impl Metadata {
       String::new()
     }
   }
+  pub fn properties(&self) -> Vec<(Rc<str>, Option<Rc<str>>)> {
+    match self {
+      Metadata::Singular(s) => vec![(s.clone(), None)],
+      Metadata::Map(items) => items
+        .iter()
+        .cloned()
+        .map(|(property, value)| (property, Some(value)))
+        .collect(),
+      Metadata::Multiple(sub_metadatas) => sub_metadatas
+        .into_iter()
+        .map(Self::properties)
+        .reduce(|mut a, mut b| {
+          a.append(&mut b);
+          a
+        })
+        .unwrap_or(vec![]),
+    }
+  }
+  pub fn validate_for_top_level_variable(
+    &self,
+    source_trace: &SourceTrace,
+  ) -> CompileResult<()> {
+    for (property, value) in self.properties().into_iter() {
+      match (&*property, value) {
+        ("group" | "binding", Some(value)) => {
+          if u8::from_str(&*value).is_err() {
+            return Err(CompileError::new(
+              InvalidVariableMetadata(self.clone()),
+              source_trace.clone(),
+            ));
+          }
+        }
+        _ => {
+          return Err(CompileError::new(
+            InvalidVariableMetadata(self.clone()),
+            source_trace.clone(),
+          ))
+        }
+      }
+    }
+    Ok(())
+  }
+  pub fn validate_for_top_level_function(
+    &self,
+    source_trace: &SourceTrace,
+  ) -> CompileResult<bool> {
+    let mut is_associative = false;
+    for (property, value) in self.properties().into_iter() {
+      match (&*property, value) {
+        ("associative", None) => {
+          is_associative = true;
+        }
+        ("fragment" | "vertex" | "compute", None) => {}
+        _ => {
+          return Err(CompileError::new(
+            InvalidFunctionMetadata(self.clone()),
+            source_trace.clone(),
+          ))
+        }
+      }
+    }
+    Ok(is_associative)
+  }
 }
 
 pub fn extract_metadata(
   exp: EaslTree,
-) -> (EaslTree, Option<Metadata>, Option<CompileError>) {
+) -> (EaslTree, Option<(Metadata, SourceTrace)>, Vec<CompileError>) {
   if let EaslTree::Inner(
     (_, EncloserOrOperator::Operator(Operator::MetadataAnnotation)),
     mut children,
   ) = exp
   {
-    let exp = children.remove(1);
-    match Metadata::from_metadata_tree(children.remove(0)) {
-      Ok(metadata) => (exp, Some(metadata), None),
-      Err(err) => (exp, None, Some(err)),
+    let metadata_tree = children.remove(0);
+    let metadata_source_trace: SourceTrace = metadata_tree.position().into();
+    let exp = children.remove(0);
+    match Metadata::from_metadata_tree(metadata_tree) {
+      Ok(metadata) => {
+        let (exp, inner_metadata, errors) = extract_metadata(exp);
+        if let Some((inner_metadata, inner_metadata_source_trace)) =
+          inner_metadata
+        {
+          (
+            exp,
+            Some((
+              Metadata::Multiple(vec![metadata, inner_metadata]),
+              metadata_source_trace.combine_with(inner_metadata_source_trace),
+            )),
+            errors,
+          )
+        } else {
+          (exp, Some((metadata, metadata_source_trace)), errors)
+        }
+      }
+      Err(err) => (exp, None, vec![err]),
     }
   } else {
-    (exp, None, None)
+    (exp, None, vec![])
   }
 }

@@ -39,9 +39,5 @@ pub fn read_type_annotated_name(
 }
 
 pub fn compile_word(word: Rc<str>) -> String {
-  if &*word == "-" {
-    word.to_string()
-  } else {
-    word.replace("-", "_")
-  }
+  word.replace("-", "_").replace("+", "PLUS")
 }

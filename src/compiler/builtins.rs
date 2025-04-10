@@ -556,6 +556,36 @@ fn negation_functions() -> Vec<AbstractFunctionSignature> {
   ]
 }
 
+fn inversion_functions() -> Vec<AbstractFunctionSignature> {
+  [
+    AbstractType::Type(Type::F32),
+    AbstractType::AbstractStruct(
+      vec2()
+        .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+        .into(),
+    ),
+    AbstractType::AbstractStruct(
+      vec3()
+        .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+        .into(),
+    ),
+    AbstractType::AbstractStruct(
+      vec4()
+        .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+        .into(),
+    ),
+  ]
+  .into_iter()
+  .map(|t| AbstractFunctionSignature {
+    name: "/".into(),
+    generic_args: vec![],
+    arg_types: vec![t.clone()],
+    return_type: t,
+    implementation: FunctionImplementationKind::Builtin,
+  })
+  .collect()
+}
+
 fn comparison_functions() -> Vec<AbstractFunctionSignature> {
   vec![
     AbstractFunctionSignature {
@@ -902,6 +932,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut arithmetic_functions("*"));
   signatures.append(&mut arithmetic_functions("-"));
   signatures.append(&mut negation_functions());
+  signatures.append(&mut inversion_functions());
   signatures.append(&mut arithmetic_functions("/"));
   signatures.append(&mut arithmetic_functions("%"));
   signatures.append(&mut bitwise_functions("^"));

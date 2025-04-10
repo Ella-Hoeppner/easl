@@ -61,11 +61,9 @@ impl Program {
     for tree in trees.into_iter() {
       use crate::parse::Encloser::*;
       use sse::syntax::EncloserOrOperator::*;
-      let (tree_body, metadata, metadata_error) =
+      let (tree_body, metadata, mut metadata_errors) =
         extract_metadata(tree.clone());
-      if let Some(e) = metadata_error {
-        errors.push(e);
-      }
+      errors.append(&mut metadata_errors);
       if let EaslTree::Inner((position, Encloser(Parens)), children) =
         &tree_body
       {
@@ -275,7 +273,6 @@ impl Program {
                       &global_context.structs,
                       &global_context.type_aliases,
                       &vec![],
-                      &vec![],
                     )
                     .map(|t| {
                       t.concretize(
@@ -286,9 +283,20 @@ impl Program {
                     }) {
                       Err(e) | Ok(Err(e)) => errors.push(e),
                       Ok(Ok(t)) => {
+                        if let Some((metadata, metadata_source_trace)) =
+                          &metadata
+                        {
+                          if let Err(e) = metadata
+                            .validate_for_top_level_variable(
+                              &metadata_source_trace,
+                            )
+                          {
+                            errors.push(e);
+                          }
+                        }
                         global_context.top_level_vars.push(TopLevelVar {
                           name,
-                          metadata,
+                          metadata: metadata.map(|(a, _)| a),
                           attributes,
                           var: Variable::new(TypeState::Known(t).into())
                             .with_kind(VariableKind::Var),
@@ -326,6 +334,12 @@ impl Program {
                             if first_child.as_str() == "override" {
                               var = var.with_kind(VariableKind::Override)
                             }
+                            if metadata.is_some() {
+                              errors.push(CompileError::new(
+                                ConstantMayNotHaveMetadata,
+                                parens_source_trace.clone(),
+                              ));
+                            }
                             global_context.top_level_vars.push(TopLevelVar {
                               name,
                               metadata: None,
@@ -354,48 +368,51 @@ impl Program {
             }
             "defn" => match children_iter.next() {
               Some(name_ast) => {
-                if let Some((name, generic_args)) = match name_ast {
-                  EaslTree::Leaf(_, name) => Some((name.into(), vec![])),
-                  EaslTree::Inner((_, Encloser(Parens)), subtrees) => {
-                    let mut subtrees_iter = subtrees.into_iter();
-                    if let Some(EaslTree::Leaf(_, name)) = subtrees_iter.next()
-                    {
-                      match subtrees_iter
-                        .map(|subtree| {
-                          parse_generic_argument(
-                            subtree,
-                            &global_context.structs,
-                            &global_context.type_aliases,
-                            &vec![],
-                          )
-                        })
-                        .collect::<CompileResult<Vec<_>>>()
+                let fn_and_generic_names: Option<(Rc<str>, Vec<_>)> =
+                  match name_ast {
+                    EaslTree::Leaf(_, name) => Some((name.into(), vec![])),
+                    EaslTree::Inner((_, Encloser(Parens)), subtrees) => {
+                      let mut subtrees_iter = subtrees.into_iter();
+                      if let Some(EaslTree::Leaf(_, name)) =
+                        subtrees_iter.next()
                       {
-                        Ok(generic_args) => Some((name.into(), generic_args)),
-                        Err(e) => {
-                          errors.push(e);
-                          None
+                        match subtrees_iter
+                          .map(|subtree| {
+                            parse_generic_argument(
+                              subtree,
+                              &global_context.structs,
+                              &global_context.type_aliases,
+                              &vec![],
+                            )
+                          })
+                          .collect::<CompileResult<Vec<_>>>()
+                        {
+                          Ok(generic_args) => Some((name.into(), generic_args)),
+                          Err(e) => {
+                            errors.push(e);
+                            None
+                          }
                         }
+                      } else {
+                        errors.push(CompileError::new(
+                          InvalidDefn("Invalid name".into()),
+                          first_child_source_trace,
+                        ));
+                        None
                       }
-                    } else {
-                      errors.push(CompileError::new(
-                        InvalidDefn("Invalid name".into()),
-                        first_child_source_trace,
-                      ));
-                      None
                     }
-                  }
-                  _ => {
-                    errors.push(CompileError::new(
+                    _ => {
+                      errors.push(CompileError::new(
                       InvalidDefn(
                         "Expected name or parens with name and generic arguments"
                           .into(),
                       ),
                       first_child_source_trace,
                     ));
-                    None
-                  }
-                } {
+                      None
+                    }
+                  };
+                if let Some((fn_name, generic_args)) = fn_and_generic_names {
                   match children_iter.next() {
                     Some(arg_list_ast) => {
                       let generic_arg_names: Vec<Rc<str>> = generic_args
@@ -463,6 +480,27 @@ impl Program {
                                     &generic_arg_names,
                                   ) {
                                     Ok(body) => {
+                                      if let Some((
+                                        metadata,
+                                        metadata_source_trace,
+                                      )) = &metadata
+                                      {
+                                        match metadata
+                                          .validate_for_top_level_function(
+                                            metadata_source_trace,
+                                          ) {
+                                          Ok(is_associative) => {
+                                            if is_associative {
+                                              global_context
+                                                .associative_top_level_functions
+                                                .insert(fn_name.clone());
+                                            }
+                                          }
+                                          Err(e) => {
+                                            errors.push(e);
+                                          }
+                                        }
+                                      }
                                       let implementation =
                                         FunctionImplementationKind::Composite(
                                           Rc::new(RefCell::new(
@@ -470,7 +508,8 @@ impl Program {
                                               arg_names,
                                               arg_metadata,
                                               return_metadata,
-                                              metadata,
+                                              metadata: metadata
+                                                .map(|(a, _)| a),
                                               body,
                                             },
                                           )),
@@ -478,7 +517,7 @@ impl Program {
                                       global_context.add_abstract_function(
                                         Rc::new(RefCell::new(
                                           AbstractFunctionSignature {
-                                            name,
+                                            name: fn_name,
                                             generic_args,
                                             arg_types,
                                             return_type,
@@ -547,6 +586,26 @@ impl Program {
     (Self { global_context }, errors)
   }
   fn propagate_types(&mut self) -> (bool, Vec<CompileError>) {
+    /*println!(
+      "{:#?}",
+      self
+        .global_context
+        .abstract_functions
+        .iter()
+        .filter_map(|(name, fs)| (fs.len() == 1)
+          .then(|| {
+            let f = fs[0].clone();
+            let f2 = f.borrow();
+            if let FunctionImplementationKind::Composite(x) = &f2.implementation
+            {
+              Some((name, x.borrow().body.data.clone()))
+            } else {
+              None
+            }
+          })
+          .flatten())
+        .collect::<Vec<_>>()
+    );*/
     let mut errors = vec![];
     let mut base_context = self.global_context.clone();
     let mut anything_changed = false;
