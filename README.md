@@ -20,10 +20,18 @@ Feature goals:
   * have a separate threshold for the max size allowed for top-level `(def ...)`
     * a lot of things that would be perfectly readable on one line are getting split to multiple lines, feels like `def`s should almost always be one line unless they're 
   * let top-level struct-like metadata appear on one line if it's under some threshold (probably should be another separate threshold)
+  * ocassionally `let` bindings will be like 1 char to the left of where they should be past the first line, not sure why
+
+* make `->` compile to a series of nested `let`s rather than just inlining, and allow `<>` to be used more than one time
+  * need a gensym system for this I guess, might as well make a general one
+
+* shadowing
+  * when a name is shadowed, replace it and references to the shadowed version with a new gensym'd name, since wgsl doesn't allow shadowing
+  * disallow shadowing of top-level definitions
+
+* ensure that all associative functions are of the signature `(Fn [T T] T)`
 
 * implement post-typechecking validations and errors
-  * ensure that all associative functions are of the signature `(Fn [T T] T)`
-    * I guess maybe the concept of "associativity" needs to be attached to a particular signature, rather than just a global list of names... current approach won't really work properly with overloading
   * ensure that no variables have the `Type::None` type
   * ensure control flow expressions are only used in their proper context
     * `break` and `continue` can only be used inside a loop
@@ -34,15 +42,9 @@ Feature goals:
       * the wildcard appears at the end
       * all patterns are just literals
       * no patterns are repeated
-      * the wildcard doesn't appear if the other patterns would already be exhaustive, i.e. you can't have `true` and `false` and a wildcard case when matching a bool 
-  * disallow shadowing of top-level definitions
+      * the wildcard doesn't appear if the other patterns would already be exhaustive, i.e. you can't have `true` and `false` and a wildcard case when matching a bool
 
 * `do`
-
-* make `->` compile to a series of nested `let`s rather than just inlining, and allow `<>` to be used more than one time
-  * need a gensym system for this I guess, might as well make a general one
-
-* when a name is shadowed, replace it and references to the shadowed version with a new gensym'd name, since wgsl doesn't allow shadowing
 
 * support lifting internal `let`s, `match`s, and `do`s
   * need to figure out how to deal with mutable variables with this... when a mutation of a variable crosses the scope over which a let would be lifted

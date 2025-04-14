@@ -38,6 +38,7 @@ pub struct AbstractFunctionSignature {
   pub arg_types: Vec<AbstractType>,
   pub return_type: AbstractType,
   pub implementation: FunctionImplementationKind,
+  pub associative: bool,
 }
 
 impl AbstractFunctionSignature {
@@ -202,6 +203,7 @@ impl AbstractFunctionSignature {
       implementation: FunctionImplementationKind::Composite(Rc::new(
         RefCell::new(implementation),
       )),
+      associative: self.associative,
     };
     Ok(f)
   }
@@ -351,6 +353,27 @@ impl FunctionSignature {
   }
   pub fn are_args_compatible(&self, arg_types: &Vec<TypeState>) -> bool {
     if arg_types.len() != self.arg_types.len() {
+      if let Some(ancestor) = &self.abstract_ancestor {
+        if ancestor.associative {
+          if arg_types.len() == 0 {
+            return false;
+          }
+          let (arg_type, arg_constraints) = &self.arg_types[0];
+          for arg_typestate in arg_types {
+            if !TypeState::are_compatible(arg_typestate, &arg_type.kind) {
+              return false;
+            }
+            if let TypeState::Known(t) = arg_typestate {
+              for constraint in arg_constraints.iter() {
+                if !t.satisfies_constraints(constraint) {
+                  return false;
+                }
+              }
+            }
+          }
+          return true;
+        }
+      }
       return false;
     }
     for i in 0..arg_types.len() {
@@ -384,6 +407,22 @@ impl FunctionSignature {
       }
       (any_arg_changed, all_errors)
     } else {
+      if let Some(ancestor) = &self.abstract_ancestor {
+        if ancestor.associative {
+          if args.len() != 0 {
+            let arg_type = &mut self.arg_types.get_mut(0).unwrap().0;
+            let mut any_arg_changed = false;
+            let mut all_errors = vec![];
+            for i in 0..args.len() {
+              let (changed, mut errors) =
+                args[i].mutually_constrain(arg_type, source_trace.clone());
+              any_arg_changed |= changed;
+              all_errors.append(&mut errors);
+            }
+            return (any_arg_changed, all_errors);
+          }
+        }
+      }
       (
         false,
         vec![CompileError::new(WrongArity(self.name()), source_trace)],

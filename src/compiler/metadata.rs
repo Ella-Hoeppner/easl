@@ -32,7 +32,7 @@ impl Display for Metadata {
       }
       Metadata::Multiple(sub_metadatas) => {
         for metadata in sub_metadatas.iter() {
-          metadata.fmt(f);
+          metadata.fmt(f).unwrap();
           write!(f, "\n")?
         }
         Ok(())
@@ -80,28 +80,19 @@ impl Metadata {
     }
   }
   pub fn compile(self) -> String {
-    match self {
-      Metadata::Singular(value) => format!("@{value} "),
-      Metadata::Map(pairs) => {
-        pairs
-          .into_iter()
-          .map(|(property, value)| {
-            if &*property == "entry" {
-              format!("@{value}")
-            } else {
-              format!("@{}({})", compile_word(property), compile_word(value))
-            }
-          })
-          .collect::<Vec<String>>()
-          .join(" ")
-          + " "
-      }
-      Metadata::Multiple(sub_metadatas) => sub_metadatas
-        .into_iter()
-        .map(Self::compile)
-        .collect::<Vec<String>>()
-        .join(" "),
-    }
+    self
+      .properties()
+      .into_iter()
+      .fold(String::new(), |s, (name, value)| {
+        if let Some(value) = value {
+          s + &format!("@{}({})", compile_word(name), compile_word(value))
+        } else {
+          match &*name {
+            "vertex" | "fragment" | "compute" => s + &format!("@{name} "),
+            _ => s,
+          }
+        }
+      })
   }
   pub fn compile_optional(maybe_self: Option<Self>) -> String {
     if let Some(metadata) = maybe_self {

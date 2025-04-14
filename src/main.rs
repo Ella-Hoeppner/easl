@@ -1,4 +1,4 @@
-use easl::{compiler::compile_easl_source_to_wgsl, parse::parse_easl};
+use easl::compiler::compile_easl_source_to_wgsl;
 use std::fs;
 
 fn main() {

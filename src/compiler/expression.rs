@@ -1634,7 +1634,13 @@ impl TypedExp {
         }
         if let TypeState::Known(f_type) = &mut f.data.kind {
           if let Type::Function(signature) = f_type {
-            if args.len() == signature.arg_types.len() {
+            if signature
+              .abstract_ancestor
+              .as_ref()
+              .map(|ancestor| ancestor.associative)
+              .unwrap_or(false)
+              || args.len() == signature.arg_types.len()
+            {
               let (changed, mut return_errors) = self.data.mutually_constrain(
                 &mut signature.return_type,
                 self.source_trace.clone(),

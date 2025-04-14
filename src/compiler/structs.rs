@@ -11,7 +11,7 @@ use crate::{
 
 use super::{
   error::{CompileError, CompileErrorKind::*, CompileResult, SourceTrace},
-  metadata::{self, Metadata},
+  metadata::Metadata,
   types::{AbstractType, ExpTypeInfo, Type, TypeState},
 };
 

@@ -480,7 +480,7 @@ impl Program {
                                     &generic_arg_names,
                                   ) {
                                     Ok(body) => {
-                                      if let Some((
+                                      let associative = if let Some((
                                         metadata,
                                         metadata_source_trace,
                                       )) = &metadata
@@ -489,18 +489,15 @@ impl Program {
                                           .validate_for_top_level_function(
                                             metadata_source_trace,
                                           ) {
-                                          Ok(is_associative) => {
-                                            if is_associative {
-                                              global_context
-                                                .associative_top_level_functions
-                                                .insert(fn_name.clone());
-                                            }
-                                          }
+                                          Ok(is_associative) => is_associative,
                                           Err(e) => {
                                             errors.push(e);
+                                            false
                                           }
                                         }
-                                      }
+                                      } else {
+                                        false
+                                      };
                                       let implementation =
                                         FunctionImplementationKind::Composite(
                                           Rc::new(RefCell::new(
@@ -522,6 +519,7 @@ impl Program {
                                             arg_types,
                                             return_type,
                                             implementation,
+                                            associative,
                                           },
                                         )),
                                       );
@@ -586,26 +584,6 @@ impl Program {
     (Self { global_context }, errors)
   }
   fn propagate_types(&mut self) -> (bool, Vec<CompileError>) {
-    /*println!(
-      "{:#?}",
-      self
-        .global_context
-        .abstract_functions
-        .iter()
-        .filter_map(|(name, fs)| (fs.len() == 1)
-          .then(|| {
-            let f = fs[0].clone();
-            let f2 = f.borrow();
-            if let FunctionImplementationKind::Composite(x) = &f2.implementation
-            {
-              Some((name, x.borrow().body.data.clone()))
-            } else {
-              None
-            }
-          })
-          .flatten())
-        .collect::<Vec<_>>()
-    );*/
     let mut errors = vec![];
     let mut base_context = self.global_context.clone();
     let mut anything_changed = false;
@@ -855,46 +833,37 @@ impl Program {
       {
         let x = &mut f.borrow_mut().body;
         x.walk_mut(&mut |exp| {
-          let mut needs_restructuring = false;
-          if let ExpKind::Application(f, args) = &mut exp.kind {
-            if let ExpKind::Name(name) = &f.kind {
-              if self
-                .global_context
-                .associative_top_level_functions
-                .contains(name)
-              {
-                if args.len() > 2 {
-                  needs_restructuring = true;
+          take(&mut exp.kind, |exp_kind| {
+            if let ExpKind::Application(f, mut args) = exp_kind {
+              if let ExpKind::Name(name) = &f.kind {
+                let Type::Function(x) = f.data.kind.unwrap_known() else {
+                  panic!("encountered application of non-fn in expand_associative_applications");
+                };
+                if let Some(abstract_ancestor) = &x.abstract_ancestor {
+                  if abstract_ancestor.associative && args.len() != 2 {
+                    let mut args_iter = args.into_iter();
+                    let mut new_exp = args_iter.next().unwrap();
+                    while let Some(next_arg) = args_iter.next() {
+                      new_exp = Exp {
+                        kind: ExpKind::Application(f.clone(), vec![new_exp, next_arg]),
+                        data: exp.data.clone(),
+                        source_trace: exp.source_trace.clone()
+                      };
+                    }
+                    new_exp.kind
+                  } else {
+                    ExpKind::Application(f, args)
+                  }
+                } else {
+                  ExpKind::Application(f, args)
                 }
+              } else {
+                ExpKind::Application(f, args)
               }
+            } else {
+              exp_kind
             }
-          }
-          if needs_restructuring {
-            take(&mut exp.kind, |exp_kind| {
-              let ExpKind::Application(f, args) = exp_kind else {
-                unreachable!()
-              };
-              let mut args_iter = args.into_iter().rev();
-              let mut new_exp = ExpKind::Application(
-                f.clone(),
-                vec![args_iter.next().unwrap(), args_iter.next().unwrap()],
-              );
-              while let Some(next_arg) = args_iter.next() {
-                new_exp = ExpKind::Application(
-                  f.clone(),
-                  vec![
-                    next_arg,
-                    Exp {
-                      data: exp.data.clone(),
-                      kind: new_exp,
-                      source_trace: exp.source_trace.clone(),
-                    },
-                  ],
-                );
-              }
-              new_exp
-            })
-          }
+          });
           Ok(true)
         })
         .unwrap();
@@ -902,11 +871,11 @@ impl Program {
     }
   }
   pub fn validate_raw_program(&mut self) -> Vec<CompileError> {
-    self.expand_associative_applications();
     let errors = self.fully_infer_types();
     if !errors.is_empty() {
       return errors;
     }
+    self.expand_associative_applications();
     let errors = self.check_assignment_validity();
     if !errors.is_empty() {
       return errors;

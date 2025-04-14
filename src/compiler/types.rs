@@ -17,7 +17,7 @@ use crate::{
 use super::{
   builtins::{
     built_in_functions, built_in_structs, built_in_type_aliases,
-    ABNORMAL_CONSTRUCTOR_STRUCTS, ASSOCIATIVE_BUILTINS,
+    ABNORMAL_CONSTRUCTOR_STRUCTS,
   },
   error::{err, CompileErrorKind::*, CompileResult, SourceTrace},
   expression::{ExpKind, TypedExp},
@@ -256,7 +256,7 @@ impl AbstractType {
               mut type_annotation_children,
             ) => {
               let source_trace: SourceTrace = position.into();
-              if let EaslTree::Leaf(position, num_str) =
+              if let EaslTree::Leaf(_, num_str) =
                 type_annotation_children.remove(0)
               {
                 let inner_type = Type::from_easl_tree(
@@ -538,7 +538,7 @@ impl Type {
           ) = array_children.into_iter().next().unwrap()
           {
             let source_trace: SourceTrace = position.into();
-            if let EaslTree::Leaf(position, num_str) =
+            if let EaslTree::Leaf(_, num_str) =
               type_annotation_children.remove(0)
             {
               let inner_type = Type::from_easl_tree(
@@ -1392,7 +1392,6 @@ pub struct Context {
   pub type_aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
   pub enclosing_function_types: Vec<TypeState>,
   pub top_level_vars: Vec<TopLevelVar>,
-  pub associative_top_level_functions: HashSet<Rc<str>>,
 }
 
 impl Context {
@@ -1404,10 +1403,6 @@ impl Context {
       type_aliases: vec![],
       enclosing_function_types: vec![],
       top_level_vars: vec![],
-      associative_top_level_functions: ASSOCIATIVE_BUILTINS
-        .into_iter()
-        .map(|s| s.into())
-        .collect(),
     }
   }
   pub fn push_enclosing_function_type(&mut self, typestate: TypeState) {
@@ -1460,6 +1455,7 @@ impl Context {
               .collect(),
             return_type: AbstractType::AbstractStruct(s.clone()),
             implementation: FunctionImplementationKind::Constructor,
+            associative: false,
           },
         )));
       }
