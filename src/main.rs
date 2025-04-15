@@ -43,6 +43,7 @@ fn main() {
     "nested_fn_inlining",
     "reference",
     "generic_identity",
+    "shadow",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

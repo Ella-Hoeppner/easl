@@ -1,6 +1,6 @@
 use core::fmt::Debug;
 use sse::syntax::EncloserOrOperator;
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, default, rc::Rc};
 
 use crate::{
   compiler::{
@@ -1082,34 +1082,34 @@ impl TypedExp {
   }
   pub fn walk(
     &self,
-    custom_handler: &mut impl FnMut(&Self) -> CompileResult<bool>,
+    prewalk_handler: &mut impl FnMut(&Self) -> CompileResult<bool>,
   ) -> CompileResult<()> {
-    if custom_handler(self)? {
+    if prewalk_handler(self)? {
       match &self.kind {
         Application(f, args) => {
-          f.walk(custom_handler)?;
+          f.walk(prewalk_handler)?;
           for arg in args.iter() {
-            arg.walk(custom_handler)?;
+            arg.walk(prewalk_handler)?;
           }
         }
-        Function(_, body) => body.walk(custom_handler)?,
-        Access(_, body) => body.walk(custom_handler)?,
+        Function(_, body) => body.walk(prewalk_handler)?,
+        Access(_, body) => body.walk(prewalk_handler)?,
         Let(bindings, body) => {
           for (_, _, value) in bindings {
-            value.walk(custom_handler)?;
+            value.walk(prewalk_handler)?;
           }
-          body.walk(custom_handler)?;
+          body.walk(prewalk_handler)?;
         }
         Match(scrutinee, arms) => {
-          scrutinee.walk(custom_handler)?;
+          scrutinee.walk(prewalk_handler)?;
           for (pattern, value) in arms {
-            pattern.walk(custom_handler)?;
-            value.walk(custom_handler)?;
+            pattern.walk(prewalk_handler)?;
+            value.walk(prewalk_handler)?;
           }
         }
         Block { expressions, .. } => {
           for subexp in expressions {
-            subexp.walk(custom_handler)?;
+            subexp.walk(prewalk_handler)?;
           }
         }
         ForLoop {
@@ -1119,22 +1119,22 @@ impl TypedExp {
           body_expression,
           ..
         } => {
-          increment_variable_initial_value_expression.walk(custom_handler)?;
-          continue_condition_expression.walk(custom_handler)?;
-          update_condition_expression.walk(custom_handler)?;
-          body_expression.walk(custom_handler)?;
+          increment_variable_initial_value_expression.walk(prewalk_handler)?;
+          continue_condition_expression.walk(prewalk_handler)?;
+          update_condition_expression.walk(prewalk_handler)?;
+          body_expression.walk(prewalk_handler)?;
         }
         WhileLoop {
           condition_expression,
           body_expression,
         } => {
-          condition_expression.walk(custom_handler)?;
-          body_expression.walk(custom_handler)?;
+          condition_expression.walk(prewalk_handler)?;
+          body_expression.walk(prewalk_handler)?;
         }
-        Return(exp) => exp.walk(custom_handler)?,
+        Return(exp) => exp.walk(prewalk_handler)?,
         ArrayLiteral(children) => {
           for child in children {
-            child.walk(custom_handler)?;
+            child.walk(prewalk_handler)?;
           }
         }
         _ => {}
@@ -1144,34 +1144,34 @@ impl TypedExp {
   }
   pub fn walk_mut(
     &mut self,
-    custom_handler: &mut impl FnMut(&mut Self) -> CompileResult<bool>,
+    prewalk_handler: &mut impl FnMut(&mut Self) -> CompileResult<bool>,
   ) -> CompileResult<()> {
-    if custom_handler(self)? {
+    if prewalk_handler(self)? {
       match &mut self.kind {
         Application(f, args) => {
-          f.walk_mut(custom_handler)?;
+          f.walk_mut(prewalk_handler)?;
           for arg in args.iter_mut() {
-            arg.walk_mut(custom_handler)?;
+            arg.walk_mut(prewalk_handler)?;
           }
         }
-        Function(_, body) => body.walk_mut(custom_handler)?,
-        Access(_, body) => body.walk_mut(custom_handler)?,
+        Function(_, body) => body.walk_mut(prewalk_handler)?,
+        Access(_, body) => body.walk_mut(prewalk_handler)?,
         Let(bindings, body) => {
           for (_, _, value) in bindings {
-            value.walk_mut(custom_handler)?;
+            value.walk_mut(prewalk_handler)?;
           }
-          body.walk_mut(custom_handler)?;
+          body.walk_mut(prewalk_handler)?;
         }
         Match(scrutinee, arms) => {
-          scrutinee.walk_mut(custom_handler)?;
+          scrutinee.walk_mut(prewalk_handler)?;
           for (pattern, value) in arms {
-            pattern.walk_mut(custom_handler)?;
-            value.walk_mut(custom_handler)?;
+            pattern.walk_mut(prewalk_handler)?;
+            value.walk_mut(prewalk_handler)?;
           }
         }
         Block { expressions, .. } => {
           for subexp in expressions {
-            subexp.walk_mut(custom_handler)?;
+            subexp.walk_mut(prewalk_handler)?;
           }
         }
         ForLoop {
@@ -1182,22 +1182,22 @@ impl TypedExp {
           ..
         } => {
           increment_variable_initial_value_expression
-            .walk_mut(custom_handler)?;
-          continue_condition_expression.walk_mut(custom_handler)?;
-          update_condition_expression.walk_mut(custom_handler)?;
-          body_expression.walk_mut(custom_handler)?;
+            .walk_mut(prewalk_handler)?;
+          continue_condition_expression.walk_mut(prewalk_handler)?;
+          update_condition_expression.walk_mut(prewalk_handler)?;
+          body_expression.walk_mut(prewalk_handler)?;
         }
         WhileLoop {
           condition_expression,
           body_expression,
         } => {
-          condition_expression.walk_mut(custom_handler)?;
-          body_expression.walk_mut(custom_handler)?;
+          condition_expression.walk_mut(prewalk_handler)?;
+          body_expression.walk_mut(prewalk_handler)?;
         }
-        Return(exp) => exp.walk_mut(custom_handler)?,
+        Return(exp) => exp.walk_mut(prewalk_handler)?,
         ArrayLiteral(children) => {
           for child in children {
-            child.walk_mut(custom_handler)?;
+            child.walk_mut(prewalk_handler)?;
           }
         }
         _ => {}
@@ -2339,5 +2339,91 @@ impl TypedExp {
         Ok(true)
       })
       .unwrap()
+  }
+
+  fn deshadow_inner(
+    &mut self,
+    globally_bound_names: &Vec<Rc<str>>,
+    bindings: &mut HashMap<Rc<str>, Vec<Rc<str>>>,
+    errors: &mut Vec<CompileError>,
+    first_in_walk: bool,
+  ) -> bool {
+    match &mut self.kind {
+      Let(let_bindings, body) => {
+        for binding in let_bindings.iter_mut() {
+          binding.2.deshadow_inner(
+            globally_bound_names,
+            bindings,
+            errors,
+            true,
+          );
+          let name = &mut binding.0;
+          if globally_bound_names.contains(&name) {
+            errors.push(CompileError::new(
+              CompileErrorKind::CantShadowTopLevelBinding(name.clone()),
+              binding.2.source_trace.clone(),
+            ));
+          }
+          if let Some(renames) = bindings.get_mut(name) {
+            let gensym_name: Rc<str> =
+              format!("{}_deshadowed_{}", name.to_string(), renames.len())
+                .into();
+            std::mem::swap(name, &mut gensym_name.clone());
+            renames.push(gensym_name);
+          } else {
+            bindings.insert(name.clone(), vec![]);
+          }
+        }
+        body.deshadow_inner(globally_bound_names, bindings, errors, true);
+        for pair in let_bindings.iter_mut() {
+          let name = &pair.0;
+          bindings.remove(name);
+          for (_, renames) in bindings.iter_mut() {
+            if renames.last() == Some(name) {
+              renames.pop();
+            }
+          }
+        }
+        false
+      }
+      Name(name) => {
+        if let Some(renames) = bindings.get(name) {
+          if let Some(rename) = renames.last() {
+            std::mem::swap(name, &mut Rc::clone(rename));
+          }
+        }
+        false
+      }
+      _ => {
+        if first_in_walk {
+          self
+            .walk_mut(&mut |exp| {
+              Ok(exp.deshadow_inner(
+                globally_bound_names,
+                bindings,
+                errors,
+                false,
+              ))
+            })
+            .unwrap();
+          false
+        } else {
+          true
+        }
+      }
+    }
+  }
+  pub fn deshadow(
+    &mut self,
+    globally_bound_names: &Vec<Rc<str>>,
+  ) -> Vec<CompileError> {
+    let mut errors = vec![];
+    self.deshadow_inner(
+      globally_bound_names,
+      &mut Default::default(),
+      &mut errors,
+      true,
+    );
+    errors
   }
 }

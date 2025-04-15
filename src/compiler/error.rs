@@ -224,6 +224,8 @@ pub enum CompileErrorKind {
   ZeroedArrayShouldntHaveChildren,
   #[error("expected function, found non-function value")]
   ExpectedFunctionFoundNonFunction,
+  #[error("Can't shadow top-level binding \"{0}\"")]
+  CantShadowTopLevelBinding(Rc<str>),
 }
 
 #[derive(Clone, Debug)]

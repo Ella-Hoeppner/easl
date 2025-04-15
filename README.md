@@ -25,10 +25,6 @@ Feature goals:
 * make `->` compile to a series of nested `let`s rather than just inlining, and allow `<>` to be used more than one time
   * need a gensym system for this I guess, might as well make a general one
 
-* shadowing
-  * when a name is shadowed, replace it and references to the shadowed version with a new gensym'd name, since wgsl doesn't allow shadowing
-  * disallow shadowing of top-level definitions
-
 * ensure that all associative functions are of the signature `(Fn [T T] T)`
 
 * implement post-typechecking validations and errors
@@ -56,6 +52,8 @@ Feature goals:
 * improve error messages
 
 ### medium priority, necessary to call the language 0.1
+
+* the names generated for deshadowing bindings aren't currently guaranteed to be unique
 
 * support declaring custom type constraints
   * each constraint is just defined by a function

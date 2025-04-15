@@ -831,44 +831,80 @@ impl Program {
       if let FunctionImplementationKind::Composite(f) =
         &f.borrow().implementation
       {
-        let x = &mut f.borrow_mut().body;
-        x.walk_mut(&mut |exp| {
-          take(&mut exp.kind, |exp_kind| {
-            if let ExpKind::Application(f, mut args) = exp_kind {
-              if let ExpKind::Name(name) = &f.kind {
-                let Type::Function(x) = f.data.kind.unwrap_known() else {
-                  panic!("encountered application of non-fn in expand_associative_applications");
-                };
-                if let Some(abstract_ancestor) = &x.abstract_ancestor {
-                  if abstract_ancestor.associative && args.len() != 2 {
-                    let mut args_iter = args.into_iter();
-                    let mut new_exp = args_iter.next().unwrap();
-                    while let Some(next_arg) = args_iter.next() {
-                      new_exp = Exp {
-                        kind: ExpKind::Application(f.clone(), vec![new_exp, next_arg]),
-                        data: exp.data.clone(),
-                        source_trace: exp.source_trace.clone()
-                      };
+        f.borrow_mut().body.walk_mut(
+          &mut |exp| {
+            take(
+              &mut exp.kind, 
+              |exp_kind| {
+                if let ExpKind::Application(f, args) = exp_kind {
+                  if let ExpKind::Name(_) = &f.kind {
+                    let Type::Function(x) = f.data.kind.unwrap_known() else {
+                      panic!("encountered application of non-fn in expand_associative_applications");
+                    };
+                    if let Some(abstract_ancestor) = &x.abstract_ancestor {
+                      if abstract_ancestor.associative && args.len() != 2 {
+                        let mut args_iter = args.into_iter();
+                        let mut new_exp = args_iter.next().unwrap();
+                        while let Some(next_arg) = args_iter.next() {
+                          new_exp = Exp {
+                            kind: ExpKind::Application(f.clone(), vec![new_exp, next_arg]),
+                            data: exp.data.clone(),
+                            source_trace: exp.source_trace.clone()
+                          };
+                        }
+                        new_exp.kind
+                      } else {
+                        ExpKind::Application(f, args)
+                      }
+                    } else {
+                      ExpKind::Application(f, args)
                     }
-                    new_exp.kind
                   } else {
                     ExpKind::Application(f, args)
                   }
                 } else {
-                  ExpKind::Application(f, args)
+                  exp_kind
                 }
-              } else {
-                ExpKind::Application(f, args)
               }
-            } else {
-              exp_kind
-            }
-          });
-          Ok(true)
-        })
+            );
+            Ok(true)
+          }
+        )
         .unwrap();
       }
     }
+  }
+  pub fn deshadow(&mut self) -> Vec<CompileError> {
+    let globally_bound_names: Vec<Rc<str>> = self
+      .global_context
+      .top_level_vars
+      .iter()
+      .map(|v| Rc::clone(&v.name))
+      .chain(
+        self
+          .global_context
+          .abstract_functions
+          .iter()
+          .map(|(name, _)| Rc::clone(name)),
+      )
+      .collect();
+    self
+      .global_context
+      .abstract_functions
+      .iter_mut()
+      .flat_map(|(_, signatures)| {
+        signatures.iter_mut().flat_map(|signature| {
+          if let FunctionImplementationKind::Composite(exp) =
+            &mut signature.borrow_mut().implementation
+          {
+            exp.borrow_mut().body.deshadow(&globally_bound_names)
+          } else {
+            vec![]
+          }
+          .into_iter()
+        })
+      })
+      .collect()
   }
   pub fn validate_raw_program(&mut self) -> Vec<CompileError> {
     let errors = self.fully_infer_types();
@@ -885,6 +921,10 @@ impl Program {
       return errors;
     }
     let errors = self.inline_all_higher_order_arguments();
+    if !errors.is_empty() {
+      return errors;
+    }
+    let errors = self.deshadow();
     if !errors.is_empty() {
       return errors;
     }
