@@ -1,14 +1,11 @@
 use sse::document::Document;
 
-use crate::{
-  compiler::program::Program,
-  parse::{parse_easl, Context, Encloser, Operator},
-};
+use crate::parse::{parse_easl, Context as ParseContext, Encloser, Operator};
 
-use super::{builtins::built_in_macros, error::CompileError};
+use super::{builtins::built_in_macros, error::CompileError, program::Program};
 
 pub fn compile_easl_document_to_wgsl(
-  document: Document<'_, Context, Encloser, Operator>,
+  document: Document<'_, ParseContext, Encloser, Operator>,
 ) -> Result<String, Vec<CompileError>> {
   let (mut program, errors) =
     Program::from_easl_document(&document, built_in_macros());

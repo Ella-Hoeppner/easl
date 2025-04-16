@@ -8,10 +8,9 @@ use super::{
   error::{err, CompileError, CompileErrorKind::*, CompileResult, SourceTrace},
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
+  program::Program,
   structs::AbstractStruct,
-  types::{
-    AbstractType, Context, ExpTypeInfo, Type, TypeConstraint, TypeState,
-  },
+  types::{AbstractType, ExpTypeInfo, Type, TypeConstraint, TypeState},
   util::indent,
 };
 
@@ -76,8 +75,8 @@ impl AbstractFunctionSignature {
     &self,
     arg_types: Vec<Type>,
     return_type: Type,
-    base_ctx: &Context,
-    new_ctx: &mut Context,
+    base_program: &Program,
+    new_program: &mut Program,
     source_trace: SourceTrace,
   ) -> CompileResult<Self> {
     let mut monomorphized = self.clone();
@@ -120,7 +119,7 @@ impl AbstractFunctionSignature {
         .map(|(x, y)| (x.clone(), y.clone()))
         .collect();
       new_fn.body.replace_skolems(&replacement_pairs);
-      new_fn.body.monomorphize(base_ctx, new_ctx)?;
+      new_fn.body.monomorphize(base_program, new_program)?;
       std::mem::swap(monomorphized_fn, &mut Rc::new(RefCell::new(new_fn)));
     } else {
       panic!("attempted to monomorphize non-composite abstract function")
@@ -475,7 +474,7 @@ impl TopLevelFunction {
       "{}fn {}({args}){} {{{}\n}}",
       Metadata::compile_optional(self.metadata),
       compile_word(name.into()),
-      if return_type.kind.unwrap_known() == Type::None {
+      if return_type.kind.unwrap_known() == Type::Typeless {
         "".to_string()
       } else {
         format!(
@@ -484,13 +483,13 @@ impl TopLevelFunction {
           return_type.compile()
         )
       },
-      indent(
-        body.compile(if return_type.kind.unwrap_known() == Type::None {
+      indent(body.compile(
+        if return_type.kind.unwrap_known() == Type::Typeless {
           ExpressionCompilationPosition::InnerLine
         } else {
           ExpressionCompilationPosition::Return
-        })
-      )
+        }
+      ))
     ))
   }
 }

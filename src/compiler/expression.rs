@@ -1,6 +1,6 @@
 use core::fmt::Debug;
 use sse::syntax::EncloserOrOperator;
-use std::{cell::RefCell, collections::HashMap, default, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use crate::{
   compiler::{
@@ -8,9 +8,10 @@ use crate::{
     error::{err, CompileError, CompileErrorKind::*, CompileResult},
     functions::FunctionSignature,
     metadata::{extract_metadata, Metadata},
+    program::Program,
     structs::AbstractStruct,
     types::{
-      extract_type_annotation, extract_type_annotation_ast, ArraySize, Context,
+      extract_type_annotation, extract_type_annotation_ast, ArraySize,
       ExpTypeInfo, Type,
       TypeState::{self, *},
       Variable, VariableKind,
@@ -286,7 +287,7 @@ use super::{
   error::{CompileErrorKind, SourceTrace, SourceTraceKind},
   functions::FunctionImplementationKind,
   structs::compiled_vec_name,
-  types::{AbstractType, TypeConstraint},
+  types::{AbstractType, LocalContext, TypeConstraint},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -444,13 +445,13 @@ impl TypedExp {
         if &*leaf == "break" {
           Exp {
             kind: ExpKind::Break,
-            data: Known(Type::None).into(),
+            data: Known(Type::Typeless).into(),
             source_trace,
           }
         } else if &*leaf == "continue" {
           Exp {
             kind: ExpKind::Continue,
-            data: Known(Type::None).into(),
+            data: Known(Type::Typeless).into(),
             source_trace,
           }
         } else if &*leaf == "discard" {
@@ -862,7 +863,7 @@ impl TypedExp {
                                 update_condition_expression,
                               ),
                               body_expression: Box::new(TypedExp {
-                                data: TypeState::Known(Type::None).into(),
+                                data: TypeState::Known(Type::Typeless).into(),
                                 kind: ExpKind::Block {
                                   expressions: body_expressions,
                                   bracketed: false,
@@ -870,7 +871,7 @@ impl TypedExp {
                                 source_trace: body_source_trace,
                               }),
                             },
-                            data: Known(Type::None).into(),
+                            data: Known(Type::Typeless).into(),
                             source_trace,
                           })
                         }
@@ -900,7 +901,7 @@ impl TypedExp {
                                 condition_expression,
                               ),
                               body_expression: Box::new(TypedExp {
-                                data: TypeState::Known(Type::None).into(),
+                                data: TypeState::Known(Type::Typeless).into(),
                                 kind: ExpKind::Block {
                                   expressions: sub_expressions,
                                   bracketed: false,
@@ -908,7 +909,7 @@ impl TypedExp {
                                 source_trace: body_source_trace,
                               }),
                             },
-                            data: Known(Type::None).into(),
+                            data: Known(Type::Typeless).into(),
                             source_trace,
                           })
                         }
@@ -923,7 +924,7 @@ impl TypedExp {
                             )?;
                             Some(Exp {
                               kind: ExpKind::Return(Box::new(exp)),
-                              data: TypeState::Known(Type::None).into(),
+                              data: TypeState::Known(Type::Typeless).into(),
                               source_trace,
                             })
                           } else {
@@ -1488,9 +1489,9 @@ impl TypedExp {
   pub fn validate_match_blocks(&self) -> CompileResult<()> {
     Ok(()) // todo!
   }
-  pub fn propagate_types(
+  fn propagate_types_inner(
     &mut self,
-    ctx: &mut Context,
+    ctx: &mut LocalContext,
   ) -> (bool, Vec<CompileError>) {
     if self.data.subtree_fully_typed {
       return (false, vec![]);
@@ -1566,7 +1567,7 @@ impl TypedExp {
                   ctx.bind(name, Variable::new(t.clone()))
                 }
                 let (body_types_changed, mut body_type_errors) =
-                  body.propagate_types(ctx);
+                  body.propagate_types_inner(ctx);
                 errors.append(&mut body_type_errors);
                 let argument_types = arg_names
                   .iter()
@@ -1605,7 +1606,7 @@ impl TypedExp {
       Application(f, args) => {
         let mut anything_changed = false;
         for arg in args.iter_mut() {
-          let (arg_changed, mut arg_errors) = arg.propagate_types(ctx);
+          let (arg_changed, mut arg_errors) = arg.propagate_types_inner(ctx);
           anything_changed |= arg_changed;
           errors.append(&mut arg_errors);
         }
@@ -1674,7 +1675,7 @@ impl TypedExp {
         );
         anything_changed |= changed;
         errors.append(&mut f_errors);
-        let (changed, mut f_errors) = f.propagate_types(ctx);
+        let (changed, mut f_errors) = f.propagate_types_inner(ctx);
         anything_changed |= changed;
         errors.append(&mut f_errors);
         self.data.subtree_fully_typed =
@@ -1687,7 +1688,7 @@ impl TypedExp {
       Access(accessor, subexp) => match accessor {
         Accessor::Field(field_name) => {
           let (mut anything_changed, mut subexp_errors) =
-            subexp.propagate_types(ctx);
+            subexp.propagate_types_inner(ctx);
           errors.append(&mut subexp_errors);
           if let Known(t) = &mut subexp.data.kind {
             if let Type::Struct(s) = t {
@@ -1731,7 +1732,7 @@ impl TypedExp {
           );
           errors.append(&mut sub_errors);
           anything_changed |= changed;
-          let (changed, mut sub_errors) = subexp.propagate_types(ctx);
+          let (changed, mut sub_errors) = subexp.propagate_types_inner(ctx);
           anything_changed |= changed;
           errors.append(&mut sub_errors);
           self.data.subtree_fully_typed = subexp.data.subtree_fully_typed;
@@ -1759,10 +1760,11 @@ impl TypedExp {
               ));
             }
           }
-          let (changed, mut sub_errors) = index_expression.propagate_types(ctx);
+          let (changed, mut sub_errors) =
+            index_expression.propagate_types_inner(ctx);
           anything_changed |= changed;
           errors.append(&mut sub_errors);
-          let (changed, mut sub_errors) = subexp.propagate_types(ctx);
+          let (changed, mut sub_errors) = subexp.propagate_types_inner(ctx);
           anything_changed |= changed;
           errors.append(&mut sub_errors);
           self.data.subtree_fully_typed = subexp.data.subtree_fully_typed
@@ -1776,12 +1778,12 @@ impl TypedExp {
           .mutually_constrain(&mut self.data, self.source_trace.clone());
         errors.append(&mut body_errors);
         for (name, _, value) in bindings.iter_mut() {
-          let (changed, mut sub_errors) = value.propagate_types(ctx);
+          let (changed, mut sub_errors) = value.propagate_types_inner(ctx);
           anything_changed |= changed;
           errors.append(&mut sub_errors);
           ctx.bind(name, Variable::new(value.data.clone()));
         }
-        let (changed, mut sub_errors) = body.propagate_types(ctx);
+        let (changed, mut sub_errors) = body.propagate_types_inner(ctx);
         anything_changed |= changed;
         errors.append(&mut sub_errors);
         for (name, _, value) in bindings.iter_mut() {
@@ -1802,20 +1804,21 @@ impl TypedExp {
       }
       Match(scrutinee, arms) => {
         let (mut anything_changed, mut scrutinee_errors) =
-          scrutinee.propagate_types(ctx);
+          scrutinee.propagate_types_inner(ctx);
         errors.append(&mut scrutinee_errors);
         if let Some(false) = is_match_exhaustive(&scrutinee.data, &arms) {
-          let (changed, mut scrutinee_errors) = self
-            .data
-            .constrain(TypeState::Known(Type::None), self.source_trace.clone());
+          let (changed, mut scrutinee_errors) = self.data.constrain(
+            TypeState::Known(Type::Typeless),
+            self.source_trace.clone(),
+          );
           anything_changed |= changed;
           errors.append(&mut scrutinee_errors);
         }
         for (case, value) in arms.iter_mut() {
-          let (changed, mut sub_errors) = case.propagate_types(ctx);
+          let (changed, mut sub_errors) = case.propagate_types_inner(ctx);
           anything_changed |= changed;
           errors.append(&mut sub_errors);
-          let (changed, mut sub_errors) = value.propagate_types(ctx);
+          let (changed, mut sub_errors) = value.propagate_types_inner(ctx);
           anything_changed |= changed;
           errors.append(&mut sub_errors);
           let (changed, mut sub_errors) = case
@@ -1842,7 +1845,7 @@ impl TypedExp {
       Block { expressions, .. } => {
         let mut anything_changed = false;
         for child in expressions.iter_mut() {
-          let (changed, mut sub_errors) = child.propagate_types(ctx);
+          let (changed, mut sub_errors) = child.propagate_types_inner(ctx);
           anything_changed |= changed;
           errors.append(&mut sub_errors);
         }
@@ -1881,7 +1884,8 @@ impl TypedExp {
             );
         errors.append(&mut sub_errors);
         let (changed, mut sub_errors) =
-          increment_variable_initial_value_expression.propagate_types(ctx);
+          increment_variable_initial_value_expression
+            .propagate_types_inner(ctx);
         anything_changed |= changed;
         errors.append(&mut sub_errors);
         ctx.bind(
@@ -1900,20 +1904,21 @@ impl TypedExp {
         errors.append(&mut sub_errors);
         let (changed, mut sub_errors) =
           update_condition_expression.data.constrain(
-            TypeState::Known(Type::None),
+            TypeState::Known(Type::Typeless),
             update_condition_expression.source_trace.clone(),
           );
         anything_changed |= changed;
         errors.append(&mut sub_errors);
         let (changed, mut sub_errors) =
-          continue_condition_expression.propagate_types(ctx);
+          continue_condition_expression.propagate_types_inner(ctx);
         anything_changed |= changed;
         errors.append(&mut sub_errors);
         let (changed, mut sub_errors) =
-          update_condition_expression.propagate_types(ctx);
+          update_condition_expression.propagate_types_inner(ctx);
         anything_changed |= changed;
         errors.append(&mut sub_errors);
-        let (changed, mut sub_errors) = body_expression.propagate_types(ctx);
+        let (changed, mut sub_errors) =
+          body_expression.propagate_types_inner(ctx);
         anything_changed |= changed;
         errors.append(&mut sub_errors);
         ctx.unbind(&increment_variable_name);
@@ -1937,16 +1942,17 @@ impl TypedExp {
           );
         errors.append(&mut sub_errors);
         let (changed, mut sub_errors) = body_expression.data.constrain(
-          TypeState::Known(Type::None),
+          TypeState::Known(Type::Typeless),
           condition_expression.source_trace.clone(),
         );
         anything_changed |= changed;
         errors.append(&mut sub_errors);
         let (changed, mut sub_errors) =
-          condition_expression.propagate_types(ctx);
+          condition_expression.propagate_types_inner(ctx);
         anything_changed |= changed;
         errors.append(&mut sub_errors);
-        let (changed, mut sub_errors) = body_expression.propagate_types(ctx);
+        let (changed, mut sub_errors) =
+          body_expression.propagate_types_inner(ctx);
         anything_changed |= changed;
         errors.append(&mut sub_errors);
         self.data.subtree_fully_typed =
@@ -2016,7 +2022,7 @@ impl TypedExp {
               );
               anything_changed |= changed;
               errors.append(&mut sub_errors);
-              let (changed, mut sub_errors) = child.propagate_types(ctx);
+              let (changed, mut sub_errors) = child.propagate_types_inner(ctx);
               anything_changed |= changed;
               errors.append(&mut sub_errors);
             } else {
@@ -2037,7 +2043,8 @@ impl TypedExp {
         anything_changed
       }
       Reference(exp) => {
-        let (mut anything_changed, mut sub_errors) = exp.propagate_types(ctx);
+        let (mut anything_changed, mut sub_errors) =
+          exp.propagate_types_inner(ctx);
         errors.append(&mut sub_errors);
         let TypeState::Known(Type::Reference(inner_type)) = &mut self.data.kind
         else {
@@ -2059,9 +2066,15 @@ impl TypedExp {
     self.data.subtree_fully_typed &= self.data.check_is_fully_known();
     (changed, errors)
   }
-  pub fn check_assignment_validity(
+  pub fn propagate_types(
+    &mut self,
+    program: &mut Program,
+  ) -> (bool, Vec<CompileError>) {
+    self.propagate_types_inner(&mut LocalContext::empty(program))
+  }
+  fn check_assignment_validity_inner(
     &self,
-    ctx: &mut Context,
+    ctx: &mut LocalContext,
   ) -> CompileResult<()> {
     self.walk(&mut |exp| {
       Ok(match &exp.kind {
@@ -2089,22 +2102,22 @@ impl TypedExp {
             }
           }
           for arg in args {
-            arg.check_assignment_validity(ctx)?;
+            arg.check_assignment_validity_inner(ctx)?;
           }
-          f.check_assignment_validity(ctx)?;
+          f.check_assignment_validity_inner(ctx)?;
           false
         }
         Let(binding_names_and_values, body) => {
           for (name, kind, value) in binding_names_and_values {
-            value.check_assignment_validity(ctx)?;
+            value.check_assignment_validity_inner(ctx)?;
             ctx.bind(
               name,
               Variable::new(value.data.clone()).with_kind(kind.clone()),
             )
           }
-          body.check_assignment_validity(ctx)?;
+          body.check_assignment_validity_inner(ctx)?;
           for (name, _, value) in binding_names_and_values {
-            value.check_assignment_validity(ctx)?;
+            value.check_assignment_validity_inner(ctx)?;
             ctx.unbind(name);
           }
           false
@@ -2120,7 +2133,7 @@ impl TypedExp {
                 },
               );
             }
-            body_exp.check_assignment_validity(ctx)?;
+            body_exp.check_assignment_validity_inner(ctx)?;
             for name in arg_names {
               ctx.unbind(name);
             }
@@ -2145,16 +2158,22 @@ impl TypedExp {
             .with_kind(VariableKind::Var),
           );
           increment_variable_initial_value_expression
-            .check_assignment_validity(ctx)?;
-          continue_condition_expression.check_assignment_validity(ctx)?;
-          update_condition_expression.check_assignment_validity(ctx)?;
-          body_expression.check_assignment_validity(ctx)?;
+            .check_assignment_validity_inner(ctx)?;
+          continue_condition_expression.check_assignment_validity_inner(ctx)?;
+          update_condition_expression.check_assignment_validity_inner(ctx)?;
+          body_expression.check_assignment_validity_inner(ctx)?;
           ctx.unbind(increment_variable_name);
           false
         }
         _ => true,
       })
     })
+  }
+  pub fn check_assignment_validity(
+    &self,
+    program: &mut Program,
+  ) -> CompileResult<()> {
+    self.check_assignment_validity_inner(&mut LocalContext::empty(program))
   }
   pub fn replace_skolems(&mut self, skolems: &Vec<(Rc<str>, Type)>) {
     self
@@ -2168,8 +2187,8 @@ impl TypedExp {
   }
   pub fn monomorphize(
     &mut self,
-    base_ctx: &Context,
-    new_ctx: &mut Context,
+    base_program: &Program,
+    new_program: &mut Program,
   ) -> CompileResult<()> {
     let source_trace = self.source_trace.clone();
     self.walk_mut(&mut |exp: &mut TypedExp| {
@@ -2208,7 +2227,7 @@ impl TypedExp {
               },
               FunctionImplementationKind::Constructor => {
                 if let Some(abstract_struct) =
-                  base_ctx.structs.iter().find(|s| s.name == *f_name)
+                  base_program.structs.iter().find(|s| s.name == *f_name)
                 {
                   let arg_types: Vec<Type> =
                     args.iter().map(|arg| arg.data.unwrap_known()).collect();
@@ -2223,7 +2242,7 @@ impl TypedExp {
                       f_name,
                       &mut AbstractStruct::concretized_name(
                         monomorphized_struct.clone(),
-                        &base_ctx.structs,
+                        &base_program.structs,
                         exp.source_trace.clone(),
                       )?,
                     );
@@ -2231,14 +2250,14 @@ impl TypedExp {
                       AbstractStruct::fill_generics_ordered(
                         monomorphized_struct.clone(),
                         vec![],
-                        &base_ctx.structs,
+                        &base_program.structs,
                         source_trace.clone(),
                       )?,
                     ));
                     exp.data.with_dereferenced_mut(|typestate| {
                       std::mem::swap(typestate, &mut new_typestate)
                     });
-                    new_ctx
+                    new_program
                       .add_monomorphized_struct(monomorphized_struct.into());
                   }
                 }
@@ -2249,12 +2268,12 @@ impl TypedExp {
                     .generate_monomorphized(
                       args.iter().map(|arg| arg.data.unwrap_known()).collect(),
                       exp.data.unwrap_known().clone(),
-                      base_ctx,
-                      new_ctx,
+                      base_program,
+                      new_program,
                       f.borrow().body.source_trace.clone(),
                     )?;
                   std::mem::swap(f_name, &mut monomorphized.name.clone());
-                  new_ctx.add_abstract_function(Rc::new(RefCell::new(
+                  new_program.add_abstract_function(Rc::new(RefCell::new(
                     monomorphized,
                   )));
                 }
@@ -2269,7 +2288,7 @@ impl TypedExp {
   }
   pub fn inline_higher_order_arguments(
     &mut self,
-    new_ctx: &mut Context,
+    new_ctx: &mut Program,
   ) -> CompileResult<bool> {
     let mut changed = false;
     self.walk_mut(&mut |exp: &mut TypedExp| {

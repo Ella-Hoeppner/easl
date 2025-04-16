@@ -1,42 +1,170 @@
-use std::{cell::RefCell, cmp::Ordering, rc::Rc};
+use std::{cell::{Ref, RefCell}, cmp::Ordering, collections::HashMap, ops::Deref, rc::Rc};
 
 use sse::{document::Document, syntax::EncloserOrOperator};
 use take_mut::take;
 
 use crate::{
   compiler::{
-    error::{CompileError, SourceTrace},
-    expression::{arg_list_and_return_type_from_easl_tree, Exp, ExpKind},
-    functions::AbstractFunctionSignature,
-    metadata::extract_metadata,
-    structs::UntypedStruct,
-    types::{
+    builtins::built_in_functions, error::{CompileError, SourceTrace}, expression::{arg_list_and_return_type_from_easl_tree, Exp, ExpKind}, functions::AbstractFunctionSignature, metadata::extract_metadata, structs::UntypedStruct, types::{
       parse_generic_argument, AbstractType, ExpTypeInfo, Type, TypeConstraint,
       TypeState, Variable, VariableKind,
-    },
-    util::read_type_annotated_name,
+    }, util::read_type_annotated_name
   },
   parse::{Context as SyntaxContext, EaslTree, Encloser, Operator},
 };
 
 use super::{
-  builtins::{built_in_structs, built_in_type_aliases},
-  error::{CompileErrorKind::*, CompileResult},
-  expression::TypedExp,
-  functions::{FunctionImplementationKind, TopLevelFunction},
-  macros::{macroexpand, Macro},
-  types::Context,
-  vars::TopLevelVar,
+  builtins::{built_in_structs, built_in_type_aliases, ABNORMAL_CONSTRUCTOR_STRUCTS}, error::{CompileErrorKind::{self, *}, CompileResult}, expression::TypedExp, functions::{FunctionImplementationKind, TopLevelFunction}, macros::{macroexpand, Macro}, structs::AbstractStruct, vars::TopLevelVar
 };
 
 pub type EaslDocument<'s> = Document<'s, SyntaxContext, Encloser, Operator>;
 
-#[derive(Debug)]
+thread_local! {
+  static DEFAULT_PROGRAM: RefCell<Program> =
+    RefCell::new(
+      Program::empty()
+        .with_functions(built_in_functions())
+        .with_structs(
+          built_in_structs().into_iter().map(|s| Rc::new(s)).collect(),
+        )
+        .with_type_aliases(built_in_type_aliases()));
+}
+
+#[derive(Debug, Clone)]
 pub struct Program {
-  pub global_context: Context,
+  pub structs: Vec<Rc<AbstractStruct>>,
+  pub abstract_functions:
+    HashMap<Rc<str>, Vec<Rc<RefCell<AbstractFunctionSignature>>>>,
+  pub type_aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
+  pub top_level_vars: Vec<TopLevelVar>,
+}
+
+impl Default for Program {
+  fn default() -> Self {
+    DEFAULT_PROGRAM.with_borrow(|ctx| ctx.clone())
+  }
 }
 
 impl Program {
+  pub fn empty() -> Self {
+    Self {
+      structs: vec![],
+      abstract_functions: HashMap::new(),
+      type_aliases: vec![],
+      top_level_vars: vec![],
+    }
+  }
+  pub fn add_abstract_function(
+    &mut self,
+    signature: Rc<RefCell<AbstractFunctionSignature>>,
+  ) {
+    let name = Rc::clone(&signature.borrow().name);
+    if let Some(bucket) = self.abstract_functions.get_mut(&name) {
+      bucket.push(signature.into());
+    } else {
+      self.abstract_functions.insert(name, vec![signature.into()]);
+    }
+  }
+  pub fn with_functions(
+    mut self,
+    functions: Vec<AbstractFunctionSignature>,
+  ) -> Self {
+    for f in functions {
+      self.add_abstract_function(Rc::new(RefCell::new(f)));
+    }
+    self
+  }
+  pub fn with_struct(mut self, s: Rc<AbstractStruct>) -> Self {
+    if !self.structs.contains(&s) {
+      if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&&*s.name) {
+        self.add_abstract_function(Rc::new(RefCell::new(
+          AbstractFunctionSignature {
+            name: s.name.clone(),
+            generic_args: s
+              .generic_args
+              .iter()
+              .map(|name| (name.clone(), vec![]))
+              .collect(),
+            arg_types: s
+              .fields
+              .iter()
+              .map(|field| field.field_type.clone())
+              .collect(),
+            return_type: AbstractType::AbstractStruct(s.clone()),
+            implementation: FunctionImplementationKind::Constructor,
+            associative: false,
+          },
+        )));
+      }
+      self.structs.push(s);
+      self.structs.dedup();
+    }
+    self
+  }
+  pub fn with_structs(self, structs: Vec<Rc<AbstractStruct>>) -> Self {
+    structs.into_iter().fold(self, |ctx, s| ctx.with_struct(s))
+  }
+  pub fn with_type_aliases(
+    mut self,
+    mut aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
+  ) -> Self {
+    self.type_aliases.append(&mut aliases);
+    self
+  }
+  pub fn add_monomorphized_struct(&mut self, s: Rc<AbstractStruct>) {
+    if self
+      .structs
+      .iter()
+      .find(|existing_struct| {
+        existing_struct.name == s.name
+          && existing_struct.filled_generics == s.filled_generics
+      })
+      .is_none()
+    {
+      self.structs.push(s);
+    }
+  }
+  pub fn concrete_signatures(
+    &mut self,
+    fn_name: &Rc<str>,
+    source_trace: SourceTrace,
+  ) -> CompileResult<Option<Vec<Type>>> {
+    if let Some(signatures) = self.abstract_functions.get(fn_name) {
+      signatures
+        .into_iter()
+        .map(|signature| {
+          Ok(Type::Function(Box::new(
+            AbstractFunctionSignature::concretize(
+              Rc::new(RefCell::new(signature.borrow().clone())),
+              &self.structs,
+              source_trace.clone(),
+            )?,
+          )))
+        })
+        .collect::<CompileResult<Vec<_>>>()
+        .map(|x| Some(x))
+    } else {
+      Ok(None)
+    }
+  }
+  pub fn abstract_functions_iter(
+    &self,
+  ) -> impl Iterator<Item = &Rc<RefCell<AbstractFunctionSignature>>> {
+    self
+      .abstract_functions
+      .values()
+      .map(|fs| fs.iter())
+      .flatten()
+  }
+  pub fn abstract_functions_iter_mut(
+    &mut self,
+  ) -> impl Iterator<Item = &mut Rc<RefCell<AbstractFunctionSignature>>> {
+    self
+      .abstract_functions
+      .values_mut()
+      .map(|fs| fs.iter_mut())
+      .flatten()
+  }
   pub fn from_easl_document(
     document: &'_ EaslDocument,
     macros: Vec<Macro>,
@@ -179,12 +307,12 @@ impl Program {
         Ordering::Equal
       }
     });
-    let mut global_context = Context::default_global();
+    let mut program = Program::default();
     for untyped_struct in untyped_structs {
       match untyped_struct
-        .assign_types(&global_context.structs, &built_in_type_aliases())
+        .assign_types(&program.structs, &built_in_type_aliases())
       {
-        Ok(s) => global_context = global_context.with_struct(s.into()),
+        Ok(s) => program = program.with_struct(s.into()),
         Err(e) => errors.push(e),
       }
     }
@@ -270,14 +398,14 @@ impl Program {
                     let type_source_path = type_ast.position().clone();
                     match AbstractType::from_easl_tree(
                       type_ast,
-                      &global_context.structs,
-                      &global_context.type_aliases,
+                      &program.structs,
+                      &program.type_aliases,
                       &vec![],
                     )
                     .map(|t| {
                       t.concretize(
                         &vec![],
-                        &global_context.structs,
+                        &program.structs,
                         type_source_path.into(),
                       )
                     }) {
@@ -294,7 +422,7 @@ impl Program {
                             errors.push(e);
                           }
                         }
-                        global_context.top_level_vars.push(TopLevelVar {
+                        program.top_level_vars.push(TopLevelVar {
                           name,
                           metadata: metadata.map(|(a, _)| a),
                           attributes,
@@ -316,7 +444,7 @@ impl Program {
                   Ok((name, type_ast)) => {
                     match TypedExp::try_from_easl_tree(
                       children_iter.next().unwrap(),
-                      &global_context.structs,
+                      &program.structs,
                       &vec![],
                       &vec![],
                       crate::compiler::expression::SyntaxTreeContext::Default,
@@ -324,8 +452,8 @@ impl Program {
                       Ok(value_expression) => {
                         match Type::from_easl_tree(
                           type_ast,
-                          &global_context.structs,
-                          &global_context.type_aliases,
+                          &program.structs,
+                          &program.type_aliases,
                           &vec![],
                         ) {
                           Ok(t) => {
@@ -340,7 +468,7 @@ impl Program {
                                 parens_source_trace.clone(),
                               ));
                             }
-                            global_context.top_level_vars.push(TopLevelVar {
+                            program.top_level_vars.push(TopLevelVar {
                               name,
                               metadata: None,
                               attributes: vec![],
@@ -380,8 +508,8 @@ impl Program {
                           .map(|subtree| {
                             parse_generic_argument(
                               subtree,
-                              &global_context.structs,
-                              &global_context.type_aliases,
+                              &program.structs,
+                              &program.type_aliases,
                               &vec![],
                             )
                           })
@@ -421,8 +549,8 @@ impl Program {
                         .collect();
                       match arg_list_and_return_type_from_easl_tree(
                         arg_list_ast,
-                        &global_context.structs,
-                        &global_context.type_aliases,
+                        &program.structs,
+                        &program.type_aliases,
                         &generic_arg_names,
                       ) {
                         Ok((
@@ -435,7 +563,7 @@ impl Program {
                         )) => {
                           match return_type.concretize(
                             &generic_arg_names,
-                            &global_context.structs,
+                            &program.structs,
                             source_path.clone().into(),
                           ) {
                             Ok(concrete_return_type) => {
@@ -445,7 +573,7 @@ impl Program {
                                   Ok((
                                     TypeState::Known(t.concretize(
                                       &generic_arg_names,
-                                      &global_context.structs,
+                                      &program.structs,
                                       source_path.clone().into(),
                                     )?)
                                     .into(),
@@ -475,8 +603,8 @@ impl Program {
                                       .into(),
                                     arg_names.clone(),
                                     concrete_arg_types,
-                                    &global_context.structs,
-                                    &global_context.type_aliases,
+                                    &program.structs,
+                                    &program.type_aliases,
                                     &generic_arg_names,
                                   ) {
                                     Ok(body) => {
@@ -511,7 +639,7 @@ impl Program {
                                             },
                                           )),
                                         );
-                                      global_context.add_abstract_function(
+                                      program.add_abstract_function(
                                         Rc::new(RefCell::new(
                                           AbstractFunctionSignature {
                                             name: fn_name,
@@ -581,13 +709,13 @@ impl Program {
         ));
       }
     }
-    (Self { global_context }, errors)
+    (program, errors)
   }
   fn propagate_types(&mut self) -> (bool, Vec<CompileError>) {
     let mut errors = vec![];
-    let mut base_context = self.global_context.clone();
+    let mut base_context = self.clone();
     let mut anything_changed = false;
-    for var in self.global_context.top_level_vars.iter_mut() {
+    for var in self.top_level_vars.iter_mut() {
       if let Some(value_expression) = &mut var.value {
         let (changed, mut sub_errors) = value_expression
           .data
@@ -600,7 +728,7 @@ impl Program {
         errors.append(&mut sub_errors);
       }
     }
-    for f in self.global_context.abstract_functions_iter_mut() {
+    for f in self.abstract_functions_iter_mut() {
       if let FunctionImplementationKind::Composite(implementation) =
         &f.borrow().implementation
       {
@@ -616,7 +744,6 @@ impl Program {
   }
   fn find_untyped(&mut self) -> Vec<TypedExp> {
     self
-      .global_context
       .abstract_functions_iter()
       .map(|f| {
         if let FunctionImplementationKind::Composite(implementation) =
@@ -629,7 +756,7 @@ impl Program {
       })
       .collect::<Vec<_>>()
       .into_iter()
-      .chain(self.global_context.top_level_vars.iter_mut().map(|v| {
+      .chain(self.top_level_vars.iter_mut().map(|v| {
         if let Some(value) = &mut v.value {
           value.find_untyped()
         } else {
@@ -640,7 +767,7 @@ impl Program {
       .collect()
   }
   pub fn validate_match_blocks(self) -> CompileResult<Self> {
-    for abstract_function in self.global_context.abstract_functions_iter() {
+    for abstract_function in self.abstract_functions_iter() {
       if let FunctionImplementationKind::Composite(implementation) =
         &abstract_function.borrow().implementation
       {
@@ -676,8 +803,8 @@ impl Program {
   }
   pub fn check_assignment_validity(&mut self) -> Vec<CompileError> {
     let mut errors = vec![];
-    for f in self.global_context.abstract_functions_iter() {
-      let mut ctx = self.global_context.clone();
+    for f in self.abstract_functions_iter() {
+      let mut ctx = self.clone();
       if let FunctionImplementationKind::Composite(implementation) =
         &f.borrow().implementation
       {
@@ -694,8 +821,8 @@ impl Program {
   }
   pub fn monomorphize(&mut self) -> Vec<CompileError> {
     let mut errors = vec![];
-    let mut monomorphized_ctx = Context::default_global();
-    for f in self.global_context.abstract_functions_iter() {
+    let mut monomorphized_ctx = Program::default();
+    for f in self.abstract_functions_iter() {
       if f.borrow().generic_args.is_empty() {
         if let FunctionImplementationKind::Composite(implementation) =
           &f.borrow().implementation
@@ -703,7 +830,7 @@ impl Program {
           match implementation
             .borrow_mut()
             .body
-            .monomorphize(&self.global_context, &mut monomorphized_ctx)
+            .monomorphize(&self, &mut monomorphized_ctx)
           {
             Ok(_) => {
               let mut new_f = (**f).borrow().clone();
@@ -717,10 +844,9 @@ impl Program {
         }
       }
     }
-    take(&mut self.global_context, |old_ctx| {
+    take(self, |old_ctx| {
       monomorphized_ctx.structs = old_ctx.structs;
       monomorphized_ctx.top_level_vars = old_ctx.top_level_vars;
-      monomorphized_ctx.variables = old_ctx.variables;
       monomorphized_ctx.type_aliases = old_ctx.type_aliases;
       monomorphized_ctx
     });
@@ -740,8 +866,8 @@ impl Program {
   pub fn inline_higher_order_arguments(&mut self) -> (bool, Vec<CompileError>) {
     let mut changed = false;
     let mut errors = vec![];
-    let mut inlined_ctx = Context::default_global();
-    for f in self.global_context.abstract_functions_iter() {
+    let mut inlined_ctx = Program::default();
+    for f in self.abstract_functions_iter() {
       if f.borrow().generic_args.is_empty()
         && f
           .borrow()
@@ -776,10 +902,9 @@ impl Program {
         }
       }
     }
-    take(&mut self.global_context, |old_ctx| {
+    take(self, |old_ctx| {
       inlined_ctx.structs = old_ctx.structs;
       inlined_ctx.top_level_vars = old_ctx.top_level_vars;
-      inlined_ctx.variables = old_ctx.variables;
       inlined_ctx.type_aliases = old_ctx.type_aliases;
       inlined_ctx
     });
@@ -787,27 +912,26 @@ impl Program {
   }
   pub fn compile_to_wgsl(self) -> CompileResult<String> {
     let mut wgsl = String::new();
-    for v in self.global_context.top_level_vars.iter() {
+    for v in self.top_level_vars.iter() {
       wgsl += &v.clone().compile();
       wgsl += ";\n";
     }
     wgsl += "\n";
     let default_structs = built_in_structs();
     for s in self
-      .global_context
       .structs
       .iter()
       .cloned()
       .filter(|s| !default_structs.contains(s))
     {
       if let Some(compiled_struct) = Rc::unwrap_or_clone(s)
-        .compile_if_non_generic(&self.global_context.structs)?
+        .compile_if_non_generic(&self.structs)?
       {
         wgsl += &compiled_struct;
         wgsl += "\n\n";
       }
     }
-    for f in self.global_context.abstract_functions_iter() {
+    for f in self.abstract_functions_iter() {
       let f = f.borrow().clone();
       if let FunctionImplementationKind::Composite(implementation) =
         f.implementation
@@ -822,7 +946,6 @@ impl Program {
   }
   pub fn expand_associative_applications(&mut self) {
     for f in self
-      .global_context
       .abstract_functions
       .iter_mut()
       .map(|(_, fns)| fns.into_iter())
@@ -874,22 +997,19 @@ impl Program {
       }
     }
   }
-  pub fn deshadow(&mut self) -> Vec<CompileError> {
+  fn deshadow(&mut self) -> Vec<CompileError> {
     let globally_bound_names: Vec<Rc<str>> = self
-      .global_context
       .top_level_vars
       .iter()
       .map(|v| Rc::clone(&v.name))
       .chain(
         self
-          .global_context
           .abstract_functions
           .iter()
           .map(|(name, _)| Rc::clone(name)),
       )
       .collect();
     self
-      .global_context
       .abstract_functions
       .iter_mut()
       .flat_map(|(_, signatures)| {
@@ -906,8 +1026,61 @@ impl Program {
       })
       .collect()
   }
+  fn validate_associative_signatures(&self) -> Vec<CompileError> {
+    self.abstract_functions_iter().filter_map(|signature| {
+      let signature = signature.borrow();
+      if signature.associative && 
+           (signature.arg_types.len() != 2 || 
+              signature.arg_types[0] != signature.arg_types[1] || 
+              signature.arg_types[0] != signature.return_type) {
+        let FunctionImplementationKind::Composite(implementation) = 
+          &signature.implementation else {unreachable!()};
+        Some(CompileError {
+          kind: CompileErrorKind::InvalidAssociativeSignature,
+          source_trace: implementation.borrow().body.source_trace.clone()
+        })
+      } else {
+        None
+      }
+    }).collect()
+  }
+  fn ensure_no_typeless_bindings(&self) -> Vec<CompileError> {
+    self.abstract_functions_iter().flat_map(|signature| {
+      let signature = signature.borrow();
+      let FunctionImplementationKind::Composite(implementation) = 
+        &signature.implementation else {unreachable!()};
+      let mut errors = vec![];
+      implementation.borrow().body.walk(&mut |exp| {
+        match &exp.kind {
+          ExpKind::Let(items, exp) => {
+            for (_, _, value) in items.iter() {
+              if TypeState::Known(Type::Typeless) == value.data.kind {
+                errors.push(
+                  CompileError {
+                    kind: CompileErrorKind::TypelessBinding,
+                    source_trace: value.source_trace.clone()
+                  }
+                );
+              }
+            }
+          },
+          _ => {}
+        }
+        Ok(true)
+      }).unwrap();
+      errors
+    }).collect()
+  }
   pub fn validate_raw_program(&mut self) -> Vec<CompileError> {
+    let errors = self.validate_associative_signatures();
+    if !errors.is_empty() {
+      return errors;
+    }
     let errors = self.fully_infer_types();
+    if !errors.is_empty() {
+      return errors;
+    }
+    let errors = self.ensure_no_typeless_bindings();
     if !errors.is_empty() {
       return errors;
     }
@@ -932,22 +1105,19 @@ impl Program {
   }
   pub fn gather_type_annotations(&self) -> Vec<(SourceTrace, TypeState)> {
     let mut type_annotations = vec![];
-    for (_, signatures) in self.global_context.abstract_functions.iter() {
-      for signature in signatures {
-        if let FunctionImplementationKind::Composite(implementation) =
-          &(&**signature).borrow().implementation
-        {
-          implementation
-            .borrow()
-            .body
-            .walk(&mut |exp: &TypedExp| {
-              type_annotations
-                .push((exp.source_trace.clone(), exp.data.kind.clone()));
-              Ok(true)
-            })
-            .unwrap();
-        }
-      }
+    for signature in self.abstract_functions_iter() {
+      let signature = signature.borrow();
+      let FunctionImplementationKind::Composite(implementation) =
+        &signature.implementation else {unreachable!()};
+        implementation
+          .borrow()
+          .body
+          .walk(&mut |exp: &TypedExp| {
+            type_annotations
+              .push((exp.source_trace.clone(), exp.data.kind.clone()));
+            Ok(true)
+          })
+          .unwrap();
     }
     type_annotations
   }

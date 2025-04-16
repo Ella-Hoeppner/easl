@@ -226,6 +226,10 @@ pub enum CompileErrorKind {
   ExpectedFunctionFoundNonFunction,
   #[error("Can't shadow top-level binding \"{0}\"")]
   CantShadowTopLevelBinding(Rc<str>),
+  #[error("Invalid signature for @associative function, signature must conform to (Fn [T T]: T)")]
+  InvalidAssociativeSignature,
+  #[error("Can't bind a name to a typeless expression")]
+  TypelessBinding,
 }
 
 #[derive(Clone, Debug)]

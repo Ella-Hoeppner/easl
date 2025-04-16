@@ -1,7 +1,7 @@
 use core::fmt::Debug;
 use std::{
   cell::RefCell,
-  collections::{HashMap, HashSet},
+  collections::HashMap,
   fmt::Display,
   ops::{Deref, DerefMut},
   rc::Rc,
@@ -15,18 +15,12 @@ use crate::{
 };
 
 use super::{
-  builtins::{
-    built_in_functions, built_in_structs, built_in_type_aliases,
-    ABNORMAL_CONSTRUCTOR_STRUCTS,
-  },
   error::{err, CompileErrorKind::*, CompileResult, SourceTrace},
   expression::{ExpKind, TypedExp},
-  functions::{
-    AbstractFunctionSignature, FunctionImplementationKind, FunctionSignature,
-  },
+  functions::FunctionSignature,
+  program::Program,
   structs::{AbstractStruct, Struct},
   util::compile_word,
-  vars::TopLevelVar,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -405,7 +399,7 @@ impl Display for ArraySize {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
-  None,
+  Typeless,
   F32,
   I32,
   U32,
@@ -606,7 +600,7 @@ impl Type {
     use Type::*;
     let source_trace: SourceTrace = source_position.into();
     Ok(match &*name {
-      "None" => None,
+      "None" => Typeless,
       "F32" | "f32" => F32,
       "I32" | "i32" => I32,
       "U32" | "u32" => U32,
@@ -637,7 +631,7 @@ impl Type {
   }
   pub fn compile(&self) -> String {
     match self {
-      Type::None => panic!("Attempted to compile None type"),
+      Type::Typeless => panic!("Attempted to compile Typeless type"),
       Type::F32 => "f32".to_string(),
       Type::I32 => "i32".to_string(),
       Type::U32 => "u32".to_string(),
@@ -732,7 +726,7 @@ impl Display for Type {
       f,
       "{}",
       match self {
-        Type::None => panic!("Attempted to compile None type"),
+        Type::Typeless => panic!("Attempted to compile None type"),
         Type::F32 => "f32".to_string(),
         Type::I32 => "i32".to_string(),
         Type::U32 => "u32".to_string(),
@@ -1383,26 +1377,18 @@ pub fn parse_generic_argument(
   }
 }
 
-#[derive(Debug, Clone)]
-pub struct Context {
-  pub structs: Vec<Rc<AbstractStruct>>,
+pub struct LocalContext<'g> {
   pub variables: HashMap<Rc<str>, Vec<Variable>>,
-  pub abstract_functions:
-    HashMap<Rc<str>, Vec<Rc<RefCell<AbstractFunctionSignature>>>>,
-  pub type_aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
   pub enclosing_function_types: Vec<TypeState>,
-  pub top_level_vars: Vec<TopLevelVar>,
+  pub program: &'g mut Program,
 }
 
-impl Context {
-  fn empty() -> Self {
+impl<'g> LocalContext<'g> {
+  pub fn empty(program: &'g mut Program) -> Self {
     Self {
-      structs: vec![],
       variables: HashMap::new(),
-      abstract_functions: HashMap::new(),
-      type_aliases: vec![],
       enclosing_function_types: vec![],
-      top_level_vars: vec![],
+      program,
     }
   }
   pub fn push_enclosing_function_type(&mut self, typestate: TypeState) {
@@ -1413,119 +1399,6 @@ impl Context {
   }
   pub fn enclosing_function_type(&mut self) -> Option<&mut TypeState> {
     self.enclosing_function_types.last_mut()
-  }
-  pub fn default_global() -> Self {
-    DEFAULT_GLOBAL_CONTEXT.with_borrow(|ctx| ctx.clone())
-  }
-  pub fn add_abstract_function(
-    &mut self,
-    signature: Rc<RefCell<AbstractFunctionSignature>>,
-  ) {
-    let name = Rc::clone(&signature.borrow().name);
-    if let Some(bucket) = self.abstract_functions.get_mut(&name) {
-      bucket.push(signature.into());
-    } else {
-      self.abstract_functions.insert(name, vec![signature.into()]);
-    }
-  }
-  pub fn with_functions(
-    mut self,
-    functions: Vec<AbstractFunctionSignature>,
-  ) -> Self {
-    for f in functions {
-      self.add_abstract_function(Rc::new(RefCell::new(f)));
-    }
-    self
-  }
-  pub fn with_struct(mut self, s: Rc<AbstractStruct>) -> Self {
-    if !self.structs.contains(&s) {
-      if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&&*s.name) {
-        self.add_abstract_function(Rc::new(RefCell::new(
-          AbstractFunctionSignature {
-            name: s.name.clone(),
-            generic_args: s
-              .generic_args
-              .iter()
-              .map(|name| (name.clone(), vec![]))
-              .collect(),
-            arg_types: s
-              .fields
-              .iter()
-              .map(|field| field.field_type.clone())
-              .collect(),
-            return_type: AbstractType::AbstractStruct(s.clone()),
-            implementation: FunctionImplementationKind::Constructor,
-            associative: false,
-          },
-        )));
-      }
-      self.structs.push(s);
-      self.structs.dedup();
-    }
-    self
-  }
-  pub fn with_structs(self, structs: Vec<Rc<AbstractStruct>>) -> Self {
-    structs.into_iter().fold(self, |ctx, s| ctx.with_struct(s))
-  }
-  pub fn with_type_aliases(
-    mut self,
-    mut aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
-  ) -> Self {
-    self.type_aliases.append(&mut aliases);
-    self
-  }
-  pub fn add_monomorphized_struct(&mut self, s: Rc<AbstractStruct>) {
-    if self
-      .structs
-      .iter()
-      .find(|existing_struct| {
-        existing_struct.name == s.name
-          && existing_struct.filled_generics == s.filled_generics
-      })
-      .is_none()
-    {
-      self.structs.push(s);
-    }
-  }
-  pub fn concrete_signatures(
-    &mut self,
-    fn_name: &Rc<str>,
-    source_trace: SourceTrace,
-  ) -> CompileResult<Option<Vec<Type>>> {
-    if let Some(signatures) = self.abstract_functions.get(fn_name) {
-      signatures
-        .into_iter()
-        .map(|signature| {
-          Ok(Type::Function(Box::new(
-            AbstractFunctionSignature::concretize(
-              Rc::new(RefCell::new(signature.borrow().clone())),
-              &self.structs,
-              source_trace.clone(),
-            )?,
-          )))
-        })
-        .collect::<CompileResult<Vec<_>>>()
-        .map(|x| Some(x))
-    } else {
-      Ok(None)
-    }
-  }
-  pub fn constrain_name_type(
-    &mut self,
-    name: &Rc<str>,
-    source_trace: SourceTrace,
-    t: &mut TypeState,
-  ) -> (bool, Vec<CompileError>) {
-    match self.concrete_signatures(name, source_trace.clone()) {
-      Err(e) => (false, vec![e]),
-      Ok(Some(signatures)) => {
-        t.constrain(TypeState::OneOf(signatures), source_trace)
-      }
-      Ok(None) => match self.get_typestate_mut(name, source_trace.clone()) {
-        Ok(typestate) => t.mutually_constrain(typestate, source_trace),
-        Err(e) => (false, vec![e]),
-      },
-    }
   }
   pub fn bind(&mut self, name: &str, v: Variable) {
     if !self.variables.contains_key(name) {
@@ -1544,8 +1417,9 @@ impl Context {
   pub fn is_bound(&self, name: &str) -> bool {
     let name_rc: Rc<str> = name.to_string().into();
     self.variables.contains_key(name)
-      || self.abstract_functions.contains_key(&name_rc)
+      || self.program.abstract_functions.contains_key(&name_rc)
       || self
+        .program
         .top_level_vars
         .iter()
         .find(|top_level_var| &*top_level_var.name == name)
@@ -1558,6 +1432,7 @@ impl Context {
       .map(|vars| vars.last().unwrap().kind.clone())
       .or(
         self
+          .program
           .top_level_vars
           .iter()
           .find_map(|v| (&*v.name == name).then(|| v.var.kind.clone())),
@@ -1573,6 +1448,7 @@ impl Context {
       Ok(&mut var.last_mut().unwrap().typestate)
     } else {
       if let Some(top_level_var) = self
+        .program
         .top_level_vars
         .iter_mut()
         .find(|var| &*var.name == name)
@@ -1583,33 +1459,21 @@ impl Context {
       }
     }
   }
-  pub fn abstract_functions_iter(
-    &self,
-  ) -> impl Iterator<Item = &Rc<RefCell<AbstractFunctionSignature>>> {
-    self
-      .abstract_functions
-      .values()
-      .map(|fs| fs.iter())
-      .flatten()
-  }
-  pub fn abstract_functions_iter_mut(
+  pub fn constrain_name_type(
     &mut self,
-  ) -> impl Iterator<Item = &mut Rc<RefCell<AbstractFunctionSignature>>> {
-    self
-      .abstract_functions
-      .values_mut()
-      .map(|fs| fs.iter_mut())
-      .flatten()
+    name: &Rc<str>,
+    source_trace: SourceTrace,
+    t: &mut TypeState,
+  ) -> (bool, Vec<CompileError>) {
+    match self.program.concrete_signatures(name, source_trace.clone()) {
+      Err(e) => (false, vec![e]),
+      Ok(Some(signatures)) => {
+        t.constrain(TypeState::OneOf(signatures), source_trace)
+      }
+      Ok(None) => match self.get_typestate_mut(name, source_trace.clone()) {
+        Ok(typestate) => t.mutually_constrain(typestate, source_trace),
+        Err(e) => (false, vec![e]),
+      },
+    }
   }
-}
-
-thread_local! {
-  static DEFAULT_GLOBAL_CONTEXT: RefCell<Context> =
-    RefCell::new(
-      Context::empty()
-        .with_functions(built_in_functions())
-        .with_structs(
-          built_in_structs().into_iter().map(|s| Rc::new(s)).collect(),
-        )
-        .with_type_aliases(built_in_type_aliases()));
 }

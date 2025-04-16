@@ -371,7 +371,7 @@ fn arithmetic_functions(
         AbstractType::Generic("T".into()),
         AbstractType::Generic("T".into()),
       ],
-      return_type: AbstractType::Type(Type::None),
+      return_type: AbstractType::Type(Type::Typeless),
       implementation: FunctionImplementationKind::Builtin,
       associative: false,
     },
@@ -405,7 +405,7 @@ fn arithmetic_functions(
             })
             .collect(),
           return_type: if assignment_fn {
-            AbstractType::Type(Type::None)
+            AbstractType::Type(Type::Typeless)
           } else {
             AbstractType::AbstractStruct(vec.clone())
           },
@@ -444,7 +444,7 @@ fn bitwise_functions(
         AbstractType::Generic("T".into()),
         AbstractType::Generic("T".into()),
       ],
-      return_type: AbstractType::Type(Type::None),
+      return_type: AbstractType::Type(Type::Typeless),
       implementation: FunctionImplementationKind::Builtin,
       associative: false,
     },
@@ -478,7 +478,7 @@ fn bitwise_functions(
             })
             .collect(),
           return_type: if assignment_fn {
-            AbstractType::Type(Type::None)
+            AbstractType::Type(Type::Typeless)
           } else {
             AbstractType::AbstractStruct(vec.clone())
           },
@@ -680,7 +680,7 @@ fn assignment_function() -> Vec<AbstractFunctionSignature> {
       AbstractType::Generic("T".into()),
       AbstractType::Generic("T".into()),
     ],
-    return_type: AbstractType::Type(Type::None),
+    return_type: AbstractType::Type(Type::Typeless),
     implementation: FunctionImplementationKind::Builtin,
     associative: false,
   }]
@@ -1176,152 +1176,165 @@ pub fn built_in_macros() -> Vec<Macro> {
                 format!("\"->\" macro expects at least one inner form").into(),
               )));
             }
-            let mut children_iter = children.into_iter();
-            children_iter.next();
-            let original_expression = children_iter.next().unwrap();
-            Some(children_iter.fold(
-              Ok(original_expression.clone()),
-              |maybe_previous_expression: Result<
-                EaslTree,
-                (SourceTrace, Rc<str>),
-              >,
-               thread_expression| {
-                match maybe_previous_expression.map(|previous_expression| {
-                  fn walk_thread_expression(
-                    tree: EaslTree,
-                    inner_expression: Option<EaslTree>,
-                    mut positioner_traces: Vec<SourceTrace>,
-                  ) -> (EaslTree, Option<EaslTree>, Vec<SourceTrace>)
-                  {
-                    match tree {
-                      EaslTree::Leaf(position, leaf) => {
-                        if leaf.as_str() == "<>" {
-                          positioner_traces
-                            .push(SourceTrace::from(position.clone()));
-                          if let Some(inner_expression) = inner_expression {
-                            (inner_expression, None, positioner_traces)
-                          } else {
-                            (
-                              EaslTree::Leaf(position, leaf),
-                              None,
-                              positioner_traces,
-                            )
-                          }
-                        } else {
-                          (
-                            EaslTree::Leaf(position, leaf),
-                            inner_expression,
-                            positioner_traces,
-                          )
-                        }
-                      }
-                      EaslTree::Inner((position, kind), subtrees) => {
-                        let (new_subtrees, inner_expression, position_traces) =
-                          subtrees.into_iter().fold(
-                            (vec![], inner_expression, positioner_traces),
-                            |(
-                              mut new_subtrees,
-                              inner_expression,
-                              positioner_traces,
-                            ),
-                             subtree| {
-                              let (
-                                new_subtree,
-                                new_inner_expression,
-                                new_positioner_traces,
-                              ) = walk_thread_expression(
-                                subtree,
-                                inner_expression,
-                                positioner_traces,
-                              );
-                              new_subtrees.push(new_subtree);
-                              (
-                                new_subtrees,
-                                new_inner_expression,
-                                new_positioner_traces,
-                              )
-                            },
-                          );
-                        (
-                          EaslTree::Inner((position, kind), new_subtrees),
-                          inner_expression,
-                          position_traces,
-                        )
-                      }
-                    }
+            fn walk_thread_expression(
+              tree: EaslTree,
+              binding_name: Rc<str>,
+              mut positioner_traces: Vec<SourceTrace>,
+            ) -> (EaslTree, Vec<SourceTrace>) {
+              match tree {
+                EaslTree::Leaf(position, leaf) => {
+                  if leaf.as_str() == "<>" {
+                    positioner_traces.push(SourceTrace::from(position.clone()));
+                    (
+                      EaslTree::Leaf(position, format!("{binding_name}")),
+                      positioner_traces,
+                    )
+                  } else {
+                    (EaslTree::Leaf(position, leaf), positioner_traces)
                   }
-                  let (
-                    new_thread_expression,
-                    previous_expression,
-                    positioner_traces,
-                  ) = walk_thread_expression(
-                    thread_expression.clone(),
-                    Some(previous_expression),
-                    vec![],
-                  );
-                  match positioner_traces.len() {
-                    0 => match new_thread_expression {
-                      EaslTree::Inner(
-                        (
-                          paren_position,
-                          EncloserOrOperator::Encloser(Encloser::Parens),
-                        ),
-                        mut subtrees,
-                      ) => {
-                        if subtrees.is_empty() {
-                          Err((
-                            SourceTrace::from(paren_position),
-                            format!(
-                              "forms inside \"->\" macro must have at least
-                                  one inner form",
-                            )
-                            .into(),
-                          ))
-                        } else {
-                          subtrees.insert(1, previous_expression.unwrap());
-                          Ok(EaslTree::Inner(
-                            (
-                              paren_position,
-                              EncloserOrOperator::Encloser(Encloser::Parens),
-                            ),
-                            subtrees,
-                          ))
-                        }
-                      }
-                      EaslTree::Inner((inner_position, _), _) => Err((
-                        SourceTrace::from(inner_position),
-                        format!("\"->\" macro expects parenthesized forms",)
-                          .into(),
-                      )),
-                      EaslTree::Leaf(leaf_position, leaf_string) => Ok({
+                }
+                EaslTree::Inner((position, kind), subtrees) => {
+                  let (new_subtrees, position_traces) =
+                    subtrees.into_iter().fold(
+                      (vec![], positioner_traces),
+                      |(mut new_subtrees, positioner_traces), subtree| {
+                        let (new_subtree, new_positioner_traces) =
+                          walk_thread_expression(
+                            subtree,
+                            binding_name.clone(),
+                            positioner_traces,
+                          );
+                        new_subtrees.push(new_subtree);
+                        (new_subtrees, new_positioner_traces)
+                      },
+                    );
+                  (
+                    EaslTree::Inner((position, kind), new_subtrees),
+                    position_traces,
+                  )
+                }
+              }
+            }
+            let binding_name =
+              |i: usize| -> Rc<str> { format!("thread_gensym_{i}").into() };
+            let null_position = DocumentPosition::new(0..0, vec![]);
+            let bindings: Result<
+              Vec<(Rc<str>, EaslTree)>,
+              (SourceTrace, Rc<str>),
+            > = children
+              .into_iter()
+              .skip(1)
+              .cloned()
+              .enumerate()
+              .map(|(i, child_expression)| {
+                Ok((
+                  binding_name(i),
+                  if i == 0 {
+                    child_expression
+                  } else {
+                    let prior_binding_name = binding_name(i - 1);
+                    let (mut new_child_expression, source_traces) =
+                      walk_thread_expression(
+                        child_expression,
+                        prior_binding_name.clone(),
+                        vec![],
+                      );
+                    if source_traces.is_empty() {
+                      let binding_leaf = EaslTree::Leaf(
+                        null_position.clone(),
+                        format!("{prior_binding_name}"),
+                      );
+                      new_child_expression = match new_child_expression {
                         EaslTree::Inner(
                           (
-                            leaf_position.clone(),
+                            paren_position,
                             EncloserOrOperator::Encloser(Encloser::Parens),
                           ),
+                          mut subtrees,
+                        ) => {
+                          if subtrees.is_empty() {
+                            return Err((
+                              SourceTrace::from(paren_position),
+                              format!(
+                                "forms inside \"->\" macro must have at least
+                                      one inner form",
+                              )
+                              .into(),
+                            ));
+                          } else {
+                            subtrees.insert(1, binding_leaf.clone());
+                            EaslTree::Inner(
+                              (
+                                paren_position,
+                                EncloserOrOperator::Encloser(Encloser::Parens),
+                              ),
+                              subtrees,
+                            )
+                          }
+                        }
+                        EaslTree::Inner((inner_position, _), _) => {
+                          return Err(
+                            (
+                              SourceTrace::from(inner_position),
+                              format!(
+                                "\"->\" macro expects parenthesized forms",
+                              )
+                              .into(),
+                            ),
+                          );
+                        }
+                        EaslTree::Leaf(leaf_position, leaf_string) => {
+                          EaslTree::Inner(
+                            (
+                              leaf_position.clone(),
+                              EncloserOrOperator::Encloser(Encloser::Parens),
+                            ),
+                            vec![
+                              EaslTree::Leaf(leaf_position, leaf_string),
+                              binding_leaf.clone(),
+                            ],
+                          )
+                        }
+                      };
+                    }
+                    new_child_expression
+                  },
+                ))
+              })
+              .collect();
+            Some(bindings.map(|mut bindings| {
+              let last_binding = bindings.pop().unwrap().1;
+              {
+                EaslTree::Inner(
+                  (
+                    null_position.clone(),
+                    EncloserOrOperator::Encloser(Encloser::Parens),
+                  ),
+                  vec![
+                    EaslTree::Leaf(null_position.clone(), "let".into()),
+                    EaslTree::Inner(
+                      (
+                        null_position.clone(),
+                        EncloserOrOperator::Encloser(Encloser::Square),
+                      ),
+                      bindings
+                        .into_iter()
+                        .flat_map(|(name, value)| {
                           vec![
-                            EaslTree::Leaf(leaf_position, leaf_string),
-                            previous_expression.unwrap(),
-                          ],
-                        )
-                      }),
-                    },
-                    1 => Ok(new_thread_expression),
-                    n => Err((
-                      positioner_traces.into_iter().collect(),
-                      format!(
-                        "\"->\" expression must contain zero or one \"<>\" \
-                          subexpressions, found {n}"
-                      )
-                      .into(),
-                    )),
-                  }
-                }) {
-                  Ok(Err(x)) | Err(x) => Err(x),
-                  Ok(Ok(x)) => Ok(x),
-                }
-              },
-            ))
+                            EaslTree::Leaf(
+                              null_position.clone(),
+                              format!("{name}"),
+                            ),
+                            value,
+                          ]
+                        })
+                        .collect(),
+                    ),
+                    last_binding,
+                  ],
+                )
+              }
+            }))
           } else {
             None
           }

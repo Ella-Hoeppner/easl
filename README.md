@@ -22,13 +22,7 @@ Feature goals:
   * let top-level struct-like metadata appear on one line if it's under some threshold (probably should be another separate threshold)
   * ocassionally `let` bindings will be like 1 char to the left of where they should be past the first line, not sure why
 
-* make `->` compile to a series of nested `let`s rather than just inlining, and allow `<>` to be used more than one time
-  * need a gensym system for this I guess, might as well make a general one
-
-* ensure that all associative functions are of the signature `(Fn [T T] T)`
-
 * implement post-typechecking validations and errors
-  * ensure that no variables have the `Type::None` type
   * ensure control flow expressions are only used in their proper context
     * `break` and `continue` can only be used inside a loop
     * `discard` can only be used inside a `@fragment` function
@@ -39,6 +33,8 @@ Feature goals:
       * all patterns are just literals
       * no patterns are repeated
       * the wildcard doesn't appear if the other patterns would already be exhaustive, i.e. you can't have `true` and `false` and a wildcard case when matching a bool
+
+* allow arguments to be declared as `@var` by just wrapping the whole body in a `let` that shadows the arguments
 
 * `do`
 
@@ -53,7 +49,7 @@ Feature goals:
 
 ### medium priority, necessary to call the language 0.1
 
-* the names generated for deshadowing bindings aren't currently guaranteed to be unique
+* the names generated for deshadowing and the `->` bindings aren't currently guaranteed to be unique, need to have a system that tracks all names used in a program and allows safe gensym-ing
 
 * support declaring custom type constraints
   * each constraint is just defined by a function
@@ -79,6 +75,9 @@ Feature goals:
 * restrict vec constructor with an `(Into T)` constraint that ensures the arg can be converted into the type of the type contained within the vector
   * right now all the generics are restricted with `Scalar`, which works well enough for all the built-in vec types, but doing `(Into T)` instead should make it possible to have the same convenience with vectors of custom types (e.g. complex numbers)
 
+* Allow associative functions to have signatures like `(Fn [A: (Into T) B: (Into T)]: T)`, and in the case of n arguments, generalize this to n different generic arguments.
+  * without this, things like `(+ (vec3f 0.) (vec3f 1.) 5.)` aren't allowed, but they have a very unambiguous meaning and disallowing them seems wrong given that you could just as well expand them to two applications of `+`.
+
 * add a special case for inferring the type of vectors/scalars when it would normally get stuck due to being inside another vector constructor
   * e.g. right now `(vec4f 1)` fails because it can't tell if the `1` is a float, int, or uint - it could be any since vec4f can accept any of those. But since it will be converted to a float regardless, its type doesn't actually affect the semantics of the program, so it's silly to throw a type inference error. It should just infer it to be a float, or more generally, ambiguous number literals can be inferred to be the same type as the surrounding vector
   * this isn't just an issue for scalars though, since `(vec4f (vec3 0f) 1f)` would also fail to compile due to not being able to infer the type of `(vec3 0f)` - just as with a scalar it could be a float, int, or uint vector, and would be converted to a float vector either way, so the type ambiguity doesn't affect the semantics and it should just be assumed to be the same type as the outer vector
@@ -102,14 +101,8 @@ Feature goals:
 
 * Optimize
   * split `propagate_types` into two functions, one which happens only once, and one which gets called repeatedly. Much of the logic in `propagate_types` needs to happen once but is wasteful if done repeatedly
-  * probably using `Rc<str>` in place of `String` in most places would be a significant improvement
-    * probably should do this in SSE too
-  * keep abstract ancestors (for functions and structs) in `Rc`s
 
 * implement a more specialized/optimized version of `mutually_constrain` that doesn't just rely on calling `constrain` twice to handle both directions
-
-* allow arguments to be declared as `@var`
-  * oh huh wgsl doesn't actually support this... I guess this could be supported by just sorta macroexpanding `@var` arguments into functions with a let block that shadows the arg
 
 * as a special case of some kind, have there be a way to declare aliases for `vec` for any type, so that you could e.g. if you had a complex number type, you could do `(vec-alias-suffix c Complex)` and automatically get `vec2c`, `vec3c`, and `vec4c` types, and their variadic constructors
 
@@ -123,10 +116,7 @@ Feature goals:
 * support tuples
   * compile to structs
 
-* support impl'ing typeclasses on types
-    * can test this by impl'ing Add on bool
-  * support impl'ing on typeclass combination aliases
-    * this should require providing a signature for all functions in each typeclass within the alias
+* support enums
 
 * clj-style `loop` construct
 
