@@ -1,4 +1,4 @@
-use std::{cell::{Ref, RefCell}, cmp::Ordering, collections::HashMap, ops::Deref, rc::Rc};
+use std::{cell::RefCell, cmp::Ordering, collections::HashMap, rc::Rc};
 
 use sse::{document::Document, syntax::EncloserOrOperator};
 use take_mut::take;
@@ -766,7 +766,8 @@ impl Program {
       .flatten()
       .collect()
   }
-  pub fn validate_match_blocks(self) -> CompileResult<Self> {
+  pub fn validate_match_blocks(&self) -> Vec<CompileError> {
+    let mut errors = vec![];
     for abstract_function in self.abstract_functions_iter() {
       if let FunctionImplementationKind::Composite(implementation) =
         &abstract_function.borrow().implementation
@@ -774,10 +775,10 @@ impl Program {
         (**implementation)
           .borrow_mut()
           .body
-          .validate_match_blocks()?;
+          .validate_match_blocks(&mut errors);
       }
     }
-    Ok(self)
+    errors
   }
   pub fn fully_infer_types(&mut self) -> Vec<CompileError> {
     let mut errors = vec![];
@@ -1047,29 +1048,40 @@ impl Program {
   fn ensure_no_typeless_bindings(&self) -> Vec<CompileError> {
     self.abstract_functions_iter().flat_map(|signature| {
       let signature = signature.borrow();
-      let FunctionImplementationKind::Composite(implementation) = 
-        &signature.implementation else {unreachable!()};
       let mut errors = vec![];
-      implementation.borrow().body.walk(&mut |exp| {
-        match &exp.kind {
-          ExpKind::Let(items, exp) => {
-            for (_, _, value) in items.iter() {
-              if TypeState::Known(Type::Typeless) == value.data.kind {
-                errors.push(
-                  CompileError {
-                    kind: CompileErrorKind::TypelessBinding,
-                    source_trace: value.source_trace.clone()
-                  }
-                );
+      if let FunctionImplementationKind::Composite(implementation) = 
+        &signature.implementation {
+        implementation.borrow().body.walk(&mut |exp| {
+          match &exp.kind {
+            ExpKind::Let(items, _) => {
+              for (_, _, value) in items.iter() {
+                if TypeState::Known(Type::Unit) == value.data.kind {
+                  errors.push(
+                    CompileError {
+                      kind: CompileErrorKind::TypelessBinding,
+                      source_trace: value.source_trace.clone()
+                    }
+                  );
+                }
               }
-            }
-          },
-          _ => {}
-        }
-        Ok(true)
-      }).unwrap();
+            },
+            _ => {}
+          }
+          Ok(true)
+        }).unwrap();
+      }
       errors
     }).collect()
+  }
+  pub fn validate_control_flow(&mut self) -> Vec<CompileError> {
+    let mut errors = vec![];
+    for signature in self.abstract_functions_iter() {
+      let signature = signature.borrow();
+      if let FunctionImplementationKind::Composite(f) = &signature.implementation {
+        f.borrow().body.validate_control_flow(&mut errors, 0);
+      }
+    }
+    errors
   }
   pub fn validate_raw_program(&mut self) -> Vec<CompileError> {
     let errors = self.validate_associative_signatures();
@@ -1077,6 +1089,10 @@ impl Program {
       return errors;
     }
     let errors = self.fully_infer_types();
+    if !errors.is_empty() {
+      return errors;
+    }
+    let errors = self.validate_control_flow();
     if !errors.is_empty() {
       return errors;
     }
@@ -1090,6 +1106,10 @@ impl Program {
       return errors;
     }
     let errors = self.monomorphize();
+    if !errors.is_empty() {
+      return errors;
+    }
+    let errors = self.validate_match_blocks();
     if !errors.is_empty() {
       return errors;
     }

@@ -15,4 +15,17 @@
          (= b
             a)
          break)
+    (for [i
+          10
+          false
+          (= i
+             0)]
+         (for [i
+               10
+               false
+               (= i
+                  0)]
+              (= b
+                 (f32 i))
+              break))
     5.))

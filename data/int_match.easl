@@ -3,6 +3,7 @@
     0 10
     1 11
     2 12
+    3 13
     _ -1))
 
 (defn inner-rotate [i: i32]: i32

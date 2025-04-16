@@ -18,30 +18,19 @@ Feature goals:
 ### high priority
 * formatter: 
   * have a separate threshold for the max size allowed for top-level `(def ...)`
-    * a lot of things that would be perfectly readable on one line are getting split to multiple lines, feels like `def`s should almost always be one line unless they're 
+    * a lot of things that would be perfectly readable on one line are getting split to multiple lines, feels like `def`s should almost always be one line unless they're very long
   * let top-level struct-like metadata appear on one line if it's under some threshold (probably should be another separate threshold)
   * ocassionally `let` bindings will be like 1 char to the left of where they should be past the first line, not sure why
-
-* implement post-typechecking validations and errors
-  * ensure control flow expressions are only used in their proper context
-    * `break` and `continue` can only be used inside a loop
-    * `discard` can only be used inside a `@fragment` function
-  * `TypedExp::validate_match_blocks`
-    * ensure that
-      * there's only one wildcard
-      * the wildcard appears at the end
-      * all patterns are just literals
-      * no patterns are repeated
-      * the wildcard doesn't appear if the other patterns would already be exhaustive, i.e. you can't have `true` and `false` and a wildcard case when matching a bool
 
 * allow arguments to be declared as `@var` by just wrapping the whole body in a `let` that shadows the arguments
 
 * `do`
 
-* support lifting internal `let`s, `match`s, and `do`s
-  * need to figure out how to deal with mutable variables with this... when a mutation of a variable crosses the scope over which a let would be lifted
-
 * matrices
+
+* support lifting internal `let`s, `match`s, `do`s
+  * "internal" is just whenever one of those expressions occurs inside an `Application`, and they need to be lifted to the outside of that application
+  * need to figure out how to deal with mutable variables with this... when a mutation of a variable crosses the scope over which a let would be lifted
 
 * add a `poisoned: bool` field or smth to `ExpTypeInfo`, which gets set to true when an expression has already returned an error. Then make `constrain`/`mutually_constrain` and other things that can return type errors just skip their effects when the relevant typestates are poisoned, so that we aren't repeatedly generating the same errors.
 

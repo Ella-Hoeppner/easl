@@ -96,17 +96,6 @@ fn parse_number(num_str: &str, source_trace: SourceTrace) -> Option<TypedExp> {
   None
 }
 
-pub fn is_match_exhaustive(
-  scrutinee_type: &ExpTypeInfo,
-  arms: &Vec<(TypedExp, TypedExp)>,
-) -> Option<bool> {
-  if let TypeState::Known(t) = &scrutinee_type.kind {
-    Some(t.do_patterns_exhaust(arms.iter().map(|(pattern, _)| pattern)))
-  } else {
-    None
-  }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct Exp<D: Debug + Clone + PartialEq> {
   pub data: D,
@@ -249,6 +238,7 @@ impl Accessor {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Wildcard,
+  Unit,
   Name(Rc<str>),
   NumberLiteral(Number),
   BooleanLiteral(bool),
@@ -445,13 +435,13 @@ impl TypedExp {
         if &*leaf == "break" {
           Exp {
             kind: ExpKind::Break,
-            data: Known(Type::Typeless).into(),
+            data: Known(Type::Unit).into(),
             source_trace,
           }
         } else if &*leaf == "continue" {
           Exp {
             kind: ExpKind::Continue,
-            data: Known(Type::Typeless).into(),
+            data: Known(Type::Unit).into(),
             source_trace,
           }
         } else if &*leaf == "discard" {
@@ -863,7 +853,7 @@ impl TypedExp {
                                 update_condition_expression,
                               ),
                               body_expression: Box::new(TypedExp {
-                                data: TypeState::Known(Type::Typeless).into(),
+                                data: TypeState::Known(Type::Unit).into(),
                                 kind: ExpKind::Block {
                                   expressions: body_expressions,
                                   bracketed: false,
@@ -871,7 +861,7 @@ impl TypedExp {
                                 source_trace: body_source_trace,
                               }),
                             },
-                            data: Known(Type::Typeless).into(),
+                            data: Known(Type::Unit).into(),
                             source_trace,
                           })
                         }
@@ -901,7 +891,7 @@ impl TypedExp {
                                 condition_expression,
                               ),
                               body_expression: Box::new(TypedExp {
-                                data: TypeState::Known(Type::Typeless).into(),
+                                data: TypeState::Known(Type::Unit).into(),
                                 kind: ExpKind::Block {
                                   expressions: sub_expressions,
                                   bracketed: false,
@@ -909,7 +899,7 @@ impl TypedExp {
                                 source_trace: body_source_trace,
                               }),
                             },
-                            data: Known(Type::Typeless).into(),
+                            data: Known(Type::Unit).into(),
                             source_trace,
                           })
                         }
@@ -924,7 +914,7 @@ impl TypedExp {
                             )?;
                             Some(Exp {
                               kind: ExpKind::Return(Box::new(exp)),
-                              data: TypeState::Known(Type::Typeless).into(),
+                              data: TypeState::Known(Type::Unit).into(),
                               source_trace,
                             })
                           } else {
@@ -979,7 +969,11 @@ impl TypedExp {
                   source_trace,
                 })
               } else {
-                return err(EmptyList, source_trace);
+                Exp {
+                  data: TypeState::Known(Type::Unit).into(),
+                  kind: ExpKind::Unit,
+                  source_trace,
+                }
               }
             }
             ArrayLookup => {
@@ -1217,6 +1211,7 @@ impl TypedExp {
     };
     match self.kind {
       Wildcard => panic!("compiling wildcard"),
+      Unit => panic!("compiling unit"),
       Name(name) => wrap(compile_word(name)),
       NumberLiteral(num) => wrap(match num {
         Number::Int(i) => {
@@ -1331,20 +1326,22 @@ impl TypedExp {
                 }
               }
               let (true_case, false_case) = if let Some(true_case) = true_case {
-                (
-                  indent(true_case.compile(position)),
-                  indent(
-                    false_case.or(wildcard_case).unwrap().compile(position),
-                  ),
-                )
+                (true_case, false_case.or(wildcard_case).unwrap())
               } else {
-                (
-                  indent(
-                    true_case.or(wildcard_case).unwrap().compile(position),
-                  ),
-                  indent(false_case.unwrap().compile(position)),
-                )
+                (true_case.or(wildcard_case).unwrap(), false_case.unwrap())
               };
+              let (true_case, false_case) = (
+                if true_case.kind == ExpKind::Unit {
+                  indent("\n".to_string())
+                } else {
+                  indent(true_case.compile(position))
+                },
+                if false_case.kind == ExpKind::Unit {
+                  indent("\n".to_string())
+                } else {
+                  indent(false_case.compile(position))
+                },
+              );
               let condition = scrutinee.compile(InnerExpression);
               if position == InnerExpression {
                 format!("select({false_case}, {true_case}, {condition})")
@@ -1388,7 +1385,11 @@ impl TypedExp {
                     } else {
                       "case ".to_string() + &pattern.compile(InnerExpression)
                     },
-                    indent(value.compile(position))
+                    if value.kind == ExpKind::Unit {
+                      "".to_string()
+                    } else {
+                      indent(value.compile(position))
+                    }
                   ))
                   .collect::<Vec<String>>()
                   .join("\n")
@@ -1486,8 +1487,60 @@ impl TypedExp {
       .unwrap();
     untyped
   }
-  pub fn validate_match_blocks(&self) -> CompileResult<()> {
-    Ok(()) // todo!
+  pub fn validate_match_blocks(&self, errors: &mut Vec<CompileError>) {
+    self
+      .walk(&mut |exp| {
+        match &exp.kind {
+          Match(exp, items) => {
+            if let TypeState::Known(t) = &exp.data.kind {
+              let mut first_wildcard: Option<SourceTrace> = None;
+              let mut all_pattern_values: Vec<&ExpKind<ExpTypeInfo>> = vec![];
+              for (pattern, _) in items.iter() {
+                if let Some(first_wildcard) = &first_wildcard {
+                  errors.push(CompileError {
+                    kind: CompileErrorKind::PatternAfterWildcard,
+                    source_trace: pattern
+                      .source_trace
+                      .clone()
+                      .combine_with(first_wildcard.clone()),
+                  })
+                }
+                if all_pattern_values.contains(&&pattern.kind) {
+                  errors.push(CompileError {
+                    kind: CompileErrorKind::DuplicatePattern,
+                    source_trace: pattern.source_trace.clone(),
+                  })
+                } else {
+                  match &pattern.kind {
+                    Wildcard => {
+                      if first_wildcard.is_none() {
+                        first_wildcard = Some(pattern.source_trace.clone())
+                      }
+                    }
+                    NumberLiteral(_) | BooleanLiteral(_) => {}
+                    _ => errors.push(CompileError {
+                      kind: CompileErrorKind::InvalidPattern,
+                      source_trace: pattern.source_trace.clone(),
+                    }),
+                  }
+                  all_pattern_values.push(&pattern.kind);
+                }
+              }
+              if first_wildcard.is_none()
+                && !(*t == Type::Bool && all_pattern_values.len() == 2)
+              {
+                errors.push(CompileError {
+                  kind: CompileErrorKind::NonexhaustiveMatch,
+                  source_trace: exp.source_trace.clone(),
+                });
+              }
+            }
+          }
+          _ => {}
+        }
+        Ok(true)
+      })
+      .unwrap();
   }
   fn propagate_types_inner(
     &mut self,
@@ -1501,6 +1554,14 @@ impl TypedExp {
       Wildcard => {
         self.data.subtree_fully_typed = true;
         false
+      }
+      Unit => {
+        self.data.subtree_fully_typed = true;
+        let (changed, mut inner_errors) = self
+          .data
+          .constrain(TypeState::Known(Type::Unit), self.source_trace.clone());
+        errors.append(&mut inner_errors);
+        changed
       }
       Name(name) => {
         self.data.subtree_fully_typed = true;
@@ -1806,14 +1867,6 @@ impl TypedExp {
         let (mut anything_changed, mut scrutinee_errors) =
           scrutinee.propagate_types_inner(ctx);
         errors.append(&mut scrutinee_errors);
-        if let Some(false) = is_match_exhaustive(&scrutinee.data, &arms) {
-          let (changed, mut scrutinee_errors) = self.data.constrain(
-            TypeState::Known(Type::Typeless),
-            self.source_trace.clone(),
-          );
-          anything_changed |= changed;
-          errors.append(&mut scrutinee_errors);
-        }
         for (case, value) in arms.iter_mut() {
           let (changed, mut sub_errors) = case.propagate_types_inner(ctx);
           anything_changed |= changed;
@@ -1904,7 +1957,7 @@ impl TypedExp {
         errors.append(&mut sub_errors);
         let (changed, mut sub_errors) =
           update_condition_expression.data.constrain(
-            TypeState::Known(Type::Typeless),
+            TypeState::Known(Type::Unit),
             update_condition_expression.source_trace.clone(),
           );
         anything_changed |= changed;
@@ -1942,7 +1995,7 @@ impl TypedExp {
           );
         errors.append(&mut sub_errors);
         let (changed, mut sub_errors) = body_expression.data.constrain(
-          TypeState::Known(Type::Typeless),
+          TypeState::Known(Type::Unit),
           condition_expression.source_trace.clone(),
         );
         anything_changed |= changed;
@@ -2367,6 +2420,34 @@ impl TypedExp {
     errors: &mut Vec<CompileError>,
     first_in_walk: bool,
   ) -> bool {
+    let add_binding = |name: &mut Rc<str>,
+                       source_trace: &SourceTrace,
+                       bindings: &mut HashMap<Rc<str>, Vec<Rc<str>>>,
+                       errors: &mut Vec<CompileError>| {
+      if globally_bound_names.contains(&name) {
+        errors.push(CompileError::new(
+          CompileErrorKind::CantShadowTopLevelBinding(name.clone()),
+          source_trace.clone(),
+        ));
+      }
+      if let Some(renames) = bindings.get_mut(name) {
+        let gensym_name: Rc<str> =
+          format!("{}_deshadowed_{}", name.to_string(), renames.len()).into();
+        std::mem::swap(name, &mut gensym_name.clone());
+        renames.push(gensym_name);
+      } else {
+        bindings.insert(name.clone(), vec![]);
+      }
+    };
+    let remove_binding =
+      |name: &Rc<str>, bindings: &mut HashMap<Rc<str>, Vec<Rc<str>>>| {
+        bindings.remove(name);
+        for (_, renames) in bindings.iter_mut() {
+          if renames.last() == Some(name) {
+            renames.pop();
+          }
+        }
+      };
     match &mut self.kind {
       Let(let_bindings, body) => {
         for binding in let_bindings.iter_mut() {
@@ -2376,33 +2457,51 @@ impl TypedExp {
             errors,
             true,
           );
-          let name = &mut binding.0;
-          if globally_bound_names.contains(&name) {
-            errors.push(CompileError::new(
-              CompileErrorKind::CantShadowTopLevelBinding(name.clone()),
-              binding.2.source_trace.clone(),
-            ));
-          }
-          if let Some(renames) = bindings.get_mut(name) {
-            let gensym_name: Rc<str> =
-              format!("{}_deshadowed_{}", name.to_string(), renames.len())
-                .into();
-            std::mem::swap(name, &mut gensym_name.clone());
-            renames.push(gensym_name);
-          } else {
-            bindings.insert(name.clone(), vec![]);
-          }
+          add_binding(
+            &mut binding.0,
+            &binding.2.source_trace,
+            bindings,
+            errors,
+          );
         }
         body.deshadow_inner(globally_bound_names, bindings, errors, true);
         for pair in let_bindings.iter_mut() {
-          let name = &pair.0;
-          bindings.remove(name);
-          for (_, renames) in bindings.iter_mut() {
-            if renames.last() == Some(name) {
-              renames.pop();
-            }
-          }
+          remove_binding(&pair.0, bindings);
         }
+        false
+      }
+      ForLoop {
+        increment_variable_name,
+        continue_condition_expression,
+        update_condition_expression,
+        body_expression,
+        ..
+      } => {
+        add_binding(
+          increment_variable_name,
+          &self.source_trace,
+          bindings,
+          errors,
+        );
+        continue_condition_expression.deshadow_inner(
+          globally_bound_names,
+          bindings,
+          errors,
+          true,
+        );
+        update_condition_expression.deshadow_inner(
+          globally_bound_names,
+          bindings,
+          errors,
+          true,
+        );
+        body_expression.deshadow_inner(
+          globally_bound_names,
+          bindings,
+          errors,
+          true,
+        );
+        remove_binding(&increment_variable_name, bindings);
         false
       }
       Name(name) => {
@@ -2444,5 +2543,58 @@ impl TypedExp {
       true,
     );
     errors
+  }
+  pub fn validate_control_flow(
+    &self,
+    errors: &mut Vec<CompileError>,
+    enclosing_loop_count: usize,
+  ) {
+    self
+      .walk(&mut |exp| {
+        Ok(match &exp.kind {
+          ExpKind::Break | ExpKind::Continue => {
+            if enclosing_loop_count == 0 {
+              errors.push(CompileError {
+                kind: if exp.kind == ExpKind::Break {
+                  CompileErrorKind::BreakOutsideLoop
+                } else {
+                  CompileErrorKind::ContinueOutsideLoop
+                },
+                source_trace: exp.source_trace.clone(),
+              });
+            }
+            true
+          }
+          ExpKind::ForLoop {
+            increment_variable_initial_value_expression,
+            continue_condition_expression,
+            update_condition_expression,
+            body_expression,
+            ..
+          } => {
+            increment_variable_initial_value_expression
+              .validate_control_flow(errors, enclosing_loop_count);
+            continue_condition_expression
+              .validate_control_flow(errors, enclosing_loop_count);
+            update_condition_expression
+              .validate_control_flow(errors, enclosing_loop_count);
+            body_expression
+              .validate_control_flow(errors, enclosing_loop_count + 1);
+            false
+          }
+          ExpKind::WhileLoop {
+            body_expression,
+            condition_expression,
+          } => {
+            condition_expression
+              .validate_control_flow(errors, enclosing_loop_count);
+            body_expression
+              .validate_control_flow(errors, enclosing_loop_count + 1);
+            false
+          }
+          _ => true,
+        })
+      })
+      .unwrap();
   }
 }

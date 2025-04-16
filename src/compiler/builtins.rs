@@ -371,7 +371,7 @@ fn arithmetic_functions(
         AbstractType::Generic("T".into()),
         AbstractType::Generic("T".into()),
       ],
-      return_type: AbstractType::Type(Type::Typeless),
+      return_type: AbstractType::Type(Type::Unit),
       implementation: FunctionImplementationKind::Builtin,
       associative: false,
     },
@@ -405,7 +405,7 @@ fn arithmetic_functions(
             })
             .collect(),
           return_type: if assignment_fn {
-            AbstractType::Type(Type::Typeless)
+            AbstractType::Type(Type::Unit)
           } else {
             AbstractType::AbstractStruct(vec.clone())
           },
@@ -444,7 +444,7 @@ fn bitwise_functions(
         AbstractType::Generic("T".into()),
         AbstractType::Generic("T".into()),
       ],
-      return_type: AbstractType::Type(Type::Typeless),
+      return_type: AbstractType::Type(Type::Unit),
       implementation: FunctionImplementationKind::Builtin,
       associative: false,
     },
@@ -478,7 +478,7 @@ fn bitwise_functions(
             })
             .collect(),
           return_type: if assignment_fn {
-            AbstractType::Type(Type::Typeless)
+            AbstractType::Type(Type::Unit)
           } else {
             AbstractType::AbstractStruct(vec.clone())
           },
@@ -680,7 +680,7 @@ fn assignment_function() -> Vec<AbstractFunctionSignature> {
       AbstractType::Generic("T".into()),
       AbstractType::Generic("T".into()),
     ],
-    return_type: AbstractType::Type(Type::Typeless),
+    return_type: AbstractType::Type(Type::Unit),
     implementation: FunctionImplementationKind::Builtin,
     associative: false,
   }]
@@ -1139,6 +1139,23 @@ pub fn built_in_macros() -> Vec<Macro> {
                       EncloserOrOperator::Encloser(Encloser::Parens),
                     ),
                     children,
+                  ),
+                  EaslTree::Leaf(
+                    DocumentPosition {
+                      span: 0..0,
+                      path: vec![],
+                    },
+                    "false".into(),
+                  ),
+                  EaslTree::Inner(
+                    (
+                      DocumentPosition {
+                        span: 0..0,
+                        path: vec![],
+                      },
+                      EncloserOrOperator::Encloser(Encloser::Parens),
+                    ),
+                    vec![],
                   ),
                 ],
               )))

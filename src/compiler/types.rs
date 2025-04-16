@@ -16,7 +16,6 @@ use crate::{
 
 use super::{
   error::{err, CompileErrorKind::*, CompileResult, SourceTrace},
-  expression::{ExpKind, TypedExp},
   functions::FunctionSignature,
   program::Program,
   structs::{AbstractStruct, Struct},
@@ -399,7 +398,7 @@ impl Display for ArraySize {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
-  Typeless,
+  Unit,
   F32,
   I32,
   U32,
@@ -600,7 +599,7 @@ impl Type {
     use Type::*;
     let source_trace: SourceTrace = source_position.into();
     Ok(match &*name {
-      "None" => Typeless,
+      "None" => Unit,
       "F32" | "f32" => F32,
       "I32" | "i32" => I32,
       "U32" | "u32" => U32,
@@ -631,7 +630,7 @@ impl Type {
   }
   pub fn compile(&self) -> String {
     match self {
-      Type::Typeless => panic!("Attempted to compile Typeless type"),
+      Type::Unit => panic!("Attempted to compile Unit type"),
       Type::F32 => "f32".to_string(),
       Type::I32 => "i32".to_string(),
       Type::U32 => "u32".to_string(),
@@ -692,32 +691,6 @@ impl Type {
       }
     }
   }
-  pub fn do_patterns_exhaust<'a>(
-    &self,
-    patterns: impl Iterator<Item = &'a TypedExp> + Clone,
-  ) -> bool {
-    for pattern in patterns.clone() {
-      if pattern.kind == ExpKind::Wildcard {
-        return true;
-      }
-    }
-    if *self == Type::Bool {
-      let mut found_true = false;
-      let mut found_false = false;
-      for pattern in patterns {
-        if let ExpKind::BooleanLiteral(b) = pattern.kind {
-          if b {
-            found_true = true;
-          } else {
-            found_false = true;
-          }
-        }
-      }
-      found_true && found_false
-    } else {
-      false
-    }
-  }
 }
 
 impl Display for Type {
@@ -726,7 +699,7 @@ impl Display for Type {
       f,
       "{}",
       match self {
-        Type::Typeless => panic!("Attempted to compile None type"),
+        Type::Unit => panic!("Attempted to compile Unit type"),
         Type::F32 => "f32".to_string(),
         Type::I32 => "i32".to_string(),
         Type::U32 => "u32".to_string(),

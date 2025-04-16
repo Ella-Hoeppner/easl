@@ -230,6 +230,24 @@ pub enum CompileErrorKind {
   InvalidAssociativeSignature,
   #[error("Can't bind a name to a typeless expression")]
   TypelessBinding,
+  #[error("`discard` can only occur in @fragment functions")]
+  DiscardOutsideFragment,
+  #[error("`continue` can only occur inside a loop")]
+  ContinueOutsideLoop,
+  #[error("`break` can only occur inside a loop")]
+  BreakOutsideLoop,
+  #[error(
+    "Can't have additional patterns in a match block after a wildcard pattern"
+  )]
+  PatternAfterWildcard,
+  #[error(
+    "Invalid pattern; patterns may only be numbers, bools, or a wildcard"
+  )]
+  InvalidPattern,
+  #[error("The same pattern cannot appear twice in a match block")]
+  DuplicatePattern,
+  #[error("`match` expression doesn't have exhaustive patterns")]
+  NonexhaustiveMatch,
 }
 
 #[derive(Clone, Debug)]

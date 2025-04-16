@@ -474,7 +474,7 @@ impl TopLevelFunction {
       "{}fn {}({args}){} {{{}\n}}",
       Metadata::compile_optional(self.metadata),
       compile_word(name.into()),
-      if return_type.kind.unwrap_known() == Type::Typeless {
+      if return_type.kind.unwrap_known() == Type::Unit {
         "".to_string()
       } else {
         format!(
@@ -483,13 +483,13 @@ impl TopLevelFunction {
           return_type.compile()
         )
       },
-      indent(body.compile(
-        if return_type.kind.unwrap_known() == Type::Typeless {
+      indent(
+        body.compile(if return_type.kind.unwrap_known() == Type::Unit {
           ExpressionCompilationPosition::InnerLine
         } else {
           ExpressionCompilationPosition::Return
-        }
-      ))
+        })
+      )
     ))
   }
 }
