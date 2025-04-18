@@ -1350,6 +1350,7 @@ pub fn parse_generic_argument(
   }
 }
 
+#[derive(Debug)]
 pub struct LocalContext<'g> {
   pub variables: HashMap<Rc<str>, Vec<Variable>>,
   pub enclosing_function_types: Vec<TypeState>,

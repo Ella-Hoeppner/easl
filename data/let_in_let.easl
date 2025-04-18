@@ -1,0 +1,5 @@
+(defn f []: u32
+  (let [a 1u
+        b (let [d 2u] d)
+        c 3u]
+    (+ a b c)))

@@ -2,7 +2,7 @@
 
 Enhanced Abstraction Shader Language
 
-WIP shader language with a lispy syntax (using [SSE](https://github.com/Ella-Hoeppner/SSE)) that compiles to WGSL.
+WIP shader language with a lispy syntax that compiles to WGSL.
 
 Feature goals:
   * full feature parity with WGSL - anything that can be expressed with WGSL will also be directly expressible with easl (easl may eventually support glsl as a compilation target as well, though this is not a priority for now)
@@ -22,15 +22,91 @@ Feature goals:
   * let top-level struct-like metadata appear on one line if it's under some threshold (probably should be another separate threshold)
   * ocassionally `let` bindings will be like 1 char to the left of where they should be past the first line, not sure why
 
-* allow arguments to be declared as `@var` by just wrapping the whole body in a `let` that shadows the arguments
-
-* `do`
-
 * matrices
 
-* support lifting internal `let`s, `match`s, `do`s
-  * "internal" is just whenever one of those expressions occurs inside an `Application`, and they need to be lifted to the outside of that application
-  * need to figure out how to deal with mutable variables with this... when a mutation of a variable crosses the scope over which a let would be lifted
+* deexpressionifying
+  * broadly, need to be able to efficiently convert between easl's expression-based syntax and wgsl's non-expression-based syntax
+  * core will be lifting all `Let`s, `Match`s, and `Block`s, outside of all `Application`s, `Access`s, `Return`s, `Reference`s, and `ArrayLiteral`s
+    * mutable variables will present a problem for this, as naively lifting, say, a `Block` to before the an `Application` that surrounds it can change semantics of the program if the `Block` mutates a variable used elsewhere in the `Application`.
+      * e.g.
+      ```
+      (let [@var x 1]
+        (+ x
+          (block
+            (+= x 1)
+            x)))
+       ```
+       naively lifting this would give
+       ```
+       (let [@var x 1]
+         (let [gen (block
+                     (+= x 1)
+                     x)]
+          (+ x gen)))
+       ```
+       this would evaluate to 4, whereas the prior would evaluate to 3.
+       a proper replacement would be:
+       ```
+       (let [@var x 1]
+         (let [original-x x
+               gen (block
+                     (+= x 1)
+                     x)]
+          (+ originalx gen)))
+       ```
+       but it would be wasteful to do this in general - ideally it should only be done when x is actually being modified
+  * special casing for certain types of forms when they occur as a binding in a `Let` block
+    * `Let`
+      * A form like
+        ```
+        (let [a 1
+              b (let [c 1]
+                  (+ c 1))]
+          ...)
+        ```
+        should be expanded to
+        ```
+        (let [a 1
+              c 1
+              b (+ c 1)]
+          ...)
+        ```
+      * in other words, the inner let block should be "flattened" into the outer one, such that the bindings from the inner one get moved into the outer one just before the name being bound to the inner let, and that name should be bound to the body of the inner let
+    * `Match`:
+      * A form like
+        ```
+        (let [a 1
+              b (match _ 1)
+              c 2]
+          ...)
+        ```
+        should be expanded to
+        ```
+        (let [a 1
+              @var b <UNINITIALIZED>]
+          (match _ (= b 1))
+          (let [c 2]
+            ...))
+        ```
+      * In other words, the let needs to be "split" just after the relevant binding, such that the binding is declared without being set, and the match block should be changed such that each arm is now wrapped as `(= b _)` where `b` is the relevant binding name and the `_` is the previous body of that arm.
+    * `Block`:
+      * A form like
+        ```
+        (let [@var a 1
+              b (do (+= a 1)
+                    5)
+              c 2]
+          ...)
+        ```
+        should be expanded to
+        ```
+        (let [@var a 1]
+          (+= a 1)
+          (let [b 5
+                c 2]
+            ...))
+        ```
+      * In other words, the let should be "split" just before the relevant binding, place all but the last form inside the block inside the body of the first let block, then start off the second let block with the relevant binding name assigned with the last form inside the block
 
 * add a `poisoned: bool` field or smth to `ExpTypeInfo`, which gets set to true when an expression has already returned an error. Then make `constrain`/`mutually_constrain` and other things that can return type errors just skip their effects when the relevant typestates are poisoned, so that we aren't repeatedly generating the same errors.
 
@@ -61,6 +137,8 @@ Feature goals:
   * or maybe have something like rust's `PhantomData`?
 
 ### low priority, extra features once core language is solid
+* allow arguments to be declared as `@var` by just wrapping the whole body in a `let` that shadows the arguments
+
 * restrict vec constructor with an `(Into T)` constraint that ensures the arg can be converted into the type of the type contained within the vector
   * right now all the generics are restricted with `Scalar`, which works well enough for all the built-in vec types, but doing `(Into T)` instead should make it possible to have the same convenience with vectors of custom types (e.g. complex numbers)
 

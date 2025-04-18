@@ -1083,6 +1083,14 @@ impl Program {
     }
     errors
   }
+  pub fn deexpressionify(&mut self) {
+    for signature in self.abstract_functions_iter() {
+      let signature = signature.borrow();
+      if let FunctionImplementationKind::Composite(f) = &signature.implementation {
+        f.borrow_mut().body.deexpressionify();
+      }
+    }
+  }
   pub fn validate_raw_program(&mut self) -> Vec<CompileError> {
     let errors = self.validate_associative_signatures();
     if !errors.is_empty() {
@@ -1121,6 +1129,7 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.deexpressionify();
     vec![]
   }
   pub fn gather_type_annotations(&self) -> Vec<(SourceTrace, TypeState)> {

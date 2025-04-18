@@ -672,8 +672,8 @@ fn comparison_functions() -> Vec<AbstractFunctionSignature> {
   ]
 }
 
-fn assignment_function() -> Vec<AbstractFunctionSignature> {
-  vec![AbstractFunctionSignature {
+pub fn assignment_function() -> AbstractFunctionSignature {
+  AbstractFunctionSignature {
     name: "=".into(),
     generic_args: vec![("T".into(), vec![])],
     arg_types: vec![
@@ -683,7 +683,7 @@ fn assignment_function() -> Vec<AbstractFunctionSignature> {
     return_type: AbstractType::Type(Type::Unit),
     implementation: FunctionImplementationKind::Builtin,
     associative: false,
-  }]
+  }
 }
 
 fn boolean_functions() -> Vec<AbstractFunctionSignature> {
@@ -976,8 +976,7 @@ fn array_functions() -> Vec<AbstractFunctionSignature> {
 }
 
 pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
-  let mut signatures = vec![];
-  signatures.append(&mut assignment_function());
+  let mut signatures = vec![assignment_function()];
   signatures.append(&mut boolean_functions());
   signatures.append(&mut comparison_functions());
   signatures.append(&mut arithmetic_functions("+", true));

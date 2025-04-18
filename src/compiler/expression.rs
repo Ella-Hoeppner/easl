@@ -247,10 +247,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Access(Accessor, Box<Exp<D>>),
   Let(Vec<(Rc<str>, VariableKind, Exp<D>)>, Box<Exp<D>>),
   Match(Box<Exp<D>>, Vec<(Exp<D>, Exp<D>)>),
-  Block {
-    expressions: Vec<Exp<D>>,
-    bracketed: bool,
-  },
+  Block(Vec<Exp<D>>),
   ForLoop {
     increment_variable_name: Rc<str>,
     increment_variable_type: Type,
@@ -269,6 +266,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Return(Box<Exp<D>>),
   ArrayLiteral(Vec<Exp<D>>),
   Reference(Box<Exp<D>>),
+  Uninitialized,
   ZeroedArray,
 }
 use ExpKind::*;
@@ -404,10 +402,7 @@ impl TypedExp {
           .iter()
           .map(|body_exp| body_exp.source_trace.clone())
           .collect(),
-        kind: ExpKind::Block {
-          expressions: body_exps,
-          bracketed: false,
-        },
+        kind: ExpKind::Block(body_exps),
       }
     };
     Ok(Exp {
@@ -561,10 +556,7 @@ impl TypedExp {
                           } else {
                             Exp {
                               data: Unknown.into(),
-                              kind: ExpKind::Block {
-                                expressions: child_exps,
-                                bracketed: false,
-                              },
+                              kind: ExpKind::Block(child_exps),
                               source_trace: source_trace.clone(),
                             }
                           };
@@ -685,10 +677,7 @@ impl TypedExp {
                             .collect::<CompileResult<Vec<Self>>>()?;
                           Some(Exp {
                             data: Unknown.into(),
-                            kind: ExpKind::Block {
-                              expressions: child_exps,
-                              bracketed: true,
-                            },
+                            kind: ExpKind::Block(child_exps),
                             source_trace,
                           })
                         }
@@ -854,10 +843,7 @@ impl TypedExp {
                               ),
                               body_expression: Box::new(TypedExp {
                                 data: TypeState::Known(Type::Unit).into(),
-                                kind: ExpKind::Block {
-                                  expressions: body_expressions,
-                                  bracketed: false,
-                                },
+                                kind: ExpKind::Block(body_expressions),
                                 source_trace: body_source_trace,
                               }),
                             },
@@ -892,10 +878,7 @@ impl TypedExp {
                               ),
                               body_expression: Box::new(TypedExp {
                                 data: TypeState::Known(Type::Unit).into(),
-                                kind: ExpKind::Block {
-                                  expressions: sub_expressions,
-                                  bracketed: false,
-                                },
+                                kind: ExpKind::Block(sub_expressions),
                                 source_trace: body_source_trace,
                               }),
                             },
@@ -1102,7 +1085,7 @@ impl TypedExp {
             value.walk(prewalk_handler)?;
           }
         }
-        Block { expressions, .. } => {
+        Block(expressions) => {
           for subexp in expressions {
             subexp.walk(prewalk_handler)?;
           }
@@ -1164,7 +1147,7 @@ impl TypedExp {
             value.walk_mut(prewalk_handler)?;
           }
         }
-        Block { expressions, .. } => {
+        Block(expressions) => {
           for subexp in expressions {
             subexp.walk_mut(prewalk_handler)?;
           }
@@ -1212,6 +1195,7 @@ impl TypedExp {
     match self.kind {
       Wildcard => panic!("compiling wildcard"),
       Unit => panic!("compiling unit"),
+      Uninitialized => panic!("compiling Uninitialized"),
       Name(name) => wrap(compile_word(name)),
       NumberLiteral(num) => wrap(match num {
         Number::Int(i) => {
@@ -1277,13 +1261,22 @@ impl TypedExp {
         let binding_lines: Vec<String> = bindings
           .into_iter()
           .map(|(name, variable_kind, value_exp)| {
-            format!(
-              "{} {}: {} = {};",
-              variable_kind.compile(),
-              compile_word(name),
-              value_exp.data.compile(),
-              value_exp.compile(InnerExpression)
-            )
+            if value_exp.kind == ExpKind::Uninitialized {
+              format!(
+                "{} {}: {};",
+                variable_kind.compile(),
+                compile_word(name),
+                value_exp.data.compile(),
+              )
+            } else {
+              format!(
+                "{} {}: {} = {};",
+                variable_kind.compile(),
+                compile_word(name),
+                value_exp.data.compile(),
+                value_exp.compile(InnerExpression)
+              )
+            }
           })
           .collect();
         let value_line = body.compile(position);
@@ -1355,53 +1348,32 @@ impl TypedExp {
             _ => unreachable!(),
           }
         } else {
-          if position == InnerExpression {
-            let mut arms_iter = arms.into_iter().rev();
-            let default = arms_iter.next().unwrap().1.compile(position);
-            let scrutinee_string = scrutinee.compile(position);
-            arms_iter.into_iter().fold(
-              default,
-              |subexpression, (pattern_subtree, value_subtree)| {
-                format!(
-                  "select({}, {}, {} == {})",
-                  subexpression,
-                  value_subtree.compile(position),
-                  pattern_subtree.compile(position),
-                  scrutinee_string
-                )
-              },
+          format!(
+            "\nswitch ({}) {{\n  {}\n}}",
+            scrutinee.compile(InnerExpression),
+            indent(
+              arms
+                .into_iter()
+                .map(|(pattern, value)| format!(
+                  "{}: {{{}\n}}",
+                  if pattern.kind == Wildcard {
+                    "default".to_string()
+                  } else {
+                    "case ".to_string() + &pattern.compile(InnerExpression)
+                  },
+                  if value.kind == ExpKind::Unit {
+                    "".to_string()
+                  } else {
+                    indent(value.compile(position))
+                  }
+                ))
+                .collect::<Vec<String>>()
+                .join("\n")
             )
-          } else {
-            format!(
-              "\nswitch ({}) {{\n  {}\n}}",
-              scrutinee.compile(InnerExpression),
-              indent(
-                arms
-                  .into_iter()
-                  .map(|(pattern, value)| format!(
-                    "{}: {{{}\n}}",
-                    if pattern.kind == Wildcard {
-                      "default".to_string()
-                    } else {
-                      "case ".to_string() + &pattern.compile(InnerExpression)
-                    },
-                    if value.kind == ExpKind::Unit {
-                      "".to_string()
-                    } else {
-                      indent(value.compile(position))
-                    }
-                  ))
-                  .collect::<Vec<String>>()
-                  .join("\n")
-              )
-            )
-          }
+          )
         }
       }
-      Block {
-        expressions,
-        bracketed,
-      } => {
+      Block(expressions) => {
         let child_count = expressions.len();
         let child_strings: Vec<String> = expressions
           .into_iter()
@@ -1414,11 +1386,7 @@ impl TypedExp {
             })
           })
           .collect();
-        if bracketed {
-          format!("\n{{{}\n}}", indent(child_strings.join("")))
-        } else {
-          format!("{}", child_strings.join(""))
-        }
+        format!("\n{{{}\n}}", indent(child_strings.join("")))
       }
       ForLoop {
         increment_variable_name,
@@ -1551,6 +1519,10 @@ impl TypedExp {
     }
     let mut errors = vec![];
     let changed = match &mut self.kind {
+      Uninitialized => {
+        self.data.subtree_fully_typed = true;
+        false
+      }
       Wildcard => {
         self.data.subtree_fully_typed = true;
         false
@@ -1895,7 +1867,7 @@ impl TypedExp {
         );
         anything_changed
       }
-      Block { expressions, .. } => {
+      Block(expressions) => {
         let mut anything_changed = false;
         for child in expressions.iter_mut() {
           let (changed, mut sub_errors) = child.propagate_types_inner(ctx);
@@ -2169,8 +2141,7 @@ impl TypedExp {
             )
           }
           body.check_assignment_validity_inner(ctx)?;
-          for (name, _, value) in binding_names_and_values {
-            value.check_assignment_validity_inner(ctx)?;
+          for (name, _, _) in binding_names_and_values {
             ctx.unbind(name);
           }
           false
@@ -2591,6 +2562,200 @@ impl TypedExp {
             body_expression
               .validate_control_flow(errors, enclosing_loop_count + 1);
             false
+          }
+          _ => true,
+        })
+      })
+      .unwrap();
+  }
+  pub fn deexpressionify(&mut self) {
+    self
+      .walk_mut(&mut |exp| {
+        Ok(match &mut exp.kind {
+          Let(items, body) => {
+            let placeholder_exp_kind = ExpKind::Wildcard;
+            let placeholder_exp = TypedExp {
+              kind: ExpKind::Wildcard,
+              data: TypeState::Unknown.into(),
+              source_trace: SourceTrace::empty(),
+            };
+            enum Restructure {
+              Let {
+                index: usize,
+                inner_bindings: Vec<(Rc<str>, VariableKind, Exp<ExpTypeInfo>)>,
+                inner_body: TypedExp,
+              },
+              Block {
+                index: usize,
+                inner_statements: Vec<TypedExp>,
+                binding_value: TypedExp,
+              },
+              Match {
+                index: usize,
+                binding_name: Rc<str>,
+                binding_type: ExpTypeInfo,
+                match_exp: TypedExp,
+              },
+            }
+            loop {
+              let mut restructure: Option<Restructure> = None;
+              for (index, (binding_name, _, value)) in
+                items.iter_mut().enumerate()
+              {
+                match &value.kind {
+                  Let(_, _) => {
+                    let mut inner_value = placeholder_exp_kind.clone();
+                    std::mem::swap(&mut inner_value, &mut value.kind);
+                    let Let(inner_bindings, inner_body) = inner_value else {
+                      unreachable!()
+                    };
+                    restructure = Some(Restructure::Let {
+                      index,
+                      inner_bindings,
+                      inner_body: *inner_body,
+                    });
+                    break;
+                  }
+                  Block { .. } => {
+                    let mut inner_statements = vec![];
+                    let Block(expressions) = &mut value.kind else {
+                      unreachable!()
+                    };
+                    std::mem::swap(&mut inner_statements, expressions);
+                    let binding_value = inner_statements.pop().unwrap();
+                    restructure = Some(Restructure::Block {
+                      index,
+                      inner_statements,
+                      binding_value,
+                    });
+                    break;
+                  }
+                  Match(_, _) => {
+                    let mut match_exp = TypedExp {
+                      kind: ExpKind::Uninitialized,
+                      data: value.data.clone(),
+                      source_trace: SourceTrace::empty(),
+                    };
+                    std::mem::swap(&mut match_exp, value);
+                    restructure = Some(Restructure::Match {
+                      index,
+                      match_exp,
+                      binding_name: binding_name.clone(),
+                      binding_type: value.data.clone(),
+                    });
+                    break;
+                  }
+                  _ => {}
+                }
+              }
+              if let Some(restructure) = restructure {
+                match restructure {
+                  Restructure::Let {
+                    index,
+                    inner_bindings,
+                    mut inner_body,
+                  } => {
+                    std::mem::swap(&mut inner_body, &mut items[index].2);
+                    items.splice(index..index, inner_bindings);
+                  }
+                  Restructure::Block {
+                    index,
+                    mut inner_statements,
+                    mut binding_value,
+                  } => {
+                    let mut original_body = placeholder_exp.clone();
+                    std::mem::swap(&mut original_body, body);
+                    let body_type = original_body.data.clone();
+                    let mut inner_bindings = items.split_off(index);
+                    std::mem::swap(
+                      &mut inner_bindings.last_mut().unwrap().2,
+                      &mut binding_value,
+                    );
+                    inner_statements.push(TypedExp {
+                      kind: ExpKind::Let(inner_bindings, original_body.into()),
+                      data: body_type.clone(),
+                      source_trace: SourceTrace::empty(),
+                    });
+                    let new_body = TypedExp {
+                      kind: ExpKind::Block(inner_statements),
+                      source_trace: SourceTrace::empty(),
+                      data: body_type,
+                    };
+                    std::mem::swap(body, &mut new_body.into());
+                  }
+                  Restructure::Match {
+                    index,
+                    mut match_exp,
+                    binding_name,
+                    binding_type,
+                  } => {
+                    let inner_bindings = items.split_off(index + 1);
+                    let body_type = body.data.clone();
+                    let mut original_body = placeholder_exp.clone();
+                    std::mem::swap(&mut original_body, body);
+                    let Match(_, arms) = &mut match_exp.kind else {
+                      unreachable!()
+                    };
+                    for (_, arm_body) in arms.iter_mut() {
+                      let mut temp = placeholder_exp.clone();
+                      std::mem::swap(&mut temp, arm_body);
+                      temp = TypedExp {
+                        data: TypeState::Known(Type::Unit).into(),
+                        kind: ExpKind::Application(
+                          TypedExp {
+                            kind: ExpKind::Name("=".into()),
+                            data: TypeState::Known(Type::Function(
+                              FunctionSignature {
+                                abstract_ancestor: None,
+                                arg_types: vec![
+                                  (binding_type.clone(), vec![]),
+                                  (binding_type.clone(), vec![]),
+                                ],
+                                return_type: TypeState::Known(Type::Unit)
+                                  .into(),
+                              }
+                              .into(),
+                            ))
+                            .into(),
+                            source_trace: SourceTrace::empty(),
+                          }
+                          .into(),
+                          vec![
+                            TypedExp {
+                              data: binding_type.clone(),
+                              kind: ExpKind::Name(binding_name.clone()),
+                              source_trace: SourceTrace::empty(),
+                            },
+                            temp,
+                          ],
+                        ),
+                        source_trace: SourceTrace::empty(),
+                      };
+                      std::mem::swap(&mut temp, arm_body);
+                    }
+                    let new_body = TypedExp {
+                      kind: ExpKind::Block(vec![
+                        match_exp,
+                        TypedExp {
+                          data: body_type.clone(),
+                          kind: ExpKind::Let(
+                            inner_bindings,
+                            original_body.into(),
+                          ),
+                          source_trace: SourceTrace::empty(),
+                        },
+                      ]),
+                      source_trace: SourceTrace::empty(),
+                      data: body_type,
+                    };
+                    std::mem::swap(body, &mut new_body.into());
+                  }
+                }
+              } else {
+                break;
+              }
+            }
+            true
           }
           _ => true,
         })

@@ -1,0 +1,7 @@
+(defn f []: u32
+  (let [a 1u
+        b (match 0u
+             0u 2u
+             _ 3u)
+        c 3u]
+    (+ a b c)))
