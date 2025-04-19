@@ -957,7 +957,7 @@ impl Program {
       if let FunctionImplementationKind::Composite(f) =
         &f.borrow().implementation
       {
-        f.borrow_mut().body.walk_mut(
+        f.borrow_mut().body.walk_mut::<()>(
           &mut |exp| {
             take(
               &mut exp.kind, 

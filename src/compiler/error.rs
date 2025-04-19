@@ -12,14 +12,14 @@ use super::{
 
 use std::error::Error;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SourceTraceKind {
   Empty,
   Singular(DocumentPosition),
   Combination(Vec<SourceTrace>),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SourceTrace {
   pub kind: Rc<SourceTraceKind>,
 }

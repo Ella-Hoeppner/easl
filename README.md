@@ -121,7 +121,10 @@ Feature goals:
 
 ### medium priority, necessary to call the language 0.1
 
-* the names generated for deshadowing and the `->` bindings aren't currently guaranteed to be unique, need to have a system that tracks all names used in a program and allows safe gensym-ing
+* there are several places where gensyms are generated, but not guaranteed to be completely safe. Need to have a system that tracks all names in the program and allows for safe gensym-ing
+  * deshadowing
+  * `->` bindings
+  * deexpressionify
 
 * support declaring custom type constraints
   * each constraint is just defined by a function

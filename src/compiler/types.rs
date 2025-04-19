@@ -365,7 +365,7 @@ impl AbstractType {
   }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ArraySize {
   Constant(u32),
   Override(Rc<str>),

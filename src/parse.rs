@@ -4,7 +4,7 @@ use sse::{
   SyntaxContext, SyntaxGraph,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Context {
   Default,
   StructuredComment,
@@ -71,7 +71,7 @@ impl SSEEncloser for Encloser {
     }
   }
 }
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Operator {
   MetadataAnnotation,
   TypeAnnotation,
