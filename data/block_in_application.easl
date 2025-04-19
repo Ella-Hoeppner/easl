@@ -1,0 +1,10 @@
+(defn f [b: bool]: f32
+  (let [@var a 0.]
+    (+ 1.
+       (block (= a 1.)
+              2.))))
+
+(defn g [b: bool]: f32
+  (let [@var b 0.
+        a: [2: f32] [0. (block (+= b 1.) 1.)]]
+    @[a 0u]))

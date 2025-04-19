@@ -107,6 +107,11 @@ Feature goals:
             ...))
         ```
       * In other words, the let should be "split" just before the relevant binding, place all but the last form inside the block inside the body of the first let block, then start off the second let block with the relevant binding name assigned with the last form inside the block
+  * make `Return`s compile properly when they're inside other expressions
+    * rn if you do like `(let [x (if ... (return 5.) 6.)] ...)`, which is a totally valid thing to want to do, it'll compile to something invalid, since that `if` gets expanded to a match that attempts to assign to `x` in each branch, and it can't properly compile something like `(= x (return 5.))`.
+      * there are probably other edge cases like this, this is just the one that I've noticed so far
+      * maybe the best approach here would be to like, just kinda extract any `return` statement whenever it's inside an application, throwing away the rest of the application? Like, `(+ 1 (return 2))` can just be simplified to `(return 2)`...
+        * if i go this route it'll need to do mutation analysis, since like `(f (do ...) (return ...))` couldn't be simplified without changing the semantics if the `do` statement modifies something in the `return`
 
 * add a `poisoned: bool` field or smth to `ExpTypeInfo`, which gets set to true when an expression has already returned an error. Then make `constrain`/`mutually_constrain` and other things that can return type errors just skip their effects when the relevant typestates are poisoned, so that we aren't repeatedly generating the same errors.
 

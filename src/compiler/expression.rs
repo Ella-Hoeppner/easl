@@ -897,7 +897,7 @@ impl TypedExp {
                             )?;
                             Some(Exp {
                               kind: ExpKind::Return(Box::new(exp)),
-                              data: TypeState::Known(Type::Unit).into(),
+                              data: TypeState::Unknown.into(),
                               source_trace,
                             })
                           } else {
@@ -2569,16 +2569,120 @@ impl TypedExp {
       .unwrap();
   }
   pub fn deexpressionify(&mut self) {
+    let mut changed = false;
+    let mut gensym_index = 0;
+    let placeholder_exp_kind = ExpKind::Wildcard;
+    let placeholder_exp = TypedExp {
+      kind: ExpKind::Wildcard,
+      data: TypeState::Unknown.into(),
+      source_trace: SourceTrace::empty(),
+    };
     self
       .walk_mut(&mut |exp| {
         Ok(match &mut exp.kind {
-          Let(items, body) => {
-            let placeholder_exp_kind = ExpKind::Wildcard;
-            let placeholder_exp = TypedExp {
-              kind: ExpKind::Wildcard,
-              data: TypeState::Unknown.into(),
-              source_trace: SourceTrace::empty(),
+          Application(_, _)
+          | ArrayLiteral(_)
+          | Reference(_)
+          | Return(_)
+          | Access(_, _) => {
+            let slots: Vec<&mut TypedExp> = match &mut exp.kind {
+              Application(_, args) | ArrayLiteral(args) => {
+                args.iter_mut().collect()
+              }
+              Reference(inner_exp) | Return(inner_exp) => vec![inner_exp],
+              Access(accessor, inner_exp) => {
+                let mut slots = vec![inner_exp.as_mut()];
+                if let Accessor::ArrayIndex(index_exp) = accessor {
+                  slots.push(index_exp);
+                }
+                slots
+              }
+              _ => unreachable!(),
             };
+            enum Restructure {
+              Block(Vec<TypedExp>),
+              Match(Rc<str>, TypedExp),
+              Let(Vec<(Rc<str>, VariableKind, Exp<ExpTypeInfo>)>),
+            }
+            let mut restructure: Option<Restructure> = None;
+            for arg in slots {
+              match &mut arg.kind {
+                ExpKind::Block(_) => {
+                  let mut temp = placeholder_exp.clone();
+                  std::mem::swap(arg, &mut temp);
+                  let ExpKind::Block(mut statements) = temp.kind else {
+                    unreachable!()
+                  };
+                  let mut value = statements.pop().unwrap();
+                  std::mem::swap(arg, &mut value);
+                  restructure = Some(Restructure::Block(statements));
+                  break;
+                }
+                ExpKind::Match(_, _) => {
+                  let name: Rc<str> =
+                    format!("match_gensym_{gensym_index}").into();
+                  gensym_index += 1;
+                  let mut name_exp = TypedExp {
+                    kind: ExpKind::Name(name.clone()),
+                    data: arg.data.clone(),
+                    source_trace: SourceTrace::empty(),
+                  };
+                  std::mem::swap(arg, &mut name_exp);
+                  restructure = Some(Restructure::Match(name, name_exp));
+                  break;
+                }
+                ExpKind::Let(bindings, value) => {
+                  let mut extracted_bindings = vec![];
+                  std::mem::swap(&mut extracted_bindings, bindings);
+                  let mut extracted_value = placeholder_exp.clone();
+                  std::mem::swap(&mut extracted_value, value);
+                  std::mem::swap(arg, &mut extracted_value);
+                  restructure = Some(Restructure::Let(extracted_bindings));
+                  break;
+                }
+                _ => {}
+              }
+            }
+            if let Some(restructure) = restructure {
+              changed = true;
+              match restructure {
+                Restructure::Block(mut statements) => {
+                  let mut temp = placeholder_exp.clone();
+                  std::mem::swap(exp, &mut temp);
+                  statements.push(temp);
+                  std::mem::swap(
+                    &mut exp.kind,
+                    &mut ExpKind::Block(statements),
+                  );
+                }
+                Restructure::Match(name, match_exp) => {
+                  let mut temp = placeholder_exp.clone();
+                  std::mem::swap(exp, &mut temp);
+                  let mut new_exp = TypedExp {
+                    data: exp.data.clone(),
+                    kind: ExpKind::Let(
+                      vec![(name, VariableKind::Let, match_exp)],
+                      temp.into(),
+                    ),
+                    source_trace: SourceTrace::empty(),
+                  };
+                  std::mem::swap(exp, &mut new_exp);
+                }
+                Restructure::Let(bindings) => {
+                  let mut temp = placeholder_exp.clone();
+                  std::mem::swap(exp, &mut temp);
+                  let mut new_exp = TypedExp {
+                    data: exp.data.clone(),
+                    kind: ExpKind::Let(bindings, temp.into()),
+                    source_trace: SourceTrace::empty(),
+                  };
+                  std::mem::swap(exp, &mut new_exp);
+                }
+              }
+            }
+            true
+          }
+          Let(items, body) => {
             enum Restructure {
               Let {
                 index: usize,
@@ -2599,7 +2703,7 @@ impl TypedExp {
             }
             loop {
               let mut restructure: Option<Restructure> = None;
-              for (index, (binding_name, _, value)) in
+              for (index, (binding_name, variable_kind, value)) in
                 items.iter_mut().enumerate()
               {
                 match &value.kind {
@@ -2631,6 +2735,7 @@ impl TypedExp {
                     break;
                   }
                   Match(_, _) => {
+                    *variable_kind = VariableKind::Var;
                     let mut match_exp = TypedExp {
                       kind: ExpKind::Uninitialized,
                       data: value.data.clone(),
@@ -2649,6 +2754,7 @@ impl TypedExp {
                 }
               }
               if let Some(restructure) = restructure {
+                changed = true;
                 match restructure {
                   Restructure::Let {
                     index,
@@ -2761,5 +2867,8 @@ impl TypedExp {
         })
       })
       .unwrap();
+    if changed {
+      self.deexpressionify();
+    }
   }
 }

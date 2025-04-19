@@ -1,5 +1,6 @@
 (defn make-two-floats [a: f32]: f32
-  (return 5.)
-  #_(return 5: u32) ; this will cause a compilation error, since the function returns an f32
-  (let [b a]
-    b))
+  (if true
+    (return 5.)
+    #_(return 5: u32) ; this will cause a compilation error, since the function returns an f32
+    (let [b a]
+      b)))

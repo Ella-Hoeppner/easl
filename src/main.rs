@@ -47,6 +47,9 @@ fn main() {
     "let_in_let",
     "block_in_let",
     "match_in_let",
+    "block_in_application",
+    "match_in_application",
+    "let_in_application",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();
