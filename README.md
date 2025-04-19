@@ -24,96 +24,11 @@ Feature goals:
 
 * matrices
 
-* disallow overloading assignment operators
-
-* deexpressionifying
-  * broadly, need to be able to efficiently convert between easl's expression-based syntax and wgsl's non-expression-based syntax
-  * core will be lifting all `Let`s, `Match`s, and `Block`s, outside of all `Application`s, `Access`s, `Return`s, `Reference`s, and `ArrayLiteral`s
-    * mutable variables will present a problem for this, as naively lifting, say, a `Block` to before the an `Application` that surrounds it can change semantics of the program if the `Block` mutates a variable used elsewhere in the `Application`.
-      * e.g.
-      ```
-      (let [@var x 1]
-        (+ x
-          (block
-            (+= x 1)
-            x)))
-       ```
-       naively lifting this would give
-       ```
-       (let [@var x 1]
-         (let [gen (block
-                     (+= x 1)
-                     x)]
-          (+ x gen)))
-       ```
-       this would evaluate to 4, whereas the prior would evaluate to 3.
-       a proper replacement would be:
-       ```
-       (let [@var x 1]
-         (let [original-x x
-               gen (block
-                     (+= x 1)
-                     x)]
-          (+ originalx gen)))
-       ```
-       but it would be wasteful to do this in general - ideally it should only be done when x is actually being modified
-  * special casing for certain types of forms when they occur as a binding in a `Let` block
-    * `Let`
-      * A form like
-        ```
-        (let [a 1
-              b (let [c 1]
-                  (+ c 1))]
-          ...)
-        ```
-        should be expanded to
-        ```
-        (let [a 1
-              c 1
-              b (+ c 1)]
-          ...)
-        ```
-      * in other words, the inner let block should be "flattened" into the outer one, such that the bindings from the inner one get moved into the outer one just before the name being bound to the inner let, and that name should be bound to the body of the inner let
-    * `Match`:
-      * A form like
-        ```
-        (let [a 1
-              b (match _ 1)
-              c 2]
-          ...)
-        ```
-        should be expanded to
-        ```
-        (let [a 1
-              @var b <UNINITIALIZED>]
-          (match _ (= b 1))
-          (let [c 2]
-            ...))
-        ```
-      * In other words, the let needs to be "split" just after the relevant binding, such that the binding is declared without being set, and the match block should be changed such that each arm is now wrapped as `(= b _)` where `b` is the relevant binding name and the `_` is the previous body of that arm.
-    * `Block`:
-      * A form like
-        ```
-        (let [@var a 1
-              b (do (+= a 1)
-                    5)
-              c 2]
-          ...)
-        ```
-        should be expanded to
-        ```
-        (let [@var a 1]
-          (+= a 1)
-          (let [b 5
-                c 2]
-            ...))
-        ```
-      * In other words, the let should be "split" just before the relevant binding, place all but the last form inside the block inside the body of the first let block, then start off the second let block with the relevant binding name assigned with the last form inside the block
-  * make `Return`s compile properly when they're inside other expressions
-    * rn if you do like `(let [x (if ... (return 5.) 6.)] ...)`, which is a totally valid thing to want to do, it'll compile to something invalid, since that `if` gets expanded to a match that attempts to assign to `x` in each branch, and it can't properly compile something like `(= x (return 5.))`.
-      * there are probably other edge cases like this, this is just the one that I've noticed so far
-      * maybe the best approach here would be to like, just kinda extract any `return` statement whenever it's inside an application, throwing away the rest of the application? Like, `(+ 1 (return 2))` can just be simplified to `(return 2)`...
-        * if i go this route it'll need to do mutation analysis, since like `(f (do ...) (return ...))` couldn't be simplified without changing the semantics if the `do` statement modifies something in the `return`
+* make `Return`s compile properly when they're inside other expressions
+  * rn if you do like `(let [x (if ... (return 5.) 6.)] ...)`, which is a totally valid thing to want to do, it'll compile to something invalid, since that `if` gets expanded to a match that attempts to assign to `x` in each branch, and it can't properly compile something like `(= x (return 5.))`.
+    * there are probably other edge cases like this, this is just the one that I've noticed so far
+    * maybe the best approach here would be to like, just kinda extract any `return` statement whenever it's inside an application, throwing away the rest of the application? Like, `(+ 1 (return 2))` can just be simplified to `(return 2)`...
+      * if i go this route it'll need to do mutation analysis, since like `(f (do ...) (return ...))` couldn't be simplified without changing the semantics if the `do` statement modifies something in the `return`
 
 * add a `poisoned: bool` field or smth to `ExpTypeInfo`, which gets set to true when an expression has already returned an error. Then make `constrain`/`mutually_constrain` and other things that can return type errors just skip their effects when the relevant typestates are poisoned, so that we aren't repeatedly generating the same errors.
 

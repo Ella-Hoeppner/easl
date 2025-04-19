@@ -2652,7 +2652,7 @@ impl TypedExp {
       data: TypeState::Unknown.into(),
       source_trace: SourceTrace::empty(),
     };
-    let _ = self.walk_mut(&mut |exp| {
+    let _ = self.walk_mut::<()>(&mut |exp| {
       Ok(match &mut exp.kind {
         Application(_, _)
         | ArrayLiteral(_)
@@ -2700,7 +2700,6 @@ impl TypedExp {
                   gensym_index += 1;
                 }
                 for arg in &mut slots[0..arg_index] {
-                  println!("replacing!! {replacement_names:?}");
                   arg.replace_internal_names(&replacement_names);
                 }
                 take(exp, |exp| TypedExp {
@@ -2727,7 +2726,7 @@ impl TypedExp {
                   ),
                   source_trace: SourceTrace::empty(),
                 });
-                return Err(());
+                return Ok(true);
               }
               break;
             }
@@ -2744,131 +2743,112 @@ impl TypedExp {
           if let Some(restructure_index) = restructure_index {
             let arg = &mut slots[restructure_index];
             changed = true;
-            enum Restructure {
-              Block(Vec<TypedExp>),
-              Match(Rc<str>, TypedExp),
-              Let(Vec<(Rc<str>, VariableKind, Exp<ExpTypeInfo>)>),
-            }
-            let restructure = match &mut arg.kind {
+            match &mut arg.kind {
               Block(_) => {
-                let mut temp = placeholder_exp.clone();
-                std::mem::swap(*arg, &mut temp);
-                let Block(mut statements) = temp.kind else {
-                  unreachable!()
-                };
-                let mut value = statements.pop().unwrap();
-                std::mem::swap(*arg, &mut value);
-                Restructure::Block(statements)
+                let mut prefix_statements = vec![];
+                take(*arg, |arg| {
+                  let Block(mut statements) = arg.kind else {
+                    unreachable!()
+                  };
+                  let value = statements.pop().unwrap();
+                  prefix_statements = statements;
+                  value
+                });
+                take(exp, |exp| {
+                  let t = exp.data.clone();
+                  prefix_statements.push(exp);
+                  TypedExp {
+                    kind: ExpKind::Block(prefix_statements),
+                    data: t,
+                    source_trace: SourceTrace::empty(),
+                  }
+                });
               }
               Match(_, _) => {
                 let name: Rc<str> =
                   format!("match_gensym_{gensym_index}").into();
                 gensym_index += 1;
-                let mut name_exp = TypedExp {
+                let mut match_exp = TypedExp {
                   kind: Name(name.clone()),
                   data: arg.data.clone(),
                   source_trace: SourceTrace::empty(),
                 };
-                std::mem::swap(*arg, &mut name_exp);
-                Restructure::Match(name, name_exp)
-              }
-              Let(bindings, value) => {
-                let mut extracted_bindings = vec![];
-                std::mem::swap(&mut extracted_bindings, bindings);
-                let mut extracted_value = placeholder_exp.clone();
-                std::mem::swap(&mut extracted_value, value);
-                std::mem::swap(*arg, &mut extracted_value);
-                Restructure::Let(extracted_bindings)
-              }
-              _ => unreachable!(),
-            };
-            match restructure {
-              Restructure::Block(mut statements) => {
-                let mut temp = placeholder_exp.clone();
-                std::mem::swap(exp, &mut temp);
-                statements.push(temp);
-                std::mem::swap(&mut exp.kind, &mut ExpKind::Block(statements));
-              }
-              Restructure::Match(name, match_exp) => {
-                let mut temp = placeholder_exp.clone();
-                std::mem::swap(exp, &mut temp);
-                let mut new_exp = TypedExp {
+                std::mem::swap(*arg, &mut match_exp);
+                take(exp, |exp| TypedExp {
                   data: exp.data.clone(),
                   kind: ExpKind::Let(
                     vec![(name, VariableKind::Let, match_exp)],
-                    temp.into(),
+                    exp.into(),
                   ),
                   source_trace: SourceTrace::empty(),
-                };
-                std::mem::swap(exp, &mut new_exp);
+                });
               }
-              Restructure::Let(bindings) => {
+              Let(bindings, body) => {
+                let mut extracted_bindings = vec![];
+                std::mem::swap(&mut extracted_bindings, bindings);
                 let mut temp = placeholder_exp.clone();
-                std::mem::swap(exp, &mut temp);
-                let mut new_exp = TypedExp {
+                std::mem::swap(&mut temp, body);
+                std::mem::swap(*arg, &mut temp);
+                take(exp, |exp| TypedExp {
                   data: exp.data.clone(),
-                  kind: ExpKind::Let(bindings, temp.into()),
+                  kind: ExpKind::Let(extracted_bindings, exp.into()),
                   source_trace: SourceTrace::empty(),
-                };
-                std::mem::swap(exp, &mut new_exp);
+                });
               }
-            }
+              _ => unreachable!(),
+            };
           }
           true
         }
         Let(items, body) => {
-          enum Restructure {
-            Let {
-              index: usize,
-              inner_bindings: Vec<(Rc<str>, VariableKind, Exp<ExpTypeInfo>)>,
-              inner_body: TypedExp,
-            },
-            Block {
-              index: usize,
-              inner_statements: Vec<TypedExp>,
-              binding_value: TypedExp,
-            },
-            Match {
-              index: usize,
-              binding_name: Rc<str>,
-              binding_type: ExpTypeInfo,
-              match_exp: TypedExp,
-            },
-          }
           loop {
-            let mut restructure: Option<Restructure> = None;
+            let mut restructured = false;
             for (index, (binding_name, variable_kind, value)) in
               items.iter_mut().enumerate()
             {
               match &value.kind {
                 Let(_, _) => {
+                  restructured = true;
                   let mut inner_value = placeholder_exp_kind.clone();
                   std::mem::swap(&mut inner_value, &mut value.kind);
-                  let Let(inner_bindings, inner_body) = inner_value else {
+                  let Let(inner_bindings, mut inner_body) = inner_value else {
                     unreachable!()
                   };
-                  restructure = Some(Restructure::Let {
-                    index,
-                    inner_bindings,
-                    inner_body: *inner_body,
-                  });
+                  std::mem::swap(&mut *inner_body, &mut items[index].2);
+                  items.splice(index..index, inner_bindings);
                   break;
                 }
                 Block { .. } => {
+                  restructured = true;
                   let mut inner_statements = vec![];
                   let Block(expressions) = &mut value.kind else {
                     unreachable!()
                   };
                   std::mem::swap(&mut inner_statements, expressions);
-                  let binding_value = inner_statements.pop().unwrap();
-                  restructure = Some(Restructure::Block {
-                    index,
-                    inner_statements,
-                    binding_value,
+                  let mut binding_value = inner_statements.pop().unwrap();
+                  take(body, |body| {
+                    let body_type = body.data.clone();
+                    let mut inner_bindings = items.split_off(index);
+                    std::mem::swap(
+                      &mut inner_bindings.last_mut().unwrap().2,
+                      &mut binding_value,
+                    );
+                    inner_statements.push(TypedExp {
+                      kind: ExpKind::Let(inner_bindings, body.into()),
+                      data: body_type.clone(),
+                      source_trace: SourceTrace::empty(),
+                    });
+                    TypedExp {
+                      kind: ExpKind::Block(inner_statements),
+                      source_trace: SourceTrace::empty(),
+                      data: body_type,
+                    }
+                    .into()
                   });
                   break;
                 }
                 Match(_, _) => {
+                  restructured = true;
                   *variable_kind = VariableKind::Var;
                   let mut match_exp = TypedExp {
                     kind: ExpKind::Uninitialized,
@@ -2876,121 +2856,68 @@ impl TypedExp {
                     source_trace: SourceTrace::empty(),
                   };
                   std::mem::swap(&mut match_exp, value);
-                  restructure = Some(Restructure::Match {
-                    index,
-                    match_exp,
-                    binding_name: binding_name.clone(),
-                    binding_type: value.data.clone(),
+                  let binding_type = value.data.clone();
+                  let binding_name = binding_name.clone();
+                  let inner_bindings = items.split_off(index + 1);
+                  let body_type = body.data.clone();
+                  take(body, |body| {
+                    let Match(_, arms) = &mut match_exp.kind else {
+                      unreachable!()
+                    };
+                    for (_, arm_body) in arms.iter_mut() {
+                      take(arm_body, |arm_body| TypedExp {
+                        data: TypeState::Known(Type::Unit).into(),
+                        kind: ExpKind::Application(
+                          TypedExp {
+                            kind: ExpKind::Name("=".into()),
+                            data: TypeState::Known(Type::Function(
+                              FunctionSignature {
+                                abstract_ancestor: None,
+                                arg_types: vec![
+                                  (binding_type.clone(), vec![]),
+                                  (binding_type.clone(), vec![]),
+                                ],
+                                return_type: TypeState::Known(Type::Unit)
+                                  .into(),
+                              }
+                              .into(),
+                            ))
+                            .into(),
+                            source_trace: SourceTrace::empty(),
+                          }
+                          .into(),
+                          vec![
+                            TypedExp {
+                              data: binding_type.clone(),
+                              kind: ExpKind::Name(binding_name.clone()),
+                              source_trace: SourceTrace::empty(),
+                            },
+                            arm_body,
+                          ],
+                        ),
+                        source_trace: SourceTrace::empty(),
+                      });
+                    }
+                    TypedExp {
+                      kind: ExpKind::Block(vec![
+                        match_exp,
+                        TypedExp {
+                          data: body_type.clone(),
+                          kind: ExpKind::Let(inner_bindings, body.into()),
+                          source_trace: SourceTrace::empty(),
+                        },
+                      ]),
+                      source_trace: SourceTrace::empty(),
+                      data: body_type,
+                    }
+                    .into()
                   });
                   break;
                 }
                 _ => {}
               }
             }
-            if let Some(restructure) = restructure {
-              changed = true;
-              match restructure {
-                Restructure::Let {
-                  index,
-                  inner_bindings,
-                  mut inner_body,
-                } => {
-                  std::mem::swap(&mut inner_body, &mut items[index].2);
-                  items.splice(index..index, inner_bindings);
-                }
-                Restructure::Block {
-                  index,
-                  mut inner_statements,
-                  mut binding_value,
-                } => {
-                  let mut original_body = placeholder_exp.clone();
-                  std::mem::swap(&mut original_body, body);
-                  let body_type = original_body.data.clone();
-                  let mut inner_bindings = items.split_off(index);
-                  std::mem::swap(
-                    &mut inner_bindings.last_mut().unwrap().2,
-                    &mut binding_value,
-                  );
-                  inner_statements.push(TypedExp {
-                    kind: ExpKind::Let(inner_bindings, original_body.into()),
-                    data: body_type.clone(),
-                    source_trace: SourceTrace::empty(),
-                  });
-                  let new_body = TypedExp {
-                    kind: ExpKind::Block(inner_statements),
-                    source_trace: SourceTrace::empty(),
-                    data: body_type,
-                  };
-                  std::mem::swap(body, &mut new_body.into());
-                }
-                Restructure::Match {
-                  index,
-                  mut match_exp,
-                  binding_name,
-                  binding_type,
-                } => {
-                  let inner_bindings = items.split_off(index + 1);
-                  let body_type = body.data.clone();
-                  let mut original_body = placeholder_exp.clone();
-                  std::mem::swap(&mut original_body, body);
-                  let Match(_, arms) = &mut match_exp.kind else {
-                    unreachable!()
-                  };
-                  for (_, arm_body) in arms.iter_mut() {
-                    let mut temp = placeholder_exp.clone();
-                    std::mem::swap(&mut temp, arm_body);
-                    temp = TypedExp {
-                      data: TypeState::Known(Type::Unit).into(),
-                      kind: ExpKind::Application(
-                        TypedExp {
-                          kind: ExpKind::Name("=".into()),
-                          data: TypeState::Known(Type::Function(
-                            FunctionSignature {
-                              abstract_ancestor: None,
-                              arg_types: vec![
-                                (binding_type.clone(), vec![]),
-                                (binding_type.clone(), vec![]),
-                              ],
-                              return_type: TypeState::Known(Type::Unit).into(),
-                            }
-                            .into(),
-                          ))
-                          .into(),
-                          source_trace: SourceTrace::empty(),
-                        }
-                        .into(),
-                        vec![
-                          TypedExp {
-                            data: binding_type.clone(),
-                            kind: ExpKind::Name(binding_name.clone()),
-                            source_trace: SourceTrace::empty(),
-                          },
-                          temp,
-                        ],
-                      ),
-                      source_trace: SourceTrace::empty(),
-                    };
-                    std::mem::swap(&mut temp, arm_body);
-                  }
-                  let new_body = TypedExp {
-                    kind: ExpKind::Block(vec![
-                      match_exp,
-                      TypedExp {
-                        data: body_type.clone(),
-                        kind: ExpKind::Let(
-                          inner_bindings,
-                          original_body.into(),
-                        ),
-                        source_trace: SourceTrace::empty(),
-                      },
-                    ]),
-                    source_trace: SourceTrace::empty(),
-                    data: body_type,
-                  };
-                  std::mem::swap(body, &mut new_body.into());
-                }
-              }
-            } else {
+            if !restructured {
               break;
             }
           }
