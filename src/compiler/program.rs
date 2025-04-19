@@ -90,6 +90,7 @@ impl Program {
               .iter()
               .map(|field| field.field_type.clone())
               .collect(),
+            mutated_args: vec![],
             return_type: AbstractType::AbstractStruct(s.clone()),
             implementation: FunctionImplementationKind::Constructor,
             associative: false,
@@ -645,6 +646,7 @@ impl Program {
                                             name: fn_name,
                                             generic_args,
                                             arg_types,
+                                            mutated_args: vec![],
                                             return_type,
                                             implementation,
                                             associative,
@@ -802,7 +804,7 @@ impl Program {
     }
     errors
   }
-  pub fn check_assignment_validity(&mut self) -> Vec<CompileError> {
+  pub fn validate_assignments(&mut self) -> Vec<CompileError> {
     let mut errors = vec![];
     for f in self.abstract_functions_iter() {
       let mut ctx = self.clone();
@@ -812,7 +814,7 @@ impl Program {
         if let Err(e) = implementation
           .borrow_mut()
           .body
-          .check_assignment_validity(&mut ctx)
+          .validate_assignments(&mut ctx)
         {
           errors.push(e);
         }
@@ -1109,7 +1111,7 @@ impl Program {
       return errors;
     }
     self.expand_associative_applications();
-    let errors = self.check_assignment_validity();
+    let errors = self.validate_assignments();
     if !errors.is_empty() {
       return errors;
     }

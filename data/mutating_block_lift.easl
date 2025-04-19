@@ -1,0 +1,5 @@
+(defn f []: f32
+  (let [@var a 0.]
+    (+ a
+       (block (= a 1.)
+              a))))

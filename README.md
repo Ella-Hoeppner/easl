@@ -24,6 +24,8 @@ Feature goals:
 
 * matrices
 
+* disallow overloading assignment operators
+
 * deexpressionifying
   * broadly, need to be able to efficiently convert between easl's expression-based syntax and wgsl's non-expression-based syntax
   * core will be lifting all `Let`s, `Match`s, and `Block`s, outside of all `Application`s, `Access`s, `Return`s, `Reference`s, and `ArrayLiteral`s

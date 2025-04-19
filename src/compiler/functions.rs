@@ -35,6 +35,7 @@ pub struct AbstractFunctionSignature {
   pub name: Rc<str>,
   pub generic_args: Vec<(Rc<str>, Vec<TypeConstraint>)>,
   pub arg_types: Vec<AbstractType>,
+  pub mutated_args: Vec<usize>,
   pub return_type: AbstractType,
   pub implementation: FunctionImplementationKind,
   pub associative: bool,
@@ -198,6 +199,7 @@ impl AbstractFunctionSignature {
         .into(),
       generic_args: self.generic_args.clone(),
       arg_types: new_parameter_types,
+      mutated_args: vec![],
       return_type: self.return_type.clone(),
       implementation: FunctionImplementationKind::Composite(Rc::new(
         RefCell::new(implementation),

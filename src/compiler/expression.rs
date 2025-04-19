@@ -1,6 +1,10 @@
 use core::fmt::Debug;
 use sse::syntax::EncloserOrOperator;
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+  cell::RefCell,
+  collections::{HashMap, HashSet},
+  rc::Rc,
+};
 
 use crate::{
   compiler::{
@@ -2097,7 +2101,22 @@ impl TypedExp {
   ) -> (bool, Vec<CompileError>) {
     self.propagate_types_inner(&mut LocalContext::empty(program))
   }
-  fn check_assignment_validity_inner(
+  fn name_or_inner_accessed_name(&self) -> Option<&Rc<str>> {
+    let mut exp = self;
+    loop {
+      if let ExpKind::Access(_, inner_exp) = &exp.kind {
+        exp = inner_exp;
+      } else {
+        break;
+      }
+    }
+    if let ExpKind::Name(name) = &exp.kind {
+      Some(name)
+    } else {
+      None
+    }
+  }
+  fn validate_assignments_inner(
     &self,
     ctx: &mut LocalContext,
   ) -> CompileResult<()> {
@@ -2106,15 +2125,7 @@ impl TypedExp {
         Application(f, args) => {
           if let ExpKind::Name(f_name) = &f.kind {
             if ASSIGNMENT_OPS.contains(&&**f_name) {
-              let mut var = &args[0];
-              loop {
-                if let ExpKind::Access(_, inner_exp) = &var.kind {
-                  var = inner_exp;
-                } else {
-                  break;
-                }
-              }
-              if let ExpKind::Name(var_name) = &var.kind {
+              if let Some(var_name) = args[0].name_or_inner_accessed_name() {
                 if ctx.get_variable_kind(var_name) != VariableKind::Var {
                   return err(
                     AssignmentTargetMustBeVariable(var_name.clone()),
@@ -2127,20 +2138,20 @@ impl TypedExp {
             }
           }
           for arg in args {
-            arg.check_assignment_validity_inner(ctx)?;
+            arg.validate_assignments_inner(ctx)?;
           }
-          f.check_assignment_validity_inner(ctx)?;
+          f.validate_assignments_inner(ctx)?;
           false
         }
         Let(binding_names_and_values, body) => {
           for (name, kind, value) in binding_names_and_values {
-            value.check_assignment_validity_inner(ctx)?;
+            value.validate_assignments_inner(ctx)?;
             ctx.bind(
               name,
               Variable::new(value.data.clone()).with_kind(kind.clone()),
             )
           }
-          body.check_assignment_validity_inner(ctx)?;
+          body.validate_assignments_inner(ctx)?;
           for (name, _, _) in binding_names_and_values {
             ctx.unbind(name);
           }
@@ -2157,7 +2168,7 @@ impl TypedExp {
                 },
               );
             }
-            body_exp.check_assignment_validity_inner(ctx)?;
+            body_exp.validate_assignments_inner(ctx)?;
             for name in arg_names {
               ctx.unbind(name);
             }
@@ -2182,10 +2193,10 @@ impl TypedExp {
             .with_kind(VariableKind::Var),
           );
           increment_variable_initial_value_expression
-            .check_assignment_validity_inner(ctx)?;
-          continue_condition_expression.check_assignment_validity_inner(ctx)?;
-          update_condition_expression.check_assignment_validity_inner(ctx)?;
-          body_expression.check_assignment_validity_inner(ctx)?;
+            .validate_assignments_inner(ctx)?;
+          continue_condition_expression.validate_assignments_inner(ctx)?;
+          update_condition_expression.validate_assignments_inner(ctx)?;
+          body_expression.validate_assignments_inner(ctx)?;
           ctx.unbind(increment_variable_name);
           false
         }
@@ -2193,11 +2204,11 @@ impl TypedExp {
       })
     })
   }
-  pub fn check_assignment_validity(
+  pub fn validate_assignments(
     &self,
     program: &mut Program,
   ) -> CompileResult<()> {
-    self.check_assignment_validity_inner(&mut LocalContext::empty(program))
+    self.validate_assignments_inner(&mut LocalContext::empty(program))
   }
   pub fn replace_skolems(&mut self, skolems: &Vec<(Rc<str>, Type)>) {
     self
@@ -2568,6 +2579,50 @@ impl TypedExp {
       })
       .unwrap();
   }
+  pub fn internally_referenced_names(&self) -> HashSet<Rc<str>> {
+    let mut names = HashSet::new();
+    self
+      .walk(&mut |exp| {
+        match &exp.kind {
+          Name(name) => {
+            names.insert(name.clone());
+          }
+          _ => {}
+        }
+        Ok(true)
+      })
+      .unwrap();
+    names
+  }
+  pub fn internally_mutated_names(&self) -> HashSet<Rc<str>> {
+    let mut names = HashSet::new();
+    self
+      .walk(&mut |exp| {
+        match &exp.kind {
+          Application(f, args) => {
+            let Type::Function(function_signature) = f.data.kind.unwrap_known()
+            else {
+              unreachable!()
+            };
+            if let Some(abstract_ancestor) =
+              function_signature.abstract_ancestor
+            {
+              for i in abstract_ancestor.mutated_args.iter().copied() {
+                names
+                  .insert(args[i].name_or_inner_accessed_name().expect(
+                    "No name found in mutated argument position. This should \
+                    never happen if validate_assignments has passed.")
+                    .clone());
+              }
+            }
+          }
+          _ => {}
+        };
+        Ok(true)
+      })
+      .unwrap();
+    names
+  }
   pub fn deexpressionify(&mut self) {
     let mut changed = false;
     let mut gensym_index = 0;
@@ -2605,43 +2660,53 @@ impl TypedExp {
               Let(Vec<(Rc<str>, VariableKind, Exp<ExpTypeInfo>)>),
             }
             let mut restructure: Option<Restructure> = None;
+            let mut previously_referenced_names = HashSet::new();
             for arg in slots {
-              match &mut arg.kind {
-                ExpKind::Block(_) => {
-                  let mut temp = placeholder_exp.clone();
-                  std::mem::swap(arg, &mut temp);
-                  let ExpKind::Block(mut statements) = temp.kind else {
-                    unreachable!()
-                  };
-                  let mut value = statements.pop().unwrap();
-                  std::mem::swap(arg, &mut value);
-                  restructure = Some(Restructure::Block(statements));
-                  break;
+              if matches!(&arg.kind, Block(_) | Match(_, _) | Let(_, _)) {
+                let mutated_names = arg.internally_mutated_names();
+                restructure = Some(match &mut arg.kind {
+                  Block(_) => {
+                    let mut temp = placeholder_exp.clone();
+                    std::mem::swap(arg, &mut temp);
+                    let Block(mut statements) = temp.kind else {
+                      unreachable!()
+                    };
+                    let mut value = statements.pop().unwrap();
+                    std::mem::swap(arg, &mut value);
+                    Restructure::Block(statements)
+                  }
+                  Match(_, _) => {
+                    let name: Rc<str> =
+                      format!("match_gensym_{gensym_index}").into();
+                    gensym_index += 1;
+                    let mut name_exp = TypedExp {
+                      kind: Name(name.clone()),
+                      data: arg.data.clone(),
+                      source_trace: SourceTrace::empty(),
+                    };
+                    std::mem::swap(arg, &mut name_exp);
+                    Restructure::Match(name, name_exp)
+                  }
+                  Let(bindings, value) => {
+                    let mut extracted_bindings = vec![];
+                    std::mem::swap(&mut extracted_bindings, bindings);
+                    let mut extracted_value = placeholder_exp.clone();
+                    std::mem::swap(&mut extracted_value, value);
+                    std::mem::swap(arg, &mut extracted_value);
+                    Restructure::Let(extracted_bindings)
+                  }
+                  _ => unreachable!(),
+                });
+                let overridden_names: Vec<&Rc<str>> = mutated_names
+                  .intersection(&previously_referenced_names)
+                  .collect();
+                if !overridden_names.is_empty() {
+                  println!("{overridden_names:?}");
                 }
-                ExpKind::Match(_, _) => {
-                  let name: Rc<str> =
-                    format!("match_gensym_{gensym_index}").into();
-                  gensym_index += 1;
-                  let mut name_exp = TypedExp {
-                    kind: ExpKind::Name(name.clone()),
-                    data: arg.data.clone(),
-                    source_trace: SourceTrace::empty(),
-                  };
-                  std::mem::swap(arg, &mut name_exp);
-                  restructure = Some(Restructure::Match(name, name_exp));
-                  break;
-                }
-                ExpKind::Let(bindings, value) => {
-                  let mut extracted_bindings = vec![];
-                  std::mem::swap(&mut extracted_bindings, bindings);
-                  let mut extracted_value = placeholder_exp.clone();
-                  std::mem::swap(&mut extracted_value, value);
-                  std::mem::swap(arg, &mut extracted_value);
-                  restructure = Some(Restructure::Let(extracted_bindings));
-                  break;
-                }
-                _ => {}
+                break;
               }
+              previously_referenced_names
+                .extend(arg.internally_referenced_names());
             }
             if let Some(restructure) = restructure {
               changed = true;

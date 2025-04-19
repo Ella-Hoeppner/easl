@@ -50,6 +50,7 @@ fn main() {
     "block_in_application",
     "match_in_application",
     "let_in_application",
+    "mutating_block_lift",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();
