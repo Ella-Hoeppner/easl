@@ -334,11 +334,11 @@ impl Program {
             first_child_position.clone().into();
           match first_child.as_str() {
             "var" => {
-              if let Some((attributes, name_and_type_ast)) = match children_iter
+              if let Some((attributes, name_and_type_ast, value_ast)) = match children_iter
                 .len()
               {
-                1 => Some((vec![], children_iter.next().unwrap())),
-                2 => {
+                1 => Some((vec![], children_iter.next().unwrap(), None)),
+                2 | 3 => {
                   let attributes_ast = children_iter.next().unwrap();
                   if let EaslTree::Inner(
                     (position, Encloser(Square)),
@@ -375,6 +375,7 @@ impl Program {
                     Some((
                       attributes.into_iter().filter_map(|x| x).collect(),
                       children_iter.next().unwrap(),
+                      children_iter.next()
                     ))
                   } else {
                     errors.push(CompileError::new(
@@ -423,13 +424,23 @@ impl Program {
                             errors.push(e);
                           }
                         }
+                        let value = value_ast.map(|value_ast| match TypedExp::try_from_easl_tree(
+                          value_ast,
+                          &program.structs,
+                          &vec![],
+                          &vec![],
+                          crate::compiler::expression::SyntaxTreeContext::Default,
+                        ) {
+                            Ok(exp) => Some(exp),
+                            Err(e) => {errors.push(e); None},
+                        }).flatten();
                         program.top_level_vars.push(TopLevelVar {
                           name,
                           metadata: metadata.map(|(a, _)| a),
                           attributes,
                           var: Variable::new(TypeState::Known(t).into())
                             .with_kind(VariableKind::Var),
-                          value: None,
+                          value,
                           source_trace: parens_source_trace,
                         })
                       }

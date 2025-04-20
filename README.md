@@ -30,6 +30,7 @@ Feature goals:
     * this means there needs to be some concept of effect-tracking... if I wanna do this before I'm really ready to start full-fledged effect tracking, I think it's fine to leave in everything except for literals and constructors
   * Maybe it should be an easl error to do a form like that? Like, whenever a `Block` contains effect-free expressions other than the final expression, throw an error 
   (including for implicit `Block`s, like those inside `Let`s and `Match`s)
+  * I guess to do this, we should have a general like `TypedExp::effects()`, which recurses it's children and unions them. Applications of the assignment ops give off a `Modifies(variable_name: Rc<str>)` effect, which for now will be the only effect. The `internally_mutated_names` function can be replaced with this. However, one improvement to make, and one thing that `internally_mutated_names` currently gets wrong now that I think about it, is that it'll report names that are created internally. To account for this, a `Let` expression should be treated as basically "handling" the `Modifies(variable_name)` effect for all names bound within it.
 
 * add a `poisoned: bool` field or smth to `ExpTypeInfo`, which gets set to true when an expression has already returned an error. Then make `constrain`/`mutually_constrain` and other things that can return type errors just skip their effects when the relevant typestates are poisoned, so that we aren't repeatedly generating the same errors.
 

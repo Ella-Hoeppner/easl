@@ -1,10 +1,15 @@
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+  cell::RefCell,
+  collections::{HashMap, HashSet},
+  rc::Rc,
+};
 
 use take_mut::take;
 
 use crate::compiler::util::compile_word;
 
 use super::{
+  effects::Effect,
   error::{err, CompileError, CompileErrorKind::*, CompileResult, SourceTrace},
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
@@ -435,6 +440,16 @@ impl FunctionSignature {
       .abstract_ancestor
       .as_ref()
       .map(|abstract_ancestor| abstract_ancestor.name.clone())
+  }
+  pub fn effects(&self) -> HashSet<Effect> {
+    if let Some(abstract_ancestor) = &self.abstract_ancestor {
+      match &abstract_ancestor.implementation {
+        FunctionImplementationKind::Composite(f) => f.borrow().body.effects(),
+        _ => HashSet::new(),
+      }
+    } else {
+      HashSet::new()
+    }
   }
 }
 

@@ -277,6 +277,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
 use ExpKind::*;
 
 use super::{
+  effects::Effect,
   error::{CompileErrorKind, SourceTrace, SourceTraceKind},
   functions::FunctionImplementationKind,
   structs::compiled_vec_name,
@@ -2599,34 +2600,51 @@ impl TypedExp {
       .unwrap();
     name_type_pairs
   }
-  fn internally_mutated_names(&self) -> HashSet<Rc<str>> {
-    let mut names = HashSet::new();
+  pub fn effects(&self) -> HashSet<Effect> {
+    let mut effects = HashSet::new();
     self
-      .walk(&mut |exp| {
-        match &exp.kind {
-          Application(f, args) => {
-            let Type::Function(function_signature) = f.data.kind.unwrap_known()
-            else {
-              unreachable!()
-            };
-            if let Some(abstract_ancestor) =
-              function_signature.abstract_ancestor
-            {
-              for i in abstract_ancestor.mutated_args.iter().copied() {
-                names
-                  .insert(args[i].name_or_inner_accessed_name().expect(
+      .walk(&mut |exp| match &exp.kind {
+        Let(items, exp) => {
+          let inner_effects =
+            items
+              .iter()
+              .fold(exp.effects(), |mut e, (_, _, value_exp)| {
+                e.extend(value_exp.effects());
+                e
+              });
+          let bound_names: HashSet<Rc<str>> =
+            items.iter().map(|(name, _, _)| name.clone()).collect();
+          effects.extend(inner_effects.into_iter().filter_map(|e| match &e {
+            Effect::Modifies(name) => (!bound_names.contains(name)).then(|| e),
+          }));
+          Ok(true)
+        }
+        Application(f, args) => {
+          let Type::Function(function_signature) = f.data.kind.unwrap_known()
+          else {
+            unreachable!()
+          };
+          effects.extend(function_signature.effects());
+          if let Some(abstract_ancestor) = function_signature.abstract_ancestor
+          {
+            for i in abstract_ancestor.mutated_args.iter().copied() {
+              effects.insert(Effect::Modifies(
+                args[i]
+                  .name_or_inner_accessed_name()
+                  .expect(
                     "No name found in mutated argument position. This should \
-                    never happen if validate_assignments has passed.")
-                    .clone());
-              }
+                    never happen if validate_assignments has passed.",
+                  )
+                  .clone(),
+              ));
             }
           }
-          _ => {}
-        };
-        Ok(true)
+          Ok(true)
+        }
+        _ => Ok(true),
       })
       .unwrap();
-    names
+    effects
   }
   fn replace_internal_names(&mut self, new_names: &HashMap<Rc<str>, Rc<str>>) {
     self
@@ -2683,10 +2701,10 @@ impl TypedExp {
               }
               Block(_) | Match(_, _) | Let(_, _) => {
                 restructure_index = Some(arg_index);
-                let mutated_names = arg.internally_mutated_names();
+                let effects = arg.effects();
                 let mut overridden_names: Vec<(Rc<str>, Type)> = vec![];
                 for (name, t) in previously_referenced_names {
-                  if mutated_names.contains(&name) {
+                  if effects.contains(&Effect::Modifies(name.clone())) {
                     overridden_names.push((name, t));
                   }
                 }
