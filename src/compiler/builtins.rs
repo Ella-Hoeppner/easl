@@ -1146,7 +1146,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                     span: 0..0,
                     path: vec![],
                   },
-                  "block".into(),
+                  "do".into(),
                 ),
               );
               Some(Ok(EaslTree::Inner(

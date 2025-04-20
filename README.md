@@ -24,11 +24,12 @@ Feature goals:
 
 * matrices
 
-* make `Return`s compile properly when they're inside other expressions
-  * rn if you do like `(let [x (if ... (return 5.) 6.)] ...)`, which is a totally valid thing to want to do, it'll compile to something invalid, since that `if` gets expanded to a match that attempts to assign to `x` in each branch, and it can't properly compile something like `(= x (return 5.))`.
-    * there are probably other edge cases like this, this is just the one that I've noticed so far
-    * maybe the best approach here would be to like, just kinda extract any `return` statement whenever it's inside an application, throwing away the rest of the application? Like, `(+ 1 (return 2))` can just be simplified to `(return 2)`...
-      * if i go this route it'll need to do mutation analysis, since like `(f (do ...) (return ...))` couldn't be simplified without changing the semantics if the `do` statement modifies something in the `return`
+* wgsl fails to compile if you have a value as a top-level statement. So an easl expression like `(let [...] 1. ...)` will produce invalid wgsl, despite typechecking
+  * One approach would be to allow things like this in easl, but have pass of pre-compilation analysis that takes any statement out of a `Block` that has no side-effects
+    * this will need to occur after `deexpressionify`, given that that will turn an expression like `(+ 1 (return ...))` into a block `(do 1 (return ...))` and therefore produce one of these
+    * this means there needs to be some concept of effect-tracking... if I wanna do this before I'm really ready to start full-fledged effect tracking, I think it's fine to leave in everything except for literals and constructors
+  * Maybe it should be an easl error to do a form like that? Like, whenever a `Block` contains effect-free expressions other than the final expression, throw an error 
+  (including for implicit `Block`s, like those inside `Let`s and `Match`s)
 
 * add a `poisoned: bool` field or smth to `ExpTypeInfo`, which gets set to true when an expression has already returned an error. Then make `constrain`/`mutually_constrain` and other things that can return type errors just skip their effects when the relevant typestates are poisoned, so that we aren't repeatedly generating the same errors.
 

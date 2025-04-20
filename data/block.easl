@@ -18,7 +18,7 @@
 (defn fragment [in: VertexOutput]: @{location 0} vec4f
   (vec2 5. 2.): vec2f
   (let [a (vec2 0. 0.): vec2f]
-    (block
+    (do
       (vec2 0. 0.): vec2f
       (vec3 1. 0. 0.): vec3f
       (vec4 (vec3 0. 0. 0.): vec3f (.x a)))))

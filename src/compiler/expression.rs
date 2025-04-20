@@ -668,7 +668,7 @@ impl TypedExp {
                             );
                           }
                         }
-                        "block" => {
+                        "do" => {
                           if children_iter.len() == 0 {
                             return err(EmptyBlock, source_trace);
                           }
@@ -2677,58 +2677,64 @@ impl TypedExp {
           let mut restructure_index: Option<usize> = None;
           for arg_index in 0..slots.len() {
             let arg = &mut slots[arg_index];
-            if matches!(&arg.kind, Block(_) | Match(_, _) | Let(_, _)) {
-              restructure_index = Some(arg_index);
-              let mutated_names = arg.internally_mutated_names();
-              let mut overridden_names: Vec<(Rc<str>, Type)> = vec![];
-              for (name, t) in previously_referenced_names {
-                if mutated_names.contains(&name) {
-                  overridden_names.push((name, t));
-                }
+            match &arg.kind {
+              Return(_) => {
+                restructure_index = Some(arg_index);
               }
-              if !overridden_names.is_empty() {
-                changed = true;
-                let mut replacement_types: HashMap<Rc<str>, Type> =
-                  HashMap::new();
-                let mut replacement_names: HashMap<Rc<str>, Rc<str>> =
-                  HashMap::new();
-                for (name, t) in overridden_names {
-                  let replacement_name =
-                    format!("original_{name}_{gensym_index}").into();
-                  replacement_names.insert(name.clone(), replacement_name);
-                  replacement_types.insert(name, t);
-                  gensym_index += 1;
+              Block(_) | Match(_, _) | Let(_, _) => {
+                restructure_index = Some(arg_index);
+                let mutated_names = arg.internally_mutated_names();
+                let mut overridden_names: Vec<(Rc<str>, Type)> = vec![];
+                for (name, t) in previously_referenced_names {
+                  if mutated_names.contains(&name) {
+                    overridden_names.push((name, t));
+                  }
                 }
-                for arg in &mut slots[0..arg_index] {
-                  arg.replace_internal_names(&replacement_names);
+                if !overridden_names.is_empty() {
+                  changed = true;
+                  let mut replacement_types: HashMap<Rc<str>, Type> =
+                    HashMap::new();
+                  let mut replacement_names: HashMap<Rc<str>, Rc<str>> =
+                    HashMap::new();
+                  for (name, t) in overridden_names {
+                    let replacement_name =
+                      format!("original_{name}_{gensym_index}").into();
+                    replacement_names.insert(name.clone(), replacement_name);
+                    replacement_types.insert(name, t);
+                    gensym_index += 1;
+                  }
+                  for arg in &mut slots[0..arg_index] {
+                    arg.replace_internal_names(&replacement_names);
+                  }
+                  take(exp, |exp| TypedExp {
+                    data: exp.data.clone(),
+                    kind: ExpKind::Let(
+                      replacement_names
+                        .into_iter()
+                        .map(|(old_name, new_name)| {
+                          (
+                            new_name,
+                            VariableKind::Let,
+                            TypedExp {
+                              data: TypeState::Known(
+                                replacement_types.remove(&old_name).unwrap(),
+                              )
+                              .into(),
+                              kind: ExpKind::Name(old_name),
+                              source_trace: SourceTrace::empty(),
+                            },
+                          )
+                        })
+                        .collect(),
+                      exp.into(),
+                    ),
+                    source_trace: SourceTrace::empty(),
+                  });
+                  return Ok(true);
                 }
-                take(exp, |exp| TypedExp {
-                  data: exp.data.clone(),
-                  kind: ExpKind::Let(
-                    replacement_names
-                      .into_iter()
-                      .map(|(old_name, new_name)| {
-                        (
-                          new_name,
-                          VariableKind::Let,
-                          TypedExp {
-                            data: TypeState::Known(
-                              replacement_types.remove(&old_name).unwrap(),
-                            )
-                            .into(),
-                            kind: ExpKind::Name(old_name),
-                            source_trace: SourceTrace::empty(),
-                          },
-                        )
-                      })
-                      .collect(),
-                    exp.into(),
-                  ),
-                  source_trace: SourceTrace::empty(),
-                });
-                return Ok(true);
+                break;
               }
-              break;
+              _ => {}
             }
             for (name, t) in arg.internally_referenced_names() {
               if previously_referenced_names
@@ -2744,6 +2750,22 @@ impl TypedExp {
             let arg = &mut slots[restructure_index];
             changed = true;
             match &mut arg.kind {
+              Return(_) => {
+                let mut inner_expressions = vec![];
+                for i in 0..restructure_index + 1 {
+                  let mut temp = placeholder_exp.clone();
+                  std::mem::swap(slots[i], &mut temp);
+                  inner_expressions.push(temp);
+                }
+                std::mem::swap(
+                  exp,
+                  &mut TypedExp {
+                    data: inner_expressions.last().unwrap().data.clone(),
+                    kind: ExpKind::Block(inner_expressions),
+                    source_trace: SourceTrace::empty(),
+                  },
+                );
+              }
               Block(_) => {
                 let mut prefix_statements = vec![];
                 take(*arg, |arg| {

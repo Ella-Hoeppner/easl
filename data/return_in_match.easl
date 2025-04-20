@@ -1,0 +1,5 @@
+(defn f [b: bool]: f32
+  (+ 1.
+     (match b
+       true 1.
+       false (return 3.))))
