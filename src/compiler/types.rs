@@ -453,6 +453,7 @@ impl Type {
                 Some(return_type_ast),
               ) => Ok(Self::Function(Box::new(FunctionSignature {
                 abstract_ancestor: None,
+                mutated_args: vec![],
                 arg_types: arg_type_asts
                   .into_iter()
                   .map(|arg_type_ast| {

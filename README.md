@@ -24,19 +24,13 @@ Feature goals:
 
 * matrices
 
-* wgsl fails to compile if you have a value as a top-level statement. So an easl expression like `(let [...] 1. ...)` will produce invalid wgsl, despite typechecking
-  * One approach would be to allow things like this in easl, but have pass of pre-compilation analysis that takes any statement out of a `Block` that has no side-effects
-    * this will need to occur after `deexpressionify`, given that that will turn an expression like `(+ 1 (return ...))` into a block `(do 1 (return ...))` and therefore produce one of these
-    * this means there needs to be some concept of effect-tracking... if I wanna do this before I'm really ready to start full-fledged effect tracking, I think it's fine to leave in everything except for literals and constructors
-  * Maybe it should be an easl error to do a form like that? Like, whenever a `Block` contains effect-free expressions other than the final expression, throw an error 
-  (including for implicit `Block`s, like those inside `Let`s and `Match`s)
-  * I guess to do this, we should have a general like `TypedExp::effects()`, which recurses it's children and unions them. Applications of the assignment ops give off a `Modifies(variable_name: Rc<str>)` effect, which for now will be the only effect. The `internally_mutated_names` function can be replaced with this. However, one improvement to make, and one thing that `internally_mutated_names` currently gets wrong now that I think about it, is that it'll report names that are created internally. To account for this, a `Let` expression should be treated as basically "handling" the `Modifies(variable_name)` effect for all names bound within it.
-
 * add a `poisoned: bool` field or smth to `ExpTypeInfo`, which gets set to true when an expression has already returned an error. Then make `constrain`/`mutually_constrain` and other things that can return type errors just skip their effects when the relevant typestates are poisoned, so that we aren't repeatedly generating the same errors.
 
 * improve error messages
 
 ### medium priority, necessary to call the language 0.1
+
+* track `discard`, `break`, and `continue` with the effects system rather than the current ad-hoc system
 
 * there are several places where gensyms are generated, but not guaranteed to be completely safe. Need to have a system that tracks all names in the program and allows for safe gensym-ing
   * deshadowing

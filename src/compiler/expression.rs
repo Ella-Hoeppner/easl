@@ -416,6 +416,7 @@ impl TypedExp {
         abstract_ancestor: None,
         arg_types,
         return_type,
+        mutated_args: vec![],
       })))
       .into(),
       kind: ExpKind::Function(arg_names, Box::new(body)),
@@ -1361,7 +1362,7 @@ impl TypedExp {
               arms
                 .into_iter()
                 .map(|(pattern, value)| format!(
-                  "{}: {{{}\n}}",
+                  "{}: {{{}\n  break;\n}}",
                   if pattern.kind == Wildcard {
                     "default".to_string()
                   } else {
@@ -1665,6 +1666,7 @@ impl TypedExp {
                 .iter()
                 .map(|arg| (arg.data.clone(), vec![]))
                 .collect(),
+              mutated_args: vec![],
               return_type: self.data.clone(),
             }))),
             f.source_trace.clone(),
@@ -2601,50 +2603,96 @@ impl TypedExp {
     name_type_pairs
   }
   pub fn effects(&self) -> HashSet<Effect> {
-    let mut effects = HashSet::new();
-    self
-      .walk(&mut |exp| match &exp.kind {
-        Let(items, exp) => {
-          let inner_effects =
-            items
-              .iter()
-              .fold(exp.effects(), |mut e, (_, _, value_exp)| {
-                e.extend(value_exp.effects());
-                e
-              });
-          let bound_names: HashSet<Rc<str>> =
-            items.iter().map(|(name, _, _)| name.clone()).collect();
-          effects.extend(inner_effects.into_iter().filter_map(|e| match &e {
+    match &self.kind {
+      Return(exp) | Reference(exp) => exp.effects(),
+      Block(exps) | ArrayLiteral(exps) => exps
+        .into_iter()
+        .map(|exp| exp.effects())
+        .reduce(|mut a, b| {
+          a.extend(b);
+          a
+        })
+        .unwrap_or_else(|| HashSet::new()),
+      Let(items, exp) => {
+        let effects =
+          items
+            .iter()
+            .fold(exp.effects(), |mut e, (_, _, value_exp)| {
+              e.extend(value_exp.effects());
+              e
+            });
+        let bound_names: HashSet<Rc<str>> =
+          items.iter().map(|(name, _, _)| name.clone()).collect();
+        effects
+          .into_iter()
+          .filter_map(|e| match &e {
             Effect::Modifies(name) => (!bound_names.contains(name)).then(|| e),
-          }));
-          Ok(true)
+          })
+          .collect()
+      }
+      Application(f, args) => {
+        let mut effects = HashSet::new();
+        let Type::Function(function_signature) = f.data.kind.unwrap_known()
+        else {
+          unreachable!()
+        };
+        effects.extend(function_signature.effects());
+        for i in function_signature.mutated_args.iter().copied() {
+          effects.insert(Effect::Modifies(
+            args[i]
+              .name_or_inner_accessed_name()
+              .expect(
+                "No name found in mutated argument position. This should \
+                  never happen if validate_assignments has passed.",
+              )
+              .clone(),
+          ));
         }
-        Application(f, args) => {
-          let Type::Function(function_signature) = f.data.kind.unwrap_known()
-          else {
-            unreachable!()
-          };
-          effects.extend(function_signature.effects());
-          if let Some(abstract_ancestor) = function_signature.abstract_ancestor
-          {
-            for i in abstract_ancestor.mutated_args.iter().copied() {
-              effects.insert(Effect::Modifies(
-                args[i]
-                  .name_or_inner_accessed_name()
-                  .expect(
-                    "No name found in mutated argument position. This should \
-                    never happen if validate_assignments has passed.",
-                  )
-                  .clone(),
-              ));
-            }
-          }
-          Ok(true)
+        effects
+      }
+      Access(accessor, exp) => match accessor {
+        Accessor::ArrayIndex(accessor_exp) => {
+          let mut effects = exp.effects();
+          effects.extend(accessor_exp.effects());
+          effects
         }
-        _ => Ok(true),
-      })
-      .unwrap();
-    effects
+        _ => exp.effects(),
+      },
+      Match(exp, items) => {
+        let mut effects = exp.effects();
+        for (_, arm) in items {
+          effects.extend(arm.effects());
+        }
+        effects
+      }
+      ForLoop {
+        increment_variable_name,
+        increment_variable_initial_value_expression,
+        continue_condition_expression,
+        update_condition_expression,
+        body_expression,
+        ..
+      } => {
+        let mut effects = increment_variable_initial_value_expression.effects();
+        effects.extend(continue_condition_expression.effects());
+        effects.extend(update_condition_expression.effects());
+        effects.extend(body_expression.effects());
+        effects.remove(&Effect::Modifies(increment_variable_name.clone()));
+        effects
+      }
+      WhileLoop {
+        condition_expression,
+        body_expression,
+      } => {
+        let mut effects = condition_expression.effects();
+        effects.extend(body_expression.effects());
+        effects
+      }
+      _ => HashSet::new(),
+    }
+  }
+  pub fn is_pure(&self) -> bool {
+    self.effects().is_empty()
   }
   fn replace_internal_names(&mut self, new_names: &HashMap<Rc<str>, Rc<str>>) {
     self
@@ -2662,312 +2710,334 @@ impl TypedExp {
       .unwrap()
   }
   pub fn deexpressionify(&mut self) {
-    let mut changed = false;
-    let mut gensym_index = 0;
-    let placeholder_exp_kind = ExpKind::Wildcard;
-    let placeholder_exp = TypedExp {
-      kind: ExpKind::Wildcard,
-      data: TypeState::Unknown.into(),
-      source_trace: SourceTrace::empty(),
-    };
-    let _ = self.walk_mut::<()>(&mut |exp| {
-      Ok(match &mut exp.kind {
-        Application(_, _)
-        | ArrayLiteral(_)
-        | Reference(_)
-        | Return(_)
-        | Access(_, _) => {
-          let mut slots: Vec<&mut TypedExp> = match &mut exp.kind {
-            Application(_, args) | ArrayLiteral(args) => {
-              args.iter_mut().collect()
-            }
-            Reference(inner_exp) | Return(inner_exp) => vec![inner_exp],
-            Access(accessor, inner_exp) => {
-              let mut slots = vec![inner_exp.as_mut()];
-              if let Accessor::ArrayIndex(index_exp) = accessor {
-                slots.push(index_exp);
+    loop {
+      let mut changed = false;
+      let mut gensym_index = 0;
+      let placeholder_exp_kind = ExpKind::Wildcard;
+      let placeholder_exp = TypedExp {
+        kind: ExpKind::Wildcard,
+        data: TypeState::Unknown.into(),
+        source_trace: SourceTrace::empty(),
+      };
+      let _ = self.walk_mut::<()>(&mut |exp| {
+        Ok(match &mut exp.kind {
+          Application(_, _)
+          | ArrayLiteral(_)
+          | Reference(_)
+          | Return(_)
+          | Access(_, _) => {
+            let mut slots: Vec<&mut TypedExp> = match &mut exp.kind {
+              Application(_, args) | ArrayLiteral(args) => {
+                args.iter_mut().collect()
               }
-              slots
-            }
-            _ => unreachable!(),
-          };
-          let mut previously_referenced_names: Vec<(Rc<str>, Type)> = vec![];
-          let mut restructure_index: Option<usize> = None;
-          for arg_index in 0..slots.len() {
-            let arg = &mut slots[arg_index];
-            match &arg.kind {
-              Return(_) => {
-                restructure_index = Some(arg_index);
-              }
-              Block(_) | Match(_, _) | Let(_, _) => {
-                restructure_index = Some(arg_index);
-                let effects = arg.effects();
-                let mut overridden_names: Vec<(Rc<str>, Type)> = vec![];
-                for (name, t) in previously_referenced_names {
-                  if effects.contains(&Effect::Modifies(name.clone())) {
-                    overridden_names.push((name, t));
-                  }
+              Reference(inner_exp) | Return(inner_exp) => vec![inner_exp],
+              Access(accessor, inner_exp) => {
+                let mut slots = vec![inner_exp.as_mut()];
+                if let Accessor::ArrayIndex(index_exp) = accessor {
+                  slots.push(index_exp);
                 }
-                if !overridden_names.is_empty() {
-                  changed = true;
-                  let mut replacement_types: HashMap<Rc<str>, Type> =
-                    HashMap::new();
-                  let mut replacement_names: HashMap<Rc<str>, Rc<str>> =
-                    HashMap::new();
-                  for (name, t) in overridden_names {
-                    let replacement_name =
-                      format!("original_{name}_{gensym_index}").into();
-                    replacement_names.insert(name.clone(), replacement_name);
-                    replacement_types.insert(name, t);
-                    gensym_index += 1;
-                  }
-                  for arg in &mut slots[0..arg_index] {
-                    arg.replace_internal_names(&replacement_names);
-                  }
-                  take(exp, |exp| TypedExp {
-                    data: exp.data.clone(),
-                    kind: ExpKind::Let(
-                      replacement_names
-                        .into_iter()
-                        .map(|(old_name, new_name)| {
-                          (
-                            new_name,
-                            VariableKind::Let,
-                            TypedExp {
-                              data: TypeState::Known(
-                                replacement_types.remove(&old_name).unwrap(),
-                              )
-                              .into(),
-                              kind: ExpKind::Name(old_name),
-                              source_trace: SourceTrace::empty(),
-                            },
-                          )
-                        })
-                        .collect(),
-                      exp.into(),
-                    ),
-                    source_trace: SourceTrace::empty(),
-                  });
-                  return Ok(true);
-                }
-                break;
-              }
-              _ => {}
-            }
-            for (name, t) in arg.internally_referenced_names() {
-              if previously_referenced_names
-                .iter()
-                .find(|(existing_name, _)| name == *existing_name)
-                .is_none()
-              {
-                previously_referenced_names.push((name, t));
-              }
-            }
-          }
-          if let Some(restructure_index) = restructure_index {
-            let arg = &mut slots[restructure_index];
-            changed = true;
-            match &mut arg.kind {
-              Return(_) => {
-                let mut inner_expressions = vec![];
-                for i in 0..restructure_index + 1 {
-                  let mut temp = placeholder_exp.clone();
-                  std::mem::swap(slots[i], &mut temp);
-                  inner_expressions.push(temp);
-                }
-                std::mem::swap(
-                  exp,
-                  &mut TypedExp {
-                    data: inner_expressions.last().unwrap().data.clone(),
-                    kind: ExpKind::Block(inner_expressions),
-                    source_trace: SourceTrace::empty(),
-                  },
-                );
-              }
-              Block(_) => {
-                let mut prefix_statements = vec![];
-                take(*arg, |arg| {
-                  let Block(mut statements) = arg.kind else {
-                    unreachable!()
-                  };
-                  let value = statements.pop().unwrap();
-                  prefix_statements = statements;
-                  value
-                });
-                take(exp, |exp| {
-                  let t = exp.data.clone();
-                  prefix_statements.push(exp);
-                  TypedExp {
-                    kind: ExpKind::Block(prefix_statements),
-                    data: t,
-                    source_trace: SourceTrace::empty(),
-                  }
-                });
-              }
-              Match(_, _) => {
-                let name: Rc<str> =
-                  format!("match_gensym_{gensym_index}").into();
-                gensym_index += 1;
-                let mut match_exp = TypedExp {
-                  kind: Name(name.clone()),
-                  data: arg.data.clone(),
-                  source_trace: SourceTrace::empty(),
-                };
-                std::mem::swap(*arg, &mut match_exp);
-                take(exp, |exp| TypedExp {
-                  data: exp.data.clone(),
-                  kind: ExpKind::Let(
-                    vec![(name, VariableKind::Let, match_exp)],
-                    exp.into(),
-                  ),
-                  source_trace: SourceTrace::empty(),
-                });
-              }
-              Let(bindings, body) => {
-                let mut extracted_bindings = vec![];
-                std::mem::swap(&mut extracted_bindings, bindings);
-                let mut temp = placeholder_exp.clone();
-                std::mem::swap(&mut temp, body);
-                std::mem::swap(*arg, &mut temp);
-                take(exp, |exp| TypedExp {
-                  data: exp.data.clone(),
-                  kind: ExpKind::Let(extracted_bindings, exp.into()),
-                  source_trace: SourceTrace::empty(),
-                });
+                slots
               }
               _ => unreachable!(),
             };
-          }
-          true
-        }
-        Let(items, body) => {
-          loop {
-            let mut restructured = false;
-            for (index, (binding_name, variable_kind, value)) in
-              items.iter_mut().enumerate()
-            {
-              match &value.kind {
-                Let(_, _) => {
-                  restructured = true;
-                  let mut inner_value = placeholder_exp_kind.clone();
-                  std::mem::swap(&mut inner_value, &mut value.kind);
-                  let Let(inner_bindings, mut inner_body) = inner_value else {
-                    unreachable!()
-                  };
-                  std::mem::swap(&mut *inner_body, &mut items[index].2);
-                  items.splice(index..index, inner_bindings);
-                  break;
+            let mut previously_referenced_names: Vec<(Rc<str>, Type)> = vec![];
+            let mut restructure_index: Option<usize> = None;
+            for arg_index in 0..slots.len() {
+              let arg = &mut slots[arg_index];
+              match &arg.kind {
+                Return(_) => {
+                  restructure_index = Some(arg_index);
                 }
-                Block { .. } => {
-                  restructured = true;
-                  let mut inner_statements = vec![];
-                  let Block(expressions) = &mut value.kind else {
-                    unreachable!()
-                  };
-                  std::mem::swap(&mut inner_statements, expressions);
-                  let mut binding_value = inner_statements.pop().unwrap();
-                  take(body, |body| {
-                    let body_type = body.data.clone();
-                    let mut inner_bindings = items.split_off(index);
-                    std::mem::swap(
-                      &mut inner_bindings.last_mut().unwrap().2,
-                      &mut binding_value,
-                    );
-                    inner_statements.push(TypedExp {
-                      kind: ExpKind::Let(inner_bindings, body.into()),
-                      data: body_type.clone(),
+                Block(_) | Match(_, _) | Let(_, _) => {
+                  restructure_index = Some(arg_index);
+                  let effects = arg.effects();
+                  let mut overridden_names: Vec<(Rc<str>, Type)> = vec![];
+                  for (name, t) in previously_referenced_names {
+                    if effects.contains(&Effect::Modifies(name.clone())) {
+                      overridden_names.push((name, t));
+                    }
+                  }
+                  if !overridden_names.is_empty() {
+                    changed = true;
+                    let mut replacement_types: HashMap<Rc<str>, Type> =
+                      HashMap::new();
+                    let mut replacement_names: HashMap<Rc<str>, Rc<str>> =
+                      HashMap::new();
+                    for (name, t) in overridden_names {
+                      let replacement_name =
+                        format!("original_{name}_{gensym_index}").into();
+                      replacement_names.insert(name.clone(), replacement_name);
+                      replacement_types.insert(name, t);
+                      gensym_index += 1;
+                    }
+                    for arg in &mut slots[0..arg_index] {
+                      arg.replace_internal_names(&replacement_names);
+                    }
+                    take(exp, |exp| TypedExp {
+                      data: exp.data.clone(),
+                      kind: ExpKind::Let(
+                        replacement_names
+                          .into_iter()
+                          .map(|(old_name, new_name)| {
+                            (
+                              new_name,
+                              VariableKind::Let,
+                              TypedExp {
+                                data: TypeState::Known(
+                                  replacement_types.remove(&old_name).unwrap(),
+                                )
+                                .into(),
+                                kind: ExpKind::Name(old_name),
+                                source_trace: SourceTrace::empty(),
+                              },
+                            )
+                          })
+                          .collect(),
+                        exp.into(),
+                      ),
                       source_trace: SourceTrace::empty(),
                     });
-                    TypedExp {
-                      kind: ExpKind::Block(inner_statements),
-                      source_trace: SourceTrace::empty(),
-                      data: body_type,
-                    }
-                    .into()
-                  });
-                  break;
-                }
-                Match(_, _) => {
-                  restructured = true;
-                  *variable_kind = VariableKind::Var;
-                  let mut match_exp = TypedExp {
-                    kind: ExpKind::Uninitialized,
-                    data: value.data.clone(),
-                    source_trace: SourceTrace::empty(),
-                  };
-                  std::mem::swap(&mut match_exp, value);
-                  let binding_type = value.data.clone();
-                  let binding_name = binding_name.clone();
-                  let inner_bindings = items.split_off(index + 1);
-                  let body_type = body.data.clone();
-                  take(body, |body| {
-                    let Match(_, arms) = &mut match_exp.kind else {
-                      unreachable!()
-                    };
-                    for (_, arm_body) in arms.iter_mut() {
-                      take(arm_body, |arm_body| TypedExp {
-                        data: TypeState::Known(Type::Unit).into(),
-                        kind: ExpKind::Application(
-                          TypedExp {
-                            kind: ExpKind::Name("=".into()),
-                            data: TypeState::Known(Type::Function(
-                              FunctionSignature {
-                                abstract_ancestor: None,
-                                arg_types: vec![
-                                  (binding_type.clone(), vec![]),
-                                  (binding_type.clone(), vec![]),
-                                ],
-                                return_type: TypeState::Known(Type::Unit)
-                                  .into(),
-                              }
-                              .into(),
-                            ))
-                            .into(),
-                            source_trace: SourceTrace::empty(),
-                          }
-                          .into(),
-                          vec![
-                            TypedExp {
-                              data: binding_type.clone(),
-                              kind: ExpKind::Name(binding_name.clone()),
-                              source_trace: SourceTrace::empty(),
-                            },
-                            arm_body,
-                          ],
-                        ),
-                        source_trace: SourceTrace::empty(),
-                      });
-                    }
-                    TypedExp {
-                      kind: ExpKind::Block(vec![
-                        match_exp,
-                        TypedExp {
-                          data: body_type.clone(),
-                          kind: ExpKind::Let(inner_bindings, body.into()),
-                          source_trace: SourceTrace::empty(),
-                        },
-                      ]),
-                      source_trace: SourceTrace::empty(),
-                      data: body_type,
-                    }
-                    .into()
-                  });
+                    return Ok(true);
+                  }
                   break;
                 }
                 _ => {}
               }
+              for (name, t) in arg.internally_referenced_names() {
+                if previously_referenced_names
+                  .iter()
+                  .find(|(existing_name, _)| name == *existing_name)
+                  .is_none()
+                {
+                  previously_referenced_names.push((name, t));
+                }
+              }
             }
-            if !restructured {
-              break;
+            if let Some(restructure_index) = restructure_index {
+              let arg = &mut slots[restructure_index];
+              changed = true;
+              match &mut arg.kind {
+                Return(_) => {
+                  let mut inner_expressions = vec![];
+                  for i in 0..restructure_index + 1 {
+                    let mut temp = placeholder_exp.clone();
+                    std::mem::swap(slots[i], &mut temp);
+                    inner_expressions.push(temp);
+                  }
+                  std::mem::swap(
+                    exp,
+                    &mut TypedExp {
+                      data: inner_expressions.last().unwrap().data.clone(),
+                      kind: ExpKind::Block(inner_expressions),
+                      source_trace: SourceTrace::empty(),
+                    },
+                  );
+                }
+                Block(_) => {
+                  let mut prefix_statements = vec![];
+                  take(*arg, |arg| {
+                    let Block(mut statements) = arg.kind else {
+                      unreachable!()
+                    };
+                    let value = statements.pop().unwrap();
+                    prefix_statements = statements;
+                    value
+                  });
+                  take(exp, |exp| {
+                    let t = exp.data.clone();
+                    prefix_statements.push(exp);
+                    TypedExp {
+                      kind: ExpKind::Block(prefix_statements),
+                      data: t,
+                      source_trace: SourceTrace::empty(),
+                    }
+                  });
+                }
+                Match(_, _) => {
+                  let name: Rc<str> =
+                    format!("match_gensym_{gensym_index}").into();
+                  gensym_index += 1;
+                  let mut match_exp = TypedExp {
+                    kind: Name(name.clone()),
+                    data: arg.data.clone(),
+                    source_trace: SourceTrace::empty(),
+                  };
+                  std::mem::swap(*arg, &mut match_exp);
+                  take(exp, |exp| TypedExp {
+                    data: exp.data.clone(),
+                    kind: ExpKind::Let(
+                      vec![(name, VariableKind::Let, match_exp)],
+                      exp.into(),
+                    ),
+                    source_trace: SourceTrace::empty(),
+                  });
+                }
+                Let(bindings, body) => {
+                  let mut extracted_bindings = vec![];
+                  std::mem::swap(&mut extracted_bindings, bindings);
+                  let mut temp = placeholder_exp.clone();
+                  std::mem::swap(&mut temp, body);
+                  std::mem::swap(*arg, &mut temp);
+                  take(exp, |exp| TypedExp {
+                    data: exp.data.clone(),
+                    kind: ExpKind::Let(extracted_bindings, exp.into()),
+                    source_trace: SourceTrace::empty(),
+                  });
+                }
+                _ => unreachable!(),
+              };
             }
+            true
           }
-          true
-        }
-        _ => true,
-      })
-    });
-    if changed {
-      self.deexpressionify();
+          Let(items, body) => {
+            loop {
+              let mut restructured = false;
+              for (index, (binding_name, variable_kind, value)) in
+                items.iter_mut().enumerate()
+              {
+                match &value.kind {
+                  Let(_, _) => {
+                    restructured = true;
+                    let mut inner_value = placeholder_exp_kind.clone();
+                    std::mem::swap(&mut inner_value, &mut value.kind);
+                    let Let(inner_bindings, mut inner_body) = inner_value
+                    else {
+                      unreachable!()
+                    };
+                    std::mem::swap(&mut *inner_body, &mut items[index].2);
+                    items.splice(index..index, inner_bindings);
+                    break;
+                  }
+                  Block { .. } => {
+                    restructured = true;
+                    let mut inner_statements = vec![];
+                    let Block(expressions) = &mut value.kind else {
+                      unreachable!()
+                    };
+                    std::mem::swap(&mut inner_statements, expressions);
+                    let mut binding_value = inner_statements.pop().unwrap();
+                    take(body, |body| {
+                      let body_type = body.data.clone();
+                      let mut inner_bindings = items.split_off(index);
+                      std::mem::swap(
+                        &mut inner_bindings.last_mut().unwrap().2,
+                        &mut binding_value,
+                      );
+                      inner_statements.push(TypedExp {
+                        kind: ExpKind::Let(inner_bindings, body.into()),
+                        data: body_type.clone(),
+                        source_trace: SourceTrace::empty(),
+                      });
+                      TypedExp {
+                        kind: ExpKind::Block(inner_statements),
+                        source_trace: SourceTrace::empty(),
+                        data: body_type,
+                      }
+                      .into()
+                    });
+                    break;
+                  }
+                  Match(_, _) => {
+                    restructured = true;
+                    *variable_kind = VariableKind::Var;
+                    let mut match_exp = TypedExp {
+                      kind: ExpKind::Uninitialized,
+                      data: value.data.clone(),
+                      source_trace: SourceTrace::empty(),
+                    };
+                    std::mem::swap(&mut match_exp, value);
+                    let binding_type = value.data.clone();
+                    let binding_name = binding_name.clone();
+                    let inner_bindings = items.split_off(index + 1);
+                    let body_type = body.data.clone();
+                    take(body, |body| {
+                      let Match(_, arms) = &mut match_exp.kind else {
+                        unreachable!()
+                      };
+                      for (_, arm_body) in arms.iter_mut() {
+                        take(arm_body, |arm_body| TypedExp {
+                          data: TypeState::Known(Type::Unit).into(),
+                          kind: ExpKind::Application(
+                            TypedExp {
+                              kind: ExpKind::Name("=".into()),
+                              data: TypeState::Known(Type::Function(
+                                FunctionSignature {
+                                  abstract_ancestor: None,
+                                  arg_types: vec![
+                                    (binding_type.clone(), vec![]),
+                                    (binding_type.clone(), vec![]),
+                                  ],
+                                  mutated_args: vec![0],
+                                  return_type: TypeState::Known(Type::Unit)
+                                    .into(),
+                                }
+                                .into(),
+                              ))
+                              .into(),
+                              source_trace: SourceTrace::empty(),
+                            }
+                            .into(),
+                            vec![
+                              TypedExp {
+                                data: binding_type.clone(),
+                                kind: ExpKind::Name(binding_name.clone()),
+                                source_trace: SourceTrace::empty(),
+                              },
+                              arm_body,
+                            ],
+                          ),
+                          source_trace: SourceTrace::empty(),
+                        });
+                      }
+                      TypedExp {
+                        kind: ExpKind::Block(vec![
+                          match_exp,
+                          TypedExp {
+                            data: body_type.clone(),
+                            kind: ExpKind::Let(inner_bindings, body.into()),
+                            source_trace: SourceTrace::empty(),
+                          },
+                        ]),
+                        source_trace: SourceTrace::empty(),
+                        data: body_type,
+                      }
+                      .into()
+                    });
+                    break;
+                  }
+                  _ => {}
+                }
+              }
+              if !restructured {
+                break;
+              }
+            }
+            true
+          }
+          Block(inner_exps) => {
+            let initial_len = inner_exps.len();
+            take(inner_exps, |mut inner_exps| {
+              if let Some(last) = inner_exps.pop() {
+                inner_exps
+                  .into_iter()
+                  .filter_map(|exp| (!exp.is_pure()).then(|| exp))
+                  .chain(std::iter::once(last))
+                  .collect()
+              } else {
+                inner_exps
+              }
+            });
+            if inner_exps.len() != initial_len {
+              changed = true;
+            }
+            true
+          }
+          _ => true,
+        })
+      });
+      if !changed {
+        break;
+      }
     }
   }
 }

@@ -218,11 +218,11 @@ impl AbstractFunctionSignature {
     structs: &Vec<Rc<AbstractStruct>>,
     source_trace: SourceTrace,
   ) -> CompileResult<FunctionSignature> {
+    let f = f.borrow();
     let (generic_variables, generic_constraints): (
       HashMap<Rc<str>, ExpTypeInfo>,
       HashMap<Rc<str>, Vec<TypeConstraint>>,
     ) = f
-      .borrow()
       .generic_args
       .iter()
       .map(|(name, bounds)| {
@@ -234,7 +234,6 @@ impl AbstractFunctionSignature {
       .collect();
     Ok(FunctionSignature {
       arg_types: f
-        .borrow()
         .arg_types
         .iter()
         .map(|t| {
@@ -295,7 +294,7 @@ impl AbstractFunctionSignature {
           })
         })
         .collect::<CompileResult<_>>()?,
-      return_type: match &f.borrow().return_type {
+      return_type: match &f.return_type {
         AbstractType::Generic(var_name) => generic_variables
           .get(var_name)
           .expect("unrecognized generic")
@@ -328,7 +327,8 @@ impl AbstractFunctionSignature {
           .into()
         }
       },
-      abstract_ancestor: Some(Rc::new(f.borrow().clone())),
+      abstract_ancestor: Some(Rc::new(f.clone())),
+      mutated_args: f.mutated_args.clone(),
     })
   }
 }
@@ -337,6 +337,7 @@ impl AbstractFunctionSignature {
 pub struct FunctionSignature {
   pub abstract_ancestor: Option<Rc<AbstractFunctionSignature>>,
   pub arg_types: Vec<(ExpTypeInfo, Vec<TypeConstraint>)>,
+  pub mutated_args: Vec<usize>,
   pub return_type: ExpTypeInfo,
 }
 
