@@ -278,10 +278,13 @@ use ExpKind::*;
 
 use super::{
   effects::Effect,
-  error::{CompileErrorKind, SourceTrace, SourceTraceKind},
+  error::{CompileErrorKind, ErrorLog, SourceTrace, SourceTraceKind},
   functions::FunctionImplementationKind,
   structs::{compiled_vec_or_mat_name, vec_and_mat_compile_names},
-  types::{AbstractType, LocalContext, TypeConstraint},
+  types::{
+    AbstractType, ImmutableProgramLocalContext, LocalContext,
+    MutableProgramLocalContext, TypeConstraint,
+  },
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -315,9 +318,10 @@ pub fn arg_list_and_return_type_from_easl_tree(
   ) = tree
   {
     let return_type_ast = args_and_return_type.remove(1);
-    let (return_type_ast, return_metadata, metadata_errors) =
-      extract_metadata(return_type_ast);
-    if let Some(metadata_error) = metadata_errors.get(0) {
+    let mut errors = ErrorLog::new();
+    let (return_type_ast, return_metadata) =
+      extract_metadata(return_type_ast, &mut errors);
+    if let Some(metadata_error) = errors.into_iter().next() {
       return Err(metadata_error.clone());
     }
     let return_type =
@@ -336,9 +340,10 @@ pub fn arg_list_and_return_type_from_easl_tree(
           ))?;
           let t =
             AbstractType::from_easl_tree(t_ast, structs, aliases, skolems)?;
-          let (arg_name_ast, arg_metadata, metadata_errors) =
-            extract_metadata(arg_name_ast);
-          if let Some(metadata_error) = metadata_errors.get(0) {
+          let mut errors = ErrorLog::new();
+          let (arg_name_ast, arg_metadata) =
+            extract_metadata(arg_name_ast, &mut errors);
+          if let Some(metadata_error) = errors.into_iter().next() {
             return Err(metadata_error.clone());
           }
           if let EaslTree::Leaf(_, arg_name) = arg_name_ast {
@@ -585,10 +590,11 @@ impl TypedExp {
                                 let (ty, name_ast) = extract_type_annotation(
                                   name_ast, structs, aliases, skolems,
                                 )?;
-                                let (name_ast, name_metadata, metadata_errors) =
-                                  extract_metadata(name_ast);
+                                let mut errors = ErrorLog::new();
+                                let (name_ast, name_metadata) =
+                                  extract_metadata(name_ast, &mut errors);
                                 if let Some(metadata_error) =
-                                  metadata_errors.get(0)
+                                  errors.into_iter().next()
                                 {
                                   return Err(metadata_error.clone());
                                 }
@@ -1462,7 +1468,7 @@ impl TypedExp {
       .unwrap();
     untyped
   }
-  pub fn validate_match_blocks(&self, errors: &mut Vec<CompileError>) {
+  pub fn validate_match_blocks(&self, errors: &mut ErrorLog) {
     self
       .walk(&mut |exp| {
         match &exp.kind {
@@ -1472,7 +1478,7 @@ impl TypedExp {
               let mut all_pattern_values: Vec<&ExpKind<ExpTypeInfo>> = vec![];
               for (pattern, _) in items.iter() {
                 if let Some(first_wildcard) = &first_wildcard {
-                  errors.push(CompileError {
+                  errors.log(CompileError {
                     kind: CompileErrorKind::PatternAfterWildcard,
                     source_trace: pattern
                       .source_trace
@@ -1481,7 +1487,7 @@ impl TypedExp {
                   })
                 }
                 if all_pattern_values.contains(&&pattern.kind) {
-                  errors.push(CompileError {
+                  errors.log(CompileError {
                     kind: CompileErrorKind::DuplicatePattern,
                     source_trace: pattern.source_trace.clone(),
                   })
@@ -1493,7 +1499,7 @@ impl TypedExp {
                       }
                     }
                     NumberLiteral(_) | BooleanLiteral(_) => {}
-                    _ => errors.push(CompileError {
+                    _ => errors.log(CompileError {
                       kind: CompileErrorKind::InvalidPattern,
                       source_trace: pattern.source_trace.clone(),
                     }),
@@ -1504,7 +1510,7 @@ impl TypedExp {
               if first_wildcard.is_none()
                 && !(*t == Type::Bool && all_pattern_values.len() == 2)
               {
-                errors.push(CompileError {
+                errors.log(CompileError {
                   kind: CompileErrorKind::NonexhaustiveMatch,
                   source_trace: exp.source_trace.clone(),
                 });
@@ -1519,12 +1525,12 @@ impl TypedExp {
   }
   fn propagate_types_inner(
     &mut self,
-    ctx: &mut LocalContext,
-  ) -> (bool, Vec<CompileError>) {
+    ctx: &mut MutableProgramLocalContext,
+    errors: &mut ErrorLog,
+  ) -> bool {
     if self.data.subtree_fully_typed {
-      return (false, vec![]);
+      return false;
     }
-    let mut errors = vec![];
     let changed = match &mut self.kind {
       Uninitialized => {
         self.data.subtree_fully_typed = true;
@@ -1536,31 +1542,31 @@ impl TypedExp {
       }
       Unit => {
         self.data.subtree_fully_typed = true;
-        let (changed, mut inner_errors) = self
-          .data
-          .constrain(TypeState::Known(Type::Unit), self.source_trace.clone());
-        errors.append(&mut inner_errors);
-        changed
+        self.data.constrain(
+          TypeState::Known(Type::Unit),
+          self.source_trace.clone(),
+          errors,
+        )
       }
       Name(name) => {
         self.data.subtree_fully_typed = true;
         if !ctx.is_bound(name) {
-          errors.push(CompileError::new(
+          errors.log(CompileError::new(
             UnboundName(name.clone()),
             self.source_trace.clone(),
           ));
         }
-        let (changed, mut inner_errors) = ctx.constrain_name_type(
+        let changed = ctx.constrain_name_type(
           name,
           self.source_trace.clone(),
           &mut self.data,
+          errors,
         );
-        errors.append(&mut inner_errors);
         changed
       }
       NumberLiteral(num) => {
         self.data.subtree_fully_typed = true;
-        let (changed, mut inner_errors) = self.data.constrain(
+        let changed = self.data.constrain(
           match num {
             Number::Int(_) => {
               TypeState::OneOf(vec![Type::I32, Type::U32, Type::F32])
@@ -1568,16 +1574,17 @@ impl TypedExp {
             Number::Float(_) => TypeState::Known(Type::F32),
           },
           self.source_trace.clone(),
+          errors,
         );
-        errors.append(&mut inner_errors);
         changed
       }
       BooleanLiteral(_) => {
         self.data.subtree_fully_typed = true;
-        let (changed, mut inner_errors) = self
-          .data
-          .constrain(TypeState::Known(Type::Bool), self.source_trace.clone());
-        errors.append(&mut inner_errors);
+        let changed = self.data.constrain(
+          TypeState::Known(Type::Bool),
+          self.source_trace.clone(),
+          errors,
+        );
         changed
       }
       Function(arg_names, body) => {
@@ -1596,33 +1603,30 @@ impl TypedExp {
                 &signature.arg_types.iter().map(|(t, _)| t.clone()).collect(),
                 &mut signature.return_type,
               );
-              let (return_type_changed, mut body_errors) =
-                body.data.mutually_constrain(
-                  return_type_state,
-                  self.source_trace.clone(),
-                );
-              errors.append(&mut body_errors);
+              let return_type_changed = body.data.mutually_constrain(
+                return_type_state,
+                self.source_trace.clone(),
+                errors,
+              );
               if arg_count == arg_names.len() {
                 for (name, t) in arg_names.iter().zip(arg_type_states) {
                   ctx.bind(name, Variable::new(t.clone()))
                 }
-                let (body_types_changed, mut body_type_errors) =
-                  body.propagate_types_inner(ctx);
-                errors.append(&mut body_type_errors);
+                let body_types_changed =
+                  body.propagate_types_inner(ctx, errors);
                 let argument_types = arg_names
                   .iter()
                   .map(|name| ctx.unbind(name).typestate.kind)
                   .collect::<Vec<_>>();
-                let (fn_type_changed, mut fn_errors) =
-                  self.data.constrain_fn_by_argument_types(
-                    argument_types,
-                    self.source_trace.clone(),
-                  );
-                errors.append(&mut fn_errors);
+                let fn_type_changed = self.data.constrain_fn_by_argument_types(
+                  argument_types,
+                  self.source_trace.clone(),
+                  errors,
+                );
                 self.data.subtree_fully_typed = body.data.subtree_fully_typed;
                 return_type_changed || body_types_changed || fn_type_changed
               } else {
-                errors.push(CompileError::new(
+                errors.log(CompileError::new(
                   WrongArity(name),
                   self.source_trace.clone(),
                 ));
@@ -1630,8 +1634,8 @@ impl TypedExp {
               }
             }
             _ => {
-              errors.push(CompileError::new(
-                FunctionExpressionHasNonFunctionType(f_type.clone()),
+              errors.log(CompileError::new(
+                FunctionExpressionHasNonFunctionType(f_type.clone().into()),
                 self.source_trace.clone(),
               ));
               false
@@ -1646,20 +1650,17 @@ impl TypedExp {
       Application(f, args) => {
         let mut anything_changed = false;
         for arg in args.iter_mut() {
-          let (arg_changed, mut arg_errors) = arg.propagate_types_inner(ctx);
-          anything_changed |= arg_changed;
-          errors.append(&mut arg_errors);
+          anything_changed |= arg.propagate_types_inner(ctx, errors);
         }
         if let Name(name) = &f.kind {
-          let (name_changed, mut name_errors) = ctx.constrain_name_type(
+          anything_changed |= ctx.constrain_name_type(
             name,
             self.source_trace.clone(),
             &mut f.data,
+            errors,
           );
-          anything_changed |= name_changed;
-          errors.append(&mut name_errors);
         } else {
-          let (f_changed, mut f_errors) = f.data.constrain(
+          anything_changed |= f.data.constrain(
             TypeState::Known(Type::Function(Box::new(FunctionSignature {
               abstract_ancestor: None,
               arg_types: args
@@ -1670,9 +1671,8 @@ impl TypedExp {
               return_type: self.data.clone(),
             }))),
             f.source_trace.clone(),
+            errors,
           );
-          anything_changed |= f_changed;
-          errors.append(&mut f_errors);
         }
         if let TypeState::Known(f_type) = &mut f.data.kind {
           if let Type::Function(signature) = f_type {
@@ -1683,42 +1683,38 @@ impl TypedExp {
               .unwrap_or(false)
               || args.len() == signature.arg_types.len()
             {
-              let (changed, mut return_errors) = self.data.mutually_constrain(
+              anything_changed |= self.data.mutually_constrain(
                 &mut signature.return_type,
                 self.source_trace.clone(),
+                errors,
               );
-              anything_changed |= changed;
-              errors.append(&mut return_errors);
               for (arg, (t, _)) in
                 args.iter_mut().zip(signature.arg_types.iter().cloned())
               {
-                let (changed, mut arg_errors) =
-                  arg.data.constrain(t.kind, self.source_trace.clone());
-                anything_changed |= changed;
-                errors.append(&mut arg_errors);
+                anything_changed |=
+                  arg
+                    .data
+                    .constrain(t.kind, self.source_trace.clone(), errors);
               }
             } else {
-              errors.push(CompileError::new(
+              errors.log(CompileError::new(
                 WrongArity(signature.name()),
                 self.source_trace.clone(),
               ));
             }
           } else {
-            errors.push(CompileError::new(
+            errors.log(CompileError::new(
               AppliedNonFunction,
               self.source_trace.clone(),
             ));
           }
         }
-        let (changed, mut f_errors) = f.data.constrain_fn_by_argument_types(
+        anything_changed |= f.data.constrain_fn_by_argument_types(
           args.iter().map(|arg| arg.data.kind.clone()).collect(),
           self.source_trace.clone(),
+          errors,
         );
-        anything_changed |= changed;
-        errors.append(&mut f_errors);
-        let (changed, mut f_errors) = f.propagate_types_inner(ctx);
-        anything_changed |= changed;
-        errors.append(&mut f_errors);
+        anything_changed |= f.propagate_types_inner(ctx, errors);
         self.data.subtree_fully_typed =
           args.iter().fold(f.data.subtree_fully_typed, |acc, arg| {
             acc && arg.data.subtree_fully_typed
@@ -1728,22 +1724,19 @@ impl TypedExp {
       }
       Access(accessor, subexp) => match accessor {
         Accessor::Field(field_name) => {
-          let (mut anything_changed, mut subexp_errors) =
-            subexp.propagate_types_inner(ctx);
-          errors.append(&mut subexp_errors);
+          let mut anything_changed = subexp.propagate_types_inner(ctx, errors);
           if let Known(t) = &mut subexp.data.kind {
             if let Type::Struct(s) = t {
               if let Some(x) =
                 &mut s.fields.iter_mut().find(|f| f.name == *field_name)
               {
-                let (changed, mut sub_errors) = self.data.mutually_constrain(
+                anything_changed |= self.data.mutually_constrain(
                   &mut x.field_type,
                   self.source_trace.clone(),
+                  errors,
                 );
-                anything_changed |= changed;
-                errors.append(&mut sub_errors);
               } else {
-                errors.push(CompileError::new(
+                errors.log(CompileError::new(
                   NoSuchField {
                     struct_name: s.abstract_ancestor.name.clone(),
                     field_name: field_name.clone(),
@@ -1752,7 +1745,7 @@ impl TypedExp {
                 ));
               }
             } else {
-              errors.push(CompileError::new(
+              errors.log(CompileError::new(
                 AccessorOnNonStruct,
                 self.source_trace.clone(),
               ));
@@ -1762,78 +1755,65 @@ impl TypedExp {
           anything_changed
         }
         Accessor::Swizzle(fields) => {
-          let (mut anything_changed, mut sub_errors) = self.data.constrain(
+          let mut anything_changed = self.data.constrain(
             swizzle_accessor_typestate(&subexp.data, fields).kind,
             self.source_trace.clone(),
+            errors,
           );
-          errors.append(&mut sub_errors);
-          let (changed, mut sub_errors) = subexp.data.constrain(
+          anything_changed |= subexp.data.constrain(
             swizzle_accessed_possibilities(fields).kind,
             self.source_trace.clone(),
+            errors,
           );
-          errors.append(&mut sub_errors);
-          anything_changed |= changed;
-          let (changed, mut sub_errors) = subexp.propagate_types_inner(ctx);
-          anything_changed |= changed;
-          errors.append(&mut sub_errors);
+          anything_changed |= subexp.propagate_types_inner(ctx, errors);
           self.data.subtree_fully_typed = subexp.data.subtree_fully_typed;
           anything_changed
         }
         Accessor::ArrayIndex(index_expression) => {
-          let (mut anything_changed, mut index_errors) =
-            index_expression.data.constrain(
-              TypeState::OneOf(vec![Type::I32, Type::U32]),
-              self.source_trace.clone(),
-            );
-          errors.append(&mut index_errors);
+          let mut anything_changed = index_expression.data.constrain(
+            TypeState::OneOf(vec![Type::I32, Type::U32]),
+            self.source_trace.clone(),
+            errors,
+          );
           if let TypeState::Known(t) = &mut subexp.data.kind {
             if let Type::Array(_, inner_type) = t {
-              let (changed, mut sub_errors) = self.data.mutually_constrain(
+              anything_changed |= self.data.mutually_constrain(
                 inner_type.as_mut(),
                 self.source_trace.clone(),
+                errors,
               );
-              anything_changed |= changed;
-              errors.append(&mut sub_errors);
             } else {
-              errors.push(CompileError::new(
+              errors.log(CompileError::new(
                 ArrayAccessOnNonArray,
                 self.source_trace.clone(),
               ));
             }
           }
-          let (changed, mut sub_errors) =
-            index_expression.propagate_types_inner(ctx);
-          anything_changed |= changed;
-          errors.append(&mut sub_errors);
-          let (changed, mut sub_errors) = subexp.propagate_types_inner(ctx);
-          anything_changed |= changed;
-          errors.append(&mut sub_errors);
+          anything_changed |=
+            index_expression.propagate_types_inner(ctx, errors);
+          anything_changed |= subexp.propagate_types_inner(ctx, errors);
           self.data.subtree_fully_typed = subexp.data.subtree_fully_typed
             && index_expression.data.subtree_fully_typed;
           anything_changed
         }
       },
       Let(bindings, body) => {
-        let (mut anything_changed, mut body_errors) = body
-          .data
-          .mutually_constrain(&mut self.data, self.source_trace.clone());
-        errors.append(&mut body_errors);
+        let mut anything_changed = body.data.mutually_constrain(
+          &mut self.data,
+          self.source_trace.clone(),
+          errors,
+        );
         for (name, _, value) in bindings.iter_mut() {
-          let (changed, mut sub_errors) = value.propagate_types_inner(ctx);
-          anything_changed |= changed;
-          errors.append(&mut sub_errors);
+          anything_changed |= value.propagate_types_inner(ctx, errors);
           ctx.bind(name, Variable::new(value.data.clone()));
         }
-        let (changed, mut sub_errors) = body.propagate_types_inner(ctx);
-        anything_changed |= changed;
-        errors.append(&mut sub_errors);
+        anything_changed |= body.propagate_types_inner(ctx, errors);
         for (name, _, value) in bindings.iter_mut() {
-          let (changed, mut sub_errors) = value.data.constrain(
+          anything_changed |= value.data.constrain(
             ctx.unbind(name).typestate.kind,
             self.source_trace.clone(),
+            errors,
           );
-          anything_changed |= changed;
-          errors.append(&mut sub_errors);
         }
         self.data.subtree_fully_typed = bindings.iter().fold(
           body.data.subtree_fully_typed,
@@ -1844,26 +1824,20 @@ impl TypedExp {
         anything_changed
       }
       Match(scrutinee, arms) => {
-        let (mut anything_changed, mut scrutinee_errors) =
-          scrutinee.propagate_types_inner(ctx);
-        errors.append(&mut scrutinee_errors);
+        let mut anything_changed = scrutinee.propagate_types_inner(ctx, errors);
         for (case, value) in arms.iter_mut() {
-          let (changed, mut sub_errors) = case.propagate_types_inner(ctx);
-          anything_changed |= changed;
-          errors.append(&mut sub_errors);
-          let (changed, mut sub_errors) = value.propagate_types_inner(ctx);
-          anything_changed |= changed;
-          errors.append(&mut sub_errors);
-          let (changed, mut sub_errors) = case
-            .data
-            .mutually_constrain(&mut scrutinee.data, self.source_trace.clone());
-          anything_changed |= changed;
-          errors.append(&mut sub_errors);
-          let (changed, mut sub_errors) = value
-            .data
-            .mutually_constrain(&mut self.data, self.source_trace.clone());
-          anything_changed |= changed;
-          errors.append(&mut sub_errors);
+          anything_changed |= case.propagate_types_inner(ctx, errors);
+          anything_changed |= value.propagate_types_inner(ctx, errors);
+          anything_changed |= case.data.mutually_constrain(
+            &mut scrutinee.data,
+            self.source_trace.clone(),
+            errors,
+          );
+          anything_changed |= value.data.mutually_constrain(
+            &mut self.data,
+            self.source_trace.clone(),
+            errors,
+          );
         }
         self.data.subtree_fully_typed = arms.iter().fold(
           scrutinee.data.subtree_fully_typed,
@@ -1878,18 +1852,16 @@ impl TypedExp {
       Block(expressions) => {
         let mut anything_changed = false;
         for child in expressions.iter_mut() {
-          let (changed, mut sub_errors) = child.propagate_types_inner(ctx);
-          anything_changed |= changed;
-          errors.append(&mut sub_errors);
+          anything_changed |= child.propagate_types_inner(ctx, errors);
         }
         if let Some(exp) = expressions.last_mut() {
-          let (changed, mut sub_errors) = self
-            .data
-            .mutually_constrain(&mut exp.data, self.source_trace.clone());
-          anything_changed |= changed;
-          errors.append(&mut sub_errors);
+          anything_changed |= self.data.mutually_constrain(
+            &mut exp.data,
+            self.source_trace.clone(),
+            errors,
+          );
         } else {
-          errors.push(CompileError::new(EmptyBlock, self.source_trace.clone()));
+          errors.log(CompileError::new(EmptyBlock, self.source_trace.clone()));
         }
         self.data.subtree_fully_typed = expressions
           .iter()
@@ -1906,21 +1878,17 @@ impl TypedExp {
       } => {
         let mut variable_typestate =
           TypeState::Known(increment_variable_type.clone());
-        let (mut anything_changed, mut sub_errors) =
-          increment_variable_initial_value_expression
-            .data
-            .mutually_constrain(
-              &mut variable_typestate,
-              increment_variable_initial_value_expression
-                .source_trace
-                .clone(),
-            );
-        errors.append(&mut sub_errors);
-        let (changed, mut sub_errors) =
-          increment_variable_initial_value_expression
-            .propagate_types_inner(ctx);
-        anything_changed |= changed;
-        errors.append(&mut sub_errors);
+        let mut anything_changed = increment_variable_initial_value_expression
+          .data
+          .mutually_constrain(
+            &mut variable_typestate,
+            increment_variable_initial_value_expression
+              .source_trace
+              .clone(),
+            errors,
+          );
+        anything_changed |= increment_variable_initial_value_expression
+          .propagate_types_inner(ctx, errors);
         ctx.bind(
           increment_variable_name,
           Variable {
@@ -1928,32 +1896,21 @@ impl TypedExp {
             typestate: variable_typestate.into(),
           },
         );
-        let (changed, mut sub_errors) =
-          continue_condition_expression.data.constrain(
-            TypeState::Known(Type::Bool),
-            continue_condition_expression.source_trace.clone(),
-          );
-        anything_changed |= changed;
-        errors.append(&mut sub_errors);
-        let (changed, mut sub_errors) =
-          update_condition_expression.data.constrain(
-            TypeState::Known(Type::Unit),
-            update_condition_expression.source_trace.clone(),
-          );
-        anything_changed |= changed;
-        errors.append(&mut sub_errors);
-        let (changed, mut sub_errors) =
-          continue_condition_expression.propagate_types_inner(ctx);
-        anything_changed |= changed;
-        errors.append(&mut sub_errors);
-        let (changed, mut sub_errors) =
-          update_condition_expression.propagate_types_inner(ctx);
-        anything_changed |= changed;
-        errors.append(&mut sub_errors);
-        let (changed, mut sub_errors) =
-          body_expression.propagate_types_inner(ctx);
-        anything_changed |= changed;
-        errors.append(&mut sub_errors);
+        anything_changed |= continue_condition_expression.data.constrain(
+          TypeState::Known(Type::Bool),
+          continue_condition_expression.source_trace.clone(),
+          errors,
+        );
+        anything_changed |= update_condition_expression.data.constrain(
+          TypeState::Known(Type::Unit),
+          update_condition_expression.source_trace.clone(),
+          errors,
+        );
+        anything_changed |=
+          continue_condition_expression.propagate_types_inner(ctx, errors);
+        anything_changed |=
+          update_condition_expression.propagate_types_inner(ctx, errors);
+        anything_changed |= body_expression.propagate_types_inner(ctx, errors);
         ctx.unbind(&increment_variable_name);
         self.data.subtree_fully_typed =
           increment_variable_initial_value_expression
@@ -1968,26 +1925,19 @@ impl TypedExp {
         condition_expression,
         body_expression,
       } => {
-        let (mut anything_changed, mut sub_errors) =
-          condition_expression.data.constrain(
-            TypeState::Known(Type::Bool),
-            condition_expression.source_trace.clone(),
-          );
-        errors.append(&mut sub_errors);
-        let (changed, mut sub_errors) = body_expression.data.constrain(
+        let mut anything_changed = condition_expression.data.constrain(
+          TypeState::Known(Type::Bool),
+          condition_expression.source_trace.clone(),
+          errors,
+        );
+        anything_changed |= body_expression.data.constrain(
           TypeState::Known(Type::Unit),
           condition_expression.source_trace.clone(),
+          errors,
         );
-        anything_changed |= changed;
-        errors.append(&mut sub_errors);
-        let (changed, mut sub_errors) =
-          condition_expression.propagate_types_inner(ctx);
-        anything_changed |= changed;
-        errors.append(&mut sub_errors);
-        let (changed, mut sub_errors) =
-          body_expression.propagate_types_inner(ctx);
-        anything_changed |= changed;
-        errors.append(&mut sub_errors);
+        anything_changed |=
+          condition_expression.propagate_types_inner(ctx, errors);
+        anything_changed |= body_expression.propagate_types_inner(ctx, errors);
         self.data.subtree_fully_typed =
           condition_expression.data.subtree_fully_typed
             && body_expression.data.subtree_fully_typed;
@@ -2014,22 +1964,22 @@ impl TypedExp {
             )
           }) {
             Ok(fn_type) => {
-              let (changed, mut sub_errors) = exp.data.mutually_constrain(
+              let changed = exp.data.mutually_constrain(
                 &mut fn_type
                   .map(|fn_type| &mut fn_type.return_type)
                   .unwrap_or(&mut TypeState::Unknown.into()),
                 self.source_trace.clone(),
+                errors,
               );
-              errors.append(&mut sub_errors);
               changed
             }
             Err(e) => {
-              errors.push(e);
+              errors.log(e);
               false
             }
           }
         } else {
-          errors.push(CompileError::new(
+          errors.log(CompileError::new(
             ReturnOutsideFunction,
             self.source_trace.clone(),
           ));
@@ -2043,7 +1993,7 @@ impl TypedExp {
         for child in children.iter_mut() {
           self.data.as_known_mut(|array_type| {
             if let Type::Array(_, inner_type) = array_type {
-              let (changed, mut sub_errors) = child.data.mutually_constrain(
+              anything_changed |= child.data.mutually_constrain(
                 inner_type.as_mut(),
                 SourceTrace {
                   kind: SourceTraceKind::Combination(vec![
@@ -2052,12 +2002,9 @@ impl TypedExp {
                   ])
                   .into(),
                 },
+                errors,
               );
-              anything_changed |= changed;
-              errors.append(&mut sub_errors);
-              let (changed, mut sub_errors) = child.propagate_types_inner(ctx);
-              anything_changed |= changed;
-              errors.append(&mut sub_errors);
+              anything_changed |= child.propagate_types_inner(ctx, errors);
             } else {
               unreachable!()
             }
@@ -2076,18 +2023,16 @@ impl TypedExp {
         anything_changed
       }
       Reference(exp) => {
-        let (mut anything_changed, mut sub_errors) =
-          exp.propagate_types_inner(ctx);
-        errors.append(&mut sub_errors);
+        let mut anything_changed = exp.propagate_types_inner(ctx, errors);
         let TypeState::Known(Type::Reference(inner_type)) = &mut self.data.kind
         else {
           unreachable!()
         };
-        let (changed, mut sub_errors) = exp
-          .data
-          .mutually_constrain(inner_type, self.source_trace.clone());
-        anything_changed |= changed;
-        errors.append(&mut sub_errors);
+        anything_changed |= exp.data.mutually_constrain(
+          inner_type,
+          self.source_trace.clone(),
+          errors,
+        );
         self.data.subtree_fully_typed = exp.data.subtree_fully_typed;
         anything_changed
       }
@@ -2097,13 +2042,14 @@ impl TypedExp {
       }
     };
     self.data.subtree_fully_typed &= self.data.check_is_fully_known();
-    (changed, errors)
+    changed
   }
   pub fn propagate_types(
     &mut self,
     program: &mut Program,
-  ) -> (bool, Vec<CompileError>) {
-    self.propagate_types_inner(&mut LocalContext::empty(program))
+    errors: &mut ErrorLog,
+  ) -> bool {
+    self.propagate_types_inner(&mut LocalContext::empty(program), errors)
   }
   fn name_or_inner_accessed_name(&self) -> Option<&Rc<str>> {
     let mut exp = self;
@@ -2122,7 +2068,7 @@ impl TypedExp {
   }
   fn validate_assignments_inner(
     &self,
-    ctx: &mut LocalContext,
+    ctx: &mut ImmutableProgramLocalContext,
   ) -> CompileResult<()> {
     self.walk(&mut |exp| {
       Ok(match &exp.kind {
@@ -2208,11 +2154,10 @@ impl TypedExp {
       })
     })
   }
-  pub fn validate_assignments(
-    &self,
-    program: &mut Program,
-  ) -> CompileResult<()> {
-    self.validate_assignments_inner(&mut LocalContext::empty(program))
+  pub fn validate_assignments(&self, program: &Program) -> CompileResult<()> {
+    self.validate_assignments_inner(&mut ImmutableProgramLocalContext::empty(
+      program,
+    ))
   }
   pub fn replace_skolems(&mut self, skolems: &Vec<(Rc<str>, Type)>) {
     self
@@ -2405,15 +2350,15 @@ impl TypedExp {
     &mut self,
     globally_bound_names: &Vec<Rc<str>>,
     bindings: &mut HashMap<Rc<str>, Vec<Rc<str>>>,
-    errors: &mut Vec<CompileError>,
+    errors: &mut ErrorLog,
     first_in_walk: bool,
   ) -> bool {
     let add_binding = |name: &mut Rc<str>,
                        source_trace: &SourceTrace,
                        bindings: &mut HashMap<Rc<str>, Vec<Rc<str>>>,
-                       errors: &mut Vec<CompileError>| {
+                       errors: &mut ErrorLog| {
       if globally_bound_names.contains(&name) {
-        errors.push(CompileError::new(
+        errors.log(CompileError::new(
           CompileErrorKind::CantShadowTopLevelBinding(name.clone()),
           source_trace.clone(),
         ));
@@ -2522,19 +2467,18 @@ impl TypedExp {
   pub fn deshadow(
     &mut self,
     globally_bound_names: &Vec<Rc<str>>,
-  ) -> Vec<CompileError> {
-    let mut errors = vec![];
+    errors: &mut ErrorLog,
+  ) {
     self.deshadow_inner(
       globally_bound_names,
       &mut Default::default(),
-      &mut errors,
+      errors,
       true,
     );
-    errors
   }
   pub fn validate_control_flow(
     &self,
-    errors: &mut Vec<CompileError>,
+    errors: &mut ErrorLog,
     enclosing_loop_count: usize,
   ) {
     self
@@ -2542,7 +2486,7 @@ impl TypedExp {
         Ok(match &exp.kind {
           ExpKind::Break | ExpKind::Continue => {
             if enclosing_loop_count == 0 {
-              errors.push(CompileError {
+              errors.log(CompileError {
                 kind: if exp.kind == ExpKind::Break {
                   CompileErrorKind::BreakOutsideLoop
                 } else {

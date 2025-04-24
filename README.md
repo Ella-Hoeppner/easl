@@ -22,15 +22,9 @@ Feature goals:
   * let top-level struct-like metadata appear on one line if it's under some threshold (probably should be another separate threshold)
   * ocassionally `let` bindings will be like 1 char to the left of where they should be past the first line, not sure why
 
-* seems like if you shadow a binding and give it a different type, you get a type error
-
-* add a `poisoned: bool` field or smth to `ExpTypeInfo`, which gets set to true when an expression has already returned an error. Then make `constrain`/`mutually_constrain` and other things that can return type errors just skip their effects when the relevant typestates are poisoned, so that we aren't repeatedly generating the same errors.
-
 * improve error messages
 
 ### medium priority, necessary to call the language 0.1
-
-* `mat` by `mat` multiplication
 
 * allow indexing vectors and matrices with integers
 

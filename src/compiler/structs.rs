@@ -13,7 +13,9 @@ use crate::{
 };
 
 use super::{
-  error::{CompileError, CompileErrorKind::*, CompileResult, SourceTrace},
+  error::{
+    CompileError, CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace,
+  },
   metadata::Metadata,
   types::{AbstractType, ExpTypeInfo, Type, TypeState},
 };
@@ -31,8 +33,9 @@ impl UntypedStructField {
     let (type_ast, inner_ast) = extract_type_annotation_ast(ast);
     let type_ast =
       type_ast.ok_or(CompileError::new(StructFieldMissingType, path.into()))?;
-    let (name, metadata, metadata_errors) = extract_metadata(inner_ast);
-    if let Some(e) = metadata_errors.get(0) {
+    let mut errors = ErrorLog::new();
+    let (name, metadata) = extract_metadata(inner_ast, &mut errors);
+    if let Some(e) = errors.into_iter().next() {
       return Err(e.clone());
     }
     Ok(Self {
@@ -202,10 +205,10 @@ impl AbstractStructField {
 }
 
 pub fn vec_and_mat_compile_names() -> HashSet<String> {
-  (2..4)
+  (2..=4)
     .flat_map(|n| {
       std::iter::once(format!("vec{n}"))
-        .chain((2..4).map(move |m| format!("mat{n}x{m}")))
+        .chain((2..=4).map(move |m| format!("mat{n}x{m}")))
     })
     .collect()
 }

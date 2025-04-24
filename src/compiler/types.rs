@@ -15,7 +15,7 @@ use crate::{
 };
 
 use super::{
-  error::{err, CompileErrorKind::*, CompileResult, SourceTrace},
+  error::{err, CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace},
   functions::FunctionSignature,
   program::Program,
   structs::{AbstractStruct, Struct},
@@ -365,7 +365,7 @@ impl AbstractType {
   }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ArraySize {
   Constant(u32),
   Override(Rc<str>),
@@ -694,55 +694,6 @@ impl Type {
   }
 }
 
-impl Display for Type {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(
-      f,
-      "{}",
-      match self {
-        Type::Unit => panic!("Attempted to compile Unit type"),
-        Type::F32 => "f32".to_string(),
-        Type::I32 => "i32".to_string(),
-        Type::U32 => "u32".to_string(),
-        Type::Bool => "bool".to_string(),
-        Type::Struct(s) => match &*s.name {
-          "Texture2D" => format!(
-            "(Texture2D {})",
-            s.fields[0].field_type.unwrap_known().to_string()
-          ),
-          _ => {
-            compile_word(s.monomorphized_name())
-            // todo! this should display a name more like the above one for
-            // Texture2D, using a kind of type-level function application syntax
-          }
-        },
-        Type::Array(size, inner_type) => {
-          if let Some(size) = size {
-            format!("[{}: {}]", size, inner_type.to_string())
-          } else {
-            format!("[{}]", inner_type.to_string())
-          }
-        }
-        Type::Reference(inner_type) => {
-          format!("&{}", inner_type.to_string())
-        }
-        Type::Function(f) => {
-          format!(
-            "(Fn [{}]: {})",
-            f.arg_types
-              .iter()
-              .map(|(t, _)| t.kind.to_string())
-              .collect::<Vec<String>>()
-              .join(" "),
-            f.return_type.to_string()
-          )
-        }
-        Type::Skolem(name) => name.to_string(),
-      }
-    )
-  }
-}
-
 pub fn extract_type_annotation_ast(
   exp: EaslTree,
 ) -> (Option<EaslTree>, EaslTree) {
@@ -944,81 +895,84 @@ impl TypeState {
     &mut self,
     mut other: TypeState,
     source_trace: SourceTrace,
-  ) -> (bool, Vec<CompileError>) {
+    errors: &mut ErrorLog,
+  ) -> bool {
     if *self == other {
-      return (false, vec![]);
+      return false;
     }
     self.with_dereferenced_mut(move |mut this| {
       other.with_dereferenced_mut(|mut other| {
         let result = match (&mut this, &mut other) {
           (TypeState::UnificationVariable(_), _) => unreachable!(),
           (_, TypeState::UnificationVariable(_)) => unreachable!(),
-          (_, TypeState::Unknown) => (false, vec![]),
+          (_, TypeState::Unknown) => false,
           (TypeState::Unknown, _) => {
             std::mem::swap(this, &mut other.clone());
-            (true, vec![])
+            true
           }
           (TypeState::Known(current_type), TypeState::Known(other_type)) => {
             if !current_type.compatible(&other_type) {
-              (
-                false,
-                vec![CompileError::new(
-                  IncompatibleTypes(this.clone(), other.clone()),
-                  source_trace,
-                )],
-              )
+              errors.log(CompileError::new(
+                IncompatibleTypes(this.clone().into(), other.clone().into()),
+                source_trace,
+              ));
+              false
             } else {
               match (current_type, other_type) {
                 (
                   Type::Function(signature),
                   Type::Function(other_signature),
                 ) => {
-                  let (mut anything_changed, mut errors) =
-                    signature.return_type.constrain(
-                      other_signature.return_type.kind.clone(),
-                      source_trace.clone(),
-                    );
+                  let mut anything_changed = signature.return_type.constrain(
+                    other_signature.return_type.kind.clone(),
+                    source_trace.clone(),
+                    errors,
+                  );
                   for ((t, _), (other_t, _)) in signature
                     .arg_types
                     .iter_mut()
                     .zip(other_signature.arg_types.iter_mut())
                   {
-                    let (changed, mut sub_errors) =
-                      t.constrain(other_t.kind.clone(), source_trace.clone());
+                    let changed = t.constrain(
+                      other_t.kind.clone(),
+                      source_trace.clone(),
+                      errors,
+                    );
                     anything_changed |= changed;
-                    errors.append(&mut sub_errors);
                   }
-                  (anything_changed, errors)
+                  anything_changed
                 }
                 (Type::Struct(s), Type::Struct(other_s)) => {
                   let mut anything_changed = false;
-                  let mut errors = vec![];
                   for (t, other_t) in
                     s.fields.iter_mut().zip(other_s.fields.iter_mut())
                   {
-                    let (changed, mut sub_errors) = t.field_type.constrain(
+                    let changed = t.field_type.constrain(
                       other_t.field_type.kind.clone(),
                       source_trace.clone(),
+                      errors,
                     );
                     anything_changed |= changed;
-                    errors.append(&mut sub_errors);
                   }
-                  (anything_changed, errors)
+                  anything_changed
                 }
                 (
                   Type::Array(size, inner_type),
                   Type::Array(other_size, other_inner_type),
                 ) => {
-                  let mut errors = vec![];
-                  let (changed, mut sub_errors) = inner_type.constrain(
+                  let changed = inner_type.constrain(
                     other_inner_type.kind.clone(),
                     source_trace.clone(),
+                    errors,
                   );
                   if let Some(other_size) = other_size {
                     if let Some(size) = &size {
                       if size != other_size {
-                        errors.push(CompileError::new(
-                          IncompatibleTypes(this.clone(), other.clone()),
+                        errors.log(CompileError::new(
+                          IncompatibleTypes(
+                            this.clone().into(),
+                            other.clone().into(),
+                          ),
                           source_trace,
                         ));
                       }
@@ -1026,15 +980,17 @@ impl TypeState {
                       std::mem::swap(size, &mut Some(other_size.clone()))
                     }
                   }
-                  errors.append(&mut sub_errors);
-                  (changed, errors)
+                  changed
                 }
                 (
                   Type::Reference(inner_type),
                   Type::Reference(other_inner_type),
-                ) => inner_type
-                  .constrain(other_inner_type.kind.clone(), source_trace),
-                _ => (false, vec![]),
+                ) => inner_type.constrain(
+                  other_inner_type.kind.clone(),
+                  source_trace,
+                  errors,
+                ),
+                _ => false,
               }
             }
           }
@@ -1055,34 +1011,28 @@ impl TypeState {
               this,
               &mut TypeState::OneOf(new_possibilities).simplified(),
             );
-            (changed, vec![])
+            changed
           }
           (TypeState::OneOf(possibilities), TypeState::Known(t)) => {
             if t.compatible_with_any(&possibilities) {
               std::mem::swap(this, &mut TypeState::Known(t.clone()));
-              (true, vec![])
+              true
             } else {
-              (
-                false,
-                vec![CompileError::new(
-                  IncompatibleTypes(this.clone(), other.clone()),
-                  source_trace,
-                )],
-              )
+              errors.log(CompileError::new(
+                IncompatibleTypes(this.clone().into(), other.clone().into()),
+                source_trace,
+              ));
+              false
             }
           }
           (TypeState::Known(t), TypeState::OneOf(possibilities)) => {
             if !t.compatible_with_any(&possibilities) {
-              (
-                false,
-                vec![CompileError::new(
-                  IncompatibleTypes(this.clone(), other.clone()),
-                  source_trace,
-                )],
-              )
-            } else {
-              (false, vec![])
+              errors.log(CompileError::new(
+                IncompatibleTypes(this.clone().into(), other.clone().into()),
+                source_trace,
+              ));
             }
+            false
           }
         };
         this.simplify();
@@ -1094,22 +1044,21 @@ impl TypeState {
     &mut self,
     other: &mut TypeState,
     source_trace: SourceTrace,
-  ) -> (bool, Vec<CompileError>) {
-    let (self_changed, mut errors) =
-      self.constrain(other.clone(), source_trace.clone());
-    let (other_changed, mut other_errors) =
-      other.constrain(self.clone(), source_trace);
-    errors.append(&mut other_errors);
-    (self_changed || other_changed, errors)
+    errors: &mut ErrorLog,
+  ) -> bool {
+    let self_changed =
+      self.constrain(other.clone(), source_trace.clone(), errors);
+    let other_changed = other.constrain(self.clone(), source_trace, errors);
+    self_changed || other_changed
   }
   pub fn constrain_fn_by_argument_types(
     &mut self,
     mut arg_types: Vec<TypeState>,
     source_trace: SourceTrace,
-  ) -> (bool, Vec<CompileError>) {
+    errors: &mut ErrorLog,
+  ) -> bool {
     self.with_dereferenced_mut(|typestate| match typestate {
       TypeState::OneOf(possibilities) => {
-        let mut errors = vec![];
         let mut anything_changed = false;
         let mut new_possibilities: Vec<Type> = vec![];
         for possibility in possibilities {
@@ -1121,39 +1070,44 @@ impl TypeState {
                 anything_changed = true;
               }
             }
-            _ => errors.push(CompileError::new(
+            _ => errors.log(CompileError::new(
               ExpectedFunctionFoundNonFunction,
               source_trace.clone(),
             )),
           }
         }
         if new_possibilities.is_empty() {
-          errors.push(CompileError::new(
-            FunctionArgumentTypesIncompatible(typestate.clone(), arg_types),
+          errors.log(CompileError::new(
+            FunctionArgumentTypesIncompatible(
+              typestate.clone().into(),
+              arg_types.into_iter().map(|t| t.into()).collect(),
+            ),
             source_trace,
           ));
-          (false, errors)
+          false
         } else {
           std::mem::swap(
             typestate,
             &mut TypeState::OneOf(new_possibilities).simplified(),
           );
-          (anything_changed, errors)
+          anything_changed
         }
       }
       TypeState::Known(t) => match t {
-        Type::Function(signature) => {
-          signature.mutually_constrain_arguments(&mut arg_types, source_trace)
-        }
-        _ => (
-          false,
-          vec![CompileError::new(
+        Type::Function(signature) => signature.mutually_constrain_arguments(
+          &mut arg_types,
+          source_trace,
+          errors,
+        ),
+        _ => {
+          errors.log(CompileError::new(
             ExpectedFunctionFoundNonFunction,
             source_trace,
-          )],
-        ),
+          ));
+          false
+        }
       },
-      TypeState::Unknown => (false, vec![]),
+      TypeState::Unknown => false,
       TypeState::UnificationVariable(_) => unreachable!(),
     })
   }
@@ -1176,25 +1130,6 @@ impl TypeState {
   }
   pub fn compile(&self) -> String {
     self.unwrap_known().compile()
-  }
-}
-
-impl Display for TypeState {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(
-      f,
-      "{}",
-      self.with_dereferenced(|t| match t {
-        TypeState::Unknown => "?".to_string(),
-        TypeState::OneOf(items) => items
-          .into_iter()
-          .map(|t| t.to_string())
-          .collect::<Vec<String>>()
-          .join(" or "),
-        TypeState::Known(t) => t.to_string(),
-        TypeState::UnificationVariable(_) => unreachable!(),
-      })
-    )
   }
 }
 
@@ -1237,13 +1172,7 @@ impl Variable {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeConstraint {
   name: Rc<str>,
-  args: Vec<AbstractType>,
-}
-
-impl Display for TypeConstraint {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(f, "{}", self.name)
-  }
+  args: Vec<Vec<TypeConstraint>>,
 }
 
 impl TypeConstraint {
@@ -1261,7 +1190,7 @@ impl TypeConstraint {
   }
 }
 
-pub fn parse_type_bound(
+pub fn parse_type_constraint(
   ast: EaslTree,
   structs: &Vec<Rc<AbstractStruct>>,
   aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
@@ -1276,15 +1205,16 @@ pub fn parse_type_bound(
       (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
       children,
     ) => {
-      let source_trace: SourceTrace = position.into();
+      todo!("can't parse type constraints yet")
+      /*let source_trace: SourceTrace = position.into();
       let mut children_iter = children.into_iter();
       let name = if let EaslTree::Leaf(_, name) =
         children_iter.next().ok_or_else(|| {
-          CompileError::new(InvalidTypeBound, source_trace.clone())
+          CompileError::new(InvalidTypeConstraint, source_trace.clone())
         })? {
         name.into()
       } else {
-        return err(InvalidTypeBound, source_trace);
+        return err(InvalidTypeConstraint, source_trace);
       };
       let args = children_iter
         .map(|child_ast| {
@@ -1296,9 +1226,9 @@ pub fn parse_type_bound(
           )
         })
         .collect::<CompileResult<Vec<AbstractType>>>()?;
-      Ok(TypeConstraint { name, args })
+      Ok(TypeConstraint { name, args })*/
     }
-    _ => err(InvalidTypeBound, ast.position().clone().into()),
+    _ => err(InvalidTypeConstraint, ast.position().clone().into()),
   }
 }
 
@@ -1331,13 +1261,18 @@ pub fn parse_generic_argument(
             bound_children
               .into_iter()
               .map(|child_ast| {
-                parse_type_bound(child_ast, structs, aliases, generic_args)
+                parse_type_constraint(child_ast, structs, aliases, generic_args)
               })
               .collect::<CompileResult<_>>()?,
           )),
           other => Ok((
             generic_name.into(),
-            vec![parse_type_bound(other, structs, aliases, generic_args)?],
+            vec![parse_type_constraint(
+              other,
+              structs,
+              aliases,
+              generic_args,
+            )?],
           )),
         }
       } else {
@@ -1352,14 +1287,14 @@ pub fn parse_generic_argument(
 }
 
 #[derive(Debug)]
-pub struct LocalContext<'g> {
+pub struct LocalContext<P: Deref<Target = Program>> {
   pub variables: HashMap<Rc<str>, Vec<Variable>>,
   pub enclosing_function_types: Vec<TypeState>,
-  pub program: &'g mut Program,
+  pub program: P,
 }
 
-impl<'g> LocalContext<'g> {
-  pub fn empty(program: &'g mut Program) -> Self {
+impl<P: Deref<Target = Program>> LocalContext<P> {
+  pub fn empty(program: P) -> Self {
     Self {
       variables: HashMap::new(),
       enclosing_function_types: vec![],
@@ -1414,7 +1349,13 @@ impl<'g> LocalContext<'g> {
       )
       .unwrap()
   }
-  pub fn get_typestate_mut(
+}
+
+pub type ImmutableProgramLocalContext<'p> = LocalContext<&'p Program>;
+
+pub type MutableProgramLocalContext<'p> = LocalContext<&'p mut Program>;
+impl<'p> MutableProgramLocalContext<'p> {
+  fn get_typestate_mut(
     &mut self,
     name: &str,
     source_trace: SourceTrace,
@@ -1439,16 +1380,206 @@ impl<'g> LocalContext<'g> {
     name: &Rc<str>,
     source_trace: SourceTrace,
     t: &mut TypeState,
-  ) -> (bool, Vec<CompileError>) {
+    errors: &mut ErrorLog,
+  ) -> bool {
     match self.program.concrete_signatures(name, source_trace.clone()) {
-      Err(e) => (false, vec![e]),
+      Err(e) => {
+        errors.log(e);
+        false
+      }
       Ok(Some(signatures)) => {
-        t.constrain(TypeState::OneOf(signatures), source_trace)
+        t.constrain(TypeState::OneOf(signatures), source_trace, errors)
       }
       Ok(None) => match self.get_typestate_mut(name, source_trace.clone()) {
-        Ok(typestate) => t.mutually_constrain(typestate, source_trace),
-        Err(e) => (false, vec![e]),
+        Ok(typestate) => t.mutually_constrain(typestate, source_trace, errors),
+        Err(e) => {
+          errors.log(e);
+          false
+        }
       },
     }
+  }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum TypeDescription {
+  Unit,
+  F32,
+  I32,
+  U32,
+  Bool,
+  Struct(String),
+  Function {
+    arg_types: Vec<(TypeStateDescription, Vec<TypeConstraintDescription>)>,
+    return_type: Box<TypeStateDescription>,
+  },
+  Skolem(Rc<str>),
+  Array(Option<ArraySize>, Box<TypeStateDescription>),
+  Reference(Box<TypeStateDescription>),
+}
+impl From<Type> for TypeDescription {
+  fn from(t: Type) -> Self {
+    match t {
+      Type::Unit => Self::Unit,
+      Type::F32 => Self::F32,
+      Type::I32 => Self::I32,
+      Type::U32 => Self::U32,
+      Type::Bool => Self::Bool,
+      Type::Struct(s) => Self::Struct(match &*s.name {
+        "Texture2D" => format!(
+          "(Texture2D {})",
+          TypeDescription::from(s.fields[0].field_type.unwrap_known())
+            .to_string()
+        ),
+        _ => {
+          compile_word(s.monomorphized_name())
+          // todo! this should display a name more like the above one for
+          // Texture2D, using a kind of type-level function application syntax
+        }
+      }),
+      Type::Function(f) => Self::Function {
+        arg_types: f
+          .arg_types
+          .into_iter()
+          .map(|(t, constraints)| {
+            (
+              TypeStateDescription::from(t.kind),
+              constraints
+                .into_iter()
+                .map(TypeConstraintDescription::from)
+                .collect(),
+            )
+          })
+          .collect(),
+        return_type: TypeStateDescription::from(f.return_type.kind).into(),
+      },
+      Type::Skolem(name) => Self::Skolem(name),
+      Type::Array(array_size, t) => {
+        Self::Array(array_size, TypeStateDescription::from(t.kind).into())
+      }
+      Type::Reference(t) => {
+        Self::Reference(TypeStateDescription::from(t.kind).into())
+      }
+    }
+  }
+}
+impl Display for TypeDescription {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(
+      f,
+      "{}",
+      match self {
+        Self::Unit => panic!("Attempted to compile Unit type"),
+        Self::F32 => "f32".to_string(),
+        Self::I32 => "i32".to_string(),
+        Self::U32 => "u32".to_string(),
+        Self::Bool => "bool".to_string(),
+        Self::Struct(name) => name.clone(),
+        Self::Array(size, inner_type) => {
+          if let Some(size) = size {
+            format!("[{}: {}]", size, inner_type.to_string())
+          } else {
+            format!("[{}]", inner_type.to_string())
+          }
+        }
+        Self::Reference(inner_type) => {
+          format!("&{}", inner_type.to_string())
+        }
+        Self::Function {
+          arg_types,
+          return_type,
+        } => {
+          format!(
+            "(Fn [{}]: {})",
+            arg_types
+              .iter()
+              .map(|(t, _)| t.to_string())
+              .collect::<Vec<String>>()
+              .join(" "),
+            return_type.to_string()
+          )
+        }
+        Self::Skolem(name) => name.to_string(),
+      }
+    )
+  }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum TypeStateDescription {
+  Unknown,
+  OneOf(Vec<TypeDescription>),
+  Known(TypeDescription),
+  UnificationVariable(Box<Self>),
+}
+impl From<TypeState> for TypeStateDescription {
+  fn from(typestate: TypeState) -> Self {
+    match typestate {
+      TypeState::Unknown => Self::Unknown,
+      TypeState::OneOf(items) => {
+        Self::OneOf(items.into_iter().map(TypeDescription::from).collect())
+      }
+      TypeState::Known(t) => Self::Known(TypeDescription::from(t)),
+      TypeState::UnificationVariable(inner_type) => Self::UnificationVariable(
+        Self::from(inner_type.borrow().clone()).into(),
+      ),
+    }
+  }
+}
+impl Display for TypeStateDescription {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(
+      f,
+      "{}",
+      match self {
+        Self::Unknown => "?".to_string(),
+        Self::OneOf(items) => items
+          .into_iter()
+          .map(|t| t.to_string())
+          .collect::<Vec<String>>()
+          .join(" or "),
+        Self::Known(t) => t.to_string(),
+        Self::UnificationVariable(inner) =>
+          format!("UnificationVariable({inner})"),
+      }
+    )
+  }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TypeConstraintDescription {
+  name: Rc<str>,
+  args: Vec<Rc<str>>,
+}
+impl From<TypeConstraint> for TypeConstraintDescription {
+  fn from(constraint: TypeConstraint) -> Self {
+    Self {
+      name: constraint.name,
+      args: (0..constraint.args.len())
+        .map(|i| ((65 + (i as u8)) as char).to_string().into())
+        .collect(),
+    }
+  }
+}
+impl Display for TypeConstraintDescription {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(
+      f,
+      "{}",
+      if self.args.len() == 0 {
+        format!(
+          "({} {})",
+          self.name,
+          self
+            .args
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect::<Vec<String>>()
+            .join(" ")
+        )
+      } else {
+        self.name.clone().to_string()
+      }
+    )
   }
 }

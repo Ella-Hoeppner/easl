@@ -1,25 +1,24 @@
 use sse::{document::DocumentPosition, ParseError};
-use std::{fmt::Display, rc::Rc};
+use std::{collections::HashSet, fmt::Display, hash::Hash, rc::Rc};
 use thiserror::Error;
 
 use crate::parse::EaslTree;
 
 use super::{
-  expression::TypedExp,
   metadata::Metadata,
-  types::{Type, TypeConstraint, TypeState},
+  types::{TypeConstraintDescription, TypeDescription, TypeStateDescription},
 };
 
 use std::error::Error;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SourceTraceKind {
   Empty,
   Singular(DocumentPosition),
   Combination(Vec<SourceTrace>),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceTrace {
   pub kind: Rc<SourceTraceKind>,
 }
@@ -75,7 +74,7 @@ impl FromIterator<SourceTrace> for SourceTrace {
   }
 }
 
-#[derive(Clone, Debug, Error)]
+#[derive(Clone, Debug, Error, PartialEq, Eq, Hash)]
 pub enum CompileErrorKind {
   #[error("Parsing error: `{0}`")]
   ParsingFailed(ParseError),
@@ -122,13 +121,16 @@ pub enum CompileErrorKind {
   #[error("Invalid argument name")]
   InvalidArgumentName,
   #[error("Couldn't infer types")]
-  CouldntInferTypes(TypedExp),
+  CouldntInferTypes,
   #[error("Incompatible types: expected {0}, found {1}")]
-  IncompatibleTypes(TypeState, TypeState),
+  IncompatibleTypes(TypeStateDescription, TypeStateDescription),
   #[error("Function argument types incompatible: expected {0:?}, found {1:?}")]
-  FunctionArgumentTypesIncompatible(TypeState, Vec<TypeState>),
+  FunctionArgumentTypesIncompatible(
+    TypeStateDescription,
+    Vec<TypeStateDescription>,
+  ),
   #[error("Function expression has non-function type: {0}")]
-  FunctionExpressionHasNonFunctionType(Type),
+  FunctionExpressionHasNonFunctionType(TypeDescription),
   #[error("Unbound name: `{0}`")]
   UnboundName(Rc<str>),
   #[error("Applied non-function in function position")]
@@ -185,9 +187,9 @@ pub enum CompileErrorKind {
   #[error("Invalid struct field type")]
   InvalidStructFieldType,
   #[error("Invalid type bound")]
-  InvalidTypeBound,
+  InvalidTypeConstraint,
   #[error("Unsatisfied type constraint: {0}")]
-  UnsatisfiedTypeConstraint(TypeConstraint),
+  UnsatisfiedTypeConstraint(TypeConstraintDescription),
   #[error("Invalid for loop header")]
   InvalidForLoopHeader,
   #[error("Invalid while loop")]
@@ -250,7 +252,7 @@ pub enum CompileErrorKind {
   NonexhaustiveMatch,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CompileError {
   pub kind: CompileErrorKind,
   //_backtrace: Rc<std::backtrace::Backtrace>,
@@ -287,4 +289,39 @@ pub fn err<T>(
   source_trace: SourceTrace,
 ) -> CompileResult<T> {
   Err(CompileError::new(kind, source_trace))
+}
+
+#[derive(Debug)]
+pub struct ErrorLog {
+  errors: HashSet<CompileError>,
+}
+
+impl ErrorLog {
+  pub fn new() -> Self {
+    Self {
+      errors: HashSet::new(),
+    }
+  }
+  pub fn log(&mut self, err: CompileError) {
+    self.errors.insert(err);
+  }
+  pub fn log_all(&mut self, errs: impl IntoIterator<Item = CompileError>) {
+    for err in errs.into_iter() {
+      self.log(err);
+    }
+  }
+  pub fn is_empty(&self) -> bool {
+    self.errors.is_empty()
+  }
+  pub fn into_iter(self) -> impl Iterator<Item = CompileError> {
+    self.errors.into_iter()
+  }
+}
+
+impl From<CompileError> for ErrorLog {
+  fn from(e: CompileError) -> Self {
+    let mut errors = ErrorLog::new();
+    errors.log(e);
+    errors
+  }
 }

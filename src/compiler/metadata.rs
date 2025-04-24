@@ -9,10 +9,10 @@ use crate::parse::EaslTree;
 use crate::parse::{Encloser::*, Operator};
 
 use super::error::{
-  err, CompileError, CompileErrorKind::*, CompileResult, SourceTrace,
+  err, CompileError, CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace,
 };
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Metadata {
   Singular(Rc<str>),
   Map(Vec<(Rc<str>, Rc<str>)>),
@@ -168,7 +168,8 @@ impl Metadata {
 
 pub fn extract_metadata(
   exp: EaslTree,
-) -> (EaslTree, Option<(Metadata, SourceTrace)>, Vec<CompileError>) {
+  errors: &mut ErrorLog,
+) -> (EaslTree, Option<(Metadata, SourceTrace)>) {
   if let EaslTree::Inner(
     (_, EncloserOrOperator::Operator(Operator::MetadataAnnotation)),
     mut children,
@@ -179,7 +180,7 @@ pub fn extract_metadata(
     let exp = children.remove(0);
     match Metadata::from_metadata_tree(metadata_tree) {
       Ok(metadata) => {
-        let (exp, inner_metadata, errors) = extract_metadata(exp);
+        let (exp, inner_metadata) = extract_metadata(exp, errors);
         if let Some((inner_metadata, inner_metadata_source_trace)) =
           inner_metadata
         {
@@ -189,15 +190,17 @@ pub fn extract_metadata(
               Metadata::Multiple(vec![metadata, inner_metadata]),
               metadata_source_trace.combine_with(inner_metadata_source_trace),
             )),
-            errors,
           )
         } else {
-          (exp, Some((metadata, metadata_source_trace)), errors)
+          (exp, Some((metadata, metadata_source_trace)))
         }
       }
-      Err(err) => (exp, None, vec![err]),
+      Err(err) => {
+        errors.log(err);
+        (exp, None)
+      }
     }
   } else {
-    (exp, None, vec![])
+    (exp, None)
   }
 }

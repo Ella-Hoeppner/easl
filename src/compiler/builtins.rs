@@ -274,9 +274,9 @@ pub fn specialized_matrix_type(
 }
 
 pub fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
-  (2..4)
+  (2..=4)
     .flat_map(|n| {
-      (2..4).flat_map(move |m| {
+      (2..=4).flat_map(move |m| {
         [
           AbstractFunctionSignature {
             name: format!("mat{n}x{m}").into(),
@@ -364,7 +364,7 @@ pub fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
 pub fn built_in_structs() -> Vec<AbstractStruct> {
   vec![vec2(), vec3(), vec4(), texture_2d(), sampler()]
     .into_iter()
-    .chain((2..4).flat_map(|n| (2..4).map(move |m| matrix(n, m))))
+    .chain((2..=4).flat_map(|n| (2..=4).map(move |m| matrix(n, m))))
     .collect()
 }
 
@@ -396,9 +396,9 @@ pub fn built_in_type_aliases() -> Vec<(Rc<str>, Rc<AbstractStruct>)> {
         ),
       ]
       .into_iter()
-      .chain((2..4).flat_map(move |n| {
+      .chain((2..=4).flat_map(move |n| {
         let t = t.clone();
-        (2..4).map(move |m| {
+        (2..=4).map(move |m| {
           (
             format!("mat{n}x{m}{suffix}").into(),
             matrix(n, m)
@@ -496,9 +496,9 @@ fn arithmetic_functions(
 }
 
 fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
-  (2..4)
+  (2..=4)
     .flat_map(|n| {
-      (2..4).flat_map(move |m| {
+      (2..=4).flat_map(move |m| {
         let vecn = |size: usize| match size {
           2 => AbstractType::AbstractStruct(vec2().into()),
           3 => AbstractType::AbstractStruct(vec3().into()),
@@ -563,6 +563,18 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
           },
         ]
         .into_iter()
+        .chain((2..=4).map(move |inner| AbstractFunctionSignature {
+          name: "*".into(),
+          generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+          arg_types: vec![
+            AbstractType::AbstractStruct(matrix(inner, m).into()),
+            AbstractType::AbstractStruct(matrix(n, inner).into()),
+          ],
+          mutated_args: vec![],
+          return_type: vecn(n),
+          implementation: FunctionImplementationKind::Builtin,
+          associative: true,
+        }))
       })
     })
     .collect()

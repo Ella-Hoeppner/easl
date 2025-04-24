@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::{
-  builtins::{built_in_structs, built_in_type_aliases, ABNORMAL_CONSTRUCTOR_STRUCTS}, error::{CompileErrorKind::{self, *}, CompileResult}, expression::TypedExp, functions::{FunctionImplementationKind, TopLevelFunction}, macros::{macroexpand, Macro}, structs::AbstractStruct, vars::TopLevelVar
+  builtins::{built_in_structs, built_in_type_aliases, ABNORMAL_CONSTRUCTOR_STRUCTS}, error::{CompileErrorKind::{self, *}, CompileResult, ErrorLog}, expression::TypedExp, functions::{FunctionImplementationKind, TopLevelFunction}, macros::{macroexpand, Macro}, structs::AbstractStruct, vars::TopLevelVar
 };
 
 pub type EaslDocument<'s> = Document<'s, SyntaxContext, Encloser, Operator>;
@@ -169,20 +169,14 @@ impl Program {
   pub fn from_easl_document(
     document: &'_ EaslDocument,
     macros: Vec<Macro>,
-  ) -> (Self, Vec<CompileError>) {
-    let (trees, macro_errors) = document
+  ) -> (Self, ErrorLog) {
+    let mut errors = ErrorLog::new();
+    let trees = document
       .syntax_trees
       .iter()
       .cloned()
-      .map(|tree| macroexpand(tree, &macros))
-      .collect::<(Vec<EaslTree>, Vec<Vec<(SourceTrace, Rc<str>)>>)>();
-    let mut errors: Vec<CompileError> = macro_errors
-      .into_iter()
-      .flatten()
-      .map(|(source_trace, err_str)| {
-        CompileError::new(MacroError(err_str), source_trace)
-      })
-      .collect();
+      .map(|tree| macroexpand(tree, &macros, &mut errors))
+      .collect::<Vec<EaslTree>>();
 
     let mut non_struct_trees = vec![];
     let mut untyped_structs = vec![];
@@ -190,9 +184,8 @@ impl Program {
     for tree in trees.into_iter() {
       use crate::parse::Encloser::*;
       use sse::syntax::EncloserOrOperator::*;
-      let (tree_body, metadata, mut metadata_errors) =
-        extract_metadata(tree.clone());
-      errors.append(&mut metadata_errors);
+      let (tree_body, metadata) =
+        extract_metadata(tree.clone(), &mut errors);
       if let EaslTree::Inner((position, Encloser(Parens)), children) =
         &tree_body
       {
@@ -213,7 +206,7 @@ impl Program {
                     source_trace,
                   ) {
                     Ok(s) => untyped_structs.push(s),
-                    Err(e) => errors.push(e),
+                    Err(e) => errors.log(e),
                   }
                 }
                 EaslTree::Inner(
@@ -236,7 +229,7 @@ impl Program {
                       ),
                     })
                     .collect::<(Vec<Option<Rc<str>>>, Vec<Option<CompileError>>)>();
-                  let mut filtered_signature_errors: Vec<CompileError> =
+                  let filtered_signature_errors: Vec<CompileError> =
                     signature_errors.into_iter().filter_map(|x| x).collect();
                   if filtered_signature_errors.is_empty() {
                     let mut filtered_signature_leaves = signature_leaves
@@ -247,7 +240,7 @@ impl Program {
                     if let Some(struct_name) = filtered_signature_leaves.next()
                     {
                       if filtered_signature_leaves.len() == 0 {
-                        errors.push(CompileError::new(
+                        errors.log(CompileError::new(
                           InvalidStructName,
                           source_trace,
                         ));
@@ -259,21 +252,21 @@ impl Program {
                           source_trace,
                         ) {
                           Ok(s) => untyped_structs.push(s),
-                          Err(e) => errors.push(e),
+                          Err(e) => errors.log(e),
                         }
                       }
                     } else {
-                      errors.push(CompileError::new(
+                      errors.log(CompileError::new(
                         InvalidStructName,
                         source_trace,
                       ));
                     }
                   } else {
-                    errors.append(&mut filtered_signature_errors);
+                    errors.log_all(filtered_signature_errors);
                   }
                 }
                 EaslTree::Inner((position, _), _) => {
-                  errors.push(CompileError::new(
+                  errors.log(CompileError::new(
                     InvalidStructName,
                     position.clone().into(),
                   ));
@@ -281,19 +274,19 @@ impl Program {
               }
             } else {
               errors
-                .push(CompileError::new(InvalidStructDefinition, source_trace));
+                .log(CompileError::new(InvalidStructDefinition, source_trace));
             }
           } else {
             non_struct_trees.push((metadata, tree_body))
           }
         } else {
-          errors.push(CompileError::new(
+          errors.log(CompileError::new(
             UnrecognizedTopLevelForm(tree_body.clone()),
             source_trace,
           ));
         }
       } else {
-        errors.push(CompileError::new(
+        errors.log(CompileError::new(
           UnrecognizedTopLevelForm(tree_body),
           tree.position().clone().into(),
         ));
@@ -314,7 +307,7 @@ impl Program {
         .assign_types(&program.structs, &built_in_type_aliases())
       {
         Ok(s) => program = program.with_struct(s.into()),
-        Err(e) => errors.push(e),
+        Err(e) => errors.log(e),
       }
     }
 
@@ -367,18 +360,14 @@ impl Program {
                           }
                         })
                         .collect();
-                    let mut filtered_attribute_errors: Vec<CompileError> =
-                      attribute_errors.into_iter().filter_map(|x| x).collect();
-                    if !filtered_attribute_errors.is_empty() {
-                      errors.append(&mut filtered_attribute_errors);
-                    }
+                    errors.log_all(attribute_errors.into_iter().filter_map(|x| x));
                     Some((
                       attributes.into_iter().filter_map(|x| x).collect(),
                       children_iter.next().unwrap(),
                       children_iter.next()
                     ))
                   } else {
-                    errors.push(CompileError::new(
+                    errors.log(CompileError::new(
                       InvalidTopLevelVar(
                         "Expected square-bracket enclosed attributes".into(),
                       ),
@@ -388,7 +377,7 @@ impl Program {
                   }
                 }
                 _ => {
-                  errors.push(CompileError::new(
+                  errors.log(CompileError::new(
                     InvalidTopLevelVar("Invalid number of inner forms".into()),
                     first_child_source_trace,
                   ));
@@ -411,7 +400,7 @@ impl Program {
                         type_source_path.into(),
                       )
                     }) {
-                      Err(e) | Ok(Err(e)) => errors.push(e),
+                      Err(e) | Ok(Err(e)) => errors.log(e),
                       Ok(Ok(t)) => {
                         if let Some((metadata, metadata_source_trace)) =
                           &metadata
@@ -421,7 +410,7 @@ impl Program {
                               &metadata_source_trace,
                             )
                           {
-                            errors.push(e);
+                            errors.log(e);
                           }
                         }
                         let value = value_ast.map(|value_ast| match TypedExp::try_from_easl_tree(
@@ -432,7 +421,7 @@ impl Program {
                           crate::compiler::expression::SyntaxTreeContext::Default,
                         ) {
                             Ok(exp) => Some(exp),
-                            Err(e) => {errors.push(e); None},
+                            Err(e) => {errors.log(e); None},
                         }).flatten();
                         program.top_level_vars.push(TopLevelVar {
                           name,
@@ -446,7 +435,7 @@ impl Program {
                       }
                     }
                   }
-                  Err(e) => errors.push(e),
+                  Err(e) => errors.log(e),
                 }
               }
             }
@@ -475,7 +464,7 @@ impl Program {
                               var = var.with_kind(VariableKind::Override)
                             }
                             if metadata.is_some() {
-                              errors.push(CompileError::new(
+                              errors.log(CompileError::new(
                                 ConstantMayNotHaveMetadata,
                                 parens_source_trace.clone(),
                               ));
@@ -489,16 +478,16 @@ impl Program {
                               source_trace: parens_source_trace,
                             })
                           }
-                          Err(e) => errors.push(e),
+                          Err(e) => errors.log(e),
                         }
                       }
-                      Err(e) => errors.push(e),
+                      Err(e) => errors.log(e),
                     }
                   }
-                  Err(e) => errors.push(e),
+                  Err(e) => errors.log(e),
                 }
               } else {
-                errors.push(CompileError::new(
+                errors.log(CompileError::new(
                   InvalidTopLevelVar(
                     "Expected two forms inside \"def\"".into(),
                   ),
@@ -529,12 +518,12 @@ impl Program {
                         {
                           Ok(generic_args) => Some((name.into(), generic_args)),
                           Err(e) => {
-                            errors.push(e);
+                            errors.log(e);
                             None
                           }
                         }
                       } else {
-                        errors.push(CompileError::new(
+                        errors.log(CompileError::new(
                           InvalidDefn("Invalid name".into()),
                           first_child_source_trace,
                         ));
@@ -542,7 +531,7 @@ impl Program {
                       }
                     }
                     _ => {
-                      errors.push(CompileError::new(
+                      errors.log(CompileError::new(
                       InvalidDefn(
                         "Expected name or parens with name and generic arguments"
                           .into(),
@@ -631,7 +620,7 @@ impl Program {
                                           ) {
                                           Ok(is_associative) => is_associative,
                                           Err(e) => {
-                                            errors.push(e);
+                                            errors.log(e);
                                             false
                                           }
                                         }
@@ -665,36 +654,36 @@ impl Program {
                                         )),
                                       );
                                     }
-                                    Err(e) => errors.push(e),
+                                    Err(e) => errors.log(e),
                                   }
                                 }
                                 Err(e) => {
-                                  errors.push(e);
+                                  errors.log(e);
                                 }
                               }
                             }
                             Err(e) => {
-                              errors.push(e);
+                              errors.log(e);
                             }
                           }
                         }
-                        Err(e) => errors.push(e),
+                        Err(e) => errors.log(e),
                       }
                     }
-                    None => errors.push(CompileError::new(
+                    None => errors.log(CompileError::new(
                       InvalidDefn("Missing Argument List".into()),
                       parens_source_trace.clone(),
                     )),
                   }
                 }
               }
-              None => errors.push(CompileError::new(
+              None => errors.log(CompileError::new(
                 InvalidDefn("Missing Name".into()),
                 parens_source_trace.clone(),
               )),
             },
             _ => {
-              errors.push(CompileError::new(
+              errors.log(CompileError::new(
                 UnrecognizedTopLevelForm(EaslTree::Leaf(
                   first_child_position.clone(),
                   first_child,
@@ -704,7 +693,7 @@ impl Program {
             }
           }
         } else {
-          errors.push(CompileError::new(
+          errors.log(CompileError::new(
             UnrecognizedTopLevelForm(first_child.unwrap_or(EaslTree::Inner(
               (
                 parens_position.clone(),
@@ -716,7 +705,7 @@ impl Program {
           ));
         }
       } else {
-        errors.push(CompileError::new(
+        errors.log(CompileError::new(
           UnrecognizedTopLevelForm(tree.clone()),
           tree.position().clone().into(),
         ));
@@ -724,36 +713,32 @@ impl Program {
     }
     (program, errors)
   }
-  fn propagate_types(&mut self) -> (bool, Vec<CompileError>) {
-    let mut errors = vec![];
+  fn propagate_types(&mut self, errors: &mut ErrorLog) -> bool {
     let mut base_context = self.clone();
     let mut anything_changed = false;
     for var in self.top_level_vars.iter_mut() {
       if let Some(value_expression) = &mut var.value {
-        let (changed, mut sub_errors) = value_expression
+        let changed = value_expression
           .data
-          .constrain(var.var.typestate.kind.clone(), var.source_trace.clone());
+          .constrain(var.var.typestate.kind.clone(), var.source_trace.clone(), errors);
         anything_changed |= changed;
-        errors.append(&mut sub_errors);
-        let (changed, mut sub_errors) =
-          value_expression.propagate_types(&mut base_context);
+        let changed =
+          value_expression.propagate_types(&mut base_context, errors);
         anything_changed |= changed;
-        errors.append(&mut sub_errors);
       }
     }
     for f in self.abstract_functions_iter_mut() {
       if let FunctionImplementationKind::Composite(implementation) =
         &f.borrow().implementation
       {
-        let (changed, mut f_errors) = implementation
+        let changed = implementation
           .borrow_mut()
           .body
-          .propagate_types(&mut base_context);
+          .propagate_types(&mut base_context, errors);
         anything_changed |= changed;
-        errors.append(&mut f_errors);
       }
     }
-    (anything_changed, errors)
+    anything_changed
   }
   fn find_untyped(&mut self) -> Vec<TypedExp> {
     self
@@ -779,8 +764,7 @@ impl Program {
       .flatten()
       .collect()
   }
-  pub fn validate_match_blocks(&self) -> Vec<CompileError> {
-    let mut errors = vec![];
+  pub fn validate_match_blocks(&self, errors: &mut ErrorLog) {
     for abstract_function in self.abstract_functions_iter() {
       if let FunctionImplementationKind::Composite(implementation) =
         &abstract_function.borrow().implementation
@@ -788,53 +772,42 @@ impl Program {
         (**implementation)
           .borrow_mut()
           .body
-          .validate_match_blocks(&mut errors);
+          .validate_match_blocks(errors);
       }
     }
-    errors
   }
-  pub fn fully_infer_types(&mut self) -> Vec<CompileError> {
-    let mut errors = vec![];
+  pub fn fully_infer_types(&mut self, errors: &mut ErrorLog) {
     loop {
-      let (did_type_states_change, mut current_errors) = self.propagate_types();
-      errors.append(&mut current_errors);
+      let did_type_states_change = self.propagate_types(errors);
       if !did_type_states_change {
         let untyped_expressions = self.find_untyped();
         return if untyped_expressions.is_empty() {
           break;
         } else {
-          untyped_expressions
-            .into_iter()
-            .map(|exp| {
-              let source_trace = exp.source_trace.clone();
-              CompileError::new(CouldntInferTypes(exp), source_trace)
-            })
-            .collect()
-        };
+          for exp in untyped_expressions {
+            let source_trace = exp.source_trace.clone();
+            errors.log( CompileError::new(CouldntInferTypes, source_trace));
+          }
+        }
       }
     }
-    errors
   }
-  pub fn validate_assignments(&mut self) -> Vec<CompileError> {
-    let mut errors = vec![];
+  pub fn validate_assignments(&mut self, errors: &mut ErrorLog) {
     for f in self.abstract_functions_iter() {
-      let mut ctx = self.clone();
       if let FunctionImplementationKind::Composite(implementation) =
         &f.borrow().implementation
       {
         if let Err(e) = implementation
           .borrow_mut()
           .body
-          .validate_assignments(&mut ctx)
+          .validate_assignments(self)
         {
-          errors.push(e);
+          errors.log(e);
         }
       }
     }
-    errors
   }
-  pub fn monomorphize(&mut self) -> Vec<CompileError> {
-    let mut errors = vec![];
+  pub fn monomorphize(&mut self, errors: &mut ErrorLog) {
     let mut monomorphized_ctx = Program::default();
     for f in self.abstract_functions_iter() {
       if f.borrow().generic_args.is_empty() {
@@ -853,7 +826,7 @@ impl Program {
               monomorphized_ctx
                 .add_abstract_function(Rc::new(RefCell::new(new_f)));
             }
-            Err(e) => errors.push(e),
+            Err(e) => errors.log(e),
           }
         }
       }
@@ -864,22 +837,15 @@ impl Program {
       monomorphized_ctx.type_aliases = old_ctx.type_aliases;
       monomorphized_ctx
     });
-    errors
   }
-  pub fn inline_all_higher_order_arguments(&mut self) -> Vec<CompileError> {
-    let (changed, errors) = self.inline_higher_order_arguments();
-    if !errors.is_empty() {
-      return errors;
-    }
-    if changed {
-      self.inline_all_higher_order_arguments()
-    } else {
-      vec![]
+  pub fn inline_all_higher_order_arguments(&mut self, errors: &mut ErrorLog) {
+    let changed = self.inline_higher_order_arguments(errors);
+    if errors.is_empty() && changed {
+      self.inline_all_higher_order_arguments(errors);
     }
   }
-  pub fn inline_higher_order_arguments(&mut self) -> (bool, Vec<CompileError>) {
+  pub fn inline_higher_order_arguments(&mut self, errors: &mut ErrorLog) -> bool {
     let mut changed = false;
-    let mut errors = vec![];
     let mut inlined_ctx = Program::default();
     for f in self.abstract_functions_iter() {
       if f.borrow().generic_args.is_empty()
@@ -911,7 +877,7 @@ impl Program {
                 FunctionImplementationKind::Composite(implementation.clone());
               inlined_ctx.add_abstract_function(Rc::new(RefCell::new(new_f)));
             }
-            Err(e) => errors.push(e),
+            Err(e) => errors.log(e),
           }
         }
       }
@@ -922,7 +888,7 @@ impl Program {
       inlined_ctx.type_aliases = old_ctx.type_aliases;
       inlined_ctx
     });
-    (changed, errors)
+    changed
   }
   pub fn compile_to_wgsl(self) -> CompileResult<String> {
     let mut wgsl = String::new();
@@ -1011,7 +977,7 @@ impl Program {
       }
     }
   }
-  fn deshadow(&mut self) -> Vec<CompileError> {
+  fn deshadow(&mut self, errors: &mut ErrorLog) {
     let globally_bound_names: Vec<Rc<str>> = self
       .top_level_vars
       .iter()
@@ -1023,25 +989,18 @@ impl Program {
           .map(|(name, _)| Rc::clone(name)),
       )
       .collect();
-    self
-      .abstract_functions
-      .iter_mut()
-      .flat_map(|(_, signatures)| {
-        signatures.iter_mut().flat_map(|signature| {
-          if let FunctionImplementationKind::Composite(exp) =
-            &mut signature.borrow_mut().implementation
-          {
-            exp.borrow_mut().body.deshadow(&globally_bound_names)
-          } else {
-            vec![]
-          }
-          .into_iter()
-        })
-      })
-      .collect()
+    for (_, signatures) in self.abstract_functions.iter_mut() {
+      for signature in signatures.iter_mut() {
+        if let FunctionImplementationKind::Composite(exp) =
+          &mut signature.borrow_mut().implementation
+        {
+          exp.borrow_mut().body.deshadow(&globally_bound_names, errors);
+        }
+      }
+    }
   }
-  fn validate_associative_signatures(&self) -> Vec<CompileError> {
-    self.abstract_functions_iter().filter_map(|signature| {
+  fn validate_associative_signatures(&self, errors: &mut ErrorLog) {
+    for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
       if signature.associative && 
            (signature.arg_types.len() != 2 || 
@@ -1049,22 +1008,17 @@ impl Program {
               signature.arg_types[0] != signature.return_type) {
         if let FunctionImplementationKind::Composite(implementation) = 
           &signature.implementation {
-          Some(CompileError {
+          errors.log(CompileError {
             kind: CompileErrorKind::InvalidAssociativeSignature,
             source_trace: implementation.borrow().body.source_trace.clone()
-          })
-        } else {
-          None
+          });
         }
-      } else {
-        None
       }
-    }).collect()
+    }
   }
-  fn ensure_no_typeless_bindings(&self) -> Vec<CompileError> {
-    self.abstract_functions_iter().flat_map(|signature| {
+  fn ensure_no_typeless_bindings(&self, errors: &mut ErrorLog) {
+    for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
-      let mut errors = vec![];
       if let FunctionImplementationKind::Composite(implementation) = 
         &signature.implementation {
         implementation.borrow().body.walk(&mut |exp| {
@@ -1072,7 +1026,7 @@ impl Program {
             ExpKind::Let(items, _) => {
               for (_, _, value) in items.iter() {
                 if TypeState::Known(Type::Unit) == value.data.kind {
-                  errors.push(
+                  errors.log(
                     CompileError {
                       kind: CompileErrorKind::TypelessBinding,
                       source_trace: value.source_trace.clone()
@@ -1086,18 +1040,15 @@ impl Program {
           Ok(true)
         }).unwrap();
       }
-      errors
-    }).collect()
+    }
   }
-  pub fn validate_control_flow(&mut self) -> Vec<CompileError> {
-    let mut errors = vec![];
+  pub fn validate_control_flow(&mut self, errors: &mut ErrorLog) {
     for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
       if let FunctionImplementationKind::Composite(f) = &signature.implementation {
-        f.borrow().body.validate_control_flow(&mut errors, 0);
+        f.borrow().body.validate_control_flow(errors, 0);
       }
     }
-    errors
   }
   pub fn deexpressionify(&mut self) {
     for signature in self.abstract_functions_iter() {
@@ -1107,46 +1058,47 @@ impl Program {
       }
     }
   }
-  pub fn validate_raw_program(&mut self) -> Vec<CompileError> {
-    let errors = self.validate_associative_signatures();
+  pub fn validate_raw_program(&mut self) -> ErrorLog {
+    let mut errors = ErrorLog::new();
+    self.validate_associative_signatures(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
-    let errors = self.fully_infer_types();
+    self.deshadow(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
-    let errors = self.validate_control_flow();
+    self.fully_infer_types(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
-    let errors = self.ensure_no_typeless_bindings();
+    self.validate_control_flow(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.ensure_no_typeless_bindings(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
     self.expand_associative_applications();
-    let errors = self.validate_assignments();
+    self.validate_assignments(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
-    let errors = self.monomorphize();
+    self.monomorphize(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
-    let errors = self.validate_match_blocks();
+    self.validate_match_blocks(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
-    let errors = self.inline_all_higher_order_arguments();
-    if !errors.is_empty() {
-      return errors;
-    }
-    let errors = self.deshadow();
+    self.inline_all_higher_order_arguments(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
     self.deexpressionify();
-    vec![]
+    errors
   }
   pub fn gather_type_annotations(&self) -> Vec<(SourceTrace, TypeState)> {
     let mut type_annotations = vec![];

@@ -8,5 +8,8 @@
         m7 (mat2x3f (vec3f a) (vec3f a))
         v: vec2f (* m (vec2f 1.))
         v2: vec2f (* m6 (vec3f 1.))
-        v3: vec3f (* (vec2f 1.) m6)]
+        v3: vec3f (* (vec2f 1.) m6)
+        m8 (mat3x4f (vec4f 0.) (vec4f 1.) (vec4f 2.))
+        m9 (mat2x3f (vec3f 0.) (vec3f 1.))
+        m10 (* m8 m9)]
     m))

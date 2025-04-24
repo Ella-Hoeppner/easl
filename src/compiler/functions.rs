@@ -10,7 +10,10 @@ use crate::compiler::util::compile_word;
 
 use super::{
   effects::Effect,
-  error::{err, CompileError, CompileErrorKind::*, CompileResult, SourceTrace},
+  error::{
+    err, CompileError, CompileErrorKind::*, CompileResult, ErrorLog,
+    SourceTrace,
+  },
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
   program::Program,
@@ -106,7 +109,7 @@ impl AbstractFunctionSignature {
             .find(|constraint| !generic_type.satisfies_constraints(constraint))
           {
             err(
-              UnsatisfiedTypeConstraint(unsatisfied_bound.clone()),
+              UnsatisfiedTypeConstraint(unsatisfied_bound.clone().into()),
               source_trace.clone(),
             )
           } else {
@@ -402,38 +405,39 @@ impl FunctionSignature {
     &mut self,
     args: &mut Vec<TypeState>,
     source_trace: SourceTrace,
-  ) -> (bool, Vec<CompileError>) {
+    errors: &mut ErrorLog,
+  ) -> bool {
     if args.len() == self.arg_types.len() {
       let mut any_arg_changed = false;
-      let mut all_errors = vec![];
       for i in 0..args.len() {
-        let (changed, mut errors) = args[i]
-          .mutually_constrain(&mut self.arg_types[i].0, source_trace.clone());
+        let changed = args[i].mutually_constrain(
+          &mut self.arg_types[i].0,
+          source_trace.clone(),
+          errors,
+        );
         any_arg_changed |= changed;
-        all_errors.append(&mut errors);
       }
-      (any_arg_changed, all_errors)
+      any_arg_changed
     } else {
       if let Some(ancestor) = &self.abstract_ancestor {
         if ancestor.associative {
           if args.len() != 0 {
             let arg_type = &mut self.arg_types.get_mut(0).unwrap().0;
             let mut any_arg_changed = false;
-            let mut all_errors = vec![];
             for i in 0..args.len() {
-              let (changed, mut errors) =
-                args[i].mutually_constrain(arg_type, source_trace.clone());
+              let changed = args[i].mutually_constrain(
+                arg_type,
+                source_trace.clone(),
+                errors,
+              );
               any_arg_changed |= changed;
-              all_errors.append(&mut errors);
             }
-            return (any_arg_changed, all_errors);
+            return any_arg_changed;
           }
         }
       }
-      (
-        false,
-        vec![CompileError::new(WrongArity(self.name()), source_trace)],
-      )
+      errors.log(CompileError::new(WrongArity(self.name()), source_trace));
+      false
     }
   }
   pub fn name(&self) -> Option<Rc<str>> {

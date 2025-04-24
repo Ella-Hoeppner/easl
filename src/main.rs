@@ -4,6 +4,7 @@ use std::fs;
 fn main() {
   std::env::set_var("RUST_BACKTRACE", "1");
   fs::create_dir_all("./out/").expect("Unable to create out directory");
+  let mut total_time: f64 = 0.;
   for filename in [
     "inversion",
     "associative",
@@ -63,6 +64,7 @@ fn main() {
     match compile_easl_source_to_wgsl(&easl_source) {
       Ok(wgsl) => {
         println!("{:?}", t.elapsed());
+        total_time += t.elapsed().as_nanos() as f64 / 1000000.;
         fs::write(&format!("./out/{filename}.wgsl"), wgsl)
           .expect("Unable to write file");
       }
@@ -73,4 +75,5 @@ fn main() {
       }
     }
   }
+  println!("total time: {total_time}");
 }
