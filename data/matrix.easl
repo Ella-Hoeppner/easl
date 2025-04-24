@@ -1,0 +1,12 @@
+(defn f [a: f32]: mat2x2f
+  (let [m (mat2x2 a a a a)
+        m2 (mat2x2f a a a a)
+        m3 (mat2x2 (vec2f a) (vec2 a))
+        m4 (mat2x2f (vec2f a) (vec2f a))
+        m5 (mat2x2f (vec2 a) (vec2 a))
+        m6 (mat3x2f (vec2f a) (vec2f a) (vec2f a))
+        m7 (mat2x3f (vec3f a) (vec3f a))
+        v: vec2f (* m (vec2f 1.))
+        v2: vec2f (* m6 (vec3f 1.))
+        v3: vec3f (* (vec2f 1.) m6)]
+    m))

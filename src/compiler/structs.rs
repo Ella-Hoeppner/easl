@@ -1,4 +1,7 @@
-use std::{collections::HashMap, rc::Rc};
+use std::{
+  collections::{HashMap, HashSet},
+  rc::Rc,
+};
 
 use crate::{
   compiler::{
@@ -119,7 +122,7 @@ impl UntypedStruct {
   }
 }
 
-pub fn compiled_vec_name(
+pub fn compiled_vec_or_mat_name(
   base_struct_name: &str,
   inner_type: Type,
 ) -> Option<Rc<str>> {
@@ -198,6 +201,15 @@ impl AbstractStructField {
   }
 }
 
+pub fn vec_and_mat_compile_names() -> HashSet<String> {
+  (2..4)
+    .flat_map(|n| {
+      std::iter::once(format!("vec{n}"))
+        .chain((2..4).map(move |m| format!("mat{n}x{m}")))
+    })
+    .collect()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractStruct {
   pub name: Rc<str>,
@@ -274,9 +286,10 @@ impl AbstractStruct {
 
     let name = &*self.name;
 
-    (name == "vec2" || name == "vec3" || name == "vec4")
+    vec_and_mat_compile_names()
+      .contains(name)
       .then(|| {
-        compiled_vec_name(
+        compiled_vec_or_mat_name(
           name,
           generic_bindings.values().next().unwrap().clone(),
         )

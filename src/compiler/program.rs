@@ -1047,12 +1047,15 @@ impl Program {
            (signature.arg_types.len() != 2 || 
               signature.arg_types[0] != signature.arg_types[1] || 
               signature.arg_types[0] != signature.return_type) {
-        let FunctionImplementationKind::Composite(implementation) = 
-          &signature.implementation else {unreachable!()};
-        Some(CompileError {
-          kind: CompileErrorKind::InvalidAssociativeSignature,
-          source_trace: implementation.borrow().body.source_trace.clone()
-        })
+        if let FunctionImplementationKind::Composite(implementation) = 
+          &signature.implementation {
+          Some(CompileError {
+            kind: CompileErrorKind::InvalidAssociativeSignature,
+            source_trace: implementation.borrow().body.source_trace.clone()
+          })
+        } else {
+          None
+        }
       } else {
         None
       }

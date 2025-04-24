@@ -5,7 +5,7 @@ fn main() {
   std::env::set_var("RUST_BACKTRACE", "1");
   fs::create_dir_all("./out/").expect("Unable to create out directory");
   for filename in [
-    /*"inversion",
+    "inversion",
     "associative",
     "assignment",
     "simple_shader",
@@ -53,8 +53,8 @@ fn main() {
     "mutating_block_lift",
     "return_in_match",
     "globally_mutating_block_lift",
-    "block_purity_filter",*/
-    "match_in_application",
+    "block_purity_filter",
+    "matrix",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

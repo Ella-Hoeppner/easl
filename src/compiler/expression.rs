@@ -280,7 +280,7 @@ use super::{
   effects::Effect,
   error::{CompileErrorKind, SourceTrace, SourceTraceKind},
   functions::FunctionImplementationKind,
-  structs::compiled_vec_name,
+  structs::{compiled_vec_or_mat_name, vec_and_mat_compile_names},
   types::{AbstractType, LocalContext, TypeConstraint},
 };
 
@@ -2241,10 +2241,10 @@ impl TypedExp {
             }
           {
             match &abstract_signature.implementation {
-              FunctionImplementationKind::Builtin => match &**f_name {
-                "vec2" | "vec3" | "vec4" => {
+              FunctionImplementationKind::Builtin => {
+                if vec_and_mat_compile_names().contains(&**f_name) {
                   if let Type::Struct(s) = &exp.data.kind.unwrap_known() {
-                    if let Some(mut compiled_name) = compiled_vec_name(
+                    if let Some(mut compiled_name) = compiled_vec_or_mat_name(
                       &f_name,
                       s.fields[0].field_type.unwrap_known(),
                     ) {
@@ -2253,17 +2253,19 @@ impl TypedExp {
                   } else {
                     unreachable!("")
                   }
-                }
-                "bitcast" => std::mem::swap(
-                  f_name,
-                  &mut format!(
-                    "bitcast<{}>",
-                    exp.data.kind.unwrap_known().compile()
+                } else if &**f_name == "bitcasst" {
+                  std::mem::swap(
+                    f_name,
+                    &mut format!(
+                      "bitcast<{}>",
+                      exp.data.kind.unwrap_known().compile()
+                    )
+                    .into(),
                   )
-                  .into(),
-                ),
-                _ => {}
-              },
+                } else {
+                  {}
+                }
+              }
               FunctionImplementationKind::Constructor => {
                 if let Some(abstract_struct) =
                   base_program.structs.iter().find(|s| s.name == *f_name)

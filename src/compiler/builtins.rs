@@ -88,9 +88,27 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
   n_sums(n)
     .into_iter()
     .chain(std::iter::once(vec![1]))
-    .map(|nums| {
-      vec![
-        AbstractFunctionSignature {
+    .flat_map(|nums| {
+      ["f", "i", "u"]
+        .into_iter()
+        .map(|suffix| AbstractFunctionSignature {
+          name: format!("vec{n}{suffix}").into(),
+          generic_args: (0..nums.len())
+            .map(|i| format!("A{i}").into())
+            .map(|name| (name, vec![TypeConstraint::scalar()]))
+            .collect(),
+          arg_types: nums
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(i, n)| vec_n_type(n).rename_generic("T", &format!("A{i}")))
+            .collect(),
+          mutated_args: vec![],
+          return_type: specialized_vec_n_type(n, suffix),
+          implementation: FunctionImplementationKind::Builtin,
+          associative: false,
+        })
+        .chain(std::iter::once(AbstractFunctionSignature {
           name: format!("vec{n}").into(),
           generic_args: (0..nums.len())
             .map(|i| format!("A{i}").into())
@@ -107,61 +125,9 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
           return_type: vec_n_type(n),
           implementation: FunctionImplementationKind::Builtin,
           associative: false,
-        },
-        AbstractFunctionSignature {
-          name: format!("vec{n}f").into(),
-          generic_args: (0..nums.len())
-            .map(|i| format!("A{i}").into())
-            .map(|name| (name, vec![TypeConstraint::scalar()]))
-            .collect(),
-          arg_types: nums
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(i, n)| vec_n_type(n).rename_generic("T", &format!("A{i}")))
-            .collect(),
-          mutated_args: vec![],
-          return_type: specialized_vec_n_type(n, "f"),
-          implementation: FunctionImplementationKind::Builtin,
-          associative: false,
-        },
-        AbstractFunctionSignature {
-          name: format!("vec{n}i").into(),
-          generic_args: (0..nums.len())
-            .map(|i| format!("A{i}").into())
-            .map(|name| (name, vec![TypeConstraint::scalar()]))
-            .collect(),
-          arg_types: nums
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(i, n)| vec_n_type(n).rename_generic("T", &format!("A{i}")))
-            .collect(),
-          mutated_args: vec![],
-          return_type: specialized_vec_n_type(n, "i"),
-          implementation: FunctionImplementationKind::Builtin,
-          associative: false,
-        },
-        AbstractFunctionSignature {
-          name: format!("vec{n}u").into(),
-          generic_args: (0..nums.len())
-            .map(|i| format!("A{i}").into())
-            .map(|name| (name, vec![TypeConstraint::scalar()]))
-            .collect(),
-          arg_types: nums
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(i, n)| vec_n_type(n).rename_generic("T", &format!("A{i}")))
-            .collect(),
-          mutated_args: vec![],
-          return_type: specialized_vec_n_type(n, "u"),
-          implementation: FunctionImplementationKind::Builtin,
-          associative: false,
-        },
-      ]
+        }))
+        .collect::<Vec<AbstractFunctionSignature>>()
     })
-    .flatten()
     .collect()
 }
 
@@ -272,76 +238,178 @@ pub fn sampler() -> AbstractStruct {
   }
 }
 
+pub fn matrix(n: usize, m: usize) -> AbstractStruct {
+  AbstractStruct {
+    name: format!("mat{n}x{m}").into(),
+    fields: vec![AbstractStructField {
+      metadata: None,
+      name: "_".into(),
+      field_type: AbstractType::Generic("T".into()),
+    }],
+    generic_args: vec!["T".into()],
+    filled_generics: HashMap::new(),
+    abstract_ancestor: None,
+    source_trace: SourceTrace::empty(),
+  }
+}
+
+pub fn specialized_matrix_type(
+  n: usize,
+  m: usize,
+  suffix: &str,
+) -> AbstractType {
+  let vec_type = AbstractType::Type(match suffix {
+    "f" => Type::F32,
+    "i" => Type::I32,
+    "u" => Type::U32,
+    _ => panic!("unknown specialized mat suffix \"{suffix}\""),
+  });
+  AbstractType::AbstractStruct(
+    matrix(n, m)
+      .partially_fill_abstract_generics(
+        [("T".into(), vec_type)].into_iter().collect(),
+      )
+      .into(),
+  )
+}
+
+pub fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
+  (2..4)
+    .flat_map(|n| {
+      (2..4).flat_map(move |m| {
+        [
+          AbstractFunctionSignature {
+            name: format!("mat{n}x{m}").into(),
+            generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+            arg_types: std::iter::repeat(AbstractType::Generic("T".into()))
+              .take(n * m)
+              .collect(),
+            mutated_args: vec![],
+            return_type: AbstractType::AbstractStruct(matrix(n, m).into()),
+            implementation: FunctionImplementationKind::Builtin,
+            associative: false,
+          },
+          AbstractFunctionSignature {
+            name: format!("mat{n}x{m}").into(),
+            generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+            arg_types: std::iter::repeat(AbstractType::AbstractStruct(
+              match m {
+                2 => vec2(),
+                3 => vec3(),
+                4 => vec4(),
+                _ => unreachable!(),
+              }
+              .into(),
+            ))
+            .take(n)
+            .collect(),
+            mutated_args: vec![],
+            return_type: AbstractType::AbstractStruct(matrix(n, m).into()),
+            implementation: FunctionImplementationKind::Builtin,
+            associative: false,
+          },
+        ]
+        .into_iter()
+        .chain(
+          [("f", Type::F32), ("i", Type::I32), ("u", Type::U32)]
+            .into_iter()
+            .flat_map(move |(suffix, t)| {
+              [
+                AbstractFunctionSignature {
+                  name: format!("mat{n}x{m}{suffix}").into(),
+                  generic_args: vec![],
+                  arg_types: std::iter::repeat(AbstractType::Type(t.clone()))
+                    .take(n * m)
+                    .collect(),
+                  mutated_args: vec![],
+                  return_type: specialized_matrix_type(n, m, suffix),
+                  implementation: FunctionImplementationKind::Builtin,
+                  associative: false,
+                },
+                AbstractFunctionSignature {
+                  name: format!("mat{n}x{m}{suffix}").into(),
+                  generic_args: vec![],
+                  arg_types: std::iter::repeat(
+                    AbstractType::AbstractStruct(
+                      match m {
+                        2 => vec2(),
+                        3 => vec3(),
+                        4 => vec4(),
+                        _ => unreachable!(),
+                      }
+                      .into(),
+                    )
+                    .fill_abstract_generics(
+                      &[("T".into(), AbstractType::Type(t))]
+                        .into_iter()
+                        .collect(),
+                    ),
+                  )
+                  .take(n)
+                  .collect(),
+                  mutated_args: vec![],
+                  return_type: specialized_matrix_type(n, m, suffix),
+                  implementation: FunctionImplementationKind::Builtin,
+                  associative: false,
+                },
+              ]
+              .into_iter()
+            }),
+        )
+      })
+    })
+    .collect()
+}
+
 pub fn built_in_structs() -> Vec<AbstractStruct> {
   vec![vec2(), vec3(), vec4(), texture_2d(), sampler()]
+    .into_iter()
+    .chain((2..4).flat_map(|n| (2..4).map(move |m| matrix(n, m))))
+    .collect()
 }
 
 pub fn built_in_type_aliases() -> Vec<(Rc<str>, Rc<AbstractStruct>)> {
-  vec![
-    (
-      "vec2f".into(),
-      vec2()
-        .generate_monomorphized(vec![Type::F32], SourceTrace::empty())
-        .unwrap()
-        .into(),
-    ),
-    (
-      "vec3f".into(),
-      vec3()
-        .generate_monomorphized(vec![Type::F32], SourceTrace::empty())
-        .unwrap()
-        .into(),
-    ),
-    (
-      "vec4f".into(),
-      vec4()
-        .generate_monomorphized(vec![Type::F32], SourceTrace::empty())
-        .unwrap()
-        .into(),
-    ),
-    (
-      "vec2i".into(),
-      vec2()
-        .generate_monomorphized(vec![Type::I32], SourceTrace::empty())
-        .unwrap()
-        .into(),
-    ),
-    (
-      "vec3i".into(),
-      vec3()
-        .generate_monomorphized(vec![Type::I32], SourceTrace::empty())
-        .unwrap()
-        .into(),
-    ),
-    (
-      "vec4i".into(),
-      vec4()
-        .generate_monomorphized(vec![Type::I32], SourceTrace::empty())
-        .unwrap()
-        .into(),
-    ),
-    (
-      "vec2u".into(),
-      vec2()
-        .generate_monomorphized(vec![Type::U32], SourceTrace::empty())
-        .unwrap()
-        .into(),
-    ),
-    (
-      "vec3u".into(),
-      vec3()
-        .generate_monomorphized(vec![Type::U32], SourceTrace::empty())
-        .unwrap()
-        .into(),
-    ),
-    (
-      "vec4u".into(),
-      vec4()
-        .generate_monomorphized(vec![Type::U32], SourceTrace::empty())
-        .unwrap()
-        .into(),
-    ),
-  ]
+  [("f", Type::F32), ("i", Type::I32), ("u", Type::U32)]
+    .into_iter()
+    .flat_map(|(suffix, t)| {
+      [
+        (
+          format!("vec2{suffix}").into(),
+          vec2()
+            .generate_monomorphized(vec![t.clone()], SourceTrace::empty())
+            .unwrap()
+            .into(),
+        ),
+        (
+          format!("vec3{suffix}").into(),
+          vec3()
+            .generate_monomorphized(vec![t.clone()], SourceTrace::empty())
+            .unwrap()
+            .into(),
+        ),
+        (
+          format!("vec4{suffix}").into(),
+          vec4()
+            .generate_monomorphized(vec![t.clone()], SourceTrace::empty())
+            .unwrap()
+            .into(),
+        ),
+      ]
+      .into_iter()
+      .chain((2..4).flat_map(move |n| {
+        let t = t.clone();
+        (2..4).map(move |m| {
+          (
+            format!("mat{n}x{m}{suffix}").into(),
+            matrix(n, m)
+              .generate_monomorphized(vec![t.clone()], SourceTrace::empty())
+              .unwrap()
+              .into(),
+          )
+        })
+      }))
+    })
+    .collect()
 }
 
 pub fn get_builtin_struct(name: &str) -> AbstractStruct {
@@ -425,6 +493,79 @@ fn arithmetic_functions(
     .collect()
   }))
   .collect()
+}
+
+fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
+  (2..4)
+    .flat_map(|n| {
+      (2..4).flat_map(move |m| {
+        let vecn = |size: usize| match size {
+          2 => AbstractType::AbstractStruct(vec2().into()),
+          3 => AbstractType::AbstractStruct(vec3().into()),
+          4 => AbstractType::AbstractStruct(vec4().into()),
+          _ => unreachable!(),
+        };
+        let mat = AbstractType::AbstractStruct(matrix(n, m).into());
+        [
+          AbstractFunctionSignature {
+            name: "+".into(),
+            generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+            arg_types: vec![mat.clone(), mat.clone()],
+            mutated_args: vec![],
+            return_type: mat.clone(),
+            implementation: FunctionImplementationKind::Builtin,
+            associative: true,
+          },
+          AbstractFunctionSignature {
+            name: "-".into(),
+            generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+            arg_types: vec![mat.clone(), mat.clone()],
+            mutated_args: vec![],
+            return_type: mat.clone(),
+            implementation: FunctionImplementationKind::Builtin,
+            associative: true,
+          },
+          AbstractFunctionSignature {
+            name: "*".into(),
+            generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+            arg_types: vec![AbstractType::Generic("T".into()), mat.clone()],
+            mutated_args: vec![],
+            return_type: mat.clone(),
+            implementation: FunctionImplementationKind::Builtin,
+            associative: true,
+          },
+          AbstractFunctionSignature {
+            name: "*".into(),
+            generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+            arg_types: vec![mat.clone(), AbstractType::Generic("T".into())],
+            mutated_args: vec![],
+            return_type: mat.clone(),
+            implementation: FunctionImplementationKind::Builtin,
+            associative: true,
+          },
+          AbstractFunctionSignature {
+            name: "*".into(),
+            generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+            arg_types: vec![mat.clone(), vecn(n)],
+            mutated_args: vec![],
+            return_type: vecn(m),
+            implementation: FunctionImplementationKind::Builtin,
+            associative: true,
+          },
+          AbstractFunctionSignature {
+            name: "*".into(),
+            generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+            arg_types: vec![vecn(m), mat.clone()],
+            mutated_args: vec![],
+            return_type: vecn(n),
+            implementation: FunctionImplementationKind::Builtin,
+            associative: true,
+          },
+        ]
+        .into_iter()
+      })
+    })
+    .collect()
 }
 
 fn bitwise_functions(
@@ -1023,16 +1164,18 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut arithmetic_functions("+", true));
   signatures.append(&mut arithmetic_functions("*", true));
   signatures.append(&mut arithmetic_functions("-", false));
-  signatures.append(&mut negation_functions());
-  signatures.append(&mut inversion_functions());
   signatures.append(&mut arithmetic_functions("/", false));
   signatures.append(&mut arithmetic_functions("%", false));
+  signatures.append(&mut negation_functions());
+  signatures.append(&mut inversion_functions());
+  signatures.append(&mut matrix_arithmetic_functions());
   signatures.append(&mut bitwise_functions("^", true));
   signatures.append(&mut bitwise_functions(">>", false));
   signatures.append(&mut bitwise_functions("<<", false));
   signatures.append(&mut multi_signature_vec_constructors(4));
   signatures.append(&mut multi_signature_vec_constructors(3));
   signatures.append(&mut multi_signature_vec_constructors(2));
+  signatures.append(&mut matrix_constructors());
   signatures.append(&mut vector_functions());
   signatures.append(&mut trigonometry_functions());
   signatures.append(&mut exp_functions());
