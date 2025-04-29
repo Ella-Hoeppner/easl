@@ -1105,7 +1105,7 @@ impl Program {
     for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
       let FunctionImplementationKind::Composite(implementation) =
-        &signature.implementation else {unreachable!()};
+        &signature.implementation else {continue};
         implementation
           .borrow()
           .body

@@ -1,0 +1,166 @@
+(def TAU: f32 6.283185307179586)
+
+@{group 0
+  binding 0}
+(var [uniform] dimensions: vec2f)
+
+(defn closest-point-between-2d [p: vec2f a: vec2f b: vec2f]: vec2f
+  (let [v (vec2f (- b.x a.x) (- b.y a.y))
+        u (vec2f (- a.x p.x) (- a.y p.y))
+        vu (+ (* v.x u.x) (* v.y u.y))
+        vv (+ (* v.x v.x) (* v.y v.y))
+        t (/ (* -1. vu) vv)]
+    (if (and (>= t 0.) (<= t 1.))
+      (vec2f (+ (* (- 1. t) a.x) (* t b.x))
+             (+ (* (- 1. t) a.y) (* t b.y)))
+      (let [g0 (+ (* (- a.x p.x) (- a.x p.x))
+                  (* (- a.y p.y) (- a.y p.y)))
+            g1 (+ (* (- b.x p.x) (- b.x p.x))
+                  (* (- b.y p.y) (- b.y p.y)))]
+        (if (<= g0 g1)
+          a
+          b)))))
+
+(defn sd-triangle [pos: vec2f size: vec2f]: f32
+  (let [pos-2 (vec2f (abs pos.x) pos.y)
+        a (- pos-2
+             (* size
+                (clamp (/ (dot pos-2 size)
+                          (dot size size))
+                       0.
+                       1.)))
+        b (- pos-2
+             (* size
+                (vec2f (clamp (/ pos-2.x size.x) 0. 1.)
+                       1.)))
+        s (- (sign size.y))
+        d (min (vec2f (dot a a)
+                      (* s
+                         (- (* pos-2.x size.y)
+                            (* pos-2.y size.x))))
+               (vec2f (dot a a)
+                      (* s (- pos-2.y size.y))))]
+    (- (* (sqrt d.x) (sign d.y)))))
+
+(defn sd-box [pos: vec2f size: vec2f]: f32
+  (let [d (- (abs pos) size)]
+    (+ (length (max d (vec2f 0.)))
+       (min (max d.x d.y) 0.))))
+
+(defn sd-uneven-capsule-up [p: vec2f
+                            r1: f32
+                            r2: f32
+                            h: f32]: f32
+  (let [p-abs (vec2f (abs p.x) p.y)
+        b (/ (- r1 r2) h)
+        a (sqrt (- 1. (* b b)))
+        k (dot p-abs (vec2f (- b) a))]
+    (if (< k 0.)
+      (- (length p-abs) r1)
+      (if (> k (* a h))
+        (- (length (- p-abs (vec2f 0. h)))
+           r2)
+        (- (dot p-abs (vec2f a b)) r1)))))
+
+(defn rotate [p: vec2f angle: f32]: vec2f
+  (let [c (cos angle)
+        s (sin angle)]
+    (vec2f (+ (* p.x c) (* p.y s))
+           (+ (* -1 (* p.x s)) (* p.y c)))))
+
+(defn sd-uneven-capsule [p: vec2f
+                         center-1: vec2f
+                         radius-1: f32
+                         center-2: vec2f
+                         radius-2: f32]: f32
+  (let [diff (- center-2 center-1)
+        angle (+ (* TAU -0.25)
+                 (atan2 diff.y diff.x))
+        offset (- p center-1)]
+    (sd-uneven-capsule-up (rotate offset angle)
+                          radius-1
+                          radius-2
+                          (length diff))))
+
+(defn hash [p: vec2f]: vec2f
+  (let [p2 (vec2f (dot p (vec2 127.1 311.7))
+                  (dot p (vec2 269.5 183.3)))]
+    (- (* 2
+          (fract (* 43758.5453123
+                    (vec2f (sin p2.x) (sin p2.y)))))
+       1)))
+
+(defn noise [p: vec2f]: f32
+  (let [K1 0.366025404
+        K2 0.211324865
+        i (floor (+ p (* K1 (+ p.x p.y))))
+        a (+ (- p i) (* K2 (+ i.x i.y)))
+        m (if (< a.y a.x)
+            1.
+            0.)
+        o (vec2f m (- 1 m))
+        b (+ K2 (- a o))
+        c (+ (- a 1) (* 2 K2))
+        h (max (vec3f 0.)
+               (- (vec3f 0.5)
+                  (vec3f (dot a a) (dot b b) (dot c c))))
+        n (* (* (* h h) (* h h))
+             (vec3f (dot a (hash i))
+                    (dot b (hash (+ i o)))
+                    (dot c (hash (+ i 1.)))))]
+    (dot n (vec3f 70.))))
+
+(struct VertexInput
+  @{location 0} corner-pos: vec2f)
+
+(struct VertexOutput
+  @{builtin position} vertex-pos: vec4f
+  @{location 0} square-pos: vec2f)
+
+@vertex
+(defn vertex [@{builtin instance-index}
+              instance-index: u32
+              in: VertexInput]: VertexOutput
+  (VertexOutput (vec4f in.corner-pos 0. 1.)
+                in.corner-pos))
+
+(defn cis [angle: f32]: vec2f
+  (vec2f (cos angle) (sin angle)))
+
+@fragment
+(defn fragment [in: VertexOutput]: @{location 0} vec4f
+  (let [pos (/ in.square-pos dimensions)
+        @var d 100.
+        petal-count 10]
+    (for [i
+          0
+          (< i petal-count)
+          (= i (+ i 1))]
+      (let [petal-angle (* TAU
+                           (/ (f32 i) (f32 petal-count)))
+            center (* 0.6 (cis petal-angle))]
+        (= d
+           (min d
+                #_(sd-uneven-capsule-up (- pos center) 0.1 0.025 0.2)
+                (sd-uneven-capsule (+ pos
+                                      (+ (* 0.075
+                                            (vec2f (noise (+ (* 2. pos) (vec2f 0.)))
+                                                   (noise (+ (* 2. pos) (vec2f 100.)))))
+                                         (* 0.015
+                                            (vec2f (noise (+ (* 10. pos) (vec2f 0.)))
+                                                   (noise (+ (* 10. pos) (vec2f 100.)))))))
+                                   center
+                                   0.125
+                                   (* center 0.05)
+                                   0.005)))))
+    #_(vec4f (vec3f (-> (noise (* 20. pos))
+                        (+ 1)
+                        (* 0.5)))
+             1.)
+    (if (< d 0.)
+      (vec4f (vec3f 1.)
+             #_(vec3f (-> (noise (* 4. pos))
+                          (+ 1)
+                          (* 0.5)))
+             1.)
+      (vec4f (vec3f 0.) 1.))))

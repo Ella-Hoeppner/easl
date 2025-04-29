@@ -124,11 +124,11 @@ pub enum CompileErrorKind {
   CouldntInferTypes,
   #[error("Incompatible types: expected {0}, found {1}")]
   IncompatibleTypes(TypeStateDescription, TypeStateDescription),
-  #[error("Function argument types incompatible: expected {0:?}, found {1:?}")]
-  FunctionArgumentTypesIncompatible(
-    TypeStateDescription,
-    Vec<TypeStateDescription>,
-  ),
+  #[error("Function argument types incompatible. Function had type {}\n Recieved arguments of types:\n{}", .f, .args.iter().map(|t| format!("{t}")).collect::<Vec<String>>().join("\n"))]
+  FunctionArgumentTypesIncompatible {
+    f: TypeStateDescription,
+    args: Vec<TypeStateDescription>,
+  },
   #[error("Function expression has non-function type: {0}")]
   FunctionExpressionHasNonFunctionType(TypeDescription),
   #[error("Unbound name: `{0}`")]

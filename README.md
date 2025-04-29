@@ -20,7 +20,6 @@ Feature goals:
   * have a separate threshold for the max size allowed for top-level `(def ...)`
     * a lot of things that would be perfectly readable on one line are getting split to multiple lines, feels like `def`s should almost always be one line unless they're very long
   * let top-level struct-like metadata appear on one line if it's under some threshold (probably should be another separate threshold)
-  * ocassionally `let` bindings will be like 1 char to the left of where they should be past the first line, not sure why
 
 * improve error messages
 

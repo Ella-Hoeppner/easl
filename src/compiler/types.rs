@@ -1078,10 +1078,10 @@ impl TypeState {
         }
         if new_possibilities.is_empty() {
           errors.log(CompileError::new(
-            FunctionArgumentTypesIncompatible(
-              typestate.clone().into(),
-              arg_types.into_iter().map(|t| t.into()).collect(),
-            ),
+            FunctionArgumentTypesIncompatible {
+              f: typestate.clone().into(),
+              args: arg_types.into_iter().map(|t| t.into()).collect(),
+            },
             source_trace,
           ));
           false
@@ -1432,7 +1432,7 @@ impl From<Type> for TypeDescription {
             .to_string()
         ),
         _ => {
-          compile_word(s.monomorphized_name())
+          compile_word(s.name)
           // todo! this should display a name more like the above one for
           // Texture2D, using a kind of type-level function application syntax
         }
@@ -1510,20 +1510,17 @@ pub enum TypeStateDescription {
   Unknown,
   OneOf(Vec<TypeDescription>),
   Known(TypeDescription),
-  UnificationVariable(Box<Self>),
 }
 impl From<TypeState> for TypeStateDescription {
   fn from(typestate: TypeState) -> Self {
-    match typestate {
+    typestate.with_dereferenced(|typestate| match typestate {
       TypeState::Unknown => Self::Unknown,
       TypeState::OneOf(items) => {
-        Self::OneOf(items.into_iter().map(TypeDescription::from).collect())
+        Self::OneOf(items.iter().cloned().map(TypeDescription::from).collect())
       }
-      TypeState::Known(t) => Self::Known(TypeDescription::from(t)),
-      TypeState::UnificationVariable(inner_type) => Self::UnificationVariable(
-        Self::from(inner_type.borrow().clone()).into(),
-      ),
-    }
+      TypeState::Known(t) => Self::Known(TypeDescription::from(t.clone())),
+      TypeState::UnificationVariable(_) => unreachable!(),
+    })
   }
 }
 impl Display for TypeStateDescription {
@@ -1539,8 +1536,6 @@ impl Display for TypeStateDescription {
           .collect::<Vec<String>>()
           .join(" or "),
         Self::Known(t) => t.to_string(),
-        Self::UnificationVariable(inner) =>
-          format!("UnificationVariable({inner})"),
       }
     )
   }

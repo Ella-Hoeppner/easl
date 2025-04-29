@@ -205,7 +205,7 @@ impl Block {
             let name_last_line_width = name.last_line_width();
             name.print(indentation)
               + " "
-              + &value.print(indentation + name_last_line_width)
+              + &value.print(indentation + name_last_line_width + 1)
           } else {
             name.print(indentation)
           }

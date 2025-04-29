@@ -56,6 +56,7 @@ fn main() {
     "globally_mutating_block_lift",
     "block_purity_filter",
     "matrix",
+    "flowers",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();
