@@ -279,10 +279,7 @@ impl Block {
       Self::from_tree(trees.remove(0))
     } else {
       let mut trees = trees.into_iter().peekable();
-      if let EaslTree::Leaf(_, _) = &trees
-        .peek()
-        .expect("Block::from_trees called with empty vec")
-      {
+      if let Some(EaslTree::Leaf(_, _)) = &trees.peek() {
         if application {
           let Some(EaslTree::Leaf(_, s)) = trees.next() else {
             unreachable!()

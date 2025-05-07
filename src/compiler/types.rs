@@ -631,7 +631,7 @@ impl Type {
   }
   pub fn compile(&self) -> String {
     match self {
-      Type::Unit => panic!("Attempted to compile Unit type"),
+      Type::Unit => "()".to_string(),
       Type::F32 => "f32".to_string(),
       Type::I32 => "i32".to_string(),
       Type::U32 => "u32".to_string(),
@@ -1469,7 +1469,7 @@ impl Display for TypeDescription {
       f,
       "{}",
       match self {
-        Self::Unit => panic!("Attempted to compile Unit type"),
+        Self::Unit => "()".to_string(),
         Self::F32 => "f32".to_string(),
         Self::I32 => "i32".to_string(),
         Self::U32 => "u32".to_string(),

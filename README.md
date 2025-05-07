@@ -22,6 +22,9 @@ Feature goals:
   * let top-level struct-like metadata appear on one line if it's under some threshold (probably should be another separate threshold)
 
 * improve error messages
+  * rn if a function is overloaded and it's arguments don't resolve to a valid signature, then the application expression using that function also won't resolve, even if the function always returns the same type
+    * for instance, in the expression `(vec4 (vec3 1. 1.) 1.)`, then inner application of `vec3` is invalid since recieves 2 scalar args. However, if you try to compile this epxression, you'll also get an error on the `vec4` saying "Couldn't infer types". But that shouldn't happen - regardless of what the input types to `vec3` are, the return type will be `vec3`, so it doesn't make sense for `vec4` to not be able to converge
+  * When there are multiple "couldn't infer types" errors, such that one is a subtree of another, only display the innermost one, I think? The outermost one usually won't be helpful.
 
 ### medium priority, necessary to call the language 0.1
 

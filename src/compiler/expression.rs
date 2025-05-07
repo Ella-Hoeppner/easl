@@ -1498,7 +1498,7 @@ impl TypedExp {
                         first_wildcard = Some(pattern.source_trace.clone())
                       }
                     }
-                    NumberLiteral(_) | BooleanLiteral(_) => {}
+                    NumberLiteral(_) | BooleanLiteral(_) | Name(_) => {}
                     _ => errors.log(CompileError {
                       kind: CompileErrorKind::InvalidPattern,
                       source_trace: pattern.source_trace.clone(),
@@ -2372,15 +2372,6 @@ impl TypedExp {
         bindings.insert(name.clone(), vec![]);
       }
     };
-    let remove_binding =
-      |name: &Rc<str>, bindings: &mut HashMap<Rc<str>, Vec<Rc<str>>>| {
-        bindings.remove(name);
-        for (_, renames) in bindings.iter_mut() {
-          if renames.last() == Some(name) {
-            renames.pop();
-          }
-        }
-      };
     match &mut self.kind {
       Let(let_bindings, body) => {
         for binding in let_bindings.iter_mut() {
@@ -2398,9 +2389,6 @@ impl TypedExp {
           );
         }
         body.deshadow_inner(globally_bound_names, bindings, errors, true);
-        for pair in let_bindings.iter_mut() {
-          remove_binding(&pair.0, bindings);
-        }
         false
       }
       ForLoop {
@@ -2434,7 +2422,6 @@ impl TypedExp {
           errors,
           true,
         );
-        remove_binding(&increment_variable_name, bindings);
         false
       }
       Name(name) => {
@@ -2671,7 +2658,8 @@ impl TypedExp {
           | ArrayLiteral(_)
           | Reference(_)
           | Return(_)
-          | Access(_, _) => {
+          | Access(_, _)
+          | Match(_, _) => {
             let mut slots: Vec<&mut TypedExp> = match &mut exp.kind {
               Application(_, args) | ArrayLiteral(args) => {
                 args.iter_mut().collect()
@@ -2683,6 +2671,9 @@ impl TypedExp {
                   slots.push(index_exp);
                 }
                 slots
+              }
+              Match(scrutinee, _) => {
+                vec![scrutinee]
               }
               _ => unreachable!(),
             };

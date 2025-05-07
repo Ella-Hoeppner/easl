@@ -243,7 +243,7 @@ pub enum CompileErrorKind {
   )]
   PatternAfterWildcard,
   #[error(
-    "Invalid pattern; patterns may only be numbers, bools, or a wildcard"
+    "Invalid pattern; patterns may only be literals, names, or wildcards"
   )]
   InvalidPattern,
   #[error("The same pattern cannot appear twice in a match block")]
@@ -291,7 +291,7 @@ pub fn err<T>(
   Err(CompileError::new(kind, source_trace))
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ErrorLog {
   errors: HashSet<CompileError>,
 }
@@ -315,6 +315,9 @@ impl ErrorLog {
   }
   pub fn into_iter(self) -> impl Iterator<Item = CompileError> {
     self.errors.into_iter()
+  }
+  pub fn iter(&self) -> impl Iterator<Item = CompileError> {
+    self.clone().into_iter()
   }
 }
 
