@@ -322,7 +322,10 @@ impl Block {
                 }
               }
             }
-            "defn" if trees.len() >= 2 => {
+            "defn"
+              if trees.len() >= 2
+                && matches!(trees.peek().unwrap(), EaslTree::Leaf(_, _)) =>
+            {
               let mut blocks = trees.map(Self::from_tree);
               let Leaf(fn_name) = blocks.next().unwrap() else {
                 unreachable!()
@@ -412,14 +415,22 @@ impl Block {
   }
 }
 
-pub fn format_document(document: EaslDocument) -> String {
+pub fn format_easl_tree(ast: EaslTree) -> String {
+  Block::from_tree(ast).print(0)
+}
+
+pub fn format_easl_trees(asts: Vec<EaslTree>) -> String {
   let mut s = String::new();
-  for (i, ast) in document.syntax_trees.into_iter().enumerate() {
+  for (i, ast) in asts.into_iter().enumerate() {
     if i > 0 {
       s += "\n";
     }
-    s += &Block::from_tree(ast).print(0);
+    s += &format_easl_tree(ast);
     s += "\n";
   }
   s
+}
+
+pub fn format_document(document: EaslDocument) -> String {
+  format_easl_trees(document.syntax_trees)
 }
