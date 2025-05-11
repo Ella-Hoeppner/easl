@@ -8,7 +8,6 @@ use crate::{
 };
 
 const MAX_EXPRESSION_WIDTH: usize = 30;
-const MAX_SINGLE_LINE_STRUCT_WIDTH: usize = 20;
 
 fn indented_newline(indentation: usize) -> String {
   "\n".to_string() + &" ".repeat(indentation)

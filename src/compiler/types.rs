@@ -1193,9 +1193,9 @@ impl TypeConstraint {
 
 pub fn parse_type_constraint(
   ast: EaslTree,
-  structs: &Vec<Rc<AbstractStruct>>,
-  aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
-  generic_args: &Vec<Rc<str>>,
+  _structs: &Vec<Rc<AbstractStruct>>,
+  _aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+  _generic_args: &Vec<Rc<str>>,
 ) -> CompileResult<TypeConstraint> {
   match ast {
     EaslTree::Leaf(_, name) => Ok(TypeConstraint {
@@ -1203,8 +1203,8 @@ pub fn parse_type_constraint(
       args: vec![],
     }),
     EaslTree::Inner(
-      (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
-      children,
+      (_position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
+      _children,
     ) => {
       todo!("can't parse type constraints yet")
       /*let source_trace: SourceTrace = position.into();
