@@ -5,6 +5,7 @@ use std::{
   fmt::Display,
   ops::{Deref, DerefMut},
   rc::Rc,
+  sync::Arc,
 };
 
 use sse::{document::DocumentPosition, syntax::EncloserOrOperator};
@@ -368,7 +369,7 @@ impl AbstractType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ArraySize {
   Constant(u32),
-  Override(Rc<str>),
+  Override(Arc<str>),
   Unsized,
 }
 
@@ -389,7 +390,7 @@ impl Display for ArraySize {
       "{}",
       match self {
         ArraySize::Constant(size) => format!("{size}"),
-        ArraySize::Override(name) => compile_word(name.clone()),
+        ArraySize::Override(name) => compile_word((**name).into()),
         ArraySize::Unsized => String::new(),
       }
     )
@@ -1413,7 +1414,7 @@ pub enum TypeDescription {
     arg_types: Vec<(TypeStateDescription, Vec<TypeConstraintDescription>)>,
     return_type: Box<TypeStateDescription>,
   },
-  Skolem(Rc<str>),
+  Skolem(String),
   Array(Option<ArraySize>, Box<TypeStateDescription>),
   Reference(Box<TypeStateDescription>),
 }
@@ -1453,7 +1454,7 @@ impl From<Type> for TypeDescription {
           .collect(),
         return_type: TypeStateDescription::from(f.return_type.kind).into(),
       },
-      Type::Skolem(name) => Self::Skolem(name),
+      Type::Skolem(name) => Self::Skolem(name.to_string()),
       Type::Array(array_size, t) => {
         Self::Array(array_size, TypeStateDescription::from(t.kind).into())
       }
@@ -1543,13 +1544,13 @@ impl Display for TypeStateDescription {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TypeConstraintDescription {
-  name: Rc<str>,
-  args: Vec<Rc<str>>,
+  name: String,
+  args: Vec<String>,
 }
 impl From<TypeConstraint> for TypeConstraintDescription {
   fn from(constraint: TypeConstraint) -> Self {
     Self {
-      name: constraint.name,
+      name: constraint.name.to_string(),
       args: (0..constraint.args.len())
         .map(|i| ((65 + (i as u8)) as char).to_string().into())
         .collect(),

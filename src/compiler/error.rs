@@ -1,5 +1,5 @@
 use sse::{document::DocumentPosition, ParseError};
-use std::{collections::HashSet, fmt::Display, hash::Hash, rc::Rc};
+use std::{collections::HashSet, fmt::Display, hash::Hash, rc::Rc, sync::Arc};
 use thiserror::Error;
 
 use crate::parse::EaslTree;
@@ -12,46 +12,28 @@ use super::{
 use std::error::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum SourceTraceKind {
-  Empty,
-  Singular(DocumentPosition),
-  Combination(Vec<SourceTrace>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SourceTrace {
-  pub kind: Rc<SourceTraceKind>,
-}
+pub struct SourceTrace(Vec<DocumentPosition>);
 
 impl SourceTrace {
   pub fn empty() -> Self {
-    Self {
-      kind: Rc::new(SourceTraceKind::Empty),
-    }
+    Self(vec![])
   }
-  pub fn combine_with(self, other: Self) -> Self {
-    Self {
-      kind: Rc::new(SourceTraceKind::Combination(vec![self, other])),
+  pub fn combine_with(mut self, other: Self) -> Self {
+    for pos in other.0 {
+      if !self.0.contains(&pos) {
+        self.0.push(pos);
+      }
     }
+    self
   }
   pub fn all_document_positions(&self) -> Vec<&DocumentPosition> {
-    match &*self.kind {
-      SourceTraceKind::Empty => vec![],
-      SourceTraceKind::Singular(pos) => vec![&pos],
-      SourceTraceKind::Combination(subtraces) => subtraces
-        .iter()
-        .map(|subtrace| subtrace.all_document_positions())
-        .flatten()
-        .collect(),
-    }
+    self.0.iter().collect()
   }
 }
 
 impl From<DocumentPosition> for SourceTrace {
   fn from(position: DocumentPosition) -> Self {
-    Self {
-      kind: Rc::new(SourceTraceKind::Singular(position)),
-    }
+    Self(vec![position])
   }
 }
 
@@ -63,13 +45,11 @@ impl From<&DocumentPosition> for SourceTrace {
 
 impl FromIterator<SourceTrace> for SourceTrace {
   fn from_iter<T: IntoIterator<Item = SourceTrace>>(iter: T) -> Self {
-    let mut subtraces: Vec<SourceTrace> = iter.into_iter().collect();
-    match subtraces.len() {
-      0 => SourceTrace::empty(),
-      1 => subtraces.remove(0),
-      _ => SourceTrace {
-        kind: Rc::new(SourceTraceKind::Combination(subtraces)),
-      },
+    let mut iter = iter.into_iter();
+    if let Some(first) = iter.next() {
+      iter.fold(first, |trace, subtrace| trace.combine_with(subtrace))
+    } else {
+      Self::empty()
     }
   }
 }
@@ -255,16 +235,11 @@ pub enum CompileErrorKind {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CompileError {
   pub kind: CompileErrorKind,
-  //_backtrace: Rc<std::backtrace::Backtrace>,
   pub source_trace: SourceTrace,
 }
 impl CompileError {
   pub fn new(kind: CompileErrorKind, source_trace: SourceTrace) -> Self {
-    Self {
-      kind,
-      //_backtrace: Rc::new(std::backtrace::Backtrace::capture()),
-      source_trace,
-    }
+    Self { kind, source_trace }
   }
 }
 
@@ -326,5 +301,501 @@ impl From<CompileError> for ErrorLog {
     let mut errors = ErrorLog::new();
     errors.log(e);
     errors
+  }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum AsyncCompileErrorKind {
+  ParsingFailed(ParseError),
+  UnrecognizedTypeName(Arc<str>),
+  InvalidMetadata(Arc<str>),
+  ExpectedTypeAnnotatedName,
+  StructFieldMissingType,
+  InvalidStructName,
+  NoStructNamed(Arc<str>),
+  InvalidArraySignature,
+  InvalidStructDefinition,
+  UnrecognizedGeneric(Arc<str>),
+  InvalidToken(Arc<str>),
+  InvalidTopLevelVar(Arc<str>),
+  InvalidDefn(Arc<str>),
+  InvalidFunction,
+  FunctionMissingBody,
+  UnrecognizedTopLevelForm(EaslTree),
+  EmptyList,
+  MissingType,
+  InvalidType(EaslTree),
+  InvalidTypeName(Arc<str>),
+  FunctionArgMissingType,
+  InvalidArgumentName,
+  CouldntInferTypes,
+  IncompatibleTypes(TypeStateDescription, TypeStateDescription),
+  FunctionArgumentTypesIncompatible {
+    f: TypeStateDescription,
+    args: Vec<TypeStateDescription>,
+  },
+  FunctionExpressionHasNonFunctionType(TypeDescription),
+  UnboundName(Arc<str>),
+  AppliedNonFunction,
+  WrongArity(Option<Arc<str>>),
+  ExpectedLeaf,
+  InvalidFunctionArgumentList,
+  InvalidFunctionSignature,
+  FunctionSignatureMissingArgumentList,
+  FunctionSignatureNotSquareBrackets,
+  FunctionSignatureMissingReturnType,
+  NoSuchField {
+    struct_name: Arc<str>,
+    field_name: Arc<str>,
+  },
+  AccessorOnNonStruct,
+  AccessorHadMultipleArguments,
+  NotEnoughLetBlockChildren,
+  LetBindingsNotSquareBracketed,
+  OddNumberOfChildrenInLetBindings,
+  ExpectedBindingName,
+  EmptyBlock,
+  ConstantMayNotHaveMetadata,
+  InvalidVariableMetadata(AsyncMetadata),
+  InvalidFunctionMetadata(AsyncMetadata),
+  InvalidAssignmentTarget,
+  AssignmentTargetMustBeVariable(Arc<str>),
+  MatchMissingScrutinee,
+  MatchMissingArms,
+  MatchIncompleteArm,
+  InvalidStructFieldType,
+  InvalidTypeConstraint,
+  UnsatisfiedTypeConstraint(TypeConstraintDescription),
+  InvalidForLoopHeader,
+  InvalidWhileLoop,
+  ReturnOutsideFunction,
+  EnclosingFunctionTypeWasntFunction,
+  InvalidReturn,
+  MacroError(Arc<str>),
+  InvalidArrayAccessSyntax,
+  ArrayAccessOnNonArray,
+  ApplicationsMustUseNames,
+  AnonymousFunctionsNotYetSupported,
+  AnonymousStructsNotYetSupported,
+  EncounteredCommentInSource,
+  EncounteredMetadataInInternalExpression,
+  InvalidFunctionType,
+  CantInlineFunctionWithoutAbstractAncestor,
+  NoArgNamesForFunction,
+  ZeroedArrayShouldntHaveChildren,
+  ExpectedFunctionFoundNonFunction,
+  CantShadowTopLevelBinding(Arc<str>),
+  InvalidAssociativeSignature,
+  TypelessBinding,
+  DiscardOutsideFragment,
+  ContinueOutsideLoop,
+  BreakOutsideLoop,
+  PatternAfterWildcard,
+  InvalidPattern,
+  DuplicatePattern,
+  NonexhaustiveMatch,
+}
+
+impl From<CompileErrorKind> for AsyncCompileErrorKind {
+  fn from(value: CompileErrorKind) -> Self {
+    use CompileErrorKind::*;
+    match value {
+      ParsingFailed(a) => AsyncCompileErrorKind::ParsingFailed(a),
+      UnrecognizedTypeName(a) => {
+        AsyncCompileErrorKind::UnrecognizedTypeName((*a).into())
+      }
+      InvalidMetadata(a) => AsyncCompileErrorKind::InvalidMetadata((*a).into()),
+      ExpectedTypeAnnotatedName => {
+        AsyncCompileErrorKind::ExpectedTypeAnnotatedName
+      }
+      StructFieldMissingType => AsyncCompileErrorKind::StructFieldMissingType,
+      InvalidStructName => AsyncCompileErrorKind::InvalidStructName,
+      NoStructNamed(a) => AsyncCompileErrorKind::NoStructNamed((*a).into()),
+      InvalidArraySignature => AsyncCompileErrorKind::InvalidArraySignature,
+      InvalidStructDefinition => AsyncCompileErrorKind::InvalidStructDefinition,
+      UnrecognizedGeneric(a) => {
+        AsyncCompileErrorKind::UnrecognizedGeneric((*a).into())
+      }
+      InvalidToken(a) => AsyncCompileErrorKind::InvalidToken((*a).into()),
+      InvalidTopLevelVar(a) => {
+        AsyncCompileErrorKind::InvalidTopLevelVar((*a).into())
+      }
+      InvalidDefn(a) => AsyncCompileErrorKind::InvalidDefn((*a).into()),
+      InvalidFunction => AsyncCompileErrorKind::InvalidFunction,
+      FunctionMissingBody => AsyncCompileErrorKind::FunctionMissingBody,
+      UnrecognizedTopLevelForm(ast) => {
+        AsyncCompileErrorKind::UnrecognizedTopLevelForm(ast)
+      }
+      EmptyList => AsyncCompileErrorKind::EmptyList,
+      MissingType => AsyncCompileErrorKind::MissingType,
+      InvalidType(ast) => AsyncCompileErrorKind::InvalidType(ast),
+      InvalidTypeName(a) => AsyncCompileErrorKind::InvalidTypeName((*a).into()),
+      FunctionArgMissingType => AsyncCompileErrorKind::FunctionArgMissingType,
+      InvalidArgumentName => AsyncCompileErrorKind::InvalidArgumentName,
+      CouldntInferTypes => AsyncCompileErrorKind::CouldntInferTypes,
+      IncompatibleTypes(a, b) => AsyncCompileErrorKind::IncompatibleTypes(a, b),
+      FunctionArgumentTypesIncompatible { f, args } => {
+        AsyncCompileErrorKind::FunctionArgumentTypesIncompatible { f, args }
+      }
+      FunctionExpressionHasNonFunctionType(type_description) => {
+        AsyncCompileErrorKind::FunctionExpressionHasNonFunctionType(
+          type_description,
+        )
+      }
+      UnboundName(a) => AsyncCompileErrorKind::UnboundName((*a).into()),
+      AppliedNonFunction => AsyncCompileErrorKind::AppliedNonFunction,
+      WrongArity(a) => {
+        AsyncCompileErrorKind::WrongArity(a.map(|a| (*a).into()))
+      }
+      ExpectedLeaf => AsyncCompileErrorKind::ExpectedLeaf,
+      InvalidFunctionArgumentList => {
+        AsyncCompileErrorKind::InvalidFunctionArgumentList
+      }
+      InvalidFunctionSignature => {
+        AsyncCompileErrorKind::InvalidFunctionSignature
+      }
+      FunctionSignatureMissingArgumentList => {
+        AsyncCompileErrorKind::FunctionSignatureMissingArgumentList
+      }
+      FunctionSignatureNotSquareBrackets => {
+        AsyncCompileErrorKind::FunctionSignatureNotSquareBrackets
+      }
+      FunctionSignatureMissingReturnType => {
+        AsyncCompileErrorKind::FunctionSignatureMissingReturnType
+      }
+      NoSuchField {
+        struct_name,
+        field_name,
+      } => AsyncCompileErrorKind::NoSuchField {
+        struct_name: (*struct_name).into(),
+        field_name: (*field_name).into(),
+      },
+      AccessorOnNonStruct => AsyncCompileErrorKind::AccessorOnNonStruct,
+      AccessorHadMultipleArguments => {
+        AsyncCompileErrorKind::AccessorHadMultipleArguments
+      }
+      NotEnoughLetBlockChildren => {
+        AsyncCompileErrorKind::NotEnoughLetBlockChildren
+      }
+      LetBindingsNotSquareBracketed => {
+        AsyncCompileErrorKind::LetBindingsNotSquareBracketed
+      }
+      OddNumberOfChildrenInLetBindings => {
+        AsyncCompileErrorKind::OddNumberOfChildrenInLetBindings
+      }
+      ExpectedBindingName => AsyncCompileErrorKind::ExpectedBindingName,
+      EmptyBlock => AsyncCompileErrorKind::EmptyBlock,
+      ConstantMayNotHaveMetadata => {
+        AsyncCompileErrorKind::ConstantMayNotHaveMetadata
+      }
+      InvalidVariableMetadata(a) => {
+        AsyncCompileErrorKind::InvalidVariableMetadata(a.into())
+      }
+      InvalidFunctionMetadata(a) => {
+        AsyncCompileErrorKind::InvalidFunctionMetadata(a.into())
+      }
+      InvalidAssignmentTarget => AsyncCompileErrorKind::InvalidAssignmentTarget,
+      AssignmentTargetMustBeVariable(a) => {
+        AsyncCompileErrorKind::AssignmentTargetMustBeVariable((*a).into())
+      }
+      MatchMissingScrutinee => AsyncCompileErrorKind::MatchMissingScrutinee,
+      MatchMissingArms => AsyncCompileErrorKind::MatchMissingArms,
+      MatchIncompleteArm => AsyncCompileErrorKind::MatchIncompleteArm,
+      InvalidStructFieldType => AsyncCompileErrorKind::InvalidStructFieldType,
+      InvalidTypeConstraint => AsyncCompileErrorKind::InvalidTypeConstraint,
+      UnsatisfiedTypeConstraint(a) => {
+        AsyncCompileErrorKind::UnsatisfiedTypeConstraint(a)
+      }
+      InvalidForLoopHeader => AsyncCompileErrorKind::InvalidForLoopHeader,
+      InvalidWhileLoop => AsyncCompileErrorKind::InvalidWhileLoop,
+      ReturnOutsideFunction => AsyncCompileErrorKind::ReturnOutsideFunction,
+      EnclosingFunctionTypeWasntFunction => {
+        AsyncCompileErrorKind::EnclosingFunctionTypeWasntFunction
+      }
+      InvalidReturn => AsyncCompileErrorKind::InvalidReturn,
+      MacroError(a) => AsyncCompileErrorKind::MacroError((*a).into()),
+      InvalidArrayAccessSyntax => {
+        AsyncCompileErrorKind::InvalidArrayAccessSyntax
+      }
+      ArrayAccessOnNonArray => AsyncCompileErrorKind::ArrayAccessOnNonArray,
+      ApplicationsMustUseNames => {
+        AsyncCompileErrorKind::ApplicationsMustUseNames
+      }
+      AnonymousFunctionsNotYetSupported => {
+        AsyncCompileErrorKind::AnonymousFunctionsNotYetSupported
+      }
+      AnonymousStructsNotYetSupported => {
+        AsyncCompileErrorKind::AnonymousStructsNotYetSupported
+      }
+      EncounteredCommentInSource => {
+        AsyncCompileErrorKind::EncounteredCommentInSource
+      }
+      EncounteredMetadataInInternalExpression => {
+        AsyncCompileErrorKind::EncounteredMetadataInInternalExpression
+      }
+      InvalidFunctionType => AsyncCompileErrorKind::InvalidFunctionType,
+      CantInlineFunctionWithoutAbstractAncestor => {
+        AsyncCompileErrorKind::CantInlineFunctionWithoutAbstractAncestor
+      }
+      NoArgNamesForFunction => AsyncCompileErrorKind::NoArgNamesForFunction,
+      ZeroedArrayShouldntHaveChildren => {
+        AsyncCompileErrorKind::ZeroedArrayShouldntHaveChildren
+      }
+      ExpectedFunctionFoundNonFunction => {
+        AsyncCompileErrorKind::ExpectedFunctionFoundNonFunction
+      }
+      CantShadowTopLevelBinding(a) => {
+        AsyncCompileErrorKind::CantShadowTopLevelBinding((*a).into())
+      }
+      InvalidAssociativeSignature => {
+        AsyncCompileErrorKind::InvalidAssociativeSignature
+      }
+      TypelessBinding => AsyncCompileErrorKind::TypelessBinding,
+      DiscardOutsideFragment => AsyncCompileErrorKind::DiscardOutsideFragment,
+      ContinueOutsideLoop => AsyncCompileErrorKind::ContinueOutsideLoop,
+      BreakOutsideLoop => AsyncCompileErrorKind::BreakOutsideLoop,
+      PatternAfterWildcard => AsyncCompileErrorKind::PatternAfterWildcard,
+      InvalidPattern => AsyncCompileErrorKind::InvalidPattern,
+      DuplicatePattern => AsyncCompileErrorKind::DuplicatePattern,
+      NonexhaustiveMatch => AsyncCompileErrorKind::NonexhaustiveMatch,
+    }
+  }
+}
+
+impl From<AsyncCompileErrorKind> for CompileErrorKind {
+  fn from(value: AsyncCompileErrorKind) -> Self {
+    use AsyncCompileErrorKind::*;
+    match value {
+      ParsingFailed(a) => CompileErrorKind::ParsingFailed(a),
+      UnrecognizedTypeName(a) => {
+        CompileErrorKind::UnrecognizedTypeName((*a).into())
+      }
+      InvalidMetadata(a) => CompileErrorKind::InvalidMetadata((*a).into()),
+      ExpectedTypeAnnotatedName => CompileErrorKind::ExpectedTypeAnnotatedName,
+      StructFieldMissingType => CompileErrorKind::StructFieldMissingType,
+      InvalidStructName => CompileErrorKind::InvalidStructName,
+      NoStructNamed(a) => CompileErrorKind::NoStructNamed((*a).into()),
+      InvalidArraySignature => CompileErrorKind::InvalidArraySignature,
+      InvalidStructDefinition => CompileErrorKind::InvalidStructDefinition,
+      UnrecognizedGeneric(a) => {
+        CompileErrorKind::UnrecognizedGeneric((*a).into())
+      }
+      InvalidToken(a) => CompileErrorKind::InvalidToken((*a).into()),
+      InvalidTopLevelVar(a) => {
+        CompileErrorKind::InvalidTopLevelVar((*a).into())
+      }
+      InvalidDefn(a) => CompileErrorKind::InvalidDefn((*a).into()),
+      InvalidFunction => CompileErrorKind::InvalidFunction,
+      FunctionMissingBody => CompileErrorKind::FunctionMissingBody,
+      UnrecognizedTopLevelForm(ast) => {
+        CompileErrorKind::UnrecognizedTopLevelForm(ast)
+      }
+      EmptyList => CompileErrorKind::EmptyList,
+      MissingType => CompileErrorKind::MissingType,
+      InvalidType(ast) => CompileErrorKind::InvalidType(ast),
+      InvalidTypeName(a) => CompileErrorKind::InvalidTypeName((*a).into()),
+      FunctionArgMissingType => CompileErrorKind::FunctionArgMissingType,
+      InvalidArgumentName => CompileErrorKind::InvalidArgumentName,
+      CouldntInferTypes => CompileErrorKind::CouldntInferTypes,
+      IncompatibleTypes(a, b) => CompileErrorKind::IncompatibleTypes(a, b),
+      FunctionArgumentTypesIncompatible { f, args } => {
+        CompileErrorKind::FunctionArgumentTypesIncompatible { f, args }
+      }
+      FunctionExpressionHasNonFunctionType(type_description) => {
+        CompileErrorKind::FunctionExpressionHasNonFunctionType(type_description)
+      }
+      UnboundName(a) => CompileErrorKind::UnboundName((*a).into()),
+      AppliedNonFunction => CompileErrorKind::AppliedNonFunction,
+      WrongArity(a) => CompileErrorKind::WrongArity(a.map(|a| (*a).into())),
+      ExpectedLeaf => CompileErrorKind::ExpectedLeaf,
+      InvalidFunctionArgumentList => {
+        CompileErrorKind::InvalidFunctionArgumentList
+      }
+      InvalidFunctionSignature => CompileErrorKind::InvalidFunctionSignature,
+      FunctionSignatureMissingArgumentList => {
+        CompileErrorKind::FunctionSignatureMissingArgumentList
+      }
+      FunctionSignatureNotSquareBrackets => {
+        CompileErrorKind::FunctionSignatureNotSquareBrackets
+      }
+      FunctionSignatureMissingReturnType => {
+        CompileErrorKind::FunctionSignatureMissingReturnType
+      }
+      NoSuchField {
+        struct_name,
+        field_name,
+      } => CompileErrorKind::NoSuchField {
+        struct_name: (*struct_name).into(),
+        field_name: (*field_name).into(),
+      },
+      AccessorOnNonStruct => CompileErrorKind::AccessorOnNonStruct,
+      AccessorHadMultipleArguments => {
+        CompileErrorKind::AccessorHadMultipleArguments
+      }
+      NotEnoughLetBlockChildren => CompileErrorKind::NotEnoughLetBlockChildren,
+      LetBindingsNotSquareBracketed => {
+        CompileErrorKind::LetBindingsNotSquareBracketed
+      }
+      OddNumberOfChildrenInLetBindings => {
+        CompileErrorKind::OddNumberOfChildrenInLetBindings
+      }
+      ExpectedBindingName => CompileErrorKind::ExpectedBindingName,
+      EmptyBlock => CompileErrorKind::EmptyBlock,
+      ConstantMayNotHaveMetadata => {
+        CompileErrorKind::ConstantMayNotHaveMetadata
+      }
+      InvalidVariableMetadata(a) => {
+        CompileErrorKind::InvalidVariableMetadata(a.into())
+      }
+      InvalidFunctionMetadata(a) => {
+        CompileErrorKind::InvalidFunctionMetadata(a.into())
+      }
+      InvalidAssignmentTarget => CompileErrorKind::InvalidAssignmentTarget,
+      AssignmentTargetMustBeVariable(a) => {
+        CompileErrorKind::AssignmentTargetMustBeVariable((*a).into())
+      }
+      MatchMissingScrutinee => CompileErrorKind::MatchMissingScrutinee,
+      MatchMissingArms => CompileErrorKind::MatchMissingArms,
+      MatchIncompleteArm => CompileErrorKind::MatchIncompleteArm,
+      InvalidStructFieldType => CompileErrorKind::InvalidStructFieldType,
+      InvalidTypeConstraint => CompileErrorKind::InvalidTypeConstraint,
+      UnsatisfiedTypeConstraint(a) => {
+        CompileErrorKind::UnsatisfiedTypeConstraint(a)
+      }
+      InvalidForLoopHeader => CompileErrorKind::InvalidForLoopHeader,
+      InvalidWhileLoop => CompileErrorKind::InvalidWhileLoop,
+      ReturnOutsideFunction => CompileErrorKind::ReturnOutsideFunction,
+      EnclosingFunctionTypeWasntFunction => {
+        CompileErrorKind::EnclosingFunctionTypeWasntFunction
+      }
+      InvalidReturn => CompileErrorKind::InvalidReturn,
+      MacroError(a) => CompileErrorKind::MacroError((*a).into()),
+      InvalidArrayAccessSyntax => CompileErrorKind::InvalidArrayAccessSyntax,
+      ArrayAccessOnNonArray => CompileErrorKind::ArrayAccessOnNonArray,
+      ApplicationsMustUseNames => CompileErrorKind::ApplicationsMustUseNames,
+      AnonymousFunctionsNotYetSupported => {
+        CompileErrorKind::AnonymousFunctionsNotYetSupported
+      }
+      AnonymousStructsNotYetSupported => {
+        CompileErrorKind::AnonymousStructsNotYetSupported
+      }
+      EncounteredCommentInSource => {
+        CompileErrorKind::EncounteredCommentInSource
+      }
+      EncounteredMetadataInInternalExpression => {
+        CompileErrorKind::EncounteredMetadataInInternalExpression
+      }
+      InvalidFunctionType => CompileErrorKind::InvalidFunctionType,
+      CantInlineFunctionWithoutAbstractAncestor => {
+        CompileErrorKind::CantInlineFunctionWithoutAbstractAncestor
+      }
+      NoArgNamesForFunction => CompileErrorKind::NoArgNamesForFunction,
+      ZeroedArrayShouldntHaveChildren => {
+        CompileErrorKind::ZeroedArrayShouldntHaveChildren
+      }
+      ExpectedFunctionFoundNonFunction => {
+        CompileErrorKind::ExpectedFunctionFoundNonFunction
+      }
+      CantShadowTopLevelBinding(a) => {
+        CompileErrorKind::CantShadowTopLevelBinding((*a).into())
+      }
+      InvalidAssociativeSignature => {
+        CompileErrorKind::InvalidAssociativeSignature
+      }
+      TypelessBinding => CompileErrorKind::TypelessBinding,
+      DiscardOutsideFragment => CompileErrorKind::DiscardOutsideFragment,
+      ContinueOutsideLoop => CompileErrorKind::ContinueOutsideLoop,
+      BreakOutsideLoop => CompileErrorKind::BreakOutsideLoop,
+      PatternAfterWildcard => CompileErrorKind::PatternAfterWildcard,
+      InvalidPattern => CompileErrorKind::InvalidPattern,
+      DuplicatePattern => CompileErrorKind::DuplicatePattern,
+      NonexhaustiveMatch => CompileErrorKind::NonexhaustiveMatch,
+    }
+  }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AsyncCompileError {
+  kind: AsyncCompileErrorKind,
+  source_trace: SourceTrace,
+}
+
+impl From<CompileError> for AsyncCompileError {
+  fn from(err: CompileError) -> Self {
+    Self {
+      kind: err.kind.into(),
+      source_trace: err.source_trace,
+    }
+  }
+}
+
+impl From<AsyncCompileError> for CompileError {
+  fn from(err: AsyncCompileError) -> Self {
+    Self {
+      kind: err.kind.into(),
+      source_trace: err.source_trace,
+    }
+  }
+}
+
+#[derive(Debug, Clone)]
+pub struct AsyncErrorLog {
+  errors: HashSet<AsyncCompileError>,
+}
+
+impl From<ErrorLog> for AsyncErrorLog {
+  fn from(log: ErrorLog) -> Self {
+    Self {
+      errors: log.errors.into_iter().map(|e| e.into()).collect(),
+    }
+  }
+}
+
+impl From<AsyncErrorLog> for ErrorLog {
+  fn from(log: AsyncErrorLog) -> Self {
+    Self {
+      errors: log.errors.into_iter().map(|e| e.into()).collect(),
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AsyncMetadata {
+  Singular(Arc<str>),
+  Map(Vec<(Arc<str>, Arc<str>)>),
+  Multiple(Vec<Self>),
+}
+
+impl From<Metadata> for AsyncMetadata {
+  fn from(metadata: Metadata) -> Self {
+    match metadata {
+      Metadata::Singular(s) => AsyncMetadata::Singular((*s).into()),
+      Metadata::Map(items) => AsyncMetadata::Map(
+        items
+          .into_iter()
+          .map(|(a, b)| ((*a).into(), (*b).into()))
+          .collect(),
+      ),
+      Metadata::Multiple(metadatas) => AsyncMetadata::Multiple(
+        metadatas.into_iter().map(|m| m.into()).collect(),
+      ),
+    }
+  }
+}
+
+impl From<AsyncMetadata> for Metadata {
+  fn from(metadata: AsyncMetadata) -> Self {
+    match metadata {
+      AsyncMetadata::Singular(s) => Metadata::Singular((*s).into()),
+      AsyncMetadata::Map(items) => Metadata::Map(
+        items
+          .into_iter()
+          .map(|(a, b)| ((*a).into(), (*b).into()))
+          .collect(),
+      ),
+      AsyncMetadata::Multiple(metadatas) => {
+        Metadata::Multiple(metadatas.into_iter().map(|m| m.into()).collect())
+      }
+    }
   }
 }

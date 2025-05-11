@@ -278,7 +278,7 @@ use ExpKind::*;
 
 use super::{
   effects::Effect,
-  error::{CompileErrorKind, ErrorLog, SourceTrace, SourceTraceKind},
+  error::{CompileErrorKind, ErrorLog, SourceTrace},
   functions::FunctionImplementationKind,
   structs::{compiled_vec_or_mat_name, vec_and_mat_compile_names},
   types::{
@@ -1995,13 +1995,10 @@ impl TypedExp {
             if let Type::Array(_, inner_type) = array_type {
               anything_changed |= child.data.mutually_constrain(
                 inner_type.as_mut(),
-                SourceTrace {
-                  kind: SourceTraceKind::Combination(vec![
-                    child.source_trace.clone(),
-                    self.source_trace.clone(),
-                  ])
-                  .into(),
-                },
+                child
+                  .source_trace
+                  .clone()
+                  .combine_with(self.source_trace.clone()),
                 errors,
               );
               anything_changed |= child.propagate_types_inner(ctx, errors);
