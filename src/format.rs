@@ -233,8 +233,11 @@ impl Block {
     if blocks.iter().find(|b| b.height() > 1).is_some() {
       Vertical(blocks)
     } else {
-      let total_width =
-        (blocks.len() - 1) + blocks.iter().map(|b| b.width()).sum::<usize>();
+      let total_width = if blocks.is_empty() {
+        0
+      } else {
+        (blocks.len() - 1) + blocks.iter().map(|b| b.width()).sum::<usize>()
+      };
       if total_width < MAX_EXPRESSION_WIDTH {
         Horizontal(blocks)
       } else {
