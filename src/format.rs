@@ -27,6 +27,7 @@ fn is_tree_comment(tree: &EaslTree) -> bool {
   }
 }
 
+#[derive(Debug)]
 pub enum Block {
   Leaf(String),
   Horizontal(Vec<Self>),
@@ -89,9 +90,15 @@ impl Block {
   fn width(&self) -> usize {
     match self {
       Leaf(s) => s.len(),
-      Horizontal(blocks) => blocks
-        .iter()
-        .fold(blocks.len() - 1, |sum, leaf| sum + leaf.width()),
+      Horizontal(blocks) => {
+        if blocks.is_empty() {
+          0
+        } else {
+          blocks
+            .iter()
+            .fold(blocks.len() - 1, |sum, leaf| sum + leaf.width())
+        }
+      }
       Vertical(blocks) => {
         blocks.iter().map(|block| block.width()).max().unwrap_or(0)
       }
@@ -256,14 +263,12 @@ impl Block {
           Self::from_tree(name),
           Some({
             let mut comments_and_values = vec![];
-            'outer: loop {
-              while let Some(comment_or_value) = trees.next() {
-                let is_comment = is_tree_comment(&comment_or_value);
-                comments_and_values.push(comment_or_value);
-                if !is_comment {
-                  break 'outer;
-                };
-              }
+            while let Some(comment_or_value) = trees.next() {
+              let is_comment = is_tree_comment(&comment_or_value);
+              comments_and_values.push(comment_or_value);
+              if !is_comment {
+                break;
+              };
             }
             if comments_and_values.len() == 1 {
               Self::from_tree(comments_and_values.remove(0))

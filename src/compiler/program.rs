@@ -20,7 +20,7 @@ use super::{
 pub type EaslDocument<'s> = Document<'s, SyntaxContext, Encloser, Operator>;
 
 thread_local! {
-  static DEFAULT_PROGRAM: RefCell<Program> =
+  pub static DEFAULT_PROGRAM: RefCell<Program> =
     RefCell::new(
       Program::empty()
         .with_functions(built_in_functions())

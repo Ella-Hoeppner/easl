@@ -1,5 +1,13 @@
 (def TAU: f32 6.283185307179586)
 
+(def short: f32 6.283185307179586)
+
+(def long-constant-name!: f32
+     6.283185307179586)
+
+(def medium-name: f32
+     6.283185307179586)
+
 @{group 0
   binding 0}
 (var [uniform] dimensions: vec2f)

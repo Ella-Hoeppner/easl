@@ -13,5 +13,6 @@
 @fragment
 (defn fragment [in: VertexOutput]: @{location 0} vec4f
   (let [a (vec2f 0.)
-        b: f32 1.]
+        b: f32 1.
+        c]
     (vec4 (vec3f 0.) (.x a))))

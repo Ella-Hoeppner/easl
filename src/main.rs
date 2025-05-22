@@ -1,4 +1,16 @@
-use easl::compiler::compile_easl_source_to_wgsl;
+use easl::{
+  compiler::{
+    compile_easl_source_to_wgsl,
+    error::SourceTrace,
+    expression::{Exp, ExpKind, Number},
+    functions::FunctionSignature,
+    program::{EaslDocument, Program, DEFAULT_PROGRAM},
+    types::{Type, TypeState, VariableKind},
+  },
+  format::format_document,
+  interpreter::{eval, EvaluationEnvironment},
+  parse::parse_easl,
+};
 use std::fs;
 
 fn main() {
@@ -62,6 +74,7 @@ fn main() {
     let t = std::time::Instant::now();
     let easl_source = fs::read_to_string(&format!("./data/{filename}.easl"))
       .expect(&format!("Unable to read {filename}.easl"));
+    let x = format_document(parse_easl(&easl_source).unwrap());
     match compile_easl_source_to_wgsl(&easl_source) {
       Ok(wgsl) => {
         println!("{:?}", t.elapsed());
@@ -77,4 +90,46 @@ fn main() {
     }
   }
   println!("total time: {total_time}");
+  /*println!(
+    "{:?}",
+    eval(
+      Exp {
+        data: TypeState::Known(Type::F32).into(),
+        source_trace: SourceTrace::empty(),
+        kind: ExpKind::Application(
+          Exp {
+            data: TypeState::Known(Type::Function(
+              FunctionSignature {
+                abstract_ancestor: None,
+                arg_types: vec![
+                  (TypeState::Known(Type::F32).into(), vec![]),
+                  (TypeState::Known(Type::F32).into(), vec![])
+                ],
+                mutated_args: vec![],
+                return_type: TypeState::Known(Type::F32).into()
+              }
+              .into()
+            ))
+            .into(),
+            source_trace: SourceTrace::empty(),
+            kind: ExpKind::Name("+".into())
+          }
+          .into(),
+          vec![
+            Exp {
+              data: TypeState::Known(Type::F32).into(),
+              kind: ExpKind::NumberLiteral(Number::Float(1.)),
+              source_trace: SourceTrace::empty()
+            },
+            Exp {
+              data: TypeState::Known(Type::F32).into(),
+              kind: ExpKind::NumberLiteral(Number::Float(2.)),
+              source_trace: SourceTrace::empty()
+            }
+          ]
+        )
+      },
+      &mut EvaluationEnvironment::from_program(Program::default())
+    )
+  );*/
 }
