@@ -16,6 +16,12 @@ Feature goals:
 
 ## todo
 ### high priority
+* change `var` address space and access declaration system to use the metadata system rather than the special-cased `[]` form
+  * so instead of `@{group 0 binding 0} (var [uniform] ...)`, you would do `@{group 0 binding 0 address uniform} (var ...)`
+    * access, like `read` or `read-write` for `storage`-addressed vars, will be declared with the `access` metadata property
+      * or, as a shorthand, you should be able to do like `@{address storage-read}`/`@{address storage-read-write}`
+  * default address space for top-leve vars if none is provided will be `private`
+
 * formatter: 
   * have a separate threshold for the max size allowed for top-level `(def ...)`
     * a lot of things that would be perfectly readable on one line are getting split to multiple lines, feels like `def`s should almost always be one line unless they're very long

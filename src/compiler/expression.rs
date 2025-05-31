@@ -2640,9 +2640,9 @@ impl TypedExp {
       .unwrap()
   }
   pub fn deexpressionify(&mut self) {
+    let mut gensym_index = 0;
     loop {
       let mut changed = false;
-      let mut gensym_index = 0;
       let placeholder_exp_kind = ExpKind::Wildcard;
       let placeholder_exp = TypedExp {
         kind: ExpKind::Wildcard,
