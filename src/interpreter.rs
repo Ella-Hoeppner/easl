@@ -1,7 +1,6 @@
 use std::{collections::HashMap, rc::Rc};
 
 use crate::compiler::{
-  error::SourceTrace,
   expression::{Accessor, Exp, ExpKind, Number, SwizzleField},
   functions::{AbstractFunctionSignature, FunctionImplementationKind},
   program::Program,
@@ -122,8 +121,8 @@ impl Value {
       Type::Array(array_size, inner_type) => Value::Array(
         std::iter::repeat(Value::zeroed(inner_type.kind.unwrap_known(), env)?)
           .take(match array_size.ok_or(CantCreateZeroedUnsizedArray)? {
-            ArraySize::Constant(size) => size as usize,
-            ArraySize::Override(name) => {
+            ArraySize::Literal(size) => size as usize,
+            ArraySize::Constant(name) => {
               let value = env.lookup(&(&*name).into())?;
               match value {
                 Value::Prim(primitive) => match primitive {

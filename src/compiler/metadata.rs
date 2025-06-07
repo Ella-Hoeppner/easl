@@ -153,7 +153,12 @@ impl Metadata {
         ("associative", None) => {
           is_associative = true;
         }
+        ("workgroup-size", _) => {}
         ("fragment" | "vertex" | "compute", None) => {}
+        ("entry", Some(entry_type))
+          if (*entry_type == *"fragment"
+            || *entry_type == *"vertex"
+            || *entry_type == *"compute") => {}
         _ => {
           return Err(CompileError::new(
             InvalidFunctionMetadata(self.clone()),

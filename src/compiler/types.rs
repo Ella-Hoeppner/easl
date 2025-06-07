@@ -261,9 +261,9 @@ impl AbstractType {
                 )?;
                 Ok(AbstractType::Type(Type::Array(
                   Some(if let Ok(array_size) = num_str.parse::<u32>() {
-                    ArraySize::Constant(array_size)
+                    ArraySize::Literal(array_size)
                   } else {
-                    ArraySize::Override(num_str.into())
+                    ArraySize::Constant(num_str.into())
                   }),
                   Box::new(TypeState::Known(inner_type).into()),
                 )))
@@ -368,16 +368,18 @@ impl AbstractType {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ArraySize {
-  Constant(u32),
-  Override(Arc<str>),
+  Literal(u32),
+  Constant(Arc<str>),
   Unsized,
 }
 
 impl ArraySize {
   pub fn compile_type(&self) -> String {
     match self {
-      ArraySize::Constant(size) => format!(", {size}"),
-      ArraySize::Override(name) => format!(", {name}"),
+      ArraySize::Literal(size) => format!(", {size}"),
+      ArraySize::Constant(name) => {
+        format!(", {}", compile_word(format!("{name}").into()))
+      }
       ArraySize::Unsized => String::new(),
     }
   }
@@ -389,8 +391,8 @@ impl Display for ArraySize {
       f,
       "{}",
       match self {
-        ArraySize::Constant(size) => format!("{size}"),
-        ArraySize::Override(name) => compile_word((**name).into()),
+        ArraySize::Literal(size) => format!("{size}"),
+        ArraySize::Constant(name) => compile_word((**name).into()),
         ArraySize::Unsized => String::new(),
       }
     )
@@ -544,9 +546,9 @@ impl Type {
               )?;
               Ok(Type::Array(
                 Some(if let Ok(array_size) = num_str.parse::<u32>() {
-                  ArraySize::Constant(array_size)
+                  ArraySize::Literal(array_size)
                 } else {
-                  ArraySize::Override(num_str.into())
+                  ArraySize::Constant(num_str.into())
                 }),
                 Box::new(TypeState::Known(inner_type).into()),
               ))

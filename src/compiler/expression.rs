@@ -1002,7 +1002,7 @@ impl TypedExp {
             }
             Square => Exp {
               data: TypeState::Known(Type::Array(
-                Some(ArraySize::Constant(children_iter.len() as u32)),
+                Some(ArraySize::Literal(children_iter.len() as u32)),
                 Box::new(TypeState::Unknown.into()),
               ))
               .into(),
@@ -2195,7 +2195,7 @@ impl TypedExp {
                   } else {
                     unreachable!("")
                   }
-                } else if &**f_name == "bitcasst" {
+                } else if &**f_name == "bitcast" {
                   std::mem::swap(
                     f_name,
                     &mut format!(
