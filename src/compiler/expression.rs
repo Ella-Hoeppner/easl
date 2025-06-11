@@ -1537,7 +1537,14 @@ impl TypedExp {
         false
       }
       Wildcard => {
-        self.data.subtree_fully_typed = true;
+        if ctx.inside_pattern {
+          self.data.subtree_fully_typed = true;
+        } else {
+          errors.log(CompileError::new(
+            WildcardOutsidePattern,
+            self.source_trace.clone(),
+          ))
+        }
         false
       }
       Unit => {
@@ -1826,7 +1833,9 @@ impl TypedExp {
       Match(scrutinee, arms) => {
         let mut anything_changed = scrutinee.propagate_types_inner(ctx, errors);
         for (case, value) in arms.iter_mut() {
+          ctx.inside_pattern = true;
           anything_changed |= case.propagate_types_inner(ctx, errors);
+          ctx.inside_pattern = false;
           anything_changed |= value.propagate_types_inner(ctx, errors);
           anything_changed |= case.data.mutually_constrain(
             &mut scrutinee.data,
@@ -2003,7 +2012,10 @@ impl TypedExp {
               );
               anything_changed |= child.propagate_types_inner(ctx, errors);
             } else {
-              unreachable!()
+              errors.log(CompileError::new(
+                CompileErrorKind::ArrayLiteralMistyped,
+                self.source_trace.clone(),
+              ));
             }
           });
         }

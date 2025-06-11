@@ -1293,6 +1293,7 @@ pub fn parse_generic_argument(
 pub struct LocalContext<P: Deref<Target = Program>> {
   pub variables: HashMap<Rc<str>, Vec<Variable>>,
   pub enclosing_function_types: Vec<TypeState>,
+  pub inside_pattern: bool,
   pub program: P,
 }
 
@@ -1301,6 +1302,7 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
     Self {
       variables: HashMap::new(),
       enclosing_function_types: vec![],
+      inside_pattern: false,
       program,
     }
   }

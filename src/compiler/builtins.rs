@@ -701,15 +701,26 @@ fn trigonometry_functions() -> Vec<AbstractFunctionSignature> {
 }
 
 fn exp_functions() -> Vec<AbstractFunctionSignature> {
-  vec![AbstractFunctionSignature {
-    name: "log".into(),
-    generic_args: vec![],
-    arg_types: vec![AbstractType::Type(Type::F32)],
-    mutated_args: vec![],
-    return_type: AbstractType::Type(Type::F32),
-    implementation: FunctionImplementationKind::Builtin,
-    associative: false,
-  }]
+  vec![
+    AbstractFunctionSignature {
+      name: "exp".into(),
+      generic_args: vec![],
+      arg_types: vec![AbstractType::Type(Type::F32)],
+      mutated_args: vec![],
+      return_type: AbstractType::Type(Type::F32),
+      implementation: FunctionImplementationKind::Builtin,
+      associative: false,
+    },
+    AbstractFunctionSignature {
+      name: "log".into(),
+      generic_args: vec![],
+      arg_types: vec![AbstractType::Type(Type::F32)],
+      mutated_args: vec![],
+      return_type: AbstractType::Type(Type::F32),
+      implementation: FunctionImplementationKind::Builtin,
+      associative: false,
+    },
+  ]
 }
 
 fn negation_functions() -> Vec<AbstractFunctionSignature> {

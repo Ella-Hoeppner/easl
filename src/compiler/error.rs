@@ -186,6 +186,8 @@ pub enum CompileErrorKind {
   InvalidArrayAccessSyntax,
   #[error("Array access on non-array type")]
   ArrayAccessOnNonArray,
+  #[error("Array literal had non-array type")]
+  ArrayLiteralMistyped,
   #[error("Applications must use names")]
   ApplicationsMustUseNames,
   #[error("Anonymous functions are not yet supported")]
@@ -218,6 +220,8 @@ pub enum CompileErrorKind {
   ContinueOutsideLoop,
   #[error("`break` can only occur inside a loop")]
   BreakOutsideLoop,
+  #[error("Wildcard encountered outside of pattern")]
+  WildcardOutsidePattern,
   #[error(
     "Can't have additional patterns in a match block after a wildcard pattern"
   )]
@@ -374,6 +378,7 @@ enum AsyncCompileErrorKind {
   MacroError(Arc<str>),
   InvalidArrayAccessSyntax,
   ArrayAccessOnNonArray,
+  ArrayLiteralMistyped,
   ApplicationsMustUseNames,
   AnonymousFunctionsNotYetSupported,
   AnonymousStructsNotYetSupported,
@@ -391,6 +396,7 @@ enum AsyncCompileErrorKind {
   ContinueOutsideLoop,
   BreakOutsideLoop,
   PatternAfterWildcard,
+  WildcardOutsidePattern,
   InvalidPattern,
   DuplicatePattern,
   NonexhaustiveMatch,
@@ -426,6 +432,7 @@ impl From<CompileErrorKind> for AsyncCompileErrorKind {
       UnrecognizedTopLevelForm(ast) => {
         AsyncCompileErrorKind::UnrecognizedTopLevelForm(ast)
       }
+      WildcardOutsidePattern => AsyncCompileErrorKind::WildcardOutsidePattern,
       EmptyList => AsyncCompileErrorKind::EmptyList,
       MissingType => AsyncCompileErrorKind::MissingType,
       InvalidType(ast) => AsyncCompileErrorKind::InvalidType(ast),
@@ -518,6 +525,7 @@ impl From<CompileErrorKind> for AsyncCompileErrorKind {
         AsyncCompileErrorKind::InvalidArrayAccessSyntax
       }
       ArrayAccessOnNonArray => AsyncCompileErrorKind::ArrayAccessOnNonArray,
+      ArrayLiteralMistyped => AsyncCompileErrorKind::ArrayLiteralMistyped,
       ApplicationsMustUseNames => {
         AsyncCompileErrorKind::ApplicationsMustUseNames
       }
@@ -672,6 +680,7 @@ impl From<AsyncCompileErrorKind> for CompileErrorKind {
       MacroError(a) => CompileErrorKind::MacroError((*a).into()),
       InvalidArrayAccessSyntax => CompileErrorKind::InvalidArrayAccessSyntax,
       ArrayAccessOnNonArray => CompileErrorKind::ArrayAccessOnNonArray,
+      ArrayLiteralMistyped => CompileErrorKind::ArrayLiteralMistyped,
       ApplicationsMustUseNames => CompileErrorKind::ApplicationsMustUseNames,
       AnonymousFunctionsNotYetSupported => {
         CompileErrorKind::AnonymousFunctionsNotYetSupported
@@ -706,6 +715,7 @@ impl From<AsyncCompileErrorKind> for CompileErrorKind {
       DiscardOutsideFragment => CompileErrorKind::DiscardOutsideFragment,
       ContinueOutsideLoop => CompileErrorKind::ContinueOutsideLoop,
       BreakOutsideLoop => CompileErrorKind::BreakOutsideLoop,
+      WildcardOutsidePattern => CompileErrorKind::WildcardOutsidePattern,
       PatternAfterWildcard => CompileErrorKind::PatternAfterWildcard,
       InvalidPattern => CompileErrorKind::InvalidPattern,
       DuplicatePattern => CompileErrorKind::DuplicatePattern,

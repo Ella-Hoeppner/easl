@@ -415,7 +415,9 @@ impl Block {
   }
   fn from_tree(tree: EaslTree) -> Self {
     match tree {
-      EaslTree::Leaf(_, s) => Leaf(s),
+      EaslTree::Leaf(_, s) => {
+        Leaf(if s.is_empty() { "_".to_string() } else { s })
+      }
       EaslTree::Inner((_, encloser_or_operator), mut asts) => {
         match encloser_or_operator {
           EncloserOrOperator::Operator(Operator::TypeAnnotation) => {
