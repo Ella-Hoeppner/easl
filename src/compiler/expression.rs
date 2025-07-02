@@ -1537,9 +1537,8 @@ impl TypedExp {
         false
       }
       Wildcard => {
-        if ctx.inside_pattern {
-          self.data.subtree_fully_typed = true;
-        } else {
+        self.data.subtree_fully_typed = true;
+        if !ctx.inside_pattern {
           errors.log(CompileError::new(
             WildcardOutsidePattern,
             self.source_trace.clone(),
@@ -2569,6 +2568,7 @@ impl TypedExp {
           .into_iter()
           .filter_map(|e| match &e {
             Effect::Modifies(name) => (!bound_names.contains(name)).then(|| e),
+            _ => Some(e),
           })
           .collect()
       }
@@ -2620,6 +2620,8 @@ impl TypedExp {
         effects.extend(update_condition_expression.effects());
         effects.extend(body_expression.effects());
         effects.remove(&Effect::Modifies(increment_variable_name.clone()));
+        effects.remove(&Effect::Break);
+        effects.remove(&Effect::Continue);
         effects
       }
       WhileLoop {
@@ -2628,8 +2630,13 @@ impl TypedExp {
       } => {
         let mut effects = condition_expression.effects();
         effects.extend(body_expression.effects());
+        effects.remove(&Effect::Break);
+        effects.remove(&Effect::Continue);
         effects
       }
+      Break => [Effect::Break].into_iter().collect(),
+      Continue => [Effect::Continue].into_iter().collect(),
+      Discard => [Effect::Discard].into_iter().collect(),
       _ => HashSet::new(),
     }
   }
