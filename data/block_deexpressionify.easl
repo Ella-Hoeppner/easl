@@ -1,0 +1,10 @@
+(defn pos-color [pos: vec2f]: vec3f
+  (-> (do
+        (vec3f 0. 0. 0.))
+      vec3f
+      vec3f))
+
+(defn pos-color-2 [pos: vec2f]: vec3f
+  (-> (vec3f 0. 0. 0.)
+      vec3f
+      vec3f))

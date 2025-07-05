@@ -16,6 +16,14 @@ Feature goals:
 
 ## todo
 ### high priority
+* Bug: when you have something like
+  ```
+  (-> (let [...] 
+        (... (-> ...)))
+      ...)
+  ```
+  which is to say, a `let` being fed through a `->` such that the let also has a `->` in its body, the compiler crashes at `expression.rs: 2871`. Or at least, I think that's when it happens, only seen it once. Not sure why, the crash seems to be caused by a `Block` with no inner statements, not sure how that comes about from the above. I think maybe it has to do with name collisions of the gensyms that `->` produces, not 100% sure tho
+
 * change `var` address space and access declaration system to use the metadata system rather than the special-cased `[]` form
   * so instead of `@{group 0 binding 0} (var [uniform] ...)`, you would do `@{group 0 binding 0 address uniform} (var ...)`
     * access, like `read` or `read-write` for `storage`-addressed vars, will be declared with the `access` metadata property

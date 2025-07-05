@@ -1,0 +1,6 @@
+(defn pos-color [pos: vec2f]: vec3f
+  (let [a (do (vec3f 0.)
+              (vec3f 0.))
+        b a
+        c b]
+    c))

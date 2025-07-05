@@ -2845,6 +2845,7 @@ impl TypedExp {
           Let(items, body) => {
             loop {
               let mut restructured = false;
+              let mut index_to_remove: Option<usize> = None;
               for (index, (binding_name, variable_kind, value)) in
                 items.iter_mut().enumerate()
               {
@@ -2868,26 +2869,36 @@ impl TypedExp {
                       unreachable!()
                     };
                     std::mem::swap(&mut inner_statements, expressions);
-                    let mut binding_value = inner_statements.pop().unwrap();
-                    take(body, |body| {
-                      let body_type = body.data.clone();
-                      let mut inner_bindings = items.split_off(index);
-                      std::mem::swap(
-                        &mut inner_bindings.last_mut().unwrap().2,
-                        &mut binding_value,
-                      );
-                      inner_statements.push(TypedExp {
-                        kind: ExpKind::Let(inner_bindings, body.into()),
-                        data: body_type.clone(),
-                        source_trace: SourceTrace::empty(),
-                      });
-                      TypedExp {
-                        kind: ExpKind::Block(inner_statements),
-                        source_trace: SourceTrace::empty(),
-                        data: body_type,
+                    match inner_statements.len() {
+                      0 => {
+                        index_to_remove = Some(index);
                       }
-                      .into()
-                    });
+                      1 => {
+                        std::mem::swap(value, &mut inner_statements[0]);
+                      }
+                      _ => {
+                        let mut binding_value = inner_statements.pop().unwrap();
+                        take(body, |body| {
+                          let body_type = body.data.clone();
+                          let mut inner_bindings = items.split_off(index);
+                          std::mem::swap(
+                            &mut inner_bindings.first_mut().unwrap().2,
+                            &mut binding_value,
+                          );
+                          inner_statements.push(TypedExp {
+                            kind: ExpKind::Let(inner_bindings, body.into()),
+                            data: body_type.clone(),
+                            source_trace: SourceTrace::empty(),
+                          });
+                          TypedExp {
+                            kind: ExpKind::Block(inner_statements),
+                            source_trace: SourceTrace::empty(),
+                            data: body_type,
+                          }
+                          .into()
+                        });
+                      }
+                    }
                     break;
                   }
                   Match(_, _) => {
@@ -2960,6 +2971,9 @@ impl TypedExp {
                   }
                   _ => {}
                 }
+              }
+              if let Some(index) = index_to_remove {
+                items.remove(index);
               }
               if !restructured {
                 break;

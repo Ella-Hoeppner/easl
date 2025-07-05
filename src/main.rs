@@ -1,14 +1,5 @@
 use easl::{
-  compiler::{
-    compile_easl_source_to_wgsl,
-    error::SourceTrace,
-    expression::{Exp, ExpKind, Number},
-    functions::FunctionSignature,
-    program::{EaslDocument, Program, DEFAULT_PROGRAM},
-    types::{Type, TypeState, VariableKind},
-  },
-  format::format_document,
-  interpreter::{eval, EvaluationEnvironment},
+  compiler::compile_easl_source_to_wgsl, format::format_document,
   parse::parse_easl,
 };
 use std::fs;
@@ -69,12 +60,13 @@ fn main() {
     "block_purity_filter",
     "matrix",
     "flowers",
+    "block_deexpressionify",
+    "block_deexpressionify_2",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();
     let easl_source = fs::read_to_string(&format!("./data/{filename}.easl"))
       .expect(&format!("Unable to read {filename}.easl"));
-    let x = format_document(parse_easl(&easl_source).unwrap());
     match compile_easl_source_to_wgsl(&easl_source) {
       Ok(wgsl) => {
         println!("{:?}", t.elapsed());
