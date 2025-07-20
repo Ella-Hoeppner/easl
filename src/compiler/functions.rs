@@ -1,15 +1,13 @@
-use std::{
-  cell::RefCell,
-  collections::{HashMap, HashSet},
-  rc::Rc,
-};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use take_mut::take;
 
-use crate::compiler::util::compile_word;
+use crate::compiler::{
+  effects::{Effect, EffectType},
+  util::compile_word,
+};
 
 use super::{
-  effects::Effect,
   error::{
     err, CompileError, CompileErrorKind::*, CompileResult, ErrorLog,
     SourceTrace,
@@ -50,6 +48,19 @@ pub struct AbstractFunctionSignature {
 }
 
 impl AbstractFunctionSignature {
+  pub fn effects(&self, program: &Program) -> EffectType {
+    if let FunctionImplementationKind::Composite(f) = &self.implementation {
+      let f = f.borrow();
+      if let ExpKind::Function(arg_names, body) = &f.body.kind {
+        let mut effects = body.effects(&program);
+        for name in arg_names {
+          effects.remove(&Effect::ReadsVar(name.clone()))
+        }
+        return effects;
+      }
+    }
+    EffectType::empty()
+  }
   pub fn arg_names(
     &self,
     source_trace: SourceTrace,
@@ -446,15 +457,22 @@ impl FunctionSignature {
       .as_ref()
       .map(|abstract_ancestor| abstract_ancestor.name.clone())
   }
-  pub fn effects(&self) -> HashSet<Effect> {
+  pub fn effects(&self, program: &Program) -> EffectType {
     if let Some(abstract_ancestor) = &self.abstract_ancestor {
       match &abstract_ancestor.implementation {
-        FunctionImplementationKind::Composite(f) => f.borrow().body.effects(),
-        _ => HashSet::new(),
+        FunctionImplementationKind::Composite(f) => {
+          if let ExpKind::Function(arg_names, body) = &f.borrow().body.kind {
+            let mut effects = body.effects(&program);
+            for name in arg_names {
+              effects.remove(&Effect::ReadsVar(name.clone()))
+            }
+            return effects;
+          };
+        }
+        _ => {}
       }
-    } else {
-      HashSet::new()
     }
+    EffectType::empty()
   }
 }
 

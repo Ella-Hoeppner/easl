@@ -1,0 +1,9 @@
+(var [private]
+     x: f32
+     0.)
+
+(defn f []: f32
+  x)
+
+(defn g []: f32
+  (+ (f) (f)))

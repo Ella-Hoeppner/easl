@@ -1,6 +1,9 @@
 use sse::document::Document;
 
-use crate::parse::{parse_easl, Context as ParseContext, Encloser, Operator};
+use crate::{
+  compiler::{expression::ExpKind, functions::FunctionImplementationKind},
+  parse::{parse_easl, Context as ParseContext, Encloser, Operator},
+};
 
 use super::{builtins::built_in_macros, error::ErrorLog, program::Program};
 
@@ -16,6 +19,7 @@ pub fn compile_easl_document_to_wgsl(
   if !errors.is_empty() {
     return Err(errors);
   }
+
   program.compile_to_wgsl().map_err(ErrorLog::from)
 }
 

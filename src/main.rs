@@ -1,7 +1,4 @@
-use easl::{
-  compiler::compile_easl_source_to_wgsl, format::format_document,
-  parse::parse_easl,
-};
+use easl::compiler::compile_easl_source_to_wgsl;
 use std::fs;
 
 fn main() {
@@ -62,6 +59,7 @@ fn main() {
     "flowers",
     "block_deexpressionify",
     "block_deexpressionify_2",
+    "global_var_effect",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

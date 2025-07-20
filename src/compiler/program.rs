@@ -1054,7 +1054,7 @@ impl Program {
     for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
       if let FunctionImplementationKind::Composite(f) = &signature.implementation {
-        f.borrow_mut().body.deexpressionify();
+        f.borrow_mut().body.deexpressionify(self);
       }
     }
   }

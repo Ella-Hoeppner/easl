@@ -10,6 +10,7 @@ use take_mut::take;
 use crate::{
   compiler::{
     builtins::{get_builtin_struct, rename_builtin, ASSIGNMENT_OPS, INFIX_OPS},
+    effects::EffectType,
     error::{err, CompileError, CompileErrorKind::*, CompileResult},
     functions::FunctionSignature,
     metadata::{extract_metadata, Metadata},
@@ -2543,44 +2544,52 @@ impl TypedExp {
       .unwrap();
     name_type_pairs
   }
-  pub fn effects(&self) -> HashSet<Effect> {
+  pub fn effects(&self, program: &Program) -> EffectType {
     match &self.kind {
-      Return(exp) | Reference(exp) => exp.effects(),
+      Name(name) => Effect::ReadsVar(name.clone()).into(),
+      Return(exp) | Reference(exp) => exp.effects(program),
       Block(exps) | ArrayLiteral(exps) => exps
         .into_iter()
-        .map(|exp| exp.effects())
+        .map(|exp| exp.effects(program))
         .reduce(|mut a, b| {
-          a.extend(b);
+          a.merge(b);
           a
         })
-        .unwrap_or_else(|| HashSet::new()),
+        .unwrap_or_else(|| EffectType::empty())
+        .into(),
       Let(items, exp) => {
-        let effects =
-          items
-            .iter()
-            .fold(exp.effects(), |mut e, (_, _, value_exp)| {
-              e.extend(value_exp.effects());
-              e
-            });
+        let effects = items.iter().fold(
+          exp.effects(program),
+          |mut e, (_, _, value_exp)| {
+            e.merge(value_exp.effects(program));
+            e
+          },
+        );
         let bound_names: HashSet<Rc<str>> =
           items.iter().map(|(name, _, _)| name.clone()).collect();
         effects
+          .0
           .into_iter()
           .filter_map(|e| match &e {
-            Effect::Modifies(name) => (!bound_names.contains(name)).then(|| e),
+            Effect::ModifiesVar(name) | Effect::ReadsVar(name) => {
+              (!bound_names.contains(name)).then(|| e)
+            }
             _ => Some(e),
           })
-          .collect()
+          .collect::<HashSet<Effect>>()
+          .into()
       }
       Application(f, args) => {
-        let mut effects = HashSet::new();
         let Type::Function(function_signature) = f.data.kind.unwrap_known()
         else {
           unreachable!()
         };
-        effects.extend(function_signature.effects());
+        let mut effects = function_signature.effects(program);
+        for arg in args {
+          effects.merge(arg.effects(program));
+        }
         for i in function_signature.mutated_args.iter().copied() {
-          effects.insert(Effect::Modifies(
+          effects.merge(Effect::ModifiesVar(
             args[i]
               .name_or_inner_accessed_name()
               .expect(
@@ -2594,16 +2603,16 @@ impl TypedExp {
       }
       Access(accessor, exp) => match accessor {
         Accessor::ArrayIndex(accessor_exp) => {
-          let mut effects = exp.effects();
-          effects.extend(accessor_exp.effects());
+          let mut effects = exp.effects(program);
+          effects.merge(accessor_exp.effects(program));
           effects
         }
-        _ => exp.effects(),
+        _ => exp.effects(program),
       },
       Match(exp, items) => {
-        let mut effects = exp.effects();
+        let mut effects = exp.effects(program);
         for (_, arm) in items {
-          effects.extend(arm.effects());
+          effects.merge(arm.effects(program));
         }
         effects
       }
@@ -2615,11 +2624,13 @@ impl TypedExp {
         body_expression,
         ..
       } => {
-        let mut effects = increment_variable_initial_value_expression.effects();
-        effects.extend(continue_condition_expression.effects());
-        effects.extend(update_condition_expression.effects());
-        effects.extend(body_expression.effects());
-        effects.remove(&Effect::Modifies(increment_variable_name.clone()));
+        let mut effects =
+          increment_variable_initial_value_expression.effects(program);
+        effects.merge(continue_condition_expression.effects(program));
+        effects.merge(update_condition_expression.effects(program));
+        effects.merge(body_expression.effects(program));
+        effects.remove(&Effect::ModifiesVar(increment_variable_name.clone()));
+        effects.remove(&Effect::ReadsVar(increment_variable_name.clone()));
         effects.remove(&Effect::Break);
         effects.remove(&Effect::Continue);
         effects
@@ -2628,20 +2639,23 @@ impl TypedExp {
         condition_expression,
         body_expression,
       } => {
-        let mut effects = condition_expression.effects();
-        effects.extend(body_expression.effects());
+        let mut effects = condition_expression.effects(program);
+        effects.merge(body_expression.effects(program));
         effects.remove(&Effect::Break);
         effects.remove(&Effect::Continue);
         effects
       }
-      Break => [Effect::Break].into_iter().collect(),
-      Continue => [Effect::Continue].into_iter().collect(),
-      Discard => [Effect::Discard].into_iter().collect(),
-      _ => HashSet::new(),
+      Break => Effect::Break.into(),
+      Continue => Effect::Continue.into(),
+      Discard => Effect::Discard.into(),
+      Wildcard => EffectType::empty(),
+      Unit => EffectType::empty(),
+      NumberLiteral(_) => EffectType::empty(),
+      BooleanLiteral(_) => EffectType::empty(),
+      Function(_, _) => EffectType::empty(),
+      Uninitialized => EffectType::empty(),
+      ZeroedArray => EffectType::empty(),
     }
-  }
-  pub fn is_pure(&self) -> bool {
-    self.effects().is_empty()
   }
   fn replace_internal_names(&mut self, new_names: &HashMap<Rc<str>, Rc<str>>) {
     self
@@ -2658,7 +2672,7 @@ impl TypedExp {
       })
       .unwrap()
   }
-  pub fn deexpressionify(&mut self) {
+  pub fn deexpressionify(&mut self, program: &Program) {
     let mut gensym_index = 0;
     loop {
       let mut changed = false;
@@ -2703,10 +2717,10 @@ impl TypedExp {
                 }
                 Block(_) | Match(_, _) | Let(_, _) => {
                   restructure_index = Some(arg_index);
-                  let effects = arg.effects();
+                  let effects = arg.effects(program);
                   let mut overridden_names: Vec<(Rc<str>, Type)> = vec![];
                   for (name, t) in previously_referenced_names {
-                    if effects.contains(&Effect::Modifies(name.clone())) {
+                    if effects.0.contains(&Effect::ModifiesVar(name.clone())) {
                       overridden_names.push((name, t));
                     }
                   }
@@ -2987,7 +3001,9 @@ impl TypedExp {
               if let Some(last) = inner_exps.pop() {
                 inner_exps
                   .into_iter()
-                  .filter_map(|exp| (!exp.is_pure()).then(|| exp))
+                  .filter_map(|exp| {
+                    (!exp.effects(program).is_pure_but_for_reads()).then(|| exp)
+                  })
                   .chain(std::iter::once(last))
                   .collect()
               } else {
