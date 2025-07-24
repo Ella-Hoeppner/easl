@@ -16,6 +16,8 @@ Feature goals:
 
 ## todo
 ### high priority
+* variadic `*` doesn't work even though it should, `+` works fine
+
 * bug: it seems like calling functions inside a call to `return` causes type errors, for some reason. At least, I tried to do `(return (vec4f 1.))` in a program and it wouldn't typecheck, saying it couldn't infer the type of the `vec4f` token.
 
 * need to catch when there are mutliple definitions of the same function.
