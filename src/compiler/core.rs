@@ -1,9 +1,6 @@
 use sse::document::Document;
 
-use crate::{
-  compiler::{expression::ExpKind, functions::FunctionImplementationKind},
-  parse::{parse_easl, Context as ParseContext, Encloser, Operator},
-};
+use crate::parse::{parse_easl, Context as ParseContext, Encloser, Operator};
 
 use super::{builtins::built_in_macros, error::ErrorLog, program::Program};
 
