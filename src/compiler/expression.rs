@@ -10,13 +10,16 @@ use take_mut::take;
 use crate::{
   Never,
   compiler::{
-    builtins::{ASSIGNMENT_OPS, INFIX_OPS, get_builtin_struct, rename_builtin},
+    builtins::{
+      ASSIGNMENT_OPS, INFIX_OPS, builtin_vec_constructor_type,
+      get_builtin_struct, rename_builtin,
+    },
     effects::EffectType,
     error::{CompileError, CompileErrorKind::*, CompileResult, err},
     functions::FunctionSignature,
     metadata::{Metadata, extract_metadata},
     program::Program,
-    structs::AbstractStruct,
+    structs::{AbstractStruct, Struct},
     types::{
       ArraySize, ExpTypeInfo, Type,
       TypeState::{self, *},
@@ -1211,6 +1214,10 @@ impl TypedExp {
               compile_word(name)
             }
           });
+          let arg_types = args
+            .iter()
+            .map(|a| a.data.unwrap_known())
+            .collect::<Vec<_>>();
           let arg_strs: Vec<String> = args
             .into_iter()
             .map(|arg| arg.compile(InnerExpression))
@@ -1234,6 +1241,33 @@ impl TypedExp {
             } else {
               panic!("{} arguments to infix op, expected 2", arg_strs.len())
             }
+          } else if let Some(wrapper_type) =
+            builtin_vec_constructor_type(&f_str)
+          {
+            let wrapped_arg_strs = arg_strs
+              .into_iter()
+              .zip(arg_types)
+              .map(|(s, t)| {
+                if let Some(wrapper) = match t {
+                  Type::F32 | Type::I32 | Type::U32 => {
+                    Some(format!("{wrapper_type}32"))
+                  }
+                  Type::Struct(Struct { name, .. }) => match &*name {
+                    "vec2" | "vec3" | "vec4" => {
+                      Some(format!("{name}{wrapper_type}"))
+                    }
+                    _ => None,
+                  },
+                  _ => None,
+                } {
+                  format!("{wrapper}({s})")
+                } else {
+                  s
+                }
+              })
+              .collect::<Vec<_>>();
+            let args_str = wrapped_arg_strs.join(", ");
+            format!("{f_str}({args_str})")
           } else {
             let args_str = arg_strs.join(", ");
             format!("{f_str}({args_str})")

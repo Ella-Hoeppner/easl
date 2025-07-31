@@ -63,6 +63,7 @@ fn main() {
     "block_deexpressionify_2",
     "global_var_effect",
     "array_assignment",
+    "mixed_vec",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

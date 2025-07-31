@@ -84,6 +84,26 @@ fn specialized_vec_n_type(n: u8, suffix: &str) -> AbstractType {
   }
 }
 
+pub(crate) fn builtin_vec_constructor_type(name: &str) -> Option<&'static str> {
+  if name.len() != 5 {
+    return None;
+  }
+  let size_char = name.chars().nth(3).unwrap();
+  let type_char = name.chars().nth(4).unwrap();
+  if &name[0..3] == "vec" && {
+    size_char == '2' || size_char == '3' || size_char == '4'
+  } {
+    match type_char {
+      'f' => Some("f"),
+      'u' => Some("u"),
+      'i' => Some("i"),
+      _ => None,
+    }
+  } else {
+    None
+  }
+}
+
 fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
   n_sums(n)
     .into_iter()

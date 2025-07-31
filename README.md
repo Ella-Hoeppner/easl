@@ -16,8 +16,6 @@ Feature goals:
 
 ## todo
 ### high priority
-* calling `vec<n>f` constructors with int-type inputs causes a crash. The way these are being compiled is invalid - wgsl requires you to explicitly wrap `i32`s or `u32`s before feeding them into the `vec` constructor. It's easy to avoid this if you know what's going on but it isn't a type error rn and it will be very confusing to testers
-
 * variadic `*` doesn't work even though it should, `+` works fine
 
 * bug: it seems like calling functions inside a call to `return` causes type errors, for some reason. At least, I tried to do `(return (vec4f 1.))` in a program and it wouldn't typecheck, saying it couldn't infer the type of the `vec4f` token.
@@ -28,6 +26,21 @@ Feature goals:
 
 
 ### medium priority, necessary to call the language 0.1
+* Overhaul references
+  * References shouldn't be first-class values. You shouldn't be able to create a binding of type `&f32` or anything like that. Functions can mark some of their arguments as references, but you'll just pass normal values for those arguments, and the fact that it's a reference will always be inferred - there will be no syntax for constructing a reference.
+  * Probably get rid of the special syntax for the reference types too, just use a `@ref ...` metadata syntax or maybe a `(Ref ...)` generic struct syntax
+  * On the GPU-side it seems like references are basically only ever used for `arrayLength` and atomic stuff. So I don't really know why a user would ever want to define a function that uses references outside of the context of atomics.
+    * I guess maybe if you have really big data structures and you wanna pass them to helper functions sometimes it might be more efficient to pass around pointers rather than having them be copied when they're passed to functions (though the compilers probably avoid that kind of copying typically I assume?)
+    * On the CPU-side version having good support for references in user-defined functions will definitely be important, though. So it's important to get this right.
+  * Mutable references should be a different thing. Also second-class, and only exist as function inputs.
+  * The semantics for this will basically just be that
+    * Arguments of type `T` can only accept a `T`
+    * Arguments of type `&T` can accept a `T`, `&T`, or `&mut T`.
+    * Arguments of type `&mut T` can accept a `&mut T`, or a `T` so long as that binding is marked as a `var`.
+    * you can 
+  * I guess there should be a `clone` function auto-derived on most types so that you can turn `&T` or `&mut T` into a `T`. But this shouldn't be defined for certain special built-in types like atomics(?) or textures.
+    * certain types should also basically have something like rust's `copy` where it basically inserts an implicit `clone` when you try to use a `&T` or `&mut` as a `T`.
+
 * Need to refactor everything to refer to not use `Rc<str>` for tokens and other stuff, but instead have like a `struct Token(usize)` type that we use to identify tokens, such that there's a global `HashMap<Token, String>` that keeps track of the string values. This should help with performance since there won't be refcounting operations happening all over the place, and it'll mean we can get rid of the stupid `AsyncErrorLog` thing.
 
 * change `var` address space and access declaration system to use the metadata system rather than the special-cased `[]` form
@@ -48,8 +61,6 @@ Feature goals:
 
 * allow indexing vectors and matrices with integers
 
-* switch the compiler
-
 * there are several places where gensyms are generated, but not guaranteed to be completely safe. Need to have a system that tracks all names in the program and allows for safe gensym-ing
   * deshadowing
   * `->` bindings
@@ -65,9 +76,16 @@ Feature goals:
 * support declaring type constraints that are the combinations of others, e.g.:
   * `(constraint Arithmetic [Add Sub Mul Div])`
 
-* support reference types in userspace functions
-  * Main thing here is that functions should be able to take references as inputs, e.g. `(defn f [x: &i32] (+= (deref x) 1))`. The parser already has `&` as an operator, and this should be usable both at the type level and at the term level for constructing a reference from a variable, though only when that variable is mutable. I think just having `deref` for derefencing is fine? It's kinda verbose but I don't think it's worth using a symbol just for a dereferencing prefix, dereferences will be pretty uncommon
-  * Passing a reference to a mutable variable to a function should trigger the mutability special case of the `let`-lifter, just like if an assignment operator crossed the 
+* add builtin `(Into T)`/`(defn into [a: A]: B)` constraint
+  * have a unary prefix operator `~` that is shorthand for this
+  * Currently vec constructors' arguments are restricted with `Scalar`, but should use this instead to make them more general
+  * Currently there's some ugly special-case logic in `TypedExp::compile` that uses `builtin_vec_constructor_type` to wrap all the arguments of vector constructors because of cases like `(vec2f 1u)` where the argument type doesn't line up with the type of the vector. I don't want the user to have to do explicit casting, so it just inserts a cast around each argument (even those that are of the right type - it doesn't check). Once we restrict vec constructors with `(Into T)` rather than `Scalar` it should be possible to make that logic a lot cleaner. Like, for each argument of type `(Into T)`, if the argument is `T` then just let it pass through without a wrapper, but if it's anything else then wrap it in the corresponding scalar/vector cast function. Those casting functions which will basically be their implementation of `(Into T)`, so maybe it can even be treated more generally as like these two principles:
+    * for any builtin function that we treat as accepting `(Into T)`-constrained arguments, during compilation, wrap each argument that isn't directly `T` in the corresponding `into` function.
+    * the specific signatures of `into` that targets those scalar types should special-case-monomorphize to just being the name of the scalar.
+  * Allow associative functions to have signatures like `(Fn [A: (Into T) B: (Into T)]: T)`, and in the case of n arguments, generalize this to n different generic arguments.
+    * without this, things like `(+ (vec3f 0.) (vec3f 1.) 5.)` aren't allowed, but they have a very unambiguous meaning and disallowing them seems wrong given that you could just as well expand them to two applications of `+`.
+  * Add a general rule to the typechecker, such that if ever typechecking would fail because it can't resolve a `OneOf` down to a `Known` on a function argument of type `(Into T)`, such that one of the `OneOf` possibilities is just `T`, then assume that the argument is of type `T`, and proceed with typechecking.
+    * Right now the expression `(vec4f 1)` fails to typecheck, because it can't decide whether to type the `1` subexpression as a `F32`, `I32`, or `U32`. This happens because `vec4f` can technically accept any of those since the argument is just constrained by `Scalar`, and `1` can syntactically be any of the scalar types. But if instead the argument was constrained by `(Into F32)`, then the above rule would allow this to typecheck properly.
 
 * special casing around `Texture2D`
   * right now I've made it so it has a field `_: T`, because monomorphization needs there to be at least one field, but this is kinda weird
@@ -77,12 +95,6 @@ Feature goals:
 
 ### low priority, extra features once core language is solid
 * allow arguments to be declared as `@var` by just wrapping the whole body in a `let` that shadows the arguments
-
-* restrict vec constructor with an `(Into T)` constraint that ensures the arg can be converted into the type of the type contained within the vector
-  * right now all the generics are restricted with `Scalar`, which works well enough for all the built-in vec types, but doing `(Into T)` instead should make it possible to have the same convenience with vectors of custom types (e.g. complex numbers)
-
-* Allow associative functions to have signatures like `(Fn [A: (Into T) B: (Into T)]: T)`, and in the case of n arguments, generalize this to n different generic arguments.
-  * without this, things like `(+ (vec3f 0.) (vec3f 1.) 5.)` aren't allowed, but they have a very unambiguous meaning and disallowing them seems wrong given that you could just as well expand them to two applications of `+`.
 
 * add a special case for inferring the type of vectors/scalars when it would normally get stuck due to being inside another vector constructor
   * e.g. right now `(vec4f 1)` fails because it can't tell if the `1` is a float, int, or uint - it could be any since vec4f can accept any of those. But since it will be converted to a float regardless, its type doesn't actually affect the semantics of the program, so it's silly to throw a type inference error. It should just infer it to be a float, or more generally, ambiguous number literals can be inferred to be the same type as the surrounding vector
