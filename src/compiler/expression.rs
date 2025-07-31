@@ -8,19 +8,20 @@ use std::{
 use take_mut::take;
 
 use crate::{
+  Never,
   compiler::{
-    builtins::{get_builtin_struct, rename_builtin, ASSIGNMENT_OPS, INFIX_OPS},
+    builtins::{ASSIGNMENT_OPS, INFIX_OPS, get_builtin_struct, rename_builtin},
     effects::EffectType,
-    error::{err, CompileError, CompileErrorKind::*, CompileResult},
+    error::{CompileError, CompileErrorKind::*, CompileResult, err},
     functions::FunctionSignature,
-    metadata::{extract_metadata, Metadata},
+    metadata::{Metadata, extract_metadata},
     program::Program,
     structs::AbstractStruct,
     types::{
-      extract_type_annotation, extract_type_annotation_ast, ArraySize,
-      ExpTypeInfo, Type,
+      ArraySize, ExpTypeInfo, Type,
       TypeState::{self, *},
-      Variable, VariableKind,
+      Variable, VariableKind, extract_type_annotation,
+      extract_type_annotation_ast,
     },
     util::{compile_word, indent},
   },
@@ -121,7 +122,6 @@ pub enum SwizzleField {
 pub enum Accessor {
   Field(Rc<str>),
   Swizzle(Vec<SwizzleField>),
-  ArrayIndex(Box<TypedExp>),
 }
 
 pub fn swizzle_accessor_typestate(
@@ -232,11 +232,6 @@ impl Accessor {
         .collect::<Vec<&str>>()
         .join("")
         .into(),
-      Accessor::ArrayIndex(exp) => format!(
-        "[{}]",
-        exp.compile(ExpressionCompilationPosition::InnerExpression)
-      )
-      .into(),
     }
   }
 }
@@ -615,7 +610,7 @@ impl TypedExp {
                                                   Metadata::Singular(tag),
                                                 ),
                                                 source_trace,
-                                              )
+                                              );
                                             }
                                           }
                                         }
@@ -626,7 +621,7 @@ impl TypedExp {
                                           return err(
                                             InvalidVariableMetadata(metadata),
                                             metadata_source_trace,
-                                          )
+                                          );
                                         }
                                       },
                                       {
@@ -973,34 +968,6 @@ impl TypedExp {
                 }
               }
             }
-            ArrayLookup => {
-              if children_iter.len() == 2 {
-                let array_expression = TypedExp::try_from_easl_tree(
-                  children_iter.next().unwrap(),
-                  structs,
-                  aliases,
-                  skolems,
-                  ctx,
-                )?;
-                let index_expression = TypedExp::try_from_easl_tree(
-                  children_iter.next().unwrap(),
-                  structs,
-                  aliases,
-                  skolems,
-                  ctx,
-                )?;
-                Exp {
-                  kind: Access(
-                    Accessor::ArrayIndex(Box::new(index_expression)),
-                    Box::new(array_expression),
-                  ),
-                  data: TypeState::Unknown.into(),
-                  source_trace,
-                }
-              } else {
-                return err(InvalidArrayAccessSyntax, source_trace);
-              }
-            }
             Square => Exp {
               data: TypeState::Known(Type::Array(
                 Some(ArraySize::Literal(children_iter.len() as u32)),
@@ -1020,15 +987,18 @@ impl TypedExp {
             },
             Curly => return err(AnonymousStructsNotYetSupported, source_trace),
             LineComment => {
-              return err(EncounteredCommentInSource, source_trace)
+              return err(EncounteredCommentInSource, source_trace);
             }
             BlockComment => {
-              return err(EncounteredCommentInSource, source_trace)
+              return err(EncounteredCommentInSource, source_trace);
             }
           },
           Operator(o) => match o {
             MetadataAnnotation => {
-              return err(EncounteredMetadataInInternalExpression, source_trace)
+              return err(
+                EncounteredMetadataInInternalExpression,
+                source_trace,
+              );
             }
             TypeAnnotation => {
               let mut exp = Self::try_from_easl_tree(
@@ -1072,10 +1042,10 @@ impl TypedExp {
       }
     })
   }
-  pub fn walk(
+  pub fn walk<E>(
     &self,
-    prewalk_handler: &mut impl FnMut(&Self) -> CompileResult<bool>,
-  ) -> CompileResult<()> {
+    prewalk_handler: &mut impl FnMut(&Self) -> Result<bool, E>,
+  ) -> Result<(), E> {
     if prewalk_handler(self)? {
       match &self.kind {
         Application(f, args) => {
@@ -1227,9 +1197,12 @@ impl TypedExp {
       }),
       BooleanLiteral(b) => wrap(format!("{b}")),
       Function(_, _) => panic!("Attempting to compile internal function"),
-      Application(f, args) => {
-        let f_str = if let ExpKind::Name(name) = f.kind {
-          rename_builtin(&*name).unwrap_or_else(|| {
+      Application(f, mut args) => match f.data.unwrap_known() {
+        Type::Function(_) => {
+          let ExpKind::Name(name) = f.kind else {
+            panic!("tried to compile application of non-name fn");
+          };
+          let f_str = rename_builtin(&*name).unwrap_or_else(|| {
             if ASSIGNMENT_OPS.contains(name.as_ref())
               || INFIX_OPS.contains(name.as_ref())
             {
@@ -1237,35 +1210,45 @@ impl TypedExp {
             } else {
               compile_word(name)
             }
+          });
+          let arg_strs: Vec<String> = args
+            .into_iter()
+            .map(|arg| arg.compile(InnerExpression))
+            .collect();
+          wrap(if ASSIGNMENT_OPS.contains(&f_str.as_str()) {
+            if arg_strs.len() == 2 {
+              format!("{} {} {}", arg_strs[0], f_str, arg_strs[1])
+            } else {
+              panic!(
+                "{} arguments to assignment op, expected 2",
+                arg_strs.len()
+              )
+            }
+          } else if INFIX_OPS.contains(&f_str.as_str()) {
+            if arg_strs.len() == 2 {
+              format!("({} {} {})", arg_strs[0], f_str, arg_strs[1])
+            } else if arg_strs.len() == 1 && &f_str == "-" {
+              format!("(-{})", arg_strs[0])
+            } else if arg_strs.len() == 1 && &f_str == "/" {
+              format!("(1. / {})", arg_strs[0])
+            } else {
+              panic!("{} arguments to infix op, expected 2", arg_strs.len())
+            }
+          } else {
+            let args_str = arg_strs.join(", ");
+            format!("{f_str}({args_str})")
           })
-        } else {
-          f.compile(InnerExpression)
-        };
-        let arg_strs: Vec<String> = args
-          .into_iter()
-          .map(|arg| arg.compile(InnerExpression))
-          .collect();
-        wrap(if ASSIGNMENT_OPS.contains(&f_str.as_str()) {
-          if arg_strs.len() == 2 {
-            format!("{} {} {}", arg_strs[0], f_str, arg_strs[1])
-          } else {
-            panic!("{} arguments to assignment op, expected 2", arg_strs.len())
-          }
-        } else if INFIX_OPS.contains(&f_str.as_str()) {
-          if arg_strs.len() == 2 {
-            format!("({} {} {})", arg_strs[0], f_str, arg_strs[1])
-          } else if arg_strs.len() == 1 && &f_str == "-" {
-            format!("(-{})", arg_strs[0])
-          } else if arg_strs.len() == 1 && &f_str == "/" {
-            format!("(1. / {})", arg_strs[0])
-          } else {
-            panic!("{} arguments to infix op, expected 2", arg_strs.len())
-          }
-        } else {
-          let args_str = arg_strs.join(", ");
-          format!("{f_str}({args_str})")
-        })
-      }
+        }
+        Type::Array(_, _) => {
+          f.compile(ExpressionCompilationPosition::InnerExpression)
+            + "["
+            + &args
+              .remove(0)
+              .compile(ExpressionCompilationPosition::InnerExpression)
+            + "]"
+        }
+        _ => panic!("tried to compile application of non-fn, non-array"),
+      },
       Access(accessor, subexp) => wrap(format!(
         "{}{}",
         subexp.compile(InnerExpression),
@@ -1520,7 +1503,7 @@ impl TypedExp {
           }
           _ => {}
         }
-        Ok(true)
+        Ok::<_, Never>(true)
       })
       .unwrap();
   }
@@ -1682,38 +1665,56 @@ impl TypedExp {
           );
         }
         if let TypeState::Known(f_type) = &mut f.data.kind {
-          if let Type::Function(signature) = f_type {
-            if signature
-              .abstract_ancestor
-              .as_ref()
-              .map(|ancestor| ancestor.associative)
-              .unwrap_or(false)
-              || args.len() == signature.arg_types.len()
-            {
-              anything_changed |= self.data.mutually_constrain(
-                &mut signature.return_type,
-                self.source_trace.clone(),
-                errors,
-              );
-              for (arg, (t, _)) in
-                args.iter_mut().zip(signature.arg_types.iter().cloned())
+          match f_type {
+            Type::Function(signature) => {
+              if signature
+                .abstract_ancestor
+                .as_ref()
+                .map(|ancestor| ancestor.associative)
+                .unwrap_or(false)
+                || args.len() == signature.arg_types.len()
               {
-                anything_changed |=
-                  arg
-                    .data
-                    .constrain(t.kind, self.source_trace.clone(), errors);
+                anything_changed |= self.data.mutually_constrain(
+                  &mut signature.return_type,
+                  self.source_trace.clone(),
+                  errors,
+                );
+                for (arg, (t, _)) in
+                  args.iter_mut().zip(signature.arg_types.iter().cloned())
+                {
+                  anything_changed |= arg.data.constrain(
+                    t.kind,
+                    self.source_trace.clone(),
+                    errors,
+                  );
+                }
+              } else {
+                errors.log(CompileError::new(
+                  WrongArity(signature.name()),
+                  self.source_trace.clone(),
+                ));
               }
-            } else {
+            }
+            Type::Array(_, inner_type) => {
+              if args.len() == 1 {
+                anything_changed |= self.data.mutually_constrain(
+                  inner_type,
+                  self.source_trace.clone(),
+                  errors,
+                );
+              } else {
+                errors.log(CompileError::new(
+                  ArrayLookupInvalidArity(args.len()),
+                  self.source_trace.clone(),
+                ));
+              }
+            }
+            _ => {
               errors.log(CompileError::new(
-                WrongArity(signature.name()),
+                AppliedNonFunction,
                 self.source_trace.clone(),
               ));
             }
-          } else {
-            errors.log(CompileError::new(
-              AppliedNonFunction,
-              self.source_trace.clone(),
-            ));
           }
         }
         anything_changed |= f.data.constrain_fn_by_argument_types(
@@ -1774,33 +1775,6 @@ impl TypedExp {
           );
           anything_changed |= subexp.propagate_types_inner(ctx, errors);
           self.data.subtree_fully_typed = subexp.data.subtree_fully_typed;
-          anything_changed
-        }
-        Accessor::ArrayIndex(index_expression) => {
-          let mut anything_changed = index_expression.data.constrain(
-            TypeState::OneOf(vec![Type::I32, Type::U32]),
-            self.source_trace.clone(),
-            errors,
-          );
-          if let TypeState::Known(t) = &mut subexp.data.kind {
-            if let Type::Array(_, inner_type) = t {
-              anything_changed |= self.data.mutually_constrain(
-                inner_type.as_mut(),
-                self.source_trace.clone(),
-                errors,
-              );
-            } else {
-              errors.log(CompileError::new(
-                ArrayAccessOnNonArray,
-                self.source_trace.clone(),
-              ));
-            }
-          }
-          anything_changed |=
-            index_expression.propagate_types_inner(ctx, errors);
-          anything_changed |= subexp.propagate_types_inner(ctx, errors);
-          self.data.subtree_fully_typed = subexp.data.subtree_fully_typed
-            && index_expression.data.subtree_fully_typed;
           anything_changed
         }
       },
@@ -2063,10 +2037,13 @@ impl TypedExp {
   fn name_or_inner_accessed_name(&self) -> Option<&Rc<str>> {
     let mut exp = self;
     loop {
-      if let ExpKind::Access(_, inner_exp) = &exp.kind {
-        exp = inner_exp;
-      } else {
-        break;
+      match &exp.kind {
+        ExpKind::Access(_, inner_exp) => exp = inner_exp,
+        ExpKind::Application(f, _) => match f.data.kind.unwrap_known() {
+          Type::Array(_, _) => exp = f,
+          _ => break,
+        },
+        _ => break,
       }
     }
     if let ExpKind::Name(name) = &exp.kind {
@@ -2191,7 +2168,7 @@ impl TypedExp {
             if let TypeState::Known(Type::Function(f)) = &f.data.kind {
               &f.abstract_ancestor
             } else {
-              unreachable!("encountered applied non-fn in monomorphization")
+              &None
             }
           {
             match &abstract_signature.implementation {
@@ -2293,9 +2270,7 @@ impl TypedExp {
             if let TypeState::Known(Type::Function(f)) = &f.data.kind {
               &f.abstract_ancestor
             } else {
-              unreachable!(
-                "encountered application of non-fn during function inlining"
-              )
+              &None
             }
           {
             match &abstract_signature.implementation {
@@ -2479,7 +2454,7 @@ impl TypedExp {
   ) {
     self
       .walk(&mut |exp| {
-        Ok(match &exp.kind {
+        Ok::<_, Never>(match &exp.kind {
           ExpKind::Break | ExpKind::Continue => {
             if enclosing_loop_count == 0 {
               errors.log(CompileError {
@@ -2539,7 +2514,7 @@ impl TypedExp {
           }
           _ => {}
         }
-        Ok(true)
+        Ok::<_, Never>(true)
       })
       .unwrap();
     name_type_pairs
@@ -2579,36 +2554,29 @@ impl TypedExp {
           .collect::<HashSet<Effect>>()
           .into()
       }
-      Application(f, args) => {
-        let Type::Function(function_signature) = f.data.kind.unwrap_known()
-        else {
-          unreachable!()
-        };
-        let mut effects = function_signature.effects(program);
-        for arg in args {
-          effects.merge(arg.effects(program));
-        }
-        for i in function_signature.mutated_args.iter().copied() {
-          effects.merge(Effect::ModifiesVar(
-            args[i]
-              .name_or_inner_accessed_name()
-              .expect(
-                "No name found in mutated argument position. This should \
+      Application(f, args) => match f.data.kind.unwrap_known() {
+        Type::Function(function_signature) => {
+          let mut effects = function_signature.effects(program);
+          for arg in args {
+            effects.merge(arg.effects(program));
+          }
+          for i in function_signature.mutated_args.iter().copied() {
+            effects.merge(Effect::ModifiesVar(
+              args[i]
+                .name_or_inner_accessed_name()
+                .expect(
+                  "No name found in mutated argument position. This should \
                   never happen if validate_assignments has passed.",
-              )
-              .clone(),
-          ));
-        }
-        effects
-      }
-      Access(accessor, exp) => match accessor {
-        Accessor::ArrayIndex(accessor_exp) => {
-          let mut effects = exp.effects(program);
-          effects.merge(accessor_exp.effects(program));
+                )
+                .clone(),
+            ));
+          }
           effects
         }
-        _ => exp.effects(program),
+        Type::Array(_, _) => EffectType::empty(),
+        _ => unreachable!(),
       },
+      Access(_, exp) => exp.effects(program),
       Match(exp, items) => {
         let mut effects = exp.effects(program);
         for (_, arm) in items {
@@ -2695,12 +2663,8 @@ impl TypedExp {
                 args.iter_mut().collect()
               }
               Reference(inner_exp) | Return(inner_exp) => vec![inner_exp],
-              Access(accessor, inner_exp) => {
-                let mut slots = vec![inner_exp.as_mut()];
-                if let Accessor::ArrayIndex(index_exp) = accessor {
-                  slots.push(index_exp);
-                }
-                slots
+              Access(_, inner_exp) => {
+                vec![inner_exp.as_mut()]
               }
               Match(scrutinee, _) => {
                 vec![scrutinee]

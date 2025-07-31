@@ -4,17 +4,36 @@ use sse::{document::Document, syntax::EncloserOrOperator};
 use take_mut::take;
 
 use crate::{
+  Never,
   compiler::{
-    builtins::built_in_functions, error::{CompileError, SourceTrace}, expression::{arg_list_and_return_type_from_easl_tree, Exp, ExpKind}, functions::AbstractFunctionSignature, metadata::extract_metadata, structs::UntypedStruct, types::{
-      parse_generic_argument, AbstractType, ExpTypeInfo, Type, TypeConstraint,
-      TypeState, Variable, VariableKind,
-    }, util::read_type_annotated_name
+    builtins::built_in_functions,
+    error::{CompileError, SourceTrace},
+    expression::{Exp, ExpKind, arg_list_and_return_type_from_easl_tree},
+    functions::AbstractFunctionSignature,
+    metadata::extract_metadata,
+    structs::UntypedStruct,
+    types::{
+      AbstractType, ExpTypeInfo, Type, TypeConstraint, TypeState, Variable,
+      VariableKind, parse_generic_argument,
+    },
+    util::read_type_annotated_name,
   },
   parse::{Context as SyntaxContext, EaslTree, Encloser, Operator},
 };
 
 use super::{
-  builtins::{built_in_structs, built_in_type_aliases, ABNORMAL_CONSTRUCTOR_STRUCTS}, error::{CompileErrorKind::{self, *}, CompileResult, ErrorLog}, expression::TypedExp, functions::{FunctionImplementationKind, TopLevelFunction}, macros::{macroexpand, Macro}, structs::AbstractStruct, vars::TopLevelVar
+  builtins::{
+    ABNORMAL_CONSTRUCTOR_STRUCTS, built_in_structs, built_in_type_aliases,
+  },
+  error::{
+    CompileErrorKind::{self, *},
+    CompileResult, ErrorLog,
+  },
+  expression::TypedExp,
+  functions::{FunctionImplementationKind, TopLevelFunction},
+  macros::{Macro, macroexpand},
+  structs::AbstractStruct,
+  vars::TopLevelVar,
 };
 
 pub type EaslDocument<'s> = Document<'s, SyntaxContext, Encloser, Operator>;
@@ -184,8 +203,7 @@ impl Program {
     for tree in trees.into_iter() {
       use crate::parse::Encloser::*;
       use sse::syntax::EncloserOrOperator::*;
-      let (tree_body, metadata) =
-        extract_metadata(tree.clone(), &mut errors);
+      let (tree_body, metadata) = extract_metadata(tree.clone(), &mut errors);
       if let EaslTree::Inner((position, Encloser(Parens)), children) =
         &tree_body
       {
@@ -327,22 +345,20 @@ impl Program {
             first_child_position.clone().into();
           match first_child.as_str() {
             "var" => {
-              if let Some((attributes, name_and_type_ast, value_ast)) = match children_iter
-                .len()
-              {
-                1 => Some((vec![], children_iter.next().unwrap(), None)),
-                2 | 3 => {
-                  let attributes_ast = children_iter.next().unwrap();
-                  if let EaslTree::Inner(
-                    (position, Encloser(Square)),
-                    attribute_asts,
-                  ) = attributes_ast
-                  {
-                    let (attributes, attribute_errors): (
-                      Vec<Option<Rc<str>>>,
-                      Vec<Option<CompileError>>,
-                    ) =
-                      attribute_asts
+              if let Some((attributes, name_and_type_ast, value_ast)) =
+                match children_iter.len() {
+                  1 => Some((vec![], children_iter.next().unwrap(), None)),
+                  2 | 3 => {
+                    let attributes_ast = children_iter.next().unwrap();
+                    if let EaslTree::Inner(
+                      (position, Encloser(Square)),
+                      attribute_asts,
+                    ) = attributes_ast
+                    {
+                      let (attributes, attribute_errors): (
+                        Vec<Option<Rc<str>>>,
+                        Vec<Option<CompileError>>,
+                      ) = attribute_asts
                         .into_iter()
                         .map(|attribute_ast| {
                           if let EaslTree::Leaf(_, attribute_string) =
@@ -360,30 +376,35 @@ impl Program {
                           }
                         })
                         .collect();
-                    errors.log_all(attribute_errors.into_iter().filter_map(|x| x));
-                    Some((
-                      attributes.into_iter().filter_map(|x| x).collect(),
-                      children_iter.next().unwrap(),
-                      children_iter.next()
-                    ))
-                  } else {
+                      errors.log_all(
+                        attribute_errors.into_iter().filter_map(|x| x),
+                      );
+                      Some((
+                        attributes.into_iter().filter_map(|x| x).collect(),
+                        children_iter.next().unwrap(),
+                        children_iter.next(),
+                      ))
+                    } else {
+                      errors.log(CompileError::new(
+                        InvalidTopLevelVar(
+                          "Expected square-bracket enclosed attributes".into(),
+                        ),
+                        first_child_source_trace,
+                      ));
+                      None
+                    }
+                  }
+                  _ => {
                     errors.log(CompileError::new(
                       InvalidTopLevelVar(
-                        "Expected square-bracket enclosed attributes".into(),
+                        "Invalid number of inner forms".into(),
                       ),
                       first_child_source_trace,
                     ));
                     None
                   }
                 }
-                _ => {
-                  errors.log(CompileError::new(
-                    InvalidTopLevelVar("Invalid number of inner forms".into()),
-                    first_child_source_trace,
-                  ));
-                  None
-                }
-              } {
+              {
                 match read_type_annotated_name(name_and_type_ast) {
                   Ok((name, type_ast)) => {
                     let type_source_path = type_ast.position().clone();
@@ -640,8 +661,8 @@ impl Program {
                                             },
                                           )),
                                         );
-                                      program.add_abstract_function(
-                                        Rc::new(RefCell::new(
+                                      program.add_abstract_function(Rc::new(
+                                        RefCell::new(
                                           AbstractFunctionSignature {
                                             name: fn_name,
                                             generic_args,
@@ -651,8 +672,8 @@ impl Program {
                                             implementation,
                                             associative,
                                           },
-                                        )),
-                                      );
+                                        ),
+                                      ));
                                     }
                                     Err(e) => errors.log(e),
                                   }
@@ -718,9 +739,11 @@ impl Program {
     let mut anything_changed = false;
     for var in self.top_level_vars.iter_mut() {
       if let Some(value_expression) = &mut var.value {
-        let changed = value_expression
-          .data
-          .constrain(var.var.typestate.kind.clone(), var.source_trace.clone(), errors);
+        let changed = value_expression.data.constrain(
+          var.var.typestate.kind.clone(),
+          var.source_trace.clone(),
+          errors,
+        );
         anything_changed |= changed;
         let changed =
           value_expression.propagate_types(&mut base_context, errors);
@@ -786,9 +809,9 @@ impl Program {
         } else {
           for exp in untyped_expressions {
             let source_trace = exp.source_trace.clone();
-            errors.log( CompileError::new(CouldntInferTypes, source_trace));
+            errors.log(CompileError::new(CouldntInferTypes, source_trace));
           }
-        }
+        };
       }
     }
   }
@@ -797,10 +820,8 @@ impl Program {
       if let FunctionImplementationKind::Composite(implementation) =
         &f.borrow().implementation
       {
-        if let Err(e) = implementation
-          .borrow_mut()
-          .body
-          .validate_assignments(self)
+        if let Err(e) =
+          implementation.borrow_mut().body.validate_assignments(self)
         {
           errors.log(e);
         }
@@ -844,7 +865,10 @@ impl Program {
       self.inline_all_higher_order_arguments(errors);
     }
   }
-  pub fn inline_higher_order_arguments(&mut self, errors: &mut ErrorLog) -> bool {
+  pub fn inline_higher_order_arguments(
+    &mut self,
+    errors: &mut ErrorLog,
+  ) -> bool {
     let mut changed = false;
     let mut inlined_ctx = Program::default();
     for f in self.abstract_functions_iter() {
@@ -904,8 +928,8 @@ impl Program {
       .cloned()
       .filter(|s| !default_structs.contains(s))
     {
-      if let Some(compiled_struct) = Rc::unwrap_or_clone(s)
-        .compile_if_non_generic(&self.structs)?
+      if let Some(compiled_struct) =
+        Rc::unwrap_or_clone(s).compile_if_non_generic(&self.structs)?
       {
         wgsl += &compiled_struct;
         wgsl += "\n\n";
@@ -934,46 +958,40 @@ impl Program {
       if let FunctionImplementationKind::Composite(f) =
         &f.borrow().implementation
       {
-        f.borrow_mut().body.walk_mut::<()>(
-          &mut |exp| {
-            take(
-              &mut exp.kind, 
-              |exp_kind| {
-                if let ExpKind::Application(f, args) = exp_kind {
-                  if let ExpKind::Name(_) = &f.kind {
-                    let Type::Function(x) = f.data.kind.unwrap_known() else {
-                      panic!("encountered application of non-fn in expand_associative_applications");
+        f.borrow_mut()
+          .body
+          .walk_mut::<()>(&mut |exp| {
+            take(&mut exp.kind, |exp_kind| {
+              if let ExpKind::Application(f, args) = exp_kind {
+                if let ExpKind::Name(_) = &f.kind
+                  && let Type::Function(x) = f.data.kind.unwrap_known()
+                  && let Some(abstract_ancestor) = &x.abstract_ancestor
+                  && abstract_ancestor.associative
+                  && args.len() != 2
+                {
+                  let mut args_iter = args.into_iter();
+                  let mut new_exp = args_iter.next().unwrap();
+                  while let Some(next_arg) = args_iter.next() {
+                    new_exp = Exp {
+                      kind: ExpKind::Application(
+                        f.clone(),
+                        vec![new_exp, next_arg],
+                      ),
+                      data: exp.data.clone(),
+                      source_trace: exp.source_trace.clone(),
                     };
-                    if let Some(abstract_ancestor) = &x.abstract_ancestor {
-                      if abstract_ancestor.associative && args.len() != 2 {
-                        let mut args_iter = args.into_iter();
-                        let mut new_exp = args_iter.next().unwrap();
-                        while let Some(next_arg) = args_iter.next() {
-                          new_exp = Exp {
-                            kind: ExpKind::Application(f.clone(), vec![new_exp, next_arg]),
-                            data: exp.data.clone(),
-                            source_trace: exp.source_trace.clone()
-                          };
-                        }
-                        new_exp.kind
-                      } else {
-                        ExpKind::Application(f, args)
-                      }
-                    } else {
-                      ExpKind::Application(f, args)
-                    }
-                  } else {
-                    ExpKind::Application(f, args)
                   }
+                  new_exp.kind
                 } else {
-                  exp_kind
+                  ExpKind::Application(f, args)
                 }
+              } else {
+                exp_kind
               }
-            );
+            });
             Ok(true)
-          }
-        )
-        .unwrap();
+          })
+          .unwrap();
       }
     }
   }
@@ -994,7 +1012,10 @@ impl Program {
         if let FunctionImplementationKind::Composite(exp) =
           &mut signature.borrow_mut().implementation
         {
-          exp.borrow_mut().body.deshadow(&globally_bound_names, errors);
+          exp
+            .borrow_mut()
+            .body
+            .deshadow(&globally_bound_names, errors);
         }
       }
     }
@@ -1002,15 +1023,17 @@ impl Program {
   fn validate_associative_signatures(&self, errors: &mut ErrorLog) {
     for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
-      if signature.associative && 
-           (signature.arg_types.len() != 2 || 
-              signature.arg_types[0] != signature.arg_types[1] || 
-              signature.arg_types[0] != signature.return_type) {
-        if let FunctionImplementationKind::Composite(implementation) = 
-          &signature.implementation {
+      if signature.associative
+        && (signature.arg_types.len() != 2
+          || signature.arg_types[0] != signature.arg_types[1]
+          || signature.arg_types[0] != signature.return_type)
+      {
+        if let FunctionImplementationKind::Composite(implementation) =
+          &signature.implementation
+        {
           errors.log(CompileError {
             kind: CompileErrorKind::InvalidAssociativeSignature,
-            source_trace: implementation.borrow().body.source_trace.clone()
+            source_trace: implementation.borrow().body.source_trace.clone(),
           });
         }
       }
@@ -1019,33 +1042,38 @@ impl Program {
   fn ensure_no_typeless_bindings(&self, errors: &mut ErrorLog) {
     for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
-      if let FunctionImplementationKind::Composite(implementation) = 
-        &signature.implementation {
-        implementation.borrow().body.walk(&mut |exp| {
-          match &exp.kind {
-            ExpKind::Let(items, _) => {
-              for (_, _, value) in items.iter() {
-                if TypeState::Known(Type::Unit) == value.data.kind {
-                  errors.log(
-                    CompileError {
+      if let FunctionImplementationKind::Composite(implementation) =
+        &signature.implementation
+      {
+        implementation
+          .borrow()
+          .body
+          .walk(&mut |exp| {
+            match &exp.kind {
+              ExpKind::Let(items, _) => {
+                for (_, _, value) in items.iter() {
+                  if TypeState::Known(Type::Unit) == value.data.kind {
+                    errors.log(CompileError {
                       kind: CompileErrorKind::TypelessBinding,
-                      source_trace: value.source_trace.clone()
-                    }
-                  );
+                      source_trace: value.source_trace.clone(),
+                    });
+                  }
                 }
               }
-            },
-            _ => {}
-          }
-          Ok(true)
-        }).unwrap();
+              _ => {}
+            }
+            Ok::<_, Never>(true)
+          })
+          .unwrap();
       }
     }
   }
   pub fn validate_control_flow(&mut self, errors: &mut ErrorLog) {
     for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
-      if let FunctionImplementationKind::Composite(f) = &signature.implementation {
+      if let FunctionImplementationKind::Composite(f) =
+        &signature.implementation
+      {
         f.borrow().body.validate_control_flow(errors, 0);
       }
     }
@@ -1053,7 +1081,9 @@ impl Program {
   pub fn deexpressionify(&mut self) {
     for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
-      if let FunctionImplementationKind::Composite(f) = &signature.implementation {
+      if let FunctionImplementationKind::Composite(f) =
+        &signature.implementation
+      {
         f.borrow_mut().body.deexpressionify(self);
       }
     }
@@ -1105,16 +1135,19 @@ impl Program {
     for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
       let FunctionImplementationKind::Composite(implementation) =
-        &signature.implementation else {continue};
-        implementation
-          .borrow()
-          .body
-          .walk(&mut |exp: &TypedExp| {
-            type_annotations
-              .push((exp.source_trace.clone(), exp.data.kind.clone()));
-            Ok(true)
-          })
-          .unwrap();
+        &signature.implementation
+      else {
+        continue;
+      };
+      implementation
+        .borrow()
+        .body
+        .walk(&mut |exp: &TypedExp| {
+          type_annotations
+            .push((exp.source_trace.clone(), exp.data.kind.clone()));
+          Ok::<_, Never>(true)
+        })
+        .unwrap();
     }
     type_annotations
   }

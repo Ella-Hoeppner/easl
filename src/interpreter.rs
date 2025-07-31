@@ -335,21 +335,6 @@ pub fn eval(
           Value::Struct(s) => s.get(&field_name).ok_or(NoSuchField)?.clone(),
           _ => return Err(AccessedFieldOnNonStruct),
         },
-        Accessor::ArrayIndex(exp) => match value {
-          Value::Array(values) => {
-            let index = eval(*exp, env)?;
-            match index {
-              Value::Prim(Primitive::I32(i)) => {
-                values[i.rem_euclid(values.len() as i32) as usize].clone()
-              }
-              Value::Prim(Primitive::U32(u)) => {
-                values[u.rem_euclid(values.len() as u32) as usize].clone()
-              }
-              _ => return Err(AccessorIndexMustBeInteger),
-            }
-          }
-          _ => return Err(AccessedIndexOnNonArray),
-        },
         Accessor::Swizzle(swizzle_fields) => {
           let map = match value {
             Value::Struct(map) => map,

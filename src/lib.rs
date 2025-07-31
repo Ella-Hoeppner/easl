@@ -5,3 +5,6 @@ pub mod parse;
 
 #[cfg(test)]
 mod core_tests {}
+
+#[derive(Debug)]
+pub(crate) enum Never {}

@@ -1,4 +1,4 @@
-use sse::{document::DocumentPosition, ParseError};
+use sse::{ParseError, document::DocumentPosition};
 use std::{collections::HashSet, fmt::Display, hash::Hash, rc::Rc, sync::Arc};
 use thiserror::Error;
 
@@ -72,6 +72,8 @@ pub enum CompileErrorKind {
   NoStructNamed(Rc<str>),
   #[error("Invalid array signature")]
   InvalidArraySignature,
+  #[error("Array lookup requires 1 argument as an index, got {0} arguments")]
+  ArrayLookupInvalidArity(usize),
   #[error("Invalid struct definition")]
   InvalidStructDefinition,
   #[error("No generic called `{0}` in this scope")]
@@ -183,10 +185,6 @@ pub enum CompileErrorKind {
   #[error("Macro error: {0}")]
   MacroError(Rc<str>),
   #[error("Invalid array access syntax")]
-  InvalidArrayAccessSyntax,
-  #[error("Array access on non-array type")]
-  ArrayAccessOnNonArray,
-  #[error("Array literal had non-array type")]
   ArrayLiteralMistyped,
   #[error("Applications must use names")]
   ApplicationsMustUseNames,
@@ -210,7 +208,9 @@ pub enum CompileErrorKind {
   ExpectedFunctionFoundNonFunction,
   #[error("Can't shadow top-level binding \"{0}\"")]
   CantShadowTopLevelBinding(Rc<str>),
-  #[error("Invalid signature for @associative function, signature must conform to (Fn [T T]: T)")]
+  #[error(
+    "Invalid signature for @associative function, signature must conform to (Fn [T T]: T)"
+  )]
   InvalidAssociativeSignature,
   #[error("Can't bind a name to a typeless expression")]
   TypelessBinding,
@@ -318,6 +318,7 @@ enum AsyncCompileErrorKind {
   InvalidStructName,
   NoStructNamed(Arc<str>),
   InvalidArraySignature,
+  ArrayLookupInvalidArity(usize),
   InvalidStructDefinition,
   UnrecognizedGeneric(Arc<str>),
   InvalidToken(Arc<str>),
@@ -376,8 +377,6 @@ enum AsyncCompileErrorKind {
   EnclosingFunctionTypeWasntFunction,
   InvalidReturn,
   MacroError(Arc<str>),
-  InvalidArrayAccessSyntax,
-  ArrayAccessOnNonArray,
   ArrayLiteralMistyped,
   ApplicationsMustUseNames,
   AnonymousFunctionsNotYetSupported,
@@ -418,6 +417,9 @@ impl From<CompileErrorKind> for AsyncCompileErrorKind {
       InvalidStructName => AsyncCompileErrorKind::InvalidStructName,
       NoStructNamed(a) => AsyncCompileErrorKind::NoStructNamed((*a).into()),
       InvalidArraySignature => AsyncCompileErrorKind::InvalidArraySignature,
+      ArrayLookupInvalidArity(usize) => {
+        AsyncCompileErrorKind::ArrayLookupInvalidArity(usize)
+      }
       InvalidStructDefinition => AsyncCompileErrorKind::InvalidStructDefinition,
       UnrecognizedGeneric(a) => {
         AsyncCompileErrorKind::UnrecognizedGeneric((*a).into())
@@ -521,10 +523,6 @@ impl From<CompileErrorKind> for AsyncCompileErrorKind {
       }
       InvalidReturn => AsyncCompileErrorKind::InvalidReturn,
       MacroError(a) => AsyncCompileErrorKind::MacroError((*a).into()),
-      InvalidArrayAccessSyntax => {
-        AsyncCompileErrorKind::InvalidArrayAccessSyntax
-      }
-      ArrayAccessOnNonArray => AsyncCompileErrorKind::ArrayAccessOnNonArray,
       ArrayLiteralMistyped => AsyncCompileErrorKind::ArrayLiteralMistyped,
       ApplicationsMustUseNames => {
         AsyncCompileErrorKind::ApplicationsMustUseNames
@@ -584,6 +582,9 @@ impl From<AsyncCompileErrorKind> for CompileErrorKind {
       InvalidStructName => CompileErrorKind::InvalidStructName,
       NoStructNamed(a) => CompileErrorKind::NoStructNamed((*a).into()),
       InvalidArraySignature => CompileErrorKind::InvalidArraySignature,
+      ArrayLookupInvalidArity(n) => {
+        CompileErrorKind::ArrayLookupInvalidArity(n)
+      }
       InvalidStructDefinition => CompileErrorKind::InvalidStructDefinition,
       UnrecognizedGeneric(a) => {
         CompileErrorKind::UnrecognizedGeneric((*a).into())
@@ -678,8 +679,6 @@ impl From<AsyncCompileErrorKind> for CompileErrorKind {
       }
       InvalidReturn => CompileErrorKind::InvalidReturn,
       MacroError(a) => CompileErrorKind::MacroError((*a).into()),
-      InvalidArrayAccessSyntax => CompileErrorKind::InvalidArrayAccessSyntax,
-      ArrayAccessOnNonArray => CompileErrorKind::ArrayAccessOnNonArray,
       ArrayLiteralMistyped => CompileErrorKind::ArrayLiteralMistyped,
       ApplicationsMustUseNames => CompileErrorKind::ApplicationsMustUseNames,
       AnonymousFunctionsNotYetSupported => {

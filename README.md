@@ -16,11 +16,19 @@ Feature goals:
 
 ## todo
 ### high priority
+* calling `vec<n>f` constructors with int-type inputs causes a crash. The way these are being compiled is invalid - wgsl requires you to explicitly wrap `i32`s or `u32`s before feeding them into the `vec` constructor. It's easy to avoid this if you know what's going on but it isn't a type error rn and it will be very confusing to testers
+
 * variadic `*` doesn't work even though it should, `+` works fine
 
 * bug: it seems like calling functions inside a call to `return` causes type errors, for some reason. At least, I tried to do `(return (vec4f 1.))` in a program and it wouldn't typecheck, saying it couldn't infer the type of the `vec4f` token.
 
 * need to catch when there are mutliple definitions of the same function.
+
+
+
+
+### medium priority, necessary to call the language 0.1
+* Need to refactor everything to refer to not use `Rc<str>` for tokens and other stuff, but instead have like a `struct Token(usize)` type that we use to identify tokens, such that there's a global `HashMap<Token, String>` that keeps track of the string values. This should help with performance since there won't be refcounting operations happening all over the place, and it'll mean we can get rid of the stupid `AsyncErrorLog` thing.
 
 * change `var` address space and access declaration system to use the metadata system rather than the special-cased `[]` form
   * so instead of `@{group 0 binding 0} (var [uniform] ...)`, you would do `@{group 0 binding 0 address uniform} (var ...)`
@@ -35,14 +43,12 @@ Feature goals:
 
 * improve error messages
   * rn if a function is overloaded and it's arguments don't resolve to a valid signature, then the application expression using that function also won't resolve, even if the function always returns the same type
-    * for instance, in the expression `(vec4 (vec3 1. 1.) 1.)`, then inner application of `vec3` is invalid since recieves 2 scalar args. However, if you try to compile this epxression, you'll also get an error on the `vec4` saying "Couldn't infer types". But that shouldn't happen - regardless of what the input types to `vec3` are, the return type will be `vec3`, so it doesn't make sense for `vec4` to not be able to converge
+    * for instance, in the expression `(vec4f (vec3f 1. 1.) 1.)`, then inner application of `vec3f` is invalid since recieves 2 scalar args. However, if you try to compile this epxression, you'll also get an error on the `vec4f` saying "Couldn't infer types". But that shouldn't happen - regardless of what the input types to `vec3f` are, the return type will be `vec3f`, so it doesn't make sense for `vec4f` to not be able to converge
   * When there are multiple "couldn't infer types" errors, such that one is a subtree of another, only display the innermost one, I think? The outermost one usually won't be helpful.
-
-### medium priority, necessary to call the language 0.1
 
 * allow indexing vectors and matrices with integers
 
-* track `discard`, `break`, and `continue` with the effects system rather than the current ad-hoc system
+* switch the compiler
 
 * there are several places where gensyms are generated, but not guaranteed to be completely safe. Need to have a system that tracks all names in the program and allows for safe gensym-ing
   * deshadowing

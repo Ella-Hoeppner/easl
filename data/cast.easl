@@ -1,17 +1,21 @@
 (def char-inverse-aspect-ratio: f32
      2.19166)
 
-(def char-glyph-rows: u32 16)
+(def char-glyph-rows: u32
+     16)
 
-(def char-glyph-cols: u32 16)
+(def char-glyph-cols: u32
+     16)
 
 @{group 0
   binding 0}
-(var [uniform] dimensions: vec2f)
+(var [uniform]
+     dimensions: vec2f)
 
 @{group 0
   binding 1}
-(var [uniform] mouse: vec2f)
+(var [uniform]
+     mouse: vec2f)
 
 @{group 0
   binding 2}
@@ -20,7 +24,8 @@
 
 @{group 0
   binding 3}
-(var [uniform] time: f32)
+(var [uniform]
+     time: f32)
 
 @{group 0
   binding 4}
@@ -37,7 +42,8 @@
 
 @{group 1
   binding 0}
-(var [uniform] view: vec3f)
+(var [uniform]
+     view: vec3f)
 
 (defn square [x: f32]: f32
   (* x x))
@@ -134,9 +140,11 @@
            (pow (sqrt (- 1 (square (+ 1 sd-ring))))
                 0.125))))))
 
-(def diffuse-min: f32 0.15)
+(def diffuse-min: f32
+     0.15)
 
-(def diffuse-max: f32 0.8)
+(def diffuse-max: f32
+     0.8)
 
 (def specular-lower-threshold: f32
      0.85)
@@ -144,7 +152,8 @@
 (def specular-upper-threshold: f32
      0.975)
 
-(def specular-factor: f32 0.5)
+(def specular-factor: f32
+     0.5)
 
 @fragment
 (defn form-fragment-fancy [in: FormVertexOutput]: @{location 0} vec4f
@@ -206,8 +215,7 @@
                               (/ dimensions))
                           0.
                           1.)
-                    (+ (.xy @[char-offsets
-                              in.character-code])
+                    (+ (.xy (char-offsets in.character-code))
                        (* 0.5
                           (vec2f (+ 1. in.corner-position.x)
                                  (- 1. in.corner-position.y))))

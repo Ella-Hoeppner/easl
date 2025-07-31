@@ -2,7 +2,9 @@ use easl::compiler::compile_easl_source_to_wgsl;
 use std::fs;
 
 fn main() {
-  std::env::set_var("RUST_BACKTRACE", "1");
+  unsafe {
+    std::env::set_var("RUST_BACKTRACE", "1");
+  }
   fs::create_dir_all("./out/").expect("Unable to create out directory");
   let mut total_time: f64 = 0.;
   for filename in [
@@ -60,6 +62,7 @@ fn main() {
     "block_deexpressionify",
     "block_deexpressionify_2",
     "global_var_effect",
+    "array_assignment",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();
@@ -80,46 +83,4 @@ fn main() {
     }
   }
   println!("total time: {total_time}");
-  /*println!(
-    "{:?}",
-    eval(
-      Exp {
-        data: TypeState::Known(Type::F32).into(),
-        source_trace: SourceTrace::empty(),
-        kind: ExpKind::Application(
-          Exp {
-            data: TypeState::Known(Type::Function(
-              FunctionSignature {
-                abstract_ancestor: None,
-                arg_types: vec![
-                  (TypeState::Known(Type::F32).into(), vec![]),
-                  (TypeState::Known(Type::F32).into(), vec![])
-                ],
-                mutated_args: vec![],
-                return_type: TypeState::Known(Type::F32).into()
-              }
-              .into()
-            ))
-            .into(),
-            source_trace: SourceTrace::empty(),
-            kind: ExpKind::Name("+".into())
-          }
-          .into(),
-          vec![
-            Exp {
-              data: TypeState::Known(Type::F32).into(),
-              kind: ExpKind::NumberLiteral(Number::Float(1.)),
-              source_trace: SourceTrace::empty()
-            },
-            Exp {
-              data: TypeState::Known(Type::F32).into(),
-              kind: ExpKind::NumberLiteral(Number::Float(2.)),
-              source_trace: SourceTrace::empty()
-            }
-          ]
-        )
-      },
-      &mut EvaluationEnvironment::from_program(Program::default())
-    )
-  );*/
 }

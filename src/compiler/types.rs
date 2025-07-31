@@ -1073,6 +1073,19 @@ impl TypeState {
                 anything_changed = true;
               }
             }
+            Type::Array(size, inner_type) => {
+              if arg_types.len() == 1
+                && TypeState::are_compatible(
+                  &arg_types[0],
+                  &TypeState::OneOf(vec![Type::U32, Type::I32]),
+                )
+              {
+                new_possibilities
+                  .push(Type::Array(size.clone(), inner_type.clone()))
+              } else {
+                anything_changed = true;
+              }
+            }
             _ => errors.log(CompileError::new(
               ExpectedFunctionFoundNonFunction,
               source_trace.clone(),
@@ -1099,6 +1112,11 @@ impl TypeState {
       TypeState::Known(t) => match t {
         Type::Function(signature) => signature.mutually_constrain_arguments(
           &mut arg_types,
+          source_trace,
+          errors,
+        ),
+        Type::Array(_, _) => arg_types[0].constrain(
+          TypeState::OneOf(vec![Type::I32, Type::U32]),
           source_trace,
           errors,
         ),

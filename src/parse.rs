@@ -29,7 +29,6 @@ use crate::compiler::{
 pub enum Encloser {
   Parens,
   Square,
-  ArrayLookup,
   Curly,
   LineComment,
   BlockComment,
@@ -40,7 +39,6 @@ impl SSEEncloser for Encloser {
     match self {
       Parens => "",
       Square => ":square-brackets:",
-      ArrayLookup => ":array-lookup:",
       Curly => ":cury-brackets:",
       LineComment => ":line-comment:",
       BlockComment => ":block-comment:",
@@ -52,7 +50,6 @@ impl SSEEncloser for Encloser {
     match self {
       Parens => "(",
       Square => "[",
-      ArrayLookup => "@[",
       Curly => "{",
       LineComment => ";",
       BlockComment => ";*",
@@ -64,7 +61,6 @@ impl SSEEncloser for Encloser {
     match self {
       Parens => ")",
       Square => "]",
-      ArrayLookup => "]",
       Curly => "}",
       LineComment => "\n",
       BlockComment => "*;",
@@ -123,7 +119,6 @@ pub fn easl_syntax_graph() -> EaslSynaxGraph {
     vec![
       Encloser::Parens,
       Encloser::Square,
-      Encloser::ArrayLookup,
       Encloser::Curly,
       Encloser::LineComment,
       Encloser::BlockComment,
@@ -150,7 +145,6 @@ pub fn easl_syntax_graph() -> EaslSynaxGraph {
     [
       (Encloser::Parens, Context::Default),
       (Encloser::Square, Context::Default),
-      (Encloser::ArrayLookup, Context::Default),
       (Encloser::Curly, Context::Default),
       (Encloser::LineComment, Context::UnstructuredComment),
       (Encloser::BlockComment, Context::UnstructuredComment),
