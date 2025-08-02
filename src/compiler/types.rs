@@ -16,7 +16,7 @@ use crate::{
 };
 
 use super::{
-  error::{err, CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace},
+  error::{CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace, err},
   functions::FunctionSignature,
   program::Program,
   structs::{AbstractStruct, Struct},
@@ -36,6 +36,21 @@ pub enum AbstractType {
 }
 
 impl AbstractType {
+  pub(crate) fn track_generic_names(&self, names: &mut Vec<Rc<str>>) {
+    match self {
+      AbstractType::Generic(name) => names.push(name.clone()),
+      AbstractType::AbstractArray { inner_type, .. }
+      | AbstractType::Reference(inner_type) => {
+        inner_type.track_generic_names(names)
+      }
+      AbstractType::AbstractStruct(abstract_struct) => {
+        for f in abstract_struct.fields.iter() {
+          f.field_type.track_generic_names(names);
+        }
+      }
+      _ => {}
+    }
+  }
   pub fn fill_generics(
     &self,
     generics: &HashMap<Rc<str>, ExpTypeInfo>,

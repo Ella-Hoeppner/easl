@@ -543,7 +543,7 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             mutated_args: vec![],
             return_type: mat.clone(),
             implementation: FunctionImplementationKind::Builtin,
-            associative: true,
+            associative: false,
           },
           AbstractFunctionSignature {
             name: "*".into(),
@@ -552,7 +552,7 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             mutated_args: vec![],
             return_type: mat.clone(),
             implementation: FunctionImplementationKind::Builtin,
-            associative: true,
+            associative: false,
           },
           AbstractFunctionSignature {
             name: "*".into(),
@@ -561,7 +561,7 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             mutated_args: vec![],
             return_type: mat.clone(),
             implementation: FunctionImplementationKind::Builtin,
-            associative: true,
+            associative: false,
           },
           AbstractFunctionSignature {
             name: "*".into(),
@@ -570,7 +570,7 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             mutated_args: vec![],
             return_type: vecn(m),
             implementation: FunctionImplementationKind::Builtin,
-            associative: true,
+            associative: false,
           },
           AbstractFunctionSignature {
             name: "*".into(),
@@ -579,7 +579,7 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             mutated_args: vec![],
             return_type: vecn(n),
             implementation: FunctionImplementationKind::Builtin,
-            associative: true,
+            associative: false,
           },
         ]
         .into_iter()

@@ -1,0 +1,4 @@
+(defn make-two-floats [a: f32]: f32
+  (let [b (+ a a a)
+        c (* a a b)]
+    b))

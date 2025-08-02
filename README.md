@@ -15,17 +15,32 @@ Feature goals:
   * type holes
 
 ## todo
-### high priority
-* variadic `*` doesn't work even though it should, `+` works fine
+### high priority, necessary to call the language 0.1
+* Need to refactor everything to not use `Rc<str>` for tokens and other stuff, but instead have like a `struct Token(usize)` type that we use to identify tokens, such that there's a global `HashMap<Token, String>` that keeps track of the string values. This should help with performance since there won't be refcounting operations happening all over the place, and it'll mean we can get rid of the stupid `AsyncErrorLog` thing.
 
-* bug: it seems like calling functions inside a call to `return` causes type errors, for some reason. At least, I tried to do `(return (vec4f 1.))` in a program and it wouldn't typecheck, saying it couldn't infer the type of the `vec4f` token.
+* there are several places where gensyms are generated, but not guaranteed to be completely safe. Need to have a system that tracks all names in the program and allows for safe gensym-ing
+  * cases where we need this:
+    * deshadowing
+    * `->` bindings
+    * deexpressionify
+  * should be easy to do this once we're tracking tokens with globally unique indeces rather than literal strings
 
-* need to catch when there are mutliple definitions of the same function.
+* `TypeConstraint` needs to be improved/generalized
+  * Right now each generic argument in a function signature is associated with a `Vec<TypeConstraint>`. But instead each should be associated with a single `TypeConstraint`, which should itself be an enum with a `Union(HashSet<Self>)` variant for when an argument has more than one constraint.
+    * It will be important to get the `Eq` implementation for these right, such that `catch_duplicate_signatures` can properly detect when two signatures will be recognized as the same even if the corresponding generic constraints are written in different orders
+    (e.g. `(defn |T: [A B]| [a: T]: T ...)` and `(defn |T: [B A]| [a: T]: T ...)` should be treated as the same)
+      * probably just do this by having a normal form that all constraints reduce to
 
+* `catch_duplicate_signatures` needs to be extended to catch partial overlaps in the type-domains of generic functions
+  * like, right now you can implement `(defn + [a: f32 b:f32]: f32 ...)` without error, even though this conflicts with the builtin definition `(defn + |T| [a: T b:T]: T)`. The two signatures aren't equal, so no error is detected, but it should be, since the `f32` implementation is just a special-case of the generic definition.
+    * this needs to not only catch the "non-generic signature is a special case of generic signature" case, but also the "two generic signatures overlap" case, like `(defn f |T: Scalar| [a: T]: T)` and `(defn f |T: Integer| [a: T]: T)`
 
+* change `var` address space and access declaration system to use the metadata system rather than the special-cased `[]` form
+  * so instead of `@{group 0 binding 0} (var [uniform] ...)`, you would do `@{group 0 binding 0 address uniform} (var ...)`
+    * access, like `read` or `read-write` for `storage`-addressed vars, will be declared with the `access` metadata property
+      * or, as a shorthand, you should be able to do like `@{address storage-read}`/`@{address storage-read-write}`
+  * default address space for top-leve vars if none is provided will be `private`
 
-
-### medium priority, necessary to call the language 0.1
 * Overhaul references
   * References shouldn't be first-class values. You shouldn't be able to create a binding of type `&f32` or anything like that. Functions can mark some of their arguments as references, but you'll just pass normal values for those arguments, and the fact that it's a reference will always be inferred - there will be no syntax for constructing a reference.
   * Probably get rid of the special syntax for the reference types too, just use a `@ref ...` metadata syntax or maybe a `(Ref ...)` generic struct syntax
@@ -41,14 +56,6 @@ Feature goals:
   * I guess there should be a `clone` function auto-derived on most types so that you can turn `&T` or `&mut T` into a `T`. But this shouldn't be defined for certain special built-in types like atomics(?) or textures.
     * certain types should also basically have something like rust's `copy` where it basically inserts an implicit `clone` when you try to use a `&T` or `&mut` as a `T`.
 
-* Need to refactor everything to refer to not use `Rc<str>` for tokens and other stuff, but instead have like a `struct Token(usize)` type that we use to identify tokens, such that there's a global `HashMap<Token, String>` that keeps track of the string values. This should help with performance since there won't be refcounting operations happening all over the place, and it'll mean we can get rid of the stupid `AsyncErrorLog` thing.
-
-* change `var` address space and access declaration system to use the metadata system rather than the special-cased `[]` form
-  * so instead of `@{group 0 binding 0} (var [uniform] ...)`, you would do `@{group 0 binding 0 address uniform} (var ...)`
-    * access, like `read` or `read-write` for `storage`-addressed vars, will be declared with the `access` metadata property
-      * or, as a shorthand, you should be able to do like `@{address storage-read}`/`@{address storage-read-write}`
-  * default address space for top-leve vars if none is provided will be `private`
-
 * formatter: 
   * have a separate threshold for the max size allowed for top-level `(def ...)`
     * a lot of things that would be perfectly readable on one line are getting split to multiple lines, feels like `def`s should almost always be one line unless they're very long
@@ -61,10 +68,7 @@ Feature goals:
 
 * allow indexing vectors and matrices with integers
 
-* there are several places where gensyms are generated, but not guaranteed to be completely safe. Need to have a system that tracks all names in the program and allows for safe gensym-ing
-  * deshadowing
-  * `->` bindings
-  * deexpressionify
+* syntax for specifying generic arguments, along with type constraints on those generic arguments (for now just the builtin ones, `Scalar` and `Integer`)
 
 * support declaring custom type constraints
   * each constraint is just defined by a function

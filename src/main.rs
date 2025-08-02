@@ -64,6 +64,10 @@ fn main() {
     "global_var_effect",
     "array_assignment",
     "mixed_vec",
+    "variadic_arithmetic",
+    "application_in_return",
+    "deexpressionify_in_return",
+    "duplicate_defn",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

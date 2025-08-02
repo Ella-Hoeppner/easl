@@ -111,6 +111,10 @@ pub enum CompileErrorKind {
     f: TypeStateDescription,
     args: Vec<TypeStateDescription>,
   },
+  #[error("Duplicate function signature \"`{0}`\"")]
+  DuplicateFunctionSignature(Rc<str>),
+  #[error("Function signature \"`{0}`\" conflicts with built-in function")]
+  FunctionSignatureConflictsWithBuiltin(Rc<str>),
   #[error("Function expression has non-function type: {0}")]
   FunctionExpressionHasNonFunctionType(TypeDescription),
   #[error("Unbound name: `{0}`")]
@@ -339,6 +343,8 @@ enum AsyncCompileErrorKind {
     f: TypeStateDescription,
     args: Vec<TypeStateDescription>,
   },
+  DuplicateFunctionSignature(Arc<str>),
+  FunctionSignatureConflictsWithBuiltin(Arc<str>),
   FunctionExpressionHasNonFunctionType(TypeDescription),
   UnboundName(Arc<str>),
   AppliedNonFunction,
@@ -445,6 +451,14 @@ impl From<CompileErrorKind> for AsyncCompileErrorKind {
       IncompatibleTypes(a, b) => AsyncCompileErrorKind::IncompatibleTypes(a, b),
       FunctionArgumentTypesIncompatible { f, args } => {
         AsyncCompileErrorKind::FunctionArgumentTypesIncompatible { f, args }
+      }
+      DuplicateFunctionSignature(name) => {
+        AsyncCompileErrorKind::DuplicateFunctionSignature((*name).into())
+      }
+      FunctionSignatureConflictsWithBuiltin(name) => {
+        AsyncCompileErrorKind::FunctionSignatureConflictsWithBuiltin(
+          (*name).into(),
+        )
       }
       FunctionExpressionHasNonFunctionType(type_description) => {
         AsyncCompileErrorKind::FunctionExpressionHasNonFunctionType(
@@ -609,6 +623,12 @@ impl From<AsyncCompileErrorKind> for CompileErrorKind {
       IncompatibleTypes(a, b) => CompileErrorKind::IncompatibleTypes(a, b),
       FunctionArgumentTypesIncompatible { f, args } => {
         CompileErrorKind::FunctionArgumentTypesIncompatible { f, args }
+      }
+      DuplicateFunctionSignature(name) => {
+        CompileErrorKind::DuplicateFunctionSignature((*name).into())
+      }
+      FunctionSignatureConflictsWithBuiltin(name) => {
+        CompileErrorKind::FunctionSignatureConflictsWithBuiltin((*name).into())
       }
       FunctionExpressionHasNonFunctionType(type_description) => {
         CompileErrorKind::FunctionExpressionHasNonFunctionType(type_description)

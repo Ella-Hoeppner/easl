@@ -1,0 +1,4 @@
+(defn f [a: f32]: f32
+  (return (if (> a 1.)
+            1.
+            a)))

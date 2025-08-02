@@ -1973,7 +1973,7 @@ impl TypedExp {
         false
       }
       Return(exp) => {
-        let changed = if let Some(t) = ctx.enclosing_function_type() {
+        let mut changed = if let Some(t) = ctx.enclosing_function_type() {
           match t.as_fn_type_if_known(|| {
             CompileError::new(
               CompileErrorKind::EnclosingFunctionTypeWasntFunction,
@@ -2002,6 +2002,7 @@ impl TypedExp {
           ));
           false
         };
+        changed |= exp.propagate_types_inner(ctx, errors);
         self.data.subtree_fully_typed = exp.data.subtree_fully_typed;
         changed
       }

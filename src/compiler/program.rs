@@ -1039,6 +1039,52 @@ impl Program {
       }
     }
   }
+  fn catch_duplicate_signatures(&self, errors: &mut ErrorLog) {
+    for (name, signatures) in self.abstract_functions.iter() {
+      let mut normalized_signatures: Vec<(Option<SourceTrace>, _)> = vec![];
+      for signature in signatures {
+        if let FunctionImplementationKind::Builtin
+        | FunctionImplementationKind::Constructor =
+          signature.borrow().implementation
+        {
+          let normalized = signature.borrow().normalized_signature();
+          normalized_signatures.push((None, normalized));
+        }
+      }
+      for signature in signatures {
+        if let FunctionImplementationKind::Composite(f) =
+          &signature.borrow().implementation
+        {
+          let source = f.borrow().body.source_trace.clone();
+          let normalized = signature.borrow().normalized_signature();
+          for (previous_signature, previous_normalized) in
+            normalized_signatures.iter()
+          {
+            if *previous_normalized == normalized {
+              if let Some(previous_source) = previous_signature {
+                errors.log(CompileError {
+                  kind: CompileErrorKind::DuplicateFunctionSignature(
+                    name.clone(),
+                  ),
+                  source_trace: source
+                    .clone()
+                    .combine_with(previous_source.clone()),
+                });
+              } else {
+                errors.log(CompileError {
+                  kind: CompileErrorKind::FunctionSignatureConflictsWithBuiltin(
+                    name.clone(),
+                  ),
+                  source_trace: source.clone(),
+                });
+              }
+            }
+          }
+          normalized_signatures.push((Some(source), normalized));
+        }
+      }
+    }
+  }
   fn ensure_no_typeless_bindings(&self, errors: &mut ErrorLog) {
     for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
@@ -1112,6 +1158,10 @@ impl Program {
     }
     self.expand_associative_applications();
     self.validate_assignments(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.catch_duplicate_signatures(&mut errors);
     if !errors.is_empty() {
       return errors;
     }

@@ -1,4 +1,8 @@
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+  cell::RefCell,
+  collections::{HashMap, HashSet},
+  rc::Rc,
+};
 
 use take_mut::take;
 
@@ -9,8 +13,8 @@ use crate::compiler::{
 
 use super::{
   error::{
-    err, CompileError, CompileErrorKind::*, CompileResult, ErrorLog,
-    SourceTrace,
+    CompileError, CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace,
+    err,
   },
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
   metadata::Metadata,
@@ -48,6 +52,58 @@ pub struct AbstractFunctionSignature {
 }
 
 impl AbstractFunctionSignature {
+  pub(crate) fn normalized_signature(
+    &self,
+  ) -> (Vec<Vec<TypeConstraint>>, Vec<AbstractType>, AbstractType) {
+    let mut used_generic_names = vec![];
+    for t in self.arg_types.iter() {
+      t.track_generic_names(&mut used_generic_names);
+    }
+    self
+      .return_type
+      .track_generic_names(&mut used_generic_names);
+    let generic_name_order: Vec<Rc<str>> = {
+      let mut duplicate_generic_names = HashSet::new();
+      used_generic_names
+        .into_iter()
+        .filter_map(|name| {
+          if duplicate_generic_names.contains(&name) {
+            None
+          } else {
+            duplicate_generic_names.insert(name.clone());
+            Some(name)
+          }
+        })
+        .collect()
+    };
+    let ordered_type_constraints: Vec<Vec<TypeConstraint>> = generic_name_order
+      .iter()
+      .map(|name| {
+        self
+          .generic_args
+          .iter()
+          .find_map(|(generic_name, constraints)| {
+            (generic_name == name).then(|| constraints.clone())
+          })
+          .unwrap()
+      })
+      .collect();
+    let rename_generics = |mut t: AbstractType| {
+      for (i, name) in generic_name_order.iter().enumerate() {
+        t = t.rename_generic(name, &format!("{i}"));
+      }
+      t
+    };
+    (
+      ordered_type_constraints,
+      self
+        .arg_types
+        .iter()
+        .map(|t| rename_generics(t.clone()))
+        .collect(),
+      rename_generics(self.return_type.clone()),
+    )
+  }
   pub fn effects(&self, program: &Program) -> EffectType {
     if let FunctionImplementationKind::Composite(f) = &self.implementation {
       let f = f.borrow();
