@@ -403,12 +403,20 @@ impl AbstractFunctionSignature {
   }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct FunctionSignature {
   pub abstract_ancestor: Option<Rc<AbstractFunctionSignature>>,
   pub arg_types: Vec<(ExpTypeInfo, Vec<TypeConstraint>)>,
   pub mutated_args: Vec<usize>,
   pub return_type: ExpTypeInfo,
+}
+
+impl PartialEq for FunctionSignature {
+  fn eq(&self, other: &Self) -> bool {
+    self.arg_types == other.arg_types
+      && self.mutated_args == other.mutated_args
+      && self.return_type == other.return_type
+  }
 }
 
 impl FunctionSignature {
