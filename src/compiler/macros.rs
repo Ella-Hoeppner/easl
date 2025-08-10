@@ -28,7 +28,7 @@ pub fn macroexpand(
       match r {
         Ok(replacement_tree) => new_tree = replacement_tree,
         Err((source_trace, err)) => errors.log(CompileError {
-          kind: CompileErrorKind::MacroError(err),
+          kind: CompileErrorKind::MacroError(err.to_string()),
           source_trace,
         }),
       }

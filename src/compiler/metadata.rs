@@ -9,7 +9,7 @@ use crate::parse::EaslTree;
 use crate::parse::{Encloser::*, Operator};
 
 use super::error::{
-  err, CompileError, CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace,
+  CompileError, CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace, err,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -128,16 +128,16 @@ impl Metadata {
         ("group" | "binding", Some(value)) => {
           if u8::from_str(&*value).is_err() {
             return Err(CompileError::new(
-              InvalidVariableMetadata(self.clone()),
+              InvalidVariableMetadata(self.clone().into()),
               source_trace.clone(),
             ));
           }
         }
         _ => {
           return Err(CompileError::new(
-            InvalidVariableMetadata(self.clone()),
+            InvalidVariableMetadata(self.clone().into()),
             source_trace.clone(),
-          ))
+          ));
         }
       }
     }
@@ -161,9 +161,9 @@ impl Metadata {
             || *entry_type == *"compute") => {}
         _ => {
           return Err(CompileError::new(
-            InvalidFunctionMetadata(self.clone()),
+            InvalidFunctionMetadata(self.clone().into()),
             source_trace.clone(),
-          ))
+          ));
         }
       }
     }

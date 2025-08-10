@@ -100,7 +100,7 @@ impl AbstractType {
         if skolems.contains(name) {
           Ok(Type::Skolem(Rc::clone(name)))
         } else {
-          err(UnrecognizedGeneric(name.clone().into()), source_trace)
+          err(UnrecognizedGeneric(name.to_string()), source_trace)
         }
       }
       AbstractType::AbstractStruct(s) => Ok(Type::Struct(
@@ -642,7 +642,7 @@ impl Type {
             source_trace.clone(),
           )?)
         } else {
-          return err(UnrecognizedTypeName(name), source_trace);
+          return err(UnrecognizedTypeName(name.to_string()), source_trace);
         }
       }
     })

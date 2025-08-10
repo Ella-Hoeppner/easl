@@ -1064,7 +1064,7 @@ impl Program {
               if let Some(previous_source) = previous_signature {
                 errors.log(CompileError {
                   kind: CompileErrorKind::DuplicateFunctionSignature(
-                    name.clone(),
+                    name.to_string(),
                   ),
                   source_trace: source
                     .clone()
@@ -1073,7 +1073,7 @@ impl Program {
               } else {
                 errors.log(CompileError {
                   kind: CompileErrorKind::FunctionSignatureConflictsWithBuiltin(
-                    name.clone(),
+                    name.to_string(),
                   ),
                   source_trace: source.clone(),
                 });

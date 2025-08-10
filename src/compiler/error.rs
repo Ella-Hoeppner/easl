@@ -1,5 +1,5 @@
 use sse::{ParseError, document::DocumentPosition};
-use std::{collections::HashSet, fmt::Display, hash::Hash, rc::Rc, sync::Arc};
+use std::{collections::HashSet, fmt::Display, hash::Hash};
 use thiserror::Error;
 
 use crate::parse::EaslTree;
@@ -59,9 +59,9 @@ pub enum CompileErrorKind {
   #[error("Parsing error: `{0}`")]
   ParsingFailed(ParseError),
   #[error("Unrecognized type name: `{0}`")]
-  UnrecognizedTypeName(Rc<str>),
+  UnrecognizedTypeName(String),
   #[error("Invalid metadata: `{0}`")]
-  InvalidMetadata(Rc<str>),
+  InvalidMetadata(String),
   #[error("Expected a name with a type annotation")]
   ExpectedTypeAnnotatedName,
   #[error("Struct fields must be given explicit types")]
@@ -69,7 +69,7 @@ pub enum CompileErrorKind {
   #[error("Invalid struct name")]
   InvalidStructName,
   #[error("Couldn't find a struct named `{0}`")]
-  NoStructNamed(Rc<str>),
+  NoStructNamed(String),
   #[error("Invalid array signature")]
   InvalidArraySignature,
   #[error("Array lookup requires 1 argument as an index, got {0} arguments")]
@@ -77,13 +77,13 @@ pub enum CompileErrorKind {
   #[error("Invalid struct definition")]
   InvalidStructDefinition,
   #[error("No generic called `{0}` in this scope")]
-  UnrecognizedGeneric(Rc<str>),
+  UnrecognizedGeneric(String),
   #[error("Invalid token `{0}`")]
-  InvalidToken(Rc<str>),
+  InvalidToken(String),
   #[error("Invalid top-level var `{0}`")]
-  InvalidTopLevelVar(Rc<str>),
+  InvalidTopLevelVar(String),
   #[error("Invalid defn `{0}`")]
-  InvalidDefn(Rc<str>),
+  InvalidDefn(String),
   #[error("Invalid function")]
   InvalidFunction,
   #[error("Function missing body")]
@@ -97,7 +97,7 @@ pub enum CompileErrorKind {
   #[error("Unrecognized top-level form")]
   InvalidType(EaslTree),
   #[error("Invalid Type Name `{0}`")]
-  InvalidTypeName(Rc<str>),
+  InvalidTypeName(String),
   #[error("Function argument missing type annotation")]
   FunctionArgMissingType,
   #[error("Invalid argument name")]
@@ -112,17 +112,17 @@ pub enum CompileErrorKind {
     args: Vec<TypeStateDescription>,
   },
   #[error("Duplicate function signature \"`{0}`\"")]
-  DuplicateFunctionSignature(Rc<str>),
+  DuplicateFunctionSignature(String),
   #[error("Function signature \"`{0}`\" conflicts with built-in function")]
-  FunctionSignatureConflictsWithBuiltin(Rc<str>),
+  FunctionSignatureConflictsWithBuiltin(String),
   #[error("Function expression has non-function type: {0}")]
   FunctionExpressionHasNonFunctionType(TypeDescription),
   #[error("Unbound name: `{0}`")]
-  UnboundName(Rc<str>),
+  UnboundName(String),
   #[error("Applied non-function in function position")]
   AppliedNonFunction,
   #[error("Wrong number of arguments for function{}", .0.as_ref().map_or(String::new(), |name| format!(": `{}`", name)))]
-  WrongArity(Option<Rc<str>>),
+  WrongArity(Option<String>),
   #[error("Expected leaf node")]
   ExpectedLeaf,
   #[error("Invalid function argument list")]
@@ -137,8 +137,8 @@ pub enum CompileErrorKind {
   FunctionSignatureMissingReturnType,
   #[error("No field named `{field_name}` in struct `{struct_name}`")]
   NoSuchField {
-    struct_name: Rc<str>,
-    field_name: Rc<str>,
+    struct_name: String,
+    field_name: String,
   },
   #[error("Accessor used on non-struct type")]
   AccessorOnNonStruct,
@@ -156,14 +156,14 @@ pub enum CompileErrorKind {
   EmptyBlock,
   #[error("Top-level constants may not have metadata")]
   ConstantMayNotHaveMetadata,
-  #[error("Invalid top-level variable metadata: {0}")]
-  InvalidVariableMetadata(Metadata),
-  #[error("Invalid top-level function metadata: {0}")]
-  InvalidFunctionMetadata(Metadata),
+  #[error("Invalid top-level variable metadata: {0:?}")]
+  InvalidVariableMetadata(MetadataDescription),
+  #[error("Invalid top-level function metadata: {0:?}")]
+  InvalidFunctionMetadata(MetadataDescription),
   #[error("Invalid assignment target")]
   InvalidAssignmentTarget,
   #[error("Assignment target must be a variable: `{0}`")]
-  AssignmentTargetMustBeVariable(Rc<str>),
+  AssignmentTargetMustBeVariable(String),
   #[error("Match expression missing scrutinee")]
   MatchMissingScrutinee,
   #[error("Match expression missing arms")]
@@ -187,7 +187,7 @@ pub enum CompileErrorKind {
   #[error("Invalid return statement")]
   InvalidReturn,
   #[error("Macro error: {0}")]
-  MacroError(Rc<str>),
+  MacroError(String),
   #[error("Invalid array access syntax")]
   ArrayLiteralMistyped,
   #[error("Applications must use names")]
@@ -211,7 +211,7 @@ pub enum CompileErrorKind {
   #[error("expected function, found non-function value")]
   ExpectedFunctionFoundNonFunction,
   #[error("Can't shadow top-level binding \"{0}\"")]
-  CantShadowTopLevelBinding(Rc<str>),
+  CantShadowTopLevelBinding(String),
   #[error(
     "Invalid signature for @associative function, signature must conform to (Fn [T T]: T)"
   )]
@@ -312,519 +312,26 @@ impl From<CompileError> for ErrorLog {
   }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum AsyncCompileErrorKind {
-  ParsingFailed(ParseError),
-  UnrecognizedTypeName(Arc<str>),
-  InvalidMetadata(Arc<str>),
-  ExpectedTypeAnnotatedName,
-  StructFieldMissingType,
-  InvalidStructName,
-  NoStructNamed(Arc<str>),
-  InvalidArraySignature,
-  ArrayLookupInvalidArity(usize),
-  InvalidStructDefinition,
-  UnrecognizedGeneric(Arc<str>),
-  InvalidToken(Arc<str>),
-  InvalidTopLevelVar(Arc<str>),
-  InvalidDefn(Arc<str>),
-  InvalidFunction,
-  FunctionMissingBody,
-  UnrecognizedTopLevelForm(EaslTree),
-  EmptyList,
-  MissingType,
-  InvalidType(EaslTree),
-  InvalidTypeName(Arc<str>),
-  FunctionArgMissingType,
-  InvalidArgumentName,
-  CouldntInferTypes,
-  IncompatibleTypes(TypeStateDescription, TypeStateDescription),
-  FunctionArgumentTypesIncompatible {
-    f: TypeStateDescription,
-    args: Vec<TypeStateDescription>,
-  },
-  DuplicateFunctionSignature(Arc<str>),
-  FunctionSignatureConflictsWithBuiltin(Arc<str>),
-  FunctionExpressionHasNonFunctionType(TypeDescription),
-  UnboundName(Arc<str>),
-  AppliedNonFunction,
-  WrongArity(Option<Arc<str>>),
-  ExpectedLeaf,
-  InvalidFunctionArgumentList,
-  InvalidFunctionSignature,
-  FunctionSignatureMissingArgumentList,
-  FunctionSignatureNotSquareBrackets,
-  FunctionSignatureMissingReturnType,
-  NoSuchField {
-    struct_name: Arc<str>,
-    field_name: Arc<str>,
-  },
-  AccessorOnNonStruct,
-  AccessorHadMultipleArguments,
-  NotEnoughLetBlockChildren,
-  LetBindingsNotSquareBracketed,
-  OddNumberOfChildrenInLetBindings,
-  ExpectedBindingName,
-  EmptyBlock,
-  ConstantMayNotHaveMetadata,
-  InvalidVariableMetadata(AsyncMetadata),
-  InvalidFunctionMetadata(AsyncMetadata),
-  InvalidAssignmentTarget,
-  AssignmentTargetMustBeVariable(Arc<str>),
-  MatchMissingScrutinee,
-  MatchMissingArms,
-  MatchIncompleteArm,
-  InvalidStructFieldType,
-  InvalidTypeConstraint,
-  UnsatisfiedTypeConstraint(TypeConstraintDescription),
-  InvalidForLoopHeader,
-  InvalidWhileLoop,
-  ReturnOutsideFunction,
-  EnclosingFunctionTypeWasntFunction,
-  InvalidReturn,
-  MacroError(Arc<str>),
-  ArrayLiteralMistyped,
-  ApplicationsMustUseNames,
-  AnonymousFunctionsNotYetSupported,
-  AnonymousStructsNotYetSupported,
-  EncounteredCommentInSource,
-  EncounteredMetadataInInternalExpression,
-  InvalidFunctionType,
-  CantInlineFunctionWithoutAbstractAncestor,
-  NoArgNamesForFunction,
-  ZeroedArrayShouldntHaveChildren,
-  ExpectedFunctionFoundNonFunction,
-  CantShadowTopLevelBinding(Arc<str>),
-  InvalidAssociativeSignature,
-  TypelessBinding,
-  DiscardOutsideFragment,
-  ContinueOutsideLoop,
-  BreakOutsideLoop,
-  PatternAfterWildcard,
-  WildcardOutsidePattern,
-  InvalidPattern,
-  DuplicatePattern,
-  NonexhaustiveMatch,
-}
-
-impl From<CompileErrorKind> for AsyncCompileErrorKind {
-  fn from(value: CompileErrorKind) -> Self {
-    use CompileErrorKind::*;
-    match value {
-      ParsingFailed(a) => AsyncCompileErrorKind::ParsingFailed(a),
-      UnrecognizedTypeName(a) => {
-        AsyncCompileErrorKind::UnrecognizedTypeName((*a).into())
-      }
-      InvalidMetadata(a) => AsyncCompileErrorKind::InvalidMetadata((*a).into()),
-      ExpectedTypeAnnotatedName => {
-        AsyncCompileErrorKind::ExpectedTypeAnnotatedName
-      }
-      StructFieldMissingType => AsyncCompileErrorKind::StructFieldMissingType,
-      InvalidStructName => AsyncCompileErrorKind::InvalidStructName,
-      NoStructNamed(a) => AsyncCompileErrorKind::NoStructNamed((*a).into()),
-      InvalidArraySignature => AsyncCompileErrorKind::InvalidArraySignature,
-      ArrayLookupInvalidArity(usize) => {
-        AsyncCompileErrorKind::ArrayLookupInvalidArity(usize)
-      }
-      InvalidStructDefinition => AsyncCompileErrorKind::InvalidStructDefinition,
-      UnrecognizedGeneric(a) => {
-        AsyncCompileErrorKind::UnrecognizedGeneric((*a).into())
-      }
-      InvalidToken(a) => AsyncCompileErrorKind::InvalidToken((*a).into()),
-      InvalidTopLevelVar(a) => {
-        AsyncCompileErrorKind::InvalidTopLevelVar((*a).into())
-      }
-      InvalidDefn(a) => AsyncCompileErrorKind::InvalidDefn((*a).into()),
-      InvalidFunction => AsyncCompileErrorKind::InvalidFunction,
-      FunctionMissingBody => AsyncCompileErrorKind::FunctionMissingBody,
-      UnrecognizedTopLevelForm(ast) => {
-        AsyncCompileErrorKind::UnrecognizedTopLevelForm(ast)
-      }
-      WildcardOutsidePattern => AsyncCompileErrorKind::WildcardOutsidePattern,
-      EmptyList => AsyncCompileErrorKind::EmptyList,
-      MissingType => AsyncCompileErrorKind::MissingType,
-      InvalidType(ast) => AsyncCompileErrorKind::InvalidType(ast),
-      InvalidTypeName(a) => AsyncCompileErrorKind::InvalidTypeName((*a).into()),
-      FunctionArgMissingType => AsyncCompileErrorKind::FunctionArgMissingType,
-      InvalidArgumentName => AsyncCompileErrorKind::InvalidArgumentName,
-      CouldntInferTypes => AsyncCompileErrorKind::CouldntInferTypes,
-      IncompatibleTypes(a, b) => AsyncCompileErrorKind::IncompatibleTypes(a, b),
-      FunctionArgumentTypesIncompatible { f, args } => {
-        AsyncCompileErrorKind::FunctionArgumentTypesIncompatible { f, args }
-      }
-      DuplicateFunctionSignature(name) => {
-        AsyncCompileErrorKind::DuplicateFunctionSignature((*name).into())
-      }
-      FunctionSignatureConflictsWithBuiltin(name) => {
-        AsyncCompileErrorKind::FunctionSignatureConflictsWithBuiltin(
-          (*name).into(),
-        )
-      }
-      FunctionExpressionHasNonFunctionType(type_description) => {
-        AsyncCompileErrorKind::FunctionExpressionHasNonFunctionType(
-          type_description,
-        )
-      }
-      UnboundName(a) => AsyncCompileErrorKind::UnboundName((*a).into()),
-      AppliedNonFunction => AsyncCompileErrorKind::AppliedNonFunction,
-      WrongArity(a) => {
-        AsyncCompileErrorKind::WrongArity(a.map(|a| (*a).into()))
-      }
-      ExpectedLeaf => AsyncCompileErrorKind::ExpectedLeaf,
-      InvalidFunctionArgumentList => {
-        AsyncCompileErrorKind::InvalidFunctionArgumentList
-      }
-      InvalidFunctionSignature => {
-        AsyncCompileErrorKind::InvalidFunctionSignature
-      }
-      FunctionSignatureMissingArgumentList => {
-        AsyncCompileErrorKind::FunctionSignatureMissingArgumentList
-      }
-      FunctionSignatureNotSquareBrackets => {
-        AsyncCompileErrorKind::FunctionSignatureNotSquareBrackets
-      }
-      FunctionSignatureMissingReturnType => {
-        AsyncCompileErrorKind::FunctionSignatureMissingReturnType
-      }
-      NoSuchField {
-        struct_name,
-        field_name,
-      } => AsyncCompileErrorKind::NoSuchField {
-        struct_name: (*struct_name).into(),
-        field_name: (*field_name).into(),
-      },
-      AccessorOnNonStruct => AsyncCompileErrorKind::AccessorOnNonStruct,
-      AccessorHadMultipleArguments => {
-        AsyncCompileErrorKind::AccessorHadMultipleArguments
-      }
-      NotEnoughLetBlockChildren => {
-        AsyncCompileErrorKind::NotEnoughLetBlockChildren
-      }
-      LetBindingsNotSquareBracketed => {
-        AsyncCompileErrorKind::LetBindingsNotSquareBracketed
-      }
-      OddNumberOfChildrenInLetBindings => {
-        AsyncCompileErrorKind::OddNumberOfChildrenInLetBindings
-      }
-      ExpectedBindingName => AsyncCompileErrorKind::ExpectedBindingName,
-      EmptyBlock => AsyncCompileErrorKind::EmptyBlock,
-      ConstantMayNotHaveMetadata => {
-        AsyncCompileErrorKind::ConstantMayNotHaveMetadata
-      }
-      InvalidVariableMetadata(a) => {
-        AsyncCompileErrorKind::InvalidVariableMetadata(a.into())
-      }
-      InvalidFunctionMetadata(a) => {
-        AsyncCompileErrorKind::InvalidFunctionMetadata(a.into())
-      }
-      InvalidAssignmentTarget => AsyncCompileErrorKind::InvalidAssignmentTarget,
-      AssignmentTargetMustBeVariable(a) => {
-        AsyncCompileErrorKind::AssignmentTargetMustBeVariable((*a).into())
-      }
-      MatchMissingScrutinee => AsyncCompileErrorKind::MatchMissingScrutinee,
-      MatchMissingArms => AsyncCompileErrorKind::MatchMissingArms,
-      MatchIncompleteArm => AsyncCompileErrorKind::MatchIncompleteArm,
-      InvalidStructFieldType => AsyncCompileErrorKind::InvalidStructFieldType,
-      InvalidTypeConstraint => AsyncCompileErrorKind::InvalidTypeConstraint,
-      UnsatisfiedTypeConstraint(a) => {
-        AsyncCompileErrorKind::UnsatisfiedTypeConstraint(a)
-      }
-      InvalidForLoopHeader => AsyncCompileErrorKind::InvalidForLoopHeader,
-      InvalidWhileLoop => AsyncCompileErrorKind::InvalidWhileLoop,
-      ReturnOutsideFunction => AsyncCompileErrorKind::ReturnOutsideFunction,
-      EnclosingFunctionTypeWasntFunction => {
-        AsyncCompileErrorKind::EnclosingFunctionTypeWasntFunction
-      }
-      InvalidReturn => AsyncCompileErrorKind::InvalidReturn,
-      MacroError(a) => AsyncCompileErrorKind::MacroError((*a).into()),
-      ArrayLiteralMistyped => AsyncCompileErrorKind::ArrayLiteralMistyped,
-      ApplicationsMustUseNames => {
-        AsyncCompileErrorKind::ApplicationsMustUseNames
-      }
-      AnonymousFunctionsNotYetSupported => {
-        AsyncCompileErrorKind::AnonymousFunctionsNotYetSupported
-      }
-      AnonymousStructsNotYetSupported => {
-        AsyncCompileErrorKind::AnonymousStructsNotYetSupported
-      }
-      EncounteredCommentInSource => {
-        AsyncCompileErrorKind::EncounteredCommentInSource
-      }
-      EncounteredMetadataInInternalExpression => {
-        AsyncCompileErrorKind::EncounteredMetadataInInternalExpression
-      }
-      InvalidFunctionType => AsyncCompileErrorKind::InvalidFunctionType,
-      CantInlineFunctionWithoutAbstractAncestor => {
-        AsyncCompileErrorKind::CantInlineFunctionWithoutAbstractAncestor
-      }
-      NoArgNamesForFunction => AsyncCompileErrorKind::NoArgNamesForFunction,
-      ZeroedArrayShouldntHaveChildren => {
-        AsyncCompileErrorKind::ZeroedArrayShouldntHaveChildren
-      }
-      ExpectedFunctionFoundNonFunction => {
-        AsyncCompileErrorKind::ExpectedFunctionFoundNonFunction
-      }
-      CantShadowTopLevelBinding(a) => {
-        AsyncCompileErrorKind::CantShadowTopLevelBinding((*a).into())
-      }
-      InvalidAssociativeSignature => {
-        AsyncCompileErrorKind::InvalidAssociativeSignature
-      }
-      TypelessBinding => AsyncCompileErrorKind::TypelessBinding,
-      DiscardOutsideFragment => AsyncCompileErrorKind::DiscardOutsideFragment,
-      ContinueOutsideLoop => AsyncCompileErrorKind::ContinueOutsideLoop,
-      BreakOutsideLoop => AsyncCompileErrorKind::BreakOutsideLoop,
-      PatternAfterWildcard => AsyncCompileErrorKind::PatternAfterWildcard,
-      InvalidPattern => AsyncCompileErrorKind::InvalidPattern,
-      DuplicatePattern => AsyncCompileErrorKind::DuplicatePattern,
-      NonexhaustiveMatch => AsyncCompileErrorKind::NonexhaustiveMatch,
-    }
-  }
-}
-
-impl From<AsyncCompileErrorKind> for CompileErrorKind {
-  fn from(value: AsyncCompileErrorKind) -> Self {
-    use AsyncCompileErrorKind::*;
-    match value {
-      ParsingFailed(a) => CompileErrorKind::ParsingFailed(a),
-      UnrecognizedTypeName(a) => {
-        CompileErrorKind::UnrecognizedTypeName((*a).into())
-      }
-      InvalidMetadata(a) => CompileErrorKind::InvalidMetadata((*a).into()),
-      ExpectedTypeAnnotatedName => CompileErrorKind::ExpectedTypeAnnotatedName,
-      StructFieldMissingType => CompileErrorKind::StructFieldMissingType,
-      InvalidStructName => CompileErrorKind::InvalidStructName,
-      NoStructNamed(a) => CompileErrorKind::NoStructNamed((*a).into()),
-      InvalidArraySignature => CompileErrorKind::InvalidArraySignature,
-      ArrayLookupInvalidArity(n) => {
-        CompileErrorKind::ArrayLookupInvalidArity(n)
-      }
-      InvalidStructDefinition => CompileErrorKind::InvalidStructDefinition,
-      UnrecognizedGeneric(a) => {
-        CompileErrorKind::UnrecognizedGeneric((*a).into())
-      }
-      InvalidToken(a) => CompileErrorKind::InvalidToken((*a).into()),
-      InvalidTopLevelVar(a) => {
-        CompileErrorKind::InvalidTopLevelVar((*a).into())
-      }
-      InvalidDefn(a) => CompileErrorKind::InvalidDefn((*a).into()),
-      InvalidFunction => CompileErrorKind::InvalidFunction,
-      FunctionMissingBody => CompileErrorKind::FunctionMissingBody,
-      UnrecognizedTopLevelForm(ast) => {
-        CompileErrorKind::UnrecognizedTopLevelForm(ast)
-      }
-      EmptyList => CompileErrorKind::EmptyList,
-      MissingType => CompileErrorKind::MissingType,
-      InvalidType(ast) => CompileErrorKind::InvalidType(ast),
-      InvalidTypeName(a) => CompileErrorKind::InvalidTypeName((*a).into()),
-      FunctionArgMissingType => CompileErrorKind::FunctionArgMissingType,
-      InvalidArgumentName => CompileErrorKind::InvalidArgumentName,
-      CouldntInferTypes => CompileErrorKind::CouldntInferTypes,
-      IncompatibleTypes(a, b) => CompileErrorKind::IncompatibleTypes(a, b),
-      FunctionArgumentTypesIncompatible { f, args } => {
-        CompileErrorKind::FunctionArgumentTypesIncompatible { f, args }
-      }
-      DuplicateFunctionSignature(name) => {
-        CompileErrorKind::DuplicateFunctionSignature((*name).into())
-      }
-      FunctionSignatureConflictsWithBuiltin(name) => {
-        CompileErrorKind::FunctionSignatureConflictsWithBuiltin((*name).into())
-      }
-      FunctionExpressionHasNonFunctionType(type_description) => {
-        CompileErrorKind::FunctionExpressionHasNonFunctionType(type_description)
-      }
-      UnboundName(a) => CompileErrorKind::UnboundName((*a).into()),
-      AppliedNonFunction => CompileErrorKind::AppliedNonFunction,
-      WrongArity(a) => CompileErrorKind::WrongArity(a.map(|a| (*a).into())),
-      ExpectedLeaf => CompileErrorKind::ExpectedLeaf,
-      InvalidFunctionArgumentList => {
-        CompileErrorKind::InvalidFunctionArgumentList
-      }
-      InvalidFunctionSignature => CompileErrorKind::InvalidFunctionSignature,
-      FunctionSignatureMissingArgumentList => {
-        CompileErrorKind::FunctionSignatureMissingArgumentList
-      }
-      FunctionSignatureNotSquareBrackets => {
-        CompileErrorKind::FunctionSignatureNotSquareBrackets
-      }
-      FunctionSignatureMissingReturnType => {
-        CompileErrorKind::FunctionSignatureMissingReturnType
-      }
-      NoSuchField {
-        struct_name,
-        field_name,
-      } => CompileErrorKind::NoSuchField {
-        struct_name: (*struct_name).into(),
-        field_name: (*field_name).into(),
-      },
-      AccessorOnNonStruct => CompileErrorKind::AccessorOnNonStruct,
-      AccessorHadMultipleArguments => {
-        CompileErrorKind::AccessorHadMultipleArguments
-      }
-      NotEnoughLetBlockChildren => CompileErrorKind::NotEnoughLetBlockChildren,
-      LetBindingsNotSquareBracketed => {
-        CompileErrorKind::LetBindingsNotSquareBracketed
-      }
-      OddNumberOfChildrenInLetBindings => {
-        CompileErrorKind::OddNumberOfChildrenInLetBindings
-      }
-      ExpectedBindingName => CompileErrorKind::ExpectedBindingName,
-      EmptyBlock => CompileErrorKind::EmptyBlock,
-      ConstantMayNotHaveMetadata => {
-        CompileErrorKind::ConstantMayNotHaveMetadata
-      }
-      InvalidVariableMetadata(a) => {
-        CompileErrorKind::InvalidVariableMetadata(a.into())
-      }
-      InvalidFunctionMetadata(a) => {
-        CompileErrorKind::InvalidFunctionMetadata(a.into())
-      }
-      InvalidAssignmentTarget => CompileErrorKind::InvalidAssignmentTarget,
-      AssignmentTargetMustBeVariable(a) => {
-        CompileErrorKind::AssignmentTargetMustBeVariable((*a).into())
-      }
-      MatchMissingScrutinee => CompileErrorKind::MatchMissingScrutinee,
-      MatchMissingArms => CompileErrorKind::MatchMissingArms,
-      MatchIncompleteArm => CompileErrorKind::MatchIncompleteArm,
-      InvalidStructFieldType => CompileErrorKind::InvalidStructFieldType,
-      InvalidTypeConstraint => CompileErrorKind::InvalidTypeConstraint,
-      UnsatisfiedTypeConstraint(a) => {
-        CompileErrorKind::UnsatisfiedTypeConstraint(a)
-      }
-      InvalidForLoopHeader => CompileErrorKind::InvalidForLoopHeader,
-      InvalidWhileLoop => CompileErrorKind::InvalidWhileLoop,
-      ReturnOutsideFunction => CompileErrorKind::ReturnOutsideFunction,
-      EnclosingFunctionTypeWasntFunction => {
-        CompileErrorKind::EnclosingFunctionTypeWasntFunction
-      }
-      InvalidReturn => CompileErrorKind::InvalidReturn,
-      MacroError(a) => CompileErrorKind::MacroError((*a).into()),
-      ArrayLiteralMistyped => CompileErrorKind::ArrayLiteralMistyped,
-      ApplicationsMustUseNames => CompileErrorKind::ApplicationsMustUseNames,
-      AnonymousFunctionsNotYetSupported => {
-        CompileErrorKind::AnonymousFunctionsNotYetSupported
-      }
-      AnonymousStructsNotYetSupported => {
-        CompileErrorKind::AnonymousStructsNotYetSupported
-      }
-      EncounteredCommentInSource => {
-        CompileErrorKind::EncounteredCommentInSource
-      }
-      EncounteredMetadataInInternalExpression => {
-        CompileErrorKind::EncounteredMetadataInInternalExpression
-      }
-      InvalidFunctionType => CompileErrorKind::InvalidFunctionType,
-      CantInlineFunctionWithoutAbstractAncestor => {
-        CompileErrorKind::CantInlineFunctionWithoutAbstractAncestor
-      }
-      NoArgNamesForFunction => CompileErrorKind::NoArgNamesForFunction,
-      ZeroedArrayShouldntHaveChildren => {
-        CompileErrorKind::ZeroedArrayShouldntHaveChildren
-      }
-      ExpectedFunctionFoundNonFunction => {
-        CompileErrorKind::ExpectedFunctionFoundNonFunction
-      }
-      CantShadowTopLevelBinding(a) => {
-        CompileErrorKind::CantShadowTopLevelBinding((*a).into())
-      }
-      InvalidAssociativeSignature => {
-        CompileErrorKind::InvalidAssociativeSignature
-      }
-      TypelessBinding => CompileErrorKind::TypelessBinding,
-      DiscardOutsideFragment => CompileErrorKind::DiscardOutsideFragment,
-      ContinueOutsideLoop => CompileErrorKind::ContinueOutsideLoop,
-      BreakOutsideLoop => CompileErrorKind::BreakOutsideLoop,
-      WildcardOutsidePattern => CompileErrorKind::WildcardOutsidePattern,
-      PatternAfterWildcard => CompileErrorKind::PatternAfterWildcard,
-      InvalidPattern => CompileErrorKind::InvalidPattern,
-      DuplicatePattern => CompileErrorKind::DuplicatePattern,
-      NonexhaustiveMatch => CompileErrorKind::NonexhaustiveMatch,
-    }
-  }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct AsyncCompileError {
-  kind: AsyncCompileErrorKind,
-  source_trace: SourceTrace,
-}
-
-impl From<CompileError> for AsyncCompileError {
-  fn from(err: CompileError) -> Self {
-    Self {
-      kind: err.kind.into(),
-      source_trace: err.source_trace,
-    }
-  }
-}
-
-impl From<AsyncCompileError> for CompileError {
-  fn from(err: AsyncCompileError) -> Self {
-    Self {
-      kind: err.kind.into(),
-      source_trace: err.source_trace,
-    }
-  }
-}
-
-#[derive(Debug, Clone)]
-pub struct AsyncErrorLog {
-  errors: HashSet<AsyncCompileError>,
-}
-
-impl From<ErrorLog> for AsyncErrorLog {
-  fn from(log: ErrorLog) -> Self {
-    Self {
-      errors: log.errors.into_iter().map(|e| e.into()).collect(),
-    }
-  }
-}
-
-impl From<AsyncErrorLog> for ErrorLog {
-  fn from(log: AsyncErrorLog) -> Self {
-    Self {
-      errors: log.errors.into_iter().map(|e| e.into()).collect(),
-    }
-  }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum AsyncMetadata {
-  Singular(Arc<str>),
-  Map(Vec<(Arc<str>, Arc<str>)>),
+pub enum MetadataDescription {
+  Singular(String),
+  Map(Vec<(String, String)>),
   Multiple(Vec<Self>),
 }
 
-impl From<Metadata> for AsyncMetadata {
+impl From<Metadata> for MetadataDescription {
   fn from(metadata: Metadata) -> Self {
     match metadata {
-      Metadata::Singular(s) => AsyncMetadata::Singular((*s).into()),
-      Metadata::Map(items) => AsyncMetadata::Map(
+      Metadata::Singular(s) => MetadataDescription::Singular((*s).to_string()),
+      Metadata::Map(items) => MetadataDescription::Map(
         items
           .into_iter()
-          .map(|(a, b)| ((*a).into(), (*b).into()))
+          .map(|(a, b)| ((*a).to_string(), (*b).to_string()))
           .collect(),
       ),
-      Metadata::Multiple(metadatas) => AsyncMetadata::Multiple(
+      Metadata::Multiple(metadatas) => MetadataDescription::Multiple(
         metadatas.into_iter().map(|m| m.into()).collect(),
       ),
-    }
-  }
-}
-
-impl From<AsyncMetadata> for Metadata {
-  fn from(metadata: AsyncMetadata) -> Self {
-    match metadata {
-      AsyncMetadata::Singular(s) => Metadata::Singular((*s).into()),
-      AsyncMetadata::Map(items) => Metadata::Map(
-        items
-          .into_iter()
-          .map(|(a, b)| ((*a).into(), (*b).into()))
-          .collect(),
-      ),
-      AsyncMetadata::Multiple(metadatas) => {
-        Metadata::Multiple(metadatas.into_iter().map(|m| m.into()).collect())
-      }
     }
   }
 }

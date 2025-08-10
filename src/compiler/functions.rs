@@ -511,7 +511,10 @@ impl FunctionSignature {
           }
         }
       }
-      errors.log(CompileError::new(WrongArity(self.name()), source_trace));
+      errors.log(CompileError::new(
+        WrongArity(self.name().map(|n| n.to_string())),
+        source_trace,
+      ));
       false
     }
   }

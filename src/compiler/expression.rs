@@ -490,7 +490,7 @@ impl TypedExp {
               },
             )
           } else {
-            return err(InvalidToken(leaf), source_trace);
+            return err(InvalidToken(leaf.to_string()), source_trace);
           }
         } else {
           Exp {
@@ -610,7 +610,8 @@ impl TypedExp {
                                             _ => {
                                               return err(
                                                 InvalidVariableMetadata(
-                                                  Metadata::Singular(tag),
+                                                  Metadata::Singular(tag)
+                                                    .into(),
                                                 ),
                                                 source_trace,
                                               );
@@ -622,7 +623,9 @@ impl TypedExp {
                                           metadata_source_trace,
                                         )) => {
                                           return err(
-                                            InvalidVariableMetadata(metadata),
+                                            InvalidVariableMetadata(
+                                              metadata.into(),
+                                            ),
                                             metadata_source_trace,
                                           );
                                         }
@@ -1576,7 +1579,7 @@ impl TypedExp {
         self.data.subtree_fully_typed = true;
         if !ctx.is_bound(name) {
           errors.log(CompileError::new(
-            UnboundName(name.clone()),
+            UnboundName(name.to_string()),
             self.source_trace.clone(),
           ));
         }
@@ -1651,7 +1654,7 @@ impl TypedExp {
                 return_type_changed || body_types_changed || fn_type_changed
               } else {
                 errors.log(CompileError::new(
-                  WrongArity(name),
+                  WrongArity(name.map(|n| n.to_string())),
                   self.source_trace.clone(),
                 ));
                 false
@@ -1724,7 +1727,7 @@ impl TypedExp {
                 }
               } else {
                 errors.log(CompileError::new(
-                  WrongArity(signature.name()),
+                  WrongArity(signature.name().map(|n| n.to_string())),
                   self.source_trace.clone(),
                 ));
               }
@@ -1780,8 +1783,8 @@ impl TypedExp {
               } else {
                 errors.log(CompileError::new(
                   NoSuchField {
-                    struct_name: s.abstract_ancestor.name.clone(),
-                    field_name: field_name.clone(),
+                    struct_name: s.abstract_ancestor.name.to_string(),
+                    field_name: field_name.to_string(),
                   },
                   self.source_trace.clone(),
                 ));
@@ -2099,7 +2102,7 @@ impl TypedExp {
               if let Some(var_name) = args[0].name_or_inner_accessed_name() {
                 if ctx.get_variable_kind(var_name) != VariableKind::Var {
                   return err(
-                    AssignmentTargetMustBeVariable(var_name.clone()),
+                    AssignmentTargetMustBeVariable(var_name.to_string()),
                     exp.source_trace.clone(),
                   );
                 }
@@ -2378,7 +2381,7 @@ impl TypedExp {
                        errors: &mut ErrorLog| {
       if globally_bound_names.contains(&name) {
         errors.log(CompileError::new(
-          CompileErrorKind::CantShadowTopLevelBinding(name.clone()),
+          CompileErrorKind::CantShadowTopLevelBinding(name.to_string()),
           source_trace.clone(),
         ));
       }
