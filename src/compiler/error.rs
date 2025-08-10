@@ -12,28 +12,48 @@ use super::{
 use std::error::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SourceTrace(Vec<DocumentPosition>);
+pub struct SourceTrace {
+  primary_position: Option<DocumentPosition>,
+  secondary_positions: Vec<DocumentPosition>,
+}
 
 impl SourceTrace {
   pub fn empty() -> Self {
-    Self(vec![])
+    Self {
+      primary_position: None,
+      secondary_positions: vec![],
+    }
   }
-  pub fn combine_with(mut self, other: Self) -> Self {
-    for pos in other.0 {
-      if !self.0.contains(&pos) {
-        self.0.push(pos);
-      }
+  pub fn insert_as_secondary(mut self, other: Self) -> Self {
+    for pos in other.into_document_positions_iter() {
+      self.secondary_positions.push(pos);
     }
     self
   }
-  pub fn all_document_positions(&self) -> Vec<&DocumentPosition> {
-    self.0.iter().collect()
+  pub fn document_positions_iter(
+    &self,
+  ) -> impl Iterator<Item = &DocumentPosition> {
+    self
+      .primary_position
+      .iter()
+      .chain(self.secondary_positions.iter())
+  }
+  pub fn into_document_positions_iter(
+    self,
+  ) -> impl Iterator<Item = DocumentPosition> {
+    self
+      .primary_position
+      .into_iter()
+      .chain(self.secondary_positions.into_iter())
   }
 }
 
 impl From<DocumentPosition> for SourceTrace {
   fn from(position: DocumentPosition) -> Self {
-    Self(vec![position])
+    Self {
+      primary_position: position.into(),
+      secondary_positions: vec![],
+    }
   }
 }
 
@@ -43,7 +63,7 @@ impl From<&DocumentPosition> for SourceTrace {
   }
 }
 
-impl FromIterator<SourceTrace> for SourceTrace {
+/*impl FromIterator<SourceTrace> for SourceTrace {
   fn from_iter<T: IntoIterator<Item = SourceTrace>>(iter: T) -> Self {
     let mut iter = iter.into_iter();
     if let Some(first) = iter.next() {
@@ -52,7 +72,7 @@ impl FromIterator<SourceTrace> for SourceTrace {
       Self::empty()
     }
   }
-}
+}*/
 
 #[derive(Clone, Debug, Error, PartialEq, Eq, Hash)]
 pub enum CompileErrorKind {

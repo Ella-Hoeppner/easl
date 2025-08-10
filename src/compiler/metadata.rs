@@ -193,7 +193,8 @@ pub fn extract_metadata(
             exp,
             Some((
               Metadata::Multiple(vec![metadata, inner_metadata]),
-              metadata_source_trace.combine_with(inner_metadata_source_trace),
+              metadata_source_trace
+                .insert_as_secondary(inner_metadata_source_trace),
             )),
           )
         } else {

@@ -352,7 +352,6 @@ impl AbstractStruct {
         field_types[first_usage_index].clone()
       })
       .collect();
-    source_trace.combine_with(self.source_trace.clone());
     Some(AbstractStruct {
       name: self.name.clone(),
       filled_generics: generic_args

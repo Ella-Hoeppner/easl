@@ -1068,7 +1068,7 @@ impl Program {
                   ),
                   source_trace: source
                     .clone()
-                    .combine_with(previous_source.clone()),
+                    .insert_as_secondary(previous_source.clone()),
                 });
               } else {
                 errors.log(CompileError {

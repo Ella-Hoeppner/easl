@@ -408,10 +408,7 @@ impl TypedExp {
     } else {
       Exp {
         data: Unknown.into(),
-        source_trace: body_exps
-          .iter()
-          .map(|body_exp| body_exp.source_trace.clone())
-          .collect(),
+        source_trace: source_trace.clone(),
         kind: ExpKind::Block(body_exps),
       }
     };
@@ -838,10 +835,6 @@ impl TypedExp {
                               )
                             })
                             .collect::<CompileResult<Vec<TypedExp>>>()?;
-                          let body_source_trace: SourceTrace = body_expressions
-                            .iter()
-                            .map(|exp| exp.source_trace.clone())
-                            .collect();
                           Some(Exp {
                             kind: ForLoop {
                               increment_variable_name,
@@ -859,7 +852,7 @@ impl TypedExp {
                               body_expression: Box::new(TypedExp {
                                 data: TypeState::Known(Type::Unit).into(),
                                 kind: ExpKind::Block(body_expressions),
-                                source_trace: body_source_trace,
+                                source_trace: source_trace.clone(),
                               }),
                             },
                             data: Known(Type::Unit).into(),
@@ -882,10 +875,6 @@ impl TypedExp {
                             ));
                           }
                           let condition_expression = sub_expressions.remove(0);
-                          let body_source_trace: SourceTrace = sub_expressions
-                            .iter()
-                            .map(|exp| exp.source_trace.clone())
-                            .collect();
                           Some(Exp {
                             kind: ExpKind::WhileLoop {
                               condition_expression: Box::new(
@@ -894,7 +883,7 @@ impl TypedExp {
                               body_expression: Box::new(TypedExp {
                                 data: TypeState::Known(Type::Unit).into(),
                                 kind: ExpKind::Block(sub_expressions),
-                                source_trace: body_source_trace,
+                                source_trace: source_trace.clone(),
                               }),
                             },
                             data: Known(Type::Unit).into(),
@@ -1501,10 +1490,9 @@ impl TypedExp {
                 if let Some(first_wildcard) = &first_wildcard {
                   errors.log(CompileError {
                     kind: CompileErrorKind::PatternAfterWildcard,
-                    source_trace: pattern
-                      .source_trace
+                    source_trace: first_wildcard
                       .clone()
-                      .combine_with(first_wildcard.clone()),
+                      .insert_as_secondary(pattern.source_trace.clone()),
                   })
                 }
                 if all_pattern_values.contains(&&pattern.kind) {
@@ -2019,7 +2007,7 @@ impl TypedExp {
                 child
                   .source_trace
                   .clone()
-                  .combine_with(self.source_trace.clone()),
+                  .insert_as_secondary(self.source_trace.clone()),
                 errors,
               );
               anything_changed |= child.propagate_types_inner(ctx, errors);
