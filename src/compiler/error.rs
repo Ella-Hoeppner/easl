@@ -13,8 +13,8 @@ use std::error::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceTrace {
-  primary_position: Option<DocumentPosition>,
-  secondary_positions: Vec<DocumentPosition>,
+  pub primary_position: Option<DocumentPosition>,
+  pub secondary_positions: Vec<DocumentPosition>,
 }
 
 impl SourceTrace {
