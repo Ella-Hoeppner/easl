@@ -501,7 +501,7 @@ impl TypedExp {
         use crate::parse::Encloser::*;
         use crate::parse::Operator::*;
         use sse::syntax::EncloserOrOperator::*;
-        let source_trace: SourceTrace = position.into();
+        let encloser_or_operator_source_trace: SourceTrace = position.into();
         let mut children_iter = children.into_iter();
         match encloser_or_operator {
           Encloser(e) => match e {
@@ -565,15 +565,15 @@ impl TypedExp {
                             Exp {
                               data: Unknown.into(),
                               kind: ExpKind::Block(child_exps),
-                              source_trace: source_trace.clone(),
+                              source_trace: encloser_or_operator_source_trace
+                                .clone(),
                             }
                           };
                           if let EaslTree::Inner(
-                            (position, Encloser(Square)),
+                            (_, Encloser(Square)),
                             binding_asts,
                           ) = bindings_ast
                           {
-                            let source_trace: SourceTrace = position.into();
                             if binding_asts.len() % 2 == 0 {
                               let mut binding_asts_iter =
                                 binding_asts.into_iter();
@@ -660,7 +660,8 @@ impl TypedExp {
                                   bindings,
                                   Box::new(body_exp),
                                 ),
-                                source_trace,
+                                source_trace: encloser_or_operator_source_trace
+                                  .clone(),
                               })
                             } else {
                               return err(
@@ -953,13 +954,13 @@ impl TypedExp {
                       .collect::<CompileResult<_>>()?,
                   ),
                   data: Unknown.into(),
-                  source_trace,
+                  source_trace: encloser_or_operator_source_trace,
                 })
               } else {
                 Exp {
                   data: TypeState::Known(Type::Unit).into(),
                   kind: ExpKind::Unit,
-                  source_trace,
+                  source_trace: encloser_or_operator_source_trace,
                 }
               }
             }
@@ -978,21 +979,32 @@ impl TypedExp {
                   })
                   .collect::<CompileResult<Vec<TypedExp>>>()?,
               ),
-              source_trace,
+              source_trace: encloser_or_operator_source_trace,
             },
-            Curly => return err(AnonymousStructsNotYetSupported, source_trace),
+            Curly => {
+              return err(
+                AnonymousStructsNotYetSupported,
+                encloser_or_operator_source_trace,
+              );
+            }
             LineComment => {
-              return err(EncounteredCommentInSource, source_trace);
+              return err(
+                EncounteredCommentInSource,
+                encloser_or_operator_source_trace,
+              );
             }
             BlockComment => {
-              return err(EncounteredCommentInSource, source_trace);
+              return err(
+                EncounteredCommentInSource,
+                encloser_or_operator_source_trace,
+              );
             }
           },
           Operator(o) => match o {
             MetadataAnnotation => {
               return err(
-                EncounteredMetadataInInternalExpression,
-                source_trace,
+                MetadataNotAllowed,
+                encloser_or_operator_source_trace,
               );
             }
             TypeAnnotation => {
@@ -1030,7 +1042,7 @@ impl TypedExp {
                 )?
                 .into(),
               ),
-              source_trace,
+              source_trace: encloser_or_operator_source_trace,
             },
           },
         }
@@ -1192,7 +1204,7 @@ impl TypedExp {
       }),
       BooleanLiteral(b) => wrap(format!("{b}")),
       Function(_, _) => panic!("Attempting to compile internal function"),
-      Application(f, mut args) => match f.data.unwrap_known() {
+      Application(f, mut args) => wrap(match f.data.unwrap_known() {
         Type::Function(_) => {
           let ExpKind::Name(name) = f.kind else {
             panic!("tried to compile application of non-name fn");
@@ -1214,7 +1226,7 @@ impl TypedExp {
             .into_iter()
             .map(|arg| arg.compile(InnerExpression))
             .collect();
-          wrap(if ASSIGNMENT_OPS.contains(&f_str.as_str()) {
+          if ASSIGNMENT_OPS.contains(&f_str.as_str()) {
             if arg_strs.len() == 2 {
               format!("{} {} {}", arg_strs[0], f_str, arg_strs[1])
             } else {
@@ -1263,18 +1275,17 @@ impl TypedExp {
           } else {
             let args_str = arg_strs.join(", ");
             format!("{f_str}({args_str})")
-          })
+          }
         }
         Type::Array(_, _) => {
-          f.compile(ExpressionCompilationPosition::InnerExpression)
-            + "["
-            + &args
-              .remove(0)
-              .compile(ExpressionCompilationPosition::InnerExpression)
-            + "]"
+          let f_str = f.compile(ExpressionCompilationPosition::InnerExpression);
+          let index_str = args
+            .remove(0)
+            .compile(ExpressionCompilationPosition::InnerExpression);
+          format!("{f_str}[{index_str}]")
         }
         _ => panic!("tried to compile application of non-fn, non-array"),
-      },
+      }),
       Access(accessor, subexp) => wrap(format!(
         "{}{}",
         subexp.compile(InnerExpression),
@@ -1559,7 +1570,7 @@ impl TypedExp {
         self.data.subtree_fully_typed = true;
         self.data.constrain(
           TypeState::Known(Type::Unit),
-          self.source_trace.clone(),
+          &self.source_trace,
           errors,
         )
       }
@@ -1573,7 +1584,7 @@ impl TypedExp {
         }
         let changed = ctx.constrain_name_type(
           name,
-          self.source_trace.clone(),
+          &self.source_trace,
           &mut self.data,
           errors,
         );
@@ -1588,7 +1599,7 @@ impl TypedExp {
             }
             Number::Float(_) => TypeState::Known(Type::F32),
           },
-          self.source_trace.clone(),
+          &self.source_trace,
           errors,
         );
         changed
@@ -1597,7 +1608,7 @@ impl TypedExp {
         self.data.subtree_fully_typed = true;
         let changed = self.data.constrain(
           TypeState::Known(Type::Bool),
-          self.source_trace.clone(),
+          &self.source_trace,
           errors,
         );
         changed
@@ -1620,7 +1631,7 @@ impl TypedExp {
               );
               let return_type_changed = body.data.mutually_constrain(
                 return_type_state,
-                self.source_trace.clone(),
+                &self.source_trace,
                 errors,
               );
               if arg_count == arg_names.len() {
@@ -1635,7 +1646,7 @@ impl TypedExp {
                   .collect::<Vec<_>>();
                 let fn_type_changed = self.data.constrain_fn_by_argument_types(
                   argument_types,
-                  self.source_trace.clone(),
+                  &self.source_trace,
                   errors,
                 );
                 self.data.subtree_fully_typed = body.data.subtree_fully_typed;
@@ -1670,7 +1681,7 @@ impl TypedExp {
         if let Name(name) = &f.kind {
           anything_changed |= ctx.constrain_name_type(
             name,
-            self.source_trace.clone(),
+            &self.source_trace,
             &mut f.data,
             errors,
           );
@@ -1685,7 +1696,7 @@ impl TypedExp {
               mutated_args: vec![],
               return_type: self.data.clone(),
             }))),
-            f.source_trace.clone(),
+            &self.source_trace,
             errors,
           );
         }
@@ -1701,17 +1712,14 @@ impl TypedExp {
               {
                 anything_changed |= self.data.mutually_constrain(
                   &mut signature.return_type,
-                  self.source_trace.clone(),
+                  &self.source_trace,
                   errors,
                 );
                 for (arg, (t, _)) in
                   args.iter_mut().zip(signature.arg_types.iter().cloned())
                 {
-                  anything_changed |= arg.data.constrain(
-                    t.kind,
-                    self.source_trace.clone(),
-                    errors,
-                  );
+                  anything_changed |=
+                    arg.data.constrain(t.kind, &self.source_trace, errors);
                 }
               } else {
                 errors.log(CompileError::new(
@@ -1724,7 +1732,13 @@ impl TypedExp {
               if args.len() == 1 {
                 anything_changed |= self.data.mutually_constrain(
                   inner_type,
-                  self.source_trace.clone(),
+                  &self.source_trace,
+                  errors,
+                );
+                let first_arg = &mut args[0];
+                first_arg.data.constrain(
+                  TypeState::OneOf(vec![Type::I32, Type::U32]),
+                  &first_arg.source_trace,
                   errors,
                 );
               } else {
@@ -1744,7 +1758,7 @@ impl TypedExp {
         }
         anything_changed |= f.data.constrain_fn_by_argument_types(
           args.iter().map(|arg| arg.data.kind.clone()).collect(),
-          self.source_trace.clone(),
+          &self.source_trace,
           errors,
         );
         anything_changed |= f.propagate_types_inner(ctx, errors);
@@ -1765,7 +1779,7 @@ impl TypedExp {
               {
                 anything_changed |= self.data.mutually_constrain(
                   &mut x.field_type,
-                  self.source_trace.clone(),
+                  &self.source_trace,
                   errors,
                 );
               } else {
@@ -1790,12 +1804,12 @@ impl TypedExp {
         Accessor::Swizzle(fields) => {
           let mut anything_changed = self.data.constrain(
             swizzle_accessor_typestate(&subexp.data, fields).kind,
-            self.source_trace.clone(),
+            &self.source_trace,
             errors,
           );
           anything_changed |= subexp.data.constrain(
             swizzle_accessed_possibilities(fields).kind,
-            self.source_trace.clone(),
+            &self.source_trace,
             errors,
           );
           anything_changed |= subexp.propagate_types_inner(ctx, errors);
@@ -1806,7 +1820,7 @@ impl TypedExp {
       Let(bindings, body) => {
         let mut anything_changed = body.data.mutually_constrain(
           &mut self.data,
-          self.source_trace.clone(),
+          &self.source_trace,
           errors,
         );
         for (name, _, value) in bindings.iter_mut() {
@@ -1817,7 +1831,7 @@ impl TypedExp {
         for (name, _, value) in bindings.iter_mut() {
           anything_changed |= value.data.constrain(
             ctx.unbind(name).typestate.kind,
-            self.source_trace.clone(),
+            &self.source_trace,
             errors,
           );
         }
@@ -1838,12 +1852,12 @@ impl TypedExp {
           anything_changed |= value.propagate_types_inner(ctx, errors);
           anything_changed |= case.data.mutually_constrain(
             &mut scrutinee.data,
-            self.source_trace.clone(),
+            &self.source_trace,
             errors,
           );
           anything_changed |= value.data.mutually_constrain(
             &mut self.data,
-            self.source_trace.clone(),
+            &self.source_trace,
             errors,
           );
         }
@@ -1865,7 +1879,7 @@ impl TypedExp {
         if let Some(exp) = expressions.last_mut() {
           anything_changed |= self.data.mutually_constrain(
             &mut exp.data,
-            self.source_trace.clone(),
+            &self.source_trace,
             errors,
           );
         } else {
@@ -1890,9 +1904,7 @@ impl TypedExp {
           .data
           .mutually_constrain(
             &mut variable_typestate,
-            increment_variable_initial_value_expression
-              .source_trace
-              .clone(),
+            &increment_variable_initial_value_expression.source_trace,
             errors,
           );
         anything_changed |= increment_variable_initial_value_expression
@@ -1906,12 +1918,12 @@ impl TypedExp {
         );
         anything_changed |= continue_condition_expression.data.constrain(
           TypeState::Known(Type::Bool),
-          continue_condition_expression.source_trace.clone(),
+          &continue_condition_expression.source_trace,
           errors,
         );
         anything_changed |= update_condition_expression.data.constrain(
           TypeState::Known(Type::Unit),
-          update_condition_expression.source_trace.clone(),
+          &update_condition_expression.source_trace,
           errors,
         );
         anything_changed |=
@@ -1935,12 +1947,12 @@ impl TypedExp {
       } => {
         let mut anything_changed = condition_expression.data.constrain(
           TypeState::Known(Type::Bool),
-          condition_expression.source_trace.clone(),
+          &condition_expression.source_trace,
           errors,
         );
         anything_changed |= body_expression.data.constrain(
           TypeState::Known(Type::Unit),
-          condition_expression.source_trace.clone(),
+          &condition_expression.source_trace,
           errors,
         );
         anything_changed |=
@@ -1976,7 +1988,7 @@ impl TypedExp {
                 &mut fn_type
                   .map(|fn_type| &mut fn_type.return_type)
                   .unwrap_or(&mut TypeState::Unknown.into()),
-                self.source_trace.clone(),
+                &self.source_trace,
                 errors,
               );
               changed
@@ -2004,7 +2016,7 @@ impl TypedExp {
             if let Type::Array(_, inner_type) = array_type {
               anything_changed |= child.data.mutually_constrain(
                 inner_type.as_mut(),
-                child
+                &child
                   .source_trace
                   .clone()
                   .insert_as_secondary(self.source_trace.clone()),
@@ -2037,11 +2049,10 @@ impl TypedExp {
         else {
           unreachable!()
         };
-        anything_changed |= exp.data.mutually_constrain(
-          inner_type,
-          self.source_trace.clone(),
-          errors,
-        );
+        anything_changed |=
+          exp
+            .data
+            .mutually_constrain(inner_type, &self.source_trace, errors);
         self.data.subtree_fully_typed = exp.data.subtree_fully_typed;
         anything_changed
       }
@@ -2229,11 +2240,8 @@ impl TypedExp {
                 {
                   let arg_types: Vec<Type> =
                     args.iter().map(|arg| arg.data.unwrap_known()).collect();
-                  if let Some(monomorphized_struct) = abstract_struct
-                    .generate_monomorphized(
-                      arg_types.clone(),
-                      exp.source_trace.clone(),
-                    )
+                  if let Some(monomorphized_struct) =
+                    abstract_struct.generate_monomorphized(arg_types.clone())
                   {
                     let monomorphized_struct = Rc::new(monomorphized_struct);
                     std::mem::swap(

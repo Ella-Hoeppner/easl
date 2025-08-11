@@ -16,3 +16,7 @@
 
 (defn f [i: u32]: vec4f
   (+ (a (- i 1)) (a (+ i 1))))
+
+(defn f2 []: f32
+  (let [arr [0.]]
+    (arr 0i)))

@@ -332,7 +332,6 @@ impl AbstractStruct {
   pub fn generate_monomorphized(
     &self,
     field_types: Vec<Type>,
-    source_trace: SourceTrace,
   ) -> Option<AbstractStruct> {
     if self.generic_args.is_empty() {
       return None;

@@ -741,7 +741,7 @@ impl Program {
       if let Some(value_expression) = &mut var.value {
         let changed = value_expression.data.constrain(
           var.var.typestate.kind.clone(),
-          var.source_trace.clone(),
+          &var.source_trace,
           errors,
         );
         anything_changed |= changed;

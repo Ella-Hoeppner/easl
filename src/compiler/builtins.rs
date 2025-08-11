@@ -396,21 +396,21 @@ pub fn built_in_type_aliases() -> Vec<(Rc<str>, Rc<AbstractStruct>)> {
         (
           format!("vec2{suffix}").into(),
           vec2()
-            .generate_monomorphized(vec![t.clone()], SourceTrace::empty())
+            .generate_monomorphized(vec![t.clone()])
             .unwrap()
             .into(),
         ),
         (
           format!("vec3{suffix}").into(),
           vec3()
-            .generate_monomorphized(vec![t.clone()], SourceTrace::empty())
+            .generate_monomorphized(vec![t.clone()])
             .unwrap()
             .into(),
         ),
         (
           format!("vec4{suffix}").into(),
           vec4()
-            .generate_monomorphized(vec![t.clone()], SourceTrace::empty())
+            .generate_monomorphized(vec![t.clone()])
             .unwrap()
             .into(),
         ),
@@ -422,7 +422,7 @@ pub fn built_in_type_aliases() -> Vec<(Rc<str>, Rc<AbstractStruct>)> {
           (
             format!("mat{n}x{m}{suffix}").into(),
             matrix(n, m)
-              .generate_monomorphized(vec![t.clone()], SourceTrace::empty())
+              .generate_monomorphized(vec![t.clone()])
               .unwrap()
               .into(),
           )
@@ -987,10 +987,7 @@ fn foreach_vec_type(
 fn vector_functions() -> Vec<AbstractFunctionSignature> {
   foreach_vec_type(|vec| {
     let vec = AbstractType::AbstractStruct(
-      vec
-        .generate_monomorphized(vec![Type::F32], SourceTrace::empty())
-        .unwrap()
-        .into(),
+      vec.generate_monomorphized(vec![Type::F32]).unwrap().into(),
     );
     let float = AbstractType::Type(Type::F32);
     [
@@ -1021,7 +1018,7 @@ fn vector_functions() -> Vec<AbstractFunctionSignature> {
   .chain({
     let vec3 = AbstractType::AbstractStruct(
       vec3()
-        .generate_monomorphized(vec![Type::F32], SourceTrace::empty())
+        .generate_monomorphized(vec![Type::F32])
         .unwrap()
         .into(),
     );

@@ -912,7 +912,7 @@ impl TypeState {
   pub fn constrain(
     &mut self,
     mut other: TypeState,
-    source_trace: SourceTrace,
+    source_trace: &SourceTrace,
     errors: &mut ErrorLog,
   ) -> bool {
     if *self == other {
@@ -930,9 +930,10 @@ impl TypeState {
           }
           (TypeState::Known(current_type), TypeState::Known(other_type)) => {
             if !current_type.compatible(&other_type) {
+              //panic!("a");
               errors.log(CompileError::new(
                 IncompatibleTypes(this.clone().into(), other.clone().into()),
-                source_trace,
+                source_trace.clone(),
               ));
               false
             } else {
@@ -943,7 +944,7 @@ impl TypeState {
                 ) => {
                   let mut anything_changed = signature.return_type.constrain(
                     other_signature.return_type.kind.clone(),
-                    source_trace.clone(),
+                    source_trace,
                     errors,
                   );
                   for ((t, _), (other_t, _)) in signature
@@ -951,11 +952,8 @@ impl TypeState {
                     .iter_mut()
                     .zip(other_signature.arg_types.iter_mut())
                   {
-                    let changed = t.constrain(
-                      other_t.kind.clone(),
-                      source_trace.clone(),
-                      errors,
-                    );
+                    let changed =
+                      t.constrain(other_t.kind.clone(), source_trace, errors);
                     anything_changed |= changed;
                   }
                   anything_changed
@@ -967,7 +965,7 @@ impl TypeState {
                   {
                     let changed = t.field_type.constrain(
                       other_t.field_type.kind.clone(),
-                      source_trace.clone(),
+                      source_trace,
                       errors,
                     );
                     anything_changed |= changed;
@@ -980,18 +978,19 @@ impl TypeState {
                 ) => {
                   let changed = inner_type.constrain(
                     other_inner_type.kind.clone(),
-                    source_trace.clone(),
+                    source_trace,
                     errors,
                   );
                   if let Some(other_size) = other_size {
                     if let Some(size) = &size {
                       if size != other_size {
+                        //panic!("b");
                         errors.log(CompileError::new(
                           IncompatibleTypes(
                             this.clone().into(),
                             other.clone().into(),
                           ),
-                          source_trace,
+                          source_trace.clone(),
                         ));
                       }
                     } else {
@@ -1036,18 +1035,20 @@ impl TypeState {
               std::mem::swap(this, &mut TypeState::Known(t.clone()));
               true
             } else {
+              //panic!("c");
               errors.log(CompileError::new(
                 IncompatibleTypes(this.clone().into(), other.clone().into()),
-                source_trace,
+                source_trace.clone(),
               ));
               false
             }
           }
           (TypeState::Known(t), TypeState::OneOf(possibilities)) => {
             if !t.compatible_with_any(&possibilities) {
+              //panic!("d");
               errors.log(CompileError::new(
                 IncompatibleTypes(this.clone().into(), other.clone().into()),
-                source_trace,
+                source_trace.clone(),
               ));
             }
             false
@@ -1061,18 +1062,17 @@ impl TypeState {
   pub fn mutually_constrain(
     &mut self,
     other: &mut TypeState,
-    source_trace: SourceTrace,
+    source_trace: &SourceTrace,
     errors: &mut ErrorLog,
   ) -> bool {
-    let self_changed =
-      self.constrain(other.clone(), source_trace.clone(), errors);
+    let self_changed = self.constrain(other.clone(), source_trace, errors);
     let other_changed = other.constrain(self.clone(), source_trace, errors);
     self_changed || other_changed
   }
   pub fn constrain_fn_by_argument_types(
     &mut self,
     mut arg_types: Vec<TypeState>,
-    source_trace: SourceTrace,
+    source_trace: &SourceTrace,
     errors: &mut ErrorLog,
   ) -> bool {
     self.with_dereferenced_mut(|typestate| match typestate {
@@ -1113,7 +1113,7 @@ impl TypeState {
               f: typestate.clone().into(),
               args: arg_types.into_iter().map(|t| t.into()).collect(),
             },
-            source_trace,
+            source_trace.clone(),
           ));
           false
         } else {
@@ -1127,7 +1127,7 @@ impl TypeState {
       TypeState::Known(t) => match t {
         Type::Function(signature) => signature.mutually_constrain_arguments(
           &mut arg_types,
-          source_trace,
+          source_trace.clone(),
           errors,
         ),
         Type::Array(_, _) => arg_types[0].constrain(
@@ -1138,7 +1138,7 @@ impl TypeState {
         _ => {
           errors.log(CompileError::new(
             ExpectedFunctionFoundNonFunction,
-            source_trace,
+            source_trace.clone(),
           ));
           false
         }
@@ -1416,7 +1416,7 @@ impl<'p> MutableProgramLocalContext<'p> {
   pub fn constrain_name_type(
     &mut self,
     name: &Rc<str>,
-    source_trace: SourceTrace,
+    source_trace: &SourceTrace,
     t: &mut TypeState,
     errors: &mut ErrorLog,
   ) -> bool {

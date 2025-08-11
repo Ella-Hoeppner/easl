@@ -487,7 +487,7 @@ impl FunctionSignature {
       for i in 0..args.len() {
         let changed = args[i].mutually_constrain(
           &mut self.arg_types[i].0,
-          source_trace.clone(),
+          &source_trace,
           errors,
         );
         any_arg_changed |= changed;
@@ -500,11 +500,8 @@ impl FunctionSignature {
             let arg_type = &mut self.arg_types.get_mut(0).unwrap().0;
             let mut any_arg_changed = false;
             for i in 0..args.len() {
-              let changed = args[i].mutually_constrain(
-                arg_type,
-                source_trace.clone(),
-                errors,
-              );
+              let changed =
+                args[i].mutually_constrain(arg_type, &source_trace, errors);
               any_arg_changed |= changed;
             }
             return any_arg_changed;

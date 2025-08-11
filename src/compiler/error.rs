@@ -63,28 +63,17 @@ impl From<&DocumentPosition> for SourceTrace {
   }
 }
 
-/*impl FromIterator<SourceTrace> for SourceTrace {
-  fn from_iter<T: IntoIterator<Item = SourceTrace>>(iter: T) -> Self {
-    let mut iter = iter.into_iter();
-    if let Some(first) = iter.next() {
-      iter.fold(first, |trace, subtrace| trace.combine_with(subtrace))
-    } else {
-      Self::empty()
-    }
-  }
-}*/
-
-#[derive(Clone, Debug, Error, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Error)]
 pub enum CompileErrorKind {
   #[error("Parsing error: `{0}`")]
   ParsingFailed(ParseError),
-  #[error("Unrecognized type name: `{0}`")]
+  #[error("Unrecognized type: `{0}`")]
   UnrecognizedTypeName(String),
   #[error("Invalid metadata: `{0}`")]
   InvalidMetadata(String),
-  #[error("Expected a name with a type annotation")]
+  #[error("Expected type annotation")]
   ExpectedTypeAnnotatedName,
-  #[error("Struct fields must be given explicit types")]
+  #[error("Struct fields must be typed")]
   StructFieldMissingType,
   #[error("Invalid struct name")]
   InvalidStructName,
@@ -92,15 +81,15 @@ pub enum CompileErrorKind {
   NoStructNamed(String),
   #[error("Invalid array signature")]
   InvalidArraySignature,
-  #[error("Array lookup requires 1 argument as an index, got {0} arguments")]
+  #[error("Array indexing needs 1 argument, got {0}")]
   ArrayLookupInvalidArity(usize),
   #[error("Invalid struct definition")]
   InvalidStructDefinition,
-  #[error("No generic called `{0}` in this scope")]
+  #[error("No generic named `{0}`")]
   UnrecognizedGeneric(String),
   #[error("Invalid token `{0}`")]
   InvalidToken(String),
-  #[error("Invalid top-level var `{0}`")]
+  #[error("Invalid var `{0}`")]
   InvalidTopLevelVar(String),
   #[error("Invalid defn `{0}`")]
   InvalidDefn(String),
@@ -118,13 +107,13 @@ pub enum CompileErrorKind {
   InvalidType(EaslTree),
   #[error("Invalid Type Name `{0}`")]
   InvalidTypeName(String),
-  #[error("Function argument missing type annotation")]
+  #[error("Function argument missing type")]
   FunctionArgMissingType,
   #[error("Invalid argument name")]
   InvalidArgumentName,
   #[error("Couldn't infer types")]
   CouldntInferTypes,
-  #[error("Incompatible types: expected {0}, found {1}")]
+  #[error("Incompatible types: {0} != {1}")]
   IncompatibleTypes(TypeStateDescription, TypeStateDescription),
   #[error("Function argument types incompatible. Function had type {}\n Recieved arguments of types:\n{}", .f, .args.iter().map(|t| format!("{t}")).collect::<Vec<String>>().join("\n"))]
   FunctionArgumentTypesIncompatible {
@@ -139,7 +128,7 @@ pub enum CompileErrorKind {
   FunctionExpressionHasNonFunctionType(TypeDescription),
   #[error("Unbound name: `{0}`")]
   UnboundName(String),
-  #[error("Applied non-function in function position")]
+  #[error("Applied non-function")]
   AppliedNonFunction,
   #[error("Wrong number of arguments for function{}", .0.as_ref().map_or(String::new(), |name| format!(": `{}`", name)))]
   WrongArity(Option<String>),
@@ -208,7 +197,7 @@ pub enum CompileErrorKind {
   InvalidReturn,
   #[error("Macro error: {0}")]
   MacroError(String),
-  #[error("Invalid array access syntax")]
+  #[error("Invalid array")]
   ArrayLiteralMistyped,
   #[error("Applications must use names")]
   ApplicationsMustUseNames,
@@ -216,13 +205,15 @@ pub enum CompileErrorKind {
   AnonymousFunctionsNotYetSupported,
   #[error("Anonymous structs are not yet supported")]
   AnonymousStructsNotYetSupported,
-  #[error("Encountered comment in source")]
+  #[error("Internal compiler error: Encountered comment in source")]
   EncounteredCommentInSource,
-  #[error("Encountered metadata in internal expression")]
-  EncounteredMetadataInInternalExpression,
+  #[error("Can't use metadata here")]
+  MetadataNotAllowed,
   #[error("Invalid function type")]
   InvalidFunctionType,
-  #[error("Cannot inline function without abstract ancestor")]
+  #[error(
+    "Internal compiler error: Cannot inline function without abstract ancestor"
+  )]
   CantInlineFunctionWithoutAbstractAncestor,
   #[error("No argument names for function")]
   NoArgNamesForFunction,
@@ -259,6 +250,102 @@ pub enum CompileErrorKind {
   #[error("`match` expression doesn't have exhaustive patterns")]
   NonexhaustiveMatch,
 }
+
+impl PartialEq for CompileErrorKind {
+  fn eq(&self, other: &Self) -> bool {
+    match (self, other) {
+      (Self::ParsingFailed(l0), Self::ParsingFailed(r0)) => l0 == r0,
+      (Self::UnrecognizedTypeName(l0), Self::UnrecognizedTypeName(r0)) => {
+        l0 == r0
+      }
+      (Self::InvalidMetadata(l0), Self::InvalidMetadata(r0)) => l0 == r0,
+      (Self::NoStructNamed(l0), Self::NoStructNamed(r0)) => l0 == r0,
+      (
+        Self::ArrayLookupInvalidArity(l0),
+        Self::ArrayLookupInvalidArity(r0),
+      ) => l0 == r0,
+      (Self::UnrecognizedGeneric(l0), Self::UnrecognizedGeneric(r0)) => {
+        l0 == r0
+      }
+      (Self::InvalidToken(l0), Self::InvalidToken(r0)) => l0 == r0,
+      (Self::InvalidTopLevelVar(l0), Self::InvalidTopLevelVar(r0)) => l0 == r0,
+      (Self::InvalidDefn(l0), Self::InvalidDefn(r0)) => l0 == r0,
+      (
+        Self::UnrecognizedTopLevelForm(l0),
+        Self::UnrecognizedTopLevelForm(r0),
+      ) => l0 == r0,
+      (Self::InvalidType(l0), Self::InvalidType(r0)) => l0 == r0,
+      (Self::InvalidTypeName(l0), Self::InvalidTypeName(r0)) => l0 == r0,
+      (Self::IncompatibleTypes(l0, l1), Self::IncompatibleTypes(r0, r1)) => {
+        (l0 == r0 && l1 == r1) || (l0 == r1 && l1 == r0)
+      }
+      (
+        Self::FunctionArgumentTypesIncompatible {
+          f: l_f,
+          args: l_args,
+        },
+        Self::FunctionArgumentTypesIncompatible {
+          f: r_f,
+          args: r_args,
+        },
+      ) => l_f == r_f && l_args == r_args,
+      (
+        Self::DuplicateFunctionSignature(l0),
+        Self::DuplicateFunctionSignature(r0),
+      ) => l0 == r0,
+      (
+        Self::FunctionSignatureConflictsWithBuiltin(l0),
+        Self::FunctionSignatureConflictsWithBuiltin(r0),
+      ) => l0 == r0,
+      (
+        Self::FunctionExpressionHasNonFunctionType(l0),
+        Self::FunctionExpressionHasNonFunctionType(r0),
+      ) => l0 == r0,
+      (Self::UnboundName(l0), Self::UnboundName(r0)) => l0 == r0,
+      (Self::WrongArity(l0), Self::WrongArity(r0)) => l0 == r0,
+      (
+        Self::NoSuchField {
+          struct_name: l_struct_name,
+          field_name: l_field_name,
+        },
+        Self::NoSuchField {
+          struct_name: r_struct_name,
+          field_name: r_field_name,
+        },
+      ) => l_struct_name == r_struct_name && l_field_name == r_field_name,
+      (
+        Self::InvalidVariableMetadata(l0),
+        Self::InvalidVariableMetadata(r0),
+      ) => l0 == r0,
+      (
+        Self::InvalidFunctionMetadata(l0),
+        Self::InvalidFunctionMetadata(r0),
+      ) => l0 == r0,
+      (
+        Self::AssignmentTargetMustBeVariable(l0),
+        Self::AssignmentTargetMustBeVariable(r0),
+      ) => l0 == r0,
+      (
+        Self::UnsatisfiedTypeConstraint(l0),
+        Self::UnsatisfiedTypeConstraint(r0),
+      ) => l0 == r0,
+      (Self::MacroError(l0), Self::MacroError(r0)) => l0 == r0,
+      (
+        Self::CantShadowTopLevelBinding(l0),
+        Self::CantShadowTopLevelBinding(r0),
+      ) => l0 == r0,
+      _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+    }
+  }
+}
+
+impl Hash for CompileErrorKind {
+  fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+    core::mem::discriminant(self).hash(state);
+  }
+}
+
+impl Eq for CompileErrorKind {}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CompileError {
