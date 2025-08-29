@@ -75,16 +75,16 @@ pub enum CompileErrorKind {
   ExpectedTypeAnnotatedName,
   #[error("Struct fields must be typed")]
   StructFieldMissingType,
-  #[error("Invalid struct name")]
-  InvalidStructName,
+  #[error("Invalid type name")]
+  InvalidTypeName,
   #[error("Couldn't find a struct named `{0}`")]
   NoStructNamed(String),
   #[error("Invalid array signature")]
   InvalidArraySignature,
   #[error("Array indexing needs 1 argument, got {0}")]
   ArrayLookupInvalidArity(usize),
-  #[error("Invalid struct definition")]
-  InvalidStructDefinition,
+  #[error("Invalid type definition")]
+  InvalidTypeDefinition,
   #[error("No generic named `{0}`")]
   UnrecognizedGeneric(String),
   #[error("Invalid token `{0}`")]
@@ -105,8 +105,6 @@ pub enum CompileErrorKind {
   MissingType,
   #[error("Unrecognized top-level form")]
   InvalidType(EaslTree),
-  #[error("Invalid Type Name `{0}`")]
-  InvalidTypeName(String),
   #[error("Function argument missing type")]
   FunctionArgMissingType,
   #[error("Invalid argument name")]
@@ -249,6 +247,10 @@ pub enum CompileErrorKind {
   DuplicatePattern,
   #[error("`match` expression doesn't have exhaustive patterns")]
   NonexhaustiveMatch,
+  #[error("Invalid enum variant")]
+  InvalidEnumVariant,
+  #[error("Cannot calculate size of type")]
+  CantCalculateSize,
 }
 
 impl PartialEq for CompileErrorKind {
@@ -275,7 +277,6 @@ impl PartialEq for CompileErrorKind {
         Self::UnrecognizedTopLevelForm(r0),
       ) => l0 == r0,
       (Self::InvalidType(l0), Self::InvalidType(r0)) => l0 == r0,
-      (Self::InvalidTypeName(l0), Self::InvalidTypeName(r0)) => l0 == r0,
       (Self::IncompatibleTypes(l0, l1), Self::IncompatibleTypes(r0, r1)) => {
         (l0 == r0 && l1 == r1) || (l0 == r1 && l1 == r0)
       }

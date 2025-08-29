@@ -7,14 +7,18 @@ use crate::{
   Never,
   compiler::{
     builtins::built_in_functions,
+    enums::{AbstractEnum, UntypedEnum},
     error::{CompileError, SourceTrace},
-    expression::{Exp, ExpKind, arg_list_and_return_type_from_easl_tree},
+    expression::{
+      Exp, ExpKind, ExpressionCompilationPosition,
+      arg_list_and_return_type_from_easl_tree,
+    },
     functions::AbstractFunctionSignature,
     metadata::extract_metadata,
     structs::UntypedStruct,
     types::{
-      AbstractType, ExpTypeInfo, Type, TypeConstraint, TypeState, Variable,
-      VariableKind, parse_generic_argument,
+      AbstractType, ExpTypeInfo, Type, TypeConstraint, TypeState, UntypedType,
+      Variable, VariableKind, parse_generic_argument,
     },
     util::read_type_annotated_name,
   },
@@ -50,11 +54,27 @@ thread_local! {
 }
 
 #[derive(Debug, Clone)]
-pub struct Program {
+pub struct TypeDefs {
   pub structs: Vec<Rc<AbstractStruct>>,
+  pub enums: Vec<Rc<AbstractEnum>>,
+  pub type_aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
+}
+
+impl TypeDefs {
+  pub fn empty() -> Self {
+    Self {
+      structs: vec![],
+      enums: vec![],
+      type_aliases: vec![],
+    }
+  }
+}
+
+#[derive(Debug, Clone)]
+pub struct Program {
+  pub typedefs: TypeDefs,
   pub abstract_functions:
     HashMap<Rc<str>, Vec<Rc<RefCell<AbstractFunctionSignature>>>>,
-  pub type_aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
   pub top_level_vars: Vec<TopLevelVar>,
 }
 
@@ -67,9 +87,8 @@ impl Default for Program {
 impl Program {
   pub fn empty() -> Self {
     Self {
-      structs: vec![],
+      typedefs: TypeDefs::empty(),
       abstract_functions: HashMap::new(),
-      type_aliases: vec![],
       top_level_vars: vec![],
     }
   }
@@ -94,7 +113,7 @@ impl Program {
     self
   }
   pub fn with_struct(mut self, s: Rc<AbstractStruct>) -> Self {
-    if !self.structs.contains(&s) {
+    if !self.typedefs.structs.contains(&s) {
       if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&&*s.name) {
         self.add_abstract_function(Rc::new(RefCell::new(
           AbstractFunctionSignature {
@@ -111,13 +130,44 @@ impl Program {
               .collect(),
             mutated_args: vec![],
             return_type: AbstractType::AbstractStruct(s.clone()),
-            implementation: FunctionImplementationKind::Constructor,
+            implementation: FunctionImplementationKind::StructConstructor,
             associative: false,
           },
         )));
       }
-      self.structs.push(s);
-      self.structs.dedup();
+      self.typedefs.structs.push(s);
+      self.typedefs.structs.dedup();
+    }
+    self
+  }
+  pub fn with_enum(mut self, e: Rc<AbstractEnum>) -> Self {
+    if !self.typedefs.enums.contains(&e) {
+      if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&&*e.name) {
+        for variant in e.variants.iter() {
+          self.add_abstract_function(Rc::new(RefCell::new(
+            AbstractFunctionSignature {
+              name: variant.name.clone(),
+              generic_args: e
+                .generic_args
+                .iter()
+                .map(|name| (name.clone(), vec![]))
+                .collect(),
+              arg_types: if variant.inner_type == AbstractType::Type(Type::Unit)
+              {
+                vec![]
+              } else {
+                vec![variant.inner_type.clone()]
+              },
+              mutated_args: vec![],
+              return_type: AbstractType::AbstractEnum(e.clone()),
+              implementation: FunctionImplementationKind::EnumConstructor,
+              associative: false,
+            },
+          )));
+        }
+      }
+      self.typedefs.enums.push(e);
+      self.typedefs.enums.dedup();
     }
     self
   }
@@ -128,11 +178,12 @@ impl Program {
     mut self,
     mut aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
   ) -> Self {
-    self.type_aliases.append(&mut aliases);
+    self.typedefs.type_aliases.append(&mut aliases);
     self
   }
   pub fn add_monomorphized_struct(&mut self, s: Rc<AbstractStruct>) {
     if self
+      .typedefs
       .structs
       .iter()
       .find(|existing_struct| {
@@ -141,7 +192,7 @@ impl Program {
       })
       .is_none()
     {
-      self.structs.push(s);
+      self.typedefs.structs.push(s);
     }
   }
   pub fn concrete_signatures(
@@ -156,7 +207,7 @@ impl Program {
           Ok(Type::Function(Box::new(
             AbstractFunctionSignature::concretize(
               Rc::new(RefCell::new(signature.borrow().clone())),
-              &self.structs,
+              &self.typedefs,
               source_trace.clone(),
             )?,
           )))
@@ -197,8 +248,8 @@ impl Program {
       .map(|tree| macroexpand(tree, &macros, &mut errors))
       .collect::<Vec<EaslTree>>();
 
-    let mut non_struct_trees = vec![];
-    let mut untyped_structs = vec![];
+    let mut non_typedef_trees = vec![];
+    let mut untyped_types = vec![];
 
     for tree in trees.into_iter() {
       use crate::parse::Encloser::*;
@@ -213,26 +264,37 @@ impl Program {
           children_iter.next()
         {
           let source_trace: SourceTrace = position.clone().into();
-          if first_child == "struct" {
-            if let Some(struct_name) = children_iter.next() {
-              match struct_name {
-                EaslTree::Leaf(_, struct_name) => {
-                  match UntypedStruct::from_field_trees(
-                    struct_name.clone().into(),
-                    vec![],
-                    children_iter.cloned().collect(),
-                    source_trace,
-                  ) {
-                    Ok(s) => untyped_structs.push(s),
-                    Err(e) => errors.log(e),
-                  }
-                }
-                EaslTree::Inner(
-                  (position, Encloser(Parens)),
-                  signature_children,
-                ) => {
-                  let source_trace: SourceTrace = position.clone().into();
-                  let (signature_leaves, signature_errors) = signature_children
+          match first_child.as_str() {
+            "struct" | "enum" => {
+              if let Some(struct_name) = children_iter.next() {
+                match struct_name {
+                  EaslTree::Leaf(_, name) => match first_child.as_str() {
+                    "struct" => match UntypedStruct::from_field_trees(
+                      name.clone().into(),
+                      vec![],
+                      children_iter.cloned().collect(),
+                      source_trace,
+                    ) {
+                      Ok(s) => untyped_types.push(UntypedType::Struct(s)),
+                      Err(e) => errors.log(e),
+                    },
+                    "enum" => match UntypedEnum::from_field_trees(
+                      name.clone().into(),
+                      vec![],
+                      children_iter.cloned().collect(),
+                      source_trace,
+                    ) {
+                      Ok(e) => untyped_types.push(UntypedType::Enum(e)),
+                      Err(e) => errors.log(e),
+                    },
+                    _ => unreachable!(),
+                  },
+                  EaslTree::Inner(
+                    (position, Encloser(Parens)),
+                    signature_children,
+                  ) => {
+                    let source_trace: SourceTrace = position.clone().into();
+                    let (signature_leaves, signature_errors) = signature_children
                     .into_iter()
                     .map(|child| match child {
                       EaslTree::Leaf(_, name) => {
@@ -241,61 +303,75 @@ impl Program {
                       _ => (
                         None,
                         Some(CompileError::new(
-                          InvalidStructName,
+                          InvalidTypeName,
                           child.position().clone().into(),
                         )),
                       ),
                     })
                     .collect::<(Vec<Option<Rc<str>>>, Vec<Option<CompileError>>)>();
-                  let filtered_signature_errors: Vec<CompileError> =
-                    signature_errors.into_iter().filter_map(|x| x).collect();
-                  if filtered_signature_errors.is_empty() {
-                    let mut filtered_signature_leaves = signature_leaves
-                      .into_iter()
-                      .filter_map(|x| x)
-                      .collect::<Vec<_>>()
-                      .into_iter();
-                    if let Some(struct_name) = filtered_signature_leaves.next()
-                    {
-                      if filtered_signature_leaves.len() == 0 {
+                    let filtered_signature_errors: Vec<CompileError> =
+                      signature_errors.into_iter().filter_map(|x| x).collect();
+                    if filtered_signature_errors.is_empty() {
+                      let mut filtered_signature_leaves = signature_leaves
+                        .into_iter()
+                        .filter_map(|x| x)
+                        .collect::<Vec<_>>()
+                        .into_iter();
+                      if let Some(type_name) = filtered_signature_leaves.next()
+                      {
+                        if filtered_signature_leaves.len() == 0 {
+                          errors.log(CompileError::new(
+                            InvalidTypeName,
+                            source_trace,
+                          ));
+                        } else {
+                          match first_child.as_str() {
+                            "struct" => match UntypedStruct::from_field_trees(
+                              type_name,
+                              filtered_signature_leaves.collect(),
+                              children_iter.cloned().collect(),
+                              source_trace,
+                            ) {
+                              Ok(s) => {
+                                untyped_types.push(UntypedType::Struct(s))
+                              }
+                              Err(e) => errors.log(e),
+                            },
+                            "enum" => match UntypedEnum::from_field_trees(
+                              type_name,
+                              filtered_signature_leaves.collect(),
+                              children_iter.cloned().collect(),
+                              source_trace,
+                            ) {
+                              Ok(e) => untyped_types.push(UntypedType::Enum(e)),
+                              Err(e) => errors.log(e),
+                            },
+                            _ => unreachable!(),
+                          }
+                        }
+                      } else {
                         errors.log(CompileError::new(
-                          InvalidStructName,
+                          InvalidTypeName,
                           source_trace,
                         ));
-                      } else {
-                        match UntypedStruct::from_field_trees(
-                          struct_name,
-                          filtered_signature_leaves.collect(),
-                          children_iter.cloned().collect(),
-                          source_trace,
-                        ) {
-                          Ok(s) => untyped_structs.push(s),
-                          Err(e) => errors.log(e),
-                        }
                       }
                     } else {
-                      errors.log(CompileError::new(
-                        InvalidStructName,
-                        source_trace,
-                      ));
+                      errors.log_all(filtered_signature_errors);
                     }
-                  } else {
-                    errors.log_all(filtered_signature_errors);
+                  }
+                  EaslTree::Inner((position, _), _) => {
+                    errors.log(CompileError::new(
+                      InvalidTypeName,
+                      position.clone().into(),
+                    ));
                   }
                 }
-                EaslTree::Inner((position, _), _) => {
-                  errors.log(CompileError::new(
-                    InvalidStructName,
-                    position.clone().into(),
-                  ));
-                }
+              } else {
+                errors
+                  .log(CompileError::new(InvalidTypeDefinition, source_trace));
               }
-            } else {
-              errors
-                .log(CompileError::new(InvalidStructDefinition, source_trace));
             }
-          } else {
-            non_struct_trees.push((metadata, tree_body))
+            _ => non_typedef_trees.push((metadata, tree_body)),
           }
         } else {
           errors.log(CompileError::new(
@@ -310,26 +386,34 @@ impl Program {
         ));
       }
     }
-    untyped_structs.sort_by(|a, b| {
-      if a.references_type_name(&b.name) {
+    untyped_types.sort_by(|a, b| {
+      if a.references_type_name(b.name()) {
         Ordering::Greater
-      } else if b.references_type_name(&a.name) {
+      } else if b.references_type_name(a.name()) {
         Ordering::Less
       } else {
         Ordering::Equal
       }
     });
     let mut program = Program::default();
-    for untyped_struct in untyped_structs {
-      match untyped_struct
-        .assign_types(&program.structs, &built_in_type_aliases())
-      {
-        Ok(s) => program = program.with_struct(s.into()),
-        Err(e) => errors.log(e),
+    for untyped_type in untyped_types {
+      match untyped_type {
+        UntypedType::Struct(untyped_struct) => {
+          match untyped_struct.assign_types(&program.typedefs) {
+            Ok(s) => program = program.with_struct(s.into()),
+            Err(e) => errors.log(e),
+          }
+        }
+        UntypedType::Enum(untyped_enum) => {
+          match untyped_enum.assign_types(&program.typedefs) {
+            Ok(e) => program = program.with_enum(e.into()),
+            Err(e) => errors.log(e),
+          }
+        }
       }
     }
 
-    for (metadata, tree) in non_struct_trees.into_iter() {
+    for (metadata, tree) in non_typedef_trees.into_iter() {
       use crate::parse::Encloser::*;
       use sse::syntax::EncloserOrOperator::*;
       if let EaslTree::Inner((parens_position, Encloser(Parens)), children) =
@@ -410,14 +494,13 @@ impl Program {
                     let type_source_path = type_ast.position().clone();
                     match AbstractType::from_easl_tree(
                       type_ast,
-                      &program.structs,
-                      &program.type_aliases,
+                      &program.typedefs,
                       &vec![],
                     )
                     .map(|t| {
                       t.concretize(
                         &vec![],
-                        &program.structs,
+                        &program.typedefs,
                         type_source_path.into(),
                       )
                     }) {
@@ -436,8 +519,7 @@ impl Program {
                         }
                         let value = value_ast.map(|value_ast| match TypedExp::try_from_easl_tree(
                           value_ast,
-                          &program.structs,
-                          &vec![],
+                          &program.typedefs,
                           &vec![],
                           crate::compiler::expression::SyntaxTreeContext::Default,
                         ) {
@@ -466,16 +548,14 @@ impl Program {
                   Ok((name, type_ast)) => {
                     match TypedExp::try_from_easl_tree(
                       children_iter.next().unwrap(),
-                      &program.structs,
-                      &vec![],
+                      &program.typedefs,
                       &vec![],
                       crate::compiler::expression::SyntaxTreeContext::Default,
                     ) {
                       Ok(value_expression) => {
                         match Type::from_easl_tree(
                           type_ast,
-                          &program.structs,
-                          &program.type_aliases,
+                          &program.typedefs,
                           &vec![],
                         ) {
                           Ok(t) => {
@@ -530,8 +610,7 @@ impl Program {
                           .map(|subtree| {
                             parse_generic_argument(
                               subtree,
-                              &program.structs,
-                              &program.type_aliases,
+                              &program.typedefs,
                               &vec![],
                             )
                           })
@@ -571,8 +650,7 @@ impl Program {
                         .collect();
                       match arg_list_and_return_type_from_easl_tree(
                         arg_list_ast,
-                        &program.structs,
-                        &program.type_aliases,
+                        &program.typedefs,
                         &generic_arg_names,
                       ) {
                         Ok((
@@ -585,7 +663,7 @@ impl Program {
                         )) => {
                           match return_type.concretize(
                             &generic_arg_names,
-                            &program.structs,
+                            &program.typedefs,
                             source_path.clone().into(),
                           ) {
                             Ok(concrete_return_type) => {
@@ -595,7 +673,7 @@ impl Program {
                                   Ok((
                                     TypeState::Known(t.concretize(
                                       &generic_arg_names,
-                                      &program.structs,
+                                      &program.typedefs,
                                       source_path.clone().into(),
                                     )?)
                                     .into(),
@@ -625,8 +703,7 @@ impl Program {
                                       .into(),
                                     arg_names.clone(),
                                     concrete_arg_types,
-                                    &program.structs,
-                                    &program.type_aliases,
+                                    &program.typedefs,
                                     &generic_arg_names,
                                   ) {
                                     Ok(body) => {
@@ -849,13 +926,14 @@ impl Program {
             }
             Err(e) => errors.log(e),
           }
+        } else {
+          monomorphized_ctx.add_abstract_function(Rc::clone(f));
         }
       }
     }
     take(self, |old_ctx| {
-      monomorphized_ctx.structs = old_ctx.structs;
+      monomorphized_ctx.typedefs = old_ctx.typedefs;
       monomorphized_ctx.top_level_vars = old_ctx.top_level_vars;
-      monomorphized_ctx.type_aliases = old_ctx.type_aliases;
       monomorphized_ctx
     });
   }
@@ -886,30 +964,33 @@ impl Program {
           })
           .is_none()
       {
-        if let FunctionImplementationKind::Composite(implementation) =
-          &f.borrow().implementation
-        {
-          match implementation
-            .borrow_mut()
-            .body
-            .inline_higher_order_arguments(&mut inlined_ctx)
-          {
-            Ok(added_new_function) => {
-              changed |= added_new_function;
-              let mut new_f = (**f).borrow().clone();
-              new_f.implementation =
-                FunctionImplementationKind::Composite(implementation.clone());
-              inlined_ctx.add_abstract_function(Rc::new(RefCell::new(new_f)));
+        match &f.borrow().implementation {
+          FunctionImplementationKind::Composite(implementation) => {
+            match implementation
+              .borrow_mut()
+              .body
+              .inline_higher_order_arguments(&mut inlined_ctx)
+            {
+              Ok(added_new_function) => {
+                changed |= added_new_function;
+                let mut new_f = (**f).borrow().clone();
+                new_f.implementation =
+                  FunctionImplementationKind::Composite(implementation.clone());
+                inlined_ctx.add_abstract_function(Rc::new(RefCell::new(new_f)));
+              }
+              Err(e) => errors.log(e),
             }
-            Err(e) => errors.log(e),
           }
+          FunctionImplementationKind::EnumConstructor => {
+            inlined_ctx.add_abstract_function(Rc::clone(f));
+          }
+          _ => {}
         }
       }
     }
     take(self, |old_ctx| {
-      inlined_ctx.structs = old_ctx.structs;
+      inlined_ctx.typedefs = old_ctx.typedefs;
       inlined_ctx.top_level_vars = old_ctx.top_level_vars;
-      inlined_ctx.type_aliases = old_ctx.type_aliases;
       inlined_ctx
     });
     changed
@@ -923,26 +1004,81 @@ impl Program {
     wgsl += "\n";
     let default_structs = built_in_structs();
     for s in self
+      .typedefs
       .structs
       .iter()
       .cloned()
       .filter(|s| !default_structs.contains(s))
     {
       if let Some(compiled_struct) =
-        Rc::unwrap_or_clone(s).compile_if_non_generic(&self.structs)?
+        Rc::unwrap_or_clone(s).compile_if_non_generic(&self.typedefs)?
       {
         wgsl += &compiled_struct;
         wgsl += "\n\n";
       }
     }
+    for e in self.typedefs.enums.iter().cloned() {
+      if let Some(compiled_enum) =
+        Rc::unwrap_or_clone(e).compile_if_non_generic(&self.typedefs)?
+      {
+        wgsl += &compiled_enum;
+        wgsl += "\n\n";
+      }
+    }
     for f in self.abstract_functions_iter() {
       let f = f.borrow().clone();
-      if let FunctionImplementationKind::Composite(implementation) =
-        f.implementation
-      {
-        if f.generic_args.is_empty() {
-          wgsl += &implementation.borrow().clone().compile(&f.name)?;
-          wgsl += "\n\n";
+      if f.generic_args.is_empty() {
+        match f.implementation {
+          FunctionImplementationKind::EnumConstructor => {
+            let variant_name = f.name;
+            let AbstractType::AbstractEnum(e) = f.return_type else {
+              unreachable!("EnumConstructor fn had a non-enum type")
+            };
+            let variant = e
+              .variants
+              .iter()
+              .find(|v| v.name == variant_name)
+              .expect("EnumConstructor fn name didn't match any variant");
+            let enum_name = &e.name;
+            let AbstractType::Type(inner_type) = &variant.inner_type else {
+              unreachable!()
+            };
+            let args_str = if *inner_type == Type::Unit {
+              String::new()
+            } else {
+              let inner_type_name = inner_type.compile();
+              format!("inner: {inner_type_name}")
+            };
+            let bitcast_inner_values = inner_type
+              .bitcastable_chunk_accessors("inner".into())
+              .into_iter()
+              .map(|exp| {
+                exp.compile(ExpressionCompilationPosition::InnerExpression)
+              })
+              .chain(std::iter::repeat("0u".into()))
+              .take(e.inner_size_in_u32s()?)
+              .collect::<Vec<String>>()
+              .join(", ");
+            wgsl += &format!(
+              "fn {variant_name}({args_str}) -> {enum_name} {{\n  \
+              {enum_name}(array({bitcast_inner_values}))\n\
+              }}"
+            );
+            wgsl += "\n\n";
+          }
+          _ => {}
+        }
+      }
+    }
+    for f in self.abstract_functions_iter() {
+      let f = f.borrow().clone();
+      if f.generic_args.is_empty() {
+        match f.implementation {
+          FunctionImplementationKind::Composite(implementation) => {
+            wgsl += &implementation.borrow().clone().compile(&f.name)?;
+            wgsl += "\n\n";
+          }
+          _ => {}
         }
       }
     }
@@ -1044,7 +1180,7 @@ impl Program {
       let mut normalized_signatures: Vec<(Option<SourceTrace>, _)> = vec![];
       for signature in signatures {
         if let FunctionImplementationKind::Builtin
-        | FunctionImplementationKind::Constructor =
+        | FunctionImplementationKind::StructConstructor =
           signature.borrow().implementation
         {
           let normalized = signature.borrow().normalized_signature();

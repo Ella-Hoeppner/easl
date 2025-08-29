@@ -1,0 +1,16 @@
+(enum TestEnum A (B f32) (C vec2f))
+
+(defn make-enum-a []: TestEnum
+  (A))
+
+(defn make-enum-b []: TestEnum
+  (B 0.))
+
+(defn make-enum-c []: TestEnum
+  (C (vec2f 0.)))
+
+#_(defn value [a: TestEnum]: f32
+    (match a
+      A 0.
+      (B x) x
+      (C x) (+ x.x x.y)))

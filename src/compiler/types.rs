@@ -1,5 +1,6 @@
 use core::fmt::Debug;
 use std::{
+  array,
   cell::RefCell,
   collections::HashMap,
   fmt::Display,
@@ -11,7 +12,13 @@ use std::{
 use sse::{document::DocumentPosition, syntax::EncloserOrOperator};
 
 use crate::{
-  compiler::error::CompileError,
+  compiler::{
+    enums::{AbstractEnum, Enum, UntypedEnum},
+    error::{CompileError, CompileErrorKind},
+    expression::{ExpKind, Number, TypedExp},
+    program::TypeDefs,
+    structs::UntypedStruct,
+  },
   parse::{EaslTree, Encloser, Operator},
 };
 
@@ -23,14 +30,49 @@ use super::{
   util::compile_word,
 };
 
+pub fn contains_name_leaf(name: &Rc<str>, tree: &EaslTree) -> bool {
+  match &tree {
+    EaslTree::Leaf(_, leaf) => leaf == &**name,
+    EaslTree::Inner(_, children) => children
+      .iter()
+      .fold(false, |acc, child| acc || contains_name_leaf(name, child)),
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum UntypedType {
+  Struct(UntypedStruct),
+  Enum(UntypedEnum),
+}
+impl UntypedType {
+  pub fn references_type_name(&self, name: &Rc<str>) -> bool {
+    match self {
+      UntypedType::Struct(untyped_struct) => {
+        untyped_struct.references_type_name(name)
+      }
+      UntypedType::Enum(untyped_enum) => {
+        untyped_enum.references_type_name(name)
+      }
+    }
+  }
+  pub fn name(&self) -> &Rc<str> {
+    match self {
+      UntypedType::Struct(untyped_struct) => &untyped_struct.name,
+      UntypedType::Enum(untyped_enum) => &untyped_enum.name,
+    }
+  }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AbstractType {
   Generic(Rc<str>),
   Type(Type),
   AbstractStruct(Rc<AbstractStruct>),
+  AbstractEnum(Rc<AbstractEnum>),
   AbstractArray {
     size: ArraySize,
     inner_type: Box<Self>,
+    source_trace: SourceTrace,
   },
   Reference(Box<Self>),
 }
@@ -54,7 +96,7 @@ impl AbstractType {
   pub fn fill_generics(
     &self,
     generics: &HashMap<Rc<str>, ExpTypeInfo>,
-    structs: &Vec<Rc<AbstractStruct>>,
+    typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<ExpTypeInfo> {
     Ok(match self {
@@ -67,23 +109,32 @@ impl AbstractType {
         TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
           s.clone(),
           generics,
-          structs,
+          typedefs,
           source_trace,
         )?))
         .into()
       }
-      AbstractType::AbstractArray { size, inner_type } => {
-        TypeState::Known(Type::Array(
-          Some(size.clone()),
-          inner_type
-            .fill_generics(generics, structs, source_trace)?
-            .into(),
-        ))
+      AbstractType::AbstractEnum(e) => {
+        TypeState::Known(Type::Enum(AbstractEnum::fill_generics(
+          e.clone(),
+          generics,
+          typedefs,
+          source_trace,
+        )?))
         .into()
       }
+      AbstractType::AbstractArray {
+        size, inner_type, ..
+      } => TypeState::Known(Type::Array(
+        Some(size.clone()),
+        inner_type
+          .fill_generics(generics, typedefs, source_trace)?
+          .into(),
+      ))
+      .into(),
       AbstractType::Reference(inner_type) => TypeState::Known(Type::Reference(
         inner_type
-          .fill_generics(generics, structs, source_trace)?
+          .fill_generics(generics, typedefs, source_trace)?
           .into(),
       ))
       .into(),
@@ -92,7 +143,7 @@ impl AbstractType {
   pub fn concretize(
     &self,
     skolems: &Vec<Rc<str>>,
-    structs: &Vec<Rc<AbstractStruct>>,
+    typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Type> {
     match self {
@@ -104,15 +155,20 @@ impl AbstractType {
         }
       }
       AbstractType::AbstractStruct(s) => Ok(Type::Struct(
-        AbstractStruct::concretize(s.clone(), structs, skolems, source_trace)?,
+        AbstractStruct::concretize(s.clone(), typedefs, skolems, source_trace)?,
+      )),
+      AbstractType::AbstractEnum(e) => Ok(Type::Enum(
+        AbstractEnum::concretize(e.clone(), typedefs, skolems, source_trace)?,
       )),
       AbstractType::Type(t) => Ok(t.clone()),
-      AbstractType::AbstractArray { size, inner_type } => Ok(Type::Array(
+      AbstractType::AbstractArray {
+        size, inner_type, ..
+      } => Ok(Type::Array(
         Some(size.clone()),
         Box::new(
           TypeState::Known(inner_type.concretize(
             skolems,
-            structs,
+            typedefs,
             source_trace,
           )?)
           .into(),
@@ -121,7 +177,7 @@ impl AbstractType {
       AbstractType::Reference(inner_type) => Ok(Type::Reference(Box::new(
         TypeState::Known(inner_type.concretize(
           skolems,
-          structs,
+          typedefs,
           source_trace,
         )?)
         .into(),
@@ -144,33 +200,43 @@ impl AbstractType {
           .clone()
           .partially_fill_abstract_generics(generics.clone()),
       )),
-      AbstractType::AbstractArray { size, inner_type } => {
-        AbstractType::AbstractArray {
-          size,
-          inner_type: inner_type.fill_abstract_generics(generics).into(),
-        }
-      }
+      AbstractType::AbstractEnum(e) => AbstractType::AbstractEnum(Rc::new(
+        (*e)
+          .clone()
+          .partially_fill_abstract_generics(generics.clone()),
+      )),
+      AbstractType::AbstractArray {
+        size,
+        inner_type,
+        source_trace,
+      } => AbstractType::AbstractArray {
+        size,
+        source_trace,
+        inner_type: inner_type.fill_abstract_generics(generics).into(),
+      },
       AbstractType::Reference(inner_type) => AbstractType::Reference(
         inner_type.fill_abstract_generics(generics).into(),
       ),
     }
   }
-  pub fn compile(
-    self,
-    structs: &Vec<Rc<AbstractStruct>>,
-  ) -> CompileResult<String> {
+  pub fn compile(self, typedefs: &TypeDefs) -> CompileResult<String> {
     Ok(match self {
       AbstractType::Generic(_) => {
         panic!("attempted to compile generic struct field")
       }
       AbstractType::Type(t) => t.compile(),
       AbstractType::AbstractStruct(t) => Rc::unwrap_or_clone(t)
-        .compile_if_non_generic(structs)?
-        .expect("failed to compile abstract structs"),
-      AbstractType::AbstractArray { size, inner_type } => {
+        .compile_if_non_generic(typedefs)?
+        .expect("failed to compile abstract struct"),
+      AbstractType::AbstractEnum(e) => Rc::unwrap_or_clone(e)
+        .compile_if_non_generic(typedefs)?
+        .expect("failed to compile abstract enum"),
+      AbstractType::AbstractArray {
+        size, inner_type, ..
+      } => {
         format!(
           "array<{}{}>",
-          inner_type.compile(structs)?,
+          inner_type.compile(typedefs)?,
           format!("{}", size.compile_type())
         )
       }
@@ -181,8 +247,7 @@ impl AbstractType {
   }
   pub fn from_easl_tree(
     tree: EaslTree,
-    structs: &Vec<Rc<AbstractStruct>>,
-    aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    typedefs: &TypeDefs,
     skolems: &Vec<Rc<str>>,
   ) -> CompileResult<Self> {
     match tree {
@@ -194,8 +259,7 @@ impl AbstractType {
           AbstractType::Type(Type::from_name(
             leaf_rc,
             position.clone(),
-            structs,
-            aliases,
+            typedefs,
             skolems,
           )?)
         })
@@ -209,7 +273,7 @@ impl AbstractType {
           if let Some(EaslTree::Leaf(_, leaf)) = children_iter.next() {
             leaf
           } else {
-            return err(InvalidStructName, position.into());
+            return err(InvalidTypeName, position.into());
           };
         if generic_struct_name.as_str() == "Fn" {
           Ok(AbstractType::Type(Type::from_easl_tree(
@@ -217,8 +281,7 @@ impl AbstractType {
               (position, EncloserOrOperator::Encloser(Encloser::Parens)),
               children,
             ),
-            structs,
-            aliases,
+            typedefs,
             skolems,
           )?))
         } else {
@@ -229,7 +292,8 @@ impl AbstractType {
             } else {
               unreachable!()
             };
-          let generic_struct = structs
+          let generic_struct = typedefs
+            .structs
             .iter()
             .find(|s| &*s.name == generic_struct_name.as_str())
             .ok_or_else(|| {
@@ -241,7 +305,7 @@ impl AbstractType {
             .clone();
           let generic_args = children_iter
             .map(|subtree: EaslTree| {
-              Self::from_easl_tree(subtree, structs, aliases, skolems)
+              Self::from_easl_tree(subtree, typedefs, skolems)
             })
             .collect::<CompileResult<Vec<_>>>()?;
           Ok(AbstractType::AbstractStruct(Rc::new(
@@ -270,8 +334,7 @@ impl AbstractType {
               {
                 let inner_type = Type::from_easl_tree(
                   type_annotation_children.remove(0),
-                  structs,
-                  aliases,
+                  typedefs,
                   skolems,
                 )?;
                 Ok(AbstractType::Type(Type::Array(
@@ -287,8 +350,7 @@ impl AbstractType {
               }
             }
             other => {
-              let inner_type =
-                Type::from_easl_tree(other, structs, aliases, skolems)?;
+              let inner_type = Type::from_easl_tree(other, typedefs, skolems)?;
               Ok(AbstractType::Type(Type::Array(
                 Some(ArraySize::Unsized),
                 Box::new(TypeState::Known(inner_type).into()),
@@ -305,17 +367,14 @@ impl AbstractType {
   pub fn from_name(
     name: Rc<str>,
     position: DocumentPosition,
-    structs: &Vec<Rc<AbstractStruct>>,
-    aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    typedefs: &TypeDefs,
     generic_args: &Vec<Rc<str>>,
     skolems: &Vec<Rc<str>>,
   ) -> CompileResult<Self> {
     Ok(if generic_args.contains(&name) {
       AbstractType::Generic(name.into())
     } else {
-      AbstractType::Type(Type::from_name(
-        name, position, structs, aliases, skolems,
-      )?)
+      AbstractType::Type(Type::from_name(name, position, typedefs, skolems)?)
     })
   }
   pub fn extract_generic_bindings(
@@ -379,6 +438,43 @@ impl AbstractType {
       other => other,
     }
   }
+  pub fn size_in_u32s(
+    &self,
+    source_trace: &SourceTrace,
+  ) -> CompileResult<usize> {
+    Ok(match self {
+      AbstractType::Generic(_) => panic!(
+        "encountered Generic while calculating size_in_u32s, this should \
+        never happen"
+      ),
+      AbstractType::Type(t) => t.size_in_u32s(source_trace)?,
+      AbstractType::Reference(_) => 1,
+      AbstractType::AbstractStruct(s) => s
+        .fields
+        .iter()
+        .map(|f| f.field_type.size_in_u32s(source_trace))
+        .collect::<CompileResult<Vec<usize>>>()?
+        .into_iter()
+        .sum::<usize>(),
+      AbstractType::AbstractEnum(e) => e.inner_size_in_u32s()? + 1,
+      AbstractType::AbstractArray {
+        size,
+        inner_type,
+        source_trace,
+      } => {
+        inner_type.size_in_u32s(source_trace)?
+          * match size {
+            ArraySize::Literal(x) => *x as usize,
+            ArraySize::Constant(_) | ArraySize::Unsized => {
+              return Err(CompileError::new(
+                CompileErrorKind::CantCalculateSize,
+                source_trace.clone(),
+              ));
+            }
+          }
+      }
+    })
+  }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -422,12 +518,47 @@ pub enum Type {
   U32,
   Bool,
   Struct(Struct),
+  Enum(Enum),
   Function(Box<FunctionSignature>),
   Skolem(Rc<str>),
   Array(Option<ArraySize>, Box<ExpTypeInfo>),
   Reference(Box<ExpTypeInfo>),
 }
 impl Type {
+  pub fn size_in_u32s(
+    &self,
+    source_trace: &SourceTrace,
+  ) -> CompileResult<usize> {
+    Ok(match self {
+      Type::Unit => 0,
+      Type::F32 | Type::I32 | Type::U32 | Type::Bool => 1,
+      Type::Struct(s) => s
+        .fields
+        .iter()
+        .map(|f| f.field_type.unwrap_known().size_in_u32s(source_trace))
+        .collect::<CompileResult<Vec<usize>>>()?
+        .into_iter()
+        .sum::<usize>(),
+      Type::Enum(e) => e.size_in_u32s()?,
+      Type::Function(_) => {
+        todo!("can't calculate size of function signatures yet")
+      }
+      Type::Skolem(_) => panic!("tried to calculate size of skolem"),
+      Type::Array(size, inner_type) => {
+        inner_type.unwrap_known().size_in_u32s(source_trace)?
+          * match size {
+            Some(ArraySize::Literal(x)) => *x as usize,
+            _ => {
+              return Err(CompileError::new(
+                CompileErrorKind::CantCalculateSize,
+                source_trace.clone(),
+              ));
+            }
+          }
+      }
+      Type::Reference(exp_type_info) => 1,
+    })
+  }
   pub fn satisfies_constraints(&self, constraint: &TypeConstraint) -> bool {
     match &*constraint.name {
       "Scalar" => {
@@ -439,13 +570,12 @@ impl Type {
   }
   pub fn from_easl_tree(
     tree: EaslTree,
-    structs: &Vec<Rc<AbstractStruct>>,
-    aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    typedefs: &TypeDefs,
     skolems: &Vec<Rc<str>>,
   ) -> CompileResult<Self> {
     match tree {
       EaslTree::Leaf(position, type_name) => {
-        Type::from_name(type_name.into(), position, structs, aliases, skolems)
+        Type::from_name(type_name.into(), position, typedefs, skolems)
       }
       EaslTree::Inner(
         (position, EncloserOrOperator::Encloser(Encloser::Parens)),
@@ -478,8 +608,7 @@ impl Type {
                     Ok((
                       TypeState::Known(Self::from_easl_tree(
                         arg_type_ast,
-                        structs,
-                        aliases,
+                        typedefs,
                         skolems,
                       )?)
                       .into(),
@@ -489,8 +618,7 @@ impl Type {
                   .collect::<CompileResult<Vec<_>>>()?,
                 return_type: TypeState::Known(Self::from_easl_tree(
                   return_type_ast,
-                  structs,
-                  aliases,
+                  typedefs,
                   skolems,
                 )?)
                 .into(),
@@ -500,7 +628,7 @@ impl Type {
           }
           Some(EaslTree::Leaf(_, struct_name)) => {
             if signature_leaves.len() == 0 {
-              return err(InvalidStructName, source_trace);
+              return err(InvalidTypeName, source_trace);
             } else {
               let generic_args: Vec<ExpTypeInfo> = signature_leaves
                 .map(|signature_arg| {
@@ -508,13 +636,12 @@ impl Type {
                     TypeState::Known(
                       AbstractType::from_easl_tree(
                         signature_arg,
-                        structs,
-                        aliases,
+                        typedefs,
                         skolems,
                       )?
                       .concretize(
                         skolems,
-                        structs,
+                        typedefs,
                         source_trace.clone(),
                       )?,
                     )
@@ -522,12 +649,13 @@ impl Type {
                   )
                 })
                 .collect::<CompileResult<Vec<ExpTypeInfo>>>()?;
-              if let Some(s) = structs.iter().find(|s| &*s.name == struct_name)
+              if let Some(s) =
+                typedefs.structs.iter().find(|s| &*s.name == struct_name)
               {
                 Ok(Type::Struct(AbstractStruct::fill_generics_ordered(
                   s.clone(),
                   generic_args,
-                  structs,
+                  typedefs,
                   source_trace.clone(),
                 )?))
               } else {
@@ -535,7 +663,7 @@ impl Type {
               }
             }
           }
-          _ => return err(InvalidStructName, source_trace),
+          _ => return err(InvalidTypeName, source_trace),
         }
       }
       EaslTree::Inner(
@@ -555,8 +683,7 @@ impl Type {
             {
               let inner_type = Type::from_easl_tree(
                 type_annotation_children.remove(0),
-                structs,
-                aliases,
+                typedefs,
                 skolems,
               )?;
               Ok(Type::Array(
@@ -611,8 +738,7 @@ impl Type {
   pub fn from_name(
     name: Rc<str>,
     source_position: DocumentPosition,
-    structs: &Vec<Rc<AbstractStruct>>,
-    type_aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    typedefs: &TypeDefs,
     skolems: &Vec<Rc<str>>,
   ) -> CompileResult<Self> {
     use Type::*;
@@ -626,19 +752,27 @@ impl Type {
       _ => {
         if skolems.contains(&name) {
           Skolem(name)
-        } else if let Some(s) = structs.iter().find(|s| s.name == name) {
+        } else if let Some(s) = typedefs.structs.iter().find(|s| s.name == name)
+        {
           Struct(AbstractStruct::fill_generics_with_unification_variables(
             s.clone(),
-            structs,
+            &typedefs,
             source_trace.clone(),
           )?)
-        } else if let Some(s) = type_aliases
+        } else if let Some(e) = typedefs.enums.iter().find(|e| e.name == name) {
+          Enum(AbstractEnum::fill_generics_with_unification_variables(
+            e.clone(),
+            &typedefs,
+            source_trace.clone(),
+          )?)
+        } else if let Some(s) = typedefs
+          .type_aliases
           .iter()
           .find_map(|(alias, s)| (*alias == name).then(|| s))
         {
           Struct(AbstractStruct::fill_generics_with_unification_variables(
             s.clone(),
-            structs,
+            &typedefs,
             source_trace.clone(),
           )?)
         } else {
@@ -661,6 +795,7 @@ impl Type {
         ),
         _ => compile_word(s.monomorphized_name()),
       },
+      Type::Enum(e) => compile_word(e.monomorphized_name()),
       Type::Array(size, inner_type) => {
         format!(
           "array<{}{}>",
@@ -710,6 +845,48 @@ impl Type {
       }
     }
   }
+  pub fn bitcastable_chunk_accessors(
+    &self,
+    value_name: Rc<str>,
+  ) -> Vec<TypedExp> {
+    match self {
+      Type::Unit => vec![],
+      Type::F32 | Type::I32 | Type::U32 | Type::Bool => vec![TypedExp {
+        data: TypeState::Known(self.clone()).into(),
+        kind: ExpKind::Name(value_name),
+        source_trace: SourceTrace::empty(),
+      }],
+      Type::Struct(s) => s.bitcastable_chunk_accessors(value_name),
+      Type::Enum(_) => todo!("enum"),
+      Type::Array(array_size, inner_type) => match array_size {
+        Some(ArraySize::Literal(n)) => (0..*n)
+          .map(|i| TypedExp {
+            data: *inner_type.clone(),
+            kind: ExpKind::Application(
+              TypedExp {
+                data: TypeState::Known(self.clone()).into(),
+                kind: ExpKind::Name(value_name.clone()),
+                source_trace: SourceTrace::empty(),
+              }
+              .into(),
+              vec![TypedExp {
+                data: TypeState::Known(Type::U32).into(),
+                kind: ExpKind::NumberLiteral(Number::Int(i as i64)),
+                source_trace: SourceTrace::empty(),
+              }],
+            ),
+            source_trace: SourceTrace::empty(),
+          })
+          .collect(),
+        Some(ArraySize::Unsized | ArraySize::Constant(_)) | None => {
+          panic!("called bitcastable_chunk_accessors on unsized Array")
+        }
+      },
+      _ => {
+        panic!("called bitcastable_chunk_accessors on invalid type")
+      }
+    }
+  }
 }
 
 pub fn extract_type_annotation_ast(
@@ -728,13 +905,12 @@ pub fn extract_type_annotation_ast(
 
 pub fn extract_type_annotation(
   exp: EaslTree,
-  structs: &Vec<Rc<AbstractStruct>>,
-  aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+  typedefs: &TypeDefs,
   skolems: &Vec<Rc<str>>,
 ) -> CompileResult<(Option<AbstractType>, EaslTree)> {
   let (t, value) = extract_type_annotation_ast(exp);
   Ok((
-    t.map(|t| AbstractType::from_easl_tree(t, structs, aliases, skolems))
+    t.map(|t| AbstractType::from_easl_tree(t, typedefs, skolems))
       .map_or(Ok(None), |v| v.map(Some))?,
     value,
   ))
@@ -1228,8 +1404,7 @@ impl TypeConstraint {
 
 pub fn parse_type_constraint(
   ast: EaslTree,
-  _structs: &Vec<Rc<AbstractStruct>>,
-  _aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+  _typedefs: &TypeDefs,
   _generic_args: &Vec<Rc<str>>,
 ) -> CompileResult<TypeConstraint> {
   match ast {
@@ -1270,8 +1445,7 @@ pub fn parse_type_constraint(
 
 pub fn parse_generic_argument(
   ast: EaslTree,
-  structs: &Vec<Rc<AbstractStruct>>,
-  aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+  typedefs: &TypeDefs,
   generic_args: &Vec<Rc<str>>,
 ) -> CompileResult<(Rc<str>, Vec<TypeConstraint>)> {
   match ast {
@@ -1297,18 +1471,13 @@ pub fn parse_generic_argument(
             bound_children
               .into_iter()
               .map(|child_ast| {
-                parse_type_constraint(child_ast, structs, aliases, generic_args)
+                parse_type_constraint(child_ast, typedefs, generic_args)
               })
               .collect::<CompileResult<_>>()?,
           )),
           other => Ok((
             generic_name.into(),
-            vec![parse_type_constraint(
-              other,
-              structs,
-              aliases,
-              generic_args,
-            )?],
+            vec![parse_type_constraint(other, typedefs, generic_args)?],
           )),
         }
       } else {
@@ -1447,6 +1616,7 @@ pub enum TypeDescription {
   U32,
   Bool,
   Struct(String),
+  Enum(String),
   Function {
     arg_types: Vec<(TypeStateDescription, Vec<TypeConstraintDescription>)>,
     return_type: Box<TypeStateDescription>,
@@ -1498,6 +1668,7 @@ impl From<Type> for TypeDescription {
       Type::Reference(t) => {
         Self::Reference(TypeStateDescription::from(t.kind).into())
       }
+      Type::Enum(e) => Self::Enum(e.name.to_string()),
     }
   }
 }
@@ -1513,6 +1684,7 @@ impl Display for TypeDescription {
         Self::U32 => "u32".to_string(),
         Self::Bool => "bool".to_string(),
         Self::Struct(name) => name.clone(),
+        Self::Enum(name) => name.clone(),
         Self::Array(size, inner_type) => {
           if let Some(size) = size {
             format!("[{}: {}]", size, inner_type.to_string())

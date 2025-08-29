@@ -8,6 +8,8 @@ use take_mut::take;
 
 use crate::compiler::{
   effects::{Effect, EffectType},
+  enums::AbstractEnum,
+  program::TypeDefs,
   util::compile_word,
 };
 
@@ -36,7 +38,8 @@ pub struct TopLevelFunction {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FunctionImplementationKind {
   Builtin,
-  Constructor,
+  StructConstructor,
+  EnumConstructor,
   Composite(Rc<RefCell<TopLevelFunction>>),
 }
 
@@ -285,7 +288,7 @@ impl AbstractFunctionSignature {
   }
   pub fn concretize(
     f: Rc<RefCell<Self>>,
-    structs: &Vec<Rc<AbstractStruct>>,
+    typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<FunctionSignature> {
     let f = f.borrow();
@@ -325,19 +328,31 @@ impl AbstractFunctionSignature {
               TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
                 s.clone(),
                 &generic_variables,
-                structs,
+                typedefs,
                 source_trace.clone(),
               )?))
               .into(),
               vec![],
             ),
-            AbstractType::AbstractArray { size, inner_type } => (
+            AbstractType::AbstractEnum(e) => (
+              TypeState::Known(Type::Enum(AbstractEnum::fill_generics(
+                e.clone(),
+                &generic_variables,
+                typedefs,
+                source_trace.clone(),
+              )?))
+              .into(),
+              vec![],
+            ),
+            AbstractType::AbstractArray {
+              size, inner_type, ..
+            } => (
               TypeState::Known(Type::Array(
                 Some(size.clone()),
                 inner_type
                   .fill_generics(
                     &generic_variables,
-                    structs,
+                    typedefs,
                     source_trace.clone(),
                   )?
                   .into(),
@@ -351,7 +366,7 @@ impl AbstractFunctionSignature {
                   abstract_type
                     .fill_generics(
                       &generic_variables,
-                      structs,
+                      typedefs,
                       source_trace.clone(),
                     )?
                     .into(),
@@ -373,25 +388,34 @@ impl AbstractFunctionSignature {
           TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
             s.clone(),
             &generic_variables,
-            structs,
+            typedefs,
+            source_trace,
+          )?))
+          .into()
+        }
+        AbstractType::AbstractEnum(e) => {
+          TypeState::Known(Type::Enum(AbstractEnum::fill_generics(
+            e.clone(),
+            &generic_variables,
+            typedefs,
             source_trace,
           )?))
           .into()
         }
         AbstractType::Type(t) => TypeState::Known(t.clone()).into(),
-        AbstractType::AbstractArray { size, inner_type } => {
-          TypeState::Known(Type::Array(
-            Some(size.clone()),
-            inner_type
-              .fill_generics(&generic_variables, structs, source_trace)?
-              .into(),
-          ))
-          .into()
-        }
+        AbstractType::AbstractArray {
+          size, inner_type, ..
+        } => TypeState::Known(Type::Array(
+          Some(size.clone()),
+          inner_type
+            .fill_generics(&generic_variables, typedefs, source_trace)?
+            .into(),
+        ))
+        .into(),
         AbstractType::Reference(inner_type) => {
           TypeState::Known(Type::Reference(
             inner_type
-              .fill_generics(&generic_variables, structs, source_trace)?
+              .fill_generics(&generic_variables, typedefs, source_trace)?
               .into(),
           ))
           .into()

@@ -15,10 +15,11 @@ use crate::{
       get_builtin_struct, rename_builtin,
     },
     effects::EffectType,
+    enums::AbstractEnum,
     error::{CompileError, CompileErrorKind::*, CompileResult, err},
     functions::FunctionSignature,
     metadata::{Metadata, extract_metadata},
-    program::Program,
+    program::{Program, TypeDefs},
     structs::{AbstractStruct, Struct},
     types::{
       ArraySize, ExpTypeInfo, Type,
@@ -152,7 +153,7 @@ pub fn swizzle_accessor_typestate(
               }
               _ => unreachable!(),
             }],
-            &vec![],
+            &TypeDefs::empty(),
             SourceTrace::empty(),
           )
           .unwrap(),
@@ -188,7 +189,7 @@ pub fn swizzle_accessed_possibilities(
         Type::Struct(
           AbstractStruct::fill_generics_with_unification_variables(
             get_builtin_struct(name).into(),
-            &vec![],
+            &TypeDefs::empty(),
             SourceTrace::empty(),
           )
           .unwrap(),
@@ -297,8 +298,7 @@ pub type TypedExp = Exp<ExpTypeInfo>;
 
 pub fn arg_list_and_return_type_from_easl_tree(
   tree: EaslTree,
-  structs: &Vec<Rc<AbstractStruct>>,
-  aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+  typedefs: &TypeDefs,
   skolems: &Vec<Rc<str>>,
 ) -> CompileResult<(
   SourceTrace,
@@ -324,7 +324,7 @@ pub fn arg_list_and_return_type_from_easl_tree(
       return Err(metadata_error.clone());
     }
     let return_type =
-      AbstractType::from_easl_tree(return_type_ast, structs, aliases, skolems)?;
+      AbstractType::from_easl_tree(return_type_ast, typedefs, skolems)?;
     if let EaslTree::Inner((position, Encloser(Square)), arg_asts) =
       args_and_return_type.remove(0)
     {
@@ -337,8 +337,7 @@ pub fn arg_list_and_return_type_from_easl_tree(
             FunctionArgMissingType,
             source_path.clone(),
           ))?;
-          let t =
-            AbstractType::from_easl_tree(t_ast, structs, aliases, skolems)?;
+          let t = AbstractType::from_easl_tree(t_ast, typedefs, skolems)?;
           let mut errors = ErrorLog::new();
           let (arg_name_ast, arg_metadata) =
             extract_metadata(arg_name_ast, &mut errors);
@@ -387,8 +386,7 @@ impl TypedExp {
     return_type: ExpTypeInfo,
     arg_names: Vec<Rc<str>>,
     arg_types: Vec<(ExpTypeInfo, Vec<TypeConstraint>)>,
-    structs: &Vec<Rc<AbstractStruct>>,
-    aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    typedefs: &TypeDefs,
     skolems: &Vec<Rc<str>>,
   ) -> CompileResult<Self> {
     let mut body_exps = body_trees
@@ -396,8 +394,7 @@ impl TypedExp {
       .map(|t| {
         Self::try_from_easl_tree(
           t,
-          structs,
-          aliases,
+          typedefs,
           skolems,
           SyntaxTreeContext::Default,
         )
@@ -426,8 +423,7 @@ impl TypedExp {
   }
   pub fn try_from_easl_tree(
     tree: EaslTree,
-    structs: &Vec<Rc<AbstractStruct>>,
-    aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    typedefs: &TypeDefs,
     skolems: &Vec<Rc<str>>,
     ctx: SyntaxTreeContext,
   ) -> CompileResult<Self> {
@@ -524,8 +520,7 @@ impl TypedExp {
                             ),
                             Box::new(Self::try_from_easl_tree(
                               children_iter.next().unwrap(),
-                              structs,
-                              aliases,
+                              typedefs,
                               skolems,
                               ctx,
                             )?),
@@ -555,7 +550,7 @@ impl TypedExp {
                             .clone()
                             .map(|child| {
                               Self::try_from_easl_tree(
-                                child, structs, aliases, skolems, ctx,
+                                child, typedefs, skolems, ctx,
                               )
                             })
                             .collect::<CompileResult<Vec<Self>>>()?;
@@ -584,7 +579,7 @@ impl TypedExp {
                                 let value_ast =
                                   binding_asts_iter.next().unwrap();
                                 let (ty, name_ast) = extract_type_annotation(
-                                  name_ast, structs, aliases, skolems,
+                                  name_ast, typedefs, skolems,
                                 )?;
                                 let mut errors = ErrorLog::new();
                                 let (name_ast, name_metadata) =
@@ -630,14 +625,13 @@ impl TypedExp {
                                       {
                                         let mut value_exp =
                                           Self::try_from_easl_tree(
-                                            value_ast, structs, aliases,
-                                            skolems, ctx,
+                                            value_ast, typedefs, skolems, ctx,
                                           )?;
                                         if let Some(ty) = ty {
                                           value_exp.data =
                                             TypeState::Known(ty.concretize(
                                               skolems,
-                                              structs,
+                                              typedefs,
                                               source_trace.clone(),
                                             )?)
                                             .into();
@@ -684,7 +678,7 @@ impl TypedExp {
                             .clone()
                             .map(|child| {
                               Self::try_from_easl_tree(
-                                child, structs, aliases, skolems, ctx,
+                                child, typedefs, skolems, ctx,
                               )
                             })
                             .collect::<CompileResult<Vec<Self>>>()?;
@@ -702,8 +696,7 @@ impl TypedExp {
                                 source_trace.clone(),
                               )
                             })?,
-                            structs,
-                            aliases,
+                            typedefs,
                             skolems,
                             ctx,
                           )?;
@@ -718,15 +711,13 @@ impl TypedExp {
                             arms.push((
                               Self::try_from_easl_tree(
                                 pattern_subtree,
-                                structs,
-                                aliases,
+                                typedefs,
                                 skolems,
                                 SyntaxTreeContext::MatchPattern,
                               )?,
                               Self::try_from_easl_tree(
                                 value_subtree,
-                                structs,
-                                aliases,
+                                typedefs,
                                 skolems,
                                 ctx,
                               )?,
@@ -788,30 +779,26 @@ impl TypedExp {
                                   .map(|var_type_subtree| {
                                     Type::from_easl_tree(
                                       var_type_subtree,
-                                      structs,
-                                      aliases,
+                                      typedefs,
                                       skolems,
                                     )
                                   })
                                   .unwrap_or(Ok(Type::I32))?,
                                 TypedExp::try_from_easl_tree(
                                   increment_variable_initial_value_subtree,
-                                  structs,
-                                  aliases,
+                                  typedefs,
                                   skolems,
                                   ctx,
                                 )?,
                                 TypedExp::try_from_easl_tree(
                                   continue_condition_subtree,
-                                  structs,
-                                  aliases,
+                                  typedefs,
                                   skolems,
                                   ctx,
                                 )?,
                                 TypedExp::try_from_easl_tree(
                                   update_condition_subtree,
-                                  structs,
-                                  aliases,
+                                  typedefs,
                                   skolems,
                                   ctx,
                                 )?,
@@ -832,7 +819,7 @@ impl TypedExp {
                             .clone()
                             .map(|child| {
                               TypedExp::try_from_easl_tree(
-                                child, structs, aliases, skolems, ctx,
+                                child, typedefs, skolems, ctx,
                               )
                             })
                             .collect::<CompileResult<Vec<TypedExp>>>()?;
@@ -865,7 +852,7 @@ impl TypedExp {
                             .clone()
                             .map(|child| {
                               TypedExp::try_from_easl_tree(
-                                child, structs, aliases, skolems, ctx,
+                                child, typedefs, skolems, ctx,
                               )
                             })
                             .collect::<CompileResult<Vec<TypedExp>>>()?;
@@ -895,8 +882,7 @@ impl TypedExp {
                           if children_iter.len() == 1 {
                             let exp = TypedExp::try_from_easl_tree(
                               children_iter.next().unwrap(),
-                              structs,
-                              aliases,
+                              typedefs,
                               skolems,
                               ctx,
                             )?;
@@ -940,16 +926,13 @@ impl TypedExp {
                   kind: Application(
                     Box::new(Self::try_from_easl_tree(
                       first_child,
-                      structs,
-                      aliases,
+                      typedefs,
                       skolems,
                       ctx,
                     )?),
                     children_iter
                       .map(|arg| {
-                        Self::try_from_easl_tree(
-                          arg, structs, aliases, skolems, ctx,
-                        )
+                        Self::try_from_easl_tree(arg, typedefs, skolems, ctx)
                       })
                       .collect::<CompileResult<_>>()?,
                   ),
@@ -973,9 +956,7 @@ impl TypedExp {
               kind: ArrayLiteral(
                 children_iter
                   .map(|ast| {
-                    TypedExp::try_from_easl_tree(
-                      ast, structs, aliases, skolems, ctx,
-                    )
+                    TypedExp::try_from_easl_tree(ast, typedefs, skolems, ctx)
                   })
                   .collect::<CompileResult<Vec<TypedExp>>>()?,
               ),
@@ -1010,15 +991,13 @@ impl TypedExp {
             TypeAnnotation => {
               let mut exp = Self::try_from_easl_tree(
                 children_iter.next().unwrap(),
-                structs,
-                aliases,
+                typedefs,
                 skolems,
                 ctx,
               )?;
               exp.data = TypeState::Known(Type::from_easl_tree(
                 children_iter.next().unwrap(),
-                structs,
-                aliases,
+                typedefs,
                 skolems,
               )?)
               .into();
@@ -1035,8 +1014,7 @@ impl TypedExp {
               kind: ExpKind::Reference(
                 Self::try_from_easl_tree(
                   children_iter.next().unwrap(),
-                  structs,
-                  aliases,
+                  typedefs,
                   skolems,
                   ctx,
                 )?
@@ -2234,9 +2212,12 @@ impl TypedExp {
                   {}
                 }
               }
-              FunctionImplementationKind::Constructor => {
-                if let Some(abstract_struct) =
-                  base_program.structs.iter().find(|s| s.name == *f_name)
+              FunctionImplementationKind::StructConstructor => {
+                if let Some(abstract_struct) = base_program
+                  .typedefs
+                  .structs
+                  .iter()
+                  .find(|s| s.name == *f_name)
                 {
                   let arg_types: Vec<Type> =
                     args.iter().map(|arg| arg.data.unwrap_known()).collect();
@@ -2248,7 +2229,7 @@ impl TypedExp {
                       f_name,
                       &mut AbstractStruct::concretized_name(
                         monomorphized_struct.clone(),
-                        &base_program.structs,
+                        &base_program.typedefs,
                         exp.source_trace.clone(),
                       )?,
                     );
@@ -2256,7 +2237,7 @@ impl TypedExp {
                       AbstractStruct::fill_generics_ordered(
                         monomorphized_struct.clone(),
                         vec![],
-                        &base_program.structs,
+                        &base_program.typedefs,
                         source_trace.clone(),
                       )?,
                     ));
@@ -2267,6 +2248,43 @@ impl TypedExp {
                       .add_monomorphized_struct(monomorphized_struct.into());
                   }
                 }
+              }
+              FunctionImplementationKind::EnumConstructor => {
+                // todo!("enum")
+                /*if let Some(abstract_enum) = base_program
+                  .typedefs
+                  .enums
+                  .iter()
+                  .find(|s| s.name == *f_name)
+                {
+                  let arg_types: Vec<Type> =
+                    args.iter().map(|arg| arg.data.unwrap_known()).collect();
+                  if let Some(monomorphized_struct) =
+                    abstract_enum.generate_monomorphized(arg_types.clone())
+                  {
+                    let abstract_enum = Rc::new(monomorphized_struct);
+                    std::mem::swap(
+                      f_name,
+                      &mut AbstractStruct::concretized_name(
+                        monomorphized_struct.clone(),
+                        &base_program.typedefs,
+                        exp.source_trace.clone(),
+                      )?,
+                    );
+                    let mut new_typestate = TypeState::Known(Type::Enum(
+                      AbstractEnum::fill_generics_ordered(
+                        abstract_enum.clone(),
+                        vec![],
+                        &base_program.typedefs,
+                        source_trace.clone(),
+                      )?,
+                    ));
+                    exp.data.with_dereferenced_mut(|typestate| {
+                      std::mem::swap(typestate, &mut new_typestate)
+                    });
+                    new_program.add_monomorphized_enum(abstract_enum.into());
+                  }
+                }*/
               }
               FunctionImplementationKind::Composite(f) => {
                 if !abstract_signature.generic_args.is_empty() {
@@ -2338,7 +2356,7 @@ impl TypedExp {
             }
           }
         } else {
-          todo!("")
+          todo!("can't inline this kind of higher-order argument yet")
         }
       }
       Ok(true)

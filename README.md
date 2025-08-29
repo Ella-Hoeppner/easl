@@ -16,14 +16,18 @@ Feature goals:
 
 ## todo
 ### high priority, necessary to call the language 0.1
-* Need to refactor everything to not use `Rc<str>` for tokens and other stuff, but instead have like a `struct Token(usize)` type that we use to identify tokens, such that there's a global `HashMap<Token, String>` that keeps track of the string values. This should help with performance since there won't be refcounting operations happening all over the place, and it'll mean we can get rid of the stupid `AsyncErrorLog` thing.
+* enums
+  * generics
+    * rn i think everything just gets dropped during monomorphization
+  * implement `bitcastable_chunk_accessors` for nested arrays
+  * matching
 
 * there are several places where gensyms are generated, but not guaranteed to be completely safe. Need to have a system that tracks all names in the program and allows for safe gensym-ing
   * cases where we need this:
     * deshadowing
-    * `->` bindings
     * deexpressionify
-  * should be easy to do this once we're tracking tokens with globally unique indeces rather than literal strings
+    * `->` bindings
+      * guess whatever system this is should be made available for macros in general
 
 * `TypeConstraint` needs to be improved/generalized
   * Right now each generic argument in a function signature is associated with a `Vec<TypeConstraint>`. But instead each should be associated with a single `TypeConstraint`, which should itself be an enum with a `Union(HashSet<Self>)` variant for when an argument has more than one constraint.
@@ -98,6 +102,9 @@ Feature goals:
   * or maybe have something like rust's `PhantomData`?
 
 ### low priority, extra features once core language is solid
+* so much of the code in `AbstractEnum` and `AbstractStruct` is incredibly similar, should abstract those out to share most of that functionality for maintainability. Same for the `UntypedEnum`/`UntypedStruct` and also just `Enum`/`Struct
+  * main difference is that enum has `variants` while struct has `fields`, but ultimately both of these are just associations between names and types, and in most helper functions they get treated the same way, so those can just turn into some multi-purpose `attributes` or something
+
 * allow arguments to be declared as `@var` by just wrapping the whole body in a `let` that shadows the arguments
 
 * add a special case for inferring the type of vectors/scalars when it would normally get stuck due to being inside another vector constructor

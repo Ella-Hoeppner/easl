@@ -1187,6 +1187,7 @@ fn array_functions() -> Vec<AbstractFunctionSignature> {
       AbstractType::AbstractArray {
         size: ArraySize::Unsized,
         inner_type: AbstractType::Generic("T".into()).into(),
+        source_trace: SourceTrace::empty(),
       }
       .into(),
     )],

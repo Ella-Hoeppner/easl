@@ -1,6 +1,7 @@
 pub mod builtins;
 pub mod core;
 pub mod effects;
+pub mod enums;
 pub mod error;
 pub mod expression;
 pub mod functions;

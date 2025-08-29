@@ -140,6 +140,7 @@ impl Value {
       Type::Function(_) => return Err(CantCreateZeroedFunction),
       Type::Skolem(_) => return Err(CantCreateZeroedSkolem),
       Type::Reference(_) => return Err(CantCreateZeroedReference),
+      Type::Enum(_) => todo!("don't know how to zero enums yet"),
     })
   }
 }
@@ -174,6 +175,7 @@ impl EvaluationEnvironment {
         })
         .collect(),
       structs: program
+        .typedefs
         .structs
         .iter()
         .map(|s| (s.name.clone(), (&**s).clone()))
@@ -225,7 +227,7 @@ impl EvaluationEnvironment {
               FunctionImplementationKind::Builtin => {
                 Ok(Function::Builtin(name.clone()))
               }
-              FunctionImplementationKind::Constructor => {
+              FunctionImplementationKind::StructConstructor => {
                 Ok(Function::Constructor({
                   let s = match self.structs.get(name) {
                     Some(s) => s,
@@ -234,6 +236,7 @@ impl EvaluationEnvironment {
                   s.fields.iter().map(|field| field.name.clone()).collect()
                 }))
               }
+              FunctionImplementationKind::EnumConstructor => todo!(),
               FunctionImplementationKind::Composite(f) => {
                 let f = f.borrow();
                 Ok(Function::Composite {

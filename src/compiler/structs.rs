@@ -5,8 +5,10 @@ use std::{
 
 use crate::{
   compiler::{
+    expression::{Accessor, ExpKind, Number, TypedExp},
     metadata::extract_metadata,
-    types::extract_type_annotation_ast,
+    program::TypeDefs,
+    types::{ArraySize, contains_name_leaf, extract_type_annotation_ast},
     util::{compile_word, read_leaf},
   },
   parse::EaslTree,
@@ -45,20 +47,11 @@ impl UntypedStructField {
     })
   }
   pub fn references_type_name(&self, name: &Rc<str>) -> bool {
-    fn contains_name_leaf(name: &Rc<str>, tree: &EaslTree) -> bool {
-      match &tree {
-        EaslTree::Leaf(_, leaf) => leaf == &**name,
-        EaslTree::Inner(_, children) => children
-          .iter()
-          .fold(false, |acc, child| acc || contains_name_leaf(name, child)),
-      }
-    }
     contains_name_leaf(&name, &self.type_ast)
   }
   pub fn assign_type(
     self,
-    structs: &Vec<Rc<AbstractStruct>>,
-    aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    typedefs: &TypeDefs,
     skolems: &Vec<Rc<str>>,
   ) -> CompileResult<AbstractStructField> {
     Ok(AbstractStructField {
@@ -66,8 +59,7 @@ impl UntypedStructField {
       name: self.name,
       field_type: AbstractType::from_easl_tree(
         self.type_ast,
-        structs,
-        aliases,
+        typedefs,
         skolems,
       )?,
     })
@@ -107,15 +99,14 @@ impl UntypedStruct {
   }
   pub fn assign_types(
     self,
-    structs: &Vec<Rc<AbstractStruct>>,
-    aliases: &Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    typedefs: &TypeDefs,
   ) -> CompileResult<AbstractStruct> {
     Ok(AbstractStruct {
       name: self.name,
       fields: self
         .fields
         .into_iter()
-        .map(|field| field.assign_type(structs, aliases, &self.generic_args))
+        .map(|field| field.assign_type(typedefs, &self.generic_args))
         .collect::<CompileResult<Vec<AbstractStructField>>>()?,
       generic_args: self.generic_args.clone(),
       filled_generics: HashMap::new(),
@@ -148,7 +139,7 @@ pub struct AbstractStructField {
 impl AbstractStructField {
   pub fn concretize(
     &self,
-    structs: &Vec<Rc<AbstractStruct>>,
+    typedefs: &TypeDefs,
     skolems: &Vec<Rc<str>>,
     source_trace: SourceTrace,
   ) -> CompileResult<StructField> {
@@ -157,7 +148,7 @@ impl AbstractStructField {
       name: Rc::clone(&self.name),
       field_type: TypeState::Known(self.field_type.concretize(
         skolems,
-        structs,
+        typedefs,
         source_trace,
       )?)
       .into(),
@@ -166,7 +157,7 @@ impl AbstractStructField {
   pub fn fill_generics(
     &self,
     generics: &HashMap<Rc<str>, ExpTypeInfo>,
-    structs: &Vec<Rc<AbstractStruct>>,
+    typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<StructField> {
     Ok(StructField {
@@ -174,7 +165,7 @@ impl AbstractStructField {
       name: self.name.clone(),
       field_type: self.field_type.fill_generics(
         generics,
-        structs,
+        typedefs,
         source_trace,
       )?,
     })
@@ -189,17 +180,14 @@ impl AbstractStructField {
       field_type: self.field_type.fill_abstract_generics(generics),
     }
   }
-  pub fn compile(
-    self,
-    structs: &Vec<Rc<AbstractStruct>>,
-  ) -> CompileResult<String> {
+  pub fn compile(self, typedefs: &TypeDefs) -> CompileResult<String> {
     let metadata = if let Some(metadata) = self.metadata {
       metadata.compile()
     } else {
       String::new()
     };
     let name = compile_word(self.name);
-    let field_type = self.field_type.compile(structs)?;
+    let field_type = self.field_type.compile(typedefs)?;
     Ok(format!("  {metadata}{name}: {field_type}"))
   }
 }
@@ -233,7 +221,7 @@ impl AbstractStruct {
   }
   pub fn concretize(
     s: Rc<Self>,
-    structs: &Vec<Rc<AbstractStruct>>,
+    typedefs: &TypeDefs,
     skolems: &Vec<Rc<str>>,
     source_trace: SourceTrace,
   ) -> CompileResult<Struct> {
@@ -242,14 +230,14 @@ impl AbstractStruct {
       fields: s
         .fields
         .iter()
-        .map(|f| f.concretize(structs, skolems, source_trace.clone()))
+        .map(|f| f.concretize(typedefs, skolems, source_trace.clone()))
         .collect::<CompileResult<Vec<_>>>()?,
       abstract_ancestor: s,
     })
   }
   pub fn compile_if_non_generic(
     self,
-    structs: &Vec<Rc<AbstractStruct>>,
+    typedefs: &TypeDefs,
   ) -> CompileResult<Option<String>> {
     self
       .generic_args
@@ -259,15 +247,18 @@ impl AbstractStruct {
           .fields
           .iter()
           .map(|f| {
-            f.field_type
-              .concretize(&vec![], structs, self.source_trace.clone())
+            f.field_type.concretize(
+              &vec![],
+              typedefs,
+              self.source_trace.clone(),
+            )
           })
           .collect::<CompileResult<Vec<Type>>>()?;
         let monomorphized_name = self.monomorphized_name(&field_types);
         let fields = self
           .fields
           .into_iter()
-          .map(|field| field.compile(structs))
+          .map(|field| field.compile(typedefs))
           .collect::<CompileResult<Vec<String>>>()?
           .join(",\n");
         Ok(format!("struct {monomorphized_name} {{\n{fields}\n}}"))
@@ -314,11 +305,11 @@ impl AbstractStruct {
   }
   pub fn concretized_name(
     s: Rc<Self>,
-    structs: &Vec<Rc<AbstractStruct>>,
+    typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Rc<str>> {
     let concretized =
-      Self::concretize(s.clone(), structs, &vec![], source_trace)?;
+      Self::concretize(s.clone(), typedefs, &vec![], source_trace)?;
     Ok(
       s.monomorphized_name(
         &concretized
@@ -387,13 +378,15 @@ impl AbstractStruct {
   pub fn fill_generics(
     s: Rc<Self>,
     generics: &HashMap<Rc<str>, ExpTypeInfo>,
-    structs: &Vec<Rc<AbstractStruct>>,
+    typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Struct> {
     let new_fields = s
       .fields
       .iter()
-      .map(|field| field.fill_generics(generics, structs, source_trace.clone()))
+      .map(|field| {
+        field.fill_generics(generics, typedefs, source_trace.clone())
+      })
       .collect::<CompileResult<Vec<_>>>()?;
     Ok(Struct {
       name: s.name.clone(),
@@ -404,7 +397,7 @@ impl AbstractStruct {
   pub fn fill_generics_ordered(
     s: Rc<Self>,
     generics: Vec<ExpTypeInfo>,
-    structs: &Vec<Rc<AbstractStruct>>,
+    typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Struct> {
     let generics_map = s
@@ -413,11 +406,11 @@ impl AbstractStruct {
       .cloned()
       .zip(generics.into_iter())
       .collect();
-    Self::fill_generics(s, &generics_map, structs, source_trace)
+    Self::fill_generics(s, &generics_map, typedefs, source_trace)
   }
   pub fn fill_generics_with_unification_variables(
     s: Rc<Self>,
-    structs: &Vec<Rc<AbstractStruct>>,
+    typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Struct> {
     let generic_count = s.generic_args.len();
@@ -427,11 +420,10 @@ impl AbstractStruct {
         .into_iter()
         .map(|_| TypeState::fresh_unification_variable().into())
         .collect(),
-      structs,
+      typedefs,
       source_trace,
     )
   }
-
   pub fn partially_fill_abstract_generics(
     self,
     generics: HashMap<Rc<str>, AbstractType>,
@@ -529,5 +521,66 @@ impl Struct {
         .map(|f| f.field_type.unwrap_known())
         .collect(),
     )
+  }
+  fn bitcastable_chunk_accessors_inner(
+    &self,
+    value: TypedExp,
+    chunks: &mut Vec<TypedExp>,
+  ) {
+    for f in self.fields.iter() {
+      let access = TypedExp {
+        data: f.field_type.clone(),
+        kind: ExpKind::Access(
+          Accessor::Field(Rc::clone(&f.name)),
+          value.clone().into(),
+        ),
+        source_trace: SourceTrace::empty(),
+      };
+      match f.field_type.unwrap_known() {
+        Type::F32 | Type::I32 | Type::U32 | Type::Bool => chunks.push(access),
+        Type::Struct(s) => s.bitcastable_chunk_accessors_inner(access, chunks),
+        Type::Array(array_size, inner_type) => match array_size {
+          Some(ArraySize::Literal(n)) => {
+            for i in 0..n {
+              chunks.push(TypedExp {
+                data: *inner_type.clone(),
+                kind: ExpKind::Application(
+                  access.clone().into(),
+                  vec![TypedExp {
+                    data: TypeState::Known(Type::U32).into(),
+                    kind: ExpKind::NumberLiteral(Number::Int(i as i64)),
+                    source_trace: SourceTrace::empty(),
+                  }],
+                ),
+                source_trace: SourceTrace::empty(),
+              });
+            }
+          }
+          Some(ArraySize::Unsized | ArraySize::Constant(_)) | None => {
+            panic!("called bitcastable_chunk_accessors on unsized Array")
+          }
+        },
+        Type::Unit => {}
+        Type::Enum(_) => todo!("enum"),
+        _ => {
+          panic!("called bitcastable_chunk_accessors on invalid type")
+        }
+      }
+    }
+  }
+  pub fn bitcastable_chunk_accessors(
+    &self,
+    value_name: Rc<str>,
+  ) -> Vec<TypedExp> {
+    let mut chunks = vec![];
+    self.bitcastable_chunk_accessors_inner(
+      TypedExp {
+        data: TypeState::Known(Type::Struct(self.clone())).into(),
+        kind: ExpKind::Name(value_name.clone()),
+        source_trace: SourceTrace::empty(),
+      },
+      &mut chunks,
+    );
+    chunks
   }
 }
