@@ -69,6 +69,8 @@ fn main() {
     "deexpressionify_in_return",
     "duplicate_defn",
     "enum",
+    "enum_generic_option",
+    "enum_generic_either",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

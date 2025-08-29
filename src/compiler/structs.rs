@@ -462,6 +462,18 @@ impl AbstractStruct {
       .collect();
     self.partially_fill_abstract_generics(generics_map)
   }
+  pub fn extract_generic_bindings(
+    &self,
+    concrete_struct: &Struct,
+    generic_bindings: &mut HashMap<Rc<str>, Type>,
+  ) {
+    for i in 0..concrete_struct.fields.len() {
+      self.fields[i].field_type.extract_generic_bindings(
+        &concrete_struct.fields[i].field_type.unwrap_known(),
+        generic_bindings,
+      );
+    }
+  }
 }
 
 #[derive(Debug, Clone, PartialEq)]

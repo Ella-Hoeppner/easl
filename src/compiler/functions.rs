@@ -39,7 +39,7 @@ pub struct TopLevelFunction {
 pub enum FunctionImplementationKind {
   Builtin,
   StructConstructor,
-  EnumConstructor,
+  EnumConstructor(Rc<str>),
   Composite(Rc<RefCell<TopLevelFunction>>),
 }
 

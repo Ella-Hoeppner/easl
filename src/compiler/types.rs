@@ -286,32 +286,52 @@ impl AbstractType {
           )?))
         } else {
           let mut children_iter = children.into_iter();
-          let generic_struct_name =
+          let generic_type_name =
             if let EaslTree::Leaf(_, leaf) = children_iter.next().unwrap() {
               leaf
             } else {
               unreachable!()
             };
-          let generic_struct = typedefs
-            .structs
-            .iter()
-            .find(|s| &*s.name == generic_struct_name.as_str())
-            .ok_or_else(|| {
-              CompileError::new(
-                NoStructNamed(generic_struct_name.clone().into()),
+          match (
+            typedefs
+              .structs
+              .iter()
+              .find(|s| &*s.name == generic_type_name.as_str()),
+            typedefs
+              .enums
+              .iter()
+              .find(|e| &*e.name == generic_type_name.as_str()),
+          ) {
+            (Some(generic_struct), None) => {
+              let generic_args = children_iter
+                .map(|subtree: EaslTree| {
+                  Self::from_easl_tree(subtree, typedefs, skolems)
+                })
+                .collect::<CompileResult<Vec<_>>>()?;
+              Ok(AbstractType::AbstractStruct(Rc::new(
+                Rc::unwrap_or_clone(generic_struct.clone())
+                  .fill_abstract_generics(generic_args),
+              )))
+            }
+            (None, Some(generic_enum)) => {
+              let generic_args = children_iter
+                .map(|subtree: EaslTree| {
+                  Self::from_easl_tree(subtree, typedefs, skolems)
+                })
+                .collect::<CompileResult<Vec<_>>>()?;
+              Ok(AbstractType::AbstractEnum(Rc::new(
+                Rc::unwrap_or_clone(generic_enum.clone())
+                  .fill_abstract_generics(generic_args),
+              )))
+            }
+            (None, None) => {
+              return Err(CompileError::new(
+                NoTypeNamed(generic_type_name.clone().into()),
                 position.into(),
-              )
-            })?
-            .clone();
-          let generic_args = children_iter
-            .map(|subtree: EaslTree| {
-              Self::from_easl_tree(subtree, typedefs, skolems)
-            })
-            .collect::<CompileResult<Vec<_>>>()?;
-          Ok(AbstractType::AbstractStruct(Rc::new(
-            Rc::unwrap_or_clone(generic_struct)
-              .fill_abstract_generics(generic_args),
-          )))
+              ));
+            }
+            (Some(_), Some(_)) => panic!("duplicate type name encountered"),
+          }
         }
       }
       EaslTree::Inner(
@@ -388,14 +408,14 @@ impl AbstractType {
       }
       AbstractType::AbstractStruct(abstract_struct) => {
         if let Type::Struct(s) = concrete_type {
-          for i in 0..s.fields.len() {
-            abstract_struct.fields[i]
-              .field_type
-              .extract_generic_bindings(
-                &s.fields[i].field_type.unwrap_known(),
-                generic_bindings,
-              );
-          }
+          abstract_struct.extract_generic_bindings(s, generic_bindings);
+        } else {
+          panic!("incompatible types in extract_generic_bindings")
+        }
+      }
+      AbstractType::AbstractEnum(abstract_enum) => {
+        if let Type::Enum(e) = concrete_type {
+          abstract_enum.extract_generic_bindings(e, generic_bindings);
         } else {
           panic!("incompatible types in extract_generic_bindings")
         }
@@ -659,7 +679,7 @@ impl Type {
                   source_trace.clone(),
                 )?))
               } else {
-                return err(NoStructNamed(struct_name.into()), source_trace);
+                return err(NoTypeNamed(struct_name.into()), source_trace);
               }
             }
           }
@@ -714,6 +734,7 @@ impl Type {
     let b = match (self, other) {
       (Type::Function(a), Type::Function(b)) => a.compatible(b),
       (Type::Struct(a), Type::Struct(b)) => a.compatible(b),
+      (Type::Enum(a), Type::Enum(b)) => a.compatible(b),
       (Type::Array(count_a, a), Type::Array(count_b, b)) => {
         (count_a.is_none() || count_b.is_none() || count_a == count_b)
           && TypeState::are_compatible(a, b)
@@ -992,6 +1013,11 @@ impl TypeState {
             .fields
             .iter()
             .find(|field| !field.field_type.check_is_fully_known())
+            .is_some(),
+          Type::Enum(e) => !e
+            .variants
+            .iter()
+            .find(|variant| !variant.inner_type.check_is_fully_known())
             .is_some(),
           Type::Function(function_signature) => {
             function_signature.arg_types.iter().fold(

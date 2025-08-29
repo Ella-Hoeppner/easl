@@ -236,7 +236,7 @@ impl EvaluationEnvironment {
                   s.fields.iter().map(|field| field.name.clone()).collect()
                 }))
               }
-              FunctionImplementationKind::EnumConstructor => todo!(),
+              FunctionImplementationKind::EnumConstructor(_) => todo!(),
               FunctionImplementationKind::Composite(f) => {
                 let f = f.borrow();
                 Ok(Function::Composite {

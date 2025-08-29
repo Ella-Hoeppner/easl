@@ -77,8 +77,8 @@ pub enum CompileErrorKind {
   StructFieldMissingType,
   #[error("Invalid type name")]
   InvalidTypeName,
-  #[error("Couldn't find a struct named `{0}`")]
-  NoStructNamed(String),
+  #[error("Couldn't find a type named `{0}`")]
+  NoTypeNamed(String),
   #[error("Invalid array signature")]
   InvalidArraySignature,
   #[error("Array indexing needs 1 argument, got {0}")]
@@ -261,7 +261,7 @@ impl PartialEq for CompileErrorKind {
         l0 == r0
       }
       (Self::InvalidMetadata(l0), Self::InvalidMetadata(r0)) => l0 == r0,
-      (Self::NoStructNamed(l0), Self::NoStructNamed(r0)) => l0 == r0,
+      (Self::NoTypeNamed(l0), Self::NoTypeNamed(r0)) => l0 == r0,
       (
         Self::ArrayLookupInvalidArity(l0),
         Self::ArrayLookupInvalidArity(r0),

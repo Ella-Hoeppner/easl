@@ -8,9 +8,3 @@
 
 (defn make-enum-c []: TestEnum
   (C (vec2f 0.)))
-
-#_(defn value [a: TestEnum]: f32
-    (match a
-      A 0.
-      (B x) x
-      (C x) (+ x.x x.y)))

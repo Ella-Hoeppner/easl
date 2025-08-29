@@ -160,7 +160,9 @@ impl Program {
               },
               mutated_args: vec![],
               return_type: AbstractType::AbstractEnum(e.clone()),
-              implementation: FunctionImplementationKind::EnumConstructor,
+              implementation: FunctionImplementationKind::EnumConstructor(
+                variant.name.clone(),
+              ),
               associative: false,
             },
           )));
@@ -193,6 +195,20 @@ impl Program {
       .is_none()
     {
       self.typedefs.structs.push(s);
+    }
+  }
+  pub fn add_monomorphized_enum(&mut self, e: Rc<AbstractEnum>) {
+    if self
+      .typedefs
+      .enums
+      .iter()
+      .find(|existing_struct| {
+        existing_struct.name == e.name
+          && existing_struct.filled_generics == e.filled_generics
+      })
+      .is_none()
+    {
+      self.typedefs.enums.push(e);
     }
   }
   pub fn concrete_signatures(
@@ -932,7 +948,6 @@ impl Program {
       }
     }
     take(self, |old_ctx| {
-      monomorphized_ctx.typedefs = old_ctx.typedefs;
       monomorphized_ctx.top_level_vars = old_ctx.top_level_vars;
       monomorphized_ctx
     });
@@ -981,7 +996,7 @@ impl Program {
               Err(e) => errors.log(e),
             }
           }
-          FunctionImplementationKind::EnumConstructor => {
+          FunctionImplementationKind::EnumConstructor(_) => {
             inlined_ctx.add_abstract_function(Rc::clone(f));
           }
           _ => {}
@@ -1029,7 +1044,9 @@ impl Program {
       let f = f.borrow().clone();
       if f.generic_args.is_empty() {
         match f.implementation {
-          FunctionImplementationKind::EnumConstructor => {
+          FunctionImplementationKind::EnumConstructor(
+            original_variant_name,
+          ) => {
             let variant_name = f.name;
             let AbstractType::AbstractEnum(e) = f.return_type else {
               unreachable!("EnumConstructor fn had a non-enum type")
@@ -1037,7 +1054,7 @@ impl Program {
             let variant = e
               .variants
               .iter()
-              .find(|v| v.name == variant_name)
+              .find(|v| v.name == original_variant_name)
               .expect("EnumConstructor fn name didn't match any variant");
             let enum_name = &e.name;
             let AbstractType::Type(inner_type) = &variant.inner_type else {
@@ -1053,7 +1070,10 @@ impl Program {
               .bitcastable_chunk_accessors("inner".into())
               .into_iter()
               .map(|exp| {
-                exp.compile(ExpressionCompilationPosition::InnerExpression)
+                format!(
+                  "bitcast<u32>({})",
+                  exp.compile(ExpressionCompilationPosition::InnerExpression)
+                )
               })
               .chain(std::iter::repeat("0u".into()))
               .take(e.inner_size_in_u32s()?)

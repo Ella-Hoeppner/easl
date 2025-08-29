@@ -17,10 +17,10 @@ Feature goals:
 ## todo
 ### high priority, necessary to call the language 0.1
 * enums
-  * generics
-    * rn i think everything just gets dropped during monomorphization
-  * implement `bitcastable_chunk_accessors` for nested arrays
   * matching
+  * implement `bitcastable_chunk_accessors` for nested enums
+
+* closures
 
 * there are several places where gensyms are generated, but not guaranteed to be completely safe. Need to have a system that tracks all names in the program and allows for safe gensym-ing
   * cases where we need this:

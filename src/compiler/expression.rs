@@ -17,7 +17,7 @@ use crate::{
     effects::EffectType,
     enums::AbstractEnum,
     error::{CompileError, CompileErrorKind::*, CompileResult, err},
-    functions::FunctionSignature,
+    functions::{AbstractFunctionSignature, FunctionSignature},
     metadata::{Metadata, extract_metadata},
     program::{Program, TypeDefs},
     structs::{AbstractStruct, Struct},
@@ -2249,31 +2249,35 @@ impl TypedExp {
                   }
                 }
               }
-              FunctionImplementationKind::EnumConstructor => {
-                // todo!("enum")
-                /*if let Some(abstract_enum) = base_program
-                  .typedefs
-                  .enums
-                  .iter()
-                  .find(|s| s.name == *f_name)
+              FunctionImplementationKind::EnumConstructor(variant_name) => {
+                let Type::Function(f) = f.data.unwrap_known() else {
+                  unreachable!()
+                };
+                let Type::Enum(enum_type) = f.return_type.unwrap_known() else {
+                  unreachable!()
+                };
+                if let Some(abstract_enum) =
+                  base_program.typedefs.enums.iter().find(|e| {
+                    e.variants.iter().find(|v| v.name == *f_name).is_some()
+                  })
                 {
-                  let arg_types: Vec<Type> =
-                    args.iter().map(|arg| arg.data.unwrap_known()).collect();
-                  if let Some(monomorphized_struct) =
-                    abstract_enum.generate_monomorphized(arg_types.clone())
+                  if let Some(monomorphized_enum) =
+                    abstract_enum.generate_monomorphized(enum_type)
                   {
-                    let abstract_enum = Rc::new(monomorphized_struct);
+                    let monomorphized_enum = Rc::new(monomorphized_enum);
                     std::mem::swap(
                       f_name,
-                      &mut AbstractStruct::concretized_name(
-                        monomorphized_struct.clone(),
-                        &base_program.typedefs,
-                        exp.source_trace.clone(),
-                      )?,
+                      &mut (f_name.to_string()
+                        + &AbstractEnum::concretized_suffix(
+                          monomorphized_enum.clone(),
+                          &base_program.typedefs,
+                          exp.source_trace.clone(),
+                        )?)
+                        .into(),
                     );
                     let mut new_typestate = TypeState::Known(Type::Enum(
                       AbstractEnum::fill_generics_ordered(
-                        abstract_enum.clone(),
+                        monomorphized_enum.clone(),
                         vec![],
                         &base_program.typedefs,
                         source_trace.clone(),
@@ -2282,9 +2286,26 @@ impl TypedExp {
                     exp.data.with_dereferenced_mut(|typestate| {
                       std::mem::swap(typestate, &mut new_typestate)
                     });
-                    new_program.add_monomorphized_enum(abstract_enum.into());
+                    new_program.add_abstract_function(Rc::new(RefCell::new(
+                      AbstractFunctionSignature {
+                        name: f_name.clone(),
+                        generic_args: vec![],
+                        arg_types: abstract_signature.arg_types.clone(),
+                        mutated_args: vec![],
+                        return_type: AbstractType::AbstractEnum(
+                          monomorphized_enum.clone(),
+                        ),
+                        implementation:
+                          FunctionImplementationKind::EnumConstructor(
+                            variant_name.clone(),
+                          ),
+                        associative: false,
+                      },
+                    )));
+                    new_program
+                      .add_monomorphized_enum(monomorphized_enum.into());
                   }
-                }*/
+                }
               }
               FunctionImplementationKind::Composite(f) => {
                 if !abstract_signature.generic_args.is_empty() {

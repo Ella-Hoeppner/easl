@@ -325,7 +325,7 @@ impl AbstractEnum {
       })
       .map_or(Ok(None), |v| v.map(Some))
   }
-  pub fn monomorphized_name(&self, variant_types: &Vec<Type>) -> Rc<str> {
+  pub fn monomorphized_suffix(&self, variant_types: &Vec<Type>) -> Rc<str> {
     let mut generic_bindings = HashMap::new();
     for (variant, variant_type) in self
       .original_ancestor()
@@ -354,7 +354,7 @@ impl AbstractEnum {
           .original_ancestor()
           .generic_args
           .iter()
-          .fold(self.name.to_string(), |name_so_far, generic_arg_name| {
+          .fold(String::new(), |name_so_far, generic_arg_name| {
             name_so_far
               + "_"
               + &generic_bindings.get(generic_arg_name).unwrap().compile()
@@ -363,29 +363,49 @@ impl AbstractEnum {
       })
       .into()
   }
-  /*pub fn generate_monomorphized(
+  pub fn monomorphized_name(&self, variant_types: &Vec<Type>) -> Rc<str> {
+    (self.name.to_string() + &self.monomorphized_suffix(variant_types)).into()
+  }
+  pub fn fill_abstract_generics(
+    self,
+    generics: Vec<AbstractType>,
+  ) -> AbstractEnum {
+    let generics_map: HashMap<Rc<str>, AbstractType> = self
+      .generic_args
+      .iter()
+      .cloned()
+      .zip(generics.into_iter())
+      .collect();
+    self.partially_fill_abstract_generics(generics_map)
+  }
+  pub fn extract_generic_bindings(
     &self,
-    field_types: Vec<Type>,
+    concrete_enum: &Enum,
+    generic_bindings: &mut HashMap<Rc<str>, Type>,
+  ) {
+    for i in 0..concrete_enum.variants.len() {
+      self.variants[i].inner_type.extract_generic_bindings(
+        &concrete_enum.variants[i].inner_type.unwrap_known(),
+        generic_bindings,
+      );
+    }
+  }
+  pub fn generate_monomorphized(
+    &self,
+    concrete_enum: Enum,
   ) -> Option<AbstractEnum> {
     if self.generic_args.is_empty() {
       return None;
     }
+    let mut generic_arg_map = HashMap::new();
+    self.extract_generic_bindings(&concrete_enum, &mut generic_arg_map);
     let generic_args: Vec<Type> = self
       .generic_args
       .iter()
       .cloned()
-      .map(|var| {
-        let var = AbstractType::Generic(var);
-        let first_usage_index = self
-          .fields
-          .iter()
-          .enumerate()
-          .find_map(|(index, field)| (field.field_type == var).then(|| index))
-          .expect("unused generic variable");
-        field_types[first_usage_index].clone()
-      })
+      .map(|var| generic_arg_map.remove(&var).unwrap())
       .collect();
-    Some(AbstractStruct {
+    Some(AbstractEnum {
       name: self.name.clone(),
       filled_generics: generic_args
         .iter()
@@ -393,13 +413,13 @@ impl AbstractEnum {
         .map(|(t, name)| (name, AbstractType::Type(t.clone())))
         .collect(),
       generic_args: vec![],
-      fields: self
-        .fields
+      variants: self
+        .variants
         .iter()
-        .map(|field| {
-          let mut new_field = field.clone();
-          if let AbstractType::Generic(generic_var) = &new_field.field_type {
-            new_field.field_type = AbstractType::Type(
+        .map(|variant| {
+          let mut new_variant = variant.clone();
+          if let AbstractType::Generic(generic_var) = &new_variant.inner_type {
+            new_variant.inner_type = AbstractType::Type(
               generic_args[self
                 .generic_args
                 .iter()
@@ -411,13 +431,47 @@ impl AbstractEnum {
               .clone(),
             )
           }
-          new_field
+          new_variant
         })
         .collect(),
       abstract_ancestor: Some(self.clone().into()),
       source_trace: self.source_trace.clone(),
     })
-  }*/
+  }
+  pub fn concretized_suffix(
+    e: Rc<Self>,
+    typedefs: &TypeDefs,
+    source_trace: SourceTrace,
+  ) -> CompileResult<Rc<str>> {
+    let concretized =
+      Self::concretize(e.clone(), typedefs, &vec![], source_trace)?;
+    Ok(
+      e.monomorphized_suffix(
+        &concretized
+          .variants
+          .iter()
+          .map(|variant| variant.inner_type.unwrap_known())
+          .collect(),
+      ),
+    )
+  }
+  pub fn concretized_name(
+    e: Rc<Self>,
+    typedefs: &TypeDefs,
+    source_trace: SourceTrace,
+  ) -> CompileResult<Rc<str>> {
+    let concretized =
+      Self::concretize(e.clone(), typedefs, &vec![], source_trace)?;
+    Ok(
+      e.monomorphized_name(
+        &concretized
+          .variants
+          .iter()
+          .map(|variant| variant.inner_type.unwrap_known())
+          .collect(),
+      ),
+    )
+  }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -434,6 +488,27 @@ pub struct Enum {
 }
 
 impl Enum {
+  pub fn compatible(&self, other: &Self) -> bool {
+    self.variants.iter().zip(other.variants.iter()).fold(
+      self.name == other.name,
+      |compatible_so_far, (field, other_field)| {
+        field.inner_type.with_dereferenced(|typestate| {
+          compatible_so_far
+            && if let TypeState::Known(t) = typestate {
+              other_field.inner_type.with_dereferenced(|other_typestate| {
+                if let TypeState::Known(other_t) = other_typestate {
+                  t.compatible(other_t)
+                } else {
+                  true
+                }
+              })
+            } else {
+              true
+            }
+        })
+      },
+    )
+  }
   pub fn monomorphized_name(&self) -> Rc<str> {
     self.abstract_ancestor.monomorphized_name(
       &self

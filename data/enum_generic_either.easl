@@ -1,0 +1,6 @@
+(enum (Either A B)
+      (Left A)
+      (Right B))
+
+(defn f [x: f32]: (Either f32 i32)
+  (Left x))
