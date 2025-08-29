@@ -8,3 +8,6 @@
 
 (defn make-enum-c []: TestEnum
   (C (vec2f 0.)))
+
+(defn make-enum-c-2 []: TestEnum
+  (C (vec2f 0.)))

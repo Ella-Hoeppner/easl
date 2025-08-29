@@ -2221,7 +2221,11 @@ impl TypedExp {
                 {
                   let arg_types: Vec<Type> =
                     args.iter().map(|arg| arg.data.unwrap_known()).collect();
-                  if let Some(monomorphized_struct) =
+                  if abstract_struct.generic_args.is_empty() {
+                    new_program.add_monomorphized_struct(
+                      Rc::unwrap_or_clone(abstract_struct.clone()).into(),
+                    );
+                  } else if let Some(monomorphized_struct) =
                     abstract_struct.generate_monomorphized(arg_types.clone())
                   {
                     let monomorphized_struct = Rc::new(monomorphized_struct);
@@ -2261,7 +2265,11 @@ impl TypedExp {
                     e.variants.iter().find(|v| v.name == *f_name).is_some()
                   })
                 {
-                  if let Some(monomorphized_enum) =
+                  if abstract_enum.generic_args.is_empty() {
+                    new_program.add_monomorphized_enum(Rc::unwrap_or_clone(
+                      abstract_enum.clone().into(),
+                    ));
+                  } else if let Some(monomorphized_enum) =
                     abstract_enum.generate_monomorphized(enum_type)
                   {
                     let monomorphized_enum = Rc::new(monomorphized_enum);

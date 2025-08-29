@@ -1,6 +1,5 @@
 use core::fmt::Debug;
 use std::{
-  array,
   cell::RefCell,
   collections::HashMap,
   fmt::Display,
@@ -576,7 +575,7 @@ impl Type {
             }
           }
       }
-      Type::Reference(exp_type_info) => 1,
+      Type::Reference(_) => 1,
     })
   }
   pub fn satisfies_constraints(&self, constraint: &TypeConstraint) -> bool {

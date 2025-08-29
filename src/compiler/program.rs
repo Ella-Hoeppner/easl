@@ -98,7 +98,16 @@ impl Program {
   ) {
     let name = Rc::clone(&signature.borrow().name);
     if let Some(bucket) = self.abstract_functions.get_mut(&name) {
-      bucket.push(signature.into());
+      let mut novel = true;
+      for existing_signature in bucket.iter() {
+        if existing_signature == &signature {
+          novel = false;
+          break;
+        }
+      }
+      if novel {
+        bucket.push(signature.into());
+      }
     } else {
       self.abstract_functions.insert(name, vec![signature.into()]);
     }
