@@ -1060,10 +1060,11 @@ impl Program {
             let AbstractType::AbstractEnum(e) = f.return_type else {
               unreachable!("EnumConstructor fn had a non-enum type")
             };
-            let variant = e
+            let (discriminant, variant) = e
               .variants
               .iter()
-              .find(|v| v.name == original_variant_name)
+              .enumerate()
+              .find(|(_, v)| v.name == original_variant_name)
               .expect("EnumConstructor fn name didn't match any variant");
             let enum_name = &e.name;
             let AbstractType::Type(inner_type) = &variant.inner_type else {
@@ -1073,10 +1074,10 @@ impl Program {
               String::new()
             } else {
               let inner_type_name = inner_type.compile();
-              format!("inner: {inner_type_name}")
+              format!("value: {inner_type_name}")
             };
             let bitcast_inner_values = inner_type
-              .bitcastable_chunk_accessors("inner".into())
+              .bitcastable_chunk_accessors("value".into())
               .into_iter()
               .map(|exp| {
                 format!(
@@ -1090,7 +1091,7 @@ impl Program {
               .join(", ");
             wgsl += &format!(
               "fn {variant_name}({args_str}) -> {enum_name} {{\n  \
-              {enum_name}(array({bitcast_inner_values}))\n\
+              {enum_name}({discriminant}, array({bitcast_inner_values}))\n\
               }}"
             );
             wgsl += "\n\n";

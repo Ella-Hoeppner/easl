@@ -320,7 +320,10 @@ impl AbstractEnum {
         let monomorphized_name = self.monomorphized_name(&field_types);
         let size = self.inner_size_in_u32s()?;
         Ok(format!(
-          "struct {monomorphized_name} {{\n  inner: array<u8, {size}>\n}}"
+          "struct {monomorphized_name} {{\n  \
+          discriminant: u32,\n  \
+          data: array<u8, {size}>\n\
+          }}"
         ))
       })
       .map_or(Ok(None), |v| v.map(Some))
