@@ -856,6 +856,13 @@ impl Type {
               .as_known_mut(|t| t.replace_skolems(skolems));
           }
         }
+        Type::Enum(e) => {
+          for variant in e.variants.iter_mut() {
+            variant
+              .inner_type
+              .as_known_mut(|t| t.replace_skolems(skolems));
+          }
+        }
         Type::Function(f) => {
           f.return_type.as_known_mut(|t| t.replace_skolems(skolems));
           for (arg_type, _) in f.arg_types.iter_mut() {

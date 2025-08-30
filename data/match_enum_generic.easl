@@ -1,18 +1,17 @@
 (enum (Option T) None (Some T))
 
-(defn unwrap-or-zero [o: (Option f32)
-                      default-value: f32]: f32
+(defn unwrap-or-float [o: (Option f32)
+                       default-value: f32]: f32
   (match o
     (Some x) x
     _ default-value))
 
-#_(defn (unwrap-or T)
-        [o: (Option T)
-         default-value: T]: T
-        (match o
-          (Some x) x
-          _ default-value))
+(defn (unwrap-or T)
+      [o: (Option T)
+       default-value: T]: T
+      (match o
+        (Some x) x
+        _ default-value))
 
-#_(defn unwrap-or-zero [o: (Option f32)
-                        default-value: f32]: f32
-    (unwrap-or o default-value))
+(defn unwrap-or-zero [o: (Option f32)]: f32
+  (unwrap-or o 0))
