@@ -583,6 +583,7 @@ impl TopLevelFunction {
     } else {
       panic!("attempted to compile function with invalid ExpKind")
     };
+    println!("compiling function {name}");
     let args = arg_names
       .into_iter()
       .zip(arg_types.into_iter())

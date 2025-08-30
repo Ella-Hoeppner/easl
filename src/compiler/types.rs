@@ -12,9 +12,10 @@ use sse::{document::DocumentPosition, syntax::EncloserOrOperator};
 
 use crate::{
   compiler::{
+    builtins::bitcast,
     enums::{AbstractEnum, Enum, UntypedEnum},
     error::{CompileError, CompileErrorKind},
-    expression::{ExpKind, Number, TypedExp},
+    expression::{Accessor, ExpKind, Number, TypedExp},
     program::TypeDefs,
     structs::UntypedStruct,
   },
@@ -457,31 +458,31 @@ impl AbstractType {
       other => other,
     }
   }
-  pub fn size_in_u32s(
+  pub fn data_size_in_u32s(
     &self,
     source_trace: &SourceTrace,
   ) -> CompileResult<usize> {
     Ok(match self {
       AbstractType::Generic(_) => panic!(
-        "encountered Generic while calculating size_in_u32s, this should \
+        "encountered Generic while calculating data_size_in_u32s, this should \
         never happen"
       ),
-      AbstractType::Type(t) => t.size_in_u32s(source_trace)?,
+      AbstractType::Type(t) => t.data_size_in_u32s(source_trace)?,
       AbstractType::Reference(_) => 1,
       AbstractType::AbstractStruct(s) => s
         .fields
         .iter()
-        .map(|f| f.field_type.size_in_u32s(source_trace))
+        .map(|f| f.field_type.data_size_in_u32s(source_trace))
         .collect::<CompileResult<Vec<usize>>>()?
         .into_iter()
         .sum::<usize>(),
-      AbstractType::AbstractEnum(e) => e.inner_size_in_u32s()? + 1,
+      AbstractType::AbstractEnum(e) => e.inner_data_size_in_u32s()? + 1,
       AbstractType::AbstractArray {
         size,
         inner_type,
         source_trace,
       } => {
-        inner_type.size_in_u32s(source_trace)?
+        inner_type.data_size_in_u32s(source_trace)?
           * match size {
             ArraySize::Literal(x) => *x as usize,
             ArraySize::Constant(_) | ArraySize::Unsized => {
@@ -544,7 +545,7 @@ pub enum Type {
   Reference(Box<ExpTypeInfo>),
 }
 impl Type {
-  pub fn size_in_u32s(
+  pub fn data_size_in_u32s(
     &self,
     source_trace: &SourceTrace,
   ) -> CompileResult<usize> {
@@ -554,17 +555,17 @@ impl Type {
       Type::Struct(s) => s
         .fields
         .iter()
-        .map(|f| f.field_type.unwrap_known().size_in_u32s(source_trace))
+        .map(|f| f.field_type.unwrap_known().data_size_in_u32s(source_trace))
         .collect::<CompileResult<Vec<usize>>>()?
         .into_iter()
         .sum::<usize>(),
-      Type::Enum(e) => e.size_in_u32s()?,
+      Type::Enum(e) => e.data_size_in_u32s()?,
       Type::Function(_) => {
         todo!("can't calculate size of function signatures yet")
       }
       Type::Skolem(_) => panic!("tried to calculate size of skolem"),
       Type::Array(size, inner_type) => {
-        inner_type.unwrap_known().size_in_u32s(source_trace)?
+        inner_type.unwrap_known().data_size_in_u32s(source_trace)?
           * match size {
             Some(ArraySize::Literal(x)) => *x as usize,
             _ => {
@@ -907,6 +908,82 @@ impl Type {
       }
     }
   }
+  fn bitcasted_from_enum_data_inner(
+    &self,
+    enum_value_name: &Rc<str>,
+    enum_type: &Enum,
+    current_index: usize,
+  ) -> TypedExp {
+    TypedExp {
+      data: TypeState::Known(self.clone()).into(),
+      kind: match self {
+        Type::Unit => ExpKind::Unit,
+        Type::F32 | Type::I32 | Type::U32 | Type::Bool => ExpKind::Application(
+          TypedExp {
+            data: TypeState::Known(Type::Function(
+              FunctionSignature {
+                abstract_ancestor: Some(bitcast().into()),
+                arg_types: vec![(TypeState::Known(Type::U32).into(), vec![])],
+                return_type: TypeState::Known(self.clone()).into(),
+                mutated_args: vec![],
+              }
+              .into(),
+            ))
+            .into(),
+            kind: ExpKind::Name(format!("bitcast<{}>", self.compile()).into()),
+            source_trace: SourceTrace::empty(),
+          }
+          .into(),
+          vec![TypedExp {
+            data: TypeState::Known(Type::U32).into(),
+            kind: ExpKind::Application(
+              TypedExp {
+                data: TypeState::Known(Type::Array(
+                  Some(ArraySize::Literal(
+                    enum_type.data_size_in_u32s().unwrap() as u32,
+                  )),
+                  Box::new(TypeState::Known(Type::U32).into()),
+                ))
+                .into(),
+                kind: ExpKind::Access(
+                  Accessor::Field("data".into()),
+                  TypedExp {
+                    data: TypeState::Known(Type::Enum(enum_type.clone()))
+                      .into(),
+                    kind: ExpKind::Name(enum_value_name.clone()),
+                    source_trace: SourceTrace::empty(),
+                  }
+                  .into(),
+                ),
+                source_trace: SourceTrace::empty(),
+              }
+              .into(),
+              vec![TypedExp {
+                data: TypeState::Known(Type::U32).into(),
+                kind: ExpKind::NumberLiteral(Number::Int(current_index as i64)),
+                source_trace: SourceTrace::empty(),
+              }],
+            ),
+            source_trace: SourceTrace::empty(),
+          }],
+        ),
+        Type::Struct(_) => todo!("enum"),
+        Type::Enum(_) => todo!("enum"),
+        Type::Array(array_size, exp_type_info) => todo!(),
+        _ => {
+          panic!("called bitcasted_from_enum_data_inner on invalid type")
+        }
+      },
+      source_trace: SourceTrace::empty(),
+    }
+  }
+  pub fn bitcasted_from_enum_data(
+    &self,
+    enum_value_name: Rc<str>,
+    enum_type: &Enum,
+  ) -> TypedExp {
+    self.bitcasted_from_enum_data_inner(&enum_value_name, enum_type, 0)
+  }
 }
 
 pub fn extract_type_annotation_ast(
@@ -1166,6 +1243,20 @@ impl TypeState {
                   {
                     let changed = t.field_type.constrain(
                       other_t.field_type.kind.clone(),
+                      source_trace,
+                      errors,
+                    );
+                    anything_changed |= changed;
+                  }
+                  anything_changed
+                }
+                (Type::Enum(e), Type::Enum(other_e)) => {
+                  let mut anything_changed = false;
+                  for (t, other_t) in
+                    e.variants.iter_mut().zip(other_e.variants.iter_mut())
+                  {
+                    let changed = t.inner_type.constrain(
+                      other_t.inner_type.kind.clone(),
                       source_trace,
                       errors,
                     );

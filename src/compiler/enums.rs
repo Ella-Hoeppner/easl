@@ -286,12 +286,12 @@ impl AbstractEnum {
       source_trace,
     )
   }
-  pub fn inner_size_in_u32s(&self) -> CompileResult<usize> {
+  pub fn inner_data_size_in_u32s(&self) -> CompileResult<usize> {
     Ok(
       self
         .variants
         .iter()
-        .map(|x| x.inner_type.size_in_u32s(&self.source_trace))
+        .map(|x| x.inner_type.data_size_in_u32s(&self.source_trace))
         .collect::<CompileResult<Vec<usize>>>()?
         .into_iter()
         .max()
@@ -318,7 +318,7 @@ impl AbstractEnum {
           })
           .collect::<CompileResult<Vec<Type>>>()?;
         let monomorphized_name = self.monomorphized_name(&field_types);
-        let size = self.inner_size_in_u32s()?;
+        let size = self.inner_data_size_in_u32s()?;
         Ok(format!(
           "struct {monomorphized_name} {{\n  \
           discriminant: u32,\n  \
@@ -521,7 +521,7 @@ impl Enum {
         .collect(),
     )
   }
-  pub fn size_in_u32s(&self) -> CompileResult<usize> {
+  pub fn data_size_in_u32s(&self) -> CompileResult<usize> {
     Ok(
       self
         .variants
@@ -529,7 +529,7 @@ impl Enum {
         .map(|v| {
           v.inner_type
             .unwrap_known()
-            .size_in_u32s(&self.abstract_ancestor.source_trace)
+            .data_size_in_u32s(&self.abstract_ancestor.source_trace)
         })
         .collect::<CompileResult<Vec<usize>>>()?
         .into_iter()

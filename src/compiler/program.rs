@@ -1086,7 +1086,7 @@ impl Program {
                 )
               })
               .chain(std::iter::repeat("0u".into()))
-              .take(e.inner_size_in_u32s()?)
+              .take(e.inner_data_size_in_u32s()?)
               .collect::<Vec<String>>()
               .join(", ");
             wgsl += &format!(

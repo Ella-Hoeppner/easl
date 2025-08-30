@@ -8,19 +8,32 @@ Feature goals:
   * full feature parity with WGSL - anything that can be expressed with WGSL will also be directly expressible with easl (easl may eventually support glsl as a compilation target as well, though this is not a priority for now)
   * fully expression-based, including scoped `let` blocks that return values, and inline `if` and `match` statements
   * a powerful type system supporting pervasive type inference, function overloading, and Constraints (similar to typeclasses/traits, but able to coexist with ad-hoc overloading)
-  * rust-style enums/sum types
+  * rust-style enums/sum types and pattern matching
   * closures and higher-order functions
   * tuples and anonymous structs
-  * clojure-like loop construct for tail-recursion-style iteration
+  * clojure-like `loop` construct for tail-recursion-style iteration
   * type holes
 
 ## todo
 ### high priority, necessary to call the language 0.1
 * enums
   * matching
+    * switch statements don't compile correctly rn
+      * for some reason the compiled `bitcast` call doesn't have the `<...>` generics, even though that should be caught in compilation
+    * I don't think matching on a variant of 0 arguments will work rn
   * implement `bitcastable_chunk_accessors` for nested enums
 
 * closures
+
+* tuples
+  * what should syntax be?
+    * would be nice to just use `[]` but I'm using that for arrays already...
+      * would it be possible to overload `[]` to use it for both things?
+    * guess I could do like `{[]}` or `{()}`? That kinda sucks though
+
+* support a `@render` function tag that acts as a fragment and vertex shader in one
+  * Basically it'll act like a vertex shader that returns a fragment shader
+  * so it'll just have to be a function with a return
 
 * there are several places where gensyms are generated, but not guaranteed to be completely safe. Need to have a system that tracks all names in the program and allows for safe gensym-ing
   * cases where we need this:

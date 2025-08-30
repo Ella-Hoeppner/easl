@@ -239,10 +239,6 @@ pub enum CompileErrorKind {
     "Can't have additional patterns in a match block after a wildcard pattern"
   )]
   PatternAfterWildcard,
-  #[error(
-    "Invalid pattern; patterns may only be literals, names, or wildcards"
-  )]
-  InvalidPattern,
   #[error("The same pattern cannot appear twice in a match block")]
   DuplicatePattern,
   #[error("`match` expression doesn't have exhaustive patterns")]
@@ -251,6 +247,8 @@ pub enum CompileErrorKind {
   InvalidEnumVariant,
   #[error("Cannot calculate size of type")]
   CantCalculateSize,
+  #[error("Invalid `match` pattern")]
+  InvalidMatchPattern,
 }
 
 impl PartialEq for CompileErrorKind {

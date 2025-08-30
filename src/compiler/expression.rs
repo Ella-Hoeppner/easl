@@ -1294,72 +1294,132 @@ impl TypedExp {
         let value_line = body.compile(position);
         format!("\n{}{}", binding_lines.join("\n"), value_line)
       }
-      Match(scrutinee, arms) => {
-        if scrutinee.data.unwrap_known() == Type::Bool {
-          match arms.len() {
-            1 => {
-              let (pattern, case) = arms.into_iter().next().unwrap();
-              let compiled_case = case.compile(position);
-              match pattern.kind {
-                ExpKind::Wildcard => compiled_case,
-                ExpKind::BooleanLiteral(true) => format!(
-                  "\nif ({}) {{{}\n}}",
-                  scrutinee.compile(InnerExpression),
-                  indent(compiled_case),
-                ),
-                ExpKind::BooleanLiteral(false) => format!(
-                  "\nif (!{}) {{{}\n}}",
-                  scrutinee.compile(InnerExpression),
-                  indent(compiled_case),
-                ),
-                _ => unreachable!(),
-              }
+      Match(scrutinee, arms) => match scrutinee.data.unwrap_known() {
+        Type::Bool => match arms.len() {
+          1 => {
+            let (pattern, case) = arms.into_iter().next().unwrap();
+            let compiled_case = case.compile(position);
+            match pattern.kind {
+              ExpKind::Wildcard => compiled_case,
+              ExpKind::BooleanLiteral(true) => format!(
+                "\nif ({}) {{{}\n}}",
+                scrutinee.compile(InnerExpression),
+                indent(compiled_case),
+              ),
+              ExpKind::BooleanLiteral(false) => format!(
+                "\nif (!{}) {{{}\n}}",
+                scrutinee.compile(InnerExpression),
+                indent(compiled_case),
+              ),
+              _ => unreachable!(),
             }
-            2 => {
-              let mut true_case = None;
-              let mut false_case = None;
-              let mut wildcard_case = None;
-              for (pattern, case) in arms {
-                if pattern.kind == ExpKind::Wildcard {
-                  wildcard_case = Some(case);
-                } else if pattern.kind == ExpKind::BooleanLiteral(true) {
-                  true_case = Some(case);
-                } else if pattern.kind == ExpKind::BooleanLiteral(false) {
-                  false_case = Some(case);
-                } else {
-                  unreachable!()
-                }
-              }
-              let (true_case, false_case) = if let Some(true_case) = true_case {
-                (true_case, false_case.or(wildcard_case).unwrap())
-              } else {
-                (true_case.or(wildcard_case).unwrap(), false_case.unwrap())
-              };
-              let (true_case, false_case) = (
-                if true_case.kind == ExpKind::Unit {
-                  indent("\n".to_string())
-                } else {
-                  indent(true_case.compile(position))
-                },
-                if false_case.kind == ExpKind::Unit {
-                  indent("\n".to_string())
-                } else {
-                  indent(false_case.compile(position))
-                },
-              );
-              let condition = scrutinee.compile(InnerExpression);
-              if position == InnerExpression {
-                format!("select({false_case}, {true_case}, {condition})")
-              } else {
-                format!(
-                  "\nif ({condition}) {{{true_case}\n}} \
-                  else {{{false_case}\n}}",
-                )
-              }
-            }
-            _ => unreachable!(),
           }
-        } else {
+          2 => {
+            let mut true_case = None;
+            let mut false_case = None;
+            let mut wildcard_case = None;
+            for (pattern, case) in arms {
+              if pattern.kind == ExpKind::Wildcard {
+                wildcard_case = Some(case);
+              } else if pattern.kind == ExpKind::BooleanLiteral(true) {
+                true_case = Some(case);
+              } else if pattern.kind == ExpKind::BooleanLiteral(false) {
+                false_case = Some(case);
+              } else {
+                unreachable!()
+              }
+            }
+            let (true_case, false_case) = if let Some(true_case) = true_case {
+              (true_case, false_case.or(wildcard_case).unwrap())
+            } else {
+              (true_case.or(wildcard_case).unwrap(), false_case.unwrap())
+            };
+            let (true_case, false_case) = (
+              if true_case.kind == ExpKind::Unit {
+                indent("\n".to_string())
+              } else {
+                indent(true_case.compile(position))
+              },
+              if false_case.kind == ExpKind::Unit {
+                indent("\n".to_string())
+              } else {
+                indent(false_case.compile(position))
+              },
+            );
+            let condition = scrutinee.compile(InnerExpression);
+            if position == InnerExpression {
+              format!("select({false_case}, {true_case}, {condition})")
+            } else {
+              format!(
+                "\nif ({condition}) {{{true_case}\n}} \
+                  else {{{false_case}\n}}",
+              )
+            }
+          }
+          _ => unreachable!(),
+        },
+        Type::Enum(e) => {
+          let ExpKind::Name(scrutinee_name) = &scrutinee.kind else {
+            panic!("scrutinee wasn't name in enum match block")
+          };
+          format!(
+            "\nswitch({}.discriminant) {{\n  {}\n}}",
+            scrutinee.clone().compile(InnerExpression),
+            indent(
+              arms
+                .into_iter()
+                .map(|(pattern, value)| {
+                  match pattern.kind {
+                    Wildcard => format!(
+                      "default: {{{}\n  break;\n}}",
+                      indent(value.compile(position))
+                    ),
+                    ExpKind::Application(mut f, mut args) => {
+                      let Some((f, _, inner_value_name)) =
+                        Self::try_deconstruct_enum_pattern(&mut f, &mut args)
+                      else {
+                        panic!("invalid pattern type in enum match block")
+                      };
+                      let FunctionImplementationKind::EnumConstructor(
+                        variant_name,
+                      ) = &f.abstract_ancestor.clone().unwrap().implementation
+                      else {
+                        panic!("invalid pattern type in enum match block")
+                      };
+                      let Type::Enum(e) = scrutinee.data.unwrap_known() else {
+                        panic!("invalid pattern type in enum match block")
+                      };
+                      let Some((discriminant, variant)) = e
+                        .variants
+                        .iter()
+                        .enumerate()
+                        .find(|(i, variant)| (variant.name == *variant_name))
+                      else {
+                        panic!("invalid pattern type in enum match block")
+                      };
+                      let bitcasted_value = variant
+                        .inner_type
+                        .unwrap_known()
+                        .bitcasted_from_enum_data(scrutinee_name.clone(), &e);
+                      format!(
+                        "case {}: {{\n  let {} = {};{}\n  break;\n}}",
+                        discriminant,
+                        inner_value_name,
+                        bitcasted_value.compile(
+                          ExpressionCompilationPosition::InnerExpression
+                        ),
+                        indent(value.compile(position))
+                      )
+                    }
+                    _ => panic!("invalid pattern type in enum match block"),
+                  }
+                })
+                .collect::<Vec<String>>()
+                .join("\n")
+            )
+          )
+        }
+        _ => {
           format!(
             "\nswitch ({}) {{\n  {}\n}}",
             scrutinee.compile(InnerExpression),
@@ -1384,7 +1444,7 @@ impl TypedExp {
             )
           )
         }
-      }
+      },
       Block(expressions) => {
         let child_count = expressions.len();
         let child_strings: Vec<String> = expressions
@@ -1467,15 +1527,15 @@ impl TypedExp {
       .unwrap();
     untyped
   }
-  pub fn validate_match_blocks(&self, errors: &mut ErrorLog) {
+  pub fn validate_match_blocks(&mut self, errors: &mut ErrorLog) {
     self
-      .walk(&mut |exp| {
-        match &exp.kind {
+      .walk_mut(&mut |exp| {
+        match &mut exp.kind {
           Match(exp, items) => {
             if let TypeState::Known(t) = &exp.data.kind {
               let mut first_wildcard: Option<SourceTrace> = None;
               let mut all_pattern_values: Vec<&ExpKind<ExpTypeInfo>> = vec![];
-              for (pattern, _) in items.iter() {
+              for (pattern, _) in items.iter_mut() {
                 if let Some(first_wildcard) = &first_wildcard {
                   errors.log(CompileError {
                     kind: CompileErrorKind::PatternAfterWildcard,
@@ -1490,17 +1550,23 @@ impl TypedExp {
                     source_trace: pattern.source_trace.clone(),
                   })
                 } else {
-                  match &pattern.kind {
+                  if !match &mut pattern.kind {
                     Wildcard => {
                       if first_wildcard.is_none() {
                         first_wildcard = Some(pattern.source_trace.clone())
                       }
+                      true
                     }
-                    NumberLiteral(_) | BooleanLiteral(_) | Name(_) => {}
-                    _ => errors.log(CompileError {
-                      kind: CompileErrorKind::InvalidPattern,
+                    NumberLiteral(_) | BooleanLiteral(_) | Name(_) => true,
+                    Application(f, args) => {
+                      Self::try_deconstruct_enum_pattern(f, args).is_some()
+                    }
+                    _ => false,
+                  } {
+                    errors.log(CompileError {
+                      kind: CompileErrorKind::InvalidMatchPattern,
                       source_trace: pattern.source_trace.clone(),
-                    }),
+                    })
                   }
                   all_pattern_values.push(&pattern.kind);
                 }
@@ -1520,6 +1586,27 @@ impl TypedExp {
         Ok::<_, Never>(true)
       })
       .unwrap();
+  }
+  fn try_deconstruct_enum_pattern<'a>(
+    f: &'a mut Box<Exp<ExpTypeInfo>>,
+    args: &'a mut Vec<Exp<ExpTypeInfo>>,
+  ) -> Option<(
+    &'a mut Box<FunctionSignature>,
+    &'a mut Exp<ExpTypeInfo>,
+    Rc<str>,
+  )> {
+    if let TypeState::Known(Type::Function(f)) = &mut *f.data
+      && let Some(abstract_f) = &f.abstract_ancestor
+      && let FunctionImplementationKind::EnumConstructor(_) =
+        &abstract_f.implementation
+      && args.len() == 1
+      && let arg = &mut args[0]
+      && let ExpKind::Name(inner_value_name) = &arg.kind
+    {
+      let inner_value_name = inner_value_name.clone();
+      return Some((f, arg, inner_value_name));
+    }
+    None
   }
   fn propagate_types_inner(
     &mut self,
@@ -1823,21 +1910,58 @@ impl TypedExp {
       }
       Match(scrutinee, arms) => {
         let mut anything_changed = scrutinee.propagate_types_inner(ctx, errors);
-        for (case, value) in arms.iter_mut() {
-          ctx.inside_pattern = true;
-          anything_changed |= case.propagate_types_inner(ctx, errors);
-          ctx.inside_pattern = false;
-          anything_changed |= value.propagate_types_inner(ctx, errors);
-          anything_changed |= case.data.mutually_constrain(
-            &mut scrutinee.data,
-            &self.source_trace,
-            errors,
-          );
-          anything_changed |= value.data.mutually_constrain(
-            &mut self.data,
-            &self.source_trace,
-            errors,
-          );
+        for (pattern, value) in arms.iter_mut() {
+          if let Application(f, args) = &mut pattern.kind {
+            f.propagate_types_inner(ctx, errors);
+            if let Some((f, arg, inner_value_name)) =
+              Self::try_deconstruct_enum_pattern(f, args)
+            {
+              anything_changed |= f.return_type.mutually_constrain(
+                &mut scrutinee.data,
+                &self.source_trace,
+                errors,
+              );
+              anything_changed |= f.return_type.mutually_constrain(
+                &mut pattern.data,
+                &self.source_trace,
+                errors,
+              );
+              anything_changed |= f.arg_types[0].0.mutually_constrain(
+                &mut arg.data,
+                &self.source_trace,
+                errors,
+              );
+              ctx.bind(
+                &inner_value_name,
+                Variable {
+                  kind: VariableKind::Let,
+                  typestate: f.arg_types[0].0.clone(),
+                },
+              );
+              anything_changed |= value.propagate_types_inner(ctx, errors);
+              ctx.unbind(&inner_value_name);
+            } else {
+              errors.log(CompileError::new(
+                CompileErrorKind::InvalidMatchPattern,
+                self.source_trace.clone(),
+              ))
+            }
+          } else {
+            ctx.inside_pattern = true;
+            anything_changed |= pattern.propagate_types_inner(ctx, errors);
+            ctx.inside_pattern = false;
+            anything_changed |= value.propagate_types_inner(ctx, errors);
+            anything_changed |= pattern.data.mutually_constrain(
+              &mut scrutinee.data,
+              &self.source_trace,
+              errors,
+            );
+            anything_changed |= value.data.mutually_constrain(
+              &mut self.data,
+              &self.source_trace,
+              errors,
+            );
+          }
         }
         self.data.subtree_fully_typed = arms.iter().fold(
           scrutinee.data.subtree_fully_typed,
