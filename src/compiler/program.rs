@@ -865,7 +865,7 @@ impl Program {
     }
     anything_changed
   }
-  fn find_untyped(&mut self) -> Vec<TypedExp> {
+  fn find_untyped(&mut self) -> Vec<SourceTrace> {
     self
       .abstract_functions_iter()
       .map(|f| {
@@ -885,6 +885,13 @@ impl Program {
         } else {
           vec![]
         }
+        .into_iter()
+        .chain(
+          (!v.var.typestate.is_fully_known())
+            .then(|| v.source_trace.clone())
+            .into_iter(),
+        )
+        .collect()
       }))
       .flatten()
       .collect()
@@ -909,8 +916,8 @@ impl Program {
         return if untyped_expressions.is_empty() {
           break;
         } else {
-          for exp in untyped_expressions {
-            let source_trace = exp.source_trace.clone();
+          for source_trace in untyped_expressions {
+            let source_trace = source_trace;
             errors.log(CompileError::new(CouldntInferTypes, source_trace));
           }
         };

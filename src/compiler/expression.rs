@@ -1515,12 +1515,12 @@ impl TypedExp {
     }
   }
 
-  pub fn find_untyped(&mut self) -> Vec<TypedExp> {
+  pub fn find_untyped(&mut self) -> Vec<SourceTrace> {
     let mut untyped = vec![];
     self
       .walk_mut::<()>(&mut |exp| {
         if !exp.data.is_fully_known() {
-          untyped.push(exp.clone());
+          untyped.push(exp.source_trace.clone());
         }
         Ok(true)
       })
