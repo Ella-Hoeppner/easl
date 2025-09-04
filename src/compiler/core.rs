@@ -1,6 +1,6 @@
 use sse::document::Document;
 
-use crate::parse::{parse_easl, Context as ParseContext, Encloser, Operator};
+use crate::parse::{Context as ParseContext, Encloser, Operator, parse_easl};
 
 use super::{builtins::built_in_macros, error::ErrorLog, program::Program};
 

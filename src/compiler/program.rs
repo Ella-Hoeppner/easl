@@ -974,9 +974,11 @@ impl Program {
     });
   }
   pub fn inline_all_higher_order_arguments(&mut self, errors: &mut ErrorLog) {
-    let changed = self.inline_higher_order_arguments(errors);
-    if errors.is_empty() && changed {
-      self.inline_all_higher_order_arguments(errors);
+    loop {
+      let changed = self.inline_higher_order_arguments(errors);
+      if !errors.is_empty() || !changed {
+        break;
+      }
     }
   }
   pub fn inline_higher_order_arguments(
@@ -1343,11 +1345,11 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    self.monomorphize(&mut errors);
+    self.validate_match_blocks(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
-    self.validate_match_blocks(&mut errors);
+    self.monomorphize(&mut errors);
     if !errors.is_empty() {
       return errors;
     }

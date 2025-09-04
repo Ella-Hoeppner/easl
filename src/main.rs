@@ -73,6 +73,7 @@ fn main() {
     "enum_generic_either",
     "match_enum",
     "match_enum_generic",
+    "option_map",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

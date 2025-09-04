@@ -1,0 +1,23 @@
+(enum (Option T) None (Some T))
+
+(defn (unwrap-or T)
+      [o: (Option T)
+       default-value: T]: T
+      (match o
+        (Some x) x
+        _ default-value))
+
+(defn (map T)
+      [o: (Option T)
+       f: (Fn [T] T)]: (Option T)
+      (match o
+        (Some x) (Some (f x))
+        _ (None)))
+
+(defn double [x: f32]: f32
+  (* x 2.))
+
+(defn main []: f32
+  (let [x (Some 0.5)
+        y (map x double)]
+    (unwrap-or y 2.)))

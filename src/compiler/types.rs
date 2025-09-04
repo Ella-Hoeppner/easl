@@ -838,15 +838,9 @@ impl Type {
       }
     }
   }
-  pub fn replace_skolems(&mut self, skolems: &Vec<(Rc<str>, Type)>) {
+  pub fn replace_skolems(&mut self, skolems: &HashMap<Rc<str>, Type>) {
     if let Type::Skolem(s) = &self {
-      std::mem::swap(
-        self,
-        &mut skolems
-          .iter()
-          .find_map(|(skolem_name, t)| (skolem_name == s).then(|| t.clone()))
-          .unwrap(),
-      )
+      std::mem::swap(self, &mut skolems.get(s).unwrap().clone())
     } else {
       match self {
         Type::Struct(s) => {
@@ -976,7 +970,7 @@ impl Type {
         ),
         Type::Struct(_) => todo!("enum"),
         Type::Enum(_) => todo!("enum"),
-        Type::Array(array_size, exp_type_info) => todo!(),
+        Type::Array(_, _) => todo!(),
         _ => {
           panic!("called bitcasted_from_enum_data_inner on invalid type")
         }
@@ -990,6 +984,36 @@ impl Type {
     enum_type: &Enum,
   ) -> TypedExp {
     self.bitcasted_from_enum_data_inner(&enum_value_name, enum_type, 0)
+  }
+  pub fn replace_skolems_with_unification_variables(
+    &mut self,
+    replacements: &HashMap<Rc<str>, ExpTypeInfo>,
+  ) {
+    match self {
+      Type::Struct(s) => {
+        for f in s.fields.iter_mut() {
+          f.field_type
+            .replace_skolems_with_unification_variables(replacements);
+        }
+      }
+      Type::Enum(e) => {
+        for v in e.variants.iter_mut() {
+          v.inner_type
+            .replace_skolems_with_unification_variables(replacements);
+        }
+      }
+      Type::Function(f) => {
+        for (t, _) in f.arg_types.iter_mut() {
+          t.replace_skolems_with_unification_variables(replacements);
+        }
+        f.return_type
+          .replace_skolems_with_unification_variables(replacements);
+      }
+      Type::Array(_, t) | Type::Reference(t) => {
+        t.replace_skolems_with_unification_variables(replacements)
+      }
+      _ => {}
+    }
   }
 }
 
@@ -1465,6 +1489,34 @@ impl TypeState {
   }
   pub fn compile(&self) -> String {
     self.unwrap_known().compile()
+  }
+  pub fn replace_skolems_with_unification_variables(
+    &mut self,
+    replacements: &HashMap<Rc<str>, ExpTypeInfo>,
+  ) {
+    if let Some(replacement) =
+      self.with_dereferenced_mut(|typestate| match typestate {
+        TypeState::OneOf(types) => {
+          for t in types.iter_mut() {
+            t.replace_skolems_with_unification_variables(replacements);
+          }
+          None
+        }
+        TypeState::Known(t) => {
+          if let Type::Skolem(name) = t
+            && let Some(replacement) = replacements.get(name)
+          {
+            Some(replacement.kind.clone())
+          } else {
+            t.replace_skolems_with_unification_variables(replacements);
+            None
+          }
+        }
+        _ => None,
+      })
+    {
+      *self = replacement;
+    }
   }
 }
 

@@ -16,6 +16,11 @@ Feature goals:
 
 ## todo
 ### high priority, necessary to call the language 0.1
+* BUG: If you try to shadow the name of a globally-bound function with a `Fn`-type arg to another function, you get weird errors
+  * e.g. if you had `(defn f [...] ...)`, but then elsewhere had a function that took an argument like `f: (Fn [...] ...)`
+  * you should just get a "can't shadow global" error but instead you get arity and type errors and stuff, because it's trying to use the global fn in places where it should be using the local value, or vice-versa
+  * actually maybe this is a more general thing where we don't check for shadowing of globals in arg names at all?
+
 * enums
   * matching
     * I don't think matching on a variant of 0 arguments will work rn

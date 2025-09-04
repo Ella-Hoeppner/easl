@@ -189,11 +189,25 @@ impl AbstractFunctionSignature {
       )?
       .into();
     monomorphized.generic_args = vec![];
+    for t in monomorphized
+      .arg_types
+      .iter_mut()
+      .chain(std::iter::once(&mut monomorphized.return_type))
+    {
+      take(t, |t| {
+        t.fill_abstract_generics(
+          &generic_bindings
+            .iter()
+            .map(|(a, b)| (a.clone(), AbstractType::Type(b.clone())))
+            .collect::<HashMap<_, _>>(),
+        )
+      })
+    }
     if let FunctionImplementationKind::Composite(monomorphized_fn) =
       &mut monomorphized.implementation
     {
       let mut new_fn = monomorphized_fn.borrow().clone();
-      let replacement_pairs: Vec<_> = generic_bindings
+      let replacement_pairs: HashMap<Rc<str>, Type> = generic_bindings
         .iter()
         .map(|(x, y)| (x.clone(), y.clone()))
         .collect();
@@ -207,6 +221,7 @@ impl AbstractFunctionSignature {
   }
   pub fn generate_higher_order_functions_inlined_version(
     &self,
+    name: &Rc<str>,
     fn_args: Vec<TypedExp>,
     source_trace: SourceTrace,
   ) -> CompileResult<Self> {
@@ -261,13 +276,13 @@ impl AbstractFunctionSignature {
     implementation.arg_names = new_parameter_names;
     implementation.arg_metadata = new_parameter_metadata;
     let f = AbstractFunctionSignature {
-      name: (self.name.to_string()
+      name: (name.to_string()
         + "__"
         + &fn_args
           .iter()
           .map(|arg| {
-            if let ExpKind::Name(name) = &arg.kind {
-              &**name
+            if let ExpKind::Name(higher_order_arg_name) = &arg.kind {
+              &**higher_order_arg_name
             } else {
               panic!("element of fn_args wasn't a Name")
             }
@@ -305,122 +320,127 @@ impl AbstractFunctionSignature {
         )
       })
       .collect();
-    Ok(FunctionSignature {
-      arg_types: f
-        .arg_types
-        .iter()
-        .map(|t| {
-          Ok(match t {
-            AbstractType::Generic(var_name) => (
-              generic_variables
-                .get(var_name)
-                .expect("unrecognized generic")
-                .clone(),
-              generic_constraints
-                .get(var_name)
-                .expect("unrecognized generic")
-                .clone(),
-            ),
-            AbstractType::Type(t) => {
-              (TypeState::Known(t.clone()).into(), vec![])
-            }
-            AbstractType::AbstractStruct(s) => (
-              TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
-                s.clone(),
-                &generic_variables,
-                typedefs,
-                source_trace.clone(),
-              )?))
-              .into(),
-              vec![],
-            ),
-            AbstractType::AbstractEnum(e) => (
-              TypeState::Known(Type::Enum(AbstractEnum::fill_generics(
-                e.clone(),
-                &generic_variables,
-                typedefs,
-                source_trace.clone(),
-              )?))
-              .into(),
-              vec![],
-            ),
-            AbstractType::AbstractArray {
-              size, inner_type, ..
-            } => (
-              TypeState::Known(Type::Array(
-                Some(size.clone()),
-                inner_type
+    let mut arg_types: Vec<_> = f
+      .arg_types
+      .iter()
+      .map(|t| {
+        Ok(match t {
+          AbstractType::Generic(var_name) => (
+            generic_variables
+              .get(var_name)
+              .expect("unrecognized generic")
+              .clone(),
+            generic_constraints
+              .get(var_name)
+              .expect("unrecognized generic")
+              .clone(),
+          ),
+          AbstractType::Type(t) => (TypeState::Known(t.clone()).into(), vec![]),
+          AbstractType::AbstractStruct(s) => (
+            TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
+              s.clone(),
+              &generic_variables,
+              typedefs,
+              source_trace.clone(),
+            )?))
+            .into(),
+            vec![],
+          ),
+          AbstractType::AbstractEnum(e) => (
+            TypeState::Known(Type::Enum(AbstractEnum::fill_generics(
+              e.clone(),
+              &generic_variables,
+              typedefs,
+              source_trace.clone(),
+            )?))
+            .into(),
+            vec![],
+          ),
+          AbstractType::AbstractArray {
+            size, inner_type, ..
+          } => (
+            TypeState::Known(Type::Array(
+              Some(size.clone()),
+              inner_type
+                .fill_generics(
+                  &generic_variables,
+                  typedefs,
+                  source_trace.clone(),
+                )?
+                .into(),
+            ))
+            .into(),
+            vec![],
+          ),
+          AbstractType::Reference(abstract_type) => (
+            TypeState::Known(
+              Type::Reference(
+                abstract_type
                   .fill_generics(
                     &generic_variables,
                     typedefs,
                     source_trace.clone(),
                   )?
                   .into(),
-              ))
-              .into(),
-              vec![],
-            ),
-            AbstractType::Reference(abstract_type) => (
-              TypeState::Known(
-                Type::Reference(
-                  abstract_type
-                    .fill_generics(
-                      &generic_variables,
-                      typedefs,
-                      source_trace.clone(),
-                    )?
-                    .into(),
-                )
-                .into(),
               )
               .into(),
-              vec![],
-            ),
-          })
-        })
-        .collect::<CompileResult<_>>()?,
-      return_type: match &f.return_type {
-        AbstractType::Generic(var_name) => generic_variables
-          .get(var_name)
-          .expect("unrecognized generic")
-          .clone(),
-        AbstractType::AbstractStruct(s) => {
-          TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
-            s.clone(),
-            &generic_variables,
-            typedefs,
-            source_trace,
-          )?))
-          .into()
-        }
-        AbstractType::AbstractEnum(e) => {
-          TypeState::Known(Type::Enum(AbstractEnum::fill_generics(
-            e.clone(),
-            &generic_variables,
-            typedefs,
-            source_trace,
-          )?))
-          .into()
-        }
-        AbstractType::Type(t) => TypeState::Known(t.clone()).into(),
-        AbstractType::AbstractArray {
-          size, inner_type, ..
-        } => TypeState::Known(Type::Array(
-          Some(size.clone()),
-          inner_type
-            .fill_generics(&generic_variables, typedefs, source_trace)?
+            )
             .into(),
-        ))
-        .into(),
-        AbstractType::Reference(inner_type) => {
-          TypeState::Known(Type::Reference(
-            inner_type
-              .fill_generics(&generic_variables, typedefs, source_trace)?
-              .into(),
-          ))
-          .into()
-        }
-      },
+            vec![],
+          ),
+        })
+      })
+      .collect::<CompileResult<_>>()?;
+    let mut return_type = match &f.return_type {
+      AbstractType::Generic(var_name) => generic_variables
+        .get(var_name)
+        .expect("unrecognized generic")
+        .clone(),
+      AbstractType::AbstractStruct(s) => {
+        TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
+          s.clone(),
+          &generic_variables,
+          typedefs,
+          source_trace,
+        )?))
+        .into()
+      }
+      AbstractType::AbstractEnum(e) => {
+        TypeState::Known(Type::Enum(AbstractEnum::fill_generics(
+          e.clone(),
+          &generic_variables,
+          typedefs,
+          source_trace,
+        )?))
+        .into()
+      }
+      AbstractType::Type(t) => TypeState::Known(t.clone()).into(),
+      AbstractType::AbstractArray {
+        size, inner_type, ..
+      } => TypeState::Known(Type::Array(
+        Some(size.clone()),
+        inner_type
+          .fill_generics(&generic_variables, typedefs, source_trace)?
+          .into(),
+      ))
+      .into(),
+      AbstractType::Reference(inner_type) => TypeState::Known(Type::Reference(
+        inner_type
+          .fill_generics(&generic_variables, typedefs, source_trace)?
+          .into(),
+      ))
+      .into(),
+    };
+    for (t, _) in arg_types.iter_mut() {
+      t.kind
+        .replace_skolems_with_unification_variables(&generic_variables);
+    }
+    return_type
+      .kind
+      .replace_skolems_with_unification_variables(&generic_variables);
+    Ok(FunctionSignature {
+      arg_types,
+      return_type,
       abstract_ancestor: Some(Rc::new(f.clone())),
       mutated_args: f.mutated_args.clone(),
     })

@@ -1358,7 +1358,7 @@ impl TypedExp {
           }
           _ => unreachable!(),
         },
-        Type::Enum(e) => {
+        Type::Enum(_) => {
           let ExpKind::Name(scrutinee_name) = &scrutinee.kind else {
             panic!("scrutinee wasn't name in enum match block")
           };
@@ -1393,7 +1393,7 @@ impl TypedExp {
                         .variants
                         .iter()
                         .enumerate()
-                        .find(|(i, variant)| (variant.name == *variant_name))
+                        .find(|(_, variant)| (variant.name == *variant_name))
                       else {
                         panic!("invalid pattern type in enum match block")
                       };
@@ -2284,7 +2284,7 @@ impl TypedExp {
       program,
     ))
   }
-  pub fn replace_skolems(&mut self, skolems: &Vec<(Rc<str>, Type)>) {
+  pub fn replace_skolems(&mut self, skolems: &HashMap<Rc<str>, Type>) {
     self
       .walk_mut::<()>(&mut |exp| {
         if let Known(t) = &mut exp.data.kind {
@@ -2436,7 +2436,7 @@ impl TypedExp {
                   }
                 }
               }
-              FunctionImplementationKind::Composite(f) => {
+              FunctionImplementationKind::Composite(composite) => {
                 if !abstract_signature.generic_args.is_empty() {
                   let monomorphized = abstract_signature
                     .generate_monomorphized(
@@ -2444,12 +2444,23 @@ impl TypedExp {
                       exp.data.unwrap_known().clone(),
                       base_program,
                       new_program,
-                      f.borrow().body.source_trace.clone(),
+                      composite.borrow().body.source_trace.clone(),
                     )?;
                   std::mem::swap(f_name, &mut monomorphized.name.clone());
-                  new_program.add_abstract_function(Rc::new(RefCell::new(
-                    monomorphized,
-                  )));
+                  let monomorphized = Rc::new(RefCell::new(monomorphized));
+                  std::mem::swap(
+                    &mut f.data.kind,
+                    &mut TypeState::Known(Type::Function(
+                      AbstractFunctionSignature::concretize(
+                        monomorphized.clone(),
+                        &new_program.typedefs,
+                        source_trace.clone(),
+                      )
+                      .unwrap()
+                      .into(),
+                    )),
+                  );
+                  new_program.add_abstract_function(monomorphized);
                 }
               }
             }
@@ -2491,6 +2502,7 @@ impl TypedExp {
                 if !function_args.is_empty() {
                   let inlined = abstract_signature
                     .generate_higher_order_functions_inlined_version(
+                      f_name,
                       function_args,
                       f.borrow().body.source_trace.clone(),
                     )?;
