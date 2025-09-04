@@ -2345,12 +2345,9 @@ impl TypedExp {
                 {
                   let arg_types: Vec<Type> =
                     args.iter().map(|arg| arg.data.unwrap_known()).collect();
-                  if abstract_struct.generic_args.is_empty() {
-                    new_program.add_monomorphized_struct(
-                      Rc::unwrap_or_clone(abstract_struct.clone()).into(),
-                    );
-                  } else if let Some(monomorphized_struct) =
-                    abstract_struct.generate_monomorphized(arg_types.clone())
+                  if abstract_struct.generic_args.len() > 0
+                    && let Some(monomorphized_struct) =
+                      abstract_struct.generate_monomorphized(arg_types.clone())
                   {
                     let monomorphized_struct = Rc::new(monomorphized_struct);
                     std::mem::swap(

@@ -18,8 +18,6 @@ Feature goals:
 ### high priority, necessary to call the language 0.1
 * enums
   * matching
-    * switch statements don't compile correctly rn
-      * for some reason the compiled `bitcast` call doesn't have the `<...>` generics, even though that should be caught in compilation
     * I don't think matching on a variant of 0 arguments will work rn
   * implement `bitcastable_chunk_accessors` for nested enums
 

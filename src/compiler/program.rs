@@ -963,6 +963,11 @@ impl Program {
         }
       }
     }
+    for s in self.typedefs.structs.iter() {
+      if s.generic_args.is_empty() {
+        monomorphized_ctx.add_monomorphized_struct(s.clone());
+      }
+    }
     take(self, |old_ctx| {
       monomorphized_ctx.top_level_vars = old_ctx.top_level_vars;
       monomorphized_ctx
