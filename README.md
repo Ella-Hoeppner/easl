@@ -16,12 +16,6 @@ Feature goals:
 
 ## todo
 ### high priority, necessary to call the language 0.1
-* support assignment into swizzles
-  * right now it typechecks fine, but it compiles to invalid wgsl
-    * wgsl doesn't allow you to assign to swizzles so there needs to be a transformation done before compilation
-      * I guess it can just like take any instance of `(= a.yz (vec2f 1.))` and turn it into `(let [gensym (vec2f 1.)] (= a.y gensym.x) (= a.z gensym.y))`
-        * needs to happen before de-expressionification
-
 * enums
   * matching
     * I don't think matching on a variant of 0 arguments will work rn
@@ -33,6 +27,17 @@ Feature goals:
     * access, like `read` or `read-write` for `storage`-addressed vars, will be declared with the `access` metadata property
       * or, as a shorthand, you should be able to do like `@{address storage-read}`/`@{address storage-read-write}`
   * default address space for top-leve vars if none is provided will be `private`
+
+* rename `=` to `set!` or `set` or something (maybe `:=`), then make `=` be equality checking, i.e. make it do what `==` currently does
+  * mutable variables don't come up *that* often, so reserving something as simple as `=` for it feels weird.
+
+* there are several places where gensyms are generated, but not guaranteed to be completely safe. Need to have a system that tracks all names in the program and allows for safe gensym-ing
+  * cases where we need this:
+    * deshadowing
+    * deexpressionify
+    * desugar_swizzle_assignments
+    * `->` bindings
+      * guess whatever system this is should be made available for macros in general
 
 * make compiler usable as a command-line tool, in addition to a library
   * example usages
@@ -48,9 +53,6 @@ Feature goals:
   * when running, there'll need to be at least some basic uniforms available. I guess for now just like, resolution and time (seconds since startup)
     * can make this more sophisticated eventually once the CPU-side of the language is usable, but for now it's more just for demo
   * need to make errors more human-readable
-
-* rename `=` to `set!` or `set` or something (maybe `:=`), then make `=` be equality checking, i.e. make it do what `==` currently does
-  * mutable variables don't come up *that* often, so reserving something as simple as `=` for it feels weird.
 
 
 
@@ -70,13 +72,6 @@ Feature goals:
 * support a `@render` function tag that acts as a fragment and vertex shader in one
   * Basically it'll act like a vertex shader that returns a fragment shader
   * so it'll just have to be a function with a return type of like `[]`
-
-* there are several places where gensyms are generated, but not guaranteed to be completely safe. Need to have a system that tracks all names in the program and allows for safe gensym-ing
-  * cases where we need this:
-    * deshadowing
-    * deexpressionify
-    * `->` bindings
-      * guess whatever system this is should be made available for macros in general
 
 * finish support for constraints
   * support declaring custom type constraints

@@ -1339,6 +1339,22 @@ impl Program {
       }
     }
   }
+  pub fn desugar_swizzle_assignments(&mut self) {
+    for signature in self.abstract_functions_iter() {
+      let signature = signature.borrow();
+      if let FunctionImplementationKind::Composite(f) =
+        &signature.implementation
+      {
+        f.borrow_mut()
+          .body
+          .walk_mut(&mut |exp| {
+            exp.desugar_swizzle_assignments();
+            Ok::<_, ()>(true)
+          })
+          .unwrap();
+      }
+    }
+  }
   pub fn validate_raw_program(&mut self) -> ErrorLog {
     let mut errors = ErrorLog::new();
     self.validate_associative_signatures(&mut errors);
@@ -1386,6 +1402,7 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.desugar_swizzle_assignments();
     self.deexpressionify();
     errors
   }

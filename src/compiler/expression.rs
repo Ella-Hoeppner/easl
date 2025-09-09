@@ -122,6 +122,17 @@ pub enum SwizzleField {
   W,
 }
 
+impl SwizzleField {
+  fn name(&self) -> &str {
+    match self {
+      SwizzleField::X => "x",
+      SwizzleField::Y => "y",
+      SwizzleField::Z => "z",
+      SwizzleField::W => "w",
+    }
+  }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Accessor {
   Field(Rc<str>),
@@ -3199,6 +3210,94 @@ impl TypedExp {
       if !changed {
         break;
       }
+    }
+  }
+  pub fn desugar_swizzle_assignments(&mut self) {
+    if let ExpKind::Application(f, args) = &self.kind
+      && let ExpKind::Name(f_name) = &f.kind
+      && &**f_name == "="
+      && let Some(first_arg) = args.get(0)
+      && let Some(second_arg) = args.get(1)
+      && let ExpKind::Access(accessor, accessed) = &first_arg.kind
+      && let Accessor::Swizzle(fields) = accessor
+    {
+      let gensym_name: Rc<str> = "gensym".into();
+      std::mem::swap(
+        self,
+        &mut Exp {
+          kind: ExpKind::Let(
+            vec![(gensym_name.clone(), VariableKind::Let, second_arg.clone())],
+            Exp {
+              kind: ExpKind::Block(
+                fields
+                  .iter()
+                  .enumerate()
+                  .map(|(i, swizzle_field)| {
+                    let Type::Struct(s) = accessed.data.unwrap_known() else {
+                      unreachable!("swizzle on non-vector")
+                    };
+                    let field_name = swizzle_field.name();
+                    println!(
+                      "\nswizzle_field: {swizzle_field:?}, {field_name}, {s:?}"
+                    );
+                    let field_type = s
+                      .fields
+                      .iter()
+                      .find_map(|struct_field| {
+                        (&*struct_field.name == field_name)
+                          .then(|| struct_field.field_type.clone())
+                      })
+                      .expect("couldn't find field when desugaring swizzle");
+                    Exp {
+                      kind: ExpKind::Application(f.clone(), {
+                        vec![
+                          Exp {
+                            kind: ExpKind::Access(
+                              Accessor::Field(field_name.into()),
+                              accessed.clone(),
+                            ),
+                            data: field_type.clone(),
+                            source_trace: self.source_trace.clone(),
+                          },
+                          Exp {
+                            kind: ExpKind::Access(
+                              Accessor::Field(
+                                match i {
+                                  0 => "x",
+                                  1 => "y",
+                                  2 => "z",
+                                  3 => "w",
+                                  _ => unreachable!(),
+                                }
+                                .into(),
+                              ),
+                              Exp {
+                                kind: ExpKind::Name(gensym_name.clone()),
+                                data: second_arg.data.clone(),
+                                source_trace: self.source_trace.clone(),
+                              }
+                              .into(),
+                            ),
+                            data: field_type.clone(),
+                            source_trace: self.source_trace.clone(),
+                          },
+                        ]
+                      }),
+                      data: TypeState::Known(Type::Unit).into(),
+                      source_trace: self.source_trace.clone(),
+                    }
+                  })
+                  .collect(),
+              ),
+              data: self.data.clone(),
+              source_trace: self.source_trace.clone(),
+            }
+            .into(),
+          ),
+          data: self.data.clone(),
+          source_trace: self.source_trace.clone(),
+        },
+      )
     }
   }
 }
