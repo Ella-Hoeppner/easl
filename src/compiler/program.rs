@@ -1265,6 +1265,31 @@ impl Program {
       }
     }
   }
+  fn catch_globally_shadowing_fn_args(&self, errors: &mut ErrorLog) {
+    for (_, signatures) in self.abstract_functions.iter() {
+      for signature in signatures {
+        if let FunctionImplementationKind::Composite(f) =
+          &signature.borrow().implementation
+        {
+          let f = f.borrow();
+          for arg_name in f.arg_names.iter() {
+            if self.abstract_functions.get(arg_name).is_some()
+              || self
+                .top_level_vars
+                .iter()
+                .find(|v| v.name == *arg_name)
+                .is_some()
+            {
+              errors.log(CompileError::new(
+                CantShadowTopLevelBinding(arg_name.to_string()),
+                f.body.source_trace.clone(),
+              ))
+            }
+          }
+        }
+      }
+    }
+  }
   fn ensure_no_typeless_bindings(&self, errors: &mut ErrorLog) {
     for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
@@ -1321,6 +1346,10 @@ impl Program {
       return errors;
     }
     self.deshadow(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.catch_globally_shadowing_fn_args(&mut errors);
     if !errors.is_empty() {
       return errors;
     }

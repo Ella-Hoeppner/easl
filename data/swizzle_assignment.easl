@@ -1,0 +1,4 @@
+(defn main []: f32
+  (let [@var x (vec4f 0.)]
+    (= x.z 1.)
+    x.z))

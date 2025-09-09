@@ -16,27 +16,60 @@ Feature goals:
 
 ## todo
 ### high priority, necessary to call the language 0.1
-* BUG: If you try to shadow the name of a globally-bound function with a `Fn`-type arg to another function, you get weird errors
-  * e.g. if you had `(defn f [...] ...)`, but then elsewhere had a function that took an argument like `f: (Fn [...] ...)`
-  * you should just get a "can't shadow global" error but instead you get arity and type errors and stuff, because it's trying to use the global fn in places where it should be using the local value, or vice-versa
-  * actually maybe this is a more general thing where we don't check for shadowing of globals in arg names at all?
+* support assignment into swizzles
+  * right now it typechecks fine, but it compiles to invalid wgsl
+    * wgsl doesn't allow you to assign to swizzles so there needs to be a transformation done before compilation
+      * I guess it can just like take any instance of `(= a.yz (vec2f 1.))` and turn it into `(let [gensym (vec2f 1.)] (= a.y gensym.x) (= a.z gensym.y))`
+        * needs to happen before de-expressionification
 
 * enums
   * matching
     * I don't think matching on a variant of 0 arguments will work rn
   * implement `bitcastable_chunk_accessors` for nested enums
+  * finish implementing `bitcasted_from_enum_data_inner` for nested enums, arrays, and structs
+
+* change `var` address space and access declaration system to use the metadata system rather than the special-cased `[]` form
+  * so instead of `@{group 0 binding 0} (var [uniform] ...)`, you would do `@{group 0 binding 0 address uniform} (var ...)`
+    * access, like `read` or `read-write` for `storage`-addressed vars, will be declared with the `access` metadata property
+      * or, as a shorthand, you should be able to do like `@{address storage-read}`/`@{address storage-read-write}`
+  * default address space for top-leve vars if none is provided will be `private`
+
+* make compiler usable as a command-line tool, in addition to a library
+  * example usages
+    * `easl compile shader.easl --output shader.wgsl`
+      * if `--output` isn't specified then it'll just use the same file name but with `.wgsl` extension
+      * maybe also just support like `easl shader.easl`, skipping the `compile`. So like the default thing the CLI does is compile to a file, if you don't specify `run` or `fmt`
+    * `easl run shader.easl --fragment frag`
+      * runs shader as a purefrag
+    * `easl run shader.easl --vertex vert --fragment frag --vertices 300`
+      * runs vertex and fragment shader. If `--vertex` is specified, `--fragment` and `--vertices` must also be specified
+    * `easl fmt shader.easl`
+      * formats file, support `--output` option but default to just overwriting the file
+  * when running, there'll need to be at least some basic uniforms available. I guess for now just like, resolution and time (seconds since startup)
+    * can make this more sophisticated eventually once the CPU-side of the language is usable, but for now it's more just for demo
+  * need to make errors more human-readable
+
+* rename `=` to `set!` or `set` or something (maybe `:=`), then make `=` be equality checking, i.e. make it do what `==` currently does
+  * mutable variables don't come up *that* often, so reserving something as simple as `=` for it feels weird.
+
+
+
+
+* anonymous structs
+
+* tuples
+  * treat this as basically a special case of anonymous structs
+  * what should syntax be?
+    * would be nice to just use `[]` but I'm using that for arrays already...
+      * would it be possible to overload `[]` to use it for both things? type inference might be tricky
+    * guess I could do like `{[]}` or `{()}`? That kinda sucks though
+    * `'()` would work I guess but i also kinda hate that
 
 * closures
 
-* tuples
-  * what should syntax be?
-    * would be nice to just use `[]` but I'm using that for arrays already...
-      * would it be possible to overload `[]` to use it for both things?
-    * guess I could do like `{[]}` or `{()}`? That kinda sucks though
-
 * support a `@render` function tag that acts as a fragment and vertex shader in one
   * Basically it'll act like a vertex shader that returns a fragment shader
-  * so it'll just have to be a function with a return
+  * so it'll just have to be a function with a return type of like `[]`
 
 * there are several places where gensyms are generated, but not guaranteed to be completely safe. Need to have a system that tracks all names in the program and allows for safe gensym-ing
   * cases where we need this:
@@ -45,21 +78,22 @@ Feature goals:
     * `->` bindings
       * guess whatever system this is should be made available for macros in general
 
-* `TypeConstraint` needs to be improved/generalized
+* finish support for constraints
+  * support declaring custom type constraints
+    * each constraint is just defined by a function
+    * what should the syntax be?
+      * `(constraint T: Add (fn + [a: T b: T]: T))`
+      * `(constraint Add (fn + [a: _ b: _]: _))`
+      * `(constraint Add (defn + [a: _ b: _]: _))`
+    * also support declaring type constraints that are the combinations of others, e.g.:
+      * `(constraint Arithmetic [Add Sub Mul Div])`
   * Right now each generic argument in a function signature is associated with a `Vec<TypeConstraint>`. But instead each should be associated with a single `TypeConstraint`, which should itself be an enum with a `Union(HashSet<Self>)` variant for when an argument has more than one constraint.
     * It will be important to get the `Eq` implementation for these right, such that `catch_duplicate_signatures` can properly detect when two signatures will be recognized as the same even if the corresponding generic constraints are written in different orders
     (e.g. `(defn |T: [A B]| [a: T]: T ...)` and `(defn |T: [B A]| [a: T]: T ...)` should be treated as the same)
-      * probably just do this by having a normal form that all constraints reduce to
 
 * `catch_duplicate_signatures` needs to be extended to catch partial overlaps in the type-domains of generic functions
   * like, right now you can implement `(defn + [a: f32 b:f32]: f32 ...)` without error, even though this conflicts with the builtin definition `(defn + |T| [a: T b:T]: T)`. The two signatures aren't equal, so no error is detected, but it should be, since the `f32` implementation is just a special-case of the generic definition.
     * this needs to not only catch the "non-generic signature is a special case of generic signature" case, but also the "two generic signatures overlap" case, like `(defn f |T: Scalar| [a: T]: T)` and `(defn f |T: Integer| [a: T]: T)`
-
-* change `var` address space and access declaration system to use the metadata system rather than the special-cased `[]` form
-  * so instead of `@{group 0 binding 0} (var [uniform] ...)`, you would do `@{group 0 binding 0 address uniform} (var ...)`
-    * access, like `read` or `read-write` for `storage`-addressed vars, will be declared with the `access` metadata property
-      * or, as a shorthand, you should be able to do like `@{address storage-read}`/`@{address storage-read-write}`
-  * default address space for top-leve vars if none is provided will be `private`
 
 * Overhaul references
   * References shouldn't be first-class values. You shouldn't be able to create a binding of type `&f32` or anything like that. Functions can mark some of their arguments as references, but you'll just pass normal values for those arguments, and the fact that it's a reference will always be inferred - there will be no syntax for constructing a reference.
@@ -72,7 +106,6 @@ Feature goals:
     * Arguments of type `T` can only accept a `T`
     * Arguments of type `&T` can accept a `T`, `&T`, or `&mut T`.
     * Arguments of type `&mut T` can accept a `&mut T`, or a `T` so long as that binding is marked as a `var`.
-    * you can 
   * I guess there should be a `clone` function auto-derived on most types so that you can turn `&T` or `&mut T` into a `T`. But this shouldn't be defined for certain special built-in types like atomics(?) or textures.
     * certain types should also basically have something like rust's `copy` where it basically inserts an implicit `clone` when you try to use a `&T` or `&mut` as a `T`.
 
@@ -87,18 +120,6 @@ Feature goals:
   * When there are multiple "couldn't infer types" errors, such that one is a subtree of another, only display the innermost one, I think? The outermost one usually won't be helpful.
 
 * allow indexing vectors and matrices with integers
-
-* syntax for specifying generic arguments, along with type constraints on those generic arguments (for now just the builtin ones, `Scalar` and `Integer`)
-
-* support declaring custom type constraints
-  * each constraint is just defined by a function
-  * what should the syntax be?
-    * `(constraint T: Add (fn + [a: T b: T]: T))`
-    * `(constraint Add (fn + [a: _ b: _]: _))`
-    * `(constraint Add (defn + [a: _ b: _]: _))`
-
-* support declaring type constraints that are the combinations of others, e.g.:
-  * `(constraint Arithmetic [Add Sub Mul Div])`
 
 * add builtin `(Into T)`/`(defn into [a: A]: B)` constraint
   * have a unary prefix operator `~` that is shorthand for this
