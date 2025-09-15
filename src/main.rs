@@ -75,6 +75,7 @@ fn main() {
     "match_enum_generic",
     "option_map",
     "swizzle_assignment",
+    "either_match",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

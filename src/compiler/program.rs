@@ -153,28 +153,25 @@ impl Program {
     if !self.typedefs.enums.contains(&e) {
       if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&&*e.name) {
         for variant in e.variants.iter() {
-          self.add_abstract_function(Rc::new(RefCell::new(
-            AbstractFunctionSignature {
-              name: variant.name.clone(),
-              generic_args: e
-                .generic_args
-                .iter()
-                .map(|name| (name.clone(), vec![]))
-                .collect(),
-              arg_types: if variant.inner_type == AbstractType::Type(Type::Unit)
-              {
-                vec![]
-              } else {
-                vec![variant.inner_type.clone()]
+          if variant.inner_type != AbstractType::Type(Type::Unit) {
+            self.add_abstract_function(Rc::new(RefCell::new(
+              AbstractFunctionSignature {
+                name: variant.name.clone(),
+                generic_args: e
+                  .generic_args
+                  .iter()
+                  .map(|name| (name.clone(), vec![]))
+                  .collect(),
+                arg_types: vec![variant.inner_type.clone()],
+                mutated_args: vec![],
+                return_type: AbstractType::AbstractEnum(e.clone()),
+                implementation: FunctionImplementationKind::EnumConstructor(
+                  variant.name.clone(),
+                ),
+                associative: false,
               },
-              mutated_args: vec![],
-              return_type: AbstractType::AbstractEnum(e.clone()),
-              implementation: FunctionImplementationKind::EnumConstructor(
-                variant.name.clone(),
-              ),
-              associative: false,
-            },
-          )));
+            )));
+          }
         }
       }
       self.typedefs.enums.push(e);
@@ -1080,7 +1077,6 @@ impl Program {
               .enumerate()
               .find(|(_, v)| v.name == original_variant_name)
               .expect("EnumConstructor fn name didn't match any variant");
-            let enum_name = &e.name;
             let AbstractType::Type(inner_type) = &variant.inner_type else {
               unreachable!()
             };
@@ -1103,9 +1099,12 @@ impl Program {
               .take(e.inner_data_size_in_u32s()?)
               .collect::<Vec<String>>()
               .join(", ");
+            let suffix =
+              variant_name[original_variant_name.len()..].to_string();
+            let enum_name = e.name.to_string() + &suffix;
             wgsl += &format!(
               "fn {variant_name}({args_str}) -> {enum_name} {{\n  \
-              {enum_name}({discriminant}, array({bitcast_inner_values}))\n\
+              return {enum_name}({discriminant}u, array({bitcast_inner_values}));\n\
               }}"
             );
             wgsl += "\n\n";

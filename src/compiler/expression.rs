@@ -1373,18 +1373,64 @@ impl TypedExp {
           let ExpKind::Name(scrutinee_name) = &scrutinee.kind else {
             panic!("scrutinee wasn't name in enum match block")
           };
+          let arm_count = arms.len();
           format!(
             "\nswitch({}.discriminant) {{\n  {}\n}}",
             scrutinee.clone().compile(InnerExpression),
             indent(
               arms
                 .into_iter()
-                .map(|(pattern, value)| {
+                .enumerate()
+                .map(|(i, (pattern, value))| {
+                  let finisher =
+                    if position == ExpressionCompilationPosition::Return {
+                      ""
+                    } else {
+                      "  break;\n"
+                    };
                   match pattern.kind {
                     Wildcard => format!(
-                      "default: {{{}\n  break;\n}}",
+                      "default: {{{}\n{finisher}}}",
                       indent(value.compile(position))
                     ),
+                    ExpKind::Name(name) => {
+                      let Type::Enum(e) = scrutinee.data.unwrap_known() else {
+                        panic!("invalid pattern type in enum match block")
+                      };
+                      let suffix = e
+                        .abstract_ancestor
+                        .original_ancestor()
+                        .monomorphized_suffix(
+                          &e.variants
+                            .iter()
+                            .map(|variant| variant.inner_type.unwrap_known())
+                            .collect(),
+                        );
+                      let Some(discriminant) = e
+                        .abstract_ancestor
+                        .original_ancestor()
+                        .variants
+                        .iter()
+                        .enumerate()
+                        .find_map(|(i, variant)| {
+                          ((variant.name.to_string() + &suffix) == &*name)
+                            .then(|| i)
+                        })
+                      else {
+                        panic!(
+                          "invalid enum unit-variant name in match pattern"
+                        )
+                      };
+                      format!(
+                        "{}: {{\n  {}\n{finisher}}}",
+                        if i == arm_count - 1 {
+                          "default".to_string()
+                        } else {
+                          format!("case {discriminant}u")
+                        },
+                        indent(value.compile(position))
+                      )
+                    }
                     ExpKind::Application(mut f, mut args) => {
                       let Some((f, _, inner_value_name)) =
                         Self::try_deconstruct_enum_pattern(&mut f, &mut args)
@@ -1413,8 +1459,12 @@ impl TypedExp {
                         .unwrap_known()
                         .bitcasted_from_enum_data(scrutinee_name.clone(), &e);
                       format!(
-                        "case {}: {{\n  let {} = {};{}\n  break;\n}}",
-                        discriminant,
+                        "{}: {{\n  let {} = {};{}\n{finisher}}}",
+                        if i == arm_count - 1 {
+                          "default".to_string()
+                        } else {
+                          format!("case {discriminant}u")
+                        },
                         inner_value_name,
                         bitcasted_value.compile(
                           ExpressionCompilationPosition::InnerExpression
@@ -1438,7 +1488,7 @@ impl TypedExp {
               arms
                 .into_iter()
                 .map(|(pattern, value)| format!(
-                  "{}: {{{}\n  break;\n}}",
+                  "{}: {{{}\n{}}}",
                   if pattern.kind == Wildcard {
                     "default".to_string()
                   } else {
@@ -1448,6 +1498,11 @@ impl TypedExp {
                     "".to_string()
                   } else {
                     indent(value.compile(position))
+                  },
+                  if position == ExpressionCompilationPosition::Return {
+                    ""
+                  } else {
+                    "  break;\n"
                   }
                 ))
                 .collect::<Vec<String>>()
@@ -1582,13 +1637,70 @@ impl TypedExp {
                   all_pattern_values.push(&pattern.kind);
                 }
               }
-              if first_wildcard.is_none()
-                && !(*t == Type::Bool && all_pattern_values.len() == 2)
-              {
-                errors.log(CompileError {
-                  kind: CompileErrorKind::NonexhaustiveMatch,
-                  source_trace: exp.source_trace.clone(),
-                });
+              if first_wildcard.is_none() {
+                let valid = match t {
+                  Type::Bool => {
+                    all_pattern_values.len() == 2
+                      && all_pattern_values
+                        .iter()
+                        .find(|value| {
+                          if let ExpKind::BooleanLiteral(true) = value {
+                            true
+                          } else {
+                            false
+                          }
+                        })
+                        .is_some()
+                      && all_pattern_values
+                        .iter()
+                        .find(|value| {
+                          if let ExpKind::BooleanLiteral(false) = value {
+                            true
+                          } else {
+                            false
+                          }
+                        })
+                        .is_some()
+                  }
+                  Type::Enum(e) => {
+                    all_pattern_values.len() == e.variants.len()
+                      && e
+                        .variants
+                        .iter()
+                        .find(|variant| {
+                          all_pattern_values
+                            .iter()
+                            .find(|pattern_value| {
+                              if variant.inner_type.unwrap_known() == Type::Unit
+                              {
+                                if let ExpKind::Name(name) = pattern_value {
+                                  *name == variant.name
+                                } else {
+                                  false
+                                }
+                              } else {
+                                if let ExpKind::Application(f, _) =
+                                  pattern_value
+                                  && let ExpKind::Name(f_name) = &f.kind
+                                {
+                                  *f_name == variant.name
+                                } else {
+                                  false
+                                }
+                              }
+                            })
+                            .is_none()
+                        })
+                        .is_none()
+                  }
+                  _ => false,
+                };
+                if !valid {
+                  errors.log(CompileError {
+                    kind: CompileErrorKind::NonexhaustiveMatch,
+                    source_trace: exp.source_trace.clone(),
+                  });
+                }
               }
             }
           }
@@ -1967,12 +2079,12 @@ impl TypedExp {
               &self.source_trace,
               errors,
             );
-            anything_changed |= value.data.mutually_constrain(
-              &mut self.data,
-              &self.source_trace,
-              errors,
-            );
           }
+          anything_changed |= value.data.mutually_constrain(
+            &mut self.data,
+            &self.source_trace,
+            errors,
+          );
         }
         self.data.subtree_fully_typed = arms.iter().fold(
           scrutinee.data.subtree_fully_typed,
@@ -2312,171 +2424,196 @@ impl TypedExp {
   ) -> CompileResult<()> {
     let source_trace = self.source_trace.clone();
     self.walk_mut::<CompileError>(&mut |exp: &mut TypedExp| {
-      if let Application(f, args) = &mut exp.kind {
-        if let ExpKind::Name(f_name) = &mut f.kind {
-          if let Some(abstract_signature) =
-            if let TypeState::Known(Type::Function(f)) = &f.data.kind {
-              &f.abstract_ancestor
-            } else {
-              &None
-            }
+      match &mut exp.kind {
+        Name(name) => {
+          if let Some(original_e) = base_program
+            .typedefs
+            .enums
+            .iter()
+            .find(|e| e.has_unit_variant_named(name))
           {
-            match &abstract_signature.implementation {
-              FunctionImplementationKind::Builtin => {
-                if vec_and_mat_compile_names().contains(&**f_name) {
-                  if let Type::Struct(s) = &exp.data.kind.unwrap_known() {
-                    if let Some(mut compiled_name) = compiled_vec_or_mat_name(
-                      &f_name,
-                      s.fields[0].field_type.unwrap_known(),
-                    ) {
-                      std::mem::swap(f_name, &mut compiled_name);
+            if let Type::Enum(e) = exp.data.kind.unwrap_known() {
+              let variant_types = e
+                .variants
+                .iter()
+                .map(|variant| variant.inner_type.unwrap_known())
+                .collect::<Vec<Type>>();
+              let suffix = original_e.monomorphized_suffix(&variant_types);
+              *name = (name.to_string() + &suffix).into();
+            }
+          }
+        }
+        Application(f, args) => {
+          if let ExpKind::Name(f_name) = &mut f.kind {
+            if let Some(abstract_signature) =
+              if let TypeState::Known(Type::Function(f)) = &f.data.kind {
+                &f.abstract_ancestor
+              } else {
+                &None
+              }
+            {
+              match &abstract_signature.implementation {
+                FunctionImplementationKind::Builtin => {
+                  if vec_and_mat_compile_names().contains(&**f_name) {
+                    if let Type::Struct(s) = &exp.data.kind.unwrap_known() {
+                      if let Some(mut compiled_name) = compiled_vec_or_mat_name(
+                        &f_name,
+                        s.fields[0].field_type.unwrap_known(),
+                      ) {
+                        std::mem::swap(f_name, &mut compiled_name);
+                      }
+                    } else {
+                      unreachable!("")
                     }
-                  } else {
-                    unreachable!("")
-                  }
-                } else if &**f_name == "bitcast" {
-                  std::mem::swap(
-                    f_name,
-                    &mut format!(
-                      "bitcast<{}>",
-                      exp.data.kind.unwrap_known().compile()
+                  } else if &**f_name == "bitcast" {
+                    std::mem::swap(
+                      f_name,
+                      &mut format!(
+                        "bitcast<{}>",
+                        exp.data.kind.unwrap_known().compile()
+                      )
+                      .into(),
                     )
-                    .into(),
-                  )
-                } else {
-                  {}
-                }
-              }
-              FunctionImplementationKind::StructConstructor => {
-                if let Some(abstract_struct) = base_program
-                  .typedefs
-                  .structs
-                  .iter()
-                  .find(|s| s.name == *f_name)
-                {
-                  let arg_types: Vec<Type> =
-                    args.iter().map(|arg| arg.data.unwrap_known()).collect();
-                  if abstract_struct.generic_args.len() > 0
-                    && let Some(monomorphized_struct) =
-                      abstract_struct.generate_monomorphized(arg_types.clone())
-                  {
-                    let monomorphized_struct = Rc::new(monomorphized_struct);
-                    std::mem::swap(
-                      f_name,
-                      &mut AbstractStruct::concretized_name(
-                        monomorphized_struct.clone(),
-                        &base_program.typedefs,
-                        exp.source_trace.clone(),
-                      )?,
-                    );
-                    let mut new_typestate = TypeState::Known(Type::Struct(
-                      AbstractStruct::fill_generics_ordered(
-                        monomorphized_struct.clone(),
-                        vec![],
-                        &base_program.typedefs,
-                        source_trace.clone(),
-                      )?,
-                    ));
-                    exp.data.with_dereferenced_mut(|typestate| {
-                      std::mem::swap(typestate, &mut new_typestate)
-                    });
-                    new_program
-                      .add_monomorphized_struct(monomorphized_struct.into());
+                  } else {
+                    {}
                   }
                 }
-              }
-              FunctionImplementationKind::EnumConstructor(variant_name) => {
-                let Type::Function(f) = f.data.unwrap_known() else {
-                  unreachable!()
-                };
-                let Type::Enum(enum_type) = f.return_type.unwrap_known() else {
-                  unreachable!()
-                };
-                if let Some(abstract_enum) =
-                  base_program.typedefs.enums.iter().find(|e| {
-                    e.variants.iter().find(|v| v.name == *f_name).is_some()
-                  })
-                {
-                  if abstract_enum.generic_args.is_empty() {
-                    new_program.add_monomorphized_enum(Rc::unwrap_or_clone(
-                      abstract_enum.clone().into(),
-                    ));
-                  } else if let Some(monomorphized_enum) =
-                    abstract_enum.generate_monomorphized(enum_type)
+                FunctionImplementationKind::StructConstructor => {
+                  if let Some(abstract_struct) = base_program
+                    .typedefs
+                    .structs
+                    .iter()
+                    .find(|s| s.name == *f_name)
                   {
-                    let monomorphized_enum = Rc::new(monomorphized_enum);
-                    std::mem::swap(
-                      f_name,
-                      &mut (f_name.to_string()
-                        + &AbstractEnum::concretized_suffix(
-                          monomorphized_enum.clone(),
+                    let arg_types: Vec<Type> =
+                      args.iter().map(|arg| arg.data.unwrap_known()).collect();
+                    if abstract_struct.generic_args.len() > 0
+                      && let Some(monomorphized_struct) = abstract_struct
+                        .generate_monomorphized(arg_types.clone())
+                    {
+                      let monomorphized_struct = Rc::new(monomorphized_struct);
+                      std::mem::swap(
+                        f_name,
+                        &mut AbstractStruct::concretized_name(
+                          monomorphized_struct.clone(),
                           &base_program.typedefs,
                           exp.source_trace.clone(),
-                        )?)
-                        .into(),
-                    );
-                    let mut new_typestate = TypeState::Known(Type::Enum(
-                      AbstractEnum::fill_generics_ordered(
-                        monomorphized_enum.clone(),
-                        vec![],
-                        &base_program.typedefs,
-                        source_trace.clone(),
-                      )?,
-                    ));
-                    exp.data.with_dereferenced_mut(|typestate| {
-                      std::mem::swap(typestate, &mut new_typestate)
-                    });
-                    new_program.add_abstract_function(Rc::new(RefCell::new(
-                      AbstractFunctionSignature {
-                        name: f_name.clone(),
-                        generic_args: vec![],
-                        arg_types: abstract_signature.arg_types.clone(),
-                        mutated_args: vec![],
-                        return_type: AbstractType::AbstractEnum(
-                          monomorphized_enum.clone(),
-                        ),
-                        implementation:
-                          FunctionImplementationKind::EnumConstructor(
-                            variant_name.clone(),
-                          ),
-                        associative: false,
-                      },
-                    )));
-                    new_program
-                      .add_monomorphized_enum(monomorphized_enum.into());
+                        )?,
+                      );
+                      let mut new_typestate = TypeState::Known(Type::Struct(
+                        AbstractStruct::fill_generics_ordered(
+                          monomorphized_struct.clone(),
+                          vec![],
+                          &base_program.typedefs,
+                          source_trace.clone(),
+                        )?,
+                      ));
+                      exp.data.with_dereferenced_mut(|typestate| {
+                        std::mem::swap(typestate, &mut new_typestate)
+                      });
+                      new_program
+                        .add_monomorphized_struct(monomorphized_struct.into());
+                    }
                   }
                 }
-              }
-              FunctionImplementationKind::Composite(composite) => {
-                if !abstract_signature.generic_args.is_empty() {
-                  let monomorphized = abstract_signature
-                    .generate_monomorphized(
-                      args.iter().map(|arg| arg.data.unwrap_known()).collect(),
-                      exp.data.unwrap_known().clone(),
-                      base_program,
-                      new_program,
-                      composite.borrow().body.source_trace.clone(),
-                    )?;
-                  std::mem::swap(f_name, &mut monomorphized.name.clone());
-                  let monomorphized = Rc::new(RefCell::new(monomorphized));
-                  std::mem::swap(
-                    &mut f.data.kind,
-                    &mut TypeState::Known(Type::Function(
-                      AbstractFunctionSignature::concretize(
-                        monomorphized.clone(),
-                        &new_program.typedefs,
-                        source_trace.clone(),
-                      )
-                      .unwrap()
-                      .into(),
-                    )),
-                  );
-                  new_program.add_abstract_function(monomorphized);
+                FunctionImplementationKind::EnumConstructor(variant_name) => {
+                  let Type::Function(f) = f.data.unwrap_known() else {
+                    unreachable!()
+                  };
+                  let Type::Enum(enum_type) = f.return_type.unwrap_known()
+                  else {
+                    unreachable!()
+                  };
+                  if let Some(abstract_enum) =
+                    base_program.typedefs.enums.iter().find(|e| {
+                      e.variants.iter().find(|v| v.name == *f_name).is_some()
+                    })
+                  {
+                    if abstract_enum.generic_args.is_empty() {
+                      new_program.add_monomorphized_enum(Rc::unwrap_or_clone(
+                        abstract_enum.clone().into(),
+                      ));
+                    } else if let Some(monomorphized_enum) =
+                      abstract_enum.generate_monomorphized(enum_type)
+                    {
+                      let monomorphized_enum = Rc::new(monomorphized_enum);
+                      std::mem::swap(
+                        f_name,
+                        &mut (f_name.to_string()
+                          + &AbstractEnum::concretized_suffix(
+                            monomorphized_enum.clone(),
+                            &base_program.typedefs,
+                            exp.source_trace.clone(),
+                          )?)
+                          .into(),
+                      );
+                      let mut new_typestate = TypeState::Known(Type::Enum(
+                        AbstractEnum::fill_generics_ordered(
+                          monomorphized_enum.clone(),
+                          vec![],
+                          &base_program.typedefs,
+                          source_trace.clone(),
+                        )?,
+                      ));
+                      exp.data.with_dereferenced_mut(|typestate| {
+                        std::mem::swap(typestate, &mut new_typestate)
+                      });
+                      new_program.add_abstract_function(Rc::new(RefCell::new(
+                        AbstractFunctionSignature {
+                          name: f_name.clone(),
+                          generic_args: vec![],
+                          arg_types: abstract_signature.arg_types.clone(),
+                          mutated_args: vec![],
+                          return_type: AbstractType::AbstractEnum(
+                            monomorphized_enum.clone(),
+                          ),
+                          implementation:
+                            FunctionImplementationKind::EnumConstructor(
+                              variant_name.clone(),
+                            ),
+                          associative: false,
+                        },
+                      )));
+                      new_program
+                        .add_monomorphized_enum(monomorphized_enum.into());
+                    }
+                  }
+                }
+                FunctionImplementationKind::Composite(composite) => {
+                  if !abstract_signature.generic_args.is_empty() {
+                    let monomorphized = abstract_signature
+                      .generate_monomorphized(
+                        args
+                          .iter()
+                          .map(|arg| arg.data.unwrap_known())
+                          .collect(),
+                        exp.data.unwrap_known().clone(),
+                        base_program,
+                        new_program,
+                        composite.borrow().body.source_trace.clone(),
+                      )?;
+                    std::mem::swap(f_name, &mut monomorphized.name.clone());
+                    let monomorphized = Rc::new(RefCell::new(monomorphized));
+                    std::mem::swap(
+                      &mut f.data.kind,
+                      &mut TypeState::Known(Type::Function(
+                        AbstractFunctionSignature::concretize(
+                          monomorphized.clone(),
+                          &new_program.typedefs,
+                          source_trace.clone(),
+                        )
+                        .unwrap()
+                        .into(),
+                      )),
+                    );
+                    new_program.add_abstract_function(monomorphized);
+                  }
                 }
               }
             }
           }
         }
+        _ => {}
       }
       Ok(true)
     })?;
@@ -3237,9 +3374,6 @@ impl TypedExp {
                       unreachable!("swizzle on non-vector")
                     };
                     let field_name = swizzle_field.name();
-                    println!(
-                      "\nswizzle_field: {swizzle_field:?}, {field_name}, {s:?}"
-                    );
                     let field_type = s
                       .fields
                       .iter()

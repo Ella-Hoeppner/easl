@@ -17,8 +17,6 @@ Feature goals:
 ## todo
 ### high priority, necessary to call the language 0.1
 * enums
-  * matching
-    * I don't think matching on a variant of 0 arguments will work rn
   * implement `bitcastable_chunk_accessors` for nested enums
   * finish implementing `bitcasted_from_enum_data_inner` for nested enums, arrays, and structs
 

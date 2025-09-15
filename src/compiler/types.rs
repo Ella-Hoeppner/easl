@@ -1239,7 +1239,6 @@ impl TypeState {
           }
           (TypeState::Known(current_type), TypeState::Known(other_type)) => {
             if !current_type.compatible(&other_type) {
-              //panic!("a");
               errors.log(CompileError::new(
                 IncompatibleTypes(this.clone().into(), other.clone().into()),
                 source_trace.clone(),
@@ -1283,11 +1282,11 @@ impl TypeState {
                 }
                 (Type::Enum(e), Type::Enum(other_e)) => {
                   let mut anything_changed = false;
-                  for (t, other_t) in
+                  for (v, other_v) in
                     e.variants.iter_mut().zip(other_e.variants.iter_mut())
                   {
-                    let changed = t.inner_type.constrain(
-                      other_t.inner_type.kind.clone(),
+                    let changed = v.inner_type.constrain(
+                      other_v.inner_type.kind.clone(),
                       source_trace,
                       errors,
                     );
@@ -1307,7 +1306,6 @@ impl TypeState {
                   if let Some(other_size) = other_size {
                     if let Some(size) = &size {
                       if size != other_size {
-                        //panic!("b");
                         errors.log(CompileError::new(
                           IncompatibleTypes(
                             this.clone().into(),
@@ -1358,7 +1356,6 @@ impl TypeState {
               std::mem::swap(this, &mut TypeState::Known(t.clone()));
               true
             } else {
-              //panic!("c");
               errors.log(CompileError::new(
                 IncompatibleTypes(this.clone().into(), other.clone().into()),
                 source_trace.clone(),
@@ -1368,7 +1365,6 @@ impl TypeState {
           }
           (TypeState::Known(t), TypeState::OneOf(possibilities)) => {
             if !t.compatible_with_any(&possibilities) {
-              //panic!("d");
               errors.log(CompileError::new(
                 IncompatibleTypes(this.clone().into(), other.clone().into()),
                 source_trace.clone(),
@@ -1716,6 +1712,13 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
         .iter()
         .find(|top_level_var| &*top_level_var.name == name)
         .is_some()
+      || self
+        .program
+        .typedefs
+        .enums
+        .iter()
+        .find(|e| e.has_unit_variant_named(name))
+        .is_some()
   }
   pub fn get_variable_kind(&self, name: &str) -> VariableKind {
     self
@@ -1741,20 +1744,32 @@ impl<'p> MutableProgramLocalContext<'p> {
     &mut self,
     name: &str,
     source_trace: SourceTrace,
-  ) -> CompileResult<&mut TypeState> {
+  ) -> CompileResult<Result<&mut TypeState, TypeState>> {
     if let Some(var) = self.variables.get_mut(name) {
-      Ok(&mut var.last_mut().unwrap().typestate)
+      Ok(Ok(&mut var.last_mut().unwrap().typestate))
+    } else if let Some(top_level_var) = self
+      .program
+      .top_level_vars
+      .iter_mut()
+      .find(|var| &*var.name == name)
+    {
+      Ok(Ok(&mut top_level_var.var.typestate))
+    } else if let Some(e) = self
+      .program
+      .typedefs
+      .enums
+      .iter()
+      .find(|e| e.has_unit_variant_named(name))
+    {
+      Ok(Err(TypeState::Known(Type::Enum(
+        AbstractEnum::fill_generics_with_unification_variables(
+          e.clone(),
+          &self.program.typedefs,
+          source_trace,
+        )?,
+      ))))
     } else {
-      if let Some(top_level_var) = self
-        .program
-        .top_level_vars
-        .iter_mut()
-        .find(|var| &*var.name == name)
-      {
-        Ok(&mut top_level_var.var.typestate)
-      } else {
-        Err(CompileError::new(UnboundName(name.into()), source_trace))
-      }
+      Err(CompileError::new(UnboundName(name.into()), source_trace))
     }
   }
   pub fn constrain_name_type(
@@ -1773,7 +1788,14 @@ impl<'p> MutableProgramLocalContext<'p> {
         t.constrain(TypeState::OneOf(signatures), source_trace, errors)
       }
       Ok(None) => match self.get_typestate_mut(name, source_trace.clone()) {
-        Ok(typestate) => t.mutually_constrain(typestate, source_trace, errors),
+        Ok(typestate) => match typestate {
+          Ok(typestate) => {
+            t.mutually_constrain(typestate, source_trace, errors)
+          }
+          Err(mut typestate) => {
+            t.mutually_constrain(&mut typestate, source_trace, errors)
+          }
+        },
         Err(e) => {
           errors.log(e);
           false

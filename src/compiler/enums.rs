@@ -188,6 +188,16 @@ pub struct AbstractEnum {
 }
 
 impl AbstractEnum {
+  pub fn has_unit_variant_named(&self, name: &str) -> bool {
+    self
+      .variants
+      .iter()
+      .find(|variant| {
+        variant.inner_type == AbstractType::Type(Type::Unit)
+          && &*variant.name == name
+      })
+      .is_some()
+  }
   pub fn original_ancestor(&self) -> &Self {
     &self
       .abstract_ancestor
@@ -319,11 +329,42 @@ impl AbstractEnum {
           .collect::<CompileResult<Vec<Type>>>()?;
         let monomorphized_name = self.monomorphized_name(&field_types);
         let size = self.inner_data_size_in_u32s()?;
-        Ok(format!(
-          "struct {monomorphized_name} {{\n  \
+        let unit_constructor_constants: Vec<String> = self
+          .variants
+          .iter()
+          .enumerate()
+          .map(|(i, variant)| {
+            Ok(if variant.inner_type == AbstractType::Type(Type::Unit) {
+              let const_name = variant.name.to_string()
+                + &self.monomorphized_suffix(&field_types);
+              Some(format!(
+                "const {const_name}: {monomorphized_name} = \
+                {monomorphized_name}({i}, {});",
+                {
+                  let mut zeroed_array_string = "array(".to_string();
+                  for i in 0..self.inner_data_size_in_u32s()? {
+                    zeroed_array_string += if i == 0 { "0" } else { ", 0" }
+                  }
+                  zeroed_array_string += ")";
+                  zeroed_array_string
+                }
+              ))
+            } else {
+              None
+            })
+          })
+          .collect::<CompileResult<Vec<Option<String>>>>()?
+          .into_iter()
+          .filter_map(|x| x)
+          .collect();
+        Ok(unit_constructor_constants.into_iter().fold(
+          format!(
+            "struct {monomorphized_name} {{\n  \
           discriminant: u32,\n  \
-          data: array<u8, {size}>\n\
+          data: array<u32, {size}>\n\
           }}"
+          ),
+          |acc, constant_string| acc + "\n\n" + &constant_string,
         ))
       })
       .map_or(Ok(None), |v| v.map(Some))

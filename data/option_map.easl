@@ -12,7 +12,7 @@
        f: (Fn [T] T)]: (Option T)
       (match o
         (Some x) (Some (f x))
-        _ (None)))
+        None None))
 
 (defn double [x: f32]: f32
   (* x 2.))

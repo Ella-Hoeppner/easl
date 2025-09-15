@@ -1,0 +1,8 @@
+(enum (Either A B)
+      (Left A)
+      (Right B))
+
+(defn f [x: (Either f32 u32)]: f32
+  (match x
+    (Left a) a
+    (Right b) (f32 b)))
