@@ -21,6 +21,7 @@ use crate::{
       Variable, VariableKind, parse_generic_argument,
     },
     util::read_type_annotated_name,
+    vars::TopLevelVariableAttributes,
   },
   parse::{Context as SyntaxContext, EaslTree, Encloser, Operator},
 };
@@ -451,66 +452,21 @@ impl Program {
             first_child_position.clone().into();
           match first_child.as_str() {
             "var" => {
-              if let Some((attributes, name_and_type_ast, value_ast)) =
-                match children_iter.len() {
-                  1 => Some((vec![], children_iter.next().unwrap(), None)),
-                  2 | 3 => {
-                    let attributes_ast = children_iter.next().unwrap();
-                    if let EaslTree::Inner(
-                      (position, Encloser(Square)),
-                      attribute_asts,
-                    ) = attributes_ast
-                    {
-                      let (attributes, attribute_errors): (
-                        Vec<Option<Rc<str>>>,
-                        Vec<Option<CompileError>>,
-                      ) = attribute_asts
-                        .into_iter()
-                        .map(|attribute_ast| {
-                          if let EaslTree::Leaf(_, attribute_string) =
-                            attribute_ast
-                          {
-                            (Some(attribute_string.into()), None)
-                          } else {
-                            (None, Some( CompileError::new(
-                            InvalidTopLevelVar(
-                              "Expected leaf for attribute, found inner form"
-                                .into(),
-                            ),
-                            position.clone().into(),
-                          )))
-                          }
-                        })
-                        .collect();
-                      errors.log_all(
-                        attribute_errors.into_iter().filter_map(|x| x),
-                      );
-                      Some((
-                        attributes.into_iter().filter_map(|x| x).collect(),
-                        children_iter.next().unwrap(),
-                        children_iter.next(),
-                      ))
-                    } else {
-                      errors.log(CompileError::new(
-                        InvalidTopLevelVar(
-                          "Expected square-bracket enclosed attributes".into(),
-                        ),
-                        first_child_source_trace,
-                      ));
-                      None
-                    }
-                  }
-                  _ => {
-                    errors.log(CompileError::new(
-                      InvalidTopLevelVar(
-                        "Invalid number of inner forms".into(),
-                      ),
-                      first_child_source_trace,
-                    ));
-                    None
-                  }
-                }
+              if let Some((name_and_type_ast, value_ast)) = match children_iter
+                .len()
               {
+                1 => Some((children_iter.next().unwrap(), None)),
+                2 => {
+                  Some((children_iter.next().unwrap(), children_iter.next()))
+                }
+                _ => {
+                  errors.log(CompileError::new(
+                    InvalidTopLevelVar("Invalid number of inner forms".into()),
+                    first_child_source_trace,
+                  ));
+                  None
+                }
+              } {
                 match read_type_annotated_name(name_and_type_ast) {
                   Ok((name, type_ast)) => {
                     let type_source_path = type_ast.position().clone();
@@ -528,17 +484,23 @@ impl Program {
                     }) {
                       Err(e) | Ok(Err(e)) => errors.log(e),
                       Ok(Ok(t)) => {
-                        if let Some((metadata, metadata_source_trace)) =
-                          &metadata
-                        {
-                          if let Err(e) = metadata
-                            .validate_for_top_level_variable(
-                              &metadata_source_trace,
-                            )
+                        let attributes =
+                          if let Some((metadata, metadata_source_trace)) =
+                            &metadata
                           {
-                            errors.log(e);
+                            match metadata.into_top_level_variable_attributes(
+                              &metadata_source_trace,
+                            ) {
+                              Err(e) => {
+                                errors.log(e);
+                                None
+                              }
+                              Ok(attributes) => Some(attributes),
+                            }
+                          } else {
+                            None
                           }
-                        }
+                          .unwrap_or_default();
                         let value = value_ast.map(|value_ast| match TypedExp::try_from_easl_tree(
                           value_ast,
                           &program.typedefs,
@@ -550,12 +512,16 @@ impl Program {
                         }).flatten();
                         program.top_level_vars.push(TopLevelVar {
                           name,
-                          metadata: metadata.map(|(a, _)| a),
-                          attributes,
-                          var: Variable::new(t.known().into())
-                            .with_kind(VariableKind::Var),
+                          var: Variable::new(t.known().into()).with_kind(
+                            if attributes.address_space.can_write() {
+                              VariableKind::Var
+                            } else {
+                              VariableKind::Let
+                            },
+                          ),
                           value,
                           source_trace: parens_source_trace,
+                          attributes,
                         })
                       }
                     }
@@ -593,11 +559,10 @@ impl Program {
                             }
                             program.top_level_vars.push(TopLevelVar {
                               name,
-                              metadata: None,
-                              attributes: vec![],
                               var,
                               value: Some(value_expression),
                               source_trace: parens_source_trace,
+                              attributes: TopLevelVariableAttributes::default(),
                             })
                           }
                           Err(e) => errors.log(e),

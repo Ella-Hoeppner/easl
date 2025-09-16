@@ -1,5 +1,4 @@
-(var [private]
-     x: f32
+(var x: f32
      0.)
 
 (defn f []: f32

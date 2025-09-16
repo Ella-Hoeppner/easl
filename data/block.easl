@@ -1,11 +1,18 @@
-@{group 0 binding 0} (var [uniform] dimensions: vec2f)
-@{group 0 binding 1} (var [uniform] time: f32)
+@{group 0
+  binding 0
+  address uniform}
+(var dimensions: vec2f)
+
+@{group 0
+  binding 1
+  address uniform}
+(var time: f32)
 
 (struct VertexInput
-        @{location 0} corner-position: vec2f)
+  @{location 0} corner-position: vec2f)
 
 (struct VertexOutput
-        @{builtin position} vertex-pos: vec4f)
+  @{builtin position} vertex-pos: vec4f)
 
 @vertex
 (defn vertex [in: VertexInput]: VertexOutput
@@ -18,7 +25,7 @@
 (defn fragment [in: VertexOutput]: @{location 0} vec4f
   (vec2 5. 2.): vec2f
   (let [a (vec2 0. 0.): vec2f]
-    (do
-      (vec2 0. 0.): vec2f
-      (vec3 1. 0. 0.): vec3f
-      (vec4 (vec3 0. 0. 0.): vec3f (.x a)))))
+    (do (vec2 0. 0.): vec2f
+        (vec3 1. 0. 0.): vec3f
+        (vec4 (vec3 0. 0. 0.): vec3f
+              (.x a)))))

@@ -5,6 +5,7 @@ use std::str::FromStr;
 use sse::syntax::EncloserOrOperator::{self, *};
 
 use crate::compiler::util::compile_word;
+use crate::compiler::vars::{TopLevelVariableAttributes, VariableAddressSpace};
 use crate::parse::EaslTree;
 use crate::parse::{Encloser::*, Operator};
 
@@ -119,18 +120,40 @@ impl Metadata {
         .unwrap_or(vec![]),
     }
   }
-  pub fn validate_for_top_level_variable(
+  pub fn into_top_level_variable_attributes(
     &self,
     source_trace: &SourceTrace,
-  ) -> CompileResult<()> {
+  ) -> CompileResult<TopLevelVariableAttributes> {
+    let mut attributes = TopLevelVariableAttributes::default();
     for (property, value) in self.properties().into_iter() {
       match (&*property, value) {
-        ("group" | "binding", Some(value)) => {
-          if u8::from_str(&*value).is_err() {
+        ("group", Some(value)) => match u8::from_str(&*value) {
+          Ok(value) => attributes.group = Some(value),
+          Err(_) => {
             return Err(CompileError::new(
               InvalidVariableMetadata(self.clone().into()),
               source_trace.clone(),
             ));
+          }
+        },
+        ("binding", Some(value)) => match u8::from_str(&*value) {
+          Ok(value) => attributes.binding = Some(value),
+          Err(_) => {
+            return Err(CompileError::new(
+              InvalidVariableMetadata(self.clone().into()),
+              source_trace.clone(),
+            ));
+          }
+        },
+        ("address", Some(value)) => {
+          match VariableAddressSpace::from_str(&*value) {
+            Some(address_space) => attributes.address_space = address_space,
+            None => {
+              return Err(CompileError::new(
+                InvalidVariableMetadata(self.clone().into()),
+                source_trace.clone(),
+              ));
+            }
           }
         }
         _ => {
@@ -141,7 +164,7 @@ impl Metadata {
         }
       }
     }
-    Ok(())
+    Ok(attributes)
   }
   pub fn validate_for_top_level_function(
     &self,

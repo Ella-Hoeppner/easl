@@ -1,12 +1,12 @@
 @{group 0
-  binding 0}
-(var [uniform]
-     a: [256: vec4f])
+  binding 0
+  address uniform}
+(var a: [256: vec4f])
 
 @{group 0
-  binding 1}
-(var [storage read]
-     b: [vec4f])
+  binding 1
+  address storage}
+(var b: [vec4f])
 
 (def c: [4: u32]
      [1 2 3 4])

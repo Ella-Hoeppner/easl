@@ -78,6 +78,7 @@ fn main() {
     "either_match",
     "nested_option",
     "enum_of_struct",
+    "address_space",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

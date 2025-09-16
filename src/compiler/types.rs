@@ -1690,7 +1690,7 @@ impl TypeState {
   }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VariableKind {
   Let,
   Var,

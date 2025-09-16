@@ -1,8 +1,12 @@
-@{group 0 binding 0}
-(var [uniform] dimensions: vec4f)
+@{group 0
+  binding 0
+  address uniform}
+(var dimensions: vec4f)
 
-@{group 0 binding 1}
-(var [uniform] time: f32)
+@{group 0
+  binding 1
+  address uniform}
+(var time: f32)
 
 (struct VertexInput
   @{location 0} corner-position: vec2f)

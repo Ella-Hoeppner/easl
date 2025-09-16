@@ -8,29 +8,29 @@
      16)
 
 @{group 0
-  binding 0}
-(var [uniform]
-     dimensions: vec2f)
+  binding 0
+  address uniform}
+(var dimensions: vec2f)
 
 @{group 0
-  binding 1}
-(var [uniform]
-     mouse: vec2f)
+  binding 1
+  address uniform}
+(var mouse: vec2f)
 
 @{group 0
-  binding 2}
-(var [uniform]
-     background-color: vec3f)
+  binding 2
+  address uniform}
+(var background-color: vec3f)
 
 @{group 0
-  binding 3}
-(var [uniform]
-     time: f32)
+  binding 3
+  address uniform}
+(var time: f32)
 
 @{group 0
-  binding 4}
-(var [uniform]
-     char-offsets: [256: vec4f])
+  binding 4
+  address uniform}
+(var char-offsets: [256: vec4f])
 
 @{group 0
   binding 5}
@@ -41,9 +41,9 @@
 (var char-sampler: sampler)
 
 @{group 1
-  binding 0}
-(var [uniform]
-     view: vec3f)
+  binding 0
+  address uniform}
+(var view: vec3f)
 
 (defn square [x: f32]: f32
   (* x x))

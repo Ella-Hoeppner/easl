@@ -1,6 +1,7 @@
-@{group 0 binding 1}
-(var [storage
-  read] a: [vec4f])
+@{group 0
+  binding 1
+  address storage}
+(var a: [vec4f])
 
 (defn f []: u32
   (let [x &a]

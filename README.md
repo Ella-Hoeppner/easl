@@ -16,17 +16,12 @@ Feature goals:
 
 ## todo
 ### high priority, necessary to call the language 0.1
-* change `var` address space and access declaration system to use the metadata system rather than the special-cased `[]` form
-  * so instead of `@{group 0 binding 0} (var [uniform] ...)`, you would do `@{group 0 binding 0 address uniform} (var ...)`
-    * access, like `read` or `read-write` for `storage`-addressed vars, will be declared with the `access` metadata property
-      * or, as a shorthand, you should be able to do like `@{address storage-read}`/`@{address storage-read-write}`
-  * default address space for top-leve vars if none is provided will be `private`
-
 * rename `=` to `set!` or `set` or something (maybe `:=`), then make `=` be equality checking, i.e. make it do what `==` currently does
   * mutable variables don't come up *that* often, so reserving something as simple as `=` for it feels weird.
 
 * there are several places where gensyms are generated, but not guaranteed to be completely safe. Need to have a system that tracks all names in the program and allows for safe gensym-ing
   * cases where we need this:
+    * monomophization
     * deshadowing
     * deexpressionify
     * desugar_swizzle_assignments

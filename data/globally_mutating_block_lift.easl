@@ -1,9 +1,8 @@
-(var [private] x: f32 0.)
+(var x: f32
+     0.)
 
 (defn f []: None
   (= x 1.))
 
 (defn g []: f32
-  (+ x
-     (do (f)
-         x)))
+  (+ x (do (f) x)))

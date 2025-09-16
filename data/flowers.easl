@@ -1,6 +1,8 @@
-(def TAU: f32 6.283185307179586)
+(def TAU: f32
+     6.283185307179586)
 
-(def short: f32 6.283185307179586)
+(def short: f32
+     6.283185307179586)
 
 (def long-constant-name!: f32
      6.283185307179586)
@@ -9,10 +11,13 @@
      6.283185307179586)
 
 @{group 0
-  binding 0}
-(var [uniform] dimensions: vec2f)
+  binding 0
+  address uniform}
+(var dimensions: vec2f)
 
-(defn closest-point-between-2d [p: vec2f a: vec2f b: vec2f]: vec2f
+(defn closest-point-between-2d [p: vec2f
+                                a: vec2f
+                                b: vec2f]: vec2f
   (let [v (vec2f (- b.x a.x) (- b.y a.y))
         u (vec2f (- a.x p.x) (- a.y p.y))
         vu (+ (* v.x u.x) (* v.y u.y))
@@ -29,7 +34,8 @@
           a
           b)))))
 
-(defn sd-triangle [pos: vec2f size: vec2f]: f32
+(defn sd-triangle [pos: vec2f
+                   size: vec2f]: f32
   (let [pos-2 (vec2f (abs pos.x) pos.y)
         a (- pos-2
              (* size
@@ -50,7 +56,8 @@
                       (* s (- pos-2.y size.y))))]
     (- (* (sqrt d.x) (sign d.y)))))
 
-(defn sd-box [pos: vec2f size: vec2f]: f32
+(defn sd-box [pos: vec2f
+              size: vec2f]: f32
   (let [d (- (abs pos) size)]
     (+ (length (max d (vec2f 0.)))
        (min (max d.x d.y) 0.))))
@@ -70,7 +77,8 @@
            r2)
         (- (dot p-abs (vec2f a b)) r1)))))
 
-(defn rotate [p: vec2f angle: f32]: vec2f
+(defn rotate [p: vec2f
+              angle: f32]: vec2f
   (let [c (cos angle)
         s (sin angle)]
     (vec2f (+ (* p.x c) (* p.y s))
