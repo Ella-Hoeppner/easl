@@ -1465,7 +1465,7 @@ impl TypedExp {
                         } else {
                           format!("case {discriminant}u")
                         },
-                        inner_value_name,
+                        compile_word(inner_value_name),
                         bitcasted_value.compile(
                           ExpressionCompilationPosition::InnerExpression
                         ),

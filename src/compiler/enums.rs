@@ -562,7 +562,7 @@ impl Enum {
         .collect(),
     )
   }
-  pub fn data_size_in_u32s(&self) -> CompileResult<usize> {
+  pub fn inner_data_size_in_u32s(&self) -> CompileResult<usize> {
     Ok(
       self
         .variants

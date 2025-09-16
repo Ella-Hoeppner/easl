@@ -76,6 +76,7 @@ fn main() {
     "option_map",
     "swizzle_assignment",
     "either_match",
+    "nested_option",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

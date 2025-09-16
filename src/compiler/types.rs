@@ -559,7 +559,7 @@ impl Type {
         .collect::<CompileResult<Vec<usize>>>()?
         .into_iter()
         .sum::<usize>(),
-      Type::Enum(e) => e.data_size_in_u32s()?,
+      Type::Enum(e) => e.inner_data_size_in_u32s()? + 1,
       Type::Function(_) => {
         todo!("can't calculate size of function signatures yet")
       }
@@ -879,7 +879,54 @@ impl Type {
         source_trace: SourceTrace::empty(),
       }],
       Type::Struct(s) => s.bitcastable_chunk_accessors(value_name),
-      Type::Enum(_) => todo!("enum"),
+      Type::Enum(e) => {
+        let data_array_length = e.inner_data_size_in_u32s().unwrap();
+        std::iter::once(TypedExp {
+          data: TypeState::Known(Type::U32).into(),
+          kind: ExpKind::Access(
+            Accessor::Field("discriminant".into()),
+            TypedExp {
+              data: TypeState::Known(self.clone()).into(),
+              kind: ExpKind::Name(value_name.clone()),
+              source_trace: SourceTrace::empty(),
+            }
+            .into(),
+          ),
+          source_trace: SourceTrace::empty(),
+        })
+        .chain((0..data_array_length).map(|i| {
+          TypedExp {
+            data: TypeState::Known(Type::U32).into(),
+            kind: ExpKind::Application(
+              TypedExp {
+                data: TypeState::Known(Type::Array(
+                  Some(ArraySize::Literal(data_array_length as u32)),
+                  Box::new(TypeState::Known(Type::U32).into()),
+                ))
+                .into(),
+                kind: ExpKind::Access(
+                  Accessor::Field("data".into()),
+                  TypedExp {
+                    data: TypeState::Known(self.clone()).into(),
+                    kind: ExpKind::Name(value_name.clone()),
+                    source_trace: SourceTrace::empty(),
+                  }
+                  .into(),
+                ),
+                source_trace: SourceTrace::empty(),
+              }
+              .into(),
+              vec![TypedExp {
+                data: TypeState::Known(Type::U32).into(),
+                kind: ExpKind::NumberLiteral(Number::Int(i as i64)),
+                source_trace: SourceTrace::empty(),
+              }],
+            ),
+            source_trace: SourceTrace::empty(),
+          }
+        }))
+        .collect()
+      }
       Type::Array(array_size, inner_type) => match array_size {
         Some(ArraySize::Literal(n)) => (0..*n)
           .map(|i| TypedExp {
@@ -915,6 +962,39 @@ impl Type {
     enum_type: &Enum,
     current_index: usize,
   ) -> TypedExp {
+    let data_array_access = |offset: usize| TypedExp {
+      data: TypeState::Known(Type::U32).into(),
+      kind: ExpKind::Application(
+        TypedExp {
+          data: TypeState::Known(Type::Array(
+            Some(ArraySize::Literal(
+              enum_type.inner_data_size_in_u32s().unwrap() as u32,
+            )),
+            Box::new(TypeState::Known(Type::U32).into()),
+          ))
+          .into(),
+          kind: ExpKind::Access(
+            Accessor::Field("data".into()),
+            TypedExp {
+              data: TypeState::Known(Type::Enum(enum_type.clone())).into(),
+              kind: ExpKind::Name(enum_value_name.clone()),
+              source_trace: SourceTrace::empty(),
+            }
+            .into(),
+          ),
+          source_trace: SourceTrace::empty(),
+        }
+        .into(),
+        vec![TypedExp {
+          data: TypeState::Known(Type::U32).into(),
+          kind: ExpKind::NumberLiteral(Number::Int(
+            (current_index + offset) as i64,
+          )),
+          source_trace: SourceTrace::empty(),
+        }],
+      ),
+      source_trace: SourceTrace::empty(),
+    };
     TypedExp {
       data: TypeState::Known(self.clone()).into(),
       kind: match self {
@@ -935,42 +1015,62 @@ impl Type {
             source_trace: SourceTrace::empty(),
           }
           .into(),
-          vec![TypedExp {
-            data: TypeState::Known(Type::U32).into(),
-            kind: ExpKind::Application(
-              TypedExp {
-                data: TypeState::Known(Type::Array(
-                  Some(ArraySize::Literal(
-                    enum_type.data_size_in_u32s().unwrap() as u32,
-                  )),
-                  Box::new(TypeState::Known(Type::U32).into()),
-                ))
+          vec![data_array_access(0)],
+        ),
+        Type::Enum(e) => {
+          let name = e.name.to_string()
+            + &e
+              .abstract_ancestor
+              .original_ancestor()
+              .monomorphized_suffix(
+                &e.variants
+                  .iter()
+                  .map(|variant| variant.inner_type.unwrap_known())
+                  .collect(),
+              );
+          let inner_data_array_type: ExpTypeInfo =
+            TypeState::Known(Type::Array(
+              Some(ArraySize::Literal(
+                e.inner_data_size_in_u32s().unwrap() as u32
+              )),
+              Box::new(TypeState::Known(Type::U32).into()),
+            ))
+            .into();
+          ExpKind::Application(
+            TypedExp {
+              data: TypeState::Known(Type::Function(
+                FunctionSignature {
+                  abstract_ancestor: None,
+                  arg_types: vec![
+                    (TypeState::Known(Type::U32).into(), vec![]),
+                    (inner_data_array_type.clone(), vec![]),
+                  ],
+                  mutated_args: vec![],
+                  return_type: TypeState::Known(Type::Enum(e.clone())).into(),
+                }
                 .into(),
-                kind: ExpKind::Access(
-                  Accessor::Field("data".into()),
-                  TypedExp {
-                    data: TypeState::Known(Type::Enum(enum_type.clone()))
-                      .into(),
-                    kind: ExpKind::Name(enum_value_name.clone()),
-                    source_trace: SourceTrace::empty(),
-                  }
-                  .into(),
+              ))
+              .into(),
+              kind: ExpKind::Name(name.into()),
+              source_trace: SourceTrace::empty(),
+            }
+            .into(),
+            vec![
+              data_array_access(0),
+              TypedExp {
+                data: inner_data_array_type,
+                kind: ExpKind::ArrayLiteral(
+                  (0..e.inner_data_size_in_u32s().unwrap())
+                    .map(|i| data_array_access(i + 1))
+                    .collect(),
                 ),
                 source_trace: SourceTrace::empty(),
-              }
-              .into(),
-              vec![TypedExp {
-                data: TypeState::Known(Type::U32).into(),
-                kind: ExpKind::NumberLiteral(Number::Int(current_index as i64)),
-                source_trace: SourceTrace::empty(),
-              }],
-            ),
-            source_trace: SourceTrace::empty(),
-          }],
-        ),
+              },
+            ],
+          )
+        }
         Type::Struct(_) => todo!("enum"),
-        Type::Enum(_) => todo!("enum"),
-        Type::Array(_, _) => todo!(),
+        Type::Array(_, _) => todo!("enum"),
         _ => {
           panic!("called bitcasted_from_enum_data_inner on invalid type")
         }

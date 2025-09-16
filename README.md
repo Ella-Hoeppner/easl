@@ -17,8 +17,8 @@ Feature goals:
 ## todo
 ### high priority, necessary to call the language 0.1
 * enums
-  * implement `bitcastable_chunk_accessors` for nested enums
-  * finish implementing `bitcasted_from_enum_data_inner` for nested enums, arrays, and structs
+  * finish implementing `bitcastable_chunk_accessors` for nested enums
+  * finish implementing `bitcasted_from_enum_data_inner` for structs and arrays
 
 * change `var` address space and access declaration system to use the metadata system rather than the special-cased `[]` form
   * so instead of `@{group 0 binding 0} (var [uniform] ...)`, you would do `@{group 0 binding 0 address uniform} (var ...)`

@@ -1,0 +1,9 @@
+(enum (Option T) None (Some T))
+
+(defn double-unwrap [o: (Option (Option f32))
+                     default-value: f32]: f32
+  (match o
+    None default-value
+    (Some inner-o) (match inner-o
+                     None default-value
+                     (Some value) value)))
