@@ -552,7 +552,7 @@ impl Program {
                           name,
                           metadata: metadata.map(|(a, _)| a),
                           attributes,
-                          var: Variable::new(TypeState::Known(t).into())
+                          var: Variable::new(t.known().into())
                             .with_kind(VariableKind::Var),
                           value,
                           source_trace: parens_source_trace,
@@ -581,8 +581,7 @@ impl Program {
                           &vec![],
                         ) {
                           Ok(t) => {
-                            let mut var =
-                              Variable::new(TypeState::Known(t).into());
+                            let mut var = Variable::new(t.known().into());
                             if first_child.as_str() == "override" {
                               var = var.with_kind(VariableKind::Override)
                             }
@@ -693,11 +692,12 @@ impl Program {
                                 .iter()
                                 .map(|t| {
                                   Ok((
-                                    TypeState::Known(t.concretize(
+                                    t.concretize(
                                       &generic_arg_names,
                                       &program.typedefs,
                                       source_path.clone().into(),
-                                    )?)
+                                    )?
+                                    .known()
                                     .into(),
                                     if let AbstractType::Generic(generic_name) =
                                       t
@@ -721,8 +721,7 @@ impl Program {
                                   match TypedExp::function_from_body_tree(
                                     source_path.clone(),
                                     children_iter.collect(),
-                                    TypeState::Known(concrete_return_type)
-                                      .into(),
+                                    concrete_return_type.known().into(),
                                     arg_names.clone(),
                                     concrete_arg_types,
                                     &program.typedefs,
@@ -1302,7 +1301,7 @@ impl Program {
             match &exp.kind {
               ExpKind::Let(items, _) => {
                 for (_, _, value) in items.iter() {
-                  if TypeState::Known(Type::Unit) == value.data.kind {
+                  if Type::Unit.known() == value.data.kind {
                     errors.log(CompileError {
                       kind: CompileErrorKind::TypelessBinding,
                       source_trace: value.source_trace.clone(),

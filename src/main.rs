@@ -77,6 +77,7 @@ fn main() {
     "swizzle_assignment",
     "either_match",
     "nested_option",
+    "enum_of_struct",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

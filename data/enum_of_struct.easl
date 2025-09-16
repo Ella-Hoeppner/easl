@@ -1,0 +1,10 @@
+(enum (Option T) None (Some T))
+
+(defn unwrap-and-double [x: (Option vec2f)]: vec2f
+  (let [unwrapped-x (match x
+                      None (vec2f 0.)
+                      (Some x) x)]
+    (* unwrapped-x 2.)))
+
+(defn f []: vec2f
+  (unwrap-and-double (Some (vec2f 1.))))

@@ -152,23 +152,22 @@ pub fn swizzle_accessor_typestate(
   if let TypeState::Known(accessed_type) = &accessed_typestate.kind {
     if let Type::Struct(s) = accessed_type {
       if &*s.name != "vec" {
-        TypeState::Known(Type::Struct(
+        Type::Struct(
           AbstractStruct::fill_generics_ordered(
             vec_struct.into(),
             vec![match &s.fields[0].field_type.kind {
               TypeState::UnificationVariable(uvar) => {
                 TypeState::UnificationVariable(uvar.clone()).into()
               }
-              TypeState::Known(inner_type) => {
-                TypeState::Known(inner_type.clone()).into()
-              }
+              TypeState::Known(inner_type) => inner_type.clone().known().into(),
               _ => unreachable!(),
             }],
             &TypeDefs::empty(),
             SourceTrace::empty(),
           )
           .unwrap(),
-        ))
+        )
+        .known()
         .into()
       } else {
         unreachable!()
@@ -639,12 +638,13 @@ impl TypedExp {
                                             value_ast, typedefs, skolems, ctx,
                                           )?;
                                         if let Some(ty) = ty {
-                                          value_exp.data =
-                                            TypeState::Known(ty.concretize(
+                                          value_exp.data = ty
+                                            .concretize(
                                               skolems,
                                               typedefs,
                                               source_trace.clone(),
-                                            )?)
+                                            )?
+                                            .known()
                                             .into();
                                         }
                                         value_exp
@@ -849,7 +849,7 @@ impl TypedExp {
                                 update_condition_expression,
                               ),
                               body_expression: Box::new(TypedExp {
-                                data: TypeState::Known(Type::Unit).into(),
+                                data: Type::Unit.known().into(),
                                 kind: ExpKind::Block(body_expressions),
                                 source_trace: source_trace.clone(),
                               }),
@@ -880,7 +880,7 @@ impl TypedExp {
                                 condition_expression,
                               ),
                               body_expression: Box::new(TypedExp {
-                                data: TypeState::Known(Type::Unit).into(),
+                                data: Type::Unit.known().into(),
                                 kind: ExpKind::Block(sub_expressions),
                                 source_trace: source_trace.clone(),
                               }),
@@ -912,10 +912,11 @@ impl TypedExp {
                         "zeroed-array" => {
                           if children_iter.len() == 0 {
                             Some(TypedExp {
-                              data: TypeState::Known(Type::Array(
+                              data: Type::Array(
                                 None,
                                 Box::new(TypeState::Unknown.into()),
-                              ))
+                              )
+                              .known()
                               .into(),
                               kind: ExpKind::ZeroedArray,
                               source_trace,
@@ -952,17 +953,18 @@ impl TypedExp {
                 })
               } else {
                 Exp {
-                  data: TypeState::Known(Type::Unit).into(),
+                  data: Type::Unit.known().into(),
                   kind: ExpKind::Unit,
                   source_trace: encloser_or_operator_source_trace,
                 }
               }
             }
             Square => Exp {
-              data: TypeState::Known(Type::Array(
+              data: Type::Array(
                 Some(ArraySize::Literal(children_iter.len() as u32)),
                 Box::new(TypeState::Unknown.into()),
-              ))
+              )
+              .known()
               .into(),
               kind: ArrayLiteral(
                 children_iter
@@ -1006,11 +1008,12 @@ impl TypedExp {
                 skolems,
                 ctx,
               )?;
-              exp.data = TypeState::Known(Type::from_easl_tree(
+              exp.data = Type::from_easl_tree(
                 children_iter.next().unwrap(),
                 typedefs,
                 skolems,
-              )?)
+              )?
+              .known()
               .into();
               exp
             }
@@ -1018,10 +1021,9 @@ impl TypedExp {
               "expression comment encountered, this should have been stripped"
             ),
             Reference => TypedExp {
-              data: TypeState::Known(Type::Reference(Box::new(
-                TypeState::Unknown.into(),
-              )))
-              .into(),
+              data: Type::Reference(Box::new(TypeState::Unknown.into()))
+                .known()
+                .into(),
               kind: ExpKind::Reference(
                 Self::try_from_easl_tree(
                   children_iter.next().unwrap(),
@@ -1422,7 +1424,7 @@ impl TypedExp {
                         )
                       };
                       format!(
-                        "{}: {{\n  {}\n{finisher}}}",
+                        "{}: {{{}\n{finisher}}}",
                         if i == arm_count - 1 {
                           "default".to_string()
                         } else {
@@ -1756,11 +1758,9 @@ impl TypedExp {
       }
       Unit => {
         self.data.subtree_fully_typed = true;
-        self.data.constrain(
-          TypeState::Known(Type::Unit),
-          &self.source_trace,
-          errors,
-        )
+        self
+          .data
+          .constrain(Type::Unit.known(), &self.source_trace, errors)
       }
       Name(name) => {
         self.data.subtree_fully_typed = true;
@@ -1785,7 +1785,7 @@ impl TypedExp {
             Number::Int(_) => {
               TypeState::OneOf(vec![Type::I32, Type::U32, Type::F32])
             }
-            Number::Float(_) => TypeState::Known(Type::F32),
+            Number::Float(_) => Type::F32.known(),
           },
           &self.source_trace,
           errors,
@@ -1794,11 +1794,10 @@ impl TypedExp {
       }
       BooleanLiteral(_) => {
         self.data.subtree_fully_typed = true;
-        let changed = self.data.constrain(
-          TypeState::Known(Type::Bool),
-          &self.source_trace,
-          errors,
-        );
+        let changed =
+          self
+            .data
+            .constrain(Type::Bool.known(), &self.source_trace, errors);
         changed
       }
       Function(arg_names, body) => {
@@ -1875,7 +1874,7 @@ impl TypedExp {
           );
         } else {
           anything_changed |= f.data.constrain(
-            TypeState::Known(Type::Function(Box::new(FunctionSignature {
+            Type::Function(Box::new(FunctionSignature {
               abstract_ancestor: None,
               arg_types: args
                 .iter()
@@ -1883,7 +1882,8 @@ impl TypedExp {
                 .collect(),
               mutated_args: vec![],
               return_type: self.data.clone(),
-            }))),
+            }))
+            .known(),
             &self.source_trace,
             errors,
           );
@@ -2123,8 +2123,7 @@ impl TypedExp {
         update_condition_expression,
         body_expression,
       } => {
-        let mut variable_typestate =
-          TypeState::Known(increment_variable_type.clone());
+        let mut variable_typestate = increment_variable_type.clone().known();
         let mut anything_changed = increment_variable_initial_value_expression
           .data
           .mutually_constrain(
@@ -2142,12 +2141,12 @@ impl TypedExp {
           },
         );
         anything_changed |= continue_condition_expression.data.constrain(
-          TypeState::Known(Type::Bool),
+          Type::Bool.known(),
           &continue_condition_expression.source_trace,
           errors,
         );
         anything_changed |= update_condition_expression.data.constrain(
-          TypeState::Known(Type::Unit),
+          Type::Unit.known(),
           &update_condition_expression.source_trace,
           errors,
         );
@@ -2171,12 +2170,12 @@ impl TypedExp {
         body_expression,
       } => {
         let mut anything_changed = condition_expression.data.constrain(
-          TypeState::Known(Type::Bool),
+          Type::Bool.known(),
           &condition_expression.source_trace,
           errors,
         );
         anything_changed |= body_expression.data.constrain(
-          TypeState::Known(Type::Unit),
+          Type::Unit.known(),
           &condition_expression.source_trace,
           errors,
         );
@@ -2385,10 +2384,8 @@ impl TypedExp {
         } => {
           ctx.bind(
             increment_variable_name,
-            Variable::new(
-              TypeState::Known(increment_variable_type.clone()).into(),
-            )
-            .with_kind(VariableKind::Var),
+            Variable::new(increment_variable_type.clone().known().into())
+              .with_kind(VariableKind::Var),
           );
           increment_variable_initial_value_expression
             .validate_assignments_inner(ctx)?;
@@ -2500,14 +2497,14 @@ impl TypedExp {
                           exp.source_trace.clone(),
                         )?,
                       );
-                      let mut new_typestate = TypeState::Known(Type::Struct(
-                        AbstractStruct::fill_generics_ordered(
+                      let mut new_typestate =
+                        Type::Struct(AbstractStruct::fill_generics_ordered(
                           monomorphized_struct.clone(),
                           vec![],
                           &base_program.typedefs,
                           source_trace.clone(),
-                        )?,
-                      ));
+                        )?)
+                        .known();
                       exp.data.with_dereferenced_mut(|typestate| {
                         std::mem::swap(typestate, &mut new_typestate)
                       });
@@ -2547,14 +2544,14 @@ impl TypedExp {
                           )?)
                           .into(),
                       );
-                      let mut new_typestate = TypeState::Known(Type::Enum(
-                        AbstractEnum::fill_generics_ordered(
+                      let mut new_typestate =
+                        Type::Enum(AbstractEnum::fill_generics_ordered(
                           monomorphized_enum.clone(),
                           vec![],
                           &base_program.typedefs,
                           source_trace.clone(),
-                        )?,
-                      ));
+                        )?)
+                        .known();
                       exp.data.with_dereferenced_mut(|typestate| {
                         std::mem::swap(typestate, &mut new_typestate)
                       });
@@ -2596,7 +2593,7 @@ impl TypedExp {
                     let monomorphized = Rc::new(RefCell::new(monomorphized));
                     std::mem::swap(
                       &mut f.data.kind,
-                      &mut TypeState::Known(Type::Function(
+                      &mut Type::Function(
                         AbstractFunctionSignature::concretize(
                           monomorphized.clone(),
                           &new_program.typedefs,
@@ -2604,7 +2601,8 @@ impl TypedExp {
                         )
                         .unwrap()
                         .into(),
-                      )),
+                      )
+                      .known(),
                     );
                     new_program.add_abstract_function(monomorphized);
                   }
@@ -3076,10 +3074,11 @@ impl TypedExp {
                               new_name,
                               VariableKind::Let,
                               TypedExp {
-                                data: TypeState::Known(
-                                  replacement_types.remove(&old_name).unwrap(),
-                                )
-                                .into(),
+                                data: replacement_types
+                                  .remove(&old_name)
+                                  .unwrap()
+                                  .known()
+                                  .into(),
                                 kind: ExpKind::Name(old_name),
                                 source_trace: SourceTrace::empty(),
                               },
@@ -3260,11 +3259,11 @@ impl TypedExp {
                       };
                       for (_, arm_body) in arms.iter_mut() {
                         take(arm_body, |arm_body| TypedExp {
-                          data: TypeState::Known(Type::Unit).into(),
+                          data: Type::Unit.known().into(),
                           kind: ExpKind::Application(
                             TypedExp {
                               kind: ExpKind::Name("=".into()),
-                              data: TypeState::Known(Type::Function(
+                              data: Type::Function(
                                 FunctionSignature {
                                   abstract_ancestor: None,
                                   arg_types: vec![
@@ -3272,11 +3271,11 @@ impl TypedExp {
                                     (binding_type.clone(), vec![]),
                                   ],
                                   mutated_args: vec![0],
-                                  return_type: TypeState::Known(Type::Unit)
-                                    .into(),
+                                  return_type: Type::Unit.known().into(),
                                 }
                                 .into(),
-                              ))
+                              )
+                              .known()
                               .into(),
                               source_trace: SourceTrace::empty(),
                             }
@@ -3417,7 +3416,7 @@ impl TypedExp {
                           },
                         ]
                       }),
-                      data: TypeState::Known(Type::Unit).into(),
+                      data: Type::Unit.known().into(),
                       source_trace: self.source_trace.clone(),
                     }
                   })

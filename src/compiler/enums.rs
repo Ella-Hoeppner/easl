@@ -158,12 +158,11 @@ impl AbstractEnumVariant {
   ) -> CompileResult<EnumVariant> {
     Ok(EnumVariant {
       name: Rc::clone(&self.name),
-      inner_type: TypeState::Known(self.inner_type.concretize(
-        skolems,
-        typedefs,
-        source_trace,
-      )?)
-      .into(),
+      inner_type: self
+        .inner_type
+        .concretize(skolems, typedefs, source_trace)?
+        .known()
+        .into(),
     })
   }
   fn fill_abstract_generics(

@@ -104,39 +104,41 @@ impl AbstractType {
         .get(var_name)
         .expect("unrecognized generic name in struct")
         .clone(),
-      AbstractType::Type(t) => TypeState::Known(t.clone()).into(),
+      AbstractType::Type(t) => t.clone().known().into(),
       AbstractType::AbstractStruct(s) => {
-        TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
+        Type::Struct(AbstractStruct::fill_generics(
           s.clone(),
           generics,
           typedefs,
           source_trace,
-        )?))
+        )?)
+        .known()
         .into()
       }
-      AbstractType::AbstractEnum(e) => {
-        TypeState::Known(Type::Enum(AbstractEnum::fill_generics(
-          e.clone(),
-          generics,
-          typedefs,
-          source_trace,
-        )?))
-        .into()
-      }
+      AbstractType::AbstractEnum(e) => Type::Enum(AbstractEnum::fill_generics(
+        e.clone(),
+        generics,
+        typedefs,
+        source_trace,
+      )?)
+      .known()
+      .into(),
       AbstractType::AbstractArray {
         size, inner_type, ..
-      } => TypeState::Known(Type::Array(
+      } => Type::Array(
         Some(size.clone()),
         inner_type
           .fill_generics(generics, typedefs, source_trace)?
           .into(),
-      ))
+      )
+      .known()
       .into(),
-      AbstractType::Reference(inner_type) => TypeState::Known(Type::Reference(
+      AbstractType::Reference(inner_type) => Type::Reference(
         inner_type
           .fill_generics(generics, typedefs, source_trace)?
           .into(),
-      ))
+      )
+      .known()
       .into(),
     })
   }
@@ -166,21 +168,17 @@ impl AbstractType {
       } => Ok(Type::Array(
         Some(size.clone()),
         Box::new(
-          TypeState::Known(inner_type.concretize(
-            skolems,
-            typedefs,
-            source_trace,
-          )?)
-          .into(),
+          inner_type
+            .concretize(skolems, typedefs, source_trace)?
+            .known()
+            .into(),
         ),
       )),
       AbstractType::Reference(inner_type) => Ok(Type::Reference(Box::new(
-        TypeState::Known(inner_type.concretize(
-          skolems,
-          typedefs,
-          source_trace,
-        )?)
-        .into(),
+        inner_type
+          .concretize(skolems, typedefs, source_trace)?
+          .known()
+          .into(),
       ))),
     }
   }
@@ -363,7 +361,7 @@ impl AbstractType {
                   } else {
                     ArraySize::Constant(num_str.into())
                   }),
-                  Box::new(TypeState::Known(inner_type).into()),
+                  Box::new(inner_type.known().into()),
                 )))
               } else {
                 return err(InvalidArraySignature, source_trace);
@@ -373,7 +371,7 @@ impl AbstractType {
               let inner_type = Type::from_easl_tree(other, typedefs, skolems)?;
               Ok(AbstractType::Type(Type::Array(
                 Some(ArraySize::Unsized),
-                Box::new(TypeState::Known(inner_type).into()),
+                Box::new(inner_type.known().into()),
               )))
             }
           }
@@ -626,21 +624,19 @@ impl Type {
                   .into_iter()
                   .map(|arg_type_ast| {
                     Ok((
-                      TypeState::Known(Self::from_easl_tree(
-                        arg_type_ast,
-                        typedefs,
-                        skolems,
-                      )?)
-                      .into(),
+                      Self::from_easl_tree(arg_type_ast, typedefs, skolems)?
+                        .known()
+                        .into(),
                       vec![],
                     ))
                   })
                   .collect::<CompileResult<Vec<_>>>()?,
-                return_type: TypeState::Known(Self::from_easl_tree(
+                return_type: Self::from_easl_tree(
                   return_type_ast,
                   typedefs,
                   skolems,
-                )?)
+                )?
+                .known()
                 .into(),
               }))),
               _ => err(InvalidFunctionType, source_trace),
@@ -653,18 +649,13 @@ impl Type {
               let generic_args: Vec<ExpTypeInfo> = signature_leaves
                 .map(|signature_arg| {
                   Ok(
-                    TypeState::Known(
-                      AbstractType::from_easl_tree(
-                        signature_arg,
-                        typedefs,
-                        skolems,
-                      )?
-                      .concretize(
-                        skolems,
-                        typedefs,
-                        source_trace.clone(),
-                      )?,
-                    )
+                    AbstractType::from_easl_tree(
+                      signature_arg,
+                      typedefs,
+                      skolems,
+                    )?
+                    .concretize(skolems, typedefs, source_trace.clone())?
+                    .known()
                     .into(),
                   )
                 })
@@ -712,7 +703,7 @@ impl Type {
                 } else {
                   ArraySize::Constant(num_str.into())
                 }),
-                Box::new(TypeState::Known(inner_type).into()),
+                Box::new(inner_type.known().into()),
               ))
             } else {
               return err(InvalidArraySignature, source_trace);
@@ -874,7 +865,7 @@ impl Type {
     match self {
       Type::Unit => vec![],
       Type::F32 | Type::I32 | Type::U32 | Type::Bool => vec![TypedExp {
-        data: TypeState::Known(self.clone()).into(),
+        data: self.clone().known().into(),
         kind: ExpKind::Name(value_name),
         source_trace: SourceTrace::empty(),
       }],
@@ -882,11 +873,11 @@ impl Type {
       Type::Enum(e) => {
         let data_array_length = e.inner_data_size_in_u32s().unwrap();
         std::iter::once(TypedExp {
-          data: TypeState::Known(Type::U32).into(),
+          data: Type::U32.known().into(),
           kind: ExpKind::Access(
             Accessor::Field("discriminant".into()),
             TypedExp {
-              data: TypeState::Known(self.clone()).into(),
+              data: self.clone().known().into(),
               kind: ExpKind::Name(value_name.clone()),
               source_trace: SourceTrace::empty(),
             }
@@ -896,18 +887,19 @@ impl Type {
         })
         .chain((0..data_array_length).map(|i| {
           TypedExp {
-            data: TypeState::Known(Type::U32).into(),
+            data: Type::U32.known().into(),
             kind: ExpKind::Application(
               TypedExp {
-                data: TypeState::Known(Type::Array(
+                data: Type::Array(
                   Some(ArraySize::Literal(data_array_length as u32)),
-                  Box::new(TypeState::Known(Type::U32).into()),
-                ))
+                  Box::new(Type::U32.known().into()),
+                )
+                .known()
                 .into(),
                 kind: ExpKind::Access(
                   Accessor::Field("data".into()),
                   TypedExp {
-                    data: TypeState::Known(self.clone()).into(),
+                    data: self.clone().known().into(),
                     kind: ExpKind::Name(value_name.clone()),
                     source_trace: SourceTrace::empty(),
                   }
@@ -917,7 +909,7 @@ impl Type {
               }
               .into(),
               vec![TypedExp {
-                data: TypeState::Known(Type::U32).into(),
+                data: Type::U32.known().into(),
                 kind: ExpKind::NumberLiteral(Number::Int(i as i64)),
                 source_trace: SourceTrace::empty(),
               }],
@@ -933,13 +925,13 @@ impl Type {
             data: *inner_type.clone(),
             kind: ExpKind::Application(
               TypedExp {
-                data: TypeState::Known(self.clone()).into(),
+                data: self.clone().known().into(),
                 kind: ExpKind::Name(value_name.clone()),
                 source_trace: SourceTrace::empty(),
               }
               .into(),
               vec![TypedExp {
-                data: TypeState::Known(Type::U32).into(),
+                data: Type::U32.known().into(),
                 kind: ExpKind::NumberLiteral(Number::Int(i as i64)),
                 source_trace: SourceTrace::empty(),
               }],
@@ -961,22 +953,23 @@ impl Type {
     enum_value_name: &Rc<str>,
     enum_type: &Enum,
     current_index: usize,
-  ) -> TypedExp {
+  ) -> (TypedExp, usize) {
     let data_array_access = |offset: usize| TypedExp {
-      data: TypeState::Known(Type::U32).into(),
+      data: Type::U32.known().into(),
       kind: ExpKind::Application(
         TypedExp {
-          data: TypeState::Known(Type::Array(
+          data: Type::Array(
             Some(ArraySize::Literal(
               enum_type.inner_data_size_in_u32s().unwrap() as u32,
             )),
-            Box::new(TypeState::Known(Type::U32).into()),
-          ))
+            Box::new(Type::U32.known().into()),
+          )
+          .known()
           .into(),
           kind: ExpKind::Access(
             Accessor::Field("data".into()),
             TypedExp {
-              data: TypeState::Known(Type::Enum(enum_type.clone())).into(),
+              data: Type::Enum(enum_type.clone()).known().into(),
               kind: ExpKind::Name(enum_value_name.clone()),
               source_trace: SourceTrace::empty(),
             }
@@ -986,7 +979,7 @@ impl Type {
         }
         .into(),
         vec![TypedExp {
-          data: TypeState::Known(Type::U32).into(),
+          data: Type::U32.known().into(),
           kind: ExpKind::NumberLiteral(Number::Int(
             (current_index + offset) as i64,
           )),
@@ -995,21 +988,21 @@ impl Type {
       ),
       source_trace: SourceTrace::empty(),
     };
-    TypedExp {
-      data: TypeState::Known(self.clone()).into(),
-      kind: match self {
-        Type::Unit => ExpKind::Unit,
-        Type::F32 | Type::I32 | Type::U32 | Type::Bool => ExpKind::Application(
+    let (kind, consumed_indeces) = match self {
+      Type::Unit => (ExpKind::Unit, 0),
+      Type::F32 | Type::I32 | Type::U32 | Type::Bool => (
+        ExpKind::Application(
           TypedExp {
-            data: TypeState::Known(Type::Function(
+            data: Type::Function(
               FunctionSignature {
                 abstract_ancestor: Some(bitcast().into()),
-                arg_types: vec![(TypeState::Known(Type::U32).into(), vec![])],
-                return_type: TypeState::Known(self.clone()).into(),
+                arg_types: vec![(Type::U32.known().into(), vec![])],
+                return_type: self.clone().known().into(),
                 mutated_args: vec![],
               }
               .into(),
-            ))
+            )
+            .known()
             .into(),
             kind: ExpKind::Name(format!("bitcast<{}>", self.compile()).into()),
             source_trace: SourceTrace::empty(),
@@ -1017,39 +1010,44 @@ impl Type {
           .into(),
           vec![data_array_access(0)],
         ),
-        Type::Enum(e) => {
-          let name = e.name.to_string()
-            + &e
-              .abstract_ancestor
-              .original_ancestor()
-              .monomorphized_suffix(
-                &e.variants
-                  .iter()
-                  .map(|variant| variant.inner_type.unwrap_known())
-                  .collect(),
-              );
-          let inner_data_array_type: ExpTypeInfo =
-            TypeState::Known(Type::Array(
-              Some(ArraySize::Literal(
-                e.inner_data_size_in_u32s().unwrap() as u32
-              )),
-              Box::new(TypeState::Known(Type::U32).into()),
-            ))
-            .into();
+        1,
+      ),
+      Type::Enum(e) => {
+        let name = e.name.to_string()
+          + &e
+            .abstract_ancestor
+            .original_ancestor()
+            .monomorphized_suffix(
+              &e.variants
+                .iter()
+                .map(|variant| variant.inner_type.unwrap_known())
+                .collect(),
+            );
+        let inner_data_array_type: ExpTypeInfo = Type::Array(
+          Some(ArraySize::Literal(
+            e.inner_data_size_in_u32s().unwrap() as u32
+          )),
+          Box::new(Type::U32.known().into()),
+        )
+        .known()
+        .into();
+        let inner_data_size = e.inner_data_size_in_u32s().unwrap();
+        (
           ExpKind::Application(
             TypedExp {
-              data: TypeState::Known(Type::Function(
+              data: Type::Function(
                 FunctionSignature {
                   abstract_ancestor: None,
                   arg_types: vec![
-                    (TypeState::Known(Type::U32).into(), vec![]),
+                    (Type::U32.known().into(), vec![]),
                     (inner_data_array_type.clone(), vec![]),
                   ],
                   mutated_args: vec![],
-                  return_type: TypeState::Known(Type::Enum(e.clone())).into(),
+                  return_type: Type::Enum(e.clone()).known().into(),
                 }
                 .into(),
-              ))
+              )
+              .known()
               .into(),
               kind: ExpKind::Name(name.into()),
               source_trace: SourceTrace::empty(),
@@ -1060,30 +1058,103 @@ impl Type {
               TypedExp {
                 data: inner_data_array_type,
                 kind: ExpKind::ArrayLiteral(
-                  (0..e.inner_data_size_in_u32s().unwrap())
+                  (0..inner_data_size)
                     .map(|i| data_array_access(i + 1))
                     .collect(),
                 ),
                 source_trace: SourceTrace::empty(),
               },
             ],
-          )
-        }
-        Type::Struct(_) => todo!("enum"),
-        Type::Array(_, _) => todo!("enum"),
-        _ => {
-          panic!("called bitcasted_from_enum_data_inner on invalid type")
-        }
+          ),
+          inner_data_size + 1,
+        )
+      }
+      Type::Struct(s) => {
+        let (constructor_args, consumed_indeces) = s.fields.iter().fold(
+          (vec![], 0),
+          |(mut constructor_args, consumed_indeces), field| {
+            let (arg, arg_consumed_indeces) = field
+              .field_type
+              .unwrap_known()
+              .bitcasted_from_enum_data_inner(
+                enum_value_name,
+                enum_type,
+                current_index + consumed_indeces,
+              );
+            constructor_args.push(arg);
+            (constructor_args, consumed_indeces + arg_consumed_indeces)
+          },
+        );
+        (
+          ExpKind::Application(
+            TypedExp {
+              data: Type::Function(Box::new(FunctionSignature {
+                abstract_ancestor: None,
+                arg_types: s
+                  .fields
+                  .iter()
+                  .map(|field| (field.field_type.clone(), vec![]))
+                  .collect(),
+                mutated_args: vec![],
+                return_type: Type::Struct(s.clone()).known().into(),
+              }))
+              .known()
+              .into(),
+              kind: ExpKind::Name(s.name.clone()),
+              source_trace: SourceTrace::empty(),
+            }
+            .into(),
+            constructor_args,
+          ),
+          consumed_indeces,
+        )
+      }
+      Type::Array(size, inner_type) => {
+        let Some(ArraySize::Literal(size)) = size else {
+          panic!("tried to construct unsized array form enum data")
+        };
+        let size = *size as usize;
+        let inner_type = inner_type.unwrap_known();
+        let inner_type_size =
+          inner_type.data_size_in_u32s(&SourceTrace::empty()).unwrap();
+        (
+          ExpKind::ArrayLiteral(
+            (0..size)
+              .map(|i| {
+                inner_type
+                  .bitcasted_from_enum_data_inner(
+                    enum_value_name,
+                    enum_type,
+                    current_index + i * inner_type_size,
+                  )
+                  .0
+              })
+              .collect(),
+          ),
+          size * inner_type_size,
+        )
+      }
+      _ => {
+        panic!("called bitcasted_from_enum_data_inner on invalid type")
+      }
+    };
+    (
+      TypedExp {
+        data: self.clone().known().into(),
+        kind,
+        source_trace: SourceTrace::empty(),
       },
-      source_trace: SourceTrace::empty(),
-    }
+      consumed_indeces,
+    )
   }
   pub fn bitcasted_from_enum_data(
     &self,
     enum_value_name: Rc<str>,
     enum_type: &Enum,
   ) -> TypedExp {
-    self.bitcasted_from_enum_data_inner(&enum_value_name, enum_type, 0)
+    self
+      .bitcasted_from_enum_data_inner(&enum_value_name, enum_type, 0)
+      .0
   }
   pub fn replace_skolems_with_unification_variables(
     &mut self,
@@ -1114,6 +1185,9 @@ impl Type {
       }
       _ => {}
     }
+  }
+  pub fn known(self) -> TypeState {
+    TypeState::Known(self)
   }
 }
 
@@ -1453,7 +1527,7 @@ impl TypeState {
           }
           (TypeState::OneOf(possibilities), TypeState::Known(t)) => {
             if t.compatible_with_any(&possibilities) {
-              std::mem::swap(this, &mut TypeState::Known(t.clone()));
+              std::mem::swap(this, &mut t.clone().known());
               true
             } else {
               errors.log(CompileError::new(
@@ -1573,7 +1647,7 @@ impl TypeState {
         self,
         &mut match possibilities.len() {
           0 => unreachable!(),
-          1 => TypeState::Known(possibilities.remove(0)),
+          1 => possibilities.remove(0).known(),
           _ => TypeState::OneOf(possibilities),
         },
       )
@@ -1861,13 +1935,14 @@ impl<'p> MutableProgramLocalContext<'p> {
       .iter()
       .find(|e| e.has_unit_variant_named(name))
     {
-      Ok(Err(TypeState::Known(Type::Enum(
-        AbstractEnum::fill_generics_with_unification_variables(
+      Ok(Err(
+        Type::Enum(AbstractEnum::fill_generics_with_unification_variables(
           e.clone(),
           &self.program.typedefs,
           source_trace,
-        )?,
-      ))))
+        )?)
+        .known(),
+      ))
     } else {
       Err(CompileError::new(UnboundName(name.into()), source_trace))
     }

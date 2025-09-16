@@ -335,31 +335,33 @@ impl AbstractFunctionSignature {
               .expect("unrecognized generic")
               .clone(),
           ),
-          AbstractType::Type(t) => (TypeState::Known(t.clone()).into(), vec![]),
+          AbstractType::Type(t) => (t.clone().known().into(), vec![]),
           AbstractType::AbstractStruct(s) => (
-            TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
+            Type::Struct(AbstractStruct::fill_generics(
               s.clone(),
               &generic_variables,
               typedefs,
               source_trace.clone(),
-            )?))
+            )?)
+            .known()
             .into(),
             vec![],
           ),
           AbstractType::AbstractEnum(e) => (
-            TypeState::Known(Type::Enum(AbstractEnum::fill_generics(
+            Type::Enum(AbstractEnum::fill_generics(
               e.clone(),
               &generic_variables,
               typedefs,
               source_trace.clone(),
-            )?))
+            )?)
+            .known()
             .into(),
             vec![],
           ),
           AbstractType::AbstractArray {
             size, inner_type, ..
           } => (
-            TypeState::Known(Type::Array(
+            Type::Array(
               Some(size.clone()),
               inner_type
                 .fill_generics(
@@ -368,23 +370,22 @@ impl AbstractFunctionSignature {
                   source_trace.clone(),
                 )?
                 .into(),
-            ))
+            )
+            .known()
             .into(),
             vec![],
           ),
           AbstractType::Reference(abstract_type) => (
-            TypeState::Known(
-              Type::Reference(
-                abstract_type
-                  .fill_generics(
-                    &generic_variables,
-                    typedefs,
-                    source_trace.clone(),
-                  )?
-                  .into(),
-              )
-              .into(),
+            Type::Reference(
+              abstract_type
+                .fill_generics(
+                  &generic_variables,
+                  typedefs,
+                  source_trace.clone(),
+                )?
+                .into(),
             )
+            .known()
             .into(),
             vec![],
           ),
@@ -397,38 +398,40 @@ impl AbstractFunctionSignature {
         .expect("unrecognized generic")
         .clone(),
       AbstractType::AbstractStruct(s) => {
-        TypeState::Known(Type::Struct(AbstractStruct::fill_generics(
+        Type::Struct(AbstractStruct::fill_generics(
           s.clone(),
           &generic_variables,
           typedefs,
           source_trace,
-        )?))
+        )?)
+        .known()
         .into()
       }
-      AbstractType::AbstractEnum(e) => {
-        TypeState::Known(Type::Enum(AbstractEnum::fill_generics(
-          e.clone(),
-          &generic_variables,
-          typedefs,
-          source_trace,
-        )?))
-        .into()
-      }
-      AbstractType::Type(t) => TypeState::Known(t.clone()).into(),
+      AbstractType::AbstractEnum(e) => Type::Enum(AbstractEnum::fill_generics(
+        e.clone(),
+        &generic_variables,
+        typedefs,
+        source_trace,
+      )?)
+      .known()
+      .into(),
+      AbstractType::Type(t) => t.clone().known().into(),
       AbstractType::AbstractArray {
         size, inner_type, ..
-      } => TypeState::Known(Type::Array(
+      } => Type::Array(
         Some(size.clone()),
         inner_type
           .fill_generics(&generic_variables, typedefs, source_trace)?
           .into(),
-      ))
+      )
+      .known()
       .into(),
-      AbstractType::Reference(inner_type) => TypeState::Known(Type::Reference(
+      AbstractType::Reference(inner_type) => Type::Reference(
         inner_type
           .fill_generics(&generic_variables, typedefs, source_trace)?
           .into(),
-      ))
+      )
+      .known()
       .into(),
     };
     for (t, _) in arg_types.iter_mut() {

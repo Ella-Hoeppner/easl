@@ -146,12 +146,11 @@ impl AbstractStructField {
     Ok(StructField {
       metadata: self.metadata.clone(),
       name: Rc::clone(&self.name),
-      field_type: TypeState::Known(self.field_type.concretize(
-        skolems,
-        typedefs,
-        source_trace,
-      )?)
-      .into(),
+      field_type: self
+        .field_type
+        .concretize(skolems, typedefs, source_trace)?
+        .known()
+        .into(),
     })
   }
   pub fn fill_generics(
@@ -559,7 +558,7 @@ impl Struct {
                 kind: ExpKind::Application(
                   access.clone().into(),
                   vec![TypedExp {
-                    data: TypeState::Known(Type::U32).into(),
+                    data: Type::U32.known().into(),
                     kind: ExpKind::NumberLiteral(Number::Int(i as i64)),
                     source_trace: SourceTrace::empty(),
                   }],
@@ -573,7 +572,47 @@ impl Struct {
           }
         },
         Type::Unit => {}
-        Type::Enum(_) => todo!("enum"),
+        Type::Enum(e) => {
+          let data_array_size = e.inner_data_size_in_u32s().unwrap();
+          chunks.append(
+            &mut std::iter::once(TypedExp {
+              data: Type::U32.known().into(),
+              kind: ExpKind::Access(
+                Accessor::Field("discriminant".into()),
+                access.clone().into(),
+              ),
+              source_trace: SourceTrace::empty(),
+            })
+            .chain((0..data_array_size).map(|i| {
+              TypedExp {
+                data: Type::U32.known().into(),
+                kind: ExpKind::Application(
+                  TypedExp {
+                    data: Type::Array(
+                      Some(ArraySize::Literal(data_array_size as u32)),
+                      Box::new(Type::U32.known().into()),
+                    )
+                    .known()
+                    .into(),
+                    kind: ExpKind::Access(
+                      Accessor::Field("data".into()),
+                      access.clone().into(),
+                    ),
+                    source_trace: SourceTrace::empty(),
+                  }
+                  .into(),
+                  vec![TypedExp {
+                    data: Type::U32.known().into(),
+                    kind: ExpKind::NumberLiteral(Number::Int(i as i64)),
+                    source_trace: SourceTrace::empty(),
+                  }],
+                ),
+                source_trace: SourceTrace::empty(),
+              }
+            }))
+            .collect(),
+          )
+        }
         _ => {
           panic!("called bitcastable_chunk_accessors on invalid type")
         }
@@ -587,7 +626,7 @@ impl Struct {
     let mut chunks = vec![];
     self.bitcastable_chunk_accessors_inner(
       TypedExp {
-        data: TypeState::Known(Type::Struct(self.clone())).into(),
+        data: Type::Struct(self.clone()).known().into(),
         kind: ExpKind::Name(value_name.clone()),
         source_trace: SourceTrace::empty(),
       },
