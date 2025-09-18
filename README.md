@@ -16,18 +16,6 @@ Feature goals:
 
 ## todo
 ### high priority, necessary to call the language 0.1
-* rename `=` to `set!` or `set` or something (maybe `:=`), then make `=` be equality checking, i.e. make it do what `==` currently does
-  * mutable variables don't come up *that* often, so reserving something as simple as `=` for it feels weird.
-
-* there are several places where gensyms are generated, but not guaranteed to be completely safe. Need to have a system that tracks all names in the program and allows for safe gensym-ing
-  * cases where we need this:
-    * monomophization
-    * deshadowing
-    * deexpressionify
-    * desugar_swizzle_assignments
-    * `->` bindings
-      * guess whatever system this is should be made available for macros in general
-
 * make compiler usable as a command-line tool, in addition to a library
   * example usages
     * `easl compile shader.easl --output shader.wgsl`
@@ -42,6 +30,7 @@ Feature goals:
   * when running, there'll need to be at least some basic uniforms available. I guess for now just like, resolution and time (seconds since startup)
     * can make this more sophisticated eventually once the CPU-side of the language is usable, but for now it's more just for demo
   * need to make errors more human-readable
+
 
 
 

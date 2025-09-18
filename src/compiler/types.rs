@@ -16,7 +16,7 @@ use crate::{
     enums::{AbstractEnum, Enum, UntypedEnum},
     error::{CompileError, CompileErrorKind},
     expression::{Accessor, ExpKind, Number, TypedExp},
-    program::TypeDefs,
+    program::{NameContext, TypeDefs},
     structs::UntypedStruct,
   },
   parse::{EaslTree, Encloser, Operator},
@@ -217,24 +217,28 @@ impl AbstractType {
       ),
     }
   }
-  pub fn compile(self, typedefs: &TypeDefs) -> CompileResult<String> {
+  pub fn compile(
+    self,
+    typedefs: &TypeDefs,
+    names: &mut NameContext,
+  ) -> CompileResult<String> {
     Ok(match self {
       AbstractType::Generic(_) => {
         panic!("attempted to compile generic struct field")
       }
-      AbstractType::Type(t) => t.compile(),
+      AbstractType::Type(t) => t.monomorphized_name(names),
       AbstractType::AbstractStruct(t) => Rc::unwrap_or_clone(t)
-        .compile_if_non_generic(typedefs)?
+        .compile_if_non_generic(typedefs, names)?
         .expect("failed to compile abstract struct"),
       AbstractType::AbstractEnum(e) => Rc::unwrap_or_clone(e)
-        .compile_if_non_generic(typedefs)?
+        .compile_if_non_generic(typedefs, names)?
         .expect("failed to compile abstract enum"),
       AbstractType::AbstractArray {
         size, inner_type, ..
       } => {
         format!(
           "array<{}{}>",
-          inner_type.compile(typedefs)?,
+          inner_type.compile(typedefs, names)?,
           format!("{}", size.compile_type())
         )
       }
@@ -793,7 +797,7 @@ impl Type {
       }
     })
   }
-  pub fn compile(&self) -> String {
+  pub fn monomorphized_name(&self, names: &mut NameContext) -> String {
     match self {
       Type::Unit => "()".to_string(),
       Type::F32 => "f32".to_string(),
@@ -803,15 +807,18 @@ impl Type {
       Type::Struct(s) => match &*s.name {
         "Texture2D" => format!(
           "texture_2d<{}>",
-          s.fields[0].field_type.unwrap_known().compile()
+          s.fields[0]
+            .field_type
+            .unwrap_known()
+            .monomorphized_name(names)
         ),
-        _ => compile_word(s.monomorphized_name()),
+        _ => compile_word(s.monomorphized_name(names)),
       },
-      Type::Enum(e) => compile_word(e.monomorphized_name()),
+      Type::Enum(e) => compile_word(e.monomorphized_name(names)),
       Type::Array(size, inner_type) => {
         format!(
           "array<{}{}>",
-          inner_type.compile(),
+          inner_type.monomorphized_name(names),
           size
             .clone()
             .map(|size| format!("{}", size.compile_type()))
@@ -819,7 +826,7 @@ impl Type {
         )
       }
       Type::Reference(inner_type) => {
-        format!("ptr<storage, {}>", inner_type.compile())
+        format!("ptr<storage, {}>", inner_type.monomorphized_name(names))
       }
       Type::Function(_) => {
         panic!("Attempted to compile ConcreteFunction type")
@@ -953,6 +960,7 @@ impl Type {
     enum_value_name: &Rc<str>,
     enum_type: &Enum,
     current_index: usize,
+    names: &mut NameContext,
   ) -> (TypedExp, usize) {
     let data_array_access = |offset: usize| TypedExp {
       data: Type::U32.known().into(),
@@ -1004,7 +1012,9 @@ impl Type {
             )
             .known()
             .into(),
-            kind: ExpKind::Name(format!("bitcast<{}>", self.compile()).into()),
+            kind: ExpKind::Name(
+              format!("bitcast<{}>", self.monomorphized_name(names)).into(),
+            ),
             source_trace: SourceTrace::empty(),
           }
           .into(),
@@ -1013,16 +1023,7 @@ impl Type {
         1,
       ),
       Type::Enum(e) => {
-        let name = e.name.to_string()
-          + &e
-            .abstract_ancestor
-            .original_ancestor()
-            .monomorphized_suffix(
-              &e.variants
-                .iter()
-                .map(|variant| variant.inner_type.unwrap_known())
-                .collect(),
-            );
+        let name = e.monomorphized_name(names);
         let inner_data_array_type: ExpTypeInfo = Type::Array(
           Some(ArraySize::Literal(
             e.inner_data_size_in_u32s().unwrap() as u32
@@ -1080,6 +1081,7 @@ impl Type {
                 enum_value_name,
                 enum_type,
                 current_index + consumed_indeces,
+                names,
               );
             constructor_args.push(arg);
             (constructor_args, consumed_indeces + arg_consumed_indeces)
@@ -1126,6 +1128,7 @@ impl Type {
                     enum_value_name,
                     enum_type,
                     current_index + i * inner_type_size,
+                    names,
                   )
                   .0
               })
@@ -1151,9 +1154,10 @@ impl Type {
     &self,
     enum_value_name: Rc<str>,
     enum_type: &Enum,
+    names: &mut NameContext,
   ) -> TypedExp {
     self
-      .bitcasted_from_enum_data_inner(&enum_value_name, enum_type, 0)
+      .bitcasted_from_enum_data_inner(&enum_value_name, enum_type, 0, names)
       .0
   }
   pub fn replace_skolems_with_unification_variables(
@@ -1657,8 +1661,8 @@ impl TypeState {
     self.simplify();
     self
   }
-  pub fn compile(&self) -> String {
-    self.unwrap_known().compile()
+  pub fn monomorphized_name(&self, names: &mut NameContext) -> String {
+    self.unwrap_known().monomorphized_name(names)
   }
   pub fn replace_skolems_with_unification_variables(
     &mut self,

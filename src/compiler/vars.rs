@@ -1,8 +1,8 @@
 use std::rc::Rc;
 
 use crate::compiler::{
-  expression::ExpressionCompilationPosition, types::VariableKind,
-  util::compile_word,
+  expression::ExpressionCompilationPosition, program::NameContext,
+  types::VariableKind, util::compile_word,
 };
 
 use super::{error::SourceTrace, expression::TypedExp, types::Variable};
@@ -77,7 +77,7 @@ pub struct TopLevelVar {
 }
 
 impl TopLevelVar {
-  pub fn compile(self) -> String {
+  pub fn compile(self, names: &mut NameContext) -> String {
     let bind_group_decoration = String::new()
       + &match self.attributes.group {
         None => String::new(),
@@ -94,7 +94,7 @@ impl TopLevelVar {
         String::new()
       };
     let name = compile_word(self.name);
-    let typ = self.var.typestate.compile();
+    let typ = self.var.typestate.monomorphized_name(names);
     let kind_name = match self.var.kind {
       VariableKind::Let => "const",
       VariableKind::Var => "var",
@@ -103,7 +103,7 @@ impl TopLevelVar {
     let assignment = if let Some(value) = self.value {
       format!(
         " = {}",
-        value.compile(ExpressionCompilationPosition::InnerExpression)
+        value.compile(ExpressionCompilationPosition::InnerExpression, names)
       )
     } else {
       String::new()

@@ -79,6 +79,9 @@ fn main() {
     "nested_option",
     "enum_of_struct",
     "address_space",
+    "monomorphized_name_collision",
+    "inlined_fn_name_collision",
+    "thread_macro",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

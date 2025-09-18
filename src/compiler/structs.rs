@@ -7,7 +7,7 @@ use crate::{
   compiler::{
     expression::{Accessor, ExpKind, Number, TypedExp},
     metadata::extract_metadata,
-    program::TypeDefs,
+    program::{NameContext, TypeDefs},
     types::{ArraySize, contains_name_leaf, extract_type_annotation_ast},
     util::{compile_word, read_leaf},
   },
@@ -179,14 +179,18 @@ impl AbstractStructField {
       field_type: self.field_type.fill_abstract_generics(generics),
     }
   }
-  pub fn compile(self, typedefs: &TypeDefs) -> CompileResult<String> {
+  pub fn compile(
+    self,
+    typedefs: &TypeDefs,
+    names: &mut NameContext,
+  ) -> CompileResult<String> {
     let metadata = if let Some(metadata) = self.metadata {
       metadata.compile()
     } else {
       String::new()
     };
     let name = compile_word(self.name);
-    let field_type = self.field_type.compile(typedefs)?;
+    let field_type = self.field_type.compile(typedefs, names)?;
     Ok(format!("  {metadata}{name}: {field_type}"))
   }
 }
@@ -237,6 +241,7 @@ impl AbstractStruct {
   pub fn compile_if_non_generic(
     self,
     typedefs: &TypeDefs,
+    names: &mut NameContext,
   ) -> CompileResult<Option<String>> {
     self
       .generic_args
@@ -253,18 +258,23 @@ impl AbstractStruct {
             )
           })
           .collect::<CompileResult<Vec<Type>>>()?;
-        let monomorphized_name = self.monomorphized_name(&field_types);
+        let monomorphized_name =
+          compile_word(self.monomorphized_name(&field_types, names));
         let fields = self
           .fields
           .into_iter()
-          .map(|field| field.compile(typedefs))
+          .map(|field| field.compile(typedefs, names))
           .collect::<CompileResult<Vec<String>>>()?
           .join(",\n");
         Ok(format!("struct {monomorphized_name} {{\n{fields}\n}}"))
       })
       .map_or(Ok(None), |v| v.map(Some))
   }
-  pub fn monomorphized_name(&self, field_types: &Vec<Type>) -> Rc<str> {
+  pub fn monomorphized_name(
+    &self,
+    field_types: &Vec<Type>,
+    names: &mut NameContext,
+  ) -> Rc<str> {
     let mut generic_bindings = HashMap::new();
     for (field, field_type) in self
       .original_ancestor()
@@ -296,7 +306,10 @@ impl AbstractStruct {
           .fold(self.name.to_string(), |name_so_far, generic_arg_name| {
             name_so_far
               + "_"
-              + &generic_bindings.get(generic_arg_name).unwrap().compile()
+              + &generic_bindings
+                .get(generic_arg_name)
+                .unwrap()
+                .monomorphized_name(names)
           })
           .into()
       })
@@ -305,6 +318,7 @@ impl AbstractStruct {
   pub fn concretized_name(
     s: Rc<Self>,
     typedefs: &TypeDefs,
+    names: &mut NameContext,
     source_trace: SourceTrace,
   ) -> CompileResult<Rc<str>> {
     let concretized =
@@ -316,6 +330,7 @@ impl AbstractStruct {
           .iter()
           .map(|f| f.field_type.unwrap_known())
           .collect(),
+        names,
       ),
     )
   }
@@ -483,14 +498,14 @@ pub struct StructField {
 }
 
 impl StructField {
-  pub fn compile(self) -> String {
+  pub fn compile(self, names: &mut NameContext) -> String {
     let metadata = if let Some(metadata) = self.metadata {
       metadata.compile()
     } else {
       String::new()
     };
     let name = compile_word(self.name);
-    let field_type = self.field_type.compile();
+    let field_type = self.field_type.monomorphized_name(names);
     format!("  {metadata}{name}: {field_type}")
   }
 }
@@ -524,13 +539,14 @@ impl Struct {
       },
     )
   }
-  pub fn monomorphized_name(&self) -> Rc<str> {
+  pub fn monomorphized_name(&self, names: &mut NameContext) -> Rc<str> {
     self.abstract_ancestor.monomorphized_name(
       &self
         .fields
         .iter()
         .map(|f| f.field_type.unwrap_known())
         .collect(),
+      names,
     )
   }
   fn bitcastable_chunk_accessors_inner(

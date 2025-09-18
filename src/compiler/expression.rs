@@ -19,7 +19,7 @@ use crate::{
     error::{CompileError, CompileErrorKind::*, CompileResult, err},
     functions::{AbstractFunctionSignature, FunctionSignature},
     metadata::{Metadata, extract_metadata},
-    program::{Program, TypeDefs},
+    program::{NameContext, Program, TypeDefs},
     structs::{AbstractStruct, Struct},
     types::{
       ArraySize, ExpTypeInfo, Type,
@@ -1165,7 +1165,11 @@ impl TypedExp {
     }
     Ok(())
   }
-  pub fn compile(self, position: ExpressionCompilationPosition) -> String {
+  pub fn compile(
+    self,
+    position: ExpressionCompilationPosition,
+    names: &mut NameContext,
+  ) -> String {
     use ExpressionCompilationPosition::*;
     let wrap = |s: String| -> String {
       match position {
@@ -1215,7 +1219,7 @@ impl TypedExp {
             .collect::<Vec<_>>();
           let arg_strs: Vec<String> = args
             .into_iter()
-            .map(|arg| arg.compile(InnerExpression))
+            .map(|arg| arg.compile(InnerExpression, names))
             .collect();
           if ASSIGNMENT_OPS.contains(&f_str.as_str()) {
             if arg_strs.len() == 2 {
@@ -1269,17 +1273,18 @@ impl TypedExp {
           }
         }
         Type::Array(_, _) => {
-          let f_str = f.compile(ExpressionCompilationPosition::InnerExpression);
+          let f_str =
+            f.compile(ExpressionCompilationPosition::InnerExpression, names);
           let index_str = args
             .remove(0)
-            .compile(ExpressionCompilationPosition::InnerExpression);
+            .compile(ExpressionCompilationPosition::InnerExpression, names);
           format!("{f_str}[{index_str}]")
         }
         _ => panic!("tried to compile application of non-fn, non-array"),
       }),
       Access(accessor, subexp) => wrap(format!(
         "{}{}",
-        subexp.compile(InnerExpression),
+        subexp.compile(InnerExpression, names),
         accessor.compile()
       )),
       Let(bindings, body) => {
@@ -1291,37 +1296,37 @@ impl TypedExp {
                 "{} {}: {};",
                 variable_kind.compile(),
                 compile_word(name),
-                value_exp.data.compile(),
+                value_exp.data.monomorphized_name(names),
               )
             } else {
               format!(
                 "{} {}: {} = {};",
                 variable_kind.compile(),
                 compile_word(name),
-                value_exp.data.compile(),
-                value_exp.compile(InnerExpression)
+                value_exp.data.monomorphized_name(names),
+                value_exp.compile(InnerExpression, names)
               )
             }
           })
           .collect();
-        let value_line = body.compile(position);
+        let value_line = body.compile(position, names);
         format!("\n{}{}", binding_lines.join("\n"), value_line)
       }
       Match(scrutinee, arms) => match scrutinee.data.unwrap_known() {
         Type::Bool => match arms.len() {
           1 => {
             let (pattern, case) = arms.into_iter().next().unwrap();
-            let compiled_case = case.compile(position);
+            let compiled_case = case.compile(position, names);
             match pattern.kind {
               ExpKind::Wildcard => compiled_case,
               ExpKind::BooleanLiteral(true) => format!(
                 "\nif ({}) {{{}\n}}",
-                scrutinee.compile(InnerExpression),
+                scrutinee.compile(InnerExpression, names),
                 indent(compiled_case),
               ),
               ExpKind::BooleanLiteral(false) => format!(
                 "\nif (!{}) {{{}\n}}",
-                scrutinee.compile(InnerExpression),
+                scrutinee.compile(InnerExpression, names),
                 indent(compiled_case),
               ),
               _ => unreachable!(),
@@ -1351,15 +1356,15 @@ impl TypedExp {
               if true_case.kind == ExpKind::Unit {
                 indent("\n".to_string())
               } else {
-                indent(true_case.compile(position))
+                indent(true_case.compile(position, names))
               },
               if false_case.kind == ExpKind::Unit {
                 indent("\n".to_string())
               } else {
-                indent(false_case.compile(position))
+                indent(false_case.compile(position, names))
               },
             );
-            let condition = scrutinee.compile(InnerExpression);
+            let condition = scrutinee.compile(InnerExpression, names);
             if position == InnerExpression {
               format!("select({false_case}, {true_case}, {condition})")
             } else {
@@ -1378,7 +1383,7 @@ impl TypedExp {
           let arm_count = arms.len();
           format!(
             "\nswitch({}.discriminant) {{\n  {}\n}}",
-            scrutinee.clone().compile(InnerExpression),
+            scrutinee.clone().compile(InnerExpression, names),
             indent(
               arms
                 .into_iter()
@@ -1393,34 +1398,36 @@ impl TypedExp {
                   match pattern.kind {
                     Wildcard => format!(
                       "default: {{{}\n{finisher}}}",
-                      indent(value.compile(position))
+                      indent(value.compile(position, names))
                     ),
                     ExpKind::Name(name) => {
                       let Type::Enum(e) = scrutinee.data.unwrap_known() else {
                         panic!("invalid pattern type in enum match block")
                       };
-                      let suffix = e
+                      let generic_arg_names = e
                         .abstract_ancestor
                         .original_ancestor()
-                        .monomorphized_suffix(
+                        .generic_arg_monomorphized_names(
                           &e.variants
                             .iter()
                             .map(|variant| variant.inner_type.unwrap_known())
                             .collect(),
+                          names,
                         );
                       let Some(discriminant) = e
-                        .abstract_ancestor
-                        .original_ancestor()
                         .variants
                         .iter()
                         .enumerate()
                         .find_map(|(i, variant)| {
-                          ((variant.name.to_string() + &suffix) == &*name)
+                          (names.get_monomorphized_name(
+                            variant.name.clone(),
+                            generic_arg_names.clone(),
+                          ) == name)
                             .then(|| i)
                         })
                       else {
                         panic!(
-                          "invalid enum unit-variant name in match pattern"
+                          "invalid enum unit-variant name in match pattern \"{name}\""
                         )
                       };
                       format!(
@@ -1430,7 +1437,7 @@ impl TypedExp {
                         } else {
                           format!("case {discriminant}u")
                         },
-                        indent(value.compile(position))
+                        indent(value.compile(position, names))
                       )
                     }
                     ExpKind::Application(mut f, mut args) => {
@@ -1459,7 +1466,11 @@ impl TypedExp {
                       let bitcasted_value = variant
                         .inner_type
                         .unwrap_known()
-                        .bitcasted_from_enum_data(scrutinee_name.clone(), &e);
+                        .bitcasted_from_enum_data(
+                          scrutinee_name.clone(),
+                          &e,
+                          names,
+                        );
                       format!(
                         "{}: {{\n  let {} = {};{}\n{finisher}}}",
                         if i == arm_count - 1 {
@@ -1469,9 +1480,10 @@ impl TypedExp {
                         },
                         compile_word(inner_value_name),
                         bitcasted_value.compile(
-                          ExpressionCompilationPosition::InnerExpression
+                          ExpressionCompilationPosition::InnerExpression,
+                          names
                         ),
-                        indent(value.compile(position))
+                        indent(value.compile(position, names))
                       )
                     }
                     _ => panic!("invalid pattern type in enum match block"),
@@ -1485,7 +1497,7 @@ impl TypedExp {
         _ => {
           format!(
             "\nswitch ({}) {{\n  {}\n}}",
-            scrutinee.compile(InnerExpression),
+            scrutinee.compile(InnerExpression, names),
             indent(
               arms
                 .into_iter()
@@ -1494,12 +1506,13 @@ impl TypedExp {
                   if pattern.kind == Wildcard {
                     "default".to_string()
                   } else {
-                    "case ".to_string() + &pattern.compile(InnerExpression)
+                    "case ".to_string()
+                      + &pattern.compile(InnerExpression, names)
                   },
                   if value.kind == ExpKind::Unit {
                     "".to_string()
                   } else {
-                    indent(value.compile(position))
+                    indent(value.compile(position, names))
                   },
                   if position == ExpressionCompilationPosition::Return {
                     ""
@@ -1519,11 +1532,14 @@ impl TypedExp {
           .into_iter()
           .enumerate()
           .map(|(i, child)| {
-            child.compile(if i == child_count - 1 {
-              position
-            } else {
-              ExpressionCompilationPosition::InnerLine
-            })
+            child.compile(
+              if i == child_count - 1 {
+                position
+              } else {
+                ExpressionCompilationPosition::InnerLine
+              },
+              names,
+            )
           })
           .collect();
         format!("\n{{{}\n}}", indent(child_strings.join("")))
@@ -1538,15 +1554,16 @@ impl TypedExp {
       } => format!(
         "\nfor (var {}: {} = {}; {}; {}) {{{}\n}}",
         increment_variable_name,
-        increment_variable_type.compile(),
+        increment_variable_type.monomorphized_name(names),
         increment_variable_initial_value_expression
-          .compile(ExpressionCompilationPosition::InnerExpression),
+          .compile(ExpressionCompilationPosition::InnerExpression, names),
         continue_condition_expression
-          .compile(ExpressionCompilationPosition::InnerExpression),
+          .compile(ExpressionCompilationPosition::InnerExpression, names),
         update_condition_expression
-          .compile(ExpressionCompilationPosition::InnerExpression),
+          .compile(ExpressionCompilationPosition::InnerExpression, names),
         indent(
-          body_expression.compile(ExpressionCompilationPosition::InnerLine)
+          body_expression
+            .compile(ExpressionCompilationPosition::InnerLine, names)
         )
       ),
       WhileLoop {
@@ -1555,9 +1572,10 @@ impl TypedExp {
       } => format!(
         "\nwhile ({}) {{{}\n}}",
         condition_expression
-          .compile(ExpressionCompilationPosition::InnerExpression),
+          .compile(ExpressionCompilationPosition::InnerExpression, names),
         indent(
-          body_expression.compile(ExpressionCompilationPosition::InnerLine)
+          body_expression
+            .compile(ExpressionCompilationPosition::InnerLine, names)
         )
       ),
       Break => "\nbreak;".to_string(),
@@ -1565,21 +1583,21 @@ impl TypedExp {
       Discard => "\ndiscard;".to_string(),
       ExpKind::Return(exp) => format!(
         "\nreturn {};",
-        exp.compile(ExpressionCompilationPosition::InnerExpression)
+        exp.compile(ExpressionCompilationPosition::InnerExpression, names)
       ),
       ArrayLiteral(children) => format!(
         "array({})",
         children
           .into_iter()
-          .map(|child| child.compile(position))
+          .map(|child| child.compile(position, names))
           .collect::<Vec<String>>()
           .join(", ")
       ),
       Reference(exp) => format!(
         "&{}",
-        exp.compile(ExpressionCompilationPosition::InnerExpression)
+        exp.compile(ExpressionCompilationPosition::InnerExpression, names)
       ),
-      ZeroedArray => self.data.kind.compile() + "()",
+      ZeroedArray => self.data.kind.monomorphized_name(names) + "()",
     }
   }
 
@@ -2435,8 +2453,15 @@ impl TypedExp {
                 .iter()
                 .map(|variant| variant.inner_type.unwrap_known())
                 .collect::<Vec<Type>>();
-              let suffix = original_e.monomorphized_suffix(&variant_types);
-              *name = (name.to_string() + &suffix).into();
+              let generic_arg_names = original_e
+                .generic_arg_monomorphized_names(
+                  &variant_types,
+                  &mut new_program.names.borrow_mut(),
+                );
+              *name = new_program
+                .names
+                .borrow_mut()
+                .get_monomorphized_name(name.clone(), generic_arg_names);
             }
           }
         }
@@ -2467,7 +2492,9 @@ impl TypedExp {
                       f_name,
                       &mut format!(
                         "bitcast<{}>",
-                        exp.data.kind.unwrap_known().compile()
+                        exp.data.kind.unwrap_known().monomorphized_name(
+                          &mut new_program.names.borrow_mut()
+                        )
                       )
                       .into(),
                     )
@@ -2494,6 +2521,7 @@ impl TypedExp {
                         &mut AbstractStruct::concretized_name(
                           monomorphized_struct.clone(),
                           &base_program.typedefs,
+                          &mut new_program.names.borrow_mut(),
                           exp.source_trace.clone(),
                         )?,
                       );
@@ -2531,19 +2559,28 @@ impl TypedExp {
                         abstract_enum.clone().into(),
                       ));
                     } else if let Some(monomorphized_enum) =
-                      abstract_enum.generate_monomorphized(enum_type)
+                      abstract_enum.generate_monomorphized(enum_type.clone())
                     {
-                      let monomorphized_enum = Rc::new(monomorphized_enum);
+                      let generic_arg_names = monomorphized_enum
+                        .generic_arg_monomorphized_names(
+                          &enum_type
+                            .variants
+                            .iter()
+                            .map(|variant| variant.inner_type.unwrap_known())
+                            .collect(),
+                          &mut new_program.names.borrow_mut(),
+                        );
                       std::mem::swap(
                         f_name,
-                        &mut (f_name.to_string()
-                          + &AbstractEnum::concretized_suffix(
-                            monomorphized_enum.clone(),
-                            &base_program.typedefs,
-                            exp.source_trace.clone(),
-                          )?)
-                          .into(),
+                        &mut new_program
+                          .names
+                          .borrow_mut()
+                          .get_monomorphized_name(
+                            f_name.clone(),
+                            generic_arg_names,
+                          ),
                       );
+                      let monomorphized_enum = Rc::new(monomorphized_enum);
                       let mut new_typestate =
                         Type::Enum(AbstractEnum::fill_generics_ordered(
                           monomorphized_enum.clone(),
@@ -2650,6 +2687,7 @@ impl TypedExp {
                     .generate_higher_order_functions_inlined_version(
                       f_name,
                       function_args,
+                      &mut new_ctx.names.borrow_mut(),
                       f.borrow().body.source_trace.clone(),
                     )?;
                   std::mem::swap(f_name, &mut inlined.name.clone());
@@ -2696,10 +2734,12 @@ impl TypedExp {
     bindings: &mut HashMap<Rc<str>, Vec<Rc<str>>>,
     errors: &mut ErrorLog,
     first_in_walk: bool,
+    names: &mut NameContext,
   ) -> bool {
     let add_binding = |name: &mut Rc<str>,
                        source_trace: &SourceTrace,
                        bindings: &mut HashMap<Rc<str>, Vec<Rc<str>>>,
+                       names: &mut NameContext,
                        errors: &mut ErrorLog| {
       if globally_bound_names.contains(&name) {
         errors.log(CompileError::new(
@@ -2708,8 +2748,7 @@ impl TypedExp {
         ));
       }
       if let Some(renames) = bindings.get_mut(name) {
-        let gensym_name: Rc<str> =
-          format!("{}_deshadowed_{}", name.to_string(), renames.len()).into();
+        let gensym_name = names.gensym(&(name.to_string() + "_deshadowed"));
         std::mem::swap(name, &mut gensym_name.clone());
         renames.push(gensym_name);
       } else {
@@ -2724,15 +2763,23 @@ impl TypedExp {
             bindings,
             errors,
             true,
+            names,
           );
           add_binding(
             &mut binding.0,
             &binding.2.source_trace,
             bindings,
+            names,
             errors,
           );
         }
-        body.deshadow_inner(globally_bound_names, bindings, errors, true);
+        body.deshadow_inner(
+          globally_bound_names,
+          bindings,
+          errors,
+          true,
+          names,
+        );
         false
       }
       ForLoop {
@@ -2746,6 +2793,7 @@ impl TypedExp {
           increment_variable_name,
           &self.source_trace,
           bindings,
+          names,
           errors,
         );
         continue_condition_expression.deshadow_inner(
@@ -2753,18 +2801,21 @@ impl TypedExp {
           bindings,
           errors,
           true,
+          names,
         );
         update_condition_expression.deshadow_inner(
           globally_bound_names,
           bindings,
           errors,
           true,
+          names,
         );
         body_expression.deshadow_inner(
           globally_bound_names,
           bindings,
           errors,
           true,
+          names,
         );
         false
       }
@@ -2785,6 +2836,7 @@ impl TypedExp {
                 bindings,
                 errors,
                 false,
+                names,
               ))
             })
             .unwrap();
@@ -2799,12 +2851,14 @@ impl TypedExp {
     &mut self,
     globally_bound_names: &Vec<Rc<str>>,
     errors: &mut ErrorLog,
+    names: &mut NameContext,
   ) {
     self.deshadow_inner(
       globally_bound_names,
       &mut Default::default(),
       errors,
       true,
+      names,
     );
   }
   pub fn validate_control_flow(
@@ -3001,7 +3055,7 @@ impl TypedExp {
       .unwrap()
   }
   pub fn deexpressionify(&mut self, program: &Program) {
-    let mut gensym_index = 0;
+    let mut names = program.names.borrow_mut();
     loop {
       let mut changed = false;
       let placeholder_exp_kind = ExpKind::Wildcard;
@@ -3056,10 +3110,9 @@ impl TypedExp {
                       HashMap::new();
                     for (name, t) in overridden_names {
                       let replacement_name =
-                        format!("original_{name}_{gensym_index}").into();
+                        names.gensym(&format!("original_{name}"));
                       replacement_names.insert(name.clone(), replacement_name);
                       replacement_types.insert(name, t);
-                      gensym_index += 1;
                     }
                     for arg in &mut slots[0..arg_index] {
                       arg.replace_internal_names(&replacement_names);
@@ -3146,9 +3199,7 @@ impl TypedExp {
                   });
                 }
                 Match(_, _) => {
-                  let name: Rc<str> =
-                    format!("match_gensym_{gensym_index}").into();
-                  gensym_index += 1;
+                  let name: Rc<str> = names.gensym(&format!("match_gensym"));
                   let mut match_exp = TypedExp {
                     kind: Name(name.clone()),
                     data: arg.data.clone(),
@@ -3348,7 +3399,7 @@ impl TypedExp {
       }
     }
   }
-  pub fn desugar_swizzle_assignments(&mut self) {
+  pub fn desugar_swizzle_assignments(&mut self, names: &mut NameContext) {
     if let ExpKind::Application(f, args) = &self.kind
       && let ExpKind::Name(f_name) = &f.kind
       && &**f_name == "="
@@ -3357,7 +3408,7 @@ impl TypedExp {
       && let ExpKind::Access(accessor, accessed) = &first_arg.kind
       && let Accessor::Swizzle(fields) = accessor
     {
-      let gensym_name: Rc<str> = "gensym".into();
+      let gensym_name: Rc<str> = names.gensym("swizzle_assignment");
       std::mem::swap(
         self,
         &mut Exp {

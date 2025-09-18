@@ -1,0 +1,12 @@
+(defn a [x: f32
+         f: (Fn [f32] f32)]: f32
+  (f (* x 2.)))
+
+(defn b [x: f32]: f32
+  (* x 3.))
+
+(defn a-b [x: f32]: f32
+  (* x 2.))
+
+(defn main []: f32
+  (a 2. b))

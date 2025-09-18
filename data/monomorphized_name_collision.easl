@@ -1,0 +1,9 @@
+(enum (Option T) None (Some T))
+
+(struct Option-f32
+  x: u32)
+
+(defn unwrap-or-zero [o: (Option f32)]: f32
+  (match o
+    (Some x) x
+    None 0.))

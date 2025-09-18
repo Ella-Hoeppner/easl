@@ -1,4 +1,9 @@
-use std::{cell::RefCell, cmp::Ordering, collections::HashMap, rc::Rc};
+use std::{
+  cell::RefCell,
+  cmp::Ordering,
+  collections::{HashMap, HashSet},
+  rc::Rc,
+};
 
 use sse::{document::Document, syntax::EncloserOrOperator};
 use take_mut::take;
@@ -20,7 +25,7 @@ use crate::{
       AbstractType, ExpTypeInfo, Type, TypeConstraint, TypeState, UntypedType,
       Variable, VariableKind, parse_generic_argument,
     },
-    util::read_type_annotated_name,
+    util::{compile_word, read_type_annotated_name},
     vars::TopLevelVariableAttributes,
   },
   parse::{Context as SyntaxContext, EaslTree, Encloser, Operator},
@@ -55,6 +60,82 @@ thread_local! {
 }
 
 #[derive(Debug, Clone)]
+pub struct NameContext {
+  user_names: HashSet<Rc<str>>,
+  generated_names: HashSet<Rc<str>>,
+  monomorphized_names: HashMap<(Rc<str>, Vec<Rc<str>>), Rc<str>>,
+}
+
+impl NameContext {
+  fn empty() -> Self {
+    Self {
+      user_names: HashSet::new(),
+      generated_names: HashSet::new(),
+      monomorphized_names: HashMap::new(),
+    }
+  }
+  fn track_all_ast_names(&mut self, ast: &EaslTree) {
+    ast.walk(&mut |ast| {
+      if let EaslTree::Leaf(_, name) = ast {
+        self.track_user_name(name);
+      }
+    });
+  }
+  fn track_user_name(&mut self, name: &str) {
+    self.user_names.insert(name.into());
+    self.user_names.insert(compile_word(name.into()).into());
+  }
+  fn is_taken(&self, name: &str) -> bool {
+    self.user_names.contains(name) || self.generated_names.contains(name)
+  }
+  pub fn gensym(&mut self, base_name: &str) -> Rc<str> {
+    if self.is_taken(base_name) {
+      let mut i = 0;
+      let final_name: Rc<str> = loop {
+        let modified_name = base_name.to_string() + &format!("_{i}");
+        if !self.is_taken(&modified_name) {
+          break modified_name.into();
+        }
+        i += 1;
+      };
+      self.generated_names.insert(final_name.clone());
+      final_name
+    } else {
+      self.generated_names.insert(base_name.into());
+      base_name.into()
+    }
+  }
+  pub(crate) fn get_monomorphized_name(
+    &mut self,
+    base_type_name: Rc<str>,
+    generic_arg_names: Vec<Rc<str>>,
+  ) -> Rc<str> {
+    let monomorphization_id = (base_type_name, generic_arg_names);
+    self
+      .monomorphized_names
+      .get(&monomorphization_id)
+      .map(|name| name.clone())
+      .unwrap_or_else(|| {
+        let full_name: Rc<str> = monomorphization_id
+          .1
+          .clone()
+          .into_iter()
+          .fold(
+            monomorphization_id.0.to_string(),
+            |full_name, generic_arg_name| full_name + "_" + &generic_arg_name,
+          )
+          .into();
+        let final_name = self.gensym(&full_name);
+        self.generated_names.insert(final_name.clone());
+        self
+          .monomorphized_names
+          .insert(monomorphization_id, final_name.clone());
+        final_name
+      })
+  }
+}
+
+#[derive(Debug, Clone)]
 pub struct TypeDefs {
   pub structs: Vec<Rc<AbstractStruct>>,
   pub enums: Vec<Rc<AbstractEnum>>,
@@ -73,6 +154,7 @@ impl TypeDefs {
 
 #[derive(Debug, Clone)]
 pub struct Program {
+  pub names: RefCell<NameContext>,
   pub typedefs: TypeDefs,
   pub abstract_functions:
     HashMap<Rc<str>, Vec<Rc<RefCell<AbstractFunctionSignature>>>>,
@@ -88,16 +170,38 @@ impl Default for Program {
 impl Program {
   pub fn empty() -> Self {
     Self {
+      names: NameContext::empty().into(),
       typedefs: TypeDefs::empty(),
       abstract_functions: HashMap::new(),
       top_level_vars: vec![],
     }
+  }
+  pub fn add_top_level_var(&mut self, var: TopLevelVar) {
+    self.names.borrow_mut().track_user_name(&var.name);
+    self.top_level_vars.push(var);
   }
   pub fn add_abstract_function(
     &mut self,
     signature: Rc<RefCell<AbstractFunctionSignature>>,
   ) {
     let name = Rc::clone(&signature.borrow().name);
+    self.names.borrow_mut().track_user_name(&name);
+    if let FunctionImplementationKind::Composite(f) =
+      &signature.borrow().implementation
+    {
+      let f = f.borrow();
+      for arg_name in f.arg_names.iter() {
+        self.names.borrow_mut().track_user_name(&arg_name);
+      }
+      f.body
+        .walk(&mut |exp| {
+          if let ExpKind::Name(name) = &exp.kind {
+            self.names.borrow_mut().track_user_name(&name);
+          }
+          Ok::<bool, ()>(true)
+        })
+        .unwrap();
+    }
     if let Some(bucket) = self.abstract_functions.get_mut(&name) {
       let mut novel = true;
       for existing_signature in bucket.iter() {
@@ -264,11 +368,15 @@ impl Program {
     macros: Vec<Macro>,
   ) -> (Self, ErrorLog) {
     let mut errors = ErrorLog::new();
+    let mut names = NameContext::empty();
+    for tree in document.syntax_trees.iter() {
+      names.track_all_ast_names(tree);
+    }
     let trees = document
       .syntax_trees
       .iter()
       .cloned()
-      .map(|tree| macroexpand(tree, &macros, &mut errors))
+      .map(|tree| macroexpand(tree, &macros, &mut names, &mut errors))
       .collect::<Vec<EaslTree>>();
 
     let mut non_typedef_trees = vec![];
@@ -418,7 +526,11 @@ impl Program {
         Ordering::Equal
       }
     });
+    for name in macros.iter().flat_map(|m| m.reserved_names.iter().cloned()) {
+      names.user_names.insert(name);
+    }
     let mut program = Program::default();
+    program.names = names.into();
     for untyped_type in untyped_types {
       match untyped_type {
         UntypedType::Struct(untyped_struct) => {
@@ -510,7 +622,7 @@ impl Program {
                             Ok(exp) => Some(exp),
                             Err(e) => {errors.log(e); None},
                         }).flatten();
-                        program.top_level_vars.push(TopLevelVar {
+                        program.add_top_level_var(TopLevelVar {
                           name,
                           var: Variable::new(t.known().into()).with_kind(
                             if attributes.address_space.can_write() {
@@ -557,7 +669,7 @@ impl Program {
                                 parens_source_trace.clone(),
                               ));
                             }
-                            program.top_level_vars.push(TopLevelVar {
+                            program.add_top_level_var(TopLevelVar {
                               name,
                               var,
                               value: Some(value_expression),
@@ -900,13 +1012,14 @@ impl Program {
   }
   pub fn monomorphize(&mut self, errors: &mut ErrorLog) {
     let mut monomorphized_ctx = Program::default();
+    monomorphized_ctx.names = self.names.clone();
     for f in self.abstract_functions_iter() {
       if f.borrow().generic_args.is_empty() {
         if let FunctionImplementationKind::Composite(implementation) =
           &f.borrow().implementation
         {
-          match implementation
-            .borrow_mut()
+          let mut borrowed_implementation = implementation.borrow_mut();
+          match borrowed_implementation
             .body
             .monomorphize(&self, &mut monomorphized_ctx)
           {
@@ -914,6 +1027,7 @@ impl Program {
               let mut new_f = (**f).borrow().clone();
               new_f.implementation =
                 FunctionImplementationKind::Composite(implementation.clone());
+              drop(borrowed_implementation);
               monomorphized_ctx
                 .add_abstract_function(Rc::new(RefCell::new(new_f)));
             }
@@ -948,6 +1062,7 @@ impl Program {
   ) -> bool {
     let mut changed = false;
     let mut inlined_ctx = Program::default();
+    inlined_ctx.names = self.names.clone();
     for f in self.abstract_functions_iter() {
       if f.borrow().generic_args.is_empty()
         && f
@@ -965,8 +1080,8 @@ impl Program {
       {
         match &f.borrow().implementation {
           FunctionImplementationKind::Composite(implementation) => {
-            match implementation
-              .borrow_mut()
+            let mut borrowed_implementation = implementation.borrow_mut();
+            match borrowed_implementation
               .body
               .inline_higher_order_arguments(&mut inlined_ctx)
             {
@@ -975,6 +1090,7 @@ impl Program {
                 let mut new_f = (**f).borrow().clone();
                 new_f.implementation =
                   FunctionImplementationKind::Composite(implementation.clone());
+                drop(borrowed_implementation);
                 inlined_ctx.add_abstract_function(Rc::new(RefCell::new(new_f)));
               }
               Err(e) => errors.log(e),
@@ -995,9 +1111,10 @@ impl Program {
     changed
   }
   pub fn compile_to_wgsl(self) -> CompileResult<String> {
+    let mut names = self.names.borrow_mut();
     let mut wgsl = String::new();
     for v in self.top_level_vars.iter() {
-      wgsl += &v.clone().compile();
+      wgsl += &v.clone().compile(&mut names);
       wgsl += ";\n";
     }
     wgsl += "\n";
@@ -1009,16 +1126,16 @@ impl Program {
       .cloned()
       .filter(|s| !default_structs.contains(s))
     {
-      if let Some(compiled_struct) =
-        Rc::unwrap_or_clone(s).compile_if_non_generic(&self.typedefs)?
+      if let Some(compiled_struct) = Rc::unwrap_or_clone(s)
+        .compile_if_non_generic(&self.typedefs, &mut names)?
       {
         wgsl += &compiled_struct;
         wgsl += "\n\n";
       }
     }
     for e in self.typedefs.enums.iter().cloned() {
-      if let Some(compiled_enum) =
-        Rc::unwrap_or_clone(e).compile_if_non_generic(&self.typedefs)?
+      if let Some(compiled_enum) = Rc::unwrap_or_clone(e)
+        .compile_if_non_generic(&self.typedefs, &mut names)?
       {
         wgsl += &compiled_enum;
         wgsl += "\n\n";
@@ -1047,7 +1164,7 @@ impl Program {
             let args_str = if *inner_type == Type::Unit {
               String::new()
             } else {
-              let inner_type_name = inner_type.compile();
+              let inner_type_name = inner_type.monomorphized_name(&mut names);
               format!("value: {inner_type_name}")
             };
             let bitcast_inner_values = inner_type
@@ -1056,16 +1173,28 @@ impl Program {
               .map(|exp| {
                 format!(
                   "bitcast<u32>({})",
-                  exp.compile(ExpressionCompilationPosition::InnerExpression)
+                  exp.compile(
+                    ExpressionCompilationPosition::InnerExpression,
+                    &mut names
+                  )
                 )
               })
               .chain(std::iter::repeat("0u".into()))
               .take(e.inner_data_size_in_u32s()?)
               .collect::<Vec<String>>()
               .join(", ");
-            let suffix =
-              variant_name[original_variant_name.len()..].to_string();
-            let enum_name = e.name.to_string() + &suffix;
+            let enum_name = e.original_ancestor().monomorphized_name(
+              &e.variants
+                .iter()
+                .map(|variant| {
+                  let AbstractType::Type(t) = &variant.inner_type else {
+                    unreachable!()
+                  };
+                  t.clone()
+                })
+                .collect(),
+              &mut names,
+            );
             wgsl += &format!(
               "fn {variant_name}({args_str}) -> {enum_name} {{\n  \
               return {enum_name}({discriminant}u, array({bitcast_inner_values}));\n\
@@ -1082,7 +1211,10 @@ impl Program {
       if f.generic_args.is_empty() {
         match f.implementation {
           FunctionImplementationKind::Composite(implementation) => {
-            wgsl += &implementation.borrow().clone().compile(&f.name)?;
+            wgsl += &implementation
+              .borrow()
+              .clone()
+              .compile(&f.name, &mut names)?;
             wgsl += "\n\n";
           }
           _ => {}
@@ -1155,10 +1287,11 @@ impl Program {
         if let FunctionImplementationKind::Composite(exp) =
           &mut signature.borrow_mut().implementation
         {
-          exp
-            .borrow_mut()
-            .body
-            .deshadow(&globally_bound_names, errors);
+          exp.borrow_mut().body.deshadow(
+            &globally_bound_names,
+            errors,
+            &mut self.names.borrow_mut(),
+          );
         }
       }
     }
@@ -1303,6 +1436,7 @@ impl Program {
     }
   }
   pub fn desugar_swizzle_assignments(&mut self) {
+    let mut names = self.names.borrow_mut();
     for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
       if let FunctionImplementationKind::Composite(f) =
@@ -1311,7 +1445,7 @@ impl Program {
         f.borrow_mut()
           .body
           .walk_mut(&mut |exp| {
-            exp.desugar_swizzle_assignments();
+            exp.desugar_swizzle_assignments(&mut names);
             Ok::<_, ()>(true)
           })
           .unwrap();

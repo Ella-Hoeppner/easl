@@ -5,8 +5,7 @@ use sse::{Ast, EncloserOrOperator};
 use crate::{
   compiler::{
     error::{CompileError, CompileErrorKind, CompileResult, SourceTrace},
-    program::TypeDefs,
-    structs::{compiled_vec_or_mat_name, vec_and_mat_compile_names},
+    program::{NameContext, TypeDefs},
     types::{AbstractType, ExpTypeInfo, Type, TypeState, contains_name_leaf},
   },
   parse::{EaslTree, Encloser},
@@ -310,6 +309,7 @@ impl AbstractEnum {
   pub fn compile_if_non_generic(
     self,
     typedefs: &TypeDefs,
+    names: &mut NameContext,
   ) -> CompileResult<Option<String>> {
     self
       .generic_args
@@ -326,7 +326,7 @@ impl AbstractEnum {
             )
           })
           .collect::<CompileResult<Vec<Type>>>()?;
-        let monomorphized_name = self.monomorphized_name(&field_types);
+        let monomorphized_name = self.monomorphized_name(&field_types, names);
         let size = self.inner_data_size_in_u32s()?;
         let unit_constructor_constants: Vec<String> = self
           .variants
@@ -334,8 +334,12 @@ impl AbstractEnum {
           .enumerate()
           .map(|(i, variant)| {
             Ok(if variant.inner_type == AbstractType::Type(Type::Unit) {
-              let const_name = variant.name.to_string()
-                + &self.monomorphized_suffix(&field_types);
+              let generic_arg_names =
+                self.generic_arg_monomorphized_names(&field_types, names);
+              let const_name = names.get_monomorphized_name(
+                variant.name.clone(),
+                generic_arg_names,
+              );
               Some(format!(
                 "const {const_name}: {monomorphized_name} = \
                 {monomorphized_name}({i}, {});",
@@ -368,7 +372,11 @@ impl AbstractEnum {
       })
       .map_or(Ok(None), |v| v.map(Some))
   }
-  pub fn monomorphized_suffix(&self, variant_types: &Vec<Type>) -> Rc<str> {
+  pub fn generic_arg_monomorphized_names(
+    &self,
+    variant_types: &Vec<Type>,
+    names: &mut NameContext,
+  ) -> Vec<Rc<str>> {
     let mut generic_bindings = HashMap::new();
     for (variant, variant_type) in self
       .original_ancestor()
@@ -381,33 +389,27 @@ impl AbstractEnum {
         .extract_generic_bindings(variant_type, &mut generic_bindings);
     }
 
-    let name = &*self.name;
-
-    vec_and_mat_compile_names()
-      .contains(name)
-      .then(|| {
-        compiled_vec_or_mat_name(
-          name,
-          generic_bindings.values().next().unwrap().clone(),
-        )
-      })
-      .flatten()
-      .unwrap_or_else(|| {
-        self
-          .original_ancestor()
-          .generic_args
-          .iter()
-          .fold(String::new(), |name_so_far, generic_arg_name| {
-            name_so_far
-              + "_"
-              + &generic_bindings.get(generic_arg_name).unwrap().compile()
-          })
+    self
+      .original_ancestor()
+      .generic_args
+      .iter()
+      .map(|generic_arg_name| {
+        generic_bindings
+          .get(generic_arg_name)
+          .unwrap()
+          .monomorphized_name(names)
           .into()
       })
-      .into()
+      .collect()
   }
-  pub fn monomorphized_name(&self, variant_types: &Vec<Type>) -> Rc<str> {
-    (self.name.to_string() + &self.monomorphized_suffix(variant_types)).into()
+  pub fn monomorphized_name(
+    &self,
+    variant_types: &Vec<Type>,
+    names: &mut NameContext,
+  ) -> Rc<str> {
+    let generic_arg_names =
+      self.generic_arg_monomorphized_names(variant_types, names);
+    names.get_monomorphized_name(self.name.clone(), generic_arg_names)
   }
   pub fn fill_abstract_generics(
     self,
@@ -481,27 +483,11 @@ impl AbstractEnum {
       source_trace: self.source_trace.clone(),
     })
   }
-  pub fn concretized_suffix(
-    e: Rc<Self>,
-    typedefs: &TypeDefs,
-    source_trace: SourceTrace,
-  ) -> CompileResult<Rc<str>> {
-    let concretized =
-      Self::concretize(e.clone(), typedefs, &vec![], source_trace)?;
-    Ok(
-      e.monomorphized_suffix(
-        &concretized
-          .variants
-          .iter()
-          .map(|variant| variant.inner_type.unwrap_known())
-          .collect(),
-      ),
-    )
-  }
   pub fn concretized_name(
     e: Rc<Self>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
+    names: &mut NameContext,
   ) -> CompileResult<Rc<str>> {
     let concretized =
       Self::concretize(e.clone(), typedefs, &vec![], source_trace)?;
@@ -512,6 +498,7 @@ impl AbstractEnum {
           .iter()
           .map(|variant| variant.inner_type.unwrap_known())
           .collect(),
+        names,
       ),
     )
   }
@@ -552,13 +539,14 @@ impl Enum {
       },
     )
   }
-  pub fn monomorphized_name(&self) -> Rc<str> {
+  pub fn monomorphized_name(&self, names: &mut NameContext) -> Rc<str> {
     self.abstract_ancestor.monomorphized_name(
       &self
         .variants
         .iter()
         .map(|v| v.inner_type.unwrap_known())
         .collect(),
+      names,
     )
   }
   pub fn inner_data_size_in_u32s(&self) -> CompileResult<usize> {

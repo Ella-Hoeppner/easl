@@ -9,7 +9,7 @@ use take_mut::take;
 use crate::compiler::{
   effects::{Effect, EffectType},
   enums::AbstractEnum,
-  program::TypeDefs,
+  program::{NameContext, TypeDefs},
   util::compile_word,
 };
 
@@ -167,27 +167,32 @@ impl AbstractFunctionSignature {
     self
       .return_type
       .extract_generic_bindings(&return_type, &mut generic_bindings);
-    monomorphized.name = self
+    let generic_arg_names = self
       .generic_args
       .iter()
-      .fold(
-        Ok(monomorphized.name.to_string()),
-        |full_name: CompileResult<String>, (arg, bounds)| {
-          let generic_type = generic_bindings.get(arg).unwrap();
-          if let Some(unsatisfied_bound) = bounds
-            .iter()
-            .find(|constraint| !generic_type.satisfies_constraints(constraint))
-          {
-            err(
-              UnsatisfiedTypeConstraint(unsatisfied_bound.clone().into()),
-              source_trace.clone(),
-            )
-          } else {
-            full_name.map(|full_name| full_name + "_" + &generic_type.compile())
-          }
-        },
-      )?
-      .into();
+      .map(|(arg, bounds)| {
+        let generic_type = generic_bindings.get(arg).unwrap();
+        if let Some(unsatisfied_bound) = bounds
+          .iter()
+          .find(|constraint| !generic_type.satisfies_constraints(constraint))
+        {
+          err(
+            UnsatisfiedTypeConstraint(unsatisfied_bound.clone().into()),
+            source_trace.clone(),
+          )
+        } else {
+          Ok(
+            generic_type
+              .monomorphized_name(&mut new_program.names.borrow_mut())
+              .into(),
+          )
+        }
+      })
+      .collect::<CompileResult<Vec<Rc<str>>>>()?;
+    monomorphized.name = new_program
+      .names
+      .borrow_mut()
+      .get_monomorphized_name(self.name.clone(), generic_arg_names);
     monomorphized.generic_args = vec![];
     for t in monomorphized
       .arg_types
@@ -223,6 +228,7 @@ impl AbstractFunctionSignature {
     &self,
     name: &Rc<str>,
     fn_args: Vec<TypedExp>,
+    names: &mut NameContext,
     source_trace: SourceTrace,
   ) -> CompileResult<Self> {
     let mut implementation = self.implementation(source_trace.clone())?;
@@ -276,20 +282,19 @@ impl AbstractFunctionSignature {
     implementation.arg_names = new_parameter_names;
     implementation.arg_metadata = new_parameter_metadata;
     let f = AbstractFunctionSignature {
-      name: (name.to_string()
-        + "__"
-        + &fn_args
+      name: names.get_monomorphized_name(
+        name.clone(),
+        fn_args
           .iter()
           .map(|arg| {
             if let ExpKind::Name(higher_order_arg_name) = &arg.kind {
-              &**higher_order_arg_name
+              higher_order_arg_name.clone()
             } else {
               panic!("element of fn_args wasn't a Name")
             }
           })
-          .collect::<Vec<&str>>()
-          .join("_"))
-        .into(),
+          .collect::<Vec<Rc<str>>>(),
+      ),
       generic_args: self.generic_args.clone(),
       arg_types: new_parameter_types,
       mutated_args: vec![],
@@ -593,7 +598,11 @@ pub struct BuiltInFunction {
 }
 
 impl TopLevelFunction {
-  pub fn compile(self, name: &str) -> CompileResult<String> {
+  pub fn compile(
+    self,
+    name: &str,
+    names: &mut NameContext,
+  ) -> CompileResult<String> {
     let TypedExp { data, kind, .. } = self.body;
     let (arg_types, return_type) =
       if let Type::Function(signature) = data.unwrap_known() {
@@ -615,7 +624,7 @@ impl TopLevelFunction {
           "{}{}: {}",
           Metadata::compile_optional(metadata),
           compile_word(name),
-          arg_type.0.compile()
+          arg_type.0.monomorphized_name(names)
         )
       })
       .collect::<Vec<String>>()
@@ -631,16 +640,17 @@ impl TopLevelFunction {
         format!(
           " -> {}{}",
           Metadata::compile_optional(self.return_metadata),
-          return_type.compile()
+          return_type.monomorphized_name(names)
         )
       },
-      indent(
-        body.compile(if return_type.kind.unwrap_known() == Type::Unit {
+      indent(body.compile(
+        if return_type.kind.unwrap_known() == Type::Unit {
           ExpressionCompilationPosition::InnerLine
         } else {
           ExpressionCompilationPosition::Return
-        })
-      )
+        },
+        names
+      ))
     ))
   }
 }
