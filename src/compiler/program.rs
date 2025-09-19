@@ -198,7 +198,7 @@ impl Program {
           if let ExpKind::Name(name) = &exp.kind {
             self.names.borrow_mut().track_user_name(&name);
           }
-          Ok::<bool, ()>(true)
+          Ok::<bool, Never>(true)
         })
         .unwrap();
     }
@@ -1446,7 +1446,7 @@ impl Program {
           .body
           .walk_mut(&mut |exp| {
             exp.desugar_swizzle_assignments(&mut names);
-            Ok::<_, ()>(true)
+            Ok::<_, Never>(true)
           })
           .unwrap();
       }

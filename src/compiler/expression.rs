@@ -1213,6 +1213,7 @@ impl TypedExp {
               compile_word(name)
             }
           });
+
           let arg_types = args
             .iter()
             .map(|a| a.data.unwrap_known())
@@ -1879,6 +1880,7 @@ impl TypedExp {
         changed
       }
       Application(f, args) => {
+        let was_f_already_known = f.data.subtree_fully_typed;
         let mut anything_changed = false;
         for arg in args.iter_mut() {
           anything_changed |= arg.propagate_types_inner(ctx, errors);
@@ -1968,8 +1970,8 @@ impl TypedExp {
           errors,
         );
         anything_changed |= f.propagate_types_inner(ctx, errors);
-        self.data.subtree_fully_typed =
-          args.iter().fold(f.data.subtree_fully_typed, |acc, arg| {
+        self.data.subtree_fully_typed = was_f_already_known
+          && args.iter().fold(f.data.subtree_fully_typed, |acc, arg| {
             acc && arg.data.subtree_fully_typed
           });
 
@@ -2936,7 +2938,7 @@ impl TypedExp {
   pub fn effects(&self, program: &Program) -> EffectType {
     match &self.kind {
       Name(name) => Effect::ReadsVar(name.clone()).into(),
-      Return(exp) | Reference(exp) => exp.effects(program),
+      Reference(exp) => exp.effects(program),
       Block(exps) | ArrayLiteral(exps) => exps
         .into_iter()
         .map(|exp| exp.effects(program))
@@ -3028,6 +3030,11 @@ impl TypedExp {
         effects
       }
       Break => Effect::Break.into(),
+      Return(exp) => {
+        let mut inner_effects = exp.effects(program);
+        inner_effects.merge(Effect::Return);
+        inner_effects
+      }
       Continue => Effect::Continue.into(),
       Discard => Effect::Discard.into(),
       Wildcard => EffectType::empty(),

@@ -5,7 +5,6 @@ use std::{
   fmt::Display,
   ops::{Deref, DerefMut},
   rc::Rc,
-  sync::Arc,
 };
 
 use sse::{document::DocumentPosition, syntax::EncloserOrOperator};
@@ -502,7 +501,7 @@ impl AbstractType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ArraySize {
   Literal(u32),
-  Constant(Arc<str>),
+  Constant(String),
   Unsized,
 }
 

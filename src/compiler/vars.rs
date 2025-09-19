@@ -87,12 +87,13 @@ impl TopLevelVar {
         None => String::new(),
         Some(binding) => format!("@binding({binding}) "),
       };
-    let address_space =
-      if let Some(address_space) = self.attributes.address_space.compile() {
-        format!("<{address_space}>")
-      } else {
-        String::new()
-      };
+    let address_space = if self.var.kind == VariableKind::Var
+      && let Some(address_space) = self.attributes.address_space.compile()
+    {
+      format!("<{address_space}>")
+    } else {
+      String::new()
+    };
     let name = compile_word(self.name);
     let typ = self.var.typestate.monomorphized_name(names);
     let kind_name = match self.var.kind {

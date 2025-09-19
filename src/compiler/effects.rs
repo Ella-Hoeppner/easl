@@ -5,6 +5,7 @@ pub enum Effect {
   ReadsVar(Rc<str>),
   ModifiesVar(Rc<str>),
   Break,
+  Return,
   Continue,
   Discard,
 }

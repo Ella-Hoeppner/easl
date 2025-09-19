@@ -1470,9 +1470,6 @@ pub fn built_in_macros() -> Vec<Macro> {
                   }
                 }
               }
-              // let binding_names: Vec<Rc<str>> = (0..(children.len() - 1))
-              //   .map(|i: usize| format!("thread_gensym_{i}").into())
-              //   .collect();
               let binding_names: Vec<Rc<str>> =
                 std::iter::repeat_with(|| names.gensym("thread_gensym"))
                   .take(children.len() - 1)

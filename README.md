@@ -16,20 +16,14 @@ Feature goals:
 
 ## todo
 ### high priority, necessary to call the language 0.1
-* make compiler usable as a command-line tool, in addition to a library
-  * example usages
-    * `easl compile shader.easl --output shader.wgsl`
-      * if `--output` isn't specified then it'll just use the same file name but with `.wgsl` extension
-      * maybe also just support like `easl shader.easl`, skipping the `compile`. So like the default thing the CLI does is compile to a file, if you don't specify `run` or `fmt`
-    * `easl run shader.easl --fragment frag`
-      * runs shader as a purefrag
-    * `easl run shader.easl --vertex vert --fragment frag --vertices 300`
-      * runs vertex and fragment shader. If `--vertex` is specified, `--fragment` and `--vertices` must also be specified
-    * `easl fmt shader.easl`
-      * formats file, support `--output` option but default to just overwriting the file
-  * when running, there'll need to be at least some basic uniforms available. I guess for now just like, resolution and time (seconds since startup)
-    * can make this more sophisticated eventually once the CPU-side of the language is usable, but for now it's more just for demo
-  * need to make errors more human-readable
+* when a variable is marked as a uniform, require that it be given a group and binding, otherwise give an error
+
+* when a local binding tries to shadow an argument name, the resulting wgsl is invalid
+
+* get rid of the regex dependency
+  * only used once and it has a lot of dependencies, probably a not-insignificant part of the size of the final executable size
+
+* implement `Display` for `ErrorLog`, need to have good human-readable error messages
 
 
 

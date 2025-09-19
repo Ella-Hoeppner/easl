@@ -3,8 +3,8 @@ use sse::{
 };
 
 use crate::{
-  compiler::program::EaslDocument,
-  parse::{EaslTree, Encloser, Operator},
+  compiler::{error::ErrorLog, program::EaslDocument},
+  parse::{EaslTree, Encloser, Operator, parse_easl},
 };
 
 const MAX_EXPRESSION_WIDTH: usize = 30;
@@ -328,16 +328,13 @@ impl Block {
                 bodies: blocks.collect(),
               }
             }
-            "match" if trees.len() >= 1 => {
-              //let mut blocks = trees.map(Self::from_tree);
-              IndentedBody {
-                opener: s,
-                prefix: Self::from_tree(trees.next().unwrap()).into(),
-                bodies: vec![Bindings(Self::bindings_from_trees(
-                  trees.collect(),
-                ))],
-              }
-            }
+            "match" if trees.len() >= 1 => IndentedBody {
+              opener: s,
+              prefix: Self::from_tree(trees.next().unwrap()).into(),
+              bodies: vec![Bindings(Self::bindings_from_trees(
+                trees.collect(),
+              ))],
+            },
             "if" if trees.len() >= 1 => {
               let mut blocks: Vec<Block> = trees.map(Self::from_tree).collect();
               if blocks.iter().find(|b| b.height() > 1).is_some()
@@ -473,4 +470,10 @@ pub fn format_easl_trees(asts: Vec<EaslTree>) -> String {
 
 pub fn format_document(document: EaslDocument) -> String {
   format_easl_trees(document.syntax_trees)
+}
+
+pub fn format_easl_source(easl_source: &str) -> Result<String, ErrorLog> {
+  Ok(format_document(
+    parse_easl(easl_source).map_err(ErrorLog::from)?,
+  ))
 }
