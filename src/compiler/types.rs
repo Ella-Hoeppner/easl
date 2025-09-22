@@ -17,6 +17,7 @@ use crate::{
     expression::{Accessor, ExpKind, Number, TypedExp},
     program::{NameContext, TypeDefs},
     structs::UntypedStruct,
+    vars::VariableAddressSpace,
   },
   parse::{EaslTree, Encloser, Operator},
 };
@@ -811,6 +812,7 @@ impl Type {
             .unwrap_known()
             .monomorphized_name(names)
         ),
+        "Sampler" => "sampler".to_string(),
         _ => compile_word(s.monomorphized_name(names)),
       },
       Type::Enum(e) => compile_word(e.monomorphized_name(names)),
@@ -1192,6 +1194,42 @@ impl Type {
   pub fn known(self) -> TypeState {
     TypeState::Known(self)
   }
+  pub fn required_address_space(&self) -> Option<VariableAddressSpace> {
+    if let Type::Struct(s) = self
+      && (&*s.name == "Texture2D" || &*s.name == "Sampler")
+    {
+      Some(VariableAddressSpace::Handle)
+    } else {
+      None
+    }
+  }
+  pub fn check_is_fully_known(&self) -> bool {
+    match self {
+      Type::Struct(s) => !s
+        .fields
+        .iter()
+        .find(|field| !field.field_type.check_is_fully_known())
+        .is_some(),
+      Type::Enum(e) => !e
+        .variants
+        .iter()
+        .find(|variant| !variant.inner_type.check_is_fully_known())
+        .is_some(),
+      Type::Function(function_signature) => {
+        function_signature.arg_types.iter().fold(
+          function_signature.return_type.check_is_fully_known(),
+          |typed_so_far, (arg_type, _)| {
+            typed_so_far && arg_type.check_is_fully_known()
+          },
+        )
+      }
+      Type::Array(size, inner_type) => {
+        size.is_some() && inner_type.check_is_fully_known()
+      }
+      Type::Reference(inner_type) => inner_type.check_is_fully_known(),
+      _ => true,
+    }
+  }
 }
 
 pub fn extract_type_annotation_ast(
@@ -1292,31 +1330,7 @@ impl TypeState {
   pub fn check_is_fully_known(&self) -> bool {
     self.with_dereferenced(|typestate| {
       if let TypeState::Known(t) = typestate {
-        match t {
-          Type::Struct(s) => !s
-            .fields
-            .iter()
-            .find(|field| !field.field_type.check_is_fully_known())
-            .is_some(),
-          Type::Enum(e) => !e
-            .variants
-            .iter()
-            .find(|variant| !variant.inner_type.check_is_fully_known())
-            .is_some(),
-          Type::Function(function_signature) => {
-            function_signature.arg_types.iter().fold(
-              function_signature.return_type.check_is_fully_known(),
-              |typed_so_far, (arg_type, _)| {
-                typed_so_far && arg_type.check_is_fully_known()
-              },
-            )
-          }
-          Type::Array(size, inner_type) => {
-            size.is_some() && inner_type.check_is_fully_known()
-          }
-          Type::Reference(inner_type) => inner_type.check_is_fully_known(),
-          _ => true,
-        }
+        t.check_is_fully_known()
       } else {
         false
       }
@@ -1907,7 +1921,7 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
           .program
           .top_level_vars
           .iter()
-          .find_map(|v| (&*v.name == name).then(|| v.var.kind.clone())),
+          .find_map(|v| (&*v.name == name).then(|| v.variable_kind())),
       )
       .unwrap()
   }
@@ -1930,7 +1944,7 @@ impl<'p> MutableProgramLocalContext<'p> {
       .iter_mut()
       .find(|var| &*var.name == name)
     {
-      Ok(Ok(&mut top_level_var.var.typestate))
+      Ok(Err(top_level_var.var_type.clone().known()))
     } else if let Some(e) = self
       .program
       .typedefs

@@ -2,7 +2,7 @@ use sse::{ParseError, document::DocumentPosition};
 use std::{collections::HashSet, fmt::Display, hash::Hash};
 use thiserror::Error;
 
-use crate::parse::EaslTree;
+use crate::{compiler::vars::VariableAddressSpace, parse::EaslTree};
 
 use super::{
   metadata::Metadata,
@@ -118,9 +118,9 @@ pub enum CompileErrorKind {
     f: TypeStateDescription,
     args: Vec<TypeStateDescription>,
   },
-  #[error("Duplicate function signature \"`{0}`\"")]
+  #[error("Duplicate function signature `{0}`")]
   DuplicateFunctionSignature(String),
-  #[error("Function signature \"`{0}`\" conflicts with built-in function")]
+  #[error("Function signature `{0}` conflicts with built-in function")]
   FunctionSignatureConflictsWithBuiltin(String),
   #[error("Function expression has non-function type: {0}")]
   FunctionExpressionHasNonFunctionType(TypeDescription),
@@ -219,7 +219,7 @@ pub enum CompileErrorKind {
   ZeroedArrayShouldntHaveChildren,
   #[error("expected function, found non-function value")]
   ExpectedFunctionFoundNonFunction,
-  #[error("Can't shadow top-level binding \"{0}\"")]
+  #[error("Can't shadow top-level binding `{0}`")]
   CantShadowTopLevelBinding(String),
   #[error(
     "Invalid signature for @associative function, signature must conform to (Fn [T T]: T)"
@@ -249,6 +249,30 @@ pub enum CompileErrorKind {
   CantCalculateSize,
   #[error("Invalid `match` pattern")]
   InvalidMatchPattern,
+  #[error("`binding` must be specified whenever `group` is specified")]
+  GroupMissingBinding,
+  #[error("`binding` must be specified whenever `group` is specified")]
+  BindingMissingGroup,
+  #[error("Address space must be annotated here, e.g. `address uniform`")]
+  NeedAddressAnnotation,
+  #[error("Invalid address space, this type is only compatible with `{0}`")]
+  InvalidAddressSpace(VariableAddressSpace),
+  #[error("`group` or `binding` annotations are required address space `{0}`")]
+  NeedGroupAndBinding(VariableAddressSpace),
+  #[error("Can't assign `group` or `binding` in address space `{0}`")]
+  DisallowedGroupAndBinding(VariableAddressSpace),
+  #[error(
+    "Type `{0}` needs `group` and `binding` annotations, e.g. `@{{group 0 binding 0}}`"
+  )]
+  NeedsGroupAndBinding(String),
+  #[error("Variables in `{0}` require an initial value")]
+  NeedsInitializationValue(VariableAddressSpace),
+  #[error("Variables in `{0}` may not be given an initial value")]
+  DisallowedInitializationValue(VariableAddressSpace),
+  #[error("The name `{0}` is used for more than one top-level variable")]
+  VariableNameCollision(String),
+  #[error("The name `{0}` is used as both a variable name and a function name")]
+  VariableFunctionNameCollision(String),
 }
 
 impl PartialEq for CompileErrorKind {

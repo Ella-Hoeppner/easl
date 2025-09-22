@@ -81,6 +81,10 @@ fn main() {
     "address_space",
     "monomorphized_name_collision",
     "inlined_fn_name_collision",
+    "override",
+    "attributes",
+    "var_initialization",
+    "var_name_collision",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

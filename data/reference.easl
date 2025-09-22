@@ -3,6 +3,5 @@
   address storage}
 (var a: [vec4f])
 
-(defn f []: u32
-  (let [x &a]
-    (arrayLength x)))
+(defn length-of-a []: u32
+  (arrayLength &a))

@@ -1,0 +1,10 @@
+(def a: f32
+     5.)
+
+
+; Uncommenting either of these will cause an error due to a name collision
+
+#_(def a: u32 5)
+
+#_(defn a [x: f32]: f32
+  (+ x x))

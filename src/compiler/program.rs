@@ -5,7 +5,7 @@ use std::{
   rc::Rc,
 };
 
-use sse::{document::Document, syntax::EncloserOrOperator};
+use sse::{Ast, document::Document, syntax::EncloserOrOperator};
 use take_mut::take;
 
 use crate::{
@@ -23,12 +23,11 @@ use crate::{
     structs::UntypedStruct,
     types::{
       AbstractType, ExpTypeInfo, Type, TypeConstraint, TypeState, UntypedType,
-      Variable, VariableKind, parse_generic_argument,
+      parse_generic_argument,
     },
-    util::{compile_word, read_type_annotated_name},
-    vars::TopLevelVariableAttributes,
+    util::compile_word,
   },
-  parse::{Context as SyntaxContext, EaslTree, Encloser, Operator},
+  parse::{Context as SyntaxContext, EaslTree, Encloser, Operator, parse_easl},
 };
 
 use super::{
@@ -47,6 +46,38 @@ use super::{
 };
 
 pub type EaslDocument<'s> = Document<'s, SyntaxContext, Encloser, Operator>;
+
+pub trait EaslDocumentMethods {
+  fn override_def(&mut self, def_name: &str, new_def_value: &str) -> bool;
+}
+impl<'s> EaslDocumentMethods for EaslDocument<'s> {
+  fn override_def(&mut self, def_name: &str, new_def_value: &str) -> bool {
+    if let Ok(parsed_document) = parse_easl(new_def_value)
+      && let Some(new_value_ast) = parsed_document.syntax_trees.first()
+    {
+      for ast in self.syntax_trees.iter_mut() {
+        if let Ast::Inner(
+          (_, EncloserOrOperator::Encloser(Encloser::Parens)),
+          children,
+        ) = ast
+          && let Some(Ast::Leaf(_, first_leaf)) = children.first()
+          && first_leaf == "def"
+          && let Some(Ast::Inner(
+            (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
+            name_children,
+          )) = children.get(2)
+          && let Some(Ast::Leaf(_, binding_name)) = name_children.first()
+          && binding_name == def_name
+          && let Some(value) = children.get_mut(2)
+        {
+          *value = new_value_ast.clone();
+          return true;
+        }
+      }
+    }
+    false
+  }
+}
 
 thread_local! {
   pub static DEFAULT_PROGRAM: RefCell<Program> =
@@ -176,7 +207,20 @@ impl Program {
       top_level_vars: vec![],
     }
   }
-  pub fn add_top_level_var(&mut self, var: TopLevelVar) {
+  pub fn add_top_level_var(&mut self, var: TopLevelVar, errors: &mut ErrorLog) {
+    if let Some(previous_var) = self
+      .top_level_vars
+      .iter()
+      .find(|old_var| old_var.name == var.name)
+    {
+      errors.log(CompileError {
+        kind: VariableNameCollision(var.name.to_string()),
+        source_trace: var
+          .source_trace
+          .clone()
+          .insert_as_secondary(previous_var.source_trace.clone()),
+      })
+    }
     self.names.borrow_mut().track_user_name(&var.name);
     self.top_level_vars.push(var);
   }
@@ -563,135 +607,17 @@ impl Program {
           let first_child_source_trace: SourceTrace =
             first_child_position.clone().into();
           match first_child.as_str() {
-            "var" => {
-              if let Some((name_and_type_ast, value_ast)) = match children_iter
-                .len()
-              {
-                1 => Some((children_iter.next().unwrap(), None)),
-                2 => {
-                  Some((children_iter.next().unwrap(), children_iter.next()))
-                }
-                _ => {
-                  errors.log(CompileError::new(
-                    InvalidTopLevelVar("Invalid number of inner forms".into()),
-                    first_child_source_trace,
-                  ));
-                  None
-                }
-              } {
-                match read_type_annotated_name(name_and_type_ast) {
-                  Ok((name, type_ast)) => {
-                    let type_source_path = type_ast.position().clone();
-                    match AbstractType::from_easl_tree(
-                      type_ast,
-                      &program.typedefs,
-                      &vec![],
-                    )
-                    .map(|t| {
-                      t.concretize(
-                        &vec![],
-                        &program.typedefs,
-                        type_source_path.into(),
-                      )
-                    }) {
-                      Err(e) | Ok(Err(e)) => errors.log(e),
-                      Ok(Ok(t)) => {
-                        let attributes =
-                          if let Some((metadata, metadata_source_trace)) =
-                            &metadata
-                          {
-                            match metadata.into_top_level_variable_attributes(
-                              &metadata_source_trace,
-                            ) {
-                              Err(e) => {
-                                errors.log(e);
-                                None
-                              }
-                              Ok(attributes) => Some(attributes),
-                            }
-                          } else {
-                            None
-                          }
-                          .unwrap_or_default();
-                        let value = value_ast.map(|value_ast| match TypedExp::try_from_easl_tree(
-                          value_ast,
-                          &program.typedefs,
-                          &vec![],
-                          crate::compiler::expression::SyntaxTreeContext::Default,
-                        ) {
-                            Ok(exp) => Some(exp),
-                            Err(e) => {errors.log(e); None},
-                        }).flatten();
-                        program.add_top_level_var(TopLevelVar {
-                          name,
-                          var: Variable::new(t.known().into()).with_kind(
-                            if attributes.address_space.can_write() {
-                              VariableKind::Var
-                            } else {
-                              VariableKind::Let
-                            },
-                          ),
-                          value,
-                          source_trace: parens_source_trace,
-                          attributes,
-                        })
-                      }
-                    }
-                  }
-                  Err(e) => errors.log(e),
-                }
-              }
-            }
-            "def" | "override" => {
-              if children_iter.len() == 2 {
-                match read_type_annotated_name(children_iter.next().unwrap()) {
-                  Ok((name, type_ast)) => {
-                    match TypedExp::try_from_easl_tree(
-                      children_iter.next().unwrap(),
-                      &program.typedefs,
-                      &vec![],
-                      crate::compiler::expression::SyntaxTreeContext::Default,
-                    ) {
-                      Ok(value_expression) => {
-                        match Type::from_easl_tree(
-                          type_ast,
-                          &program.typedefs,
-                          &vec![],
-                        ) {
-                          Ok(t) => {
-                            let mut var = Variable::new(t.known().into());
-                            if first_child.as_str() == "override" {
-                              var = var.with_kind(VariableKind::Override)
-                            }
-                            if metadata.is_some() {
-                              errors.log(CompileError::new(
-                                ConstantMayNotHaveMetadata,
-                                parens_source_trace.clone(),
-                              ));
-                            }
-                            program.add_top_level_var(TopLevelVar {
-                              name,
-                              var,
-                              value: Some(value_expression),
-                              source_trace: parens_source_trace,
-                              attributes: TopLevelVariableAttributes::default(),
-                            })
-                          }
-                          Err(e) => errors.log(e),
-                        }
-                      }
-                      Err(e) => errors.log(e),
-                    }
-                  }
-                  Err(e) => errors.log(e),
-                }
-              } else {
-                errors.log(CompileError::new(
-                  InvalidTopLevelVar(
-                    "Expected two forms inside \"def\"".into(),
-                  ),
-                  first_child_source_trace,
-                ));
+            "var" | "def" | "override" => {
+              if let Some(var) = TopLevelVar::from_ast(
+                first_child.as_str(),
+                &parens_source_trace,
+                children_iter,
+                &program,
+                document,
+                metadata,
+                &mut errors,
+              ) {
+                program.add_top_level_var(var, &mut errors);
               }
             }
             "defn" => match children_iter.next() {
@@ -915,7 +841,7 @@ impl Program {
     for var in self.top_level_vars.iter_mut() {
       if let Some(value_expression) = &mut var.value {
         let changed = value_expression.data.constrain(
-          var.var.typestate.kind.clone(),
+          var.var_type.clone().known(),
           &var.source_trace,
           errors,
         );
@@ -960,7 +886,7 @@ impl Program {
         }
         .into_iter()
         .chain(
-          (!v.var.typestate.is_fully_known())
+          (!v.var_type.check_is_fully_known())
             .then(|| v.source_trace.clone())
             .into_iter(),
         )
@@ -1386,6 +1312,19 @@ impl Program {
       }
     }
   }
+  fn catch_top_level_function_and_var_name_collisions(
+    &self,
+    errors: &mut ErrorLog,
+  ) {
+    for var in self.top_level_vars.iter() {
+      if self.abstract_functions.get(&var.name).is_some() {
+        errors.log(CompileError {
+          kind: VariableFunctionNameCollision(var.name.to_string()),
+          source_trace: var.source_trace.clone(),
+        })
+      }
+    }
+  }
   fn ensure_no_typeless_bindings(&self, errors: &mut ErrorLog) {
     for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
@@ -1463,6 +1402,10 @@ impl Program {
       return errors;
     }
     self.catch_globally_shadowing_fn_args(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.catch_top_level_function_and_var_name_collisions(&mut errors);
     if !errors.is_empty() {
       return errors;
     }

@@ -1,0 +1,62 @@
+(def a: f32
+     5.)
+
+@{group 0
+  binding 1
+  address uniform}
+(var b: f32)
+
+; This isn't allowed because `binding` must be specified when `group` is
+
+
+#_@{group 0}
+  (var c: f32)
+
+; This isn't allowed because `group` must be specified when `binding` is
+
+
+#_@{binding 1}
+  (var d: f32)
+
+; This isn't allowed because when `group` and `binding` are specified, `address` 
+
+
+; must also be specified
+
+
+#_@{binding 1
+    group 2}
+  (var e: f32)
+
+; This isn't allowed because `group` and `binding` aren't allowed in the 
+
+
+; `private` address space
+
+
+#_@{binding 1
+    group 2
+    address private}
+  (var f: f32
+       5.)
+
+; This is allowed, despite not having `address`, because `Texture2D` implies
+
+
+; the `handle` address space
+
+
+@{binding 1
+  group 2}
+(var g: (Texture2D f32))
+
+; This two aren't allowed, because the implied address space `handle` requires that
+
+
+; there be a `binding` and `group
+
+
+#_(var h: (Texture2D f32))
+
+#_@{address handle}
+  (var h: (Texture2D f32))

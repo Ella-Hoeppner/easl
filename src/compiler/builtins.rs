@@ -249,7 +249,7 @@ pub fn texture_2d() -> AbstractStruct {
 
 pub fn sampler() -> AbstractStruct {
   AbstractStruct {
-    name: "sampler".into(),
+    name: "Sampler".into(),
     fields: vec![],
     generic_args: vec![],
     filled_generics: HashMap::new(),

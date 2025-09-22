@@ -3,7 +3,7 @@ use crate::compiler::{
   functions::FunctionImplementationKind,
   program::Program,
   types::{ArraySize, Type},
-  vars::VariableAddressSpace,
+  vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
 
 pub enum TypeInfo {
@@ -37,16 +37,11 @@ impl From<Type> for TypeInfo {
   }
 }
 
-pub struct UniformInfo {
-  pub group: u8,
-  pub binding: u8,
-}
-
 pub struct VariableInfo {
   pub name: String,
   pub value: Option<String>,
   pub variable_type: TypeInfo,
-  pub uniform_info: Option<UniformInfo>,
+  pub uniform_info: Option<GroupAndBinding>,
 }
 
 pub struct ProgramInfo {
@@ -86,13 +81,16 @@ impl From<&Program> for ProgramInfo {
         .iter()
         .map(|var| VariableInfo {
           name: var.name.to_string(),
-          variable_type: var.var.typestate.unwrap_known().into(),
-          uniform_info: (var.attributes.address_space
-            == VariableAddressSpace::Uniform)
-            .then(|| UniformInfo {
-              group: var.attributes.group.unwrap(),
-              binding: var.attributes.binding.unwrap(),
-            }),
+          variable_type: var.var_type.clone().into(),
+          uniform_info: if let TopLevelVariableKind::Var {
+            address_space: VariableAddressSpace::Uniform,
+            group_and_binding,
+          } = &var.kind
+          {
+            group_and_binding.clone()
+          } else {
+            None
+          },
           value: var
             .value
             .clone()

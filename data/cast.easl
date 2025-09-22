@@ -38,7 +38,7 @@
 
 @{group 0
   binding 6}
-(var char-sampler: sampler)
+(var char-sampler: Sampler)
 
 @{group 1
   binding 0

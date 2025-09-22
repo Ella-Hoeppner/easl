@@ -1,7 +1,10 @@
-@{group 0 binding 0} (var tex: (Texture2D f32))
-@{group 0 binding 1} (var tex-sampler: sampler)
+@{group 0
+  binding 0}
+(var tex: (Texture2D f32))
+
+@{group 0
+  binding 1}
+(var tex-sampler: Sampler)
 
 (defn f [a: f32]: vec4f
-  (textureSample tex
-                 tex-sampler
-                 (vec2f 0.)))
+  (textureSample tex tex-sampler (vec2f 0.)))

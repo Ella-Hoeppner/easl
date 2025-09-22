@@ -16,18 +16,50 @@ Feature goals:
 
 ## todo
 ### high priority, necessary to call the language 0.1
-* when a variable is marked as a uniform, require that it be given a group and binding, otherwise give an error
+* formatter: single-line comments force there to be two entire lines of whitespace after them, ideally they shouldn't require any whitespace after them
+
+* rename metadata to "annotations"? Seems like maybe a more specific and descriptive word, and I think it might make the binary-prefix-syntax more understandable
 
 * when a local binding tries to shadow an argument name, the resulting wgsl is invalid
 
+* allow arguments to be declared as `@var`
+  * just wrap the whole body in a `let` that shadows the arguments
+
 * get rid of the regex dependency
   * only used once and it has a lot of dependencies, probably a not-insignificant part of the size of the final executable size
+
+* missing some built-in functions:
+  * `bool` casting functions
+  * `any` and `all` on bool-vectors
+    * these can also just accept a single bool, in which case they act as an identity function. Might as well do this, I guess
+  * acos, asin, atan, sinh, cosh, tanh, asinh, acosh, atanh
+  * determinant
+  * exp2
+  * extractBits
+  * faceForward
+  * fma
+  * a bunch of weird bit manipulation functions
+    * dot4U8Packed, dot4I8Packed, extractBits, firstLeadingBit, firstTrailingBit, countLeadingZeros, countOneBits, countTrailingZeros
+  * ldexp
+  * log2
+  * reverseBits
+  * saturate
+  * step
+  * transpose
+  * trunc
 
 * implement `Display` for `ErrorLog`, need to have good human-readable error messages
 
 
 
 
+
+* make it so `arrayLength` can accept an array as an input, rather than a reference to an array, at least syntactically
+  * so I guess like, insert the reference operation for the user if a function ever takes an argument `&T` but ends up recieving a `T`?
+    * or maybe don't do that, and just have an extra signature for arrayLength built-in, and have a special case for it in the backend?
+
+* would be nice to expose `bitcast` to the user for arbitrary structs/enums
+  * would need to throw an error when the types aren't of the same size I guess
 
 * anonymous structs
 
@@ -106,10 +138,10 @@ Feature goals:
   * or maybe have something like rust's `PhantomData`?
 
 ### low priority, extra features once core language is solid
-* so much of the code in `AbstractEnum` and `AbstractStruct` is incredibly similar, should abstract those out to share most of that functionality for maintainability. Same for the `UntypedEnum`/`UntypedStruct` and also just `Enum`/`Struct
-  * main difference is that enum has `variants` while struct has `fields`, but ultimately both of these are just associations between names and types, and in most helper functions they get treated the same way, so those can just turn into some multi-purpose `attributes` or something
+* support f16
 
-* allow arguments to be declared as `@var` by just wrapping the whole body in a `let` that shadows the arguments
+* so much of the code in `AbstractEnum` and `AbstractStruct` is very similar, should abstract those out to share most of that functionality for maintainability. Same for the `UntypedEnum`/`UntypedStruct` and also just `Enum`/`Struct
+  * main difference is that enum has `variants` while struct has `fields`, but ultimately both of these are just associations between names and types, and in most helper functions they get treated the same way, so those can just turn into some multi-purpose `attributes` or something
 
 * add a special case for inferring the type of vectors/scalars when it would normally get stuck due to being inside another vector constructor
   * e.g. right now `(vec4f 1)` fails because it can't tell if the `1` is a float, int, or uint - it could be any since vec4f can accept any of those. But since it will be converted to a float regardless, its type doesn't actually affect the semantics of the program, so it's silly to throw a type inference error. It should just infer it to be a float, or more generally, ambiguous number literals can be inferred to be the same type as the surrounding vector
@@ -120,40 +152,16 @@ Feature goals:
     * once `(Into T)` exists, the signature for a vector constructor will change from looking like `(fn (vec4f T A: Scalar) [a: A]: (vec4f T))` to `(fn (vec4f T A: (Into T)) [a: A]: (vec4f T))`. All scalars will implement `into` for one another, so this will feel exactly like the current approach. But it will also get stuck in the same place, because all the scalars satisfy `(Into ...)` for whatever the type of the vector is. But this could be resolved by a special inference rule: If type inference stalls with the type of a function argument being narrowed down to one `OneOf` several possibilities including some particular type `T`, and that function argument is constrained by `(Into T)`, collapse the `OneOf` into `Known(T)`
       * a practical benefit of this is that it'll work on custom vector types, like if someone defined `vecc` as a vector of complex numbers, and implemented `(Into Complex)` for floats, then `(vecc 1.)` work automatically. It'll also work on any custom types that expect `(Into ...)` that could run into ambiguity
 
-* make
-  ```
-    structs: &Vec<Rc<AbstractStruct>>,
-    skolems: &Vec<Rc<str>>,
-    source_trace: SourceTrace,
-  ```
-  into something like "ConcretizationContext" or something, this exists in a bunch of places
-
 * write a bunch of tests
   * the current shaders can be converted into tests, but there should also be test cases for invalid programs that ensure the right kinds of errors are returned
   * maybe the tests should like actually feed the output into a wgsl compiler? Could even use hollow to like open a window that shows all the different things so that it can be visually checked whether everything is working
 
 * Optimize
   * split `propagate_types` into two functions, one which happens only once, and one which gets called repeatedly. Much of the logic in `propagate_types` needs to happen once but is wasteful if done repeatedly
-
-* implement a more specialized/optimized version of `mutually_constrain` that doesn't just rely on calling `constrain` twice to handle both directions
+  * implement a more specialized/optimized version of `mutually_constrain` that doesn't just rely on calling `constrain` twice to handle both directions
 
 * as a special case of some kind, have there be a way to declare aliases for `vec` for any type, so that you could e.g. if you had a complex number type, you could do `(vec-alias-suffix c Complex)` and automatically get `vec2c`, `vec3c`, and `vec4c` types, and their variadic constructors
 
-* support higher-order functions
-  * any invocation of one of these functions will need to have that argument inlined
-    * for now there can be a restriction that the values for these arguments must always be constant, support non-constant fn args via dynamic dispatch later
-
-* support anonymous/structural structs
-  * each anonymous struct compiles to a concrete struct with a name derived from its field and types
-
-* support tuples
-  * compile to structs
-
-* support enums
-
 * clj-style `loop` construct
-
-* add closures, lambda lifting
-  * closures will need to be compiled to a struct holding captured values, along with a corresponding function for "invoking" instances of the struct
 
 * add typeclasses for trig ops (including a Trig combo alias), exp, exp2, log, log2, pow, ceil/floor, abs, clamp, length, distance, dot, fract, mod, sign, smoothstep, sqrt, step

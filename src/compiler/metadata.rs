@@ -4,8 +4,9 @@ use std::str::FromStr;
 
 use sse::syntax::EncloserOrOperator::{self, *};
 
+use crate::compiler::error::CompileErrorKind;
 use crate::compiler::util::compile_word;
-use crate::compiler::vars::{TopLevelVariableAttributes, VariableAddressSpace};
+use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
 use crate::parse::EaslTree;
 use crate::parse::{Encloser::*, Operator};
 
@@ -120,51 +121,74 @@ impl Metadata {
         .unwrap_or(vec![]),
     }
   }
-  pub fn into_top_level_variable_attributes(
+  pub fn into_top_level_var_data(
     &self,
     source_trace: &SourceTrace,
-  ) -> CompileResult<TopLevelVariableAttributes> {
-    let mut attributes = TopLevelVariableAttributes::default();
+  ) -> CompileResult<(Option<GroupAndBinding>, Option<VariableAddressSpace>)>
+  {
+    let mut group = None;
+    let mut binding = None;
+    let mut address_space = None;
     for (property, value) in self.properties().into_iter() {
       match (&*property, value) {
         ("group", Some(value)) => match u8::from_str(&*value) {
-          Ok(value) => attributes.group = Some(value),
+          Ok(value) => group = Some(value),
           Err(_) => {
-            return Err(CompileError::new(
+            return err(
               InvalidVariableMetadata(self.clone().into()),
               source_trace.clone(),
-            ));
+            );
           }
         },
         ("binding", Some(value)) => match u8::from_str(&*value) {
-          Ok(value) => attributes.binding = Some(value),
+          Ok(value) => binding = Some(value),
           Err(_) => {
-            return Err(CompileError::new(
+            return err(
               InvalidVariableMetadata(self.clone().into()),
               source_trace.clone(),
-            ));
+            );
           }
         },
         ("address", Some(value)) => {
           match VariableAddressSpace::from_str(&*value) {
-            Some(address_space) => attributes.address_space = address_space,
+            Some(a) => address_space = Some(a),
             None => {
-              return Err(CompileError::new(
+              return err(
                 InvalidVariableMetadata(self.clone().into()),
                 source_trace.clone(),
-              ));
+              );
             }
           }
         }
         _ => {
-          return Err(CompileError::new(
+          return err(
             InvalidVariableMetadata(self.clone().into()),
             source_trace.clone(),
-          ));
+          );
         }
       }
     }
-    Ok(attributes)
+    Ok((
+      match (group, binding) {
+        (Some(_), None) => {
+          return err(
+            CompileErrorKind::GroupMissingBinding,
+            source_trace.clone(),
+          );
+        }
+        (None, Some(_)) => {
+          return err(
+            CompileErrorKind::BindingMissingGroup,
+            source_trace.clone(),
+          );
+        }
+        (None, None) => None,
+        (Some(group), Some(binding)) => {
+          Some(GroupAndBinding { group, binding })
+        }
+      },
+      address_space,
+    ))
   }
   pub fn validate_for_top_level_function(
     &self,
