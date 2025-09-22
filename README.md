@@ -16,8 +16,6 @@ Feature goals:
 
 ## todo
 ### high priority, necessary to call the language 0.1
-* formatter: single-line comments force there to be two entire lines of whitespace after them, ideally they shouldn't require any whitespace after them
-
 * rename metadata to "annotations"? Seems like maybe a more specific and descriptive word, and I think it might make the binary-prefix-syntax more understandable
 
 * when a local binding tries to shadow an argument name, the resulting wgsl is invalid

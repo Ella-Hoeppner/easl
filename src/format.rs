@@ -458,12 +458,23 @@ pub fn format_easl_tree(ast: EaslTree) -> String {
 
 pub fn format_easl_trees(asts: Vec<EaslTree>) -> String {
   let mut s = String::new();
+  let mut last_ast_was_line_comment = false;
   for (i, ast) in asts.into_iter().enumerate() {
-    if i > 0 {
+    if i > 0 && !last_ast_was_line_comment {
       s += "\n";
     }
-    s += &format_easl_tree(ast);
-    s += "\n";
+    if let EaslTree::Inner(
+      (_, EncloserOrOperator::Encloser(Encloser::LineComment)),
+      _,
+    ) = ast
+    {
+      s += &format_easl_tree(ast);
+      last_ast_was_line_comment = true;
+    } else {
+      s += &format_easl_tree(ast);
+      s += "\n";
+      last_ast_was_line_comment = false;
+    }
   }
   s
 }
