@@ -23,7 +23,7 @@ use crate::{
     structs::UntypedStruct,
     types::{
       AbstractType, ExpTypeInfo, Type, TypeConstraint, TypeState, UntypedType,
-      parse_generic_argument,
+      Variable, VariableKind, parse_generic_argument,
     },
     util::compile_word,
   },
@@ -693,15 +693,30 @@ impl Program {
                             Ok(concrete_return_type) => {
                               match arg_types
                                 .iter()
-                                .map(|t| {
+                                .zip(arg_metadata.iter())
+                                .map(|(t, metadata)| {
                                   Ok((
-                                    t.concretize(
-                                      &generic_arg_names,
-                                      &program.typedefs,
-                                      source_path.clone().into(),
-                                    )?
-                                    .known()
-                                    .into(),
+                                    Variable {
+                                      var_type: t
+                                        .concretize(
+                                          &generic_arg_names,
+                                          &program.typedefs,
+                                          source_path.clone().into(),
+                                        )?
+                                        .known()
+                                        .into(),
+                                      kind: if let Some(metadata) = metadata
+                                        && metadata
+                                          .properties()
+                                          .into_iter()
+                                          .find(|(name, _)| &**name == "var")
+                                          .is_some()
+                                      {
+                                        VariableKind::Var
+                                      } else {
+                                        VariableKind::Let
+                                      },
+                                    },
                                     if let AbstractType::Generic(generic_name) =
                                       t
                                     {
@@ -718,15 +733,15 @@ impl Program {
                                   ))
                                 })
                                 .collect::<CompileResult<
-                                  Vec<(ExpTypeInfo, Vec<TypeConstraint>)>,
+                                  Vec<(Variable, Vec<TypeConstraint>)>,
                                 >>() {
-                                Ok(concrete_arg_types) => {
+                                Ok(concrete_args) => {
                                   match TypedExp::function_from_body_tree(
                                     source_path.clone(),
                                     children_iter.collect(),
                                     concrete_return_type.known().into(),
                                     arg_names.clone(),
-                                    concrete_arg_types,
+                                    concrete_args,
                                     &program.typedefs,
                                     &generic_arg_names,
                                   ) {
@@ -924,13 +939,13 @@ impl Program {
     }
   }
   pub fn validate_assignments(&mut self, errors: &mut ErrorLog) {
-    for f in self.abstract_functions_iter() {
+    for abstract_f in self.abstract_functions_iter() {
+      let abstract_f = abstract_f.borrow();
       if let FunctionImplementationKind::Composite(implementation) =
-        &f.borrow().implementation
+        &abstract_f.implementation
       {
-        if let Err(e) =
-          implementation.borrow_mut().body.validate_assignments(self)
-        {
+        let implementation = implementation.borrow_mut();
+        if let Err(e) = implementation.body.validate_assignments(self) {
           errors.log(e);
         }
       }
@@ -1210,14 +1225,67 @@ impl Program {
       .collect();
     for (_, signatures) in self.abstract_functions.iter_mut() {
       for signature in signatures.iter_mut() {
-        if let FunctionImplementationKind::Composite(exp) =
-          &mut signature.borrow_mut().implementation
+        let mut signature = signature.borrow_mut();
+        if let FunctionImplementationKind::Composite(f) =
+          &mut signature.implementation
         {
-          exp.borrow_mut().body.deshadow(
+          f.borrow_mut().body.deshadow(
             &globally_bound_names,
             errors,
             &mut self.names.borrow_mut(),
           );
+        }
+      }
+    }
+  }
+  fn wrap_mutable_function_args(&mut self) {
+    for signature in self.abstract_functions_iter() {
+      if let FunctionImplementationKind::Composite(implementation) =
+        &signature.borrow().implementation
+      {
+        let mut implementation = implementation.borrow_mut();
+        if let Type::Function(f) = &mut implementation.body.data.unwrap_known()
+          && let ExpKind::Function(arg_names, body) =
+            &mut implementation.body.kind
+        {
+          let mutable_args: Vec<_> = f
+            .args
+            .iter()
+            .zip(arg_names.iter())
+            .filter_map(|((var, _), arg_name)| {
+              if var.kind == VariableKind::Var {
+                Some((arg_name.clone(), var.var_type.clone()))
+              } else {
+                None
+              }
+            })
+            .collect();
+          if mutable_args.len() > 0 {
+            take(body, |body| {
+              TypedExp {
+                data: body.data.clone(),
+                source_trace: body.source_trace.clone(),
+                kind: ExpKind::Let(
+                  mutable_args
+                    .into_iter()
+                    .map(|(arg_name, arg_type)| {
+                      (
+                        arg_name.clone(),
+                        VariableKind::Var,
+                        TypedExp {
+                          data: arg_type.clone(),
+                          kind: ExpKind::Name(arg_name),
+                          source_trace: body.source_trace.clone(),
+                        },
+                      )
+                    })
+                    .collect(),
+                  body,
+                ),
+              }
+              .into()
+            });
+          }
         }
       }
     }
@@ -1397,6 +1465,7 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.wrap_mutable_function_args();
     self.deshadow(&mut errors);
     if !errors.is_empty() {
       return errors;

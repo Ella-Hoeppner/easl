@@ -85,6 +85,8 @@ fn main() {
     "attributes",
     "var_initialization",
     "var_name_collision",
+    "shadowed_arg",
+    "var_arg",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

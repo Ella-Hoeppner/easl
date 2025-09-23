@@ -395,7 +395,7 @@ impl TypedExp {
     body_trees: Vec<EaslTree>,
     return_type: ExpTypeInfo,
     arg_names: Vec<Rc<str>>,
-    arg_types: Vec<(ExpTypeInfo, Vec<TypeConstraint>)>,
+    args: Vec<(Variable, Vec<TypeConstraint>)>,
     typedefs: &TypeDefs,
     skolems: &Vec<Rc<str>>,
   ) -> CompileResult<Self> {
@@ -422,7 +422,7 @@ impl TypedExp {
     Ok(Exp {
       data: Known(Type::Function(Box::new(FunctionSignature {
         abstract_ancestor: None,
-        arg_types,
+        args,
         return_type,
         mutated_args: vec![],
       })))
@@ -1731,14 +1731,23 @@ impl TypedExp {
       })
       .unwrap();
   }
+  fn try_deconstruct_untyped_enum_pattern<'a>(
+    f: &'a mut Box<TypedExp>,
+    args: &'a mut Vec<TypedExp>,
+  ) -> Option<&'a mut TypedExp> {
+    if let ExpKind::Name(_) = &f.kind
+      && args.len() == 1
+      && let arg = &mut args[0]
+      && let ExpKind::Name(_) = &arg.kind
+    {
+      return Some(arg);
+    }
+    None
+  }
   fn try_deconstruct_enum_pattern<'a>(
-    f: &'a mut Box<Exp<ExpTypeInfo>>,
-    args: &'a mut Vec<Exp<ExpTypeInfo>>,
-  ) -> Option<(
-    &'a mut Box<FunctionSignature>,
-    &'a mut Exp<ExpTypeInfo>,
-    Rc<str>,
-  )> {
+    f: &'a mut Box<TypedExp>,
+    args: &'a mut Vec<TypedExp>,
+  ) -> Option<(&'a mut Box<FunctionSignature>, &'a mut TypedExp, Rc<str>)> {
     if let TypeState::Known(Type::Function(f)) = &mut *f.data
       && let Some(abstract_f) = &f.abstract_ancestor
       && let FunctionImplementationKind::EnumConstructor(_) =
@@ -1831,8 +1840,12 @@ impl TypedExp {
                 &mut ExpTypeInfo,
               ) = (
                 signature.name(),
-                signature.arg_types.len(),
-                &signature.arg_types.iter().map(|(t, _)| t.clone()).collect(),
+                signature.args.len(),
+                &signature
+                  .args
+                  .iter()
+                  .map(|(var, _)| var.var_type.clone())
+                  .collect(),
                 &mut signature.return_type,
               );
               let return_type_changed = body.data.mutually_constrain(
@@ -1842,13 +1855,13 @@ impl TypedExp {
               );
               if arg_count == arg_names.len() {
                 for (name, t) in arg_names.iter().zip(arg_type_states) {
-                  ctx.bind(name, Variable::new(t.clone()))
+                  ctx.bind(name, Variable::immutable(t.clone()))
                 }
                 let body_types_changed =
                   body.propagate_types_inner(ctx, errors);
                 let argument_types = arg_names
                   .iter()
-                  .map(|name| ctx.unbind(name).typestate.kind)
+                  .map(|name| ctx.unbind(name).var_type.kind)
                   .collect::<Vec<_>>();
                 let fn_type_changed = self.data.constrain_fn_by_argument_types(
                   argument_types,
@@ -1896,9 +1909,9 @@ impl TypedExp {
           anything_changed |= f.data.constrain(
             Type::Function(Box::new(FunctionSignature {
               abstract_ancestor: None,
-              arg_types: args
+              args: args
                 .iter()
-                .map(|arg| (arg.data.clone(), vec![]))
+                .map(|arg| (Variable::immutable(arg.data.clone()), vec![]))
                 .collect(),
               mutated_args: vec![],
               return_type: self.data.clone(),
@@ -1916,18 +1929,21 @@ impl TypedExp {
                 .as_ref()
                 .map(|ancestor| ancestor.associative)
                 .unwrap_or(false)
-                || args.len() == signature.arg_types.len()
+                || args.len() == signature.args.len()
               {
                 anything_changed |= self.data.mutually_constrain(
                   &mut signature.return_type,
                   &self.source_trace,
                   errors,
                 );
-                for (arg, (t, _)) in
-                  args.iter_mut().zip(signature.arg_types.iter().cloned())
+                for (arg, (fn_arg, _)) in
+                  args.iter_mut().zip(signature.args.iter().cloned())
                 {
-                  anything_changed |=
-                    arg.data.constrain(t.kind, &self.source_trace, errors);
+                  anything_changed |= arg.data.constrain(
+                    fn_arg.var_type.kind,
+                    &self.source_trace,
+                    errors,
+                  );
                 }
               } else {
                 errors.log(CompileError::new(
@@ -2033,12 +2049,12 @@ impl TypedExp {
         );
         for (name, _, value) in bindings.iter_mut() {
           anything_changed |= value.propagate_types_inner(ctx, errors);
-          ctx.bind(name, Variable::new(value.data.clone()));
+          ctx.bind(name, Variable::immutable(value.data.clone()));
         }
         anything_changed |= body.propagate_types_inner(ctx, errors);
         for (name, _, value) in bindings.iter_mut() {
           anything_changed |= value.data.constrain(
-            ctx.unbind(name).typestate.kind,
+            ctx.unbind(name).var_type.kind,
             &self.source_trace,
             errors,
           );
@@ -2069,7 +2085,7 @@ impl TypedExp {
                 &self.source_trace,
                 errors,
               );
-              anything_changed |= f.arg_types[0].0.mutually_constrain(
+              anything_changed |= f.args[0].0.var_type.mutually_constrain(
                 &mut arg.data,
                 &self.source_trace,
                 errors,
@@ -2078,7 +2094,7 @@ impl TypedExp {
                 &inner_value_name,
                 Variable {
                   kind: VariableKind::Let,
-                  typestate: f.arg_types[0].0.clone(),
+                  var_type: f.args[0].0.var_type.clone(),
                 },
               );
               anything_changed |= value.propagate_types_inner(ctx, errors);
@@ -2157,7 +2173,7 @@ impl TypedExp {
           increment_variable_name,
           Variable {
             kind: VariableKind::Var,
-            typestate: variable_typestate.into(),
+            var_type: variable_typestate.into(),
           },
         );
         anything_changed |= continue_condition_expression.data.constrain(
@@ -2365,7 +2381,7 @@ impl TypedExp {
             value.validate_assignments_inner(ctx)?;
             ctx.bind(
               name,
-              Variable::new(value.data.clone()).with_kind(kind.clone()),
+              Variable::immutable(value.data.clone()).with_kind(kind.clone()),
             )
           }
           body.validate_assignments_inner(ctx)?;
@@ -2376,14 +2392,8 @@ impl TypedExp {
         }
         Function(arg_names, body_exp) => {
           if let TypeState::Known(Type::Function(f)) = &exp.data.kind {
-            for (name, (ty, _)) in arg_names.iter().zip(f.arg_types.iter()) {
-              ctx.bind(
-                name,
-                Variable {
-                  kind: VariableKind::Let,
-                  typestate: ty.clone(),
-                },
-              );
+            for (name, (arg, _)) in arg_names.iter().zip(f.args.iter()) {
+              ctx.bind(name, arg.clone());
             }
             body_exp.validate_assignments_inner(ctx)?;
             for name in arg_names {
@@ -2404,7 +2414,7 @@ impl TypedExp {
         } => {
           ctx.bind(
             increment_variable_name,
-            Variable::new(increment_variable_type.clone().known().into())
+            Variable::immutable(increment_variable_type.clone().known().into())
               .with_kind(VariableKind::Var),
           );
           increment_variable_initial_value_expression
@@ -2734,15 +2744,17 @@ impl TypedExp {
     &mut self,
     globally_bound_names: &Vec<Rc<str>>,
     bindings: &mut HashMap<Rc<str>, Vec<Rc<str>>>,
+    reverse_bindings: &mut HashMap<Rc<str>, Rc<str>>,
     errors: &mut ErrorLog,
     first_in_walk: bool,
     names: &mut NameContext,
   ) -> bool {
-    let add_binding = |name: &mut Rc<str>,
-                       source_trace: &SourceTrace,
-                       bindings: &mut HashMap<Rc<str>, Vec<Rc<str>>>,
-                       names: &mut NameContext,
-                       errors: &mut ErrorLog| {
+    let bind = |name: &mut Rc<str>,
+                source_trace: &SourceTrace,
+                bindings: &mut HashMap<Rc<str>, Vec<Rc<str>>>,
+                reverse_bindings: &mut HashMap<Rc<str>, Rc<str>>,
+                names: &mut NameContext,
+                errors: &mut ErrorLog| {
       if globally_bound_names.contains(&name) {
         errors.log(CompileError::new(
           CompileErrorKind::CantShadowTopLevelBinding(name.to_string()),
@@ -2751,26 +2763,30 @@ impl TypedExp {
       }
       if let Some(renames) = bindings.get_mut(name) {
         let gensym_name = names.gensym(&(name.to_string() + "_deshadowed"));
+        reverse_bindings.insert(gensym_name.clone(), name.clone());
         std::mem::swap(name, &mut gensym_name.clone());
         renames.push(gensym_name);
       } else {
         bindings.insert(name.clone(), vec![]);
       }
     };
+    let unbind =
+      |name: &mut Rc<str>,
+       bindings: &mut HashMap<Rc<str>, Vec<Rc<str>>>,
+       reverse_bindings: &mut HashMap<Rc<str>, Rc<str>>| {
+        if bindings.remove(name).is_none() {
+          let original_name = reverse_bindings.get(name).unwrap();
+          bindings.get_mut(original_name).unwrap().pop();
+        }
+      };
     match &mut self.kind {
-      Let(let_bindings, body) => {
-        for binding in let_bindings.iter_mut() {
-          binding.2.deshadow_inner(
-            globally_bound_names,
+      Function(arg_names, body) => {
+        for name in arg_names.iter_mut() {
+          bind(
+            name,
+            &self.source_trace,
             bindings,
-            errors,
-            true,
-            names,
-          );
-          add_binding(
-            &mut binding.0,
-            &binding.2.source_trace,
-            bindings,
+            reverse_bindings,
             names,
             errors,
           );
@@ -2778,10 +2794,46 @@ impl TypedExp {
         body.deshadow_inner(
           globally_bound_names,
           bindings,
+          reverse_bindings,
+          errors,
+          first_in_walk,
+          names,
+        );
+        for name in arg_names.iter_mut().rev() {
+          unbind(name, bindings, reverse_bindings);
+        }
+        false
+      }
+      Let(let_bindings, body) => {
+        for (name, _, value) in let_bindings.iter_mut() {
+          value.deshadow_inner(
+            globally_bound_names,
+            bindings,
+            reverse_bindings,
+            errors,
+            true,
+            names,
+          );
+          bind(
+            name,
+            &value.source_trace,
+            bindings,
+            reverse_bindings,
+            names,
+            errors,
+          );
+        }
+        body.deshadow_inner(
+          globally_bound_names,
+          bindings,
+          reverse_bindings,
           errors,
           true,
           names,
         );
+        for (name, _, _) in let_bindings.iter_mut().rev() {
+          unbind(name, bindings, reverse_bindings);
+        }
         false
       }
       ForLoop {
@@ -2791,16 +2843,18 @@ impl TypedExp {
         body_expression,
         ..
       } => {
-        add_binding(
+        bind(
           increment_variable_name,
           &self.source_trace,
           bindings,
+          reverse_bindings,
           names,
           errors,
         );
         continue_condition_expression.deshadow_inner(
           globally_bound_names,
           bindings,
+          reverse_bindings,
           errors,
           true,
           names,
@@ -2808,6 +2862,7 @@ impl TypedExp {
         update_condition_expression.deshadow_inner(
           globally_bound_names,
           bindings,
+          reverse_bindings,
           errors,
           true,
           names,
@@ -2815,10 +2870,72 @@ impl TypedExp {
         body_expression.deshadow_inner(
           globally_bound_names,
           bindings,
+          reverse_bindings,
           errors,
           true,
           names,
         );
+        unbind(increment_variable_name, bindings, reverse_bindings);
+        false
+      }
+      Match(scrutinee, arms) => {
+        scrutinee.deshadow_inner(
+          globally_bound_names,
+          bindings,
+          reverse_bindings,
+          errors,
+          first_in_walk,
+          names,
+        );
+        for (pattern, value) in arms.iter_mut() {
+          if let Application(f, args) = &mut pattern.kind
+            && let Some(arg) =
+              Self::try_deconstruct_untyped_enum_pattern(f, args)
+          {
+            {
+              let ExpKind::Name(arg_name) = &mut arg.kind else {
+                unreachable!()
+              };
+              bind(
+                arg_name,
+                &arg.source_trace,
+                bindings,
+                reverse_bindings,
+                names,
+                errors,
+              );
+              arg.deshadow_inner(
+                globally_bound_names,
+                bindings,
+                reverse_bindings,
+                errors,
+                first_in_walk,
+                names,
+              );
+            }
+            value.deshadow_inner(
+              globally_bound_names,
+              bindings,
+              reverse_bindings,
+              errors,
+              first_in_walk,
+              names,
+            );
+            let ExpKind::Name(arg_name) = &mut arg.kind else {
+              unreachable!()
+            };
+            unbind(arg_name, bindings, reverse_bindings);
+          } else {
+            value.deshadow_inner(
+              globally_bound_names,
+              bindings,
+              reverse_bindings,
+              errors,
+              first_in_walk,
+              names,
+            );
+          }
+        }
         false
       }
       Name(name) => {
@@ -2836,6 +2953,7 @@ impl TypedExp {
               Ok(exp.deshadow_inner(
                 globally_bound_names,
                 bindings,
+                reverse_bindings,
                 errors,
                 false,
                 names,
@@ -2857,7 +2975,8 @@ impl TypedExp {
   ) {
     self.deshadow_inner(
       globally_bound_names,
-      &mut Default::default(),
+      &mut HashMap::new(),
+      &mut HashMap::new(),
       errors,
       true,
       names,
@@ -3324,9 +3443,15 @@ impl TypedExp {
                               data: Type::Function(
                                 FunctionSignature {
                                   abstract_ancestor: None,
-                                  arg_types: vec![
-                                    (binding_type.clone(), vec![]),
-                                    (binding_type.clone(), vec![]),
+                                  args: vec![
+                                    (
+                                      Variable::immutable(binding_type.clone()),
+                                      vec![],
+                                    ),
+                                    (
+                                      Variable::immutable(binding_type.clone()),
+                                      vec![],
+                                    ),
                                   ],
                                   mutated_args: vec![0],
                                   return_type: Type::Unit.known().into(),

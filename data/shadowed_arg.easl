@@ -1,0 +1,8 @@
+(defn quadruple [x: f32]: f32
+  (let [x (+ x x)]
+    (+ x x)))
+
+(defn octuple [x: f32]: f32
+  (let [x (+ x x)
+        x (+ x x)]
+    (+ x x)))

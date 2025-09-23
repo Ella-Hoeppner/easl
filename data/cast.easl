@@ -52,8 +52,6 @@
   (-> pos (- view.xy) (/ view.z)))
 
 ; Background
-
-
 (struct BackgroundVertexOutput
   @{builtin position} vertex-pos: vec4f
   @{location 0} screen-pos: vec2f)
@@ -76,8 +74,6 @@
   (vec4f background-color 1.))
 
 ; Forms
-
-
 (struct FormVertexInput
   @{location 0} corner-position: vec2f
   @{location 1} form-circle: vec3f
@@ -188,8 +184,6 @@
            1.)))
 
 ; Char
-
-
 (struct CharVertexInput
   @{location 0} corner-position: vec2f
   @{location 1} character-box: vec3f
@@ -247,8 +241,6 @@
       (vec4f (vec3f 0.) 1.))))
 
 ; UI
-
-
 (struct UIVertexInput
   @{location 0} corner-position: vec2f
   @{location 1} element-pos: vec2f

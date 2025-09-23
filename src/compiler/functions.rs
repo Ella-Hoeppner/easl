@@ -10,6 +10,7 @@ use crate::compiler::{
   effects::{Effect, EffectType},
   enums::AbstractEnum,
   program::{NameContext, TypeDefs},
+  types::Variable,
   util::compile_word,
 };
 
@@ -122,12 +123,12 @@ impl AbstractFunctionSignature {
   }
   pub fn arg_names(
     &self,
-    source_trace: SourceTrace,
+    source_trace: &SourceTrace,
   ) -> CompileResult<Vec<Rc<str>>> {
     if let FunctionImplementationKind::Composite(f) = &self.implementation {
       Ok(f.borrow().arg_names.clone())
     } else {
-      err(NoArgNamesForFunction, source_trace)
+      err(NoArgNamesForFunction, source_trace.clone())
     }
   }
   pub fn arg_metadata(
@@ -269,7 +270,7 @@ impl AbstractFunctionSignature {
       };
       if let TypeState::Known(Type::Function(signature)) = &mut body.data.kind {
         for i in retained_argument_indeces.into_iter().rev() {
-          signature.arg_types.remove(i);
+          signature.args.remove(i);
         }
       } else {
         unreachable!()
@@ -325,11 +326,11 @@ impl AbstractFunctionSignature {
         )
       })
       .collect();
-    let mut arg_types: Vec<_> = f
+    let mut args: Vec<_> = f
       .arg_types
       .iter()
       .map(|t| {
-        Ok(match t {
+        let (var_type, constraints) = match t {
           AbstractType::Generic(var_name) => (
             generic_variables
               .get(var_name)
@@ -394,7 +395,8 @@ impl AbstractFunctionSignature {
             .into(),
             vec![],
           ),
-        })
+        };
+        Ok((Variable::immutable(var_type), constraints))
       })
       .collect::<CompileResult<_>>()?;
     let mut return_type = match &f.return_type {
@@ -439,15 +441,16 @@ impl AbstractFunctionSignature {
       .known()
       .into(),
     };
-    for (t, _) in arg_types.iter_mut() {
-      t.kind
+    for (v, _) in args.iter_mut() {
+      v.var_type
+        .kind
         .replace_skolems_with_unification_variables(&generic_variables);
     }
     return_type
       .kind
       .replace_skolems_with_unification_variables(&generic_variables);
     Ok(FunctionSignature {
-      arg_types,
+      args,
       return_type,
       abstract_ancestor: Some(Rc::new(f.clone())),
       mutated_args: f.mutated_args.clone(),
@@ -458,14 +461,14 @@ impl AbstractFunctionSignature {
 #[derive(Debug, Clone)]
 pub struct FunctionSignature {
   pub abstract_ancestor: Option<Rc<AbstractFunctionSignature>>,
-  pub arg_types: Vec<(ExpTypeInfo, Vec<TypeConstraint>)>,
+  pub args: Vec<(Variable, Vec<TypeConstraint>)>,
   pub mutated_args: Vec<usize>,
   pub return_type: ExpTypeInfo,
 }
 
 impl PartialEq for FunctionSignature {
   fn eq(&self, other: &Self) -> bool {
-    self.arg_types == other.arg_types
+    self.args == other.args
       && self.mutated_args == other.mutated_args
       && self.return_type == other.return_type
   }
@@ -473,31 +476,29 @@ impl PartialEq for FunctionSignature {
 
 impl FunctionSignature {
   pub fn compatible(&self, other: &Self) -> bool {
-    if self.arg_types.len() != other.arg_types.len() {
+    if self.args.len() != other.args.len() {
       return false;
     }
     !self
-      .arg_types
+      .args
       .iter()
-      .zip(other.arg_types.iter())
-      .find(
-        |((a_typestate, a_constraints), (b_typestate, b_constraints))| {
-          !TypeState::are_compatible(a_typestate, b_typestate)
-            || a_constraints != b_constraints
-        },
-      )
+      .zip(other.args.iter())
+      .find(|((a_var, a_constraints), (b_var, b_constraints))| {
+        !TypeState::are_compatible(&a_var.var_type, &b_var.var_type)
+          || a_constraints != b_constraints
+      })
       .is_some()
   }
   pub fn are_args_compatible(&self, arg_types: &Vec<TypeState>) -> bool {
-    if arg_types.len() != self.arg_types.len() {
+    if arg_types.len() != self.args.len() {
       if let Some(ancestor) = &self.abstract_ancestor {
         if ancestor.associative {
           if arg_types.len() == 0 {
             return false;
           }
-          let (arg_type, arg_constraints) = &self.arg_types[0];
+          let (arg, arg_constraints) = &self.args[0];
           for arg_typestate in arg_types {
-            if !TypeState::are_compatible(arg_typestate, &arg_type.kind) {
+            if !TypeState::are_compatible(arg_typestate, &arg.var_type.kind) {
               return false;
             }
             if let TypeState::Known(t) = arg_typestate {
@@ -514,8 +515,8 @@ impl FunctionSignature {
       return false;
     }
     for i in 0..arg_types.len() {
-      let (arg_typestate, arg_constraints) = &self.arg_types[i];
-      if !TypeState::are_compatible(arg_typestate, &arg_types[i]) {
+      let (arg, arg_constraints) = &self.args[i];
+      if !TypeState::are_compatible(&arg.var_type, &arg_types[i]) {
         return false;
       }
       if let TypeState::Known(t) = &arg_types[i] {
@@ -534,11 +535,11 @@ impl FunctionSignature {
     source_trace: SourceTrace,
     errors: &mut ErrorLog,
   ) -> bool {
-    if args.len() == self.arg_types.len() {
+    if args.len() == self.args.len() {
       let mut any_arg_changed = false;
       for i in 0..args.len() {
         let changed = args[i].mutually_constrain(
-          &mut self.arg_types[i].0,
+          &mut self.args[i].0.var_type,
           &source_trace,
           errors,
         );
@@ -549,7 +550,7 @@ impl FunctionSignature {
       if let Some(ancestor) = &self.abstract_ancestor {
         if ancestor.associative {
           if args.len() != 0 {
-            let arg_type = &mut self.arg_types.get_mut(0).unwrap().0;
+            let arg_type = &mut self.args.get_mut(0).unwrap().0.var_type;
             let mut any_arg_changed = false;
             for i in 0..args.len() {
               let changed =
@@ -604,9 +605,9 @@ impl TopLevelFunction {
     names: &mut NameContext,
   ) -> CompileResult<String> {
     let TypedExp { data, kind, .. } = self.body;
-    let (arg_types, return_type) =
+    let (args, return_type) =
       if let Type::Function(signature) = data.unwrap_known() {
-        (signature.arg_types, signature.return_type)
+        (signature.args, signature.return_type)
       } else {
         panic!("attempted to compile function with invalid type data")
       };
@@ -617,14 +618,14 @@ impl TopLevelFunction {
     };
     let args = arg_names
       .into_iter()
-      .zip(arg_types.into_iter())
+      .zip(args.into_iter())
       .zip(self.arg_metadata.into_iter())
-      .map(|((name, arg_type), metadata)| {
+      .map(|((name, (arg, _)), metadata)| {
         format!(
           "{}{}: {}",
           Metadata::compile_optional(metadata),
           compile_word(name),
-          arg_type.0.monomorphized_name(names)
+          arg.var_type.monomorphized_name(names)
         )
       })
       .collect::<Vec<String>>()

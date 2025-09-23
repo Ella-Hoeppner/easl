@@ -16,15 +16,28 @@ Feature goals:
 
 ## todo
 ### high priority, necessary to call the language 0.1
+* more annotation validation:
+  * validate annotations on function arguments
+    * right now you can kinda just do anything and it'll pass through the compiler just fine
+    * instead you should be limited to basically just `@var` or `@{builtin ...}`
+    * while I'm changing this, might as well add a `@builtin ...` shorthand
+      * e.g. `(defn vert [@{builtin vertex-index} vertex-index: u32] ...)`
+        * this should be abbreviatable as:
+          * `(defn vert [@builtin vertex-index: u32] ...)`
+          * this only makes sense as long as you're willing to use this particular name, but I think it'll still be quite nice to have
+  * validate annotations on struct fields
+  * disallow annotations on structs
+    * as in `@{blah blah} (struct ...)`
+    * never does anything anways, but should just make sure it gives an error so the user knows it isn't a valid thing to do
+
 * rename metadata to "annotations"? Seems like maybe a more specific and descriptive word, and I think it might make the binary-prefix-syntax more understandable
-
-* when a local binding tries to shadow an argument name, the resulting wgsl is invalid
-
-* allow arguments to be declared as `@var`
-  * just wrap the whole body in a `let` that shadows the arguments
 
 * get rid of the regex dependency
   * only used once and it has a lot of dependencies, probably a not-insignificant part of the size of the final executable size
+
+* make it so `arrayLength` can accept an array as an input, rather than a reference to an array, at least syntactically
+  * so I guess like, insert the reference operation for the user if a function ever takes an argument `&T` but ends up recieving a `T`?
+    * or maybe don't do that, and just have an extra signature for arrayLength built-in, and have a special case for it in the backend?
 
 * missing some built-in functions:
   * `bool` casting functions
@@ -52,9 +65,6 @@ Feature goals:
 
 
 
-* make it so `arrayLength` can accept an array as an input, rather than a reference to an array, at least syntactically
-  * so I guess like, insert the reference operation for the user if a function ever takes an argument `&T` but ends up recieving a `T`?
-    * or maybe don't do that, and just have an extra signature for arrayLength built-in, and have a special case for it in the backend?
 
 * would be nice to expose `bitcast` to the user for arbitrary structs/enums
   * would need to throw an error when the types aren't of the same size I guess

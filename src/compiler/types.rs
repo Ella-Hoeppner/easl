@@ -624,13 +624,15 @@ impl Type {
               ) => Ok(Self::Function(Box::new(FunctionSignature {
                 abstract_ancestor: None,
                 mutated_args: vec![],
-                arg_types: arg_type_asts
+                args: arg_type_asts
                   .into_iter()
                   .map(|arg_type_ast| {
                     Ok((
-                      Self::from_easl_tree(arg_type_ast, typedefs, skolems)?
-                        .known()
-                        .into(),
+                      Variable::immutable(
+                        Self::from_easl_tree(arg_type_ast, typedefs, skolems)?
+                          .known()
+                          .into(),
+                      ),
                       vec![],
                     ))
                   })
@@ -858,8 +860,8 @@ impl Type {
         }
         Type::Function(f) => {
           f.return_type.as_known_mut(|t| t.replace_skolems(skolems));
-          for (arg_type, _) in f.arg_types.iter_mut() {
-            arg_type.as_known_mut(|t| t.replace_skolems(skolems))
+          for (arg, _) in f.args.iter_mut() {
+            arg.var_type.as_known_mut(|t| t.replace_skolems(skolems))
           }
         }
         _ => {}
@@ -1005,7 +1007,10 @@ impl Type {
             data: Type::Function(
               FunctionSignature {
                 abstract_ancestor: Some(bitcast().into()),
-                arg_types: vec![(Type::U32.known().into(), vec![])],
+                args: vec![(
+                  Variable::immutable(Type::U32.known().into()),
+                  vec![],
+                )],
                 return_type: self.clone().known().into(),
                 mutated_args: vec![],
               }
@@ -1040,9 +1045,12 @@ impl Type {
               data: Type::Function(
                 FunctionSignature {
                   abstract_ancestor: None,
-                  arg_types: vec![
-                    (Type::U32.known().into(), vec![]),
-                    (inner_data_array_type.clone(), vec![]),
+                  args: vec![
+                    (Variable::immutable(Type::U32.known().into()), vec![]),
+                    (
+                      Variable::immutable(inner_data_array_type.clone()),
+                      vec![],
+                    ),
                   ],
                   mutated_args: vec![],
                   return_type: Type::Enum(e.clone()).known().into(),
@@ -1093,10 +1101,12 @@ impl Type {
             TypedExp {
               data: Type::Function(Box::new(FunctionSignature {
                 abstract_ancestor: None,
-                arg_types: s
+                args: s
                   .fields
                   .iter()
-                  .map(|field| (field.field_type.clone(), vec![]))
+                  .map(|field| {
+                    (Variable::immutable(field.field_type.clone()), vec![])
+                  })
                   .collect(),
                 mutated_args: vec![],
                 return_type: Type::Struct(s.clone()).known().into(),
@@ -1179,8 +1189,10 @@ impl Type {
         }
       }
       Type::Function(f) => {
-        for (t, _) in f.arg_types.iter_mut() {
-          t.replace_skolems_with_unification_variables(replacements);
+        for (arg, _) in f.args.iter_mut() {
+          arg
+            .var_type
+            .replace_skolems_with_unification_variables(replacements);
         }
         f.return_type
           .replace_skolems_with_unification_variables(replacements);
@@ -1216,10 +1228,10 @@ impl Type {
         .find(|variant| !variant.inner_type.check_is_fully_known())
         .is_some(),
       Type::Function(function_signature) => {
-        function_signature.arg_types.iter().fold(
+        function_signature.args.iter().fold(
           function_signature.return_type.check_is_fully_known(),
-          |typed_so_far, (arg_type, _)| {
-            typed_so_far && arg_type.check_is_fully_known()
+          |typed_so_far, (arg_var, _)| {
+            typed_so_far && arg_var.var_type.check_is_fully_known()
           },
         )
       }
@@ -1447,12 +1459,15 @@ impl TypeState {
                     errors,
                   );
                   for ((t, _), (other_t, _)) in signature
-                    .arg_types
+                    .args
                     .iter_mut()
-                    .zip(other_signature.arg_types.iter_mut())
+                    .zip(other_signature.args.iter_mut())
                   {
-                    let changed =
-                      t.constrain(other_t.kind.clone(), source_trace, errors);
+                    let changed = t.var_type.constrain(
+                      other_t.var_type.kind.clone(),
+                      source_trace,
+                      errors,
+                    );
                     anything_changed |= changed;
                   }
                   anything_changed
@@ -1727,14 +1742,20 @@ impl VariableKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Variable {
   pub kind: VariableKind,
-  pub typestate: ExpTypeInfo,
+  pub var_type: ExpTypeInfo,
 }
 
 impl Variable {
-  pub fn new(typestate: ExpTypeInfo) -> Self {
+  pub fn immutable(var_type: ExpTypeInfo) -> Self {
     Self {
-      typestate,
+      var_type,
       kind: VariableKind::Let,
+    }
+  }
+  pub fn mutable(var_type: ExpTypeInfo) -> Self {
+    Self {
+      var_type,
+      kind: VariableKind::Var,
     }
   }
   pub fn with_kind(mut self, kind: VariableKind) -> Self {
@@ -1855,7 +1876,7 @@ pub fn parse_generic_argument(
 
 #[derive(Debug)]
 pub struct LocalContext<P: Deref<Target = Program>> {
-  pub variables: HashMap<Rc<str>, Vec<Variable>>,
+  pub variables: HashMap<Rc<str>, Variable>,
   pub enclosing_function_types: Vec<TypeState>,
   pub inside_pattern: bool,
   pub program: P,
@@ -1880,18 +1901,10 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
     self.enclosing_function_types.last_mut()
   }
   pub fn bind(&mut self, name: &str, v: Variable) {
-    if !self.variables.contains_key(name) {
-      self.variables.insert(name.into(), vec![]);
-    }
-    self.variables.get_mut(name).unwrap().push(v);
+    self.variables.insert(name.into(), v);
   }
   pub fn unbind(&mut self, name: &str) -> Variable {
-    let name_bindings = self.variables.get_mut(name).unwrap();
-    let v = name_bindings.pop().unwrap();
-    if name_bindings.is_empty() {
-      self.variables.remove(name);
-    }
-    v
+    self.variables.remove(name).unwrap()
   }
   pub fn is_bound(&self, name: &str) -> bool {
     let name_rc: Rc<str> = name.to_string().into();
@@ -1915,7 +1928,7 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
     self
       .variables
       .get(name)
-      .map(|vars| vars.last().unwrap().kind.clone())
+      .map(|var| var.kind.clone())
       .or(
         self
           .program
@@ -1937,7 +1950,7 @@ impl<'p> MutableProgramLocalContext<'p> {
     source_trace: SourceTrace,
   ) -> CompileResult<Result<&mut TypeState, TypeState>> {
     if let Some(var) = self.variables.get_mut(name) {
-      Ok(Ok(&mut var.last_mut().unwrap().typestate))
+      Ok(Ok(&mut var.var_type))
     } else if let Some(top_level_var) = self
       .program
       .top_level_vars
@@ -2036,11 +2049,11 @@ impl From<Type> for TypeDescription {
       }),
       Type::Function(f) => Self::Function {
         arg_types: f
-          .arg_types
+          .args
           .into_iter()
-          .map(|(t, constraints)| {
+          .map(|(var, constraints)| {
             (
-              TypeStateDescription::from(t.kind),
+              TypeStateDescription::from(var.var_type.kind),
               constraints
                 .into_iter()
                 .map(TypeConstraintDescription::from)
