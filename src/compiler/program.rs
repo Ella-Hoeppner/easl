@@ -22,8 +22,8 @@ use crate::{
     metadata::extract_metadata,
     structs::UntypedStruct,
     types::{
-      AbstractType, ExpTypeInfo, Type, TypeConstraint, TypeState, UntypedType,
-      Variable, VariableKind, parse_generic_argument,
+      AbstractType, Type, TypeConstraint, TypeState, UntypedType, Variable,
+      VariableKind, parse_generic_argument,
     },
     util::compile_word,
   },

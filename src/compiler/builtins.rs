@@ -498,7 +498,7 @@ fn arithmetic_functions(
               }
             })
             .collect(),
-          mutated_args: vec![],
+          mutated_args: if assignment_fn { vec![0] } else { vec![] },
           return_type: if assignment_fn {
             AbstractType::Type(Type::Unit)
           } else {
@@ -820,6 +820,18 @@ fn comparison_functions() -> Vec<AbstractFunctionSignature> {
   vec![
     AbstractFunctionSignature {
       name: "==".into(),
+      generic_args: vec![("T".into(), vec![])],
+      arg_types: vec![
+        AbstractType::Generic("T".into()),
+        AbstractType::Generic("T".into()),
+      ],
+      mutated_args: vec![],
+      return_type: AbstractType::Type(Type::Bool),
+      implementation: FunctionImplementationKind::Builtin,
+      associative: false,
+    },
+    AbstractFunctionSignature {
+      name: "!=".into(),
       generic_args: vec![("T".into(), vec![])],
       arg_types: vec![
         AbstractType::Generic("T".into()),
@@ -1237,8 +1249,8 @@ lazy_static! {
       .into_iter()
       .collect();
   pub static ref INFIX_OPS: HashSet<&'static str> = [
-    "==", ">=", ">", "<=", "<", "||", "&&", "+", "-", "*", "/", "%", "^", ">>",
-    "<<"
+    "==", "!=", ">=", ">", "<=", "<", "||", "&&", "+", "-", "*", "/", "%", "^",
+    ">>", "<<"
   ]
   .into_iter()
   .collect();
