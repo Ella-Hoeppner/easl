@@ -156,12 +156,12 @@ pub fn vec2() -> AbstractStruct {
     name: "vec2".into(),
     fields: vec![
       AbstractStructField {
-        metadata: None,
+        annotation: None,
         name: "x".into(),
         field_type: AbstractType::Generic("T".into()),
       },
       AbstractStructField {
-        metadata: None,
+        annotation: None,
         name: "y".into(),
         field_type: AbstractType::Generic("T".into()),
       },
@@ -178,17 +178,17 @@ pub fn vec3() -> AbstractStruct {
     name: "vec3".into(),
     fields: vec![
       AbstractStructField {
-        metadata: None,
+        annotation: None,
         name: "x".into(),
         field_type: AbstractType::Generic("T".into()),
       },
       AbstractStructField {
-        metadata: None,
+        annotation: None,
         name: "y".into(),
         field_type: AbstractType::Generic("T".into()),
       },
       AbstractStructField {
-        metadata: None,
+        annotation: None,
         name: "z".into(),
         field_type: AbstractType::Generic("T".into()),
       },
@@ -205,22 +205,22 @@ pub fn vec4() -> AbstractStruct {
     name: "vec4".into(),
     fields: vec![
       AbstractStructField {
-        metadata: None,
+        annotation: None,
         name: "x".into(),
         field_type: AbstractType::Generic("T".into()),
       },
       AbstractStructField {
-        metadata: None,
+        annotation: None,
         name: "y".into(),
         field_type: AbstractType::Generic("T".into()),
       },
       AbstractStructField {
-        metadata: None,
+        annotation: None,
         name: "z".into(),
         field_type: AbstractType::Generic("T".into()),
       },
       AbstractStructField {
-        metadata: None,
+        annotation: None,
         name: "w".into(),
         field_type: AbstractType::Generic("T".into()),
       },
@@ -236,7 +236,7 @@ pub fn texture_2d() -> AbstractStruct {
   AbstractStruct {
     name: "Texture2D".into(),
     fields: vec![AbstractStructField {
-      metadata: None,
+      annotation: None,
       name: "_".into(),
       field_type: AbstractType::Generic("T".into()),
     }],
@@ -262,7 +262,7 @@ pub fn matrix(n: usize, m: usize) -> AbstractStruct {
   AbstractStruct {
     name: format!("mat{n}x{m}").into(),
     fields: vec![AbstractStructField {
-      metadata: None,
+      annotation: None,
       name: "_".into(),
       field_type: AbstractType::Generic("T".into()),
     }],

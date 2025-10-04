@@ -38,7 +38,7 @@ fn main() {
     "thread_macro",
     "when_macro",
     "array",
-    "argument_metadata",
+    "argument_annotation",
     "texture",
     "cast",
     "array_literal",

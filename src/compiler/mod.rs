@@ -1,3 +1,4 @@
+pub mod annotation;
 pub mod builtins;
 pub mod core;
 pub mod effects;
@@ -7,7 +8,6 @@ pub mod expression;
 pub mod functions;
 pub mod info;
 pub mod macros;
-pub mod metadata;
 pub mod program;
 pub mod structs;
 pub mod types;

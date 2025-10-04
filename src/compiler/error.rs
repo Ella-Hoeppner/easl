@@ -5,7 +5,7 @@ use thiserror::Error;
 use crate::{compiler::vars::VariableAddressSpace, parse::EaslTree};
 
 use super::{
-  metadata::Metadata,
+  annotation::Annotation,
   types::{TypeConstraintDescription, TypeDescription, TypeStateDescription},
 };
 
@@ -69,8 +69,8 @@ pub enum CompileErrorKind {
   ParsingFailed(ParseError),
   #[error("Unrecognized type: `{0}`")]
   UnrecognizedTypeName(String),
-  #[error("Invalid metadata: `{0}`")]
-  InvalidMetadata(String),
+  #[error("Invalid annotation: `{0}`")]
+  InvalidAnnotation(String),
   #[error("Expected type annotation")]
   ExpectedTypeAnnotatedName,
   #[error("Struct fields must be typed")]
@@ -161,12 +161,12 @@ pub enum CompileErrorKind {
   ExpectedBindingName,
   #[error("Empty block")]
   EmptyBlock,
-  #[error("Top-level constants may not have metadata")]
-  ConstantMayNotHaveMetadata,
-  #[error("Invalid top-level variable metadata: {0:?}")]
-  InvalidVariableMetadata(MetadataDescription),
-  #[error("Invalid top-level function metadata: {0:?}")]
-  InvalidFunctionMetadata(MetadataDescription),
+  #[error("Top-level constants may not have annotation")]
+  ConstantMayNotHaveAnnotation,
+  #[error("Invalid top-level variable annotation: {0:?}")]
+  InvalidVariableAnnotation(AnnotationDescription),
+  #[error("Invalid top-level function annotation: {0:?}")]
+  InvalidFunctionAnnotation(AnnotationDescription),
   #[error("Invalid assignment target")]
   InvalidAssignmentTarget,
   #[error("Assignment target must be a variable: `{0}`")]
@@ -205,8 +205,8 @@ pub enum CompileErrorKind {
   AnonymousStructsNotYetSupported,
   #[error("Internal compiler error: Encountered comment in source")]
   EncounteredCommentInSource,
-  #[error("Can't use metadata here")]
-  MetadataNotAllowed,
+  #[error("Can't use annotation here")]
+  AnnotationNotAllowed,
   #[error("Invalid function type")]
   InvalidFunctionType,
   #[error(
@@ -282,7 +282,7 @@ impl PartialEq for CompileErrorKind {
       (Self::UnrecognizedTypeName(l0), Self::UnrecognizedTypeName(r0)) => {
         l0 == r0
       }
-      (Self::InvalidMetadata(l0), Self::InvalidMetadata(r0)) => l0 == r0,
+      (Self::InvalidAnnotation(l0), Self::InvalidAnnotation(r0)) => l0 == r0,
       (Self::NoTypeNamed(l0), Self::NoTypeNamed(r0)) => l0 == r0,
       (
         Self::ArrayLookupInvalidArity(l0),
@@ -337,12 +337,12 @@ impl PartialEq for CompileErrorKind {
         },
       ) => l_struct_name == r_struct_name && l_field_name == r_field_name,
       (
-        Self::InvalidVariableMetadata(l0),
-        Self::InvalidVariableMetadata(r0),
+        Self::InvalidVariableAnnotation(l0),
+        Self::InvalidVariableAnnotation(r0),
       ) => l0 == r0,
       (
-        Self::InvalidFunctionMetadata(l0),
-        Self::InvalidFunctionMetadata(r0),
+        Self::InvalidFunctionAnnotation(l0),
+        Self::InvalidFunctionAnnotation(r0),
       ) => l0 == r0,
       (
         Self::AssignmentTargetMustBeVariable(l0),
@@ -443,24 +443,26 @@ impl From<CompileError> for ErrorLog {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum MetadataDescription {
+pub enum AnnotationDescription {
   Singular(String),
   Map(Vec<(String, String)>),
   Multiple(Vec<Self>),
 }
 
-impl From<Metadata> for MetadataDescription {
-  fn from(metadata: Metadata) -> Self {
-    match metadata {
-      Metadata::Singular(s) => MetadataDescription::Singular((*s).to_string()),
-      Metadata::Map(items) => MetadataDescription::Map(
+impl From<Annotation> for AnnotationDescription {
+  fn from(annotation: Annotation) -> Self {
+    match annotation {
+      Annotation::Singular(s) => {
+        AnnotationDescription::Singular((*s).to_string())
+      }
+      Annotation::Map(items) => AnnotationDescription::Map(
         items
           .into_iter()
           .map(|(a, b)| ((*a).to_string(), (*b).to_string()))
           .collect(),
       ),
-      Metadata::Multiple(metadatas) => MetadataDescription::Multiple(
-        metadatas.into_iter().map(|m| m.into()).collect(),
+      Annotation::Multiple(sub_annotations) => AnnotationDescription::Multiple(
+        sub_annotations.into_iter().map(|m| m.into()).collect(),
       ),
     }
   }

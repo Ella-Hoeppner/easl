@@ -60,9 +60,9 @@ impl From<&Program> for ProgramInfo {
           let abstract_f = abstract_f.borrow();
           if let FunctionImplementationKind::Composite(f) =
             &abstract_f.implementation
-            && let Some(metadata) = &f.borrow().metadata
+            && let Some(annotation) = &f.borrow().annotation
           {
-            metadata.properties().iter().find_map(|(name, value)| {
+            annotation.properties().iter().find_map(|(name, value)| {
               if value.is_none() && &**name == entry_kind {
                 Some(abstract_f.name.to_string())
               } else {

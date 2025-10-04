@@ -10,6 +10,7 @@ use take_mut::take;
 use crate::{
   Never,
   compiler::{
+    annotation::{Annotation, extract_annotation},
     builtins::{
       ASSIGNMENT_OPS, INFIX_OPS, builtin_vec_constructor_type,
       get_builtin_struct, rename_builtin,
@@ -18,7 +19,6 @@ use crate::{
     enums::AbstractEnum,
     error::{CompileError, CompileErrorKind::*, CompileResult, err},
     functions::{AbstractFunctionSignature, FunctionSignature},
-    metadata::{Metadata, extract_metadata},
     program::{NameContext, Program, TypeDefs},
     structs::{AbstractStruct, Struct},
     types::{
@@ -314,32 +314,32 @@ pub fn arg_list_and_return_type_from_easl_tree(
   SourceTrace,
   Vec<Rc<str>>,
   Vec<AbstractType>,
-  Vec<Option<Metadata>>,
+  Vec<Option<Annotation>>,
   AbstractType,
-  Option<Metadata>,
+  Option<Annotation>,
 )> {
-  use crate::parse::Encloser::*;
-  use crate::parse::Operator::*;
+  use crate::parse::Encloser as E;
+  use crate::parse::Operator as O;
   use sse::syntax::EncloserOrOperator::*;
   if let EaslTree::Inner(
-    (position, Operator(TypeAnnotation)),
+    (position, Operator(O::TypeAscription)),
     mut args_and_return_type,
   ) = tree
   {
     let return_type_ast = args_and_return_type.remove(1);
     let mut errors = ErrorLog::new();
-    let (return_type_ast, return_metadata) =
-      extract_metadata(return_type_ast, &mut errors);
-    if let Some(metadata_error) = errors.into_iter().next() {
-      return Err(metadata_error.clone());
+    let (return_type_ast, return_annotation) =
+      extract_annotation(return_type_ast, &mut errors);
+    if let Some(annotation_error) = errors.into_iter().next() {
+      return Err(annotation_error.clone());
     }
     let return_type =
       AbstractType::from_easl_tree(return_type_ast, typedefs, skolems)?;
-    if let EaslTree::Inner((position, Encloser(Square)), arg_asts) =
+    if let EaslTree::Inner((position, Encloser(E::Square)), arg_asts) =
       args_and_return_type.remove(0)
     {
       let source_path: SourceTrace = position.into();
-      let ((arg_types, arg_metadata), arg_names) = arg_asts
+      let ((arg_types, arg_annotations), arg_names) = arg_asts
         .into_iter()
         .map(|arg| -> CompileResult<_> {
           let (maybe_t_ast, arg_name_ast) = extract_type_annotation_ast(arg);
@@ -349,28 +349,28 @@ pub fn arg_list_and_return_type_from_easl_tree(
           ))?;
           let t = AbstractType::from_easl_tree(t_ast, typedefs, skolems)?;
           let mut errors = ErrorLog::new();
-          let (arg_name_ast, arg_metadata) =
-            extract_metadata(arg_name_ast, &mut errors);
-          if let Some(metadata_error) = errors.into_iter().next() {
-            return Err(metadata_error.clone());
+          let (arg_name_ast, arg_annotations) =
+            extract_annotation(arg_name_ast, &mut errors);
+          if let Some(annotation_error) = errors.into_iter().next() {
+            return Err(annotation_error.clone());
           }
           if let EaslTree::Leaf(_, arg_name) = arg_name_ast {
-            Ok(((t, arg_metadata.map(|(a, _)| a)), arg_name.into()))
+            Ok(((t, arg_annotations.map(|(a, _)| a)), arg_name.into()))
           } else {
             err(InvalidArgumentName, source_path.clone())
           }
         })
         .collect::<CompileResult<(
-          (Vec<AbstractType>, Vec<Option<Metadata>>),
+          (Vec<AbstractType>, Vec<Option<Annotation>>),
           Vec<Rc<str>>,
         )>>()?;
       Ok((
         source_path,
         arg_names,
         arg_types,
-        arg_metadata,
+        arg_annotations,
         return_type,
-        return_metadata.map(|(a, _)| a),
+        return_annotation.map(|(a, _)| a),
       ))
     } else {
       err(FunctionSignatureNotSquareBrackets, position.into())
@@ -504,14 +504,14 @@ impl TypedExp {
         }
       }
       EaslTree::Inner((position, encloser_or_operator), children) => {
-        use crate::parse::Encloser::*;
-        use crate::parse::Operator::*;
+        use crate::parse::Encloser as E;
+        use crate::parse::Operator as O;
         use sse::syntax::EncloserOrOperator::*;
         let encloser_or_operator_source_trace: SourceTrace = position.into();
         let mut children_iter = children.into_iter();
         match encloser_or_operator {
           Encloser(e) => match e {
-            Parens => {
+            E::Parens => {
               if let Some(first_child) = children_iter.next() {
                 match &first_child {
                   EaslTree::Leaf(position, first_child_name) => {
@@ -575,7 +575,7 @@ impl TypedExp {
                             }
                           };
                           if let EaslTree::Inner(
-                            (_, Encloser(Square)),
+                            (_, Encloser(E::Square)),
                             binding_asts,
                           ) = bindings_ast
                           {
@@ -592,43 +592,44 @@ impl TypedExp {
                                   name_ast, typedefs, skolems,
                                 )?;
                                 let mut errors = ErrorLog::new();
-                                let (name_ast, name_metadata) =
-                                  extract_metadata(name_ast, &mut errors);
-                                if let Some(metadata_error) =
+                                let (name_ast, name_annotation) =
+                                  extract_annotation(name_ast, &mut errors);
+                                if let Some(annotation_error) =
                                   errors.into_iter().next()
                                 {
-                                  return Err(metadata_error.clone());
+                                  return Err(annotation_error.clone());
                                 }
                                 match name_ast {
                                   EaslTree::Leaf(position, name) => {
                                     let source_trace = position.clone().into();
                                     bindings.push((
                                       name.into(),
-                                      match name_metadata {
+                                      match name_annotation {
                                         None => VariableKind::Let,
-                                        Some((Metadata::Singular(tag), _)) => {
-                                          match &*tag {
-                                            "var" => VariableKind::Var,
-                                            _ => {
-                                              return err(
-                                                InvalidVariableMetadata(
-                                                  Metadata::Singular(tag)
-                                                    .into(),
-                                                ),
-                                                source_trace,
-                                              );
-                                            }
-                                          }
-                                        }
                                         Some((
-                                          metadata,
-                                          metadata_source_trace,
+                                          Annotation::Singular(tag),
+                                          _,
+                                        )) => match &*tag {
+                                          "var" => VariableKind::Var,
+                                          _ => {
+                                            return err(
+                                              InvalidVariableAnnotation(
+                                                Annotation::Singular(tag)
+                                                  .into(),
+                                              ),
+                                              source_trace,
+                                            );
+                                          }
+                                        },
+                                        Some((
+                                          annotation,
+                                          annotation_source_trace,
                                         )) => {
                                           return err(
-                                            InvalidVariableMetadata(
-                                              metadata.into(),
+                                            InvalidVariableAnnotation(
+                                              annotation.into(),
                                             ),
-                                            metadata_source_trace,
+                                            annotation_source_trace,
                                           );
                                         }
                                       },
@@ -760,7 +761,7 @@ impl TypedExp {
                           ) = if let EaslTree::Inner(
                             (
                               header_source_position,
-                              EncloserOrOperator::Encloser(Square),
+                              EncloserOrOperator::Encloser(E::Square),
                             ),
                             mut header_subtrees,
                           ) = header_tree
@@ -959,7 +960,7 @@ impl TypedExp {
                 }
               }
             }
-            Square => Exp {
+            E::Square => Exp {
               data: Type::Array(
                 Some(ArraySize::Literal(children_iter.len() as u32)),
                 Box::new(TypeState::Unknown.into()),
@@ -975,19 +976,19 @@ impl TypedExp {
               ),
               source_trace: encloser_or_operator_source_trace,
             },
-            Curly => {
+            E::Curly => {
               return err(
                 AnonymousStructsNotYetSupported,
                 encloser_or_operator_source_trace,
               );
             }
-            LineComment => {
+            E::LineComment => {
               return err(
                 EncounteredCommentInSource,
                 encloser_or_operator_source_trace,
               );
             }
-            BlockComment => {
+            E::BlockComment => {
               return err(
                 EncounteredCommentInSource,
                 encloser_or_operator_source_trace,
@@ -995,13 +996,13 @@ impl TypedExp {
             }
           },
           Operator(o) => match o {
-            MetadataAnnotation => {
+            O::Annotation => {
               return err(
-                MetadataNotAllowed,
+                AnnotationNotAllowed,
                 encloser_or_operator_source_trace,
               );
             }
-            TypeAnnotation => {
+            O::TypeAscription => {
               let mut exp = Self::try_from_easl_tree(
                 children_iter.next().unwrap(),
                 typedefs,
@@ -1017,10 +1018,10 @@ impl TypedExp {
               .into();
               exp
             }
-            ExpressionComment => unreachable!(
+            O::ExpressionComment => unreachable!(
               "expression comment encountered, this should have been stripped"
             ),
-            Reference => TypedExp {
+            O::Reference => TypedExp {
               data: Type::Reference(Box::new(TypeState::Unknown.into()))
                 .known()
                 .into(),

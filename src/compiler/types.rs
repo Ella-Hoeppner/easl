@@ -346,7 +346,7 @@ impl AbstractType {
             EaslTree::Inner(
               (
                 position,
-                EncloserOrOperator::Operator(Operator::TypeAnnotation),
+                EncloserOrOperator::Operator(Operator::TypeAscription),
               ),
               mut type_annotation_children,
             ) => {
@@ -690,7 +690,7 @@ impl Type {
         let source_trace: SourceTrace = position.into();
         if array_children.len() == 1 {
           if let EaslTree::Inner(
-            (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
+            (position, EncloserOrOperator::Operator(Operator::TypeAscription)),
             mut type_annotation_children,
           ) = array_children.into_iter().next().unwrap()
           {
@@ -1248,7 +1248,7 @@ pub fn extract_type_annotation_ast(
   exp: EaslTree,
 ) -> (Option<EaslTree>, EaslTree) {
   if let EaslTree::Inner(
-    (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
+    (_, EncloserOrOperator::Operator(Operator::TypeAscription)),
     mut children,
   ) = exp
   {
@@ -1796,7 +1796,7 @@ pub fn parse_type_constraint(
       args: vec![],
     }),
     EaslTree::Inner(
-      (_position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
+      (_position, EncloserOrOperator::Operator(Operator::TypeAscription)),
       _children,
     ) => {
       todo!("can't parse type constraints yet")
@@ -1834,7 +1834,7 @@ pub fn parse_generic_argument(
   match ast {
     EaslTree::Leaf(_, generic_name) => Ok((generic_name.into(), vec![])),
     EaslTree::Inner(
-      (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
+      (position, EncloserOrOperator::Operator(Operator::TypeAscription)),
       mut children,
     ) => {
       if children.len() < 2 {

@@ -1,7 +1,7 @@
 use sse::{
-  document::Document, standard_whitespace_chars, syntax::Context as SSEContext,
   DocumentSyntaxTree, Encloser as SSEEncloser, Operator as SSEOperator,
-  SyntaxContext, SyntaxGraph,
+  SyntaxContext, SyntaxGraph, document::Document, standard_whitespace_chars,
+  syntax::Context as SSEContext,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -69,25 +69,25 @@ impl SSEEncloser for Encloser {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Operator {
-  MetadataAnnotation,
-  TypeAnnotation,
+  Annotation,
+  TypeAscription,
   ExpressionComment,
   Reference,
 }
 impl SSEOperator for Operator {
   fn id_str(&self) -> &str {
     match self {
-      Operator::MetadataAnnotation => ":metadata:",
-      Operator::TypeAnnotation => ":type-annotation:",
-      Operator::ExpressionComment => ":expression-annotation:",
+      Operator::Annotation => ":annotation:",
+      Operator::TypeAscription => ":type-ascription:",
+      Operator::ExpressionComment => ":expression-comment:",
       Operator::Reference => ":reference:",
     }
   }
 
   fn left_args(&self) -> usize {
     match self {
-      Operator::MetadataAnnotation => 0,
-      Operator::TypeAnnotation => 1,
+      Operator::Annotation => 0,
+      Operator::TypeAscription => 1,
       Operator::ExpressionComment => 0,
       Operator::Reference => 0,
     }
@@ -95,8 +95,8 @@ impl SSEOperator for Operator {
 
   fn right_args(&self) -> usize {
     match self {
-      Operator::MetadataAnnotation => 2,
-      Operator::TypeAnnotation => 1,
+      Operator::Annotation => 2,
+      Operator::TypeAscription => 1,
       Operator::ExpressionComment => 1,
       Operator::Reference => 1,
     }
@@ -104,8 +104,8 @@ impl SSEOperator for Operator {
 
   fn op_str(&self) -> &str {
     match self {
-      Operator::MetadataAnnotation => "@",
-      Operator::TypeAnnotation => ":",
+      Operator::Annotation => "@",
+      Operator::TypeAscription => ":",
       Operator::ExpressionComment => "#_",
       Operator::Reference => "&",
     }
@@ -124,8 +124,8 @@ pub fn easl_syntax_graph() -> EaslSynaxGraph {
       Encloser::BlockComment,
     ],
     vec![
-      Operator::MetadataAnnotation,
-      Operator::TypeAnnotation,
+      Operator::Annotation,
+      Operator::TypeAscription,
       Operator::ExpressionComment,
       Operator::Reference,
     ],
@@ -151,8 +151,8 @@ pub fn easl_syntax_graph() -> EaslSynaxGraph {
     ]
     .into(),
     [
-      (Operator::MetadataAnnotation, Context::Default),
-      (Operator::TypeAnnotation, Context::Default),
+      (Operator::Annotation, Context::Default),
+      (Operator::TypeAscription, Context::Default),
       (Operator::Reference, Context::Default),
       (Operator::ExpressionComment, Context::StructuredComment),
     ]

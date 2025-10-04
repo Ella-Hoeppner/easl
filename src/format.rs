@@ -34,8 +34,8 @@ pub enum Block {
   Vertical(Vec<Self>),
   Enclosed(Encloser, Box<Self>),
   Prefixed(Operator, Box<Self>),
-  MetadataHorizontal(Box<Self>, Option<Box<Self>>),
-  MetadataVertical(Box<Self>, Option<Box<Self>>),
+  AnnotationHorizontal(Box<Self>, Option<Box<Self>>),
+  AnnotationVertical(Box<Self>, Option<Box<Self>>),
   Typed(Box<Self>, Option<Box<Self>>),
   ApplicationIndentation(String, Box<Self>),
   Bindings(Vec<(Self, Option<Self>)>),
@@ -68,10 +68,10 @@ impl Block {
           + 2
           + ty.as_ref().map(|ty| ty.last_line_width()).unwrap_or(0)
       }
-      MetadataHorizontal(data, term) => {
+      AnnotationHorizontal(data, term) => {
         data.width() + term.as_ref().map(|term| term.width()).unwrap_or(0) + 2
       }
-      MetadataVertical(data, term) => term
+      AnnotationVertical(data, term) => term
         .as_ref()
         .map(|term| term.last_line_width())
         .unwrap_or_else(|| data.last_line_width()),
@@ -123,10 +123,10 @@ impl Block {
           + 2
           + ty.as_ref().map(|ty| ty.width()).unwrap_or(0)
       }
-      MetadataHorizontal(data, term) => {
+      AnnotationHorizontal(data, term) => {
         data.width() + 2 + term.as_ref().map(|term| term.width()).unwrap_or(0)
       }
-      MetadataVertical(data, term) => (data.width() + 1)
+      AnnotationVertical(data, term) => (data.width() + 1)
         .max(term.as_ref().map(|term| term.width()).unwrap_or(0)),
       ApplicationIndentation(f, inner) => f.len() + 1 + inner.width(),
       Bindings(bindings) => bindings
@@ -161,8 +161,8 @@ impl Block {
       Typed(term, ty) => {
         term.height() + ty.as_ref().map(|ty| ty.width()).unwrap_or(1) - 1
       }
-      MetadataHorizontal(_, _) => 1,
-      MetadataVertical(data, term) => {
+      AnnotationHorizontal(_, _) => 1,
+      AnnotationVertical(data, term) => {
         data.height() + term.as_ref().map(|term| term.width()).unwrap_or(0)
       }
       ApplicationIndentation(_, block) => block.height(),
@@ -212,7 +212,7 @@ impl Block {
             .map(|ty| ty.print(offset + 2))
             .unwrap_or_else(|| String::new())
       }
-      MetadataHorizontal(data, term) => {
+      AnnotationHorizontal(data, term) => {
         "@".to_string()
           + &data.print(indentation)
           + " "
@@ -220,7 +220,7 @@ impl Block {
             .map(|term| term.print(indentation))
             .unwrap_or_else(|| String::new())
       }
-      MetadataVertical(data, term) => {
+      AnnotationVertical(data, term) => {
         "@".to_string()
           + &data.print(indentation + 1)
           + &indented_newline(indentation)
@@ -417,23 +417,23 @@ impl Block {
       }
       EaslTree::Inner((_, encloser_or_operator), mut asts) => {
         match encloser_or_operator {
-          EncloserOrOperator::Operator(Operator::TypeAnnotation) => {
+          EncloserOrOperator::Operator(Operator::TypeAscription) => {
             let mut asts_iter = asts.into_iter();
             Typed(
               Box::new(Self::from_tree(asts_iter.next().unwrap())),
               asts_iter.next().map(|ast| Box::new(Self::from_tree(ast))),
             )
           }
-          EncloserOrOperator::Operator(Operator::MetadataAnnotation) => {
+          EncloserOrOperator::Operator(Operator::Annotation) => {
             let data = Self::from_tree(asts.remove(0));
             let term = Self::from_tree(asts.remove(0));
             if data.height() == 1
               && term.height() == 1
               && data.width() + 1 + term.width() < MAX_EXPRESSION_WIDTH
             {
-              MetadataHorizontal(Box::new(data), Some(Box::new(term)))
+              AnnotationHorizontal(Box::new(data), Some(Box::new(term)))
             } else {
-              MetadataVertical(Box::new(data), Some(Box::new(term)))
+              AnnotationVertical(Box::new(data), Some(Box::new(term)))
             }
           }
           EncloserOrOperator::Operator(operator) => {

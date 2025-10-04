@@ -2,9 +2,9 @@ use std::{fmt::Display, rc::Rc};
 
 use crate::{
   compiler::{
+    annotation::Annotation,
     error::{CompileError, CompileErrorKind::*, ErrorLog},
     expression::ExpressionCompilationPosition,
-    metadata::Metadata,
     program::{EaslDocument, NameContext, Program},
     types::{AbstractType, Type, VariableKind},
     util::{compile_word, read_type_annotated_name},
@@ -118,7 +118,7 @@ impl TopLevelVar {
     mut internal_forms: impl ExactSizeIterator<Item = EaslTree>,
     program: &Program,
     document: &EaslDocument,
-    metadata: Option<(Metadata, SourceTrace)>,
+    annotation: Option<(Annotation, SourceTrace)>,
     errors: &mut ErrorLog,
   ) -> Option<Self> {
     match var_kind_name {
@@ -153,91 +153,90 @@ impl TopLevelVar {
               }) {
                 Err(e) | Ok(Err(e)) => errors.log(e),
                 Ok(Ok(t)) => {
-                  let (group_and_binding, address_space) = if let Some((
-                    metadata,
-                    metadata_source_trace,
-                  )) = &metadata
-                  {
-                    match metadata
-                      .into_top_level_var_data(&metadata_source_trace)
+                  let (group_and_binding, address_space) =
+                    if let Some((annotation, annotation_source_trace)) =
+                      &annotation
                     {
-                      Err(e) => {
-                        errors.log(e);
-                        None
-                      }
-                      Ok((group_and_binding, address_space)) => {
-                        if let Some(address_space) = address_space {
-                          if let Some(required) = t.required_address_space() {
-                            if address_space == required {
-                              if address_space.needs_group_and_binding()
-                                && group_and_binding == None
-                              {
+                      match annotation
+                        .into_top_level_var_data(&annotation_source_trace)
+                      {
+                        Err(e) => {
+                          errors.log(e);
+                          None
+                        }
+                        Ok((group_and_binding, address_space)) => {
+                          if let Some(address_space) = address_space {
+                            if let Some(required) = t.required_address_space() {
+                              if address_space == required {
+                                if address_space.needs_group_and_binding()
+                                  && group_and_binding == None
+                                {
+                                  errors.log(CompileError::new(
+                                    NeedsGroupAndBinding(
+                                      document.text[type_ast_span].to_string(),
+                                    ),
+                                    parens_source_trace.clone(),
+                                  ));
+                                  None
+                                } else {
+                                  Some((group_and_binding, address_space))
+                                }
+                              } else {
                                 errors.log(CompileError::new(
-                                  NeedsGroupAndBinding(
-                                    document.text[type_ast_span].to_string(),
-                                  ),
-                                  parens_source_trace.clone(),
+                                  InvalidAddressSpace(required),
+                                  annotation_source_trace.clone(),
+                                ));
+                                None
+                              }
+                            } else if address_space.needs_group_and_binding() {
+                              if group_and_binding.is_none() {
+                                errors.log(CompileError::new(
+                                  NeedGroupAndBinding(address_space),
+                                  annotation_source_trace.clone(),
                                 ));
                                 None
                               } else {
                                 Some((group_and_binding, address_space))
                               }
                             } else {
-                              errors.log(CompileError::new(
-                                InvalidAddressSpace(required),
-                                metadata_source_trace.clone(),
-                              ));
-                              None
-                            }
-                          } else if address_space.needs_group_and_binding() {
-                            if group_and_binding.is_none() {
-                              errors.log(CompileError::new(
-                                NeedGroupAndBinding(address_space),
-                                metadata_source_trace.clone(),
-                              ));
-                              None
-                            } else {
-                              Some((group_and_binding, address_space))
+                              if group_and_binding.is_some() {
+                                errors.log(CompileError::new(
+                                  DisallowedGroupAndBinding(address_space),
+                                  annotation_source_trace.clone(),
+                                ));
+                                None
+                              } else {
+                                Some((group_and_binding, address_space))
+                              }
                             }
                           } else {
-                            if group_and_binding.is_some() {
+                            if let Some(required) = t.required_address_space() {
+                              Some((group_and_binding, required))
+                            } else {
                               errors.log(CompileError::new(
-                                DisallowedGroupAndBinding(address_space),
-                                metadata_source_trace.clone(),
+                                NeedAddressAnnotation,
+                                annotation_source_trace.clone(),
                               ));
                               None
-                            } else {
-                              Some((group_and_binding, address_space))
                             }
-                          }
-                        } else {
-                          if let Some(required) = t.required_address_space() {
-                            Some((group_and_binding, required))
-                          } else {
-                            errors.log(CompileError::new(
-                              NeedAddressAnnotation,
-                              metadata_source_trace.clone(),
-                            ));
-                            None
                           }
                         }
                       }
+                    } else {
+                      if let Some(required_address_space) =
+                        t.required_address_space()
+                        && required_address_space.needs_group_and_binding()
+                      {
+                        errors.log(CompileError::new(
+                          NeedsGroupAndBinding(
+                            document.text[type_ast_span].to_string(),
+                          ),
+                          parens_source_trace.clone(),
+                        ));
+                      }
+                      None
                     }
-                  } else {
-                    if let Some(required_address_space) =
-                      t.required_address_space()
-                      && required_address_space.needs_group_and_binding()
-                    {
-                      errors.log(CompileError::new(
-                        NeedsGroupAndBinding(
-                          document.text[type_ast_span].to_string(),
-                        ),
-                        parens_source_trace.clone(),
-                      ));
-                    }
-                    None
-                  }
-                  .unwrap_or_else(|| (None, VariableAddressSpace::default()));
+                    .unwrap_or_else(|| (None, VariableAddressSpace::default()));
                   let value = value_ast
                     .map(|value_ast| {
                       match TypedExp::try_from_easl_tree(
@@ -303,9 +302,9 @@ impl TopLevelVar {
                     &vec![],
                   ) {
                     Ok(t) => {
-                      if metadata.is_some() {
+                      if annotation.is_some() {
                         errors.log(CompileError::new(
-                          ConstantMayNotHaveMetadata,
+                          ConstantMayNotHaveAnnotation,
                           parens_source_trace.clone(),
                         ));
                       }

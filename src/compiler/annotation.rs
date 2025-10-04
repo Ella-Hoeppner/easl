@@ -15,26 +15,26 @@ use super::error::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Metadata {
+pub enum Annotation {
   Singular(Rc<str>),
   Map(Vec<(Rc<str>, Rc<str>)>),
   Multiple(Vec<Self>),
 }
 
-impl Display for Metadata {
+impl Display for Annotation {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      Metadata::Singular(s) => write!(f, "{}", s),
-      Metadata::Map(items) => {
+      Annotation::Singular(s) => write!(f, "{}", s),
+      Annotation::Map(items) => {
         write!(f, "{{\n")?;
         for (key, val) in items {
           write!(f, "  {} {}\n", key, val)?;
         }
         write!(f, "\n}}")
       }
-      Metadata::Multiple(sub_metadatas) => {
-        for metadata in sub_metadatas.iter() {
-          metadata.fmt(f).unwrap();
+      Annotation::Multiple(sub_annotations) => {
+        for annotation in sub_annotations.iter() {
+          annotation.fmt(f).unwrap();
           write!(f, "\n")?
         }
         Ok(())
@@ -43,8 +43,8 @@ impl Display for Metadata {
   }
 }
 
-impl Metadata {
-  pub fn from_metadata_tree(ast: EaslTree) -> CompileResult<Self> {
+impl Annotation {
+  pub fn from_annotation_tree(ast: EaslTree) -> CompileResult<Self> {
     match ast {
       EaslTree::Leaf(_, singular) => Ok(Self::Singular(singular.into())),
       EaslTree::Inner((position, Encloser(Curly)), map_fields) => {
@@ -58,7 +58,7 @@ impl Metadata {
                   Ok(field_string.into())
                 } else {
                   err(
-                    InvalidMetadata("fields must all be leaves".into()),
+                    InvalidAnnotation("fields must all be leaves".into()),
                     source_trace.clone(),
                   )
                 }
@@ -70,13 +70,13 @@ impl Metadata {
           ))
         } else {
           err(
-            InvalidMetadata("fields must all be leaves".into()),
+            InvalidAnnotation("fields must all be leaves".into()),
             source_trace,
           )
         }
       }
       _ => err(
-        InvalidMetadata("fields must all be leaves".into()),
+        InvalidAnnotation("fields must all be leaves".into()),
         ast.position().clone().into(),
       ),
     }
@@ -97,21 +97,21 @@ impl Metadata {
       })
   }
   pub fn compile_optional(maybe_self: Option<Self>) -> String {
-    if let Some(metadata) = maybe_self {
-      metadata.compile()
+    if let Some(annotation) = maybe_self {
+      annotation.compile()
     } else {
       String::new()
     }
   }
   pub fn properties(&self) -> Vec<(Rc<str>, Option<Rc<str>>)> {
     match self {
-      Metadata::Singular(s) => vec![(s.clone(), None)],
-      Metadata::Map(items) => items
+      Annotation::Singular(s) => vec![(s.clone(), None)],
+      Annotation::Map(items) => items
         .iter()
         .cloned()
         .map(|(property, value)| (property, Some(value)))
         .collect(),
-      Metadata::Multiple(sub_metadatas) => sub_metadatas
+      Annotation::Multiple(sub_annotations) => sub_annotations
         .into_iter()
         .map(Self::properties)
         .reduce(|mut a, mut b| {
@@ -135,7 +135,7 @@ impl Metadata {
           Ok(value) => group = Some(value),
           Err(_) => {
             return err(
-              InvalidVariableMetadata(self.clone().into()),
+              InvalidVariableAnnotation(self.clone().into()),
               source_trace.clone(),
             );
           }
@@ -144,7 +144,7 @@ impl Metadata {
           Ok(value) => binding = Some(value),
           Err(_) => {
             return err(
-              InvalidVariableMetadata(self.clone().into()),
+              InvalidVariableAnnotation(self.clone().into()),
               source_trace.clone(),
             );
           }
@@ -154,7 +154,7 @@ impl Metadata {
             Some(a) => address_space = Some(a),
             None => {
               return err(
-                InvalidVariableMetadata(self.clone().into()),
+                InvalidVariableAnnotation(self.clone().into()),
                 source_trace.clone(),
               );
             }
@@ -162,7 +162,7 @@ impl Metadata {
         }
         _ => {
           return err(
-            InvalidVariableMetadata(self.clone().into()),
+            InvalidVariableAnnotation(self.clone().into()),
             source_trace.clone(),
           );
         }
@@ -208,7 +208,7 @@ impl Metadata {
             || *entry_type == *"compute") => {}
         _ => {
           return Err(CompileError::new(
-            InvalidFunctionMetadata(self.clone().into()),
+            InvalidFunctionAnnotation(self.clone().into()),
             source_trace.clone(),
           ));
         }
@@ -218,34 +218,35 @@ impl Metadata {
   }
 }
 
-pub fn extract_metadata(
+pub fn extract_annotation(
   exp: EaslTree,
   errors: &mut ErrorLog,
-) -> (EaslTree, Option<(Metadata, SourceTrace)>) {
+) -> (EaslTree, Option<(Annotation, SourceTrace)>) {
   if let EaslTree::Inner(
-    (_, EncloserOrOperator::Operator(Operator::MetadataAnnotation)),
+    (_, EncloserOrOperator::Operator(Operator::Annotation)),
     mut children,
   ) = exp
   {
-    let metadata_tree = children.remove(0);
-    let metadata_source_trace: SourceTrace = metadata_tree.position().into();
+    let annotation_tree = children.remove(0);
+    let annotation_source_trace: SourceTrace =
+      annotation_tree.position().into();
     let exp = children.remove(0);
-    match Metadata::from_metadata_tree(metadata_tree) {
-      Ok(metadata) => {
-        let (exp, inner_metadata) = extract_metadata(exp, errors);
-        if let Some((inner_metadata, inner_metadata_source_trace)) =
-          inner_metadata
+    match Annotation::from_annotation_tree(annotation_tree) {
+      Ok(annotation) => {
+        let (exp, inner_annotation) = extract_annotation(exp, errors);
+        if let Some((inner_annotation, inner_annotation_source_trace)) =
+          inner_annotation
         {
           (
             exp,
             Some((
-              Metadata::Multiple(vec![metadata, inner_metadata]),
-              metadata_source_trace
-                .insert_as_secondary(inner_metadata_source_trace),
+              Annotation::Multiple(vec![annotation, inner_annotation]),
+              annotation_source_trace
+                .insert_as_secondary(inner_annotation_source_trace),
             )),
           )
         } else {
-          (exp, Some((metadata, metadata_source_trace)))
+          (exp, Some((annotation, annotation_source_trace)))
         }
       }
       Err(err) => {

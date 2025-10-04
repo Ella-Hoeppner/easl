@@ -36,8 +36,6 @@ Feature goals:
       * also validate that the values of the `location` annotations make sense - they don't overlap, and there are no gaps, e.g. something with `location 0` on one field and `location 2` on another, but no `location 1`, shouldn't be allowed
         * at least, I presume? haven't actually checked the wgsl spec for this
 
-* rename metadata to "annotations"? Seems like maybe a more specific and descriptive word, and I think it might make the binary-prefix-syntax more understandable
-
 * get rid of the regex dependency
   * only used once and it has a lot of dependencies, probably a not-insignificant part of the size of the final executable size
 
@@ -113,7 +111,7 @@ Feature goals:
 
 * Overhaul references
   * References shouldn't be first-class values. You shouldn't be able to create a binding of type `&f32` or anything like that. Functions can mark some of their arguments as references, but you'll just pass normal values for those arguments, and the fact that it's a reference will always be inferred - there will be no syntax for constructing a reference.
-  * Probably get rid of the special syntax for the reference types too, just use a `@ref ...` metadata syntax or maybe a `(Ref ...)` generic struct syntax
+  * Probably get rid of the special syntax for the reference types too, just use a `@ref ...` annotation syntax or maybe a `(Ref ...)` generic struct syntax
   * On the GPU-side it seems like references are basically only ever used for `arrayLength` and atomic stuff. So I don't really know why a user would ever want to define a function that uses references outside of the context of atomics.
     * I guess maybe if you have really big data structures and you wanna pass them to helper functions sometimes it might be more efficient to pass around pointers rather than having them be copied when they're passed to functions (though the compilers probably avoid that kind of copying typically I assume?)
     * On the CPU-side version having good support for references in user-defined functions will definitely be important, though. So it's important to get this right.
@@ -128,7 +126,7 @@ Feature goals:
 * formatter: 
   * have a separate threshold for the max size allowed for top-level `(def ...)`
     * a lot of things that would be perfectly readable on one line are getting split to multiple lines, feels like `def`s should almost always be one line unless they're very long
-  * let top-level struct-like metadata appear on one line if it's under some threshold (probably should be another separate threshold)
+  * let top-level struct-like annotation appear on one line if it's under some threshold (probably should be another separate threshold)
 
 * improve error messages
   * rn if a function is overloaded and it's arguments don't resolve to a valid signature, then the application expression using that function also won't resolve, even if the function always returns the same type

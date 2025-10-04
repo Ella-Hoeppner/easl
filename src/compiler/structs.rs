@@ -6,7 +6,7 @@ use std::{
 use crate::{
   compiler::{
     expression::{Accessor, ExpKind, Number, TypedExp},
-    metadata::extract_metadata,
+    annotation::extract_annotation,
     program::{NameContext, TypeDefs},
     types::{ArraySize, contains_name_leaf, extract_type_annotation_ast},
     util::{compile_word, read_leaf},
@@ -18,13 +18,13 @@ use super::{
   error::{
     CompileError, CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace,
   },
-  metadata::Metadata,
+  annotation::Annotation,
   types::{AbstractType, ExpTypeInfo, Type, TypeState},
 };
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UntypedStructField {
-  metadata: Option<Metadata>,
+  annotation: Option<Annotation>,
   name: Rc<str>,
   type_ast: EaslTree,
 }
@@ -36,12 +36,12 @@ impl UntypedStructField {
     let type_ast =
       type_ast.ok_or(CompileError::new(StructFieldMissingType, path.into()))?;
     let mut errors = ErrorLog::new();
-    let (name, metadata) = extract_metadata(inner_ast, &mut errors);
+    let (name, annotation) = extract_annotation(inner_ast, &mut errors);
     if let Some(e) = errors.into_iter().next() {
       return Err(e.clone());
     }
     Ok(Self {
-      metadata: metadata.map(|(a, _)| a),
+      annotation: annotation.map(|(a, _)| a),
       name: read_leaf(name)?,
       type_ast,
     })
@@ -55,7 +55,7 @@ impl UntypedStructField {
     skolems: &Vec<Rc<str>>,
   ) -> CompileResult<AbstractStructField> {
     Ok(AbstractStructField {
-      metadata: self.metadata,
+      annotation: self.annotation,
       name: self.name,
       field_type: AbstractType::from_easl_tree(
         self.type_ast,
@@ -131,7 +131,7 @@ pub fn compiled_vec_or_mat_name(
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractStructField {
-  pub metadata: Option<Metadata>,
+  pub annotation: Option<Annotation>,
   pub name: Rc<str>,
   pub field_type: AbstractType,
 }
@@ -144,7 +144,7 @@ impl AbstractStructField {
     source_trace: SourceTrace,
   ) -> CompileResult<StructField> {
     Ok(StructField {
-      metadata: self.metadata.clone(),
+      annotation: self.annotation.clone(),
       name: Rc::clone(&self.name),
       field_type: self
         .field_type
@@ -160,7 +160,7 @@ impl AbstractStructField {
     source_trace: SourceTrace,
   ) -> CompileResult<StructField> {
     Ok(StructField {
-      metadata: self.metadata.clone(),
+      annotation: self.annotation.clone(),
       name: self.name.clone(),
       field_type: self.field_type.fill_generics(
         generics,
@@ -174,7 +174,7 @@ impl AbstractStructField {
     generics: &HashMap<Rc<str>, AbstractType>,
   ) -> Self {
     AbstractStructField {
-      metadata: self.metadata,
+      annotation: self.annotation,
       name: self.name,
       field_type: self.field_type.fill_abstract_generics(generics),
     }
@@ -184,14 +184,14 @@ impl AbstractStructField {
     typedefs: &TypeDefs,
     names: &mut NameContext,
   ) -> CompileResult<String> {
-    let metadata = if let Some(metadata) = self.metadata {
-      metadata.compile()
+    let annotation = if let Some(annotation) = self.annotation {
+      annotation.compile()
     } else {
       String::new()
     };
     let name = compile_word(self.name);
     let field_type = self.field_type.compile(typedefs, names)?;
-    Ok(format!("  {metadata}{name}: {field_type}"))
+    Ok(format!("  {annotation}{name}: {field_type}"))
   }
 }
 
@@ -492,21 +492,21 @@ impl AbstractStruct {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructField {
-  pub metadata: Option<Metadata>,
+  pub annotation: Option<Annotation>,
   pub name: Rc<str>,
   pub field_type: ExpTypeInfo,
 }
 
 impl StructField {
   pub fn compile(self, names: &mut NameContext) -> String {
-    let metadata = if let Some(metadata) = self.metadata {
-      metadata.compile()
+    let annotation = if let Some(annotation) = self.annotation {
+      annotation.compile()
     } else {
       String::new()
     };
     let name = compile_word(self.name);
     let field_type = self.field_type.monomorphized_name(names);
-    format!("  {metadata}{name}: {field_type}")
+    format!("  {annotation}{name}: {field_type}")
   }
 }
 

@@ -22,7 +22,7 @@ pub fn read_type_annotated_name(
   ast: EaslTree,
 ) -> CompileResult<(Rc<str>, EaslTree)> {
   if let EaslTree::Inner(
-    (position, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
+    (position, EncloserOrOperator::Operator(Operator::TypeAscription)),
     mut children,
   ) = ast
   {

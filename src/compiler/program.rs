@@ -11,6 +11,7 @@ use take_mut::take;
 use crate::{
   Never,
   compiler::{
+    annotation::extract_annotation,
     builtins::built_in_functions,
     enums::{AbstractEnum, UntypedEnum},
     error::{CompileError, SourceTrace},
@@ -19,7 +20,6 @@ use crate::{
       arg_list_and_return_type_from_easl_tree,
     },
     functions::AbstractFunctionSignature,
-    metadata::extract_metadata,
     structs::UntypedStruct,
     types::{
       AbstractType, Type, TypeConstraint, TypeState, UntypedType, Variable,
@@ -63,7 +63,7 @@ impl<'s> EaslDocumentMethods for EaslDocument<'s> {
           && let Some(Ast::Leaf(_, first_leaf)) = children.first()
           && first_leaf == "def"
           && let Some(Ast::Inner(
-            (_, EncloserOrOperator::Operator(Operator::TypeAnnotation)),
+            (_, EncloserOrOperator::Operator(Operator::TypeAscription)),
             name_children,
           )) = children.get(2)
           && let Some(Ast::Leaf(_, binding_name)) = name_children.first()
@@ -429,7 +429,8 @@ impl Program {
     for tree in trees.into_iter() {
       use crate::parse::Encloser::*;
       use sse::syntax::EncloserOrOperator::*;
-      let (tree_body, metadata) = extract_metadata(tree.clone(), &mut errors);
+      let (tree_body, annotation) =
+        extract_annotation(tree.clone(), &mut errors);
       if let EaslTree::Inner((position, Encloser(Parens)), children) =
         &tree_body
       {
@@ -546,7 +547,7 @@ impl Program {
                   .log(CompileError::new(InvalidTypeDefinition, source_trace));
               }
             }
-            _ => non_typedef_trees.push((metadata, tree_body)),
+            _ => non_typedef_trees.push((annotation, tree_body)),
           }
         } else {
           errors.log(CompileError::new(
@@ -592,7 +593,7 @@ impl Program {
       }
     }
 
-    for (metadata, tree) in non_typedef_trees.into_iter() {
+    for (annotation, tree) in non_typedef_trees.into_iter() {
       use crate::parse::Encloser::*;
       use sse::syntax::EncloserOrOperator::*;
       if let EaslTree::Inner((parens_position, Encloser(Parens)), children) =
@@ -614,7 +615,7 @@ impl Program {
                 children_iter,
                 &program,
                 document,
-                metadata,
+                annotation,
                 &mut errors,
               ) {
                 program.add_top_level_var(var, &mut errors);
@@ -681,9 +682,9 @@ impl Program {
                           source_path,
                           arg_names,
                           arg_types,
-                          arg_metadata,
+                          arg_annotations,
                           return_type,
-                          return_metadata,
+                          return_annotation,
                         )) => {
                           match return_type.concretize(
                             &generic_arg_names,
@@ -693,8 +694,8 @@ impl Program {
                             Ok(concrete_return_type) => {
                               match arg_types
                                 .iter()
-                                .zip(arg_metadata.iter())
-                                .map(|(t, metadata)| {
+                                .zip(arg_annotations.iter())
+                                .map(|(t, annotation)| {
                                   Ok((
                                     Variable {
                                       var_type: t
@@ -705,8 +706,8 @@ impl Program {
                                         )?
                                         .known()
                                         .into(),
-                                      kind: if let Some(metadata) = metadata
-                                        && metadata
+                                      kind: if let Some(annotation) = annotation
+                                        && annotation
                                           .properties()
                                           .into_iter()
                                           .find(|(name, _)| &**name == "var")
@@ -747,13 +748,13 @@ impl Program {
                                   ) {
                                     Ok(body) => {
                                       let associative = if let Some((
-                                        metadata,
-                                        metadata_source_trace,
-                                      )) = &metadata
+                                        annotation,
+                                        annotation_source_trace,
+                                      )) = &annotation
                                       {
-                                        match metadata
+                                        match annotation
                                           .validate_for_top_level_function(
-                                            metadata_source_trace,
+                                            annotation_source_trace,
                                           ) {
                                           Ok(is_associative) => is_associative,
                                           Err(e) => {
@@ -769,9 +770,9 @@ impl Program {
                                           Rc::new(RefCell::new(
                                             TopLevelFunction {
                                               arg_names,
-                                              arg_metadata,
-                                              return_metadata,
-                                              metadata: metadata
+                                              arg_annotations,
+                                              return_annotation,
+                                              annotation: annotation
                                                 .map(|(a, _)| a),
                                               body,
                                             },

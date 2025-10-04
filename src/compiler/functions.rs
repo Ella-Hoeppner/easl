@@ -15,12 +15,12 @@ use crate::compiler::{
 };
 
 use super::{
+  annotation::Annotation,
   error::{
     CompileError, CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace,
     err,
   },
   expression::{ExpKind, ExpressionCompilationPosition, TypedExp},
-  metadata::Metadata,
   program::Program,
   structs::AbstractStruct,
   types::{AbstractType, ExpTypeInfo, Type, TypeConstraint, TypeState},
@@ -30,9 +30,9 @@ use super::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct TopLevelFunction {
   pub arg_names: Vec<Rc<str>>,
-  pub arg_metadata: Vec<Option<Metadata>>,
-  pub return_metadata: Option<Metadata>,
-  pub metadata: Option<Metadata>,
+  pub arg_annotations: Vec<Option<Annotation>>,
+  pub return_annotation: Option<Annotation>,
+  pub annotation: Option<Annotation>,
   pub body: TypedExp,
 }
 
@@ -131,12 +131,12 @@ impl AbstractFunctionSignature {
       err(NoArgNamesForFunction, source_trace.clone())
     }
   }
-  pub fn arg_metadata(
+  pub fn arg_annotations(
     &self,
     source_trace: SourceTrace,
-  ) -> CompileResult<Vec<Option<Metadata>>> {
+  ) -> CompileResult<Vec<Option<Annotation>>> {
     if let FunctionImplementationKind::Composite(f) = &self.implementation {
-      Ok(f.borrow().arg_metadata.clone())
+      Ok(f.borrow().arg_annotations.clone())
     } else {
       err(NoArgNamesForFunction, source_trace)
     }
@@ -238,19 +238,19 @@ impl AbstractFunctionSignature {
       .iter()
       .cloned()
       .zip(implementation.arg_names.into_iter())
-      .zip(implementation.arg_metadata.into_iter())
-      .map(|((t, name), metadata)| {
+      .zip(implementation.arg_annotations.into_iter())
+      .map(|((t, name), annotation)| {
         if let AbstractType::Type(Type::Function(_)) = t {
           (Some(name.clone()), None)
         } else {
-          (None, Some((name.clone(), (metadata.clone(), t))))
+          (None, Some((name.clone(), (annotation.clone(), t))))
         }
       })
       .collect::<(
         Vec<Option<Rc<str>>>,
-        Vec<Option<(Rc<str>, (Option<Metadata>, AbstractType))>>,
+        Vec<Option<(Rc<str>, (Option<Annotation>, AbstractType))>>,
       )>();
-    let (new_parameter_names, (new_parameter_metadata, new_parameter_types)): (
+    let (new_parameter_names, (new_parameter_annotation, new_parameter_types)): (
       Vec<_>,
       (Vec<_>, Vec<_>),
     ) = remaining_parameters.into_iter().filter_map(|x| x).collect();
@@ -281,7 +281,7 @@ impl AbstractFunctionSignature {
       .body
       .inline_args(&removed_param_names, &fn_args);
     implementation.arg_names = new_parameter_names;
-    implementation.arg_metadata = new_parameter_metadata;
+    implementation.arg_annotations = new_parameter_annotation;
     let f = AbstractFunctionSignature {
       name: names.get_monomorphized_name(
         name.clone(),
@@ -628,11 +628,11 @@ impl TopLevelFunction {
     let args = arg_names
       .into_iter()
       .zip(args.into_iter())
-      .zip(self.arg_metadata.into_iter())
-      .map(|((name, (arg, _)), metadata)| {
+      .zip(self.arg_annotations.into_iter())
+      .map(|((name, (arg, _)), annotation)| {
         format!(
           "{}{}: {}",
-          Metadata::compile_optional(metadata),
+          Annotation::compile_optional(annotation),
           compile_word(name),
           arg.var_type.monomorphized_name(names)
         )
@@ -642,14 +642,14 @@ impl TopLevelFunction {
 
     Ok(format!(
       "{}fn {}({args}){} {{{}\n}}",
-      Metadata::compile_optional(self.metadata),
+      Annotation::compile_optional(self.annotation),
       compile_word(name.into()),
       if return_type.kind.unwrap_known() == Type::Unit {
         "".to_string()
       } else {
         format!(
           " -> {}{}",
-          Metadata::compile_optional(self.return_metadata),
+          Annotation::compile_optional(self.return_annotation),
           return_type.monomorphized_name(names)
         )
       },
