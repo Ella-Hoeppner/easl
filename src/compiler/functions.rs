@@ -591,6 +591,15 @@ impl FunctionSignature {
     }
     EffectType::empty()
   }
+  pub fn unwrap_type_signature(&self) -> Vec<Type> {
+    self
+      .args
+      .iter()
+      .map(|a| &a.0.var_type)
+      .chain(std::iter::once(&self.return_type))
+      .map(|t| t.unwrap_known())
+      .collect::<Vec<Type>>()
+  }
 }
 
 pub struct BuiltInFunction {

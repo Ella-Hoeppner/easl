@@ -1442,6 +1442,69 @@ impl Program {
       }
     }
   }
+  pub fn separate_overloaded_fns(&mut self) {
+    let mut renames = HashMap::new();
+    for (_, signatures) in self.abstract_functions.iter() {
+      if signatures.len() > 1 {
+        for s in signatures.iter() {
+          let mut s = s.borrow_mut();
+          let base_name = s.name.clone();
+          let type_signature = if s.generic_args.is_empty()
+            && let FunctionImplementationKind::Composite(f) =
+              &mut s.implementation
+            && let Type::Function(f) = f.borrow().body.data.unwrap_known()
+          {
+            f.unwrap_type_signature()
+          } else {
+            continue;
+          };
+          let new_name = base_name.to_string()
+            + "_"
+            + &type_signature
+              .iter()
+              .map(|t| t.monomorphized_name(&mut self.names.borrow_mut()))
+              .collect::<Vec<String>>()
+              .join("_");
+          let new_name: Rc<str> = new_name.into();
+          s.name = new_name.clone();
+          if !renames.contains_key(&base_name) {
+            renames.insert(base_name.clone(), vec![]);
+          }
+          renames
+            .get_mut(&base_name)
+            .unwrap()
+            .push((type_signature, new_name));
+        }
+      }
+    }
+    for signature in self.abstract_functions_iter() {
+      let signature = signature.borrow();
+      if let FunctionImplementationKind::Composite(f) =
+        &signature.implementation
+      {
+        f.borrow_mut()
+          .body
+          .walk_mut(&mut |exp| {
+            if let ExpKind::Name(name) = &mut exp.kind {
+              if let Some(renames) = renames.get(name)
+                && let Type::Function(f) = exp.data.unwrap_known()
+              {
+                let f_signature = f.unwrap_type_signature();
+                for (signature, rename) in renames.iter() {
+                  if signature == &f_signature {
+                    *name = rename.clone();
+                  }
+                }
+              }
+              Ok::<bool, Never>(false)
+            } else {
+              Ok(true)
+            }
+          })
+          .unwrap();
+      }
+    }
+  }
   pub fn desugar_swizzle_assignments(&mut self) {
     let mut names = self.names.borrow_mut();
     for signature in self.abstract_functions_iter() {
@@ -1513,6 +1576,7 @@ impl Program {
     }
     self.desugar_swizzle_assignments();
     self.deexpressionify();
+    self.separate_overloaded_fns();
     errors
   }
   pub fn gather_type_annotations(&self) -> Vec<(SourceTrace, TypeState)> {

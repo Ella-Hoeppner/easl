@@ -88,6 +88,8 @@ fn main() {
     "shadowed_arg",
     "var_arg",
     "angle_bracket",
+    "overload",
+    "overload_builtin",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

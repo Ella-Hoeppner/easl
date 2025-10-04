@@ -1,0 +1,10 @@
+(struct Complex
+  r: f32
+  i: f32)
+
+(defn + [x: Complex y: Complex]: Complex
+  (Complex (+ x.r y.r)
+           (+ x.i y.i)))
+
+(defn double [x: Complex]: Complex
+  (+ x x))

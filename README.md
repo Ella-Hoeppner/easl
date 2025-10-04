@@ -16,10 +16,6 @@ Feature goals:
 
 ## todo
 ### high priority, necessary to call the language 0.1
-* overloading doesn't actually work rn
-  * wgsl doesn't support overloading and we don't actually change the name of any overloaded functions during compilation, so user-defined overloaded function will just produce invalid wgsl right now
-  * need to make sure whatever approach we use also works for user overloads of builtin functions i.e. defining `(defn + [x: Complex y: Complex]: Complex ...)`
-
 * more annotation validation:
   * validate annotations on function arguments
     * right now you can kinda just do anything and it'll pass through the compiler just fine
@@ -29,10 +25,16 @@ Feature goals:
         * this should be abbreviatable as:
           * `(defn vert [@builtin vertex-index: u32] ...)`
           * this only makes sense as long as you're willing to use this particular name, but I think it'll still be quite nice to have
-  * validate annotations on struct fields
+    * on fragment entry points, require a `@{location ...}` on the output type, or one isn't found, assume that it's `@{location 0}`
   * disallow annotations on structs
     * as in `@{blah blah} (struct ...)`
     * never does anything anways, but should just make sure it gives an error so the user knows it isn't a valid thing to do
+  * validate annotations on struct fields
+    * ensure that any struct used as an input/output type of an entry point has all of its fields annotated as either `@{location ...}` or `@{builtin ..}`, or the `@builtin` shorthand
+      * or, alternatively, make it so `@{location ...}` annotations are purely optional, and will just be filled in with the order of the fields if left empty?
+        * could be weird if the user specifies only a few of them, but I guess I can handle that by just skipping those indeces when filling in the others
+      * also validate that the values of the `location` annotations make sense - they don't overlap, and there are no gaps, e.g. something with `location 0` on one field and `location 2` on another, but no `location 1`, shouldn't be allowed
+        * at least, I presume? haven't actually checked the wgsl spec for this
 
 * rename metadata to "annotations"? Seems like maybe a more specific and descriptive word, and I think it might make the binary-prefix-syntax more understandable
 
@@ -82,6 +84,9 @@ Feature goals:
       * would it be possible to overload `[]` to use it for both things? type inference might be tricky
     * guess I could do like `{[]}` or `{()}`? That kinda sucks though
     * `'()` would work I guess but i also kinda hate that
+
+* support declaring local functions as like `(fn [x: ...]: ... ...)`
+  * would be nice to have this even if they don't close over the environment yet, e.g. for quickly modifying an sdf in a raymarcher without having to declare a whole top-level `defn` for it
 
 * closures
 

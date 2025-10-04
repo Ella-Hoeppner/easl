@@ -1,0 +1,8 @@
+(defn double [x: f32]: u32
+  (u32 (+ x x)))
+
+(defn double [x: u32]: u32
+  (+ x x))
+
+(defn quadruple [x: f32]: u32
+  (double (double x)))
