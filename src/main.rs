@@ -87,6 +87,7 @@ fn main() {
     "var_name_collision",
     "shadowed_arg",
     "var_arg",
+    "angle_bracket",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

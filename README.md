@@ -20,10 +20,6 @@ Feature goals:
   * wgsl doesn't support overloading and we don't actually change the name of any overloaded functions during compilation, so user-defined overloaded function will just produce invalid wgsl right now
   * need to make sure whatever approach we use also works for user overloads of builtin functions i.e. defining `(defn + [x: Complex y: Complex]: Complex ...)`
 
-* names like `bi->uni` don't compile correctly
-  * turns into like `bi_>uni`
-    * I thought I had a system for replacing `>` and the like with other things, guess not?
-
 * more annotation validation:
   * validate annotations on function arguments
     * right now you can kinda just do anything and it'll pass through the compiler just fine

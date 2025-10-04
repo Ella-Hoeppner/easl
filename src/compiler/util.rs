@@ -4,7 +4,7 @@ use sse::syntax::EncloserOrOperator;
 
 use crate::parse::{EaslTree, Operator};
 
-use super::error::{err, CompileErrorKind::*, CompileResult, SourceTrace};
+use super::error::{CompileErrorKind::*, CompileResult, SourceTrace, err};
 
 pub fn indent(s: String) -> String {
   s.replace("\n", "\n  ")
@@ -39,5 +39,10 @@ pub fn read_type_annotated_name(
 }
 
 pub fn compile_word(word: Rc<str>) -> String {
-  word.replace("-", "_").replace("+", "PLUS")
+  word
+    .replace("-", "_")
+    .replace("+", "PLUS")
+    .replace("*", "STAR")
+    .replace(">", "ABRACKET_RIGHT")
+    .replace("<", "ABRACKET_LEFT")
 }
