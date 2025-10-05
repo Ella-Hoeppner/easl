@@ -1158,7 +1158,7 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
 fn texture_functions() -> Vec<AbstractFunctionSignature> {
   vec![
     AbstractFunctionSignature {
-      name: "textureSample".into(),
+      name: "texture-sample".into(),
       generic_args: vec![("T".into(), vec![])],
       arg_types: vec![
         AbstractType::AbstractStruct(texture_2d().into()),
@@ -1175,7 +1175,7 @@ fn texture_functions() -> Vec<AbstractFunctionSignature> {
       associative: false,
     },
     AbstractFunctionSignature {
-      name: "textureLoad".into(),
+      name: "texture-load".into(),
       generic_args: vec![("T".into(), vec![])],
       arg_types: vec![
         AbstractType::AbstractStruct(texture_2d().into()),
@@ -1196,7 +1196,7 @@ fn texture_functions() -> Vec<AbstractFunctionSignature> {
 
 fn array_functions() -> Vec<AbstractFunctionSignature> {
   vec![AbstractFunctionSignature {
-    name: "arrayLength".into(),
+    name: "array-length".into(),
     generic_args: vec![("T".into(), vec![])],
     arg_types: vec![AbstractType::Reference(
       AbstractType::AbstractArray {
@@ -1256,6 +1256,13 @@ lazy_static! {
   .collect();
   pub static ref ABNORMAL_CONSTRUCTOR_STRUCTS: HashSet<&'static str> =
     ["vec2", "vec3", "vec4"].into_iter().collect();
+  pub static ref RENAMED_BUILTINS: HashMap<&'static str, &'static str> = [
+    ("array-length", "arrayLength"),
+    ("texture-sample", "textureSample"),
+    ("texture-load", "textureLoad")
+  ]
+  .into_iter()
+  .collect();
 }
 
 pub fn built_in_macros() -> Vec<Macro> {

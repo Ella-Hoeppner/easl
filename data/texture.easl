@@ -7,4 +7,4 @@
 (var tex-sampler: Sampler)
 
 (defn f [a: f32]: vec4f
-  (textureSample tex tex-sampler (vec2f 0.)))
+  (texture-sample tex tex-sampler (vec2f 0.)))

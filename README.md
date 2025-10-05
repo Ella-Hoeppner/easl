@@ -36,13 +36,6 @@ Feature goals:
       * also validate that the values of the `location` annotations make sense - they don't overlap, and there are no gaps, e.g. something with `location 0` on one field and `location 2` on another, but no `location 1`, shouldn't be allowed
         * at least, I presume? haven't actually checked the wgsl spec for this
 
-* get rid of the regex dependency
-  * only used once and it has a lot of dependencies, probably a not-insignificant part of the size of the final executable size
-
-* make it so `arrayLength` can accept an array as an input, rather than a reference to an array, at least syntactically
-  * so I guess like, insert the reference operation for the user if a function ever takes an argument `&T` but ends up recieving a `T`?
-    * or maybe don't do that, and just have an extra signature for arrayLength built-in, and have a special case for it in the backend?
-
 * missing some built-in functions:
   * `bool` casting functions
   * `any` and `all` on bool-vectors
@@ -69,6 +62,9 @@ Feature goals:
 
 
 
+* make it so `arrayLength` can accept an array as an input, rather than a reference to an array, at least syntactically
+  * so I guess like, insert the reference operation for the user if a function ever takes an argument `&T` but ends up recieving a `T`?
+    * or maybe don't do that, and just have an extra signature for arrayLength built-in, and have a special case for it in the backend?
 
 * would be nice to expose `bitcast` to the user for arbitrary structs/enums
   * would need to throw an error when the types aren't of the same size I guess

@@ -229,7 +229,7 @@
                                    (or (>= in.pos-in-char.x 1.)
                                        (>= in.pos-in-char.y 1.))))
                          0.
-                         (.x (textureSample char-tex
+                         (.x (texture-sample char-tex
                                             char-sampler
                                             (/ (+ (vec2f in.character-coords)
                                                   (clamp in.pos-in-char
