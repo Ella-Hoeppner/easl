@@ -6,6 +6,7 @@ use std::{
   rc::Rc,
 };
 use take_mut::take;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::{
   Never,
@@ -37,74 +38,90 @@ pub enum Number {
   Int(i64),
   Float(f64),
 }
-use lazy_static::lazy_static;
-use regex::Regex;
-
-lazy_static! {
-  static ref NUM_REGEX: Regex =
-    Regex::new(r"^(-?\d+\.?\d*|\.\d+)(i|u|f)?$").unwrap();
-}
 
 fn parse_number(num_str: &str, source_trace: SourceTrace) -> Option<TypedExp> {
-  if let Some(captures) = NUM_REGEX.captures(num_str) {
-    let num_str = captures.get(1).unwrap().as_str();
-    let contains_decimal = num_str.contains('.');
-    if let Some(suffix) = captures.get(2).map(|m| m.as_str()) {
-      match suffix {
-        "f" => {
-          return Some(Exp {
-            kind: ExpKind::NumberLiteral(Number::Float(
-              num_str.parse::<f64>().unwrap(),
-            )),
-            data: Known(Type::F32).into(),
-            source_trace,
-          });
+  let mut known_type = None;
+  let mut already_seen_decimal = false;
+  let mut suffix_index = None;
+  let mut has_minus = false;
+  let mut graphemes = num_str.grapheme_indices(true).peekable();
+  let mut seen_digit = false;
+  while let Some((i, c)) = graphemes.next() {
+    match c {
+      "-" => {
+        if i != 0 {
+          return None;
         }
-        "i" | "u" => {
-          if !contains_decimal {
-            return Some(Exp {
-              kind: ExpKind::NumberLiteral(Number::Int(
-                num_str.parse::<i64>().unwrap(),
-              )),
-              data: Known(match suffix {
-                "i" => Type::I32,
-                "u" => Type::U32,
-                _ => unreachable!(),
-              })
-              .into(),
-              source_trace,
-            });
-          }
-        }
-        _ => unreachable!(),
+        has_minus = true;
       }
-    } else {
-      if contains_decimal {
-        return Some(Exp {
-          kind: ExpKind::NumberLiteral(Number::Float(
-            num_str.parse::<f64>().unwrap(),
-          )),
-          data: Known(Type::F32).into(),
-          source_trace,
-        });
-      } else {
-        return Some(Exp {
-          kind: ExpKind::NumberLiteral(Number::Int(
-            num_str.parse::<i64>().unwrap(),
-          )),
-          data: OneOf(if num_str.contains('-') {
+      "." => {
+        if already_seen_decimal {
+          return None;
+        }
+        known_type = Some(Type::F32);
+        already_seen_decimal = true;
+      }
+      "i" | "u" | "f" => {
+        if graphemes.peek().is_some() {
+          return None;
+        }
+        let t = match c {
+          "i" => Type::I32,
+          "u" => Type::U32,
+          "f" => Type::F32,
+          _ => unreachable!(),
+        };
+        suffix_index = Some(i);
+        if let Some(known_type) = known_type.as_ref() {
+          if known_type != &t {
+            return None;
+          }
+        } else {
+          known_type = Some(t);
+        }
+      }
+      _ => {
+        if c < "0" || c > "9" {
+          return None;
+        }
+        seen_digit = true;
+      }
+    }
+  }
+  if !seen_digit {
+    return None;
+  }
+  let prefix_str = if let Some(suffix_index) = suffix_index {
+    &num_str[..suffix_index]
+  } else {
+    num_str
+  };
+  Some(if let Some(Type::F32) = known_type {
+    Exp {
+      kind: ExpKind::NumberLiteral(Number::Float(
+        prefix_str.parse::<f64>().unwrap(),
+      )),
+      data: Known(Type::F32).into(),
+      source_trace,
+    }
+  } else {
+    Exp {
+      kind: ExpKind::NumberLiteral(Number::Int({
+        prefix_str.parse::<i64>().unwrap()
+      })),
+      data: known_type
+        .map(|t| Known(t))
+        .unwrap_or_else(|| {
+          OneOf(if has_minus {
             vec![Type::F32, Type::I32]
           } else {
             vec![Type::F32, Type::I32, Type::U32]
           })
-          .into(),
-          source_trace,
-        });
-      }
+        })
+        .into(),
+      source_trace,
     }
-  }
-
-  None
+  })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1860,12 +1877,12 @@ impl TypedExp {
                 }
                 let body_types_changed =
                   body.propagate_types_inner(ctx, errors);
-                let argument_types = arg_names
+                let mut argument_types = arg_names
                   .iter()
                   .map(|name| ctx.unbind(name).var_type.kind)
                   .collect::<Vec<_>>();
                 let fn_type_changed = self.data.constrain_fn_by_argument_types(
-                  argument_types,
+                  argument_types.iter_mut().collect(),
                   &self.source_trace,
                   errors,
                 );
@@ -1982,7 +1999,7 @@ impl TypedExp {
           }
         }
         anything_changed |= f.data.constrain_fn_by_argument_types(
-          args.iter().map(|arg| arg.data.kind.clone()).collect(),
+          args.iter_mut().map(|arg| &mut arg.data.kind).collect(),
           &self.source_trace,
           errors,
         );
@@ -2053,12 +2070,12 @@ impl TypedExp {
           ctx.bind(name, Variable::immutable(value.data.clone()));
         }
         anything_changed |= body.propagate_types_inner(ctx, errors);
-        for (name, _, value) in bindings.iter_mut() {
-          anything_changed |= value.data.constrain(
-            ctx.unbind(name).var_type.kind,
-            &self.source_trace,
-            errors,
-          );
+        for (name, _, value) in bindings.iter_mut().rev() {
+          let unbound_type = ctx.unbind(name).var_type.kind;
+          anything_changed |=
+            value
+              .data
+              .constrain(unbound_type, &self.source_trace, errors);
         }
         self.data.subtree_fully_typed = bindings.iter().fold(
           body.data.subtree_fully_typed,

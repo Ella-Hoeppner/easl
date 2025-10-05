@@ -531,7 +531,7 @@ impl FunctionSignature {
   }
   pub fn mutually_constrain_arguments(
     &mut self,
-    args: &mut Vec<TypeState>,
+    mut args: Vec<&mut TypeState>,
     source_trace: SourceTrace,
     errors: &mut ErrorLog,
   ) -> bool {

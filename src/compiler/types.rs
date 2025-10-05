@@ -1596,7 +1596,7 @@ impl TypeState {
   }
   pub fn constrain_fn_by_argument_types(
     &mut self,
-    mut arg_types: Vec<TypeState>,
+    mut arg_types: Vec<&mut TypeState>,
     source_trace: &SourceTrace,
     errors: &mut ErrorLog,
   ) -> bool {
@@ -1607,7 +1607,9 @@ impl TypeState {
         for possibility in possibilities {
           match possibility {
             Type::Function(signature) => {
-              if signature.are_args_compatible(&arg_types) {
+              if signature.are_args_compatible(
+                &arg_types.iter().map(|t| (*t).clone()).collect(),
+              ) {
                 new_possibilities.push(Type::Function(signature.clone()))
               } else {
                 anything_changed = true;
@@ -1636,7 +1638,7 @@ impl TypeState {
           errors.log(CompileError::new(
             FunctionArgumentTypesIncompatible {
               f: typestate.clone().into(),
-              args: arg_types.into_iter().map(|t| t.into()).collect(),
+              args: arg_types.into_iter().map(|t| t.clone().into()).collect(),
             },
             source_trace.clone(),
           ));
@@ -1650,11 +1652,14 @@ impl TypeState {
         }
       }
       TypeState::Known(t) => match t {
-        Type::Function(signature) => signature.mutually_constrain_arguments(
-          &mut arg_types,
-          source_trace.clone(),
-          errors,
-        ),
+        Type::Function(signature) => {
+          let changed = signature.mutually_constrain_arguments(
+            arg_types,
+            source_trace.clone(),
+            errors,
+          );
+          changed
+        }
         Type::Array(_, _) => arg_types[0].constrain(
           TypeState::OneOf(vec![Type::I32, Type::U32]),
           source_trace,
