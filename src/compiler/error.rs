@@ -273,6 +273,8 @@ pub enum CompileErrorKind {
   VariableNameCollision(String),
   #[error("The name `{0}` is used as both a variable name and a function name")]
   VariableFunctionNameCollision(String),
+  #[error("Internal compiler error: Tried to compile Unit type")]
+  TriedToCompileUnit,
 }
 
 impl PartialEq for CompileErrorKind {

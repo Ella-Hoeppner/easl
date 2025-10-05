@@ -1,0 +1,7 @@
+(defn any_test []: bool
+  (let [b (vec4 false)]
+    (any b)))
+
+(defn all_test []: bool
+  (let [b (vec4 false)]
+    (all b)))

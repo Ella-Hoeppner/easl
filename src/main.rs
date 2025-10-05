@@ -90,6 +90,8 @@ fn main() {
     "angle_bracket",
     "overload",
     "overload_builtin",
+    "trig",
+    "any_and_all",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

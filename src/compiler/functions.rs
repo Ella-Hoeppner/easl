@@ -395,6 +395,7 @@ impl AbstractFunctionSignature {
             .into(),
             vec![],
           ),
+          AbstractType::Unit => (TypeState::Known(Type::Unit).into(), vec![]),
         };
         Ok((Variable::immutable(var_type), constraints))
       })
@@ -440,6 +441,7 @@ impl AbstractFunctionSignature {
       )
       .known()
       .into(),
+      AbstractType::Unit => TypeState::Known(Type::Unit).into(),
     };
     for (v, _) in args.iter_mut() {
       v.var_type

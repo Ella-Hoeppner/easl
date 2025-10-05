@@ -115,7 +115,7 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
           name: format!("vec{n}{suffix}").into(),
           generic_args: (0..nums.len())
             .map(|i| format!("A{i}").into())
-            .map(|name| (name, vec![TypeConstraint::scalar()]))
+            .map(|name| (name, vec![TypeConstraint::scalar_or_bool()]))
             .collect(),
           arg_types: nums
             .iter()
@@ -133,7 +133,7 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
           generic_args: (0..nums.len())
             .map(|i| format!("A{i}").into())
             .chain(std::iter::once("T".into()))
-            .map(|name| (name, vec![TypeConstraint::scalar()]))
+            .map(|name| (name, vec![TypeConstraint::scalar_or_bool()]))
             .collect(),
           arg_types: nums
             .iter()
@@ -300,7 +300,10 @@ pub fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
         [
           AbstractFunctionSignature {
             name: format!("mat{n}x{m}").into(),
-            generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+            generic_args: vec![(
+              "T".into(),
+              vec![TypeConstraint::scalar_or_bool()],
+            )],
             arg_types: std::iter::repeat(AbstractType::Generic("T".into()))
               .take(n * m)
               .collect(),
@@ -311,7 +314,10 @@ pub fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
           },
           AbstractFunctionSignature {
             name: format!("mat{n}x{m}").into(),
-            generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+            generic_args: vec![(
+              "T".into(),
+              vec![TypeConstraint::scalar_or_bool()],
+            )],
             arg_types: std::iter::repeat(AbstractType::AbstractStruct(
               match m {
                 2 => vec2(),
@@ -600,6 +606,34 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
     .collect()
 }
 
+pub fn misc_matrix_functions() -> Vec<AbstractFunctionSignature> {
+  (2..4)
+    .map(|i| {
+      let m = specialized_matrix_type(i, i, "f");
+      AbstractFunctionSignature {
+        name: "determinant".into(),
+        generic_args: vec![],
+        arg_types: vec![m],
+        mutated_args: vec![],
+        return_type: AbstractType::Type(Type::F32),
+        implementation: FunctionImplementationKind::Builtin,
+        associative: false,
+      }
+    })
+    .chain((2..4).flat_map(|x| {
+      (2..4).map(move |y| AbstractFunctionSignature {
+        name: "transpose".into(),
+        generic_args: vec![],
+        arg_types: vec![specialized_matrix_type(x, y, "f")],
+        mutated_args: vec![],
+        return_type: specialized_matrix_type(y, x, "f"),
+        implementation: FunctionImplementationKind::Builtin,
+        associative: false,
+      })
+    }))
+    .collect()
+}
+
 fn bitwise_functions(
   name: &str,
   associative: bool,
@@ -677,143 +711,116 @@ fn bitwise_functions(
 }
 
 fn trigonometry_functions() -> Vec<AbstractFunctionSignature> {
-  vec![
-    AbstractFunctionSignature {
-      name: "atan2".into(),
-      generic_args: vec![],
-      arg_types: vec![
-        AbstractType::Type(Type::F32),
-        AbstractType::Type(Type::F32),
-      ],
-      mutated_args: vec![],
-      return_type: AbstractType::Type(Type::F32),
-      implementation: FunctionImplementationKind::Builtin,
-      associative: false,
-    },
-    AbstractFunctionSignature {
-      name: "cos".into(),
-      generic_args: vec![],
-      arg_types: vec![AbstractType::Type(Type::F32)],
-      mutated_args: vec![],
-      return_type: AbstractType::Type(Type::F32),
-      implementation: FunctionImplementationKind::Builtin,
-      associative: false,
-    },
-    AbstractFunctionSignature {
-      name: "sin".into(),
-      generic_args: vec![],
-      arg_types: vec![AbstractType::Type(Type::F32)],
-      mutated_args: vec![],
-      return_type: AbstractType::Type(Type::F32),
-      implementation: FunctionImplementationKind::Builtin,
-      associative: false,
-    },
-    AbstractFunctionSignature {
-      name: "tan".into(),
-      generic_args: vec![],
-      arg_types: vec![AbstractType::Type(Type::F32)],
-      mutated_args: vec![],
-      return_type: AbstractType::Type(Type::F32),
-      implementation: FunctionImplementationKind::Builtin,
-      associative: false,
-    },
+  [
+    ("atan2", 2),
+    ("cos", 1),
+    ("sin", 1),
+    ("tan", 1),
+    ("acos", 1),
+    ("asin", 1),
+    ("atan", 1),
+    ("sinh", 1),
+    ("cosh", 1),
+    ("tanh", 1),
+    ("asinh", 1),
+    ("acosh", 1),
+    ("atanh", 1),
   ]
+  .into_iter()
+  .flat_map(|(name, arity)| {
+    foreach_float_or_vecf_type(|t| {
+      vec![AbstractFunctionSignature {
+        name: name.into(),
+        generic_args: vec![],
+        arg_types: std::iter::repeat_n(t.clone(), arity).collect(),
+        mutated_args: vec![],
+        return_type: t,
+        implementation: FunctionImplementationKind::Builtin,
+        associative: false,
+      }]
+    })
+  })
+  .collect()
 }
 
 fn exp_functions() -> Vec<AbstractFunctionSignature> {
-  vec![
-    AbstractFunctionSignature {
-      name: "exp".into(),
+  foreach_float_or_vecf_type(|t| {
+    ["exp", "exp2", "log", "log2"]
+      .into_iter()
+      .map(|name| AbstractFunctionSignature {
+        name: name.into(),
+        generic_args: vec![],
+        arg_types: vec![t.clone()],
+        mutated_args: vec![],
+        return_type: t.clone(),
+        implementation: FunctionImplementationKind::Builtin,
+        associative: false,
+      })
+      .collect()
+  })
+  .into_iter()
+  .chain(foreach_generic_scalar_or_vec_type(|t| {
+    let generic_name: Rc<str> = "T".into();
+    let f = t.clone().fill_abstract_generics(
+      &[(generic_name.clone(), AbstractType::Type(Type::F32))]
+        .into_iter()
+        .collect(),
+    );
+    let i = t.fill_abstract_generics(
+      &[(generic_name, AbstractType::Type(Type::I32))]
+        .into_iter()
+        .collect(),
+    );
+    vec![AbstractFunctionSignature {
+      name: "ldexp".into(),
       generic_args: vec![],
-      arg_types: vec![AbstractType::Type(Type::F32)],
+      arg_types: vec![f.clone(), i],
       mutated_args: vec![],
-      return_type: AbstractType::Type(Type::F32),
+      return_type: f,
       implementation: FunctionImplementationKind::Builtin,
       associative: false,
-    },
-    AbstractFunctionSignature {
-      name: "log".into(),
-      generic_args: vec![],
-      arg_types: vec![AbstractType::Type(Type::F32)],
-      mutated_args: vec![],
-      return_type: AbstractType::Type(Type::F32),
-      implementation: FunctionImplementationKind::Builtin,
-      associative: false,
-    },
-  ]
+    }]
+  }))
+  .collect()
 }
 
 fn negation_functions() -> Vec<AbstractFunctionSignature> {
-  vec![
-    AbstractFunctionSignature {
-      name: "-".into(),
-      generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
-      arg_types: vec![AbstractType::Generic("T".into())],
-      mutated_args: vec![],
-      return_type: AbstractType::Generic("T".into()),
-      implementation: FunctionImplementationKind::Builtin,
-      associative: false,
-    },
-    AbstractFunctionSignature {
-      name: "-".into(),
-      generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
-      arg_types: vec![AbstractType::AbstractStruct(vec2().into())],
-      mutated_args: vec![],
-      return_type: AbstractType::AbstractStruct(vec2().into()),
-      implementation: FunctionImplementationKind::Builtin,
-      associative: false,
-    },
-    AbstractFunctionSignature {
-      name: "-".into(),
-      generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
-      arg_types: vec![AbstractType::AbstractStruct(vec3().into())],
-      mutated_args: vec![],
-      return_type: AbstractType::AbstractStruct(vec3().into()),
-      implementation: FunctionImplementationKind::Builtin,
-      associative: false,
-    },
-    AbstractFunctionSignature {
-      name: "-".into(),
-      generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
-      arg_types: vec![AbstractType::AbstractStruct(vec4().into())],
-      mutated_args: vec![],
-      return_type: AbstractType::AbstractStruct(vec4().into()),
-      implementation: FunctionImplementationKind::Builtin,
-      associative: false,
-    },
-  ]
+  foreach_generic_scalar_or_vec_type(|t| {
+    let generic_name: Rc<str> = "T".into();
+    [Type::F32, Type::I32]
+      .into_iter()
+      .map(|scalar| {
+        let t = t.clone().fill_abstract_generics(
+          &[(generic_name.clone(), AbstractType::Type(scalar))]
+            .into_iter()
+            .collect(),
+        );
+        AbstractFunctionSignature {
+          name: "-".into(),
+          generic_args: vec![],
+          arg_types: vec![t.clone()],
+          mutated_args: vec![],
+          return_type: t,
+          implementation: FunctionImplementationKind::Builtin,
+          associative: false,
+        }
+      })
+      .collect()
+  })
 }
 
 fn inversion_functions() -> Vec<AbstractFunctionSignature> {
-  [
-    AbstractType::Type(Type::F32),
-    AbstractType::AbstractStruct(
-      vec2()
-        .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
-        .into(),
-    ),
-    AbstractType::AbstractStruct(
-      vec3()
-        .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
-        .into(),
-    ),
-    AbstractType::AbstractStruct(
-      vec4()
-        .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
-        .into(),
-    ),
-  ]
-  .into_iter()
-  .map(|t| AbstractFunctionSignature {
-    name: "/".into(),
-    generic_args: vec![],
-    arg_types: vec![t.clone()],
-    mutated_args: vec![],
-    return_type: t,
-    implementation: FunctionImplementationKind::Builtin,
-    associative: false,
+  foreach_float_or_vecf_type(|t| {
+    vec![AbstractFunctionSignature {
+      name: "/".into(),
+      generic_args: vec![],
+      arg_types: vec![t.clone()],
+      mutated_args: vec![],
+      return_type: t,
+      implementation: FunctionImplementationKind::Builtin,
+      associative: false,
+    }]
   })
-  .collect()
 }
 
 fn comparison_functions() -> Vec<AbstractFunctionSignature> {
@@ -946,6 +953,81 @@ fn boolean_functions() -> Vec<AbstractFunctionSignature> {
   ]
 }
 
+fn bit_manipulation_functions() -> Vec<AbstractFunctionSignature> {
+  [
+    ("dot-4-u8-packed", 2, Type::U32),
+    ("dot-4-i8-packed", 2, Type::I32),
+    ("extract-bits", 2, Type::I32),
+  ]
+  .into_iter()
+  .map(|(name, arity, return_type)| AbstractFunctionSignature {
+    name: name.into(),
+    generic_args: vec![],
+    arg_types: std::iter::repeat_n(AbstractType::Type(Type::U32), arity)
+      .collect(),
+    mutated_args: vec![],
+    return_type: AbstractType::Type(return_type),
+    implementation: FunctionImplementationKind::Builtin,
+    associative: false,
+  })
+  .chain(
+    [
+      "first-leading-bit",
+      "first-trailing-bit",
+      "count-leading-zeros",
+      "count-trailing-zeros",
+      "count-one-bits",
+      "reverse-bits",
+    ]
+    .into_iter()
+    .flat_map(|name| {
+      [Type::U32, Type::I32].into_iter().flat_map(move |t| {
+        generic_and_vec_types().into_iter().map(move |v| {
+          let generic_name: Rc<str> = "T".into();
+          let v = v.fill_abstract_generics(
+            &[(generic_name, AbstractType::Type(t.clone()))]
+              .into_iter()
+              .collect(),
+          );
+          AbstractFunctionSignature {
+            name: name.into(),
+            generic_args: vec![],
+            arg_types: vec![v.clone()],
+            mutated_args: vec![],
+            return_type: v,
+            implementation: FunctionImplementationKind::Builtin,
+            associative: false,
+          }
+        })
+      })
+    }),
+  )
+  .chain(generic_and_vec_types().into_iter().flat_map(|v| {
+    [Type::U32, Type::I32].into_iter().map(move |inner_type| {
+      let generic_name: Rc<str> = "T".into();
+      let v = v.clone().fill_abstract_generics(
+        &[(generic_name, AbstractType::Type(inner_type.clone()))]
+          .into_iter()
+          .collect(),
+      );
+      AbstractFunctionSignature {
+        name: "extract-bits".into(),
+        generic_args: vec![],
+        arg_types: vec![
+          v.clone(),
+          AbstractType::Type(Type::U32),
+          AbstractType::Type(Type::U32),
+        ],
+        mutated_args: vec![],
+        return_type: v,
+        implementation: FunctionImplementationKind::Builtin,
+        associative: false,
+      }
+    })
+  }))
+  .collect()
+}
+
 fn float_and_float_vec_types() -> Vec<AbstractType> {
   let f32 = AbstractType::Type(Type::F32);
   vec![
@@ -991,6 +1073,34 @@ fn foreach_vec_type(
 ) -> Vec<AbstractFunctionSignature> {
   [vec2(), vec3(), vec4()]
     .into_iter()
+    .map(f)
+    .flatten()
+    .collect()
+}
+
+fn foreach_float_or_vecf_type(
+  f: impl Fn(AbstractType) -> Vec<AbstractFunctionSignature>,
+) -> Vec<AbstractFunctionSignature> {
+  [vec2(), vec3(), vec4()]
+    .into_iter()
+    .map(|v| {
+      AbstractType::AbstractStruct(
+        v.generate_monomorphized(vec![Type::F32]).unwrap().into(),
+      )
+    })
+    .chain(std::iter::once(AbstractType::Type(Type::F32)))
+    .map(f)
+    .flatten()
+    .collect()
+}
+
+fn foreach_generic_scalar_or_vec_type(
+  f: impl Fn(AbstractType) -> Vec<AbstractFunctionSignature>,
+) -> Vec<AbstractFunctionSignature> {
+  [vec2(), vec3(), vec4()]
+    .into_iter()
+    .map(|v| AbstractType::AbstractStruct(v.into()))
+    .chain(std::iter::once(AbstractType::Generic("T".into())))
     .map(f)
     .flatten()
     .collect()
@@ -1091,7 +1201,47 @@ fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin,
       associative: false,
     },
+    AbstractFunctionSignature {
+      name: "bool".into(),
+      generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+      arg_types: vec![AbstractType::Generic("T".into())],
+      mutated_args: vec![],
+      return_type: AbstractType::Type(Type::Bool),
+      implementation: FunctionImplementationKind::Builtin,
+      associative: false,
+    },
   ]
+}
+
+fn any_and_all() -> Vec<AbstractFunctionSignature> {
+  foreach_generic_scalar_or_vec_type(|t| {
+    let generic_name: Rc<str> = "T".into();
+    let t = t.clone().fill_abstract_generics(
+      &[(generic_name.clone(), AbstractType::Type(Type::Bool))]
+        .into_iter()
+        .collect(),
+    );
+    vec![
+      AbstractFunctionSignature {
+        name: "any".into(),
+        generic_args: vec![],
+        arg_types: vec![t.clone()],
+        mutated_args: vec![],
+        return_type: AbstractType::Type(Type::Bool),
+        implementation: FunctionImplementationKind::Builtin,
+        associative: false,
+      },
+      AbstractFunctionSignature {
+        name: "all".into(),
+        generic_args: vec![],
+        arg_types: vec![t],
+        mutated_args: vec![],
+        return_type: AbstractType::Type(Type::Bool),
+        implementation: FunctionImplementationKind::Builtin,
+        associative: false,
+      },
+    ]
+  })
 }
 
 fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
@@ -1123,10 +1273,14 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
         ("round", 1),
         ("fract", 1),
         ("sqrt", 1),
+        ("trunc", 1),
+        ("saturate", 1),
         ("pow", 2),
         ("mix", 3),
         ("clamp", 3),
         ("smoothstep", 3),
+        ("step", 3),
+        ("fma", 3),
       ]
       .into_iter()
       .map(|(name, arg_count)| AbstractFunctionSignature {
@@ -1141,15 +1295,26 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
       .collect::<Vec<_>>()
     }))
     .chain(float_vec_types().into_iter().map(|t| {
-      vec![AbstractFunctionSignature {
-        name: "mix".into(),
-        generic_args: vec![],
-        arg_types: vec![t.clone(), t.clone(), AbstractType::Type(Type::F32)],
-        mutated_args: vec![],
-        return_type: t.clone(),
-        implementation: FunctionImplementationKind::Builtin,
-        associative: false,
-      }]
+      vec![
+        AbstractFunctionSignature {
+          name: "mix".into(),
+          generic_args: vec![],
+          arg_types: vec![t.clone(), t.clone(), AbstractType::Type(Type::F32)],
+          mutated_args: vec![],
+          return_type: t.clone(),
+          implementation: FunctionImplementationKind::Builtin,
+          associative: false,
+        },
+        AbstractFunctionSignature {
+          name: "face-forward".into(),
+          generic_args: vec![],
+          arg_types: vec![t.clone(), t.clone(), t.clone()],
+          mutated_args: vec![],
+          return_type: t.clone(),
+          implementation: FunctionImplementationKind::Builtin,
+          associative: false,
+        },
+      ]
     }))
     .flatten()
     .collect()
@@ -1225,6 +1390,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut negation_functions());
   signatures.append(&mut inversion_functions());
   signatures.append(&mut matrix_arithmetic_functions());
+  signatures.append(&mut misc_matrix_functions());
   signatures.append(&mut bitwise_functions("^", true));
   signatures.append(&mut bitwise_functions(">>", false));
   signatures.append(&mut bitwise_functions("<<", false));
@@ -1237,6 +1403,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut exp_functions());
   signatures.append(&mut scalar_conversion_functions());
   signatures.append(&mut vec![bitcast()]);
+  signatures.append(&mut any_and_all());
   signatures.append(&mut misc_math_functions());
   signatures.append(&mut texture_functions());
   signatures.append(&mut array_functions());
@@ -1259,7 +1426,17 @@ lazy_static! {
   pub static ref RENAMED_BUILTINS: HashMap<&'static str, &'static str> = [
     ("array-length", "arrayLength"),
     ("texture-sample", "textureSample"),
-    ("texture-load", "textureLoad")
+    ("texture-load", "textureLoad"),
+    ("face-forward", "faceForward"),
+    ("dot-4-u8-packed", "dot4U8Packed"),
+    ("dot-4-i8-packed", "dot4I8Packed"),
+    ("extract-bits", "extractBits"),
+    ("reverse-bits", "reverseBits"),
+    ("first-leading-bit", "firstLeadingBit"),
+    ("first-trailing-bit", "firstTrailingBit"),
+    ("count-leading-zeros", "countLeadingZeros"),
+    ("count-one-bits", "countOneBits"),
+    ("count-trailing-zeros", "countTrailingZeros")
   ]
   .into_iter()
   .collect();

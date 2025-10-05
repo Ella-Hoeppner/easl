@@ -36,31 +36,22 @@ Feature goals:
       * also validate that the values of the `location` annotations make sense - they don't overlap, and there are no gaps, e.g. something with `location 0` on one field and `location 2` on another, but no `location 1`, shouldn't be allowed
         * at least, I presume? haven't actually checked the wgsl spec for this
 
+* vecs of bools don't compile properly. Right now it gets compiled like `vec4_bool`, but it needs to be `vec4<bool>`, as seen in the `any_and_all.easl` example. Need a special case to compile this properly.
+  * support `vec4b` as a type alias
+
 * missing some built-in functions:
-  * `bool` casting functions
-  * `any` and `all` on bool-vectors
-    * these can also just accept a single bool, in which case they act as an identity function. Might as well do this, I guess
-  * acos, asin, atan, sinh, cosh, tanh, asinh, acosh, atanh
-  * determinant
-  * exp2
-  * extractBits
-  * faceForward
-  * fma
-  * a bunch of weird bit manipulation functions
-    * dot4U8Packed, dot4I8Packed, extractBits, firstLeadingBit, firstTrailingBit, countLeadingZeros, countOneBits, countTrailingZeros
-  * ldexp
-  * log2
-  * reverseBits
-  * saturate
-  * step
-  * transpose
-  * trunc
+  * derivative functions
+  * texture functions
 
 * implement `Display` for `ErrorLog`, need to have good human-readable error messages
 
 
 
 
+
+* support vecs over arbitrary types
+  * wgsl doesn't do this, it's just restricted to scalars and bool
+  * These'll need to be compiled just like normal structs, and there'll need to be special logic for swizzling on these
 
 * make it so `arrayLength` can accept an array as an input, rather than a reference to an array, at least syntactically
   * so I guess like, insert the reference operation for the user if a function ever takes an argument `&T` but ends up recieving a `T`?

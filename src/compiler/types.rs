@@ -65,6 +65,7 @@ impl UntypedType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AbstractType {
+  Unit,
   Generic(Rc<str>),
   Type(Type),
   AbstractStruct(Rc<AbstractStruct>),
@@ -100,6 +101,7 @@ impl AbstractType {
     source_trace: SourceTrace,
   ) -> CompileResult<ExpTypeInfo> {
     Ok(match self {
+      AbstractType::Unit => TypeState::Known(Type::Unit).into(),
       AbstractType::Generic(var_name) => generics
         .get(var_name)
         .expect("unrecognized generic name in struct")
@@ -149,6 +151,7 @@ impl AbstractType {
     source_trace: SourceTrace,
   ) -> CompileResult<Type> {
     match self {
+      AbstractType::Unit => Ok(Type::Unit),
       AbstractType::Generic(name) => {
         if skolems.contains(name) {
           Ok(Type::Skolem(Rc::clone(name)))
@@ -187,6 +190,7 @@ impl AbstractType {
     generics: &HashMap<Rc<str>, AbstractType>,
   ) -> Self {
     match self {
+      AbstractType::Unit => AbstractType::Unit,
       AbstractType::Generic(var_name) => generics
         .iter()
         .find_map(|(name, t)| (*name == var_name).then(|| t))
@@ -223,6 +227,12 @@ impl AbstractType {
     names: &mut NameContext,
   ) -> CompileResult<String> {
     Ok(match self {
+      AbstractType::Unit => {
+        return Err(CompileError::new(
+          CompileErrorKind::TriedToCompileUnit,
+          SourceTrace::empty(),
+        ));
+      }
       AbstractType::Generic(_) => {
         panic!("attempted to compile generic struct field")
       }
@@ -270,6 +280,9 @@ impl AbstractType {
         (position, EncloserOrOperator::Encloser(Encloser::Parens)),
         children,
       ) => {
+        if children.is_empty() {
+          return Ok(Self::Unit);
+        }
         let mut children_iter = children.iter();
         let generic_struct_name =
           if let Some(EaslTree::Leaf(_, leaf)) = children_iter.next() {
@@ -465,6 +478,7 @@ impl AbstractType {
     source_trace: &SourceTrace,
   ) -> CompileResult<usize> {
     Ok(match self {
+      AbstractType::Unit => 0,
       AbstractType::Generic(_) => panic!(
         "encountered Generic while calculating data_size_in_u32s, this should \
         never happen"
@@ -585,6 +599,12 @@ impl Type {
     match &*constraint.name {
       "Scalar" => {
         *self == Type::I32 || *self == Type::F32 || *self == Type::U32
+      }
+      "ScalarOrBool" => {
+        *self == Type::I32
+          || *self == Type::F32
+          || *self == Type::U32
+          || *self == Type::Bool
       }
       "Integer" => *self == Type::I32 || *self == Type::U32,
       _ => todo!("custom constraints not yet supported"),
@@ -1779,6 +1799,12 @@ impl TypeConstraint {
   pub fn scalar() -> Self {
     Self {
       name: "Scalar".into(),
+      args: vec![],
+    }
+  }
+  pub fn scalar_or_bool() -> Self {
+    Self {
+      name: "ScalarOrBool".into(),
       args: vec![],
     }
   }
