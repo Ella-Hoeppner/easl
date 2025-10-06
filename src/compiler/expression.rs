@@ -2505,7 +2505,7 @@ impl TypedExp {
               }
             {
               match &abstract_signature.implementation {
-                FunctionImplementationKind::Builtin => {
+                FunctionImplementationKind::Builtin(_) => {
                   if vec_and_mat_compile_names().contains(&**f_name) {
                     if let Type::Struct(s) = &exp.data.kind.unwrap_known() {
                       if let Some(mut compiled_name) = compiled_vec_or_mat_name(

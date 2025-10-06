@@ -8,6 +8,7 @@ pub enum Effect {
   Return,
   Continue,
   Discard,
+  FragmentExclusiveFunction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

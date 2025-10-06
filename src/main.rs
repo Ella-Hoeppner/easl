@@ -93,6 +93,8 @@ fn main() {
     "trig",
     "any_and_all",
     "vecb",
+    "dpdx",
+    "discard",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

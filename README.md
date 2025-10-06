@@ -17,6 +17,8 @@ Feature goals:
 ## todo
 ### high priority, necessary to call the language 0.1
 * more annotation validation:
+  * validate annotations on functions
+    * I think the only valid thing is the entry point? Or `@associative` but idk if that's actually working correctly rn
   * validate annotations on function arguments
     * right now you can kinda just do anything and it'll pass through the compiler just fine
     * instead you should be limited to basically just `@var` or `@{builtin ...}`
@@ -26,7 +28,7 @@ Feature goals:
           * `(defn vert [@builtin vertex-index: u32] ...)`
           * this only makes sense as long as you're willing to use this particular name, but I think it'll still be quite nice to have
     * on fragment entry points, require a `@{location ...}` on the output type, or one isn't found, assume that it's `@{location 0}`
-  * disallow annotations on structs
+  * disallow annotations on structs and enums
     * as in `@{blah blah} (struct ...)`
     * never does anything anways, but should just make sure it gives an error so the user knows it isn't a valid thing to do
   * validate annotations on struct fields
@@ -36,10 +38,18 @@ Feature goals:
         * could be weird if the user specifies only a few of them, but I guess I can handle that by just skipping those indeces when filling in the others
       * also validate that the values of the `location` annotations make sense - they don't overlap, and there are no gaps, e.g. something with `location 0` on one field and `location 2` on another, but no `location 1`, shouldn't be allowed
         * at least, I presume? haven't actually checked the wgsl spec for this
+      * a struct used as the output of a vertex shader must have a `@{builtin position}` field, which must be of type `vec4f`
+
+* finish `validate_top_level_fn_effects`
+  * This needs to validate that any top-level user fn with the `@vertex` or `@compute` entry point annotation doesn't contain any effects that are exclusive to fragment shaders, i.e. `Discard` or `FragmentExclusiveFunction`
+
+* right now if you do `(discard)` you get a strange error, should fix that
+  * you don't normally have to call `discard`, you can just do it without the parens and it works fine
+    * but I guess it should also be allowed to just do it like `(discard)`, it does kinda "feel" like you're calling a function even if that's not really what's happening. Same with break and continue
 
 * missing some built-in functions:
-  * derivative functions
   * texture functions
+    * `textureSampleCompare` should have an effect restricting it to fragment shaders
 
 * implement `Display` for `ErrorLog`, need to have good human-readable error messages
 

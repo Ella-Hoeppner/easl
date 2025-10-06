@@ -1314,7 +1314,7 @@ impl Program {
     for (name, signatures) in self.abstract_functions.iter() {
       let mut normalized_signatures: Vec<(Option<SourceTrace>, _)> = vec![];
       for signature in signatures {
-        if let FunctionImplementationKind::Builtin
+        if let FunctionImplementationKind::Builtin(_)
         | FunctionImplementationKind::StructConstructor =
           signature.borrow().implementation
         {
@@ -1523,6 +1523,16 @@ impl Program {
       }
     }
   }
+  pub fn validate_top_level_fn_effects(&mut self, errors: &mut ErrorLog) {
+    for signature in self.abstract_functions_iter() {
+      let signature = signature.borrow();
+      if let FunctionImplementationKind::Composite(_) =
+        &signature.implementation
+      {
+        // todo!
+      }
+    }
+  }
   pub fn validate_raw_program(&mut self) -> ErrorLog {
     let mut errors = ErrorLog::new();
     self.validate_associative_signatures(&mut errors);
@@ -1572,6 +1582,10 @@ impl Program {
       return errors;
     }
     self.inline_all_higher_order_arguments(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.validate_top_level_fn_effects(&mut errors);
     if !errors.is_empty() {
       return errors;
     }

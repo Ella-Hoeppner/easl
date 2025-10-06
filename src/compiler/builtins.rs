@@ -9,7 +9,10 @@ use sse::{document::DocumentPosition, syntax::EncloserOrOperator};
 
 use crate::{
   compiler::{
-    error::SourceTrace, structs::AbstractStructField, types::ArraySize,
+    effects::{Effect, EffectType},
+    error::SourceTrace,
+    structs::AbstractStructField,
+    types::ArraySize,
   },
   parse::{EaslTree, Encloser},
 };
@@ -126,7 +129,9 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
             .collect(),
           mutated_args: vec![],
           return_type: specialized_vec_n_type(n, suffix),
-          implementation: FunctionImplementationKind::Builtin,
+          implementation: FunctionImplementationKind::Builtin(
+            EffectType::empty(),
+          ),
           associative: false,
         })
         .chain(std::iter::once(AbstractFunctionSignature {
@@ -144,7 +149,9 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
             .collect(),
           mutated_args: vec![],
           return_type: vec_n_type(n),
-          implementation: FunctionImplementationKind::Builtin,
+          implementation: FunctionImplementationKind::Builtin(
+            EffectType::empty(),
+          ),
           associative: false,
         }))
         .collect::<Vec<AbstractFunctionSignature>>()
@@ -310,7 +317,9 @@ pub fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
               .collect(),
             mutated_args: vec![],
             return_type: AbstractType::AbstractStruct(matrix(n, m).into()),
-            implementation: FunctionImplementationKind::Builtin,
+            implementation: FunctionImplementationKind::Builtin(
+              EffectType::empty(),
+            ),
             associative: false,
           },
           AbstractFunctionSignature {
@@ -332,7 +341,9 @@ pub fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
             .collect(),
             mutated_args: vec![],
             return_type: AbstractType::AbstractStruct(matrix(n, m).into()),
-            implementation: FunctionImplementationKind::Builtin,
+            implementation: FunctionImplementationKind::Builtin(
+              EffectType::empty(),
+            ),
             associative: false,
           },
         ]
@@ -350,7 +361,9 @@ pub fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
                     .collect(),
                   mutated_args: vec![],
                   return_type: specialized_matrix_type(n, m, suffix),
-                  implementation: FunctionImplementationKind::Builtin,
+                  implementation: FunctionImplementationKind::Builtin(
+                    EffectType::empty(),
+                  ),
                   associative: false,
                 },
                 AbstractFunctionSignature {
@@ -376,7 +389,9 @@ pub fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
                   .collect(),
                   mutated_args: vec![],
                   return_type: specialized_matrix_type(n, m, suffix),
-                  implementation: FunctionImplementationKind::Builtin,
+                  implementation: FunctionImplementationKind::Builtin(
+                    EffectType::empty(),
+                  ),
                   associative: false,
                 },
               ]
@@ -466,7 +481,7 @@ fn arithmetic_functions(
       ],
       mutated_args: vec![],
       return_type: AbstractType::Generic("T".into()),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative,
     },
     AbstractFunctionSignature {
@@ -478,7 +493,7 @@ fn arithmetic_functions(
       ],
       mutated_args: vec![0],
       return_type: AbstractType::Type(Type::Unit),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     },
   ]
@@ -516,7 +531,9 @@ fn arithmetic_functions(
           } else {
             AbstractType::AbstractStruct(vec.clone())
           },
-          implementation: FunctionImplementationKind::Builtin,
+          implementation: FunctionImplementationKind::Builtin(
+            EffectType::empty(),
+          ),
           associative: !assignment_fn && arg_vecs_or_scalars == [true, true],
         })
         .collect::<Vec<_>>()
@@ -545,7 +562,9 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             arg_types: vec![mat.clone(), mat.clone()],
             mutated_args: vec![],
             return_type: mat.clone(),
-            implementation: FunctionImplementationKind::Builtin,
+            implementation: FunctionImplementationKind::Builtin(
+              EffectType::empty(),
+            ),
             associative: true,
           },
           AbstractFunctionSignature {
@@ -554,7 +573,9 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             arg_types: vec![mat.clone(), mat.clone()],
             mutated_args: vec![],
             return_type: mat.clone(),
-            implementation: FunctionImplementationKind::Builtin,
+            implementation: FunctionImplementationKind::Builtin(
+              EffectType::empty(),
+            ),
             associative: false,
           },
           AbstractFunctionSignature {
@@ -563,7 +584,9 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             arg_types: vec![AbstractType::Generic("T".into()), mat.clone()],
             mutated_args: vec![],
             return_type: mat.clone(),
-            implementation: FunctionImplementationKind::Builtin,
+            implementation: FunctionImplementationKind::Builtin(
+              EffectType::empty(),
+            ),
             associative: false,
           },
           AbstractFunctionSignature {
@@ -572,7 +595,9 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             arg_types: vec![mat.clone(), AbstractType::Generic("T".into())],
             mutated_args: vec![],
             return_type: mat.clone(),
-            implementation: FunctionImplementationKind::Builtin,
+            implementation: FunctionImplementationKind::Builtin(
+              EffectType::empty(),
+            ),
             associative: false,
           },
           AbstractFunctionSignature {
@@ -581,7 +606,9 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             arg_types: vec![mat.clone(), vecn(n)],
             mutated_args: vec![],
             return_type: vecn(m),
-            implementation: FunctionImplementationKind::Builtin,
+            implementation: FunctionImplementationKind::Builtin(
+              EffectType::empty(),
+            ),
             associative: false,
           },
           AbstractFunctionSignature {
@@ -590,7 +617,9 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             arg_types: vec![vecn(m), mat.clone()],
             mutated_args: vec![],
             return_type: vecn(n),
-            implementation: FunctionImplementationKind::Builtin,
+            implementation: FunctionImplementationKind::Builtin(
+              EffectType::empty(),
+            ),
             associative: false,
           },
         ]
@@ -604,7 +633,9 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
           ],
           mutated_args: vec![],
           return_type: vecn(n),
-          implementation: FunctionImplementationKind::Builtin,
+          implementation: FunctionImplementationKind::Builtin(
+            EffectType::empty(),
+          ),
           associative: true,
         }))
       })
@@ -622,7 +653,7 @@ pub fn misc_matrix_functions() -> Vec<AbstractFunctionSignature> {
         arg_types: vec![m],
         mutated_args: vec![],
         return_type: AbstractType::Type(Type::F32),
-        implementation: FunctionImplementationKind::Builtin,
+        implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
         associative: false,
       }
     })
@@ -633,7 +664,7 @@ pub fn misc_matrix_functions() -> Vec<AbstractFunctionSignature> {
         arg_types: vec![specialized_matrix_type(x, y, "f")],
         mutated_args: vec![],
         return_type: specialized_matrix_type(y, x, "f"),
-        implementation: FunctionImplementationKind::Builtin,
+        implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
         associative: false,
       })
     }))
@@ -655,7 +686,7 @@ fn bitwise_functions(
       ],
       mutated_args: vec![],
       return_type: AbstractType::Generic("T".into()),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative,
     },
     AbstractFunctionSignature {
@@ -667,7 +698,7 @@ fn bitwise_functions(
       ],
       mutated_args: vec![0],
       return_type: AbstractType::Type(Type::Unit),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     },
   ]
@@ -705,7 +736,9 @@ fn bitwise_functions(
           } else {
             AbstractType::AbstractStruct(vec.clone())
           },
-          implementation: FunctionImplementationKind::Builtin,
+          implementation: FunctionImplementationKind::Builtin(
+            EffectType::empty(),
+          ),
           associative: !assignment_fn && arg_vecs_or_scalars == [true, true],
         })
         .collect::<Vec<_>>()
@@ -741,7 +774,7 @@ fn trigonometry_functions() -> Vec<AbstractFunctionSignature> {
         arg_types: std::iter::repeat_n(t.clone(), arity).collect(),
         mutated_args: vec![],
         return_type: t,
-        implementation: FunctionImplementationKind::Builtin,
+        implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
         associative: false,
       }]
     })
@@ -759,7 +792,7 @@ fn exp_functions() -> Vec<AbstractFunctionSignature> {
         arg_types: vec![t.clone()],
         mutated_args: vec![],
         return_type: t.clone(),
-        implementation: FunctionImplementationKind::Builtin,
+        implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
         associative: false,
       })
       .collect()
@@ -783,7 +816,7 @@ fn exp_functions() -> Vec<AbstractFunctionSignature> {
       arg_types: vec![f.clone(), i],
       mutated_args: vec![],
       return_type: f,
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     }]
   }))
@@ -807,7 +840,9 @@ fn negation_functions() -> Vec<AbstractFunctionSignature> {
           arg_types: vec![t.clone()],
           mutated_args: vec![],
           return_type: t,
-          implementation: FunctionImplementationKind::Builtin,
+          implementation: FunctionImplementationKind::Builtin(
+            EffectType::empty(),
+          ),
           associative: false,
         }
       })
@@ -823,7 +858,7 @@ fn inversion_functions() -> Vec<AbstractFunctionSignature> {
       arg_types: vec![t.clone()],
       mutated_args: vec![],
       return_type: t,
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     }]
   })
@@ -840,7 +875,7 @@ fn comparison_functions() -> Vec<AbstractFunctionSignature> {
       ],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     },
     AbstractFunctionSignature {
@@ -852,7 +887,7 @@ fn comparison_functions() -> Vec<AbstractFunctionSignature> {
       ],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     },
     AbstractFunctionSignature {
@@ -864,7 +899,7 @@ fn comparison_functions() -> Vec<AbstractFunctionSignature> {
       ],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     },
     AbstractFunctionSignature {
@@ -876,7 +911,7 @@ fn comparison_functions() -> Vec<AbstractFunctionSignature> {
       ],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     },
     AbstractFunctionSignature {
@@ -888,7 +923,7 @@ fn comparison_functions() -> Vec<AbstractFunctionSignature> {
       ],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     },
     AbstractFunctionSignature {
@@ -900,7 +935,7 @@ fn comparison_functions() -> Vec<AbstractFunctionSignature> {
       ],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     },
   ]
@@ -916,7 +951,7 @@ pub fn assignment_function() -> AbstractFunctionSignature {
     ],
     mutated_args: vec![0],
     return_type: AbstractType::Type(Type::Unit),
-    implementation: FunctionImplementationKind::Builtin,
+    implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
     associative: false,
   }
 }
@@ -929,7 +964,7 @@ fn boolean_functions() -> Vec<AbstractFunctionSignature> {
       arg_types: vec![AbstractType::Type(Type::Bool)],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     },
     AbstractFunctionSignature {
@@ -938,7 +973,7 @@ fn boolean_functions() -> Vec<AbstractFunctionSignature> {
       arg_types: vec![AbstractType::Type(Type::Bool)],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     },
     AbstractFunctionSignature {
@@ -950,7 +985,7 @@ fn boolean_functions() -> Vec<AbstractFunctionSignature> {
       ],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: true,
     },
     AbstractFunctionSignature {
@@ -962,7 +997,7 @@ fn boolean_functions() -> Vec<AbstractFunctionSignature> {
       ],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: true,
     },
     AbstractFunctionSignature {
@@ -974,7 +1009,7 @@ fn boolean_functions() -> Vec<AbstractFunctionSignature> {
       ],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: true,
     },
     AbstractFunctionSignature {
@@ -986,7 +1021,7 @@ fn boolean_functions() -> Vec<AbstractFunctionSignature> {
       ],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: true,
     },
   ]
@@ -1006,7 +1041,7 @@ fn bit_manipulation_functions() -> Vec<AbstractFunctionSignature> {
       .collect(),
     mutated_args: vec![],
     return_type: AbstractType::Type(return_type),
-    implementation: FunctionImplementationKind::Builtin,
+    implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
     associative: false,
   })
   .chain(
@@ -1034,7 +1069,9 @@ fn bit_manipulation_functions() -> Vec<AbstractFunctionSignature> {
             arg_types: vec![v.clone()],
             mutated_args: vec![],
             return_type: v,
-            implementation: FunctionImplementationKind::Builtin,
+            implementation: FunctionImplementationKind::Builtin(
+              EffectType::empty(),
+            ),
             associative: false,
           }
         })
@@ -1043,26 +1080,28 @@ fn bit_manipulation_functions() -> Vec<AbstractFunctionSignature> {
   )
   .chain(generic_and_vec_types().into_iter().flat_map(|v| {
     [Type::U32, Type::I32].into_iter().map(move |inner_type| {
-      let generic_name: Rc<str> = "T".into();
-      let v = v.clone().fill_abstract_generics(
-        &[(generic_name, AbstractType::Type(inner_type.clone()))]
-          .into_iter()
-          .collect(),
-      );
-      AbstractFunctionSignature {
-        name: "extract-bits".into(),
-        generic_args: vec![],
-        arg_types: vec![
-          v.clone(),
-          AbstractType::Type(Type::U32),
-          AbstractType::Type(Type::U32),
-        ],
-        mutated_args: vec![],
-        return_type: v,
-        implementation: FunctionImplementationKind::Builtin,
-        associative: false,
-      }
-    })
+        let generic_name: Rc<str> = "T".into();
+        let v = v.clone().fill_abstract_generics(
+          &[(generic_name, AbstractType::Type(inner_type.clone()))]
+            .into_iter()
+            .collect(),
+        );
+        AbstractFunctionSignature {
+          name: "extract-bits".into(),
+          generic_args: vec![],
+          arg_types: vec![
+            v.clone(),
+            AbstractType::Type(Type::U32),
+            AbstractType::Type(Type::U32),
+          ],
+          mutated_args: vec![],
+          return_type: v,
+          implementation: FunctionImplementationKind::Builtin(
+            EffectType::empty(),
+          ),
+          associative: false,
+        }
+      })
   }))
   .collect()
 }
@@ -1170,7 +1209,7 @@ fn vector_functions() -> Vec<AbstractFunctionSignature> {
       arg_types,
       mutated_args: vec![],
       return_type,
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     })
     .collect()
@@ -1189,7 +1228,7 @@ fn vector_functions() -> Vec<AbstractFunctionSignature> {
       arg_types: vec![vec3.clone(), vec3.clone()],
       mutated_args: vec![],
       return_type: vec3,
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     })
   })
@@ -1206,7 +1245,7 @@ pub fn bitcast() -> AbstractFunctionSignature {
     arg_types: vec![AbstractType::Generic("T".into())],
     mutated_args: vec![],
     return_type: AbstractType::Generic("S".into()),
-    implementation: FunctionImplementationKind::Builtin,
+    implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
     associative: false,
   }
 }
@@ -1219,7 +1258,7 @@ fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
       arg_types: vec![AbstractType::Generic("T".into())],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::I32),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     },
     AbstractFunctionSignature {
@@ -1228,7 +1267,7 @@ fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
       arg_types: vec![AbstractType::Generic("T".into())],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::F32),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     },
     AbstractFunctionSignature {
@@ -1237,7 +1276,7 @@ fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
       arg_types: vec![AbstractType::Generic("T".into())],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::U32),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     },
     AbstractFunctionSignature {
@@ -1246,7 +1285,7 @@ fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
       arg_types: vec![AbstractType::Generic("T".into())],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     },
   ]
@@ -1267,7 +1306,7 @@ fn any_and_all() -> Vec<AbstractFunctionSignature> {
         arg_types: vec![t.clone()],
         mutated_args: vec![],
         return_type: AbstractType::Type(Type::Bool),
-        implementation: FunctionImplementationKind::Builtin,
+        implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
         associative: false,
       },
       AbstractFunctionSignature {
@@ -1276,7 +1315,7 @@ fn any_and_all() -> Vec<AbstractFunctionSignature> {
         arg_types: vec![t],
         mutated_args: vec![],
         return_type: AbstractType::Type(Type::Bool),
-        implementation: FunctionImplementationKind::Builtin,
+        implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
         associative: false,
       },
     ]
@@ -1300,7 +1339,7 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
         arg_types: std::iter::repeat(t.clone()).take(arg_count).collect(),
         mutated_args: vec![],
         return_type: t.clone(),
-        implementation: FunctionImplementationKind::Builtin,
+        implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
         associative,
       })
       .collect::<Vec<_>>()
@@ -1328,7 +1367,7 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
         arg_types: std::iter::repeat(t.clone()).take(arg_count).collect(),
         mutated_args: vec![],
         return_type: t.clone(),
-        implementation: FunctionImplementationKind::Builtin,
+        implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
         associative: false,
       })
       .collect::<Vec<_>>()
@@ -1341,7 +1380,7 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
           arg_types: vec![t.clone(), t.clone(), AbstractType::Type(Type::F32)],
           mutated_args: vec![],
           return_type: t.clone(),
-          implementation: FunctionImplementationKind::Builtin,
+          implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
           associative: false,
         },
         AbstractFunctionSignature {
@@ -1350,7 +1389,7 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
           arg_types: vec![t.clone(), t.clone(), t.clone()],
           mutated_args: vec![],
           return_type: t.clone(),
-          implementation: FunctionImplementationKind::Builtin,
+          implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
           associative: false,
         },
       ]
@@ -1375,7 +1414,7 @@ fn texture_functions() -> Vec<AbstractFunctionSignature> {
       ],
       mutated_args: vec![],
       return_type: AbstractType::AbstractStruct(vec4().into()),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     },
     AbstractFunctionSignature {
@@ -1392,7 +1431,7 @@ fn texture_functions() -> Vec<AbstractFunctionSignature> {
       ],
       mutated_args: vec![],
       return_type: AbstractType::AbstractStruct(vec4().into()),
-      implementation: FunctionImplementationKind::Builtin,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
       associative: false,
     },
   ]
@@ -1412,9 +1451,37 @@ fn array_functions() -> Vec<AbstractFunctionSignature> {
     )],
     mutated_args: vec![],
     return_type: AbstractType::Type(Type::U32),
-    implementation: FunctionImplementationKind::Builtin,
+    implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
     associative: false,
   }]
+}
+
+fn derivative_functions() -> Vec<AbstractFunctionSignature> {
+  float_and_float_vec_types()
+    .into_iter()
+    .flat_map(|t| {
+      [
+        "dpdx",
+        "dpdy",
+        "dpdx-coarse",
+        "dpdy-coarse",
+        "dpdx-fine",
+        "dpdy-fine",
+      ]
+      .into_iter()
+      .map(move |name| AbstractFunctionSignature {
+        name: name.into(),
+        generic_args: vec![],
+        arg_types: vec![t.clone()],
+        mutated_args: vec![],
+        return_type: t.clone(),
+        implementation: FunctionImplementationKind::Builtin(
+          Effect::FragmentExclusiveFunction.into(),
+        ),
+        associative: false,
+      })
+    })
+    .collect()
 }
 
 pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
@@ -1447,6 +1514,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut texture_functions());
   signatures.append(&mut array_functions());
   signatures.append(&mut bit_manipulation_functions());
+  signatures.append(&mut derivative_functions());
   signatures
 }
 
@@ -1827,6 +1895,10 @@ pub fn built_in_macros() -> Vec<Macro> {
 
 pub fn rename_builtin_fn(name: &str) -> Option<String> {
   match &*name {
+    "dpdx-coarse" => Some("dpdxCoarse"),
+    "dpdy-coarse" => Some("dpdyCoarse"),
+    "dpdx-fine" => Some("dpdxFine"),
+    "dpdy-fine" => Some("dpdyFine"),
     "vec2b" => Some("vec2"),
     "vec3b" => Some("vec3"),
     "vec4b" => Some("vec4"),

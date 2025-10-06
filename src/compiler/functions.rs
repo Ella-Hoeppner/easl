@@ -38,7 +38,7 @@ pub struct TopLevelFunction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FunctionImplementationKind {
-  Builtin,
+  Builtin(EffectType),
   StructConstructor,
   EnumConstructor(Rc<str>),
   Composite(Rc<RefCell<TopLevelFunction>>),
@@ -588,6 +588,7 @@ impl FunctionSignature {
             return effects;
           };
         }
+        FunctionImplementationKind::Builtin(effects) => return effects.clone(),
         _ => {}
       }
     }

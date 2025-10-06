@@ -224,7 +224,7 @@ impl EvaluationEnvironment {
             .is_none()
           {
             Some(match &f.implementation {
-              FunctionImplementationKind::Builtin => {
+              FunctionImplementationKind::Builtin(_) => {
                 Ok(Function::Builtin(name.clone()))
               }
               FunctionImplementationKind::StructConstructor => {
