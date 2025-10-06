@@ -30,7 +30,8 @@ Feature goals:
     * as in `@{blah blah} (struct ...)`
     * never does anything anways, but should just make sure it gives an error so the user knows it isn't a valid thing to do
   * validate annotations on struct fields
-    * ensure that any struct used as an input/output type of an entry point has all of its fields annotated as either `@{location ...}` or `@{builtin ..}`, or the `@builtin` shorthand
+    * only thing that should be allowed is `@{location ...}` or `@{builtin ...}`, and again support the `@builtin` shorthand
+    * ensure that any struct used as an input/output type of an entry point has all of its fields annotated as either `@{location ...}` or `@{builtin ..}`
       * or, alternatively, make it so `@{location ...}` annotations are purely optional, and will just be filled in with the order of the fields if left empty?
         * could be weird if the user specifies only a few of them, but I guess I can handle that by just skipping those indeces when filling in the others
       * also validate that the values of the `location` annotations make sense - they don't overlap, and there are no gaps, e.g. something with `location 0` on one field and `location 2` on another, but no `location 1`, shouldn't be allowed

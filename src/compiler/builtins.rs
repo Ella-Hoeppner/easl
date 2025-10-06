@@ -927,7 +927,31 @@ fn boolean_functions() -> Vec<AbstractFunctionSignature> {
       associative: false,
     },
     AbstractFunctionSignature {
+      name: "&&".into(),
+      generic_args: vec![],
+      arg_types: vec![
+        AbstractType::Type(Type::Bool),
+        AbstractType::Type(Type::Bool),
+      ],
+      mutated_args: vec![],
+      return_type: AbstractType::Type(Type::Bool),
+      implementation: FunctionImplementationKind::Builtin,
+      associative: true,
+    },
+    AbstractFunctionSignature {
       name: "and".into(),
+      generic_args: vec![],
+      arg_types: vec![
+        AbstractType::Type(Type::Bool),
+        AbstractType::Type(Type::Bool),
+      ],
+      mutated_args: vec![],
+      return_type: AbstractType::Type(Type::Bool),
+      implementation: FunctionImplementationKind::Builtin,
+      associative: true,
+    },
+    AbstractFunctionSignature {
+      name: "||".into(),
       generic_args: vec![],
       arg_types: vec![
         AbstractType::Type(Type::Bool),
@@ -1407,6 +1431,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut misc_math_functions());
   signatures.append(&mut texture_functions());
   signatures.append(&mut array_functions());
+  signatures.append(&mut bit_manipulation_functions());
   signatures
 }
 
@@ -1423,23 +1448,6 @@ lazy_static! {
   .collect();
   pub static ref ABNORMAL_CONSTRUCTOR_STRUCTS: HashSet<&'static str> =
     ["vec2", "vec3", "vec4"].into_iter().collect();
-  pub static ref RENAMED_BUILTINS: HashMap<&'static str, &'static str> = [
-    ("array-length", "arrayLength"),
-    ("texture-sample", "textureSample"),
-    ("texture-load", "textureLoad"),
-    ("face-forward", "faceForward"),
-    ("dot-4-u8-packed", "dot4U8Packed"),
-    ("dot-4-i8-packed", "dot4I8Packed"),
-    ("extract-bits", "extractBits"),
-    ("reverse-bits", "reverseBits"),
-    ("first-leading-bit", "firstLeadingBit"),
-    ("first-trailing-bit", "firstTrailingBit"),
-    ("count-leading-zeros", "countLeadingZeros"),
-    ("count-one-bits", "countOneBits"),
-    ("count-trailing-zeros", "countTrailingZeros")
-  ]
-  .into_iter()
-  .collect();
 }
 
 pub fn built_in_macros() -> Vec<Macro> {
@@ -1592,7 +1600,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                 Some(Err((
                   SourceTrace::from(position),
                   "\"when\" statement expects a condition and at least 1 body \
-                statement"
+                  statement"
                     .into(),
                 )))
               }
@@ -1806,6 +1814,19 @@ pub fn rename_builtin(name: &str) -> Option<String> {
   match &*name {
     "and" => Some("&&"),
     "or" => Some("||"),
+    "array-length" => Some("arrayLength"),
+    "texture-sample" => Some("textureSample"),
+    "texture-load" => Some("textureLoad"),
+    "face-forward" => Some("faceForward"),
+    "dot-4-u8-packed" => Some("dot4U8Packed"),
+    "dot-4-i8-packed" => Some("dot4I8Packed"),
+    "extract-bits" => Some("extractBits"),
+    "reverse-bits" => Some("reverseBits"),
+    "first-leading-bit" => Some("firstLeadingBit"),
+    "first-trailing-bit" => Some("firstTrailingBit"),
+    "count-leading-zeros" => Some("countLeadingZeros"),
+    "count-one-bits" => Some("countOneBits"),
+    "count-trailing-zeros" => Some("countTrailingZeros"),
     _ => None,
   }
   .map(|name| name.to_string())

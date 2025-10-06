@@ -27,7 +27,7 @@ use crate::{
     },
     util::compile_word,
   },
-  parse::{Context as SyntaxContext, EaslTree, Encloser, Operator, parse_easl},
+  parse::{EaslSyntax, EaslTree, Encloser, Operator, parse_easl},
 };
 
 use super::{
@@ -45,7 +45,7 @@ use super::{
   vars::TopLevelVar,
 };
 
-pub type EaslDocument<'s> = Document<'s, SyntaxContext, Encloser, Operator>;
+pub type EaslDocument<'s> = Document<'s, EaslSyntax>;
 
 pub trait EaslDocumentMethods {
   fn override_def(&mut self, def_name: &str, new_def_value: &str) -> bool;

@@ -2,10 +2,7 @@ use std::rc::Rc;
 
 use sse::syntax::EncloserOrOperator;
 
-use crate::{
-  compiler::builtins::RENAMED_BUILTINS,
-  parse::{EaslTree, Operator},
-};
+use crate::parse::{EaslTree, Operator};
 
 use super::error::{CompileErrorKind::*, CompileResult, SourceTrace, err};
 
@@ -42,15 +39,10 @@ pub fn read_type_annotated_name(
 }
 
 pub fn compile_word(word: Rc<str>) -> String {
-  RENAMED_BUILTINS
-    .get(&*word)
-    .map(|s| s.to_string())
-    .unwrap_or_else(|| {
-      word
-        .replace("-", "_")
-        .replace("+", "PLUS")
-        .replace("*", "STAR")
-        .replace(">", "ABRACKET_RIGHT")
-        .replace("<", "ABRACKET_LEFT")
-    })
+  word
+    .replace("-", "_")
+    .replace("+", "PLUS")
+    .replace("*", "STAR")
+    .replace(">", "ABRACKET_RIGHT")
+    .replace("<", "ABRACKET_LEFT")
 }

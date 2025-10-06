@@ -1478,7 +1478,7 @@ impl TypedExp {
                         .variants
                         .iter()
                         .enumerate()
-                        .find(|(_, variant)| (variant.name == *variant_name))
+                        .find(|(_, variant)| variant.name == *variant_name)
                       else {
                         panic!("invalid pattern type in enum match block")
                       };

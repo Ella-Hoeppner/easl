@@ -1,7 +1,11 @@
+use std::sync::LazyLock;
+
 use sse::{
-  DocumentSyntaxTree, Encloser as SSEEncloser, Operator as SSEOperator,
-  SyntaxContext, SyntaxGraph, document::Document, standard_whitespace_chars,
-  syntax::Context as SSEContext,
+  Context as SSEContext, DocumentSyntaxTree, Encloser as SSEEncloser,
+  Operator as SSEOperator,
+  document::Document,
+  standard_whitespace_chars,
+  syntax::{ContextId, Syntax},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -11,7 +15,7 @@ pub enum Context {
   UnstructuredComment,
 }
 
-impl SSEContext for Context {
+impl ContextId for Context {
   fn is_comment(&self) -> bool {
     use Context::*;
     match self {
@@ -34,17 +38,6 @@ pub enum Encloser {
   BlockComment,
 }
 impl SSEEncloser for Encloser {
-  fn id_str(&self) -> &str {
-    use Encloser::*;
-    match self {
-      Parens => "",
-      Square => ":square-brackets:",
-      Curly => ":cury-brackets:",
-      LineComment => ":line-comment:",
-      BlockComment => ":block-comment:",
-    }
-  }
-
   fn opening_encloser_str(&self) -> &str {
     use Encloser::*;
     match self {
@@ -75,15 +68,6 @@ pub enum Operator {
   Reference,
 }
 impl SSEOperator for Operator {
-  fn id_str(&self) -> &str {
-    match self {
-      Operator::Annotation => ":annotation:",
-      Operator::TypeAscription => ":type-ascription:",
-      Operator::ExpressionComment => ":expression-comment:",
-      Operator::Reference => ":reference:",
-    }
-  }
-
   fn left_args(&self) -> usize {
     match self {
       Operator::Annotation => 0,
@@ -112,68 +96,76 @@ impl SSEOperator for Operator {
   }
 }
 
-pub type EaslSynaxGraph = SyntaxGraph<Context, Encloser, Operator>;
+static DEFAULT_CTX: LazyLock<SSEContext<Encloser, Operator>> =
+  LazyLock::new(|| {
+    SSEContext::new(
+      vec![
+        Encloser::Parens,
+        Encloser::Square,
+        Encloser::Curly,
+        Encloser::LineComment,
+        Encloser::BlockComment,
+      ],
+      vec![
+        Operator::Annotation,
+        Operator::TypeAscription,
+        Operator::ExpressionComment,
+        Operator::Reference,
+      ],
+      None,
+      standard_whitespace_chars(),
+    )
+  });
 
-pub fn easl_syntax_graph() -> EaslSynaxGraph {
-  let default_context = SyntaxContext::new(
-    vec![
-      Encloser::Parens,
-      Encloser::Square,
-      Encloser::Curly,
-      Encloser::LineComment,
-      Encloser::BlockComment,
-    ],
-    vec![
-      Operator::Annotation,
-      Operator::TypeAscription,
-      Operator::ExpressionComment,
-      Operator::Reference,
-    ],
-    None,
-    standard_whitespace_chars(),
-  );
-  let unstructured_comment_context =
-    SyntaxContext::new(vec![], vec![], None, vec![]);
-  EaslSynaxGraph::new(
-    Context::Default,
-    [
-      (Context::Default, default_context.clone()),
-      (Context::StructuredComment, default_context),
-      (Context::UnstructuredComment, unstructured_comment_context),
-    ]
-    .into(),
-    [
-      (Encloser::Parens, Context::Default),
-      (Encloser::Square, Context::Default),
-      (Encloser::Curly, Context::Default),
-      (Encloser::LineComment, Context::UnstructuredComment),
-      (Encloser::BlockComment, Context::UnstructuredComment),
-    ]
-    .into(),
-    [
-      (Operator::Annotation, Context::Default),
-      (Operator::TypeAscription, Context::Default),
-      (Operator::Reference, Context::Default),
-      (Operator::ExpressionComment, Context::StructuredComment),
-    ]
-    .into(),
-  )
+static TRIVIAL_CTX: LazyLock<SSEContext<Encloser, Operator>> =
+  LazyLock::new(|| SSEContext::trivial());
+
+pub struct EaslSyntax;
+
+impl Syntax for EaslSyntax {
+  type C = Context;
+  type E = Encloser;
+  type O = Operator;
+
+  fn root_context(&self) -> Self::C {
+    Context::Default
+  }
+  fn context<'a>(&'a self, id: &Self::C) -> &'a SSEContext<Self::E, Self::O> {
+    match id {
+      Context::Default | Context::StructuredComment => &*DEFAULT_CTX,
+      Context::UnstructuredComment => &*TRIVIAL_CTX,
+    }
+  }
+  fn encloser_context(&self, encloser: &Self::E) -> Self::C {
+    match encloser {
+      Encloser::Parens | Encloser::Square | Encloser::Curly => Context::Default,
+      Encloser::LineComment | Encloser::BlockComment => {
+        Context::UnstructuredComment
+      }
+    }
+  }
+  fn operator_context(&self, operator: &Self::O) -> Self::C {
+    match operator {
+      Operator::Annotation | Operator::TypeAscription | Operator::Reference => {
+        Context::Default
+      }
+      Operator::ExpressionComment => Context::StructuredComment,
+    }
+  }
+  fn reserved_tokens(&self) -> impl Iterator<Item = &str> {
+    ["&&"].into_iter()
+  }
 }
 
-pub fn parse_easl(easl_source: &str) -> CompileResult<EaslDocument> {
-  Document::from_text_with_syntax(easl_syntax_graph(), easl_source).map_err(
-    |e| {
-      CompileError::new(
-        CompileErrorKind::ParsingFailed(e),
-        SourceTrace::empty(),
-      )
-    },
-  )
+pub fn parse_easl(easl_source: &'_ str) -> CompileResult<EaslDocument<'_>> {
+  Document::from_text_with_syntax(EaslSyntax, easl_source).map_err(|e| {
+    CompileError::new(CompileErrorKind::ParsingFailed(e), SourceTrace::empty())
+  })
 }
 
 pub fn parse_easl_without_comments(
-  easl_source: &str,
-) -> CompileResult<EaslDocument> {
+  easl_source: &'_ str,
+) -> CompileResult<EaslDocument<'_>> {
   let mut doc = parse_easl(easl_source)?;
   doc.strip_comments();
   Ok(doc)

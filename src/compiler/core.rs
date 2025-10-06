@@ -2,13 +2,13 @@ use sse::document::Document;
 
 use crate::{
   compiler::info::ProgramInfo,
-  parse::{Context as ParseContext, Encloser, Operator, parse_easl},
+  parse::{EaslSyntax, parse_easl},
 };
 
 use super::{builtins::built_in_macros, error::ErrorLog, program::Program};
 
 pub fn compile_easl_document_to_wgsl(
-  document: Document<'_, ParseContext, Encloser, Operator>,
+  document: Document<'_, EaslSyntax>,
 ) -> Result<String, ErrorLog> {
   let (mut program, errors) =
     Program::from_easl_document(&document, built_in_macros());

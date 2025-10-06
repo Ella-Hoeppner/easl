@@ -23,7 +23,7 @@
         vu (+ (* v.x u.x) (* v.y u.y))
         vv (+ (* v.x v.x) (* v.y v.y))
         t (/ (* -1. vu) vv)]
-    (if (and (>= t 0.) (<= t 1.))
+    (if (&& (>= t 0.) (<= t 1.))
       (vec2f (+ (* (- 1. t) a.x) (* t b.x))
              (+ (* (- 1. t) a.y) (* t b.y)))
       (let [g0 (+ (* (- a.x p.x) (- a.x p.x))
