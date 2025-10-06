@@ -37,9 +37,6 @@ Feature goals:
       * also validate that the values of the `location` annotations make sense - they don't overlap, and there are no gaps, e.g. something with `location 0` on one field and `location 2` on another, but no `location 1`, shouldn't be allowed
         * at least, I presume? haven't actually checked the wgsl spec for this
 
-* vecs of bools don't compile properly. Right now it gets compiled like `vec4_bool`, but it needs to be `vec4<bool>`, as seen in the `any_and_all.easl` example. Need a special case to compile this properly.
-  * support `vec4b` as a type alias
-
 * missing some built-in functions:
   * derivative functions
   * texture functions

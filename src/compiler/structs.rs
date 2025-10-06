@@ -5,8 +5,8 @@ use std::{
 
 use crate::{
   compiler::{
-    expression::{Accessor, ExpKind, Number, TypedExp},
     annotation::extract_annotation,
+    expression::{Accessor, ExpKind, Number, TypedExp},
     program::{NameContext, TypeDefs},
     types::{ArraySize, contains_name_leaf, extract_type_annotation_ast},
     util::{compile_word, read_leaf},
@@ -15,10 +15,10 @@ use crate::{
 };
 
 use super::{
+  annotation::Annotation,
   error::{
     CompileError, CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace,
   },
-  annotation::Annotation,
   types::{AbstractType, ExpTypeInfo, Type, TypeState},
 };
 
@@ -124,9 +124,10 @@ pub fn compiled_vec_or_mat_name(
     Type::F32 => Some("f"),
     Type::I32 => Some("i"),
     Type::U32 => Some("u"),
+    Type::Bool => Some("<bool>"),
     _ => None,
   }
-  .map(|suffix| format!("{base_struct_name}{}", suffix).into())
+  .map(|suffix| format!("{base_struct_name}{suffix}").into())
 }
 
 #[derive(Debug, Clone, PartialEq)]

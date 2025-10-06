@@ -14,7 +14,7 @@ use crate::{
     annotation::{Annotation, extract_annotation},
     builtins::{
       ASSIGNMENT_OPS, INFIX_OPS, builtin_vec_constructor_type,
-      get_builtin_struct, rename_builtin,
+      get_builtin_struct, rename_builtin_fn,
     },
     effects::EffectType,
     enums::AbstractEnum,
@@ -1222,7 +1222,7 @@ impl TypedExp {
           let ExpKind::Name(name) = f.kind else {
             panic!("tried to compile application of non-name fn");
           };
-          let f_str = rename_builtin(&*name).unwrap_or_else(|| {
+          let f_str = rename_builtin_fn(&*name).unwrap_or_else(|| {
             if ASSIGNMENT_OPS.contains(name.as_ref())
               || INFIX_OPS.contains(name.as_ref())
             {

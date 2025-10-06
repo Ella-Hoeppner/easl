@@ -1,0 +1,9 @@
+(defn any-but-not-all [a: vec2b]: bool
+  (&& (any a)
+      (not (all a))))
+
+(defn f []: f32
+  (let [y (vec4b true false true false)]
+    (if (all y)
+      1.
+      0.)))

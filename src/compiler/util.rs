@@ -39,10 +39,13 @@ pub fn read_type_annotated_name(
 }
 
 pub fn compile_word(word: Rc<str>) -> String {
-  word
-    .replace("-", "_")
-    .replace("+", "PLUS")
-    .replace("*", "STAR")
-    .replace(">", "ABRACKET_RIGHT")
-    .replace("<", "ABRACKET_LEFT")
+  match &*word {
+    "vec2<bool>" | "vec3<bool>" | "vec4<bool>" => word.to_string(),
+    _ => word
+      .replace("-", "_")
+      .replace("+", "PLUS")
+      .replace("*", "STAR")
+      .replace(">", "ABRACKET_RIGHT")
+      .replace("<", "ABRACKET_LEFT"),
+  }
 }

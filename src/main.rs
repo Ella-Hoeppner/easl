@@ -92,6 +92,7 @@ fn main() {
     "overload_builtin",
     "trig",
     "any_and_all",
+    "vecb",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

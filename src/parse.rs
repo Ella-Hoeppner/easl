@@ -153,7 +153,7 @@ impl Syntax for EaslSyntax {
     }
   }
   fn reserved_tokens(&self) -> impl Iterator<Item = &str> {
-    ["&&"].into_iter()
+    ["&&", "||"].into_iter()
   }
 }
 

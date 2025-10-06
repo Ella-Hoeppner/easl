@@ -55,6 +55,7 @@ fn specialized_vec_n_type(n: u8, suffix: &str) -> AbstractType {
     "f" => Type::F32,
     "i" => Type::I32,
     "u" => Type::U32,
+    "b" => Type::Bool,
     _ => panic!("unknown specialized vec suffix \"{suffix}\""),
   });
   match n {
@@ -109,7 +110,7 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
     .into_iter()
     .chain(std::iter::once(vec![1]))
     .flat_map(|nums| {
-      ["f", "i", "u"]
+      ["f", "i", "u", "b"]
         .into_iter()
         .map(|suffix| AbstractFunctionSignature {
           name: format!("vec{n}{suffix}").into(),
@@ -395,47 +396,52 @@ pub fn built_in_structs() -> Vec<AbstractStruct> {
 }
 
 pub fn built_in_type_aliases() -> Vec<(Rc<str>, Rc<AbstractStruct>)> {
-  [("f", Type::F32), ("i", Type::I32), ("u", Type::U32)]
+  [
+    ("f", Type::F32),
+    ("i", Type::I32),
+    ("u", Type::U32),
+    ("b", Type::Bool),
+  ]
+  .into_iter()
+  .flat_map(|(suffix, t)| {
+    [
+      (
+        format!("vec2{suffix}").into(),
+        vec2()
+          .generate_monomorphized(vec![t.clone()])
+          .unwrap()
+          .into(),
+      ),
+      (
+        format!("vec3{suffix}").into(),
+        vec3()
+          .generate_monomorphized(vec![t.clone()])
+          .unwrap()
+          .into(),
+      ),
+      (
+        format!("vec4{suffix}").into(),
+        vec4()
+          .generate_monomorphized(vec![t.clone()])
+          .unwrap()
+          .into(),
+      ),
+    ]
     .into_iter()
-    .flat_map(|(suffix, t)| {
-      [
+    .chain((2..=4).flat_map(move |n| {
+      let t = t.clone();
+      (2..=4).map(move |m| {
         (
-          format!("vec2{suffix}").into(),
-          vec2()
+          format!("mat{n}x{m}{suffix}").into(),
+          matrix(n, m)
             .generate_monomorphized(vec![t.clone()])
             .unwrap()
             .into(),
-        ),
-        (
-          format!("vec3{suffix}").into(),
-          vec3()
-            .generate_monomorphized(vec![t.clone()])
-            .unwrap()
-            .into(),
-        ),
-        (
-          format!("vec4{suffix}").into(),
-          vec4()
-            .generate_monomorphized(vec![t.clone()])
-            .unwrap()
-            .into(),
-        ),
-      ]
-      .into_iter()
-      .chain((2..=4).flat_map(move |n| {
-        let t = t.clone();
-        (2..=4).map(move |m| {
-          (
-            format!("mat{n}x{m}{suffix}").into(),
-            matrix(n, m)
-              .generate_monomorphized(vec![t.clone()])
-              .unwrap()
-              .into(),
-          )
-        })
-      }))
-    })
-    .collect()
+        )
+      })
+    }))
+  })
+  .collect()
 }
 
 pub fn get_builtin_struct(name: &str) -> AbstractStruct {
@@ -919,6 +925,15 @@ fn boolean_functions() -> Vec<AbstractFunctionSignature> {
   vec![
     AbstractFunctionSignature {
       name: "!".into(),
+      generic_args: vec![],
+      arg_types: vec![AbstractType::Type(Type::Bool)],
+      mutated_args: vec![],
+      return_type: AbstractType::Type(Type::Bool),
+      implementation: FunctionImplementationKind::Builtin,
+      associative: false,
+    },
+    AbstractFunctionSignature {
+      name: "not".into(),
       generic_args: vec![],
       arg_types: vec![AbstractType::Type(Type::Bool)],
       mutated_args: vec![],
@@ -1810,8 +1825,12 @@ pub fn built_in_macros() -> Vec<Macro> {
   vec![if_macro, when_macro, thread_macro]
 }
 
-pub fn rename_builtin(name: &str) -> Option<String> {
+pub fn rename_builtin_fn(name: &str) -> Option<String> {
   match &*name {
+    "vec2b" => Some("vec2"),
+    "vec3b" => Some("vec3"),
+    "vec4b" => Some("vec4"),
+    "not" => Some("!"),
     "and" => Some("&&"),
     "or" => Some("||"),
     "array-length" => Some("arrayLength"),
