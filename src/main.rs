@@ -97,6 +97,7 @@ fn main() {
     "discard",
     "compute",
     "arg_annotation",
+    "return_annotation",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

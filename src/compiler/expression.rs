@@ -22,7 +22,7 @@ use crate::{
     functions::{
       AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
     },
-    program::{NameContext, Program, TypeDefs},
+    program::{self, NameContext, Program, TypeDefs},
     structs::{AbstractStruct, Struct},
     types::{
       ArraySize, ExpTypeInfo, Type,
@@ -328,6 +328,7 @@ pub type TypedExp = Exp<ExpTypeInfo>;
 pub fn arg_list_and_return_type_from_easl_tree(
   tree: EaslTree,
   typedefs: &TypeDefs,
+  names: &mut NameContext,
   skolems: &Vec<Rc<str>>,
 ) -> CompileResult<(
   SourceTrace,
@@ -378,8 +379,24 @@ pub fn arg_list_and_return_type_from_easl_tree(
               arg_annotation
                 .validate_as_argument_annotation(&source_trace, &arg_name)
                 .map(|arg_annotation| {
-                  ((t, Some(arg_annotation)), arg_name.into())
+                  if let Some(builtin) = arg_annotation.builtin.as_ref() {
+                    if builtin.arg_type() == t {
+                      Ok(((t, Some(arg_annotation)), arg_name.into()))
+                    } else {
+                      Err(CompileError {
+                        kind: ArgumentTypeIncompatibleWithBuiltin(
+                          builtin.name().to_string(),
+                          builtin.arg_type().compile(typedefs, names).unwrap(),
+                        ),
+                        source_trace,
+                      })
+                    }
+                    //((t, Some(arg_annotation)), arg_name.into())
+                  } else {
+                    Ok(((t, Some(arg_annotation)), arg_name.into()))
+                  }
                 })
+                .flatten()
             } else {
               Ok(((t, None), arg_name.into()))
             }

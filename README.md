@@ -17,13 +17,8 @@ Feature goals:
 ## todo
 ### high priority, necessary to call the language 0.1
 * more annotation validation:
-  * on fragment entry points, require a `@{location ...}` on the output type, or one isn't found, assume that it's `@{location 0}`
-    * disallow annotations on output types for any other entry point, or for functions with no entry point
-  * disallow annotations on structs and enums
-    * as in `@{blah blah} (struct ...)`
-    * never does anything anways, but should just make sure it gives an error so the user knows it isn't a valid thing to do
   * validate annotations on struct fields
-    * only thing that should be allowed is `@{location ...}` or `@{builtin ...}`, and again support the `@builtin` shorthand
+    * only thing that should be allowed is `@{location ...}` `@{interpolate ...}` or `@{builtin ...}`, and again support the `@builtin` shorthand
     * ensure that any struct used as an input/output type of an entry point has all of its fields annotated as either `@{location ...}` or `@{builtin ..}`
       * or, alternatively, make it so `@{location ...}` annotations are purely optional, and will just be filled in with the order of the fields if left empty?
         * could be weird if the user specifies only a few of them, but I guess I can handle that by just skipping those indeces when filling in the others

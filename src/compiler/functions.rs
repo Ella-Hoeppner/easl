@@ -6,13 +6,18 @@ use std::{
 
 use take_mut::take;
 
-use crate::compiler::{
-  builtins::vec3,
-  effects::{Effect, EffectType},
-  enums::AbstractEnum,
-  program::{NameContext, TypeDefs},
-  types::Variable,
-  util::compile_word,
+use crate::{
+  compiler::{
+    annotation::FunctionAnnotation,
+    builtins::vec3,
+    effects::{Effect, EffectType},
+    enums::AbstractEnum,
+    expression::arg_list_and_return_type_from_easl_tree,
+    program::{NameContext, TypeDefs},
+    types::{Variable, VariableKind, parse_generic_argument},
+    util::compile_word,
+  },
+  parse::EaslTree,
 };
 
 use super::{
@@ -150,7 +155,7 @@ impl FunctionArgumentAnnotation {
 pub struct TopLevelFunction {
   pub arg_names: Vec<Rc<str>>,
   pub arg_annotations: Vec<Option<FunctionArgumentAnnotation>>,
-  pub return_annotation: Option<Annotation>,
+  pub return_location: Option<usize>,
   pub entry_point: Option<EntryPoint>,
   pub body: TypedExp,
 }
@@ -175,6 +180,263 @@ pub struct AbstractFunctionSignature {
 }
 
 impl AbstractFunctionSignature {
+  pub(crate) fn from_defn_ast(
+    mut children_iter: impl Iterator<Item = EaslTree>,
+    first_child_source_trace: SourceTrace,
+    parens_source_trace: SourceTrace,
+    annotation: Option<(Annotation, SourceTrace)>,
+    program: &Program,
+    errors: &mut ErrorLog,
+  ) -> Option<Self> {
+    use crate::parse::Encloser::*;
+    use sse::syntax::EncloserOrOperator::*;
+    let Some(name_ast) = children_iter.next() else {
+      errors.log(CompileError::new(
+        InvalidDefn("Missing Name".into()),
+        parens_source_trace.clone(),
+      ));
+      return None;
+    };
+    let fn_and_generic_names: Option<(Rc<str>, Vec<_>)> = match name_ast {
+      EaslTree::Leaf(_, name) => Some((name.into(), vec![])),
+      EaslTree::Inner((_, Encloser(Parens)), subtrees) => {
+        let mut subtrees_iter = subtrees.into_iter();
+        if let Some(EaslTree::Leaf(_, name)) = subtrees_iter.next() {
+          match subtrees_iter
+            .map(|subtree| {
+              parse_generic_argument(subtree, &program.typedefs, &vec![])
+            })
+            .collect::<CompileResult<Vec<_>>>()
+          {
+            Ok(generic_args) => Some((name.into(), generic_args)),
+            Err(e) => {
+              errors.log(e);
+              None
+            }
+          }
+        } else {
+          errors.log(CompileError::new(
+            InvalidDefn("Invalid name".into()),
+            first_child_source_trace,
+          ));
+          None
+        }
+      }
+      _ => {
+        errors.log(CompileError::new(
+          InvalidDefn(
+            "Expected name or parens with name and generic arguments".into(),
+          ),
+          first_child_source_trace,
+        ));
+        None
+      }
+    };
+    let Some((fn_name, generic_args)) = fn_and_generic_names else {
+      return None;
+    };
+    let Some(arg_list_ast) = children_iter.next() else {
+      errors.log(CompileError::new(
+        InvalidDefn("Missing Argument List".into()),
+        parens_source_trace.clone(),
+      ));
+      return None;
+    };
+    let generic_arg_names: Vec<Rc<str>> =
+      generic_args.iter().map(|(name, _)| name.clone()).collect();
+    match arg_list_and_return_type_from_easl_tree(
+      arg_list_ast,
+      &program.typedefs,
+      &mut program.names.borrow_mut(),
+      &generic_arg_names,
+    ) {
+      Ok((
+        source_path,
+        arg_names,
+        arg_types,
+        arg_annotations,
+        return_type,
+        return_annotation,
+      )) => {
+        match return_type.concretize(
+          &generic_arg_names,
+          &program.typedefs,
+          source_path.clone().into(),
+        ) {
+          Ok(concrete_return_type) => {
+            match arg_types
+              .iter()
+              .zip(arg_annotations.iter())
+              .map(|(t, annotation)| {
+                Ok((
+                  Variable {
+                    var_type: t
+                      .concretize(
+                        &generic_arg_names,
+                        &program.typedefs,
+                        source_path.clone().into(),
+                      )?
+                      .known()
+                      .into(),
+                    kind: if let Some(annotation) = annotation
+                      && annotation.var
+                    {
+                      VariableKind::Var
+                    } else {
+                      VariableKind::Let
+                    },
+                  },
+                  if let AbstractType::Generic(generic_name) = t {
+                    generic_args
+                      .iter()
+                      .find_map(|(name, constraints)| {
+                        (generic_name == name).then(|| constraints.clone())
+                      })
+                      .unwrap_or(vec![])
+                  } else {
+                    vec![]
+                  },
+                ))
+              })
+              .collect::<CompileResult<Vec<(Variable, Vec<TypeConstraint>)>>>()
+            {
+              Ok(concrete_args) => {
+                match TypedExp::function_from_body_tree(
+                  source_path.clone(),
+                  children_iter.collect(),
+                  concrete_return_type.known().into(),
+                  arg_names.clone(),
+                  concrete_args,
+                  &program.typedefs,
+                  &generic_arg_names,
+                ) {
+                  Ok(body) => {
+                    let parsed_annotation =
+                      if let Some((annotation, annotation_source_trace)) =
+                        &annotation
+                      {
+                        match annotation.validate_as_function_annotation(
+                          annotation_source_trace,
+                        ) {
+                          Ok(is_associative) => is_associative,
+                          Err(e) => {
+                            errors.log(e);
+                            FunctionAnnotation::default()
+                          }
+                        }
+                      } else {
+                        FunctionAnnotation::default()
+                      };
+                    let all_arg_annotations: Vec<FunctionArgumentAnnotation> =
+                      arg_annotations
+                        .iter()
+                        .cloned()
+                        .filter_map(|x| x)
+                        .collect();
+                    for annotation in all_arg_annotations.iter() {
+                      if let Some(builtin) = &annotation.builtin {
+                        if let Some(entry) = parsed_annotation.entry {
+                          if !builtin.allowed_for_entry(entry) {
+                            errors.log(CompileError {
+                              kind: BuiltinArgumentsOnWrongEntry(
+                                builtin.name().to_string(),
+                                entry.name().to_string(),
+                              ),
+                              source_trace: source_path.clone(),
+                            });
+                          }
+                        } else {
+                          errors.log(CompileError {
+                            kind: BuiltinArgumentsOnlyAllowedOnEntry,
+                            source_trace: source_path.clone(),
+                          });
+                        }
+                      }
+                    }
+                    let all_builtins: Vec<BuiltinArgumentAnnotation> =
+                      all_arg_annotations
+                        .iter()
+                        .filter_map(|a| a.builtin.clone())
+                        .collect();
+                    if all_builtins.iter().collect::<HashSet<_>>().len()
+                      < all_builtins.len()
+                    {
+                      errors.log(CompileError {
+                        kind: DuplicateBuiltinArgument,
+                        source_trace: source_path.clone(),
+                      });
+                    }
+                    let mut return_location = None;
+                    if let Some(return_annotation) = return_annotation {
+                      for (name, value) in return_annotation.properties() {
+                        match (&*name, value) {
+                          ("location", Some(value)) => {
+                            match value.parse::<usize>() {
+                              Ok(location) => {
+                                return_location = Some(location);
+                                if parsed_annotation.entry
+                                  != Some(EntryPoint::Fragment)
+                                {
+                                  errors.log(CompileError {
+                                    kind: InvalidReturnTypeAnnotation,
+                                    source_trace: source_path.clone(),
+                                  });
+                                }
+                              }
+                              Err(_) => errors.log(CompileError {
+                                kind: InvalidReturnTypeAnnotation,
+                                source_trace: source_path.clone(),
+                              }),
+                            }
+                          }
+                          _ => errors.log(CompileError {
+                            kind: InvalidReturnTypeAnnotation,
+                            source_trace: source_path.clone(),
+                          }),
+                        }
+                      }
+                    }
+                    if return_location.is_none()
+                      && parsed_annotation.entry == Some(EntryPoint::Fragment)
+                    {
+                      return_location = Some(0);
+                    }
+                    let implementation = FunctionImplementationKind::Composite(
+                      Rc::new(RefCell::new(TopLevelFunction {
+                        arg_names,
+                        arg_annotations,
+                        return_location,
+                        entry_point: parsed_annotation.entry,
+                        body,
+                      })),
+                    );
+                    return Some(AbstractFunctionSignature {
+                      name: fn_name,
+                      generic_args,
+                      arg_types,
+                      mutated_args: vec![],
+                      return_type,
+                      implementation,
+                      associative: parsed_annotation.associative,
+                    });
+                  }
+                  Err(e) => errors.log(e),
+                }
+              }
+              Err(e) => {
+                errors.log(e);
+              }
+            }
+          }
+          Err(e) => {
+            errors.log(e);
+          }
+        }
+      }
+      Err(e) => errors.log(e),
+    }
+    None
+  }
   pub(crate) fn normalized_signature(
     &self,
   ) -> (Vec<Vec<TypeConstraint>>, Vec<AbstractType>, AbstractType) {
@@ -779,7 +1041,10 @@ impl TopLevelFunction {
       } else {
         format!(
           " -> {}{}",
-          Annotation::compile_optional(self.return_annotation),
+          self
+            .return_location
+            .map(|location| format!("@location({location}) "))
+            .unwrap_or_default(),
           return_type.monomorphized_name(names)
         )
       },

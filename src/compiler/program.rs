@@ -11,24 +11,15 @@ use take_mut::take;
 use crate::{
   Never,
   compiler::{
-    annotation::{FunctionAnnotation, extract_annotation},
+    annotation::extract_annotation,
     builtins::built_in_functions,
     effects::Effect,
     enums::{AbstractEnum, UntypedEnum},
     error::{CompileError, SourceTrace},
-    expression::{
-      Exp, ExpKind, ExpressionCompilationPosition,
-      arg_list_and_return_type_from_easl_tree,
-    },
-    functions::{
-      AbstractFunctionSignature, BuiltinArgumentAnnotation, EntryPoint,
-      FunctionArgumentAnnotation,
-    },
+    expression::{Exp, ExpKind, ExpressionCompilationPosition},
+    functions::{AbstractFunctionSignature, EntryPoint},
     structs::UntypedStruct,
-    types::{
-      AbstractType, Type, TypeConstraint, TypeState, UntypedType, Variable,
-      VariableKind, parse_generic_argument,
-    },
+    types::{AbstractType, Type, TypeState, UntypedType, VariableKind},
     util::compile_word,
   },
   parse::{EaslSyntax, EaslTree, Encloser, Operator, parse_easl},
@@ -43,7 +34,7 @@ use super::{
     CompileResult, ErrorLog,
   },
   expression::TypedExp,
-  functions::{FunctionImplementationKind, TopLevelFunction},
+  functions::FunctionImplementationKind,
   macros::{Macro, macroexpand},
   structs::AbstractStruct,
   vars::TopLevelVar,
@@ -446,6 +437,12 @@ impl Program {
           let source_trace: SourceTrace = position.clone().into();
           match first_child.as_str() {
             "struct" | "enum" => {
+              if let Some((_, source_trace)) = annotation {
+                errors.log(CompileError {
+                  kind: AnnotationNotAllowedOnType,
+                  source_trace,
+                });
+              }
               if let Some(struct_name) = children_iter.next() {
                 match struct_name {
                   EaslTree::Leaf(_, name) => match first_child.as_str() {
@@ -625,256 +622,18 @@ impl Program {
                 program.add_top_level_var(var, &mut errors);
               }
             }
-            "defn" => match children_iter.next() {
-              Some(name_ast) => {
-                let fn_and_generic_names: Option<(Rc<str>, Vec<_>)> =
-                  match name_ast {
-                    EaslTree::Leaf(_, name) => Some((name.into(), vec![])),
-                    EaslTree::Inner((_, Encloser(Parens)), subtrees) => {
-                      let mut subtrees_iter = subtrees.into_iter();
-                      if let Some(EaslTree::Leaf(_, name)) =
-                        subtrees_iter.next()
-                      {
-                        match subtrees_iter
-                          .map(|subtree| {
-                            parse_generic_argument(
-                              subtree,
-                              &program.typedefs,
-                              &vec![],
-                            )
-                          })
-                          .collect::<CompileResult<Vec<_>>>()
-                        {
-                          Ok(generic_args) => Some((name.into(), generic_args)),
-                          Err(e) => {
-                            errors.log(e);
-                            None
-                          }
-                        }
-                      } else {
-                        errors.log(CompileError::new(
-                          InvalidDefn("Invalid name".into()),
-                          first_child_source_trace,
-                        ));
-                        None
-                      }
-                    }
-                    _ => {
-                      errors.log(CompileError::new(
-                      InvalidDefn(
-                        "Expected name or parens with name and generic arguments"
-                          .into(),
-                      ),
-                      first_child_source_trace,
-                    ));
-                      None
-                    }
-                  };
-                if let Some((fn_name, generic_args)) = fn_and_generic_names {
-                  match children_iter.next() {
-                    Some(arg_list_ast) => {
-                      let generic_arg_names: Vec<Rc<str>> = generic_args
-                        .iter()
-                        .map(|(name, _)| name.clone())
-                        .collect();
-                      match arg_list_and_return_type_from_easl_tree(
-                        arg_list_ast,
-                        &program.typedefs,
-                        &generic_arg_names,
-                      ) {
-                        Ok((
-                          source_path,
-                          arg_names,
-                          arg_types,
-                          arg_annotations,
-                          return_type,
-                          return_annotation,
-                        )) => {
-                          match return_type.concretize(
-                            &generic_arg_names,
-                            &program.typedefs,
-                            source_path.clone().into(),
-                          ) {
-                            Ok(concrete_return_type) => {
-                              match arg_types
-                                .iter()
-                                .zip(arg_annotations.iter())
-                                .map(|(t, annotation)| {
-                                  Ok((
-                                    Variable {
-                                      var_type: t
-                                        .concretize(
-                                          &generic_arg_names,
-                                          &program.typedefs,
-                                          source_path.clone().into(),
-                                        )?
-                                        .known()
-                                        .into(),
-                                      kind: if let Some(annotation) = annotation
-                                        && annotation.var
-                                      {
-                                        VariableKind::Var
-                                      } else {
-                                        VariableKind::Let
-                                      },
-                                    },
-                                    if let AbstractType::Generic(generic_name) =
-                                      t
-                                    {
-                                      generic_args
-                                        .iter()
-                                        .find_map(|(name, constraints)| {
-                                          (generic_name == name)
-                                            .then(|| constraints.clone())
-                                        })
-                                        .unwrap_or(vec![])
-                                    } else {
-                                      vec![]
-                                    },
-                                  ))
-                                })
-                                .collect::<CompileResult<
-                                  Vec<(Variable, Vec<TypeConstraint>)>,
-                                >>() {
-                                Ok(concrete_args) => {
-                                  match TypedExp::function_from_body_tree(
-                                    source_path.clone(),
-                                    children_iter.collect(),
-                                    concrete_return_type.known().into(),
-                                    arg_names.clone(),
-                                    concrete_args,
-                                    &program.typedefs,
-                                    &generic_arg_names,
-                                  ) {
-                                    Ok(body) => {
-                                      let parsed_annotation = if let Some((
-                                        annotation,
-                                        annotation_source_trace,
-                                      )) =
-                                        &annotation
-                                      {
-                                        match annotation
-                                          .validate_as_function_annotation(
-                                            annotation_source_trace,
-                                          ) {
-                                          Ok(is_associative) => is_associative,
-                                          Err(e) => {
-                                            errors.log(e);
-                                            FunctionAnnotation::default()
-                                          }
-                                        }
-                                      } else {
-                                        FunctionAnnotation::default()
-                                      };
-                                      let all_arg_annotations: Vec<
-                                        FunctionArgumentAnnotation,
-                                      > = arg_annotations
-                                        .iter()
-                                        .cloned()
-                                        .filter_map(|x| x)
-                                        .collect();
-                                      for annotation in
-                                        all_arg_annotations.iter()
-                                      {
-                                        if let Some(builtin) =
-                                          &annotation.builtin
-                                        {
-                                          if let Some(entry) =
-                                            parsed_annotation.entry
-                                          {
-                                            if !builtin.allowed_for_entry(entry)
-                                            {
-                                              errors.log(CompileError {
-                                                kind:
-                                                  BuiltinArgumentsOnWrongEntry(
-                                                    builtin.name().to_string(),
-                                                    entry.name().to_string(),
-                                                  ),
-                                                source_trace: source_path
-                                                  .clone(),
-                                              });
-                                            }
-                                          } else {
-                                            errors.log(CompileError {
-                                              kind: BuiltinArgumentsOnlyAllowedOnEntry,
-                                              source_trace: source_path.clone(),
-                                            });
-                                          }
-                                        }
-                                      }
-                                      let all_builtins: Vec<
-                                        BuiltinArgumentAnnotation,
-                                      > = all_arg_annotations
-                                        .iter()
-                                        .filter_map(|a| a.builtin.clone())
-                                        .collect();
-                                      if all_builtins
-                                        .iter()
-                                        .collect::<HashSet<_>>()
-                                        .len()
-                                        < all_builtins.len()
-                                      {
-                                        errors.log(CompileError {
-                                          kind: DuplicateBuiltinArgument,
-                                          source_trace: source_path,
-                                        });
-                                      }
-                                      let implementation =
-                                        FunctionImplementationKind::Composite(
-                                          Rc::new(RefCell::new(
-                                            TopLevelFunction {
-                                              arg_names,
-                                              arg_annotations,
-                                              return_annotation,
-                                              entry_point: parsed_annotation
-                                                .entry,
-                                              body,
-                                            },
-                                          )),
-                                        );
-                                      program.add_abstract_function(Rc::new(
-                                        RefCell::new(
-                                          AbstractFunctionSignature {
-                                            name: fn_name,
-                                            generic_args,
-                                            arg_types,
-                                            mutated_args: vec![],
-                                            return_type,
-                                            implementation,
-                                            associative: parsed_annotation
-                                              .associative,
-                                          },
-                                        ),
-                                      ));
-                                    }
-                                    Err(e) => errors.log(e),
-                                  }
-                                }
-                                Err(e) => {
-                                  errors.log(e);
-                                }
-                              }
-                            }
-                            Err(e) => {
-                              errors.log(e);
-                            }
-                          }
-                        }
-                        Err(e) => errors.log(e),
-                      }
-                    }
-                    None => errors.log(CompileError::new(
-                      InvalidDefn("Missing Argument List".into()),
-                      parens_source_trace.clone(),
-                    )),
-                  }
-                }
+            "defn" => {
+              if let Some(f) = AbstractFunctionSignature::from_defn_ast(
+                children_iter,
+                first_child_source_trace,
+                parens_source_trace,
+                annotation,
+                &program,
+                &mut errors,
+              ) {
+                program.add_abstract_function(Rc::new(RefCell::new(f)));
               }
-              None => errors.log(CompileError::new(
-                InvalidDefn("Missing Name".into()),
-                parens_source_trace.clone(),
-              )),
-            },
+            }
             _ => {
               errors.log(CompileError::new(
                 UnrecognizedTopLevelForm(EaslTree::Leaf(

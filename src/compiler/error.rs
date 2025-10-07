@@ -301,6 +301,12 @@ pub enum CompileErrorKind {
   BuiltinArgumentsOnWrongEntry(String, String),
   #[error("Built-in operator \"{0}\" can't accept arguments")]
   BuiltInOperatorTakesNoArguments(String),
+  #[error("Annotations are not allowed on type")]
+  AnnotationNotAllowedOnType,
+  #[error("Invalid annotation on return type, only \"location\" is allowed")]
+  InvalidReturnTypeAnnotation,
+  #[error("Builting \"{0}\" requires type \"{1}\"")]
+  ArgumentTypeIncompatibleWithBuiltin(String, String),
 }
 
 impl PartialEq for CompileErrorKind {
