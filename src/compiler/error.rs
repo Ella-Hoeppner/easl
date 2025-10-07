@@ -167,6 +167,16 @@ pub enum CompileErrorKind {
   InvalidVariableAnnotation(AnnotationDescription),
   #[error("Invalid top-level function annotation: {0:?}")]
   InvalidFunctionAnnotation(AnnotationDescription),
+  #[error("Invalid workgroup size: {0:?}")]
+  InvalidWorkgroupSize(String),
+  #[error("Conflicting entry point annotations")]
+  ConflictingEntryPointAnnotations,
+  #[error(
+    "workgroup-size annotations are only allowed on functions marked as `@compute` entry points"
+  )]
+  InvalidWorkgroupSizeAnnotation,
+  #[error("compute entry points must specify a workgroup-size")]
+  ComputeEntryMissingWorkgroupSize,
   #[error("Invalid assignment target")]
   InvalidAssignmentTarget,
   #[error("Assignment target must be a variable: `{0}`")]
@@ -229,6 +239,8 @@ pub enum CompileErrorKind {
   TypelessBinding,
   #[error("`discard` can only occur in @fragment functions")]
   DiscardOutsideFragment,
+  #[error("function `{0}` can only occur in @fragment functions")]
+  FragmentExclusiveFunctionOutsideFragment(String),
   #[error("`continue` can only occur inside a loop")]
   ContinueOutsideLoop,
   #[error("`break` can only occur inside a loop")]

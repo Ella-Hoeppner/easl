@@ -12,7 +12,7 @@
 
 ; uncommenting this should cause an error, as `gradient-dir` has an effect not
 ; allowed in vertex shaders
-@vertex
+#_@vertex
 (defn v [@{builtin vertex-index} vertex-index: u32]: VertexOutput
   (let [x (f32 vertex-index)]
     (VertexOutput 5 (vec4f (gradient-dir x) 0. 0.))))

@@ -1476,7 +1476,7 @@ fn derivative_functions() -> Vec<AbstractFunctionSignature> {
         mutated_args: vec![],
         return_type: t.clone(),
         implementation: FunctionImplementationKind::Builtin(
-          Effect::FragmentExclusiveFunction.into(),
+          Effect::FragmentExclusiveFunction(name.into()).into(),
         ),
         associative: false,
       })

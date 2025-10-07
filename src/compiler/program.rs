@@ -11,15 +11,16 @@ use take_mut::take;
 use crate::{
   Never,
   compiler::{
-    annotation::extract_annotation,
+    annotation::{FunctionAnnotation, extract_annotation},
     builtins::built_in_functions,
+    effects::Effect,
     enums::{AbstractEnum, UntypedEnum},
     error::{CompileError, SourceTrace},
     expression::{
       Exp, ExpKind, ExpressionCompilationPosition,
       arg_list_and_return_type_from_easl_tree,
     },
-    functions::AbstractFunctionSignature,
+    functions::{AbstractFunctionSignature, EntryPoint},
     structs::UntypedStruct,
     types::{
       AbstractType, Type, TypeConstraint, TypeState, UntypedType, Variable,
@@ -747,10 +748,11 @@ impl Program {
                                     &generic_arg_names,
                                   ) {
                                     Ok(body) => {
-                                      let associative = if let Some((
+                                      let parsed_annotation = if let Some((
                                         annotation,
                                         annotation_source_trace,
-                                      )) = &annotation
+                                      )) =
+                                        &annotation
                                       {
                                         match annotation
                                           .validate_for_top_level_function(
@@ -759,11 +761,11 @@ impl Program {
                                           Ok(is_associative) => is_associative,
                                           Err(e) => {
                                             errors.log(e);
-                                            false
+                                            FunctionAnnotation::default()
                                           }
                                         }
                                       } else {
-                                        false
+                                        FunctionAnnotation::default()
                                       };
                                       let implementation =
                                         FunctionImplementationKind::Composite(
@@ -772,8 +774,8 @@ impl Program {
                                               arg_names,
                                               arg_annotations,
                                               return_annotation,
-                                              annotation: annotation
-                                                .map(|(a, _)| a),
+                                              entry_point: parsed_annotation
+                                                .entry,
                                               body,
                                             },
                                           )),
@@ -787,7 +789,8 @@ impl Program {
                                             mutated_args: vec![],
                                             return_type,
                                             implementation,
-                                            associative,
+                                            associative: parsed_annotation
+                                              .associative,
                                           },
                                         ),
                                       ));
@@ -1526,10 +1529,37 @@ impl Program {
   pub fn validate_top_level_fn_effects(&mut self, errors: &mut ErrorLog) {
     for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
-      if let FunctionImplementationKind::Composite(_) =
+      if let FunctionImplementationKind::Composite(f) =
         &signature.implementation
       {
-        // todo!
+        let f = f.borrow();
+        if let Some(entry_point) = f.entry_point
+          && let EntryPoint::Vertex | EntryPoint::Compute(_) = entry_point
+        {
+          let ExpKind::Function(_, body) = &f.body.kind else {
+            unreachable!()
+          };
+          let effects = body.effects(self);
+          for e in effects.0.iter() {
+            match e {
+              Effect::Discard => {
+                errors.log(CompileError {
+                  kind: DiscardOutsideFragment,
+                  source_trace: f.body.source_trace.clone(),
+                });
+              }
+              Effect::FragmentExclusiveFunction(name) => {
+                errors.log(CompileError {
+                  kind: FragmentExclusiveFunctionOutsideFragment(
+                    name.to_string(),
+                  ),
+                  source_trace: f.body.source_trace.clone(),
+                });
+              }
+              _ => {}
+            }
+          }
+        }
       }
     }
   }
@@ -1614,5 +1644,25 @@ impl Program {
         .unwrap();
     }
     type_annotations
+  }
+  pub fn find_fn_names_by_entry_point(
+    &self,
+    entry_kind_predicate: impl Fn(EntryPoint) -> bool,
+  ) -> Vec<String> {
+    self
+      .abstract_functions_iter()
+      .filter_map(|abstract_f| {
+        let abstract_f = abstract_f.borrow();
+        if let FunctionImplementationKind::Composite(f) =
+          &abstract_f.implementation
+          && let Some(entry_point) = f.borrow().entry_point
+          && entry_kind_predicate(entry_point)
+        {
+          Some(abstract_f.name.to_string())
+        } else {
+          None
+        }
+      })
+      .collect()
   }
 }

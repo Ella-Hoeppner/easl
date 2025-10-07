@@ -27,12 +27,30 @@ use super::{
   util::indent,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryPoint {
+  Vertex,
+  Fragment,
+  Compute(usize),
+}
+impl EntryPoint {
+  fn compile(&self) -> String {
+    match self {
+      EntryPoint::Vertex => "@vertex\n".to_string(),
+      EntryPoint::Fragment => "@fragment\n".to_string(),
+      EntryPoint::Compute(size) => {
+        format!("@compute\n@workgroup_size({size})\n")
+      }
+    }
+  }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TopLevelFunction {
   pub arg_names: Vec<Rc<str>>,
   pub arg_annotations: Vec<Option<Annotation>>,
   pub return_annotation: Option<Annotation>,
-  pub annotation: Option<Annotation>,
+  pub entry_point: Option<EntryPoint>,
   pub body: TypedExp,
 }
 
@@ -645,7 +663,11 @@ impl TopLevelFunction {
 
     Ok(format!(
       "{}fn {}({args}){} {{{}\n}}",
-      Annotation::compile_optional(self.annotation),
+      self
+        .entry_point
+        .as_ref()
+        .map(|e| e.compile())
+        .unwrap_or(String::new()),
       compile_word(name.into()),
       if return_type.kind.unwrap_known() == Type::Unit {
         "".to_string()

@@ -5,6 +5,7 @@ use std::str::FromStr;
 use sse::syntax::EncloserOrOperator::{self, *};
 
 use crate::compiler::error::CompileErrorKind;
+use crate::compiler::functions::EntryPoint;
 use crate::compiler::util::compile_word;
 use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
 use crate::parse::EaslTree;
@@ -190,22 +191,45 @@ impl Annotation {
       address_space,
     ))
   }
-  pub fn validate_for_top_level_function(
+  pub(crate) fn validate_for_top_level_function(
     &self,
     source_trace: &SourceTrace,
-  ) -> CompileResult<bool> {
-    let mut is_associative = false;
+  ) -> CompileResult<FunctionAnnotation> {
+    let mut parsed_annotation = FunctionAnnotation {
+      associative: false,
+      entry: None,
+    };
+    let mut workgroup_size: Option<usize> = None;
     for (property, value) in self.properties().into_iter() {
       match (&*property, value) {
         ("associative", None) => {
-          is_associative = true;
+          parsed_annotation.associative = true;
         }
-        ("workgroup-size", _) => {}
-        ("fragment" | "vertex" | "compute", None) => {}
-        ("entry", Some(entry_type))
-          if (*entry_type == *"fragment"
-            || *entry_type == *"vertex"
-            || *entry_type == *"compute") => {}
+        ("workgroup-size", Some(size_str)) => {
+          if let Ok(size) = size_str.parse::<usize>() {
+            workgroup_size = Some(size);
+          } else {
+            return Err(CompileError::new(
+              InvalidWorkgroupSize(size_str.to_string()),
+              source_trace.clone(),
+            ));
+          }
+        }
+        ("fragment" | "vertex" | "compute", None) => {
+          if parsed_annotation.entry.is_none() {
+            parsed_annotation.entry = Some(match &*property {
+              "fragment" => EntryPoint::Fragment,
+              "vertex" => EntryPoint::Vertex,
+              "compute" => EntryPoint::Compute(0),
+              _ => unreachable!(),
+            })
+          } else {
+            return Err(CompileError::new(
+              ConflictingEntryPointAnnotations,
+              source_trace.clone(),
+            ));
+          }
+        }
         _ => {
           return Err(CompileError::new(
             InvalidFunctionAnnotation(self.clone().into()),
@@ -214,7 +238,40 @@ impl Annotation {
         }
       }
     }
-    Ok(is_associative)
+    if let Some(workgroup_size) = workgroup_size {
+      match parsed_annotation.entry {
+        Some(EntryPoint::Compute(_)) | None => {
+          parsed_annotation.entry = Some(EntryPoint::Compute(workgroup_size))
+        }
+        _ => {
+          return Err(CompileError::new(
+            InvalidWorkgroupSizeAnnotation,
+            source_trace.clone(),
+          ));
+        }
+      }
+    } else {
+      if let Some(EntryPoint::Compute(_)) = parsed_annotation.entry {
+        return Err(CompileError::new(
+          ComputeEntryMissingWorkgroupSize,
+          source_trace.clone(),
+        ));
+      }
+    }
+    Ok(parsed_annotation)
+  }
+}
+
+pub(crate) struct FunctionAnnotation {
+  pub(crate) associative: bool,
+  pub(crate) entry: Option<EntryPoint>,
+}
+impl Default for FunctionAnnotation {
+  fn default() -> Self {
+    Self {
+      associative: false,
+      entry: None,
+    }
   }
 }
 

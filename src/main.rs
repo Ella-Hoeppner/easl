@@ -95,6 +95,7 @@ fn main() {
     "vecb",
     "dpdx",
     "discard",
+    "compute",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

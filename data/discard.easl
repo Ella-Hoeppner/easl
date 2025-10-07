@@ -8,6 +8,6 @@
 
 ; uncommenting this should cause an error, as the `discard` effect is only
 ; allowed in fragment shaders
-@vertex
+#_@vertex
 (defn v [@{builtin vertex-index} vertex-index: u32]: VertexOutput
   discard)

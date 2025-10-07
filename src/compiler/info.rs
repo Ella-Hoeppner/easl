@@ -1,6 +1,6 @@
 use crate::compiler::{
   expression::{ExpKind, Number},
-  functions::FunctionImplementationKind,
+  functions::EntryPoint,
   program::Program,
   types::{ArraySize, Type},
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
@@ -53,28 +53,6 @@ pub struct ProgramInfo {
 
 impl From<&Program> for ProgramInfo {
   fn from(program: &Program) -> Self {
-    let find_entry_points = |entry_kind: &str| -> Vec<String> {
-      program
-        .abstract_functions_iter()
-        .filter_map(|abstract_f| {
-          let abstract_f = abstract_f.borrow();
-          if let FunctionImplementationKind::Composite(f) =
-            &abstract_f.implementation
-            && let Some(annotation) = &f.borrow().annotation
-          {
-            annotation.properties().iter().find_map(|(name, value)| {
-              if value.is_none() && &**name == entry_kind {
-                Some(abstract_f.name.to_string())
-              } else {
-                None
-              }
-            })
-          } else {
-            None
-          }
-        })
-        .collect()
-    };
     Self {
       global_vars: program
         .top_level_vars
@@ -106,9 +84,12 @@ impl From<&Program> for ProgramInfo {
             .flatten(),
         })
         .collect(),
-      fragment_entries: find_entry_points("fragment"),
-      vertex_entries: find_entry_points("vertex"),
-      compute_entries: find_entry_points("compute"),
+      fragment_entries: program
+        .find_fn_names_by_entry_point(&|e| e == EntryPoint::Fragment),
+      vertex_entries: program
+        .find_fn_names_by_entry_point(&|e| e == EntryPoint::Vertex),
+      compute_entries: program
+        .find_fn_names_by_entry_point(&|e| matches!(e, EntryPoint::Compute(_))),
     }
   }
 }
