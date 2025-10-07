@@ -19,7 +19,9 @@ use crate::{
     effects::EffectType,
     enums::AbstractEnum,
     error::{CompileError, CompileErrorKind::*, CompileResult, err},
-    functions::{AbstractFunctionSignature, FunctionSignature},
+    functions::{
+      AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
+    },
     program::{NameContext, Program, TypeDefs},
     structs::{AbstractStruct, Struct},
     types::{
@@ -331,7 +333,7 @@ pub fn arg_list_and_return_type_from_easl_tree(
   SourceTrace,
   Vec<Rc<str>>,
   Vec<AbstractType>,
-  Vec<Option<Annotation>>,
+  Vec<Option<FunctionArgumentAnnotation>>,
   AbstractType,
   Option<Annotation>,
 )> {
@@ -366,19 +368,27 @@ pub fn arg_list_and_return_type_from_easl_tree(
           ))?;
           let t = AbstractType::from_easl_tree(t_ast, typedefs, skolems)?;
           let mut errors = ErrorLog::new();
-          let (arg_name_ast, arg_annotations) =
+          let (arg_name_ast, arg_annotation) =
             extract_annotation(arg_name_ast, &mut errors);
           if let Some(annotation_error) = errors.into_iter().next() {
             return Err(annotation_error.clone());
           }
           if let EaslTree::Leaf(_, arg_name) = arg_name_ast {
-            Ok(((t, arg_annotations.map(|(a, _)| a)), arg_name.into()))
+            if let Some((arg_annotation, source_trace)) = arg_annotation {
+              arg_annotation
+                .validate_as_argument_annotation(&source_trace, &arg_name)
+                .map(|arg_annotation| {
+                  ((t, Some(arg_annotation)), arg_name.into())
+                })
+            } else {
+              Ok(((t, None), arg_name.into()))
+            }
           } else {
             err(InvalidArgumentName, source_path.clone())
           }
         })
         .collect::<CompileResult<(
-          (Vec<AbstractType>, Vec<Option<Annotation>>),
+          (Vec<AbstractType>, Vec<Option<FunctionArgumentAnnotation>>),
           Vec<Rc<str>>,
         )>>()?;
       Ok((

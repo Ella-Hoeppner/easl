@@ -17,15 +17,8 @@ Feature goals:
 ## todo
 ### high priority, necessary to call the language 0.1
 * more annotation validation:
-  * validate annotations on function arguments
-    * right now you can kinda just do anything and it'll pass through the compiler just fine
-    * instead you should be limited to basically just `@var` or `@{builtin ...}`
-    * while I'm changing this, might as well add a `@builtin ...` shorthand
-      * e.g. `(defn vert [@{builtin vertex-index} vertex-index: u32] ...)`
-        * this should be abbreviatable as:
-          * `(defn vert [@builtin vertex-index: u32] ...)`
-          * this only makes sense as long as you're willing to use this particular name, but I think it'll still be quite nice to have
-    * on fragment entry points, require a `@{location ...}` on the output type, or one isn't found, assume that it's `@{location 0}`
+  * on fragment entry points, require a `@{location ...}` on the output type, or one isn't found, assume that it's `@{location 0}`
+    * disallow annotations on output types for any other entry point, or for functions with no entry point
   * disallow annotations on structs and enums
     * as in `@{blah blah} (struct ...)`
     * never does anything anways, but should just make sure it gives an error so the user knows it isn't a valid thing to do
@@ -51,6 +44,8 @@ Feature goals:
 
 
 
+
+* `clip_distances` builtin attribute
 
 * support vecs over arbitrary types
   * wgsl doesn't do this, it's just restricted to scalars and bool

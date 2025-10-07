@@ -157,9 +157,9 @@ impl TopLevelVar {
                     if let Some((annotation, annotation_source_trace)) =
                       &annotation
                     {
-                      match annotation
-                        .into_top_level_var_data(&annotation_source_trace)
-                      {
+                      match annotation.validate_as_top_level_var_data(
+                        &annotation_source_trace,
+                      ) {
                         Err(e) => {
                           errors.log(e);
                           None

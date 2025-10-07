@@ -20,7 +20,10 @@ use crate::{
       Exp, ExpKind, ExpressionCompilationPosition,
       arg_list_and_return_type_from_easl_tree,
     },
-    functions::{AbstractFunctionSignature, EntryPoint},
+    functions::{
+      AbstractFunctionSignature, BuiltinArgumentAnnotation, EntryPoint,
+      FunctionArgumentAnnotation,
+    },
     structs::UntypedStruct,
     types::{
       AbstractType, Type, TypeConstraint, TypeState, UntypedType, Variable,
@@ -708,11 +711,7 @@ impl Program {
                                         .known()
                                         .into(),
                                       kind: if let Some(annotation) = annotation
-                                        && annotation
-                                          .properties()
-                                          .into_iter()
-                                          .find(|(name, _)| &**name == "var")
-                                          .is_some()
+                                        && annotation.var
                                       {
                                         VariableKind::Var
                                       } else {
@@ -755,7 +754,7 @@ impl Program {
                                         &annotation
                                       {
                                         match annotation
-                                          .validate_for_top_level_function(
+                                          .validate_as_function_annotation(
                                             annotation_source_trace,
                                           ) {
                                           Ok(is_associative) => is_associative,
@@ -767,6 +766,59 @@ impl Program {
                                       } else {
                                         FunctionAnnotation::default()
                                       };
+                                      let all_arg_annotations: Vec<
+                                        FunctionArgumentAnnotation,
+                                      > = arg_annotations
+                                        .iter()
+                                        .cloned()
+                                        .filter_map(|x| x)
+                                        .collect();
+                                      for annotation in
+                                        all_arg_annotations.iter()
+                                      {
+                                        if let Some(builtin) =
+                                          &annotation.builtin
+                                        {
+                                          if let Some(entry) =
+                                            parsed_annotation.entry
+                                          {
+                                            if !builtin.allowed_for_entry(entry)
+                                            {
+                                              errors.log(CompileError {
+                                                kind:
+                                                  BuiltinArgumentsOnWrongEntry(
+                                                    builtin.name().to_string(),
+                                                    entry.name().to_string(),
+                                                  ),
+                                                source_trace: source_path
+                                                  .clone(),
+                                              });
+                                            }
+                                          } else {
+                                            errors.log(CompileError {
+                                              kind: BuiltinArgumentsOnlyAllowedOnEntry,
+                                              source_trace: source_path.clone(),
+                                            });
+                                          }
+                                        }
+                                      }
+                                      let all_builtins: Vec<
+                                        BuiltinArgumentAnnotation,
+                                      > = all_arg_annotations
+                                        .iter()
+                                        .filter_map(|a| a.builtin.clone())
+                                        .collect();
+                                      if all_builtins
+                                        .iter()
+                                        .collect::<HashSet<_>>()
+                                        .len()
+                                        < all_builtins.len()
+                                      {
+                                        errors.log(CompileError {
+                                          kind: DuplicateBuiltinArgument,
+                                          source_trace: source_path,
+                                        });
+                                      }
                                       let implementation =
                                         FunctionImplementationKind::Composite(
                                           Rc::new(RefCell::new(

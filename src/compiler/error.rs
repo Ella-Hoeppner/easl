@@ -287,6 +287,18 @@ pub enum CompileErrorKind {
   VariableFunctionNameCollision(String),
   #[error("Internal compiler error: Tried to compile Unit type")]
   TriedToCompileUnit,
+  #[error("Invalid argument annotation")]
+  InvalidArgumentAnnotation,
+  #[error("Invalid builtin argument name \"{0}\"")]
+  InvalidBuiltinArgumentName(String),
+  #[error("Multiple conflicting builtins found on function argument")]
+  ConflictingBuiltinNames,
+  #[error("Builtin argument occurs more than once")]
+  DuplicateBuiltinArgument,
+  #[error("Builtin arguments are only supported on entry points")]
+  BuiltinArgumentsOnlyAllowedOnEntry,
+  #[error("Builtin argument \"{0}\" isn't allowed on \"{1}\" entry point")]
+  BuiltinArgumentsOnWrongEntry(String, String),
 }
 
 impl PartialEq for CompileErrorKind {

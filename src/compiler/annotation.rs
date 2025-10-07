@@ -5,7 +5,9 @@ use std::str::FromStr;
 use sse::syntax::EncloserOrOperator::{self, *};
 
 use crate::compiler::error::CompileErrorKind;
-use crate::compiler::functions::EntryPoint;
+use crate::compiler::functions::{
+  BuiltinArgumentAnnotation, EntryPoint, FunctionArgumentAnnotation,
+};
 use crate::compiler::util::compile_word;
 use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
 use crate::parse::EaslTree;
@@ -122,7 +124,7 @@ impl Annotation {
         .unwrap_or(vec![]),
     }
   }
-  pub fn into_top_level_var_data(
+  pub fn validate_as_top_level_var_data(
     &self,
     source_trace: &SourceTrace,
   ) -> CompileResult<(Option<GroupAndBinding>, Option<VariableAddressSpace>)>
@@ -191,7 +193,7 @@ impl Annotation {
       address_space,
     ))
   }
-  pub(crate) fn validate_for_top_level_function(
+  pub(crate) fn validate_as_function_annotation(
     &self,
     source_trace: &SourceTrace,
   ) -> CompileResult<FunctionAnnotation> {
@@ -259,6 +261,54 @@ impl Annotation {
       }
     }
     Ok(parsed_annotation)
+  }
+  pub(crate) fn validate_as_argument_annotation(
+    &self,
+    source_trace: &SourceTrace,
+    arg_name: &str,
+  ) -> CompileResult<FunctionArgumentAnnotation> {
+    let mut annotation = FunctionArgumentAnnotation {
+      var: false,
+      builtin: None,
+    };
+    for (name, value) in self.properties().iter() {
+      match (&**name, value) {
+        ("var", None) => {
+          annotation.var = true;
+        }
+        ("builtin", value) => {
+          let builtin_name = if let Some(value) = value {
+            value.to_string()
+          } else {
+            arg_name.to_string()
+          };
+          if let Some(builtin) =
+            BuiltinArgumentAnnotation::from_name(&builtin_name)
+          {
+            if annotation.builtin.is_none() {
+              annotation.builtin = Some(builtin);
+            } else {
+              return Err(CompileError {
+                kind: ConflictingBuiltinNames,
+                source_trace: source_trace.clone(),
+              });
+            }
+          } else {
+            return Err(CompileError {
+              kind: InvalidBuiltinArgumentName(builtin_name),
+              source_trace: source_trace.clone(),
+            });
+          }
+        }
+        _ => {
+          return Err(CompileError {
+            kind: InvalidArgumentAnnotation,
+            source_trace: source_trace.clone(),
+          });
+        }
+      }
+    }
+    Ok(annotation)
   }
 }
 

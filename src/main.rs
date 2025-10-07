@@ -96,6 +96,7 @@ fn main() {
     "dpdx",
     "discard",
     "compute",
+    "arg_annotation",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

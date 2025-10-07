@@ -7,6 +7,7 @@ use std::{
 use take_mut::take;
 
 use crate::compiler::{
+  builtins::vec3,
   effects::{Effect, EffectType},
   enums::AbstractEnum,
   program::{NameContext, TypeDefs},
@@ -43,12 +44,112 @@ impl EntryPoint {
       }
     }
   }
+  pub fn name(&self) -> &'static str {
+    match self {
+      EntryPoint::Vertex => "vertex",
+      EntryPoint::Fragment => "fragment",
+      EntryPoint::Compute(_) => "compute",
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BuiltinArgumentAnnotation {
+  VertexIndex,
+  InstanceIndex,
+  FrontFacing,
+  SampleIndex,
+  LocalInvocationId,
+  LocalInvocationIndex,
+  GlobalInvocationId,
+}
+
+impl BuiltinArgumentAnnotation {
+  pub fn arg_type(&self) -> AbstractType {
+    use BuiltinArgumentAnnotation::*;
+    match self {
+      VertexIndex | InstanceIndex | LocalInvocationIndex | SampleIndex => {
+        AbstractType::Type(Type::U32)
+      }
+      FrontFacing => AbstractType::Type(Type::Bool),
+      LocalInvocationId | GlobalInvocationId => AbstractType::AbstractStruct(
+        vec3()
+          .fill_abstract_generics(vec![AbstractType::Type(Type::U32)])
+          .into(),
+      ),
+    }
+  }
+  pub fn from_name(name: &str) -> Option<Self> {
+    use BuiltinArgumentAnnotation::*;
+    Some(match name {
+      "vertex-index" => VertexIndex,
+      "instance-index" => InstanceIndex,
+      "front-facing" => FrontFacing,
+      "sample-index" => SampleIndex,
+      "local-invocation-id" => LocalInvocationId,
+      "local-invocation-index" => LocalInvocationIndex,
+      "global-invocation-index" => GlobalInvocationId,
+      _ => return None,
+    })
+  }
+  pub fn name(&self) -> &'static str {
+    use BuiltinArgumentAnnotation::*;
+    match self {
+      VertexIndex => "vertex-index",
+      InstanceIndex => "instance-index",
+      FrontFacing => "front-facing",
+      SampleIndex => "sample-index",
+      LocalInvocationId => "local-invocation-id",
+      LocalInvocationIndex => "local-invocation-index",
+      GlobalInvocationId => "global-invocation-index",
+    }
+  }
+  pub fn allowed_for_entry(&self, entry: EntryPoint) -> bool {
+    use BuiltinArgumentAnnotation::*;
+    match (self, entry) {
+      (VertexIndex | InstanceIndex, EntryPoint::Vertex) => true,
+      (FrontFacing | SampleIndex, EntryPoint::Fragment) => true,
+      (
+        LocalInvocationId | LocalInvocationIndex | GlobalInvocationId,
+        EntryPoint::Compute(_),
+      ) => true,
+      _ => false,
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionArgumentAnnotation {
+  pub var: bool,
+  pub builtin: Option<BuiltinArgumentAnnotation>,
+}
+
+impl FunctionArgumentAnnotation {
+  fn compile(&self) -> String {
+    use BuiltinArgumentAnnotation::*;
+    if let Some(builtin) = &self.builtin {
+      format!(
+        "@builtin({}) ",
+        match builtin {
+          VertexIndex => "vertex_index",
+          InstanceIndex => "instance_index",
+          FrontFacing => "front_facing",
+          SampleIndex => "sample_index",
+          LocalInvocationId => "local_invocation_id",
+          LocalInvocationIndex => "local_invocation_index",
+          GlobalInvocationId => "global_invocation_id",
+        }
+      )
+    } else {
+      String::new()
+    }
+  }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TopLevelFunction {
   pub arg_names: Vec<Rc<str>>,
-  pub arg_annotations: Vec<Option<Annotation>>,
+  pub arg_annotations: Vec<Option<FunctionArgumentAnnotation>>,
   pub return_annotation: Option<Annotation>,
   pub entry_point: Option<EntryPoint>,
   pub body: TypedExp,
@@ -152,7 +253,7 @@ impl AbstractFunctionSignature {
   pub fn arg_annotations(
     &self,
     source_trace: SourceTrace,
-  ) -> CompileResult<Vec<Option<Annotation>>> {
+  ) -> CompileResult<Vec<Option<FunctionArgumentAnnotation>>> {
     if let FunctionImplementationKind::Composite(f) = &self.implementation {
       Ok(f.borrow().arg_annotations.clone())
     } else {
@@ -266,7 +367,9 @@ impl AbstractFunctionSignature {
       })
       .collect::<(
         Vec<Option<Rc<str>>>,
-        Vec<Option<(Rc<str>, (Option<Annotation>, AbstractType))>>,
+        Vec<
+          Option<(Rc<str>, (Option<FunctionArgumentAnnotation>, AbstractType))>,
+        >,
       )>();
     let (new_parameter_names, (new_parameter_annotation, new_parameter_types)): (
       Vec<_>,
@@ -653,7 +756,9 @@ impl TopLevelFunction {
       .map(|((name, (arg, _)), annotation)| {
         format!(
           "{}{}: {}",
-          Annotation::compile_optional(annotation),
+          annotation
+            .map(|annotation| annotation.compile())
+            .unwrap_or_else(|| String::new()),
           compile_word(name),
           arg.var_type.monomorphized_name(names)
         )
