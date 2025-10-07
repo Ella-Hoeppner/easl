@@ -299,6 +299,8 @@ pub enum CompileErrorKind {
   BuiltinArgumentsOnlyAllowedOnEntry,
   #[error("Builtin argument \"{0}\" isn't allowed on \"{1}\" entry point")]
   BuiltinArgumentsOnWrongEntry(String, String),
+  #[error("Built-in operator \"{0}\" can't accept arguments")]
+  BuiltInOperatorTakesNoArguments(String),
 }
 
 impl PartialEq for CompileErrorKind {

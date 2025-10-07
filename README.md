@@ -7,12 +7,12 @@ WIP shader language with a lispy syntax that compiles to WGSL.
 Feature goals:
   * full feature parity with WGSL - anything that can be expressed with WGSL will also be directly expressible with easl (easl may eventually support glsl as a compilation target as well, though this is not a priority for now)
   * fully expression-based, including scoped `let` blocks that return values, and inline `if` and `match` statements
-  * a powerful type system supporting pervasive type inference, function overloading, and Constraints (similar to typeclasses/traits, but able to coexist with ad-hoc overloading)
+  * a powerful type system supporting pervasive type inference, arbitrary function overloading, and Constraints (similar to typeclasses/traits, but able to coexist with arbitrary overloading)
   * rust-style enums/sum types and pattern matching
-  * closures and higher-order functions
+  * higher-order functions
+  * closures
   * tuples and anonymous structs
-  * clojure-like `loop` construct for tail-recursion-style iteration
-  * type holes
+  * algebraic effects (though with some limitations due to the nature of GPUs: no mutlishot continuations or capturing of continuations in a data structure)
 
 ## todo
 ### high priority, necessary to call the language 0.1
@@ -31,13 +31,12 @@ Feature goals:
         * at least, I presume? haven't actually checked the wgsl spec for this
       * a struct used as the output of a vertex shader must have a `@{builtin position}` field, which must be of type `vec4f`
 
-* right now if you do `(discard)` you get a strange error, should fix that
-  * you don't normally have to call `discard`, you can just do it without the parens and it works fine
-    * but I guess it should also be allowed to just do it like `(discard)`, it does kinda "feel" like you're calling a function even if that's not really what's happening. Same with break and continue
-
 * missing some built-in functions:
   * texture functions
-    * `textureSampleCompare` should have an effect restricting it to fragment shaders
+    * `textureSampleCompare` should have an `FragmentExclusiveFunction` effect
+
+* support declaring local functions as like `(fn [x: ...]: ... ...)`
+  * will be nice to have this even if they don't close over the environment yet, e.g. for quickly modifying an sdf in a raymarcher without having to declare a whole top-level `defn` for it
 
 * implement `Display` for `ErrorLog`, need to have good human-readable error messages
 
@@ -68,14 +67,11 @@ Feature goals:
     * guess I could do like `{[]}` or `{()}`? That kinda sucks though
     * `'()` would work I guess but i also kinda hate that
 
-* support declaring local functions as like `(fn [x: ...]: ... ...)`
-  * would be nice to have this even if they don't close over the environment yet, e.g. for quickly modifying an sdf in a raymarcher without having to declare a whole top-level `defn` for it
-
 * closures
 
 * support a `@render` function tag that acts as a fragment and vertex shader in one
   * Basically it'll act like a vertex shader that returns a fragment shader
-  * so it'll just have to be a function with a return type of like `[]`
+  * so it'll just have to be a function with a return type of like `[vec4f (Fn [] vec4f)]`
 
 * finish support for constraints
   * support declaring custom type constraints

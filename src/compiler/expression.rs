@@ -569,6 +569,27 @@ impl TypedExp {
                       }
                     } else {
                       match first_child_name.as_str() {
+                        "discard" | "break" | "continue" => {
+                          if children_iter.len() == 0 {
+                            Some(Exp {
+                              data: Unknown.into(),
+                              kind: match first_child_name.as_str() {
+                                "discard" => ExpKind::Discard,
+                                "break" => ExpKind::Break,
+                                "continue" => ExpKind::Continue,
+                                _ => unreachable!(),
+                              },
+                              source_trace,
+                            })
+                          } else {
+                            return err(
+                              BuiltInOperatorTakesNoArguments(
+                                first_child_name.clone(),
+                              ),
+                              position.into(),
+                            );
+                          }
+                        }
                         "fn" => {
                           return err(
                             AnonymousFunctionsNotYetSupported,

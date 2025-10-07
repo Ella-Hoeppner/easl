@@ -2,9 +2,21 @@
   @{location 0} x: f32
   @{builtin position} pos: vec4f)
 
+; you're allowed to use discard either just as a leaf node, or treat it like a
+; fn call and put it inside parens
 @fragment
 (defn f [in: VertexOutput]: @{location 0} vec4f
   discard)
+
+@fragment
+(defn f2 [in: VertexOutput]: @{location 0} vec4f
+  (discard))
+
+; uncommenting this should cause an error, as the `discard` can't be called with
+; arguments
+#_@fragment
+(defn f2 [in: VertexOutput]: @{location 0} vec4f
+  (discard 2))
 
 ; uncommenting this should cause an error, as the `discard` effect is only
 ; allowed in fragment shaders
