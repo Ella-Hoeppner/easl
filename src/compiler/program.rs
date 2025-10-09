@@ -1520,7 +1520,6 @@ impl Program {
                   source,
                 ))
               }
-              let mut locatable_count: usize = 0;
               let mut used_locations: HashMap<usize, (SourceTrace, Type)> =
                 HashMap::new();
               let mut used_builtins: HashMap<
@@ -1585,18 +1584,9 @@ impl Program {
                     ))
                   }
                 } else {
-                  locatable_count += 1;
                   if let Some((location, source)) = attributes.location() {
                     used_locations.insert(location, (source, t.clone()));
                   }
-                }
-              }
-              for (location, (source, _)) in used_locations.iter() {
-                if *location >= locatable_count {
-                  errors.log(CompileError::new(
-                    InvalidLocationAttribute(*location, locatable_count),
-                    (*source).clone(),
-                  ));
                 }
               }
               for (t, attributable) in attributables {

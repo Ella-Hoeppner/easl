@@ -339,8 +339,6 @@ pub enum CompileErrorKind {
   DuplicateBuiltinAttribute(InputOrOutput, String),
   #[error("Builtin value \"{0}\" isn't a valid {2} for stage \"{1}\"")]
   InvalidBuiltinForEntryPoint(String, InputOrOutput, String),
-  #[error("Invalid location attribute {0}, must be <{1}")]
-  InvalidLocationAttribute(usize, usize),
   #[error("Cant assign attributes to values of this type")]
   CantAssignAttributesToType,
   #[error("Type \"{0}\" can't be used as an {1} for entry point")]
