@@ -39,11 +39,11 @@ pub struct FunctionArgumentAnnotation {
   pub attributes: IOAttributes,
 }
 
-impl Default for FunctionArgumentAnnotation {
-  fn default() -> Self {
+impl FunctionArgumentAnnotation {
+  pub fn empty(arg_source_trace: SourceTrace) -> Self {
     Self {
       var: false,
-      attributes: IOAttributes::empty(),
+      attributes: IOAttributes::empty(arg_source_trace),
     }
   }
 }
@@ -148,6 +148,7 @@ impl AbstractFunctionSignature {
       arg_types,
       arg_annotations,
       return_type,
+      return_source,
       return_annotation,
     )) = arg_list_and_return_type_from_easl_tree(
       arg_list_ast,
@@ -234,7 +235,7 @@ impl AbstractFunctionSignature {
                       }
                       attributes
                     } else {
-                      IOAttributes::empty()
+                      IOAttributes::empty(return_source)
                     };
                   let implementation = FunctionImplementationKind::Composite(
                     Rc::new(RefCell::new(TopLevelFunction {

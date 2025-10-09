@@ -178,7 +178,7 @@ impl EvaluationEnvironment {
         .typedefs
         .structs
         .iter()
-        .map(|s| (s.name.clone(), (&**s).clone()))
+        .map(|s| (s.name.clone(), (&*s).clone()))
         .collect(),
     }
   }

@@ -165,14 +165,16 @@ pub fn vec2() -> AbstractStruct {
     name: "vec2".into(),
     fields: vec![
       AbstractStructField {
-        attributes: IOAttributes::empty(),
+        attributes: IOAttributes::empty(SourceTrace::empty()),
         name: "x".into(),
         field_type: AbstractType::Generic("T".into()),
+        source_trace: SourceTrace::empty(),
       },
       AbstractStructField {
-        attributes: IOAttributes::empty(),
+        attributes: IOAttributes::empty(SourceTrace::empty()),
         name: "y".into(),
         field_type: AbstractType::Generic("T".into()),
+        source_trace: SourceTrace::empty(),
       },
     ],
     generic_args: vec!["T".into()],
@@ -187,19 +189,22 @@ pub fn vec3() -> AbstractStruct {
     name: "vec3".into(),
     fields: vec![
       AbstractStructField {
-        attributes: IOAttributes::empty(),
+        attributes: IOAttributes::empty(SourceTrace::empty()),
         name: "x".into(),
         field_type: AbstractType::Generic("T".into()),
+        source_trace: SourceTrace::empty(),
       },
       AbstractStructField {
-        attributes: IOAttributes::empty(),
+        attributes: IOAttributes::empty(SourceTrace::empty()),
         name: "y".into(),
         field_type: AbstractType::Generic("T".into()),
+        source_trace: SourceTrace::empty(),
       },
       AbstractStructField {
-        attributes: IOAttributes::empty(),
+        attributes: IOAttributes::empty(SourceTrace::empty()),
         name: "z".into(),
         field_type: AbstractType::Generic("T".into()),
+        source_trace: SourceTrace::empty(),
       },
     ],
     generic_args: vec!["T".into()],
@@ -214,24 +219,28 @@ pub fn vec4() -> AbstractStruct {
     name: "vec4".into(),
     fields: vec![
       AbstractStructField {
-        attributes: IOAttributes::empty(),
+        attributes: IOAttributes::empty(SourceTrace::empty()),
         name: "x".into(),
         field_type: AbstractType::Generic("T".into()),
+        source_trace: SourceTrace::empty(),
       },
       AbstractStructField {
-        attributes: IOAttributes::empty(),
+        attributes: IOAttributes::empty(SourceTrace::empty()),
         name: "y".into(),
         field_type: AbstractType::Generic("T".into()),
+        source_trace: SourceTrace::empty(),
       },
       AbstractStructField {
-        attributes: IOAttributes::empty(),
+        attributes: IOAttributes::empty(SourceTrace::empty()),
         name: "z".into(),
         field_type: AbstractType::Generic("T".into()),
+        source_trace: SourceTrace::empty(),
       },
       AbstractStructField {
-        attributes: IOAttributes::empty(),
+        attributes: IOAttributes::empty(SourceTrace::empty()),
         name: "w".into(),
         field_type: AbstractType::Generic("T".into()),
+        source_trace: SourceTrace::empty(),
       },
     ],
     generic_args: vec!["T".into()],
@@ -245,9 +254,10 @@ pub fn texture_2d() -> AbstractStruct {
   AbstractStruct {
     name: "Texture2D".into(),
     fields: vec![AbstractStructField {
-      attributes: IOAttributes::empty(),
+      attributes: IOAttributes::empty(SourceTrace::empty()),
       name: "_".into(),
       field_type: AbstractType::Generic("T".into()),
+      source_trace: SourceTrace::empty(),
     }],
     generic_args: vec!["T".into()],
     filled_generics: HashMap::new(),
@@ -271,9 +281,10 @@ pub fn matrix(n: usize, m: usize) -> AbstractStruct {
   AbstractStruct {
     name: format!("mat{n}x{m}").into(),
     fields: vec![AbstractStructField {
-      attributes: IOAttributes::empty(),
+      attributes: IOAttributes::empty(SourceTrace::empty()),
       name: "_".into(),
       field_type: AbstractType::Generic("T".into()),
+      source_trace: SourceTrace::empty(),
     }],
     generic_args: vec!["T".into()],
     filled_generics: HashMap::new(),

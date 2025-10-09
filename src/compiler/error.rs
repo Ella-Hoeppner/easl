@@ -3,7 +3,10 @@ use std::{collections::HashSet, fmt::Display, hash::Hash};
 use thiserror::Error;
 
 use crate::{
-  compiler::{annotation::AnnotationKind, vars::VariableAddressSpace},
+  compiler::{
+    annotation::AnnotationKind, entry::InputOrOutput,
+    vars::VariableAddressSpace,
+  },
   parse::EaslTree,
 };
 
@@ -316,8 +319,8 @@ pub enum CompileErrorKind {
   InvalidInterpolationSampling(String, String),
   #[error("Invalid annotation on return type, only \"location\" is allowed")]
   InvalidReturnTypeAnnotation,
-  #[error("Builtin \"{0}\" requires type \"{1}\"")]
-  ArgumentTypeIncompatibleWithBuiltin(String, String),
+  #[error("Invalid type for builtin \"{0}\"")]
+  InvalidBuiltinType(String),
   #[error("Invalid struct field annotation")]
   InvalidStructFieldAnnotation,
   #[error("Invalid builtin struct field name \"{0}\"")]
@@ -332,18 +335,36 @@ pub enum CompileErrorKind {
   ComputeEntryReturnType,
   #[error("Compute entry-points may not be assigned attributes")]
   ComputeEntryReturnAttributes,
-  #[error("Duplicate input builtin attribute \"{0}\"")]
-  DuplicateInputBuiltinAttribute(String),
-  #[error("Duplicate output builtin attribute \"{0}\"")]
-  DuplicateOutputBuiltinAttribute(String),
-  #[error("Builtin value \"{0}\" isn't a valid input for stage \"{1}\"")]
-  InvalidBuiltinInputForEntryPoint(String, String),
-  #[error("Builtin value \"{0}\" isn't a valid output for stage \"{1}\"")]
-  InvalidBuiltinOutputForEntryPoint(String, String),
+  #[error("Duplicate {0} builtin attribute \"{1}\"")]
+  DuplicateBuiltinAttribute(InputOrOutput, String),
+  #[error("Builtin value \"{0}\" isn't a valid {2} for stage \"{1}\"")]
+  InvalidBuiltinForEntryPoint(String, InputOrOutput, String),
   #[error("Invalid location attribute {0}, must be <{1}")]
   InvalidLocationAttribute(usize, usize),
   #[error("Cant assign attributes to values of this type")]
   CantAssignAttributesToType,
+  #[error("Type \"{0}\" can't be used as an {1} for entry point")]
+  InvalidTypeForEntryPoint(TypeDescription, InputOrOutput),
+  #[error(
+    "Return type for vertex entry point must contain a vec4f marked as @{{builtin position}}"
+  )]
+  VertexMustHavePositionOutput,
+  #[error(
+    "Return type for fragment entry point must contain a vec4f marked as @{{location 0}}"
+  )]
+  FragmentMustHaveLocation0Output,
+  #[error("Position output of vertex function must be a vec4f")]
+  VertexPositionOutputInvalidType,
+  #[error("Value at location 0 in fragment return type must be vec4f")]
+  Fragment0OutputInvalidType,
+  #[error("Cant assign attributes to field \"{0}\" due to invalid type")]
+  CantAssignAttributesToFieldOfType(String),
+  #[error("All {0}s of entry points must be scalars or structs")]
+  EntryInputOrOutputMustBeScalarOrStruct(InputOrOutput),
+  #[error("Couldn't inline higher-order function")]
+  UninlinableHigherOrderFunction,
+  #[error("Type constraints on generic types are not yet supported")]
+  TypeConstraintsNotYetSupported,
 }
 
 impl PartialEq for CompileErrorKind {

@@ -5,7 +5,7 @@ Enhanced Abstraction Shader Language
 WIP shader language with a lispy syntax that compiles to WGSL.
 
 Feature goals:
-  * full feature parity with WGSL - anything that can be expressed with WGSL will also be directly expressible with easl (easl may eventually support glsl as a compilation target as well, though this is not a priority for now)
+  * full feature parity with WGSL - anything that can be expressed with WGSL will also be directly expressible with easl
   * fully expression-based, including scoped `let` blocks that return values, and inline `if` and `match` statements
   * a powerful type system supporting pervasive type inference, arbitrary function overloading, and Constraints (similar to typeclasses/traits, but able to coexist with arbitrary overloading)
   * rust-style enums/sum types and pattern matching
@@ -15,23 +15,65 @@ Feature goals:
   * algebraic effects (though with some limitations due to the nature of GPUs: no mutlishot continuations or capturing of continuations in a data structure)
 
 ## todo
-### high priority, necessary to call the language 0.1
-* replace all of the remaining `todo!`s with an actuals error so the compiler doesn't just crash on people
-
-* when function arg list isn't annotated with a return type, assume it to be unit rather than giving an error
-
+### high priority, necessary for basic wgsl feature parity + stuff I wanna get done before calling the language 0.1
 * missing some built-in functions:
   * texture functions
     * `textureSampleCompare` should have an `FragmentExclusiveFunction` effect
+  * data un/packing/unpacking functions
+
+* have a way to turn an `ErrorLog` into a good, human-readable list of error messages for the compiler CLI
+  * for each error, need to print a few lines from the original source document where the primary position is, ideally with arrows beneath the offending part, like rust does
+
+
+
+
+
+* Overhaul references
+  * References shouldn't be first-class values. You shouldn't be able to create a binding of type `&f32` or anything like that. Functions can mark some of their arguments as references, but you'll just pass normal values for those arguments, and the fact that it's a reference will always be inferred - there will be no syntax for constructing a reference.
+  * Probably get rid of the special syntax for the reference types too, just use a `@ref ...` annotation syntax or maybe a `(Ref ...)` generic struct syntax
+  * On the GPU-side it seems like references are basically only ever used for `arrayLength` and atomic stuff. So I don't really know why a user would ever want to define a function that uses references outside of the context of atomics.
+    * I guess maybe if you have really big data structures and you wanna pass them to helper functions sometimes it might be more efficient to pass around pointers rather than having them be copied when they're passed to functions (though the compilers probably avoid that kind of copying typically I assume?)
+    * On the CPU-side version having good support for references in user-defined functions will definitely be important, though. So it's important to get this right.
+  * Mutable references should be a different thing. Also second-class, and only exist as function inputs
+  * The semantics for this will basically just be that
+    * Arguments of type `T` can only accept a `T`
+    * Arguments of type `&T` can accept a `T`, `&T`, or `&mut T`.
+    * Arguments of type `&mut T` can accept a `&mut T`, or a `T` so long as that binding is marked as a `var`.
+  * I guess there should be a `clone` function auto-derived on most types so that you can turn `&T` or `&mut T` into a `T`. But this shouldn't be defined for certain special built-in types like atomics(?) or textures.
+    * certain types should also basically have something like rust's `copy` where it basically inserts an implicit `clone` when you try to use a `&T` or `&mut` as a `T`.
+
+* atomics
+* barrier functions
+* `workgroupUniformLoad`
+* subgroup functions
+* quad functions
+
+* `catch_duplicate_signatures` needs to be extended to catch partial overlaps in the type-domains of generic functions
+  * like, right now you can implement `(defn + [a: f32 b:f32]: f32 ...)` without error, even though this conflicts with the builtin definition `(defn (+ T) [a: T b:T]: T)`. The two signatures aren't equal, so no error is detected, but it should be, since the `f32` implementation is just a special-case of the generic definition.
+    * this needs to not only catch the "non-generic signature is a special case of generic signature" case, but also the "two generic signatures overlap" case, like `(defn f |T: Scalar| [a: T]: T)` and `(defn f |T: Integer| [a: T]: T)`
+
+* formatter: 
+  * have a separate threshold for the max size allowed for top-level `(def ...)`
+    * a lot of things that would be perfectly readable on one line are getting split to multiple lines, feels like `def`s should almost always be one line unless they're very long
+  * let top-level struct-like annotation appear on one line if it's under some threshold (probably should be another separate threshold)
+
+* improve error messages
+  * rn if a function is overloaded and it's arguments don't resolve to a valid signature, then the application expression using that function also won't resolve, even if the function always returns the same type
+    * for instance, in the expression `(vec4f (vec3f 1. 1.) 1.)`, then inner application of `vec3f` is invalid since recieves 2 scalar args. However, if you try to compile this epxression, you'll also get an error on the `vec4f` saying "Couldn't infer types". But that shouldn't happen - regardless of what the input types to `vec3f` are, the return type will be `vec3f`, so it doesn't make sense for `vec4f` to not be able to converge
+  * When there are multiple "couldn't infer types" errors, such that one is a subtree of another, only display the innermost one, I think? The outermost one usually won't be helpful.
+
+* allow indexing vectors and matrices with integers
+
+* special casing around `Texture2D`
+  * right now I've made it so it has a field `_: T`, because monomorphization needs there to be at least one field, but this is kinda weird
+  * you definitely shouldn't be able to access the `_` field, and you shouldn't be allowed to construct it
+  * might need this for other types too? Maybe have a like `external_only` or `opaque` type that prevents it from being constructed or from having it's fields accessed 
+  * or maybe have something like rust's `PhantomData`?
+
+### secondary priority, nice features to have once the language is at wgsl-parity
 
 * support declaring local functions as like `(fn [x: ...]: ... ...)`
   * will be nice to have this even if they don't close over the environment yet, e.g. for quickly modifying an sdf in a raymarcher without having to declare a whole top-level `defn` for it
-
-* implement `Display` for `ErrorLog`, need to have good human-readable error messages
-
-
-
-
 
 * support vecs over arbitrary types
   * wgsl doesn't do this, it's just restricted to scalars and bool
@@ -46,6 +88,10 @@ Feature goals:
 
 * anonymous structs
 
+* support a `@render` function tag that acts as a fragment and vertex shader in one
+  * Basically it'll act like a vertex shader that returns a fragment shader
+  * so it'll just have to be a function with a return type of like `[vec4f (Fn [] vec4f)]`
+
 * tuples
   * treat this as basically a special case of anonymous structs
   * what should syntax be?
@@ -55,10 +101,6 @@ Feature goals:
     * `'()` would work I guess but i also kinda hate that
 
 * closures
-
-* support a `@render` function tag that acts as a fragment and vertex shader in one
-  * Basically it'll act like a vertex shader that returns a fragment shader
-  * so it'll just have to be a function with a return type of like `[vec4f (Fn [] vec4f)]`
 
 * finish support for constraints
   * support declaring custom type constraints
@@ -73,36 +115,6 @@ Feature goals:
     * It will be important to get the `Eq` implementation for these right, such that `catch_duplicate_signatures` can properly detect when two signatures will be recognized as the same even if the corresponding generic constraints are written in different orders
     (e.g. `(defn |T: [A B]| [a: T]: T ...)` and `(defn |T: [B A]| [a: T]: T ...)` should be treated as the same)
 
-* `catch_duplicate_signatures` needs to be extended to catch partial overlaps in the type-domains of generic functions
-  * like, right now you can implement `(defn + [a: f32 b:f32]: f32 ...)` without error, even though this conflicts with the builtin definition `(defn + |T| [a: T b:T]: T)`. The two signatures aren't equal, so no error is detected, but it should be, since the `f32` implementation is just a special-case of the generic definition.
-    * this needs to not only catch the "non-generic signature is a special case of generic signature" case, but also the "two generic signatures overlap" case, like `(defn f |T: Scalar| [a: T]: T)` and `(defn f |T: Integer| [a: T]: T)`
-
-* Overhaul references
-  * References shouldn't be first-class values. You shouldn't be able to create a binding of type `&f32` or anything like that. Functions can mark some of their arguments as references, but you'll just pass normal values for those arguments, and the fact that it's a reference will always be inferred - there will be no syntax for constructing a reference.
-  * Probably get rid of the special syntax for the reference types too, just use a `@ref ...` annotation syntax or maybe a `(Ref ...)` generic struct syntax
-  * On the GPU-side it seems like references are basically only ever used for `arrayLength` and atomic stuff. So I don't really know why a user would ever want to define a function that uses references outside of the context of atomics.
-    * I guess maybe if you have really big data structures and you wanna pass them to helper functions sometimes it might be more efficient to pass around pointers rather than having them be copied when they're passed to functions (though the compilers probably avoid that kind of copying typically I assume?)
-    * On the CPU-side version having good support for references in user-defined functions will definitely be important, though. So it's important to get this right.
-  * Mutable references should be a different thing. Also second-class, and only exist as function inputs.
-  * The semantics for this will basically just be that
-    * Arguments of type `T` can only accept a `T`
-    * Arguments of type `&T` can accept a `T`, `&T`, or `&mut T`.
-    * Arguments of type `&mut T` can accept a `&mut T`, or a `T` so long as that binding is marked as a `var`.
-  * I guess there should be a `clone` function auto-derived on most types so that you can turn `&T` or `&mut T` into a `T`. But this shouldn't be defined for certain special built-in types like atomics(?) or textures.
-    * certain types should also basically have something like rust's `copy` where it basically inserts an implicit `clone` when you try to use a `&T` or `&mut` as a `T`.
-
-* formatter: 
-  * have a separate threshold for the max size allowed for top-level `(def ...)`
-    * a lot of things that would be perfectly readable on one line are getting split to multiple lines, feels like `def`s should almost always be one line unless they're very long
-  * let top-level struct-like annotation appear on one line if it's under some threshold (probably should be another separate threshold)
-
-* improve error messages
-  * rn if a function is overloaded and it's arguments don't resolve to a valid signature, then the application expression using that function also won't resolve, even if the function always returns the same type
-    * for instance, in the expression `(vec4f (vec3f 1. 1.) 1.)`, then inner application of `vec3f` is invalid since recieves 2 scalar args. However, if you try to compile this epxression, you'll also get an error on the `vec4f` saying "Couldn't infer types". But that shouldn't happen - regardless of what the input types to `vec3f` are, the return type will be `vec3f`, so it doesn't make sense for `vec4f` to not be able to converge
-  * When there are multiple "couldn't infer types" errors, such that one is a subtree of another, only display the innermost one, I think? The outermost one usually won't be helpful.
-
-* allow indexing vectors and matrices with integers
-
 * add builtin `(Into T)`/`(defn into [a: A]: B)` constraint
   * have a unary prefix operator `~` that is shorthand for this
   * Currently vec constructors' arguments are restricted with `Scalar`, but should use this instead to make them more general
@@ -114,14 +126,17 @@ Feature goals:
   * Add a general rule to the typechecker, such that if ever typechecking would fail because it can't resolve a `OneOf` down to a `Known` on a function argument of type `(Into T)`, such that one of the `OneOf` possibilities is just `T`, then assume that the argument is of type `T`, and proceed with typechecking.
     * Right now the expression `(vec4f 1)` fails to typecheck, because it can't decide whether to type the `1` subexpression as a `F32`, `I32`, or `U32`. This happens because `vec4f` can technically accept any of those since the argument is just constrained by `Scalar`, and `1` can syntactically be any of the scalar types. But if instead the argument was constrained by `(Into F32)`, then the above rule would allow this to typecheck properly.
 
-* special casing around `Texture2D`
-  * right now I've made it so it has a field `_: T`, because monomorphization needs there to be at least one field, but this is kinda weird
-  * you definitely shouldn't be able to access the `_` field, and you shouldn't be allowed to construct it
-  * might need this for other types too? Maybe have a like `external_only` or `opaque` type that prevents it from being constructed or from having it's fields accessed 
-  * or maybe have something like rust's `PhantomData`?
-
 ### low priority, extra features once core language is solid
-* support f16
+* uniformity analysis of some kind?
+
+* some kind of module system, so that code can be broken up across
+
+* support extensions:
+  * f16
+  * clip_distances
+  * dual_source_blending
+  * subgroups
+  * primitive_index
 
 * so much of the code in `AbstractEnum` and `AbstractStruct` is very similar, should abstract those out to share most of that functionality for maintainability. Same for the `UntypedEnum`/`UntypedStruct` and also just `Enum`/`Struct
   * main difference is that enum has `variants` while struct has `fields`, but ultimately both of these are just associations between names and types, and in most helper functions they get treated the same way, so those can just turn into some multi-purpose `attributes` or something

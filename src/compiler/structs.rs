@@ -22,21 +22,17 @@ use super::{
   types::{AbstractType, ExpTypeInfo, Type, TypeState},
 };
 
-/*#[derive(Debug, Clone, PartialEq)]
-pub struct StructFieldAnnotation {
-  pub location: Option<usize>,
-  pub builtin: Option<BuiltinIOAttribute>,
-}*/
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct UntypedStructField {
   attributes: IOAttributes,
   name: Rc<str>,
   type_ast: EaslTree,
+  source_trace: SourceTrace,
 }
 
 impl UntypedStructField {
   fn from_field_tree(ast: EaslTree, errors: &mut ErrorLog) -> Option<Self> {
+    let source_trace = ast.position().clone().into();
     let path = ast.position().clone();
     let (type_ast, inner_ast) = extract_type_annotation_ast(ast);
     let Some(type_ast) = type_ast else {
@@ -60,7 +56,7 @@ impl UntypedStructField {
         &mut errors,
       )
     } else {
-      (IOAttributes::empty(), vec![])
+      (IOAttributes::empty(path.into()), vec![])
     };
     if !leftovers.is_empty() {
       let mut source_trace = leftovers[0].1.clone();
@@ -85,6 +81,7 @@ impl UntypedStructField {
       attributes,
       name,
       type_ast,
+      source_trace,
     })
   }
   pub fn references_type_name(&self, name: &Rc<str>) -> bool {
@@ -103,6 +100,7 @@ impl UntypedStructField {
         typedefs,
         skolems,
       )?,
+      source_trace: self.source_trace,
     })
   }
 }
@@ -177,6 +175,7 @@ pub struct AbstractStructField {
   pub attributes: IOAttributes,
   pub name: Rc<str>,
   pub field_type: AbstractType,
+  pub source_trace: SourceTrace,
 }
 
 impl AbstractStructField {
@@ -220,6 +219,7 @@ impl AbstractStructField {
       attributes: self.attributes,
       name: self.name,
       field_type: self.field_type.fill_abstract_generics(generics),
+      source_trace: self.source_trace.clone(),
     }
   }
   pub fn compile(
@@ -229,7 +229,10 @@ impl AbstractStructField {
   ) -> CompileResult<String> {
     let annotation = self.attributes.compile();
     let name = compile_word(self.name);
-    let field_type = self.field_type.compile(typedefs, names)?;
+    let field_type =
+      self
+        .field_type
+        .compile(typedefs, names, &self.source_trace)?;
     Ok(format!("  {annotation}{name}: {field_type}"))
   }
 }
@@ -526,6 +529,14 @@ impl AbstractStruct {
         generic_bindings,
       );
     }
+  }
+  pub fn is_vec4f(&self) -> bool {
+    &*self.name == "vec4"
+      && self
+        .fields
+        .get(0)
+        .map(|f| f.field_type == AbstractType::Type(Type::F32))
+        .unwrap_or(false)
   }
 }
 

@@ -1,13 +1,12 @@
-use std::rc::Rc;
+use std::{fmt::Display, rc::Rc};
 
 use crate::compiler::{
   annotation::Annotation,
-  builtins::{vec3, vec4},
   error::{
     CompileError, CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace,
     err,
   },
-  types::{AbstractType, Type},
+  types::Type,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +34,26 @@ impl EntryPoint {
   }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputOrOutput {
+  Input,
+  Output,
+}
+
+impl Display for InputOrOutput {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(
+      f,
+      "{}",
+      match self {
+        InputOrOutput::Input => "input",
+        InputOrOutput::Output => "output",
+      }
+    )
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinIOAttribute {
   VertexIndex,
   InstanceIndex,
@@ -53,24 +71,16 @@ pub enum BuiltinIOAttribute {
 use BuiltinIOAttribute::*;
 
 impl BuiltinIOAttribute {
-  pub fn arg_type(&self) -> AbstractType {
+  pub fn is_type_compatible(&self, t: &Type) -> bool {
     match self {
       VertexIndex | InstanceIndex | LocalInvocationIndex | SampleIndex
-      | SampleMask => AbstractType::Type(Type::U32),
-      FrontFacing => AbstractType::Type(Type::Bool),
+      | SampleMask => *t == Type::U32,
+      FrontFacing => *t == Type::Bool,
       LocalInvocationId | GlobalInvocationId | WorkgroupId | NumWorkgroups => {
-        AbstractType::AbstractStruct(
-          vec3()
-            .fill_abstract_generics(vec![AbstractType::Type(Type::U32)])
-            .into(),
-        )
+        t.is_vec3u()
       }
-      Position => AbstractType::AbstractStruct(
-        vec4()
-          .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
-          .into(),
-      ),
-      FragDepth => AbstractType::Type(Type::F32),
+      Position => t.is_vec4f(),
+      FragDepth => *t == Type::F32,
     }
   }
   pub fn from_name(name: &str) -> Option<Self> {
@@ -327,11 +337,15 @@ impl IOAttribute {
 #[derive(Debug, Clone, PartialEq)]
 pub struct IOAttributes {
   attributes: Vec<IOAttribute>,
+  pub attributed_source: SourceTrace,
 }
 
 impl IOAttributes {
-  pub fn empty() -> Self {
-    Self { attributes: vec![] }
+  pub fn empty(attributed_source: SourceTrace) -> Self {
+    Self {
+      attributes: vec![],
+      attributed_source,
+    }
   }
   pub fn is_empty(&self) -> bool {
     self.attributes.is_empty()
@@ -422,7 +436,12 @@ impl IOAttributes {
     Self,
     Vec<(Rc<str>, SourceTrace, Option<(Rc<str>, SourceTrace)>)>,
   ) {
-    let mut attributes = Self::empty();
+    let mut attributes = Self::empty(
+      arg_or_field_name
+        .as_ref()
+        .map(|(_, source)| source.clone())
+        .unwrap_or_else(|| annotation.source_trace.clone()),
+    );
     let mut leftover_properties = vec![];
     for (name, name_source, value) in annotation.properties() {
       match IOAttribute::try_parse_from_annotation_property(

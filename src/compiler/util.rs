@@ -4,7 +4,7 @@ use sse::syntax::EncloserOrOperator;
 
 use crate::parse::{EaslTree, Operator};
 
-use super::error::{CompileErrorKind::*, CompileResult, SourceTrace, err};
+use super::error::{CompileErrorKind::*, CompileResult, err};
 
 pub fn indent(s: String) -> String {
   s.replace("\n", "\n  ")
@@ -14,7 +14,7 @@ pub fn read_leaf(ast: EaslTree) -> CompileResult<Rc<str>> {
   if let EaslTree::Leaf(_, word) = ast {
     Ok(word.into())
   } else {
-    err(ExpectedLeaf, SourceTrace::empty())
+    err(ExpectedLeaf, ast.position().into())
   }
 }
 

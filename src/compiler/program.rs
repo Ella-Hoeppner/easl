@@ -12,11 +12,11 @@ use crate::{
   Never,
   compiler::{
     annotation::extract_annotation,
-    builtins::{built_in_functions, vec4},
+    builtins::built_in_functions,
     effects::Effect,
     entry::{
       BuiltinIOAttribute, EntryPoint, IOAttribute, IOAttributeKind,
-      IOAttributes,
+      IOAttributes, InputOrOutput,
     },
     enums::{AbstractEnum, UntypedEnum},
     error::{CompileError, SourceTrace},
@@ -167,7 +167,7 @@ impl NameContext {
 
 #[derive(Debug, Clone)]
 pub struct TypeDefs {
-  pub structs: Vec<Rc<AbstractStruct>>,
+  pub structs: Vec<AbstractStruct>,
   pub enums: Vec<Rc<AbstractEnum>>,
   pub type_aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
 }
@@ -176,9 +176,41 @@ impl TypeDefs {
   pub fn get_attributable_components(
     &self,
     t: Type,
-  ) -> Vec<(Type, Rc<str>, IOAttributes)> {
-    //todo!()
-    vec![]
+    input_or_output: InputOrOutput,
+    source_trace: SourceTrace,
+    errors: &mut ErrorLog,
+  ) -> Vec<(Rc<AbstractStruct>, Rc<str>, IOAttributes)> {
+    match t {
+      Type::Struct(s) => s
+        .fields
+        .iter()
+        .filter_map(|f| {
+          if f.field_type.unwrap_known().is_attributable() {
+            Some((
+              s.abstract_ancestor.clone(),
+              f.name.clone(),
+              f.attributes.clone(),
+            ))
+          } else {
+            errors.log(CompileError::new(
+              CantAssignAttributesToFieldOfType(f.name.to_string()),
+              source_trace
+                .clone()
+                .insert_as_secondary(s.abstract_ancestor.source_trace.clone()),
+            ));
+            None
+          }
+        })
+        .collect(),
+      Type::Unit => vec![],
+      _ => {
+        errors.log(CompileError::new(
+          EntryInputOrOutputMustBeScalarOrStruct(input_or_output),
+          source_trace,
+        ));
+        vec![]
+      }
+    }
   }
 }
 
@@ -302,7 +334,7 @@ impl Program {
           },
         )));
       }
-      self.typedefs.structs.push(s);
+      self.typedefs.structs.push(s.as_ref().clone());
       self.typedefs.structs.dedup();
     }
     self
@@ -347,7 +379,7 @@ impl Program {
     self.typedefs.type_aliases.append(&mut aliases);
     self
   }
-  pub fn add_monomorphized_struct(&mut self, s: Rc<AbstractStruct>) {
+  pub fn add_monomorphized_struct(&mut self, s: AbstractStruct) {
     if self
       .typedefs
       .structs
@@ -887,8 +919,8 @@ impl Program {
       .cloned()
       .filter(|s| !default_structs.contains(s))
     {
-      if let Some(compiled_struct) = Rc::unwrap_or_clone(s)
-        .compile_if_non_generic(&self.typedefs, &mut names)?
+      if let Some(compiled_struct) =
+        s.compile_if_non_generic(&self.typedefs, &mut names)?
       {
         wgsl += &compiled_struct;
         wgsl += "\n\n";
@@ -1380,58 +1412,70 @@ impl Program {
     }
   }
   pub fn validate_entry_points(&mut self, errors: &mut ErrorLog) {
-    let mut inferred_struct_field_locations: Vec<(Type, Rc<str>, usize)> =
-      vec![];
+    let mut inferred_struct_field_locations: Vec<(
+      Rc<AbstractStruct>,
+      Rc<str>,
+      usize,
+    )> = vec![];
     for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
       if let FunctionImplementationKind::Composite(f) =
         &signature.implementation
       {
         let mut f = f.borrow_mut();
+        let f_source = f.body.source_trace.clone();
         if let Some(entry) = f.entry_point {
           let Type::Function(signature) = f.body.data.unwrap_known() else {
             unreachable!()
           };
           match entry {
             EntryPoint::Vertex => {
-              if let Type::Struct(s) = signature.return_type.unwrap_known()
-                && *s.abstract_ancestor
-                  == vec4()
-                    .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+              if signature.return_type.unwrap_known().is_vec4f()
                 && f.return_attributes.is_empty()
               {
+                let return_source =
+                  f.return_attributes.attributed_source.clone();
                 f.return_attributes.try_add_attribute(
                   IOAttribute {
                     kind: IOAttributeKind::Builtin(
                       BuiltinIOAttribute::Position,
                     ),
-                    source_trace: SourceTrace::empty(),
+                    source_trace: return_source,
                   },
                   errors,
                 );
               }
             }
             EntryPoint::Compute(_) => {
+              let mut errored = false;
               if Type::Unit != signature.return_type.unwrap_known() {
                 errors.log(CompileError::new(
                   ComputeEntryReturnType,
                   f.body.source_trace.clone(),
                 ));
+                errored = true;
               }
               if !f.return_attributes.is_empty() {
                 errors.log(CompileError::new(
                   ComputeEntryReturnType,
                   f.body.source_trace.clone(),
                 ));
+                errored = true;
+              }
+              if errored {
+                continue;
               }
             }
-            _ => {}
+            EntryPoint::Fragment => {}
           }
 
           let check_for_duplicate_builtins =
             |attributables: &Vec<(
               Type,
-              Result<&mut IOAttributes, (Type, Rc<str>, IOAttributes)>,
+              Result<
+                &mut IOAttributes,
+                (Rc<AbstractStruct>, Rc<str>, IOAttributes),
+              >,
             )>|
              -> Vec<(String, SourceTrace)> {
               let mut duplicates = HashSet::new();
@@ -1455,15 +1499,157 @@ impl Program {
               duplicates.into_iter().collect()
             };
 
+          let mut handle_inout_attributables =
+            |attributables: Vec<(
+              Type,
+              Result<
+                &mut IOAttributes,
+                (Rc<AbstractStruct>, Rc<str>, IOAttributes),
+              >,
+            )>,
+             input_or_output: InputOrOutput,
+             errors: &mut ErrorLog|
+             -> (
+              HashMap<usize, (SourceTrace, Type)>,
+              HashMap<BuiltinIOAttribute, Result<Type, AbstractType>>,
+            ) {
+              for (name, source) in check_for_duplicate_builtins(&attributables)
+              {
+                errors.log(CompileError::new(
+                  DuplicateBuiltinAttribute(input_or_output, name),
+                  source,
+                ))
+              }
+              let mut locatable_count: usize = 0;
+              let mut used_locations: HashMap<usize, (SourceTrace, Type)> =
+                HashMap::new();
+              let mut used_builtins: HashMap<
+                BuiltinIOAttribute,
+                Result<Type, AbstractType>,
+              > = HashMap::new();
+              for (t, attributable) in attributables.iter() {
+                let attributes = match attributable {
+                  Ok(a) => &*a,
+                  Err((_, _, a)) => a,
+                };
+                if let Some((builtin, source)) = attributes.builtin() {
+                  if match input_or_output {
+                    InputOrOutput::Input => {
+                      !builtin.is_valid_input_for_stage(&entry)
+                    }
+                    InputOrOutput::Output => {
+                      !builtin.is_valid_output_for_stage(&entry)
+                    }
+                  } {
+                    errors.log(CompileError::new(
+                      InvalidBuiltinForEntryPoint(
+                        builtin.name().to_string(),
+                        input_or_output,
+                        entry.name().to_string(),
+                      ),
+                      source.clone(),
+                    ));
+                  } else {
+                    used_builtins.insert(
+                      *builtin,
+                      match attributable {
+                        Ok(_) => Ok(t.clone()),
+                        Err((s, field_name, _)) => Err(
+                          s.fields
+                            .iter()
+                            .find_map(|f| {
+                              (f.name == *field_name)
+                                .then(|| f.field_type.clone())
+                            })
+                            .unwrap()
+                            .clone(),
+                        ),
+                      },
+                    );
+                  }
+                  let t = match attributable {
+                    Ok(_) => t,
+                    Err((s, field_name, _)) => &s
+                      .fields
+                      .iter()
+                      .find(|f| f.name == *field_name)
+                      .unwrap()
+                      .field_type
+                      .concretize(&vec![], &self.typedefs, SourceTrace::empty())
+                      .unwrap(),
+                  };
+                  if !builtin.is_type_compatible(t) {
+                    errors.log(CompileError::new(
+                      InvalidBuiltinType(builtin.name().to_string()),
+                      attributes.attributed_source.clone(),
+                    ))
+                  }
+                } else {
+                  locatable_count += 1;
+                  if let Some((location, source)) = attributes.location() {
+                    used_locations.insert(location, (source, t.clone()));
+                  }
+                }
+              }
+              for (location, (source, _)) in used_locations.iter() {
+                if *location >= locatable_count {
+                  errors.log(CompileError::new(
+                    InvalidLocationAttribute(*location, locatable_count),
+                    (*source).clone(),
+                  ));
+                }
+              }
+              for (t, attributable) in attributables {
+                let attributes = match &attributable {
+                  Ok(a) => &*a,
+                  Err((_, _, a)) => a,
+                };
+                if attributes.builtin().is_none()
+                  && attributes.location().is_none()
+                {
+                  let untaken_location =
+                    (0..).find(|i| !used_locations.contains_key(i)).unwrap();
+                  match attributable {
+                    Ok(a) => {
+                      if t.is_location_attributable() {
+                        let source_trace = a.attributed_source.clone();
+                        a.try_add_attribute(
+                          IOAttribute {
+                            kind: IOAttributeKind::Location(untaken_location),
+                            source_trace: source_trace.clone(),
+                          },
+                          errors,
+                        );
+                        used_locations
+                          .insert(untaken_location, (source_trace, t));
+                      } else {
+                        errors.log(CompileError::new(
+                          InvalidTypeForEntryPoint(t.into(), input_or_output),
+                          f_source.clone(),
+                        ));
+                      }
+                    }
+                    Err((t, field_name, _)) => inferred_struct_field_locations
+                      .push((t.clone(), field_name.clone(), untaken_location)),
+                  }
+                }
+              }
+              (used_locations, used_builtins)
+            };
+
           let input_attributables: Vec<(
             Type,
-            Result<&mut IOAttributes, (Type, Rc<str>, IOAttributes)>,
+            Result<
+              &mut IOAttributes,
+              (Rc<AbstractStruct>, Rc<str>, IOAttributes),
+            >,
           )> = f
             .arg_annotations
             .iter_mut()
             .enumerate()
             .flat_map(|(i, annotation)| {
-              let arg_type = signature.args[i].0.var_type.unwrap_known();
+              let arg = &signature.args[i];
+              let arg_type = arg.0.var_type.unwrap_known();
               if arg_type.is_attributable() {
                 vec![(arg_type, Ok(&mut annotation.attributes))]
               } else {
@@ -1476,89 +1662,34 @@ impl Program {
                 } else {
                   self
                     .typedefs
-                    .get_attributable_components(arg_type.clone())
+                    .get_attributable_components(
+                      arg_type.clone(),
+                      InputOrOutput::Input,
+                      f_source.clone(),
+                      errors,
+                    )
                     .into_iter()
                     .map(|(t, field_name, attributes)| {
-                      (t, Err((arg_type.clone(), field_name, attributes)))
+                      (arg_type.clone(), Err((t, field_name, attributes)))
                     })
                     .collect()
                 }
               }
             })
             .collect();
-          for (name, source) in
-            check_for_duplicate_builtins(&input_attributables)
-          {
-            errors.log(CompileError::new(
-              DuplicateInputBuiltinAttribute(name),
-              source,
-            ))
-          }
-          let mut locatable_input_count: usize = 0;
-          let mut taken_input_locations: Vec<(usize, SourceTrace)> = vec![];
-          for (_, attributable) in input_attributables.iter() {
-            let attributes = match attributable {
-              Ok(a) => &*a,
-              Err((_, _, a)) => a,
-            };
-            if let Some((builtin, source)) = attributes.builtin() {
-              if !builtin.is_valid_input_for_stage(&entry) {
-                errors.log(CompileError::new(
-                  InvalidBuiltinInputForEntryPoint(
-                    builtin.name().to_string(),
-                    entry.name().to_string(),
-                  ),
-                  source.clone(),
-                ));
-              }
-            } else {
-              locatable_input_count += 1;
-              if let Some(location) = attributes.location() {
-                taken_input_locations.push(location);
-              }
-            }
-          }
-          for (location, source) in taken_input_locations.iter() {
-            if *location >= locatable_input_count {
-              errors.log(CompileError::new(
-                InvalidLocationAttribute(*location, locatable_input_count),
-                (*source).clone(),
-              ));
-            }
-          }
-          for (_, attributable) in input_attributables {
-            let attributes = match &attributable {
-              Ok(a) => &*a,
-              Err((_, _, a)) => a,
-            };
-            if attributes.builtin().is_none() && attributes.location().is_none()
-            {
-              let untaken_location = (0..)
-                .find(|i| {
-                  taken_input_locations
-                    .iter()
-                    .find(|(existing_i, _)| existing_i == i)
-                    .is_none()
-                })
-                .unwrap();
-              match attributable {
-                Ok(a) => a.try_add_attribute(
-                  IOAttribute {
-                    kind: IOAttributeKind::Location(untaken_location),
-                    source_trace: SourceTrace::empty(),
-                  },
-                  errors,
-                ),
-                Err((t, field_name, _)) => inferred_struct_field_locations
-                  .push((t.clone(), field_name.clone(), untaken_location)),
-              }
-            }
-          }
+          handle_inout_attributables(
+            input_attributables,
+            InputOrOutput::Input,
+            errors,
+          );
 
           let return_type = signature.return_type.unwrap_known();
           let output_attributables: Vec<(
             Type,
-            Result<&mut IOAttributes, (Type, Rc<str>, IOAttributes)>,
+            Result<
+              &mut IOAttributes,
+              (Rc<AbstractStruct>, Rc<str>, IOAttributes),
+            >,
           )> = if return_type.is_attributable() {
             vec![(return_type, Ok(&mut f.return_attributes))]
           } else {
@@ -1570,88 +1701,68 @@ impl Program {
             } else {
               self
                 .typedefs
-                .get_attributable_components(return_type.clone())
+                .get_attributable_components(
+                  return_type.clone(),
+                  InputOrOutput::Output,
+                  f_source.clone(),
+                  errors,
+                )
                 .into_iter()
                 .map(|(t, field_name, attributes)| {
-                  (t, Err((return_type.clone(), field_name, attributes)))
+                  (return_type.clone(), Err((t, field_name, attributes)))
                 })
                 .collect()
             }
           };
-          for (name, source) in
-            check_for_duplicate_builtins(&output_attributables)
-          {
-            errors.log(CompileError::new(
-              DuplicateOutputBuiltinAttribute(name),
-              source,
-            ))
-          }
-          let mut locatable_output_count: usize = 0;
-          let mut taken_output_locations: Vec<(usize, SourceTrace)> = vec![];
-          for (_, attributable) in output_attributables.iter() {
-            let attributes = match attributable {
-              Ok(a) => &*a,
-              Err((_, _, a)) => a,
-            };
-            if let Some((builtin, source)) = attributes.builtin() {
-              if !builtin.is_valid_output_for_stage(&entry) {
+          let (used_output_locations, used_output_builtins) =
+            handle_inout_attributables(
+              output_attributables,
+              InputOrOutput::Output,
+              errors,
+            );
+
+          match entry {
+            EntryPoint::Vertex => {
+              if let Some(t) =
+                used_output_builtins.get(&BuiltinIOAttribute::Position)
+              {
+                if match t {
+                  Ok(t) => !t.is_vec4f(),
+                  Err(t) => !t.is_vec4f(),
+                } {
+                  errors.log(CompileError::new(
+                    VertexPositionOutputInvalidType,
+                    f_source,
+                  ));
+                }
+              } else {
                 errors.log(CompileError::new(
-                  InvalidBuiltinOutputForEntryPoint(
-                    builtin.name().to_string(),
-                    entry.name().to_string(),
-                  ),
-                  source.clone(),
+                  VertexMustHavePositionOutput,
+                  f_source,
                 ));
               }
-            } else {
-              locatable_output_count += 1;
-              if let Some(location) = attributes.location() {
-                taken_output_locations.push(location);
+            }
+            EntryPoint::Fragment => {
+              if let Some((_, t)) = used_output_locations.get(&0) {
+                if let Type::Struct(s) = t
+                  && &*s.name == "vec4"
+                  && s.fields[0].field_type.unwrap_known() == Type::F32
+                {
+                } else {
+                  errors.log(CompileError::new(
+                    Fragment0OutputInvalidType,
+                    f_source,
+                  ));
+                }
+              } else {
+                errors.log(CompileError::new(
+                  FragmentMustHaveLocation0Output,
+                  f_source,
+                ));
               }
             }
+            EntryPoint::Compute(_) => {}
           }
-          for (location, source) in taken_output_locations.iter() {
-            if *location >= locatable_output_count {
-              errors.log(CompileError::new(
-                InvalidLocationAttribute(*location, locatable_output_count),
-                (*source).clone(),
-              ));
-            }
-          }
-          for (_, attributable) in output_attributables {
-            let attributes = match &attributable {
-              Ok(a) => &*a,
-              Err((_, _, a)) => a,
-            };
-            if attributes.builtin().is_none() && attributes.location().is_none()
-            {
-              let untaken_location = (0..)
-                .find(|i| {
-                  taken_output_locations
-                    .iter()
-                    .find(|(existing_i, _)| existing_i == i)
-                    .is_none()
-                })
-                .unwrap();
-              match attributable {
-                Ok(a) => a.try_add_attribute(
-                  IOAttribute {
-                    kind: IOAttributeKind::Location(untaken_location),
-                    source_trace: SourceTrace::empty(),
-                  },
-                  errors,
-                ),
-                Err((t, field_name, _)) => inferred_struct_field_locations
-                  .push((t.clone(), field_name.clone(), untaken_location)),
-              }
-            }
-          }
-
-          /*todo!(
-            "ensure that the required things are present in the output for \
-            each given stage, i.e. a location(0) for fragment and a \
-            builtin(position) for vertex"
-          )*/
         } else {
           for attributes in f
             .arg_annotations
@@ -1667,9 +1778,43 @@ impl Program {
         }
       }
     }
-    /*for (t, field_name, location) in inferred_struct_field_locations {
-      todo!("modify typedefs to add location to the correspond field")
-    }*/
+    while let Some((s, field_name, location)) =
+      inferred_struct_field_locations.pop()
+    {
+      let struct_source_trace = s.source_trace.clone();
+      let mut field_locations = vec![(field_name, location)];
+      let mut remaining_inferred_struct_field_locations = vec![];
+      for (other_s, field_name, location) in inferred_struct_field_locations {
+        if s == other_s {
+          field_locations.push((field_name, location));
+        } else {
+          remaining_inferred_struct_field_locations
+            .push((other_s, field_name, location));
+        }
+      }
+      let s = self
+        .typedefs
+        .structs
+        .iter_mut()
+        .find(|existing_s| *s == **existing_s)
+        .unwrap();
+      for (field_name, location) in field_locations {
+        s.fields
+          .iter_mut()
+          .find(|f| f.name == field_name)
+          .unwrap()
+          .attributes
+          .try_add_attribute(
+            IOAttribute {
+              kind: IOAttributeKind::Location(location),
+              source_trace: struct_source_trace.clone(),
+            },
+            errors,
+          );
+      }
+      inferred_struct_field_locations =
+        remaining_inferred_struct_field_locations;
+    }
   }
   pub fn validate_raw_program(&mut self) -> ErrorLog {
     let mut errors = ErrorLog::new();

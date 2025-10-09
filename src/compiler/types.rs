@@ -225,12 +225,13 @@ impl AbstractType {
     self,
     typedefs: &TypeDefs,
     names: &mut NameContext,
+    source_trace: &SourceTrace,
   ) -> CompileResult<String> {
     Ok(match self {
       AbstractType::Unit => {
         return Err(CompileError::new(
           CompileErrorKind::TriedToCompileUnit,
-          SourceTrace::empty(),
+          source_trace.clone(),
         ));
       }
       AbstractType::Generic(_) => {
@@ -248,7 +249,7 @@ impl AbstractType {
       } => {
         format!(
           "array<{}{}>",
-          inner_type.compile(typedefs, names)?,
+          inner_type.compile(typedefs, names, source_trace)?,
           format!("{}", size.compile_type())
         )
       }
@@ -324,8 +325,7 @@ impl AbstractType {
                 })
                 .collect::<CompileResult<Vec<_>>>()?;
               Ok(AbstractType::AbstractStruct(Rc::new(
-                Rc::unwrap_or_clone(generic_struct.clone())
-                  .fill_abstract_generics(generic_args),
+                generic_struct.clone().fill_abstract_generics(generic_args),
               )))
             }
             (None, Some(generic_enum)) => {
@@ -511,6 +511,13 @@ impl AbstractType {
       }
     })
   }
+  pub fn is_vec4f(&self) -> bool {
+    match self {
+      AbstractType::Type(t) => t.is_vec4f(),
+      AbstractType::AbstractStruct(s) => s.is_vec4f(),
+      _ => false,
+    }
+  }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -577,7 +584,7 @@ impl Type {
         .sum::<usize>(),
       Type::Enum(e) => e.inner_data_size_in_u32s()? + 1,
       Type::Function(_) => {
-        todo!("can't calculate size of function signatures yet")
+        return err(UninlinableHigherOrderFunction, source_trace.clone());
       }
       Type::Skolem(_) => panic!("tried to calculate size of skolem"),
       Type::Array(size, inner_type) => {
@@ -596,18 +603,17 @@ impl Type {
     })
   }
   pub fn satisfies_constraints(&self, constraint: &TypeConstraint) -> bool {
-    match &*constraint.name {
-      "Scalar" => {
+    match constraint.kind {
+      TypeConstraintKind::Scalar => {
         *self == Type::I32 || *self == Type::F32 || *self == Type::U32
       }
-      "ScalarOrBool" => {
+      TypeConstraintKind::ScalarOrBool => {
         *self == Type::I32
           || *self == Type::F32
           || *self == Type::U32
           || *self == Type::Bool
       }
-      "Integer" => *self == Type::I32 || *self == Type::U32,
-      _ => todo!("custom constraints not yet supported"),
+      TypeConstraintKind::Integer => *self == Type::I32 || *self == Type::U32,
     }
   }
   pub fn from_easl_tree(
@@ -690,7 +696,7 @@ impl Type {
                 typedefs.structs.iter().find(|s| &*s.name == struct_name)
               {
                 Ok(Type::Struct(AbstractStruct::fill_generics_ordered(
-                  s.clone(),
+                  Rc::new(s.clone()),
                   generic_args,
                   typedefs,
                   source_trace.clone(),
@@ -793,7 +799,7 @@ impl Type {
         } else if let Some(s) = typedefs.structs.iter().find(|s| s.name == name)
         {
           Struct(AbstractStruct::fill_generics_with_unification_variables(
-            s.clone(),
+            Rc::new(s.clone()),
             &typedefs,
             source_trace.clone(),
           )?)
@@ -1263,8 +1269,50 @@ impl Type {
     }
   }
   pub fn is_attributable(&self) -> bool {
-    //todo!()
-    true
+    match self {
+      Type::F32 | Type::I32 | Type::U32 | Type::Bool => true,
+      Type::Struct(s) => match &*s.abstract_ancestor.original_ancestor().name {
+        "vec2" | "vec3" | "vec4" => {
+          match s.fields.first().unwrap().field_type.unwrap_known() {
+            Type::F32 | Type::I32 | Type::U32 => true,
+            _ => false,
+          }
+        }
+        _ => false,
+      },
+      _ => false,
+    }
+  }
+  pub fn is_location_attributable(&self) -> bool {
+    *self != Type::Bool && self.is_attributable()
+  }
+  pub fn is_vec3u(&self) -> bool {
+    if let Type::Struct(s) = self
+      && &*s.name == "vec3"
+      && s
+        .fields
+        .get(0)
+        .map(|f| f.field_type.unwrap_known() == Type::U32)
+        .unwrap_or(false)
+    {
+      true
+    } else {
+      false
+    }
+  }
+  pub fn is_vec4f(&self) -> bool {
+    if let Type::Struct(s) = self
+      && &*s.name == "vec4"
+      && s
+        .fields
+        .get(0)
+        .map(|f| f.field_type.unwrap_known() == Type::F32)
+        .unwrap_or(false)
+    {
+      true
+    } else {
+      false
+    }
   }
 }
 
@@ -1794,27 +1842,42 @@ impl Variable {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum TypeConstraintKind {
+  Scalar,
+  ScalarOrBool,
+  Integer,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct TypeConstraint {
-  name: Rc<str>,
+  kind: TypeConstraintKind,
   args: Vec<Vec<TypeConstraint>>,
 }
 
 impl TypeConstraint {
+  pub fn name(&self) -> String {
+    match self.kind {
+      TypeConstraintKind::Scalar => "Scalar",
+      TypeConstraintKind::ScalarOrBool => "ScalarOrBool",
+      TypeConstraintKind::Integer => "Integer",
+    }
+    .to_string()
+  }
   pub fn scalar() -> Self {
     Self {
-      name: "Scalar".into(),
+      kind: TypeConstraintKind::Scalar,
       args: vec![],
     }
   }
   pub fn scalar_or_bool() -> Self {
     Self {
-      name: "ScalarOrBool".into(),
+      kind: TypeConstraintKind::ScalarOrBool,
       args: vec![],
     }
   }
   pub fn integer() -> Self {
     Self {
-      name: "Integer".into(),
+      kind: TypeConstraintKind::Integer,
       args: vec![],
     }
   }
@@ -1826,15 +1889,17 @@ pub fn parse_type_constraint(
   _generic_args: &Vec<Rc<str>>,
 ) -> CompileResult<TypeConstraint> {
   match ast {
-    EaslTree::Leaf(_, name) => Ok(TypeConstraint {
-      name: name.into(),
-      args: vec![],
-    }),
+    EaslTree::Leaf(position, name) => match name.as_str() {
+      "Scalar" => Ok(TypeConstraint::scalar()),
+      "ScalarOrBool" => Ok(TypeConstraint::scalar_or_bool()),
+      "Integer" => Ok(TypeConstraint::integer()),
+      _ => err(TypeConstraintsNotYetSupported, position.into()),
+    },
     EaslTree::Inner(
-      (_position, EncloserOrOperator::Operator(Operator::TypeAscription)),
+      (position, EncloserOrOperator::Operator(Operator::TypeAscription)),
       _children,
     ) => {
-      todo!("can't parse type constraints yet")
+      err(TypeConstraintsNotYetSupported, position.into())
       /*let source_trace: SourceTrace = position.into();
       let mut children_iter = children.into_iter();
       let name = if let EaslTree::Leaf(_, name) =
@@ -2196,7 +2261,7 @@ pub struct TypeConstraintDescription {
 impl From<TypeConstraint> for TypeConstraintDescription {
   fn from(constraint: TypeConstraint) -> Self {
     Self {
-      name: constraint.name.to_string(),
+      name: constraint.name().to_string(),
       args: (0..constraint.args.len())
         .map(|i| ((65 + (i as u8)) as char).to_string().into())
         .collect(),

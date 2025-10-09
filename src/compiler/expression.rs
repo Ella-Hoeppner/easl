@@ -337,99 +337,104 @@ pub fn arg_list_and_return_type_from_easl_tree(
   Vec<AbstractType>,
   Vec<FunctionArgumentAnnotation>,
   AbstractType,
+  SourceTrace,
   Option<Annotation>,
 )> {
   use crate::parse::Encloser as E;
   use crate::parse::Operator as O;
   use sse::syntax::EncloserOrOperator::*;
-  if let EaslTree::Inner(
-    (position, Operator(O::TypeAscription)),
+  let (args_list_ast, return_type_ast) = if let EaslTree::Inner(
+    (_, Operator(O::TypeAscription)),
     mut args_and_return_type,
   ) = tree
   {
     let return_type_ast = args_and_return_type.remove(1);
-    let (return_type_ast, return_annotation) =
-      extract_annotation(return_type_ast, errors);
-    let return_type =
-      match AbstractType::from_easl_tree(return_type_ast, typedefs, skolems) {
-        Ok(t) => t,
-        Err(e) => {
-          errors.log(e);
-          return None;
-        }
-      };
-    if let EaslTree::Inner((position, Encloser(E::Square)), arg_asts) =
-      args_and_return_type.remove(0)
-    {
-      let source_path: SourceTrace = position.into();
-      let ((arg_types, arg_annotations), arg_names) = match arg_asts
-        .into_iter()
-        .map(|arg| -> CompileResult<_> {
-          let (maybe_t_ast, arg_name_ast) = extract_type_annotation_ast(arg);
-          let t_ast = maybe_t_ast.ok_or(CompileError::new(
-            FunctionArgMissingType,
-            source_path.clone(),
-          ))?;
-          let t = AbstractType::from_easl_tree(t_ast, typedefs, skolems)?;
-          let (arg_name_ast, arg_annotation) =
-            extract_annotation(arg_name_ast, errors);
-          if let EaslTree::Leaf(arg_name_pos, arg_name) = arg_name_ast {
-            if let Some(arg_annotation) = arg_annotation {
-              let (attributes, residual) = IOAttributes::parse_from_annotation(
-                arg_annotation,
-                Some((arg_name.clone().into(), arg_name_pos.into())),
-                errors,
-              );
-              let mut arg_annotation = FunctionArgumentAnnotation {
-                var: false,
-                attributes,
-              };
-              for (name, name_source, value) in residual {
-                match (&*name, value) {
-                  ("var", None) => arg_annotation.var = true,
-                  _ => errors.log(CompileError {
-                    kind: InvalidArgumentAnnotation,
-                    source_trace: name_source,
-                  }),
-                }
+    let args_list_ast = args_and_return_type.remove(0);
+    (args_list_ast, return_type_ast)
+  } else {
+    let pos = tree.position().clone();
+    (tree, EaslTree::Inner((pos, Encloser(E::Parens)), vec![]))
+  };
+  let return_source = return_type_ast.position().into();
+  let (return_type_ast, return_annotation) =
+    extract_annotation(return_type_ast, errors);
+  let return_type =
+    match AbstractType::from_easl_tree(return_type_ast, typedefs, skolems) {
+      Ok(t) => t,
+      Err(e) => {
+        errors.log(e);
+        return None;
+      }
+    };
+  if let EaslTree::Inner((position, Encloser(E::Square)), arg_asts) =
+    args_list_ast
+  {
+    let source_path: SourceTrace = position.into();
+    let ((arg_types, arg_annotations), arg_names) = match arg_asts
+      .into_iter()
+      .map(|arg| -> CompileResult<_> {
+        let (maybe_t_ast, arg_name_ast) = extract_type_annotation_ast(arg);
+        let t_ast = maybe_t_ast.ok_or(CompileError::new(
+          FunctionArgMissingType,
+          source_path.clone(),
+        ))?;
+        let t = AbstractType::from_easl_tree(t_ast, typedefs, skolems)?;
+        let (arg_name_ast, arg_annotation) =
+          extract_annotation(arg_name_ast, errors);
+        if let EaslTree::Leaf(arg_name_pos, arg_name) = arg_name_ast {
+          if let Some(arg_annotation) = arg_annotation {
+            let (attributes, residual) = IOAttributes::parse_from_annotation(
+              arg_annotation,
+              Some((arg_name.clone().into(), arg_name_pos.into())),
+              errors,
+            );
+            let mut arg_annotation = FunctionArgumentAnnotation {
+              var: false,
+              attributes,
+            };
+            for (name, name_source, value) in residual {
+              match (&*name, value) {
+                ("var", None) => arg_annotation.var = true,
+                _ => errors.log(CompileError {
+                  kind: InvalidArgumentAnnotation,
+                  source_trace: name_source,
+                }),
               }
-              Ok(((t, arg_annotation), arg_name.into()))
-            } else {
-              Ok(((t, FunctionArgumentAnnotation::default()), arg_name.into()))
             }
+            Ok(((t, arg_annotation), arg_name.into()))
           } else {
-            err(InvalidArgumentName, source_path.clone())
+            Ok((
+              (t, FunctionArgumentAnnotation::empty(arg_name_pos.into())),
+              arg_name.into(),
+            ))
           }
-        })
-        .collect::<CompileResult<(
-          (Vec<AbstractType>, Vec<FunctionArgumentAnnotation>),
-          Vec<Rc<str>>,
-        )>>() {
-        Ok(x) => x,
-        Err(e) => {
-          errors.log(e);
-          return None;
+        } else {
+          err(InvalidArgumentName, source_path.clone())
         }
-      };
-      Some((
-        source_path,
-        arg_names,
-        arg_types,
-        arg_annotations,
-        return_type,
-        return_annotation,
-      ))
-    } else {
-      errors.log(CompileError::new(
-        FunctionSignatureNotSquareBrackets,
-        position.into(),
-      ));
-      return None;
-    }
+      })
+      .collect::<CompileResult<(
+        (Vec<AbstractType>, Vec<FunctionArgumentAnnotation>),
+        Vec<Rc<str>>,
+      )>>() {
+      Ok(x) => x,
+      Err(e) => {
+        errors.log(e);
+        return None;
+      }
+    };
+    Some((
+      source_path,
+      arg_names,
+      arg_types,
+      arg_annotations,
+      return_type,
+      return_source,
+      return_annotation,
+    ))
   } else {
     errors.log(CompileError::new(
-      FunctionSignatureMissingReturnType,
-      tree.position().clone().into(),
+      FunctionSignatureNotSquareBrackets,
+      args_list_ast.position().into(),
     ));
     return None;
   }
@@ -2606,11 +2611,12 @@ impl TypedExp {
                       && let Some(monomorphized_struct) = abstract_struct
                         .generate_monomorphized(arg_types.clone())
                     {
-                      let monomorphized_struct = Rc::new(monomorphized_struct);
+                      let monomorphized_struct_rc =
+                        Rc::new(monomorphized_struct.clone());
                       std::mem::swap(
                         f_name,
                         &mut AbstractStruct::concretized_name(
-                          monomorphized_struct.clone(),
+                          monomorphized_struct_rc.clone(),
                           &base_program.typedefs,
                           &mut new_program.names.borrow_mut(),
                           exp.source_trace.clone(),
@@ -2618,7 +2624,7 @@ impl TypedExp {
                       );
                       let mut new_typestate =
                         Type::Struct(AbstractStruct::fill_generics_ordered(
-                          monomorphized_struct.clone(),
+                          monomorphized_struct_rc.clone(),
                           vec![],
                           &base_program.typedefs,
                           source_trace.clone(),
@@ -2628,7 +2634,7 @@ impl TypedExp {
                         std::mem::swap(typestate, &mut new_typestate)
                       });
                       new_program
-                        .add_monomorphized_struct(monomorphized_struct.into());
+                        .add_monomorphized_struct(monomorphized_struct);
                     }
                   }
                 }
@@ -2793,7 +2799,7 @@ impl TypedExp {
             }
           }
         } else {
-          todo!("can't inline this kind of higher-order argument yet")
+          return err(UninlinableHigherOrderFunction, exp.source_trace.clone());
         }
       }
       Ok(true)
