@@ -16,11 +16,6 @@ Feature goals:
 
 ## todo
 ### high priority, necessary for basic wgsl feature parity + stuff I wanna get done before calling the language 0.1
-* missing some built-in functions:
-  * texture functions
-    * `textureSampleCompare` should have an `FragmentExclusiveFunction` effect
-  * data un/packing/unpacking functions
-
 * have a way to turn an `ErrorLog` into a good, human-readable list of error messages for the compiler CLI
   * for each error, need to print a few lines from the original source document where the primary position is, ideally with arrows beneath the offending part, like rust does
 
@@ -47,6 +42,14 @@ Feature goals:
 * `workgroupUniformLoad`
 * subgroup functions
 * quad functions
+
+* extended texture types:
+  * 1d, 3d textures
+  * texture arrays
+  * multisampled textures
+  * sampler_comparison
+  * texture_storage
+  * all the functions that use these
 
 * `catch_duplicate_signatures` needs to be extended to catch partial overlaps in the type-domains of generic functions
   * like, right now you can implement `(defn + [a: f32 b:f32]: f32 ...)` without error, even though this conflicts with the builtin definition `(defn (+ T) [a: T b:T]: T)`. The two signatures aren't equal, so no error is detected, but it should be, since the `f32` implementation is just a special-case of the generic definition.
@@ -129,7 +132,7 @@ Feature goals:
 ### low priority, extra features once core language is solid
 * uniformity analysis of some kind?
 
-* some kind of module system, so that code can be broken up across
+* some kind of module system, so that code can be broken up across multiple files, and imports can be scoped to ony particular parts of the codebase
 
 * support extensions:
   * f16

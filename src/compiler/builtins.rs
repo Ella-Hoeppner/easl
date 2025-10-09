@@ -1411,11 +1411,68 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
 }
 
 fn texture_functions() -> Vec<AbstractFunctionSignature> {
+  let vec2f = || {
+    AbstractType::AbstractStruct(
+      vec2()
+        .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+        .into(),
+    )
+  };
+  let vec4f = || {
+    AbstractType::AbstractStruct(
+      vec4()
+        .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+        .into(),
+    )
+  };
+  let texture_2df = || {
+    AbstractType::AbstractStruct(
+      texture_2d()
+        .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+        .into(),
+    )
+  };
   vec![
     AbstractFunctionSignature {
-      name: "texture-sample".into(),
+      name: "texture-dimensions".into(),
       generic_args: vec![("T".into(), vec![])],
+      arg_types: vec![AbstractType::AbstractStruct(texture_2d().into())],
+      mutated_args: vec![],
+      return_type: AbstractType::AbstractStruct(
+        vec2()
+          .fill_abstract_generics(vec![AbstractType::Type(Type::U32)])
+          .into(),
+      ),
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
+      associative: false,
+    },
+    AbstractFunctionSignature {
+      name: "texture-dimensions".into(),
+      generic_args: vec![
+        ("T".into(), vec![]),
+        ("L".into(), vec![TypeConstraint::integer()]),
+      ],
       arg_types: vec![
+        AbstractType::AbstractStruct(texture_2d().into()),
+        AbstractType::Generic("L".into()),
+      ],
+      mutated_args: vec![],
+      return_type: AbstractType::AbstractStruct(
+        vec2()
+          .fill_abstract_generics(vec![AbstractType::Type(Type::U32)])
+          .into(),
+      ),
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
+      associative: false,
+    },
+    AbstractFunctionSignature {
+      name: "texture-gather".into(),
+      generic_args: vec![
+        ("T".into(), vec![]),
+        ("C".into(), vec![TypeConstraint::integer()]),
+      ],
+      arg_types: vec![
+        AbstractType::Generic("C".into()),
         AbstractType::AbstractStruct(texture_2d().into()),
         AbstractType::AbstractStruct(sampler().into()),
         AbstractType::AbstractStruct(
@@ -1430,16 +1487,105 @@ fn texture_functions() -> Vec<AbstractFunctionSignature> {
       associative: false,
     },
     AbstractFunctionSignature {
+      name: "texture-sample".into(),
+      generic_args: vec![],
+      arg_types: vec![
+        texture_2df(),
+        AbstractType::AbstractStruct(sampler().into()),
+        AbstractType::AbstractStruct(
+          vec2()
+            .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+            .into(),
+        ),
+      ],
+      mutated_args: vec![],
+      return_type: vec4f(),
+      implementation: FunctionImplementationKind::Builtin(
+        Effect::FragmentExclusiveFunction("texture-sample".into()).into(),
+      ),
+      associative: false,
+    },
+    AbstractFunctionSignature {
+      name: "texture-sample-bias".into(),
+      generic_args: vec![],
+      arg_types: vec![
+        texture_2df(),
+        AbstractType::AbstractStruct(sampler().into()),
+        AbstractType::AbstractStruct(
+          vec2()
+            .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+            .into(),
+        ),
+        AbstractType::Type(Type::F32),
+      ],
+      mutated_args: vec![],
+      return_type: vec4f(),
+      implementation: FunctionImplementationKind::Builtin(
+        Effect::FragmentExclusiveFunction("texture-sample-bias".into()).into(),
+      ),
+      associative: false,
+    },
+    AbstractFunctionSignature {
+      name: "texture-sample-grad".into(),
+      generic_args: vec![],
+      arg_types: vec![
+        texture_2df(),
+        AbstractType::AbstractStruct(sampler().into()),
+        vec2f(),
+        vec2f(),
+        vec2f(),
+      ],
+      mutated_args: vec![],
+      return_type: vec4f(),
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
+      associative: false,
+    },
+    AbstractFunctionSignature {
+      name: "texture-sample-level".into(),
+      generic_args: vec![],
+      arg_types: {
+        vec![
+          texture_2df(),
+          AbstractType::AbstractStruct(sampler().into()),
+          vec2f(),
+          AbstractType::Type(Type::F32),
+        ]
+      },
+      mutated_args: vec![],
+      return_type: vec4f(),
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
+      associative: false,
+    },
+    AbstractFunctionSignature {
+      name: "texture-sample-base-clamp-to-edge".into(),
+      generic_args: vec![],
+      arg_types: {
+        vec![
+          texture_2df(),
+          AbstractType::AbstractStruct(sampler().into()),
+          vec2f(),
+        ]
+      },
+      mutated_args: vec![],
+      return_type: vec4f(),
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
+      associative: false,
+    },
+    AbstractFunctionSignature {
       name: "texture-load".into(),
-      generic_args: vec![("T".into(), vec![])],
+      generic_args: vec![
+        ("T".into(), vec![]),
+        ("C".into(), vec![TypeConstraint::integer()]),
+        ("L".into(), vec![TypeConstraint::integer()]),
+      ],
       arg_types: vec![
         AbstractType::AbstractStruct(texture_2d().into()),
         AbstractType::AbstractStruct(
           vec2()
-            .fill_abstract_generics(vec![AbstractType::Type(Type::I32)])
+            .fill_abstract_generics(vec![AbstractType::Generic("C".into())])
             .into(),
         ),
-        AbstractType::Type(Type::I32),
+        AbstractType::Generic("L".into()),
       ],
       mutated_args: vec![],
       return_type: AbstractType::AbstractStruct(vec4().into()),
@@ -1447,6 +1593,51 @@ fn texture_functions() -> Vec<AbstractFunctionSignature> {
       associative: false,
     },
   ]
+}
+
+fn data_packing_functions() -> Vec<AbstractFunctionSignature> {
+  [
+    ("4x8-snorm", vec4(), Type::F32, true),
+    ("4x8-unorm", vec4(), Type::F32, true),
+    ("4x8-i8", vec4(), Type::I32, true),
+    ("4x8-u8", vec4(), Type::U32, true),
+    ("4x8-i8-clamp", vec4(), Type::I32, false),
+    ("4x8-u8-clamp", vec4(), Type::U32, false),
+    ("2x16-snorm", vec2(), Type::F32, true),
+    ("2x16-unorm", vec2(), Type::F32, true),
+    ("2x16-float", vec2(), Type::F32, true),
+  ]
+  .into_iter()
+  .flat_map(|(name, v, t, unpack)| {
+    let mut signatures = vec![AbstractFunctionSignature {
+      name: format!("pack-{name}").into(),
+      generic_args: vec![],
+      arg_types: vec![AbstractType::AbstractStruct(
+        v.clone()
+          .fill_abstract_generics(vec![AbstractType::Type(t.clone())])
+          .into(),
+      )],
+      mutated_args: vec![],
+      return_type: AbstractType::Type(Type::U32),
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
+      associative: false,
+    }];
+    if unpack {
+      signatures.push(AbstractFunctionSignature {
+      name: format!("unpack-{name}").into(),
+      generic_args: vec![],
+      arg_types: vec![AbstractType::Type(Type::U32)],
+      mutated_args: vec![],
+      return_type: AbstractType::AbstractStruct(
+        v.fill_abstract_generics(vec![AbstractType::Type(t)]).into(),
+      ),
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
+      associative: false,
+    });
+    }
+    signatures
+  })
+  .collect()
 }
 
 fn array_functions() -> Vec<AbstractFunctionSignature> {
@@ -1525,6 +1716,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut misc_math_functions());
   signatures.append(&mut texture_functions());
   signatures.append(&mut array_functions());
+  signatures.append(&mut data_packing_functions());
   signatures.append(&mut bit_manipulation_functions());
   signatures.append(&mut derivative_functions());
   signatures
@@ -1919,7 +2111,26 @@ pub fn rename_builtin_fn(name: &str) -> Option<String> {
     "or" => Some("||"),
     "array-length" => Some("arrayLength"),
     "texture-sample" => Some("textureSample"),
+    "texture-dimensions" => Some("textureDimensions"),
+    "texture-gather" => Some("textureGather"),
+    "texture-gather-compare" => Some("textureGatherCompare"),
     "texture-load" => Some("textureLoad"),
+    "texture-sample-bias" => Some("textureSampleBias"),
+    "texture-sample-compare" => Some("textureSampleCompare"),
+    "texture-sample-compare-level" => Some("textureSampleCompareLevel"),
+    "texture-sample-grad" => Some("textureSampleGrad"),
+    "texture-sample-level" => Some("textureSampleLevel"),
+    "texture-sample-base-clamp-to-edge" => Some("textureSampleBaseClampToEdge"),
+    "texture-store" => Some("textureStore"),
+    "pack-4x8-snorm" => Some("pack4x8snorm"),
+    "pack-4x8-unorm" => Some("pack4x8unorm"),
+    "pack-4x8-i8" => Some("pack4x8I8"),
+    "pack-4x8-u8" => Some("pack4x8U8"),
+    "pack-4x8-i8-clamp" => Some("pack4x8I8Clamp"),
+    "pack-4x8-u8-clamp" => Some("pack4x8U8Clamp"),
+    "pack-2x16-snorm" => Some("pack2x16snorm"),
+    "pack-2x16-unorm" => Some("pack2x16unorm"),
+    "pack-2x16-float" => Some("pack2x16float"),
     "face-forward" => Some("faceForward"),
     "dot-4-u8-packed" => Some("dot4U8Packed"),
     "dot-4-i8-packed" => Some("dot4I8Packed"),
