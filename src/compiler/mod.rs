@@ -2,6 +2,7 @@ pub mod annotation;
 pub mod builtins;
 pub mod core;
 pub mod effects;
+pub mod entry;
 pub mod enums;
 pub mod error;
 pub mod expression;

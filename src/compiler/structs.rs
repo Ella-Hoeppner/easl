@@ -6,6 +6,7 @@ use std::{
 use crate::{
   compiler::{
     annotation::extract_annotation,
+    entry::IOAttributes,
     expression::{Accessor, ExpKind, Number, TypedExp},
     program::{NameContext, TypeDefs},
     types::{ArraySize, contains_name_leaf, extract_type_annotation_ast},
@@ -15,34 +16,74 @@ use crate::{
 };
 
 use super::{
-  annotation::Annotation,
   error::{
     CompileError, CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace,
   },
   types::{AbstractType, ExpTypeInfo, Type, TypeState},
 };
 
+/*#[derive(Debug, Clone, PartialEq)]
+pub struct StructFieldAnnotation {
+  pub location: Option<usize>,
+  pub builtin: Option<BuiltinIOAttribute>,
+}*/
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct UntypedStructField {
-  annotation: Option<Annotation>,
+  attributes: IOAttributes,
   name: Rc<str>,
   type_ast: EaslTree,
 }
 
 impl UntypedStructField {
-  fn from_field_tree(ast: EaslTree) -> CompileResult<Self> {
+  fn from_field_tree(ast: EaslTree, errors: &mut ErrorLog) -> Option<Self> {
     let path = ast.position().clone();
     let (type_ast, inner_ast) = extract_type_annotation_ast(ast);
-    let type_ast =
-      type_ast.ok_or(CompileError::new(StructFieldMissingType, path.into()))?;
+    let Some(type_ast) = type_ast else {
+      errors.log(CompileError::new(StructFieldMissingType, path.into()));
+      return None;
+    };
     let mut errors = ErrorLog::new();
-    let (name, annotation) = extract_annotation(inner_ast, &mut errors);
-    if let Some(e) = errors.into_iter().next() {
-      return Err(e.clone());
+    let (name_ast, annotation) = extract_annotation(inner_ast, &mut errors);
+    let name_source = name_ast.position().into();
+    let name = match read_leaf(name_ast) {
+      Ok(name) => name,
+      Err(e) => {
+        errors.log(e);
+        return None;
+      }
+    };
+    let (attributes, leftovers) = if let Some(annotation) = annotation {
+      IOAttributes::parse_from_annotation(
+        annotation,
+        Some((name.clone(), name_source)),
+        &mut errors,
+      )
+    } else {
+      (IOAttributes::empty(), vec![])
+    };
+    if !leftovers.is_empty() {
+      let mut source_trace = leftovers[0].1.clone();
+      if let Some((_, secondary_source)) = &leftovers[0].2 {
+        source_trace =
+          source_trace.insert_as_secondary(secondary_source.clone());
+      }
+      for (_, secondary_source, value) in &leftovers[1..] {
+        source_trace =
+          source_trace.insert_as_secondary(secondary_source.clone());
+        if let Some((_, secondary_source)) = value {
+          source_trace =
+            source_trace.insert_as_secondary(secondary_source.clone());
+        }
+      }
+      errors.log(CompileError::new(
+        InvalidStructFieldAnnotation,
+        source_trace,
+      ));
     }
-    Ok(Self {
-      annotation: annotation.map(|(a, _)| a),
-      name: read_leaf(name)?,
+    Some(Self {
+      attributes,
+      name,
       type_ast,
     })
   }
@@ -55,7 +96,7 @@ impl UntypedStructField {
     skolems: &Vec<Rc<str>>,
   ) -> CompileResult<AbstractStructField> {
     Ok(AbstractStructField {
-      annotation: self.annotation,
+      attributes: self.attributes,
       name: self.name,
       field_type: AbstractType::from_easl_tree(
         self.type_ast,
@@ -80,16 +121,17 @@ impl UntypedStruct {
     generic_args: Vec<Rc<str>>,
     field_asts: Vec<EaslTree>,
     source_trace: SourceTrace,
-  ) -> CompileResult<Self> {
-    Ok(Self {
+    errors: &mut ErrorLog,
+  ) -> Self {
+    Self {
       name,
       generic_args,
       fields: field_asts
         .into_iter()
-        .map(UntypedStructField::from_field_tree)
-        .collect::<CompileResult<_>>()?,
+        .filter_map(|field| UntypedStructField::from_field_tree(field, errors))
+        .collect(),
       source_trace,
-    })
+    }
   }
   pub fn references_type_name(&self, name: &Rc<str>) -> bool {
     self
@@ -132,7 +174,7 @@ pub fn compiled_vec_or_mat_name(
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractStructField {
-  pub annotation: Option<Annotation>,
+  pub attributes: IOAttributes,
   pub name: Rc<str>,
   pub field_type: AbstractType,
 }
@@ -145,7 +187,7 @@ impl AbstractStructField {
     source_trace: SourceTrace,
   ) -> CompileResult<StructField> {
     Ok(StructField {
-      annotation: self.annotation.clone(),
+      attributes: self.attributes.clone(),
       name: Rc::clone(&self.name),
       field_type: self
         .field_type
@@ -161,7 +203,7 @@ impl AbstractStructField {
     source_trace: SourceTrace,
   ) -> CompileResult<StructField> {
     Ok(StructField {
-      annotation: self.annotation.clone(),
+      attributes: self.attributes.clone(),
       name: self.name.clone(),
       field_type: self.field_type.fill_generics(
         generics,
@@ -175,7 +217,7 @@ impl AbstractStructField {
     generics: &HashMap<Rc<str>, AbstractType>,
   ) -> Self {
     AbstractStructField {
-      annotation: self.annotation,
+      attributes: self.attributes,
       name: self.name,
       field_type: self.field_type.fill_abstract_generics(generics),
     }
@@ -185,11 +227,7 @@ impl AbstractStructField {
     typedefs: &TypeDefs,
     names: &mut NameContext,
   ) -> CompileResult<String> {
-    let annotation = if let Some(annotation) = self.annotation {
-      annotation.compile()
-    } else {
-      String::new()
-    };
+    let annotation = self.attributes.compile();
     let name = compile_word(self.name);
     let field_type = self.field_type.compile(typedefs, names)?;
     Ok(format!("  {annotation}{name}: {field_type}"))
@@ -493,21 +531,17 @@ impl AbstractStruct {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructField {
-  pub annotation: Option<Annotation>,
+  pub attributes: IOAttributes,
   pub name: Rc<str>,
   pub field_type: ExpTypeInfo,
 }
 
 impl StructField {
   pub fn compile(self, names: &mut NameContext) -> String {
-    let annotation = if let Some(annotation) = self.annotation {
-      annotation.compile()
-    } else {
-      String::new()
-    };
+    let attributes = self.attributes.compile();
     let name = compile_word(self.name);
     let field_type = self.field_type.monomorphized_name(names);
-    format!("  {annotation}{name}: {field_type}")
+    format!("  {attributes}{name}: {field_type}")
   }
 }
 

@@ -4,10 +4,8 @@ use std::str::FromStr;
 
 use sse::syntax::EncloserOrOperator::{self, *};
 
+use crate::compiler::entry::EntryPoint;
 use crate::compiler::error::CompileErrorKind;
-use crate::compiler::functions::{
-  BuiltinArgumentAnnotation, EntryPoint, FunctionArgumentAnnotation,
-};
 use crate::compiler::util::compile_word;
 use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
 use crate::parse::EaslTree;
@@ -18,24 +16,24 @@ use super::error::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Annotation {
-  Singular(Rc<str>),
-  Map(Vec<(Rc<str>, Rc<str>)>),
-  Multiple(Vec<Self>),
+pub enum AnnotationKind {
+  Singular(Rc<str>, SourceTrace),
+  Map(Vec<(Rc<str>, SourceTrace, Rc<str>, SourceTrace)>),
+  Multiple(Vec<Annotation>),
 }
 
-impl Display for Annotation {
+impl Display for AnnotationKind {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     match self {
-      Annotation::Singular(s) => write!(f, "{}", s),
-      Annotation::Map(items) => {
+      AnnotationKind::Singular(s, _) => write!(f, "{}", s),
+      AnnotationKind::Map(items) => {
         write!(f, "{{\n")?;
-        for (key, val) in items {
+        for (key, _, val, _) in items {
           write!(f, "  {} {}\n", key, val)?;
         }
         write!(f, "\n}}")
       }
-      Annotation::Multiple(sub_annotations) => {
+      AnnotationKind::Multiple(sub_annotations) => {
         for annotation in sub_annotations.iter() {
           annotation.fmt(f).unwrap();
           write!(f, "\n")?
@@ -46,31 +44,59 @@ impl Display for Annotation {
   }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Annotation {
+  pub kind: AnnotationKind,
+  pub source_trace: SourceTrace,
+}
+
+impl Display for Annotation {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    self.kind.fmt(f)
+  }
+}
+
 impl Annotation {
   pub fn from_annotation_tree(ast: EaslTree) -> CompileResult<Self> {
     match ast {
-      EaslTree::Leaf(_, singular) => Ok(Self::Singular(singular.into())),
-      EaslTree::Inner((position, Encloser(Curly)), map_fields) => {
-        let source_trace: SourceTrace = position.into();
+      EaslTree::Leaf(pos, singular) => {
+        let source_trace: SourceTrace = pos.into();
+        Ok(Self {
+          kind: AnnotationKind::Singular(singular.into(), source_trace.clone()),
+          source_trace: source_trace,
+        })
+      }
+      EaslTree::Inner((pos, Encloser(Curly)), map_fields) => {
+        let source_trace: SourceTrace = pos.into();
         if map_fields.len() % 2 == 0 {
-          Ok(Self::Map(
-            map_fields
-              .into_iter()
-              .map(|field| {
-                if let EaslTree::Leaf(_, field_string) = field {
-                  Ok(field_string.into())
-                } else {
-                  err(
-                    InvalidAnnotation("fields must all be leaves".into()),
-                    source_trace.clone(),
+          Ok(Self {
+            kind: AnnotationKind::Map(
+              map_fields
+                .into_iter()
+                .map(|field| {
+                  if let EaslTree::Leaf(pos, field_string) = field {
+                    Ok((field_string.into(), pos.into()))
+                  } else {
+                    err(
+                      InvalidAnnotation("fields must all be leaves".into()),
+                      source_trace.clone(),
+                    )
+                  }
+                })
+                .collect::<CompileResult<Vec<(Rc<str>, SourceTrace)>>>()?
+                .chunks(2)
+                .map(|arr| {
+                  (
+                    arr[0].0.clone(),
+                    arr[0].1.clone(),
+                    arr[1].0.clone(),
+                    arr[1].1.clone(),
                   )
-                }
-              })
-              .collect::<CompileResult<Vec<Rc<str>>>>()?
-              .chunks(2)
-              .map(|arr| (arr[0].clone(), arr[1].clone()))
-              .collect(),
-          ))
+                })
+                .collect(),
+            ),
+            source_trace,
+          })
         } else {
           err(
             InvalidAnnotation("fields must all be leaves".into()),
@@ -88,8 +114,8 @@ impl Annotation {
     self
       .properties()
       .into_iter()
-      .fold(String::new(), |s, (name, value)| {
-        if let Some(value) = value {
+      .fold(String::new(), |s, (name, _, value)| {
+        if let Some((value, _)) = value {
           s + &format!("@{}({})", compile_word(name), compile_word(value))
         } else {
           match &*name {
@@ -106,15 +132,21 @@ impl Annotation {
       String::new()
     }
   }
-  pub fn properties(&self) -> Vec<(Rc<str>, Option<Rc<str>>)> {
-    match self {
-      Annotation::Singular(s) => vec![(s.clone(), None)],
-      Annotation::Map(items) => items
+  pub fn properties(
+    &self,
+  ) -> Vec<(Rc<str>, SourceTrace, Option<(Rc<str>, SourceTrace)>)> {
+    match &self.kind {
+      AnnotationKind::Singular(name, source_trace) => {
+        vec![(name.clone(), source_trace.clone(), None)]
+      }
+      AnnotationKind::Map(items) => items
         .iter()
         .cloned()
-        .map(|(property, value)| (property, Some(value)))
+        .map(|(name, name_source, value, value_source)| {
+          (name, name_source, Some((value, value_source)))
+        })
         .collect(),
-      Annotation::Multiple(sub_annotations) => sub_annotations
+      AnnotationKind::Multiple(sub_annotations) => sub_annotations
         .into_iter()
         .map(Self::properties)
         .reduce(|mut a, mut b| {
@@ -126,39 +158,39 @@ impl Annotation {
   }
   pub fn validate_as_top_level_var_data(
     &self,
-    source_trace: &SourceTrace,
   ) -> CompileResult<(Option<GroupAndBinding>, Option<VariableAddressSpace>)>
   {
     let mut group = None;
     let mut binding = None;
     let mut address_space = None;
-    for (property, value) in self.properties().into_iter() {
-      match (&*property, value) {
-        ("group", Some(value)) => match u8::from_str(&*value) {
+    for (name, name_source, value) in self.properties().into_iter() {
+      match (&*name, value) {
+        ("group", Some((value, value_source))) => match u8::from_str(&*value) {
           Ok(value) => group = Some(value),
           Err(_) => {
             return err(
               InvalidVariableAnnotation(self.clone().into()),
-              source_trace.clone(),
+              value_source,
             );
           }
         },
-        ("binding", Some(value)) => match u8::from_str(&*value) {
+        ("binding", Some((value, value_source))) => match u8::from_str(&*value)
+        {
           Ok(value) => binding = Some(value),
           Err(_) => {
             return err(
               InvalidVariableAnnotation(self.clone().into()),
-              source_trace.clone(),
+              value_source,
             );
           }
         },
-        ("address", Some(value)) => {
+        ("address", Some((value, value_source))) => {
           match VariableAddressSpace::from_str(&*value) {
             Some(a) => address_space = Some(a),
             None => {
               return err(
                 InvalidVariableAnnotation(self.clone().into()),
-                source_trace.clone(),
+                value_source,
               );
             }
           }
@@ -166,7 +198,7 @@ impl Annotation {
         _ => {
           return err(
             InvalidVariableAnnotation(self.clone().into()),
-            source_trace.clone(),
+            name_source,
           );
         }
       }
@@ -176,13 +208,13 @@ impl Annotation {
         (Some(_), None) => {
           return err(
             CompileErrorKind::GroupMissingBinding,
-            source_trace.clone(),
+            self.source_trace.clone(),
           );
         }
         (None, Some(_)) => {
           return err(
             CompileErrorKind::BindingMissingGroup,
-            source_trace.clone(),
+            self.source_trace.clone(),
           );
         }
         (None, None) => None,
@@ -195,31 +227,30 @@ impl Annotation {
   }
   pub(crate) fn validate_as_function_annotation(
     &self,
-    source_trace: &SourceTrace,
   ) -> CompileResult<FunctionAnnotation> {
     let mut parsed_annotation = FunctionAnnotation {
       associative: false,
       entry: None,
     };
     let mut workgroup_size: Option<usize> = None;
-    for (property, value) in self.properties().into_iter() {
-      match (&*property, value) {
+    for (name, name_source, value) in self.properties().into_iter() {
+      match (&*name, value) {
         ("associative", None) => {
           parsed_annotation.associative = true;
         }
-        ("workgroup-size", Some(size_str)) => {
+        ("workgroup-size", Some((size_str, size_source))) => {
           if let Ok(size) = size_str.parse::<usize>() {
             workgroup_size = Some(size);
           } else {
             return Err(CompileError::new(
               InvalidWorkgroupSize(size_str.to_string()),
-              source_trace.clone(),
+              size_source,
             ));
           }
         }
         ("fragment" | "vertex" | "compute", None) => {
           if parsed_annotation.entry.is_none() {
-            parsed_annotation.entry = Some(match &*property {
+            parsed_annotation.entry = Some(match &*name {
               "fragment" => EntryPoint::Fragment,
               "vertex" => EntryPoint::Vertex,
               "compute" => EntryPoint::Compute(0),
@@ -228,14 +259,14 @@ impl Annotation {
           } else {
             return Err(CompileError::new(
               ConflictingEntryPointAnnotations,
-              source_trace.clone(),
+              name_source,
             ));
           }
         }
         _ => {
           return Err(CompileError::new(
             InvalidFunctionAnnotation(self.clone().into()),
-            source_trace.clone(),
+            name_source,
           ));
         }
       }
@@ -248,7 +279,7 @@ impl Annotation {
         _ => {
           return Err(CompileError::new(
             InvalidWorkgroupSizeAnnotation,
-            source_trace.clone(),
+            self.source_trace.clone(),
           ));
         }
       }
@@ -256,59 +287,11 @@ impl Annotation {
       if let Some(EntryPoint::Compute(_)) = parsed_annotation.entry {
         return Err(CompileError::new(
           ComputeEntryMissingWorkgroupSize,
-          source_trace.clone(),
+          self.source_trace.clone(),
         ));
       }
     }
     Ok(parsed_annotation)
-  }
-  pub(crate) fn validate_as_argument_annotation(
-    &self,
-    source_trace: &SourceTrace,
-    arg_name: &str,
-  ) -> CompileResult<FunctionArgumentAnnotation> {
-    let mut annotation = FunctionArgumentAnnotation {
-      var: false,
-      builtin: None,
-    };
-    for (name, value) in self.properties().iter() {
-      match (&**name, value) {
-        ("var", None) => {
-          annotation.var = true;
-        }
-        ("builtin", value) => {
-          let builtin_name = if let Some(value) = value {
-            value.to_string()
-          } else {
-            arg_name.to_string()
-          };
-          if let Some(builtin) =
-            BuiltinArgumentAnnotation::from_name(&builtin_name)
-          {
-            if annotation.builtin.is_none() {
-              annotation.builtin = Some(builtin);
-            } else {
-              return Err(CompileError {
-                kind: ConflictingBuiltinNames,
-                source_trace: source_trace.clone(),
-              });
-            }
-          } else {
-            return Err(CompileError {
-              kind: InvalidBuiltinArgumentName(builtin_name),
-              source_trace: source_trace.clone(),
-            });
-          }
-        }
-        _ => {
-          return Err(CompileError {
-            kind: InvalidArgumentAnnotation,
-            source_trace: source_trace.clone(),
-          });
-        }
-      }
-    }
-    Ok(annotation)
   }
 }
 
@@ -328,32 +311,33 @@ impl Default for FunctionAnnotation {
 pub fn extract_annotation(
   exp: EaslTree,
   errors: &mut ErrorLog,
-) -> (EaslTree, Option<(Annotation, SourceTrace)>) {
+) -> (EaslTree, Option<Annotation>) {
   if let EaslTree::Inner(
     (_, EncloserOrOperator::Operator(Operator::Annotation)),
     mut children,
   ) = exp
   {
     let annotation_tree = children.remove(0);
-    let annotation_source_trace: SourceTrace =
-      annotation_tree.position().into();
     let exp = children.remove(0);
     match Annotation::from_annotation_tree(annotation_tree) {
       Ok(annotation) => {
         let (exp, inner_annotation) = extract_annotation(exp, errors);
-        if let Some((inner_annotation, inner_annotation_source_trace)) =
-          inner_annotation
-        {
+        if let Some(inner_annotation) = inner_annotation {
           (
             exp,
-            Some((
-              Annotation::Multiple(vec![annotation, inner_annotation]),
-              annotation_source_trace
-                .insert_as_secondary(inner_annotation_source_trace),
-            )),
+            Some(Annotation {
+              source_trace: annotation
+                .source_trace
+                .clone()
+                .insert_as_secondary(inner_annotation.source_trace.clone()),
+              kind: AnnotationKind::Multiple(vec![
+                annotation,
+                inner_annotation,
+              ]),
+            }),
           )
         } else {
-          (exp, Some((annotation, annotation_source_trace)))
+          (exp, Some(annotation))
         }
       }
       Err(err) => {

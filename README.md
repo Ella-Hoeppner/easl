@@ -16,15 +16,9 @@ Feature goals:
 
 ## todo
 ### high priority, necessary to call the language 0.1
-* more annotation validation:
-  * validate annotations on struct fields
-    * only thing that should be allowed is `@{location ...}` `@{interpolate ...}` or `@{builtin ...}`, and again support the `@builtin` shorthand
-    * ensure that any struct used as an input/output type of an entry point has all of its fields annotated as either `@{location ...}` or `@{builtin ..}`
-      * or, alternatively, make it so `@{location ...}` annotations are purely optional, and will just be filled in with the order of the fields if left empty?
-        * could be weird if the user specifies only a few of them, but I guess I can handle that by just skipping those indeces when filling in the others
-      * also validate that the values of the `location` annotations make sense - they don't overlap, and there are no gaps, e.g. something with `location 0` on one field and `location 2` on another, but no `location 1`, shouldn't be allowed
-        * at least, I presume? haven't actually checked the wgsl spec for this
-      * a struct used as the output of a vertex shader must have a `@{builtin position}` field, which must be of type `vec4f`
+* replace all of the remaining `todo!`s with an actuals error so the compiler doesn't just crash on people
+
+* when function arg list isn't annotated with a return type, assume it to be unit rather than giving an error
 
 * missing some built-in functions:
   * texture functions
@@ -38,8 +32,6 @@ Feature goals:
 
 
 
-
-* `clip_distances` builtin attribute
 
 * support vecs over arbitrary types
   * wgsl doesn't do this, it's just restricted to scalars and bool

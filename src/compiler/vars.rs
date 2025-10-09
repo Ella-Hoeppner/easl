@@ -118,7 +118,7 @@ impl TopLevelVar {
     mut internal_forms: impl ExactSizeIterator<Item = EaslTree>,
     program: &Program,
     document: &EaslDocument,
-    annotation: Option<(Annotation, SourceTrace)>,
+    annotation: Option<Annotation>,
     errors: &mut ErrorLog,
   ) -> Option<Self> {
     match var_kind_name {
@@ -154,12 +154,8 @@ impl TopLevelVar {
                 Err(e) | Ok(Err(e)) => errors.log(e),
                 Ok(Ok(t)) => {
                   let (group_and_binding, address_space) =
-                    if let Some((annotation, annotation_source_trace)) =
-                      &annotation
-                    {
-                      match annotation.validate_as_top_level_var_data(
-                        &annotation_source_trace,
-                      ) {
+                    if let Some(annotation) = &annotation {
+                      match annotation.validate_as_top_level_var_data() {
                         Err(e) => {
                           errors.log(e);
                           None
@@ -184,7 +180,7 @@ impl TopLevelVar {
                               } else {
                                 errors.log(CompileError::new(
                                   InvalidAddressSpace(required),
-                                  annotation_source_trace.clone(),
+                                  annotation.source_trace.clone(),
                                 ));
                                 None
                               }
@@ -192,7 +188,7 @@ impl TopLevelVar {
                               if group_and_binding.is_none() {
                                 errors.log(CompileError::new(
                                   NeedGroupAndBinding(address_space),
-                                  annotation_source_trace.clone(),
+                                  annotation.source_trace.clone(),
                                 ));
                                 None
                               } else {
@@ -202,7 +198,7 @@ impl TopLevelVar {
                               if group_and_binding.is_some() {
                                 errors.log(CompileError::new(
                                   DisallowedGroupAndBinding(address_space),
-                                  annotation_source_trace.clone(),
+                                  annotation.source_trace.clone(),
                                 ));
                                 None
                               } else {
@@ -215,7 +211,7 @@ impl TopLevelVar {
                             } else {
                               errors.log(CompileError::new(
                                 NeedAddressAnnotation,
-                                annotation_source_trace.clone(),
+                                annotation.source_trace.clone(),
                               ));
                               None
                             }

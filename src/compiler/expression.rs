@@ -11,18 +11,19 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::{
   Never,
   compiler::{
-    annotation::{Annotation, extract_annotation},
+    annotation::{Annotation, AnnotationKind, extract_annotation},
     builtins::{
       ASSIGNMENT_OPS, INFIX_OPS, builtin_vec_constructor_type,
       get_builtin_struct, rename_builtin_fn,
     },
     effects::EffectType,
+    entry::IOAttributes,
     enums::AbstractEnum,
     error::{CompileError, CompileErrorKind::*, CompileResult, err},
     functions::{
       AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
     },
-    program::{self, NameContext, Program, TypeDefs},
+    program::{NameContext, Program, TypeDefs},
     structs::{AbstractStruct, Struct},
     types::{
       ArraySize, ExpTypeInfo, Type,
@@ -328,13 +329,13 @@ pub type TypedExp = Exp<ExpTypeInfo>;
 pub fn arg_list_and_return_type_from_easl_tree(
   tree: EaslTree,
   typedefs: &TypeDefs,
-  names: &mut NameContext,
   skolems: &Vec<Rc<str>>,
-) -> CompileResult<(
+  errors: &mut ErrorLog,
+) -> Option<(
   SourceTrace,
   Vec<Rc<str>>,
   Vec<AbstractType>,
-  Vec<Option<FunctionArgumentAnnotation>>,
+  Vec<FunctionArgumentAnnotation>,
   AbstractType,
   Option<Annotation>,
 )> {
@@ -347,19 +348,21 @@ pub fn arg_list_and_return_type_from_easl_tree(
   ) = tree
   {
     let return_type_ast = args_and_return_type.remove(1);
-    let mut errors = ErrorLog::new();
     let (return_type_ast, return_annotation) =
-      extract_annotation(return_type_ast, &mut errors);
-    if let Some(annotation_error) = errors.into_iter().next() {
-      return Err(annotation_error.clone());
-    }
+      extract_annotation(return_type_ast, errors);
     let return_type =
-      AbstractType::from_easl_tree(return_type_ast, typedefs, skolems)?;
+      match AbstractType::from_easl_tree(return_type_ast, typedefs, skolems) {
+        Ok(t) => t,
+        Err(e) => {
+          errors.log(e);
+          return None;
+        }
+      };
     if let EaslTree::Inner((position, Encloser(E::Square)), arg_asts) =
       args_and_return_type.remove(0)
     {
       let source_path: SourceTrace = position.into();
-      let ((arg_types, arg_annotations), arg_names) = arg_asts
+      let ((arg_types, arg_annotations), arg_names) = match arg_asts
         .into_iter()
         .map(|arg| -> CompileResult<_> {
           let (maybe_t_ast, arg_name_ast) = extract_type_annotation_ast(arg);
@@ -368,62 +371,67 @@ pub fn arg_list_and_return_type_from_easl_tree(
             source_path.clone(),
           ))?;
           let t = AbstractType::from_easl_tree(t_ast, typedefs, skolems)?;
-          let mut errors = ErrorLog::new();
           let (arg_name_ast, arg_annotation) =
-            extract_annotation(arg_name_ast, &mut errors);
-          if let Some(annotation_error) = errors.into_iter().next() {
-            return Err(annotation_error.clone());
-          }
-          if let EaslTree::Leaf(_, arg_name) = arg_name_ast {
-            if let Some((arg_annotation, source_trace)) = arg_annotation {
-              arg_annotation
-                .validate_as_argument_annotation(&source_trace, &arg_name)
-                .map(|arg_annotation| {
-                  if let Some(builtin) = arg_annotation.builtin.as_ref() {
-                    if builtin.arg_type() == t {
-                      Ok(((t, Some(arg_annotation)), arg_name.into()))
-                    } else {
-                      Err(CompileError {
-                        kind: ArgumentTypeIncompatibleWithBuiltin(
-                          builtin.name().to_string(),
-                          builtin.arg_type().compile(typedefs, names).unwrap(),
-                        ),
-                        source_trace,
-                      })
-                    }
-                    //((t, Some(arg_annotation)), arg_name.into())
-                  } else {
-                    Ok(((t, Some(arg_annotation)), arg_name.into()))
-                  }
-                })
-                .flatten()
+            extract_annotation(arg_name_ast, errors);
+          if let EaslTree::Leaf(arg_name_pos, arg_name) = arg_name_ast {
+            if let Some(arg_annotation) = arg_annotation {
+              let (attributes, residual) = IOAttributes::parse_from_annotation(
+                arg_annotation,
+                Some((arg_name.clone().into(), arg_name_pos.into())),
+                errors,
+              );
+              let mut arg_annotation = FunctionArgumentAnnotation {
+                var: false,
+                attributes,
+              };
+              for (name, name_source, value) in residual {
+                match (&*name, value) {
+                  ("var", None) => arg_annotation.var = true,
+                  _ => errors.log(CompileError {
+                    kind: InvalidArgumentAnnotation,
+                    source_trace: name_source,
+                  }),
+                }
+              }
+              Ok(((t, arg_annotation), arg_name.into()))
             } else {
-              Ok(((t, None), arg_name.into()))
+              Ok(((t, FunctionArgumentAnnotation::default()), arg_name.into()))
             }
           } else {
             err(InvalidArgumentName, source_path.clone())
           }
         })
         .collect::<CompileResult<(
-          (Vec<AbstractType>, Vec<Option<FunctionArgumentAnnotation>>),
+          (Vec<AbstractType>, Vec<FunctionArgumentAnnotation>),
           Vec<Rc<str>>,
-        )>>()?;
-      Ok((
+        )>>() {
+        Ok(x) => x,
+        Err(e) => {
+          errors.log(e);
+          return None;
+        }
+      };
+      Some((
         source_path,
         arg_names,
         arg_types,
         arg_annotations,
         return_type,
-        return_annotation.map(|(a, _)| a),
+        return_annotation,
       ))
     } else {
-      err(FunctionSignatureNotSquareBrackets, position.into())
+      errors.log(CompileError::new(
+        FunctionSignatureNotSquareBrackets,
+        position.into(),
+      ));
+      return None;
     }
   } else {
-    err(
+    errors.log(CompileError::new(
       FunctionSignatureMissingReturnType,
       tree.position().clone().into(),
-    )
+    ));
+    return None;
   }
 }
 
@@ -665,36 +673,41 @@ impl TypedExp {
                                   return Err(annotation_error.clone());
                                 }
                                 match name_ast {
-                                  EaslTree::Leaf(position, name) => {
-                                    let source_trace = position.clone().into();
+                                  EaslTree::Leaf(_, name) => {
                                     bindings.push((
                                       name.into(),
                                       match name_annotation {
                                         None => VariableKind::Let,
-                                        Some((
-                                          Annotation::Singular(tag),
-                                          _,
-                                        )) => match &*tag {
+                                        Some(
+                                          ref annotation @ Annotation {
+                                            kind:
+                                              AnnotationKind::Singular(
+                                                ref tag,
+                                                ..,
+                                              ),
+                                            ..
+                                          },
+                                        ) => match &**tag {
                                           "var" => VariableKind::Var,
                                           _ => {
+                                            let source_trace =
+                                              annotation.source_trace.clone();
                                             return err(
                                               InvalidVariableAnnotation(
-                                                Annotation::Singular(tag)
-                                                  .into(),
+                                                annotation.clone().into(),
                                               ),
                                               source_trace,
                                             );
                                           }
                                         },
-                                        Some((
-                                          annotation,
-                                          annotation_source_trace,
-                                        )) => {
+                                        Some(annotation) => {
+                                          let source_trace =
+                                            annotation.source_trace.clone();
                                           return err(
                                             InvalidVariableAnnotation(
                                               annotation.into(),
                                             ),
-                                            annotation_source_trace,
+                                            source_trace,
                                           );
                                         }
                                       },

@@ -12,12 +12,16 @@ use crate::{
   Never,
   compiler::{
     annotation::extract_annotation,
-    builtins::built_in_functions,
+    builtins::{built_in_functions, vec4},
     effects::Effect,
+    entry::{
+      BuiltinIOAttribute, EntryPoint, IOAttribute, IOAttributeKind,
+      IOAttributes,
+    },
     enums::{AbstractEnum, UntypedEnum},
     error::{CompileError, SourceTrace},
     expression::{Exp, ExpKind, ExpressionCompilationPosition},
-    functions::{AbstractFunctionSignature, EntryPoint},
+    functions::AbstractFunctionSignature,
     structs::UntypedStruct,
     types::{AbstractType, Type, TypeState, UntypedType, VariableKind},
     util::compile_word,
@@ -166,6 +170,16 @@ pub struct TypeDefs {
   pub structs: Vec<Rc<AbstractStruct>>,
   pub enums: Vec<Rc<AbstractEnum>>,
   pub type_aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
+}
+
+impl TypeDefs {
+  pub fn get_attributable_components(
+    &self,
+    t: Type,
+  ) -> Vec<(Type, Rc<str>, IOAttributes)> {
+    //todo!()
+    vec![]
+  }
 }
 
 impl TypeDefs {
@@ -426,141 +440,132 @@ impl Program {
       use sse::syntax::EncloserOrOperator::*;
       let (tree_body, annotation) =
         extract_annotation(tree.clone(), &mut errors);
-      if let EaslTree::Inner((position, Encloser(Parens)), children) =
-        &tree_body
-      {
-        let source_trace: SourceTrace = position.clone().into();
-        let mut children_iter = children.into_iter();
-        if let Some(EaslTree::Leaf(position, first_child)) =
-          children_iter.next()
-        {
-          let source_trace: SourceTrace = position.clone().into();
-          match first_child.as_str() {
-            "struct" | "enum" => {
-              if let Some((_, source_trace)) = annotation {
-                errors.log(CompileError {
-                  kind: AnnotationNotAllowedOnType,
-                  source_trace,
-                });
-              }
-              if let Some(struct_name) = children_iter.next() {
-                match struct_name {
-                  EaslTree::Leaf(_, name) => match first_child.as_str() {
-                    "struct" => match UntypedStruct::from_field_trees(
-                      name.clone().into(),
-                      vec![],
-                      children_iter.cloned().collect(),
-                      source_trace,
-                    ) {
-                      Ok(s) => untyped_types.push(UntypedType::Struct(s)),
-                      Err(e) => errors.log(e),
-                    },
-                    "enum" => match UntypedEnum::from_field_trees(
-                      name.clone().into(),
-                      vec![],
-                      children_iter.cloned().collect(),
-                      source_trace,
-                    ) {
-                      Ok(e) => untyped_types.push(UntypedType::Enum(e)),
-                      Err(e) => errors.log(e),
-                    },
-                    _ => unreachable!(),
-                  },
-                  EaslTree::Inner(
-                    (position, Encloser(Parens)),
-                    signature_children,
-                  ) => {
-                    let source_trace: SourceTrace = position.clone().into();
-                    let (signature_leaves, signature_errors) = signature_children
-                    .into_iter()
-                    .map(|child| match child {
-                      EaslTree::Leaf(_, name) => {
-                        (Some(name.clone().into()), None)
-                      }
-                      _ => (
-                        None,
-                        Some(CompileError::new(
-                          InvalidTypeName,
-                          child.position().clone().into(),
-                        )),
-                      ),
-                    })
-                    .collect::<(Vec<Option<Rc<str>>>, Vec<Option<CompileError>>)>();
-                    let filtered_signature_errors: Vec<CompileError> =
-                      signature_errors.into_iter().filter_map(|x| x).collect();
-                    if filtered_signature_errors.is_empty() {
-                      let mut filtered_signature_leaves = signature_leaves
-                        .into_iter()
-                        .filter_map(|x| x)
-                        .collect::<Vec<_>>()
-                        .into_iter();
-                      if let Some(type_name) = filtered_signature_leaves.next()
-                      {
-                        if filtered_signature_leaves.len() == 0 {
-                          errors.log(CompileError::new(
-                            InvalidTypeName,
-                            source_trace,
-                          ));
-                        } else {
-                          match first_child.as_str() {
-                            "struct" => match UntypedStruct::from_field_trees(
-                              type_name,
-                              filtered_signature_leaves.collect(),
-                              children_iter.cloned().collect(),
-                              source_trace,
-                            ) {
-                              Ok(s) => {
-                                untyped_types.push(UntypedType::Struct(s))
-                              }
-                              Err(e) => errors.log(e),
-                            },
-                            "enum" => match UntypedEnum::from_field_trees(
-                              type_name,
-                              filtered_signature_leaves.collect(),
-                              children_iter.cloned().collect(),
-                              source_trace,
-                            ) {
-                              Ok(e) => untyped_types.push(UntypedType::Enum(e)),
-                              Err(e) => errors.log(e),
-                            },
-                            _ => unreachable!(),
-                          }
-                        }
-                      } else {
-                        errors.log(CompileError::new(
-                          InvalidTypeName,
-                          source_trace,
-                        ));
-                      }
-                    } else {
-                      errors.log_all(filtered_signature_errors);
-                    }
-                  }
-                  EaslTree::Inner((position, _), _) => {
-                    errors.log(CompileError::new(
-                      InvalidTypeName,
-                      position.clone().into(),
-                    ));
-                  }
-                }
-              } else {
-                errors
-                  .log(CompileError::new(InvalidTypeDefinition, source_trace));
-              }
-            }
-            _ => non_typedef_trees.push((annotation, tree_body)),
-          }
-        } else {
-          errors.log(CompileError::new(
-            UnrecognizedTopLevelForm(tree_body.clone()),
-            source_trace,
-          ));
-        }
-      } else {
+      let EaslTree::Inner((position, Encloser(Parens)), children) = &tree_body
+      else {
         errors.log(CompileError::new(
           UnrecognizedTopLevelForm(tree_body),
           tree.position().clone().into(),
         ));
+        continue;
+      };
+      let source_trace: SourceTrace = position.clone().into();
+      let mut children_iter = children.into_iter();
+      let Some(EaslTree::Leaf(position, first_child)) = children_iter.next()
+      else {
+        errors.log(CompileError::new(
+          UnrecognizedTopLevelForm(tree_body.clone()),
+          source_trace,
+        ));
+        continue;
+      };
+      let source_trace: SourceTrace = position.clone().into();
+      match first_child.as_str() {
+        "struct" | "enum" => {
+          if annotation.is_some() {
+            errors.log(CompileError {
+              kind: AnnotationNotAllowedOnType,
+              source_trace: source_trace.clone(),
+            });
+          }
+          if let Some(struct_name) = children_iter.next() {
+            match struct_name {
+              EaslTree::Leaf(_, name) => match first_child.as_str() {
+                "struct" => untyped_types.push(UntypedType::Struct(
+                  UntypedStruct::from_field_trees(
+                    name.clone().into(),
+                    vec![],
+                    children_iter.cloned().collect(),
+                    source_trace,
+                    &mut errors,
+                  ),
+                )),
+                "enum" => match UntypedEnum::from_field_trees(
+                  name.clone().into(),
+                  vec![],
+                  children_iter.cloned().collect(),
+                  source_trace,
+                ) {
+                  Ok(e) => untyped_types.push(UntypedType::Enum(e)),
+                  Err(e) => errors.log(e),
+                },
+                _ => unreachable!(),
+              },
+              EaslTree::Inner(
+                (position, Encloser(Parens)),
+                signature_children,
+              ) => {
+                let source_trace: SourceTrace = position.clone().into();
+                let (signature_leaves, signature_errors) = signature_children
+                  .into_iter()
+                  .map(|child| match child {
+                    EaslTree::Leaf(_, name) => {
+                      (Some(name.clone().into()), None)
+                    }
+                    _ => (
+                      None,
+                      Some(CompileError::new(
+                        InvalidTypeName,
+                        child.position().clone().into(),
+                      )),
+                    ),
+                  })
+                  .collect::<(Vec<Option<Rc<str>>>, Vec<Option<CompileError>>)>(
+                  );
+                let filtered_signature_errors: Vec<CompileError> =
+                  signature_errors.into_iter().filter_map(|x| x).collect();
+                if filtered_signature_errors.is_empty() {
+                  let mut filtered_signature_leaves = signature_leaves
+                    .into_iter()
+                    .filter_map(|x| x)
+                    .collect::<Vec<_>>()
+                    .into_iter();
+                  if let Some(type_name) = filtered_signature_leaves.next() {
+                    if filtered_signature_leaves.len() == 0 {
+                      errors
+                        .log(CompileError::new(InvalidTypeName, source_trace));
+                    } else {
+                      match first_child.as_str() {
+                        "struct" => untyped_types.push(UntypedType::Struct(
+                          UntypedStruct::from_field_trees(
+                            type_name,
+                            filtered_signature_leaves.collect(),
+                            children_iter.cloned().collect(),
+                            source_trace,
+                            &mut errors,
+                          ),
+                        )),
+                        "enum" => match UntypedEnum::from_field_trees(
+                          type_name,
+                          filtered_signature_leaves.collect(),
+                          children_iter.cloned().collect(),
+                          source_trace,
+                        ) {
+                          Ok(e) => untyped_types.push(UntypedType::Enum(e)),
+                          Err(e) => errors.log(e),
+                        },
+                        _ => unreachable!(),
+                      }
+                    }
+                  } else {
+                    errors
+                      .log(CompileError::new(InvalidTypeName, source_trace));
+                  }
+                } else {
+                  errors.log_all(filtered_signature_errors);
+                }
+              }
+              EaslTree::Inner((position, _), _) => {
+                errors.log(CompileError::new(
+                  InvalidTypeName,
+                  position.clone().into(),
+                ));
+              }
+            }
+          } else {
+            errors.log(CompileError::new(InvalidTypeDefinition, source_trace));
+          }
+        }
+        _ => non_typedef_trees.push((annotation, tree_body)),
       }
     }
     untyped_types.sort_by(|a, b| {
@@ -1374,6 +1379,298 @@ impl Program {
       }
     }
   }
+  pub fn validate_entry_points(&mut self, errors: &mut ErrorLog) {
+    let mut inferred_struct_field_locations: Vec<(Type, Rc<str>, usize)> =
+      vec![];
+    for signature in self.abstract_functions_iter() {
+      let signature = signature.borrow();
+      if let FunctionImplementationKind::Composite(f) =
+        &signature.implementation
+      {
+        let mut f = f.borrow_mut();
+        if let Some(entry) = f.entry_point {
+          let Type::Function(signature) = f.body.data.unwrap_known() else {
+            unreachable!()
+          };
+          match entry {
+            EntryPoint::Vertex => {
+              if let Type::Struct(s) = signature.return_type.unwrap_known()
+                && *s.abstract_ancestor
+                  == vec4()
+                    .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+                && f.return_attributes.is_empty()
+              {
+                f.return_attributes.try_add_attribute(
+                  IOAttribute {
+                    kind: IOAttributeKind::Builtin(
+                      BuiltinIOAttribute::Position,
+                    ),
+                    source_trace: SourceTrace::empty(),
+                  },
+                  errors,
+                );
+              }
+            }
+            EntryPoint::Compute(_) => {
+              if Type::Unit != signature.return_type.unwrap_known() {
+                errors.log(CompileError::new(
+                  ComputeEntryReturnType,
+                  f.body.source_trace.clone(),
+                ));
+              }
+              if !f.return_attributes.is_empty() {
+                errors.log(CompileError::new(
+                  ComputeEntryReturnType,
+                  f.body.source_trace.clone(),
+                ));
+              }
+            }
+            _ => {}
+          }
+
+          let check_for_duplicate_builtins =
+            |attributables: &Vec<(
+              Type,
+              Result<&mut IOAttributes, (Type, Rc<str>, IOAttributes)>,
+            )>|
+             -> Vec<(String, SourceTrace)> {
+              let mut duplicates = HashSet::new();
+              let mut builtins = HashSet::new();
+              for (_, attributable) in attributables.iter() {
+                let attribute = match attributable {
+                  Ok(a) => &*a,
+                  Err((_, _, a)) => a,
+                };
+                if let Some((builtin, source_trace)) = attribute.builtin() {
+                  if builtins.contains(builtin) {
+                    duplicates.insert((
+                      builtin.name().to_string(),
+                      source_trace.clone(),
+                    ));
+                  } else {
+                    builtins.insert(builtin.clone());
+                  }
+                }
+              }
+              duplicates.into_iter().collect()
+            };
+
+          let input_attributables: Vec<(
+            Type,
+            Result<&mut IOAttributes, (Type, Rc<str>, IOAttributes)>,
+          )> = f
+            .arg_annotations
+            .iter_mut()
+            .enumerate()
+            .flat_map(|(i, annotation)| {
+              let arg_type = signature.args[i].0.var_type.unwrap_known();
+              if arg_type.is_attributable() {
+                vec![(arg_type, Ok(&mut annotation.attributes))]
+              } else {
+                if let Some(source) =
+                  annotation.attributes.source_trace_if_not_empty()
+                {
+                  errors
+                    .log(CompileError::new(CantAssignAttributesToType, source));
+                  vec![]
+                } else {
+                  self
+                    .typedefs
+                    .get_attributable_components(arg_type.clone())
+                    .into_iter()
+                    .map(|(t, field_name, attributes)| {
+                      (t, Err((arg_type.clone(), field_name, attributes)))
+                    })
+                    .collect()
+                }
+              }
+            })
+            .collect();
+          for (name, source) in
+            check_for_duplicate_builtins(&input_attributables)
+          {
+            errors.log(CompileError::new(
+              DuplicateInputBuiltinAttribute(name),
+              source,
+            ))
+          }
+          let mut locatable_input_count: usize = 0;
+          let mut taken_input_locations: Vec<(usize, SourceTrace)> = vec![];
+          for (_, attributable) in input_attributables.iter() {
+            let attributes = match attributable {
+              Ok(a) => &*a,
+              Err((_, _, a)) => a,
+            };
+            if let Some((builtin, source)) = attributes.builtin() {
+              if !builtin.is_valid_input_for_stage(&entry) {
+                errors.log(CompileError::new(
+                  InvalidBuiltinInputForEntryPoint(
+                    builtin.name().to_string(),
+                    entry.name().to_string(),
+                  ),
+                  source.clone(),
+                ));
+              }
+            } else {
+              locatable_input_count += 1;
+              if let Some(location) = attributes.location() {
+                taken_input_locations.push(location);
+              }
+            }
+          }
+          for (location, source) in taken_input_locations.iter() {
+            if *location >= locatable_input_count {
+              errors.log(CompileError::new(
+                InvalidLocationAttribute(*location, locatable_input_count),
+                (*source).clone(),
+              ));
+            }
+          }
+          for (_, attributable) in input_attributables {
+            let attributes = match &attributable {
+              Ok(a) => &*a,
+              Err((_, _, a)) => a,
+            };
+            if attributes.builtin().is_none() && attributes.location().is_none()
+            {
+              let untaken_location = (0..)
+                .find(|i| {
+                  taken_input_locations
+                    .iter()
+                    .find(|(existing_i, _)| existing_i == i)
+                    .is_none()
+                })
+                .unwrap();
+              match attributable {
+                Ok(a) => a.try_add_attribute(
+                  IOAttribute {
+                    kind: IOAttributeKind::Location(untaken_location),
+                    source_trace: SourceTrace::empty(),
+                  },
+                  errors,
+                ),
+                Err((t, field_name, _)) => inferred_struct_field_locations
+                  .push((t.clone(), field_name.clone(), untaken_location)),
+              }
+            }
+          }
+
+          let return_type = signature.return_type.unwrap_known();
+          let output_attributables: Vec<(
+            Type,
+            Result<&mut IOAttributes, (Type, Rc<str>, IOAttributes)>,
+          )> = if return_type.is_attributable() {
+            vec![(return_type, Ok(&mut f.return_attributes))]
+          } else {
+            if let Some(source) =
+              f.return_attributes.source_trace_if_not_empty()
+            {
+              errors.log(CompileError::new(CantAssignAttributesToType, source));
+              vec![]
+            } else {
+              self
+                .typedefs
+                .get_attributable_components(return_type.clone())
+                .into_iter()
+                .map(|(t, field_name, attributes)| {
+                  (t, Err((return_type.clone(), field_name, attributes)))
+                })
+                .collect()
+            }
+          };
+          for (name, source) in
+            check_for_duplicate_builtins(&output_attributables)
+          {
+            errors.log(CompileError::new(
+              DuplicateOutputBuiltinAttribute(name),
+              source,
+            ))
+          }
+          let mut locatable_output_count: usize = 0;
+          let mut taken_output_locations: Vec<(usize, SourceTrace)> = vec![];
+          for (_, attributable) in output_attributables.iter() {
+            let attributes = match attributable {
+              Ok(a) => &*a,
+              Err((_, _, a)) => a,
+            };
+            if let Some((builtin, source)) = attributes.builtin() {
+              if !builtin.is_valid_output_for_stage(&entry) {
+                errors.log(CompileError::new(
+                  InvalidBuiltinOutputForEntryPoint(
+                    builtin.name().to_string(),
+                    entry.name().to_string(),
+                  ),
+                  source.clone(),
+                ));
+              }
+            } else {
+              locatable_output_count += 1;
+              if let Some(location) = attributes.location() {
+                taken_output_locations.push(location);
+              }
+            }
+          }
+          for (location, source) in taken_output_locations.iter() {
+            if *location >= locatable_output_count {
+              errors.log(CompileError::new(
+                InvalidLocationAttribute(*location, locatable_output_count),
+                (*source).clone(),
+              ));
+            }
+          }
+          for (_, attributable) in output_attributables {
+            let attributes = match &attributable {
+              Ok(a) => &*a,
+              Err((_, _, a)) => a,
+            };
+            if attributes.builtin().is_none() && attributes.location().is_none()
+            {
+              let untaken_location = (0..)
+                .find(|i| {
+                  taken_output_locations
+                    .iter()
+                    .find(|(existing_i, _)| existing_i == i)
+                    .is_none()
+                })
+                .unwrap();
+              match attributable {
+                Ok(a) => a.try_add_attribute(
+                  IOAttribute {
+                    kind: IOAttributeKind::Location(untaken_location),
+                    source_trace: SourceTrace::empty(),
+                  },
+                  errors,
+                ),
+                Err((t, field_name, _)) => inferred_struct_field_locations
+                  .push((t.clone(), field_name.clone(), untaken_location)),
+              }
+            }
+          }
+
+          /*todo!(
+            "ensure that the required things are present in the output for \
+            each given stage, i.e. a location(0) for fragment and a \
+            builtin(position) for vertex"
+          )*/
+        } else {
+          for attributes in f
+            .arg_annotations
+            .iter()
+            .map(|a| &a.attributes)
+            .chain(std::iter::once(&f.return_attributes))
+          {
+            if let Some(source_trace) = attributes.source_trace_if_not_empty() {
+              errors
+                .log(CompileError::new(IOAttributesOnNonEntry, source_trace));
+            }
+          }
+        }
+      }
+    }
+    /*for (t, field_name, location) in inferred_struct_field_locations {
+      todo!("modify typedefs to add location to the correspond field")
+    }*/
+  }
   pub fn validate_raw_program(&mut self) -> ErrorLog {
     let mut errors = ErrorLog::new();
     self.validate_associative_signatures(&mut errors);
@@ -1427,6 +1724,10 @@ impl Program {
       return errors;
     }
     self.validate_top_level_fn_effects(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.validate_entry_points(&mut errors);
     if !errors.is_empty() {
       return errors;
     }

@@ -1262,6 +1262,10 @@ impl Type {
       _ => true,
     }
   }
+  pub fn is_attributable(&self) -> bool {
+    //todo!()
+    true
+  }
 }
 
 pub fn extract_type_annotation_ast(

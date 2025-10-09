@@ -1,6 +1,6 @@
 use crate::compiler::{
+  entry::EntryPoint,
   expression::{ExpKind, Number},
-  functions::EntryPoint,
   program::Program,
   types::{ArraySize, Type},
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},

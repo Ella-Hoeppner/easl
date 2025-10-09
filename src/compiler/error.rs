@@ -2,7 +2,10 @@ use sse::{ParseError, document::DocumentPosition};
 use std::{collections::HashSet, fmt::Display, hash::Hash};
 use thiserror::Error;
 
-use crate::{compiler::vars::VariableAddressSpace, parse::EaslTree};
+use crate::{
+  compiler::{annotation::AnnotationKind, vars::VariableAddressSpace},
+  parse::EaslTree,
+};
 
 use super::{
   annotation::Annotation,
@@ -289,8 +292,10 @@ pub enum CompileErrorKind {
   TriedToCompileUnit,
   #[error("Invalid argument annotation")]
   InvalidArgumentAnnotation,
-  #[error("Invalid builtin argument name \"{0}\"")]
-  InvalidBuiltinArgumentName(String),
+  #[error("Builtin attribute requires a name")]
+  BuiltinAttributeNeedsName,
+  #[error("Invalid builtin attribute name \"{0}\"")]
+  InvalidBuiltinAttributeName(String),
   #[error("Multiple conflicting builtins found on function argument")]
   ConflictingBuiltinNames,
   #[error("Builtin argument occurs more than once")]
@@ -303,10 +308,42 @@ pub enum CompileErrorKind {
   BuiltInOperatorTakesNoArguments(String),
   #[error("Annotations are not allowed on type")]
   AnnotationNotAllowedOnType,
+  #[error("Invalid \"location\" annotation")]
+  InvalidIOLocation,
+  #[error("Invalid \"interpolate\" annotation")]
+  InvalidInterpolation,
+  #[error("Sampling type \"{0}\" is not allowed for interpolation \"{1}\"")]
+  InvalidInterpolationSampling(String, String),
   #[error("Invalid annotation on return type, only \"location\" is allowed")]
   InvalidReturnTypeAnnotation,
-  #[error("Builting \"{0}\" requires type \"{1}\"")]
+  #[error("Builtin \"{0}\" requires type \"{1}\"")]
   ArgumentTypeIncompatibleWithBuiltin(String, String),
+  #[error("Invalid struct field annotation")]
+  InvalidStructFieldAnnotation,
+  #[error("Invalid builtin struct field name \"{0}\"")]
+  InvalidBuiltinStructFieldName(String),
+  #[error("Invalid annotations on return type")]
+  InvalidReturnAnnotations,
+  #[error("Conflicting attributes")]
+  ConflictingAttributes,
+  #[error("Attributes are not allowed on non-entry-point functions")]
+  IOAttributesOnNonEntry,
+  #[error("Compute entry-points must have a return type of ()")]
+  ComputeEntryReturnType,
+  #[error("Compute entry-points may not be assigned attributes")]
+  ComputeEntryReturnAttributes,
+  #[error("Duplicate input builtin attribute \"{0}\"")]
+  DuplicateInputBuiltinAttribute(String),
+  #[error("Duplicate output builtin attribute \"{0}\"")]
+  DuplicateOutputBuiltinAttribute(String),
+  #[error("Builtin value \"{0}\" isn't a valid input for stage \"{1}\"")]
+  InvalidBuiltinInputForEntryPoint(String, String),
+  #[error("Builtin value \"{0}\" isn't a valid output for stage \"{1}\"")]
+  InvalidBuiltinOutputForEntryPoint(String, String),
+  #[error("Invalid location attribute {0}, must be <{1}")]
+  InvalidLocationAttribute(usize, usize),
+  #[error("Cant assign attributes to values of this type")]
+  CantAssignAttributesToType,
 }
 
 impl PartialEq for CompileErrorKind {
@@ -485,19 +522,21 @@ pub enum AnnotationDescription {
 
 impl From<Annotation> for AnnotationDescription {
   fn from(annotation: Annotation) -> Self {
-    match annotation {
-      Annotation::Singular(s) => {
+    match annotation.kind {
+      AnnotationKind::Singular(s, _) => {
         AnnotationDescription::Singular((*s).to_string())
       }
-      Annotation::Map(items) => AnnotationDescription::Map(
+      AnnotationKind::Map(items) => AnnotationDescription::Map(
         items
           .into_iter()
-          .map(|(a, b)| ((*a).to_string(), (*b).to_string()))
+          .map(|(a, _, b, _)| ((*a).to_string(), (*b).to_string()))
           .collect(),
       ),
-      Annotation::Multiple(sub_annotations) => AnnotationDescription::Multiple(
-        sub_annotations.into_iter().map(|m| m.into()).collect(),
-      ),
+      AnnotationKind::Multiple(sub_annotations) => {
+        AnnotationDescription::Multiple(
+          sub_annotations.into_iter().map(|m| m.into()).collect(),
+        )
+      }
     }
   }
 }
