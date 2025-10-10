@@ -120,6 +120,7 @@ static DEFAULT_CTX: LazyLock<SSEContext<Encloser, Operator>> =
 static TRIVIAL_CTX: LazyLock<SSEContext<Encloser, Operator>> =
   LazyLock::new(|| SSEContext::trivial());
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EaslSyntax;
 
 impl Syntax for EaslSyntax {
