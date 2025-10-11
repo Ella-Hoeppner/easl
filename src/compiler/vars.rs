@@ -351,12 +351,16 @@ impl TopLevelVar {
   pub fn compile(self, names: &mut NameContext) -> String {
     let (bind_group_decoration, address_space) =
       if let TopLevelVariableKind::Var {
-        group_and_binding: Some(GroupAndBinding { group, binding }),
+        group_and_binding,
         address_space,
       } = &self.kind
       {
         (
-          format!("@group({group}) @binding({binding}) "),
+          if let Some(GroupAndBinding { group, binding }) = group_and_binding {
+            format!("@group({group}) @binding({binding}) ")
+          } else {
+            String::new()
+          },
           address_space
             .compile()
             .map(|a| format!("<{a}>"))
