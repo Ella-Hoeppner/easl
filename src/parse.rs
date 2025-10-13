@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use sse::{
   Context as SSEContext, DocumentSyntaxTree, Encloser as SSEEncloser,
-  Operator as SSEOperator, ParseError,
+  Operator as SSEOperator,
   document::Document,
   standard_whitespace_chars,
   syntax::{ContextId, Syntax},

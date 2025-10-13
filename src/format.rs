@@ -1,10 +1,9 @@
 use sse::{
   Encloser as SSEEncloser, EncloserOrOperator, Operator as SSEOperator,
-  ParseError,
 };
 
 use crate::{
-  compiler::{error::ErrorLog, program::EaslDocument},
+  compiler::program::EaslDocument,
   parse::{EaslTree, Encloser, Operator, parse_easl},
 };
 
