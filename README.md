@@ -16,13 +16,6 @@ Feature goals:
 
 ## todo
 ### high priority, necessary for basic wgsl feature parity + stuff I wanna get done before calling the language 0.1
-* have a way to turn an `ErrorLog` into a good, human-readable list of error messages for the compiler CLI
-  * for each error, need to print a few lines from the original source document where the primary position is, ideally with arrows beneath the offending part, like rust does
-
-
-
-
-
 * Overhaul references
   * References shouldn't be first-class values. You shouldn't be able to create a binding of type `&f32` or anything like that. Functions can mark some of their arguments as references, but you'll just pass normal values for those arguments, and the fact that it's a reference will always be inferred - there will be no syntax for constructing a reference.
   * Probably get rid of the special syntax for the reference types too, just use a `@ref ...` annotation syntax or maybe a `(Ref ...)` generic struct syntax

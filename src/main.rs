@@ -103,19 +103,25 @@ fn main() {
     let t = std::time::Instant::now();
     let easl_source = fs::read_to_string(&format!("./data/{filename}.easl"))
       .expect(&format!("Unable to read {filename}.easl"));
-    match compile_easl_source_to_wgsl(&easl_source) {
-      Ok(wgsl) => {
-        println!("{:?}", t.elapsed());
-        total_time += t.elapsed().as_nanos() as f64 / 1000000.;
-        fs::write(&format!("./out/{filename}.wgsl"), wgsl)
-          .expect("Unable to write file");
-      }
-      Err(e) => {
-        fs::write(&format!("./out/_failure.txt"), format!("{e:#?}"))
-          .expect("Unable to write file");
-        println!("failed!\n");
-      }
-    }
+    fs::write(
+      &format!("./out/{filename}.wgsl"),
+      match compile_easl_source_to_wgsl(&easl_source) {
+        Ok(Ok(wgsl)) => {
+          println!("{:?}", t.elapsed());
+          total_time += t.elapsed().as_nanos() as f64 / 1000000.;
+          wgsl
+        }
+        Ok(Err((document, error_log))) => {
+          println!("failed!\n");
+          error_log.describe(&document)
+        }
+        Err(parse_error) => {
+          println!("parsing failed!\n");
+          format!("{parse_error:#?}")
+        }
+      },
+    )
+    .expect("Unable to write file");
   }
   println!("total time: {total_time}");
 }

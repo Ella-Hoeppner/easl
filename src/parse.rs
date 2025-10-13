@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use sse::{
   Context as SSEContext, DocumentSyntaxTree, Encloser as SSEEncloser,
-  Operator as SSEOperator,
+  Operator as SSEOperator, ParseError,
   document::Document,
   standard_whitespace_chars,
   syntax::{ContextId, Syntax},
@@ -25,10 +25,7 @@ impl ContextId for Context {
   }
 }
 
-use crate::compiler::{
-  error::{CompileError, CompileErrorKind, CompileResult, SourceTrace},
-  program::EaslDocument,
-};
+use crate::compiler::{error::CompileResult, program::EaslDocument};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Encloser {
   Parens,
@@ -158,18 +155,18 @@ impl Syntax for EaslSyntax {
   }
 }
 
-pub fn parse_easl(easl_source: &'_ str) -> CompileResult<EaslDocument<'_>> {
-  Document::from_text_with_syntax(EaslSyntax, easl_source).map_err(|e| {
-    CompileError::new(CompileErrorKind::ParsingFailed(e), SourceTrace::empty())
-  })
+pub fn parse_easl(
+  easl_source: &'_ str,
+) -> Result<EaslDocument<'_>, ParseError> {
+  Document::from_text_with_syntax(EaslSyntax, easl_source)
 }
 
 pub fn parse_easl_without_comments(
   easl_source: &'_ str,
-) -> CompileResult<EaslDocument<'_>> {
+) -> Result<CompileResult<EaslDocument<'_>>, ParseError> {
   let mut doc = parse_easl(easl_source)?;
   doc.strip_comments();
-  Ok(doc)
+  Ok(Ok(doc))
 }
 
 pub type EaslTree = DocumentSyntaxTree<Encloser, Operator>;

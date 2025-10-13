@@ -1,10 +1,10 @@
-use sse::{ParseError, document::DocumentPosition};
+use sse::document::DocumentPosition;
 use std::{collections::HashSet, fmt::Display, hash::Hash};
 use thiserror::Error;
 
 use crate::{
   compiler::{
-    annotation::AnnotationKind, entry::InputOrOutput,
+    annotation::AnnotationKind, entry::InputOrOutput, program::EaslDocument,
     vars::VariableAddressSpace,
   },
   parse::EaslTree,
@@ -71,8 +71,6 @@ impl From<&DocumentPosition> for SourceTrace {
 
 #[derive(Clone, Debug, Error)]
 pub enum CompileErrorKind {
-  #[error("Parsing error: `{0}`")]
-  ParsingFailed(ParseError),
   #[error("Unrecognized type: `{0}`")]
   UnrecognizedTypeName(String),
   #[error("Invalid annotation: `{0}`")]
@@ -119,7 +117,12 @@ pub enum CompileErrorKind {
   CouldntInferTypes,
   #[error("Incompatible types: {0} != {1}")]
   IncompatibleTypes(TypeStateDescription, TypeStateDescription),
-  #[error("Function argument types incompatible. Function had type {}\n Recieved arguments of types:\n{}", .f, .args.iter().map(|t| format!("{t}")).collect::<Vec<String>>().join("\n"))]
+  #[error(
+    "Function argument types incompatible. Function had type {}\n \
+    Recieved arguments of types:\n{}",
+    .f,
+    .args.iter().map(|t| format!("{t}")).collect::<Vec<String>>().join("\n"))
+    ]
   FunctionArgumentTypesIncompatible {
     f: TypeStateDescription,
     args: Vec<TypeStateDescription>,
@@ -134,7 +137,10 @@ pub enum CompileErrorKind {
   UnboundName(String),
   #[error("Applied non-function")]
   AppliedNonFunction,
-  #[error("Wrong number of arguments for function{}", .0.as_ref().map_or(String::new(), |name| format!(": `{}`", name)))]
+  #[error(
+    "Wrong number of arguments for function{}",
+    .0.as_ref().map_or(String::new(), |name| format!(": `{}`", name))
+  )]
   WrongArity(Option<String>),
   #[error("Expected leaf node")]
   ExpectedLeaf,
@@ -178,7 +184,8 @@ pub enum CompileErrorKind {
   #[error("Conflicting entry point annotations")]
   ConflictingEntryPointAnnotations,
   #[error(
-    "workgroup-size annotations are only allowed on functions marked as `@compute` entry points"
+    "workgroup-size annotations are only allowed on functions marked as \
+    `@compute` entry points"
   )]
   InvalidWorkgroupSizeAnnotation,
   #[error("compute entry points must specify a workgroup-size")]
@@ -238,7 +245,8 @@ pub enum CompileErrorKind {
   #[error("Can't shadow top-level binding `{0}`")]
   CantShadowTopLevelBinding(String),
   #[error(
-    "Invalid signature for @associative function, signature must conform to (Fn [T T]: T)"
+    "Invalid signature for @associative function, signature must conform to \
+    (Fn [T T]: T)"
   )]
   InvalidAssociativeSignature,
   #[error("Can't bind a name to a typeless expression")]
@@ -280,7 +288,8 @@ pub enum CompileErrorKind {
   #[error("Can't assign `group` or `binding` in address space `{0}`")]
   DisallowedGroupAndBinding(VariableAddressSpace),
   #[error(
-    "Type `{0}` needs `group` and `binding` annotations, e.g. `@{{group 0 binding 0}}`"
+    "Type `{0}` needs `group` and `binding` annotations, e.g. \
+    `@{{group 0 binding 0}}`"
   )]
   NeedsGroupAndBinding(String),
   #[error("Variables in `{0}` require an initial value")]
@@ -344,11 +353,13 @@ pub enum CompileErrorKind {
   #[error("Type \"{0}\" can't be used as an {1} for entry point")]
   InvalidTypeForEntryPoint(TypeDescription, InputOrOutput),
   #[error(
-    "Return type for vertex entry point must contain a vec4f marked as @{{builtin position}}"
+    "Return type for vertex entry point must contain a vec4f marked as \
+    @{{builtin position}}"
   )]
   VertexMustHavePositionOutput,
   #[error(
-    "Return type for fragment entry point must contain a vec4f marked as @{{location 0}}"
+    "Return type for fragment entry point must contain a vec4f marked as \
+    @{{location 0}}"
   )]
   FragmentMustHaveLocation0Output,
   #[error("Position output of vertex function must be a vec4f")]
@@ -368,7 +379,6 @@ pub enum CompileErrorKind {
 impl PartialEq for CompileErrorKind {
   fn eq(&self, other: &Self) -> bool {
     match (self, other) {
-      (Self::ParsingFailed(l0), Self::ParsingFailed(r0)) => l0 == r0,
       (Self::UnrecognizedTypeName(l0), Self::UnrecognizedTypeName(r0)) => {
         l0 == r0
       }
@@ -469,6 +479,52 @@ impl CompileError {
   pub fn new(kind: CompileErrorKind, source_trace: SourceTrace) -> Self {
     Self { kind, source_trace }
   }
+  pub fn describe(&self, document: &EaslDocument<'_>) -> String {
+    let mut description = match &self.source_trace.primary_position {
+      Some(pos) => {
+        let start = pos.span.start;
+        let end = pos.span.end;
+        let (start_row, start_col) =
+          document.index_to_row_and_col(start).unwrap();
+        let (end_row, end_col) = document.index_to_row_and_col(end).unwrap();
+        let line_indices = (if start_row > 0 {
+          start_row - 1
+        } else {
+          start_row
+        })..=end_row;
+        let mut line_names = line_indices
+          .clone()
+          .map(|i| format!("{}", i + 1))
+          .collect::<Vec<String>>();
+        let max_line_name_length =
+          line_names.iter().map(|n| n.len()).max().unwrap();
+        for n in line_names.iter_mut() {
+          while n.len() < max_line_name_length {
+            *n += " ";
+          }
+        }
+        let mut lines = line_names
+          .into_iter()
+          .zip(line_indices)
+          .map(|(name, i)| format!("{name} | {}", document.get_line(i)))
+          .collect::<Vec<String>>()
+          .join("\n");
+        let (start_col, end_col) =
+          (start_col.min(end_col), start_col.max(end_col));
+        lines += "\n";
+        lines += &" ".repeat(max_line_name_length + 3 + start_col);
+        lines += &"^".repeat(end_col - start_col);
+        lines
+      }
+      None => "[[Internal compiler failure: Couldn't locate source location \
+              for error]]"
+        .to_string(),
+    };
+    description += "\n";
+    description += &format!("{}", self.kind);
+    description += "\n";
+    description
+  }
 }
 
 impl Display for CompileError {
@@ -480,12 +536,6 @@ impl Display for CompileError {
 impl Error for CompileError {}
 
 pub type CompileResult<T> = Result<T, CompileError>;
-
-impl From<ParseError> for CompileError {
-  fn from(err: ParseError) -> Self {
-    Self::new(CompileErrorKind::ParsingFailed(err), SourceTrace::empty())
-  }
-}
 
 pub fn err<T>(
   kind: CompileErrorKind,
@@ -521,6 +571,14 @@ impl ErrorLog {
   }
   pub fn iter(&self) -> impl Iterator<Item = CompileError> {
     self.clone().into_iter()
+  }
+  pub fn describe(&self, document: &EaslDocument<'_>) -> String {
+    self
+      .errors
+      .iter()
+      .map(|e| e.describe(document))
+      .collect::<Vec<String>>()
+      .join("\n")
   }
 }
 

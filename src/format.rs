@@ -1,5 +1,6 @@
 use sse::{
   Encloser as SSEEncloser, EncloserOrOperator, Operator as SSEOperator,
+  ParseError,
 };
 
 use crate::{
@@ -483,8 +484,8 @@ pub fn format_document(document: EaslDocument) -> String {
   format_easl_trees(document.syntax_trees)
 }
 
-pub fn format_easl_source(easl_source: &str) -> Result<String, ErrorLog> {
-  Ok(format_document(
-    parse_easl(easl_source).map_err(ErrorLog::from)?,
-  ))
+pub fn format_easl_source(
+  easl_source: &str,
+) -> Result<Result<String, ErrorLog>, ParseError> {
+  Ok(Ok(format_document(parse_easl(easl_source)?)))
 }
