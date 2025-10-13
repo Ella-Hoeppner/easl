@@ -51,9 +51,8 @@ pub trait EaslDocumentMethods {
 }
 impl<'s> EaslDocumentMethods for EaslDocument<'s> {
   fn override_def(&mut self, def_name: &str, new_def_value: &str) -> bool {
-    if let Ok(parsed_document) = parse_easl(new_def_value)
-      && let Some(new_value_ast) = parsed_document.syntax_trees.first()
-    {
+    let new_def_document = parse_easl(new_def_value);
+    if let Some(new_value_ast) = new_def_document.syntax_trees.first() {
       for ast in self.syntax_trees.iter_mut() {
         if let Ast::Inner(
           (_, EncloserOrOperator::Encloser(Encloser::Parens)),

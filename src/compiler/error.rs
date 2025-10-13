@@ -481,41 +481,7 @@ impl CompileError {
   }
   pub fn describe(&self, document: &EaslDocument<'_>) -> String {
     let mut description = match &self.source_trace.primary_position {
-      Some(pos) => {
-        let start = pos.span.start;
-        let end = pos.span.end;
-        let (start_row, start_col) =
-          document.index_to_row_and_col(start).unwrap();
-        let (end_row, end_col) = document.index_to_row_and_col(end).unwrap();
-        let line_indices = (if start_row > 0 {
-          start_row - 1
-        } else {
-          start_row
-        })..=end_row;
-        let mut line_names = line_indices
-          .clone()
-          .map(|i| format!("{}", i + 1))
-          .collect::<Vec<String>>();
-        let max_line_name_length =
-          line_names.iter().map(|n| n.len()).max().unwrap();
-        for n in line_names.iter_mut() {
-          while n.len() < max_line_name_length {
-            *n += " ";
-          }
-        }
-        let mut lines = line_names
-          .into_iter()
-          .zip(line_indices)
-          .map(|(name, i)| format!("{name} | {}", document.get_line(i)))
-          .collect::<Vec<String>>()
-          .join("\n");
-        let (start_col, end_col) =
-          (start_col.min(end_col), start_col.max(end_col));
-        lines += "\n";
-        lines += &" ".repeat(max_line_name_length + 3 + start_col);
-        lines += &"^".repeat(end_col - start_col);
-        lines
-      }
+      Some(pos) => document.describe_document_position(pos.span.clone()),
       None => "[[Internal compiler failure: Couldn't locate source location \
               for error]]"
         .to_string(),

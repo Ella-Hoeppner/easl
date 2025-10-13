@@ -16,7 +16,6 @@
     (+= x (asinh a))
     (+= x (acosh a))
     (+= x (atanh a))
-
     (+= y (sin b))
     (+= y (cos b))
     (+= y (tan b))

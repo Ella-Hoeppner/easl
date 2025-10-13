@@ -155,18 +155,16 @@ impl Syntax for EaslSyntax {
   }
 }
 
-pub fn parse_easl(
-  easl_source: &'_ str,
-) -> Result<EaslDocument<'_>, ParseError> {
+pub fn parse_easl(easl_source: &'_ str) -> EaslDocument<'_> {
   Document::from_text_with_syntax(EaslSyntax, easl_source)
 }
 
 pub fn parse_easl_without_comments(
   easl_source: &'_ str,
-) -> Result<CompileResult<EaslDocument<'_>>, ParseError> {
-  let mut doc = parse_easl(easl_source)?;
+) -> CompileResult<EaslDocument<'_>> {
+  let mut doc = parse_easl(easl_source);
   doc.strip_comments();
-  Ok(Ok(doc))
+  Ok(doc)
 }
 
 pub type EaslTree = DocumentSyntaxTree<Encloser, Operator>;

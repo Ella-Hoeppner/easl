@@ -40,7 +40,7 @@ dependencies = [
 [[package]]
 name = "sse"
 version = "0.0.0"
-source = "git+https://github.com/Ella-Hoeppner/SSE.git#b30c815271df66d4988f7fdff058a64912a5f833"
+source = "git+https://github.com/Ella-Hoeppner/SSE.git#b78436e282e99ec55436e456c05112c92482436f"
 dependencies = [
  "take_mut",
  "unicode-segmentation",

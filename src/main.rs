@@ -115,9 +115,16 @@ fn main() {
           println!("failed!\n");
           error_log.describe(&document)
         }
-        Err(parse_error) => {
+        Err(mut failed_document) => {
           println!("parsing failed!\n");
-          format!("{parse_error:#?}")
+          format!(
+            "{}",
+            failed_document
+              .parsing_failure
+              .take()
+              .unwrap()
+              .describe(&failed_document)
+          )
         }
       },
     )

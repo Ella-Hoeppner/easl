@@ -27,8 +27,11 @@ pub fn compile_easl_document_to_wgsl<'t>(
 
 pub fn compile_easl_source_to_wgsl<'t>(
   easl_source: &'t str,
-) -> Result<Result<String, (EaslDocument<'t>, ErrorLog)>, ParseError> {
-  let mut document = parse_easl(easl_source)?;
+) -> Result<Result<String, (EaslDocument<'t>, ErrorLog)>, EaslDocument<'t>> {
+  let mut document = parse_easl(easl_source);
+  if document.parsing_failure.is_some() {
+    return Err(document);
+  }
   document.strip_comments();
   Ok(compile_easl_document_to_wgsl(document))
 }
@@ -36,7 +39,10 @@ pub fn compile_easl_source_to_wgsl<'t>(
 pub fn get_easl_program_info(
   easl_source: &str,
 ) -> Result<Result<ProgramInfo, ErrorLog>, ParseError> {
-  let mut document = parse_easl(easl_source)?;
+  let mut document = parse_easl(easl_source);
+  if let Some(err) = &document.parsing_failure {
+    return Err(err.clone());
+  }
   document.strip_comments();
   let (mut program, _) =
     Program::from_easl_document(&document, built_in_macros());

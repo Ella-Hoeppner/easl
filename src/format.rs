@@ -484,8 +484,6 @@ pub fn format_document(document: EaslDocument) -> String {
   format_easl_trees(document.syntax_trees)
 }
 
-pub fn format_easl_source(
-  easl_source: &str,
-) -> Result<Result<String, ErrorLog>, ParseError> {
-  Ok(Ok(format_document(parse_easl(easl_source)?)))
+pub fn format_easl_source(easl_source: &str) -> String {
+  format_document(parse_easl(easl_source))
 }
