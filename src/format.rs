@@ -484,5 +484,10 @@ pub fn format_document(document: EaslDocument) -> String {
 }
 
 pub fn format_easl_source(easl_source: &str) -> String {
-  format_document(parse_easl(easl_source))
+  let doc = parse_easl(easl_source);
+  if doc.parsing_failure.is_some() {
+    doc.text.to_string()
+  } else {
+    format_document(doc)
+  }
 }
