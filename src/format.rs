@@ -480,14 +480,14 @@ pub fn format_easl_trees(asts: Vec<EaslTree>) -> String {
 }
 
 pub fn format_document(document: EaslDocument) -> String {
-  format_easl_trees(document.syntax_trees)
+  if document.parsing_failure.is_some() {
+    document.text.to_string()
+  } else {
+    format_easl_trees(document.syntax_trees)
+  }
 }
 
 pub fn format_easl_source(easl_source: &str) -> String {
   let doc = parse_easl(easl_source);
-  if doc.parsing_failure.is_some() {
-    doc.text.to_string()
-  } else {
-    format_document(doc)
-  }
+  format_document(doc)
 }
