@@ -40,7 +40,8 @@ pub fn read_type_annotated_name(
 
 pub fn compile_word(word: Rc<str>) -> String {
   match &*word {
-    "vec2<bool>" | "vec3<bool>" | "vec4<bool>" => word.to_string(),
+    "vec2<bool>" | "vec3<bool>" | "vec4<bool>" | "bitcast<f32>"
+    | "bitcast<i32>" | "bitcast<u32>" => word.to_string(),
     _ => word
       .replace("-", "_")
       .replace("+", "PLUS")
