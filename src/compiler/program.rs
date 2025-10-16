@@ -1853,6 +1853,8 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.desugar_swizzle_assignments();
+    self.deexpressionify();
     self.inline_all_higher_order_arguments(&mut errors);
     if !errors.is_empty() {
       return errors;
@@ -1865,8 +1867,6 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    self.desugar_swizzle_assignments();
-    self.deexpressionify();
     self.separate_overloaded_fns();
     errors
   }
