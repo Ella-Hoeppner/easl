@@ -2201,12 +2201,25 @@ impl TypedExp {
         );
         anything_changed
       }
-      Block(expressions) => {
+      Block(children) => {
         let mut anything_changed = false;
-        for child in expressions.iter_mut() {
+        let child_count = children.len();
+        for (i, child) in children.iter_mut().enumerate() {
+          if i != child_count - 1 {
+            match &child.kind {
+              Break | Continue | Discard | Return(_) => {
+                anything_changed |= child.data.constrain(
+                  TypeState::Known(Type::Unit),
+                  &child.source_trace,
+                  errors,
+                );
+              }
+              _ => {}
+            }
+          }
           anything_changed |= child.propagate_types_inner(ctx, errors);
         }
-        if let Some(exp) = expressions.last_mut() {
+        if let Some(exp) = children.last_mut() {
           anything_changed |= self.data.mutually_constrain(
             &mut exp.data,
             &self.source_trace,
@@ -2215,7 +2228,7 @@ impl TypedExp {
         } else {
           errors.log(CompileError::new(EmptyBlock, self.source_trace.clone()));
         }
-        self.data.subtree_fully_typed = expressions
+        self.data.subtree_fully_typed = children
           .iter()
           .fold(true, |acc, exp| acc && exp.data.subtree_fully_typed);
         anything_changed

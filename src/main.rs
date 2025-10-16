@@ -101,6 +101,7 @@ fn main() {
     "break_in_match",
     "array_literal_access",
     "vec_match",
+    "exp_after_control_flow",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

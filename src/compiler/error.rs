@@ -372,6 +372,8 @@ pub enum CompileErrorKind {
   UninlinableHigherOrderFunction,
   #[error("Type constraints on generic types are not yet supported")]
   TypeConstraintsNotYetSupported,
+  #[error("Expression found after control flow operator \"{0}\"")]
+  ExpressionAfterControlFlow(String),
 }
 
 impl PartialEq for CompileErrorKind {

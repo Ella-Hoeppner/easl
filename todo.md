@@ -1,8 +1,6 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language 0.1
-* Give an error if there's ever an expression after a call to `break`, `continue`, `return`, or `discard`
-
 * for some reason the following doesn't work:
   ```
   (struct VertexOutput
@@ -56,23 +54,6 @@
   * do `do` blocks work right now if you try to use them in the condition or incrementation expressions?
   * Are you required to use a literal for the initial value of a for loop? Can't recall how i implemented it. If so that restriction should be removed
 
-* support declaring local functions like `(fn [x: ...]: ... ...)`
-  * will be nice to have this even if they don't close over the environment yet, e.g. for quickly modifying an sdf in a raymarcher without having to declare a whole top-level `defn` for it
-  * also allows for functions to return other functions, which can't really be done right now
-    * should make sure that it's possible to have a function like this:
-      ```
-      (defn distort-sdf [sdf: (Fn [vec3f] f32)
-                         distortion: (Fn [vec3f] vec3f)]: (Fn [vec3f] f32)
-        (fn [x: vec3f]: f32
-          (sdf (+ x (distortion x)))))
-      ```
-      and that you can use this alongside other higher-order functions, i.e.
-      ```
-      (raymarch (distort-sdf my-sdf my-disortion) ...)
-      ```
-      * Currently the restriction on higher-order arguments in `inline_higher_order_arguments` is that they all just be a name, otherwise an error will be thrown. But to make the above work this restriction will have to be relaxed
-        * Actually I guess if `inline_higher_order_arguments` just proceeds as a postwalk rather than a prewalk then this should work fine?
-
 * `catch_duplicate_signatures` needs to be extended to catch partial overlaps in the type-domains of generic functions
   * like, right now you can implement `(defn + [a: f32 b:f32]: f32 ...)` without error, even though this conflicts with the builtin definition `(defn (+ T) [a: T b:T]: T)`. The two signatures aren't equal, so no error is detected, but it should be, since the `f32` implementation is just a special-case of the generic definition.
     * this needs to not only catch the "non-generic signature is a special case of generic signature" case, but also the "two generic signatures overlap" case, like `(defn f |T: Scalar| [a: T]: T)` and `(defn f |T: Integer| [a: T]: T)`
@@ -88,6 +69,8 @@
   * When there are multiple "couldn't infer types" errors, such that one is a subtree of another, only display the innermost one, I think? The outermost one usually won't be helpful.
 
 * allow indexing vectors and matrices with integers
+  * It's already possible to use the `(f a)` syntax where `f` is something other than a function, but for now it only works when `f` is an array. So I guess I can just extend that logic to check if `f` is a vector or matrix as well?
+    * Or maybe have some constraint like `Indexable` for this and make arrays, vecs, and mats implement it, so there's less special casing. And in the long run even maybe let the user implement `Indexable` on their own types.
 
 * special casing around `Texture2D` and `Sampler`
   * right now I've made it so it has a field `_: T`, because monomorphization needs there to be at least one field, but this is kinda weird
@@ -129,9 +112,53 @@
 
 ## Secondary priority
 ### nice features to have once the language is at wgsl-parity
+* support declaring local functions like `(fn [x: ...]: ... ...)`
+  * also support functions that return other functions, which currently isn't possible
+  * will be nice to have this even if they don't close over the environment yet, e.g. for quickly modifying an sdf in a raymarcher without having to declare a whole top-level `defn` for it
+  * also allows for functions to return other functions, which can't really be done right now
+    * should make sure that it's possible to have a function like this:
+      ```
+      (defn distort-sdf [sdf: (Fn [vec3f] f32)
+                         distortion: (Fn [vec3f] vec3f)]: (Fn [vec3f] f32)
+        (fn [x: vec3f]: f32
+          (sdf (+ x (distortion x)))))
+      ```
+      and that you can use this alongside other higher-order functions, i.e.
+      ```
+      (raymarch (distort-sdf my-sdf my-disortion) ...)
+      ```
+      * Currently the restriction on higher-order arguments in `inline_higher_order_arguments` is that they all just be a name, otherwise an error will be thrown. But to make the above work this restriction will have to be relaxed
+        * Actually I guess if `inline_higher_order_arguments` just proceeds as a postwalk rather than a prewalk then this should work fine?
+  * I think the way best way to make this work will be to introduce a unique unit-like type for each function. Then, after typechecking but before inlining, for each expression of a `(Fn [...] ...)` type, replace it's type with the specific type for that individual function. Then during inlining, choose the function to inline in each location based on it's type, as opposed to the current system where it's just based on the name
+    * this way you can have bind local values to functions then pass them to other higher-order fns, and return fns from other fns, neither of which are possible currently
+    * any signature that accepts one of these unit-like types should be removed from it's signature as part of inlining, just like we currently remove any function-type arguments
+      * also, any bindings to these unit-like types should be removed at the same time
+    * Having a unique anonymous type for each function like this will be useful for later implementing closures anyways. Each closure will get its own specific type as well, but it will have fields corresponding to the values captured in its scope, rather than being unit-like
+      * also, even later when trying to support dynamically varying function arguments, the types of those can simply be treated as an anonymous unions over these function-specific types
+
+* more threading macros
+  * `->=`
+    * shorthand for `(= x (-> x ...))`
+    * requires that the final type be the same as the initial type, but may support different types in between
+  * `cond->`
+    * should be similar to clojure's, but with the same ability as `->` to designate the positioning of the threaded expression with `<>`
+    * I guess every step will need to be of the same type, since the steps are optional and therefore can't reliably change the type of the expression passing through
+    * also allow the `<>` to be used in the conditions 
+      * e.g.
+        ```
+        (cond-> x
+          (< y 0.5) (* 5.)
+          (> <> 3.) (- 1.))
+        ```
+      * this'll make it significantly more powerful than clojure's version
+  * `cond->=`
+    * just a combination of the above two
+  
+
 * consider making an effect type for each builtin, so that rather than specifying a builtin as part of the input to a shader stage, you can just call a function with the name of the builtin value, e.g. `(vertex-index)`. That acts as an effect, and at compile time this effect gets handled on each entry point by just inlining the argument into the entry that uses it (and to the helper functions that invoke it)
   * Maybe also have effects for setting these as output, e.g. `(set-frag-depth! 0.)` or `(set-position! 0.)`
   * just seems like it might be a more ergonomic alternative to having to add a bunch of extra fields to the struct
+  * hmm, this would kinda cause a problem if you tried to explicitly use a builtin name as an input, since now those input names would have a name-collision with a top-level fn
 
 * support vecs over arbitrary types
   * wgsl doesn't do this, it's just restricted to scalars and bool

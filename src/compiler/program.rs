@@ -1805,6 +1805,56 @@ impl Program {
         remaining_inferred_struct_field_locations;
     }
   }
+  pub fn catch_expressions_after_control_flow(
+    &mut self,
+    errors: &mut ErrorLog,
+  ) {
+    for signature in self.abstract_functions_iter() {
+      let signature = signature.borrow();
+      if let FunctionImplementationKind::Composite(implementation) =
+        &signature.implementation
+      {
+        implementation
+          .borrow()
+          .body
+          .walk(&mut |exp| {
+            match &exp.kind {
+              ExpKind::Block(children) => {
+                let mut encountered_control_flow_operator = None;
+                for child in children.iter() {
+                  match child.kind {
+                    ExpKind::Break
+                    | ExpKind::Continue
+                    | ExpKind::Discard
+                    | ExpKind::Return(_) => {
+                      encountered_control_flow_operator =
+                        Some(match child.kind {
+                          ExpKind::Break => "break".to_string(),
+                          ExpKind::Continue => "continue".to_string(),
+                          ExpKind::Discard => "discard".to_string(),
+                          ExpKind::Return(_) => "return".to_string(),
+                          _ => unreachable!(),
+                        });
+                    }
+                    _ => {
+                      if let Some(name) = &encountered_control_flow_operator {
+                        errors.log(CompileError::new(
+                          ExpressionAfterControlFlow(name.clone()),
+                          child.source_trace.clone(),
+                        ))
+                      }
+                    }
+                  }
+                }
+              }
+              _ => {}
+            }
+            Ok::<_, Never>(true)
+          })
+          .unwrap();
+      }
+    }
+  }
   pub fn validate_raw_program(&mut self) -> ErrorLog {
     let mut errors = ErrorLog::new();
     self.validate_associative_signatures(&mut errors);
@@ -1864,6 +1914,10 @@ impl Program {
       return errors;
     }
     self.validate_entry_points(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.catch_expressions_after_control_flow(&mut errors);
     if !errors.is_empty() {
       return errors;
     }

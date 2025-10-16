@@ -627,11 +627,12 @@ impl Type {
       }
       EaslTree::Inner(
         (position, EncloserOrOperator::Encloser(Encloser::Parens)),
-        struct_signature_children,
+        type_signature_children,
       ) => {
         let source_trace: SourceTrace = position.into();
-        let mut signature_leaves = struct_signature_children.into_iter();
+        let mut signature_leaves = type_signature_children.into_iter();
         match signature_leaves.next() {
+          None => Ok(Self::Unit),
           Some(EaslTree::Leaf(_, struct_name))
             if struct_name.as_str() == "Fn" =>
           {
