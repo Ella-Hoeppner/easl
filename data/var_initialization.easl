@@ -1,34 +1,37 @@
-; This should fail since this is (implicitly) in the `private` address space and therefore requires initialization
-#_(var a: f32)
-
-; These should fail because these address spaces require initialization
-#_@{address private}
-  (var b: f32)
-
-#_@{address workgroup}
-  (var c: f32)
-
-; These should pass, as they are properly initialized as expected by their address space
-(var d: f32
+; These should pass, as they are both private and therefor may be initialized
+(var a: f32
      4.)
 
 @{address private}
-(var e: f32
+(var b: f32
      5.)
 
-@{address workgroup}
-(var f: f32
-     6.)
+; These should also pass, as initialization is optional in private
+(var c: f32)
 
-; This should fail, since variables in the `uniform` address space can't be initialized
+@{address private}
+(var d: f32)
+
+; These should fail, since other address spaces can't be initialized
 #_@{group 0
     binding 1
     address uniform}
-  (var g: f32
+  (var e: f32
        0.5)
 
-; This should pass
+#_@{group 0
+    binding 1
+    address storage}
+  (var f: f32
+       0.5)
+
+; These should pass, since they don't initialize
 @{group 0
   binding 1
   address uniform}
 (var g: f32)
+
+@{group 0
+  binding 2
+  address storage}
+(var h: f32)

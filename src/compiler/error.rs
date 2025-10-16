@@ -292,8 +292,6 @@ pub enum CompileErrorKind {
     `@{{group 0 binding 0}}`"
   )]
   NeedsGroupAndBinding(String),
-  #[error("Variables in `{0}` require an initial value")]
-  NeedsInitializationValue(VariableAddressSpace),
   #[error("Variables in `{0}` may not be given an initial value")]
   DisallowedInitializationValue(VariableAddressSpace),
   #[error("The name `{0}` is used for more than one top-level variable")]

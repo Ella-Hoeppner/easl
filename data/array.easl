@@ -14,6 +14,10 @@
 (def d: [4: u32]
      (zeroed-array))
 
+(defn e []: f32
+  (let [arr (zeroed-array): [3: f32]]
+    (arr 0u)))
+
 (defn f [i: u32]: vec4f
   (+ (a (- i 1)) (a (+ i 1))))
 

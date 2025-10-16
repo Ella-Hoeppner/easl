@@ -1,0 +1,4 @@
+(defn f [v: vec3u]: f32
+  (match v
+    (vec3u 0u 0u 0u) 1.
+    _ 0.))

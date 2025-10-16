@@ -98,6 +98,9 @@ fn main() {
     "compute",
     "arg_annotation",
     "return_annotation",
+    "break_in_match",
+    "array_literal_access",
+    "vec_match",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

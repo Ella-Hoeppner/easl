@@ -43,8 +43,8 @@ impl VariableAddressSpace {
       _ => true,
     }
   }
-  pub fn requires_initialization(&self) -> bool {
-    !self.needs_group_and_binding()
+  pub fn disallows_initialization(&self) -> bool {
+    *self != Private
   }
   pub fn compile(&self) -> Option<&'static str> {
     Some(match self {
@@ -249,14 +249,8 @@ impl TopLevelVar {
                       }
                     })
                     .flatten();
-                  if address_space.requires_initialization() {
-                    if value.is_none() {
-                      errors.log(CompileError::new(
-                        NeedsInitializationValue(address_space),
-                        parens_source_trace.clone(),
-                      ));
-                    }
-                  } else {
+                  if address_space.disallows_initialization() && value.is_some()
+                  {
                     if value.is_some() {
                       errors.log(CompileError::new(
                         DisallowedInitializationValue(address_space),
