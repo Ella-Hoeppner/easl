@@ -498,25 +498,7 @@ impl TypedExp {
       EaslTree::Leaf(position, leaf) => {
         let leaf: Rc<str> = leaf.into();
         let source_trace: SourceTrace = position.into();
-        if &*leaf == "break" {
-          Exp {
-            kind: ExpKind::Break,
-            data: Known(Type::Unit).into(),
-            source_trace,
-          }
-        } else if &*leaf == "continue" {
-          Exp {
-            kind: ExpKind::Continue,
-            data: Known(Type::Unit).into(),
-            source_trace,
-          }
-        } else if &*leaf == "discard" {
-          Exp {
-            kind: ExpKind::Discard,
-            data: TypeState::fresh_unification_variable().into(),
-            source_trace,
-          }
-        } else if &*leaf == "true" || &*leaf == "false" {
+        if &*leaf == "true" || &*leaf == "false" {
           Exp {
             kind: ExpKind::BooleanLiteral(&*leaf == "true"),
             data: Known(Type::Bool).into(),

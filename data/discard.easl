@@ -2,20 +2,14 @@
   @{location 0} x: f32
   @{builtin position} pos: vec4f)
 
-; you're allowed to use discard either just as a leaf node, or treat it like a
-; fn call and put it inside parens
 @fragment
 (defn f [in: VertexOutput]: @{location 0} vec4f
-  discard)
-
-@fragment
-(defn f2 [in: VertexOutput]: @{location 0} vec4f
   (discard))
 
 ; uncommenting this should cause an error, as the `discard` can't be called with
 ; arguments
 #_@fragment
-  (defn f3 [in: VertexOutput]: @{location 0} vec4f
+  (defn f2 [in: VertexOutput]: @{location 0} vec4f
     (discard 2))
 
 ; uncommenting this should cause an error, as the `discard` effect is only
@@ -28,7 +22,7 @@
 ; you're allowed to use `discard` in non-entry functions
 (defn discard-or-double [x: f32]: f32
   (if (< x 0.)
-    discard
+    (discard)
     (* x 2.)))
 
 ; helper functions that call discard may be used from fragment entry points

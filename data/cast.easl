@@ -105,7 +105,7 @@
     (if (or (> center-dist 1.)
             (< center-dist
                (- 1 in.form-thickness)))
-      discard
+      (discard)
       (vec4f (pow in.form-color (vec3f 2.4))
              1.))))
 
@@ -122,7 +122,7 @@
                             ring-thickness)]
         (when (> sd-ring 0)
           (if should-discard
-            discard
+            (discard)
             (= sd-ring 0)))
         (* multiplier
            (* (sqrt (- 1 (square (+ 1 sd-ring))))
@@ -130,7 +130,7 @@
       (let [@var sd-ring (- center-dist 1)]
         (when (> sd-ring 0)
           (if should-discard
-            discard
+            (discard)
             (= sd-ring 0)))
         (* multiplier
            (pow (sqrt (- 1 (square (+ 1 sd-ring))))
@@ -230,14 +230,14 @@
                                        (>= in.pos-in-char.y 1.))))
                          0.
                          (.x (texture-sample char-tex
-                                            char-sampler
-                                            (/ (+ (vec2f in.character-coords)
-                                                  (clamp in.pos-in-char
-                                                         (vec2f 0.)
-                                                         (vec2f 1.)))
-                                               16.))))]
+                                             char-sampler
+                                             (/ (+ (vec2f in.character-coords)
+                                                   (clamp in.pos-in-char
+                                                          (vec2f 0.)
+                                                          (vec2f 1.)))
+                                                16.))))]
     (if (<= char-tex-alpha 0.5)
-      discard
+      (discard)
       (vec4f (vec3f 0.) 1.))))
 
 ; UI
@@ -289,6 +289,6 @@
              in.element-radius)]
     (if (or (> d 0)
             (< d (- in.element-thickness)))
-      discard
+      (discard)
       (vec4f (pow in.element-color (vec3f 2.4))
              1.))))

@@ -5,6 +5,6 @@
       (*= x -2)
       (match x
         0 (+= sum 0.5)
-        10 break
+        10 (break)
         _ (+= sum 1.)))
     sum))

@@ -2,8 +2,6 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language 0.1
-* require that `break`, `continue`, and `discard` all be invoked as if they were functions rather than supporting the single-word syntax
-
 * BUG: trying to use an array literal in the accessor syntax doesn't work. For instance, `([0. 1.] 0u)` doesn't work, even though `(let [arr [0. 1.]] (arr 0u))` does, and the two should obviously be equivalent. Demonstrated in the `array_literal_access.easl` test.
 
 * Give an error if there's ever an expression after a call to `break`, `continue`, `return`, or `discard`

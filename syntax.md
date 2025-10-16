@@ -24,6 +24,8 @@ If you're already familiar with wgsl, you'll find that everything you can expres
 
 You can expect that any function or type from wgsl (with a few caveats, see [the README](https://github.com/Ella-Hoeppner/easl/blob/main/README.md)) will also be available in easl. However, function names have all been changed from camel case to kebab case, e.g. `textureSample` becomes `texture-sample`, and all type names have been changed to use camel case with a capital first letter, e.g. `texture_2d` becomes `Texture2D`.
 
+Easl attempts to make the compiled wgsl human-readable whenever possible. Most variable names will be preserved through compilation, though with any `-` symbols replace with `_`. If you're curious about how easl handles certain abstractions, looking at the compiled wgsl code may provide some insight.
+
 ### Let bindings
 To bind names to values in easl, you use the special `let` form inside a pair of parentheses, followed by the values you want to bind. For instance, here's some easl code that declares some let bindings and uses them, and then the equivalent wgsl code:
 
@@ -335,34 +337,28 @@ The first expression after the `while` is treated as the conditional used to che
 
 `while` and `for` expressions both always have the unit type, meaning they do not return a value. Therefore, their only effect on the program will happen via the side effects that they cause to occur inside their bodies.
 
-`break` and `continue` can be used to modify the control flow of loops, just like in wgsl and other C-like languages. For instance:
+`break` and `continue` can be used to modify the control flow of loops, just like in wgsl and other C-like languages. These operator are treated as functions of zero arguments, so call them by placing them alone inside a pair of parentheses, i.e. `(break)` or `(continue)`. For instance:
 
 ```
 (while true
   (+= x 0.1)
   (when (> x 1.)
-    break))
+    (break)))
 
 (for [i 0 (< i 10) (= i (+ i 1))]
   (when (== (% i 2) 0)
-    continue)
+    (continue))
   (+= x (* i i)))
 ```
 
-You can use `break` and `continue` either by just writing them as word with no enclosing syntax like in the above example, or by enclosing them in parentheses like `(break)` or `(continue)` to mirror the syntax of a function call with zero arguments. Either syntax works just fine, and they mean exactly the same thing.
-
 ### Discard
-The `discard` keyword can be used in functions to discard the current pixel, when executing a fragment shader. `discard` keyword may be used directly in the fragment entry point itself, or in a helper function that the fragment entry point invokes. However, it must not be used in a vertex or compute entry point, or in any helper function invoked by such an entry point.
-
-Like `break` and `continue`, `discard` can be used alone as a single word or enclosed in a pair of parentheses like `(discard)`. Both syntaxes are valid, and equivalent. For example:
+The `discard` keyword can be used in functions to discard the current pixel, when executing a fragment shader. `discard` may be used directly in the fragment entry point itself, or in a helper function that the fragment entry point invokes. However, it must not be used in a vertex or compute entry point, or in any helper function invoked by such an entry point. Just like `break` and `discard`, you invoke `discard` by putting it alone inside a pair of parentheses, calling it like a function of zero arguments:
 
 ```
-(defn discard-if-outside-zero-to-one [x: f32]: f32
+(defn discard-when-negative [x: f32]: f32
   (if (< x 0.)
-    discard
-    (if (> x 1.)
-      (discard)
-      x)))
+    (discard)
+    x))
 ```
 
 ### Arrays
