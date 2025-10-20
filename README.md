@@ -1,11 +1,9 @@
 # Easl, the Enhanced Abstraction Shader Language
-
 A shader language with a lispy syntax that compiles to wgsl.
 
 Easl provides a powerful type system and supports high-level abstractions that aren't available in traditional shader languages. Easl is currently a work-in-progress, and breaking changes should be expected, but it's already mature enough for certain use-cases.
 
 This repository contains the core compiler code. This repository can be used as a crate, so you use the easl compiler directly as part of a rust project to convert easl source code to wgsl code. If you want to use easl in a standalone way, rather than as a crate from another rust project, check out the [Easl CLI](https://github.com/Ella-Hoeppner/easl_cli).
-
 
 ## Feature goals:
 | Feature | Explanation | Implementation Status |

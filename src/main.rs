@@ -121,13 +121,15 @@ fn main() {
         }
         Err(mut failed_document) => {
           println!("parsing failed!\n");
+          let mut errors = vec![];
+          std::mem::swap(&mut errors, &mut failed_document.parsing_failures);
           format!(
             "{}",
-            failed_document
-              .parsing_failure
-              .take()
-              .unwrap()
-              .describe(&failed_document)
+            errors
+              .into_iter()
+              .map(|err| err.describe(&failed_document))
+              .collect::<Vec<String>>()
+              .join("\n\n")
           )
         }
       },

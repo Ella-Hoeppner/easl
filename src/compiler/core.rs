@@ -29,7 +29,7 @@ pub fn compile_easl_source_to_wgsl<'t>(
   easl_source: &'t str,
 ) -> Result<Result<String, (EaslDocument<'t>, ErrorLog)>, EaslDocument<'t>> {
   let mut document = parse_easl(easl_source);
-  if document.parsing_failure.is_some() {
+  if !document.parsing_failures.is_empty() {
     return Err(document);
   }
   document.strip_comments();
@@ -38,10 +38,10 @@ pub fn compile_easl_source_to_wgsl<'t>(
 
 pub fn get_easl_program_info(
   easl_source: &str,
-) -> Result<Result<ProgramInfo, ErrorLog>, ParseError> {
+) -> Result<Result<ProgramInfo, ErrorLog>, Vec<ParseError>> {
   let mut document = parse_easl(easl_source);
-  if let Some(err) = &document.parsing_failure {
-    return Err(err.clone());
+  if !document.parsing_failures.is_empty() {
+    return Err(document.parsing_failures);
   }
   document.strip_comments();
   let (mut program, _) =

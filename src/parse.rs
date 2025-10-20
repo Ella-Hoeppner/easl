@@ -134,20 +134,18 @@ impl Syntax for EaslSyntax {
       Context::UnstructuredComment => &*TRIVIAL_CTX,
     }
   }
-  fn encloser_context(&self, encloser: &Self::E) -> Self::C {
+  fn encloser_context(&self, encloser: &Self::E) -> Option<Self::C> {
     match encloser {
-      Encloser::Parens | Encloser::Square | Encloser::Curly => Context::Default,
       Encloser::LineComment | Encloser::BlockComment => {
-        Context::UnstructuredComment
+        Some(Context::UnstructuredComment)
       }
+      _ => None,
     }
   }
-  fn operator_context(&self, operator: &Self::O) -> Self::C {
+  fn operator_context(&self, operator: &Self::O) -> Option<Self::C> {
     match operator {
-      Operator::Annotation | Operator::TypeAscription | Operator::Reference => {
-        Context::Default
-      }
-      Operator::ExpressionComment => Context::StructuredComment,
+      Operator::ExpressionComment => Some(Context::StructuredComment),
+      _ => None,
     }
   }
   fn reserved_tokens(&self) -> impl Iterator<Item = &str> {

@@ -203,7 +203,7 @@ Functions in easl are declared with the special `defn` keyword, which can only b
 
 Immediately after the `defn`, there must be a name for the function, in this case `f`. The name must then be followed by a pair of square brackets, containing the names of the arguments, and each argument must have a type ascribed to it with the `:` operator. The square brackets may themselves be followed by another type ascription operator `:` along with the return type of the function, here `: i32`. After that, the function body may consist of any number of other expressions enclosed inside the outermost pair of parentheses. So overall, this `defn` is declaring a function called `f` that takes in two arguments, both of type `f32`, and returns an `i32`. Internally this function simply adds the two arguments together, casts the result to an `i32`, and returns that value.
 
-Easl requires explicit type ascriptions on all function arguments, so the `:` operator for each name in the argument list is mandatory. The output type ascription, however, is optional. If not provided, the function will be presumed not to return any value. More specifically, functions with no return value are treated as a having the "unit type" as their return type. The return type is rarely explicitly written down, but when needed, it can be written as `()`. In other words, the following two signatures are equivalent:
+Easl requires explicit type ascriptions on all function arguments, so the `:` operator for each name in the argument list is mandatory. The output type ascription, however, is optional. If not provided, the function will be presumed not to return any value. More specifically, functions with no return value are treated as a having the "unit type" as their return type. The return type is rarely explicitly ascribed in easl, but when needed, it can be written as `()`. In other words, the following two signatures are equivalent:
 
 ```
 (defn f [x: f32]
@@ -241,7 +241,7 @@ Just as with `let` blocks, `if` expressions can always be used inside of other e
 
 Here the whole `(if b 5. 10.)` expression has the type `f32`, because it's true and false clauses are `5.` and `10.`, which are both inferred to be `f32`s. Because of this ability to return values, the two branches of an `if` statement *must* have the same type, and you'll get a type errror if you try to write one that returns different types from the two branches. The previous example where we use the `=` operator in each branch satisfies this constraint because the `=` operator is treated as a function that returns the unit type.
 
-The fact that `if` expressions can be used both at the top level and inside other expressions represents a significant ergonomic improvement over traditional, non-expression-based shader languages. In glsl, for instance, if you want to write a conditional at the statement-level, then you write it as `if (...) {...} else {...}`. But if you want to write a conditional inside another expression, you're forced to use an entirely different syntax, the "ternary operator" `... ? ... : ...`. Wgsl is even worse in this regard, with it's bizarre `select()` function instead of the ternary operator. Easl simplifies the situation sigificantly by allowing you to use the single `if` expression for conditionals, regardless of where they occur in your program.
+The fact that `if` expressions can be used both at the top level and inside other expressions represents a significant ergonomic improvement over traditional, non-expression-based shader languages. In glsl, for instance, if you want to write a conditional at the statement-level, then you write it as `if (...) {...} else {...}`. But if you want to write a conditional inside another expression, you're forced to use an entirely different syntax, the "ternary operator" `... ? ... : ...`, or the `select()` function in wgsl. Easl simplifies the situation sigificantly by allowing you to use the single `if` expression for conditionals, regardless of where they occur in your program.
 
 ### Do blocks
 
@@ -294,20 +294,8 @@ Since easl's `if` expressions return values, they can't handle cases like these,
 
 Unlike `if` blocks which must always contain exactly 2 expressions after the conditional, `when` blocks may contain any number of expressions after the conditional, and either all of them will be executed, or none of them will, depending on the value of the conditional. And unlike `if` blocks, `when` blocks do not return a value, and instead always have the unit type.
 
-Strictly speaking, `when` blocks aren't essential, because they can always be expressed in terms of an `if` expression and a `do` expression. For instance, the above example could be rewritten as:
-
-```
-(if (x < 0.5)
-  (do (+= x 1)
-      (*= x 2)
-      (return x))
-  ())
-```
-
-However, the `when` approach is more concise and more clearly conveys intention, so it's preferrable when you're trying to do a one-sided conditional.
-
 ### Loops
-Easl supports both `for` and `while` loops, like most traditional imperative languages.
+Easl supports `for` and `while` loops.
 
 `for` loops are written like so:
 

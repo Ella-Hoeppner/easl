@@ -480,7 +480,7 @@ pub fn format_easl_trees(asts: Vec<EaslTree>) -> String {
 }
 
 pub fn format_document(document: EaslDocument) -> String {
-  if document.parsing_failure.is_some() {
+  if !document.parsing_failures.is_empty() {
     document.text.to_string()
   } else {
     format_easl_trees(document.syntax_trees)

@@ -50,7 +50,7 @@
   * texture_storage
   * all the functions that use these
 
-* let `for` loops use something other than `i32`s for their incrementation variables
+* let `for` loops use types other than `i32`s for their incrementation variables
   * do `do` blocks work right now if you try to use them in the condition or incrementation expressions?
   * Are you required to use a literal for the initial value of a for loop? Can't recall how i implemented it. If so that restriction should be removed
 
@@ -177,11 +177,17 @@
     * guess I could do like `{[]}` or `{()}`? That kinda sucks though
     * `'()` would work I guess but i also kinda hate that
 
+* infer the types of `(fn [...] ...)` expressions
+  * since there aren't any generic variables involved, I think these should be unambiguously typable most of the time
+
+* implement `#` as a shorthand anonymous function syntax
+  * like clojure's `#(...)`, but works on any kind of expression, e.g. `#[% 1.]`.
+
+* closures
+
 * support a `@render` function tag that acts as a fragment and vertex shader in one
   * Basically it'll act like a vertex shader that returns a fragment shader
   * so it'll just have to be a function with a return type of like `[vec4f (Fn [] vec4f)]`
-
-* closures
 
 * finish support for constraints
   * support declaring custom type constraints
