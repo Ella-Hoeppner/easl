@@ -108,7 +108,7 @@ dependencies = [
 [[package]]
 name = "sse"
 version = "0.0.0"
-source = "git+https://github.com/Ella-Hoeppner/SSE.git#b9a3c22f6fa53a3913ffc9833eb26ef0efd4d081"
+source = "git+https://github.com/Ella-Hoeppner/SSE.git#1257c97accd6251090b78fa9c6ce26b3bb9e8ece"
 dependencies = [
  "rand",
  "take_mut",
@@ -154,9 +154,9 @@ dependencies = [
 
 [[package]]
 name = "unicode-ident"
-version = "1.0.19"
+version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f63a545481291138910575129486daeaf8ac54aee4387fe7906919f7830c7d9d"
+checksum = "462eeb75aeb73aea900253ce739c8e18a67423fadf006037cd3ff27e82748a06"
 
 [[package]]
 name = "unicode-segmentation"

@@ -3,7 +3,7 @@ A shader language with a lispy syntax that compiles to wgsl.
 
 Easl provides a powerful type system and supports high-level abstractions that aren't available in traditional shader languages. Easl is currently a work-in-progress, and breaking changes should be expected, but it's already mature enough for certain use-cases.
 
-This repository contains the core compiler code. This repository can be used as a crate, so you use the easl compiler directly as part of a rust project to convert easl source code to wgsl code. If you want to use easl in a standalone way, rather than as a crate from another rust project, check out the [Easl CLI](https://github.com/Ella-Hoeppner/easl_cli).
+This repository contains the core compiler code. This repository can be used as a crate, so you can use the easl compiler directly as part of a rust project to convert easl source code to wgsl code. If you want to use easl in a standalone way, rather than as a crate from another rust project, check out the [Easl CLI](https://github.com/Ella-Hoeppner/easl_cli).
 
 ## Feature goals:
 | Feature | Explanation | Implementation Status |
@@ -12,7 +12,7 @@ This repository contains the core compiler code. This repository can be used as 
 | Fully expression-based | Inline `if` and `match` blocks, and scoped `let` blocks that return values | ✅ |
 | Powerful type inference | Top-level functions are required to have explicit type signatures for clarity, but inside the body of a function, Easl has a type inference system that obviates the need for most explicit type ascriptions. | ✅ |
 | Generic types and functions | | ✅ |
-| Function overloading | You can overload functions with multiple different type different signatures, including built-in functions like `+`. | ✅ |
+| Function overloading | You can overload functions with multiple different type signatures, including built-in functions like `+`. | ✅ |
 | Sum Types | aka rust-style Enums | ✅* |
 | Tuples | | ❌ |
 | Higher-order functions | Functions that can accept other functions as inputs, and return other functions as outputs | ✅* |
@@ -29,4 +29,4 @@ This repository contains the core compiler code. This repository can be used as 
 
 ---
 
-Easl doesn't yet have fully-fledged documentation. For now, an explanation of easl's syntax and language features is available in [syntax.md](https://github.com/Ella-Hoeppner/easl/blob/main/syntax.md), and some [simple example shaders are included with the Easl CLI repo](https://github.com/Ella-Hoeppner/easl_cli/tree/main/examples).
+Easl doesn't yet have fully-fledged documentation. For now, an explanation of easl's syntax and language features is available in [introduction.md](https://github.com/Ella-Hoeppner/easl/blob/main/introduction.md), and some [simple example shaders are included with the Easl CLI repo](https://github.com/Ella-Hoeppner/easl_cli/tree/main/examples).

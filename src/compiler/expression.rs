@@ -1966,12 +1966,8 @@ impl TypedExp {
           anything_changed |= arg.propagate_types_inner(ctx, errors);
         }
         if let Name(name) = &f.kind {
-          anything_changed |= ctx.constrain_name_type(
-            name,
-            &self.source_trace,
-            &mut f.data,
-            errors,
-          );
+          anything_changed |=
+            ctx.constrain_name_type(name, &f.source_trace, &mut f.data, errors);
         } else {
           anything_changed |= f.data.constrain(
             TypeState::OneOf(vec![

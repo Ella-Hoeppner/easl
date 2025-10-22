@@ -1,5 +1,6 @@
 use sse::document::DocumentPosition;
 use std::{collections::HashSet, fmt::Display, hash::Hash};
+use take_mut::take;
 use thiserror::Error;
 
 use crate::{
@@ -374,6 +375,20 @@ pub enum CompileErrorKind {
   TypeConstraintsNotYetSupported,
   #[error("Expression found after control flow operator \"{0}\"")]
   ExpressionAfterControlFlow(String),
+  #[error("Invalid name")]
+  InvalidName,
+}
+
+impl CompileErrorKind {
+  pub fn priority(&self) -> usize {
+    use CompileErrorKind::*;
+    match self {
+      InvalidName | UnboundName(_) => 10,
+      ExpectedFunctionFoundNonFunction => 2,
+      CouldntInferTypes => 0,
+      _ => 1,
+    }
+  }
 }
 
 impl PartialEq for CompileErrorKind {
@@ -491,6 +506,9 @@ impl CompileError {
     description += "\n";
     description
   }
+  pub fn priority(&self) -> usize {
+    self.kind.priority()
+  }
 }
 
 impl Display for CompileError {
@@ -512,7 +530,7 @@ pub fn err<T>(
 
 #[derive(Debug, Clone)]
 pub struct ErrorLog {
-  errors: HashSet<CompileError>,
+  pub errors: HashSet<CompileError>,
 }
 
 impl ErrorLog {
@@ -546,6 +564,19 @@ impl ErrorLog {
       .collect::<Vec<String>>()
       .join("\n")
   }
+  pub fn filter_by_priority(&mut self) {
+    if let Some(max_priority) =
+      self.errors.iter().map(CompileError::priority).max()
+    {
+      println!("max priority: {max_priority}");
+      take(&mut self.errors, |errors| {
+        errors
+          .into_iter()
+          .filter(|e| e.priority() == max_priority)
+          .collect()
+      });
+    }
+  }
 }
 
 impl From<CompileError> for ErrorLog {
@@ -553,6 +584,14 @@ impl From<CompileError> for ErrorLog {
     let mut errors = ErrorLog::new();
     errors.log(e);
     errors
+  }
+}
+
+impl From<Vec<CompileError>> for ErrorLog {
+  fn from(errors: Vec<CompileError>) -> Self {
+    ErrorLog {
+      errors: errors.into_iter().collect(),
+    }
   }
 }
 

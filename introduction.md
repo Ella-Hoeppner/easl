@@ -9,11 +9,11 @@ All function calls are denoted by a pair of parentheses containing the function 
 (f a b)
 ```
 
-This bit of code represents an application of the function `f` to the arguments `a` and `b`. This might look a bit unusual if you're used to C-style syntax which would write the name of the function before the parentheses, like `f(a, b)`, but the simplicity easl's syntax has many advantages. For one, in easl, no commas are necessary to separate arguments - the whitespace alone is enough.
+This bit of code represents an application of the function `f` to the arguments `a` and `b`. This might look a bit unusual if you're used to C-style syntax which would write the name of the function before the parentheses, like `f(a, b)`, but the simplicity of easl's syntax has many advantages. For one, in easl, no commas are necessary to separate arguments - the whitespace alone is enough.
 
 Another big difference from C-style syntax is the lack of infix operators. If you want to add two numbers together, C-style syntax would have you do that as `1 + 2`. However, in easl, this would be written as `(+ 1 2)`. You simply treat `+` as a function of two arguments, and call it like you would any other function. The same is true for all other arithmetic and logical operators, and the assignment operators like `=` and `+=`; to assign to a variable, you do `(= a 5)` rather than `a = 5`.
 
-The fact that infix operators aren't used in easl frees up the `-` symbol to be used as a separator in multi-word names, since it won't be confused with the infix subtraction opereation. This can be more aesthetically pleasing than the `_` separator or using camel case like other languages do. For instance, you can name a variable `my-variable` rather than `my_variable` or `myVariable`. The built-in functions in easl all use this style, which is referred to as "kebab case". Type names in easl, on the other hand, all use camel case with a capitalized first letter, e.g. `MyType`.
+The fact that infix operators aren't used in easl frees up the `-` symbol to be used as a separator in multi-word names, since it won't be confused with the infix subtraction operation. This can be more aesthetically pleasing than the `_` separator or using camel case like other languages do. For instance, you can name a variable `my-variable` rather than `my_variable` or `myVariable`. The built-in functions in easl all use this style, which is referred to as "kebab case". Type names in easl, on the other hand, all use camel case with a capitalized first letter, e.g. `MyType`.
 
 Function and variable names in easl may include a wide variety of symbols that aren't allowed in most languages. For instance, you can freely use `-`, `_`, `!`, `?`, `*`, `+`, `>`, `<`, `@`, `$`, `%`, `^`, and `&`. Reserved characters that may not be used in names are `(`, `)`, `[`, `]`, `{`, `}`, `|`, `~`, `@`, `:`, `/`, `'`, and `#`, because they are used for built-in syntactic constructs (or are planned to be).
 
@@ -52,6 +52,44 @@ The `let` form always expects there to be a pair of square brackets `[...]` imme
 (+= z y)
 ```
 
+### Comments
+Easl supports several different types of comments. Easl supports single-line comments, multi-line comments, and expression comments.
+
+Single-line comments start with `;` and continue to the end of the line:
+
+```
+; I'm a comment! I can write whatever I want here!
+; I can even have unbalanced parentheses :)
+(defn f ...)
+```
+
+Multi-line comments start with `;*` and end with `*;`:
+
+```
+;* I'm a block comment.
+I can take up as many lines as I want!
+But when you want me to end you can just type *;
+(defn f ...)
+```
+
+Expression comments begin with a `#_` and continue to the end of following expression. This may be multiple lines, or a single line, or even just a small part of a single line, depending on what expression you place it on:
+
+```
+; The `defn` below this line will be completely ignored, since it starts with #_
+#_(defn f [x: f32]: f32
+    (+ x x))
+
+(defn f [x: f32]: f32
+  ; The `return` expression below will also be ignored
+  #_(return 5.)
+  (+ x
+     #_(this expression also be ignored! which is good because this definitely isnt
+        a valid function call)
+     x))
+```
+
+Expression comments are different from single-line or multi-line comments in that the code inside them must still parse as structurally valid easl code (though of course it doesn't need to typecheck). So if you just want to write some plaintext for documentation purposes and don't actually want it to be parsed, you're better off using single-line or multi-line comments. But expression comments can be very useful for quickly making temporary changes to the logic of your code.
+
 ### Expression-based syntax
 `let` blocks can also produce values that get returned into the scope where they're used. For instance, say we had some function `f` that accepts two `f32`s as arguments, and consider the following code:
 
@@ -72,12 +110,12 @@ f(2., b * b)
 
 Here the `b` binding has to be declared *before* the call to `f`, rather than *inside* it. This means that it isn't clear just by looking at this bit of code whether `b` will only used here, or instead used further down in the code. In the easl example, you know at a glance that `b` won't be used anywhere else, since it goes out of scope before the call to `f` is even completed.
 
-This ability to declare bindings right where they need to be used, including deeply nested inside other expressions, can be a poweful tool for organizing and reasoning about code in easl. This capacity to use things like `let` blocks as values and place them directly inside other expressions is called *expression-based syntax*. Many modern programming languages are embracing the convenience and expressivity of that this style of syntax has to offer, but before easl, no shader langauge has supported this.
+This ability to declare bindings right where they need to be used, including deeply nested inside other expressions, can be a poweful tool for organizing and reasoning about code in easl. This capacity to use things like `let` blocks as values and place them directly inside other expressions is called *expression-based syntax*. Many modern programming languages are embracing the convenience and expressivity that this style of syntax has to offer, but before easl, no shader langauge has supported this.
 
-Easl uses this expression-based style for it's other control structures as well, such as `if` and `match` blocks.
+Easl uses this expression-based style for its other control structures as well, such as `if` and `match` blocks.
 
 ### Variables
-By default, bindings introduced in a `let` block are immutable, meaning that you can't assign into them with operators like `=` or `+=`. To declare a binding as mutable, you prefix it's name with a `@var` annotation. For instance, this easl is equivalent to the following wgsl:
+By default, bindings introduced in a `let` block are immutable, meaning that you can't assign into them with operators like `=` or `+=`. To declare a binding as mutable, you prefix its name with a `@var` annotation. For instance, this easl is equivalent to the following wgsl:
 
 ```
 (let [@var x 1.
@@ -516,7 +554,7 @@ A match block where the scrutinee is of type `f32`, `u32`, or `i32` *must* have 
 For now, the scrutinee of a match block can only be a `bool`, `f32`, `u32`, `i32`, or an enum. It isn't currently possible to match on a vector or any custom struct type. This restriction will eventually be lifted.
 
 ### Annotations
-Earlier we saw that a binding in a `let` expression can be marked as mutable by prefixing it's name with `@var`, e.g.:
+Earlier we saw that a binding in a `let` expression can be marked as mutable by prefixing its name with `@var`, e.g.:
 
 ```
 (let [@var x 5.]
@@ -682,7 +720,7 @@ Currently, there is a significant restriction on the use of higher-order functio
                x))
 ```
 
-This limitation will eventually be lifted as the compiler matures. But for now, the upside is that this restriction guarantees that there will never be any performance penalty for making use of higher-order functions, since all function calls are inlined at compile time. In other words, easl's higher-order functions are a *zero-overhead abstraction*. And even with this limitation, they allow for ergonomic abstractions that reduce code duplication in ways that have previously been impossible in shader languages. For instance, here's a higher-order function that uses the finite differences method to approximate the gradient of any function passed into it:
+This limitation will eventually be lifted as the compiler matures. But for now, the upside is that this restriction guarantees that there will never be any performance penalty for making use of higher-order functions, since all function calls are inlined at compile time. In other words, easl's higher-order functions are a *zero-cost abstraction*. And even with this limitation, they allow for ergonomic abstractions that reduce code duplication in ways that have previously been impossible in shader languages. For instance, here's a higher-order function that uses the finite differences method to approximate the gradient of any function passed into it:
 
 ```
 (defn gradient [f: (Fn [vec3f] f32)
@@ -700,44 +738,6 @@ This limitation will eventually be lifted as the compiler matures. But for now, 
 
 ### Shadowing
 Easl allows you to shadow local bindings with other local bindings, by reusing a name inside a `let` expression that was previously used in the enclosing scope. However, easl forbids shadowing of global bindings.
-
-### Comments
-Easl supports several different types of comments. Like most langauges, easl supports both single-line and multi-line comments.
-
-Single-line comments start with `;` and continue to the end of the line:
-
-```
-; I'm a comment! I can write whatever I want here!
-; I can even have unbalanced parentheses :)
-(defn f ...)
-```
-
-Multi-line comments start with `;*` and end with `*;`:
-
-```
-;* I'm a block comment.
-I can take up as many lines as I want!
-But when you want me to end you can just type *;
-(defn f ...)
-```
-
-Easl also supports *expression comments*, which begin with a `#_` and continue to the end of following expression. This may be multiple lines, or a single line, or even just a small part of a single line, depending on what expression you place it on:
-
-```
-; The `defn` below this line will be completely ignored, since it starts with #_
-#_(defn f [x: f32]: f32
-    (+ x x))
-
-(defn f [x: f32]: f32
-  ; The `return` expression below will also be ignored
-  #_(return 5.)
-  (+ x
-     #_(this expression also be ignored! which is good because this definitely isnt
-        a valid function call)
-     x))
-```
-
-Expression comments are different from single-line or multi-line comments in that the code inside them must still parse as structurally valid easl code (though of course it doesn't need to typecheck). This means that if you write an expression comment but then try to change the code inside the, e.g. by adding unbalanced parentheses, then you might change the boundaries of where the expression ends, and create parsing errors in your file. So if you just want to write some plaintext for documentation purposes and don't actually want it to be parsed, you're better off using single-line or multi-line comments. But expression comments can be very useful for quickly making temporary changes to the logic of your code.
 
 ### Threading expression
 The *threading expression* can be used to write code in a way that avoids deep nesting. A threading expression starts with the special `->` keyword, and looks like this:
@@ -757,7 +757,7 @@ The above expression is precisely equivalent to:
 [(- (/ (* (+ x 6) 3) 2)) 5]
 ```
 
-The way to read the threading macro is to think of each `<>` that occurs in an expression as a "hole", which is filled with the value of the previous expression. So starting with the first expression, each expression effectively gets "threaded into" the position of the `<>` hole in the following expression. So in the above example, starting with `x`, the expression get threaded into the hole where the `<>` in next expression, which is `(+ <> 6)`, meaning that so far the expression is equivalent to `(+ x 6)`. Now, that expression gets fed into the `<>` hole in the following expression, which is `(* <> 3)`, so the new expression is now `(* (+ x 6) 3)`. This process continues until the last expression, in this case `[<> 5]`, which is reflected by the fact that the square brackets end up at the outermost layer of the expression.
+The way to read the threading macro is to think of each `<>` that occurs in an expression as a "hole", which is filled with the value of the previous expression. So starting with the first expression, each expression effectively gets "threaded into" the position of the `<>` hole in the following expression. So in the above example, starting with `x`, the expression get threaded into the hole where the `<>` in next expression, which is `(+ <> 6)`, meaning that so far the expression is equivalent to `(+ x 6)`. Now, that expression gets fed into the `<>` hole in the following expression, which is `(* <> 3)`, so the new expression is now `(* (+ x 6) 3)`. This process continues until the last expression, in this case `[<> 5]`, which is reflected by the fact that the square brackets end up at the outermost layer of the inlined expression.
 
 In other words, the threading macro allows you to turn the normal ordering of function calls inside out, writing the calls that will happen earliest before the outermost calls, rather than inside them.
 
@@ -806,6 +806,182 @@ With these shortcuts, the original example of the thread expression given in thi
 
 You may also use the `<>` expression twice inside a single step. For instance, `(-> x (* <> <>))` is the equivalent of `(* x x)`. When this syntax is used, each intermediate value will only be computed once, even if it is used multiple times in the next stage, so the threading expression will never have a negative impact on performance compared to another way of writing the expression.
 
-This feature is heavily inspired by Clojure's [threading macros](https://clojure.org/guides/threading_macros), but aims to be simpler and more flexible. Rather than the several different threading macros like `->`, `->>`, and `as->` that clojure provides, easl opts for a single, more flexible threading expression `->` that acts as a combination of clojure's `->` and `as->`. Easl thread expression makes use of the special "hole" symbol `<>` to declare position the threaded expression rather than requiring an explicit name like clojure's `as->` does, and falling back to the behavior of the clojure's `->` macro if the hole symbol isn't used.
+This feature is heavily inspired by Clojure's [threading macros](https://clojure.org/guides/threading_macros), but aims to be simpler and more flexible. Rather than the several different threading macros like `->`, `->>`, and `as->` that clojure provides, easl opts for a single, flexible threading expression `->` that acts as a combination of clojure's `->` and `as->`. Easl thread expression makes use of the special "hole" symbol `<>` to declare position the threaded expression rather than requiring an explicit name like clojure's `as->` does, whole falling back to the behavior of the clojure's `->` macro if the hole symbol isn't used.
 
 Easl may eventually include other kinds of threading expressions, such as a `cond->` expression similar to clojure's.
+
+# Example Shader Program
+The following is an example of a full shader program, one of the examples packaged with the [Easl CLI](https://github.com/Ella-Hoeppner/easl_cli). It implements a simple [raymarcher](https://iquilezles.org/articles/raymarchingdf/), and demonstrates several of easl's important features.
+
+```
+@{group 0
+  binding 0
+  address uniform}
+(var dimensions: vec2f)
+
+@{group 0
+  binding 1
+  address uniform}
+(var time: f32)
+
+(def triangles: u32
+     1)
+
+(defn uni->bi [x: vec2f]: vec2f
+  (-> x (* 2.) (- 1.)))
+
+@vertex
+(defn vertex [@builtin vertex-index: u32]: vec4f
+  (vec4f (match vertex-index
+           0 (vec2f -1.)
+           1 (vec2f -1. 3.)
+           _ (vec2f 3. -1.))
+         0.
+         1.))
+
+(enum (Option T) None (Some T))
+
+(struct Ray
+  pos: vec3f
+  dir: vec3f)
+
+(defn advance [r: Ray
+               d: f32]: Ray
+  (Ray (+ r.pos (* d r.dir)) r.dir))
+
+(defn gradient [f: (Fn [vec3f] f32)
+                x: vec3f]: vec3f
+  (let [center (f x)]
+    (vec3f (- (f (+ x (vec3f 0.001 0. 0.)))
+              center)
+           (- (f (+ x (vec3f 0. 0.001 0.)))
+              center)
+           (- (f (+ x (vec3f 0. 0. 0.001)))
+              center))))
+
+(defn raymarch [sdf: (Fn [vec3f] f32)
+                ray: Ray]: (Option vec3f)
+  (let [@var current-dist 0.]
+    (for [i 0 (< i 256) (= i (+ i 1))]
+      (let [current-pos (.pos (advance ray current-dist))
+            dist (sdf current-pos)]
+        (when (< (abs dist) 0.001)
+          (return (Some (normalize (gradient sdf current-pos)))))
+        (when (> dist 5.)
+          (break))
+        (+= current-dist (* 0.9 dist))))
+    None))
+
+(defn sd-box [pos: vec3f
+              size: vec3f]: f32
+  (let [q (- (abs pos) size)]
+    (+ (length (max q (vec3f 0.)))
+       (min (max q.x (max q.y q.z)) 0.))))
+
+(defn rot [angle: f32]: mat2x2f
+  (let [c (cos angle)
+        s (sin angle)]
+    (mat2x2f c (- s) s c)))
+
+(defn sd-scene [@var pos: vec3f]: f32
+  (-= pos (vec3f 0. 0. 2.5))
+  (= pos.zy
+     (* pos.zy (rot (* 0.4 time))))
+  (= pos.xz
+     (* pos.xz (rot (* -0.7 time))))
+  (+ (sd-box pos (vec3f 0.75))
+     (* 0.025
+        (cos (+ (* 11. pos.x) (* 9. time))))
+     (* 0.01
+        (cos (+ 2. (* 4. pos.y) (* 4. time))))
+     (* 0.03
+        (cos (+ 5. (* 7. pos.z) (* 12. time))))))
+
+@fragment
+(defn fragment [@builtin position: vec4f]: vec4f
+  (let [screen-pos (-> position
+                       .xy
+                       (/ dimensions)
+                       uni->bi
+                       (* (/ dimensions
+                             (min dimensions.x dimensions.y))))
+        surface-normal (raymarch sd-scene
+                                 (Ray (vec3f 0.)
+                                      (normalize (vec3f screen-pos 1.))))]
+    (match surface-normal
+      (Some normal) (vec4f (pow (* (+ normal 1.) 0.5)
+                                (vec3f 2.2))
+                           1.)
+      None (vec4f (vec3f 0.) 1.))))
+```
+
+The `raymarch` function in the above example is structured quite differently than you would see in a traditional shader language. This raymarch function takes in a `Ray` and a function called `sdf`, which should be a [signed distance function](https://en.wikipedia.org/wiki/Signed_distance_function). The `sdf` accepts a `vec3f` representing a position, and returns an `f32` representing the distance to a surface. The raymarcher itself returns an `(Option vec3f)`, which represents the surface normal of the location where the ray intersected the sdf, if any was found. In the case that the ray never intersects the surface, the `None` variant will be returned, otherwise the `Some` variant will be returned, containing the surface normal.
+
+The fact that our `raymarch` function accepts the `sdf` function *as an argument* makes it much more general and powerful than any equivalent function in a traditional shader language. If you were to rewrite the above shader in a language like glsl or wgsl, you'd have to omit the `sdf` argument to `raymarch`, and instead just directly inline a call to `sd-scene` inside the body of `raymarch`.
+
+That approach comes with a big downside, which is that if you ever wanted to raymarch another sdf in the same shader, you'd have to just duplicate the entire `raymarch` function, but with the inlined call to `sd-scene` swapped with a call to whatever other sdf you wanted to use. In easl, you could simply call the same `raymarch` function in several different places with several other functions in place of the `sdf` argument, and your code would work just fine, but with much less duplicated code. And there is no performance penalty associated with this usage of higher-order functions, because all calls to higher-order functions are transformed at compile-time into versions of the function with all the higher-order arguments inlined, just as if you had written it that way by hand.
+
+Additionally, the `Option` enum provides a nice expression of the fact that raymarchers do not always hit their target. In a traditional shader language, without sum types, you'd have to use some other way to denote that the raymarcher exited without converging on the surface. For instance, you might decide to return a special value like `(vec3f 0.)` when the ray diverges, and then just check for that value everywhere you use the raymarching function. Or, you might return a struct containing both a `vec3f` and a `bool`, such that the `bool` is set to false when the ray diverges. However, both of these are more error-prone and less maintainable than the `Option`-based approach that easl provides. Both other approaches make it very easy to accidentally forget to use check the validity of the output before using the `vec3f`, which would lead to a bug. The `Option` approach makes that kind of mistake impossible, since there's not even any `vec3f` to access unless you use a `match` block to handle both possible cases of the returned value.
+
+### Details on the compilation of Enum types
+
+Thankfully, adopting the more type-safe and convenient representation that the `Option` enum provides in the above example doesn't come with any runtime cost; the `Option` approach is just as efficient as the alternative, and compile to essentially the same code. Easl's enums are a *zero-cost abstraction*. Specifically, the compiled wgsl code for the `Option` type used in the above example looks like this:
+
+```
+struct Option_vec3f {
+    discriminant: u32,
+    data: array<u32, 3>
+}
+
+const None_vec3f: Option_vec3f = Option_vec3f(0, array(0, 0, 0));
+
+fn Some_vec3f(value: vec3f) -> Option_vec3f {
+  return Option_vec3f(
+    1u,
+    array(
+      bitcast<u32>(value.x),
+      bitcast<u32>(value.y),
+      bitcast<u32>(value.z)
+    )
+  );
+}
+```
+
+Here you can see the definition for the `Option` type itself as a wgsl struct, and the two constructors, `None` and `Some` The name of the type and each variant is suffixed with `_vec3f` because this specific code represents the [*monomorphized*](https://en.wikipedia.org/wiki/Monomorphization) version of our generic `Option` type for the particular inner type `vec3f`. Since the `None` constructor has no arguments, it is simply a constant, while the `Some` constructor is represented as a function, since it must accept some inner `vec3f` value.
+
+The `Option_vec3f` struct represents our `(Option vec3f)` enum type. All compiled enums look like this one, with `discriminant` and `data` fields, with the only difference being the size of the `data` array.
+
+The `discriminant` field is used to designate which variant each instance belongs to. In this case, a discriminant of 0 represents the `None` variant, while 1 represents `Some`. No other discriminant value will ever be used for this type, but an enum with 3 or more variants will have a unique, constant `u32` value for each possible variant.
+
+The `data` array will in general contain as many `u32`s as would be needed to represent the largest internal type of any variant. Here only variant with an internal type is `Some`, which contains a `vec3f`, which just consists of 3 `f32`s, which have the same size as `u32`s, so the `data` array is of size `3`. The `Some_vec3f` constructor function takes in a `vec3f`, and uses `bitcast` to store each individaul field of the `vec3f` type into a different slot in the `data` array.
+
+In the above example, the `raymarch` function which returns the `(Option vec3f)` is invoked in the `fragment` function, which then uses a `match` expression on the result to handle both possible variants. The compiled code for that `match` expression looks like this:
+
+```
+let surface_normal: Option_vec3f = ...;
+switch(surface_normal.discriminant) {
+  case 1u: {
+    let normal = vec3(
+      bitcast<f32>(surface_normal.data[0u]),
+      bitcast<f32>(surface_normal.data[1u]),
+      bitcast<f32>(surface_normal.data[2u])
+    );
+    return vec4f(
+      vec3f(
+        pow(
+          ((normal + 1f) * 0.5f),
+          vec3f(f32(2.2f))
+        )
+      ),
+      f32(1f)
+    );
+  }
+  default: {
+    return vec4f(vec3f(vec3f(f32(0f))), f32(1f));
+  }
+}
+```
+
+The `match` expression gets converted into a `switch` statement with two `case`s, one for each of the arms in the `match`. The first `case`, which checks that the discriminant is `1`, corresponds to the `(Some normal)` branch of the `match` expression. The first statement inside that `case` defines the `normal` binding as a `vec3f` constructed from the elements stored within the `data` field of the `Option_vec3f`, using `bitcast` again to convert the values from `u32`s to `f32`s. The second case, which `default` since it is the last possible case, represents the `None` branch of the `match` expression.
+
+While the compiled wgsl code may look complex, it's actually a very performant translation of the easl code. The `bitcast` operator in wgsl doesn't actually impose any runtime cost - it's simply a compile-time abstraction that lets the type system know you're intentionally reinterpreting the bits of a value, and won't actually insert any instructions in the final compiled machine code. And the `switch` block with the two cases should perform equivalently to an `if` statement that used the `discriminant` of the enum as its condition. So in terms of the actual runtime implications, this compiled code from the earlier raymarching example should perform the same as an alternative hand-written wgsl raymarcher that returned a struct containing both a `bool` for whether the ray converged on the surface and a `vec3f` for the surface normal direction.
