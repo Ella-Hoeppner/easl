@@ -25,7 +25,7 @@ impl ContextId for Context {
   }
 }
 
-use crate::compiler::{error::CompileResult, program::EaslDocument};
+use crate::compiler::program::EaslDocument;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Encloser {
   Parens,
@@ -157,12 +157,10 @@ pub fn parse_easl(easl_source: &'_ str) -> EaslDocument<'_> {
   Document::from_text_with_syntax(EaslSyntax, easl_source)
 }
 
-pub fn parse_easl_without_comments(
-  easl_source: &'_ str,
-) -> CompileResult<EaslDocument<'_>> {
+pub fn parse_easl_without_comments(easl_source: &'_ str) -> EaslDocument<'_> {
   let mut doc = parse_easl(easl_source);
   doc.strip_comments();
-  Ok(doc)
+  doc
 }
 
 pub type EaslTree = DocumentSyntaxTree<Encloser, Operator>;
