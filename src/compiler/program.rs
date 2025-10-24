@@ -1122,6 +1122,7 @@ impl Program {
                     .map(|(arg_name, arg_type)| {
                       (
                         arg_name.clone(),
+                        SourceTrace::empty(),
                         VariableKind::Var,
                         TypedExp {
                           data: arg_type.clone(),
@@ -1256,11 +1257,11 @@ impl Program {
           .walk(&mut |exp| {
             match &exp.kind {
               ExpKind::Let(items, _) => {
-                for (_, _, value) in items.iter() {
+                for (_, source_trace, _, value) in items.iter() {
                   if Type::Unit.known() == value.data.kind {
                     errors.log(CompileError {
                       kind: CompileErrorKind::TypelessBinding,
-                      source_trace: value.source_trace.clone(),
+                      source_trace: source_trace.clone(),
                     });
                   }
                 }
@@ -1942,6 +1943,12 @@ impl Program {
         .walk(&mut |exp: &TypedExp| {
           type_annotations
             .push((exp.source_trace.clone(), exp.data.kind.clone()));
+          if let ExpKind::Let(bindings, _) = &exp.kind {
+            for (_, source_trace, _, bound_exp) in bindings.iter() {
+              type_annotations
+                .push((source_trace.clone(), bound_exp.data.kind.clone()))
+            }
+          }
           Ok::<_, Never>(true)
         })
         .unwrap();

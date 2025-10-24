@@ -369,8 +369,8 @@ pub fn eval(
     }
     ExpKind::Let(items, exp) => {
       let names: Vec<Rc<str>> =
-        items.iter().map(|(name, _, _)| name.clone()).collect();
-      for (name, _, exp) in items {
+        items.iter().map(|(name, _, _, _)| name.clone()).collect();
+      for (name, _, _, exp) in items {
         let value = eval(exp, env)?;
         env.bind(name, value);
       }

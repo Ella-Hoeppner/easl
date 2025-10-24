@@ -280,7 +280,10 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Function(Vec<Rc<str>>, Box<Exp<D>>),
   Application(Box<Exp<D>>, Vec<Exp<D>>),
   Access(Accessor, Box<Exp<D>>),
-  Let(Vec<(Rc<str>, VariableKind, Exp<D>)>, Box<Exp<D>>),
+  Let(
+    Vec<(Rc<str>, SourceTrace, VariableKind, Exp<D>)>,
+    Box<Exp<D>>,
+  ),
   Match(Box<Exp<D>>, Vec<(Exp<D>, Exp<D>)>),
   Block(Vec<Exp<D>>),
   ForLoop {
@@ -660,9 +663,10 @@ impl TypedExp {
                                   return Err(annotation_error.clone());
                                 }
                                 match name_ast {
-                                  EaslTree::Leaf(_, name) => {
+                                  EaslTree::Leaf(pos, name) => {
                                     bindings.push((
                                       name.into(),
+                                      pos.into(),
                                       match name_annotation {
                                         None => VariableKind::Let,
                                         Some(
@@ -1121,7 +1125,7 @@ impl TypedExp {
         Function(_, body) => body.walk(prewalk_handler)?,
         Access(_, body) => body.walk(prewalk_handler)?,
         Let(bindings, body) => {
-          for (_, _, value) in bindings {
+          for (_, _, _, value) in bindings {
             value.walk(prewalk_handler)?;
           }
           body.walk(prewalk_handler)?;
@@ -1183,7 +1187,7 @@ impl TypedExp {
         Function(_, body) => body.walk_mut(prewalk_handler)?,
         Access(_, body) => body.walk_mut(prewalk_handler)?,
         Let(bindings, body) => {
-          for (_, _, value) in bindings {
+          for (_, _, _, value) in bindings {
             value.walk_mut(prewalk_handler)?;
           }
           body.walk_mut(prewalk_handler)?;
@@ -1357,7 +1361,7 @@ impl TypedExp {
       Let(bindings, body) => {
         let binding_lines: Vec<String> = bindings
           .into_iter()
-          .map(|(name, variable_kind, value_exp)| {
+          .map(|(name, _, variable_kind, value_exp)| {
             if value_exp.kind == ExpKind::Uninitialized {
               format!(
                 "{} {}: {};",
@@ -2112,21 +2116,19 @@ impl TypedExp {
           &self.source_trace,
           errors,
         );
-        for (name, _, value) in bindings.iter_mut() {
+        for (name, _, _, value) in bindings.iter_mut() {
           anything_changed |= value.propagate_types_inner(ctx, errors);
           ctx.bind(name, Variable::immutable(value.data.clone()));
         }
         anything_changed |= body.propagate_types_inner(ctx, errors);
-        for (name, _, value) in bindings.iter_mut().rev() {
+        for (name, source_trace, _, value) in bindings.iter_mut().rev() {
           let unbound_type = ctx.unbind(name).var_type.kind;
           anything_changed |=
-            value
-              .data
-              .constrain(unbound_type, &self.source_trace, errors);
+            value.data.constrain(unbound_type, &source_trace, errors);
         }
         self.data.subtree_fully_typed = bindings.iter().fold(
           body.data.subtree_fully_typed,
-          |acc, (_, _, binding_value)| {
+          |acc, (_, _, _, binding_value)| {
             acc && binding_value.data.subtree_fully_typed
           },
         );
@@ -2455,7 +2457,7 @@ impl TypedExp {
           false
         }
         Let(binding_names_and_values, body) => {
-          for (name, kind, value) in binding_names_and_values {
+          for (name, _, kind, value) in binding_names_and_values {
             value.validate_assignments_inner(ctx)?;
             ctx.bind(
               name,
@@ -2463,7 +2465,7 @@ impl TypedExp {
             )
           }
           body.validate_assignments_inner(ctx)?;
-          for (name, _, _) in binding_names_and_values {
+          for (name, _, _, _) in binding_names_and_values {
             ctx.unbind(name);
           }
           false
@@ -2884,7 +2886,7 @@ impl TypedExp {
         false
       }
       Let(let_bindings, body) => {
-        for (name, _, value) in let_bindings.iter_mut() {
+        for (name, source_trace, _, value) in let_bindings.iter_mut() {
           value.deshadow_inner(
             globally_bound_names,
             bindings,
@@ -2895,7 +2897,7 @@ impl TypedExp {
           );
           bind(
             name,
-            &value.source_trace,
+            &source_trace,
             bindings,
             reverse_bindings,
             names,
@@ -2910,7 +2912,7 @@ impl TypedExp {
           true,
           names,
         );
-        for (name, _, _) in let_bindings.iter_mut().rev() {
+        for (name, _, _, _) in let_bindings.iter_mut().rev() {
           unbind(name, bindings, reverse_bindings);
         }
         false
@@ -3149,13 +3151,13 @@ impl TypedExp {
       Let(items, exp) => {
         let effects = items.iter().fold(
           exp.effects(program),
-          |mut e, (_, _, value_exp)| {
+          |mut e, (_, _, _, value_exp)| {
             e.merge(value_exp.effects(program));
             e
           },
         );
         let bound_names: HashSet<Rc<str>> =
-          items.iter().map(|(name, _, _)| name.clone()).collect();
+          items.iter().map(|(name, _, _, _)| name.clone()).collect();
         effects
           .0
           .into_iter()
@@ -3287,7 +3289,12 @@ impl TypedExp {
                 data: temp.data.clone(),
                 source_trace: temp.source_trace.clone(),
                 kind: ExpKind::Let(
-                  vec![(f_name, VariableKind::Let, name_exp)],
+                  vec![(
+                    f_name,
+                    temp.source_trace.clone(),
+                    VariableKind::Let,
+                    name_exp,
+                  )],
                   Box::new(temp),
                 ),
               };
@@ -3355,6 +3362,7 @@ impl TypedExp {
                           .map(|(old_name, new_name)| {
                             (
                               new_name,
+                              exp.source_trace.clone(),
                               VariableKind::Let,
                               TypedExp {
                                 data: replacement_types
@@ -3439,7 +3447,12 @@ impl TypedExp {
                   take(exp, |exp| TypedExp {
                     data: exp.data.clone(),
                     kind: ExpKind::Let(
-                      vec![(name, VariableKind::Let, match_exp)],
+                      vec![(
+                        name,
+                        SourceTrace::empty(),
+                        VariableKind::Let,
+                        match_exp,
+                      )],
                       exp.into(),
                     ),
                     source_trace: SourceTrace::empty(),
@@ -3464,7 +3477,7 @@ impl TypedExp {
           Let(items, body) => loop {
             let mut restructured = false;
             let mut index_to_remove: Option<usize> = None;
-            for (index, (binding_name, variable_kind, value)) in
+            for (index, (binding_name, _, variable_kind, value)) in
               items.iter_mut().enumerate()
             {
               match &value.kind {
@@ -3475,7 +3488,7 @@ impl TypedExp {
                   let Let(inner_bindings, mut inner_body) = inner_value else {
                     unreachable!()
                   };
-                  std::mem::swap(&mut *inner_body, &mut items[index].2);
+                  std::mem::swap(&mut *inner_body, &mut items[index].3);
                   items.splice(index..index, inner_bindings);
                   break;
                 }
@@ -3499,7 +3512,7 @@ impl TypedExp {
                         let body_type = body.data.clone();
                         let mut inner_bindings = items.split_off(index);
                         std::mem::swap(
-                          &mut inner_bindings.first_mut().unwrap().2,
+                          &mut inner_bindings.first_mut().unwrap().3,
                           &mut binding_value,
                         );
                         inner_statements.push(TypedExp {
@@ -3644,7 +3657,12 @@ impl TypedExp {
         self,
         &mut Exp {
           kind: ExpKind::Let(
-            vec![(gensym_name.clone(), VariableKind::Let, second_arg.clone())],
+            vec![(
+              gensym_name.clone(),
+              SourceTrace::empty(),
+              VariableKind::Let,
+              second_arg.clone(),
+            )],
             Exp {
               kind: ExpKind::Block(
                 fields
