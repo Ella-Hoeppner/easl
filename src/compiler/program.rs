@@ -1775,7 +1775,10 @@ impl Program {
       let mut remaining_inferred_struct_field_locations = vec![];
       for (other_s, field_name, location) in inferred_struct_field_locations {
         if s == other_s {
-          field_locations.push((field_name, location));
+          let location = (field_name, location);
+          if !field_locations.contains(&location) {
+            field_locations.push(location);
+          }
         } else {
           remaining_inferred_struct_field_locations
             .push((other_s, field_name, location));

@@ -1,27 +1,6 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language 0.1
-* for some reason the following doesn't work:
-  ```
-  (struct VertexOutput
-    @builtin position: vec4f
-    corner-pos: vec2f)
-
-  @vertex
-  (defn vertex [@builtin vertex-index: u32
-                @builtin instance-index: u32]: VertexOutput
-    (let [corner (match vertex-index
-                  0 (vec2f -1.)
-                  1 (vec2f -1. 3.)
-                  _ (vec2f 3. -1.))]
-      (VertexOutput (vec4f corner 0. 1.) corner)))
-
-  @fragment
-  (defn fragment [in: VertexOutput]: vec4f
-    (vec4f in.corner-pos 0. 1.))
-  ```
-  there's a `ConflictingAttributes` error on the `VertexOutput` struct. Seems to go away if you add `@{location 0}` in from of `corner-pos`. But that should be inferred! So idk what's going on
-
 * Overhaul references
   * References shouldn't be first-class values. You shouldn't be able to create a binding of type `&f32` or anything like that. Functions can mark some of their arguments as references, but you'll just pass normal values for those arguments, and the fact that it's a reference will always be implicit - there will be no syntax for constructing a reference.
   * Get rid of the `&` operator, just use a `@ref ...` annotation syntax on the function arguments

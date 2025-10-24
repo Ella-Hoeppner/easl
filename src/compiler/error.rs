@@ -568,7 +568,6 @@ impl ErrorLog {
     if let Some(max_priority) =
       self.errors.iter().map(CompileError::priority).max()
     {
-      println!("max priority: {max_priority}");
       take(&mut self.errors, |errors| {
         errors
           .into_iter()
