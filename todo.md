@@ -1,6 +1,6 @@
 # todo
 ## Highest priority
-### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language 0.1
+### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production-ready"
 * Overhaul references
   * References shouldn't be first-class values. You shouldn't be able to create a binding of type `&f32` or anything like that. Functions can mark some of their arguments as references, but you'll just pass normal values for those arguments, and the fact that it's a reference will always be implicit - there will be no syntax for constructing a reference.
   * Get rid of the `&` operator, just use a `@ref ...` annotation syntax on the function arguments
@@ -14,6 +14,8 @@
     * I wonder if I should rename `var` to `mut` for clarity?
   * builtin assignment operators like `=` and `+=` should be reformulated as accepting a `@ref-mut`
   * once this is done, make sure that you can successfully call `array-length` like `(array-length arr)` rather than `(array-length &arr)`
+
+* `*=` doesn't work when multiplying a vec by a matrix
 
 * atomics
 * barrier functions
@@ -81,7 +83,10 @@
     * maybe allow compilation so long as it's a zeroable type? But still would need to prevent compilation if it's ever used as e.g. a texture
 
 * support builtin functions that don't just directly correspond to any wgsl functions
-  * e.g. wanna have `bi->uni` and `uni->bi` builtin, don't wanna have to declare them in all my sketches
+  * current ones I can think of:
+    * `bi->uni`, `uni->bi`
+      * eventually these should be generic over some `T: |(Add f32) (Mul f32)|`, but for now can just do them over the vecf types
+    * `rot: (Fn [f32]: mat2x2f)` 
   * these will need to be represented as `FunctionImplementationKind::Composite`s, but will just have their definitions builtin ratehr than being user-defined
   * need to make sure these don't always get compiled to the output if they aren't used, though, unlike normal composite functions
 
@@ -160,7 +165,10 @@
   * since there aren't any generic variables involved, I think these should be unambiguously typable most of the time
 
 * implement `#` as a shorthand anonymous function syntax
-  * like clojure's `#(...)`, but works on any kind of expression, e.g. `#[% 1.]`.
+  * like clojure's `#(...)`, but works on any kind of expression, e.g. `#[% 1.]` for a function that returns an array, or `#5` for a constant function that always just returns `5`.
+  * I guess this at least needs to be able to represent a function of 0 args (if no `%` is present), or a function of 1 arg. Could also eventually extend it to support `%1` `%2` like clojure does for n-arg fns. 
+    * But sometimes a `#(...)` expression that doesn't use `%` inside shouldn't actually be treated as a 0-arg fn, but instead a n>0-arg fn that just ignores it's argument(s). At least, it would be ideal to support that. This ambiguity doesn't occur with the `(fn [...] ...)` syntax since you at least have to name each argument even if you don't use them in the body, so the number of args is never ambiguous. But if we wanna support this in the `#` syntax then the *number of arguments* will itself need to be part of what gets inferred, which seems somewhat tricky.
+      * as a workaround the user could always do `#(let [_ %] ...)` to indicate that there should be an argument in `%`, but then just not use it in the expression that actually gets returned. But it would be sorta lame to have to do that
 
 * closures
 
@@ -213,7 +221,7 @@
     * this will basically require any function that would normally return a `T` but can throw the `break` effect to essentially return a union of `T` and some unit `Break` type, and then match on that wherever the function is used to see if it threw the `break` effect and propagate it outwards if so.
       * this might be a good place to start introducing anonymous unions, but just used internally for now, not exposed to the user
   * allow user to define their own effect types, and have a built-in `(handle <handler> <code>)` operator
-    * probably want to have some kind of support for like, mutable variables that are scope to each individual instance of a handler. Not sure quite how to do that though
+    * probably want to have some kind of support for like, mutable variables that are scoped to each individual instance of a handler. Not sure quite how to do that though
       * might need some kind of module system for this? But even if the variables were scope to the inside of some module, that would kinda imply that different handlers would all share the same state for those variables, which seems wrong
       * Maybe handlers should be structs that implement some interface, rather than functions? And then use the fields of the struct to represent whatever mutable state you'd wanna store?
         * so the interface might be like:
@@ -227,7 +235,7 @@
   * I guess the core thing will be a constraint like `(HasField 'x T)`
     * any function that accepts an argument of a generic type with constraint `(HasField 'x T)` should be able to access the field `.x` on elements of that type inside its body
   * would also be really nice to include some builtin row-polymorphic functions like `assoc`, `dissoc`, `update`, `select-fields` with behavior analogous to clojure
-    * can also have `update=` for modifying a mutable variable in place, following along the `+=` naming convention
+    * can also have `update=` for modifying a mutable variable in place given a fn, following along the `+=` naming convention
     * these will need to take a special kind of value as an "argument", which is a symbol that corresponds to the field name being acted upon
       * so like `(assoc s 'field-name 5.)`, the `'field-name` here is a special thing that needs to be known at compile-time
         * I guess this could be represented as having a special `Label` built-in type, which can only be constructed by with this symbol-literal syntax. Make it so the user isn't allowed to ever define a function that returns a `Label`, or use `Label` as a field type in a struct. That way it's guaranteed by construction that any value of type `Label` that appears in the code will be knowable at compile time, while still making it possible for the user to define functions that accept `Label`s as inputs
@@ -250,7 +258,7 @@
              f: (Fn [F] F)]: S
             ...)
       ```
-      * don't live this though for the same reason I don't like rusts way of handling functions. These labels *feel* like values, and the "they're actually unit types that-satisfy a constraint" thing feels hacky, and probably unintuitive to people not super comfortable with type-level stuff. Though I guess these singatures will be confusing for those kinds of people either way. I think I'll probably go with the term-level `Label` approach and fall back to this type-level approach if it turns out to be hard to make decidable
+      * don't love this though for the same reason I don't like rusts way of handling functions. These labels *feel* like values, and the "they're actually unit types that-satisfy a constraint" thing feels hacky, and probably unintuitive to people not super comfortable with type-level stuff. Though I guess these singatures will be confusing for those kinds of people either way. I think I'll probably go with the term-level `Label` approach and fall back to this type-level approach if it turns out to be hard to make decidable
     * The signature for `assoc` will be a bit more complicated since changes the shape of the struct:
       ```
       (defn (assoc F 
@@ -297,6 +305,8 @@
 ## Low priority
 ### extra features once core language is solid
 * interpreter and partial evaluator
+  * can use rust_apfloat, https://github.com/rust-lang/rustc_apfloat, for deterministic float operations
+   * at least when it's being run as a partial evaluator. Maybe have a mode to just use normal operations for extra speed when used in the interpreter, but keep that mode on when doing partial evaluation
 
 * uniformity analysis of some kind? Want to make sure the user never gets errors from the compiled wgsl, so I guess some form of uniformity analysis mimicking wgsl's will be necessary
 

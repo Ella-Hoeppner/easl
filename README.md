@@ -18,6 +18,7 @@ This repository contains the core compiler code. This repository can be used as 
 | Higher-order functions | Functions that can accept other functions as inputs, and return other functions as outputs | ✅* |
 | Closures | Anonymous functions that capture variables from the scope in which they're created | ❌ |
 | Type Constraints | Similar to typeclasses/traits/interfaces, but able to coexist seamlessly with arbitrary function overloading | 🚧 |
+| Modules | Organize types and functions into modules for code organization and re-use, including the ability to use refer to modules defined in other files | ❌ |
 | Anonymous Structs | Structs without names, characterized only by the names and types of their fields. Useful for grouping values together in a way that offers more clarity than a tuple, without having to explicitly declare a new type. | ❌ |
 | Row Polymorphism | The ability to define functions that operate on any struct matching a certain shape, e.g. a function that can operate over any struct type with a field named `x` | ❌ |
 | Algebraic Effects | Sophisticated, type-safe manipulation of control flow. There will be some limitations compared to other algebraic effect systems: continuations will be single-shot, cannot escape the scope of the handler, and can only be called in the tail position | 🚧 |
@@ -25,7 +26,7 @@ This repository contains the core compiler code. This repository can be used as 
 
 * All core types, math functions, and control flow operations from wgsl are already implemented. Missing features include atomics, barrier functions, texture types other than basic 2d textures, and extension features like subgroup/quad functions. Finishing support for these missing features is a top priority.
 * Sum Types are supported, but for now may only contain at most a single internal field. This limitation will be resolved as soon as tuple are implemented.
-* Higher-order functions currently have a significant restriction: all function-type arguments must be inlinable at compile time. A function `f` that takes another function as an argument may be called like `(f g)`, but not like `(f (if condition f g))`, because the compiler needs to be able to inline the higher-order argument at compile time. If you violate this restriction, you'll get a compilation error. This limitation will eventually be resolved, but is blocked behind several other unimplemented internal features, so it may take some time.
+* Higher-order functions currently have a significant restriction: all function-type arguments must be inlinable at compile time. A function `f` that takes another function as an argument may be called like `(f g)`, but not like `(f (if a f g))`, because the compiler needs to be able to inline the higher-order argument at compile time. If you violate this restriction, you'll get a compilation error. This limitation will eventually be resolved, but is blocked behind several other unimplemented internal features, so it may take some time.
 
 ---
 

@@ -320,7 +320,9 @@ impl Block {
             unreachable!()
           };
           return match s.as_str() {
-            "struct" | "when" | "while" | "for" if trees.len() >= 1 => {
+            "struct" | "enum" | "when" | "while" | "for"
+              if trees.len() >= 1 =>
+            {
               let mut blocks = trees.map(Self::from_tree);
               IndentedBody {
                 opener: s,

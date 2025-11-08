@@ -839,7 +839,9 @@ The following is an example of a full shader program, one of the examples packag
          0.
          1.))
 
-(enum (Option T) None (Some T))
+(enum (Option T)
+  None
+  (Some T))
 
 (struct Ray
   pos: vec3f
@@ -851,13 +853,10 @@ The following is an example of a full shader program, one of the examples packag
 
 (defn gradient [f: (Fn [vec3f] f32)
                 x: vec3f]: vec3f
-  (let [center (f x)]
-    (vec3f (- (f (+ x (vec3f 0.001 0. 0.)))
-              center)
-           (- (f (+ x (vec3f 0. 0.001 0.)))
-              center)
-           (- (f (+ x (vec3f 0. 0. 0.001)))
-              center))))
+  (- (vec3f (f (+ x (vec3f 0.001 0. 0.)))
+            (f (+ x (vec3f 0. 0.001 0.)))
+            (f (+ x (vec3f 0. 0. 0.001))))
+     (f x)))
 
 (defn raymarch [sdf: (Fn [vec3f] f32)
                 ray: Ray]: (Option vec3f)
@@ -876,7 +875,7 @@ The following is an example of a full shader program, one of the examples packag
               size: vec3f]: f32
   (let [q (- (abs pos) size)]
     (+ (length (max q (vec3f 0.)))
-       (min (max q.x (max q.y q.z)) 0.))))
+       (min (max q.x q.y q.z) 0.))))
 
 (defn rot [angle: f32]: mat2x2f
   (let [c (cos angle)
@@ -886,16 +885,18 @@ The following is an example of a full shader program, one of the examples packag
 (defn sd-scene [@var pos: vec3f]: f32
   (-= pos (vec3f 0. 0. 2.5))
   (= pos.zy
-     (* pos.zy (rot (* 0.4 time))))
+     (* pos.zy
+        (rot (* 0.4 (+ time 2.)))))
   (= pos.xz
-     (* pos.xz (rot (* -0.7 time))))
+     (* pos.xz
+        (rot (* -0.7 (+ time 1.)))))
   (+ (sd-box pos (vec3f 0.75))
      (* 0.025
-        (cos (+ (* 11. pos.x) (* 9. time))))
+        (cos (+ (* 11. pos.x) (* 4.5 time))))
      (* 0.01
-        (cos (+ 2. (* 4. pos.y) (* 4. time))))
+        (cos (+ 2. (* 4. pos.y) (* 2. time))))
      (* 0.03
-        (cos (+ 5. (* 7. pos.z) (* 12. time))))))
+        (cos (+ 5. (* 7. pos.z) (* 6.25 time))))))
 
 @fragment
 (defn fragment [@builtin position: vec4f]: vec4f

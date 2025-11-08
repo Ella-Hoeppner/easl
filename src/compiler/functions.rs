@@ -271,6 +271,15 @@ impl AbstractFunctionSignature {
     }
     None
   }
+  pub(crate) fn has_higher_order_arguments(&self) -> bool {
+    self.arg_types.iter().any(|t| {
+      if let AbstractType::Type(Type::Function(_)) = t {
+        true
+      } else {
+        false
+      }
+    })
+  }
   pub(crate) fn normalized_signature(
     &self,
   ) -> (Vec<Vec<TypeConstraint>>, Vec<AbstractType>, AbstractType) {

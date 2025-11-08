@@ -857,19 +857,10 @@ impl Program {
     inlined_ctx.names = self.names.clone();
     for f in self.abstract_functions_iter() {
       if f.borrow().generic_args.is_empty()
-        && f
-          .borrow()
-          .arg_types
-          .iter()
-          .find(|t| {
-            if let AbstractType::Type(Type::Function(_)) = t {
-              true
-            } else {
-              false
-            }
-          })
-          .is_none()
+        && f.borrow().has_higher_order_arguments()
       {
+        inlined_ctx.add_abstract_function(Rc::clone(f));
+      } else {
         match &f.borrow().implementation {
           FunctionImplementationKind::Composite(implementation) => {
             let mut borrowed_implementation = implementation.borrow_mut();
@@ -935,7 +926,7 @@ impl Program {
     }
     for f in self.abstract_functions_iter() {
       let f = f.borrow().clone();
-      if f.generic_args.is_empty() {
+      if f.generic_args.is_empty() && !f.has_higher_order_arguments() {
         match f.implementation {
           FunctionImplementationKind::EnumConstructor(
             original_variant_name,
