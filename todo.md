@@ -43,6 +43,40 @@
   * have a separate threshold for the max size allowed for top-level `(def ...)`
     * a lot of things that would be perfectly readable on one line are getting split to multiple lines, feels like `def`s should almost always be one line unless they're very long
   * let top-level struct-like annotation appear on one line if it's under some threshold (probably should be another separate threshold)
+  * special-case the formatting of other special forms when inside a `->` expression
+    * right now matches get formatted like:
+      ```
+      (match x
+        0 a
+        1 b
+        _ c)
+      ```
+      with each case and arm on the same line. But if you try to restructure this with a `->`, it ends up getting formatted like this:
+      ```
+      (-> x
+          (match 0
+            a 1
+            b _
+            c))
+      ```
+      with the cases and arms kinda mismatched. It's trying to just apply the same logic that it does normally, but it mistreats the first case as if it were the scrutinee. Ideally it should be formatted like:
+      ```
+      (-> x
+          (match 
+            0 a
+            1 b
+            _ c))
+      ```
+      Just kinda leaving the spot of the scrutinee blank and then formatting the rest as normal.
+      * A similar issue happens with `if`, `when`, `while`.
+      * However, I guess whether or not this special formatting should be adopted depends on whether there's an explicit `<>` used in the threading expression, cause if so then it shouldn't do this special case but instead just do what it currently does. Like if you instead wanted to restructure the above example to thread through one of the arms instead of the scrutinee and therefore couldn't rely on the default implicit `<>` positioning:
+        ```
+        (-> a
+            (match x
+              0 <>
+              1 b
+              _ c))
+        ```
 
 * improve error messages
   * rn if a function is overloaded and it's arguments don't resolve to a valid signature, then the application expression using that function also won't resolve, even if the function always returns the same type

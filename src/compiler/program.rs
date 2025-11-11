@@ -991,7 +991,7 @@ impl Program {
     }
     for f in self.abstract_functions_iter() {
       let f = f.borrow().clone();
-      if f.generic_args.is_empty() {
+      if f.generic_args.is_empty() && !f.has_higher_order_arguments() {
         match f.implementation {
           FunctionImplementationKind::Composite(implementation) => {
             wgsl += &implementation
