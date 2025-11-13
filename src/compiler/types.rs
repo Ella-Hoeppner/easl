@@ -7,7 +7,7 @@ use std::{
   rc::Rc,
 };
 
-use sse::{document::DocumentPosition, syntax::EncloserOrOperator};
+use fsexp::{document::DocumentPosition, syntax::EncloserOrOperator};
 
 use crate::{
   compiler::{

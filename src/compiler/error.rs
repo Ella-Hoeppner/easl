@@ -1,4 +1,4 @@
-use sse::document::DocumentPosition;
+use fsexp::document::DocumentPosition;
 use std::{collections::HashSet, fmt::Display, hash::Hash};
 use take_mut::take;
 use thiserror::Error;

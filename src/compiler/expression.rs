@@ -1,5 +1,5 @@
 use core::fmt::Debug;
-use sse::syntax::EncloserOrOperator;
+use fsexp::syntax::EncloserOrOperator;
 use std::{
   cell::RefCell,
   collections::{HashMap, HashSet},
@@ -345,7 +345,7 @@ pub fn arg_list_and_return_type_from_easl_tree(
 )> {
   use crate::parse::Encloser as E;
   use crate::parse::Operator as O;
-  use sse::syntax::EncloserOrOperator::*;
+  use fsexp::syntax::EncloserOrOperator::*;
   let (args_list_ast, return_type_ast) = if let EaslTree::Inner(
     (_, Operator(O::TypeAscription)),
     mut args_and_return_type,
@@ -548,7 +548,7 @@ impl TypedExp {
       EaslTree::Inner((position, encloser_or_operator), children) => {
         use crate::parse::Encloser as E;
         use crate::parse::Operator as O;
-        use sse::syntax::EncloserOrOperator::*;
+        use fsexp::syntax::EncloserOrOperator::*;
         let encloser_or_operator_source_trace: SourceTrace = position.into();
         let mut children_iter = children.into_iter();
         match encloser_or_operator {

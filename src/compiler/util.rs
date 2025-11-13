@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use sse::syntax::EncloserOrOperator;
+use fsexp::syntax::EncloserOrOperator;
 
 use crate::parse::{EaslTree, Operator};
 

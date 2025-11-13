@@ -1,4 +1,4 @@
-use sse::{
+use fsexp::{
   Encloser as SSEEncloser, EncloserOrOperator, Operator as SSEOperator,
 };
 
@@ -15,15 +15,16 @@ fn indented_newline(indentation: usize) -> String {
 
 fn is_tree_comment(tree: &EaslTree) -> bool {
   match &tree {
-    sse::Ast::Leaf(_, _) => false,
-    sse::Ast::Inner((_, encloser_or_operator), _) => match encloser_or_operator
-    {
-      EncloserOrOperator::Encloser(
-        Encloser::BlockComment | Encloser::LineComment,
-      ) => true,
-      EncloserOrOperator::Operator(Operator::ExpressionComment) => true,
-      _ => false,
-    },
+    fsexp::Ast::Leaf(_, _) => false,
+    fsexp::Ast::Inner((_, encloser_or_operator), _) => {
+      match encloser_or_operator {
+        EncloserOrOperator::Encloser(
+          Encloser::BlockComment | Encloser::LineComment,
+        ) => true,
+        EncloserOrOperator::Operator(Operator::ExpressionComment) => true,
+        _ => false,
+      }
+    }
   }
 }
 

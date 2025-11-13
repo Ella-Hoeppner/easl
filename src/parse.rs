@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use sse::{
+use fsexp::{
   Context as SSEContext, DocumentSyntaxTree, Encloser as SSEEncloser,
   Operator as SSEOperator,
   document::Document,

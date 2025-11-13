@@ -1,4 +1,4 @@
-use sse::ParseError;
+use fsexp::ParseError;
 
 use crate::{
   compiler::{info::ProgramInfo, program::EaslDocument},

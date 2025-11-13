@@ -5,7 +5,7 @@ use std::{
 
 use lazy_static::lazy_static;
 
-use sse::{document::DocumentPosition, syntax::EncloserOrOperator};
+use fsexp::{document::DocumentPosition, syntax::EncloserOrOperator};
 
 use crate::{
   compiler::{

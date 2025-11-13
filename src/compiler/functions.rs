@@ -86,7 +86,7 @@ impl AbstractFunctionSignature {
     errors: &mut ErrorLog,
   ) -> Option<Self> {
     use crate::parse::Encloser::*;
-    use sse::syntax::EncloserOrOperator::*;
+    use fsexp::syntax::EncloserOrOperator::*;
     let Some(name_ast) = children_iter.next() else {
       errors.log(CompileError::new(
         InvalidDefn("Missing Name".into()),

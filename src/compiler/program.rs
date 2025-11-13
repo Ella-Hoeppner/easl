@@ -5,7 +5,7 @@ use std::{
   rc::Rc,
 };
 
-use sse::{Ast, document::Document, syntax::EncloserOrOperator};
+use fsexp::{Ast, document::Document, syntax::EncloserOrOperator};
 use take_mut::take;
 
 use crate::{
@@ -468,7 +468,7 @@ impl Program {
 
     for tree in trees.into_iter() {
       use crate::parse::Encloser::*;
-      use sse::syntax::EncloserOrOperator::*;
+      use fsexp::syntax::EncloserOrOperator::*;
       let (tree_body, annotation) =
         extract_annotation(tree.clone(), &mut errors);
       let EaslTree::Inner((position, Encloser(Parens)), children) = &tree_body
@@ -632,7 +632,7 @@ impl Program {
 
     for (annotation, tree) in non_typedef_trees.into_iter() {
       use crate::parse::Encloser::*;
-      use sse::syntax::EncloserOrOperator::*;
+      use fsexp::syntax::EncloserOrOperator::*;
       if let EaslTree::Inner((parens_position, Encloser(Parens)), children) =
         tree
       {

@@ -2,7 +2,7 @@ use std::fmt::Display;
 use std::rc::Rc;
 use std::str::FromStr;
 
-use sse::syntax::EncloserOrOperator::{self, *};
+use fsexp::syntax::EncloserOrOperator::{self, *};
 
 use crate::compiler::entry::EntryPoint;
 use crate::compiler::error::CompileErrorKind;

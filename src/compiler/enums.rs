@@ -1,6 +1,6 @@
 use std::{collections::HashMap, rc::Rc};
 
-use sse::{Ast, EncloserOrOperator};
+use fsexp::{Ast, EncloserOrOperator};
 
 use crate::{
   compiler::{
