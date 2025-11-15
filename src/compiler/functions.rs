@@ -50,6 +50,7 @@ impl FunctionArgumentAnnotation {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TopLevelFunction {
+  pub name_source_trace: SourceTrace,
   pub arg_names: Vec<Rc<str>>,
   pub arg_annotations: Vec<FunctionArgumentAnnotation>,
   pub return_attributes: IOAttributes,
@@ -68,7 +69,7 @@ pub enum FunctionImplementationKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractFunctionSignature {
   pub name: Rc<str>,
-  pub generic_args: Vec<(Rc<str>, Vec<TypeConstraint>)>,
+  pub generic_args: Vec<(Rc<str>, SourceTrace, Vec<TypeConstraint>)>,
   pub arg_types: Vec<AbstractType>,
   pub mutated_args: Vec<usize>,
   pub return_type: AbstractType,
@@ -94,18 +95,22 @@ impl AbstractFunctionSignature {
       ));
       return None;
     };
-    let fn_and_generic_names: Option<(Rc<str>, Vec<_>)> = match name_ast {
-      EaslTree::Leaf(_, name) => Some((name.into(), vec![])),
+    let fn_and_generic_names: Option<(
+      Rc<str>,
+      SourceTrace,
+      Vec<(Rc<str>, SourceTrace, Vec<TypeConstraint>)>,
+    )> = match name_ast {
+      EaslTree::Leaf(pos, name) => Some((name.into(), pos.into(), vec![])),
       EaslTree::Inner((_, Encloser(Parens)), subtrees) => {
         let mut subtrees_iter = subtrees.into_iter();
-        if let Some(EaslTree::Leaf(_, name)) = subtrees_iter.next() {
+        if let Some(EaslTree::Leaf(pos, name)) = subtrees_iter.next() {
           match subtrees_iter
             .map(|subtree| {
               parse_generic_argument(subtree, &program.typedefs, &vec![])
             })
             .collect::<CompileResult<Vec<_>>>()
           {
-            Ok(generic_args) => Some((name.into(), generic_args)),
+            Ok(generic_args) => Some((name.into(), pos.into(), generic_args)),
             Err(e) => {
               errors.log(e);
               None
@@ -129,7 +134,8 @@ impl AbstractFunctionSignature {
         None
       }
     };
-    let Some((fn_name, generic_args)) = fn_and_generic_names else {
+    let Some((fn_name, fn_name_source, generic_args)) = fn_and_generic_names
+    else {
       return None;
     };
     let Some(arg_list_ast) = children_iter.next() else {
@@ -139,8 +145,10 @@ impl AbstractFunctionSignature {
       ));
       return None;
     };
-    let generic_arg_names: Vec<Rc<str>> =
-      generic_args.iter().map(|(name, _)| name.clone()).collect();
+    let generic_arg_names: Vec<Rc<str>> = generic_args
+      .iter()
+      .map(|(name, _, _)| name.clone())
+      .collect();
 
     if let Some((
       source_path,
@@ -185,7 +193,7 @@ impl AbstractFunctionSignature {
                 if let AbstractType::Generic(generic_name) = t {
                   generic_args
                     .iter()
-                    .find_map(|(name, constraints)| {
+                    .find_map(|(name, _, constraints)| {
                       (generic_name == name).then(|| constraints.clone())
                     })
                     .unwrap_or(vec![])
@@ -239,6 +247,7 @@ impl AbstractFunctionSignature {
                     };
                   let implementation = FunctionImplementationKind::Composite(
                     Rc::new(RefCell::new(TopLevelFunction {
+                      name_source_trace: fn_name_source,
                       arg_names,
                       arg_annotations,
                       return_attributes,
@@ -310,7 +319,7 @@ impl AbstractFunctionSignature {
         self
           .generic_args
           .iter()
-          .find_map(|(generic_name, constraints)| {
+          .find_map(|(generic_name, _, constraints)| {
             (generic_name == name).then(|| constraints.clone())
           })
           .unwrap()
@@ -395,7 +404,7 @@ impl AbstractFunctionSignature {
     let generic_arg_names = self
       .generic_args
       .iter()
-      .map(|(arg, bounds)| {
+      .map(|(arg, _, bounds)| {
         let generic_type = generic_bindings.get(arg).unwrap();
         if let Some(unsatisfied_bound) = bounds
           .iter()
@@ -543,7 +552,7 @@ impl AbstractFunctionSignature {
     ) = f
       .generic_args
       .iter()
-      .map(|(name, bounds)| {
+      .map(|(name, _, bounds)| {
         (
           (name.clone(), TypeState::fresh_unification_variable().into()),
           (name.clone(), bounds.clone()),

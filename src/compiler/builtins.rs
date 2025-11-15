@@ -120,7 +120,13 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
           name: format!("vec{n}{suffix}").into(),
           generic_args: (0..nums.len())
             .map(|i| format!("A{i}").into())
-            .map(|name| (name, vec![TypeConstraint::scalar_or_bool()]))
+            .map(|name| {
+              (
+                name,
+                SourceTrace::empty(),
+                vec![TypeConstraint::scalar_or_bool()],
+              )
+            })
             .collect(),
           arg_types: nums
             .iter()
@@ -140,7 +146,13 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
           generic_args: (0..nums.len())
             .map(|i| format!("A{i}").into())
             .chain(std::iter::once("T".into()))
-            .map(|name| (name, vec![TypeConstraint::scalar_or_bool()]))
+            .map(|name| {
+              (
+                name,
+                SourceTrace::empty(),
+                vec![TypeConstraint::scalar_or_bool()],
+              )
+            })
             .collect(),
           arg_types: nums
             .iter()
@@ -162,7 +174,7 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
 
 pub fn vec2() -> AbstractStruct {
   AbstractStruct {
-    name: "vec2".into(),
+    name: ("vec2".into(), SourceTrace::empty()),
     fields: vec![
       AbstractStructField {
         attributes: IOAttributes::empty(SourceTrace::empty()),
@@ -177,7 +189,7 @@ pub fn vec2() -> AbstractStruct {
         source_trace: SourceTrace::empty(),
       },
     ],
-    generic_args: vec!["T".into()],
+    generic_args: vec![("T".into(), SourceTrace::empty())],
     filled_generics: HashMap::new(),
     abstract_ancestor: None,
     source_trace: SourceTrace::empty(),
@@ -186,7 +198,7 @@ pub fn vec2() -> AbstractStruct {
 
 pub fn vec3() -> AbstractStruct {
   AbstractStruct {
-    name: "vec3".into(),
+    name: ("vec3".into(), SourceTrace::empty()),
     fields: vec![
       AbstractStructField {
         attributes: IOAttributes::empty(SourceTrace::empty()),
@@ -207,7 +219,7 @@ pub fn vec3() -> AbstractStruct {
         source_trace: SourceTrace::empty(),
       },
     ],
-    generic_args: vec!["T".into()],
+    generic_args: vec![("T".into(), SourceTrace::empty())],
     filled_generics: HashMap::new(),
     abstract_ancestor: None,
     source_trace: SourceTrace::empty(),
@@ -216,7 +228,7 @@ pub fn vec3() -> AbstractStruct {
 
 pub fn vec4() -> AbstractStruct {
   AbstractStruct {
-    name: "vec4".into(),
+    name: ("vec4".into(), SourceTrace::empty()),
     fields: vec![
       AbstractStructField {
         attributes: IOAttributes::empty(SourceTrace::empty()),
@@ -243,7 +255,7 @@ pub fn vec4() -> AbstractStruct {
         source_trace: SourceTrace::empty(),
       },
     ],
-    generic_args: vec!["T".into()],
+    generic_args: vec![("T".into(), SourceTrace::empty())],
     filled_generics: HashMap::new(),
     abstract_ancestor: None,
     source_trace: SourceTrace::empty(),
@@ -252,14 +264,14 @@ pub fn vec4() -> AbstractStruct {
 
 pub fn texture_2d() -> AbstractStruct {
   AbstractStruct {
-    name: "Texture2D".into(),
+    name: ("Texture2D".into(), SourceTrace::empty()),
     fields: vec![AbstractStructField {
       attributes: IOAttributes::empty(SourceTrace::empty()),
       name: "_".into(),
       field_type: AbstractType::Generic("T".into()),
       source_trace: SourceTrace::empty(),
     }],
-    generic_args: vec!["T".into()],
+    generic_args: vec![("T".into(), SourceTrace::empty())],
     filled_generics: HashMap::new(),
     abstract_ancestor: None,
     source_trace: SourceTrace::empty(),
@@ -268,7 +280,7 @@ pub fn texture_2d() -> AbstractStruct {
 
 pub fn sampler() -> AbstractStruct {
   AbstractStruct {
-    name: "Sampler".into(),
+    name: ("Sampler".into(), SourceTrace::empty()),
     fields: vec![],
     generic_args: vec![],
     filled_generics: HashMap::new(),
@@ -279,14 +291,14 @@ pub fn sampler() -> AbstractStruct {
 
 pub fn matrix(n: usize, m: usize) -> AbstractStruct {
   AbstractStruct {
-    name: format!("mat{n}x{m}").into(),
+    name: (format!("mat{n}x{m}").into(), SourceTrace::empty()),
     fields: vec![AbstractStructField {
       attributes: IOAttributes::empty(SourceTrace::empty()),
       name: "_".into(),
       field_type: AbstractType::Generic("T".into()),
       source_trace: SourceTrace::empty(),
     }],
-    generic_args: vec!["T".into()],
+    generic_args: vec![("T".into(), SourceTrace::empty())],
     filled_generics: HashMap::new(),
     abstract_ancestor: None,
     source_trace: SourceTrace::empty(),
@@ -322,6 +334,7 @@ pub fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
             name: format!("mat{n}x{m}").into(),
             generic_args: vec![(
               "T".into(),
+              SourceTrace::empty(),
               vec![TypeConstraint::scalar_or_bool()],
             )],
             arg_types: std::iter::repeat(AbstractType::Generic("T".into()))
@@ -338,6 +351,7 @@ pub fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
             name: format!("mat{n}x{m}").into(),
             generic_args: vec![(
               "T".into(),
+              SourceTrace::empty(),
               vec![TypeConstraint::scalar_or_bool()],
             )],
             arg_types: std::iter::repeat(AbstractType::AbstractStruct(
@@ -474,7 +488,7 @@ pub fn built_in_type_aliases() -> Vec<(Rc<str>, Rc<AbstractStruct>)> {
 pub fn get_builtin_struct(name: &str) -> AbstractStruct {
   built_in_structs()
     .into_iter()
-    .find(|s| &*s.name == name)
+    .find(|s| &*s.name.0 == name)
     .unwrap()
 }
 
@@ -486,7 +500,11 @@ fn arithmetic_functions(
   vec![
     AbstractFunctionSignature {
       name: name.into(),
-      generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+      generic_args: vec![(
+        "T".into(),
+        SourceTrace::empty(),
+        vec![TypeConstraint::scalar()],
+      )],
       arg_types: vec![
         AbstractType::Generic("T".into()),
         AbstractType::Generic("T".into()),
@@ -498,7 +516,11 @@ fn arithmetic_functions(
     },
     AbstractFunctionSignature {
       name: Rc::clone(&assignment_name),
-      generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+      generic_args: vec![(
+        "T".into(),
+        SourceTrace::empty(),
+        vec![TypeConstraint::scalar()],
+      )],
       arg_types: vec![
         AbstractType::Generic("T".into()),
         AbstractType::Generic("T".into()),
@@ -526,7 +548,11 @@ fn arithmetic_functions(
           } else {
             name.into()
           },
-          generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+          generic_args: vec![(
+            "T".into(),
+            SourceTrace::empty(),
+            vec![TypeConstraint::scalar()],
+          )],
           arg_types: arg_vecs_or_scalars
             .into_iter()
             .map(|vec_or_scalar| {
@@ -570,7 +596,11 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
         [
           AbstractFunctionSignature {
             name: "+".into(),
-            generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+            generic_args: vec![(
+              "T".into(),
+              SourceTrace::empty(),
+              vec![TypeConstraint::scalar()],
+            )],
             arg_types: vec![mat.clone(), mat.clone()],
             mutated_args: vec![],
             return_type: mat.clone(),
@@ -581,7 +611,11 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
           },
           AbstractFunctionSignature {
             name: "-".into(),
-            generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+            generic_args: vec![(
+              "T".into(),
+              SourceTrace::empty(),
+              vec![TypeConstraint::scalar()],
+            )],
             arg_types: vec![mat.clone(), mat.clone()],
             mutated_args: vec![],
             return_type: mat.clone(),
@@ -592,7 +626,11 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
           },
           AbstractFunctionSignature {
             name: "*".into(),
-            generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+            generic_args: vec![(
+              "T".into(),
+              SourceTrace::empty(),
+              vec![TypeConstraint::scalar()],
+            )],
             arg_types: vec![AbstractType::Generic("T".into()), mat.clone()],
             mutated_args: vec![],
             return_type: mat.clone(),
@@ -603,7 +641,11 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
           },
           AbstractFunctionSignature {
             name: "*".into(),
-            generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+            generic_args: vec![(
+              "T".into(),
+              SourceTrace::empty(),
+              vec![TypeConstraint::scalar()],
+            )],
             arg_types: vec![mat.clone(), AbstractType::Generic("T".into())],
             mutated_args: vec![],
             return_type: mat.clone(),
@@ -614,7 +656,11 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
           },
           AbstractFunctionSignature {
             name: "*".into(),
-            generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+            generic_args: vec![(
+              "T".into(),
+              SourceTrace::empty(),
+              vec![TypeConstraint::scalar()],
+            )],
             arg_types: vec![mat.clone(), vecn(n)],
             mutated_args: vec![],
             return_type: vecn(m),
@@ -625,7 +671,11 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
           },
           AbstractFunctionSignature {
             name: "*".into(),
-            generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+            generic_args: vec![(
+              "T".into(),
+              SourceTrace::empty(),
+              vec![TypeConstraint::scalar()],
+            )],
             arg_types: vec![vecn(m), mat.clone()],
             mutated_args: vec![],
             return_type: vecn(n),
@@ -638,7 +688,11 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
         .into_iter()
         .chain((2..=4).map(move |inner| AbstractFunctionSignature {
           name: "*".into(),
-          generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+          generic_args: vec![(
+            "T".into(),
+            SourceTrace::empty(),
+            vec![TypeConstraint::scalar()],
+          )],
           arg_types: vec![
             AbstractType::AbstractStruct(matrix(inner, m).into()),
             AbstractType::AbstractStruct(matrix(n, inner).into()),
@@ -691,7 +745,11 @@ fn bitwise_functions(
   vec![
     AbstractFunctionSignature {
       name: name.into(),
-      generic_args: vec![("T".into(), vec![TypeConstraint::integer()])],
+      generic_args: vec![(
+        "T".into(),
+        SourceTrace::empty(),
+        vec![TypeConstraint::integer()],
+      )],
       arg_types: vec![
         AbstractType::Generic("T".into()),
         AbstractType::Generic("T".into()),
@@ -703,7 +761,11 @@ fn bitwise_functions(
     },
     AbstractFunctionSignature {
       name: Rc::clone(&assignment_name),
-      generic_args: vec![("T".into(), vec![TypeConstraint::integer()])],
+      generic_args: vec![(
+        "T".into(),
+        SourceTrace::empty(),
+        vec![TypeConstraint::integer()],
+      )],
       arg_types: vec![
         AbstractType::Generic("T".into()),
         AbstractType::Generic("T".into()),
@@ -731,7 +793,11 @@ fn bitwise_functions(
           } else {
             name.into()
           },
-          generic_args: vec![("T".into(), vec![TypeConstraint::integer()])],
+          generic_args: vec![(
+            "T".into(),
+            SourceTrace::empty(),
+            vec![TypeConstraint::integer()],
+          )],
           arg_types: arg_vecs_or_scalars
             .into_iter()
             .map(|vec_or_scalar| {
@@ -880,7 +946,7 @@ fn comparison_functions() -> Vec<AbstractFunctionSignature> {
   vec![
     AbstractFunctionSignature {
       name: "==".into(),
-      generic_args: vec![("T".into(), vec![])],
+      generic_args: vec![("T".into(), SourceTrace::empty(), vec![])],
       arg_types: vec![
         AbstractType::Generic("T".into()),
         AbstractType::Generic("T".into()),
@@ -892,7 +958,7 @@ fn comparison_functions() -> Vec<AbstractFunctionSignature> {
     },
     AbstractFunctionSignature {
       name: "!=".into(),
-      generic_args: vec![("T".into(), vec![])],
+      generic_args: vec![("T".into(), SourceTrace::empty(), vec![])],
       arg_types: vec![
         AbstractType::Generic("T".into()),
         AbstractType::Generic("T".into()),
@@ -904,7 +970,11 @@ fn comparison_functions() -> Vec<AbstractFunctionSignature> {
     },
     AbstractFunctionSignature {
       name: ">=".into(),
-      generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+      generic_args: vec![(
+        "T".into(),
+        SourceTrace::empty(),
+        vec![TypeConstraint::scalar()],
+      )],
       arg_types: vec![
         AbstractType::Generic("T".into()),
         AbstractType::Generic("T".into()),
@@ -916,7 +986,11 @@ fn comparison_functions() -> Vec<AbstractFunctionSignature> {
     },
     AbstractFunctionSignature {
       name: ">".into(),
-      generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+      generic_args: vec![(
+        "T".into(),
+        SourceTrace::empty(),
+        vec![TypeConstraint::scalar()],
+      )],
       arg_types: vec![
         AbstractType::Generic("T".into()),
         AbstractType::Generic("T".into()),
@@ -928,7 +1002,11 @@ fn comparison_functions() -> Vec<AbstractFunctionSignature> {
     },
     AbstractFunctionSignature {
       name: "<=".into(),
-      generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+      generic_args: vec![(
+        "T".into(),
+        SourceTrace::empty(),
+        vec![TypeConstraint::scalar()],
+      )],
       arg_types: vec![
         AbstractType::Generic("T".into()),
         AbstractType::Generic("T".into()),
@@ -940,7 +1018,11 @@ fn comparison_functions() -> Vec<AbstractFunctionSignature> {
     },
     AbstractFunctionSignature {
       name: "<".into(),
-      generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+      generic_args: vec![(
+        "T".into(),
+        SourceTrace::empty(),
+        vec![TypeConstraint::scalar()],
+      )],
       arg_types: vec![
         AbstractType::Generic("T".into()),
         AbstractType::Generic("T".into()),
@@ -956,7 +1038,7 @@ fn comparison_functions() -> Vec<AbstractFunctionSignature> {
 pub fn assignment_function() -> AbstractFunctionSignature {
   AbstractFunctionSignature {
     name: "=".into(),
-    generic_args: vec![("T".into(), vec![])],
+    generic_args: vec![("T".into(), SourceTrace::empty(), vec![])],
     arg_types: vec![
       AbstractType::Generic("T".into()),
       AbstractType::Generic("T".into()),
@@ -1251,8 +1333,16 @@ pub fn bitcast() -> AbstractFunctionSignature {
   AbstractFunctionSignature {
     name: "bitcast".into(),
     generic_args: vec![
-      ("T".into(), vec![TypeConstraint::scalar()]),
-      ("S".into(), vec![TypeConstraint::scalar()]),
+      (
+        "T".into(),
+        SourceTrace::empty(),
+        vec![TypeConstraint::scalar()],
+      ),
+      (
+        "S".into(),
+        SourceTrace::empty(),
+        vec![TypeConstraint::scalar()],
+      ),
     ],
     arg_types: vec![AbstractType::Generic("T".into())],
     mutated_args: vec![],
@@ -1266,7 +1356,11 @@ fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
   vec![
     AbstractFunctionSignature {
       name: "i32".into(),
-      generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+      generic_args: vec![(
+        "T".into(),
+        SourceTrace::empty(),
+        vec![TypeConstraint::scalar()],
+      )],
       arg_types: vec![AbstractType::Generic("T".into())],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::I32),
@@ -1275,7 +1369,11 @@ fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
     },
     AbstractFunctionSignature {
       name: "f32".into(),
-      generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+      generic_args: vec![(
+        "T".into(),
+        SourceTrace::empty(),
+        vec![TypeConstraint::scalar()],
+      )],
       arg_types: vec![AbstractType::Generic("T".into())],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::F32),
@@ -1284,7 +1382,11 @@ fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
     },
     AbstractFunctionSignature {
       name: "u32".into(),
-      generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+      generic_args: vec![(
+        "T".into(),
+        SourceTrace::empty(),
+        vec![TypeConstraint::scalar()],
+      )],
       arg_types: vec![AbstractType::Generic("T".into())],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::U32),
@@ -1293,7 +1395,11 @@ fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
     },
     AbstractFunctionSignature {
       name: "bool".into(),
-      generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+      generic_args: vec![(
+        "T".into(),
+        SourceTrace::empty(),
+        vec![TypeConstraint::scalar()],
+      )],
       arg_types: vec![AbstractType::Generic("T".into())],
       mutated_args: vec![],
       return_type: AbstractType::Type(Type::Bool),
@@ -1347,7 +1453,7 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
       .into_iter()
       .map(|(name, arg_count, associative)| AbstractFunctionSignature {
         name: name.into(),
-        generic_args: vec![("T".into(), vec![TypeConstraint::scalar()])],
+        generic_args: vec![("T".into(), SourceTrace::empty(), vec![TypeConstraint::scalar()])],
         arg_types: std::iter::repeat(t.clone()).take(arg_count).collect(),
         mutated_args: vec![],
         return_type: t.clone(),
@@ -1435,7 +1541,7 @@ fn texture_functions() -> Vec<AbstractFunctionSignature> {
   vec![
     AbstractFunctionSignature {
       name: "texture-dimensions".into(),
-      generic_args: vec![("T".into(), vec![])],
+      generic_args: vec![("T".into(), SourceTrace::empty(), vec![])],
       arg_types: vec![AbstractType::AbstractStruct(texture_2d().into())],
       mutated_args: vec![],
       return_type: AbstractType::AbstractStruct(
@@ -1449,8 +1555,12 @@ fn texture_functions() -> Vec<AbstractFunctionSignature> {
     AbstractFunctionSignature {
       name: "texture-dimensions".into(),
       generic_args: vec![
-        ("T".into(), vec![]),
-        ("L".into(), vec![TypeConstraint::integer()]),
+        ("T".into(), SourceTrace::empty(), vec![]),
+        (
+          "L".into(),
+          SourceTrace::empty(),
+          vec![TypeConstraint::integer()],
+        ),
       ],
       arg_types: vec![
         AbstractType::AbstractStruct(texture_2d().into()),
@@ -1468,8 +1578,12 @@ fn texture_functions() -> Vec<AbstractFunctionSignature> {
     AbstractFunctionSignature {
       name: "texture-gather".into(),
       generic_args: vec![
-        ("T".into(), vec![]),
-        ("C".into(), vec![TypeConstraint::integer()]),
+        ("T".into(), SourceTrace::empty(), vec![]),
+        (
+          "C".into(),
+          SourceTrace::empty(),
+          vec![TypeConstraint::integer()],
+        ),
       ],
       arg_types: vec![
         AbstractType::Generic("C".into()),
@@ -1574,9 +1688,17 @@ fn texture_functions() -> Vec<AbstractFunctionSignature> {
     AbstractFunctionSignature {
       name: "texture-load".into(),
       generic_args: vec![
-        ("T".into(), vec![]),
-        ("C".into(), vec![TypeConstraint::integer()]),
-        ("L".into(), vec![TypeConstraint::integer()]),
+        ("T".into(), SourceTrace::empty(), vec![]),
+        (
+          "C".into(),
+          SourceTrace::empty(),
+          vec![TypeConstraint::integer()],
+        ),
+        (
+          "L".into(),
+          SourceTrace::empty(),
+          vec![TypeConstraint::integer()],
+        ),
       ],
       arg_types: vec![
         AbstractType::AbstractStruct(texture_2d().into()),
@@ -1643,7 +1765,7 @@ fn data_packing_functions() -> Vec<AbstractFunctionSignature> {
 fn array_functions() -> Vec<AbstractFunctionSignature> {
   vec![AbstractFunctionSignature {
     name: "array-length".into(),
-    generic_args: vec![("T".into(), vec![])],
+    generic_args: vec![("T".into(), SourceTrace::empty(), vec![])],
     arg_types: vec![AbstractType::Reference(
       AbstractType::AbstractArray {
         size: ArraySize::Unsized,

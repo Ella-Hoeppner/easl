@@ -178,7 +178,7 @@ impl EvaluationEnvironment {
         .typedefs
         .structs
         .iter()
-        .map(|s| (s.name.clone(), (&*s).clone()))
+        .map(|s| (s.name.0.clone(), (&*s).clone()))
         .collect(),
     }
   }
@@ -407,7 +407,7 @@ pub fn eval(
     } => {
       let initial_value =
         eval(*increment_variable_initial_value_expression, env)?;
-      env.bind(increment_variable_name.clone(), initial_value);
+      env.bind(increment_variable_name.0.clone(), initial_value);
       loop {
         let should_continue =
           eval(*continue_condition_expression.clone(), env)?;
@@ -422,7 +422,7 @@ pub fn eval(
         eval(*body_expression.clone(), env)?;
         eval(*update_condition_expression.clone(), env)?;
       }
-      env.unbind(&increment_variable_name);
+      env.unbind(&increment_variable_name.0);
       Primitive::Unit.into()
     }
     ExpKind::WhileLoop {

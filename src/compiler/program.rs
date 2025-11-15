@@ -24,7 +24,7 @@ use crate::{
     functions::AbstractFunctionSignature,
     structs::UntypedStruct,
     types::{AbstractType, Type, TypeState, UntypedType, VariableKind},
-    util::compile_word,
+    util::{compile_word, is_valid_name},
   },
   parse::{EaslSyntax, EaslTree, Encloser, Operator, parse_easl},
 };
@@ -312,14 +312,14 @@ impl Program {
   }
   pub fn with_struct(mut self, s: Rc<AbstractStruct>) -> Self {
     if !self.typedefs.structs.contains(&s) {
-      if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&&*s.name) {
+      if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&&*s.name.0) {
         self.add_abstract_function(Rc::new(RefCell::new(
           AbstractFunctionSignature {
-            name: s.name.clone(),
+            name: s.name.0.clone(),
             generic_args: s
               .generic_args
               .iter()
-              .map(|name| (name.clone(), vec![]))
+              .map(|name| (name.0.clone(), name.1.clone(), vec![]))
               .collect(),
             arg_types: s
               .fields
@@ -340,7 +340,7 @@ impl Program {
   }
   pub fn with_enum(mut self, e: Rc<AbstractEnum>) -> Self {
     if !self.typedefs.enums.contains(&e) {
-      if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&&*e.name) {
+      if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&&*e.name.0) {
         for variant in e.variants.iter() {
           if variant.inner_type != AbstractType::Type(Type::Unit) {
             self.add_abstract_function(Rc::new(RefCell::new(
@@ -349,7 +349,7 @@ impl Program {
                 generic_args: e
                   .generic_args
                   .iter()
-                  .map(|name| (name.clone(), vec![]))
+                  .map(|name| (name.0.clone(), name.1.clone(), vec![]))
                   .collect(),
                 arg_types: vec![variant.inner_type.clone()],
                 mutated_args: vec![],
@@ -500,10 +500,10 @@ impl Program {
           }
           if let Some(struct_name) = children_iter.next() {
             match struct_name {
-              EaslTree::Leaf(_, name) => match first_child.as_str() {
+              EaslTree::Leaf(pos, name) => match first_child.as_str() {
                 "struct" => untyped_types.push(UntypedType::Struct(
                   UntypedStruct::from_field_trees(
-                    name.clone().into(),
+                    (name.clone().into(), pos.into()),
                     vec![],
                     children_iter.cloned().collect(),
                     source_trace,
@@ -511,7 +511,7 @@ impl Program {
                   ),
                 )),
                 "enum" => match UntypedEnum::from_field_trees(
-                  name.clone().into(),
+                  (name.clone().into(), pos.into()),
                   vec![],
                   children_iter.cloned().collect(),
                   source_trace,
@@ -529,8 +529,8 @@ impl Program {
                 let (signature_leaves, signature_errors) = signature_children
                   .into_iter()
                   .map(|child| match child {
-                    EaslTree::Leaf(_, name) => {
-                      (Some(name.clone().into()), None)
+                    EaslTree::Leaf(pos, name) => {
+                      (Some((name.clone().into(), pos.into())), None)
                     }
                     _ => (
                       None,
@@ -540,8 +540,10 @@ impl Program {
                       )),
                     ),
                   })
-                  .collect::<(Vec<Option<Rc<str>>>, Vec<Option<CompileError>>)>(
-                  );
+                  .collect::<(
+                    Vec<Option<(Rc<str>, SourceTrace)>>,
+                    Vec<Option<CompileError>>,
+                  )>();
                 let filtered_signature_errors: Vec<CompileError> =
                   signature_errors.into_iter().filter_map(|x| x).collect();
                 if filtered_signature_errors.is_empty() {
@@ -550,7 +552,9 @@ impl Program {
                     .filter_map(|x| x)
                     .collect::<Vec<_>>()
                     .into_iter();
-                  if let Some(type_name) = filtered_signature_leaves.next() {
+                  if let Some((type_name, type_name_source)) =
+                    filtered_signature_leaves.next()
+                  {
                     if filtered_signature_leaves.len() == 0 {
                       errors
                         .log(CompileError::new(InvalidTypeName, source_trace));
@@ -558,7 +562,7 @@ impl Program {
                       match first_child.as_str() {
                         "struct" => untyped_types.push(UntypedType::Struct(
                           UntypedStruct::from_field_trees(
-                            type_name,
+                            (type_name, type_name_source),
                             filtered_signature_leaves.collect(),
                             children_iter.cloned().collect(),
                             source_trace,
@@ -566,7 +570,7 @@ impl Program {
                           ),
                         )),
                         "enum" => match UntypedEnum::from_field_trees(
-                          type_name,
+                          (type_name, type_name_source),
                           filtered_signature_leaves.collect(),
                           children_iter.cloned().collect(),
                           source_trace,
@@ -1129,6 +1133,124 @@ impl Program {
               .into()
             });
           }
+        }
+      }
+    }
+  }
+  fn validate_names(&self, errors: &mut ErrorLog) {
+    for signature in self.abstract_functions_iter() {
+      let signature = signature.borrow();
+      if let FunctionImplementationKind::Composite(implementation) =
+        &signature.implementation
+      {
+        let implementation = implementation.borrow();
+        if !is_valid_name(&signature.name) {
+          errors.log(CompileError::new(
+            CompileErrorKind::InvalidName,
+            implementation.name_source_trace.clone(),
+          ))
+        }
+        for (generic_name, source_trace, _) in signature.generic_args.iter() {
+          if !is_valid_name(generic_name) {
+            errors.log(CompileError::new(
+              CompileErrorKind::InvalidName,
+              source_trace.clone(),
+            ))
+          }
+        }
+        implementation
+          .body
+          .walk(&mut |exp| {
+            let names: Vec<_> = match &exp.kind {
+              ExpKind::Let(items, _) => items
+                .iter()
+                .map(|(name, source, _, _)| (name, source))
+                .collect(),
+              ExpKind::Match(_, arms) => arms
+                .iter()
+                .flat_map(|(pattern, _)| {
+                  if let ExpKind::Application(_, args) = &pattern.kind {
+                    args
+                      .iter()
+                      .filter_map(|arg| {
+                        if let ExpKind::Name(name) = &arg.kind {
+                          Some((name, &arg.source_trace))
+                        } else {
+                          None
+                        }
+                      })
+                      .collect()
+                  } else {
+                    vec![]
+                  }
+                })
+                .collect(),
+              ExpKind::ForLoop {
+                increment_variable_name,
+                ..
+              } => {
+                vec![(&increment_variable_name.0, &increment_variable_name.1)]
+              }
+              _ => vec![],
+            };
+            for (name, source) in names {
+              if !is_valid_name(name) {
+                errors.log(CompileError::new(
+                  CompileErrorKind::InvalidName,
+                  source.clone(),
+                ));
+              }
+            }
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
+      }
+    }
+    for e in self.typedefs.enums.iter() {
+      if !is_valid_name(&e.name.0) {
+        errors.log(CompileError::new(
+          CompileErrorKind::InvalidName,
+          e.name.1.clone(),
+        ));
+      }
+      for (generic_arg, source) in e.generic_args.iter() {
+        if !is_valid_name(generic_arg) {
+          errors.log(CompileError::new(
+            CompileErrorKind::InvalidName,
+            source.clone(),
+          ));
+        }
+      }
+      for variant in e.variants.iter() {
+        if !is_valid_name(&variant.name) {
+          errors.log(CompileError::new(
+            CompileErrorKind::InvalidName,
+            variant.source.clone(),
+          ));
+        }
+      }
+    }
+    for s in self.typedefs.structs.iter() {
+      if !is_valid_name(&s.name.0) {
+        errors.log(CompileError::new(
+          CompileErrorKind::InvalidName,
+          s.name.1.clone(),
+        ));
+      }
+      for (generic_arg, source) in s.generic_args.iter() {
+        if !is_valid_name(generic_arg) {
+          errors.log(CompileError::new(
+            CompileErrorKind::InvalidName,
+            source.clone(),
+          ));
+        }
+      }
+      for field in s.fields.iter() {
+        if !is_valid_name(&field.name) {
+          errors.log(CompileError::new(
+            CompileErrorKind::InvalidName,
+            field.source_trace.clone(),
+          ));
         }
       }
     }
@@ -1852,6 +1974,10 @@ impl Program {
   }
   pub fn validate_raw_program(&mut self) -> ErrorLog {
     let mut errors = ErrorLog::new();
+    self.validate_names(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     self.validate_associative_signatures(&mut errors);
     if !errors.is_empty() {
       return errors;

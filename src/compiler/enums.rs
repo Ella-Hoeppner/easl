@@ -14,13 +14,15 @@ use crate::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct UntypedEnumVariant {
   name: Rc<str>,
+  source: SourceTrace,
   type_ast: Option<EaslTree>,
 }
 
 impl UntypedEnumVariant {
   fn from_field_tree(ast: EaslTree) -> CompileResult<Self> {
     match ast {
-      Ast::Leaf(_, name) => Ok(Self {
+      Ast::Leaf(pos, name) => Ok(Self {
+        source: pos.into(),
         name: name.into(),
         type_ast: None,
       }),
@@ -33,6 +35,7 @@ impl UntypedEnumVariant {
           let name = children.pop().unwrap();
           if let Ast::Leaf(_, name) = name {
             Ok(Self {
+              source: position.into(),
               name: name.into(),
               type_ast,
             })
@@ -69,6 +72,7 @@ impl UntypedEnumVariant {
   ) -> CompileResult<AbstractEnumVariant> {
     Ok(AbstractEnumVariant {
       name: self.name,
+      source: self.source,
       inner_type: if let Some(type_ast) = self.type_ast {
         AbstractType::from_easl_tree(type_ast, typedefs, skolems)?
       } else {
@@ -80,9 +84,9 @@ impl UntypedEnumVariant {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UntypedEnum {
-  pub name: Rc<str>,
+  pub name: (Rc<str>, SourceTrace),
   pub variants: Vec<UntypedEnumVariant>,
-  pub generic_args: Vec<Rc<str>>,
+  pub generic_args: Vec<(Rc<str>, SourceTrace)>,
   source_trace: SourceTrace,
 }
 impl UntypedEnum {
@@ -93,8 +97,8 @@ impl UntypedEnum {
       .fold(false, |acc, v| acc || v.references_type_name(name))
   }
   pub fn from_field_trees(
-    name: Rc<str>,
-    generic_args: Vec<Rc<str>>,
+    name: (Rc<str>, SourceTrace),
+    generic_args: Vec<(Rc<str>, SourceTrace)>,
     variant_asts: Vec<EaslTree>,
     source_trace: SourceTrace,
   ) -> CompileResult<Self> {
@@ -117,7 +121,12 @@ impl UntypedEnum {
       variants: self
         .variants
         .into_iter()
-        .map(|variant| variant.assign_type(typedefs, &self.generic_args))
+        .map(|variant| {
+          variant.assign_type(
+            typedefs,
+            &self.generic_args.iter().map(|(n, _)| n.clone()).collect(),
+          )
+        })
         .collect::<CompileResult<Vec<AbstractEnumVariant>>>()?,
       generic_args: self.generic_args.clone(),
       filled_generics: HashMap::new(),
@@ -130,6 +139,7 @@ impl UntypedEnum {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractEnumVariant {
   pub name: Rc<str>,
+  pub source: SourceTrace,
   pub inner_type: AbstractType,
 }
 
@@ -170,6 +180,7 @@ impl AbstractEnumVariant {
   ) -> Self {
     AbstractEnumVariant {
       name: self.name,
+      source: self.source,
       inner_type: self.inner_type.fill_abstract_generics(generics),
     }
   }
@@ -177,9 +188,9 @@ impl AbstractEnumVariant {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractEnum {
-  pub name: Rc<str>,
+  pub name: (Rc<str>, SourceTrace),
   pub filled_generics: HashMap<Rc<str>, AbstractType>,
-  pub generic_args: Vec<Rc<str>>,
+  pub generic_args: Vec<(Rc<str>, SourceTrace)>,
   pub variants: Vec<AbstractEnumVariant>,
   pub abstract_ancestor: Option<Rc<Self>>,
   pub source_trace: SourceTrace,
@@ -217,7 +228,7 @@ impl AbstractEnum {
       })
       .collect::<CompileResult<Vec<_>>>()?;
     Ok(Enum {
-      name: s.name.clone(),
+      name: s.name.0.clone(),
       abstract_ancestor: s,
       variants: new_variants,
     })
@@ -229,7 +240,7 @@ impl AbstractEnum {
     source_trace: SourceTrace,
   ) -> CompileResult<Enum> {
     Ok(Enum {
-      name: Rc::clone(&s.name),
+      name: Rc::clone(&s.name.0),
       variants: s
         .variants
         .iter()
@@ -248,7 +259,7 @@ impl AbstractEnum {
       generic_args: self
         .generic_args
         .into_iter()
-        .filter(|name| generics.contains_key(name))
+        .filter(|name| generics.contains_key(&name.0))
         .collect(),
       variants: self
         .variants
@@ -273,6 +284,7 @@ impl AbstractEnum {
     let generics_map = s
       .generic_args
       .iter()
+      .map(|(n, _)| n)
       .cloned()
       .zip(generics.into_iter())
       .collect();
@@ -393,7 +405,7 @@ impl AbstractEnum {
       .original_ancestor()
       .generic_args
       .iter()
-      .map(|generic_arg_name| {
+      .map(|(generic_arg_name, _)| {
         generic_bindings
           .get(generic_arg_name)
           .unwrap()
@@ -409,7 +421,7 @@ impl AbstractEnum {
   ) -> Rc<str> {
     let generic_arg_names =
       self.generic_arg_monomorphized_names(variant_types, names);
-    names.get_monomorphized_name(self.name.clone(), generic_arg_names)
+    names.get_monomorphized_name(self.name.0.clone(), generic_arg_names)
   }
   pub fn fill_abstract_generics(
     self,
@@ -418,6 +430,7 @@ impl AbstractEnum {
     let generics_map: HashMap<Rc<str>, AbstractType> = self
       .generic_args
       .iter()
+      .map(|(n, _)| n)
       .cloned()
       .zip(generics.into_iter())
       .collect();
@@ -448,14 +461,14 @@ impl AbstractEnum {
       .generic_args
       .iter()
       .cloned()
-      .map(|var| generic_arg_map.remove(&var).unwrap())
+      .map(|(var, _)| generic_arg_map.remove(&var).unwrap())
       .collect();
     Some(AbstractEnum {
       name: self.name.clone(),
       filled_generics: generic_args
         .iter()
         .zip(self.generic_args.iter().cloned())
-        .map(|(t, name)| (name, AbstractType::Type(t.clone())))
+        .map(|(t, (name, _))| (name, AbstractType::Type(t.clone())))
         .collect(),
       generic_args: vec![],
       variants: self
@@ -469,7 +482,7 @@ impl AbstractEnum {
                 .generic_args
                 .iter()
                 .enumerate()
-                .find_map(|(index, generic_arg)| {
+                .find_map(|(index, (generic_arg, _))| {
                   (generic_var == generic_arg).then(|| index)
                 })
                 .expect("unrecognized generic variable")]

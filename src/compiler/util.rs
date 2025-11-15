@@ -1,6 +1,7 @@
 use std::rc::Rc;
 
 use fsexp::syntax::EncloserOrOperator;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::parse::{EaslTree, Operator};
 
@@ -48,5 +49,28 @@ pub fn compile_word(word: Rc<str>) -> String {
       .replace("*", "STAR")
       .replace(">", "ABRACKET_RIGHT")
       .replace("<", "ABRACKET_LEFT"),
+  }
+}
+
+pub fn is_valid_name(word: &Rc<str>) -> bool {
+  match &**word {
+    "defn" | "def" | "struct" | "enum" | "let" | "return" | "if" | "when"
+    | "match" | "break" | "continue" => false,
+    other => {
+      for (i, grapheme) in other.grapheme_indices(true) {
+        if i == 0
+          && grapheme.len() == 1
+          && grapheme.chars().next().unwrap().is_ascii_digit()
+        {
+          return false;
+        }
+        match grapheme {
+          "'" | " " | "|" | "~" | "." | "@" | ":" | ";" | "/" | "#" | "("
+          | ")" | "[" | "]" | "{" | "}" => return false,
+          _ => {}
+        }
+      }
+      true
+    }
   }
 }

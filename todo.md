@@ -1,6 +1,6 @@
 # todo
 ## Highest priority
-### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production-ready"
+### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready"
 * Overhaul references
   * References shouldn't be first-class values. You shouldn't be able to create a binding of type `&f32` or anything like that. Functions can mark some of their arguments as references, but you'll just pass normal values for those arguments, and the fact that it's a reference will always be implicit - there will be no syntax for constructing a reference.
   * Get rid of the `&` operator, just use a `@ref ...` annotation syntax on the function arguments
@@ -42,6 +42,7 @@
 * formatter: 
   * have a separate threshold for the max size allowed for top-level `(def ...)`
     * a lot of things that would be perfectly readable on one line are getting split to multiple lines, feels like `def`s should almost always be one line unless they're very long
+  * `defn`s where the fn has generic variables, and therefore the first inner form looks like `(fn-name generic-name)`, get formatted weird
   * let top-level struct-like annotation appear on one line if it's under some threshold (probably should be another separate threshold)
   * special-case the formatting of other special forms when inside a `->` expression
     * right now matches get formatted like:

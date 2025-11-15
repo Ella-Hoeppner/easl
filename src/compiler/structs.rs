@@ -107,16 +107,16 @@ impl UntypedStructField {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UntypedStruct {
-  pub name: Rc<str>,
+  pub name: (Rc<str>, SourceTrace),
   pub fields: Vec<UntypedStructField>,
-  pub generic_args: Vec<Rc<str>>,
+  pub generic_args: Vec<(Rc<str>, SourceTrace)>,
   source_trace: SourceTrace,
 }
 
 impl UntypedStruct {
   pub fn from_field_trees(
-    name: Rc<str>,
-    generic_args: Vec<Rc<str>>,
+    name: (Rc<str>, SourceTrace),
+    generic_args: Vec<(Rc<str>, SourceTrace)>,
     field_asts: Vec<EaslTree>,
     source_trace: SourceTrace,
     errors: &mut ErrorLog,
@@ -146,7 +146,12 @@ impl UntypedStruct {
       fields: self
         .fields
         .into_iter()
-        .map(|field| field.assign_type(typedefs, &self.generic_args))
+        .map(|field| {
+          field.assign_type(
+            typedefs,
+            &self.generic_args.iter().map(|(n, _)| n.clone()).collect(),
+          )
+        })
         .collect::<CompileResult<Vec<AbstractStructField>>>()?,
       generic_args: self.generic_args.clone(),
       filled_generics: HashMap::new(),
@@ -248,10 +253,10 @@ pub fn vec_and_mat_compile_names() -> HashSet<String> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractStruct {
-  pub name: Rc<str>,
+  pub name: (Rc<str>, SourceTrace),
   pub filled_generics: HashMap<Rc<str>, AbstractType>,
   pub fields: Vec<AbstractStructField>,
-  pub generic_args: Vec<Rc<str>>,
+  pub generic_args: Vec<(Rc<str>, SourceTrace)>,
   pub abstract_ancestor: Option<Rc<Self>>,
   pub source_trace: SourceTrace,
 }
@@ -271,7 +276,7 @@ impl AbstractStruct {
     source_trace: SourceTrace,
   ) -> CompileResult<Struct> {
     Ok(Struct {
-      name: Rc::clone(&s.name),
+      name: Rc::clone(&s.name.0),
       fields: s
         .fields
         .iter()
@@ -329,7 +334,7 @@ impl AbstractStruct {
         .extract_generic_bindings(field_type, &mut generic_bindings);
     }
 
-    let name = &*self.name;
+    let name = &*self.name.0;
 
     vec_and_mat_compile_names()
       .contains(name)
@@ -345,14 +350,17 @@ impl AbstractStruct {
           .original_ancestor()
           .generic_args
           .iter()
-          .fold(self.name.to_string(), |name_so_far, generic_arg_name| {
-            name_so_far
-              + "_"
-              + &generic_bindings
-                .get(generic_arg_name)
-                .unwrap()
-                .monomorphized_name(names)
-          })
+          .fold(
+            self.name.0.to_string(),
+            |name_so_far, (generic_arg_name, _)| {
+              name_so_far
+                + "_"
+                + &generic_bindings
+                  .get(generic_arg_name)
+                  .unwrap()
+                  .monomorphized_name(names)
+            },
+          )
           .into()
       })
       .into()
@@ -387,7 +395,7 @@ impl AbstractStruct {
       .generic_args
       .iter()
       .cloned()
-      .map(|var| {
+      .map(|(var, _)| {
         let var = AbstractType::Generic(var);
         let first_usage_index = self
           .fields
@@ -403,7 +411,7 @@ impl AbstractStruct {
       filled_generics: generic_args
         .iter()
         .zip(self.generic_args.iter().cloned())
-        .map(|(t, name)| (name, AbstractType::Type(t.clone())))
+        .map(|(t, (name, _))| (name, AbstractType::Type(t.clone())))
         .collect(),
       generic_args: vec![],
       fields: self
@@ -417,7 +425,7 @@ impl AbstractStruct {
                 .generic_args
                 .iter()
                 .enumerate()
-                .find_map(|(index, generic_arg)| {
+                .find_map(|(index, (generic_arg, _))| {
                   (generic_var == generic_arg).then(|| index)
                 })
                 .expect("unrecognized generic variable")]
@@ -445,7 +453,7 @@ impl AbstractStruct {
       })
       .collect::<CompileResult<Vec<_>>>()?;
     Ok(Struct {
-      name: s.name.clone(),
+      name: s.name.0.clone(),
       abstract_ancestor: s,
       fields: new_fields,
     })
@@ -459,6 +467,7 @@ impl AbstractStruct {
     let generics_map = s
       .generic_args
       .iter()
+      .map(|(n, _)| n)
       .cloned()
       .zip(generics.into_iter())
       .collect();
@@ -490,7 +499,7 @@ impl AbstractStruct {
       generic_args: self
         .generic_args
         .into_iter()
-        .filter(|name| generics.contains_key(name))
+        .filter(|(name, _)| generics.contains_key(name))
         .collect(),
       fields: self
         .fields
@@ -513,6 +522,7 @@ impl AbstractStruct {
     let generics_map: HashMap<Rc<str>, AbstractType> = self
       .generic_args
       .iter()
+      .map(|(n, _)| n)
       .cloned()
       .zip(generics.into_iter())
       .collect();
@@ -531,7 +541,7 @@ impl AbstractStruct {
     }
   }
   pub fn is_vec4f(&self) -> bool {
-    &*self.name == "vec4"
+    &*self.name.0 == "vec4"
       && self
         .fields
         .get(0)

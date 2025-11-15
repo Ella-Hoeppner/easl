@@ -102,6 +102,8 @@ fn main() {
     "array_literal_access",
     "exp_after_control_flow",
     "location_inference",
+    "reserved_names",
+    "invalid_names",
     // "vec_match" // todo!
   ] {
     print!("compiling {filename}...");

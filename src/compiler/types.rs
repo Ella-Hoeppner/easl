@@ -57,8 +57,8 @@ impl UntypedType {
   }
   pub fn name(&self) -> &Rc<str> {
     match self {
-      UntypedType::Struct(untyped_struct) => &untyped_struct.name,
-      UntypedType::Enum(untyped_enum) => &untyped_enum.name,
+      UntypedType::Struct(untyped_struct) => &untyped_struct.name.0,
+      UntypedType::Enum(untyped_enum) => &untyped_enum.name.0,
     }
   }
 }
@@ -312,11 +312,11 @@ impl AbstractType {
             typedefs
               .structs
               .iter()
-              .find(|s| &*s.name == generic_type_name.as_str()),
+              .find(|s| &*s.name.0 == generic_type_name.as_str()),
             typedefs
               .enums
               .iter()
-              .find(|e| &*e.name == generic_type_name.as_str()),
+              .find(|e| &*e.name.0 == generic_type_name.as_str()),
           ) {
             (Some(generic_struct), None) => {
               let generic_args = children_iter
@@ -452,12 +452,15 @@ impl AbstractType {
         s.generic_args = s
           .generic_args
           .into_iter()
-          .map(|name| {
-            if &*name == old_name {
-              new_name.into()
-            } else {
-              name
-            }
+          .map(|(name, source)| {
+            (
+              if &*name == old_name {
+                new_name.into()
+              } else {
+                name
+              },
+              source,
+            )
           })
           .collect();
         s.fields = s
@@ -694,7 +697,7 @@ impl Type {
                 })
                 .collect::<CompileResult<Vec<ExpTypeInfo>>>()?;
               if let Some(s) =
-                typedefs.structs.iter().find(|s| &*s.name == struct_name)
+                typedefs.structs.iter().find(|s| &*s.name.0 == struct_name)
               {
                 Ok(Type::Struct(AbstractStruct::fill_generics_ordered(
                   Rc::new(s.clone()),
@@ -797,14 +800,16 @@ impl Type {
       _ => {
         if skolems.contains(&name) {
           Skolem(name)
-        } else if let Some(s) = typedefs.structs.iter().find(|s| s.name == name)
+        } else if let Some(s) =
+          typedefs.structs.iter().find(|s| s.name.0 == name)
         {
           Struct(AbstractStruct::fill_generics_with_unification_variables(
             Rc::new(s.clone()),
             &typedefs,
             source_trace.clone(),
           )?)
-        } else if let Some(e) = typedefs.enums.iter().find(|e| e.name == name) {
+        } else if let Some(e) = typedefs.enums.iter().find(|e| e.name.0 == name)
+        {
           Enum(AbstractEnum::fill_generics_with_unification_variables(
             e.clone(),
             &typedefs,
@@ -1272,7 +1277,8 @@ impl Type {
   pub fn is_attributable(&self) -> bool {
     match self {
       Type::F32 | Type::I32 | Type::U32 | Type::Bool => true,
-      Type::Struct(s) => match &*s.abstract_ancestor.original_ancestor().name {
+      Type::Struct(s) => match &*s.abstract_ancestor.original_ancestor().name.0
+      {
         "vec2" | "vec3" | "vec4" => {
           match s.fields.first().unwrap().field_type.unwrap_known() {
             Type::F32 | Type::I32 | Type::U32 => true,
@@ -1931,9 +1937,11 @@ pub fn parse_generic_argument(
   ast: EaslTree,
   typedefs: &TypeDefs,
   generic_args: &Vec<Rc<str>>,
-) -> CompileResult<(Rc<str>, Vec<TypeConstraint>)> {
+) -> CompileResult<(Rc<str>, SourceTrace, Vec<TypeConstraint>)> {
   match ast {
-    EaslTree::Leaf(_, generic_name) => Ok((generic_name.into(), vec![])),
+    EaslTree::Leaf(pos, generic_name) => {
+      Ok((generic_name.into(), pos.into(), vec![]))
+    }
     EaslTree::Inner(
       (position, EncloserOrOperator::Operator(Operator::TypeAscription)),
       mut children,
@@ -1948,10 +1956,11 @@ pub fn parse_generic_argument(
       if let EaslTree::Leaf(_, generic_name) = children.remove(0) {
         match bounds_tree {
           EaslTree::Inner(
-            (_, EncloserOrOperator::Encloser(Encloser::Square)),
+            (pos, EncloserOrOperator::Encloser(Encloser::Square)),
             bound_children,
           ) => Ok((
             generic_name.into(),
+            pos.into(),
             bound_children
               .into_iter()
               .map(|child_ast| {
@@ -1961,6 +1970,7 @@ pub fn parse_generic_argument(
           )),
           other => Ok((
             generic_name.into(),
+            other.position().into(),
             vec![parse_type_constraint(other, typedefs, generic_args)?],
           )),
         }

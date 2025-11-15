@@ -287,7 +287,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Match(Box<Exp<D>>, Vec<(Exp<D>, Exp<D>)>),
   Block(Vec<Exp<D>>),
   ForLoop {
-    increment_variable_name: Rc<str>,
+    increment_variable_name: (Rc<str>, SourceTrace),
     increment_variable_type: Type,
     increment_variable_initial_value_expression: Box<Exp<D>>,
     continue_condition_expression: Box<Exp<D>>,
@@ -846,10 +846,10 @@ impl TypedExp {
                               let (var_type_subtree, var_name_subtree) =
                                 extract_type_annotation_ast(var_name_subtree);
                               (
-                                if let EaslTree::Leaf(_, name) =
+                                if let EaslTree::Leaf(pos, name) =
                                   var_name_subtree
                                 {
-                                  name.into()
+                                  (name.into(), pos.into())
                                 } else {
                                   return Err(CompileError::new(
                                     InvalidForLoopHeader,
@@ -1624,7 +1624,7 @@ impl TypedExp {
         body_expression,
       } => format!(
         "\nfor (var {}: {} = {}; {}; {}) {{{}\n}}",
-        increment_variable_name,
+        increment_variable_name.0,
         increment_variable_type.monomorphized_name(names),
         increment_variable_initial_value_expression
           .compile(ExpressionCompilationPosition::InnerExpression, names),
@@ -2078,7 +2078,7 @@ impl TypedExp {
               } else {
                 errors.log(CompileError::new(
                   NoSuchField {
-                    struct_name: s.abstract_ancestor.name.to_string(),
+                    struct_name: s.abstract_ancestor.name.0.to_string(),
                     field_name: field_name.to_string(),
                   },
                   self.source_trace.clone(),
@@ -2250,7 +2250,7 @@ impl TypedExp {
         anything_changed |= increment_variable_initial_value_expression
           .propagate_types_inner(ctx, errors);
         ctx.bind(
-          increment_variable_name,
+          &increment_variable_name.0,
           Variable {
             kind: VariableKind::Var,
             var_type: variable_typestate.into(),
@@ -2271,7 +2271,7 @@ impl TypedExp {
         anything_changed |=
           update_condition_expression.propagate_types_inner(ctx, errors);
         anything_changed |= body_expression.propagate_types_inner(ctx, errors);
-        ctx.unbind(&increment_variable_name);
+        ctx.unbind(&increment_variable_name.0);
         self.data.subtree_fully_typed =
           increment_variable_initial_value_expression
             .data
@@ -2493,7 +2493,7 @@ impl TypedExp {
           body_expression,
         } => {
           ctx.bind(
-            increment_variable_name,
+            &increment_variable_name.0,
             Variable::immutable(increment_variable_type.clone().known().into())
               .with_kind(VariableKind::Var),
           );
@@ -2502,7 +2502,7 @@ impl TypedExp {
           continue_condition_expression.validate_assignments_inner(ctx)?;
           update_condition_expression.validate_assignments_inner(ctx)?;
           body_expression.validate_assignments_inner(ctx)?;
-          ctx.unbind(increment_variable_name);
+          ctx.unbind(&increment_variable_name.0);
           false
         }
         _ => true,
@@ -2599,7 +2599,7 @@ impl TypedExp {
                     .typedefs
                     .structs
                     .iter()
-                    .find(|s| s.name == *f_name)
+                    .find(|s| s.name.0 == *f_name)
                   {
                     let arg_types: Vec<Type> =
                       args.iter().map(|arg| arg.data.unwrap_known()).collect();
@@ -2925,7 +2925,7 @@ impl TypedExp {
         ..
       } => {
         bind(
-          increment_variable_name,
+          &mut increment_variable_name.0,
           &self.source_trace,
           bindings,
           reverse_bindings,
@@ -2956,7 +2956,7 @@ impl TypedExp {
           true,
           names,
         );
-        unbind(increment_variable_name, bindings, reverse_bindings);
+        unbind(&mut increment_variable_name.0, bindings, reverse_bindings);
         false
       }
       Match(scrutinee, arms) => {
@@ -3213,8 +3213,8 @@ impl TypedExp {
         effects.merge(continue_condition_expression.effects(program));
         effects.merge(update_condition_expression.effects(program));
         effects.merge(body_expression.effects(program));
-        effects.remove(&Effect::ModifiesVar(increment_variable_name.clone()));
-        effects.remove(&Effect::ReadsVar(increment_variable_name.clone()));
+        effects.remove(&Effect::ModifiesVar(increment_variable_name.0.clone()));
+        effects.remove(&Effect::ReadsVar(increment_variable_name.0.clone()));
         effects.remove(&Effect::Break);
         effects.remove(&Effect::Continue);
         effects
