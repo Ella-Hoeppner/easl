@@ -104,6 +104,8 @@ fn main() {
     "location_inference",
     "reserved_names",
     "invalid_names",
+    "duplicate_field",
+    "duplicate_variant",
     // "vec_match" // todo!
   ] {
     print!("compiling {filename}...");

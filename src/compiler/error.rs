@@ -377,6 +377,10 @@ pub enum CompileErrorKind {
   ExpressionAfterControlFlow(String),
   #[error("Invalid name")]
   InvalidName,
+  #[error("Duplicate struct field name")]
+  DuplicateStructFieldName,
+  #[error("Duplicate enum variant name")]
+  DuplicateEnumVariantName,
 }
 
 impl CompileErrorKind {

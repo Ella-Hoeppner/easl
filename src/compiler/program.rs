@@ -1345,6 +1345,38 @@ impl Program {
       }
     }
   }
+  fn catch_duplicate_struct_fields(&self, errors: &mut ErrorLog) {
+    for s in self.typedefs.structs.iter() {
+      let mut names_so_far = HashSet::new();
+      for field in s.fields.iter() {
+        let name = &field.name;
+        if names_so_far.contains(name) {
+          errors.log(CompileError::new(
+            CompileErrorKind::DuplicateStructFieldName,
+            field.source_trace.clone(),
+          ));
+        } else {
+          names_so_far.insert(name);
+        }
+      }
+    }
+  }
+  fn catch_duplicate_enum_variants(&self, errors: &mut ErrorLog) {
+    for e in self.typedefs.enums.iter() {
+      let mut names_so_far = HashSet::new();
+      for variant in e.variants.iter() {
+        let name = &variant.name;
+        if names_so_far.contains(name) {
+          errors.log(CompileError::new(
+            CompileErrorKind::DuplicateEnumVariantName,
+            variant.source.clone(),
+          ));
+        } else {
+          names_so_far.insert(name);
+        }
+      }
+    }
+  }
   fn catch_top_level_function_and_var_name_collisions(
     &self,
     errors: &mut ErrorLog,
@@ -1992,6 +2024,14 @@ impl Program {
       return errors;
     }
     self.catch_top_level_function_and_var_name_collisions(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.catch_duplicate_struct_fields(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.catch_duplicate_enum_variants(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
