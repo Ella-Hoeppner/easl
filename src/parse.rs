@@ -62,7 +62,6 @@ pub enum Operator {
   Annotation,
   TypeAscription,
   ExpressionComment,
-  Reference,
 }
 impl SSEOperator for Operator {
   fn left_args(&self) -> usize {
@@ -70,7 +69,6 @@ impl SSEOperator for Operator {
       Operator::Annotation => 0,
       Operator::TypeAscription => 1,
       Operator::ExpressionComment => 0,
-      Operator::Reference => 0,
     }
   }
 
@@ -79,7 +77,6 @@ impl SSEOperator for Operator {
       Operator::Annotation => 2,
       Operator::TypeAscription => 1,
       Operator::ExpressionComment => 1,
-      Operator::Reference => 1,
     }
   }
 
@@ -88,7 +85,6 @@ impl SSEOperator for Operator {
       Operator::Annotation => "@",
       Operator::TypeAscription => ":",
       Operator::ExpressionComment => "#_",
-      Operator::Reference => "&",
     }
   }
 }
@@ -107,7 +103,6 @@ static DEFAULT_CTX: LazyLock<SSEContext<Encloser, Operator>> =
         Operator::Annotation,
         Operator::TypeAscription,
         Operator::ExpressionComment,
-        Operator::Reference,
       ],
       None,
       standard_whitespace_chars(),
@@ -149,7 +144,7 @@ impl Syntax for EaslSyntax {
     }
   }
   fn reserved_tokens(&self) -> impl Iterator<Item = &str> {
-    ["&&", "||"].into_iter()
+    ["||"].into_iter()
   }
 }
 

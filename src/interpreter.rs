@@ -722,7 +722,6 @@ impl Value {
       ),
       Type::Function(_) => return Err(CantCreateZeroedFunction),
       Type::Skolem(_) => return Err(CantCreateZeroedSkolem),
-      Type::Reference(_) => return Err(CantCreateZeroedReference),
       Type::Enum(e) => {
         let first_variant = &e.variants[0];
         Value::Enum(
@@ -1126,7 +1125,6 @@ pub fn eval(
         .map(|exp| eval(exp, env))
         .collect::<Result<_, _>>()?,
     ),
-    ExpKind::Reference(exp) => eval(*exp, env)?,
     ExpKind::Uninitialized => Value::Uninitialized,
     ExpKind::ZeroedArray => Value::zeroed(exp.data.kind.unwrap_known(), env)?,
   })

@@ -1,20 +1,6 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready"
-* Overhaul references
-  * References shouldn't be first-class values. You shouldn't be able to create a binding of type `&f32` or anything like that. Functions can mark some of their arguments as references, but you'll just pass normal values for those arguments, and the fact that it's a reference will always be implicit - there will be no syntax for constructing a reference.
-  * Get rid of the `&` operator, just use a `@ref ...` annotation syntax on the function arguments
-  * Mutable references should be a different thing. Also second-class, only existing as a `@ref-mut ...` annotation on function inputs
-  * The semantics for this will basically just be that
-    * Arguments of type `T` can only accept a `T`
-    * Arguments of type `@ref T` can accept a `T`, `@ref T`, or `@ref-mut T`.
-    * Arguments of type `@ref-mut T` can accept a `@ref-mut T`, or a `T` so long as that binding is marked as a `var`.
-  * have `(deref x)` be a special builtin function that turns a `@ref T` or `@ref-mut T` into a `T`
-  * need to have a general check whenever an argument is `@ref-mut` that the argument being passed into it is marked as `var`
-    * I wonder if I should rename `var` to `mut` for clarity?
-  * builtin assignment operators like `=` and `+=` should be reformulated as accepting a `@ref-mut`
-  * once this is done, make sure that you can successfully call `array-length` like `(array-length arr)` rather than `(array-length &arr)`
-
 * `*=` doesn't work when multiplying a vec by a matrix
 
 * atomics

@@ -191,5 +191,5 @@ fn cpu_examples() {
 
 fn main() {
   shader_examples();
-  cpu_examples();
+  //cpu_examples();
 }

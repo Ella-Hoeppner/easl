@@ -15,6 +15,7 @@ use crate::{
     enums::{AbstractEnum, Enum, UntypedEnum},
     error::{CompileError, CompileErrorKind},
     expression::{Accessor, ExpKind, Number, TypedExp},
+    functions::Ownership,
     program::{NameContext, TypeDefs},
     structs::UntypedStruct,
     vars::VariableAddressSpace,
@@ -75,15 +76,13 @@ pub enum AbstractType {
     inner_type: Box<Self>,
     source_trace: SourceTrace,
   },
-  Reference(Box<Self>),
 }
 
 impl AbstractType {
   pub(crate) fn track_generic_names(&self, names: &mut Vec<Rc<str>>) {
     match self {
       AbstractType::Generic(name) => names.push(name.clone()),
-      AbstractType::AbstractArray { inner_type, .. }
-      | AbstractType::Reference(inner_type) => {
+      AbstractType::AbstractArray { inner_type, .. } => {
         inner_type.track_generic_names(names)
       }
       AbstractType::AbstractStruct(abstract_struct) => {
@@ -135,13 +134,6 @@ impl AbstractType {
       )
       .known()
       .into(),
-      AbstractType::Reference(inner_type) => Type::Reference(
-        inner_type
-          .fill_generics(generics, typedefs, source_trace)?
-          .into(),
-      )
-      .known()
-      .into(),
     })
   }
   pub fn concretize(
@@ -177,12 +169,6 @@ impl AbstractType {
             .into(),
         ),
       )),
-      AbstractType::Reference(inner_type) => Ok(Type::Reference(Box::new(
-        inner_type
-          .concretize(skolems, typedefs, source_trace)?
-          .known()
-          .into(),
-      ))),
     }
   }
   pub fn fill_abstract_generics(
@@ -216,9 +202,6 @@ impl AbstractType {
         source_trace,
         inner_type: inner_type.fill_abstract_generics(generics).into(),
       },
-      AbstractType::Reference(inner_type) => AbstractType::Reference(
-        inner_type.fill_abstract_generics(generics).into(),
-      ),
     }
   }
   pub fn compile(
@@ -252,9 +235,6 @@ impl AbstractType {
           inner_type.compile(typedefs, names, source_trace)?,
           format!("{}", size.compile_type())
         )
-      }
-      AbstractType::Reference(_) => {
-        unreachable!("compiling abstract reference type, this shouldn't happen")
       }
     })
   }
@@ -487,7 +467,6 @@ impl AbstractType {
         never happen"
       ),
       AbstractType::Type(t) => t.data_size_in_u32s(source_trace)?,
-      AbstractType::Reference(_) => 1,
       AbstractType::AbstractStruct(s) => s
         .fields
         .iter()
@@ -568,7 +547,6 @@ pub enum Type {
   Function(Box<FunctionSignature>),
   Skolem(Rc<str>),
   Array(Option<ArraySize>, Box<ExpTypeInfo>),
-  Reference(Box<ExpTypeInfo>),
 }
 impl Type {
   pub fn data_size_in_u32s(
@@ -602,7 +580,6 @@ impl Type {
             }
           }
       }
-      Type::Reference(_) => 1,
     })
   }
   pub fn satisfies_constraints(&self, constraint: &TypeConstraint) -> bool {
@@ -766,9 +743,6 @@ impl Type {
         (count_a.is_none() || count_b.is_none() || count_a == count_b)
           && TypeState::are_compatible(a, b)
       }
-      (Type::Reference(a), Type::Reference(b)) => {
-        TypeState::are_compatible(a, b)
-      }
       (a, b) => a == b,
     };
     b
@@ -859,9 +833,6 @@ impl Type {
             .map(|size| format!("{}", size.compile_type()))
             .unwrap_or(String::new())
         )
-      }
-      Type::Reference(inner_type) => {
-        format!("ptr<storage, {}>", inner_type.monomorphized_name(names))
       }
       Type::Function(_) => {
         panic!("Attempted to compile ConcreteFunction type")
@@ -1229,7 +1200,7 @@ impl Type {
         f.return_type
           .replace_skolems_with_unification_variables(replacements);
       }
-      Type::Array(_, t) | Type::Reference(t) => {
+      Type::Array(_, t) => {
         t.replace_skolems_with_unification_variables(replacements)
       }
       _ => {}
@@ -1270,7 +1241,6 @@ impl Type {
       Type::Array(size, inner_type) => {
         size.is_some() && inner_type.check_is_fully_known()
       }
-      Type::Reference(inner_type) => inner_type.check_is_fully_known(),
       _ => true,
     }
   }
@@ -1362,6 +1332,7 @@ pub fn extract_type_annotation(
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExpTypeInfo {
   pub kind: TypeState,
+  pub ownership: Ownership,
   pub subtree_fully_typed: bool,
   pub errored: bool,
   pub fully_known_cached: bool,
@@ -1385,6 +1356,7 @@ impl From<TypeState> for ExpTypeInfo {
   fn from(kind: TypeState) -> Self {
     ExpTypeInfo {
       kind,
+      ownership: Ownership::Owned,
       subtree_fully_typed: false,
       fully_known_cached: false,
       errored: false,
@@ -1614,14 +1586,6 @@ impl TypeState {
                   }
                   changed
                 }
-                (
-                  Type::Reference(inner_type),
-                  Type::Reference(other_inner_type),
-                ) => inner_type.constrain(
-                  other_inner_type.kind.clone(),
-                  source_trace,
-                  errors,
-                ),
                 _ => false,
               }
             }
@@ -2145,7 +2109,6 @@ pub enum TypeDescription {
   },
   Skolem(String),
   Array(Option<ArraySize>, Box<TypeStateDescription>),
-  Reference(Box<TypeStateDescription>),
 }
 impl From<Type> for TypeDescription {
   fn from(t: Type) -> Self {
@@ -2187,9 +2150,6 @@ impl From<Type> for TypeDescription {
       Type::Array(array_size, t) => {
         Self::Array(array_size, TypeStateDescription::from(t.kind).into())
       }
-      Type::Reference(t) => {
-        Self::Reference(TypeStateDescription::from(t.kind).into())
-      }
       Type::Enum(e) => Self::Enum(e.name.to_string()),
     }
   }
@@ -2213,9 +2173,6 @@ impl Display for TypeDescription {
           } else {
             format!("[{}]", inner_type.to_string())
           }
-        }
-        Self::Reference(inner_type) => {
-          format!("&{}", inner_type.to_string())
         }
         Self::Function {
           arg_types,

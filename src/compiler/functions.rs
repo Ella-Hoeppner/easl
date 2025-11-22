@@ -36,6 +36,7 @@ use super::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionArgumentAnnotation {
   pub var: bool,
+  pub reference: bool,
   pub attributes: IOAttributes,
 }
 
@@ -43,6 +44,7 @@ impl FunctionArgumentAnnotation {
   pub fn empty(arg_source_trace: SourceTrace) -> Self {
     Self {
       var: false,
+      reference: false,
       attributes: IOAttributes::empty(arg_source_trace),
     }
   }
@@ -66,11 +68,17 @@ pub enum FunctionImplementationKind {
   Composite(Rc<RefCell<TopLevelFunction>>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Ownership {
+  Owned,
+  Reference,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractFunctionSignature {
   pub name: Rc<str>,
   pub generic_args: Vec<(Rc<str>, SourceTrace, Vec<TypeConstraint>)>,
-  pub arg_types: Vec<AbstractType>,
+  pub arg_types: Vec<(AbstractType, Ownership)>,
   pub mutated_args: Vec<usize>,
   pub return_type: AbstractType,
   pub implementation: FunctionImplementationKind,
@@ -175,36 +183,45 @@ impl AbstractFunctionSignature {
             .zip(arg_annotations.iter())
             .map(|(t, annotation)| {
               Ok((
-                Variable {
-                  var_type: t
-                    .concretize(
-                      &generic_arg_names,
-                      &program.typedefs,
-                      source_path.clone().into(),
-                    )?
-                    .known()
-                    .into(),
-                  kind: if annotation.var {
-                    VariableKind::Var
-                  } else {
-                    VariableKind::Let
+                (
+                  Variable {
+                    var_type: t
+                      .concretize(
+                        &generic_arg_names,
+                        &program.typedefs,
+                        source_path.clone().into(),
+                      )?
+                      .known()
+                      .into(),
+                    kind: if annotation.var {
+                      VariableKind::Var
+                    } else {
+                      VariableKind::Let
+                    },
                   },
-                },
-                if let AbstractType::Generic(generic_name) = t {
-                  generic_args
-                    .iter()
-                    .find_map(|(name, _, constraints)| {
-                      (generic_name == name).then(|| constraints.clone())
-                    })
-                    .unwrap_or(vec![])
+                  if let AbstractType::Generic(generic_name) = t {
+                    generic_args
+                      .iter()
+                      .find_map(|(name, _, constraints)| {
+                        (generic_name == name).then(|| constraints.clone())
+                      })
+                      .unwrap_or(vec![])
+                  } else {
+                    vec![]
+                  },
+                ),
+                if annotation.reference {
+                  Ownership::Reference
                 } else {
-                  vec![]
+                  Ownership::Owned
                 },
               ))
             })
-            .collect::<CompileResult<Vec<(Variable, Vec<TypeConstraint>)>>>()
-          {
-            Ok(concrete_args) => {
+            .collect::<CompileResult<(
+              Vec<(Variable, Vec<TypeConstraint>)>,
+              Vec<Ownership>,
+            )>>() {
+            Ok((concrete_args, arg_ownerships)) => {
               match TypedExp::function_from_body_tree(
                 source_path.clone(),
                 children_iter.collect(),
@@ -258,7 +275,10 @@ impl AbstractFunctionSignature {
                   return Some(AbstractFunctionSignature {
                     name: fn_name,
                     generic_args,
-                    arg_types,
+                    arg_types: arg_types
+                      .into_iter()
+                      .zip(arg_ownerships)
+                      .collect(),
                     mutated_args: vec![],
                     return_type,
                     implementation,
@@ -281,7 +301,7 @@ impl AbstractFunctionSignature {
     None
   }
   pub(crate) fn has_higher_order_arguments(&self) -> bool {
-    self.arg_types.iter().any(|t| {
+    self.arg_types.iter().any(|(t, _)| {
       if let AbstractType::Type(Type::Function(_)) = t {
         true
       } else {
@@ -293,7 +313,7 @@ impl AbstractFunctionSignature {
     &self,
   ) -> (Vec<Vec<TypeConstraint>>, Vec<AbstractType>, AbstractType) {
     let mut used_generic_names = vec![];
-    for t in self.arg_types.iter() {
+    for (t, _) in self.arg_types.iter() {
       t.track_generic_names(&mut used_generic_names);
     }
     self
@@ -336,7 +356,7 @@ impl AbstractFunctionSignature {
       self
         .arg_types
         .iter()
-        .map(|t| rename_generics(t.clone()))
+        .map(|(t, _)| rename_generics(t.clone()))
         .collect(),
       rename_generics(self.return_type.clone()),
     )
@@ -396,6 +416,7 @@ impl AbstractFunctionSignature {
     let mut generic_bindings = HashMap::new();
     for i in 0..self.arg_types.len() {
       self.arg_types[i]
+        .0
         .extract_generic_bindings(&arg_types[i], &mut generic_bindings);
     }
     self
@@ -431,6 +452,7 @@ impl AbstractFunctionSignature {
     for t in monomorphized
       .arg_types
       .iter_mut()
+      .map(|(t, _)| t)
       .chain(std::iter::once(&mut monomorphized.return_type))
     {
       take(t, |t| {
@@ -472,21 +494,36 @@ impl AbstractFunctionSignature {
       .cloned()
       .zip(implementation.arg_names.into_iter())
       .zip(implementation.arg_annotations.into_iter())
-      .map(|((t, name), annotation)| {
+      .map(|(((t, ownership), name), annotation)| {
         if let AbstractType::Type(Type::Function(_)) = t {
           (Some(name.clone()), None)
         } else {
-          (None, Some((name.clone(), (annotation.clone(), t))))
+          (
+            None,
+            Some((name.clone(), (annotation.clone(), t, ownership))),
+          )
         }
       })
       .collect::<(
         Vec<Option<Rc<str>>>,
-        Vec<Option<(Rc<str>, (FunctionArgumentAnnotation, AbstractType))>>,
+        Vec<
+          Option<(
+            Rc<str>,
+            (FunctionArgumentAnnotation, AbstractType, Ownership),
+          )>,
+        >,
       )>();
     let (new_parameter_names, (new_parameter_annotation, new_parameter_types)): (
       Vec<_>,
       (Vec<_>, Vec<_>),
-    ) = remaining_parameters.into_iter().filter_map(|x| x).collect();
+    ) = remaining_parameters
+          .into_iter()
+          .filter_map(|x| 
+            x.map(|(name, (annotation, t, ownership))| {
+              (name, (annotation, (t, ownership)))
+            })
+          )
+          .collect();
     let (retained_argument_indeces, removed_param_names): (
       Vec<usize>,
       Vec<Rc<str>>,
@@ -562,8 +599,8 @@ impl AbstractFunctionSignature {
     let mut args: Vec<_> = f
       .arg_types
       .iter()
-      .map(|t| {
-        let (var_type, constraints) = match t {
+      .map(|(t, ownership)| {
+        let (mut var_type, constraints) = match t {
           AbstractType::Generic(var_name) => (
             generic_variables
               .get(var_name)
@@ -614,22 +651,9 @@ impl AbstractFunctionSignature {
             .into(),
             vec![],
           ),
-          AbstractType::Reference(abstract_type) => (
-            Type::Reference(
-              abstract_type
-                .fill_generics(
-                  &generic_variables,
-                  typedefs,
-                  source_trace.clone(),
-                )?
-                .into(),
-            )
-            .known()
-            .into(),
-            vec![],
-          ),
           AbstractType::Unit => (TypeState::Known(Type::Unit).into(), vec![]),
         };
+        var_type.ownership = *ownership;
         Ok((Variable::immutable(var_type), constraints))
       })
       .collect::<CompileResult<_>>()?;
@@ -661,13 +685,6 @@ impl AbstractFunctionSignature {
         size, inner_type, ..
       } => Type::Array(
         Some(size.clone()),
-        inner_type
-          .fill_generics(&generic_variables, typedefs, source_trace)?
-          .into(),
-      )
-      .known()
-      .into(),
-      AbstractType::Reference(inner_type) => Type::Reference(
         inner_type
           .fill_generics(&generic_variables, typedefs, source_trace)?
           .into(),

@@ -22,6 +22,7 @@ use crate::{
     error::{CompileError, CompileErrorKind::*, CompileResult, err},
     functions::{
       AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
+      Ownership,
     },
     program::{NameContext, Program, TypeDefs},
     structs::{AbstractStruct, Struct},
@@ -329,7 +330,6 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Discard,
   Return(Box<Exp<D>>),
   ArrayLiteral(Vec<Exp<D>>),
-  Reference(Box<Exp<D>>),
   Uninitialized,
   ZeroedArray,
 }
@@ -419,11 +419,28 @@ pub fn arg_list_and_return_type_from_easl_tree(
             );
             let mut arg_annotation = FunctionArgumentAnnotation {
               var: false,
+              reference: false,
               attributes,
             };
             for (name, name_source, value) in residual {
               match (&*name, value) {
                 ("var", None) => arg_annotation.var = true,
+                // ("ref", None) => arg_annotation.reference = true,
+                //
+                // todo! uncommenting the above would allow the user to define
+                // functions that accept references as arguments, but most of
+                // the ways you'd want to use that would fail in wgsl due to
+                // restrictions on the usage of pointer types in function
+                // arguments. At the very least the function arguments would
+                // need the pointer address space included in the compiled type.
+                // Maybe easl functions that accept references should be treated
+                // as kinda generic over the address space and should be
+                // monomorphized separately for each address space that they're
+                // used with? idk, for now just leaving this disabled since idk
+                // how to draw good boundaries around which usages are valid or
+                // not, aside from just copying all the type-level complexity of
+                // wgsl's approach. With this disabled only built-in functions
+                // will ever accept references, which seems ok for now I guess?
                 _ => errors.log(CompileError {
                   kind: InvalidArgumentAnnotation,
                   source_trace: name_source,
@@ -1116,21 +1133,6 @@ impl TypedExp {
             O::ExpressionComment => unreachable!(
               "expression comment encountered, this should have been stripped"
             ),
-            O::Reference => TypedExp {
-              data: Type::Reference(Box::new(TypeState::Unknown.into()))
-                .known()
-                .into(),
-              kind: ExpKind::Reference(
-                Self::try_from_easl_tree(
-                  children_iter.next().unwrap(),
-                  typedefs,
-                  skolems,
-                  ctx,
-                )?
-                .into(),
-              ),
-              source_trace: encloser_or_operator_source_trace,
-            },
           },
         }
       }
@@ -1296,7 +1298,7 @@ impl TypedExp {
       BooleanLiteral(b) => wrap(format!("{b}")),
       Function(_, _) => panic!("Attempting to compile internal function"),
       Application(f, mut args) => wrap(match f.data.unwrap_known() {
-        Type::Function(_) => {
+        Type::Function(signature) => {
           let ExpKind::Name(name) = f.kind else {
             panic!("tried to compile application of non-name fn");
           };
@@ -1316,7 +1318,18 @@ impl TypedExp {
             .collect::<Vec<_>>();
           let arg_strs: Vec<String> = args
             .into_iter()
-            .map(|arg| arg.compile(InnerExpression, names))
+            .zip(signature.args.iter())
+            .map(|(arg, signature_arg)| {
+              format!(
+                "{}{}",
+                if signature_arg.0.var_type.ownership == Ownership::Reference {
+                  "&"
+                } else {
+                  ""
+                },
+                arg.compile(InnerExpression, names)
+              )
+            })
             .collect();
           if ASSIGNMENT_OPS.contains(&f_str.as_str()) {
             if arg_strs.len() == 2 {
@@ -1690,10 +1703,6 @@ impl TypedExp {
           .map(|child| child.compile(position, names))
           .collect::<Vec<String>>()
           .join(", ")
-      ),
-      Reference(exp) => format!(
-        "&{}",
-        exp.compile(ExpressionCompilationPosition::InnerExpression, names)
       ),
       ZeroedArray => self.data.kind.monomorphized_name(names) + "()",
     }
@@ -2407,19 +2416,6 @@ impl TypedExp {
             .map(|child| child.data.subtree_fully_typed)
             .reduce(|a, b| a && b)
             .unwrap_or(true);
-        anything_changed
-      }
-      Reference(exp) => {
-        let mut anything_changed = exp.propagate_types_inner(ctx, errors);
-        let TypeState::Known(Type::Reference(inner_type)) = &mut self.data.kind
-        else {
-          unreachable!()
-        };
-        anything_changed |=
-          exp
-            .data
-            .mutually_constrain(inner_type, &self.source_trace, errors);
-        self.data.subtree_fully_typed = exp.data.subtree_fully_typed;
         anything_changed
       }
       ZeroedArray => {
@@ -3164,7 +3160,6 @@ impl TypedExp {
   pub fn effects(&self, program: &Program) -> EffectType {
     match &self.kind {
       Name(name) => Effect::ReadsVar(name.clone()).into(),
-      Reference(exp) => exp.effects(program),
       Block(exps) | ArrayLiteral(exps) => exps
         .into_iter()
         .map(|exp| exp.effects(program))
@@ -3331,7 +3326,6 @@ impl TypedExp {
         match &mut exp.kind {
           Application(_, _)
           | ArrayLiteral(_)
-          | Reference(_)
           | Return(_)
           | Access(_, _)
           | Match(_, _) => {
@@ -3339,7 +3333,7 @@ impl TypedExp {
               Application(_, args) | ArrayLiteral(args) => {
                 args.iter_mut().collect()
               }
-              Reference(inner_exp) | Return(inner_exp) => vec![inner_exp],
+              Return(inner_exp) => vec![inner_exp],
               Access(_, inner_exp) => {
                 vec![inner_exp.as_mut()]
               }

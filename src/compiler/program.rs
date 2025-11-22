@@ -21,7 +21,7 @@ use crate::{
     enums::{AbstractEnum, UntypedEnum},
     error::{CompileError, SourceTrace},
     expression::{Exp, ExpKind, ExpressionCompilationPosition},
-    functions::AbstractFunctionSignature,
+    functions::{AbstractFunctionSignature, Ownership},
     structs::UntypedStruct,
     types::{AbstractType, Type, TypeState, UntypedType, VariableKind},
     util::{compile_word, is_valid_name},
@@ -327,7 +327,7 @@ impl Program {
             arg_types: s
               .fields
               .iter()
-              .map(|field| field.field_type.clone())
+              .map(|field| (field.field_type.clone(), Ownership::Owned))
               .collect(),
             mutated_args: vec![],
             return_type: AbstractType::AbstractStruct(s.clone()),
@@ -354,7 +354,7 @@ impl Program {
                   .iter()
                   .map(|name| (name.0.clone(), name.1.clone(), vec![]))
                   .collect(),
-                arg_types: vec![variant.inner_type.clone()],
+                arg_types: vec![(variant.inner_type.clone(), Ownership::Owned)],
                 mutated_args: vec![],
                 return_type: AbstractType::AbstractEnum(e.clone()),
                 implementation: FunctionImplementationKind::EnumConstructor(
@@ -1265,7 +1265,7 @@ impl Program {
       if signature.associative
         && (signature.arg_types.len() != 2
           || signature.arg_types[0] != signature.arg_types[1]
-          || signature.arg_types[0] != signature.return_type)
+          || signature.arg_types[0].0 != signature.return_type)
       {
         if let FunctionImplementationKind::Composite(implementation) =
           &signature.implementation

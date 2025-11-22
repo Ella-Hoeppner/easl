@@ -4,4 +4,7 @@
 (var a: [vec4f])
 
 (defn length-of-a []: u32
-  (array-length &a))
+  (array-length a))
+
+(defn f []: u32
+  (+ (length-of-a) 5))
