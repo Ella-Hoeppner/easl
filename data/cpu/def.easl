@@ -1,0 +1,4 @@
+(def x: f32 5.)
+
+(defn main []
+  (print x))

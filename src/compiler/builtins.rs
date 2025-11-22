@@ -1809,6 +1809,18 @@ fn derivative_functions() -> Vec<AbstractFunctionSignature> {
     .collect()
 }
 
+fn print_functions() -> Vec<AbstractFunctionSignature> {
+  vec![AbstractFunctionSignature {
+    name: "print".into(),
+    generic_args: vec![("T".into(), SourceTrace::empty(), vec![])],
+    arg_types: vec![AbstractType::Generic("T".into())],
+    mutated_args: vec![],
+    return_type: AbstractType::Unit,
+    implementation: FunctionImplementationKind::Builtin(Effect::Print.into()),
+    associative: false,
+  }]
+}
+
 pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   let mut signatures = vec![assignment_function()];
   signatures.append(&mut boolean_functions());
@@ -1822,6 +1834,8 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut inversion_functions());
   signatures.append(&mut matrix_arithmetic_functions());
   signatures.append(&mut misc_matrix_functions());
+  signatures.append(&mut bitwise_functions("&", true));
+  signatures.append(&mut bitwise_functions("|", true));
   signatures.append(&mut bitwise_functions("^", true));
   signatures.append(&mut bitwise_functions(">>", false));
   signatures.append(&mut bitwise_functions("<<", false));
@@ -1841,6 +1855,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut data_packing_functions());
   signatures.append(&mut bit_manipulation_functions());
   signatures.append(&mut derivative_functions());
+  signatures.append(&mut print_functions());
   signatures
 }
 

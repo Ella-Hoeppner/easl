@@ -139,6 +139,9 @@ impl NameContext {
     base_type_name: Rc<str>,
     generic_arg_names: Vec<Rc<str>>,
   ) -> Rc<str> {
+    if generic_arg_names.is_empty() {
+      return base_type_name;
+    }
     let monomorphization_id = (base_type_name, generic_arg_names);
     self
       .monomorphized_names
@@ -277,7 +280,7 @@ impl Program {
       for arg_name in f.arg_names.iter() {
         self.names.borrow_mut().track_user_name(&arg_name);
       }
-      f.body
+      f.expression
         .walk(&mut |exp| {
           if let ExpKind::Name(name) = &exp.kind {
             self.names.borrow_mut().track_user_name(&name);
@@ -727,7 +730,7 @@ impl Program {
       {
         let changed = implementation
           .borrow_mut()
-          .body
+          .expression
           .propagate_types(&mut base_context, errors);
         anything_changed |= changed;
       }
@@ -741,7 +744,7 @@ impl Program {
         if let FunctionImplementationKind::Composite(implementation) =
           &f.borrow().implementation
         {
-          implementation.borrow_mut().body.find_untyped()
+          implementation.borrow_mut().expression.find_untyped()
         } else {
           vec![]
         }
@@ -772,7 +775,7 @@ impl Program {
       {
         (**implementation)
           .borrow_mut()
-          .body
+          .expression
           .validate_match_blocks(errors);
       }
     }
@@ -800,7 +803,7 @@ impl Program {
         &abstract_f.implementation
       {
         let implementation = implementation.borrow_mut();
-        if let Err(e) = implementation.body.validate_assignments(self) {
+        if let Err(e) = implementation.expression.validate_assignments(self) {
           errors.log(e);
         }
       }
@@ -816,7 +819,7 @@ impl Program {
         {
           let mut borrowed_implementation = implementation.borrow_mut();
           match borrowed_implementation
-            .body
+            .expression
             .monomorphize(&self, &mut monomorphized_ctx)
           {
             Ok(_) => {
@@ -869,7 +872,7 @@ impl Program {
           FunctionImplementationKind::Composite(implementation) => {
             let mut borrowed_implementation = implementation.borrow_mut();
             match borrowed_implementation
-              .body
+              .expression
               .inline_higher_order_arguments(&mut inlined_ctx)
             {
               Ok(added_new_function) => {
@@ -1021,7 +1024,7 @@ impl Program {
         &f.borrow().implementation
       {
         f.borrow_mut()
-          .body
+          .expression
           .walk_mut::<()>(&mut |exp| {
             take(&mut exp.kind, |exp_kind| {
               if let ExpKind::Application(f, args) = exp_kind {
@@ -1075,7 +1078,7 @@ impl Program {
         if let FunctionImplementationKind::Composite(f) =
           &mut signature.implementation
         {
-          f.borrow_mut().body.deshadow(
+          f.borrow_mut().expression.deshadow(
             &globally_bound_names,
             errors,
             &mut self.names.borrow_mut(),
@@ -1090,9 +1093,10 @@ impl Program {
         &signature.borrow().implementation
       {
         let mut implementation = implementation.borrow_mut();
-        if let Type::Function(f) = &mut implementation.body.data.unwrap_known()
+        if let Type::Function(f) =
+          &mut implementation.expression.data.unwrap_known()
           && let ExpKind::Function(arg_names, body) =
-            &mut implementation.body.kind
+            &mut implementation.expression.kind
         {
           let mutable_args: Vec<_> = f
             .args
@@ -1159,7 +1163,7 @@ impl Program {
           }
         }
         implementation
-          .body
+          .expression
           .walk(&mut |exp| {
             let names: Vec<_> = match &exp.kind {
               ExpKind::Let(items, _) => items
@@ -1268,7 +1272,11 @@ impl Program {
         {
           errors.log(CompileError {
             kind: CompileErrorKind::InvalidAssociativeSignature,
-            source_trace: implementation.borrow().body.source_trace.clone(),
+            source_trace: implementation
+              .borrow()
+              .expression
+              .source_trace
+              .clone(),
           });
         }
       }
@@ -1290,7 +1298,7 @@ impl Program {
         if let FunctionImplementationKind::Composite(f) =
           &signature.borrow().implementation
         {
-          let source = f.borrow().body.source_trace.clone();
+          let source = f.borrow().expression.source_trace.clone();
           let normalized = signature.borrow().normalized_signature();
           for (previous_signature, previous_normalized) in
             normalized_signatures.iter()
@@ -1337,7 +1345,7 @@ impl Program {
             {
               errors.log(CompileError::new(
                 CantShadowTopLevelBinding(arg_name.to_string()),
-                f.body.source_trace.clone(),
+                f.expression.source_trace.clone(),
               ))
             }
           }
@@ -1398,7 +1406,7 @@ impl Program {
       {
         implementation
           .borrow()
-          .body
+          .expression
           .walk(&mut |exp| {
             match &exp.kind {
               ExpKind::Let(items, _) => {
@@ -1425,7 +1433,7 @@ impl Program {
       if let FunctionImplementationKind::Composite(f) =
         &signature.implementation
       {
-        f.borrow().body.validate_control_flow(errors, 0);
+        f.borrow().expression.validate_control_flow(errors, 0);
       }
     }
   }
@@ -1435,7 +1443,7 @@ impl Program {
       if let FunctionImplementationKind::Composite(f) =
         &signature.implementation
       {
-        f.borrow_mut().body.deexpressionify(self);
+        f.borrow_mut().expression.deexpressionify(self);
       }
     }
   }
@@ -1449,7 +1457,7 @@ impl Program {
           let type_signature = if s.generic_args.is_empty()
             && let FunctionImplementationKind::Composite(f) =
               &mut s.implementation
-            && let Type::Function(f) = f.borrow().body.data.unwrap_known()
+            && let Type::Function(f) = f.borrow().expression.data.unwrap_known()
           {
             f.unwrap_type_signature()
           } else {
@@ -1480,7 +1488,7 @@ impl Program {
         &signature.implementation
       {
         f.borrow_mut()
-          .body
+          .expression
           .walk_mut(&mut |exp| {
             if let ExpKind::Name(name) = &mut exp.kind {
               if let Some(renames) = renames.get(name)
@@ -1510,7 +1518,7 @@ impl Program {
         &signature.implementation
       {
         f.borrow_mut()
-          .body
+          .expression
           .walk_mut(&mut |exp| {
             exp.desugar_swizzle_assignments(&mut names);
             Ok::<_, Never>(true)
@@ -1529,7 +1537,7 @@ impl Program {
         if let Some(entry_point) = f.entry_point
           && let EntryPoint::Vertex | EntryPoint::Compute(_) = entry_point
         {
-          let ExpKind::Function(_, body) = &f.body.kind else {
+          let ExpKind::Function(_, body) = &f.expression.kind else {
             unreachable!()
           };
           let effects = body.effects(self);
@@ -1538,7 +1546,7 @@ impl Program {
               Effect::Discard => {
                 errors.log(CompileError {
                   kind: DiscardOutsideFragment,
-                  source_trace: f.body.source_trace.clone(),
+                  source_trace: f.expression.source_trace.clone(),
                 });
               }
               Effect::FragmentExclusiveFunction(name) => {
@@ -1546,7 +1554,7 @@ impl Program {
                   kind: FragmentExclusiveFunctionOutsideFragment(
                     name.to_string(),
                   ),
-                  source_trace: f.body.source_trace.clone(),
+                  source_trace: f.expression.source_trace.clone(),
                 });
               }
               _ => {}
@@ -1568,9 +1576,10 @@ impl Program {
         &signature.implementation
       {
         let mut f = f.borrow_mut();
-        let f_source = f.body.source_trace.clone();
+        let f_source = f.expression.source_trace.clone();
         if let Some(entry) = f.entry_point {
-          let Type::Function(signature) = f.body.data.unwrap_known() else {
+          let Type::Function(signature) = f.expression.data.unwrap_known()
+          else {
             unreachable!()
           };
           match entry {
@@ -1596,14 +1605,14 @@ impl Program {
               if Type::Unit != signature.return_type.unwrap_known() {
                 errors.log(CompileError::new(
                   ComputeEntryReturnType,
-                  f.body.source_trace.clone(),
+                  f.expression.source_trace.clone(),
                 ));
                 errored = true;
               }
               if !f.return_attributes.is_empty() {
                 errors.log(CompileError::new(
                   ComputeEntryReturnType,
-                  f.body.source_trace.clone(),
+                  f.expression.source_trace.clone(),
                 ));
                 errored = true;
               }
@@ -1965,7 +1974,7 @@ impl Program {
       {
         implementation
           .borrow()
-          .body
+          .expression
           .walk(&mut |exp| {
             match &exp.kind {
               ExpKind::Block(children) => {
@@ -2096,7 +2105,7 @@ impl Program {
       };
       implementation
         .borrow()
-        .body
+        .expression
         .walk(&mut |exp: &TypedExp| {
           type_annotations
             .push((exp.source_trace.clone(), exp.data.kind.clone()));
@@ -2131,5 +2140,16 @@ impl Program {
         }
       })
       .collect()
+  }
+  pub fn main_fn(&self) -> Option<Rc<RefCell<AbstractFunctionSignature>>> {
+    if let Some(main_fns) = self.abstract_functions.get("main".into()) {
+      let main_fn = main_fns.iter().find(|f| {
+        let f = f.borrow();
+        f.arg_types.is_empty() && f.return_type == AbstractType::Unit
+      });
+      main_fn.cloned()
+    } else {
+      None
+    }
   }
 }

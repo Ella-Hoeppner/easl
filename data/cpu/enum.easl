@@ -1,0 +1,7 @@
+(enum Option
+  None
+  (Some f32))
+
+(defn main []
+  (print (Some 5.))
+  (print None))

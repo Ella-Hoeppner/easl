@@ -1293,6 +1293,15 @@ impl Type {
   pub fn is_location_attributable(&self) -> bool {
     *self != Type::Bool && self.is_attributable()
   }
+  pub fn is_vector(&self) -> bool {
+    if let Type::Struct(s) = self
+      && (&*s.name == "vec2" || &*s.name == "vec3" || &*s.name == "vec4")
+    {
+      true
+    } else {
+      false
+    }
+  }
   pub fn is_vec3u(&self) -> bool {
     if let Type::Struct(s) = self
       && &*s.name == "vec3"

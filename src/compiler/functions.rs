@@ -55,7 +55,7 @@ pub struct TopLevelFunction {
   pub arg_annotations: Vec<FunctionArgumentAnnotation>,
   pub return_attributes: IOAttributes,
   pub entry_point: Option<EntryPoint>,
-  pub body: TypedExp,
+  pub expression: TypedExp,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -214,7 +214,7 @@ impl AbstractFunctionSignature {
                 &program.typedefs,
                 &generic_arg_names,
               ) {
-                Ok(body) => {
+                Ok(expression) => {
                   let parsed_annotation = if let Some(annotation) = &annotation
                   {
                     match annotation.validate_as_function_annotation() {
@@ -252,7 +252,7 @@ impl AbstractFunctionSignature {
                       arg_annotations,
                       return_attributes,
                       entry_point: parsed_annotation.entry,
-                      body,
+                      expression,
                     })),
                   );
                   return Some(AbstractFunctionSignature {
@@ -344,7 +344,7 @@ impl AbstractFunctionSignature {
   pub fn effects(&self, program: &Program) -> EffectType {
     if let FunctionImplementationKind::Composite(f) = &self.implementation {
       let f = f.borrow();
-      if let ExpKind::Function(arg_names, body) = &f.body.kind {
+      if let ExpKind::Function(arg_names, body) = &f.expression.kind {
         let mut effects = body.effects(&program);
         for name in arg_names {
           effects.remove(&Effect::ReadsVar(name.clone()))
@@ -450,8 +450,8 @@ impl AbstractFunctionSignature {
         .iter()
         .map(|(x, y)| (x.clone(), y.clone()))
         .collect();
-      new_fn.body.replace_skolems(&replacement_pairs);
-      new_fn.body.monomorphize(base_program, new_program)?;
+      new_fn.expression.replace_skolems(&replacement_pairs);
+      new_fn.expression.monomorphize(base_program, new_program)?;
       std::mem::swap(monomorphized_fn, &mut Rc::new(RefCell::new(new_fn)));
     } else {
       panic!("attempted to monomorphize non-composite abstract function")
@@ -495,7 +495,7 @@ impl AbstractFunctionSignature {
       .enumerate()
       .filter_map(|(i, x)| x.map(|x| (i, x)))
       .collect();
-    take(&mut implementation.body, |mut body| {
+    take(&mut implementation.expression, |mut body| {
       body.kind = if let ExpKind::Function(_, body_exp) = body.kind {
         ExpKind::Function(new_parameter_names.clone(), body_exp)
       } else {
@@ -511,7 +511,7 @@ impl AbstractFunctionSignature {
       body
     });
     implementation
-      .body
+      .expression
       .inline_args(&removed_param_names, &fn_args);
     implementation.arg_names = new_parameter_names;
     implementation.arg_annotations = new_parameter_annotation;
@@ -813,7 +813,9 @@ impl FunctionSignature {
     if let Some(abstract_ancestor) = &self.abstract_ancestor {
       match &abstract_ancestor.implementation {
         FunctionImplementationKind::Composite(f) => {
-          if let ExpKind::Function(arg_names, body) = &f.borrow().body.kind {
+          if let ExpKind::Function(arg_names, body) =
+            &f.borrow().expression.kind
+          {
             let mut effects = body.effects(&program);
             for name in arg_names {
               effects.remove(&Effect::ReadsVar(name.clone()))
@@ -849,7 +851,7 @@ impl TopLevelFunction {
     name: &str,
     names: &mut NameContext,
   ) -> CompileResult<String> {
-    let TypedExp { data, kind, .. } = self.body;
+    let TypedExp { data, kind, .. } = self.expression;
     let (args, return_type) =
       if let Type::Function(signature) = data.unwrap_known() {
         (signature.args, signature.return_type)

@@ -1,0 +1,5 @@
+(defn double [x: f32]: f32
+  (* x 2.))
+
+(defn main []
+  (print (double 2.)))

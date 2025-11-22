@@ -1,0 +1,8 @@
+(defn main []
+  (let [@var x (vec2f 1. 1.)]
+    (= x.x 2.)
+    (+= x.y 3.)
+    (print x))
+  (let [@var y (vec3f 1.)]
+    (*= y.zx (vec2f 3. 2.))
+    (print y)))

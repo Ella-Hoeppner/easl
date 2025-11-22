@@ -143,12 +143,38 @@ pub enum SwizzleField {
 }
 
 impl SwizzleField {
-  fn name(&self) -> &str {
+  pub fn index(&self) -> usize {
+    match self {
+      SwizzleField::X => 0,
+      SwizzleField::Y => 1,
+      SwizzleField::Z => 2,
+      SwizzleField::W => 3,
+    }
+  }
+  pub fn from_index(i: usize) -> Self {
+    match i {
+      0 => SwizzleField::X,
+      1 => SwizzleField::Y,
+      2 => SwizzleField::Z,
+      3 => SwizzleField::W,
+      _ => panic!(),
+    }
+  }
+  pub fn name(&self) -> &str {
     match self {
       SwizzleField::X => "x",
       SwizzleField::Y => "y",
       SwizzleField::Z => "z",
       SwizzleField::W => "w",
+    }
+  }
+  pub fn from_name(name: &str) -> Self {
+    match name {
+      "x" => SwizzleField::X,
+      "y" => SwizzleField::Y,
+      "z" => SwizzleField::Z,
+      "w" => SwizzleField::W,
+      _ => panic!(),
     }
   }
 }
@@ -2411,7 +2437,7 @@ impl TypedExp {
   ) -> bool {
     self.propagate_types_inner(&mut LocalContext::empty(program), errors)
   }
-  fn name_or_inner_accessed_name(&self) -> Option<&Rc<str>> {
+  pub fn name_or_inner_accessed_name(&self) -> Option<&Rc<str>> {
     let mut exp = self;
     loop {
       match &exp.kind {
@@ -2717,7 +2743,7 @@ impl TypedExp {
                         exp.data.unwrap_known().clone(),
                         base_program,
                         new_program,
-                        composite.borrow().body.source_trace.clone(),
+                        composite.borrow().expression.source_trace.clone(),
                       )?;
                     std::mem::swap(f_name, &mut monomorphized.name.clone());
                     let monomorphized = Rc::new(RefCell::new(monomorphized));
@@ -2781,7 +2807,7 @@ impl TypedExp {
                       f_name,
                       function_args,
                       &mut new_ctx.names.borrow_mut(),
-                      f.borrow().body.source_trace.clone(),
+                      f.borrow().expression.source_trace.clone(),
                     )?;
                   std::mem::swap(f_name, &mut inlined.name.clone());
                   for fn_arg_index in function_arg_positions.iter().rev() {

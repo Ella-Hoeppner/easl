@@ -1,0 +1,8 @@
+(defn main []
+  (let [@var x 1.
+        @var y 0.]
+    (while (> x 0.1)
+      (+= y x)
+      (/= x 2.)
+      (print x)
+      (print y))))

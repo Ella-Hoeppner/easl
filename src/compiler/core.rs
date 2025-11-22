@@ -2,7 +2,7 @@ use fsexp::ParseError;
 
 use crate::{
   compiler::{info::ProgramInfo, program::EaslDocument},
-  parse::parse_easl,
+  parse::parse_easl_without_comments,
 };
 
 use super::{builtins::built_in_macros, error::ErrorLog, program::Program};
@@ -28,22 +28,20 @@ pub fn compile_easl_document_to_wgsl<'t>(
 pub fn compile_easl_source_to_wgsl<'t>(
   easl_source: &'t str,
 ) -> Result<Result<String, (EaslDocument<'t>, ErrorLog)>, EaslDocument<'t>> {
-  let mut document = parse_easl(easl_source);
+  let document = parse_easl_without_comments(easl_source);
   if !document.parsing_failures.is_empty() {
     return Err(document);
   }
-  document.strip_comments();
   Ok(compile_easl_document_to_wgsl(document))
 }
 
 pub fn get_easl_program_info(
   easl_source: &str,
 ) -> Result<Result<ProgramInfo, ErrorLog>, Vec<ParseError>> {
-  let mut document = parse_easl(easl_source);
+  let document = parse_easl_without_comments(easl_source);
   if !document.parsing_failures.is_empty() {
     return Err(document.parsing_failures);
   }
-  document.strip_comments();
   let (mut program, _) =
     Program::from_easl_document(&document, built_in_macros());
   let errors = program.validate_raw_program();
