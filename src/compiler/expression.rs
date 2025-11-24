@@ -417,36 +417,27 @@ pub fn arg_list_and_return_type_from_easl_tree(
               Some((arg_name.clone().into(), arg_name_pos.into())),
               errors,
             );
-            let mut arg_annotation = FunctionArgumentAnnotation {
-              var: false,
-              reference: false,
-              attributes,
-            };
+            let mut has_var = false;
+            let mut has_ref = false;
             for (name, name_source, value) in residual {
               match (&*name, value) {
-                ("var", None) => arg_annotation.var = true,
-                // ("ref", None) => arg_annotation.reference = true,
-                //
-                // todo! uncommenting the above would allow the user to define
-                // functions that accept references as arguments, but most of
-                // the ways you'd want to use that would fail in wgsl due to
-                // restrictions on the usage of pointer types in function
-                // arguments. At the very least the function arguments would
-                // need the pointer address space included in the compiled type.
-                // Maybe easl functions that accept references should be treated
-                // as kinda generic over the address space and should be
-                // monomorphized separately for each address space that they're
-                // used with? idk, for now just leaving this disabled since idk
-                // how to draw good boundaries around which usages are valid or
-                // not, aside from just copying all the type-level complexity of
-                // wgsl's approach. With this disabled only built-in functions
-                // will ever accept references, which seems ok for now I guess?
+                ("var", None) => has_var = true,
+                ("ref", None) => has_ref = true,
                 _ => errors.log(CompileError {
                   kind: InvalidArgumentAnnotation,
                   source_trace: name_source,
                 }),
               }
             }
+            let arg_annotation = FunctionArgumentAnnotation {
+              var: has_var && !has_ref,
+              ownership: match (has_var, has_ref) {
+                (true, true) => Ownership::MutableReference,
+                (false, true) => Ownership::Reference,
+                _ => Ownership::Owned,
+              },
+              attributes,
+            };
             Ok(((t, arg_annotation), arg_name.into()))
           } else {
             Ok((
@@ -527,7 +518,6 @@ impl TypedExp {
         abstract_ancestor: None,
         args,
         return_type,
-        mutated_args: vec![],
       })))
       .into(),
       kind: ExpKind::Function(arg_names, Box::new(body)),
@@ -1316,13 +1306,19 @@ impl TypedExp {
             .iter()
             .map(|a| a.data.unwrap_known())
             .collect::<Vec<_>>();
+          let first_arg_is_owned = args
+            .first()
+            .map(|arg| arg.data.ownership == Ownership::Owned)
+            .unwrap_or(false);
           let arg_strs: Vec<String> = args
             .into_iter()
             .zip(signature.args.iter())
             .map(|(arg, signature_arg)| {
               format!(
                 "{}{}",
-                if signature_arg.0.var_type.ownership == Ownership::Reference {
+                if signature_arg.0.var_type.ownership != Ownership::Owned
+                  && arg.data.ownership == Ownership::Owned
+                {
                   "&"
                 } else {
                   ""
@@ -1333,7 +1329,13 @@ impl TypedExp {
             .collect();
           if ASSIGNMENT_OPS.contains(&f_str.as_str()) {
             if arg_strs.len() == 2 {
-              format!("{} {} {}", arg_strs[0], f_str, arg_strs[1])
+              format!(
+                "{}{} {} {}",
+                if first_arg_is_owned { "" } else { "*" },
+                arg_strs[0],
+                f_str,
+                arg_strs[1]
+              )
             } else {
               panic!(
                 "{} arguments to assignment op, expected 2",
@@ -1904,6 +1906,9 @@ impl TypedExp {
             self.source_trace.clone(),
           ));
         }
+        if let Some(ownership) = ctx.get_variable_ownership(name) {
+          self.data.ownership = ownership;
+        }
         let changed = ctx.constrain_name_type(
           name,
           &self.source_trace,
@@ -2016,7 +2021,6 @@ impl TypedExp {
                   .iter()
                   .map(|arg| (Variable::immutable(arg.data.clone()), vec![]))
                   .collect(),
-                mutated_args: vec![],
                 return_type: self.data.clone(),
               })),
               Type::Array(None, Box::new(TypeState::Unknown.into())),
@@ -2460,8 +2464,14 @@ impl TypedExp {
         Application(f, args) => {
           if let ExpKind::Name(f_name) = &f.kind {
             if ASSIGNMENT_OPS.contains(&&**f_name) {
-              if let Some(var_name) = args[0].name_or_inner_accessed_name() {
-                if ctx.get_variable_kind(var_name) != VariableKind::Var {
+              let assigned_expression = &args[0];
+              if let Some(var_name) =
+                assigned_expression.name_or_inner_accessed_name()
+              {
+                if !(ctx.get_variable_kind(var_name) == VariableKind::Var
+                  || assigned_expression.data.ownership
+                    == Ownership::MutableReference)
+                {
                   return err(
                     AssignmentTargetMustBeVariable(var_name.to_string()),
                     exp.source_trace.clone(),
@@ -2712,7 +2722,6 @@ impl TypedExp {
                           name: f_name.clone(),
                           generic_args: vec![],
                           arg_types: abstract_signature.arg_types.clone(),
-                          mutated_args: vec![],
                           return_type: AbstractType::AbstractEnum(
                             monomorphized_enum.clone(),
                           ),
@@ -3194,19 +3203,21 @@ impl TypedExp {
       Application(f, args) => match f.data.kind.unwrap_known() {
         Type::Function(function_signature) => {
           let mut effects = function_signature.effects(program);
-          for arg in args {
+          for ((arg_var, _), arg) in
+            function_signature.args.iter().zip(args.iter())
+          {
             effects.merge(arg.effects(program));
-          }
-          for i in function_signature.mutated_args.iter().copied() {
-            effects.merge(Effect::ModifiesVar(
-              args[i]
-                .name_or_inner_accessed_name()
-                .expect(
-                  "No name found in mutated argument position. This should \
-                  never happen if validate_assignments has passed.",
-                )
-                .clone(),
-            ));
+            if arg_var.var_type.ownership == Ownership::MutableReference {
+              effects.merge(Effect::ModifiesVar(
+                arg
+                  .name_or_inner_accessed_name()
+                  .expect(
+                    "No name found in mutated argument position. This should \
+                    never happen if validate_assignments has passed.",
+                  )
+                  .clone(),
+              ));
+            }
           }
           effects
         }
@@ -3579,7 +3590,13 @@ impl TypedExp {
                                 abstract_ancestor: None,
                                 args: vec![
                                   (
-                                    Variable::immutable(binding_type.clone()),
+                                    Variable::immutable({
+                                      let mut reference_type =
+                                        binding_type.clone();
+                                      reference_type.ownership =
+                                        Ownership::Reference;
+                                      reference_type
+                                    }),
                                     vec![],
                                   ),
                                   (
@@ -3587,7 +3604,6 @@ impl TypedExp {
                                     vec![],
                                   ),
                                 ],
-                                mutated_args: vec![0],
                                 return_type: Type::Unit.known().into(),
                               }
                               .into(),

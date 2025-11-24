@@ -329,7 +329,6 @@ impl Program {
               .iter()
               .map(|field| (field.field_type.clone(), Ownership::Owned))
               .collect(),
-            mutated_args: vec![],
             return_type: AbstractType::AbstractStruct(s.clone()),
             implementation: FunctionImplementationKind::StructConstructor,
             associative: false,
@@ -355,7 +354,6 @@ impl Program {
                   .map(|name| (name.0.clone(), name.1.clone(), vec![]))
                   .collect(),
                 arg_types: vec![(variant.inner_type.clone(), Ownership::Owned)],
-                mutated_args: vec![],
                 return_type: AbstractType::AbstractEnum(e.clone()),
                 implementation: FunctionImplementationKind::EnumConstructor(
                   variant.name.clone(),
@@ -847,6 +845,9 @@ impl Program {
       monomorphized_ctx
     });
   }
+  pub fn monomorphize_reference_address_spaces(&mut self) {
+    // todo!()
+  }
   pub fn inline_all_higher_order_arguments(&mut self, errors: &mut ErrorLog) {
     loop {
       let changed = self.inline_higher_order_arguments(errors);
@@ -1103,7 +1104,9 @@ impl Program {
             .iter()
             .zip(arg_names.iter())
             .filter_map(|((var, _), arg_name)| {
-              if var.kind == VariableKind::Var {
+              if var.kind == VariableKind::Var
+                && var.var_type.ownership == Ownership::Owned
+              {
                 Some((arg_name.clone(), var.var_type.clone()))
               } else {
                 None
@@ -2092,6 +2095,7 @@ impl Program {
       return errors;
     }
     self.separate_overloaded_fns();
+    self.monomorphize_reference_address_spaces();
     errors
   }
   pub fn gather_type_annotations(&self) -> Vec<(SourceTrace, TypeState)> {

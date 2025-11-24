@@ -1,6 +1,14 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready"
+* finish overhauling references
+  * need to make functions that accept references monomorphize to the particular address-space of the references they're used with
+  * validate the reference relationships of all function applications
+    * an owned argument must be passed an owned value
+    * a reference argument can be passed any value
+    * a mutable reference argument can be passed a mutable-reference value, or an owned value iff that value is marked as mutable
+  * whenever a value is passed as a reference argument, check it's address space and see if it is one of the ones that can validly be passed. Which I think is just private and function, basically. But I think workgroup ones can also be passed to built-in assignment functions so that'll need to be a special case? idk? maybe storage can do the same in read-write mode?
+
 * `*=` doesn't work when multiplying a vec by a matrix
 
 * atomics

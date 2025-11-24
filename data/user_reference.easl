@@ -1,0 +1,25 @@
+@{address private}
+(var private-float: f32 0.)
+
+@{address workgroup}
+(var workgroup-float: f32)
+
+@{address uniform
+  group 0
+  binding 0}
+(var uniform-float: f32)
+
+(defn increment [@var @ref x: f32]
+  (+= x 1.))
+
+(defn f []
+  (increment private-float)
+  (increment workgroup-float)
+  ; the below will error because you can't pass things in the uniform address
+  ; space as references
+  #_(increment uniform-float)
+  (let [@var x: f32 0.]
+    (increment x))
+  ; the below will error because x isn't marked as mutable
+  #_(let [x: f32 0.]
+      (increment x)))

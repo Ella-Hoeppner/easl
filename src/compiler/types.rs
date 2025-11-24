@@ -630,7 +630,6 @@ impl Type {
                 Some(return_type_ast),
               ) => Ok(Self::Function(Box::new(FunctionSignature {
                 abstract_ancestor: None,
-                mutated_args: vec![],
                 args: arg_type_asts
                   .into_iter()
                   .map(|arg_type_ast| {
@@ -1015,7 +1014,6 @@ impl Type {
                   vec![],
                 )],
                 return_type: self.clone().known().into(),
-                mutated_args: vec![],
               }
               .into(),
             )
@@ -1055,7 +1053,6 @@ impl Type {
                       vec![],
                     ),
                   ],
-                  mutated_args: vec![],
                   return_type: Type::Enum(e.clone()).known().into(),
                 }
                 .into(),
@@ -1111,7 +1108,6 @@ impl Type {
                     (Variable::immutable(field.field_type.clone()), vec![])
                   })
                   .collect(),
-                mutated_args: vec![],
                 return_type: Type::Struct(s.clone()).known().into(),
               }))
               .known()
@@ -2028,6 +2024,13 @@ pub type ImmutableProgramLocalContext<'p> = LocalContext<&'p Program>;
 
 pub type MutableProgramLocalContext<'p> = LocalContext<&'p mut Program>;
 impl<'p> MutableProgramLocalContext<'p> {
+  pub fn get_variable_ownership(&self, name: &str) -> Option<Ownership> {
+    if let Some(var) = self.variables.get(name) {
+      Some(var.var_type.ownership)
+    } else {
+      None
+    }
+  }
   fn get_typestate_mut(
     &mut self,
     name: &str,
@@ -2065,7 +2068,7 @@ impl<'p> MutableProgramLocalContext<'p> {
     &mut self,
     name: &Rc<str>,
     source_trace: &SourceTrace,
-    t: &mut TypeState,
+    t: &mut ExpTypeInfo,
     errors: &mut ErrorLog,
   ) -> bool {
     match self.program.concrete_signatures(name, source_trace.clone()) {

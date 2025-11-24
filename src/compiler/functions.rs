@@ -36,7 +36,7 @@ use super::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionArgumentAnnotation {
   pub var: bool,
-  pub reference: bool,
+  pub ownership: Ownership,
   pub attributes: IOAttributes,
 }
 
@@ -44,7 +44,7 @@ impl FunctionArgumentAnnotation {
   pub fn empty(arg_source_trace: SourceTrace) -> Self {
     Self {
       var: false,
-      reference: false,
+      ownership: Ownership::Owned,
       attributes: IOAttributes::empty(arg_source_trace),
     }
   }
@@ -72,6 +72,7 @@ pub enum FunctionImplementationKind {
 pub enum Ownership {
   Owned,
   Reference,
+  MutableReference
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -79,7 +80,6 @@ pub struct AbstractFunctionSignature {
   pub name: Rc<str>,
   pub generic_args: Vec<(Rc<str>, SourceTrace, Vec<TypeConstraint>)>,
   pub arg_types: Vec<(AbstractType, Ownership)>,
-  pub mutated_args: Vec<usize>,
   pub return_type: AbstractType,
   pub implementation: FunctionImplementationKind,
   pub associative: bool,
@@ -182,17 +182,20 @@ impl AbstractFunctionSignature {
             .iter()
             .zip(arg_annotations.iter())
             .map(|(t, annotation)| {
+              let ownership = annotation.ownership;
+              let mut typestate: ExpTypeInfo = 
+                t.concretize(
+                    &generic_arg_names,
+                    &program.typedefs,
+                    source_path.clone().into(),
+                  )?
+                 .known()
+                 .into();
+              typestate.ownership = ownership;
               Ok((
                 (
                   Variable {
-                    var_type: t
-                      .concretize(
-                        &generic_arg_names,
-                        &program.typedefs,
-                        source_path.clone().into(),
-                      )?
-                      .known()
-                      .into(),
+                    var_type: typestate,
                     kind: if annotation.var {
                       VariableKind::Var
                     } else {
@@ -210,11 +213,7 @@ impl AbstractFunctionSignature {
                     vec![]
                   },
                 ),
-                if annotation.reference {
-                  Ownership::Reference
-                } else {
-                  Ownership::Owned
-                },
+                ownership,
               ))
             })
             .collect::<CompileResult<(
@@ -279,7 +278,6 @@ impl AbstractFunctionSignature {
                       .into_iter()
                       .zip(arg_ownerships)
                       .collect(),
-                    mutated_args: vec![],
                     return_type,
                     implementation,
                     associative: parsed_annotation.associative,
@@ -360,19 +358,6 @@ impl AbstractFunctionSignature {
         .collect(),
       rename_generics(self.return_type.clone()),
     )
-  }
-  pub fn effects(&self, program: &Program) -> EffectType {
-    if let FunctionImplementationKind::Composite(f) = &self.implementation {
-      let f = f.borrow();
-      if let ExpKind::Function(arg_names, body) = &f.expression.kind {
-        let mut effects = body.effects(&program);
-        for name in arg_names {
-          effects.remove(&Effect::ReadsVar(name.clone()))
-        }
-        return effects;
-      }
-    }
-    EffectType::empty()
   }
   pub fn arg_names(
     &self,
@@ -568,7 +553,6 @@ impl AbstractFunctionSignature {
       ),
       generic_args: self.generic_args.clone(),
       arg_types: new_parameter_types,
-      mutated_args: vec![],
       return_type: self.return_type.clone(),
       implementation: FunctionImplementationKind::Composite(Rc::new(
         RefCell::new(implementation),
@@ -705,7 +689,6 @@ impl AbstractFunctionSignature {
       args,
       return_type,
       abstract_ancestor: Some(Rc::new(f.clone())),
-      mutated_args: f.mutated_args.clone(),
     })
   }
 }
@@ -714,14 +697,12 @@ impl AbstractFunctionSignature {
 pub struct FunctionSignature {
   pub abstract_ancestor: Option<Rc<AbstractFunctionSignature>>,
   pub args: Vec<(Variable, Vec<TypeConstraint>)>,
-  pub mutated_args: Vec<usize>,
   pub return_type: ExpTypeInfo,
 }
 
 impl PartialEq for FunctionSignature {
   fn eq(&self, other: &Self) -> bool {
     self.args == other.args
-      && self.mutated_args == other.mutated_args
       && self.return_type == other.return_type
   }
 }
@@ -830,15 +811,7 @@ impl FunctionSignature {
     if let Some(abstract_ancestor) = &self.abstract_ancestor {
       match &abstract_ancestor.implementation {
         FunctionImplementationKind::Composite(f) => {
-          if let ExpKind::Function(arg_names, body) =
-            &f.borrow().expression.kind
-          {
-            let mut effects = body.effects(&program);
-            for name in arg_names {
-              effects.remove(&Effect::ReadsVar(name.clone()))
-            }
-            return effects;
-          };
+          return f.borrow().effects(program);
         }
         FunctionImplementationKind::Builtin(effects) => return effects.clone(),
         _ => {}
@@ -869,12 +842,10 @@ impl TopLevelFunction {
     names: &mut NameContext,
   ) -> CompileResult<String> {
     let TypedExp { data, kind, .. } = self.expression;
-    let (args, return_type) =
-      if let Type::Function(signature) = data.unwrap_known() {
-        (signature.args, signature.return_type)
-      } else {
-        panic!("attempted to compile function with invalid type data")
-      };
+    let Type::Function(signature) = data.unwrap_known() else {
+      panic!("attempted to compile function with invalid type data")
+    };
+    let FunctionSignature {args, return_type, ..} = *signature;
     let (arg_names, body) = if let ExpKind::Function(arg_names, body) = kind {
       (arg_names, *body)
     } else {
@@ -889,7 +860,13 @@ impl TopLevelFunction {
           "{}{}: {}",
           annotation.attributes.compile(),
           compile_word(name),
-          arg.var_type.monomorphized_name(names)
+          {
+            let base_type = arg.var_type.monomorphized_name(names);
+            match arg.var_type.ownership {
+              Ownership::Owned => base_type,
+              Ownership::Reference | Ownership::MutableReference => format!("ptr<private, {base_type}>"),
+            }
+          }
         )
       })
       .collect::<Vec<String>>()
@@ -921,5 +898,18 @@ impl TopLevelFunction {
         names
       ))
     ))
+  }
+  pub fn effects(&self, program: &Program) -> EffectType {
+    if let ExpKind::Function(arg_names, body) = &self.expression.kind
+    {
+      let mut effects = body.effects(&program);
+      for name in arg_names {
+        effects.remove(&Effect::ReadsVar(name.clone()));
+        effects.remove(&Effect::ModifiesVar(name.clone()))
+      }
+      effects
+    } else {
+      EffectType::empty()
+    }
   }
 }
