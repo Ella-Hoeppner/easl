@@ -109,8 +109,10 @@ fn shader_examples() {
     "invalid_names",
     "duplicate_field",
     "duplicate_variant",
-    "user_reference",
     "double_monomorphize",
+    "complex_monomorphize",
+    "user_reference",
+    "nested_user_reference",
     // "vec_match" // todo!
   ] {
     print!("compiling {filename}...");

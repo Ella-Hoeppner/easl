@@ -15,7 +15,7 @@ use crate::{
     expression::arg_list_and_return_type_from_easl_tree,
     program::{NameContext, TypeDefs},
     types::{Variable, VariableKind, parse_generic_argument},
-    util::compile_word,
+    util::compile_word, vars::VariableAddressSpace,
   },
   parse::EaslTree,
 };
@@ -72,7 +72,8 @@ pub enum FunctionImplementationKind {
 pub enum Ownership {
   Owned,
   Reference,
-  MutableReference
+  MutableReference,
+  Pointer(VariableAddressSpace)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -86,6 +87,14 @@ pub struct AbstractFunctionSignature {
 }
 
 impl AbstractFunctionSignature {
+  pub fn reference_arg_positions(&self) -> Vec<usize> {
+    self.arg_types.iter().enumerate().filter_map(|(i, (_, ownership))| 
+    match ownership {
+          Ownership::Reference | Ownership::MutableReference => Some(i),
+          _=>None
+      }
+    ).collect()
+  }
   pub(crate) fn from_defn_ast(
     mut children_iter: impl Iterator<Item = EaslTree>,
     first_child_source_trace: SourceTrace,
@@ -845,7 +854,7 @@ impl TopLevelFunction {
     let Type::Function(signature) = data.unwrap_known() else {
       panic!("attempted to compile function with invalid type data")
     };
-    let FunctionSignature {args, return_type, ..} = *signature;
+    let FunctionSignature { args, return_type, .. } = *signature;
     let (arg_names, body) = if let ExpKind::Function(arg_names, body) = kind {
       (arg_names, *body)
     } else {
@@ -864,7 +873,13 @@ impl TopLevelFunction {
             let base_type = arg.var_type.monomorphized_name(names);
             match arg.var_type.ownership {
               Ownership::Owned => base_type,
-              Ownership::Reference | Ownership::MutableReference => format!("ptr<private, {base_type}>"),
+              Ownership::Pointer(address_space) => format!("ptr<{}, {base_type}>", address_space.compile().unwrap_or("")),
+              Ownership::Reference | Ownership::MutableReference => {
+                panic!(
+                  "encountered raw reference in argument ownership, this \
+                  should have been monomorphized into a pointer"
+                )
+              }
             }
           }
         )

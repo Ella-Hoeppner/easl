@@ -811,28 +811,27 @@ impl Program {
     let mut monomorphized_ctx = Program::default();
     monomorphized_ctx.names = self.names.clone();
     for f in self.abstract_functions_iter() {
-      if f.borrow().generic_args.is_empty() {
-        if let FunctionImplementationKind::Composite(implementation) =
+      if f.borrow().generic_args.is_empty()
+        && let FunctionImplementationKind::Composite(implementation) =
           &f.borrow().implementation
+      {
+        let mut borrowed_implementation = implementation.borrow_mut();
+        match borrowed_implementation
+          .expression
+          .monomorphize(&self, &mut monomorphized_ctx)
         {
-          let mut borrowed_implementation = implementation.borrow_mut();
-          match borrowed_implementation
-            .expression
-            .monomorphize(&self, &mut monomorphized_ctx)
-          {
-            Ok(_) => {
-              let mut new_f = (**f).borrow().clone();
-              new_f.implementation =
-                FunctionImplementationKind::Composite(implementation.clone());
-              drop(borrowed_implementation);
-              monomorphized_ctx
-                .add_abstract_function(Rc::new(RefCell::new(new_f)));
-            }
-            Err(e) => errors.log(e),
+          Ok(_) => {
+            let mut new_f = (**f).borrow().clone();
+            new_f.implementation =
+              FunctionImplementationKind::Composite(implementation.clone());
+            drop(borrowed_implementation);
+            monomorphized_ctx
+              .add_abstract_function(Rc::new(RefCell::new(new_f)));
           }
-        } else {
-          monomorphized_ctx.add_abstract_function(Rc::clone(f));
+          Err(e) => errors.log(e),
         }
+      } else {
+        monomorphized_ctx.add_abstract_function(Rc::clone(f));
       }
     }
     for s in self.typedefs.structs.iter() {
@@ -846,7 +845,39 @@ impl Program {
     });
   }
   pub fn monomorphize_reference_address_spaces(&mut self) {
-    // todo!()
+    loop {
+      let mut monomorphized_ctx = Program::default();
+      monomorphized_ctx.names = self.names.clone();
+      monomorphized_ctx.typedefs = self.typedefs.clone();
+      let mut changed = false;
+      for f in self.abstract_functions_iter() {
+        let borrowed_f = f.borrow();
+        if borrowed_f.reference_arg_positions().is_empty()
+          && let FunctionImplementationKind::Composite(implementation) =
+            &f.borrow().implementation
+        {
+          let mut borrowed_implementation = implementation.borrow_mut();
+          changed |= borrowed_implementation
+            .expression
+            .monomorphize_reference_address_spaces(
+              &self,
+              &mut monomorphized_ctx,
+            );
+          let mut new_f = (**f).borrow().clone();
+          new_f.implementation =
+            FunctionImplementationKind::Composite(implementation.clone());
+          drop(borrowed_implementation);
+          monomorphized_ctx.add_abstract_function(Rc::new(RefCell::new(new_f)));
+        }
+      }
+      take(self, |old_ctx| {
+        monomorphized_ctx.top_level_vars = old_ctx.top_level_vars;
+        monomorphized_ctx
+      });
+      if !changed {
+        break;
+      }
+    }
   }
   pub fn inline_all_higher_order_arguments(&mut self, errors: &mut ErrorLog) {
     loop {
@@ -864,12 +895,9 @@ impl Program {
     let mut inlined_ctx = Program::default();
     inlined_ctx.names = self.names.clone();
     for f in self.abstract_functions_iter() {
-      if f.borrow().generic_args.is_empty()
-        && f.borrow().has_higher_order_arguments()
-      {
-        inlined_ctx.add_abstract_function(Rc::clone(f));
-      } else {
-        match &f.borrow().implementation {
+      let borrowed_f = f.borrow();
+      if !borrowed_f.has_higher_order_arguments() {
+        match &borrowed_f.implementation {
           FunctionImplementationKind::Composite(implementation) => {
             let mut borrowed_implementation = implementation.borrow_mut();
             match borrowed_implementation
@@ -878,9 +906,21 @@ impl Program {
             {
               Ok(added_new_function) => {
                 changed |= added_new_function;
-                let mut new_f = (**f).borrow().clone();
+                let mut new_f = borrowed_f.clone();
                 new_f.implementation =
                   FunctionImplementationKind::Composite(implementation.clone());
+                take(&mut new_f.arg_types, |arg_types| {
+                  arg_types
+                    .into_iter()
+                    .filter(|(t, _)| {
+                      if let AbstractType::Type(Type::Function(_)) = t {
+                        false
+                      } else {
+                        true
+                      }
+                    })
+                    .collect()
+                });
                 drop(borrowed_implementation);
                 inlined_ctx.add_abstract_function(Rc::new(RefCell::new(new_f)));
               }
@@ -2072,13 +2112,13 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    self.monomorphize(&mut errors);
-    if !errors.is_empty() {
-      return errors;
-    }
     self.desugar_swizzle_assignments();
     self.deexpressionify();
     self.inline_all_higher_order_arguments(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.monomorphize(&mut errors);
     if !errors.is_empty() {
       return errors;
     }

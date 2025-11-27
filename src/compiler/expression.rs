@@ -33,6 +33,7 @@ use crate::{
       extract_type_annotation_ast,
     },
     util::{compile_word, indent},
+    vars::{TopLevelVariableKind, VariableAddressSpace},
   },
   parse::EaslTree,
 };
@@ -1246,6 +1247,101 @@ impl TypedExp {
         ArrayLiteral(children) => {
           for child in children {
             child.walk_mut(prewalk_handler)?;
+          }
+        }
+        _ => {}
+      }
+    }
+    Ok(())
+  }
+  pub fn walk_mut_with_ctx<E>(
+    &mut self,
+    prewalk_handler: &mut impl FnMut(
+      &mut Self,
+      &ImmutableProgramLocalContext,
+    ) -> Result<bool, E>,
+    ctx: &mut ImmutableProgramLocalContext,
+  ) -> Result<(), E> {
+    if prewalk_handler(self, ctx)? {
+      match &mut self.kind {
+        Application(f, args) => {
+          f.walk_mut_with_ctx(prewalk_handler, ctx)?;
+          for arg in args.iter_mut() {
+            arg.walk_mut_with_ctx(prewalk_handler, ctx)?;
+          }
+        }
+        Function(arg_names, body) => {
+          let TypeState::Known(Type::Function(f)) = &self.data.kind else {
+            unreachable!()
+          };
+          for (name, (arg, _)) in arg_names.iter().zip(f.args.iter()) {
+            ctx.bind(name, arg.clone());
+          }
+          body.walk_mut_with_ctx(prewalk_handler, ctx)?;
+          for name in arg_names {
+            ctx.unbind(name);
+          }
+        }
+        Access(_, body) => body.walk_mut_with_ctx(prewalk_handler, ctx)?,
+        Let(bindings, body) => {
+          for (name, _, kind, value) in bindings.iter_mut() {
+            value.walk_mut_with_ctx(prewalk_handler, ctx)?;
+            ctx.bind(
+              name,
+              Variable::immutable(value.data.clone()).with_kind(kind.clone()),
+            );
+          }
+          body.walk_mut_with_ctx(prewalk_handler, ctx)?;
+          for (name, _, _, _) in bindings {
+            ctx.unbind(name);
+          }
+        }
+        Match(scrutinee, arms) => {
+          scrutinee.walk_mut_with_ctx(prewalk_handler, ctx)?;
+          for (pattern, value) in arms {
+            pattern.walk_mut_with_ctx(prewalk_handler, ctx)?;
+            value.walk_mut_with_ctx(prewalk_handler, ctx)?;
+          }
+        }
+        Block(expressions) => {
+          for subexp in expressions {
+            subexp.walk_mut_with_ctx(prewalk_handler, ctx)?;
+          }
+        }
+        ForLoop {
+          increment_variable_initial_value_expression,
+          continue_condition_expression,
+          update_condition_expression,
+          body_expression,
+          increment_variable_name,
+          increment_variable_type,
+          ..
+        } => {
+          ctx.bind(
+            &increment_variable_name.0,
+            Variable::immutable(increment_variable_type.clone().known().into())
+              .with_kind(VariableKind::Var),
+          );
+          increment_variable_initial_value_expression
+            .walk_mut_with_ctx(prewalk_handler, ctx)?;
+          continue_condition_expression
+            .walk_mut_with_ctx(prewalk_handler, ctx)?;
+          update_condition_expression
+            .walk_mut_with_ctx(prewalk_handler, ctx)?;
+          body_expression.walk_mut_with_ctx(prewalk_handler, ctx)?;
+          ctx.unbind(&increment_variable_name.0);
+        }
+        WhileLoop {
+          condition_expression,
+          body_expression,
+        } => {
+          condition_expression.walk_mut_with_ctx(prewalk_handler, ctx)?;
+          body_expression.walk_mut_with_ctx(prewalk_handler, ctx)?;
+        }
+        Return(exp) => exp.walk_mut_with_ctx(prewalk_handler, ctx)?,
+        ArrayLiteral(children) => {
+          for child in children {
+            child.walk_mut_with_ctx(prewalk_handler, ctx)?;
           }
         }
         _ => {}
@@ -2778,6 +2874,102 @@ impl TypedExp {
     })?;
     Ok(())
   }
+  pub fn monomorphize_reference_address_spaces(
+    &mut self,
+    base_program: &Program,
+    new_program: &mut Program,
+  ) -> bool {
+    let mut changed = false;
+    self
+      .walk_mut_with_ctx::<Never>(
+        &mut |exp: &mut TypedExp, ctx: &ImmutableProgramLocalContext| {
+          match &mut exp.kind {
+            Application(f, args) => {
+              let ExpKind::Name(f_name) = &mut f.kind else {
+                panic!()
+              };
+              if let TypeState::Known(Type::Function(signature)) =
+                &mut f.data.kind
+                && let Some(abstract_ancestor) =
+                  &mut signature.abstract_ancestor
+                && let FunctionImplementationKind::Composite(top_level_f) =
+                  &abstract_ancestor.implementation
+              {
+                let reference_arg_positions =
+                  abstract_ancestor.reference_arg_positions();
+                if !reference_arg_positions.is_empty() {
+                  let mut new_abstract_ancestor = (**abstract_ancestor).clone();
+                  let mut new_top_level_f = top_level_f.borrow().clone();
+                  let mut address_space_names = vec![];
+                  for i in reference_arg_positions {
+                    let name = args[i].name_or_inner_accessed_name().unwrap();
+                    let address_space = base_program
+                      .top_level_vars
+                      .iter()
+                      .find_map(|v| {
+                        if v.name == *name
+                          && let TopLevelVariableKind::Var {
+                            address_space, ..
+                          } = v.kind
+                        {
+                          Some(address_space)
+                        } else {
+                          None
+                        }
+                      })
+                      .or_else(|| {
+                        if let Some(v) = ctx.variables.get(name)
+                          && let Ownership::Pointer(address_space) =
+                            v.var_type.ownership
+                        {
+                          Some(address_space)
+                        } else {
+                          None
+                        }
+                      })
+                      .unwrap_or(VariableAddressSpace::Function);
+                    let TypeState::Known(Type::Function(new_signature)) =
+                      &mut new_top_level_f.expression.data.kind
+                    else {
+                      panic!()
+                    };
+                    new_abstract_ancestor.arg_types[i].1 =
+                      Ownership::Pointer(address_space);
+                    signature.args[i].0.var_type.ownership =
+                      Ownership::Pointer(address_space);
+                    new_signature.args[i].0.var_type.ownership =
+                      Ownership::Pointer(address_space);
+                    address_space_names
+                      .push(address_space.compile().unwrap_or("").into());
+                  }
+                  new_abstract_ancestor.implementation =
+                    FunctionImplementationKind::Composite(Rc::new(
+                      RefCell::new(new_top_level_f),
+                    ));
+                  let new_name =
+                    new_program.names.borrow_mut().get_monomorphized_name(
+                      f_name.clone(),
+                      address_space_names,
+                    );
+                  *f_name = new_name.clone();
+                  new_abstract_ancestor.name = new_name;
+                  *abstract_ancestor = Rc::new(new_abstract_ancestor.clone());
+                  new_program.add_abstract_function(Rc::new(RefCell::new(
+                    new_abstract_ancestor,
+                  )));
+                  changed = true;
+                }
+              };
+              Ok(true)
+            }
+            _ => Ok(true),
+          }
+        },
+        &mut ImmutableProgramLocalContext::empty(&base_program),
+      )
+      .unwrap();
+    changed
+  }
   pub fn inline_higher_order_arguments(
     &mut self,
     new_ctx: &mut Program,
@@ -2786,12 +2978,8 @@ impl TypedExp {
     self.walk_mut::<CompileError>(&mut |exp: &mut TypedExp| {
       if let Application(f, args) = &mut exp.kind {
         if let ExpKind::Name(f_name) = &mut f.kind {
-          if let Some(abstract_signature) =
-            if let TypeState::Known(Type::Function(f)) = &f.data.kind {
-              &f.abstract_ancestor
-            } else {
-              &None
-            }
+          if let TypeState::Known(Type::Function(f)) = &mut f.data.kind
+            && let Some(abstract_signature) = &mut f.abstract_ancestor
           {
             match &abstract_signature.implementation {
               FunctionImplementationKind::Composite(f) => {
@@ -2807,18 +2995,24 @@ impl TypedExp {
                   })
                   .collect::<CompileResult<(Vec<usize>, Vec<TypedExp>)>>()?;
                 if !function_args.is_empty() {
-                  let inlined = abstract_signature
+                  let inlined_signature = abstract_signature
                     .generate_higher_order_functions_inlined_version(
                       f_name,
                       function_args,
                       &mut new_ctx.names.borrow_mut(),
                       f.borrow().expression.source_trace.clone(),
                     )?;
-                  std::mem::swap(f_name, &mut inlined.name.clone());
+                  std::mem::swap(f_name, &mut inlined_signature.name.clone());
+                  std::mem::swap(
+                    abstract_signature,
+                    &mut Rc::new(inlined_signature.clone()),
+                  );
                   for fn_arg_index in function_arg_positions.iter().rev() {
                     args.remove(*fn_arg_index);
                   }
-                  new_ctx.add_abstract_function(Rc::new(RefCell::new(inlined)));
+                  new_ctx.add_abstract_function(Rc::new(RefCell::new(
+                    inlined_signature,
+                  )));
                   changed = true;
                 }
               }

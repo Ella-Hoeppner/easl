@@ -17,6 +17,7 @@ use super::{error::SourceTrace, expression::TypedExp};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VariableAddressSpace {
   Private,
+  Function,
   Workgroup,
   Uniform,
   StorageRead,
@@ -33,7 +34,7 @@ use VariableAddressSpace::*;
 impl VariableAddressSpace {
   pub fn may_write(&self) -> bool {
     match self {
-      Private | Workgroup | StorageReadWrite => true,
+      Function | Private | Workgroup | StorageReadWrite => true,
       Uniform | StorageRead | Handle => false,
     }
   }
@@ -48,6 +49,7 @@ impl VariableAddressSpace {
   }
   pub fn compile(&self) -> Option<&'static str> {
     Some(match self {
+      Function => "function",
       Private => "private",
       Workgroup => "workgroup",
       Uniform => "uniform",
@@ -75,6 +77,7 @@ impl Display for VariableAddressSpace {
       f,
       "{}",
       match self {
+        Function => "function",
         Private => "private",
         Workgroup => "workgroup",
         Uniform => "uniform",

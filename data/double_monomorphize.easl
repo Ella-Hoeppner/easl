@@ -1,16 +1,9 @@
-(enum (Option T) None (Some T))
+(defn (id-1 T) [x: T]: T
+  x)
 
-(struct (TwoOf T)
-  a: T
-  b: T)
+(defn (id-2 T) [x: T]: T
+  (id-1 x))
 
-(defn (map T U) [o: (Option T) f: (Fn [T] U)]: (Option U)
-  (match o
-    (Some x) (Some (f x))
-    None None))
-
-(defn (make-two-of T) [x: T] (TwoOf T)
-  (TwoOf x x))
-
-(defn (make-two-of-inside T) [o: (Option T)]: (Option (TwoOf T))
-  (map o make-two-of))
+(defn main []
+  (print (id-2 5.))
+  (print (id-2 5u)))
