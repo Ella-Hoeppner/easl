@@ -48,15 +48,22 @@ impl VariableAddressSpace {
     *self != Private
   }
   pub fn compile(&self) -> Option<&'static str> {
-    Some(match self {
+    match self {
+      StorageReadWrite => Some("storage, read_write"),
+      Handle => None,
+      other => Some(other.name()),
+    }
+  }
+  pub fn name(&self) -> &'static str {
+    match self {
       Function => "function",
       Private => "private",
       Workgroup => "workgroup",
       Uniform => "uniform",
       StorageRead => "storage",
-      StorageReadWrite => "storage, read_write",
-      Handle => return None,
-    })
+      StorageReadWrite => "storage_read_write",
+      Handle => "handle",
+    }
   }
   pub fn from_str(s: &str) -> Option<Self> {
     Some(match s {

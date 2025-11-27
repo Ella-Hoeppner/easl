@@ -2939,8 +2939,7 @@ impl TypedExp {
                       Ownership::Pointer(address_space);
                     new_signature.args[i].0.var_type.ownership =
                       Ownership::Pointer(address_space);
-                    address_space_names
-                      .push(address_space.compile().unwrap_or("").into());
+                    address_space_names.push(address_space.name().into());
                   }
                   new_abstract_ancestor.implementation =
                     FunctionImplementationKind::Composite(Rc::new(

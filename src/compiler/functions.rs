@@ -873,7 +873,7 @@ impl TopLevelFunction {
             let base_type = arg.var_type.monomorphized_name(names);
             match arg.var_type.ownership {
               Ownership::Owned => base_type,
-              Ownership::Pointer(address_space) => format!("ptr<{}, {base_type}>", address_space.compile().unwrap_or("")),
+              Ownership::Pointer(address_space) => format!("ptr<{}, {base_type}>", address_space.name()),
               Ownership::Reference | Ownership::MutableReference => {
                 panic!(
                   "encountered raw reference in argument ownership, this \

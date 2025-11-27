@@ -1,0 +1,31 @@
+(defn (print-ref T) [@ref x: T]
+  (print x))
+
+(defn (print-mut-ref T) [@var @ref x: T]
+  (print x))
+
+(defn f []
+  (let [x 3.
+        @var y 4.]
+    (print-ref x)
+    ; the below will fail because x isn't marked as mutable
+    #_(print-mut-ref x)
+    (print-mut-ref y)))
+
+(defn g [@ref x: f32]
+  (print-ref x)
+  ; the below will fail because x isn't marked as mutable
+  #_(print-mut-ref x))
+
+(defn g2 [@ref @var x: f32]
+  (print-ref x)
+  (print-mut-ref x))
+
+(defn g3 [x: f32]
+  (print-ref x)
+  ; the below will fail because x isn't marked as mutable
+  #_(print-mut-ref x))
+
+(defn g4 [@var x: f32]
+  (print-ref x)
+  (print-mut-ref x))

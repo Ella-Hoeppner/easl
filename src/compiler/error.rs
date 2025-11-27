@@ -381,6 +381,20 @@ pub enum CompileErrorKind {
   DuplicateStructFieldName,
   #[error("Duplicate enum variant name")]
   DuplicateEnumVariantName,
+  #[error("Argument must be an owned value, found a reference")]
+  ArgumentMustBeOwnedValue,
+  #[error(
+    "Argument must be a name, as this function expects reference, not a value"
+  )]
+  ReferenceArgumentMustBeName,
+  #[error(
+    "Function expects a mutable reference, found a non-mutable reference"
+  )]
+  ReferenceMustBeMutable,
+  #[error(
+    "Function expects a mutable reference, but passed value is immutable"
+  )]
+  ImmutableOwnedPassedAsMutableReference,
 }
 
 impl CompileErrorKind {

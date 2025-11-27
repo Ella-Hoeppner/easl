@@ -9,8 +9,15 @@
   binding 0}
 (var uniform-float: f32)
 
+@{group 0
+  binding 1}
+(var my-tex: (Texture2D f32))
+
 (defn increment [@var @ref x: f32]
   (+= x 1.))
+
+(defn (print-ref T) [@ref x: T]
+  (print x))
 
 (defn f []
   (increment private-float)
@@ -18,6 +25,9 @@
   ; the below will error because you can't pass things in the uniform address
   ; space as references
   #_(increment uniform-float)
+  ; the below will also error, handle address space references can't be passed
+  ; either
+  (print-ref my-tex)
   (let [@var x: f32 0.]
     (increment x))
   ; the below will error because x isn't marked as mutable

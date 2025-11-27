@@ -23,7 +23,10 @@ use crate::{
     expression::{Exp, ExpKind, ExpressionCompilationPosition},
     functions::{AbstractFunctionSignature, Ownership},
     structs::UntypedStruct,
-    types::{AbstractType, Type, TypeState, UntypedType, VariableKind},
+    types::{
+      AbstractType, ImmutableProgramLocalContext, Type, TypeState, UntypedType,
+      VariableKind,
+    },
     util::{compile_word, is_valid_name},
   },
   parse::{EaslSyntax, EaslTree, Encloser, Operator, parse_easl},
@@ -843,6 +846,108 @@ impl Program {
       monomorphized_ctx.top_level_vars = old_ctx.top_level_vars;
       monomorphized_ctx
     });
+  }
+  pub fn validate_argument_ownership(&mut self, errors: &mut ErrorLog) {
+    for f in self.abstract_functions_iter() {
+      if let FunctionImplementationKind::Composite(implementation) =
+        &mut f.borrow_mut().implementation
+      {
+        implementation
+          .borrow_mut()
+          .expression
+          .walk_mut_with_ctx::<Never>(
+            &mut |exp, ctx| {
+              match &exp.kind {
+                ExpKind::Application(f, args) => {
+                  if let Type::Function(f) = f.data.unwrap_known()
+                    && let Some(abstract_f) = f.abstract_ancestor
+                    && let FunctionImplementationKind::Composite(_) =
+                      abstract_f.implementation
+                  {
+                    for (i, (_, expected_ownership)) in
+                      abstract_f.arg_types.iter().enumerate()
+                    {
+                      let arg = &args[i];
+                      match expected_ownership {
+                        Ownership::Owned => {
+                          if arg.data.ownership != Ownership::Owned {
+                            errors.log(CompileError::new(
+                              ArgumentMustBeOwnedValue,
+                              arg.source_trace.clone(),
+                            ));
+                          }
+                        }
+                        Ownership::Reference | Ownership::MutableReference => {
+                          if let ExpKind::Name(name) = &arg.kind {
+                            if *expected_ownership
+                              == Ownership::MutableReference
+                            {
+                              match arg.data.ownership {
+                                Ownership::Reference => {
+                                  errors.log(CompileError::new(
+                                    ReferenceMustBeMutable,
+                                    arg.source_trace.clone(),
+                                  ));
+                                }
+                                Ownership::Owned => {
+                                  if ctx
+                                    .variables
+                                    .get(&**name)
+                                    .map(|v| v.kind)
+                                    .or_else(|| {
+                                      self.top_level_vars.iter().find_map(|v| {
+                                        (v.name == *name)
+                                          .then(|| v.variable_kind())
+                                      })
+                                    })
+                                    .unwrap()
+                                    != VariableKind::Var
+                                  {
+                                    errors.log(CompileError::new(
+                                      ImmutableOwnedPassedAsMutableReference,
+                                      arg.source_trace.clone(),
+                                    ));
+                                  }
+                                }
+                                _ => {}
+                              }
+                            }
+                          } else {
+                            errors.log(CompileError::new(
+                              ReferenceArgumentMustBeName,
+                              arg.source_trace.clone(),
+                            ));
+                          }
+                        }
+                        Ownership::Pointer(_) => {
+                          unreachable!(
+                            "unexpected Ownership::Pointer encountered"
+                          )
+                        }
+                      }
+                    }
+                  }
+                }
+                _ => {}
+              }
+              Ok(true)
+            },
+            &mut ImmutableProgramLocalContext::empty(self),
+          )
+          .unwrap();
+      }
+    }
+  }
+  pub fn validate_reference_address_spaces(&mut self, errors: &mut ErrorLog) {
+    for f in self.abstract_functions_iter() {
+      let borrowed_f = f.borrow();
+      if borrowed_f.reference_arg_positions().is_empty()
+        && let FunctionImplementationKind::Composite(implementation) =
+          &f.borrow().implementation
+      {
+        //todo!
+      }
+    }
   }
   pub fn monomorphize_reference_address_spaces(&mut self) {
     loop {
@@ -2131,6 +2236,14 @@ impl Program {
       return errors;
     }
     self.catch_expressions_after_control_flow(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.validate_argument_ownership(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.validate_reference_address_spaces(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
