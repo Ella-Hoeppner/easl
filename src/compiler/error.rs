@@ -395,6 +395,8 @@ pub enum CompileErrorKind {
     "Function expects a mutable reference, but passed value is immutable"
   )]
   ImmutableOwnedPassedAsMutableReference,
+  #[error("Can't pass variables in the \"{0}\" address space as references")]
+  PassedReferenceFromInvalidAddressSpace(VariableAddressSpace),
 }
 
 impl CompileErrorKind {

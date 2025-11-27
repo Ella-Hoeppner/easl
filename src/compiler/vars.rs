@@ -47,11 +47,11 @@ impl VariableAddressSpace {
   pub fn disallows_initialization(&self) -> bool {
     *self != Private
   }
-  pub fn compile(&self) -> Option<&'static str> {
+  pub fn compile(&self) -> &'static str {
     match self {
-      StorageReadWrite => Some("storage, read_write"),
-      Handle => None,
-      other => Some(other.name()),
+      StorageReadWrite => "storage, read_write",
+      Handle => "handle",
+      other => other.name(),
     }
   }
   pub fn name(&self) -> &'static str {
@@ -61,7 +61,7 @@ impl VariableAddressSpace {
       Workgroup => "workgroup",
       Uniform => "uniform",
       StorageRead => "storage",
-      StorageReadWrite => "storage_read_write",
+      StorageReadWrite => "storage-write",
       Handle => "handle",
     }
   }
@@ -76,26 +76,19 @@ impl VariableAddressSpace {
       _ => return None,
     })
   }
+  pub fn may_be_passed_as_reference(&self) -> bool {
+    match self {
+      Private | Function => true,
+      _ => false,
+    }
+  }
 }
 
 impl Display for VariableAddressSpace {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(
-      f,
-      "{}",
-      match self {
-        Function => "function",
-        Private => "private",
-        Workgroup => "workgroup",
-        Uniform => "uniform",
-        StorageRead => "storage",
-        StorageReadWrite => "storage-write",
-        Handle => "handle",
-      }
-    )
+    write!(f, "{}", self.name())
   }
 }
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GroupAndBinding {
   pub group: u8,
@@ -365,10 +358,7 @@ impl TopLevelVar {
           } else {
             String::new()
           },
-          address_space
-            .compile()
-            .map(|a| format!("<{a}>"))
-            .unwrap_or_else(|| String::new()),
+          format!("<{}>", address_space.compile()),
         )
       } else {
         (String::new(), String::new())

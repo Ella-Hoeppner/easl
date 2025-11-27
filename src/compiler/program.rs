@@ -28,6 +28,7 @@ use crate::{
       VariableKind,
     },
     util::{compile_word, is_valid_name},
+    vars::TopLevelVariableKind,
   },
   parse::{EaslSyntax, EaslTree, Encloser, Operator, parse_easl},
 };
@@ -879,6 +880,26 @@ impl Program {
                         }
                         Ownership::Reference | Ownership::MutableReference => {
                           if let ExpKind::Name(name) = &arg.kind {
+                            let top_level_var = self
+                              .top_level_vars
+                              .iter()
+                              .find(|v| v.name == *name);
+                            if let Some(TopLevelVar {
+                              kind:
+                                TopLevelVariableKind::Var {
+                                  address_space, ..
+                                },
+                              ..
+                            }) = top_level_var
+                              && !address_space.may_be_passed_as_reference()
+                            {
+                              errors.log(CompileError::new(
+                                PassedReferenceFromInvalidAddressSpace(
+                                  *address_space,
+                                ),
+                                arg.source_trace.clone(),
+                              ));
+                            }
                             if *expected_ownership
                               == Ownership::MutableReference
                             {
@@ -895,10 +916,8 @@ impl Program {
                                     .get(&**name)
                                     .map(|v| v.kind)
                                     .or_else(|| {
-                                      self.top_level_vars.iter().find_map(|v| {
-                                        (v.name == *name)
-                                          .then(|| v.variable_kind())
-                                      })
+                                      top_level_var
+                                        .map(TopLevelVar::variable_kind)
                                     })
                                     .unwrap()
                                     != VariableKind::Var
@@ -935,17 +954,6 @@ impl Program {
             &mut ImmutableProgramLocalContext::empty(self),
           )
           .unwrap();
-      }
-    }
-  }
-  pub fn validate_reference_address_spaces(&mut self, errors: &mut ErrorLog) {
-    for f in self.abstract_functions_iter() {
-      let borrowed_f = f.borrow();
-      if borrowed_f.reference_arg_positions().is_empty()
-        && let FunctionImplementationKind::Composite(implementation) =
-          &f.borrow().implementation
-      {
-        //todo!
       }
     }
   }
@@ -2240,10 +2248,6 @@ impl Program {
       return errors;
     }
     self.validate_argument_ownership(&mut errors);
-    if !errors.is_empty() {
-      return errors;
-    }
-    self.validate_reference_address_spaces(&mut errors);
     if !errors.is_empty() {
       return errors;
     }

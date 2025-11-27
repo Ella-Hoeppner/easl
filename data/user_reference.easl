@@ -21,13 +21,15 @@
 
 (defn f []
   (increment private-float)
-  (increment workgroup-float)
+  ; the below will error because you can't pass things in the workgroup address
+  ; space as references
+  #_(increment workgroup-float)
   ; the below will error because you can't pass things in the uniform address
   ; space as references
   #_(increment uniform-float)
   ; the below will also error, handle address space references can't be passed
   ; either
-  (print-ref my-tex)
+  #_(print-ref my-tex)
   (let [@var x: f32 0.]
     (increment x))
   ; the below will error because x isn't marked as mutable
