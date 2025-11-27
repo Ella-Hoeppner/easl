@@ -47,11 +47,11 @@ impl VariableAddressSpace {
   pub fn disallows_initialization(&self) -> bool {
     *self != Private
   }
-  pub fn compile(&self) -> &'static str {
+  pub fn compile(&self) -> Option<&'static str> {
     match self {
-      StorageReadWrite => "storage, read_write",
-      Handle => "handle",
-      other => other.name(),
+      StorageReadWrite => Some("storage, read_write"),
+      Handle => None,
+      other => Some(other.name()),
     }
   }
   pub fn name(&self) -> &'static str {
@@ -358,7 +358,10 @@ impl TopLevelVar {
           } else {
             String::new()
           },
-          format!("<{}>", address_space.compile()),
+          address_space
+            .compile()
+            .map(|s| format!("<{s}>"))
+            .unwrap_or_default(),
         )
       } else {
         (String::new(), String::new())
