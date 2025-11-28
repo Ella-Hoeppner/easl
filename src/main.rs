@@ -113,7 +113,9 @@ fn shader_examples() {
     "complex_monomorphize",
     "user_reference",
     "nested_user_reference",
-    "ownership", // "vec_match" // todo!
+    "ownership",
+    "underscore_name",
+    // "vec_match" // todo!
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

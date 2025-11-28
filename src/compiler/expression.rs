@@ -698,62 +698,69 @@ impl TypedExp {
                                 }
                                 match name_ast {
                                   EaslTree::Leaf(pos, name) => {
-                                    bindings.push((
-                                      name.into(),
-                                      pos.into(),
-                                      match name_annotation {
-                                        None => VariableKind::Let,
-                                        Some(
-                                          ref annotation @ Annotation {
-                                            kind:
-                                              AnnotationKind::Singular(
-                                                ref tag,
-                                                ..,
-                                              ),
-                                            ..
+                                    if name == "_" {
+                                      return err(
+                                        WildcardOutsidePattern,
+                                        position.into(),
+                                      );
+                                    } else {
+                                      bindings.push((
+                                        name.into(),
+                                        pos.into(),
+                                        match name_annotation {
+                                          None => VariableKind::Let,
+                                          Some(
+                                            ref annotation @ Annotation {
+                                              kind:
+                                                AnnotationKind::Singular(
+                                                  ref tag,
+                                                  ..,
+                                                ),
+                                              ..
+                                            },
+                                          ) => match &**tag {
+                                            "var" => VariableKind::Var,
+                                            _ => {
+                                              let source_trace =
+                                                annotation.source_trace.clone();
+                                              return err(
+                                                InvalidVariableAnnotation(
+                                                  annotation.clone().into(),
+                                                ),
+                                                source_trace,
+                                              );
+                                            }
                                           },
-                                        ) => match &**tag {
-                                          "var" => VariableKind::Var,
-                                          _ => {
+                                          Some(annotation) => {
                                             let source_trace =
                                               annotation.source_trace.clone();
                                             return err(
                                               InvalidVariableAnnotation(
-                                                annotation.clone().into(),
+                                                annotation.into(),
                                               ),
                                               source_trace,
                                             );
                                           }
                                         },
-                                        Some(annotation) => {
-                                          let source_trace =
-                                            annotation.source_trace.clone();
-                                          return err(
-                                            InvalidVariableAnnotation(
-                                              annotation.into(),
-                                            ),
-                                            source_trace,
-                                          );
-                                        }
-                                      },
-                                      {
-                                        let mut value_exp =
-                                          Self::try_from_easl_tree(
-                                            value_ast, typedefs, skolems, ctx,
-                                          )?;
-                                        if let Some(ty) = ty {
-                                          value_exp.data = ty
-                                            .concretize(
-                                              skolems,
-                                              typedefs,
-                                              source_trace.clone(),
-                                            )?
-                                            .known()
-                                            .into();
-                                        }
-                                        value_exp
-                                      },
-                                    ));
+                                        {
+                                          let mut value_exp =
+                                            Self::try_from_easl_tree(
+                                              value_ast, typedefs, skolems, ctx,
+                                            )?;
+                                          if let Some(ty) = ty {
+                                            value_exp.data = ty
+                                              .concretize(
+                                                skolems,
+                                                typedefs,
+                                                source_trace.clone(),
+                                              )?
+                                              .known()
+                                              .into();
+                                          }
+                                          value_exp
+                                        },
+                                      ));
+                                    }
                                   }
                                   EaslTree::Inner((position, _), _) => {
                                     return err(

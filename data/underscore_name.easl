@@ -1,0 +1,6 @@
+(defn main []
+  (let [x 5.]
+    (print x))
+  ; the below will cause an error, cause you can't use `_` as a name
+  #_(let [_ 0.]
+      (print 5.)))
