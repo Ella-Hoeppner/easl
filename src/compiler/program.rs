@@ -965,22 +965,26 @@ impl Program {
       let mut changed = false;
       for f in self.abstract_functions_iter() {
         let borrowed_f = f.borrow();
-        if borrowed_f.reference_arg_positions().is_empty()
-          && let FunctionImplementationKind::Composite(implementation) =
-            &f.borrow().implementation
+        if let FunctionImplementationKind::Composite(implementation) =
+          &f.borrow().implementation
         {
-          let mut borrowed_implementation = implementation.borrow_mut();
-          changed |= borrowed_implementation
-            .expression
-            .monomorphize_reference_address_spaces(
-              &self,
-              &mut monomorphized_ctx,
-            );
-          let mut new_f = (**f).borrow().clone();
-          new_f.implementation =
-            FunctionImplementationKind::Composite(implementation.clone());
-          drop(borrowed_implementation);
-          monomorphized_ctx.add_abstract_function(Rc::new(RefCell::new(new_f)));
+          if borrowed_f.reference_arg_positions().is_empty() {
+            let mut borrowed_implementation = implementation.borrow_mut();
+            changed |= borrowed_implementation
+              .expression
+              .monomorphize_reference_address_spaces(
+                &self,
+                &mut monomorphized_ctx,
+              );
+            let mut new_f = (**f).borrow().clone();
+            new_f.implementation =
+              FunctionImplementationKind::Composite(implementation.clone());
+            drop(borrowed_implementation);
+            monomorphized_ctx
+              .add_abstract_function(Rc::new(RefCell::new(new_f)));
+          }
+        } else {
+          monomorphized_ctx.add_abstract_function(f.clone());
         }
       }
       take(self, |old_ctx| {

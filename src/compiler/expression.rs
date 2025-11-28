@@ -701,7 +701,7 @@ impl TypedExp {
                                     if name == "_" {
                                       return err(
                                         WildcardOutsidePattern,
-                                        position.into(),
+                                        pos.into(),
                                       );
                                     } else {
                                       bindings.push((
