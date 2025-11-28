@@ -1388,10 +1388,9 @@ impl TypedExp {
           let ExpKind::Name(name) = f.kind else {
             panic!("tried to compile application of non-name fn");
           };
+          let is_assignment_operator = ASSIGNMENT_OPS.contains(name.as_ref());
           let f_str = rename_builtin_fn(&*name).unwrap_or_else(|| {
-            if ASSIGNMENT_OPS.contains(name.as_ref())
-              || INFIX_OPS.contains(name.as_ref())
-            {
+            if is_assignment_operator || INFIX_OPS.contains(name.as_ref()) {
               name.to_string()
             } else {
               compile_word(name)
@@ -1409,18 +1408,24 @@ impl TypedExp {
           let arg_strs: Vec<String> = args
             .into_iter()
             .zip(signature.args.iter())
-            .map(|(arg, signature_arg)| {
-              format!(
-                "{}{}",
-                if signature_arg.0.var_type.ownership != Ownership::Owned
-                  && arg.data.ownership == Ownership::Owned
-                {
-                  "&"
-                } else {
-                  ""
-                },
-                arg.compile(InnerExpression, names)
-              )
+            .enumerate()
+            .map(|(i, (arg, signature_arg))| {
+              let prefix = match (
+                signature_arg.0.var_type.ownership,
+                arg.data.ownership,
+              ) {
+                (Ownership::Owned, Ownership::Owned) => "",
+                (Ownership::Owned, _) => "*",
+                (_, Ownership::Owned) => {
+                  if i == 0 && is_assignment_operator {
+                    ""
+                  } else {
+                    "&"
+                  }
+                }
+                _ => "",
+              };
+              format!("{}{}", prefix, arg.compile(InnerExpression, names))
             })
             .collect();
           if ASSIGNMENT_OPS.contains(&f_str.as_str()) {
@@ -3787,7 +3792,7 @@ impl TypedExp {
                                       let mut reference_type =
                                         binding_type.clone();
                                       reference_type.ownership =
-                                        Ownership::Reference;
+                                        Ownership::MutableReference;
                                       reference_type
                                     }),
                                     vec![],
@@ -3850,9 +3855,7 @@ impl TypedExp {
               if let Some(last) = inner_exps.pop() {
                 inner_exps
                   .into_iter()
-                  .filter_map(|exp| {
-                    (!exp.effects(program).is_pure_but_for_reads()).then(|| exp)
-                  })
+                  .filter(|exp| !exp.effects(program).is_pure_but_for_reads())
                   .chain(std::iter::once(last))
                   .collect()
               } else {
