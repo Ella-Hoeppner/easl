@@ -115,6 +115,8 @@ fn shader_examples() {
     "nested_user_reference",
     "ownership",
     "underscore_name",
+    "bind_discard",
+    "non_return_if",
     // "vec_match" // todo!
   ] {
     print!("compiling {filename}...");

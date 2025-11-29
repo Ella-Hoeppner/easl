@@ -1,0 +1,7 @@
+(defn f []
+  (let [x (discard): f32]))
+
+(defn g []
+  (let [x (if true
+            (discard)
+            0.5)]))

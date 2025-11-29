@@ -1,0 +1,13 @@
+#_(defn (consume T) [x: T])
+
+#_(defn f []: f32
+  (consume (if (< 0.5 0.25)
+             0.5
+             (discard)))
+  0.)
+
+(defn g []: f32
+  (if true
+    0.5
+    (discard))
+  0.)

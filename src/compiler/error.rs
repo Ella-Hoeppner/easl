@@ -164,16 +164,14 @@ pub enum CompileErrorKind {
   AccessorOnNonStruct,
   #[error("Accessor had multiple arguments")]
   AccessorHadMultipleArguments,
-  #[error("Not enough children in let block")]
-  NotEnoughLetBlockChildren,
+  #[error("let block must have bindings")]
+  LetBlockMissingBindings,
   #[error("Let bindings not enclosed in square brackets")]
   LetBindingsNotSquareBracketed,
   #[error("Odd number of children in let bindings")]
   OddNumberOfChildrenInLetBindings,
   #[error("Expected binding name")]
   ExpectedBindingName,
-  #[error("Empty block")]
-  EmptyBlock,
   #[error("Top-level constants may not have annotation")]
   ConstantMayNotHaveAnnotation,
   #[error("Invalid top-level variable annotation: {0:?}")]
