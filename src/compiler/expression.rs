@@ -3920,6 +3920,43 @@ impl TypedExp {
       }
     }
   }
+  pub fn throw_away_inner_values_in_blocks(&mut self, program: &Program) {
+    self
+      .walk_mut(&mut |exp| {
+        match &mut exp.kind {
+          Block(inner_exps) => {
+            let len = inner_exps.len();
+            if len > 1 {
+              for inner_exp in inner_exps.iter_mut().take(len - 1) {
+                if inner_exp.data.unwrap_known() != Type::Unit {
+                  take(inner_exp, |inner_exp| TypedExp {
+                    data: TypeState::Known(Type::Unit).into(),
+                    source_trace: inner_exp.source_trace.clone(),
+                    kind: ExpKind::Let(
+                      vec![(
+                        program.names.borrow_mut().gensym("throwaway"),
+                        SourceTrace::empty(),
+                        VariableKind::Let,
+                        inner_exp,
+                      )],
+                      TypedExp {
+                        data: TypeState::Known(Type::Unit).into(),
+                        kind: ExpKind::Unit,
+                        source_trace: SourceTrace::empty(),
+                      }
+                      .into(),
+                    ),
+                  });
+                }
+              }
+            }
+          }
+          _ => {}
+        }
+        Ok::<bool, Never>(true)
+      })
+      .unwrap()
+  }
   pub fn desugar_swizzle_assignments(&mut self, names: &mut NameContext) {
     if let ExpKind::Application(f, args) = &self.kind
       && let ExpKind::Name(f_name) = &f.kind

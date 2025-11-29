@@ -1603,7 +1603,9 @@ impl Program {
       if let FunctionImplementationKind::Composite(f) =
         &signature.implementation
       {
-        f.borrow_mut().expression.deexpressionify(self);
+        let mut f = f.borrow_mut();
+        f.expression.throw_away_inner_values_in_blocks(self);
+        f.expression.deexpressionify(self);
       }
     }
   }
