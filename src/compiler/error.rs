@@ -53,6 +53,13 @@ impl SourceTrace {
       .into_iter()
       .chain(self.secondary_positions.into_iter())
   }
+  pub fn primary_path(&self) -> Vec<usize> {
+    self
+      .primary_position
+      .as_ref()
+      .map(|pos| pos.path.clone())
+      .unwrap_or_default()
+  }
 }
 
 impl From<DocumentPosition> for SourceTrace {

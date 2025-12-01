@@ -2319,4 +2319,136 @@ impl Program {
       None
     }
   }
+  pub fn find_definition(
+    &self,
+    name: &str,
+    path: &Vec<usize>,
+  ) -> Option<NameDefinitionSource> {
+    for e in self.typedefs.enums.iter() {
+      let e = e.original_ancestor();
+      if &*e.name.0 == name {
+        return Some(NameDefinitionSource::Enum(e.name.1.primary_path()));
+      }
+    }
+    for t in self.typedefs.enums.iter() {
+      let t = t.original_ancestor();
+      if &*t.name.0 == name {
+        return Some(NameDefinitionSource::Enum(t.name.1.primary_path()));
+      }
+    }
+    let mut defn_locations: HashSet<Vec<usize>> = HashSet::new();
+    for f in self.abstract_functions_iter() {
+      let f = f.borrow();
+      if &*f.name == name {
+        if let FunctionImplementationKind::Composite(f) = &f.implementation {
+          defn_locations.insert(f.borrow().name_source_trace.primary_path());
+        }
+      }
+    }
+    if !defn_locations.is_empty() {
+      return Some(NameDefinitionSource::Defn(
+        defn_locations.into_iter().collect(),
+      ));
+    }
+    for f in self.abstract_functions_iter() {
+      let f = f.borrow();
+      if let FunctionImplementationKind::Composite(f) = &f.implementation {
+        let mut definition_source: Option<NameDefinitionSource> = None;
+        fn is_prefix(a: &Vec<usize>, b: &Vec<usize>) -> bool {
+          a.len() < b.len()
+            && a.iter().zip(b.iter()).find(|(a, b)| a != b).is_none()
+        }
+        f.borrow()
+          .expression
+          .walk(&mut |exp| {
+            let exp_path = exp.source_trace.primary_path();
+            if is_prefix(&exp_path, path) {
+              return Ok(false);
+            }
+            match &exp.kind {
+              ExpKind::ForLoop {
+                increment_variable_name,
+                ..
+              } => {
+                if &*increment_variable_name.0 == name {
+                  definition_source =
+                    Some(NameDefinitionSource::ForLoopBinding(
+                      increment_variable_name.1.primary_path(),
+                    ))
+                }
+              }
+              ExpKind::Let(bindings, _) => {
+                let bindings_to_consider = if path[exp_path.len()] == 1 {
+                  // path being searched for is inside bindings
+                  if let Some(internal_binding_index) =
+                    path.get(exp_path.len() + 1)
+                    && internal_binding_index % 2 == 1
+                  {
+                    let internal_binding_index = internal_binding_index / 2;
+                    internal_binding_index.checked_sub(1).unwrap_or(0)
+                  } else {
+                    0
+                  }
+                } else {
+                  // path being searched for is inside body
+                  bindings.len()
+                };
+                for (binding_name, binding_source_trace, _, _) in
+                  bindings.iter().take(bindings_to_consider).rev()
+                {
+                  if &**binding_name == name {
+                    definition_source = Some(NameDefinitionSource::LetBinding(
+                      binding_source_trace.primary_path(),
+                    ));
+                    break;
+                  }
+                }
+              }
+              ExpKind::Match(_, arms) => {
+                for (pattern, arm_body) in arms.iter() {
+                  if is_prefix(&arm_body.source_trace.primary_path(), path) {
+                    match &pattern.kind {
+                      ExpKind::Name(pattern_name) => {
+                        if &**pattern_name == name {
+                          definition_source =
+                            Some(NameDefinitionSource::MatchBinding(
+                              pattern.source_trace.primary_path(),
+                            ));
+                        }
+                      }
+                      ExpKind::Application(_, args) => {
+                        for arg in args.iter() {
+                          if let ExpKind::Name(pattern_name) = &arg.kind {
+                            if &**pattern_name == name {
+                              Some(NameDefinitionSource::MatchBinding(
+                                arg.source_trace.primary_path(),
+                              ));
+                            }
+                          }
+                        }
+                      }
+                      _ => {}
+                    }
+                  }
+                }
+              }
+              _ => {}
+            }
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
+      }
+    }
+    None
+  }
+}
+
+pub enum NameDefinitionSource {
+  BuiltInFunction(Vec<usize>),
+  Defn(Vec<Vec<usize>>),
+  Struct(Vec<usize>),
+  Enum(Vec<usize>),
+  LetBinding(Vec<usize>),
+  ForLoopBinding(Vec<usize>),
+  MatchBinding(Vec<usize>),
 }
