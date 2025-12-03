@@ -110,7 +110,11 @@ impl Function {
       FunctionImplementationKind::Composite(f) => {
         let f = f.borrow();
         Ok(Function::Composite {
-          arg_names: f.arg_names.clone(),
+          arg_names: f
+            .arg_names
+            .iter()
+            .map(|(arg_name, _)| arg_name.clone())
+            .collect(),
           expression: f.expression.clone(),
         })
       }
@@ -831,7 +835,10 @@ pub fn eval(
     ExpKind::BooleanLiteral(b) => Primitive::Bool(b).into(),
     ExpKind::Function(arg_names, expression) => {
       Value::Fun(Function::Composite {
-        arg_names,
+        arg_names: arg_names
+          .iter()
+          .map(|(arg_name, _)| arg_name.clone())
+          .collect(),
         expression: *expression,
       })
     }

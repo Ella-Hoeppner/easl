@@ -53,7 +53,7 @@ impl FunctionArgumentAnnotation {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TopLevelFunction {
   pub name_source_trace: SourceTrace,
-  pub arg_names: Vec<Rc<str>>,
+  pub arg_names: Vec<(Rc<str>, SourceTrace)>,
   pub arg_annotations: Vec<FunctionArgumentAnnotation>,
   pub return_attributes: IOAttributes,
   pub entry_point: Option<EntryPoint>,
@@ -371,7 +371,7 @@ impl AbstractFunctionSignature {
   pub fn arg_names(
     &self,
     source_trace: &SourceTrace,
-  ) -> CompileResult<Vec<Rc<str>>> {
+  ) -> CompileResult<Vec<(Rc<str>, SourceTrace)>> {
     if let FunctionImplementationKind::Composite(f) = &self.implementation {
       Ok(f.borrow().arg_names.clone())
     } else {
@@ -488,13 +488,13 @@ impl AbstractFunctionSignature {
       .cloned()
       .zip(implementation.arg_names.into_iter())
       .zip(implementation.arg_annotations.into_iter())
-      .map(|(((t, ownership), name), annotation)| {
+      .map(|(((t, ownership), (name, name_source_trace)), annotation)| {
         if let AbstractType::Type(Type::Function(_)) = t {
           (Some(name.clone()), None)
         } else {
           (
             None,
-            Some((name.clone(), (annotation.clone(), t, ownership))),
+            Some(((name.clone(), name_source_trace.clone()), (annotation.clone(), t, ownership))),
           )
         }
       })
@@ -502,7 +502,7 @@ impl AbstractFunctionSignature {
         Vec<Option<Rc<str>>>,
         Vec<
           Option<(
-            Rc<str>,
+            (Rc<str>, SourceTrace),
             (FunctionArgumentAnnotation, AbstractType, Ownership),
           )>,
         >,
@@ -864,7 +864,7 @@ impl TopLevelFunction {
       .into_iter()
       .zip(args.into_iter())
       .zip(self.arg_annotations.into_iter())
-      .map(|((name, (arg, _)), annotation)| {
+      .map(|(((name, _), (arg, _)), annotation)| {
         format!(
           "{}{}: {}",
           annotation.attributes.compile(),
@@ -918,7 +918,7 @@ impl TopLevelFunction {
     if let ExpKind::Function(arg_names, body) = &self.expression.kind
     {
       let mut effects = body.effects(&program);
-      for name in arg_names {
+      for (name, _) in arg_names {
         effects.remove(&Effect::ReadsVar(name.clone()));
         effects.remove(&Effect::ModifiesVar(name.clone()))
       }

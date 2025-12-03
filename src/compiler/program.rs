@@ -24,8 +24,8 @@ use crate::{
     functions::{AbstractFunctionSignature, Ownership},
     structs::UntypedStruct,
     types::{
-      AbstractType, ImmutableProgramLocalContext, Type, TypeState, UntypedType,
-      VariableKind,
+      AbstractType, ImmutableProgramLocalContext, NameDefinitionSource, Type,
+      TypeState, UntypedType, VariableKind,
     },
     util::{compile_word, is_valid_name},
     vars::TopLevelVariableKind,
@@ -281,7 +281,7 @@ impl Program {
       &signature.borrow().implementation
     {
       let f = f.borrow();
-      for arg_name in f.arg_names.iter() {
+      for (arg_name, _) in f.arg_names.iter() {
         self.names.borrow_mut().track_user_name(&arg_name);
       }
       f.expression
@@ -914,7 +914,7 @@ impl Program {
                                   if ctx
                                     .variables
                                     .get(&**name)
-                                    .map(|v| v.kind)
+                                    .map(|(v, _)| v.kind)
                                     .or_else(|| {
                                       top_level_var
                                         .map(TopLevelVar::variable_kind)
@@ -1278,7 +1278,7 @@ impl Program {
                 kind: ExpKind::Let(
                   mutable_args
                     .into_iter()
-                    .map(|(arg_name, arg_type)| {
+                    .map(|((arg_name, _), arg_type)| {
                       (
                         arg_name.clone(),
                         SourceTrace::empty(),
@@ -1495,7 +1495,7 @@ impl Program {
           &signature.borrow().implementation
         {
           let f = f.borrow();
-          for arg_name in f.arg_names.iter() {
+          for (arg_name, _) in f.arg_names.iter() {
             if self.abstract_functions.get(arg_name).is_some()
               || self
                 .top_level_vars
@@ -2288,6 +2288,75 @@ impl Program {
     }
     type_annotations
   }
+  pub fn gather_name_definition_sites(
+    &self,
+  ) -> HashMap<Vec<usize>, NameDefinitionSource> {
+    let mut top_level_name_definitions = HashMap::new();
+    for e in self.typedefs.enums.iter() {
+      let e = e.original_ancestor();
+      top_level_name_definitions.insert(
+        e.name.0.clone(),
+        NameDefinitionSource::Enum(e.name.1.primary_path()),
+      );
+    }
+    for t in self.typedefs.enums.iter() {
+      let t = t.original_ancestor();
+      top_level_name_definitions.insert(
+        t.name.0.clone(),
+        NameDefinitionSource::Enum(t.name.1.primary_path()),
+      );
+    }
+    let mut defn_locations: HashMap<Rc<str>, Vec<Vec<usize>>> = HashMap::new();
+    for f in self.abstract_functions_iter() {
+      let f = f.borrow();
+      if let FunctionImplementationKind::Composite(implementation) =
+        &f.implementation
+      {
+        if !defn_locations.contains_key(&f.name) {
+          defn_locations.insert(f.name.clone(), vec![]);
+        }
+        defn_locations
+          .get_mut(&f.name)
+          .unwrap()
+          .push(implementation.borrow().name_source_trace.primary_path());
+      }
+    }
+    for (name, sources) in defn_locations {
+      top_level_name_definitions
+        .insert(name, NameDefinitionSource::Defn(sources));
+    }
+    let mut sites = HashMap::new();
+    for f in self.abstract_functions_iter() {
+      let f = f.borrow();
+      if let FunctionImplementationKind::Composite(f) = &f.implementation {
+        f.borrow()
+          .expression
+          .walk_with_ctx(
+            &mut |exp, ctx| {
+              match &exp.kind {
+                ExpKind::Name(name) => {
+                  if let Some(definition_source) = top_level_name_definitions
+                    .get(name)
+                    .cloned()
+                    .or_else(|| ctx.get_name_definition_source(name))
+                  {
+                    sites.insert(
+                      exp.source_trace.primary_path(),
+                      definition_source,
+                    );
+                  }
+                }
+                _ => {}
+              }
+              Ok::<bool, Never>(true)
+            },
+            &mut ImmutableProgramLocalContext::empty(self),
+          )
+          .unwrap();
+      }
+    }
+    sites
+  }
   pub fn find_fn_names_by_entry_point(
     &self,
     entry_kind_predicate: impl Fn(EntryPoint) -> bool,
@@ -2371,10 +2440,9 @@ impl Program {
                 ..
               } => {
                 if &*increment_variable_name.0 == name {
-                  definition_source =
-                    Some(NameDefinitionSource::ForLoopBinding(
-                      increment_variable_name.1.primary_path(),
-                    ))
+                  definition_source = Some(NameDefinitionSource::LocalBinding(
+                    increment_variable_name.1.primary_path(),
+                  ))
                 }
               }
               ExpKind::Let(bindings, _) => {
@@ -2397,9 +2465,10 @@ impl Program {
                   bindings.iter().take(bindings_to_consider).rev()
                 {
                   if &**binding_name == name {
-                    definition_source = Some(NameDefinitionSource::LetBinding(
-                      binding_source_trace.primary_path(),
-                    ));
+                    definition_source =
+                      Some(NameDefinitionSource::LocalBinding(
+                        binding_source_trace.primary_path(),
+                      ));
                     break;
                   }
                 }
@@ -2411,7 +2480,7 @@ impl Program {
                       ExpKind::Name(pattern_name) => {
                         if &**pattern_name == name {
                           definition_source =
-                            Some(NameDefinitionSource::MatchBinding(
+                            Some(NameDefinitionSource::LocalBinding(
                               pattern.source_trace.primary_path(),
                             ));
                         }
@@ -2420,7 +2489,7 @@ impl Program {
                         for arg in args.iter() {
                           if let ExpKind::Name(pattern_name) = &arg.kind {
                             if &**pattern_name == name {
-                              Some(NameDefinitionSource::MatchBinding(
+                              Some(NameDefinitionSource::LocalBinding(
                                 arg.source_trace.primary_path(),
                               ));
                             }
@@ -2441,14 +2510,4 @@ impl Program {
     }
     None
   }
-}
-
-pub enum NameDefinitionSource {
-  BuiltInFunction(Vec<usize>),
-  Defn(Vec<Vec<usize>>),
-  Struct(Vec<usize>),
-  Enum(Vec<usize>),
-  LetBinding(Vec<usize>),
-  ForLoopBinding(Vec<usize>),
-  MatchBinding(Vec<usize>),
 }

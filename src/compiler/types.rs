@@ -1956,7 +1956,7 @@ pub fn parse_generic_argument(
 
 #[derive(Debug)]
 pub struct LocalContext<P: Deref<Target = Program>> {
-  pub variables: HashMap<Rc<str>, Variable>,
+  pub variables: HashMap<Rc<str>, (Variable, SourceTrace)>,
   pub enclosing_function_types: Vec<TypeState>,
   pub inside_pattern: bool,
   pub program: P,
@@ -1980,11 +1980,11 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
   pub fn enclosing_function_type(&mut self) -> Option<&mut TypeState> {
     self.enclosing_function_types.last_mut()
   }
-  pub fn bind(&mut self, name: &str, v: Variable) {
-    self.variables.insert(name.into(), v);
+  pub fn bind(&mut self, name: &str, v: Variable, s: SourceTrace) {
+    self.variables.insert(name.into(), (v, s));
   }
   pub fn unbind(&mut self, name: &str) -> Variable {
-    self.variables.remove(name).unwrap()
+    self.variables.remove(name).unwrap().0
   }
   pub fn is_bound(&self, name: &str) -> bool {
     let name_rc: Rc<str> = name.to_string().into();
@@ -2008,7 +2008,7 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
     self
       .variables
       .get(name)
-      .map(|var| var.kind.clone())
+      .map(|(var, _)| var.kind.clone())
       .or(
         self
           .program
@@ -2018,6 +2018,32 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
       )
       .unwrap()
   }
+  pub fn get_name_definition_source(
+    &self,
+    name: &str,
+  ) -> Option<NameDefinitionSource> {
+    self
+      .variables
+      .get(name)
+      .map(|(_, source_trace)| {
+        NameDefinitionSource::LocalBinding(source_trace.primary_path())
+      })
+      .or(self.program.top_level_vars.iter().find_map(|v| {
+        (&*v.name == name).then(|| {
+          NameDefinitionSource::GlobalBinding(v.source_trace.primary_path())
+        })
+      }))
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum NameDefinitionSource {
+  BuiltInFunction(Vec<usize>),
+  Defn(Vec<Vec<usize>>),
+  Struct(Vec<usize>),
+  Enum(Vec<usize>),
+  GlobalBinding(Vec<usize>),
+  LocalBinding(Vec<usize>),
 }
 
 pub type ImmutableProgramLocalContext<'p> = LocalContext<&'p Program>;
@@ -2025,7 +2051,7 @@ pub type ImmutableProgramLocalContext<'p> = LocalContext<&'p Program>;
 pub type MutableProgramLocalContext<'p> = LocalContext<&'p mut Program>;
 impl<'p> MutableProgramLocalContext<'p> {
   pub fn get_variable_ownership(&self, name: &str) -> Option<Ownership> {
-    if let Some(var) = self.variables.get(name) {
+    if let Some((var, _)) = self.variables.get(name) {
       Some(var.var_type.ownership)
     } else {
       None
@@ -2036,7 +2062,7 @@ impl<'p> MutableProgramLocalContext<'p> {
     name: &str,
     source_trace: SourceTrace,
   ) -> CompileResult<Result<&mut TypeState, TypeState>> {
-    if let Some(var) = self.variables.get_mut(name) {
+    if let Some((var, _)) = self.variables.get_mut(name) {
       Ok(Ok(&mut var.var_type))
     } else if let Some(top_level_var) = self
       .program

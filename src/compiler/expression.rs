@@ -305,7 +305,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Name(Rc<str>),
   NumberLiteral(Number),
   BooleanLiteral(bool),
-  Function(Vec<Rc<str>>, Box<Exp<D>>),
+  Function(Vec<(Rc<str>, SourceTrace)>, Box<Exp<D>>),
   Application(Box<Exp<D>>, Vec<Exp<D>>),
   Access(Accessor, Box<Exp<D>>),
   Let(
@@ -363,7 +363,7 @@ pub fn arg_list_and_return_type_from_easl_tree(
   errors: &mut ErrorLog,
 ) -> Option<(
   SourceTrace,
-  Vec<Rc<str>>,
+  Vec<(Rc<str>, SourceTrace)>,
   Vec<AbstractType>,
   Vec<FunctionArgumentAnnotation>,
   AbstractType,
@@ -412,10 +412,11 @@ pub fn arg_list_and_return_type_from_easl_tree(
         let (arg_name_ast, arg_annotation) =
           extract_annotation(arg_name_ast, errors);
         if let EaslTree::Leaf(arg_name_pos, arg_name) = arg_name_ast {
+          let arg_name_source_trace: SourceTrace = arg_name_pos.into();
           if let Some(arg_annotation) = arg_annotation {
             let (attributes, residual) = IOAttributes::parse_from_annotation(
               arg_annotation,
-              Some((arg_name.clone().into(), arg_name_pos.into())),
+              Some((arg_name.clone().into(), arg_name_source_trace.clone())),
               errors,
             );
             let mut has_var = false;
@@ -439,11 +440,19 @@ pub fn arg_list_and_return_type_from_easl_tree(
               },
               attributes,
             };
-            Ok(((t, arg_annotation), arg_name.into()))
+            Ok((
+              (t, arg_annotation),
+              (arg_name.into(), arg_name_source_trace),
+            ))
           } else {
             Ok((
-              (t, FunctionArgumentAnnotation::empty(arg_name_pos.into())),
-              arg_name.into(),
+              (
+                t,
+                FunctionArgumentAnnotation::empty(
+                  arg_name_source_trace.clone(),
+                ),
+              ),
+              (arg_name.into(), arg_name_source_trace),
             ))
           }
         } else {
@@ -452,7 +461,7 @@ pub fn arg_list_and_return_type_from_easl_tree(
       })
       .collect::<CompileResult<(
         (Vec<AbstractType>, Vec<FunctionArgumentAnnotation>),
-        Vec<Rc<str>>,
+        Vec<(Rc<str>, SourceTrace)>,
       )>>() {
       Ok(x) => x,
       Err(e) => {
@@ -489,7 +498,7 @@ impl TypedExp {
     source_trace: SourceTrace,
     body_trees: Vec<EaslTree>,
     return_type: ExpTypeInfo,
-    arg_names: Vec<Rc<str>>,
+    arg_names: Vec<(Rc<str>, SourceTrace)>,
     args: Vec<(Variable, Vec<TypeConstraint>)>,
     typedefs: &TypeDefs,
     skolems: &Vec<Rc<str>>,
@@ -1255,6 +1264,136 @@ impl TypedExp {
     }
     Ok(())
   }
+  pub fn walk_with_ctx<E>(
+    &self,
+    prewalk_handler: &mut impl FnMut(
+      &Self,
+      &ImmutableProgramLocalContext,
+    ) -> Result<bool, E>,
+    ctx: &mut ImmutableProgramLocalContext,
+  ) -> Result<(), E> {
+    if prewalk_handler(self, ctx)? {
+      match &self.kind {
+        Application(f, args) => {
+          f.walk_with_ctx(prewalk_handler, ctx)?;
+          for arg in args.iter() {
+            arg.walk_with_ctx(prewalk_handler, ctx)?;
+          }
+        }
+        Function(arg_names, body) => {
+          let TypeState::Known(Type::Function(f)) = &self.data.kind else {
+            unreachable!()
+          };
+          for ((name, name_source_trace), (arg, _)) in
+            arg_names.iter().zip(f.args.iter())
+          {
+            ctx.bind(name, arg.clone(), name_source_trace.clone());
+          }
+          body.walk_with_ctx(prewalk_handler, ctx)?;
+          for (name, _) in arg_names {
+            ctx.unbind(name);
+          }
+        }
+        Access(_, body) => body.walk_with_ctx(prewalk_handler, ctx)?,
+        Let(bindings, body) => {
+          for (name, name_source_trace, kind, value) in bindings.iter() {
+            value.walk_with_ctx(prewalk_handler, ctx)?;
+            ctx.bind(
+              name,
+              Variable::immutable(value.data.clone()).with_kind(kind.clone()),
+              name_source_trace.clone(),
+            );
+          }
+          body.walk_with_ctx(prewalk_handler, ctx)?;
+          for (name, _, _, _) in bindings {
+            ctx.unbind(name);
+          }
+        }
+        Match(scrutinee, arms) => {
+          scrutinee.walk_with_ctx(prewalk_handler, ctx)?;
+          for (pattern, value) in arms {
+            pattern.walk_with_ctx(prewalk_handler, ctx)?;
+            let mut bound_names = vec![];
+            match &pattern.kind {
+              Name(n) => {
+                bound_names.push(n.clone());
+                ctx.bind(
+                  n,
+                  Variable {
+                    kind: VariableKind::Let,
+                    var_type: scrutinee.data.clone(),
+                  },
+                  pattern.source_trace.clone(),
+                )
+              }
+              Application(f, args) => {
+                if let Some((_, inner_exp, inner_name)) =
+                  Self::try_deconstruct_enum_pattern(f, args)
+                {
+                  bound_names.push(inner_name.clone());
+                  ctx.bind(
+                    &inner_name,
+                    Variable {
+                      kind: VariableKind::Let,
+                      var_type: inner_exp.data.clone(),
+                    },
+                    inner_exp.source_trace.clone(),
+                  );
+                }
+              }
+              _ => {}
+            }
+            value.walk_with_ctx(prewalk_handler, ctx)?;
+            for name in bound_names {
+              ctx.unbind(&name);
+            }
+          }
+        }
+        Block(expressions) => {
+          for subexp in expressions {
+            subexp.walk_with_ctx(prewalk_handler, ctx)?;
+          }
+        }
+        ForLoop {
+          increment_variable_initial_value_expression,
+          continue_condition_expression,
+          update_condition_expression,
+          body_expression,
+          increment_variable_name,
+          increment_variable_type,
+          ..
+        } => {
+          ctx.bind(
+            &increment_variable_name.0,
+            Variable::immutable(increment_variable_type.clone().known().into())
+              .with_kind(VariableKind::Var),
+            increment_variable_name.1.clone(),
+          );
+          increment_variable_initial_value_expression
+            .walk_with_ctx(prewalk_handler, ctx)?;
+          continue_condition_expression.walk_with_ctx(prewalk_handler, ctx)?;
+          update_condition_expression.walk_with_ctx(prewalk_handler, ctx)?;
+          body_expression.walk_with_ctx(prewalk_handler, ctx)?;
+          ctx.unbind(&increment_variable_name.0);
+        }
+        WhileLoop {
+          condition_expression,
+          body_expression,
+        } => {
+          condition_expression.walk_with_ctx(prewalk_handler, ctx)?;
+          body_expression.walk_with_ctx(prewalk_handler, ctx)?;
+        }
+        Return(exp) => exp.walk_with_ctx(prewalk_handler, ctx)?,
+        ArrayLiteral(children) => {
+          for child in children {
+            child.walk_with_ctx(prewalk_handler, ctx)?;
+          }
+        }
+        _ => {}
+      }
+    }
+    Ok(())
+  }
   pub fn walk_mut_with_ctx<E>(
     &mut self,
     prewalk_handler: &mut impl FnMut(
@@ -1276,20 +1415,21 @@ impl TypedExp {
             unreachable!()
           };
           for (name, (arg, _)) in arg_names.iter().zip(f.args.iter()) {
-            ctx.bind(name, arg.clone());
+            ctx.bind(&name.0, arg.clone(), name.1.clone());
           }
           body.walk_mut_with_ctx(prewalk_handler, ctx)?;
           for name in arg_names {
-            ctx.unbind(name);
+            ctx.unbind(&name.0);
           }
         }
         Access(_, body) => body.walk_mut_with_ctx(prewalk_handler, ctx)?,
         Let(bindings, body) => {
-          for (name, _, kind, value) in bindings.iter_mut() {
+          for (name, name_source_trace, kind, value) in bindings.iter_mut() {
             value.walk_mut_with_ctx(prewalk_handler, ctx)?;
             ctx.bind(
               name,
               Variable::immutable(value.data.clone()).with_kind(kind.clone()),
+              name_source_trace.clone(),
             );
           }
           body.walk_mut_with_ctx(prewalk_handler, ctx)?;
@@ -1301,7 +1441,40 @@ impl TypedExp {
           scrutinee.walk_mut_with_ctx(prewalk_handler, ctx)?;
           for (pattern, value) in arms {
             pattern.walk_mut_with_ctx(prewalk_handler, ctx)?;
+            let mut bound_names = vec![];
+            match &mut pattern.kind {
+              Name(n) => {
+                bound_names.push(n.clone());
+                ctx.bind(
+                  n,
+                  Variable {
+                    kind: VariableKind::Let,
+                    var_type: scrutinee.data.clone(),
+                  },
+                  pattern.source_trace.clone(),
+                )
+              }
+              Application(f, args) => {
+                if let Some((_, inner_exp, inner_name)) =
+                  Self::try_deconstruct_enum_pattern_mut(f, args)
+                {
+                  bound_names.push(inner_name.clone());
+                  ctx.bind(
+                    &inner_name,
+                    Variable {
+                      kind: VariableKind::Let,
+                      var_type: inner_exp.data.clone(),
+                    },
+                    inner_exp.source_trace.clone(),
+                  );
+                }
+              }
+              _ => {}
+            }
             value.walk_mut_with_ctx(prewalk_handler, ctx)?;
+            for name in bound_names {
+              ctx.unbind(&name);
+            }
           }
         }
         Block(expressions) => {
@@ -1322,6 +1495,7 @@ impl TypedExp {
             &increment_variable_name.0,
             Variable::immutable(increment_variable_type.clone().known().into())
               .with_kind(VariableKind::Var),
+            increment_variable_name.1.clone(),
           );
           increment_variable_initial_value_expression
             .walk_mut_with_ctx(prewalk_handler, ctx)?;
@@ -1660,7 +1834,7 @@ impl TypedExp {
                     }
                     ExpKind::Application(mut f, mut args) => {
                       let Some((f, _, inner_value_name)) =
-                        Self::try_deconstruct_enum_pattern(&mut f, &mut args)
+                        Self::try_deconstruct_enum_pattern_mut(&mut f, &mut args)
                       else {
                         panic!("invalid pattern type in enum match block")
                       };
@@ -1864,7 +2038,7 @@ impl TypedExp {
                     }
                     NumberLiteral(_) | BooleanLiteral(_) | Name(_) => true,
                     Application(f, args) => {
-                      Self::try_deconstruct_enum_pattern(f, args).is_some()
+                      Self::try_deconstruct_enum_pattern_mut(f, args).is_some()
                     }
                     _ => false,
                   } {
@@ -1962,7 +2136,7 @@ impl TypedExp {
     }
     None
   }
-  fn try_deconstruct_enum_pattern<'a>(
+  fn try_deconstruct_enum_pattern_mut<'a>(
     f: &'a mut Box<TypedExp>,
     args: &'a mut Vec<TypedExp>,
   ) -> Option<(&'a mut Box<FunctionSignature>, &'a mut TypedExp, Rc<str>)> {
@@ -1972,6 +2146,23 @@ impl TypedExp {
         &abstract_f.implementation
       && args.len() == 1
       && let arg = &mut args[0]
+      && let ExpKind::Name(inner_value_name) = &arg.kind
+    {
+      let inner_value_name = inner_value_name.clone();
+      return Some((f, arg, inner_value_name));
+    }
+    None
+  }
+  fn try_deconstruct_enum_pattern<'a>(
+    f: &'a Box<TypedExp>,
+    args: &'a Vec<TypedExp>,
+  ) -> Option<(&'a Box<FunctionSignature>, &'a TypedExp, Rc<str>)> {
+    if let TypeState::Known(Type::Function(f)) = &*f.data
+      && let Some(abstract_f) = &f.abstract_ancestor
+      && let FunctionImplementationKind::EnumConstructor(_) =
+        &abstract_f.implementation
+      && args.len() == 1
+      && let arg = &args[0]
       && let ExpKind::Name(inner_value_name) = &arg.kind
     {
       let inner_value_name = inner_value_name.clone();
@@ -2075,14 +2266,20 @@ impl TypedExp {
                 errors,
               );
               if arg_count == arg_names.len() {
-                for (name, t) in arg_names.iter().zip(arg_type_states) {
-                  ctx.bind(name, Variable::immutable(t.clone()))
+                for ((name, name_source_trace), t) in
+                  arg_names.iter().zip(arg_type_states)
+                {
+                  ctx.bind(
+                    name,
+                    Variable::immutable(t.clone()),
+                    name_source_trace.clone(),
+                  )
                 }
                 let body_types_changed =
                   body.propagate_types_inner(ctx, errors);
                 let mut argument_types = arg_names
                   .iter()
-                  .map(|name| ctx.unbind(name).var_type.kind)
+                  .map(|(name, _)| ctx.unbind(&name).var_type.kind)
                   .collect::<Vec<_>>();
                 let fn_type_changed = self.data.constrain_fn_by_argument_types(
                   argument_types.iter_mut().collect(),
@@ -2265,9 +2462,13 @@ impl TypedExp {
           &self.source_trace,
           errors,
         );
-        for (name, _, _, value) in bindings.iter_mut() {
+        for (name, name_source_trace, _, value) in bindings.iter_mut() {
           anything_changed |= value.propagate_types_inner(ctx, errors);
-          ctx.bind(name, Variable::immutable(value.data.clone()));
+          ctx.bind(
+            name,
+            Variable::immutable(value.data.clone()),
+            name_source_trace.clone(),
+          );
         }
         anything_changed |= body.propagate_types_inner(ctx, errors);
         for (name, source_trace, _, value) in bindings.iter_mut().rev() {
@@ -2289,7 +2490,7 @@ impl TypedExp {
           if let Application(f, args) = &mut pattern.kind {
             f.propagate_types_inner(ctx, errors);
             if let Some((f, arg, inner_value_name)) =
-              Self::try_deconstruct_enum_pattern(f, args)
+              Self::try_deconstruct_enum_pattern_mut(f, args)
             {
               anything_changed |= f.return_type.mutually_constrain(
                 &mut scrutinee.data,
@@ -2312,6 +2513,7 @@ impl TypedExp {
                   kind: VariableKind::Let,
                   var_type: f.args[0].0.var_type.clone(),
                 },
+                arg.source_trace.clone(),
               );
               anything_changed |= value.propagate_types_inner(ctx, errors);
               ctx.unbind(&inner_value_name);
@@ -2408,6 +2610,7 @@ impl TypedExp {
             kind: VariableKind::Var,
             var_type: variable_typestate.into(),
           },
+          increment_variable_name.1.clone(),
         );
         anything_changed |= continue_condition_expression.data.constrain(
           Type::Bool.known(),
@@ -2603,11 +2806,13 @@ impl TypedExp {
           false
         }
         Let(binding_names_and_values, body) => {
-          for (name, _, kind, value) in binding_names_and_values {
+          for (name, name_source_trace, kind, value) in binding_names_and_values
+          {
             value.validate_assignments_inner(ctx)?;
             ctx.bind(
               name,
               Variable::immutable(value.data.clone()).with_kind(kind.clone()),
+              name_source_trace.clone(),
             )
           }
           body.validate_assignments_inner(ctx)?;
@@ -2618,11 +2823,13 @@ impl TypedExp {
         }
         Function(arg_names, body_exp) => {
           if let TypeState::Known(Type::Function(f)) = &exp.data.kind {
-            for (name, (arg, _)) in arg_names.iter().zip(f.args.iter()) {
-              ctx.bind(name, arg.clone());
+            for ((name, name_source_trace), (arg, _)) in
+              arg_names.iter().zip(f.args.iter())
+            {
+              ctx.bind(name, arg.clone(), name_source_trace.clone());
             }
             body_exp.validate_assignments_inner(ctx)?;
-            for name in arg_names {
+            for (name, _) in arg_names {
               ctx.unbind(name);
             }
             false
@@ -2642,6 +2849,7 @@ impl TypedExp {
             &increment_variable_name.0,
             Variable::immutable(increment_variable_type.clone().known().into())
               .with_kind(VariableKind::Var),
+            increment_variable_name.1.clone(),
           );
           increment_variable_initial_value_expression
             .validate_assignments_inner(ctx)?;
@@ -2936,7 +3144,7 @@ impl TypedExp {
                         }
                       })
                       .or_else(|| {
-                        if let Some(v) = ctx.variables.get(name)
+                        if let Some((v, _)) = ctx.variables.get(name)
                           && let Ownership::Pointer(address_space) =
                             v.var_type.ownership
                         {
@@ -3104,10 +3312,10 @@ impl TypedExp {
       };
     match &mut self.kind {
       Function(arg_names, body) => {
-        for name in arg_names.iter_mut() {
+        for (name, name_source_trace) in arg_names.iter_mut() {
           bind(
             name,
-            &self.source_trace,
+            name_source_trace,
             bindings,
             reverse_bindings,
             names,
@@ -3122,7 +3330,7 @@ impl TypedExp {
           first_in_walk,
           names,
         );
-        for name in arg_names.iter_mut().rev() {
+        for (name, _) in arg_names.iter_mut().rev() {
           unbind(name, bindings, reverse_bindings);
         }
         false
