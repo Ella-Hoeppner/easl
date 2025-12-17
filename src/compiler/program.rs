@@ -2052,7 +2052,12 @@ impl Program {
               if let Some((_, t)) = used_output_locations.get(&0) {
                 if let Type::Struct(s) = t
                   && &*s.name == "vec4"
-                  && s.fields[0].field_type.unwrap_known() == Type::F32
+                  && {
+                    let field_type = s.fields[0].field_type.unwrap_known();
+                    field_type == Type::F32
+                      || field_type == Type::U32
+                      || field_type == Type::I32
+                  }
                 {
                 } else {
                   errors.log(CompileError::new(

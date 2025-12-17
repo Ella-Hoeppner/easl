@@ -1,6 +1,109 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready"
+* small but important bugs:
+  * when there's an enum (at least, one with non-unit fields on some variants) that doesn't get used anywhere, the compiled wgsl code is invalid, since it still outputs the constructors but not the type itself
+    * should just always output the type I think
+  * match blocks crash the compiler when the scrutinee isn't a name
+    * I think this can just be fixed with a small change to the deexpressionification logic
+  * `==` is component-wise in wgsl, apparently. Need to change the type signature
+  * `?`s in names don't get compiled properly rn
+  * the inference of locations in structs used as the in-betweens for fragment and vertex shaders seems to be broken
+    * it seems to just assign location `0` to all fields, when of course it needs to not do that, and assign a unique location to each one
+  * order of type definitions seems to matter sometimes, even though it shouldn't
+    * e.g. the following code compiles fine:
+    ```
+    (struct ConvergedRaymarchResult
+      pos: vec2f
+      normal: vec2f
+      pos-info: ScenePositionInfo
+      d: f32)
+
+    (struct ScenePositionInfo
+      surface-dist: f32
+      opacity: f32
+      color: vec3f)
+
+    (enum RaymarchResult
+      (Exited ExitedRaymarchResult)
+      (HitSurface ConvergedRaymarchResult)
+      Failed)
+    ```
+    but this doesnt (only difference is that the second and third are swapped):
+    ```
+    (struct ConvergedRaymarchResult
+      pos: vec2f
+      normal: vec2f
+      pos-info: ScenePositionInfo
+      d: f32)
+
+    (enum RaymarchResult
+      (Exited ExitedRaymarchResult)
+      (HitSurface ConvergedRaymarchResult)
+      Failed)
+
+    (struct ScenePositionInfo
+      surface-dist: f32
+      opacity: f32
+      color: vec3f)
+    ```
+  * seems like you can provide generic arguments for certain built-in types that don't need them, e.g. `(Sampler f32)` or even `(Sampler f32 u32)` seems to compile fine even though `Sampler` doesn't take generic arguments??? very weird, not sure exactly how this happens, but it doesn't seem to throw any compilation error and the shader ran
+  * this pattern:
+    ```
+    (let [thickness 0.01
+        bottom-left (vec2f -0.5 0.5)
+        bottom-right (vec2f 0.5 0.45)
+        top (vec2f -0.05 -0.45)
+        body (-> (sd-triangle pos
+                              bottom-left
+                              bottom-right
+                              top)
+                 abs
+                 (- thickness))
+        left-leg (min (- (let [base (mix bottom-left
+                                         bottom-right
+                                         (slider 0.33829248))
+                               ankle (vec2f (-> (slider 0.4817152)
+                                                (* 2.)
+                                                (- 1.))
+                                            (-> (slider 0.5765213)
+                                                (* 2.)
+                                                (- 1.)))
+                               toe (vec2f (-> (slider 0.4138589)
+                                              (* 2.)
+                                              (- 1.))
+                                          (-> (slider 0.5692222)
+                                              (* 2.)
+                                              (- 1.)))]
+                           (min (sd-line pos base (+ base ankle))
+                                (sd-line pos
+                                         (+ base ankle)
+                                         (+ base toe))))
+                         thickness))
+        right-leg (min (- (let [base (mix bottom-left
+                                            bottom-right
+                                            (slider 0.6258855))
+                                ankle (vec2f (-> (slider 0.5237309)
+                                                   (* 2.)
+                                                   (- 1.))
+                                               (-> (slider 0.5765213)
+                                                   (* 2.)
+                                                   (- 1.)))
+                                toe (vec2f (-> (slider 0.601118)
+                                                 (* 2.)
+                                                 (- 1.))
+                                             (-> (slider 0.55986655)
+                                                 (* 2.)
+                                                 (- 1.)))]
+                            (min (sd-line pos base (+ base ankle))
+                                 (sd-line pos
+                                          (+ base ankle)
+                                          (+ base toe))))
+                          thickness))]
+    (min body left-leg right-leg))
+    ```
+    seems to cause a compilation crash. Think it has to do with the fact that the variables `base`, `ankle`, and `toe` are each used multiple times in internal `let` blocks in different places, maybe?
+
 * when match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
 
 * turn the examples into an actual test suite

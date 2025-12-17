@@ -368,7 +368,9 @@ pub enum CompileErrorKind {
   FragmentMustHaveLocation0Output,
   #[error("Position output of vertex function must be a vec4f")]
   VertexPositionOutputInvalidType,
-  #[error("Value at location 0 in fragment return type must be vec4f")]
+  #[error(
+    "Value at location 0 in fragment return type must be vec4f, vec4u, or vec4i"
+  )]
   Fragment0OutputInvalidType,
   #[error("Cant assign attributes to field \"{0}\" due to invalid type")]
   CantAssignAttributesToFieldOfType(String),

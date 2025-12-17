@@ -1444,6 +1444,7 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
       [
         ("sign", 1, false),
         ("abs", 1, false),
+        ("clamp", 3, false),
         ("max", 2, true),
         ("min", 2, true),
       ]
@@ -1469,7 +1470,6 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
         ("saturate", 1),
         ("pow", 2),
         ("mix", 3),
-        ("clamp", 3),
         ("smoothstep", 3),
         ("step", 3),
         ("fma", 3),
