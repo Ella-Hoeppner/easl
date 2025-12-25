@@ -119,6 +119,7 @@ fn shader_examples() {
     "non_return_if",
     "unused_enum",
     "vector_equality",
+    "match_non_name_scrutinee",
     // "vec_match", // todo!
   ] {
     print!("compiling {filename}...");

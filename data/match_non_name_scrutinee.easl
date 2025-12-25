@@ -1,0 +1,10 @@
+(defn f [x: f32]: f32
+  (* x x))
+
+(defn main []: f32
+  (+ (match (+ 1i 2i)
+       3i 5.
+       _ 2.)
+     (match (f 2.)
+       4. 0.
+       _ 1.)))

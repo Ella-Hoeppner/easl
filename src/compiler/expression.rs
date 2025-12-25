@@ -3753,6 +3753,37 @@ impl TypedExp {
             }
           }
         }
+        if let Match(scrutinee, _) = &mut exp.kind {
+          match &scrutinee.kind {
+            Name(_) | NumberLiteral(_) | BooleanLiteral(_) => {}
+            _ => {
+              let scrutinee_gensym = names.gensym(&format!("scrutinee"));
+              let mut scrutinee_name_exp = TypedExp {
+                data: scrutinee.data.clone(),
+                kind: ExpKind::Name(scrutinee_gensym.clone()),
+                source_trace: scrutinee.source_trace.clone(),
+              };
+              std::mem::swap(&mut scrutinee_name_exp, scrutinee);
+              let mut temp = placeholder_exp.clone();
+              std::mem::swap(exp, &mut temp);
+              temp = Exp {
+                data: temp.data.clone(),
+                source_trace: temp.source_trace.clone(),
+                kind: ExpKind::Let(
+                  vec![(
+                    scrutinee_gensym,
+                    temp.source_trace.clone(),
+                    VariableKind::Let,
+                    scrutinee_name_exp,
+                  )],
+                  Box::new(temp),
+                ),
+              };
+              std::mem::swap(exp, &mut temp);
+              return Ok(true);
+            }
+          }
+        }
         match &mut exp.kind {
           Application(_, _)
           | ArrayLiteral(_)

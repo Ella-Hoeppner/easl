@@ -4,8 +4,6 @@
 * small but important bugs:
   * when there's an enum (at least, one with non-unit fields on some variants) that doesn't get used anywhere, the compiled wgsl code is invalid, since it still outputs the constructors but not the type itself
     * should just always output the type I think
-  * match blocks crash the compiler when the scrutinee isn't a name
-    * I think this can just be fixed with a small change to the deexpressionification logic
   * the inference of locations in structs used as the in-betweens for fragment and vertex shaders seems to be broken
     * it seems to just assign location `0` to all fields, when of course it needs to not do that, and assign a unique location to each one
   * order of type definitions seems to matter sometimes, even though it shouldn't
@@ -101,6 +99,10 @@
     (min body left-leg right-leg))
     ```
     seems to cause a compilation crash. Think it has to do with the fact that the variables `base`, `ankle`, and `toe` are each used multiple times in internal `let` blocks in different places, maybe?
+  * apparently you can't use floats as the scrutinees in `switch` statements in wgsl, so need to change the way matches are handled when compiling `match`es on floats
+    * should just compile to an if-else change with equality checks instead
+    * actually seems like the same is true for everything but scalar integers, so should make `match`es on vecs compile this way too
+      * also I guess `match` should be restricted to only allow scalars or vectors as scrutinees? Since structs don't automatically have a notion of equality defined
 
 * when match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
 
