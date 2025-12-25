@@ -6,7 +6,7 @@ use crate::{
     error::{CompileError, CompileErrorKind::*, ErrorLog},
     expression::ExpressionCompilationPosition,
     program::{EaslDocument, NameContext, Program},
-    types::{AbstractType, Type, VariableKind},
+    types::{Type, VariableKind},
     util::{compile_word, read_type_annotated_name},
   },
   parse::EaslTree,
@@ -140,22 +140,10 @@ impl TopLevelVar {
         } {
           match read_type_annotated_name(name_and_type_ast) {
             Ok((name, type_ast)) => {
-              let type_source_path = type_ast.position().clone();
               let type_ast_span = type_ast.position().span.clone();
-              match AbstractType::from_easl_tree(
-                type_ast,
-                &program.typedefs,
-                &vec![],
-              )
-              .map(|t| {
-                t.concretize(
-                  &vec![],
-                  &program.typedefs,
-                  type_source_path.into(),
-                )
-              }) {
-                Err(e) | Ok(Err(e)) => errors.log(e),
-                Ok(Ok(t)) => {
+              match Type::from_easl_tree(type_ast, &program.typedefs, &vec![]) {
+                Err(e) => errors.log(e),
+                Ok(t) => {
                   let (group_and_binding, address_space) =
                     if let Some(annotation) = &annotation {
                       match annotation.validate_as_top_level_var_data() {

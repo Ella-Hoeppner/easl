@@ -41,7 +41,6 @@
       opacity: f32
       color: vec3f)
     ```
-  * seems like you can provide generic arguments for certain built-in types that don't need them, e.g. `(Sampler f32)` or even `(Sampler f32 u32)` seems to compile fine even though `Sampler` doesn't take generic arguments??? very weird, not sure exactly how this happens, but it doesn't seem to throw any compilation error and the shader ran
   * this pattern:
     ```
     (let [thickness 0.01

@@ -7,6 +7,7 @@ use crate::{
   compiler::{
     annotation::extract_annotation,
     entry::IOAttributes,
+    error::err,
     expression::{Accessor, ExpKind, Number, TypedExp},
     program::{NameContext, TypeDefs},
     types::{ArraySize, contains_name_leaf, extract_type_annotation_ast},
@@ -464,6 +465,12 @@ impl AbstractStruct {
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Struct> {
+    if s.generic_args.len() != generics.len() {
+      return err(
+        WrongNumberOfGenericArguments(s.generic_args.len(), generics.len()),
+        source_trace,
+      );
+    }
     let generics_map = s
       .generic_args
       .iter()

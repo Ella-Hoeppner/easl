@@ -4,7 +4,9 @@ use fsexp::{Ast, EncloserOrOperator};
 
 use crate::{
   compiler::{
-    error::{CompileError, CompileErrorKind, CompileResult, SourceTrace},
+    error::{
+      CompileError, CompileErrorKind::*, CompileResult, SourceTrace, err,
+    },
     program::{NameContext, TypeDefs},
     types::{AbstractType, ExpTypeInfo, Type, TypeState, contains_name_leaf},
   },
@@ -40,22 +42,15 @@ impl UntypedEnumVariant {
               type_ast,
             })
           } else {
-            Err(CompileError::new(
-              CompileErrorKind::InvalidEnumVariant,
-              position.into(),
-            ))
+            Err(CompileError::new(InvalidEnumVariant, position.into()))
           }
         } else {
-          Err(CompileError::new(
-            CompileErrorKind::InvalidEnumVariant,
-            position.into(),
-          ))
+          Err(CompileError::new(InvalidEnumVariant, position.into()))
         }
       }
-      Ast::Inner((position, _), _) => Err(CompileError::new(
-        CompileErrorKind::InvalidEnumVariant,
-        position.into(),
-      )),
+      Ast::Inner((position, _), _) => {
+        Err(CompileError::new(InvalidEnumVariant, position.into()))
+      }
     }
   }
   pub fn references_type_name(&self, name: &Rc<str>) -> bool {
@@ -281,6 +276,12 @@ impl AbstractEnum {
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Enum> {
+    if s.generic_args.len() != generics.len() {
+      return err(
+        WrongNumberOfGenericArguments(s.generic_args.len(), generics.len()),
+        source_trace,
+      );
+    }
     let generics_map = s
       .generic_args
       .iter()

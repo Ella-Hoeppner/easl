@@ -404,6 +404,8 @@ pub enum CompileErrorKind {
   ImmutableOwnedPassedAsMutableReference,
   #[error("Can't pass variables in the \"{0}\" address space as references")]
   PassedReferenceFromInvalidAddressSpace(VariableAddressSpace),
+  #[error("Wrong number of generic arguments: expected {0}, got {1}")]
+  WrongNumberOfGenericArguments(usize, usize),
 }
 
 impl CompileErrorKind {

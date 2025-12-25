@@ -654,7 +654,7 @@ impl Type {
               _ => err(InvalidFunctionType, source_trace),
             }
           }
-          Some(EaslTree::Leaf(_, struct_name)) => {
+          Some(EaslTree::Leaf(_, type_name)) => {
             if signature_leaves.len() == 0 {
               return err(InvalidTypeName, source_trace);
             } else {
@@ -673,7 +673,7 @@ impl Type {
                 })
                 .collect::<CompileResult<Vec<ExpTypeInfo>>>()?;
               if let Some(s) =
-                typedefs.structs.iter().find(|s| &*s.name.0 == struct_name)
+                typedefs.structs.iter().find(|s| &*s.name.0 == type_name)
               {
                 Ok(Type::Struct(AbstractStruct::fill_generics_ordered(
                   Rc::new(s.clone()),
@@ -681,8 +681,17 @@ impl Type {
                   typedefs,
                   source_trace.clone(),
                 )?))
+              } else if let Some(e) =
+                typedefs.enums.iter().find(|e| &*e.name.0 == type_name)
+              {
+                Ok(Type::Enum(AbstractEnum::fill_generics_ordered(
+                  e.clone(),
+                  generic_args,
+                  typedefs,
+                  source_trace.clone(),
+                )?))
               } else {
-                return err(NoTypeNamed(struct_name.into()), source_trace);
+                return err(NoTypeNamed(type_name.into()), source_trace);
               }
             }
           }
@@ -695,33 +704,43 @@ impl Type {
       ) => {
         let source_trace: SourceTrace = position.into();
         if array_children.len() == 1 {
-          if let EaslTree::Inner(
-            (position, EncloserOrOperator::Operator(Operator::TypeAscription)),
-            mut type_annotation_children,
-          ) = array_children.into_iter().next().unwrap()
-          {
-            let source_trace: SourceTrace = position.into();
-            if let EaslTree::Leaf(_, num_str) =
-              type_annotation_children.remove(0)
-            {
-              let inner_type = Type::from_easl_tree(
-                type_annotation_children.remove(0),
-                typedefs,
-                skolems,
-              )?;
+          let child = array_children.into_iter().next().unwrap();
+          match child {
+            EaslTree::Inner(
+              (
+                position,
+                EncloserOrOperator::Operator(Operator::TypeAscription),
+              ),
+              mut type_annotation_children,
+            ) => {
+              let source_trace: SourceTrace = position.into();
+              if let EaslTree::Leaf(_, num_str) =
+                type_annotation_children.remove(0)
+              {
+                let inner_type = Type::from_easl_tree(
+                  type_annotation_children.remove(0),
+                  typedefs,
+                  skolems,
+                )?;
+                Ok(Type::Array(
+                  Some(if let Ok(array_size) = num_str.parse::<u32>() {
+                    ArraySize::Literal(array_size)
+                  } else {
+                    ArraySize::Constant(num_str.into())
+                  }),
+                  Box::new(inner_type.known().into()),
+                ))
+              } else {
+                return err(InvalidArraySignature, source_trace);
+              }
+            }
+            other => {
+              let inner_type = Type::from_easl_tree(other, typedefs, skolems)?;
               Ok(Type::Array(
-                Some(if let Ok(array_size) = num_str.parse::<u32>() {
-                  ArraySize::Literal(array_size)
-                } else {
-                  ArraySize::Constant(num_str.into())
-                }),
+                Some(ArraySize::Unsized),
                 Box::new(inner_type.known().into()),
               ))
-            } else {
-              return err(InvalidArraySignature, source_trace);
             }
-          } else {
-            return err(InvalidArraySignature, source_trace);
           }
         } else {
           return err(InvalidArraySignature, source_trace);
