@@ -959,90 +959,87 @@ fn inversion_functions() -> Vec<AbstractFunctionSignature> {
 }
 
 fn comparison_functions() -> Vec<AbstractFunctionSignature> {
-  vec![
-    AbstractFunctionSignature {
-      name: "==".into(),
-      generic_args: vec![("T".into(), SourceTrace::empty(), vec![])],
-      arg_types: vec![
-        AbstractType::Generic("T".into()).owned(),
-        AbstractType::Generic("T".into()).owned(),
-      ],
-      return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
-      associative: false,
-    },
-    AbstractFunctionSignature {
-      name: "!=".into(),
-      generic_args: vec![("T".into(), SourceTrace::empty(), vec![])],
-      arg_types: vec![
-        AbstractType::Generic("T".into()).owned(),
-        AbstractType::Generic("T".into()).owned(),
-      ],
-      return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
-      associative: false,
-    },
-    AbstractFunctionSignature {
-      name: ">=".into(),
-      generic_args: vec![(
-        "T".into(),
-        SourceTrace::empty(),
-        vec![TypeConstraint::scalar()],
-      )],
-      arg_types: vec![
-        AbstractType::Generic("T".into()).owned(),
-        AbstractType::Generic("T".into()).owned(),
-      ],
-      return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
-      associative: false,
-    },
-    AbstractFunctionSignature {
-      name: ">".into(),
-      generic_args: vec![(
-        "T".into(),
-        SourceTrace::empty(),
-        vec![TypeConstraint::scalar()],
-      )],
-      arg_types: vec![
-        AbstractType::Generic("T".into()).owned(),
-        AbstractType::Generic("T".into()).owned(),
-      ],
-      return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
-      associative: false,
-    },
-    AbstractFunctionSignature {
-      name: "<=".into(),
-      generic_args: vec![(
-        "T".into(),
-        SourceTrace::empty(),
-        vec![TypeConstraint::scalar()],
-      )],
-      arg_types: vec![
-        AbstractType::Generic("T".into()).owned(),
-        AbstractType::Generic("T".into()).owned(),
-      ],
-      return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
-      associative: false,
-    },
-    AbstractFunctionSignature {
-      name: "<".into(),
-      generic_args: vec![(
-        "T".into(),
-        SourceTrace::empty(),
-        vec![TypeConstraint::scalar()],
-      )],
-      arg_types: vec![
-        AbstractType::Generic("T".into()).owned(),
-        AbstractType::Generic("T".into()).owned(),
-      ],
-      return_type: AbstractType::Type(Type::Bool),
-      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
-      associative: false,
-    },
-  ]
+  foreach_generic_scalar_or_vec_type(|t| {
+    let b = t.clone().fill_abstract_generics(
+      &[("T".into(), AbstractType::Type(Type::Bool))]
+        .into_iter()
+        .collect(),
+    );
+    vec![
+      AbstractFunctionSignature {
+        name: "==".into(),
+        generic_args: vec![(
+          "T".into(),
+          SourceTrace::empty(),
+          vec![TypeConstraint::scalar_or_bool()],
+        )],
+        arg_types: vec![t.clone().owned(), t.clone().owned()],
+        return_type: b.clone(),
+        implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
+        associative: false,
+      },
+      AbstractFunctionSignature {
+        name: "!=".into(),
+        generic_args: vec![(
+          "T".into(),
+          SourceTrace::empty(),
+          vec![TypeConstraint::scalar_or_bool()],
+        )],
+        arg_types: vec![t.clone().owned(), t.clone().owned()],
+        return_type: b.clone(),
+        implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
+        associative: false,
+      },
+      AbstractFunctionSignature {
+        name: ">=".into(),
+        generic_args: vec![(
+          "T".into(),
+          SourceTrace::empty(),
+          vec![TypeConstraint::scalar()],
+        )],
+        arg_types: vec![t.clone().owned(), t.clone().owned()],
+        return_type: b.clone(),
+        implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
+        associative: false,
+      },
+      AbstractFunctionSignature {
+        name: ">".into(),
+        generic_args: vec![(
+          "T".into(),
+          SourceTrace::empty(),
+          vec![TypeConstraint::scalar()],
+        )],
+        arg_types: vec![t.clone().owned(), t.clone().owned()],
+        return_type: b.clone(),
+        implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
+        associative: false,
+      },
+      AbstractFunctionSignature {
+        name: "<=".into(),
+        generic_args: vec![(
+          "T".into(),
+          SourceTrace::empty(),
+          vec![TypeConstraint::scalar()],
+        )],
+        arg_types: vec![t.clone().owned(), t.clone().owned()],
+        return_type: b.clone(),
+        implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
+        associative: false,
+      },
+      AbstractFunctionSignature {
+        name: "<".into(),
+        generic_args: vec![(
+          "T".into(),
+          SourceTrace::empty(),
+          vec![TypeConstraint::scalar()],
+        )],
+        arg_types: vec![t.clone().owned(), t.clone().owned()],
+        return_type: b.clone(),
+        implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
+        associative: false,
+      },
+    ]
+  })
 }
 
 pub fn assignment_function() -> AbstractFunctionSignature {

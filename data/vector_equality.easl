@@ -1,0 +1,11 @@
+(defn eta-== [a: vec2f
+              b: vec2f]: vec2b
+  (== a b))
+
+(defn eta-== [a: vec3f
+              b: vec3f]: vec3b
+  (== a b))
+
+(defn eta-== [a: vec4f
+              b: vec4f]: vec4b
+  (== a b))
