@@ -3780,6 +3780,7 @@ impl TypedExp {
                 ),
               };
               std::mem::swap(exp, &mut temp);
+              changed = true;
               return Ok(true);
             }
           }
