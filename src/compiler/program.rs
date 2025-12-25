@@ -843,6 +843,11 @@ impl Program {
         monomorphized_ctx.add_monomorphized_struct(s.clone());
       }
     }
+    for e in self.typedefs.enums.iter() {
+      if e.generic_args.is_empty() {
+        monomorphized_ctx.add_monomorphized_enum(e.clone());
+      }
+    }
     take(self, |old_ctx| {
       monomorphized_ctx.top_level_vars = old_ctx.top_level_vars;
       monomorphized_ctx
