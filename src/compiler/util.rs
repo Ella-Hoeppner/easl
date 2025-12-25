@@ -48,7 +48,9 @@ pub fn compile_word(word: Rc<str>) -> String {
       .replace("+", "PLUS")
       .replace("*", "STAR")
       .replace(">", "ABRACKET_RIGHT")
-      .replace("<", "ABRACKET_LEFT"),
+      .replace("<", "ABRACKET_LEFT")
+      .replace("?", "QMARK")
+      .replace("=", "EQUAL_SIGN"),
   }
 }
 

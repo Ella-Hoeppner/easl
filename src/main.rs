@@ -118,7 +118,8 @@ fn shader_examples() {
     "bind_discard",
     "non_return_if",
     "unused_enum",
-    "vector_equality", // "vec_match", // todo!
+    "vector_equality",
+    // "vec_match", // todo!
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

@@ -6,7 +6,6 @@
     * should just always output the type I think
   * match blocks crash the compiler when the scrutinee isn't a name
     * I think this can just be fixed with a small change to the deexpressionification logic
-  * `?`s and `=`s in names don't get compiled properly rn
   * the inference of locations in structs used as the in-betweens for fragment and vertex shaders seems to be broken
     * it seems to just assign location `0` to all fields, when of course it needs to not do that, and assign a unique location to each one
   * order of type definitions seems to matter sometimes, even though it shouldn't
