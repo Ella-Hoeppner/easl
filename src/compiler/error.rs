@@ -406,6 +406,8 @@ pub enum CompileErrorKind {
   PassedReferenceFromInvalidAddressSpace(VariableAddressSpace),
   #[error("Wrong number of generic arguments: expected {0}, got {1}")]
   WrongNumberOfGenericArguments(usize, usize),
+  #[error("Cyclic dependency detected between types: {0:?}")]
+  TypeDependencyCycle(Vec<String>),
 }
 
 impl CompileErrorKind {

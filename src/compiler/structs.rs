@@ -111,7 +111,7 @@ pub struct UntypedStruct {
   pub name: (Rc<str>, SourceTrace),
   pub fields: Vec<UntypedStructField>,
   pub generic_args: Vec<(Rc<str>, SourceTrace)>,
-  source_trace: SourceTrace,
+  pub source_trace: SourceTrace,
 }
 
 impl UntypedStruct {

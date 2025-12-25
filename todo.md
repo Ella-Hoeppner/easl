@@ -2,43 +2,6 @@
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready"
 * small but important bugs:
-  * order of type definitions seems to matter sometimes, even though it shouldn't
-    * e.g. the following code compiles fine:
-    ```
-    (struct ConvergedRaymarchResult
-      pos: vec2f
-      normal: vec2f
-      pos-info: ScenePositionInfo
-      d: f32)
-
-    (struct ScenePositionInfo
-      surface-dist: f32
-      opacity: f32
-      color: vec3f)
-
-    (enum RaymarchResult
-      (Exited ExitedRaymarchResult)
-      (HitSurface ConvergedRaymarchResult)
-      Failed)
-    ```
-    but this doesnt (only difference is that the second and third are swapped):
-    ```
-    (struct ConvergedRaymarchResult
-      pos: vec2f
-      normal: vec2f
-      pos-info: ScenePositionInfo
-      d: f32)
-
-    (enum RaymarchResult
-      (Exited ExitedRaymarchResult)
-      (HitSurface ConvergedRaymarchResult)
-      Failed)
-
-    (struct ScenePositionInfo
-      surface-dist: f32
-      opacity: f32
-      color: vec3f)
-    ```
   * this pattern:
     ```
     (let [thickness 0.01

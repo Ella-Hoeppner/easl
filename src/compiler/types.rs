@@ -1,7 +1,7 @@
 use core::fmt::Debug;
 use std::{
   cell::RefCell,
-  collections::HashMap,
+  collections::{HashMap, HashSet},
   fmt::Display,
   ops::{Deref, DerefMut},
   rc::Rc,
@@ -56,11 +56,125 @@ impl UntypedType {
       }
     }
   }
+
   pub fn name(&self) -> &Rc<str> {
     match self {
       UntypedType::Struct(untyped_struct) => &untyped_struct.name.0,
       UntypedType::Enum(untyped_enum) => &untyped_enum.name.0,
     }
+  }
+
+  pub fn source_trace(&self) -> &SourceTrace {
+    match self {
+      UntypedType::Struct(untyped_struct) => &untyped_struct.source_trace,
+      UntypedType::Enum(untyped_enum) => &untyped_enum.source_trace,
+    }
+  }
+
+  pub fn sort_by_references(
+    unsorted_types: &Vec<Self>,
+  ) -> Result<Vec<Self>, Vec<Rc<str>>> {
+    let mut sorted = Vec::new();
+    let mut sorted_names = HashSet::new();
+
+    while sorted.len() < unsorted_types.len() {
+      let start_len = sorted.len();
+
+      for typ in unsorted_types {
+        if sorted_names.contains(typ.name()) {
+          continue;
+        }
+
+        let mut can_add = true;
+        for other in unsorted_types {
+          if typ.references_type_name(other.name())
+            && !sorted_names.contains(other.name())
+          {
+            can_add = false;
+            break;
+          }
+        }
+
+        if can_add {
+          sorted.push(typ.clone());
+          sorted_names.insert(typ.name().clone());
+        }
+      }
+
+      if sorted.len() == start_len {
+        for typ in unsorted_types {
+          if !sorted_names.contains(typ.name()) {
+            if let Some(cycle_path) =
+              Self::find_cycle_path(typ, &unsorted_types, &sorted_names)
+            {
+              return Err(cycle_path);
+            }
+          }
+        }
+        return Err(vec![]);
+      }
+    }
+
+    Ok(sorted)
+  }
+
+  fn find_cycle_path(
+    start: &Self,
+    all_types: &[Self],
+    already_added: &HashSet<Rc<str>>,
+  ) -> Option<Vec<Rc<str>>> {
+    let mut visited = HashSet::new();
+    let mut path = Vec::new();
+
+    fn trace_dependencies(
+      current_name: &Rc<str>,
+      all_types: &[UntypedType],
+      already_added: &HashSet<Rc<str>>,
+      visited: &mut HashSet<Rc<str>>,
+      path: &mut Vec<Rc<str>>,
+    ) -> Option<Vec<Rc<str>>> {
+      if let Some(cycle_start_idx) = path.iter().position(|n| n == current_name)
+      {
+        let mut cycle = path[cycle_start_idx..].to_vec();
+        cycle.push(current_name.clone());
+        return Some(cycle);
+      }
+
+      if already_added.contains(current_name) || visited.contains(current_name)
+      {
+        return None;
+      }
+
+      path.push(current_name.clone());
+      visited.insert(current_name.clone());
+
+      if let Some(typ) = all_types.iter().find(|t| t.name() == current_name) {
+        for other in all_types {
+          if typ.references_type_name(other.name()) {
+            if let Some(cycle) = trace_dependencies(
+              other.name(),
+              all_types,
+              already_added,
+              visited,
+              path,
+            ) {
+              return Some(cycle);
+            }
+          }
+        }
+      }
+
+      path.pop();
+      None
+    }
+
+    trace_dependencies(
+      start.name(),
+      all_types,
+      already_added,
+      &mut visited,
+      &mut path,
+    )
   }
 }
 

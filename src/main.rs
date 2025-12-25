@@ -120,6 +120,7 @@ fn shader_examples() {
     "unused_enum",
     "vector_equality",
     "match_non_name_scrutinee",
+    "type_order",
     // "vec_match", // todo!
   ] {
     print!("compiling {filename}...");

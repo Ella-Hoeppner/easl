@@ -608,34 +608,55 @@ impl Program {
         _ => non_typedef_trees.push((annotation, tree_body)),
       }
     }
-    untyped_types.sort_by(|a, b| {
-      if a.references_type_name(b.name()) {
-        Ordering::Greater
-      } else if b.references_type_name(a.name()) {
-        Ordering::Less
-      } else {
-        Ordering::Equal
-      }
-    });
-    for name in macros.iter().flat_map(|m| m.reserved_names.iter().cloned()) {
-      names.user_names.insert(name);
-    }
     let mut program = Program::default();
     program.names = names.into();
-    for untyped_type in untyped_types {
-      match untyped_type {
-        UntypedType::Struct(untyped_struct) => {
-          match untyped_struct.assign_types(&program.typedefs) {
-            Ok(s) => program = program.with_struct(s.into()),
-            Err(e) => errors.log(e),
+    match UntypedType::sort_by_references(&untyped_types) {
+      Ok(sorted_untyped_types) => {
+        for name in macros.iter().flat_map(|m| m.reserved_names.iter().cloned())
+        {
+          program.names.borrow_mut().user_names.insert(name);
+        }
+        for untyped_type in sorted_untyped_types {
+          match untyped_type {
+            UntypedType::Struct(untyped_struct) => {
+              match untyped_struct.assign_types(&program.typedefs) {
+                Ok(s) => program = program.with_struct(s.into()),
+                Err(e) => errors.log(e),
+              }
+            }
+            UntypedType::Enum(untyped_enum) => {
+              match untyped_enum.assign_types(&program.typedefs) {
+                Ok(e) => program = program.with_enum(e.into()),
+                Err(e) => errors.log(e),
+              }
+            }
           }
         }
-        UntypedType::Enum(untyped_enum) => {
-          match untyped_enum.assign_types(&program.typedefs) {
-            Ok(e) => program = program.with_enum(e.into()),
-            Err(e) => errors.log(e),
+      }
+      Err(e) => {
+        let source_trace = if let Some(first_name) = e.get(0)
+          && let Some(primary_type) =
+            untyped_types.iter().find(|t| t.name() == first_name)
+        {
+          let mut source_trace = primary_type.source_trace().clone();
+          for i in 1..e.len() {
+            if let Some(secondary_type) =
+              untyped_types.iter().find(|t| t.name() == &e[i])
+            {
+              source_trace = source_trace
+                .insert_as_secondary(secondary_type.source_trace().clone());
+            }
           }
-        }
+          source_trace
+        } else {
+          SourceTrace::empty()
+        };
+        errors.log(CompileError::new(
+          TypeDependencyCycle(
+            e.into_iter().map(|name| name.to_string()).collect(),
+          ),
+          source_trace,
+        ));
       }
     }
 

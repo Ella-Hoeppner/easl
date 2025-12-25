@@ -1,0 +1,15 @@
+(struct ConvergedRaymarchResult
+  pos: vec2f
+  normal: vec2f
+  pos-info: ScenePositionInfo
+  d: f32)
+
+(enum RaymarchResult
+  (Exited vec2f)
+  (HitSurface ConvergedRaymarchResult)
+  Failed)
+
+(struct ScenePositionInfo
+  surface-dist: f32
+  opacity: f32
+  color: vec3f)

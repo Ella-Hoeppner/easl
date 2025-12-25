@@ -82,7 +82,7 @@ pub struct UntypedEnum {
   pub name: (Rc<str>, SourceTrace),
   pub variants: Vec<UntypedEnumVariant>,
   pub generic_args: Vec<(Rc<str>, SourceTrace)>,
-  source_trace: SourceTrace,
+  pub source_trace: SourceTrace,
 }
 impl UntypedEnum {
   pub fn references_type_name(&self, name: &Rc<str>) -> bool {
