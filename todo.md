@@ -4,8 +4,6 @@
 * small but important bugs:
   * when there's an enum (at least, one with non-unit fields on some variants) that doesn't get used anywhere, the compiled wgsl code is invalid, since it still outputs the constructors but not the type itself
     * should just always output the type I think
-  * the inference of locations in structs used as the in-betweens for fragment and vertex shaders seems to be broken
-    * it seems to just assign location `0` to all fields, when of course it needs to not do that, and assign a unique location to each one
   * order of type definitions seems to matter sometimes, even though it shouldn't
     * e.g. the following code compiles fine:
     ```

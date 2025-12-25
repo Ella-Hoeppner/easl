@@ -1826,7 +1826,7 @@ impl Program {
              input_or_output: InputOrOutput,
              errors: &mut ErrorLog|
              -> (
-              HashMap<usize, (SourceTrace, Type)>,
+              HashMap<usize, (SourceTrace, Result<Type, Rc<AbstractStruct>>)>,
               HashMap<BuiltinIOAttribute, Result<Type, AbstractType>>,
             ) {
               for (name, source) in check_for_duplicate_builtins(&attributables)
@@ -1836,8 +1836,10 @@ impl Program {
                   source,
                 ))
               }
-              let mut used_locations: HashMap<usize, (SourceTrace, Type)> =
-                HashMap::new();
+              let mut used_locations: HashMap<
+                usize,
+                (SourceTrace, Result<Type, Rc<AbstractStruct>>),
+              > = HashMap::new();
               let mut used_builtins: HashMap<
                 BuiltinIOAttribute,
                 Result<Type, AbstractType>,
@@ -1901,7 +1903,7 @@ impl Program {
                   }
                 } else {
                   if let Some((location, source)) = attributes.location() {
-                    used_locations.insert(location, (source, t.clone()));
+                    used_locations.insert(location, (source, Ok(t.clone())));
                   }
                 }
               }
@@ -1927,7 +1929,7 @@ impl Program {
                           errors,
                         );
                         used_locations
-                          .insert(untaken_location, (source_trace, t));
+                          .insert(untaken_location, (source_trace, Ok(t)));
                       } else {
                         errors.log(CompileError::new(
                           InvalidTypeForEntryPoint(t.into(), input_or_output),
@@ -1935,8 +1937,17 @@ impl Program {
                         ));
                       }
                     }
-                    Err((t, field_name, _)) => inferred_struct_field_locations
-                      .push((t.clone(), field_name.clone(), untaken_location)),
+                    Err((t, field_name, a)) => {
+                      inferred_struct_field_locations.push((
+                        t.clone(),
+                        field_name.clone(),
+                        untaken_location,
+                      ));
+                      used_locations.insert(
+                        untaken_location,
+                        (a.attributed_source, Err(t.clone())),
+                      );
+                    }
                   }
                 }
               }
@@ -2050,13 +2061,24 @@ impl Program {
             }
             EntryPoint::Fragment => {
               if let Some((_, t)) = used_output_locations.get(&0) {
-                if let Type::Struct(s) = t
+                if let Ok(Type::Struct(s)) = t
                   && &*s.name == "vec4"
                   && {
                     let field_type = s.fields[0].field_type.unwrap_known();
                     field_type == Type::F32
                       || field_type == Type::U32
                       || field_type == Type::I32
+                  }
+                {
+                } else if let Err(s) = t
+                  && &*s.name.0 == "vec4"
+                  && {
+                    match s.fields[0].field_type {
+                      AbstractType::Type(Type::F32 | Type::U32 | Type::I32) => {
+                        true
+                      }
+                      _ => false,
+                    }
                   }
                 {
                 } else {
