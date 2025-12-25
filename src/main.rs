@@ -121,6 +121,7 @@ fn shader_examples() {
     "vector_equality",
     "match_non_name_scrutinee",
     "type_order",
+    "nested_let_name_reuse",
     // "vec_match", // todo!
   ] {
     print!("compiling {filename}...");

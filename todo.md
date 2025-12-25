@@ -1,66 +1,10 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready"
-* small but important bugs:
-  * this pattern:
-    ```
-    (let [thickness 0.01
-        bottom-left (vec2f -0.5 0.5)
-        bottom-right (vec2f 0.5 0.45)
-        top (vec2f -0.05 -0.45)
-        body (-> (sd-triangle pos
-                              bottom-left
-                              bottom-right
-                              top)
-                 abs
-                 (- thickness))
-        left-leg (min (- (let [base (mix bottom-left
-                                         bottom-right
-                                         (slider 0.33829248))
-                               ankle (vec2f (-> (slider 0.4817152)
-                                                (* 2.)
-                                                (- 1.))
-                                            (-> (slider 0.5765213)
-                                                (* 2.)
-                                                (- 1.)))
-                               toe (vec2f (-> (slider 0.4138589)
-                                              (* 2.)
-                                              (- 1.))
-                                          (-> (slider 0.5692222)
-                                              (* 2.)
-                                              (- 1.)))]
-                           (min (sd-line pos base (+ base ankle))
-                                (sd-line pos
-                                         (+ base ankle)
-                                         (+ base toe))))
-                         thickness))
-        right-leg (min (- (let [base (mix bottom-left
-                                            bottom-right
-                                            (slider 0.6258855))
-                                ankle (vec2f (-> (slider 0.5237309)
-                                                   (* 2.)
-                                                   (- 1.))
-                                               (-> (slider 0.5765213)
-                                                   (* 2.)
-                                                   (- 1.)))
-                                toe (vec2f (-> (slider 0.601118)
-                                                 (* 2.)
-                                                 (- 1.))
-                                             (-> (slider 0.55986655)
-                                                 (* 2.)
-                                                 (- 1.)))]
-                            (min (sd-line pos base (+ base ankle))
-                                 (sd-line pos
-                                          (+ base ankle)
-                                          (+ base toe))))
-                          thickness))]
-    (min body left-leg right-leg))
-    ```
-    seems to cause a compilation crash. Think it has to do with the fact that the variables `base`, `ankle`, and `toe` are each used multiple times in internal `let` blocks in different places, maybe?
-  * apparently you can't use floats as the scrutinees in `switch` statements in wgsl, so need to change the way matches are handled when compiling `match`es on floats
-    * should just compile to an if-else change with equality checks instead
-    * actually seems like the same is true for everything but scalar integers, so should make `match`es on vecs compile this way too
-      * also I guess `match` should be restricted to only allow scalars or vectors as scrutinees? Since structs don't automatically have a notion of equality defined
+* apparently you can't use floats as the scrutinees in `switch` statements in wgsl, so need to change the way matches are handled when compiling `match`es on floats
+  * should just compile to an if-else change with equality checks instead
+  * actually seems like the same is true for everything but scalar integers, so should make `match`es on vecs compile this way too
+    * also I guess `match` should be restricted to only allow scalars or vectors as scrutinees? Since structs don't automatically have a notion of equality defined
 
 * when match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
 

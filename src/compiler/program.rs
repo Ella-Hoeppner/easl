@@ -2286,6 +2286,10 @@ impl Program {
     }
     self.desugar_swizzle_assignments();
     self.deexpressionify();
+    self.deshadow(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     self.inline_all_higher_order_arguments(&mut errors);
     if !errors.is_empty() {
       return errors;

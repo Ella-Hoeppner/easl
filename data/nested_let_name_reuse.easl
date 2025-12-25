@@ -1,0 +1,66 @@
+(defn sd-triangle [pos: vec2f
+                   a: vec2f
+                   b: vec2f
+                   c: vec2f]: f32
+  0.)
+
+(defn sd-line [pos: vec2f
+               a: vec2f
+               b: vec2f]: f32
+  0.)
+
+(defn slider [x: f32]: f32
+  x)
+
+(defn sd-little-guy [pos: vec2f]: f32
+  (let [thickness 0.01
+        bottom-left (vec2f -0.5 0.5)
+        bottom-right (vec2f 0.5 0.45)
+        top (vec2f -0.05 -0.45)
+        body (-> (sd-triangle pos
+                              bottom-left
+                              bottom-right
+                              top)
+                 abs
+                 (- thickness))
+        left-leg (min (- (let [base (mix bottom-left
+                                         bottom-right
+                                         (slider 0.33829248))
+                               ankle (vec2f (-> (slider 0.4817152)
+                                                (* 2.)
+                                                (- 1.))
+                                            (-> (slider 0.5765213)
+                                                (* 2.)
+                                                (- 1.)))
+                               toe (vec2f (-> (slider 0.4138589)
+                                              (* 2.)
+                                              (- 1.))
+                                          (-> (slider 0.5692222)
+                                              (* 2.)
+                                              (- 1.)))]
+                           (min (sd-line pos base (+ base ankle))
+                                (sd-line pos
+                                         (+ base ankle)
+                                         (+ base toe))))
+                         thickness))
+        right-leg (min (- (let [base (mix bottom-left
+                                          bottom-right
+                                          (slider 0.6258855))
+                                ankle (vec2f (-> (slider 0.5237309)
+                                                 (* 2.)
+                                                 (- 1.))
+                                             (-> (slider 0.5765213)
+                                                 (* 2.)
+                                                 (- 1.)))
+                                toe (vec2f (-> (slider 0.601118)
+                                               (* 2.)
+                                               (- 1.))
+                                           (-> (slider 0.55986655)
+                                               (* 2.)
+                                               (- 1.)))]
+                            (min (sd-line pos base (+ base ankle))
+                                 (sd-line pos
+                                          (+ base ankle)
+                                          (+ base toe))))
+                          thickness))]
+    (min body left-leg right-leg)))
