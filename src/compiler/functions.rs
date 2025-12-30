@@ -7,17 +7,9 @@ use std::{
 use take_mut::take;
 
 use crate::{
-  compiler::{
-    annotation::FunctionAnnotation,
-    effects::{Effect, EffectType},
-    entry::{EntryPoint, IOAttributes},
-    enums::AbstractEnum,
-    expression::arg_list_and_return_type_from_easl_tree,
-    program::{NameContext, TypeDefs},
-    types::{Variable, VariableKind, parse_generic_argument},
-    util::compile_word, vars::VariableAddressSpace,
-  },
-  parse::EaslTree,
+  Never, compiler::{
+    annotation::FunctionAnnotation, effects::{Effect, EffectType}, entry::{EntryPoint, IOAttributes}, enums::AbstractEnum, expression::arg_list_and_return_type_from_easl_tree, program::{NameContext, TypeDefs}, structs::{AbstractStructField, Struct}, types::{ImmutableProgramLocalContext, NameDefinitionSource, Variable, VariableKind, parse_generic_argument}, util::compile_word, vars::VariableAddressSpace
+  }, parse::EaslTree
 };
 
 use super::{
@@ -94,6 +86,63 @@ impl AbstractFunctionSignature {
           _=>None
       }
     ).collect()
+  }
+  pub fn remove_unitlike_arguments(&mut self, names: &mut NameContext) {
+    let mut arg_types = self.arg_types.clone();
+    if let FunctionImplementationKind::Composite(implementation) =
+        &self.implementation
+    {
+      let mut implementation = implementation.borrow_mut();
+      loop {
+        let mut changed = false;
+        for i in 0..arg_types.len() {
+          if arg_types[i].0.is_unitlike(names) {
+            arg_types.remove(i);
+            let ExpKind::Function(arg_names, _) =
+              &mut implementation.expression.kind
+            else {
+              panic!()
+            };
+            arg_names.remove(i);
+            implementation.expression.data.as_known_mut(|t| match t {
+              Type::Function(function_signature) => {
+                function_signature.args.remove(i);
+              }
+              _ => {}
+            });
+            changed = true;
+            break;
+          }
+        }
+        if !changed {
+          break;
+        }
+      }
+    }
+    self.arg_types = arg_types;
+  }
+  pub fn representative_type(&self, names: &mut NameContext) -> AbstractStruct {
+    let name = names.get_monomorphized_name(
+      self.name.clone(),
+      vec!["Representative".into()]
+    );
+    let source_trace = match &self.implementation {
+        FunctionImplementationKind::Composite(f) => f.borrow().name_source_trace.clone(),
+        _ => SourceTrace::empty()
+    };
+    AbstractStruct {
+      name: (name.clone(), source_trace.clone()),
+      filled_generics: HashMap::new(),
+      fields: vec![AbstractStructField {
+        attributes: IOAttributes::empty(source_trace.clone()),
+        name,
+        field_type: AbstractType::Unit,
+        source_trace: source_trace.clone()
+      }],
+      generic_args: vec![],
+      abstract_ancestor: None,
+      source_trace
+    }
   }
   pub(crate) fn from_defn_ast(
     mut children_iter: impl Iterator<Item = EaslTree>,
@@ -310,6 +359,15 @@ impl AbstractFunctionSignature {
   pub(crate) fn has_higher_order_arguments(&self) -> bool {
     self.arg_types.iter().any(|(t, _)| {
       if let AbstractType::Type(Type::Function(_)) = t {
+        true
+      } else {
+        false
+      }
+    })
+  }
+  pub(crate) fn has_uninlined_higher_order_arguments(&self) -> bool {
+    self.arg_types.iter().any(|(t, _)| {
+      if let AbstractType::Type(Type::Function(f)) = t && f.abstract_ancestor.is_none() {
         true
       } else {
         false
@@ -569,6 +627,58 @@ impl AbstractFunctionSignature {
       associative: self.associative,
     };
     Ok(f)
+  }
+  pub fn generate_higher_order_argument_inlined_version(
+    &self,
+    f_name: Rc<str>,
+    argument_index: usize,
+    signature: Rc<AbstractFunctionSignature>, 
+    ctx: &mut Program,
+    source_trace: &SourceTrace
+  ) -> CompileResult<Self> {
+    let mut implementation = self.implementation(source_trace.clone())?;
+    let arg_name = &self.arg_names(source_trace)?[argument_index].0;
+    let inlined_fn_name = &signature.name;
+    if let TypeState::Known(Type::Function(f)) = &mut implementation.expression.data.kind
+      && let TypeState::Known(Type::Function(f_arg)) = &mut f.args[argument_index].0.var_type.kind {
+      f_arg.abstract_ancestor = Some(signature.clone());
+    } else {
+      panic!()
+    }
+    implementation.expression.walk_mut(
+      &mut |exp| -> Result<bool, Never> {
+        match &mut exp.kind {
+            ExpKind::Name(name) => {
+              if name == arg_name {
+                *name = inlined_fn_name.clone();
+                let mut exp_type = exp.data.unwrap_known();
+                let Type::Function(f) = &mut exp_type else {panic!()};
+                f.abstract_ancestor = Some(signature.clone());
+              }
+              Ok(true)
+            },
+            _=>Ok(true)
+        }
+      }
+    ).unwrap();
+    let mut arg_types = self.arg_types.clone();
+    let AbstractType::Type(Type::Function(f)) = &mut arg_types[argument_index].0 else {
+      panic!("tried to inline higher order fn for non-fn argument type");
+    };
+    f.abstract_ancestor = Some(signature.clone());
+   Ok(AbstractFunctionSignature {
+      name: ctx.names.borrow_mut().get_monomorphized_name(
+        f_name.clone(),
+        vec![inlined_fn_name.clone()],
+      ),
+      generic_args: self.generic_args.clone(),
+      arg_types,
+      return_type: self.return_type.clone(),
+      implementation: FunctionImplementationKind::Composite(Rc::new(
+        RefCell::new(implementation),
+      )),
+      associative: self.associative,
+    })
   }
   pub fn concretize(
     f: Rc<RefCell<Self>>,

@@ -3206,42 +3206,42 @@ impl TypedExp {
           if let TypeState::Known(Type::Function(f)) = &mut f.data.kind
             && let Some(abstract_signature) = &mut f.abstract_ancestor
           {
-            match &abstract_signature.implementation {
-              FunctionImplementationKind::Composite(f) => {
-                let (function_arg_positions, function_args) = args
-                  .iter()
-                  .enumerate()
-                  .filter_map(|(i, arg)| {
-                    if let Type::Function(_) = arg.data.kind.unwrap_known() {
-                      Some(Ok((i, arg.clone())))
+            if let Some((inlinable_arg_index, inlinable_abstract_signature)) =
+              abstract_signature.arg_types.iter().enumerate().find_map(
+                |(i, (t, _))| match t {
+                  AbstractType::Type(Type::Function(f))
+                    if f.abstract_ancestor.is_none() =>
+                  {
+                    if let Type::Function(arg_f) = &args[i].data.unwrap_known()
+                      && let Some(arg_abstract_signature) =
+                        &arg_f.abstract_ancestor
+                    {
+                      Some((i, arg_abstract_signature.clone()))
                     } else {
                       None
                     }
-                  })
-                  .collect::<CompileResult<(Vec<usize>, Vec<TypedExp>)>>()?;
-                if !function_args.is_empty() {
-                  let inlined_signature = abstract_signature
-                    .generate_higher_order_functions_inlined_version(
-                      f_name,
-                      function_args,
-                      &mut new_ctx.names.borrow_mut(),
-                      f.borrow().expression.source_trace.clone(),
-                    )?;
-                  std::mem::swap(f_name, &mut inlined_signature.name.clone());
-                  std::mem::swap(
-                    abstract_signature,
-                    &mut Rc::new(inlined_signature.clone()),
-                  );
-                  for fn_arg_index in function_arg_positions.iter().rev() {
-                    args.remove(*fn_arg_index);
                   }
-                  new_ctx.add_abstract_function(Rc::new(RefCell::new(
-                    inlined_signature,
-                  )));
-                  changed = true;
-                }
-              }
-              _ => {}
+                  _ => None,
+                },
+              )
+            {
+              let representative_struct = inlinable_abstract_signature
+                .representative_type(&mut new_ctx.names.borrow_mut());
+              let inlined_signature = abstract_signature
+                .generate_higher_order_argument_inlined_version(
+                  f_name.clone(),
+                  inlinable_arg_index,
+                  inlinable_abstract_signature,
+                  new_ctx,
+                  &exp.source_trace,
+                )?;
+              *f_name = inlined_signature.name.clone();
+              *abstract_signature = Rc::new(inlined_signature.clone());
+              new_ctx.add_abstract_function(Rc::new(RefCell::new(
+                inlined_signature,
+              )));
+              new_ctx.add_monomorphized_struct(representative_struct);
+              changed = true;
             }
           }
         } else {

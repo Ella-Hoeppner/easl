@@ -270,6 +270,9 @@ impl AbstractStruct {
       .map(|ancestor| ancestor.original_ancestor())
       .unwrap_or(&self)
   }
+  pub fn is_unitlike(&self, names: &mut NameContext) -> bool {
+    !self.fields.iter().any(|f| !f.field_type.is_unitlike(names))
+  }
   pub fn concretize(
     s: Rc<Self>,
     typedefs: &TypeDefs,
@@ -562,15 +565,6 @@ pub struct StructField {
   pub attributes: IOAttributes,
   pub name: Rc<str>,
   pub field_type: ExpTypeInfo,
-}
-
-impl StructField {
-  pub fn compile(self, names: &mut NameContext) -> String {
-    let attributes = self.attributes.compile();
-    let name = compile_word(self.name);
-    let field_type = self.field_type.monomorphized_name(names);
-    format!("  {attributes}{name}: {field_type}")
-  }
 }
 
 #[derive(Debug, Clone, PartialEq)]

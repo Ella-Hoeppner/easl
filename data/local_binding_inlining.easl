@@ -1,0 +1,14 @@
+(defn double [x: f32]: f32
+  (* x 2.))
+
+(defn triple [x: f32]: f32
+  (* x 3.))
+
+(defn apply [f: (Fn [f32] f32)
+             x: f32]: f32
+  (f x))
+
+(defn main []: f32
+  (+ (let [x double]
+       (apply x 5.))
+     (apply triple 5.)))

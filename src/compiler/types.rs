@@ -614,6 +614,38 @@ impl AbstractType {
       _ => false,
     }
   }
+  pub fn is_unitlike(&self, names: &mut NameContext) -> bool {
+    match self {
+      AbstractType::Unit => true,
+      AbstractType::Generic(_) => false,
+      AbstractType::Type(t) => t.is_unitlike(names),
+      AbstractType::AbstractStruct(abstract_struct) => !abstract_struct
+        .fields
+        .iter()
+        .any(|f| !f.field_type.is_unitlike(names)),
+      AbstractType::AbstractEnum(abstract_enum) => {
+        if abstract_enum.variants.len() <= 1 {
+          abstract_enum
+            .variants
+            .get(0)
+            .map(|v| v.inner_type.is_unitlike(names))
+            .unwrap_or(true)
+        } else {
+          false
+        }
+      }
+      AbstractType::AbstractArray {
+        size, inner_type, ..
+      } => {
+        inner_type.is_unitlike(names)
+          || match size {
+            ArraySize::Literal(s) => *s == 0,
+            ArraySize::Constant(_) => false,
+            ArraySize::Unsized => false,
+          }
+      }
+    }
+  }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -663,6 +695,51 @@ pub enum Type {
   Array(Option<ArraySize>, Box<ExpTypeInfo>),
 }
 impl Type {
+  pub fn is_unitlike(&self, names: &mut NameContext) -> bool {
+    match self {
+      Type::Unit => true,
+      Type::Struct(s) => !s.fields.iter().any(|f| {
+        !f.field_type.kind.with_dereferenced(|f| match f {
+          TypeState::Known(t) => t.is_unitlike(names),
+          _ => false,
+        })
+      }),
+      Type::Enum(e) => {
+        if e.variants.len() <= 1 {
+          e.variants
+            .get(0)
+            .map(|v| {
+              v.inner_type.kind.with_dereferenced(|f| match f {
+                TypeState::Known(t) => t.is_unitlike(names),
+                _ => false,
+              })
+            })
+            .unwrap_or(true)
+        } else {
+          false
+        }
+      }
+      Type::Function(function_signature) => function_signature
+        .abstract_ancestor
+        .as_ref()
+        .map(|f| f.representative_type(names).is_unitlike(names))
+        .unwrap_or(false),
+      Type::Array(array_size, inner_type) => {
+        inner_type.kind.with_dereferenced(|f| match f {
+          TypeState::Known(t) => t.is_unitlike(names),
+          _ => false,
+        }) || match array_size {
+          Some(size) => match size {
+            ArraySize::Literal(size) => *size == 0,
+            ArraySize::Constant(_) => false,
+            ArraySize::Unsized => false,
+          },
+          None => false,
+        }
+      }
+      _ => false,
+    }
+  }
   pub fn data_size_in_u32s(
     &self,
     source_trace: &SourceTrace,
@@ -966,8 +1043,14 @@ impl Type {
             .unwrap_or(String::new())
         )
       }
-      Type::Function(_) => {
-        panic!("Attempted to compile ConcreteFunction type")
+      Type::Function(f) => {
+        if let Some(f) = &f.abstract_ancestor {
+          f.representative_type(names).name.0.to_string()
+        } else {
+          panic!(
+            "Attempted to compile ConcreteFunction type with no abstract ancestor"
+          );
+        }
       }
       Type::Skolem(name) => {
         panic!("Attempted to compile Skolem \"{name}\"")

@@ -1037,9 +1037,10 @@ impl Program {
     let mut changed = false;
     let mut inlined_ctx = Program::default();
     inlined_ctx.names = self.names.clone();
+    inlined_ctx.typedefs = self.typedefs.clone();
     for f in self.abstract_functions_iter() {
       let borrowed_f = f.borrow();
-      if !borrowed_f.has_higher_order_arguments() {
+      if !borrowed_f.has_uninlined_higher_order_arguments() {
         match &borrowed_f.implementation {
           FunctionImplementationKind::Composite(implementation) => {
             let mut borrowed_implementation = implementation.borrow_mut();
@@ -1052,18 +1053,6 @@ impl Program {
                 let mut new_f = borrowed_f.clone();
                 new_f.implementation =
                   FunctionImplementationKind::Composite(implementation.clone());
-                take(&mut new_f.arg_types, |arg_types| {
-                  arg_types
-                    .into_iter()
-                    .filter(|(t, _)| {
-                      if let AbstractType::Type(Type::Function(_)) = t {
-                        false
-                      } else {
-                        true
-                      }
-                    })
-                    .collect()
-                });
                 drop(borrowed_implementation);
                 inlined_ctx.add_abstract_function(Rc::new(RefCell::new(new_f)));
               }
@@ -1078,11 +1067,80 @@ impl Program {
       }
     }
     take(self, |old_ctx| {
-      inlined_ctx.typedefs = old_ctx.typedefs;
       inlined_ctx.top_level_vars = old_ctx.top_level_vars;
       inlined_ctx
     });
     changed
+  }
+  pub fn remove_unitlike_values(&mut self) {
+    let mut names = NameContext::empty();
+    std::mem::swap(&mut names, &mut self.names.borrow_mut());
+    take(&mut self.typedefs.structs, |structs| {
+      structs
+        .into_iter()
+        .filter(|s| !s.is_unitlike(&mut names))
+        .collect()
+    });
+    for f in self.abstract_functions_iter_mut() {
+      let f = f.borrow_mut();
+      if let FunctionImplementationKind::Composite(implementation) =
+        &f.implementation
+      {
+        let mut implementation = implementation.borrow_mut();
+        implementation
+          .expression
+          .walk_mut(&mut |exp| match &mut exp.kind {
+            ExpKind::Application(applied_f, args) => {
+              applied_f.data.with_dereferenced_mut(|t| match t {
+                TypeState::Known(t) => match t {
+                  Type::Function(applied_f_signature) => {
+                    if let Some(applied_f_abstract_signature) =
+                      &mut applied_f_signature.abstract_ancestor
+                    {
+                      let mut applied_f_abstract_signature =
+                        (**applied_f_abstract_signature).clone();
+                      applied_f_abstract_signature
+                        .remove_unitlike_arguments(&mut names);
+                      applied_f_signature.abstract_ancestor =
+                        Some(Rc::new(applied_f_abstract_signature));
+                    }
+                    let args_to_remove: Vec<usize> = (0..args.len())
+                      .rev()
+                      .filter(|i| {
+                        args[*i].data.unwrap_known().is_unitlike(&mut names)
+                      })
+                      .collect();
+                    for i in args_to_remove {
+                      args.remove(i);
+                      applied_f_signature.args.remove(i);
+                    }
+                  }
+                  _ => {}
+                },
+                _ => {}
+              });
+
+              Ok(true)
+            }
+            ExpKind::Let(bindings, _) => {
+              take(bindings, |bindings| {
+                bindings
+                  .into_iter()
+                  .filter(|(_, _, _, t)| {
+                    !t.data.unwrap_known().is_unitlike(&mut names)
+                  })
+                  .collect()
+              });
+              //todo!();
+              Ok(true)
+            }
+            _ => Ok::<bool, Never>(true),
+          })
+          .unwrap();
+      }
+    }
+    std::mem::swap(&mut names, &mut self.names.borrow_mut());
+    //todo!()
   }
   pub fn compile_to_wgsl(self) -> CompileResult<String> {
     let mut names = self.names.borrow_mut();
@@ -1117,7 +1175,8 @@ impl Program {
     }
     for f in self.abstract_functions_iter() {
       let f = f.borrow().clone();
-      if f.generic_args.is_empty() && !f.has_higher_order_arguments() {
+      if f.generic_args.is_empty() && !f.has_uninlined_higher_order_arguments()
+      {
         match f.implementation {
           FunctionImplementationKind::EnumConstructor(
             original_variant_name,
@@ -1182,7 +1241,8 @@ impl Program {
     }
     for f in self.abstract_functions_iter() {
       let f = f.borrow().clone();
-      if f.generic_args.is_empty() && !f.has_higher_order_arguments() {
+      if f.generic_args.is_empty() && !f.has_uninlined_higher_order_arguments()
+      {
         match f.implementation {
           FunctionImplementationKind::Composite(implementation) => {
             wgsl += &implementation
@@ -2290,14 +2350,15 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    self.inline_all_higher_order_arguments(&mut errors);
-    if !errors.is_empty() {
-      return errors;
-    }
     self.monomorphize(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
+    self.inline_all_higher_order_arguments(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.remove_unitlike_values();
     self.validate_top_level_fn_effects(&mut errors);
     if !errors.is_empty() {
       return errors;
