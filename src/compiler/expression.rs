@@ -3146,6 +3146,7 @@ impl TypedExp {
                               variant_name.clone(),
                             ),
                           associative: false,
+                          captured_scope: None,
                         },
                       )));
                       new_program
@@ -3780,13 +3781,19 @@ impl TypedExp {
         inner_effects.merge(Effect::Return);
         inner_effects
       }
+      Function(arg_names, body) => {
+        let mut effects = body.effects(program);
+        for (arg, _) in arg_names {
+          effects.remove(&Effect::ReadsVar(arg.clone()));
+        }
+        effects
+      }
       Continue => Effect::Continue.into(),
       Discard => Effect::Discard.into(),
       Wildcard => EffectType::empty(),
       Unit => EffectType::empty(),
       NumberLiteral(_) => EffectType::empty(),
       BooleanLiteral(_) => EffectType::empty(),
-      Function(_, _) => EffectType::empty(),
       Uninitialized => EffectType::empty(),
       ZeroedArray => EffectType::empty(),
     }

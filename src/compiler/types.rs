@@ -1047,10 +1047,9 @@ impl Type {
         if let Some(f) = &f.abstract_ancestor {
           f.representative_type(names).name.0.to_string()
         } else {
-          "ANCESTORLESS".to_string()
-          /*panic!(
+          panic!(
             "Attempted to compile ConcreteFunction type with no abstract ancestor"
-          );*/
+          );
         }
       }
       Type::Skolem(name) => {

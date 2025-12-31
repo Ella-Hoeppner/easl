@@ -1,6 +1,5 @@
 use std::{
   cell::RefCell,
-  cmp::Ordering,
   collections::{HashMap, HashSet},
   rc::Rc,
 };
@@ -19,16 +18,16 @@ use crate::{
       IOAttributes, InputOrOutput,
     },
     enums::{AbstractEnum, UntypedEnum},
-    error::{CompileError, SourceTrace},
-    expression::{Exp, ExpKind, ExpressionCompilationPosition},
+    error::{CompileError, SourceTrace, err},
+    expression::{Accessor, Exp, ExpKind, ExpressionCompilationPosition},
     functions::{
       AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
       Ownership, TopLevelFunction,
     },
-    structs::UntypedStruct,
+    structs::{AbstractStructField, UntypedStruct},
     types::{
       AbstractType, ImmutableProgramLocalContext, NameDefinitionSource, Type,
-      TypeState, UntypedType, VariableKind,
+      TypeState, UntypedType, Variable, VariableKind,
     },
     util::{compile_word, is_valid_name},
     vars::TopLevelVariableKind,
@@ -339,6 +338,7 @@ impl Program {
             return_type: AbstractType::AbstractStruct(s.clone()),
             implementation: FunctionImplementationKind::StructConstructor,
             associative: false,
+            captured_scope: None,
           },
         )));
       }
@@ -366,6 +366,7 @@ impl Program {
                   variant.name.clone(),
                 ),
                 associative: false,
+                captured_scope: None,
               },
             )));
           }
@@ -1025,6 +1026,42 @@ impl Program {
       }
     }
   }
+  pub fn propagate_abstract_function_signatures(&mut self) {
+    let copy_program = self.clone();
+    for f in self.abstract_functions_iter() {
+      let borrowed_f = f.borrow();
+      match &borrowed_f.implementation {
+        FunctionImplementationKind::Composite(implementation) => implementation
+          .borrow_mut()
+          .expression
+          .walk_mut_with_ctx(
+            &mut |exp, ctx| {
+              exp.data.as_known_mut(|t| {
+                if let Type::Function(f) = t {
+                  match &exp.kind {
+                    ExpKind::Name(name) => {
+                      if let Some((v, _)) = ctx.variables.get(name)
+                        && let Type::Function(bound_f) =
+                          v.var_type.unwrap_known()
+                        && let Some(abstract_ancestor) =
+                          bound_f.abstract_ancestor
+                      {
+                        f.abstract_ancestor = Some(abstract_ancestor);
+                      }
+                    }
+                    _ => {}
+                  }
+                }
+                Ok::<bool, Never>(true)
+              })
+            },
+            &mut ImmutableProgramLocalContext::empty(&copy_program),
+          )
+          .unwrap(),
+        _ => {}
+      }
+    }
+  }
   pub fn inline_local_bound_function_applications(&mut self) {
     for f in self.abstract_functions_iter() {
       let borrowed_f = f.borrow();
@@ -1087,71 +1124,263 @@ impl Program {
           implementation
             .borrow_mut()
             .expression
-            .walk_mut(&mut |exp| {
-              if !root_encountered {
-                root_encountered = true;
-                return Ok(true);
-              }
-              if let ExpKind::Function(arg_names, _) = &mut exp.kind {
-                let name = self.names.borrow_mut().gensym("inner_fn");
-                let Type::Function(f_signature) = exp.data.unwrap_known()
-                else {
-                  panic!()
-                };
-                let signature = AbstractFunctionSignature {
-                  name: name.clone(),
-                  generic_args: vec![],
-                  associative: false,
-                  arg_types: f_signature
-                    .args
+            .walk_mut_with_ctx(
+              &mut |exp, ctx| {
+                if !root_encountered {
+                  root_encountered = true;
+                  return Ok(true);
+                }
+                let effects = exp.effects(self);
+                if let ExpKind::Function(arg_names, body) = &mut exp.kind {
+                  let name = self.names.borrow_mut().gensym("inner_fn");
+                  let Type::Function(f_signature) = exp.data.unwrap_known()
+                  else {
+                    panic!()
+                  };
+                  let captured_vars = effects
+                    .0
                     .iter()
-                    .map(|(arg, _)| {
-                      (
-                        AbstractType::Type(arg.var_type.unwrap_known()),
-                        Ownership::Owned,
-                      )
-                    })
-                    .collect(),
-                  return_type: AbstractType::Type(
-                    f_signature.return_type.unwrap_known(),
-                  ),
-                  implementation: FunctionImplementationKind::Composite(
-                    Rc::new(RefCell::new(TopLevelFunction {
-                      name_source_trace: exp.source_trace.clone(),
-                      arg_names: arg_names.clone(),
-                      arg_annotations: arg_names
-                        .iter()
-                        .map(|(_, arg_source_trace)| {
-                          FunctionArgumentAnnotation::empty(
-                            arg_source_trace.clone(),
-                          )
+                    .map(|e| match e {
+                      Effect::ReadsVar(var_name) => {
+                        Ok(match ctx.variables.get(var_name) {
+                          Some((var, _)) => {
+                            Some((var_name, var.var_type.unwrap_known()))
+                          }
+                          None => None,
                         })
-                        .collect(),
-                      return_attributes: IOAttributes::empty(
+                      }
+                      _ => {
+                        err(IllegalEffectsInClosure, body.source_trace.clone())
+                      }
+                    })
+                    .collect::<CompileResult<Vec<_>>>();
+                  let captured_vars: Vec<(&Rc<str>, Type)> = captured_vars
+                    .unwrap_or_else(|e| {
+                      errors.log(e);
+                      vec![]
+                    })
+                    .into_iter()
+                    .filter_map(|x| x)
+                    .collect();
+                  let captured_scope = if captured_vars.is_empty() {
+                    None
+                  } else {
+                    Some(AbstractStruct {
+                      name: (
+                        self
+                          .names
+                          .borrow_mut()
+                          .gensym(&format!("{name}_scope"))
+                          .into(),
                         exp.source_trace.clone(),
                       ),
-                      entry_point: None,
-                      expression: exp.clone(),
-                    })),
-                  ),
-                };
-                new_signatures.push(signature.clone());
-                *exp = Exp {
-                  data: Type::Function(Box::new(FunctionSignature {
-                    abstract_ancestor: Some(Rc::new(signature)),
-                    args: f_signature.args,
-                    return_type: f_signature.return_type,
-                  }))
-                  .known()
-                  .into(),
-                  kind: ExpKind::Name(name),
-                  source_trace: exp.source_trace.clone(),
-                };
-                Ok(true)
-              } else {
-                Ok::<bool, Never>(true)
-              }
-            })
+                      filled_generics: HashMap::new(),
+                      fields: captured_vars
+                        .iter()
+                        .map(|(name, t)| AbstractStructField {
+                          attributes: IOAttributes::empty(
+                            exp.source_trace.clone(),
+                          ),
+                          name: (**name).clone(),
+                          field_type: AbstractType::Type(t.clone()),
+                          source_trace: exp.source_trace.clone(),
+                        })
+                        .collect(),
+                      generic_args: vec![],
+                      abstract_ancestor: None,
+                      source_trace: exp.source_trace.clone(),
+                    })
+                  };
+                  let mut arg_types: Vec<(AbstractType, Ownership)> =
+                    f_signature
+                      .args
+                      .iter()
+                      .map(|(arg, _)| {
+                        (
+                          AbstractType::Type(arg.var_type.unwrap_known()),
+                          Ownership::Owned,
+                        )
+                      })
+                      .collect();
+                  let captured_scope = captured_scope.map(|captured_scope| {
+                    (
+                      captured_scope.clone(),
+                      AbstractType::AbstractStruct(Rc::new(captured_scope))
+                        .concretize(
+                          &vec![],
+                          &self.typedefs,
+                          exp.source_trace.clone(),
+                        )
+                        .unwrap(),
+                      self.names.borrow_mut().gensym("scope"),
+                    )
+                  });
+                  if let Some((
+                    captured_scope,
+                    concrete_captured_scope_type,
+                    scope_name,
+                  )) = &captured_scope
+                  {
+                    arg_names
+                      .push((scope_name.clone(), exp.source_trace.clone()));
+                    exp.data.as_known_mut(|t| {
+                      let Type::Function(f) = t else {
+                        panic!();
+                      };
+                      f.args.push((
+                        Variable {
+                          kind: VariableKind::Let,
+                          var_type: concrete_captured_scope_type
+                            .clone()
+                            .known()
+                            .into(),
+                        },
+                        vec![],
+                      ));
+                    });
+                    arg_types.push((
+                      AbstractType::AbstractStruct(Rc::new(
+                        captured_scope.clone(),
+                      )),
+                      Ownership::Owned,
+                    ));
+                  }
+                  let signature = AbstractFunctionSignature {
+                    name: name.clone(),
+                    generic_args: vec![],
+                    associative: false,
+                    arg_types,
+                    return_type: AbstractType::Type(
+                      f_signature.return_type.unwrap_known(),
+                    ),
+                    implementation: FunctionImplementationKind::Composite(
+                      Rc::new(RefCell::new(TopLevelFunction {
+                        name_source_trace: exp.source_trace.clone(),
+                        arg_names: arg_names.clone(),
+                        arg_annotations: arg_names
+                          .iter()
+                          .map(|(_, arg_source_trace)| {
+                            FunctionArgumentAnnotation::empty(
+                              arg_source_trace.clone(),
+                            )
+                          })
+                          .collect(),
+                        return_attributes: IOAttributes::empty(
+                          exp.source_trace.clone(),
+                        ),
+                        entry_point: None,
+                        expression: {
+                          let mut new_exp = exp.clone();
+                          if let Some((
+                            _,
+                            concrete_captured_scope_type,
+                            scope_name,
+                          )) = &captured_scope
+                          {
+                            let ExpKind::Function(_, body) = &mut new_exp.kind
+                            else {
+                              panic!()
+                            };
+                            take(&mut **body, |body| Exp {
+                              data: body.data.clone(),
+                              kind: ExpKind::Let(
+                                captured_vars
+                                  .iter()
+                                  .map(|(arg_name, t)| {
+                                    (
+                                      (**arg_name).clone(),
+                                      exp.source_trace.clone(),
+                                      VariableKind::Let,
+                                      Exp {
+                                        data: t.clone().known().into(),
+                                        kind: ExpKind::Access(
+                                          Accessor::Field((**arg_name).clone()),
+                                          Box::new(Exp {
+                                            data: concrete_captured_scope_type
+                                              .clone()
+                                              .known()
+                                              .into(),
+                                            kind: ExpKind::Name(
+                                              scope_name.clone(),
+                                            ),
+                                            source_trace: exp
+                                              .source_trace
+                                              .clone(),
+                                          }),
+                                        ),
+                                        source_trace: exp.source_trace.clone(),
+                                      },
+                                    )
+                                  })
+                                  .collect(),
+                                Box::new(body),
+                              ),
+                              source_trace: exp.source_trace.clone(),
+                            })
+                          }
+                          new_exp
+                        },
+                      })),
+                    ),
+                    captured_scope: captured_scope
+                      .as_ref()
+                      .map(|(s, _, _)| s.clone()),
+                  };
+                  new_signatures.push(signature.clone());
+                  *exp = Exp {
+                    data: Type::Function(Box::new(FunctionSignature {
+                      abstract_ancestor: Some(Rc::new(signature)),
+                      args: f_signature.args,
+                      return_type: f_signature.return_type,
+                    }))
+                    .known()
+                    .into(),
+                    kind: if let Some((captured_scope, _, _)) = captured_scope {
+                      ExpKind::Application(
+                        Box::new(Exp {
+                          data: Type::Function(Box::new(FunctionSignature {
+                            abstract_ancestor: None,
+                            args: captured_vars
+                              .iter()
+                              .map(|(_, t)| {
+                                (
+                                  Variable {
+                                    kind: VariableKind::Let,
+                                    var_type: t.clone().known().into(),
+                                  },
+                                  vec![],
+                                )
+                              })
+                              .collect(),
+                            return_type: exp.data.clone(),
+                          }))
+                          .known()
+                          .into(),
+                          kind: ExpKind::Name(captured_scope.name.0.clone()),
+                          source_trace: exp.source_trace.clone(),
+                        }),
+                        captured_vars
+                          .into_iter()
+                          .map(|(name, t)| Exp {
+                            data: t.known().into(),
+                            kind: ExpKind::Name(name.clone()),
+                            source_trace: exp.source_trace.clone(),
+                          })
+                          .collect(),
+                      )
+                    } else {
+                      ExpKind::Name(name)
+                    },
+                    source_trace: exp.source_trace.clone(),
+                  };
+
+                  Ok(true)
+                } else {
+                  Ok::<bool, Never>(true)
+                }
+              },
+              &mut ImmutableProgramLocalContext::empty(self),
+            )
             .unwrap();
         }
         _ => {}
@@ -1190,9 +1419,9 @@ impl Program {
               Ok(added_new_function) => {
                 changed |= added_new_function;
                 let mut new_f = borrowed_f.clone();
+                drop(borrowed_implementation);
                 new_f.implementation =
                   FunctionImplementationKind::Composite(implementation.clone());
-                drop(borrowed_implementation);
                 inlined_ctx.add_abstract_function(Rc::new(RefCell::new(new_f)));
               }
               Err(e) => errors.log(e),
@@ -1270,7 +1499,6 @@ impl Program {
                   })
                   .collect()
               });
-              //todo!();
               Ok(true)
             }
             _ => Ok::<bool, Never>(true),
@@ -1279,7 +1507,6 @@ impl Program {
       }
     }
     std::mem::swap(&mut names, &mut self.names.borrow_mut());
-    //todo!()
   }
   pub fn compile_to_wgsl(self) -> CompileResult<String> {
     let mut names = self.names.borrow_mut();
@@ -2497,11 +2724,12 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.propagate_abstract_function_signatures();
+    self.inline_local_bound_function_applications();
     self.inline_all_higher_order_arguments(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
-    self.inline_local_bound_function_applications();
     self.remove_unitlike_values();
     self.validate_top_level_fn_effects(&mut errors);
     if !errors.is_empty() {

@@ -410,6 +410,8 @@ pub enum CompileErrorKind {
   TypeDependencyCycle(Vec<String>),
   #[error("Missing argument list in fn")]
   FnMissingArgumentList,
+  #[error("Closure has illegal effects")]
+  IllegalEffectsInClosure,
 }
 
 impl CompileErrorKind {

@@ -7,9 +7,20 @@ use std::{
 use take_mut::take;
 
 use crate::{
-  Never, compiler::{
-    annotation::FunctionAnnotation, effects::{Effect, EffectType}, entry::{EntryPoint, IOAttributes}, enums::AbstractEnum, expression::arg_list_and_return_type_from_easl_tree, program::{NameContext, TypeDefs}, structs::{AbstractStructField}, types::{Variable, VariableKind, parse_generic_argument}, util::compile_word, vars::VariableAddressSpace
-  }, parse::EaslTree
+  Never,
+  compiler::{
+    annotation::FunctionAnnotation,
+    effects::{Effect, EffectType},
+    entry::{EntryPoint, IOAttributes},
+    enums::AbstractEnum,
+    expression::{Exp, arg_list_and_return_type_from_easl_tree},
+    program::{NameContext, TypeDefs},
+    structs::AbstractStructField,
+    types::{Variable, VariableKind, parse_generic_argument},
+    util::compile_word,
+    vars::VariableAddressSpace,
+  },
+  parse::EaslTree,
 };
 
 use super::{
@@ -65,7 +76,7 @@ pub enum Ownership {
   Owned,
   Reference,
   MutableReference,
-  Pointer(VariableAddressSpace)
+  Pointer(VariableAddressSpace),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -76,21 +87,25 @@ pub struct AbstractFunctionSignature {
   pub return_type: AbstractType,
   pub implementation: FunctionImplementationKind,
   pub associative: bool,
+  pub captured_scope: Option<AbstractStruct>,
 }
 
 impl AbstractFunctionSignature {
   pub fn reference_arg_positions(&self) -> Vec<usize> {
-    self.arg_types.iter().enumerate().filter_map(|(i, (_, ownership))| 
-    match ownership {
-          Ownership::Reference | Ownership::MutableReference => Some(i),
-          _=>None
-      }
-    ).collect()
+    self
+      .arg_types
+      .iter()
+      .enumerate()
+      .filter_map(|(i, (_, ownership))| match ownership {
+        Ownership::Reference | Ownership::MutableReference => Some(i),
+        _ => None,
+      })
+      .collect()
   }
   pub fn remove_unitlike_arguments(&mut self, names: &mut NameContext) {
     let mut arg_types = self.arg_types.clone();
     if let FunctionImplementationKind::Composite(implementation) =
-        &self.implementation
+      &self.implementation
     {
       let mut implementation = implementation.borrow_mut();
       loop {
@@ -122,13 +137,16 @@ impl AbstractFunctionSignature {
     self.arg_types = arg_types;
   }
   pub fn representative_type(&self, names: &mut NameContext) -> AbstractStruct {
-    let name = names.get_monomorphized_name(
-      self.name.clone(),
-      vec!["Representative".into()]
-    );
+    if let Some(captured_scope) = &self.captured_scope {
+      return captured_scope.clone();
+    }
+    let name = names
+      .get_monomorphized_name(self.name.clone(), vec!["Representative".into()]);
     let source_trace = match &self.implementation {
-        FunctionImplementationKind::Composite(f) => f.borrow().name_source_trace.clone(),
-        _ => SourceTrace::empty()
+      FunctionImplementationKind::Composite(f) => {
+        f.borrow().name_source_trace.clone()
+      }
+      _ => SourceTrace::empty(),
     };
     AbstractStruct {
       name: (name.clone(), source_trace.clone()),
@@ -137,11 +155,11 @@ impl AbstractFunctionSignature {
         attributes: IOAttributes::empty(source_trace.clone()),
         name,
         field_type: AbstractType::Unit,
-        source_trace: source_trace.clone()
+        source_trace: source_trace.clone(),
       }],
       generic_args: vec![],
       abstract_ancestor: None,
-      source_trace
+      source_trace,
     }
   }
   pub(crate) fn from_defn_ast(
@@ -228,28 +246,23 @@ impl AbstractFunctionSignature {
       &generic_arg_names,
       errors,
     ) {
-      let arg_types:Vec<AbstractType> = match arg_types
+      let arg_types: Vec<AbstractType> = match arg_types
         .into_iter()
-        .map(|x| x.ok_or_else(|| CompileError::new(
-          FunctionArgMissingType,
-          source_path.clone(),
-        )))
-        .collect::<CompileResult<Vec<_>>>() {
+        .map(|x| {
+          x.ok_or_else(|| {
+            CompileError::new(FunctionArgMissingType, source_path.clone())
+          })
+        })
+        .collect::<CompileResult<Vec<_>>>()
+      {
         Ok(t) => t,
         Err(e) => {
           errors.log(e);
           return None;
-        },
+        }
       };
-      let (return_type,
-           return_source,
-           return_annotation) = return_info.unwrap_or_else(||
-        (
-          AbstractType::Unit,
-          source_path.clone(),
-          None
-        )
-      );
+      let (return_type, return_source, return_annotation) = return_info
+        .unwrap_or_else(|| (AbstractType::Unit, source_path.clone(), None));
       match return_type.concretize(
         &generic_arg_names,
         &program.typedefs,
@@ -261,14 +274,14 @@ impl AbstractFunctionSignature {
             .zip(arg_annotations.iter())
             .map(|(t, annotation)| {
               let ownership = annotation.ownership;
-              let mut typestate: ExpTypeInfo = 
-                t.concretize(
-                    &generic_arg_names,
-                    &program.typedefs,
-                    source_path.clone().into(),
-                  )?
-                 .known()
-                 .into();
+              let mut typestate: ExpTypeInfo = t
+                .concretize(
+                  &generic_arg_names,
+                  &program.typedefs,
+                  source_path.clone().into(),
+                )?
+                .known()
+                .into();
               typestate.ownership = ownership;
               Ok((
                 (
@@ -359,6 +372,7 @@ impl AbstractFunctionSignature {
                     return_type,
                     implementation,
                     associative: parsed_annotation.associative,
+                    captured_scope: None,
                   });
                 }
                 Err(e) => errors.log(e),
@@ -378,7 +392,9 @@ impl AbstractFunctionSignature {
   }
   pub(crate) fn has_uninlined_higher_order_arguments(&self) -> bool {
     self.arg_types.iter().any(|(t, _)| {
-      if let AbstractType::Type(Type::Function(f)) = t && f.abstract_ancestor.is_none() {
+      if let AbstractType::Type(Type::Function(f)) = t
+        && f.abstract_ancestor.is_none()
+      {
         true
       } else {
         false
@@ -543,145 +559,92 @@ impl AbstractFunctionSignature {
     }
     Ok(monomorphized)
   }
-  pub fn generate_higher_order_functions_inlined_version(
-    &self,
-    name: &Rc<str>,
-    fn_args: Vec<TypedExp>,
-    names: &mut NameContext,
-    source_trace: SourceTrace,
-  ) -> CompileResult<Self> {
-    let mut implementation = self.implementation(source_trace.clone())?;
-    let (fn_parameter_names, remaining_parameters) = self
-      .arg_types
-      .iter()
-      .cloned()
-      .zip(implementation.arg_names.into_iter())
-      .zip(implementation.arg_annotations.into_iter())
-      .map(|(((t, ownership), (name, name_source_trace)), annotation)| {
-        if let AbstractType::Type(Type::Function(_)) = t {
-          (Some(name.clone()), None)
-        } else {
-          (
-            None,
-            Some(((name.clone(), name_source_trace.clone()), (annotation.clone(), t, ownership))),
-          )
-        }
-      })
-      .collect::<(
-        Vec<Option<Rc<str>>>,
-        Vec<
-          Option<(
-            (Rc<str>, SourceTrace),
-            (FunctionArgumentAnnotation, AbstractType, Ownership),
-          )>,
-        >,
-      )>();
-    let (new_parameter_names, (new_parameter_annotation, new_parameter_types)): (
-      Vec<_>,
-      (Vec<_>, Vec<_>),
-    ) = remaining_parameters
-          .into_iter()
-          .filter_map(|x| 
-            x.map(|(name, (annotation, t, ownership))| {
-              (name, (annotation, (t, ownership)))
-            })
-          )
-          .collect();
-    let (retained_argument_indeces, removed_param_names): (
-      Vec<usize>,
-      Vec<Rc<str>>,
-    ) = fn_parameter_names
-      .into_iter()
-      .enumerate()
-      .filter_map(|(i, x)| x.map(|x| (i, x)))
-      .collect();
-    take(&mut implementation.expression, |mut body| {
-      body.kind = if let ExpKind::Function(_, body_exp) = body.kind {
-        ExpKind::Function(new_parameter_names.clone(), body_exp)
-      } else {
-        unreachable!()
-      };
-      if let TypeState::Known(Type::Function(signature)) = &mut body.data.kind {
-        for i in retained_argument_indeces.into_iter().rev() {
-          signature.args.remove(i);
-        }
-      } else {
-        unreachable!()
-      }
-      body
-    });
-    implementation
-      .expression
-      .inline_args(&removed_param_names, &fn_args);
-    implementation.arg_names = new_parameter_names;
-    implementation.arg_annotations = new_parameter_annotation;
-    let f = AbstractFunctionSignature {
-      name: names.get_monomorphized_name(
-        name.clone(),
-        fn_args
-          .iter()
-          .map(|arg| {
-            if let ExpKind::Name(higher_order_arg_name) = &arg.kind {
-              higher_order_arg_name.clone()
-            } else {
-              panic!("element of fn_args wasn't a Name")
-            }
-          })
-          .collect::<Vec<Rc<str>>>(),
-      ),
-      generic_args: self.generic_args.clone(),
-      arg_types: new_parameter_types,
-      return_type: self.return_type.clone(),
-      implementation: FunctionImplementationKind::Composite(Rc::new(
-        RefCell::new(implementation),
-      )),
-      associative: self.associative,
-    };
-    Ok(f)
-  }
   pub fn generate_higher_order_argument_inlined_version(
     &self,
     f_name: Rc<str>,
     argument_index: usize,
-    signature: Rc<AbstractFunctionSignature>, 
+    signature: Rc<AbstractFunctionSignature>,
     ctx: &mut Program,
-    source_trace: &SourceTrace
+    source_trace: &SourceTrace,
   ) -> CompileResult<Self> {
     let mut implementation = self.implementation(source_trace.clone())?;
     let arg_name = &self.arg_names(source_trace)?[argument_index].0;
     let inlined_fn_name = &signature.name;
-    if let TypeState::Known(Type::Function(f)) = &mut implementation.expression.data.kind
-      && let TypeState::Known(Type::Function(f_arg)) = &mut f.args[argument_index].0.var_type.kind {
+    if let TypeState::Known(Type::Function(f)) =
+      &mut implementation.expression.data.kind
+      && let TypeState::Known(Type::Function(f_arg)) =
+        &mut f.args[argument_index].0.var_type.kind
+    {
       f_arg.abstract_ancestor = Some(signature.clone());
     } else {
       panic!()
     }
-    implementation.expression.walk_mut(
-      &mut |exp| -> Result<bool, Never> {
+    implementation
+      .expression
+      .walk_mut(&mut |exp| -> Result<bool, Never> {
         match &mut exp.kind {
-            ExpKind::Name(name) => {
-              if name == arg_name {
+          ExpKind::Application(f_name, args) => {
+            let ExpKind::Name(name) = &mut f_name.kind else {
+              panic!()
+            };
+            if let Some(captured_scope) = &signature.captured_scope
+              && name == arg_name
+            {
+              f_name.data.as_known_mut(|f_type| {
+                let Type::Function(f) = f_type else { panic!() };
+                let new_arg_type =
+                  AbstractType::AbstractStruct(Rc::new(captured_scope.clone()))
+                    .concretize(
+                      &vec![],
+                      &ctx.typedefs,
+                      f_name.source_trace.clone(),
+                    )
+                    .unwrap();
+                args.push(Exp {
+                  data: new_arg_type.clone().known().into(),
+                  kind: ExpKind::Name(name.clone()),
+                  source_trace: f_name.source_trace.clone(),
+                });
                 *name = inlined_fn_name.clone();
-                let mut exp_type = exp.data.unwrap_known();
-                let Type::Function(f) = &mut exp_type else {panic!()};
+                f.args.push((
+                  Variable {
+                    var_type: new_arg_type.known().into(),
+                    kind: VariableKind::Let,
+                  },
+                  vec![],
+                ));
                 f.abstract_ancestor = Some(signature.clone());
-              }
-              Ok(true)
-            },
-            _=>Ok(true)
+              });
+            }
+            Ok(true)
+          }
+          ExpKind::Name(name) => {
+            if name == arg_name {
+              exp.data.as_known_mut(|exp_type| {
+                if let Type::Function(f) = exp_type {
+                  *name = inlined_fn_name.clone();
+                  f.abstract_ancestor = Some(signature.clone());
+                }
+              });
+            }
+            Ok(true)
+          }
+          _ => Ok(true),
         }
-      }
-    ).unwrap();
+      })
+      .unwrap();
     let mut arg_types = self.arg_types.clone();
-    let AbstractType::Type(Type::Function(f)) = &mut arg_types[argument_index].0 else {
+    let AbstractType::Type(Type::Function(f)) =
+      &mut arg_types[argument_index].0
+    else {
       panic!("tried to inline higher order fn for non-fn argument type");
     };
     f.abstract_ancestor = Some(signature.clone());
-   Ok(AbstractFunctionSignature {
-      name: ctx.names.borrow_mut().get_monomorphized_name(
-        f_name.clone(),
-        vec![inlined_fn_name.clone()],
-      ),
+    Ok(AbstractFunctionSignature {
+      name: ctx
+        .names
+        .borrow_mut()
+        .get_monomorphized_name(f_name.clone(), vec![inlined_fn_name.clone()]),
       generic_args: self.generic_args.clone(),
       arg_types,
       return_type: self.return_type.clone(),
@@ -689,6 +652,7 @@ impl AbstractFunctionSignature {
         RefCell::new(implementation),
       )),
       associative: self.associative,
+      captured_scope: self.captured_scope.clone(),
     })
   }
   pub fn concretize(
@@ -832,8 +796,7 @@ pub struct FunctionSignature {
 
 impl PartialEq for FunctionSignature {
   fn eq(&self, other: &Self) -> bool {
-    self.args == other.args
-      && self.return_type == other.return_type
+    self.args == other.args && self.return_type == other.return_type
   }
 }
 
@@ -975,7 +938,9 @@ impl TopLevelFunction {
     let Type::Function(signature) = data.unwrap_known() else {
       panic!("attempted to compile function with invalid type data")
     };
-    let FunctionSignature { args, return_type, .. } = *signature;
+    let FunctionSignature {
+      args, return_type, ..
+    } = *signature;
     let (arg_names, body) = if let ExpKind::Function(arg_names, body) = kind {
       (arg_names, *body)
     } else {
@@ -994,7 +959,9 @@ impl TopLevelFunction {
             let base_type = arg.var_type.monomorphized_name(names);
             match arg.var_type.ownership {
               Ownership::Owned => base_type,
-              Ownership::Pointer(address_space) => format!("ptr<{}, {base_type}>", address_space.name()),
+              Ownership::Pointer(address_space) => {
+                format!("ptr<{}, {base_type}>", address_space.name())
+              }
               Ownership::Reference | Ownership::MutableReference => {
                 panic!(
                   "encountered raw reference in argument ownership, this \
@@ -1036,8 +1003,7 @@ impl TopLevelFunction {
     ))
   }
   pub fn effects(&self, program: &Program) -> EffectType {
-    if let ExpKind::Function(arg_names, body) = &self.expression.kind
-    {
+    if let ExpKind::Function(arg_names, body) = &self.expression.kind {
       let mut effects = body.effects(&program);
       for (name, _) in arg_names {
         effects.remove(&Effect::ReadsVar(name.clone()));
