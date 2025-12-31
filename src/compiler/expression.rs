@@ -2060,15 +2060,16 @@ impl TypedExp {
         "\nreturn {};",
         exp.compile(ExpressionCompilationPosition::InnerExpression, names)
       ),
-      ArrayLiteral(children) => format!(
+      ArrayLiteral(children) => wrap(format!(
         "{}({})",
         self.data.monomorphized_name(names),
         children
           .into_iter()
-          .map(|child| child.compile(position, names))
+          .map(|child| child
+            .compile(ExpressionCompilationPosition::InnerExpression, names))
           .collect::<Vec<String>>()
           .join(", ")
-      ),
+      )),
       ZeroedArray => self.data.kind.monomorphized_name(names) + "()",
     }
   }
