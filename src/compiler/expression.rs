@@ -649,10 +649,90 @@ impl TypedExp {
                           }
                         }
                         "fn" => {
-                          return err(
-                            AnonymousFunctionsNotYetSupported,
+                          let Some(arg_list_ast) = children_iter.next() else {
+                            return err(FnMissingArgumentList, source_trace);
+                          };
+                          let mut errors = ErrorLog::new();
+                          let parsed_arg_list =
+                            arg_list_and_return_type_from_easl_tree(
+                              arg_list_ast,
+                              typedefs,
+                              skolems,
+                              &mut errors,
+                            );
+                          if let Some(err) = errors.into_iter().next() {
+                            return Err(err);
+                          }
+                          let Some((
+                            _,
+                            arg_names,
+                            arg_types,
+                            arg_annotations,
+                            return_type,
+                            return_type_source_trace,
+                            return_annotation,
+                          )) = parsed_arg_list
+                          else {
+                            return err(FnMissingArgumentList, source_trace);
+                          };
+                          if children_iter.len() == 0 {
+                            return err(FunctionMissingBody, source_trace);
+                          }
+                          let concrete_return_type: ExpTypeInfo = return_type
+                            .concretize(
+                              skolems,
+                              typedefs,
+                              return_type_source_trace,
+                            )?
+                            .known()
+                            .into();
+                          Some(Exp {
+                            data: Type::Function(Box::new(FunctionSignature {
+                              abstract_ancestor: None,
+                              args: arg_types
+                                .into_iter()
+                                .zip(arg_names.iter())
+                                .map(|(t, (_, arg_source_trace))| {
+                                  Ok((
+                                    Variable {
+                                      kind: VariableKind::Let,
+                                      var_type: t
+                                        .concretize(
+                                          skolems,
+                                          typedefs,
+                                          arg_source_trace.clone(),
+                                        )?
+                                        .known()
+                                        .into(),
+                                    },
+                                    vec![],
+                                  ))
+                                })
+                                .collect::<Result<Vec<_>, _>>()?,
+                              return_type: concrete_return_type.clone(),
+                            }))
+                            .known()
+                            .into(),
+                            kind: ExpKind::Function(
+                              arg_names,
+                              Box::new(Exp {
+                                data: concrete_return_type,
+                                kind: ExpKind::Block({
+                                  let mut body_forms = vec![];
+                                  while let Some(exp) = children_iter.next() {
+                                    body_forms.push(
+                                      TypedExp::try_from_easl_tree(
+                                        exp, typedefs, skolems, ctx,
+                                      )?,
+                                    );
+                                  }
+                                  body_forms
+                                }),
+                                source_trace: source_trace.clone(),
+                              }),
+                            ),
                             source_trace,
-                          );
+                          })
                         }
                         "let" => {
                           if children_iter.len() < 1 {
@@ -1575,7 +1655,6 @@ impl TypedExp {
               compile_word(name)
             }
           });
-
           let arg_types = args
             .iter()
             .map(|a| a.data.unwrap_known())

@@ -968,7 +968,7 @@ impl TopLevelFunction {
     let (arg_names, body) = if let ExpKind::Function(arg_names, body) = kind {
       (arg_names, *body)
     } else {
-      panic!("attempted to compile function with invalid ExpKind")
+      panic!("attempted to compile function with invalid ExpKind {kind:?}")
     };
     let args = arg_names
       .into_iter()

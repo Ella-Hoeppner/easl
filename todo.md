@@ -1,6 +1,12 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready"
+* seems like local functions that involve generic variables crash the compiler
+
+* let local functions skip type annotations
+
+* closures
+
 * apparently you can't use floats as the scrutinees in `switch` statements in wgsl, so need to change the way matches are handled when compiling `match`es on floats
   * should just compile to an if-else change with equality checks instead
   * actually seems like the same is true for everything but scalar integers, so should make `match`es on vecs compile this way too

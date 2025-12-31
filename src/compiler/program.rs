@@ -21,7 +21,10 @@ use crate::{
     enums::{AbstractEnum, UntypedEnum},
     error::{CompileError, SourceTrace},
     expression::{Exp, ExpKind, ExpressionCompilationPosition},
-    functions::{AbstractFunctionSignature, Ownership},
+    functions::{
+      AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
+      Ownership, TopLevelFunction,
+    },
     structs::UntypedStruct,
     types::{
       AbstractType, ImmutableProgramLocalContext, NameDefinitionSource, Type,
@@ -1020,6 +1023,139 @@ impl Program {
       if !changed {
         break;
       }
+    }
+  }
+  pub fn inline_local_bound_function_applications(&mut self) {
+    for f in self.abstract_functions_iter() {
+      let borrowed_f = f.borrow();
+      match &borrowed_f.implementation {
+        FunctionImplementationKind::Composite(implementation) => implementation
+          .borrow_mut()
+          .expression
+          .walk_mut_with_ctx(
+            &mut |exp, ctx| match &mut exp.kind {
+              ExpKind::Application(f, _) => {
+                let ExpKind::Name(original_name) = &mut f.kind else {
+                  panic!("non-name fn being applied")
+                };
+                if let Type::Function(_) = f.data.unwrap_known() {
+                  match ctx.get_name_definition_source(&original_name) {
+                    Some(source) => match source {
+                      NameDefinitionSource::LocalBinding(_) => {
+                        let Type::Function(bound_signature) = ctx
+                          .variables
+                          .get(original_name)
+                          .unwrap()
+                          .0
+                          .var_type
+                          .unwrap_known()
+                        else {
+                          panic!()
+                        };
+                        if let Some(abstract_fn) =
+                          bound_signature.abstract_ancestor
+                        {
+                          *original_name = abstract_fn.name.clone();
+                        }
+                      }
+                      _ => {}
+                    },
+                    None => {}
+                  }
+                }
+                Ok(true)
+              }
+              _ => Ok::<bool, Never>(true),
+            },
+            &mut ImmutableProgramLocalContext::empty(self),
+          )
+          .unwrap(),
+        _ => {}
+      }
+    }
+  }
+  pub fn extract_inner_functions(&mut self, errors: &mut ErrorLog) {
+    let mut new_signatures: Vec<AbstractFunctionSignature> = vec![];
+    for f in self.abstract_functions_iter() {
+      let borrowed_f = f.borrow();
+      match &borrowed_f.implementation {
+        FunctionImplementationKind::Composite(implementation) => {
+          let mut root_encountered = false;
+          implementation
+            .borrow_mut()
+            .expression
+            .walk_mut(&mut |exp| {
+              if !root_encountered {
+                root_encountered = true;
+                return Ok(true);
+              }
+              if let ExpKind::Function(arg_names, _) = &mut exp.kind {
+                let name = self.names.borrow_mut().gensym("inner_fn");
+                let Type::Function(f_signature) = exp.data.unwrap_known()
+                else {
+                  panic!()
+                };
+                let signature = AbstractFunctionSignature {
+                  name: name.clone(),
+                  generic_args: vec![],
+                  associative: false,
+                  arg_types: f_signature
+                    .args
+                    .iter()
+                    .map(|(arg, _)| {
+                      (
+                        AbstractType::Type(arg.var_type.unwrap_known()),
+                        Ownership::Owned,
+                      )
+                    })
+                    .collect(),
+                  return_type: AbstractType::Type(
+                    f_signature.return_type.unwrap_known(),
+                  ),
+                  implementation: FunctionImplementationKind::Composite(
+                    Rc::new(RefCell::new(TopLevelFunction {
+                      name_source_trace: exp.source_trace.clone(),
+                      arg_names: arg_names.clone(),
+                      arg_annotations: arg_names
+                        .iter()
+                        .map(|(_, arg_source_trace)| {
+                          FunctionArgumentAnnotation::empty(
+                            arg_source_trace.clone(),
+                          )
+                        })
+                        .collect(),
+                      return_attributes: IOAttributes::empty(
+                        exp.source_trace.clone(),
+                      ),
+                      entry_point: None,
+                      expression: exp.clone(),
+                    })),
+                  ),
+                };
+                new_signatures.push(signature.clone());
+                *exp = Exp {
+                  data: Type::Function(Box::new(FunctionSignature {
+                    abstract_ancestor: Some(Rc::new(signature)),
+                    args: f_signature.args,
+                    return_type: f_signature.return_type,
+                  }))
+                  .known()
+                  .into(),
+                  kind: ExpKind::Name(name),
+                  source_trace: exp.source_trace.clone(),
+                };
+                Ok(true)
+              } else {
+                Ok::<bool, Never>(true)
+              }
+            })
+            .unwrap();
+        }
+        _ => {}
+      }
+    }
+    for s in new_signatures {
+      self.add_abstract_function(Rc::new(RefCell::new(s)));
     }
   }
   pub fn inline_all_higher_order_arguments(&mut self, errors: &mut ErrorLog) {
@@ -2354,10 +2490,15 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.extract_inner_functions(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     self.inline_all_higher_order_arguments(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
+    self.inline_local_bound_function_applications();
     self.remove_unitlike_values();
     self.validate_top_level_fn_effects(&mut errors);
     if !errors.is_empty() {

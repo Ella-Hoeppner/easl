@@ -123,7 +123,7 @@ fn shader_examples() {
     "type_order",
     "nested_let_name_reuse",
     "local_binding_inlining",
-    // "vec_match", // todo!
+    "local_fn", // "vec_match", // todo!
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

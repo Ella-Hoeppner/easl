@@ -408,6 +408,8 @@ pub enum CompileErrorKind {
   WrongNumberOfGenericArguments(usize, usize),
   #[error("Cyclic dependency detected between types: {0:?}")]
   TypeDependencyCycle(Vec<String>),
+  #[error("Missing argument list in fn")]
+  FnMissingArgumentList,
 }
 
 impl CompileErrorKind {
