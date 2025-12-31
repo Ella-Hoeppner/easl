@@ -1,8 +1,6 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready"
-* seems like local functions that involve generic variables crash the compiler
-
 * let local functions skip type annotations
 
 * closures

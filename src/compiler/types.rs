@@ -1083,6 +1083,9 @@ impl Type {
             arg.var_type.as_known_mut(|t| t.replace_skolems(skolems))
           }
         }
+        Type::Array(_, inner_type) => {
+          inner_type.as_known_mut(|t| t.replace_skolems(skolems));
+        }
         _ => {}
       }
     }

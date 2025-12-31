@@ -1,0 +1,6 @@
+(defn (make-pair T)
+      [x: T]: [2: T]
+      [x x])
+
+(defn main []: [2: f32]
+  (make-pair 2.))

@@ -1078,6 +1078,9 @@ impl Program {
     let mut new_signatures: Vec<AbstractFunctionSignature> = vec![];
     for f in self.abstract_functions_iter() {
       let borrowed_f = f.borrow();
+      if !borrowed_f.generic_args.is_empty() {
+        continue;
+      }
       match &borrowed_f.implementation {
         FunctionImplementationKind::Composite(implementation) => {
           let mut root_encountered = false;
