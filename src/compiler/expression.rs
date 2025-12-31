@@ -364,11 +364,9 @@ pub fn arg_list_and_return_type_from_easl_tree(
 ) -> Option<(
   SourceTrace,
   Vec<(Rc<str>, SourceTrace)>,
-  Vec<AbstractType>,
+  Vec<Option<AbstractType>>,
   Vec<FunctionArgumentAnnotation>,
-  AbstractType,
-  SourceTrace,
-  Option<Annotation>,
+  Option<(AbstractType, SourceTrace, Option<Annotation>)>,
 )> {
   use crate::parse::Encloser as E;
   use crate::parse::Operator as O;
@@ -380,22 +378,31 @@ pub fn arg_list_and_return_type_from_easl_tree(
   {
     let return_type_ast = args_and_return_type.remove(1);
     let args_list_ast = args_and_return_type.remove(0);
-    (args_list_ast, return_type_ast)
+    (args_list_ast, Some(return_type_ast))
   } else {
-    let pos = tree.position().clone();
-    (tree, EaslTree::Inner((pos, Encloser(E::Parens)), vec![]))
+    (tree, None)
   };
-  let return_source = return_type_ast.position().into();
-  let (return_type_ast, return_annotation) =
-    extract_annotation(return_type_ast, errors);
-  let return_type =
-    match AbstractType::from_easl_tree(return_type_ast, typedefs, skolems) {
-      Ok(t) => t,
-      Err(e) => {
-        errors.log(e);
-        return None;
-      }
-    };
+  let return_info = match return_type_ast {
+    Some(return_type_ast) => {
+      let return_source = return_type_ast.position().into();
+      let (return_type_ast, return_annotation) =
+        extract_annotation(return_type_ast, errors);
+      let return_type = match AbstractType::from_easl_tree(
+        return_type_ast,
+        typedefs,
+        skolems,
+      ) {
+        Ok(t) => t,
+        Err(e) => {
+          errors.log(e);
+          return None;
+        }
+      };
+      Some((return_type, return_source, return_annotation))
+    }
+    None => None,
+  };
+
   if let EaslTree::Inner((position, Encloser(E::Square)), arg_asts) =
     args_list_ast
   {
@@ -403,12 +410,13 @@ pub fn arg_list_and_return_type_from_easl_tree(
     let ((arg_types, arg_annotations), arg_names) = match arg_asts
       .into_iter()
       .map(|arg| -> CompileResult<_> {
-        let (maybe_t_ast, arg_name_ast) = extract_type_annotation_ast(arg);
-        let t_ast = maybe_t_ast.ok_or(CompileError::new(
-          FunctionArgMissingType,
-          source_path.clone(),
-        ))?;
-        let t = AbstractType::from_easl_tree(t_ast, typedefs, skolems)?;
+        let (t_ast, arg_name_ast) = extract_type_annotation_ast(arg);
+        let t = match t_ast {
+          Some(t_ast) => {
+            Some(AbstractType::from_easl_tree(t_ast, typedefs, skolems)?)
+          }
+          None => None,
+        };
         let (arg_name_ast, arg_annotation) =
           extract_annotation(arg_name_ast, errors);
         if let EaslTree::Leaf(arg_name_pos, arg_name) = arg_name_ast {
@@ -460,7 +468,7 @@ pub fn arg_list_and_return_type_from_easl_tree(
         }
       })
       .collect::<CompileResult<(
-        (Vec<AbstractType>, Vec<FunctionArgumentAnnotation>),
+        (Vec<Option<AbstractType>>, Vec<FunctionArgumentAnnotation>),
         Vec<(Rc<str>, SourceTrace)>,
       )>>() {
       Ok(x) => x,
@@ -474,9 +482,7 @@ pub fn arg_list_and_return_type_from_easl_tree(
       arg_names,
       arg_types,
       arg_annotations,
-      return_type,
-      return_source,
-      return_annotation,
+      return_info,
     ))
   } else {
     errors.log(CompileError::new(
@@ -663,28 +669,33 @@ impl TypedExp {
                           if let Some(err) = errors.into_iter().next() {
                             return Err(err);
                           }
-                          let Some((
-                            _,
-                            arg_names,
-                            arg_types,
-                            arg_annotations,
-                            return_type,
-                            return_type_source_trace,
-                            return_annotation,
-                          )) = parsed_arg_list
+                          let Some((_, arg_names, arg_types, _, return_info)) =
+                            parsed_arg_list
                           else {
                             return err(FnMissingArgumentList, source_trace);
                           };
                           if children_iter.len() == 0 {
                             return err(FunctionMissingBody, source_trace);
                           }
-                          let concrete_return_type: ExpTypeInfo = return_type
-                            .concretize(
-                              skolems,
-                              typedefs,
-                              return_type_source_trace,
-                            )?
-                            .known()
+                          let concrete_return_type: TypeState =
+                            match return_info {
+                              Some((
+                                return_type,
+                                return_type_source_trace,
+                                _,
+                              )) => return_type
+                                .concretize(
+                                  skolems,
+                                  typedefs,
+                                  return_type_source_trace,
+                                )?
+                                .known(),
+                              None => TypeState::Unknown,
+                            };
+                          let concrete_return_type: ExpTypeInfo =
+                            TypeState::UnificationVariable(Rc::new(
+                              RefCell::new(concrete_return_type),
+                            ))
                             .into();
                           Some(Exp {
                             data: Type::Function(Box::new(FunctionSignature {
@@ -696,14 +707,17 @@ impl TypedExp {
                                   Ok((
                                     Variable {
                                       kind: VariableKind::Let,
-                                      var_type: t
-                                        .concretize(
-                                          skolems,
-                                          typedefs,
-                                          arg_source_trace.clone(),
-                                        )?
-                                        .known()
-                                        .into(),
+                                      var_type: match t {
+                                        Some(t) => t
+                                          .concretize(
+                                            skolems,
+                                            typedefs,
+                                            arg_source_trace.clone(),
+                                          )?
+                                          .known()
+                                          .into(),
+                                        None => TypeState::Unknown.into(),
+                                      },
                                     },
                                     vec![],
                                   ))

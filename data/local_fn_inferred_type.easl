@@ -1,0 +1,3 @@
+(defn main []: f32
+  (let [double (fn [x] (* x 2.))]
+    (double 5.)))

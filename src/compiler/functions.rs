@@ -8,7 +8,7 @@ use take_mut::take;
 
 use crate::{
   Never, compiler::{
-    annotation::FunctionAnnotation, effects::{Effect, EffectType}, entry::{EntryPoint, IOAttributes}, enums::AbstractEnum, expression::arg_list_and_return_type_from_easl_tree, program::{NameContext, TypeDefs}, structs::{AbstractStructField, Struct}, types::{ImmutableProgramLocalContext, NameDefinitionSource, Variable, VariableKind, parse_generic_argument}, util::compile_word, vars::VariableAddressSpace
+    annotation::FunctionAnnotation, effects::{Effect, EffectType}, entry::{EntryPoint, IOAttributes}, enums::AbstractEnum, expression::arg_list_and_return_type_from_easl_tree, program::{NameContext, TypeDefs}, structs::{AbstractStructField}, types::{Variable, VariableKind, parse_generic_argument}, util::compile_word, vars::VariableAddressSpace
   }, parse::EaslTree
 };
 
@@ -221,15 +221,35 @@ impl AbstractFunctionSignature {
       arg_names,
       arg_types,
       arg_annotations,
-      return_type,
-      return_source,
-      return_annotation,
+      return_info,
     )) = arg_list_and_return_type_from_easl_tree(
       arg_list_ast,
       &program.typedefs,
       &generic_arg_names,
       errors,
     ) {
+      let arg_types:Vec<AbstractType> = match arg_types
+        .into_iter()
+        .map(|x| x.ok_or_else(|| CompileError::new(
+          FunctionArgMissingType,
+          source_path.clone(),
+        )))
+        .collect::<CompileResult<Vec<_>>>() {
+        Ok(t) => t,
+        Err(e) => {
+          errors.log(e);
+          return None;
+        },
+      };
+      let (return_type,
+           return_source,
+           return_annotation) = return_info.unwrap_or_else(||
+        (
+          AbstractType::Unit,
+          source_path.clone(),
+          None
+        )
+      );
       match return_type.concretize(
         &generic_arg_names,
         &program.typedefs,
@@ -355,15 +375,6 @@ impl AbstractFunctionSignature {
       }
     }
     None
-  }
-  pub(crate) fn has_higher_order_arguments(&self) -> bool {
-    self.arg_types.iter().any(|(t, _)| {
-      if let AbstractType::Type(Type::Function(_)) = t {
-        true
-      } else {
-        false
-      }
-    })
   }
   pub(crate) fn has_uninlined_higher_order_arguments(&self) -> bool {
     self.arg_types.iter().any(|(t, _)| {
