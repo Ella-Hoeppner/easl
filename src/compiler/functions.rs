@@ -185,6 +185,7 @@ impl AbstractFunctionSignature {
       generic_args: vec![],
       abstract_ancestor: None,
       source_trace,
+      opaque: false,
     }
   }
   pub(crate) fn from_defn_ast(

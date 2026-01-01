@@ -159,6 +159,7 @@ impl UntypedStruct {
       filled_generics: HashMap::new(),
       abstract_ancestor: None,
       source_trace: self.source_trace,
+      opaque: false,
     })
   }
 }
@@ -261,6 +262,7 @@ pub struct AbstractStruct {
   pub generic_args: Vec<(Rc<str>, SourceTrace)>,
   pub abstract_ancestor: Option<Rc<Self>>,
   pub source_trace: SourceTrace,
+  pub opaque: bool,
 }
 
 impl AbstractStruct {
@@ -442,6 +444,7 @@ impl AbstractStruct {
         .collect(),
       abstract_ancestor: Some(self.clone().into()),
       source_trace: self.source_trace.clone(),
+      opaque: self.opaque,
     })
   }
   pub fn fill_generics(
@@ -524,6 +527,7 @@ impl AbstractStruct {
         .collect(),
       abstract_ancestor: Some(abstract_ancestor),
       source_trace: self.source_trace,
+      opaque: self.opaque,
     }
   }
   pub fn fill_abstract_generics(

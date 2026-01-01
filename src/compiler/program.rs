@@ -1189,6 +1189,7 @@ impl Program {
                       generic_args: vec![],
                       abstract_ancestor: None,
                       source_trace: exp.source_trace.clone(),
+                      opaque: false,
                     })
                   };
                   let mut arg_types: Vec<(AbstractType, Ownership)> =
@@ -1479,6 +1480,7 @@ impl Program {
                       })
                       .collect();
                     for i in args_to_remove {
+                      println!("removing argument {i} cause its unitlike");
                       args.remove(i);
                       applied_f_signature.args.remove(i);
                     }

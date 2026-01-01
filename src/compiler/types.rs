@@ -619,10 +619,13 @@ impl AbstractType {
       AbstractType::Unit => true,
       AbstractType::Generic(_) => false,
       AbstractType::Type(t) => t.is_unitlike(names),
-      AbstractType::AbstractStruct(abstract_struct) => !abstract_struct
-        .fields
-        .iter()
-        .any(|f| !f.field_type.is_unitlike(names)),
+      AbstractType::AbstractStruct(abstract_struct) => {
+        !abstract_struct.opaque
+          && !abstract_struct
+            .fields
+            .iter()
+            .any(|f| !f.field_type.is_unitlike(names))
+      }
       AbstractType::AbstractEnum(abstract_enum) => {
         if abstract_enum.variants.len() <= 1 {
           abstract_enum
@@ -698,12 +701,15 @@ impl Type {
   pub fn is_unitlike(&self, names: &mut NameContext) -> bool {
     match self {
       Type::Unit => true,
-      Type::Struct(s) => !s.fields.iter().any(|f| {
-        !f.field_type.kind.with_dereferenced(|f| match f {
-          TypeState::Known(t) => t.is_unitlike(names),
-          _ => false,
-        })
-      }),
+      Type::Struct(s) => {
+        !s.abstract_ancestor.opaque
+          && !s.fields.iter().any(|f| {
+            !f.field_type.kind.with_dereferenced(|f| match f {
+              TypeState::Known(t) => t.is_unitlike(names),
+              _ => false,
+            })
+          })
+      }
       Type::Enum(e) => {
         if e.variants.len() <= 1 {
           e.variants

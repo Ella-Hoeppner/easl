@@ -206,6 +206,7 @@ pub fn vec2() -> AbstractStruct {
     filled_generics: HashMap::new(),
     abstract_ancestor: None,
     source_trace: SourceTrace::empty(),
+    opaque: false,
   }
 }
 
@@ -236,6 +237,7 @@ pub fn vec3() -> AbstractStruct {
     filled_generics: HashMap::new(),
     abstract_ancestor: None,
     source_trace: SourceTrace::empty(),
+    opaque: false,
   }
 }
 
@@ -272,6 +274,7 @@ pub fn vec4() -> AbstractStruct {
     filled_generics: HashMap::new(),
     abstract_ancestor: None,
     source_trace: SourceTrace::empty(),
+    opaque: false,
   }
 }
 
@@ -288,6 +291,7 @@ pub fn texture_2d() -> AbstractStruct {
     filled_generics: HashMap::new(),
     abstract_ancestor: None,
     source_trace: SourceTrace::empty(),
+    opaque: true,
   }
 }
 
@@ -299,6 +303,7 @@ pub fn sampler() -> AbstractStruct {
     filled_generics: HashMap::new(),
     abstract_ancestor: None,
     source_trace: SourceTrace::empty(),
+    opaque: true,
   }
 }
 
@@ -315,6 +320,7 @@ pub fn matrix(n: usize, m: usize) -> AbstractStruct {
     filled_generics: HashMap::new(),
     abstract_ancestor: None,
     source_trace: SourceTrace::empty(),
+    opaque: true,
   }
 }
 
