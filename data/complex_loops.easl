@@ -1,0 +1,32 @@
+(defn main []
+  (let [@var x 1.]
+    (while (let [twice-x (* x 2.)]
+             (< twice-x 5.))
+      (*= x 2))
+    (for [i
+          (let [y 5.]
+            (* y y))
+          (< i 2.)
+          (+= i 1.)]
+      (*= x 3.))
+    (for [i
+          5.
+          (let [twice-i (* i 2.)]
+            (< twice-i 2.))
+          (+= i 2.)]
+      (*= x 5.))
+    (for [i
+          0.
+          (< i 1.)
+          (+= i
+              (let [z 5.]
+                (* z z)))]
+      (*= x 8.))
+    (for [i2
+          (let [z 3.]
+            (* z z))
+          (< i2 1.)
+          (+= i2
+              (let [z 5.]
+                (* z z)))]
+      (*= x 13.))))

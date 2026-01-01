@@ -1080,7 +1080,7 @@ pub fn eval(
       increment_variable_name,
       increment_variable_initial_value_expression,
       continue_condition_expression,
-      update_condition_expression,
+      update_expression,
       body_expression,
       ..
     } => {
@@ -1099,7 +1099,9 @@ pub fn eval(
           _ => return Err(NonBooleanLoopCondition),
         }
         eval(*body_expression.clone(), env)?;
-        eval(*update_condition_expression.clone(), env)?;
+        if let Some(update_expression) = &update_expression {
+          eval(*update_expression.clone(), env)?;
+        }
       }
       env.unbind(&increment_variable_name.0);
       Value::Unit

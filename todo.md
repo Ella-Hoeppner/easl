@@ -1,8 +1,6 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready"
-* deexpressionify complex expressions in the condition/update expressions of `while` and `for` loops
-
 * when match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
 
 * turn the examples into an actual test suite
@@ -10,6 +8,10 @@
   * for things that are currently commented out because they're examples of what would cause errors, move those to separate files and make tests that check that they produce the expected errors
 
 * `*=` doesn't work when multiplying a vec by a matrix
+
+* allow importing from other files
+  * for now just a simple string-concatenation approach will be fine I think, eventually probably want a proper module system but for now this will be enough
+    * I guess file origin will need to be tracked as part of a `SourceTrace`? might be tricky to get that right
 
 * atomics
 * barrier functions

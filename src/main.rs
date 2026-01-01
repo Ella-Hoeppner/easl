@@ -132,6 +132,7 @@ fn shader_examples() {
     "float_match",
     "vec_match",
     "for_multitype",
+    "complex_loops",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

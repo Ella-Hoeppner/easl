@@ -319,7 +319,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
     increment_variable_type: TypeState,
     increment_variable_initial_value_expression: Box<Exp<D>>,
     continue_condition_expression: Box<Exp<D>>,
-    update_condition_expression: Box<Exp<D>>,
+    update_expression: Option<Box<Exp<D>>>,
     body_expression: Box<Exp<D>>,
   },
   WhileLoop {
@@ -601,10 +601,11 @@ impl TypedExp {
         let encloser_or_operator_source_trace: SourceTrace = position.into();
         let mut children_iter = children.into_iter();
         match encloser_or_operator {
-          Encloser(e) => match e {
-            E::Parens => {
-              if let Some(first_child) = children_iter.next() {
-                match &first_child {
+          Encloser(e) => {
+            match e {
+              E::Parens => {
+                if let Some(first_child) = children_iter.next() {
+                  match &first_child {
                   EaslTree::Leaf(position, first_child_name) => {
                     let source_trace: SourceTrace = position.clone().into();
                     if first_child_name.starts_with(".") {
@@ -964,7 +965,7 @@ impl TypedExp {
                             increment_variable_type,
                             increment_variable_initial_value_expression,
                             continue_condition_expression,
-                            update_condition_expression,
+                            update_expression,
                           ) = if let EaslTree::Inner(
                             (
                               header_source_position,
@@ -1054,9 +1055,7 @@ impl TypedExp {
                               continue_condition_expression: Box::new(
                                 continue_condition_expression,
                               ),
-                              update_condition_expression: Box::new(
-                                update_condition_expression,
-                              ),
+                              update_expression: Some(Box::new(update_expression)),
                               body_expression: Box::new(TypedExp {
                                 data: Type::Unit.known().into(),
                                 kind: ExpKind::Block(body_expressions),
@@ -1160,49 +1159,50 @@ impl TypedExp {
                   data: Unknown.into(),
                   source_trace: encloser_or_operator_source_trace,
                 })
-              } else {
-                Exp {
-                  data: Type::Unit.known().into(),
-                  kind: ExpKind::Unit,
-                  source_trace: encloser_or_operator_source_trace,
+                } else {
+                  Exp {
+                    data: Type::Unit.known().into(),
+                    kind: ExpKind::Unit,
+                    source_trace: encloser_or_operator_source_trace,
+                  }
                 }
               }
+              E::Square => Exp {
+                data: Type::Array(
+                  Some(ArraySize::Literal(children_iter.len() as u32)),
+                  Box::new(TypeState::Unknown.into()),
+                )
+                .known()
+                .into(),
+                kind: ArrayLiteral(
+                  children_iter
+                    .map(|ast| {
+                      TypedExp::try_from_easl_tree(ast, typedefs, skolems, ctx)
+                    })
+                    .collect::<CompileResult<Vec<TypedExp>>>()?,
+                ),
+                source_trace: encloser_or_operator_source_trace,
+              },
+              E::Curly => {
+                return err(
+                  AnonymousStructsNotYetSupported,
+                  encloser_or_operator_source_trace,
+                );
+              }
+              E::LineComment => {
+                return err(
+                  EncounteredCommentInSource,
+                  encloser_or_operator_source_trace,
+                );
+              }
+              E::BlockComment => {
+                return err(
+                  EncounteredCommentInSource,
+                  encloser_or_operator_source_trace,
+                );
+              }
             }
-            E::Square => Exp {
-              data: Type::Array(
-                Some(ArraySize::Literal(children_iter.len() as u32)),
-                Box::new(TypeState::Unknown.into()),
-              )
-              .known()
-              .into(),
-              kind: ArrayLiteral(
-                children_iter
-                  .map(|ast| {
-                    TypedExp::try_from_easl_tree(ast, typedefs, skolems, ctx)
-                  })
-                  .collect::<CompileResult<Vec<TypedExp>>>()?,
-              ),
-              source_trace: encloser_or_operator_source_trace,
-            },
-            E::Curly => {
-              return err(
-                AnonymousStructsNotYetSupported,
-                encloser_or_operator_source_trace,
-              );
-            }
-            E::LineComment => {
-              return err(
-                EncounteredCommentInSource,
-                encloser_or_operator_source_trace,
-              );
-            }
-            E::BlockComment => {
-              return err(
-                EncounteredCommentInSource,
-                encloser_or_operator_source_trace,
-              );
-            }
-          },
+          }
           Operator(o) => match o {
             O::Annotation => {
               return err(
@@ -1269,13 +1269,15 @@ impl TypedExp {
         ForLoop {
           increment_variable_initial_value_expression,
           continue_condition_expression,
-          update_condition_expression,
+          update_expression,
           body_expression,
           ..
         } => {
           increment_variable_initial_value_expression.walk(prewalk_handler)?;
           continue_condition_expression.walk(prewalk_handler)?;
-          update_condition_expression.walk(prewalk_handler)?;
+          if let Some(update_expression) = &update_expression {
+            update_expression.walk(prewalk_handler)?;
+          }
           body_expression.walk(prewalk_handler)?;
         }
         WhileLoop {
@@ -1331,14 +1333,16 @@ impl TypedExp {
         ForLoop {
           increment_variable_initial_value_expression,
           continue_condition_expression,
-          update_condition_expression,
+          update_expression,
           body_expression,
           ..
         } => {
           increment_variable_initial_value_expression
             .walk_mut(prewalk_handler)?;
           continue_condition_expression.walk_mut(prewalk_handler)?;
-          update_condition_expression.walk_mut(prewalk_handler)?;
+          if let Some(update_expression) = update_expression {
+            update_expression.walk_mut(prewalk_handler)?;
+          }
           body_expression.walk_mut(prewalk_handler)?;
         }
         WhileLoop {
@@ -1452,7 +1456,7 @@ impl TypedExp {
         ForLoop {
           increment_variable_initial_value_expression,
           continue_condition_expression,
-          update_condition_expression,
+          update_expression,
           body_expression,
           increment_variable_name,
           increment_variable_type,
@@ -1467,7 +1471,9 @@ impl TypedExp {
           increment_variable_initial_value_expression
             .walk_with_ctx(prewalk_handler, ctx)?;
           continue_condition_expression.walk_with_ctx(prewalk_handler, ctx)?;
-          update_condition_expression.walk_with_ctx(prewalk_handler, ctx)?;
+          if let Some(update_expression) = update_expression {
+            update_expression.walk_with_ctx(prewalk_handler, ctx)?;
+          }
           body_expression.walk_with_ctx(prewalk_handler, ctx)?;
           ctx.unbind(&increment_variable_name.0);
         }
@@ -1580,7 +1586,7 @@ impl TypedExp {
         ForLoop {
           increment_variable_initial_value_expression,
           continue_condition_expression,
-          update_condition_expression,
+          update_expression,
           body_expression,
           increment_variable_name,
           increment_variable_type,
@@ -1596,8 +1602,9 @@ impl TypedExp {
             .walk_mut_with_ctx(prewalk_handler, ctx)?;
           continue_condition_expression
             .walk_mut_with_ctx(prewalk_handler, ctx)?;
-          update_condition_expression
-            .walk_mut_with_ctx(prewalk_handler, ctx)?;
+          if let Some(update_expression) = update_expression {
+            update_expression.walk_mut_with_ctx(prewalk_handler, ctx)?;
+          }
           body_expression.walk_mut_with_ctx(prewalk_handler, ctx)?;
           ctx.unbind(&increment_variable_name.0);
         }
@@ -2072,7 +2079,7 @@ impl TypedExp {
         increment_variable_type,
         increment_variable_initial_value_expression,
         continue_condition_expression,
-        update_condition_expression,
+        update_expression,
         body_expression,
       } => format!(
         "\nfor (var {}: {} = {}; {}; {}) {{{}\n}}",
@@ -2082,8 +2089,12 @@ impl TypedExp {
           .compile(ExpressionCompilationPosition::InnerExpression, names),
         continue_condition_expression
           .compile(ExpressionCompilationPosition::InnerExpression, names),
-        update_condition_expression
-          .compile(ExpressionCompilationPosition::InnerExpression, names),
+        if let Some(update_expression) = update_expression {
+          update_expression
+            .compile(ExpressionCompilationPosition::InnerExpression, names)
+        } else {
+          String::new()
+        },
         indent(
           body_expression
             .compile(ExpressionCompilationPosition::InnerLine, names)
@@ -2734,7 +2745,7 @@ impl TypedExp {
         increment_variable_type,
         increment_variable_initial_value_expression,
         continue_condition_expression,
-        update_condition_expression,
+        update_expression,
         body_expression,
       } => {
         let mut anything_changed = increment_variable_initial_value_expression
@@ -2759,15 +2770,21 @@ impl TypedExp {
           &continue_condition_expression.source_trace,
           errors,
         );
-        anything_changed |= update_condition_expression.data.constrain(
-          Type::Unit.known(),
-          &update_condition_expression.source_trace,
-          errors,
-        );
+
+        if let Some(update_expression) = update_expression {
+          anything_changed |= update_expression.data.constrain(
+            Type::Unit.known(),
+            &update_expression.source_trace,
+            errors,
+          );
+        }
         anything_changed |=
           continue_condition_expression.propagate_types_inner(ctx, errors);
-        anything_changed |=
-          update_condition_expression.propagate_types_inner(ctx, errors);
+
+        if let Some(update_expression) = update_expression {
+          anything_changed |=
+            update_expression.propagate_types_inner(ctx, errors);
+        }
         anything_changed |= body_expression.propagate_types_inner(ctx, errors);
         let mut resulting_increment_var =
           ctx.unbind(&increment_variable_name.0);
@@ -2781,7 +2798,11 @@ impl TypedExp {
             .data
             .subtree_fully_typed
             && continue_condition_expression.data.subtree_fully_typed
-            && update_condition_expression.data.subtree_fully_typed
+            && if let Some(update_expression) = update_expression {
+              update_expression.data.subtree_fully_typed
+            } else {
+              true
+            }
             && body_expression.data.subtree_fully_typed;
         anything_changed
       }
@@ -2990,7 +3011,7 @@ impl TypedExp {
           increment_variable_type,
           increment_variable_initial_value_expression,
           continue_condition_expression,
-          update_condition_expression,
+          update_expression,
           body_expression,
         } => {
           ctx.bind(
@@ -3002,7 +3023,10 @@ impl TypedExp {
           increment_variable_initial_value_expression
             .validate_assignments_inner(ctx)?;
           continue_condition_expression.validate_assignments_inner(ctx)?;
-          update_condition_expression.validate_assignments_inner(ctx)?;
+
+          if let Some(update_expression) = update_expression {
+            update_expression.validate_assignments_inner(ctx)?;
+          }
           body_expression.validate_assignments_inner(ctx)?;
           ctx.unbind(&increment_variable_name.0);
           false
@@ -3519,7 +3543,7 @@ impl TypedExp {
       ForLoop {
         increment_variable_name,
         continue_condition_expression,
-        update_condition_expression,
+        update_expression,
         body_expression,
         ..
       } => {
@@ -3539,14 +3563,16 @@ impl TypedExp {
           true,
           names,
         );
-        update_condition_expression.deshadow_inner(
-          globally_bound_names,
-          bindings,
-          reverse_bindings,
-          errors,
-          true,
-          names,
-        );
+        if let Some(update_expression) = update_expression {
+          update_expression.deshadow_inner(
+            globally_bound_names,
+            bindings,
+            reverse_bindings,
+            errors,
+            true,
+            names,
+          );
+        }
         body_expression.deshadow_inner(
           globally_bound_names,
           bindings,
@@ -3686,7 +3712,7 @@ impl TypedExp {
           ExpKind::ForLoop {
             increment_variable_initial_value_expression,
             continue_condition_expression,
-            update_condition_expression,
+            update_expression,
             body_expression,
             ..
           } => {
@@ -3694,8 +3720,10 @@ impl TypedExp {
               .validate_control_flow(errors, enclosing_loop_count);
             continue_condition_expression
               .validate_control_flow(errors, enclosing_loop_count);
-            update_condition_expression
-              .validate_control_flow(errors, enclosing_loop_count);
+            if let Some(update_expression) = update_expression {
+              update_expression
+                .validate_control_flow(errors, enclosing_loop_count);
+            }
             body_expression
               .validate_control_flow(errors, enclosing_loop_count + 1);
             false
@@ -3804,14 +3832,16 @@ impl TypedExp {
         increment_variable_name,
         increment_variable_initial_value_expression,
         continue_condition_expression,
-        update_condition_expression,
+        update_expression,
         body_expression,
         ..
       } => {
         let mut effects =
           increment_variable_initial_value_expression.effects(program);
         effects.merge(continue_condition_expression.effects(program));
-        effects.merge(update_condition_expression.effects(program));
+        if let Some(update_expression) = update_expression {
+          effects.merge(update_expression.effects(program));
+        }
         effects.merge(body_expression.effects(program));
         effects.remove(&Effect::ModifiesVar(increment_variable_name.0.clone()));
         effects.remove(&Effect::ReadsVar(increment_variable_name.0.clone()));
@@ -4124,6 +4154,186 @@ impl TypedExp {
                   _ => unreachable!(),
                 };
               }
+            }
+          }
+          WhileLoop {
+            condition_expression,
+            body_expression,
+          } => match &condition_expression.kind {
+            Block(_) | Match(_, _) | Let(_, _) | Return(_) => {
+              let condition_source = condition_expression.source_trace.clone();
+              let mut condition_replacement_expression = TypedExp {
+                data: Type::Bool.known().into(),
+                kind: ExpKind::BooleanLiteral(true),
+                source_trace: condition_source.clone(),
+              };
+              std::mem::swap(
+                condition_expression.as_mut(),
+                &mut condition_replacement_expression,
+              );
+              take(body_expression.as_mut(), |body_expression| TypedExp {
+                source_trace: body_expression.source_trace.clone(),
+                data: body_expression.data.clone(),
+                kind: ExpKind::Block(vec![
+                  TypedExp {
+                    data: Type::Unit.known().into(),
+                    source_trace: condition_source.clone(),
+                    kind: ExpKind::Match(
+                      condition_replacement_expression.into(),
+                      vec![
+                        (
+                          TypedExp {
+                            data: Type::Bool.known().into(),
+                            kind: ExpKind::BooleanLiteral(true),
+                            source_trace: condition_source.clone(),
+                          },
+                          TypedExp {
+                            data: Type::Unit.known().into(),
+                            kind: ExpKind::Unit,
+                            source_trace: condition_source.clone(),
+                          },
+                        ),
+                        (
+                          TypedExp {
+                            data: Type::Bool.known().into(),
+                            kind: ExpKind::Wildcard,
+                            source_trace: condition_source.clone(),
+                          },
+                          TypedExp {
+                            data: Type::Unit.known().into(),
+                            kind: ExpKind::Break,
+                            source_trace: condition_source.clone(),
+                          },
+                        ),
+                      ],
+                    ),
+                  },
+                  body_expression,
+                ]),
+              });
+              changed = true;
+            }
+            _ => {}
+          },
+          ForLoop {
+            increment_variable_initial_value_expression,
+            continue_condition_expression,
+            update_expression,
+            body_expression,
+            ..
+          } => {
+            match &increment_variable_initial_value_expression.kind {
+              Block(_) | Match(_, _) | Let(_, _) | Return(_) => {
+                let initial_value_name = names.gensym("initial_value");
+                let mut replacement_initial_value_exp = TypedExp {
+                  data: increment_variable_initial_value_expression
+                    .data
+                    .clone(),
+                  kind: ExpKind::Name(initial_value_name.clone()),
+                  source_trace: increment_variable_initial_value_expression
+                    .source_trace
+                    .clone(),
+                };
+                std::mem::swap(
+                  &mut replacement_initial_value_exp,
+                  increment_variable_initial_value_expression,
+                );
+                take(exp, |exp| TypedExp {
+                  data: exp.data.clone(),
+                  source_trace: exp.source_trace.clone(),
+                  kind: ExpKind::Let(
+                    vec![(
+                      initial_value_name,
+                      replacement_initial_value_exp.source_trace.clone(),
+                      VariableKind::Let,
+                      replacement_initial_value_exp,
+                    )],
+                    exp.into(),
+                  ),
+                });
+                changed = true;
+                return Ok(true);
+              }
+              _ => {}
+            }
+            let need_to_extract_condition_and_update =
+              match &continue_condition_expression.kind {
+                Block(_) | Match(_, _) | Let(_, _) | Return(_) => true,
+                _ => false,
+              } || if let Some(update_expression) = update_expression {
+                match &update_expression.kind {
+                  Block(_) | Match(_, _) | Let(_, _) | Return(_) => true,
+                  _ => false,
+                }
+              } else {
+                false
+              };
+            if need_to_extract_condition_and_update {
+              let condition_source =
+                continue_condition_expression.source_trace.clone();
+              let mut continue_condition_replacement_expression = TypedExp {
+                data: Type::Bool.known().into(),
+                kind: ExpKind::BooleanLiteral(true),
+                source_trace: condition_source.clone(),
+              };
+              std::mem::swap(
+                continue_condition_expression.as_mut(),
+                &mut continue_condition_replacement_expression,
+              );
+              let mut update_replacement_expression = None;
+              std::mem::swap(
+                update_expression,
+                &mut update_replacement_expression,
+              );
+              take(body_expression.as_mut(), |body_expression| TypedExp {
+                source_trace: body_expression.source_trace.clone(),
+                data: Type::Unit.known().into(),
+                kind: ExpKind::Block({
+                  let mut inner_expressions = vec![body_expression];
+                  if let Some(update_replacement_expression) =
+                    update_replacement_expression
+                  {
+                    inner_expressions.push(*update_replacement_expression);
+                  }
+                  inner_expressions.push(TypedExp {
+                    source_trace: continue_condition_replacement_expression
+                      .source_trace
+                      .clone(),
+                    data: Type::Unit.known().into(),
+                    kind: ExpKind::Match(
+                      continue_condition_replacement_expression.into(),
+                      vec![
+                        (
+                          TypedExp {
+                            data: Type::Bool.known().into(),
+                            kind: ExpKind::BooleanLiteral(true),
+                            source_trace: condition_source.clone(),
+                          },
+                          TypedExp {
+                            data: Type::Unit.known().into(),
+                            kind: ExpKind::Unit,
+                            source_trace: condition_source.clone(),
+                          },
+                        ),
+                        (
+                          TypedExp {
+                            data: Type::Bool.known().into(),
+                            kind: ExpKind::Wildcard,
+                            source_trace: condition_source.clone(),
+                          },
+                          TypedExp {
+                            data: Type::Unit.known().into(),
+                            kind: ExpKind::Break,
+                            source_trace: condition_source.clone(),
+                          },
+                        ),
+                      ],
+                    ),
+                  });
+                  inner_expressions
+                }),
+              });
+              changed = true;
             }
           }
           Let(items, body) => loop {
