@@ -9,6 +9,7 @@ use crate::{
     entry::IOAttributes,
     error::err,
     expression::{Accessor, ExpKind, Number, TypedExp},
+    functions::is_vec_name,
     program::{NameContext, TypeDefs},
     types::{ArraySize, contains_name_leaf, extract_type_annotation_ast},
     util::{compile_word, read_leaf},
@@ -549,6 +550,9 @@ impl AbstractStruct {
         generic_bindings,
       );
     }
+  }
+  pub fn is_vec(&self) -> bool {
+    is_vec_name(&*self.name.0)
   }
   pub fn is_vec4f(&self) -> bool {
     &*self.name.0 == "vec4"

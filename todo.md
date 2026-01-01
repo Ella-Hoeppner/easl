@@ -1,15 +1,6 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready"
-* let local functions skip type annotations
-
-* closures
-
-* apparently you can't use floats as the scrutinees in `switch` statements in wgsl, so need to change the way matches are handled when compiling `match`es on floats
-  * should just compile to an if-else change with equality checks instead
-  * actually seems like the same is true for everything but scalar integers, so should make `match`es on vecs compile this way too
-    * also I guess `match` should be restricted to only allow scalars or vectors as scrutinees? Since structs don't automatically have a notion of equality defined
-
 * when match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
 
 * turn the examples into an actual test suite
@@ -126,35 +117,11 @@
   * these will need to be represented as `FunctionImplementationKind::Composite`s, but will just have their definitions builtin ratehr than being user-defined
   * need to make sure these don't always get compiled to the output if they aren't used, though, unlike normal composite functions
 
-* support matching on vectors and other structs
-  * `vec_match.easl` demonstrates the problem
-  * I guess for now, if the pattern looks like an application `(f ...)` and doesn't match any known enum constructor, then it should just be evaluated and it's value checked against as part of the `case` statement. This means it won't be possible to destructure a struct, but for now it's better than nothing.
-
 ## Secondary priority
 ### nice features to have once the language is at wgsl-parity
-* support declaring local functions like `(fn [x: ...]: ... ...)`
-  * also support functions that return other functions, which currently isn't possible
-  * will be nice to have this even if they don't close over the environment yet, e.g. for quickly modifying an sdf in a raymarcher without having to declare a whole top-level `defn` for it
-  * also allows for functions to return other functions, which can't really be done right now
-    * should make sure that it's possible to have a function like this:
-      ```
-      (defn distort-sdf [sdf: (Fn [vec3f] f32)
-                         distortion: (Fn [vec3f] vec3f)]: (Fn [vec3f] f32)
-        (fn [x: vec3f]: f32
-          (sdf (+ x (distortion x)))))
-      ```
-      and that you can use this alongside other higher-order functions, i.e.
-      ```
-      (raymarch (distort-sdf my-sdf my-disortion) ...)
-      ```
-      * Currently the restriction on higher-order arguments in `inline_higher_order_arguments` is that they all just be a name, otherwise an error will be thrown. But to make the above work this restriction will have to be relaxed
-        * Actually I guess if `inline_higher_order_arguments` just proceeds as a postwalk rather than a prewalk then this should work fine?
-  * I think the way best way to make this work will be to introduce a unique unit-like type for each function. Then, after typechecking but before inlining, for each expression of a `(Fn [...] ...)` type, replace it's type with the specific type for that individual function. Then during inlining, choose the function to inline in each location based on it's type, as opposed to the current system where it's just based on the name
-    * this way you can have bind local values to functions then pass them to other higher-order fns, and return fns from other fns, neither of which are possible currently
-    * any signature that accepts one of these unit-like types should be removed from it's signature as part of inlining, just like we currently remove any function-type arguments
-      * also, any bindings to these unit-like types should be removed at the same time
-    * Having a unique anonymous type for each function like this will be useful for later implementing closures anyways. Each closure will get its own specific type as well, but it will have fields corresponding to the values captured in its scope, rather than being unit-like
-      * also, even later when trying to support dynamically varying function arguments, the types of those can simply be treated as an anonymous unions over these function-specific types
+* allow functions to return other functions
+
+* support destructuring structs in `match` and `let` blocks
 
 * more threading macros
   * `->=`
@@ -197,16 +164,11 @@
     * guess I could do like `{[]}` or `{()}`? That kinda sucks though
     * `'()` would work I guess but i also kinda hate that
 
-* infer the types of `(fn [...] ...)` expressions
-  * since there aren't any generic variables involved, I think these should be unambiguously typable most of the time
-
 * implement `#` as a shorthand anonymous function syntax
   * like clojure's `#(...)`, but works on any kind of expression, e.g. `#[% 1.]` for a function that returns an array, or `#5` for a constant function that always just returns `5`.
   * I guess this at least needs to be able to represent a function of 0 args (if no `%` is present), or a function of 1 arg. Could also eventually extend it to support `%1` `%2` like clojure does for n-arg fns. 
     * But sometimes a `#(...)` expression that doesn't use `%` inside shouldn't actually be treated as a 0-arg fn, but instead a n>0-arg fn that just ignores it's argument(s). At least, it would be ideal to support that. This ambiguity doesn't occur with the `(fn [...] ...)` syntax since you at least have to name each argument even if you don't use them in the body, so the number of args is never ambiguous. But if we wanna support this in the `#` syntax then the *number of arguments* will itself need to be part of what gets inferred, which seems somewhat tricky.
       * as a workaround the user could always do `#(let [_ %] ...)` to indicate that there should be an argument in `%`, but then just not use it in the expression that actually gets returned. But it would be sorta lame to have to do that
-
-* closures
 
 * support a `@render` function tag that acts as a fragment and vertex shader in one
   * Basically it'll act like a vertex shader that returns a fragment shader

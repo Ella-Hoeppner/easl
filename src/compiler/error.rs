@@ -275,6 +275,8 @@ pub enum CompileErrorKind {
   DuplicatePattern,
   #[error("`match` expression doesn't have exhaustive patterns")]
   NonexhaustiveMatch,
+  #[error("Can't match on this type")]
+  CantMatchOnType,
   #[error("Invalid enum variant")]
   InvalidEnumVariant,
   #[error("Cannot calculate size of type")]

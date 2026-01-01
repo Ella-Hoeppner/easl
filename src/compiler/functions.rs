@@ -90,7 +90,32 @@ pub struct AbstractFunctionSignature {
   pub captured_scope: Option<AbstractStruct>,
 }
 
+pub fn is_vec_name(name: &str) -> bool {
+  matches!(
+    name,
+    "vec2"
+      | "vec3"
+      | "vec4"
+      | "vec2f"
+      | "vec3f"
+      | "vec4f"
+      | "vec2i"
+      | "vec3i"
+      | "vec4i"
+      | "vec2u"
+      | "vec3u"
+      | "vec4u"
+      | "vec2b"
+      | "vec3b"
+      | "vec4b"
+  )
+}
+
 impl AbstractFunctionSignature {
+  pub fn is_builtin_vector_constructor(&self) -> bool {
+    matches!(&self.implementation, FunctionImplementationKind::Builtin(_))
+      && is_vec_name(&*self.name)
+  }
   pub fn reference_arg_positions(&self) -> Vec<usize> {
     self
       .arg_types

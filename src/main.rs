@@ -129,7 +129,8 @@ fn shader_examples() {
     "local_fn",
     "local_fn_inferred_type",
     "closure",
-    // "vec_match", // todo!
+    "float_match",
+    "vec_match",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();
