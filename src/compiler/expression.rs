@@ -316,7 +316,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Block(Vec<Exp<D>>),
   ForLoop {
     increment_variable_name: (Rc<str>, SourceTrace),
-    increment_variable_type: Type,
+    increment_variable_type: TypeState,
     increment_variable_initial_value_expression: Box<Exp<D>>,
     continue_condition_expression: Box<Exp<D>>,
     update_condition_expression: Box<Exp<D>>,
@@ -1001,8 +1001,9 @@ impl TypedExp {
                                       typedefs,
                                       skolems,
                                     )
+                                    .map(|t| t.known())
                                   })
-                                  .unwrap_or(Ok(Type::I32))?,
+                                  .unwrap_or(Ok(TypeState::Unknown))?,
                                 TypedExp::try_from_easl_tree(
                                   increment_variable_initial_value_subtree,
                                   typedefs,
@@ -1459,7 +1460,7 @@ impl TypedExp {
         } => {
           ctx.bind(
             &increment_variable_name.0,
-            Variable::immutable(increment_variable_type.clone().known().into())
+            Variable::immutable(increment_variable_type.clone().into())
               .with_kind(VariableKind::Var),
             increment_variable_name.1.clone(),
           );
@@ -1587,7 +1588,7 @@ impl TypedExp {
         } => {
           ctx.bind(
             &increment_variable_name.0,
-            Variable::immutable(increment_variable_type.clone().known().into())
+            Variable::immutable(increment_variable_type.clone().into())
               .with_kind(VariableKind::Var),
             increment_variable_name.1.clone(),
           );
@@ -1797,77 +1798,73 @@ impl TypedExp {
         let value_line = body.compile(position, names);
         format!("\n{}{}", binding_lines.join("\n"), value_line)
       }
-      Match(scrutinee, arms) => {
-        let ExpKind::Name(scrutinee_name) = &scrutinee.kind else {
-          panic!("scrutinee wasn't name in enum match block")
-        };
-        match scrutinee.data.unwrap_known() {
-          Type::Bool => match arms.len() {
-            1 => {
-              let (pattern, case) = arms.into_iter().next().unwrap();
-              let compiled_case = case.compile(position, names);
-              match pattern.kind {
-                ExpKind::Wildcard => compiled_case,
-                ExpKind::BooleanLiteral(true) => format!(
-                  "\nif ({}) {{{}\n}}",
-                  scrutinee.compile(InnerExpression, names),
-                  indent(compiled_case),
-                ),
-                ExpKind::BooleanLiteral(false) => format!(
-                  "\nif (!{}) {{{}\n}}",
-                  scrutinee.compile(InnerExpression, names),
-                  indent(compiled_case),
-                ),
-                _ => unreachable!(),
+      Match(scrutinee, arms) => match scrutinee.data.unwrap_known() {
+        Type::Bool => match arms.len() {
+          1 => {
+            let (pattern, case) = arms.into_iter().next().unwrap();
+            let compiled_case = case.compile(position, names);
+            match pattern.kind {
+              ExpKind::Wildcard => compiled_case,
+              ExpKind::BooleanLiteral(true) => format!(
+                "\nif ({}) {{{}\n}}",
+                scrutinee.compile(InnerExpression, names),
+                indent(compiled_case),
+              ),
+              ExpKind::BooleanLiteral(false) => format!(
+                "\nif (!{}) {{{}\n}}",
+                scrutinee.compile(InnerExpression, names),
+                indent(compiled_case),
+              ),
+              _ => unreachable!(),
+            }
+          }
+          2 => {
+            let mut true_case = None;
+            let mut false_case = None;
+            let mut wildcard_case = None;
+            for (pattern, case) in arms {
+              if pattern.kind == ExpKind::Wildcard {
+                wildcard_case = Some(case);
+              } else if pattern.kind == ExpKind::BooleanLiteral(true) {
+                true_case = Some(case);
+              } else if pattern.kind == ExpKind::BooleanLiteral(false) {
+                false_case = Some(case);
+              } else {
+                unreachable!()
               }
             }
-            2 => {
-              let mut true_case = None;
-              let mut false_case = None;
-              let mut wildcard_case = None;
-              for (pattern, case) in arms {
-                if pattern.kind == ExpKind::Wildcard {
-                  wildcard_case = Some(case);
-                } else if pattern.kind == ExpKind::BooleanLiteral(true) {
-                  true_case = Some(case);
-                } else if pattern.kind == ExpKind::BooleanLiteral(false) {
-                  false_case = Some(case);
-                } else {
-                  unreachable!()
-                }
-              }
-              let (true_case, false_case) = if let Some(true_case) = true_case {
-                (true_case, false_case.or(wildcard_case).unwrap())
+            let (true_case, false_case) = if let Some(true_case) = true_case {
+              (true_case, false_case.or(wildcard_case).unwrap())
+            } else {
+              (true_case.or(wildcard_case).unwrap(), false_case.unwrap())
+            };
+            let (true_case, false_case) = (
+              if true_case.kind == ExpKind::Unit {
+                indent("\n".to_string())
               } else {
-                (true_case.or(wildcard_case).unwrap(), false_case.unwrap())
-              };
-              let (true_case, false_case) = (
-                if true_case.kind == ExpKind::Unit {
-                  indent("\n".to_string())
-                } else {
-                  indent(true_case.compile(position, names))
-                },
-                if false_case.kind == ExpKind::Unit {
-                  indent("\n".to_string())
-                } else {
-                  indent(false_case.compile(position, names))
-                },
-              );
-              let condition = scrutinee.compile(InnerExpression, names);
-              if position == InnerExpression {
-                format!("select({false_case}, {true_case}, {condition})")
+                indent(true_case.compile(position, names))
+              },
+              if false_case.kind == ExpKind::Unit {
+                indent("\n".to_string())
               } else {
-                format!(
-                  "\nif ({condition}) {{{true_case}\n}} \
+                indent(false_case.compile(position, names))
+              },
+            );
+            let condition = scrutinee.compile(InnerExpression, names);
+            if position == InnerExpression {
+              format!("select({false_case}, {true_case}, {condition})")
+            } else {
+              format!(
+                "\nif ({condition}) {{{true_case}\n}} \
                   else {{{false_case}\n}}",
-                )
-              }
+              )
             }
-            _ => unreachable!(),
-          },
-          Type::Enum(_) => {
-            let arm_count = arms.len();
-            format!(
+          }
+          _ => unreachable!(),
+        },
+        Type::Enum(_) => {
+          let arm_count = arms.len();
+          format!(
             "\nswitch({}.discriminant) {{\n  {}\n}}",
             scrutinee.clone().compile(InnerExpression, names),
             indent(
@@ -1953,7 +1950,7 @@ impl TypedExp {
                         .inner_type
                         .unwrap_known()
                         .bitcasted_from_enum_data(
-                          scrutinee_name.clone(),
+                          scrutinee.clone().compile(InnerExpression, names).into(),
                           &e,
                           names,
                         );
@@ -1979,75 +1976,75 @@ impl TypedExp {
                 .join("\n")
             )
           )
-          }
-          Type::I32 | Type::U32 => {
-            format!(
-              "\nswitch ({}) {{\n  {}\n}}",
-              scrutinee.compile(InnerExpression, names),
-              indent(
-                arms
-                  .into_iter()
-                  .map(|(pattern, value)| format!(
-                    "{}: {{{}\n{}}}",
-                    if pattern.kind == Wildcard {
-                      "default".to_string()
-                    } else {
-                      "case ".to_string()
-                        + &pattern.compile(InnerExpression, names)
-                    },
-                    if value.kind == ExpKind::Unit {
-                      "".to_string()
-                    } else {
-                      indent(value.compile(position, names))
-                    },
-                    if position == ExpressionCompilationPosition::Return {
-                      ""
-                    } else {
-                      "  break;\n"
-                    }
-                  ))
-                  .collect::<Vec<String>>()
-                  .join("\n")
-              )
-            )
-          }
-          other_type => {
-            let arm_count = arms.len();
-            arms
-              .into_iter()
-              .enumerate()
-              .map(|(i, (pattern, value))| {
-                let pattern_prefix = if i == (arm_count - 1) {
-                  " else".to_string()
-                } else {
-                  let conditional = format!(
-                    "({} == {})",
-                    scrutinee_name,
-                    &pattern.compile(InnerExpression, names),
-                  );
-                  format!(
-                    "{} {}",
-                    if i == 0 { "\nif" } else { " else if" },
-                    if let Type::Struct(s) = &other_type
-                      && s.abstract_ancestor.is_vec()
-                    {
-                      format!("all({conditional})")
-                    } else {
-                      conditional
-                    }
-                  )
-                };
-                format!(
-                  "{} {{{}\n}}",
-                  pattern_prefix,
-                  indent(value.compile(position, names))
-                )
-              })
-              .collect::<Vec<String>>()
-              .join("")
-          }
         }
-      }
+        Type::I32 | Type::U32 => {
+          format!(
+            "\nswitch ({}) {{\n  {}\n}}",
+            scrutinee.compile(InnerExpression, names),
+            indent(
+              arms
+                .into_iter()
+                .map(|(pattern, value)| format!(
+                  "{}: {{{}\n{}}}",
+                  if pattern.kind == Wildcard {
+                    "default".to_string()
+                  } else {
+                    "case ".to_string()
+                      + &pattern.compile(InnerExpression, names)
+                  },
+                  if value.kind == ExpKind::Unit {
+                    "".to_string()
+                  } else {
+                    indent(value.compile(position, names))
+                  },
+                  if position == ExpressionCompilationPosition::Return {
+                    ""
+                  } else {
+                    "  break;\n"
+                  }
+                ))
+                .collect::<Vec<String>>()
+                .join("\n")
+            )
+          )
+        }
+        other_type => {
+          let arm_count = arms.len();
+          let compiled_scrutinee = scrutinee.compile(InnerExpression, names);
+          arms
+            .into_iter()
+            .enumerate()
+            .map(|(i, (pattern, value))| {
+              let pattern_prefix = if i == (arm_count - 1) {
+                " else".to_string()
+              } else {
+                let equality_expression = format!(
+                  "({} == {})",
+                  compiled_scrutinee.clone(),
+                  &pattern.compile(InnerExpression, names),
+                );
+                format!(
+                  "{} {}",
+                  if i == 0 { "\nif" } else { " else if" },
+                  if let Type::Struct(s) = &other_type
+                    && s.abstract_ancestor.is_vec()
+                  {
+                    format!("all{equality_expression}")
+                  } else {
+                    equality_expression
+                  }
+                )
+              };
+              format!(
+                "{} {{{}\n}}",
+                pattern_prefix,
+                indent(value.compile(position, names))
+              )
+            })
+            .collect::<Vec<String>>()
+            .join("")
+        }
+      },
       Block(expressions) => {
         let child_count = expressions.len();
         if child_count == 0 {
@@ -2740,11 +2737,10 @@ impl TypedExp {
         update_condition_expression,
         body_expression,
       } => {
-        let mut variable_typestate = increment_variable_type.clone().known();
         let mut anything_changed = increment_variable_initial_value_expression
           .data
           .mutually_constrain(
-            &mut variable_typestate,
+            increment_variable_type,
             &increment_variable_initial_value_expression.source_trace,
             errors,
           );
@@ -2754,7 +2750,7 @@ impl TypedExp {
           &increment_variable_name.0,
           Variable {
             kind: VariableKind::Var,
-            var_type: variable_typestate.into(),
+            var_type: increment_variable_type.clone().into(),
           },
           increment_variable_name.1.clone(),
         );
@@ -2773,7 +2769,13 @@ impl TypedExp {
         anything_changed |=
           update_condition_expression.propagate_types_inner(ctx, errors);
         anything_changed |= body_expression.propagate_types_inner(ctx, errors);
-        ctx.unbind(&increment_variable_name.0);
+        let mut resulting_increment_var =
+          ctx.unbind(&increment_variable_name.0);
+        increment_variable_type.mutually_constrain(
+          &mut resulting_increment_var.var_type,
+          &increment_variable_name.1,
+          errors,
+        );
         self.data.subtree_fully_typed =
           increment_variable_initial_value_expression
             .data
@@ -2993,7 +2995,7 @@ impl TypedExp {
         } => {
           ctx.bind(
             &increment_variable_name.0,
-            Variable::immutable(increment_variable_type.clone().known().into())
+            Variable::immutable(increment_variable_type.clone().into())
               .with_kind(VariableKind::Var),
             increment_variable_name.1.clone(),
           );

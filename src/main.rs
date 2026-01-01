@@ -131,6 +131,7 @@ fn shader_examples() {
     "closure",
     "float_match",
     "vec_match",
+    "for_multitype",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

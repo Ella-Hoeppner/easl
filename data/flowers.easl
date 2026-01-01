@@ -147,7 +147,7 @@
 (defn fragment [in: VertexOutput]: @{location 0} vec4f
   (let [pos (/ in.square-pos dimensions)
         @var d 100.
-        petal-count 10]
+        petal-count 10u]
     (for [i
           0
           (< i petal-count)

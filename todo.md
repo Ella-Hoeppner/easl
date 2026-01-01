@@ -1,6 +1,8 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready"
+* deexpressionify complex expressions in the condition/update expressions of `while` and `for` loops
+
 * when match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
 
 * turn the examples into an actual test suite
@@ -23,13 +25,9 @@
   * texture_storage
   * all the functions that use these
 
-* let `for` loops use types other than `i32`s for their incrementation variables
-  * do `do` blocks work right now if you try to use them in the condition or incrementation expressions?
-  * Are you required to use a literal for the initial value of a for loop? Can't recall how i implemented it. If so that restriction should be removed
-
 * `catch_duplicate_signatures` needs to be extended to catch partial overlaps in the type-domains of generic functions
   * like, right now you can implement `(defn + [a: f32 b:f32]: f32 ...)` without error, even though this conflicts with the builtin definition `(defn (+ T) [a: T b:T]: T)`. The two signatures aren't equal, so no error is detected, but it should be, since the `f32` implementation is just a special-case of the generic definition.
-    * this needs to not only catch the "non-generic signature is a special case of generic signature" case, but also the "two generic signatures overlap" case, like `(defn f |T: Scalar| [a: T]: T)` and `(defn f |T: Integer| [a: T]: T)`
+    * this needs to not only catch the "non-generic signature is a special case of generic signature" case, but also the "two generic signatures overlap" case, like `(defn (f T: Scalar) [a: T]: T)` and `(defn f |T: Integer| [a: T]: T)`
 
 * formatter: 
   * have a separate threshold for the max size allowed for top-level `(def ...)`
