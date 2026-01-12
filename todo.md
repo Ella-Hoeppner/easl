@@ -1,6 +1,9 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready"
+* calls to `array-length` on nested arrays seem to just not work!
+  * or maybe it's calls to `array-length` on arrays returned from functions? or both
+
 * when match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
 
 * allow functions to return other functions

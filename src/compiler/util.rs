@@ -3,7 +3,10 @@ use std::rc::Rc;
 use fsexp::syntax::EncloserOrOperator;
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::parse::{EaslTree, Operator};
+use crate::{
+  compiler::wgsl::is_wgsl_reserved_word,
+  parse::{EaslTree, Operator},
+};
 
 use super::error::{CompileErrorKind::*, CompileResult, err};
 
@@ -40,7 +43,7 @@ pub fn read_type_annotated_name(
 }
 
 pub fn compile_word(word: Rc<str>) -> String {
-  match &*word {
+  let compiled_word = match &*word {
     "vec2<bool>" | "vec3<bool>" | "vec4<bool>" | "bitcast<f32>"
     | "bitcast<i32>" | "bitcast<u32>" => word.to_string(),
     _ => word
@@ -51,6 +54,11 @@ pub fn compile_word(word: Rc<str>) -> String {
       .replace("<", "ABRACKET_LEFT")
       .replace("?", "QMARK")
       .replace("=", "EQUAL_SIGN"),
+  };
+  if is_wgsl_reserved_word(&compiled_word) {
+    compiled_word + "_"
+  } else {
+    compiled_word
   }
 }
 

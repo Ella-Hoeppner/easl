@@ -133,7 +133,8 @@ fn shader_examples() {
     // "vec_match",
     // "for_multitype",
     // "complex_loops",
-    "texture",
+    // "texture",
+    "reserved_wgsl_names",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

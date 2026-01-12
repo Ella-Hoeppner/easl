@@ -31,6 +31,7 @@ use crate::{
     },
     util::{compile_word, is_valid_name},
     vars::TopLevelVariableKind,
+    wgsl::is_wgsl_reserved_word,
   },
   parse::{EaslSyntax, EaslTree, Encloser, Operator, parse_easl},
 };
@@ -176,7 +177,7 @@ impl NameContext {
 #[derive(Debug, Clone)]
 pub struct TypeDefs {
   pub structs: Vec<AbstractStruct>,
-  pub enums: Vec<Rc<AbstractEnum>>,
+  pub enums: Vec<AbstractEnum>,
   pub type_aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
 }
 
@@ -347,7 +348,7 @@ impl Program {
     }
     self
   }
-  pub fn with_enum(mut self, e: Rc<AbstractEnum>) -> Self {
+  pub fn with_enum(mut self, e: AbstractEnum) -> Self {
     if !self.typedefs.enums.contains(&e) {
       if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&&*e.name.0) {
         for variant in e.variants.iter() {
@@ -361,7 +362,7 @@ impl Program {
                   .map(|name| (name.0.clone(), name.1.clone(), vec![]))
                   .collect(),
                 arg_types: vec![(variant.inner_type.clone(), Ownership::Owned)],
-                return_type: AbstractType::AbstractEnum(e.clone()),
+                return_type: AbstractType::AbstractEnum(e.clone().into()),
                 implementation: FunctionImplementationKind::EnumConstructor(
                   variant.name.clone(),
                 ),
@@ -401,7 +402,7 @@ impl Program {
       self.typedefs.structs.push(s);
     }
   }
-  pub fn add_monomorphized_enum(&mut self, e: Rc<AbstractEnum>) {
+  pub fn add_monomorphized_enum(&mut self, e: AbstractEnum) {
     if self
       .typedefs
       .enums
@@ -1480,7 +1481,6 @@ impl Program {
                       })
                       .collect();
                     for i in args_to_remove {
-                      println!("removing argument {i} cause its unitlike");
                       args.remove(i);
                       applied_f_signature.args.remove(i);
                     }
@@ -1534,8 +1534,8 @@ impl Program {
       }
     }
     for e in self.typedefs.enums.iter().cloned() {
-      if let Some(compiled_enum) = Rc::unwrap_or_clone(e)
-        .compile_if_non_generic(&self.typedefs, &mut names)?
+      if let Some(compiled_enum) =
+        e.compile_if_non_generic(&self.typedefs, &mut names)?
       {
         wgsl += &compiled_enum;
         wgsl += "\n\n";
@@ -1549,7 +1549,7 @@ impl Program {
           FunctionImplementationKind::EnumConstructor(
             original_variant_name,
           ) => {
-            let variant_name = f.name;
+            let variant_name = compile_word(f.name);
             let AbstractType::AbstractEnum(e) = f.return_type else {
               unreachable!("EnumConstructor fn had a non-enum type")
             };
@@ -1584,17 +1584,19 @@ impl Program {
               .take(e.inner_data_size_in_u32s()?)
               .collect::<Vec<String>>()
               .join(", ");
-            let enum_name = e.original_ancestor().monomorphized_name(
-              &e.variants
-                .iter()
-                .map(|variant| {
-                  let AbstractType::Type(t) = &variant.inner_type else {
-                    unreachable!()
-                  };
-                  t.clone()
-                })
-                .collect(),
-              &mut names,
+            let enum_name = compile_word(
+              e.original_ancestor().monomorphized_name(
+                &e.variants
+                  .iter()
+                  .map(|variant| {
+                    let AbstractType::Type(t) = &variant.inner_type else {
+                      unreachable!()
+                    };
+                    t.clone()
+                  })
+                  .collect(),
+                &mut names,
+              ),
             );
             wgsl += &format!(
               "fn {variant_name}({args_str}) -> {enum_name} {{\n  \

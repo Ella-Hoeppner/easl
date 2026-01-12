@@ -14,3 +14,4 @@ pub mod structs;
 pub mod types;
 pub mod util;
 pub mod vars;
+pub mod wgsl;

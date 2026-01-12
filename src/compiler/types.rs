@@ -429,8 +429,7 @@ impl AbstractType {
                 })
                 .collect::<CompileResult<Vec<_>>>()?;
               Ok(AbstractType::AbstractEnum(Rc::new(
-                Rc::unwrap_or_clone(generic_enum.clone())
-                  .fill_abstract_generics(generic_args),
+                generic_enum.clone().fill_abstract_generics(generic_args),
               )))
             }
             (None, None) => {
@@ -882,7 +881,7 @@ impl Type {
                 typedefs.enums.iter().find(|e| &*e.name.0 == type_name)
               {
                 Ok(Type::Enum(AbstractEnum::fill_generics_ordered(
-                  e.clone(),
+                  e.clone().into(),
                   generic_args,
                   typedefs,
                   source_trace.clone(),
@@ -1000,7 +999,7 @@ impl Type {
         } else if let Some(e) = typedefs.enums.iter().find(|e| e.name.0 == name)
         {
           Enum(AbstractEnum::fill_generics_with_unification_variables(
-            e.clone(),
+            e.clone().into(),
             &typedefs,
             source_trace.clone(),
           )?)
@@ -1519,6 +1518,29 @@ impl Type {
       true
     } else {
       false
+    }
+  }
+  pub fn walk_mut(&mut self, f: &impl Fn(&mut Self)) {
+    f(self);
+    match self {
+      Type::Struct(s) => {
+        for field in s.fields.iter_mut() {
+          field.field_type.as_known_mut(|t| t.walk_mut(f));
+        }
+      }
+      Type::Enum(e) => {
+        for variant in e.variants.iter_mut() {
+          variant.inner_type.as_known_mut(|t| t.walk_mut(f));
+        }
+      }
+      Type::Function(signature) => {
+        signature.return_type.as_known_mut(|t| t.walk_mut(f));
+        for (arg, _) in signature.args.iter_mut() {
+          arg.var_type.as_known_mut(|t| t.walk_mut(f));
+        }
+      }
+      Type::Array(_, inner_type) => inner_type.as_known_mut(|t| t.walk_mut(f)),
+      _ => {}
     }
   }
 }
@@ -2305,7 +2327,7 @@ impl<'p> MutableProgramLocalContext<'p> {
     {
       Ok(Err(
         Type::Enum(AbstractEnum::fill_generics_with_unification_variables(
-          e.clone(),
+          e.clone().into(),
           &self.program.typedefs,
           source_trace,
         )?)

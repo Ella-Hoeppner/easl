@@ -1,0 +1,31 @@
+(defn union [x: f32
+             y: f32]: f32
+  (min x y))
+
+(defn main []: f32
+  (union 5. 6.))
+
+(struct virtual
+  x: f32
+  y: f32)
+
+(defn make-virtual [x: f32
+                    y: f32]: virtual
+  (virtual x y))
+
+(enum smooth
+  (writeonly f32)
+  varying)
+
+(defn make-smooth [x: bool]: smooth
+  (if x
+    (writeonly 5.)
+    varying))
+
+(struct IllegalFieldName
+  unorm: f32)
+
+(defn make-IllegalFieldName [x: f32]: IllegalFieldName
+  (let [@var s (IllegalFieldName x)]
+    (= s.unorm 1.)
+    s))

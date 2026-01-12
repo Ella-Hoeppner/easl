@@ -2309,7 +2309,7 @@ impl TypedExp {
     }
     None
   }
-  fn try_deconstruct_enum_pattern<'a>(
+  pub fn try_deconstruct_enum_pattern<'a>(
     f: &'a Box<TypedExp>,
     args: &'a Vec<TypedExp>,
   ) -> Option<(&'a Box<FunctionSignature>, &'a TypedExp, Rc<str>)> {
@@ -3227,8 +3227,9 @@ impl TypedExp {
                           captured_scope: None,
                         },
                       )));
-                      new_program
-                        .add_monomorphized_enum(monomorphized_enum.into());
+                      new_program.add_monomorphized_enum(Rc::unwrap_or_clone(
+                        monomorphized_enum,
+                      ));
                     }
                   }
                 }

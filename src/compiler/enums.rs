@@ -9,6 +9,7 @@ use crate::{
     },
     program::{NameContext, TypeDefs},
     types::{AbstractType, ExpTypeInfo, Type, TypeState, contains_name_leaf},
+    util::compile_word,
   },
   parse::{EaslTree, Encloser},
 };
@@ -339,7 +340,8 @@ impl AbstractEnum {
             )
           })
           .collect::<CompileResult<Vec<Type>>>()?;
-        let monomorphized_name = self.monomorphized_name(&field_types, names);
+        let monomorphized_name =
+          compile_word(self.monomorphized_name(&field_types, names));
         let size = self.inner_data_size_in_u32s()?;
         let unit_constructor_constants: Vec<String> = self
           .variants
@@ -349,10 +351,10 @@ impl AbstractEnum {
             Ok(if variant.inner_type == AbstractType::Type(Type::Unit) {
               let generic_arg_names =
                 self.generic_arg_monomorphized_names(&field_types, names);
-              let const_name = names.get_monomorphized_name(
+              let const_name = compile_word(names.get_monomorphized_name(
                 variant.name.clone(),
                 generic_arg_names,
-              );
+              ));
               Some(format!(
                 "const {const_name}: {monomorphized_name} = \
                 {monomorphized_name}({i}, {});",
