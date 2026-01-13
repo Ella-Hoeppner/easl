@@ -6,7 +6,7 @@ use thiserror::Error;
 use crate::{
   compiler::{
     annotation::AnnotationKind, entry::InputOrOutput, program::EaslDocument,
-    vars::VariableAddressSpace,
+    types::ConcreteArraySizeDescription, vars::VariableAddressSpace,
   },
   parse::EaslTree,
 };
@@ -125,6 +125,11 @@ pub enum CompileErrorKind {
   CouldntInferTypes,
   #[error("Incompatible types: {0} != {1}")]
   IncompatibleTypes(TypeStateDescription, TypeStateDescription),
+  #[error("Incompatible array sizes: {0} != {1}")]
+  IncompatibleArraySize(
+    ConcreteArraySizeDescription,
+    ConcreteArraySizeDescription,
+  ),
   #[error(
     "Function argument types incompatible. Function had type {}\n \
     Recieved arguments of types:\n{}",

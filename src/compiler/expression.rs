@@ -27,7 +27,7 @@ use crate::{
     program::{NameContext, Program, TypeDefs},
     structs::{AbstractStruct, Struct},
     types::{
-      ArraySize, ExpTypeInfo, Type,
+      ConcreteArraySize, ExpTypeInfo, GenericArgumentValue, Type,
       TypeState::{self, *},
       Variable, VariableKind, extract_type_annotation,
       extract_type_annotation_ast,
@@ -205,9 +205,13 @@ pub fn swizzle_accessor_typestate(
             vec_struct.into(),
             vec![match &s.fields[0].field_type.kind {
               TypeState::UnificationVariable(uvar) => {
-                TypeState::UnificationVariable(uvar.clone()).into()
+                GenericArgumentValue::Type(
+                  TypeState::UnificationVariable(uvar.clone()).into(),
+                )
               }
-              TypeState::Known(inner_type) => inner_type.clone().known().into(),
+              TypeState::Known(inner_type) => {
+                GenericArgumentValue::Type(inner_type.clone().known().into())
+              }
               _ => unreachable!(),
             }],
             &TypeDefs::empty(),
@@ -1169,7 +1173,7 @@ impl TypedExp {
               }
               E::Square => Exp {
                 data: Type::Array(
-                  Some(ArraySize::Literal(children_iter.len() as u32)),
+                  Some(ConcreteArraySize::Literal(children_iter.len() as u32)),
                   Box::new(TypeState::Unknown.into()),
                 )
                 .known()

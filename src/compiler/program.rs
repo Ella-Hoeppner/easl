@@ -19,15 +19,18 @@ use crate::{
     },
     enums::{AbstractEnum, UntypedEnum},
     error::{CompileError, SourceTrace, err},
-    expression::{Accessor, Exp, ExpKind, ExpressionCompilationPosition},
+    expression::{
+      Accessor, Exp, ExpKind, ExpressionCompilationPosition, Number,
+    },
     functions::{
       AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
       Ownership, TopLevelFunction,
     },
     structs::{AbstractStructField, UntypedStruct},
     types::{
-      AbstractType, ImmutableProgramLocalContext, NameDefinitionSource, Type,
-      TypeState, UntypedType, Variable, VariableKind,
+      AbstractType, ConcreteArraySize, GenericArgument,
+      ImmutableProgramLocalContext, NameDefinitionSource, Type, TypeState,
+      UntypedType, Variable, VariableKind,
     },
     util::{compile_word, is_valid_name},
     vars::TopLevelVariableKind,
@@ -326,11 +329,7 @@ impl Program {
         self.add_abstract_function(Rc::new(RefCell::new(
           AbstractFunctionSignature {
             name: s.name.0.clone(),
-            generic_args: s
-              .generic_args
-              .iter()
-              .map(|name| (name.0.clone(), name.1.clone(), vec![]))
-              .collect(),
+            generic_args: s.generic_args.clone(),
             arg_types: s
               .fields
               .iter()
@@ -356,11 +355,7 @@ impl Program {
             self.add_abstract_function(Rc::new(RefCell::new(
               AbstractFunctionSignature {
                 name: variant.name.clone(),
-                generic_args: e
-                  .generic_args
-                  .iter()
-                  .map(|name| (name.0.clone(), name.1.clone(), vec![]))
-                  .collect(),
+                generic_args: e.generic_args.clone(),
                 arg_types: vec![(variant.inner_type.clone(), Ownership::Owned)],
                 return_type: AbstractType::AbstractEnum(e.clone().into()),
                 implementation: FunctionImplementationKind::EnumConstructor(
@@ -573,7 +568,12 @@ impl Program {
                         "struct" => untyped_types.push(UntypedType::Struct(
                           UntypedStruct::from_field_trees(
                             (type_name, type_name_source),
-                            filtered_signature_leaves.collect(),
+                            filtered_signature_leaves
+                              .into_iter()
+                              .map(|(name, source)| {
+                                (name, GenericArgument::Type(vec![]), source)
+                              })
+                              .collect(),
                             children_iter.cloned().collect(),
                             source_trace,
                             &mut errors,
@@ -581,7 +581,12 @@ impl Program {
                         )),
                         "enum" => match UntypedEnum::from_field_trees(
                           (type_name, type_name_source),
-                          filtered_signature_leaves.collect(),
+                          filtered_signature_leaves
+                            .into_iter()
+                            .map(|(name, source)| {
+                              (name, GenericArgument::Type(vec![]), source)
+                            })
+                            .collect(),
                           children_iter.cloned().collect(),
                           source_trace,
                         ) {
@@ -1770,7 +1775,7 @@ impl Program {
             implementation.name_source_trace.clone(),
           ))
         }
-        for (generic_name, source_trace, _) in signature.generic_args.iter() {
+        for (generic_name, _, source_trace) in signature.generic_args.iter() {
           if !is_valid_name(generic_name) {
             errors.log(CompileError::new(
               CompileErrorKind::InvalidName,
@@ -1833,8 +1838,8 @@ impl Program {
           e.name.1.clone(),
         ));
       }
-      for (generic_arg, source) in e.generic_args.iter() {
-        if !is_valid_name(generic_arg) {
+      for (name, _, source) in e.generic_args.iter() {
+        if !is_valid_name(name) {
           errors.log(CompileError::new(
             CompileErrorKind::InvalidName,
             source.clone(),
@@ -1857,8 +1862,8 @@ impl Program {
           s.name.1.clone(),
         ));
       }
-      for (generic_arg, source) in s.generic_args.iter() {
-        if !is_valid_name(generic_arg) {
+      for (name, _, source) in s.generic_args.iter() {
+        if !is_valid_name(name) {
           errors.log(CompileError::new(
             CompileErrorKind::InvalidName,
             source.clone(),
@@ -2123,6 +2128,39 @@ impl Program {
             } else {
               Ok(true)
             }
+          })
+          .unwrap();
+      }
+    }
+  }
+  pub fn inline_static_array_lengths(&mut self) {
+    for f in self.abstract_functions_iter_mut() {
+      if let FunctionImplementationKind::Composite(f) =
+        &f.borrow_mut().implementation
+      {
+        f.borrow_mut()
+          .expression
+          .walk_mut(&mut |exp| {
+            if let ExpKind::Application(f, args) = &exp.kind
+              && let ExpKind::Name(f_name) = &f.kind
+              && &**f_name == "array-length"
+              && let Type::Array(Some(size), _) = args[0].data.unwrap_known()
+              && size != ConcreteArraySize::Unsized
+            {
+              let size = match size {
+                ConcreteArraySize::Literal(x) => x,
+                ConcreteArraySize::UnificationVariable(const_generic_value) => {
+                  const_generic_value.value.borrow().unwrap()
+                }
+                _ => panic!("can't handle this kind of ConcreteArraySize here"),
+              };
+              *exp = TypedExp {
+                data: Type::U32.known().into(),
+                kind: ExpKind::NumberLiteral(Number::Int(size as i64)),
+                source_trace: exp.source_trace.clone(),
+              }
+            }
+            Ok::<bool, Never>(true)
           })
           .unwrap();
       }
@@ -2752,6 +2790,7 @@ impl Program {
       return errors;
     }
     self.separate_overloaded_fns();
+    self.inline_static_array_lengths();
     self.monomorphize_reference_address_spaces();
     errors
   }

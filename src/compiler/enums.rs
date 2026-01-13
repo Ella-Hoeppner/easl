@@ -8,7 +8,10 @@ use crate::{
       CompileError, CompileErrorKind::*, CompileResult, SourceTrace, err,
     },
     program::{NameContext, TypeDefs},
-    types::{AbstractType, ExpTypeInfo, Type, TypeState, contains_name_leaf},
+    types::{
+      AbstractType, ConstGenericValue, ExpTypeInfo, GenericArgument,
+      GenericArgumentValue, Type, TypeState, contains_name_leaf,
+    },
     util::compile_word,
   },
   parse::{EaslTree, Encloser},
@@ -82,7 +85,7 @@ impl UntypedEnumVariant {
 pub struct UntypedEnum {
   pub name: (Rc<str>, SourceTrace),
   pub variants: Vec<UntypedEnumVariant>,
-  pub generic_args: Vec<(Rc<str>, SourceTrace)>,
+  pub generic_args: Vec<(Rc<str>, GenericArgument, SourceTrace)>,
   pub source_trace: SourceTrace,
 }
 impl UntypedEnum {
@@ -94,7 +97,7 @@ impl UntypedEnum {
   }
   pub fn from_field_trees(
     name: (Rc<str>, SourceTrace),
-    generic_args: Vec<(Rc<str>, SourceTrace)>,
+    generic_args: Vec<(Rc<str>, GenericArgument, SourceTrace)>,
     variant_asts: Vec<EaslTree>,
     source_trace: SourceTrace,
   ) -> CompileResult<Self> {
@@ -120,7 +123,11 @@ impl UntypedEnum {
         .map(|variant| {
           variant.assign_type(
             typedefs,
-            &self.generic_args.iter().map(|(n, _)| n.clone()).collect(),
+            &self
+              .generic_args
+              .iter()
+              .map(|(n, _, _)| n.clone())
+              .collect(),
           )
         })
         .collect::<CompileResult<Vec<AbstractEnumVariant>>>()?,
@@ -143,6 +150,7 @@ impl AbstractEnumVariant {
   pub fn fill_generics(
     &self,
     generics: &HashMap<Rc<str>, ExpTypeInfo>,
+    generic_constants: &HashMap<Rc<str>, ConstGenericValue>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<EnumVariant> {
@@ -150,6 +158,7 @@ impl AbstractEnumVariant {
       name: self.name.clone(),
       inner_type: self.inner_type.fill_generics(
         generics,
+        generic_constants,
         typedefs,
         source_trace,
       )?,
@@ -186,7 +195,7 @@ impl AbstractEnumVariant {
 pub struct AbstractEnum {
   pub name: (Rc<str>, SourceTrace),
   pub filled_generics: HashMap<Rc<str>, AbstractType>,
-  pub generic_args: Vec<(Rc<str>, SourceTrace)>,
+  pub generic_args: Vec<(Rc<str>, GenericArgument, SourceTrace)>,
   pub variants: Vec<AbstractEnumVariant>,
   pub abstract_ancestor: Option<Rc<Self>>,
   pub source_trace: SourceTrace,
@@ -213,6 +222,7 @@ impl AbstractEnum {
   pub fn fill_generics(
     s: Rc<Self>,
     generics: &HashMap<Rc<str>, ExpTypeInfo>,
+    generic_constants: &HashMap<Rc<str>, ConstGenericValue>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Enum> {
@@ -220,7 +230,12 @@ impl AbstractEnum {
       .variants
       .iter()
       .map(|variant| {
-        variant.fill_generics(generics, typedefs, source_trace.clone())
+        variant.fill_generics(
+          generics,
+          generic_constants,
+          typedefs,
+          source_trace.clone(),
+        )
       })
       .collect::<CompileResult<Vec<_>>>()?;
     Ok(Enum {
@@ -255,7 +270,7 @@ impl AbstractEnum {
       generic_args: self
         .generic_args
         .into_iter()
-        .filter(|name| generics.contains_key(&name.0))
+        .filter(|(name, _, _)| generics.contains_key(name))
         .collect(),
       variants: self
         .variants
@@ -273,7 +288,7 @@ impl AbstractEnum {
   }
   pub fn fill_generics_ordered(
     s: Rc<Self>,
-    generics: Vec<ExpTypeInfo>,
+    generics: Vec<GenericArgumentValue>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Enum> {
@@ -283,30 +298,57 @@ impl AbstractEnum {
         source_trace,
       );
     }
-    let generics_map = s
-      .generic_args
-      .iter()
-      .map(|(n, _)| n)
-      .cloned()
-      .zip(generics.into_iter())
-      .collect();
-    Self::fill_generics(s, &generics_map, typedefs, source_trace)
+    let mut generics_map: HashMap<Rc<str>, ExpTypeInfo> = HashMap::new();
+    let mut generic_constants_map: HashMap<Rc<str>, ConstGenericValue> =
+      HashMap::new();
+    for ((name, generic_argument, _), generic_value) in
+      s.generic_args.iter().cloned().zip(generics.into_iter())
+    {
+      match generic_argument {
+        GenericArgument::Type(_) => match generic_value {
+          GenericArgumentValue::Type(t) => {
+            generics_map.insert(name, t);
+          }
+          GenericArgumentValue::Constant(_) => {
+            panic!("const-generic found when type-generic was expected");
+          }
+        },
+        GenericArgument::Constant => match generic_value {
+          GenericArgumentValue::Type(_) => {
+            panic!("type-generic found when const-generic was expected");
+          }
+          GenericArgumentValue::Constant(c) => {
+            generic_constants_map.insert(name, c);
+          }
+        },
+      }
+    }
+    Self::fill_generics(
+      s,
+      &generics_map,
+      &generic_constants_map,
+      typedefs,
+      source_trace,
+    )
   }
   pub fn fill_generics_with_unification_variables(
     s: Rc<Self>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Enum> {
-    let generic_count = s.generic_args.len();
-    Self::fill_generics_ordered(
-      s,
-      (0..generic_count)
-        .into_iter()
-        .map(|_| TypeState::fresh_unification_variable().into())
-        .collect(),
-      typedefs,
-      source_trace,
-    )
+    let generic_values = s
+      .generic_args
+      .iter()
+      .map(|(_, arg, _)| match arg {
+        GenericArgument::Type(_) => GenericArgumentValue::Type(
+          TypeState::fresh_unification_variable().into(),
+        ),
+        GenericArgument::Constant => {
+          GenericArgumentValue::Constant(ConstGenericValue::fresh())
+        }
+      })
+      .collect();
+    Self::fill_generics_ordered(s, generic_values, typedefs, source_trace)
   }
   pub fn inner_data_size_in_u32s(&self) -> CompileResult<usize> {
     Ok(
@@ -392,28 +434,34 @@ impl AbstractEnum {
     variant_types: &Vec<Type>,
     names: &mut NameContext,
   ) -> Vec<Rc<str>> {
-    let mut generic_bindings = HashMap::new();
+    let mut generic_type_bindings = HashMap::new();
+    let mut generic_constant_bindings = HashMap::new();
     for (variant, variant_type) in self
       .original_ancestor()
       .variants
       .iter()
       .zip(variant_types.iter())
     {
-      variant
-        .inner_type
-        .extract_generic_bindings(variant_type, &mut generic_bindings);
+      variant.inner_type.extract_generic_bindings(
+        variant_type,
+        &mut generic_type_bindings,
+        &mut generic_constant_bindings,
+      );
     }
 
     self
       .original_ancestor()
       .generic_args
       .iter()
-      .map(|(generic_arg_name, _)| {
-        generic_bindings
-          .get(generic_arg_name)
+      .map(|(name, generic_arg, _)| match generic_arg {
+        GenericArgument::Type(_) => generic_type_bindings
+          .get(name)
           .unwrap()
           .monomorphized_name(names)
-          .into()
+          .into(),
+        GenericArgument::Constant => {
+          format!("{}", generic_constant_bindings.get(name).unwrap()).into()
+        }
       })
       .collect()
   }
@@ -433,7 +481,7 @@ impl AbstractEnum {
     let generics_map: HashMap<Rc<str>, AbstractType> = self
       .generic_args
       .iter()
-      .map(|(n, _)| n)
+      .map(|(n, _, _)| n)
       .cloned()
       .zip(generics.into_iter())
       .collect();
@@ -442,12 +490,14 @@ impl AbstractEnum {
   pub fn extract_generic_bindings(
     &self,
     concrete_enum: &Enum,
-    generic_bindings: &mut HashMap<Rc<str>, Type>,
+    type_bindings: &mut HashMap<Rc<str>, Type>,
+    constant_bindings: &mut HashMap<Rc<str>, u32>,
   ) {
     for i in 0..concrete_enum.variants.len() {
       self.variants[i].inner_type.extract_generic_bindings(
         &concrete_enum.variants[i].inner_type.unwrap_known(),
-        generic_bindings,
+        type_bindings,
+        constant_bindings,
       );
     }
   }
@@ -458,20 +508,25 @@ impl AbstractEnum {
     if self.generic_args.is_empty() {
       return None;
     }
-    let mut generic_arg_map = HashMap::new();
-    self.extract_generic_bindings(&concrete_enum, &mut generic_arg_map);
+    let mut generic_arg_type_map = HashMap::new();
+    let mut generic_arg_constant_map = HashMap::new();
+    self.extract_generic_bindings(
+      &concrete_enum,
+      &mut generic_arg_type_map,
+      &mut generic_arg_constant_map,
+    );
     let generic_args: Vec<Type> = self
       .generic_args
       .iter()
       .cloned()
-      .map(|(var, _)| generic_arg_map.remove(&var).unwrap())
+      .map(|(var, _, _)| generic_arg_type_map.remove(&var).unwrap())
       .collect();
     Some(AbstractEnum {
       name: self.name.clone(),
       filled_generics: generic_args
         .iter()
         .zip(self.generic_args.iter().cloned())
-        .map(|(t, (name, _))| (name, AbstractType::Type(t.clone())))
+        .map(|(t, (name, _, _))| (name, AbstractType::Type(t.clone())))
         .collect(),
       generic_args: vec![],
       variants: self
@@ -485,7 +540,7 @@ impl AbstractEnum {
                 .generic_args
                 .iter()
                 .enumerate()
-                .find_map(|(index, (generic_arg, _))| {
+                .find_map(|(index, (generic_arg, _, _))| {
                   (generic_var == generic_arg).then(|| index)
                 })
                 .expect("unrecognized generic variable")]

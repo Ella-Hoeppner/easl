@@ -1,0 +1,6 @@
+(defn f []: u32
+  (let [a [1. 2. 3. 4.]
+        b [[2u 3u] [4u 5u] [6u 7u]]]
+    (+ (array-length a)
+       (array-length b)
+       (array-length (b 0u)))))

@@ -2,7 +2,7 @@ use crate::compiler::{
   entry::EntryPoint,
   expression::{ExpKind, Number},
   program::Program,
-  types::{ArraySize, Type},
+  types::{ConcreteArraySize, Type},
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
 
@@ -14,7 +14,7 @@ pub enum TypeInfo {
   Bool,
   Struct(String),
   Enum(String),
-  Array(Option<ArraySize>, Box<Self>),
+  Array(Option<ConcreteArraySize>, Box<Self>),
   InvalidType,
 }
 

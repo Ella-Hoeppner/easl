@@ -6,7 +6,9 @@ use crate::compiler::{
   functions::{AbstractFunctionSignature, FunctionImplementationKind},
   program::Program,
   structs::AbstractStruct,
-  types::{AbstractType, ArraySize, ExpTypeInfo, Type},
+  types::{
+    AbstractArraySize, AbstractType, ConcreteArraySize, ExpTypeInfo, Type,
+  },
 };
 
 #[derive(Clone, PartialEq, Debug)]
@@ -62,6 +64,7 @@ pub enum EvaluationError {
   CantCreateZeroedSkolem,
   CantCreateZeroedReference,
   CantCreateZeroedUnsizedArray,
+  CantCreateZeroedSkolemSizedArray,
   InvalidArraySize,
   NonBooleanLoopCondition,
   UnrecognizedStructName,
@@ -708,8 +711,8 @@ impl Value {
       Type::Array(array_size, inner_type) => Value::Array(
         std::iter::repeat(Value::zeroed(inner_type.kind.unwrap_known(), env)?)
           .take(match array_size.ok_or(CantCreateZeroedUnsizedArray)? {
-            ArraySize::Literal(size) => size as usize,
-            ArraySize::Constant(name) => {
+            ConcreteArraySize::Literal(size) => size as usize,
+            ConcreteArraySize::Constant(name) => {
               let value = env.lookup(&(&*name).into())?;
               match value {
                 Value::Prim(primitive) => match primitive {
@@ -720,7 +723,18 @@ impl Value {
                 _ => return Err(InvalidArraySize),
               }
             }
-            ArraySize::Unsized => return Err(CantCreateZeroedUnsizedArray),
+            ConcreteArraySize::Unsized => {
+              return Err(CantCreateZeroedUnsizedArray);
+            }
+            ConcreteArraySize::Skolem(_) => {
+              return Err(CantCreateZeroedSkolemSizedArray);
+            }
+            ConcreteArraySize::UnificationVariable(const_generic_value) => {
+              match &*const_generic_value.value.borrow() {
+                Some(x) => *x as usize,
+                None => return Err(CantCreateZeroedSkolemSizedArray),
+              }
+            }
           })
           .collect(),
       ),

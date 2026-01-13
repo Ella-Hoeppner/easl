@@ -186,7 +186,7 @@ pub enum AbstractType {
   AbstractStruct(Rc<AbstractStruct>),
   AbstractEnum(Rc<AbstractEnum>),
   AbstractArray {
-    size: ArraySize,
+    size: AbstractArraySize,
     inner_type: Box<Self>,
     source_trace: SourceTrace,
   },
@@ -210,6 +210,7 @@ impl AbstractType {
   pub fn fill_generics(
     &self,
     generics: &HashMap<Rc<str>, ExpTypeInfo>,
+    generic_constants: &HashMap<Rc<str>, ConstGenericValue>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<ExpTypeInfo> {
@@ -217,13 +218,14 @@ impl AbstractType {
       AbstractType::Unit => TypeState::Known(Type::Unit).into(),
       AbstractType::Generic(var_name) => generics
         .get(var_name)
-        .expect("unrecognized generic name in struct")
+        .expect("unrecognized generic name")
         .clone(),
       AbstractType::Type(t) => t.clone().known().into(),
       AbstractType::AbstractStruct(s) => {
         Type::Struct(AbstractStruct::fill_generics(
           s.clone(),
           generics,
+          generic_constants,
           typedefs,
           source_trace,
         )?)
@@ -233,6 +235,7 @@ impl AbstractType {
       AbstractType::AbstractEnum(e) => Type::Enum(AbstractEnum::fill_generics(
         e.clone(),
         generics,
+        generic_constants,
         typedefs,
         source_trace,
       )?)
@@ -241,9 +244,9 @@ impl AbstractType {
       AbstractType::AbstractArray {
         size, inner_type, ..
       } => Type::Array(
-        Some(size.clone()),
+        Some(size.fill_generics(generic_constants)),
         inner_type
-          .fill_generics(generics, typedefs, source_trace)?
+          .fill_generics(generics, generic_constants, typedefs, source_trace)?
           .into(),
       )
       .known()
@@ -275,7 +278,7 @@ impl AbstractType {
       AbstractType::AbstractArray {
         size, inner_type, ..
       } => Ok(Type::Array(
-        Some(size.clone()),
+        Some(size.concretize(skolems)),
         Box::new(
           inner_type
             .concretize(skolems, typedefs, source_trace)?
@@ -467,9 +470,9 @@ impl AbstractType {
                 )?;
                 Ok(AbstractType::Type(Type::Array(
                   Some(if let Ok(array_size) = num_str.parse::<u32>() {
-                    ArraySize::Literal(array_size)
+                    ConcreteArraySize::Literal(array_size)
                   } else {
-                    ArraySize::Constant(num_str.into())
+                    ConcreteArraySize::Constant(num_str.into())
                   }),
                   Box::new(inner_type.known().into()),
                 )))
@@ -480,7 +483,7 @@ impl AbstractType {
             other => {
               let inner_type = Type::from_easl_tree(other, typedefs, skolems)?;
               Ok(AbstractType::Type(Type::Array(
-                Some(ArraySize::Unsized),
+                Some(ConcreteArraySize::Unsized),
                 Box::new(inner_type.known().into()),
               )))
             }
@@ -508,26 +511,36 @@ impl AbstractType {
   pub fn extract_generic_bindings(
     &self,
     concrete_type: &Type,
-    generic_bindings: &mut HashMap<Rc<str>, Type>,
+    type_bindings: &mut HashMap<Rc<str>, Type>,
+    constant_bindings: &mut HashMap<Rc<str>, u32>,
   ) {
     match self {
       AbstractType::Generic(generic) => {
-        generic_bindings.insert(generic.clone(), concrete_type.clone());
+        type_bindings.insert(generic.clone(), concrete_type.clone());
       }
       AbstractType::AbstractStruct(abstract_struct) => {
         if let Type::Struct(s) = concrete_type {
-          abstract_struct.extract_generic_bindings(s, generic_bindings);
+          abstract_struct.extract_generic_bindings(
+            s,
+            type_bindings,
+            constant_bindings,
+          );
         } else {
           panic!("incompatible types in extract_generic_bindings")
         }
       }
       AbstractType::AbstractEnum(abstract_enum) => {
         if let Type::Enum(e) = concrete_type {
-          abstract_enum.extract_generic_bindings(e, generic_bindings);
+          abstract_enum.extract_generic_bindings(
+            e,
+            type_bindings,
+            constant_bindings,
+          );
         } else {
           panic!("incompatible types in extract_generic_bindings")
         }
       }
+      AbstractType::AbstractArray { size, .. } => todo!(),
       _ => {}
     }
   }
@@ -545,13 +558,14 @@ impl AbstractType {
         s.generic_args = s
           .generic_args
           .into_iter()
-          .map(|(name, source)| {
+          .map(|(name, arg, source)| {
             (
               if &*name == old_name {
                 new_name.into()
               } else {
                 name
               },
+              arg,
               source,
             )
           })
@@ -595,8 +609,8 @@ impl AbstractType {
       } => {
         inner_type.data_size_in_u32s(source_trace)?
           * match size {
-            ArraySize::Literal(x) => *x as usize,
-            ArraySize::Constant(_) | ArraySize::Unsized => {
+            AbstractArraySize::Literal(x) => *x as usize,
+            _ => {
               return Err(CompileError::new(
                 CompileErrorKind::CantCalculateSize,
                 source_trace.clone(),
@@ -641,45 +655,228 @@ impl AbstractType {
       } => {
         inner_type.is_unitlike(names)
           || match size {
-            ArraySize::Literal(s) => *s == 0,
-            ArraySize::Constant(_) => false,
-            ArraySize::Unsized => false,
+            AbstractArraySize::Literal(s) => *s == 0,
+            _ => false,
           }
       }
     }
   }
 }
 
+// todo!() uncomment the below and replace ArraySize
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ArraySize {
+pub enum AbstractArraySize {
   Literal(u32),
   Constant(String),
+  Generic(Rc<str>),
   Unsized,
 }
 
-impl ArraySize {
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConcreteArraySize {
+  Literal(u32),
+  Constant(String),
+  Skolem(Rc<str>),
+  UnificationVariable(ConstGenericValue),
+  Unsized,
+}
+
+impl AbstractArraySize {
   pub fn compile_type(&self) -> String {
     match self {
-      ArraySize::Literal(size) => format!(", {size}"),
-      ArraySize::Constant(name) => {
+      AbstractArraySize::Literal(size) => format!(", {size}"),
+      AbstractArraySize::Constant(name) => {
         format!(", {}", compile_word(format!("{name}").into()))
       }
-      ArraySize::Unsized => String::new(),
+      AbstractArraySize::Unsized => String::new(),
+      AbstractArraySize::Generic(_) => {
+        panic!(
+          "compiling AbstractArraySize generic, this should have been replaced"
+        )
+      }
+    }
+  }
+  pub fn fill_generics(
+    &self,
+    generics: &HashMap<Rc<str>, ConstGenericValue>,
+  ) -> ConcreteArraySize {
+    match self {
+      AbstractArraySize::Literal(x) => ConcreteArraySize::Literal(*x),
+      AbstractArraySize::Unsized => ConcreteArraySize::Unsized,
+      AbstractArraySize::Constant(x) => ConcreteArraySize::Constant(x.clone()),
+      AbstractArraySize::Generic(x) => ConcreteArraySize::UnificationVariable(
+        generics
+          .get(x)
+          .expect("unrecognized generic constant name")
+          .clone(),
+      ),
+    }
+  }
+  pub fn concretize(&self, skolems: &Vec<Rc<str>>) -> ConcreteArraySize {
+    match self {
+      AbstractArraySize::Literal(x) => ConcreteArraySize::Literal(*x),
+      AbstractArraySize::Unsized => ConcreteArraySize::Unsized,
+      AbstractArraySize::Constant(x) => ConcreteArraySize::Constant(x.clone()),
+      AbstractArraySize::Generic(x) => {
+        if skolems.iter().find(|s| *s == x).is_some() {
+          ConcreteArraySize::Skolem(x.clone())
+        } else {
+          panic!("unrecognized generic constant name")
+        }
+      }
     }
   }
 }
 
-impl Display for ArraySize {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(
-      f,
-      "{}",
-      match self {
-        ArraySize::Literal(size) => format!("{size}"),
-        ArraySize::Constant(name) => compile_word((**name).into()),
-        ArraySize::Unsized => String::new(),
+impl ConcreteArraySize {
+  pub fn compile_type(&self) -> String {
+    match self {
+      ConcreteArraySize::Literal(size) => format!(", {size}"),
+      ConcreteArraySize::Constant(name) => {
+        format!(", {}", compile_word(format!("{name}").into()))
       }
-    )
+      ConcreteArraySize::Unsized => String::new(),
+      ConcreteArraySize::UnificationVariable(value) => format!(
+        ", {}",
+        value
+          .value
+          .borrow()
+          .expect("ConcreteArraySize unification var wasn't unified")
+      ),
+      ConcreteArraySize::Skolem(_) => {
+        panic!(
+          "compiling ConcreteArraySize skolem, this should have been replaced"
+        )
+      }
+    }
+  }
+  pub fn constrain(
+    &mut self,
+    other: &Self,
+    source_trace: &SourceTrace,
+  ) -> CompileResult<bool> {
+    match (&self, other) {
+      (ConcreteArraySize::Literal(a), ConcreteArraySize::Literal(b)) => {
+        if a == b {
+          Ok(false)
+        } else {
+          err(
+            IncompatibleArraySize(self.clone().into(), other.clone().into()),
+            source_trace.clone(),
+          )
+        }
+      }
+      (ConcreteArraySize::Constant(a), ConcreteArraySize::Constant(b)) => {
+        if a == b {
+          Ok(false)
+        } else {
+          err(
+            IncompatibleArraySize(self.clone().into(), other.clone().into()),
+            source_trace.clone(),
+          )
+        }
+      }
+      (ConcreteArraySize::Skolem(a), ConcreteArraySize::Skolem(b)) => {
+        if a == b {
+          Ok(false)
+        } else {
+          err(
+            IncompatibleArraySize(self.clone().into(), other.clone().into()),
+            source_trace.clone(),
+          )
+        }
+      }
+      (ConcreteArraySize::Unsized, ConcreteArraySize::Unsized) => Ok(false),
+      (
+        ConcreteArraySize::UnificationVariable(var),
+        ConcreteArraySize::Literal(value),
+      ) => {
+        let mut unification_value = var.value.borrow_mut();
+        match &*unification_value {
+          Some(unification_value) => {
+            if unification_value == value {
+              Ok(false)
+            } else {
+              err(
+                IncompatibleArraySize(
+                  self.clone().into(),
+                  other.clone().into(),
+                ),
+                source_trace.clone(),
+              )
+            }
+          }
+          None => {
+            *unification_value = Some(*value);
+            Ok(true)
+          }
+        }
+      }
+      (ConcreteArraySize::UnificationVariable(_), _)
+      | (_, ConcreteArraySize::UnificationVariable(_)) => Ok(false),
+      (a, b) => err(
+        IncompatibleArraySize(self.clone().into(), other.clone().into()),
+        source_trace.clone(),
+      ),
+    }
+  }
+  pub fn are_compatible(a: &Self, b: &Self) -> bool {
+    match (a, b) {
+      (ConcreteArraySize::Literal(a), ConcreteArraySize::Literal(b)) => a == b,
+      (ConcreteArraySize::Constant(a), ConcreteArraySize::Constant(b)) => {
+        a == b
+      }
+      (ConcreteArraySize::Skolem(a), ConcreteArraySize::Skolem(b)) => a == b,
+      (ConcreteArraySize::Unsized, ConcreteArraySize::Unsized) => true,
+      (ConcreteArraySize::UnificationVariable(u), other)
+      | (other, ConcreteArraySize::UnificationVariable(u)) => match other {
+        ConcreteArraySize::Literal(x) => match &*u.value.borrow() {
+          Some(u_value) => u_value == x,
+          None => true,
+        },
+        ConcreteArraySize::UnificationVariable(other_u) => {
+          match (&*u.value.borrow(), &*other_u.value.borrow()) {
+            (Some(a), Some(b)) => a == b,
+            _ => true,
+          }
+        }
+        _ => false,
+      },
+      _ => false,
+    }
+  }
+}
+
+// impl Display for ConcreteArraySize {
+//   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//     f.write_fmt(core::format_args!(
+//       "{}",
+//       match self {
+//         ConcreteArraySize::Literal(size) => format!("{size}"),
+//         ConcreteArraySize::Constant(name) => compile_word((**name).into()),
+//         ConcreteArraySize::Unsized => String::new(),
+//         ConcreteArraySize::Skolem(name) => format!("SKOLEM<{name}>"),
+//         ConcreteArraySize::UnificationVariable(value) =>
+//           match &*value.value.borrow() {
+//             Some(size) => format!("{size}"),
+//             None => format!("UNIFICATION_VAR"),
+//           },
+//       }
+//     ))
+//   }
+// }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstGenericValue {
+  pub(crate) value: Rc<RefCell<Option<u32>>>,
+}
+
+impl ConstGenericValue {
+  pub fn fresh() -> Self {
+    Self {
+      value: Rc::new(RefCell::new(None)),
+    }
   }
 }
 
@@ -694,7 +891,7 @@ pub enum Type {
   Enum(Enum),
   Function(Box<FunctionSignature>),
   Skolem(Rc<str>),
-  Array(Option<ArraySize>, Box<ExpTypeInfo>),
+  Array(Option<ConcreteArraySize>, Box<ExpTypeInfo>),
 }
 impl Type {
   pub fn is_unitlike(&self, names: &mut NameContext) -> bool {
@@ -735,9 +932,8 @@ impl Type {
           _ => false,
         }) || match array_size {
           Some(size) => match size {
-            ArraySize::Literal(size) => *size == 0,
-            ArraySize::Constant(_) => false,
-            ArraySize::Unsized => false,
+            ConcreteArraySize::Literal(size) => *size == 0,
+            _ => false,
           },
           None => false,
         }
@@ -767,7 +963,7 @@ impl Type {
       Type::Array(size, inner_type) => {
         inner_type.unwrap_known().data_size_in_u32s(source_trace)?
           * match size {
-            Some(ArraySize::Literal(x)) => *x as usize,
+            Some(ConcreteArraySize::Literal(x)) => *x as usize,
             _ => {
               return Err(CompileError::new(
                 CompileErrorKind::CantCalculateSize,
@@ -854,9 +1050,9 @@ impl Type {
             if signature_leaves.len() == 0 {
               return err(InvalidTypeName, source_trace);
             } else {
-              let generic_args: Vec<ExpTypeInfo> = signature_leaves
+              let generic_args: Vec<GenericArgumentValue> = signature_leaves
                 .map(|signature_arg| {
-                  Ok(
+                  Ok(GenericArgumentValue::Type(
                     AbstractType::from_easl_tree(
                       signature_arg,
                       typedefs,
@@ -865,9 +1061,9 @@ impl Type {
                     .concretize(skolems, typedefs, source_trace.clone())?
                     .known()
                     .into(),
-                  )
+                  ))
                 })
-                .collect::<CompileResult<Vec<ExpTypeInfo>>>()?;
+                .collect::<CompileResult<Vec<GenericArgumentValue>>>()?;
               if let Some(s) =
                 typedefs.structs.iter().find(|s| &*s.name.0 == type_name)
               {
@@ -920,9 +1116,9 @@ impl Type {
                 )?;
                 Ok(Type::Array(
                   Some(if let Ok(array_size) = num_str.parse::<u32>() {
-                    ArraySize::Literal(array_size)
+                    ConcreteArraySize::Literal(array_size)
                   } else {
-                    ArraySize::Constant(num_str.into())
+                    ConcreteArraySize::Constant(num_str.into())
                   }),
                   Box::new(inner_type.known().into()),
                 ))
@@ -933,7 +1129,7 @@ impl Type {
             other => {
               let inner_type = Type::from_easl_tree(other, typedefs, skolems)?;
               Ok(Type::Array(
-                Some(ArraySize::Unsized),
+                Some(ConcreteArraySize::Unsized),
                 Box::new(inner_type.known().into()),
               ))
             }
@@ -953,9 +1149,12 @@ impl Type {
       (Type::Function(a), Type::Function(b)) => a.compatible(b),
       (Type::Struct(a), Type::Struct(b)) => a.compatible(b),
       (Type::Enum(a), Type::Enum(b)) => a.compatible(b),
-      (Type::Array(count_a, a), Type::Array(count_b, b)) => {
-        (count_a.is_none() || count_b.is_none() || count_a == count_b)
-          && TypeState::are_compatible(a, b)
+      (Type::Array(size_a, a), Type::Array(size_b, b)) => {
+        TypeState::are_compatible(a, b)
+          && match (size_a, size_b) {
+            (Some(a), Some(b)) => ConcreteArraySize::are_compatible(a, b),
+            _ => true,
+          }
       }
       (a, b) => a == b,
     };
@@ -1127,7 +1326,7 @@ impl Type {
             kind: ExpKind::Application(
               TypedExp {
                 data: Type::Array(
-                  Some(ArraySize::Literal(data_array_length as u32)),
+                  Some(ConcreteArraySize::Literal(data_array_length as u32)),
                   Box::new(Type::U32.known().into()),
                 )
                 .known()
@@ -1156,7 +1355,7 @@ impl Type {
         .collect()
       }
       Type::Array(array_size, inner_type) => match array_size {
-        Some(ArraySize::Literal(n)) => (0..*n)
+        Some(ConcreteArraySize::Literal(n)) => (0..*n)
           .map(|i| TypedExp {
             data: *inner_type.clone(),
             kind: ExpKind::Application(
@@ -1175,7 +1374,7 @@ impl Type {
             source_trace: SourceTrace::empty(),
           })
           .collect(),
-        Some(ArraySize::Unsized | ArraySize::Constant(_)) | None => {
+        Some(_) | None => {
           panic!("called bitcastable_chunk_accessors on unsized Array")
         }
       },
@@ -1196,7 +1395,7 @@ impl Type {
       kind: ExpKind::Application(
         TypedExp {
           data: Type::Array(
-            Some(ArraySize::Literal(
+            Some(ConcreteArraySize::Literal(
               enum_type.inner_data_size_in_u32s().unwrap() as u32,
             )),
             Box::new(Type::U32.known().into()),
@@ -1256,8 +1455,8 @@ impl Type {
       Type::Enum(e) => {
         let name = e.monomorphized_name(names);
         let inner_data_array_type: ExpTypeInfo = Type::Array(
-          Some(ArraySize::Literal(
-            e.inner_data_size_in_u32s().unwrap() as u32
+          Some(ConcreteArraySize::Literal(
+            e.inner_data_size_in_u32s().unwrap() as u32,
           )),
           Box::new(Type::U32.known().into()),
         )
@@ -1346,7 +1545,7 @@ impl Type {
         )
       }
       Type::Array(size, inner_type) => {
-        let Some(ArraySize::Literal(size)) = size else {
+        let Some(ConcreteArraySize::Literal(size)) = size else {
           panic!("tried to construct unsized array form enum data")
         };
         let size = *size as usize;
@@ -1807,27 +2006,24 @@ impl TypeState {
                   Type::Array(size, inner_type),
                   Type::Array(other_size, other_inner_type),
                 ) => {
-                  let changed = inner_type.constrain(
+                  let mut anything_changed = inner_type.constrain(
                     other_inner_type.kind.clone(),
                     source_trace,
                     errors,
                   );
                   if let Some(other_size) = other_size {
-                    if let Some(size) = &size {
-                      if size != other_size {
-                        errors.log(CompileError::new(
-                          IncompatibleTypes(
-                            this.clone().into(),
-                            other.clone().into(),
-                          ),
-                          source_trace.clone(),
-                        ));
+                    if let Some(size) = size.as_mut() {
+                      match size.constrain(other_size, source_trace) {
+                        Ok(changed) => {
+                          anything_changed |= changed;
+                        }
+                        Err(e) => errors.log(e),
                       }
                     } else {
                       std::mem::swap(size, &mut Some(other_size.clone()))
                     }
                   }
-                  changed
+                  anything_changed
                 }
                 _ => false,
               }
@@ -2149,15 +2345,29 @@ pub fn parse_type_constraint(
   }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum GenericArgument {
+  Type(Vec<TypeConstraint>),
+  Constant,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum GenericArgumentValue {
+  Type(ExpTypeInfo),
+  Constant(ConstGenericValue),
+}
+
 pub fn parse_generic_argument(
   ast: EaslTree,
   typedefs: &TypeDefs,
   generic_args: &Vec<Rc<str>>,
-) -> CompileResult<(Rc<str>, SourceTrace, Vec<TypeConstraint>)> {
+) -> CompileResult<(Rc<str>, GenericArgument, SourceTrace)> {
   match ast {
-    EaslTree::Leaf(pos, generic_name) => {
-      Ok((generic_name.into(), pos.into(), vec![]))
-    }
+    EaslTree::Leaf(pos, generic_name) => Ok((
+      generic_name.into(),
+      GenericArgument::Type(vec![]),
+      pos.into(),
+    )),
     EaslTree::Inner(
       (position, EncloserOrOperator::Operator(Operator::TypeAscription)),
       mut children,
@@ -2176,19 +2386,28 @@ pub fn parse_generic_argument(
             bound_children,
           ) => Ok((
             generic_name.into(),
+            GenericArgument::Type(
+              bound_children
+                .into_iter()
+                .map(|child_ast| {
+                  parse_type_constraint(child_ast, typedefs, generic_args)
+                })
+                .collect::<CompileResult<_>>()?,
+            ),
             pos.into(),
-            bound_children
-              .into_iter()
-              .map(|child_ast| {
-                parse_type_constraint(child_ast, typedefs, generic_args)
-              })
-              .collect::<CompileResult<_>>()?,
           )),
-          other => Ok((
-            generic_name.into(),
-            other.position().into(),
-            vec![parse_type_constraint(other, typedefs, generic_args)?],
-          )),
+          other => {
+            let pos = other.position().into();
+            Ok((
+              generic_name.into(),
+              GenericArgument::Type(vec![parse_type_constraint(
+                other,
+                typedefs,
+                generic_args,
+              )?]),
+              pos,
+            ))
+          }
         }
       } else {
         err(InvalidDefn("Invalid generic name".into()), position.into())
@@ -2371,6 +2590,50 @@ impl<'p> MutableProgramLocalContext<'p> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum ConcreteArraySizeDescription {
+  Literal(u32),
+  Constant(String),
+  Skolem(Rc<str>),
+  UnificationVariable(Option<u32>),
+  Unsized,
+}
+
+impl From<ConcreteArraySize> for ConcreteArraySizeDescription {
+  fn from(value: ConcreteArraySize) -> Self {
+    match value {
+      ConcreteArraySize::Literal(x) => Self::Literal(x),
+      ConcreteArraySize::Constant(x) => Self::Constant(x),
+      ConcreteArraySize::Skolem(x) => Self::Skolem(x),
+      ConcreteArraySize::UnificationVariable(value) => {
+        Self::UnificationVariable(value.value.borrow().clone())
+      }
+      ConcreteArraySize::Unsized => Self::Unsized,
+    }
+  }
+}
+
+impl Display for ConcreteArraySizeDescription {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.write_fmt(core::format_args!(
+      "{}",
+      match self {
+        Self::Literal(size) => format!("{size}"),
+        Self::Constant(name) => compile_word((**name).into()),
+        Self::Unsized => String::new(),
+        Self::Skolem(name) => format!("SKOLEM<{name}>"),
+        Self::UnificationVariable(value) => format!(
+          "UNIFICATION_VAR<{}>",
+          match value {
+            Some(x) => format!("{x}"),
+            None => "???".to_string(),
+          }
+        ),
+      }
+    ))
+  }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TypeDescription {
   Unit,
   F32,
@@ -2384,7 +2647,10 @@ pub enum TypeDescription {
     return_type: Box<TypeStateDescription>,
   },
   Skolem(String),
-  Array(Option<ArraySize>, Box<TypeStateDescription>),
+  Array(
+    Option<ConcreteArraySizeDescription>,
+    Box<TypeStateDescription>,
+  ),
 }
 impl From<Type> for TypeDescription {
   fn from(t: Type) -> Self {
@@ -2423,9 +2689,10 @@ impl From<Type> for TypeDescription {
         return_type: TypeStateDescription::from(f.return_type.kind).into(),
       },
       Type::Skolem(name) => Self::Skolem(name.to_string()),
-      Type::Array(array_size, t) => {
-        Self::Array(array_size, TypeStateDescription::from(t.kind).into())
-      }
+      Type::Array(array_size, t) => Self::Array(
+        array_size.map(|size| size.into()),
+        TypeStateDescription::from(t.kind).into(),
+      ),
       Type::Enum(e) => Self::Enum(e.name.to_string()),
     }
   }

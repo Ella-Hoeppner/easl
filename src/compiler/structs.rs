@@ -11,7 +11,10 @@ use crate::{
     expression::{Accessor, ExpKind, Number, TypedExp},
     functions::is_vec_name,
     program::{NameContext, TypeDefs},
-    types::{ArraySize, contains_name_leaf, extract_type_annotation_ast},
+    types::{
+      ConcreteArraySize, ConstGenericValue, GenericArgument,
+      GenericArgumentValue, contains_name_leaf, extract_type_annotation_ast,
+    },
     util::{compile_word, read_leaf},
   },
   parse::EaslTree,
@@ -111,14 +114,14 @@ impl UntypedStructField {
 pub struct UntypedStruct {
   pub name: (Rc<str>, SourceTrace),
   pub fields: Vec<UntypedStructField>,
-  pub generic_args: Vec<(Rc<str>, SourceTrace)>,
+  pub generic_args: Vec<(Rc<str>, GenericArgument, SourceTrace)>,
   pub source_trace: SourceTrace,
 }
 
 impl UntypedStruct {
   pub fn from_field_trees(
     name: (Rc<str>, SourceTrace),
-    generic_args: Vec<(Rc<str>, SourceTrace)>,
+    generic_args: Vec<(Rc<str>, GenericArgument, SourceTrace)>,
     field_asts: Vec<EaslTree>,
     source_trace: SourceTrace,
     errors: &mut ErrorLog,
@@ -151,7 +154,11 @@ impl UntypedStruct {
         .map(|field| {
           field.assign_type(
             typedefs,
-            &self.generic_args.iter().map(|(n, _)| n.clone()).collect(),
+            &self
+              .generic_args
+              .iter()
+              .map(|(n, _, _)| n.clone())
+              .collect(),
           )
         })
         .collect::<CompileResult<Vec<AbstractStructField>>>()?,
@@ -206,6 +213,7 @@ impl AbstractStructField {
   pub fn fill_generics(
     &self,
     generics: &HashMap<Rc<str>, ExpTypeInfo>,
+    generic_constants: &HashMap<Rc<str>, ConstGenericValue>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<StructField> {
@@ -214,6 +222,7 @@ impl AbstractStructField {
       name: self.name.clone(),
       field_type: self.field_type.fill_generics(
         generics,
+        generic_constants,
         typedefs,
         source_trace,
       )?,
@@ -259,7 +268,7 @@ pub struct AbstractStruct {
   pub name: (Rc<str>, SourceTrace),
   pub filled_generics: HashMap<Rc<str>, AbstractType>,
   pub fields: Vec<AbstractStructField>,
-  pub generic_args: Vec<(Rc<str>, SourceTrace)>,
+  pub generic_args: Vec<(Rc<str>, GenericArgument, SourceTrace)>,
   pub abstract_ancestor: Option<Rc<Self>>,
   pub source_trace: SourceTrace,
   pub opaque: bool,
@@ -329,16 +338,19 @@ impl AbstractStruct {
     field_types: &Vec<Type>,
     names: &mut NameContext,
   ) -> Rc<str> {
-    let mut generic_bindings = HashMap::new();
+    let mut generic_type_bindings = HashMap::new();
+    let mut generic_constant_bindings = HashMap::new();
     for (field, field_type) in self
       .original_ancestor()
       .fields
       .iter()
       .zip(field_types.iter())
     {
-      field
-        .field_type
-        .extract_generic_bindings(field_type, &mut generic_bindings);
+      field.field_type.extract_generic_bindings(
+        field_type,
+        &mut generic_type_bindings,
+        &mut generic_constant_bindings,
+      );
     }
 
     let name = &*self.name.0;
@@ -348,7 +360,7 @@ impl AbstractStruct {
       .then(|| {
         compiled_vec_or_mat_name(
           name,
-          generic_bindings.values().next().unwrap().clone(),
+          generic_type_bindings.values().next().unwrap().clone(),
         )
       })
       .flatten()
@@ -359,13 +371,18 @@ impl AbstractStruct {
           .iter()
           .fold(
             self.name.0.to_string(),
-            |name_so_far, (generic_arg_name, _)| {
+            |name_so_far, (generic_arg_name, _, _)| {
               name_so_far
                 + "_"
-                + &generic_bindings
+                + &generic_type_bindings
                   .get(generic_arg_name)
-                  .unwrap()
-                  .monomorphized_name(names)
+                  .map(|x| x.monomorphized_name(names))
+                  .unwrap_or_else(|| {
+                    format!(
+                      "{}",
+                      generic_constant_bindings.get(generic_arg_name).unwrap()
+                    )
+                  })
             },
           )
           .into()
@@ -402,7 +419,7 @@ impl AbstractStruct {
       .generic_args
       .iter()
       .cloned()
-      .map(|(var, _)| {
+      .map(|(var, _, _)| {
         let var = AbstractType::Generic(var);
         let first_usage_index = self
           .fields
@@ -418,7 +435,7 @@ impl AbstractStruct {
       filled_generics: generic_args
         .iter()
         .zip(self.generic_args.iter().cloned())
-        .map(|(t, (name, _))| (name, AbstractType::Type(t.clone())))
+        .map(|(t, (name, _, _))| (name, AbstractType::Type(t.clone())))
         .collect(),
       generic_args: vec![],
       fields: self
@@ -432,8 +449,8 @@ impl AbstractStruct {
                 .generic_args
                 .iter()
                 .enumerate()
-                .find_map(|(index, (generic_arg, _))| {
-                  (generic_var == generic_arg).then(|| index)
+                .find_map(|(index, (generic_arg_name, _, _))| {
+                  (generic_var == generic_arg_name).then(|| index)
                 })
                 .expect("unrecognized generic variable")]
               .clone(),
@@ -450,6 +467,7 @@ impl AbstractStruct {
   pub fn fill_generics(
     s: Rc<Self>,
     generics: &HashMap<Rc<str>, ExpTypeInfo>,
+    generic_constants: &HashMap<Rc<str>, ConstGenericValue>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Struct> {
@@ -457,7 +475,12 @@ impl AbstractStruct {
       .fields
       .iter()
       .map(|field| {
-        field.fill_generics(generics, typedefs, source_trace.clone())
+        field.fill_generics(
+          generics,
+          generic_constants,
+          typedefs,
+          source_trace.clone(),
+        )
       })
       .collect::<CompileResult<Vec<_>>>()?;
     Ok(Struct {
@@ -468,7 +491,7 @@ impl AbstractStruct {
   }
   pub fn fill_generics_ordered(
     s: Rc<Self>,
-    generics: Vec<ExpTypeInfo>,
+    generics: Vec<GenericArgumentValue>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Struct> {
@@ -478,14 +501,38 @@ impl AbstractStruct {
         source_trace,
       );
     }
-    let generics_map = s
-      .generic_args
-      .iter()
-      .map(|(n, _)| n)
-      .cloned()
-      .zip(generics.into_iter())
-      .collect();
-    Self::fill_generics(s, &generics_map, typedefs, source_trace)
+    let mut generics_map: HashMap<Rc<str>, ExpTypeInfo> = HashMap::new();
+    let mut generic_constants_map: HashMap<Rc<str>, ConstGenericValue> =
+      HashMap::new();
+    for ((name, generic_argument, _), generic_value) in
+      s.generic_args.iter().cloned().zip(generics.into_iter())
+    {
+      match generic_argument {
+        GenericArgument::Type(_) => match generic_value {
+          GenericArgumentValue::Type(t) => {
+            generics_map.insert(name, t);
+          }
+          GenericArgumentValue::Constant(_) => {
+            panic!("const-generic found when type-generic was expected");
+          }
+        },
+        GenericArgument::Constant => match generic_value {
+          GenericArgumentValue::Type(_) => {
+            panic!("type-generic found when const-generic was expected");
+          }
+          GenericArgumentValue::Constant(c) => {
+            generic_constants_map.insert(name, c);
+          }
+        },
+      }
+    }
+    Self::fill_generics(
+      s,
+      &generics_map,
+      &generic_constants_map,
+      typedefs,
+      source_trace,
+    )
   }
   pub fn fill_generics_with_unification_variables(
     s: Rc<Self>,
@@ -493,15 +540,19 @@ impl AbstractStruct {
     source_trace: SourceTrace,
   ) -> CompileResult<Struct> {
     let generic_count = s.generic_args.len();
-    Self::fill_generics_ordered(
-      s,
-      (0..generic_count)
-        .into_iter()
-        .map(|_| TypeState::fresh_unification_variable().into())
-        .collect(),
-      typedefs,
-      source_trace,
-    )
+    let generic_values = s
+      .generic_args
+      .iter()
+      .map(|(_, a, _)| match a {
+        GenericArgument::Type(type_constraints) => GenericArgumentValue::Type(
+          TypeState::fresh_unification_variable().into(),
+        ),
+        GenericArgument::Constant => {
+          GenericArgumentValue::Constant(ConstGenericValue::fresh())
+        }
+      })
+      .collect();
+    Self::fill_generics_ordered(s, generic_values, typedefs, source_trace)
   }
   pub fn partially_fill_abstract_generics(
     self,
@@ -513,7 +564,7 @@ impl AbstractStruct {
       generic_args: self
         .generic_args
         .into_iter()
-        .filter(|(name, _)| generics.contains_key(name))
+        .filter(|(name, _, _)| generics.contains_key(name))
         .collect(),
       fields: self
         .fields
@@ -537,7 +588,7 @@ impl AbstractStruct {
     let generics_map: HashMap<Rc<str>, AbstractType> = self
       .generic_args
       .iter()
-      .map(|(n, _)| n)
+      .map(|(n, _, _)| n)
       .cloned()
       .zip(generics.into_iter())
       .collect();
@@ -547,11 +598,13 @@ impl AbstractStruct {
     &self,
     concrete_struct: &Struct,
     generic_bindings: &mut HashMap<Rc<str>, Type>,
+    constant_bindings: &mut HashMap<Rc<str>, u32>,
   ) {
     for i in 0..concrete_struct.fields.len() {
       self.fields[i].field_type.extract_generic_bindings(
         &concrete_struct.fields[i].field_type.unwrap_known(),
         generic_bindings,
+        constant_bindings,
       );
     }
   }
@@ -632,7 +685,7 @@ impl Struct {
         Type::F32 | Type::I32 | Type::U32 | Type::Bool => chunks.push(access),
         Type::Struct(s) => s.bitcastable_chunk_accessors_inner(access, chunks),
         Type::Array(array_size, inner_type) => match array_size {
-          Some(ArraySize::Literal(n)) => {
+          Some(ConcreteArraySize::Literal(n)) => {
             for i in 0..n {
               chunks.push(TypedExp {
                 data: *inner_type.clone(),
@@ -648,7 +701,7 @@ impl Struct {
               });
             }
           }
-          Some(ArraySize::Unsized | ArraySize::Constant(_)) | None => {
+          Some(_) | None => {
             panic!("called bitcastable_chunk_accessors on unsized Array")
           }
         },
@@ -670,7 +723,7 @@ impl Struct {
                 kind: ExpKind::Application(
                   TypedExp {
                     data: Type::Array(
-                      Some(ArraySize::Literal(data_array_size as u32)),
+                      Some(ConcreteArraySize::Literal(data_array_size as u32)),
                       Box::new(Type::U32.known().into()),
                     )
                     .known()

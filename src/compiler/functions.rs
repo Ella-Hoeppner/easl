@@ -16,7 +16,10 @@ use crate::{
     expression::{Exp, arg_list_and_return_type_from_easl_tree},
     program::{NameContext, TypeDefs},
     structs::AbstractStructField,
-    types::{Variable, VariableKind, parse_generic_argument},
+    types::{
+      ConstGenericValue, GenericArgument, Variable, VariableKind,
+      parse_generic_argument,
+    },
     util::compile_word,
     vars::VariableAddressSpace,
   },
@@ -82,7 +85,7 @@ pub enum Ownership {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractFunctionSignature {
   pub name: Rc<str>,
-  pub generic_args: Vec<(Rc<str>, SourceTrace, Vec<TypeConstraint>)>,
+  pub generic_args: Vec<(Rc<str>, GenericArgument, SourceTrace)>,
   pub arg_types: Vec<(AbstractType, Ownership)>,
   pub return_type: AbstractType,
   pub implementation: FunctionImplementationKind,
@@ -208,7 +211,7 @@ impl AbstractFunctionSignature {
     let fn_and_generic_names: Option<(
       Rc<str>,
       SourceTrace,
-      Vec<(Rc<str>, SourceTrace, Vec<TypeConstraint>)>,
+      Vec<(Rc<str>, GenericArgument, SourceTrace)>,
     )> = match name_ast {
       EaslTree::Leaf(pos, name) => Some((name.into(), pos.into(), vec![])),
       EaslTree::Inner((_, Encloser(Parens)), subtrees) => {
@@ -322,8 +325,14 @@ impl AbstractFunctionSignature {
                   if let AbstractType::Generic(generic_name) = t {
                     generic_args
                       .iter()
-                      .find_map(|(name, _, constraints)| {
-                        (generic_name == name).then(|| constraints.clone())
+                      .find_map(|(name, generic_arg, _)| {
+                        if let GenericArgument::Type(constraints) = generic_arg
+                          && generic_name == name
+                        {
+                          Some(constraints.clone())
+                        } else {
+                          None
+                        }
                       })
                       .unwrap_or(vec![])
                   } else {
@@ -457,8 +466,14 @@ impl AbstractFunctionSignature {
         self
           .generic_args
           .iter()
-          .find_map(|(generic_name, _, constraints)| {
-            (generic_name == name).then(|| constraints.clone())
+          .find_map(|(generic_name, generic_arg, _)| {
+            if let GenericArgument::Type(constraints) = generic_arg
+              && generic_name == name
+            {
+              Some(constraints.clone())
+            } else {
+              None
+            }
           })
           .unwrap()
       })
@@ -518,34 +533,44 @@ impl AbstractFunctionSignature {
     source_trace: SourceTrace,
   ) -> CompileResult<Self> {
     let mut monomorphized = self.clone();
-    let mut generic_bindings = HashMap::new();
+    let mut generic_type_bindings = HashMap::new();
+    let mut generic_constant_bindings = HashMap::new();
     for i in 0..self.arg_types.len() {
-      self.arg_types[i]
-        .0
-        .extract_generic_bindings(&arg_types[i], &mut generic_bindings);
+      self.arg_types[i].0.extract_generic_bindings(
+        &arg_types[i],
+        &mut generic_type_bindings,
+        &mut generic_constant_bindings,
+      );
     }
-    self
-      .return_type
-      .extract_generic_bindings(&return_type, &mut generic_bindings);
+    self.return_type.extract_generic_bindings(
+      &return_type,
+      &mut generic_type_bindings,
+      &mut generic_constant_bindings,
+    );
     let generic_arg_names = self
       .generic_args
       .iter()
-      .map(|(arg, _, bounds)| {
-        let generic_type = generic_bindings.get(arg).unwrap();
-        if let Some(unsatisfied_bound) = bounds
-          .iter()
-          .find(|constraint| !generic_type.satisfies_constraints(constraint))
-        {
-          err(
-            UnsatisfiedTypeConstraint(unsatisfied_bound.clone().into()),
-            source_trace.clone(),
-          )
-        } else {
-          Ok(
-            generic_type
-              .monomorphized_name(&mut new_program.names.borrow_mut())
-              .into(),
-          )
+      .map(|(arg, generic_arg, _)| match generic_arg {
+        GenericArgument::Type(bounds) => {
+          let generic_type = generic_type_bindings.get(arg).unwrap();
+          if let Some(unsatisfied_bound) = bounds
+            .iter()
+            .find(|constraint| !generic_type.satisfies_constraints(constraint))
+          {
+            err(
+              UnsatisfiedTypeConstraint(unsatisfied_bound.clone().into()),
+              source_trace.clone(),
+            )
+          } else {
+            Ok(
+              generic_type
+                .monomorphized_name(&mut new_program.names.borrow_mut())
+                .into(),
+            )
+          }
+        }
+        GenericArgument::Constant => {
+          Ok(format!("{}", generic_constant_bindings.get(arg).unwrap()).into())
         }
       })
       .collect::<CompileResult<Vec<Rc<str>>>>()?;
@@ -562,7 +587,7 @@ impl AbstractFunctionSignature {
     {
       take(t, |t| {
         t.fill_abstract_generics(
-          &generic_bindings
+          &generic_type_bindings
             .iter()
             .map(|(a, b)| (a.clone(), AbstractType::Type(b.clone())))
             .collect::<HashMap<_, _>>(),
@@ -573,7 +598,7 @@ impl AbstractFunctionSignature {
       &mut monomorphized.implementation
     {
       let mut new_fn = monomorphized_fn.borrow().clone();
-      let replacement_pairs: HashMap<Rc<str>, Type> = generic_bindings
+      let replacement_pairs: HashMap<Rc<str>, Type> = generic_type_bindings
         .iter()
         .map(|(x, y)| (x.clone(), y.clone()))
         .collect();
@@ -693,11 +718,26 @@ impl AbstractFunctionSignature {
     ) = f
       .generic_args
       .iter()
-      .map(|(name, _, bounds)| {
-        (
-          (name.clone(), TypeState::fresh_unification_variable().into()),
-          (name.clone(), bounds.clone()),
-        )
+      .filter_map(|(name, generic_arg, _)| {
+        if let GenericArgument::Type(bounds) = generic_arg {
+          Some((
+            (name.clone(), TypeState::fresh_unification_variable().into()),
+            (name.clone(), bounds.clone()),
+          ))
+        } else {
+          None
+        }
+      })
+      .collect();
+    let generic_constants: HashMap<Rc<str>, ConstGenericValue> = f
+      .generic_args
+      .iter()
+      .filter_map(|(name, generic_arg, _)| {
+        if let GenericArgument::Constant = generic_arg {
+          Some((name.clone(), ConstGenericValue::fresh()))
+        } else {
+          None
+        }
       })
       .collect();
     let mut args: Vec<_> = f
@@ -720,6 +760,7 @@ impl AbstractFunctionSignature {
             Type::Struct(AbstractStruct::fill_generics(
               s.clone(),
               &generic_variables,
+              &generic_constants,
               typedefs,
               source_trace.clone(),
             )?)
@@ -731,6 +772,7 @@ impl AbstractFunctionSignature {
             Type::Enum(AbstractEnum::fill_generics(
               e.clone(),
               &generic_variables,
+              &generic_constants,
               typedefs,
               source_trace.clone(),
             )?)
@@ -742,10 +784,11 @@ impl AbstractFunctionSignature {
             size, inner_type, ..
           } => (
             Type::Array(
-              Some(size.clone()),
+              Some(size.fill_generics(&generic_constants)),
               inner_type
                 .fill_generics(
                   &generic_variables,
+                  &generic_constants,
                   typedefs,
                   source_trace.clone(),
                 )?
@@ -770,6 +813,7 @@ impl AbstractFunctionSignature {
         Type::Struct(AbstractStruct::fill_generics(
           s.clone(),
           &generic_variables,
+          &generic_constants,
           typedefs,
           source_trace,
         )?)
@@ -779,6 +823,7 @@ impl AbstractFunctionSignature {
       AbstractType::AbstractEnum(e) => Type::Enum(AbstractEnum::fill_generics(
         e.clone(),
         &generic_variables,
+        &generic_constants,
         typedefs,
         source_trace,
       )?)
@@ -788,9 +833,14 @@ impl AbstractFunctionSignature {
       AbstractType::AbstractArray {
         size, inner_type, ..
       } => Type::Array(
-        Some(size.clone()),
+        Some(size.fill_generics(&generic_constants)),
         inner_type
-          .fill_generics(&generic_variables, typedefs, source_trace)?
+          .fill_generics(
+            &generic_variables,
+            &generic_constants,
+            typedefs,
+            source_trace,
+          )?
           .into(),
       )
       .known()

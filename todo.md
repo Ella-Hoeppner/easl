@@ -1,12 +1,13 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready"
-* calls to `array-length` on nested arrays seem to just not work!
-  * or maybe it's calls to `array-length` on arrays returned from functions? or both
-
-* when match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
+* add a compiler phase before type checking that inlines constant values used in array sizes when possible, so that unification/etc. can be done over arrays with sizes that refer to some `(def ...)`
 
 * allow functions to return other functions
+
+
+
+* when a match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
 
 * turn the examples into an actual test suite
   * for the successful examples, also try to feed the output wgsl into wgpu and compile them, so that we can catch some bugs in the emitted wgsl
