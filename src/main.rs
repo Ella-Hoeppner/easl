@@ -137,6 +137,7 @@ fn shader_examples() {
     "reserved_wgsl_names",
     "reference",
     "static_array_length",
+    "def_sized_array",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

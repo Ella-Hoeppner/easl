@@ -668,7 +668,7 @@ impl AbstractType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AbstractArraySize {
   Literal(u32),
-  Constant(String),
+  Constant(Rc<str>),
   Generic(Rc<str>),
   Unsized,
 }
@@ -676,7 +676,7 @@ pub enum AbstractArraySize {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConcreteArraySize {
   Literal(u32),
-  Constant(String),
+  Constant(Rc<str>),
   Skolem(Rc<str>),
   UnificationVariable(ConstGenericValue),
   Unsized,
@@ -1724,21 +1724,23 @@ impl Type {
     match self {
       Type::Struct(s) => {
         for field in s.fields.iter_mut() {
-          field.field_type.as_known_mut(|t| t.walk_mut(f));
+          field.field_type.try_as_known_mut(|t| t.walk_mut(f));
         }
       }
       Type::Enum(e) => {
         for variant in e.variants.iter_mut() {
-          variant.inner_type.as_known_mut(|t| t.walk_mut(f));
+          variant.inner_type.try_as_known_mut(|t| t.walk_mut(f));
         }
       }
       Type::Function(signature) => {
-        signature.return_type.as_known_mut(|t| t.walk_mut(f));
+        signature.return_type.try_as_known_mut(|t| t.walk_mut(f));
         for (arg, _) in signature.args.iter_mut() {
-          arg.var_type.as_known_mut(|t| t.walk_mut(f));
+          arg.var_type.try_as_known_mut(|t| t.walk_mut(f));
         }
       }
-      Type::Array(_, inner_type) => inner_type.as_known_mut(|t| t.walk_mut(f)),
+      Type::Array(_, inner_type) => {
+        inner_type.try_as_known_mut(|t| t.walk_mut(f));
+      }
       _ => {}
     }
   }
@@ -1865,6 +1867,18 @@ impl TypeState {
         f(t)
       } else {
         panic!("as_known_mut on a non-Known TypeState")
+      }
+    })
+  }
+  pub fn try_as_known_mut<O>(
+    &mut self,
+    f: impl FnOnce(&mut Type) -> O,
+  ) -> Option<O> {
+    self.with_dereferenced_mut(|typestate| {
+      if let TypeState::Known(t) = typestate {
+        Some(f(t))
+      } else {
+        None
       }
     })
   }
@@ -2592,7 +2606,7 @@ impl<'p> MutableProgramLocalContext<'p> {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ConcreteArraySizeDescription {
   Literal(u32),
-  Constant(String),
+  Constant(Rc<str>),
   Skolem(Rc<str>),
   UnificationVariable(Option<u32>),
   Unsized,

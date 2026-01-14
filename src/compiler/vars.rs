@@ -95,7 +95,7 @@ pub struct GroupAndBinding {
   pub binding: u8,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TopLevelVariableKind {
   Const,
   Override,

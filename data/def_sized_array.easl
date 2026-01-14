@@ -1,0 +1,13 @@
+(def x: u32
+     5)
+
+(defn f []: [x: f32]
+  (let [@var arr (zeroed-array)
+        len (array-length arr)]
+    (for [i 0u (< i len) (+= i 1)]
+      (= (arr i) (f32 i)))
+    arr))
+
+(defn g []: f32
+  (let [arr: [x: f32] (zeroed-array)]
+    (arr 0u)))

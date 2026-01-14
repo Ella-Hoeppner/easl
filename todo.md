@@ -1,8 +1,6 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready"
-* add a compiler phase before type checking that inlines constant values used in array sizes when possible, so that unification/etc. can be done over arrays with sizes that refer to some `(def ...)`
-
 * allow functions to return other functions
 
 

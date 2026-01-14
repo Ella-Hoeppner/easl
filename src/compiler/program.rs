@@ -2133,7 +2133,49 @@ impl Program {
       }
     }
   }
-  pub fn inline_static_array_lengths(&mut self) {
+  pub fn inline_def_array_sizes(&mut self) {
+    let u32_constants: HashMap<Rc<str>, u32> = self
+      .top_level_vars
+      .iter()
+      .filter_map(|v| {
+        if (v.var_type == Type::U32 || v.var_type == Type::I32)
+          && v.kind == TopLevelVariableKind::Const
+          && let Some(TypedExp {
+            kind: ExpKind::NumberLiteral(Number::Int(n)),
+            ..
+          }) = v.value
+          && let Ok(n) = n.try_into()
+        {
+          Some((v.name.clone(), n))
+        } else {
+          None
+        }
+      })
+      .collect();
+    for f in self.abstract_functions_iter_mut() {
+      if let FunctionImplementationKind::Composite(f) =
+        &f.borrow_mut().implementation
+      {
+        f.borrow_mut()
+          .expression
+          .walk_mut(&mut |exp| {
+            if let TypeState::Known(t) = &mut exp.data.kind {
+              t.walk_mut(&|t| {
+                if let Type::Array(Some(size), _) = t
+                  && let ConcreteArraySize::Constant(constant_name) = size
+                  && let Some(n) = u32_constants.get(constant_name)
+                {
+                  *size = ConcreteArraySize::Literal(*n);
+                }
+              });
+            }
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
+      }
+    }
+  }
+  pub fn inline_static_array_length_calls(&mut self) {
     for f in self.abstract_functions_iter_mut() {
       if let FunctionImplementationKind::Composite(f) =
         &f.borrow_mut().implementation
@@ -2727,6 +2769,7 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.inline_def_array_sizes();
     self.fully_infer_types(&mut errors);
     if !errors.is_empty() {
       return errors;
@@ -2790,7 +2833,7 @@ impl Program {
       return errors;
     }
     self.separate_overloaded_fns();
-    self.inline_static_array_lengths();
+    self.inline_static_array_length_calls();
     self.monomorphize_reference_address_spaces();
     errors
   }
