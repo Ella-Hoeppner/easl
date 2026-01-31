@@ -6,9 +6,7 @@ use crate::compiler::{
   functions::{AbstractFunctionSignature, FunctionImplementationKind},
   program::Program,
   structs::AbstractStruct,
-  types::{
-    AbstractArraySize, AbstractType, ConcreteArraySize, ExpTypeInfo, Type,
-  },
+  types::{AbstractType, ConcreteArraySize, ExpTypeInfo, Type},
 };
 
 #[derive(Clone, PartialEq, Debug)]
@@ -865,7 +863,7 @@ pub fn eval(
         panic!()
       };
       let f = f.abstract_ancestor.unwrap();
-      let f = Function::from_abstract_signature(&*f, &name, env)?;
+      let f = Function::from_abstract_signature(&*f.borrow(), &name, env)?;
       let arg_types: Vec<Type> =
         args.iter().map(|a| a.data.kind.unwrap_known()).collect();
       let return_type = exp.data.unwrap_known();

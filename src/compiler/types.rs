@@ -663,8 +663,6 @@ impl AbstractType {
   }
 }
 
-// todo!() uncomment the below and replace ArraySize
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AbstractArraySize {
   Literal(u32),
@@ -848,25 +846,6 @@ impl ConcreteArraySize {
   }
 }
 
-// impl Display for ConcreteArraySize {
-//   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//     f.write_fmt(core::format_args!(
-//       "{}",
-//       match self {
-//         ConcreteArraySize::Literal(size) => format!("{size}"),
-//         ConcreteArraySize::Constant(name) => compile_word((**name).into()),
-//         ConcreteArraySize::Unsized => String::new(),
-//         ConcreteArraySize::Skolem(name) => format!("SKOLEM<{name}>"),
-//         ConcreteArraySize::UnificationVariable(value) =>
-//           match &*value.value.borrow() {
-//             Some(size) => format!("{size}"),
-//             None => format!("UNIFICATION_VAR"),
-//           },
-//       }
-//     ))
-//   }
-// }
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConstGenericValue {
   pub(crate) value: Rc<RefCell<Option<u32>>>,
@@ -894,6 +873,20 @@ pub enum Type {
   Array(Option<ConcreteArraySize>, Box<ExpTypeInfo>),
 }
 impl Type {
+  pub fn tag(&self) -> &str {
+    match self {
+      Type::Unit => "Unit",
+      Type::F32 => "F32",
+      Type::I32 => "I32",
+      Type::U32 => "U32",
+      Type::Bool => "Bool",
+      Type::Struct(_) => "Struct",
+      Type::Enum(_) => "Enum",
+      Type::Function(_) => "Function",
+      Type::Skolem(_) => "Skolem",
+      Type::Array(_, _) => "Array",
+    }
+  }
   pub fn is_unitlike(&self, names: &mut NameContext) -> bool {
     match self {
       Type::Unit => true,
@@ -924,7 +917,7 @@ impl Type {
       Type::Function(function_signature) => function_signature
         .abstract_ancestor
         .as_ref()
-        .map(|f| f.representative_type(names).is_unitlike(names))
+        .map(|f| f.borrow().representative_type(names).is_unitlike(names))
         .unwrap_or(false),
       Type::Array(array_size, inner_type) => {
         inner_type.kind.with_dereferenced(|f| match f {
@@ -1248,13 +1241,12 @@ impl Type {
         )
       }
       Type::Function(f) => {
-        if let Some(f) = &f.abstract_ancestor {
-          f.representative_type(names).name.0.to_string()
-        } else {
+        let Some(f) = &f.abstract_ancestor else {
           panic!(
             "Attempted to compile ConcreteFunction type with no abstract ancestor"
           );
-        }
+        };
+        f.borrow().representative_type(names).name.0.to_string()
       }
       Type::Skolem(name) => {
         panic!("Attempted to compile Skolem \"{name}\"")
@@ -1431,7 +1423,7 @@ impl Type {
           TypedExp {
             data: Type::Function(
               FunctionSignature {
-                abstract_ancestor: Some(bitcast().into()),
+                abstract_ancestor: Some(RefCell::new(bitcast()).into()),
                 args: vec![(
                   Variable::immutable(Type::U32.known().into()),
                   vec![],
@@ -1939,18 +1931,18 @@ impl TypeState {
   }
   pub fn constrain(
     &mut self,
-    mut other: TypeState,
+    other: &TypeState,
     source_trace: &SourceTrace,
     errors: &mut ErrorLog,
   ) -> bool {
-    if *self == other {
+    if *self == *other {
       return false;
     }
     self.with_dereferenced_mut(move |mut this| {
-      other.with_dereferenced_mut(|mut other| {
-        let result = match (&mut this, &mut other) {
-          (TypeState::UnificationVariable(_), _) => unreachable!(),
-          (_, TypeState::UnificationVariable(_)) => unreachable!(),
+      other.with_dereferenced(|other| {
+        let result = match (&mut this, &other) {
+          (TypeState::UnificationVariable(_), _)
+          | (_, TypeState::UnificationVariable(_)) => unreachable!(),
           (_, TypeState::Unknown) => false,
           (TypeState::Unknown, _) => {
             std::mem::swap(this, &mut other.clone());
@@ -1970,17 +1962,15 @@ impl TypeState {
                   Type::Function(other_signature),
                 ) => {
                   let mut anything_changed = signature.return_type.constrain(
-                    other_signature.return_type.kind.clone(),
+                    &other_signature.return_type.kind,
                     source_trace,
                     errors,
                   );
-                  for ((t, _), (other_t, _)) in signature
-                    .args
-                    .iter_mut()
-                    .zip(other_signature.args.iter_mut())
+                  for ((t, _), (other_t, _)) in
+                    signature.args.iter_mut().zip(other_signature.args.iter())
                   {
                     let changed = t.var_type.constrain(
-                      other_t.var_type.kind.clone(),
+                      &other_t.var_type.kind,
                       source_trace,
                       errors,
                     );
@@ -1991,10 +1981,10 @@ impl TypeState {
                 (Type::Struct(s), Type::Struct(other_s)) => {
                   let mut anything_changed = false;
                   for (t, other_t) in
-                    s.fields.iter_mut().zip(other_s.fields.iter_mut())
+                    s.fields.iter_mut().zip(other_s.fields.iter())
                   {
                     let changed = t.field_type.constrain(
-                      other_t.field_type.kind.clone(),
+                      &other_t.field_type.kind,
                       source_trace,
                       errors,
                     );
@@ -2005,10 +1995,10 @@ impl TypeState {
                 (Type::Enum(e), Type::Enum(other_e)) => {
                   let mut anything_changed = false;
                   for (v, other_v) in
-                    e.variants.iter_mut().zip(other_e.variants.iter_mut())
+                    e.variants.iter_mut().zip(other_e.variants.iter())
                   {
                     let changed = v.inner_type.constrain(
-                      other_v.inner_type.kind.clone(),
+                      &other_v.inner_type.kind,
                       source_trace,
                       errors,
                     );
@@ -2021,7 +2011,7 @@ impl TypeState {
                   Type::Array(other_size, other_inner_type),
                 ) => {
                   let mut anything_changed = inner_type.constrain(
-                    other_inner_type.kind.clone(),
+                    &other_inner_type.kind,
                     source_trace,
                     errors,
                   );
@@ -2095,8 +2085,8 @@ impl TypeState {
     source_trace: &SourceTrace,
     errors: &mut ErrorLog,
   ) -> bool {
-    let self_changed = self.constrain(other.clone(), source_trace, errors);
-    let other_changed = other.constrain(self.clone(), source_trace, errors);
+    let self_changed = self.constrain(other, source_trace, errors);
+    let other_changed = other.constrain(self, source_trace, errors);
     self_changed || other_changed
   }
   pub fn constrain_fn_by_argument_types(
@@ -2166,7 +2156,7 @@ impl TypeState {
           changed
         }
         Type::Array(_, _) => arg_types[0].constrain(
-          TypeState::OneOf(vec![Type::I32, Type::U32]),
+          &TypeState::OneOf(vec![Type::I32, Type::U32]),
           source_trace,
           errors,
         ),
@@ -2183,16 +2173,10 @@ impl TypeState {
     })
   }
   pub fn simplify(&mut self) {
-    if let TypeState::OneOf(mut possibilities) = self.clone() {
-      possibilities.dedup();
-      std::mem::swap(
-        self,
-        &mut match possibilities.len() {
-          0 => unreachable!(),
-          1 => possibilities.remove(0).known(),
-          _ => TypeState::OneOf(possibilities),
-        },
-      )
+    if let TypeState::OneOf(possibilities) = self {
+      if possibilities.len() == 1 {
+        *self = possibilities.remove(0).known();
+      }
     }
   }
   pub fn simplified(mut self) -> Self {
@@ -2583,7 +2567,7 @@ impl<'p> MutableProgramLocalContext<'p> {
         false
       }
       Ok(Some(signatures)) => {
-        t.constrain(TypeState::OneOf(signatures), source_trace, errors)
+        t.constrain(&TypeState::OneOf(signatures), source_trace, errors)
       }
       Ok(None) => match self.get_typestate_mut(name, source_trace.clone()) {
         Ok(typestate) => match typestate {

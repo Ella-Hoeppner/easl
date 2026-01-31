@@ -340,6 +340,33 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
 }
 use ExpKind::*;
 
+impl<D: Debug + Clone + PartialEq> ExpKind<D> {
+  pub fn tag(&self) -> &str {
+    match self {
+      Wildcard => "Wildcard",
+      Unit => "Unit",
+      Name(_) => "Name",
+      NumberLiteral(_) => "NumberLiteral",
+      BooleanLiteral(_) => "BooleanLiteral",
+      Function(_, _) => "Function",
+      Application(_, _) => "Application",
+      Access(_, _) => "Access",
+      Let(_, _) => "Let",
+      Match(_, _) => "Match",
+      Block(_) => "Block",
+      ForLoop { .. } => "ForLoop",
+      WhileLoop { .. } => "WhileLoop",
+      Break => "Break",
+      Continue => "Continue",
+      Discard => "Discard",
+      Return(_) => "Return",
+      ArrayLiteral(_) => "ArrayLiteral",
+      Uninitialized => "Uninitialized",
+      ZeroedArray => "ZeroedArray",
+    }
+  }
+}
+
 use super::{
   effects::Effect,
   error::{CompileErrorKind, ErrorLog, SourceTrace},
@@ -1691,13 +1718,23 @@ impl TypedExp {
             .unwrap_or(false);
           let arg_strs: Vec<String> = args
             .into_iter()
-            .zip(signature.args.iter())
+            .zip(if let Some(ancestor) = signature.abstract_ancestor {
+              ancestor
+                .borrow()
+                .arg_types
+                .iter()
+                .map(|(_, ownership)| *ownership)
+                .collect::<Vec<_>>()
+            } else {
+              signature
+                .args
+                .iter()
+                .map(|(arg, _)| arg.var_type.ownership)
+                .collect()
+            })
             .enumerate()
-            .map(|(i, (arg, signature_arg))| {
-              let prefix = match (
-                signature_arg.0.var_type.ownership,
-                arg.data.ownership,
-              ) {
+            .map(|(i, (arg, ownership))| {
+              let prefix = match (ownership, arg.data.ownership) {
                 (Ownership::Owned, Ownership::Owned) => "",
                 (Ownership::Owned, _) => "*",
                 (_, Ownership::Owned) => {
@@ -1940,9 +1977,10 @@ impl TypedExp {
                       else {
                         panic!("invalid pattern type in enum match block")
                       };
+                      let f_abstract_ancestor = f.abstract_ancestor.clone().unwrap();
                       let FunctionImplementationKind::EnumConstructor(
                         variant_name,
-                      ) = &f.abstract_ancestor.clone().unwrap().implementation
+                      ) = &f_abstract_ancestor.borrow().implementation
                       else {
                         panic!("invalid pattern type in enum match block")
                       };
@@ -2302,8 +2340,10 @@ impl TypedExp {
   ) -> Option<(&'a mut Box<FunctionSignature>, &'a mut TypedExp, Rc<str>)> {
     if let TypeState::Known(Type::Function(f)) = &mut *f.data
       && let Some(abstract_f) = &f.abstract_ancestor
-      && let FunctionImplementationKind::EnumConstructor(_) =
-        &abstract_f.implementation
+      && matches!(
+        &abstract_f.borrow().implementation,
+        FunctionImplementationKind::EnumConstructor(_)
+      )
       && args.len() == 1
       && let arg = &mut args[0]
       && let ExpKind::Name(inner_value_name) = &arg.kind
@@ -2320,7 +2360,7 @@ impl TypedExp {
     if let TypeState::Known(Type::Function(f)) = &*f.data
       && let Some(abstract_f) = &f.abstract_ancestor
       && let FunctionImplementationKind::EnumConstructor(_) =
-        &abstract_f.implementation
+        &abstract_f.borrow().implementation
       && args.len() == 1
       && let arg = &args[0]
       && let ExpKind::Name(inner_value_name) = &arg.kind
@@ -2357,7 +2397,7 @@ impl TypedExp {
         self.data.subtree_fully_typed = true;
         self
           .data
-          .constrain(Type::Unit.known(), &self.source_trace, errors)
+          .constrain(&Type::Unit.known(), &self.source_trace, errors)
       }
       Name(name) => {
         self.data.subtree_fully_typed = true;
@@ -2381,7 +2421,7 @@ impl TypedExp {
       NumberLiteral(num) => {
         self.data.subtree_fully_typed = true;
         let changed = self.data.constrain(
-          match num {
+          &match num {
             Number::Int(_) => {
               TypeState::OneOf(vec![Type::I32, Type::U32, Type::F32])
             }
@@ -2397,7 +2437,7 @@ impl TypedExp {
         let changed =
           self
             .data
-            .constrain(Type::Bool.known(), &self.source_trace, errors);
+            .constrain(&Type::Bool.known(), &self.source_trace, errors);
         changed
       }
       Function(arg_names, body) => {
@@ -2481,7 +2521,7 @@ impl TypedExp {
             ctx.constrain_name_type(name, &f.source_trace, &mut f.data, errors);
         } else {
           anything_changed |= f.data.constrain(
-            TypeState::OneOf(vec![
+            &TypeState::OneOf(vec![
               Type::Function(Box::new(FunctionSignature {
                 abstract_ancestor: None,
                 args: args
@@ -2502,7 +2542,7 @@ impl TypedExp {
               if signature
                 .abstract_ancestor
                 .as_ref()
-                .map(|ancestor| ancestor.associative)
+                .map(|ancestor| ancestor.borrow().associative)
                 .unwrap_or(false)
                 || args.len() == signature.args.len()
               {
@@ -2515,7 +2555,7 @@ impl TypedExp {
                   args.iter_mut().zip(signature.args.iter().cloned())
                 {
                   anything_changed |= arg.data.constrain(
-                    fn_arg.var_type.kind,
+                    &fn_arg.var_type.kind,
                     &self.source_trace,
                     errors,
                   );
@@ -2536,7 +2576,7 @@ impl TypedExp {
                 );
                 let first_arg = &mut args[0];
                 first_arg.data.constrain(
-                  TypeState::OneOf(vec![Type::I32, Type::U32]),
+                  &TypeState::OneOf(vec![Type::I32, Type::U32]),
                   &first_arg.source_trace,
                   errors,
                 );
@@ -2602,12 +2642,12 @@ impl TypedExp {
         }
         Accessor::Swizzle(fields) => {
           let mut anything_changed = self.data.constrain(
-            swizzle_accessor_typestate(&subexp.data, fields).kind,
+            &swizzle_accessor_typestate(&subexp.data, fields).kind,
             &self.source_trace,
             errors,
           );
           anything_changed |= subexp.data.constrain(
-            swizzle_accessed_possibilities(fields).kind,
+            &swizzle_accessed_possibilities(fields).kind,
             &self.source_trace,
             errors,
           );
@@ -2634,7 +2674,7 @@ impl TypedExp {
         for (name, source_trace, _, value) in bindings.iter_mut().rev() {
           let unbound_type = ctx.unbind(name).var_type.kind;
           anything_changed |=
-            value.data.constrain(unbound_type, &source_trace, errors);
+            value.data.constrain(&unbound_type, &source_trace, errors);
         }
         self.data.subtree_fully_typed = bindings.iter().fold(
           body.data.subtree_fully_typed,
@@ -2716,7 +2756,7 @@ impl TypedExp {
             match &child.kind {
               Break | Continue | Discard | Return(_) => {
                 anything_changed |= child.data.constrain(
-                  TypeState::Known(Type::Unit),
+                  &TypeState::Known(Type::Unit),
                   &child.source_trace,
                   errors,
                 );
@@ -2734,7 +2774,7 @@ impl TypedExp {
           );
         } else {
           anything_changed |= self.data.constrain(
-            TypeState::Known(Type::Unit),
+            &TypeState::Known(Type::Unit),
             &self.source_trace,
             errors,
           );
@@ -2770,14 +2810,14 @@ impl TypedExp {
           increment_variable_name.1.clone(),
         );
         anything_changed |= continue_condition_expression.data.constrain(
-          Type::Bool.known(),
+          &Type::Bool.known(),
           &continue_condition_expression.source_trace,
           errors,
         );
 
         if let Some(update_expression) = update_expression {
           anything_changed |= update_expression.data.constrain(
-            Type::Unit.known(),
+            &Type::Unit.known(),
             &update_expression.source_trace,
             errors,
           );
@@ -2815,12 +2855,12 @@ impl TypedExp {
         body_expression,
       } => {
         let mut anything_changed = condition_expression.data.constrain(
-          Type::Bool.known(),
+          &Type::Bool.known(),
           &condition_expression.source_trace,
           errors,
         );
         anything_changed |= body_expression.data.constrain(
-          Type::Unit.known(),
+          &Type::Unit.known(),
           &condition_expression.source_trace,
           errors,
         );
@@ -3091,12 +3131,12 @@ impl TypedExp {
           if let ExpKind::Name(f_name) = &mut f.kind {
             if let Some(abstract_signature) =
               if let TypeState::Known(Type::Function(f)) = &f.data.kind {
-                &f.abstract_ancestor
+                f.abstract_ancestor.clone()
               } else {
-                &None
+                None
               }
             {
-              match &abstract_signature.implementation {
+              match &abstract_signature.borrow().implementation {
                 FunctionImplementationKind::Builtin(_) => {
                   if vec_and_mat_compile_names().contains(&**f_name) {
                     if let Type::Struct(s) = &exp.data.kind.unwrap_known() {
@@ -3219,7 +3259,10 @@ impl TypedExp {
                         AbstractFunctionSignature {
                           name: f_name.clone(),
                           generic_args: vec![],
-                          arg_types: abstract_signature.arg_types.clone(),
+                          arg_types: abstract_signature
+                            .borrow()
+                            .arg_types
+                            .clone(),
                           return_type: AbstractType::AbstractEnum(
                             monomorphized_enum.clone(),
                           ),
@@ -3238,9 +3281,9 @@ impl TypedExp {
                   }
                 }
                 FunctionImplementationKind::Composite(composite) => {
-                  if !abstract_signature.generic_args.is_empty() {
-                    let monomorphized = abstract_signature
-                      .generate_monomorphized(
+                  if !abstract_signature.borrow().generic_args.is_empty() {
+                    let monomorphized =
+                      abstract_signature.borrow().generate_monomorphized(
                         args
                           .iter()
                           .map(|arg| arg.data.unwrap_known())
@@ -3297,12 +3340,13 @@ impl TypedExp {
                 && let Some(abstract_ancestor) =
                   &mut signature.abstract_ancestor
                 && let FunctionImplementationKind::Composite(top_level_f) =
-                  &abstract_ancestor.implementation
+                  abstract_ancestor.clone().borrow().implementation.clone()
               {
                 let reference_arg_positions =
-                  abstract_ancestor.reference_arg_positions();
+                  abstract_ancestor.borrow().reference_arg_positions();
                 if !reference_arg_positions.is_empty() {
-                  let mut new_abstract_ancestor = (**abstract_ancestor).clone();
+                  let mut new_abstract_ancestor =
+                    (**abstract_ancestor).borrow().clone();
                   let mut new_top_level_f = top_level_f.borrow().clone();
                   let mut address_space_names = vec![];
                   for i in reference_arg_positions {
@@ -3356,7 +3400,8 @@ impl TypedExp {
                     );
                   *f_name = new_name.clone();
                   new_abstract_ancestor.name = new_name;
-                  *abstract_ancestor = Rc::new(new_abstract_ancestor.clone());
+                  *abstract_ancestor =
+                    Rc::new(RefCell::new(new_abstract_ancestor.clone()));
                   new_program.add_abstract_function(Rc::new(RefCell::new(
                     new_abstract_ancestor,
                   )));
@@ -3385,8 +3430,13 @@ impl TypedExp {
             && let Some(abstract_signature) = &mut f.abstract_ancestor
           {
             if let Some((inlinable_arg_index, inlinable_abstract_signature)) =
-              abstract_signature.arg_types.iter().enumerate().find_map(
-                |(i, (t, _))| match t {
+              abstract_signature
+                .clone()
+                .borrow()
+                .arg_types
+                .iter()
+                .enumerate()
+                .find_map(|(i, (t, _))| match t {
                   AbstractType::Type(Type::Function(f))
                     if f.abstract_ancestor.is_none() =>
                   {
@@ -3400,12 +3450,13 @@ impl TypedExp {
                     }
                   }
                   _ => None,
-                },
-              )
+                })
             {
               let representative_struct = inlinable_abstract_signature
+                .borrow()
                 .representative_type(&mut new_ctx.names.borrow_mut());
               let inlined_signature = abstract_signature
+                .borrow()
                 .generate_higher_order_argument_inlined_version(
                   f_name.clone(),
                   inlinable_arg_index,
@@ -3414,7 +3465,8 @@ impl TypedExp {
                   &exp.source_trace,
                 )?;
               *f_name = inlined_signature.name.clone();
-              *abstract_signature = Rc::new(inlined_signature.clone());
+              *abstract_signature =
+                Rc::new(RefCell::new(inlined_signature.clone()));
               new_ctx.add_abstract_function(Rc::new(RefCell::new(
                 inlined_signature,
               )));
@@ -4663,6 +4715,7 @@ impl TypedExp {
       Application(f, args) => match &f.data.unwrap_known() {
         Type::Function(f) => {
           if let Some(f) = &f.abstract_ancestor {
+            let f = f.borrow();
             (match f.implementation {
               FunctionImplementationKind::Builtin(_) => {
                 f.is_builtin_vector_constructor()

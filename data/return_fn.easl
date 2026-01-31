@@ -1,0 +1,21 @@
+(def TAU: f32
+     6.28318530718)
+
+(defn make-oscillator [frequency: f32
+                       phase: f32
+                       amplitude: f32]: (Fn [f32] f32)
+  (let [f (fn [x]
+              (-> x
+                  (* frequency)
+                  (+ phase)
+                  (* TAU)
+                  cos
+                  (* amplitude)))]
+    f))
+
+(defn distort [x: f32]: f32
+  (let [osc-1 (make-oscillator 2. 0. 0.25)
+        osc-2 (make-oscillator 5. 0.25 0.075)]
+    (-> x
+        (+ <> (osc-1 <>))
+        (+ <> (osc-2 <>)))))

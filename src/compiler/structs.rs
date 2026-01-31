@@ -539,12 +539,11 @@ impl AbstractStruct {
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Struct> {
-    let generic_count = s.generic_args.len();
     let generic_values = s
       .generic_args
       .iter()
       .map(|(_, a, _)| match a {
-        GenericArgument::Type(type_constraints) => GenericArgumentValue::Type(
+        GenericArgument::Type(_) => GenericArgumentValue::Type(
           TypeState::fresh_unification_variable().into(),
         ),
         GenericArgument::Constant => {

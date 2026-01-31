@@ -1,0 +1,640 @@
+; translated from https://www.shadertoy.com/view/7sVGD1
+; implemenetation of the Okhsv and Okhsl color spaces by Björn Ottosson
+(def PI: f32
+     3.1415926535897932384626433832795)
+
+(defn cbrt [x: f32]: f32
+  (* (sign x)
+     (pow (abs x) 0.333333333)))
+
+(defn srgb-transfer-function [a: f32]: f32
+  (if (>= 0.0031308 a)
+    (* 12.92 a)
+    (- (* 1.055
+          (pow a 0.4166666666666667))
+       0.055)))
+
+(defn srgb-transfer-function-inv [a: f32]: f32
+  (if (< 0.04045 a)
+    (pow (/ (+ a 0.055) 1.055) 2.4)
+    (/ a 12.92)))
+
+(defn linear-srgb-to-oklab [c: vec3f]: vec3f
+  (let [l (+ (* 0.4122214708 c.x)
+             (* 0.5363325363 c.y)
+             (* 0.0514459929 c.z))
+        m (+ (* 0.2119034982 c.x)
+             (* 0.6806995451 c.y)
+             (* 0.1073969566 c.z))
+        s (+ (* 0.0883024619 c.x)
+             (* 0.2817188376 c.y)
+             (* 0.6299787005 c.z))
+        l_ (cbrt l)
+        m_ (cbrt m)
+        s_ (cbrt s)]
+    (vec3f (+ (* 0.2104542553 l_)
+              (* 0.7936177850 m_)
+              (* -0.0040720468 s_))
+           (+ (* 1.9779984951 l_)
+              (* -2.4285922050 m_)
+              (* 0.4505937099 s_))
+           (+ (* 0.0259040371 l_)
+              (* 0.7827717662 m_)
+              (* -0.8086757660 s_)))))
+
+(defn oklab-to-linear-srgb [c: vec3f]: vec3f
+  (let [l_ (+ c.x
+              (* 0.3963377774 c.y)
+              (* 0.2158037573 c.z))
+        m_ (+ c.x
+              (* -0.1055613458 c.y)
+              (* -0.0638541728 c.z))
+        s_ (+ c.x
+              (* -0.0894841775 c.y)
+              (* -1.2914855480 c.z))
+        l (* l_ (* l_ l_))
+        m (* m_ (* m_ m_))
+        s (* s_ (* s_ s_))]
+    (vec3f (+ (* 4.0767416621 l)
+              (* -3.3077115913 m)
+              (* 0.2309699292 s))
+           (+ (* -1.2684380046 l)
+              (* 2.6097574011 m)
+              (* -0.3413193965 s))
+           (+ (* -0.0041960863 l)
+              (* -0.7034186147 m)
+              (* 1.7076147010 s)))))
+
+(defn compute-max-saturation [a: f32
+                              b: f32]: f32
+  ;; Select coefficients based on which RGB component hits zero first
+
+  ;; Using vec4f to pack: (k0, k1, k2, k3) and (k4, wl, wm, ws)
+
+  (let [cond-red (> (+ (* -1.88170328 a)
+                       (* -0.80936493 b))
+                    1.0)
+        cond-green (> (+ (* 1.81444104 a)
+                         (* -1.19445276 b))
+                      1.0)
+        coeffs1 (if cond-red
+                  (vec4f 1.19086277
+                         1.76576728
+                         0.59662641
+                         0.75515197)
+                  (if cond-green
+                    (vec4f 0.73956515
+                           -0.45954404
+                           0.08285427
+                           0.12541070)
+                    (vec4f 1.35733652
+                           -0.00915799
+                           -1.15130210
+                           -0.50559606)))
+        coeffs2 (if cond-red
+                  (vec4f 0.56771245
+                         4.0767416621
+                         -3.3077115913
+                         0.2309699292)
+                  (if cond-green
+                    (vec4f 0.14503204
+                           -1.2684380046
+                           2.6097574011
+                           -0.3413193965)
+                    (vec4f 0.00692167
+                           -0.0041960863
+                           -0.7034186147
+                           1.7076147010)))
+        k0 coeffs1.x
+        k1 coeffs1.y
+        k2 coeffs1.z
+        k3 coeffs1.w
+        k4 coeffs2.x
+        wl coeffs2.y
+        wm coeffs2.z
+        ws coeffs2.w
+        ;; Approximate max saturation using polynomial
+
+        S (+ k0
+             (* k1 a)
+             (* k2 b)
+             (* k3 (* a a))
+             (* k4 (* a b)))
+        ;; One step of Halley's method
+
+        k_l (+ (* 0.3963377774 a)
+               (* 0.2158037573 b))
+        k_m (+ (* -0.1055613458 a)
+               (* -0.0638541728 b))
+        k_s (+ (* -0.0894841775 a)
+               (* -1.2914855480 b))
+        l_ (+ 1.0 (* S k_l))
+        m_ (+ 1.0 (* S k_m))
+        s_ (+ 1.0 (* S k_s))
+        l (* l_ (* l_ l_))
+        m (* m_ (* m_ m_))
+        s (* s_ (* s_ s_))
+        l_dS (* 3.0 (* k_l (* l_ l_)))
+        m_dS (* 3.0 (* k_m (* m_ m_)))
+        s_dS (* 3.0 (* k_s (* s_ s_)))
+        l_dS2 (* 6.0 (* k_l (* k_l l_)))
+        m_dS2 (* 6.0 (* k_m (* k_m m_)))
+        s_dS2 (* 6.0 (* k_s (* k_s s_)))
+        f (+ (* wl l) (* wm m) (* ws s))
+        f1 (+ (* wl l_dS)
+              (* wm m_dS)
+              (* ws s_dS))
+        f2 (+ (* wl l_dS2)
+              (* wm m_dS2)
+              (* ws s_dS2))]
+    (- S
+       (/ (* f f1)
+          (- (* f1 f1) (* 0.5 (* f f2)))))))
+
+(defn find-cusp [a: f32
+                 b: f32]: vec2f
+  (let [S_cusp (compute-max-saturation a b)
+        rgb_at_max (oklab-to-linear-srgb (vec3f 1.0 (* S_cusp a) (* S_cusp b)))
+        L_cusp (cbrt (/ 1.0
+                        (max (max rgb_at_max.x rgb_at_max.y)
+                             rgb_at_max.z)))
+        C_cusp (* L_cusp S_cusp)]
+    (vec2f L_cusp C_cusp)))
+
+(defn find-gamut-intersection-with-cusp [a: f32
+                                         b: f32
+                                         L1: f32
+                                         C1: f32
+                                         L0: f32
+                                         cusp: vec2f]: f32
+  (if (<= (- (* (- L1 L0) cusp.y)
+             (* (- cusp.x L0) C1))
+          0.0)
+    ;; Lower half
+
+    (/ (* cusp.y L0)
+       (+ (* C1 cusp.x)
+          (* cusp.y (- L0 L1))))
+    ;; Upper half
+
+    (let [t_initial (/ (* cusp.y (- L0 1.0))
+                       (+ (* C1 (- cusp.x 1.0))
+                          (* cusp.y (- L0 L1))))
+          dL (- L1 L0)
+          dC C1
+          k_l (+ (* 0.3963377774 a)
+                 (* 0.2158037573 b))
+          k_m (+ (* -0.1055613458 a)
+                 (* -0.0638541728 b))
+          k_s (+ (* -0.0894841775 a)
+                 (* -1.2914855480 b))
+          l_dt (+ dL (* dC k_l))
+          m_dt (+ dL (* dC k_m))
+          s_dt (+ dL (* dC k_s))
+          ;; Halley iteration
+
+          L (+ (* L0 (- 1.0 t_initial))
+               (* t_initial L1))
+          C (* t_initial C1)
+          l_ (+ L (* C k_l))
+          m_ (+ L (* C k_m))
+          s_ (+ L (* C k_s))
+          l (* l_ (* l_ l_))
+          m (* m_ (* m_ m_))
+          s (* s_ (* s_ s_))
+          ldt (* 3.0 (* l_dt (* l_ l_)))
+          mdt (* 3.0 (* m_dt (* m_ m_)))
+          sdt (* 3.0 (* s_dt (* s_ s_)))
+          ldt2 (* 6.0 (* l_dt (* l_dt l_)))
+          mdt2 (* 6.0 (* m_dt (* m_dt m_)))
+          sdt2 (* 6.0 (* s_dt (* s_dt s_)))
+          r (- (+ (* 4.0767416621 l)
+                  (* -3.3077115913 m)
+                  (* 0.2309699292 s))
+               1.0)
+          r1 (+ (* 4.0767416621 ldt)
+                (* -3.3077115913 mdt)
+                (* 0.2309699292 sdt))
+          r2 (+ (* 4.0767416621 ldt2)
+                (* -3.3077115913 mdt2)
+                (* 0.2309699292 sdt2))
+          u_r (/ r1
+                 (- (* r1 r1) (* 0.5 (* r r2))))
+          t_r (* (- r) u_r)
+          g (- (+ (* -1.2684380046 l)
+                  (* 2.6097574011 m)
+                  (* -0.3413193965 s))
+               1.0)
+          g1 (+ (* -1.2684380046 ldt)
+                (* 2.6097574011 mdt)
+                (* -0.3413193965 sdt))
+          g2 (+ (* -1.2684380046 ldt2)
+                (* 2.6097574011 mdt2)
+                (* -0.3413193965 sdt2))
+          u_g (/ g1
+                 (- (* g1 g1) (* 0.5 (* g g2))))
+          t_g (* (- g) u_g)
+          b_ (- (+ (* -0.0041960863 l)
+                   (* -0.7034186147 m)
+                   (* 1.7076147010 s))
+                1.0)
+          b1 (+ (* -0.0041960863 ldt)
+                (* -0.7034186147 mdt)
+                (* 1.7076147010 sdt))
+          b2 (+ (* -0.0041960863 ldt2)
+                (* -0.7034186147 mdt2)
+                (* 1.7076147010 sdt2))
+          u_b (/ b1
+                 (- (* b1 b1) (* 0.5 (* b_ b2))))
+          t_b (* (- b_) u_b)
+          t_r_safe (if (>= u_r 0.0)
+                     t_r
+                     10000.0)
+          t_g_safe (if (>= u_g 0.0)
+                     t_g
+                     10000.0)
+          t_b_safe (if (>= u_b 0.0)
+                     t_b
+                     10000.0)]
+      (+ t_initial
+         (min t_r_safe
+              (min t_g_safe t_b_safe))))))
+
+(defn find-gamut-intersection [a: f32
+                               b: f32
+                               L1: f32
+                               C1: f32
+                               L0: f32]: f32
+  (let [cusp (find-cusp a b)]
+    (find-gamut-intersection-with-cusp a b L1 C1 L0 cusp)))
+
+(defn gamut-clip-preserve-chroma [rgb: vec3f]: vec3f
+  (if (and (< rgb.x 1.0)
+           (< rgb.y 1.0)
+           (< rgb.z 1.0)
+           (> rgb.x 0.0)
+           (> rgb.y 0.0)
+           (> rgb.z 0.0))
+    rgb
+    (let [lab (linear-srgb-to-oklab rgb)
+          L lab.x
+          eps 0.00001
+          C (max eps
+                 (sqrt (+ (* lab.y lab.y)
+                          (* lab.z lab.z))))
+          a_ (/ lab.y C)
+          b_ (/ lab.z C)
+          L0 (clamp L 0.0 1.0)
+          t (find-gamut-intersection a_ b_ L C L0)
+          L_clipped (+ (* L0 (- 1.0 t)) (* t L))
+          C_clipped (* t C)]
+      (oklab-to-linear-srgb (vec3f L_clipped
+                                   (* C_clipped a_)
+                                   (* C_clipped b_))))))
+
+(defn gamut-clip-project-to-0-5 [rgb: vec3f]: vec3f
+  (if (and (< rgb.x 1.0)
+           (< rgb.y 1.0)
+           (< rgb.z 1.0)
+           (> rgb.x 0.0)
+           (> rgb.y 0.0)
+           (> rgb.z 0.0))
+    rgb
+    (let [lab (linear-srgb-to-oklab rgb)
+          L lab.x
+          eps 0.00001
+          C (max eps
+                 (sqrt (+ (* lab.y lab.y)
+                          (* lab.z lab.z))))
+          a_ (/ lab.y C)
+          b_ (/ lab.z C)
+          L0 0.5
+          t (find-gamut-intersection a_ b_ L C L0)
+          L_clipped (+ (* L0 (- 1.0 t)) (* t L))
+          C_clipped (* t C)]
+      (oklab-to-linear-srgb (vec3f L_clipped
+                                   (* C_clipped a_)
+                                   (* C_clipped b_))))))
+
+(defn gamut-clip-project-to-L-cusp [rgb: vec3f]: vec3f
+  (if (and (< rgb.x 1.0)
+           (< rgb.y 1.0)
+           (< rgb.z 1.0)
+           (> rgb.x 0.0)
+           (> rgb.y 0.0)
+           (> rgb.z 0.0))
+    rgb
+    (let [lab (linear-srgb-to-oklab rgb)
+          L lab.x
+          eps 0.00001
+          C (max eps
+                 (sqrt (+ (* lab.y lab.y)
+                          (* lab.z lab.z))))
+          a_ (/ lab.y C)
+          b_ (/ lab.z C)
+          cusp (find-cusp a_ b_)
+          L0 cusp.x
+          t (find-gamut-intersection a_ b_ L C L0)
+          L_clipped (+ (* L0 (- 1.0 t)) (* t L))
+          C_clipped (* t C)]
+      (oklab-to-linear-srgb (vec3f L_clipped
+                                   (* C_clipped a_)
+                                   (* C_clipped b_))))))
+
+(defn gamut-clip-adaptive-L0-0-5 [rgb: vec3f
+                                  alpha: f32]: vec3f
+  (if (and (< rgb.x 1.0)
+           (< rgb.y 1.0)
+           (< rgb.z 1.0)
+           (> rgb.x 0.0)
+           (> rgb.y 0.0)
+           (> rgb.z 0.0))
+    rgb
+    (let [lab (linear-srgb-to-oklab rgb)
+          L lab.x
+          eps 0.00001
+          C (max eps
+                 (sqrt (+ (* lab.y lab.y)
+                          (* lab.z lab.z))))
+          a_ (/ lab.y C)
+          b_ (/ lab.z C)
+          Ld (- L 0.5)
+          e1 (+ 0.5 (abs Ld) (* alpha C))
+          L0 (* 0.5
+                (+ 1.0
+                   (* (sign Ld)
+                      (- e1
+                         (sqrt (- (* e1 e1) (* 2.0 (abs Ld))))))))
+          t (find-gamut-intersection a_ b_ L C L0)
+          L_clipped (+ (* L0 (- 1.0 t)) (* t L))
+          C_clipped (* t C)]
+      (oklab-to-linear-srgb (vec3f L_clipped
+                                   (* C_clipped a_)
+                                   (* C_clipped b_))))))
+
+(defn gamut-clip-adaptive-L0-L-cusp [rgb: vec3f
+                                     alpha: f32]: vec3f
+  (if (and (< rgb.x 1.0)
+           (< rgb.y 1.0)
+           (< rgb.z 1.0)
+           (> rgb.x 0.0)
+           (> rgb.y 0.0)
+           (> rgb.z 0.0))
+    rgb
+    (let [lab (linear-srgb-to-oklab rgb)
+          L lab.x
+          eps 0.00001
+          C (max eps
+                 (sqrt (+ (* lab.y lab.y)
+                          (* lab.z lab.z))))
+          a_ (/ lab.y C)
+          b_ (/ lab.z C)
+          cusp (find-cusp a_ b_)
+          Ld (- L cusp.x)
+          k (* 2.0
+               (if (> Ld 0.0)
+                 (- 1.0 cusp.x)
+                 cusp.x))
+          e1 (+ (* 0.5 k)
+                (abs Ld)
+                (/ (* alpha C) k))
+          L0 (+ cusp.x
+                (* 0.5
+                   (* (sign Ld)
+                      (- e1
+                         (sqrt (- (* e1 e1)
+                                  (* 2.0 (* k (abs Ld)))))))))
+          t (find-gamut-intersection a_ b_ L C L0)
+          L_clipped (+ (* L0 (- 1.0 t)) (* t L))
+          C_clipped (* t C)]
+      (oklab-to-linear-srgb (vec3f L_clipped
+                                   (* C_clipped a_)
+                                   (* C_clipped b_))))))
+
+(defn toe [x: f32]: f32
+  (let [k_1 0.206
+        k_2 0.03
+        k_3 (/ (+ 1.0 k_1) (+ 1.0 k_2))]
+    (* 0.5
+       (+ (- (* k_3 x) k_1)
+          (sqrt (+ (* (- (* k_3 x) k_1)
+                      (- (* k_3 x) k_1))
+                   (* 4.0 (* k_2 (* k_3 x)))))))))
+
+(defn toe-inv [x: f32]: f32
+  (let [k_1 0.206
+        k_2 0.03
+        k_3 (/ (+ 1.0 k_1) (+ 1.0 k_2))]
+    (/ (+ (* x x) (* k_1 x))
+       (* k_3 (+ x k_2)))))
+
+(defn to-ST [cusp: vec2f]: vec2f
+  (let [L cusp.x
+        C cusp.y]
+    (vec2f (/ C L) (/ C (- 1.0 L)))))
+
+(defn get-ST-mid [a_: f32
+                  b_: f32]: vec2f
+  (let [S (+ 0.11516993
+             (/ 1.0
+                (+ 7.44778970
+                   (* 4.15901240 b_)
+                   (* a_
+                      (+ -2.19557347
+                         (* 1.75198401 b_)
+                         (* a_
+                            (+ -2.13704948
+                               (* -10.02301043 b_)
+                               (* a_
+                                  (+ -4.24894561
+                                     (* 5.38770819 b_)
+                                     (* 4.69891013 a_))))))))))
+        T (+ 0.11239642
+             (/ 1.0
+                (+ 1.61320320
+                   (* -0.68124379 b_)
+                   (* a_
+                      (+ 0.40370612
+                         (* 0.90148123 b_)
+                         (* a_
+                            (+ -0.27087943
+                               (* 0.61223990 b_)
+                               (* a_
+                                  (+ 0.00299215
+                                     (* -0.45399568 b_)
+                                     (* -0.14661872 a_))))))))))]
+    (vec2f S T)))
+
+(defn get-Cs [L: f32
+              a_: f32
+              b_: f32]: vec3f
+  (let [cusp (find-cusp a_ b_)
+        C_max (find-gamut-intersection-with-cusp a_ b_ L 1.0 L cusp)
+        ST_max (to-ST cusp)
+        k (/ C_max
+             (min (* L ST_max.x)
+                  (* (- 1.0 L) ST_max.y)))
+        ST_mid (get-ST-mid a_ b_)
+        C_a (* L ST_mid.x)
+        C_b (* (- 1.0 L) ST_mid.y)
+        C_a4 (* C_a (* C_a (* C_a C_a)))
+        C_b4 (* C_b (* C_b (* C_b C_b)))
+        C_mid (* 0.9
+                 (* k
+                    (sqrt (sqrt (/ 1.0
+                                   (+ (/ 1.0 C_a4) (/ 1.0 C_b4)))))))
+        C_a_0 (* L 0.4)
+        C_b_0 (* (- 1.0 L) 0.8)
+        C_0 (sqrt (/ 1.0
+                     (+ (/ 1.0 (* C_a_0 C_a_0))
+                        (/ 1.0 (* C_b_0 C_b_0)))))]
+    (vec3f C_0 C_mid C_max)))
+
+(defn okhsl-to-srgb [hsl: vec3f]: vec3f
+  (let [h hsl.x
+        s hsl.y
+        l hsl.z]
+    (if (== l 1.0)
+      (vec3f 1.0 1.0 1.0)
+      (if (== l 0.0)
+        (vec3f 0.0 0.0 0.0)
+        (let [a_ (cos (* 2.0 (* PI h)))
+              b_ (sin (* 2.0 (* PI h)))
+              L (toe-inv l)
+              cs (get-Cs L a_ b_)
+              C_0 cs.x
+              C_mid cs.y
+              C_max cs.z
+              mid 0.8
+              mid_inv 1.25
+              C (if (< s mid)
+                  (let [t (* mid_inv s)
+                        k_1 (* mid C_0)
+                        k_2 (- 1.0 (/ k_1 C_mid))]
+                    (/ (* t k_1) (- 1.0 (* k_2 t))))
+                  (let [t (/ (- s mid) (- 1.0 mid))
+                        k_0 C_mid
+                        k_1 (/ (* (- 1.0 mid)
+                                  (* C_mid
+                                     (* C_mid (* mid_inv mid_inv))))
+                               C_0)
+                        k_2 (- 1.0 (/ k_1 (- C_max C_mid)))]
+                    (+ k_0
+                       (/ (* t k_1) (- 1.0 (* k_2 t))))))
+              rgb (oklab-to-linear-srgb (vec3f L (* C a_) (* C b_)))]
+          (vec3f (srgb-transfer-function rgb.x)
+                 (srgb-transfer-function rgb.y)
+                 (srgb-transfer-function rgb.z)))))))
+
+(defn srgb-to-okhsl [rgb: vec3f]: vec3f
+  (let [lab (linear-srgb-to-oklab (vec3f (srgb-transfer-function-inv rgb.x)
+                                         (srgb-transfer-function-inv rgb.y)
+                                         (srgb-transfer-function-inv rgb.z)))
+        C (sqrt (+ (* lab.y lab.y)
+                   (* lab.z lab.z)))
+        a_ (/ lab.y C)
+        b_ (/ lab.z C)
+        L lab.x
+        h (+ 0.5
+             (/ (* 0.5
+                   (atan2 (- lab.z) (- lab.y)))
+                PI))
+        cs (get-Cs L a_ b_)
+        C_0 cs.x
+        C_mid cs.y
+        C_max cs.z
+        mid 0.8
+        mid_inv 1.25
+        s (if (< C C_mid)
+            (let [k_1 (* mid C_0)
+                  k_2 (- 1.0 (/ k_1 C_mid))
+                  t (/ C (+ k_1 (* k_2 C)))]
+              (* t mid))
+            (let [k_0 C_mid
+                  k_1 (/ (* (- 1.0 mid)
+                            (* C_mid
+                               (* C_mid (* mid_inv mid_inv))))
+                         C_0)
+                  k_2 (- 1.0 (/ k_1 (- C_max C_mid)))
+                  t (/ (- C k_0)
+                       (+ k_1 (* k_2 (- C k_0))))]
+              (+ mid (* (- 1.0 mid) t))))
+        l (toe L)]
+    (vec3f h s l)))
+
+(defn okhsv-to-srgb [hsv: vec3f]: vec3f
+  (let [h hsv.x
+        s hsv.y
+        v hsv.z
+        a_ (cos (* 2.0 (* PI h)))
+        b_ (sin (* 2.0 (* PI h)))
+        cusp (find-cusp a_ b_)
+        ST_max (to-ST cusp)
+        S_max ST_max.x
+        T_max ST_max.y
+        S_0 0.5
+        k (- 1.0 (/ S_0 S_max))
+        L_v (- 1.0
+               (/ (* s S_0)
+                  (+ S_0
+                     (- T_max (* T_max (* k s))))))
+        C_v (/ (* s (* T_max S_0))
+               (+ S_0
+                  (- T_max (* T_max (* k s)))))
+        L (* v L_v)
+        C (* v C_v)
+        L_vt (toe-inv L_v)
+        C_vt (/ (* C_v L_vt) L_v)
+        L_new (toe-inv L)
+        C_new (/ (* C L_new) L)
+        rgb_scale (oklab-to-linear-srgb (vec3f L_vt (* a_ C_vt) (* b_ C_vt)))
+        scale_L (cbrt (/ 1.0
+                         (max (max rgb_scale.x rgb_scale.y)
+                              (max rgb_scale.z 0.0))))
+        L_final (* L_new scale_L)
+        C_final (* C_new scale_L)
+        rgb (oklab-to-linear-srgb (vec3f L_final
+                                         (* C_final a_)
+                                         (* C_final b_)))]
+    (vec3f (srgb-transfer-function rgb.x)
+           (srgb-transfer-function rgb.y)
+           (srgb-transfer-function rgb.z))))
+
+(defn srgb-to-okhsv [rgb: vec3f]: vec3f
+  (let [lab (linear-srgb-to-oklab (vec3f (srgb-transfer-function-inv rgb.x)
+                                         (srgb-transfer-function-inv rgb.y)
+                                         (srgb-transfer-function-inv rgb.z)))
+        C (sqrt (+ (* lab.y lab.y)
+                   (* lab.z lab.z)))
+        a_ (/ lab.y C)
+        b_ (/ lab.z C)
+        L lab.x
+        h (+ 0.5
+             (/ (* 0.5
+                   (atan2 (- lab.z) (- lab.y)))
+                PI))
+        cusp (find-cusp a_ b_)
+        ST_max (to-ST cusp)
+        S_max ST_max.x
+        T_max ST_max.y
+        S_0 0.5
+        k (- 1.0 (/ S_0 S_max))
+        t (/ T_max (+ C (* L T_max)))
+        L_v (* t L)
+        C_v (* t C)
+        L_vt (toe-inv L_v)
+        C_vt (/ (* C_v L_vt) L_v)
+        rgb_scale (oklab-to-linear-srgb (vec3f L_vt (* a_ C_vt) (* b_ C_vt)))
+        scale_L (cbrt (/ 1.0
+                         (max (max rgb_scale.x rgb_scale.y)
+                              (max rgb_scale.z 0.0))))
+        L_scaled (/ L scale_L)
+        C_scaled (/ C scale_L)
+        C_toed (/ (* C_scaled (toe L_scaled))
+                  L_scaled)
+        L_toed (toe L_scaled)
+        v (/ L_toed L_v)
+        s (/ (* (+ S_0 T_max) C_v)
+             (+ (* T_max S_0)
+                (* T_max (* k C_v))))]
+    (vec3f h s v)))

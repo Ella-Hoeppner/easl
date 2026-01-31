@@ -1,8 +1,12 @@
 (def global-factor: f32
      0.5)
 
+(defn apply [f: (Fn [f32] f32)
+             x: f32]: f32
+  (f 0.5))
+
 (defn main []: f32
   (let [local-factor 2.
         multiply-by-factors (fn [x]
                                 (* x local-factor global-factor))]
-    (multiply-by-factors 5.)))
+    (apply multiply-by-factors 5.)))

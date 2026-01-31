@@ -3,13 +3,23 @@
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready"
 * allow functions to return other functions
 
+* add a compiler error whenever a match expression has a function type
+  * basically just implement `catch_illegal_match_functions`
+
+* `bitcast`, at least for builtin types
+
+* some long programs, e.g. `okhsl.easl`, take much longer to compile than expected
+  * that one takes like 1.25 seconds in release mode!
+  * from the flamegraph it seems like a lot of time is spent in `Program::concrete_signatures`, as called from `constrain_name_type`. Most of this is repeated work and I think all the concrete signatures could be safely cached before the call to `fully_infer_types`
+  * also seems to spend a lot of time in dropping instances of `Type`, and most of the time there seems to be spend in dropping `Struct`s or `FunctionSignature`s, so maybe keep those in `Rc`s to minimize the amount of drops?
 
 
-* when a match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
 
 * turn the examples into an actual test suite
   * for the successful examples, also try to feed the output wgsl into wgpu and compile them, so that we can catch some bugs in the emitted wgsl
   * for things that are currently commented out because they're examples of what would cause errors, move those to separate files and make tests that check that they produce the expected errors
+
+* when a match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
 
 * `*=` doesn't work when multiplying a vec by a matrix
 

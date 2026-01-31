@@ -614,13 +614,13 @@ impl AbstractFunctionSignature {
     &self,
     f_name: Rc<str>,
     argument_index: usize,
-    signature: Rc<AbstractFunctionSignature>,
+    signature: Rc<RefCell<AbstractFunctionSignature>>,
     ctx: &mut Program,
     source_trace: &SourceTrace,
   ) -> CompileResult<Self> {
     let mut implementation = self.implementation(source_trace.clone())?;
     let arg_name = &self.arg_names(source_trace)?[argument_index].0;
-    let inlined_fn_name = &signature.name;
+    let inlined_fn_name = &signature.borrow().name;
     if let TypeState::Known(Type::Function(f)) =
       &mut implementation.expression.data.kind
       && let TypeState::Known(Type::Function(f_arg)) =
@@ -638,7 +638,7 @@ impl AbstractFunctionSignature {
             let ExpKind::Name(name) = &mut f_name.kind else {
               panic!()
             };
-            if let Some(captured_scope) = &signature.captured_scope
+            if let Some(captured_scope) = &signature.borrow().captured_scope
               && name == arg_name
             {
               f_name.data.as_known_mut(|f_type| {
@@ -711,11 +711,11 @@ impl AbstractFunctionSignature {
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<FunctionSignature> {
-    let f = f.borrow();
+    let f_borrowed = f.borrow();
     let (generic_variables, generic_constraints): (
       HashMap<Rc<str>, ExpTypeInfo>,
       HashMap<Rc<str>, Vec<TypeConstraint>>,
-    ) = f
+    ) = f_borrowed
       .generic_args
       .iter()
       .filter_map(|(name, generic_arg, _)| {
@@ -729,7 +729,7 @@ impl AbstractFunctionSignature {
         }
       })
       .collect();
-    let generic_constants: HashMap<Rc<str>, ConstGenericValue> = f
+    let generic_constants: HashMap<Rc<str>, ConstGenericValue> = f_borrowed
       .generic_args
       .iter()
       .filter_map(|(name, generic_arg, _)| {
@@ -740,7 +740,7 @@ impl AbstractFunctionSignature {
         }
       })
       .collect();
-    let mut args: Vec<_> = f
+    let mut args: Vec<_> = f_borrowed
       .arg_types
       .iter()
       .map(|(t, ownership)| {
@@ -804,7 +804,7 @@ impl AbstractFunctionSignature {
         Ok((Variable::immutable(var_type), constraints))
       })
       .collect::<CompileResult<_>>()?;
-    let mut return_type = match &f.return_type {
+    let mut return_type = match &f_borrowed.return_type {
       AbstractType::Generic(var_name) => generic_variables
         .get(var_name)
         .expect("unrecognized generic")
@@ -858,14 +858,14 @@ impl AbstractFunctionSignature {
     Ok(FunctionSignature {
       args,
       return_type,
-      abstract_ancestor: Some(Rc::new(f.clone())),
+      abstract_ancestor: Some(f.clone()),
     })
   }
 }
 
 #[derive(Debug, Clone)]
 pub struct FunctionSignature {
-  pub abstract_ancestor: Option<Rc<AbstractFunctionSignature>>,
+  pub abstract_ancestor: Option<Rc<RefCell<AbstractFunctionSignature>>>,
   pub args: Vec<(Variable, Vec<TypeConstraint>)>,
   pub return_type: ExpTypeInfo,
 }
@@ -894,7 +894,7 @@ impl FunctionSignature {
   pub fn are_args_compatible(&self, arg_types: &Vec<TypeState>) -> bool {
     if arg_types.len() != self.args.len() {
       if let Some(ancestor) = &self.abstract_ancestor {
-        if ancestor.associative {
+        if ancestor.borrow().associative {
           if arg_types.len() == 0 {
             return false;
           }
@@ -950,7 +950,7 @@ impl FunctionSignature {
       any_arg_changed
     } else {
       if let Some(ancestor) = &self.abstract_ancestor {
-        if ancestor.associative {
+        if ancestor.borrow().associative {
           if args.len() != 0 {
             let arg_type = &mut self.args.get_mut(0).unwrap().0.var_type;
             let mut any_arg_changed = false;
@@ -974,11 +974,11 @@ impl FunctionSignature {
     self
       .abstract_ancestor
       .as_ref()
-      .map(|abstract_ancestor| abstract_ancestor.name.clone())
+      .map(|abstract_ancestor| abstract_ancestor.borrow().name.clone())
   }
   pub fn effects(&self, program: &Program) -> EffectType {
     if let Some(abstract_ancestor) = &self.abstract_ancestor {
-      match &abstract_ancestor.implementation {
+      match &abstract_ancestor.borrow().implementation {
         FunctionImplementationKind::Composite(f) => {
           return f.borrow().effects(program);
         }

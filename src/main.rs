@@ -128,7 +128,7 @@ fn shader_examples() {
     "returned_array_generic",
     "local_fn",
     "local_fn_inferred_type",
-    "closure",
+    "passed_closure",
     "float_match",
     "vec_match",
     "for_multitype",
@@ -138,6 +138,9 @@ fn shader_examples() {
     "reference",
     "static_array_length",
     "def_sized_array",
+    "closure",
+    "return_fn",
+    // "okhsl",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();
@@ -175,7 +178,7 @@ fn shader_examples() {
   println!("total time: {total_time}");
 }
 
-fn cpu_examples() {
+fn _cpu_examples() {
   unsafe {
     std::env::set_var("RUST_BACKTRACE", "1");
   }

@@ -34,7 +34,6 @@ use crate::{
     },
     util::{compile_word, is_valid_name},
     vars::TopLevelVariableKind,
-    wgsl::is_wgsl_reserved_word,
   },
   parse::{EaslSyntax, EaslTree, Encloser, Operator, parse_easl},
 };
@@ -747,7 +746,7 @@ impl Program {
     for var in self.top_level_vars.iter_mut() {
       if let Some(value_expression) = &mut var.value {
         let changed = value_expression.data.constrain(
-          var.var_type.clone().known(),
+          &var.var_type.clone().known(),
           &var.source_trace,
           errors,
         );
@@ -886,11 +885,13 @@ impl Program {
   }
   pub fn validate_argument_ownership(&mut self, errors: &mut ErrorLog) {
     for f in self.abstract_functions_iter() {
+      let mut borrowed_f = f.borrow_mut();
+      let name = borrowed_f.name.clone();
       if let FunctionImplementationKind::Composite(implementation) =
-        &mut f.borrow_mut().implementation
+        &mut borrowed_f.implementation
       {
+        let mut implementation = implementation.borrow_mut();
         implementation
-          .borrow_mut()
           .expression
           .walk_mut_with_ctx::<Never>(
             &mut |exp, ctx| {
@@ -898,6 +899,7 @@ impl Program {
                 ExpKind::Application(f, args) => {
                   if let Type::Function(f) = f.data.unwrap_known()
                     && let Some(abstract_f) = f.abstract_ancestor
+                    && let abstract_f = abstract_f.borrow()
                     && let FunctionImplementationKind::Composite(_) =
                       abstract_f.implementation
                   {
@@ -1032,43 +1034,136 @@ impl Program {
       }
     }
   }
+  pub fn catch_illegal_match_functions(&mut self, _errors: &mut ErrorLog) {
+    // todo!()
+  }
   pub fn propagate_abstract_function_signatures(&mut self) {
-    let copy_program = self.clone();
-    for f in self.abstract_functions_iter() {
-      let borrowed_f = f.borrow();
-      match &borrowed_f.implementation {
-        FunctionImplementationKind::Composite(implementation) => implementation
-          .borrow_mut()
-          .expression
-          .walk_mut_with_ctx(
-            &mut |exp, ctx| {
-              exp.data.as_known_mut(|t| {
-                if let Type::Function(f) = t {
-                  match &exp.kind {
-                    ExpKind::Name(name) => {
-                      if let Some((v, _)) = ctx.variables.get(name)
-                        && let Type::Function(bound_f) =
-                          v.var_type.unwrap_known()
-                        && let Some(abstract_ancestor) =
-                          bound_f.abstract_ancestor
-                      {
-                        f.abstract_ancestor = Some(abstract_ancestor);
+    loop {
+      let mut changed = false;
+      let copy_program = self.clone();
+      for top_level_f in self.abstract_functions_iter() {
+        let mut borrowed_f = top_level_f.borrow_mut();
+        match &borrowed_f.implementation {
+          FunctionImplementationKind::Composite(implementation) => {
+            let mut borrowed_implementation = implementation.borrow_mut();
+            borrowed_implementation
+              .expression
+              .walk_mut_with_ctx(
+                &mut |exp, ctx| {
+                  exp.data.as_known_mut(|t| {
+                    if let Type::Function(f) = t
+                      && f.abstract_ancestor.is_none()
+                    {
+                      match &exp.kind {
+                        ExpKind::Name(name) => {
+                          if let Some((v, _)) = ctx.variables.get(name)
+                            && let Type::Function(bound_f) =
+                              v.var_type.unwrap_known()
+                            && let Some(abstract_ancestor) =
+                              bound_f.abstract_ancestor
+                          {
+                            f.abstract_ancestor = Some(abstract_ancestor);
+                            changed = true;
+                          }
+                        }
+                        ExpKind::Application(applied_f, _) => {
+                          if let Type::Function(applied_f) =
+                            applied_f.data.unwrap_known()
+                            && let Some(abstract_applied_f) =
+                              applied_f.abstract_ancestor
+                            && let Type::Function(_) =
+                              applied_f.return_type.unwrap_known()
+                            && let Some(signatures) = self
+                              .abstract_functions
+                              .get(&abstract_applied_f.borrow().name)
+                            && let Some(signature) = signatures.get(0)
+                            && let AbstractType::Type(Type::Function(
+                              returned_f,
+                            )) = &signature.borrow().return_type
+                            && let Some(returned_abstract_ancestor) =
+                              &returned_f.abstract_ancestor
+                          {
+                            f.abstract_ancestor =
+                              Some(returned_abstract_ancestor.clone());
+                            changed = true;
+                          }
+                        }
+                        _ => {}
                       }
                     }
-                    _ => {}
+                    Ok::<bool, Never>(true)
+                  })
+                },
+                &mut ImmutableProgramLocalContext::empty(&copy_program),
+              )
+              .unwrap();
+            borrowed_implementation
+              .expression
+              .walk_mut(&mut |exp| {
+                exp.data.as_known_mut(|t| {
+                  if let Type::Function(f) = t
+                    && f.abstract_ancestor.is_none()
+                    && let Some(inner_exp) = match &exp.kind {
+                      ExpKind::Let(_, body) => Some(body.as_ref()),
+                      ExpKind::Block(exps) => exps.last(),
+                      _ => None,
+                    }
+                    && let Type::Function(inner_f) =
+                      inner_exp.data.unwrap_known()
+                    && let Some(inner_abstract_ancestor) =
+                      inner_f.abstract_ancestor
+                  {
+                    f.abstract_ancestor = Some(inner_abstract_ancestor.clone());
+                    changed = true;
                   }
-                }
+                });
                 Ok::<bool, Never>(true)
               })
-            },
-            &mut ImmutableProgramLocalContext::empty(&copy_program),
-          )
-          .unwrap(),
-        _ => {}
+              .unwrap();
+            let inner_abstract_ancestor = if let ExpKind::Function(_, body) =
+              &borrowed_implementation.expression.kind
+              && let Type::Function(inner_f) = body.data.unwrap_known()
+              && let Some(ancestor) = inner_f.abstract_ancestor
+            {
+              Some(ancestor)
+            } else {
+              None
+            };
+            if let TypeState::Known(Type::Function(signature)) =
+              &mut borrowed_implementation.expression.data.kind
+              && let TypeState::Known(Type::Function(return_signature)) =
+                &mut signature.return_type.kind
+            {
+              if let Some(inner_abstract_ancestor) =
+                inner_abstract_ancestor.clone()
+                && return_signature.abstract_ancestor.is_none()
+              {
+                return_signature.abstract_ancestor =
+                  Some(inner_abstract_ancestor);
+                changed = true;
+              }
+            }
+            drop(borrowed_implementation);
+            if let AbstractType::Type(Type::Function(f)) =
+              &mut borrowed_f.return_type
+              && f.abstract_ancestor.is_none()
+            {
+              if let Some(inner_abstract_ancestor) = inner_abstract_ancestor {
+                f.abstract_ancestor = Some(inner_abstract_ancestor);
+                changed = true;
+              }
+            }
+          }
+          _ => {}
+        }
+      }
+      if !changed {
+        break;
       }
     }
   }
   pub fn inline_local_bound_function_applications(&mut self) {
+    let mut representative_structs = vec![];
     for f in self.abstract_functions_iter() {
       let borrowed_f = f.borrow();
       match &borrowed_f.implementation {
@@ -1077,7 +1172,7 @@ impl Program {
           .expression
           .walk_mut_with_ctx(
             &mut |exp, ctx| match &mut exp.kind {
-              ExpKind::Application(f, _) => {
+              ExpKind::Application(f, args) => {
                 let ExpKind::Name(original_name) = &mut f.kind else {
                   panic!("non-name fn being applied")
                 };
@@ -1098,7 +1193,29 @@ impl Program {
                         if let Some(abstract_fn) =
                           bound_signature.abstract_ancestor
                         {
-                          *original_name = abstract_fn.name.clone();
+                          let abstract_fn = abstract_fn.borrow();
+                          let new_name = abstract_fn.name.clone();
+                          if let Some(captured_scope) =
+                            abstract_fn.captured_scope.as_ref()
+                          {
+                            args.push(Exp {
+                              data: Type::Struct(
+                                AbstractStruct::concretize(
+                                  Rc::new(captured_scope.clone()),
+                                  &self.typedefs,
+                                  &vec![],
+                                  f.source_trace.clone(),
+                                )
+                                .unwrap(),
+                              )
+                              .known()
+                              .into(),
+                              kind: ExpKind::Name(original_name.clone()),
+                              source_trace: f.source_trace.clone(),
+                            });
+                            representative_structs.push(captured_scope.clone());
+                          }
+                          *original_name = new_name;
                         }
                       }
                       _ => {}
@@ -1115,6 +1232,9 @@ impl Program {
           .unwrap(),
         _ => {}
       }
+    }
+    for s in representative_structs {
+      self.add_monomorphized_struct(s);
     }
   }
   pub fn extract_inner_functions(&mut self, errors: &mut ErrorLog) {
@@ -1336,7 +1456,7 @@ impl Program {
                   new_signatures.push(signature.clone());
                   *exp = Exp {
                     data: Type::Function(Box::new(FunctionSignature {
-                      abstract_ancestor: Some(Rc::new(signature)),
+                      abstract_ancestor: Some(Rc::new(RefCell::new(signature))),
                       args: f_signature.args,
                       return_type: f_signature.return_type,
                     }))
@@ -1472,9 +1592,10 @@ impl Program {
                     if let Some(applied_f_abstract_signature) =
                       &mut applied_f_signature.abstract_ancestor
                     {
-                      let mut applied_f_abstract_signature =
+                      let applied_f_abstract_signature =
                         (**applied_f_abstract_signature).clone();
                       applied_f_abstract_signature
+                        .borrow_mut()
                         .remove_unitlike_arguments(&mut names);
                       applied_f_signature.abstract_ancestor =
                         Some(Rc::new(applied_f_abstract_signature));
@@ -1650,7 +1771,7 @@ impl Program {
                 if let ExpKind::Name(_) = &f.kind
                   && let Type::Function(x) = f.data.kind.unwrap_known()
                   && let Some(abstract_ancestor) = &x.abstract_ancestor
-                  && abstract_ancestor.associative
+                  && abstract_ancestor.borrow().associative
                   && args.len() != 2
                 {
                   let mut args_iter = args.into_iter();
@@ -2805,10 +2926,15 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.catch_illegal_match_functions(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     self.extract_inner_functions(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
+    self.separate_overloaded_fns();
     self.propagate_abstract_function_signatures();
     self.inline_local_bound_function_applications();
     self.inline_all_higher_order_arguments(&mut errors);
@@ -2832,7 +2958,6 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    self.separate_overloaded_fns();
     self.inline_static_array_length_calls();
     self.monomorphize_reference_address_spaces();
     errors
