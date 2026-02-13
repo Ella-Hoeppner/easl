@@ -2410,13 +2410,12 @@ impl TypedExp {
         if let Some(ownership) = ctx.get_variable_ownership(name) {
           self.data.ownership = ownership;
         }
-        let changed = ctx.constrain_name_type(
+        ctx.constrain_name_type(
           name,
           &self.source_trace,
           &mut self.data,
           errors,
-        );
-        changed
+        )
       }
       NumberLiteral(num) => {
         self.data.subtree_fully_typed = true;
@@ -2516,9 +2515,8 @@ impl TypedExp {
         for arg in args.iter_mut() {
           anything_changed |= arg.propagate_types_inner(ctx, errors);
         }
-        if let Name(name) = &f.kind {
-          anything_changed |=
-            ctx.constrain_name_type(name, &f.source_trace, &mut f.data, errors);
+        anything_changed |= f.propagate_types_inner(ctx, errors);
+        if let Name(_) = &f.kind {
         } else {
           anything_changed |= f.data.constrain(
             &TypeState::OneOf(vec![
@@ -2600,7 +2598,6 @@ impl TypedExp {
           &self.source_trace,
           errors,
         );
-        anything_changed |= f.propagate_types_inner(ctx, errors);
         self.data.subtree_fully_typed = was_f_already_known
           && args.iter().fold(f.data.subtree_fully_typed, |acc, arg| {
             acc && arg.data.subtree_fully_typed

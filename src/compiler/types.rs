@@ -540,7 +540,7 @@ impl AbstractType {
           panic!("incompatible types in extract_generic_bindings")
         }
       }
-      AbstractType::AbstractArray { size, .. } => todo!(),
+      AbstractType::AbstractArray { .. } => todo!(),
       _ => {}
     }
   }
@@ -813,7 +813,7 @@ impl ConcreteArraySize {
       }
       (ConcreteArraySize::UnificationVariable(_), _)
       | (_, ConcreteArraySize::UnificationVariable(_)) => Ok(false),
-      (a, b) => err(
+      _ => err(
         IncompatibleArraySize(self.clone().into(), other.clone().into()),
         source_trace.clone(),
       ),
@@ -1772,6 +1772,7 @@ pub struct ExpTypeInfo {
   pub subtree_fully_typed: bool,
   pub errored: bool,
   pub fully_known_cached: bool,
+  pub already_constrained_against_signatures: bool,
 }
 
 impl Deref for ExpTypeInfo {
@@ -1796,6 +1797,7 @@ impl From<TypeState> for ExpTypeInfo {
       subtree_fully_typed: false,
       fully_known_cached: false,
       errored: false,
+      already_constrained_against_signatures: false,
     }
   }
 }
@@ -2561,15 +2563,23 @@ impl<'p> MutableProgramLocalContext<'p> {
     t: &mut ExpTypeInfo,
     errors: &mut ErrorLog,
   ) -> bool {
-    match self.program.concrete_signatures(name, source_trace.clone()) {
-      Err(e) => {
-        errors.log(e);
-        false
+    if self.program.abstract_functions.get(name).is_some() {
+      if t.already_constrained_against_signatures {
+        return false;
       }
-      Ok(Some(signatures)) => {
-        t.constrain(&TypeState::OneOf(signatures), source_trace, errors)
+      t.already_constrained_against_signatures = true;
+      match self.program.concrete_signatures(name, source_trace.clone()) {
+        Err(e) => {
+          errors.log(e);
+          false
+        }
+        Ok(Some(signatures)) => {
+          t.constrain(&TypeState::OneOf(signatures), source_trace, errors)
+        }
+        Ok(None) => panic!(),
       }
-      Ok(None) => match self.get_typestate_mut(name, source_trace.clone()) {
+    } else {
+      match self.get_typestate_mut(name, source_trace.clone()) {
         Ok(typestate) => match typestate {
           Ok(typestate) => {
             t.mutually_constrain(typestate, source_trace, errors)
@@ -2582,7 +2592,7 @@ impl<'p> MutableProgramLocalContext<'p> {
           errors.log(e);
           false
         }
-      },
+      }
     }
   }
 }

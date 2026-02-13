@@ -814,6 +814,7 @@ impl Program {
   }
   pub fn fully_infer_types(&mut self, errors: &mut ErrorLog) {
     loop {
+      println!("outerl oop");
       let did_type_states_change = self.propagate_types(errors);
       if !did_type_states_change {
         let untyped_expressions = self.find_untyped();
@@ -886,7 +887,6 @@ impl Program {
   pub fn validate_argument_ownership(&mut self, errors: &mut ErrorLog) {
     for f in self.abstract_functions_iter() {
       let mut borrowed_f = f.borrow_mut();
-      let name = borrowed_f.name.clone();
       if let FunctionImplementationKind::Composite(implementation) =
         &mut borrowed_f.implementation
       {
