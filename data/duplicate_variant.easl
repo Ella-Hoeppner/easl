@@ -1,9 +1,0 @@
-; the following should both cause an error due to the duplicate variant name
-
-#_(enum MyEnum
-    A
-    A)
-
-#_(enum MyEnum
-    A
-    (A vec3f))

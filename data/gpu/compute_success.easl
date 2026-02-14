@@ -1,0 +1,10 @@
+@compute
+@{workgroup-size 16}
+(defn c []: ()
+  (let [@var x 0.25]
+    (+= x 0.5)))
+
+@{workgroup-size 16}
+(defn c2 []
+  (let [@var x 0.25]
+    (+= x 0.5)))

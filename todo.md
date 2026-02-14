@@ -1,9 +1,7 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready
-* turn the examples into an actual test suite
-  * for the successful examples, also try to feed the output wgsl into wgpu and compile them, so that we can catch some bugs in the emitted wgsl
-  * for things that are currently commented out because they're examples of what would cause errors, move those to separate files and make tests that check that they produce the expected errors
+* in the test suite, try to feed the output wgsl into wgpu and compile them, so that we can catch some bugs in the emitted wgsl
 
 
 

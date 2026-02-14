@@ -1,0 +1,10 @@
+(struct VertexOut
+  @{builtin position} vertex-pos: vec4f)
+
+@fragment
+(defn f1 [b: VertexOut]: @{location 0} vec4f
+  (vec4f 1.))
+
+@fragment
+(defn f2 [b: VertexOut]: vec4f
+  (vec4f 1.))

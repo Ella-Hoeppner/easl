@@ -1,0 +1,3 @@
+(struct MyStruct
+  pos: vec3f
+  pos: vec3f)

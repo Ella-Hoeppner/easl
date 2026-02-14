@@ -1,0 +1,9 @@
+@{group 0
+  binding 1}
+(var my-tex: (Texture2D f32))
+
+(defn (print-ref T) [@ref x: T]
+  (print x))
+
+(defn f []
+  (print-ref my-tex))

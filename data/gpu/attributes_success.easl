@@ -1,0 +1,11 @@
+(def a: f32
+     5.)
+
+@{group 0
+  binding 1
+  address uniform}
+(var b: f32)
+
+@{binding 1
+  group 2}
+(var g: (Texture2D f32))

@@ -1,0 +1,5 @@
+@{binding 1
+  group 2
+  address private}
+(var f: f32
+     5.)

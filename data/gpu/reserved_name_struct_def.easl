@@ -1,0 +1,2 @@
+(struct def
+  x: f32)

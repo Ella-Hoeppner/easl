@@ -520,6 +520,99 @@ impl PartialEq for CompileErrorKind {
         Self::CantShadowTopLevelBinding(l0),
         Self::CantShadowTopLevelBinding(r0),
       ) => l0 == r0,
+      (
+        Self::IncompatibleArraySize(l0, l1),
+        Self::IncompatibleArraySize(r0, r1),
+      ) => l0 == r0 && l1 == r1,
+      (Self::InvalidWorkgroupSize(l0), Self::InvalidWorkgroupSize(r0)) => {
+        l0 == r0
+      }
+      (
+        Self::FragmentExclusiveFunctionOutsideFragment(l0),
+        Self::FragmentExclusiveFunctionOutsideFragment(r0),
+      ) => l0 == r0,
+      (Self::InvalidAddressSpace(l0), Self::InvalidAddressSpace(r0)) => {
+        l0 == r0
+      }
+      (Self::NeedGroupAndBinding(l0), Self::NeedGroupAndBinding(r0)) => {
+        l0 == r0
+      }
+      (
+        Self::DisallowedGroupAndBinding(l0),
+        Self::DisallowedGroupAndBinding(r0),
+      ) => l0 == r0,
+      (Self::NeedsGroupAndBinding(l0), Self::NeedsGroupAndBinding(r0)) => {
+        l0 == r0
+      }
+      (
+        Self::DisallowedInitializationValue(l0),
+        Self::DisallowedInitializationValue(r0),
+      ) => l0 == r0,
+      (Self::VariableNameCollision(l0), Self::VariableNameCollision(r0)) => {
+        l0 == r0
+      }
+      (
+        Self::VariableFunctionNameCollision(l0),
+        Self::VariableFunctionNameCollision(r0),
+      ) => l0 == r0,
+      (
+        Self::InvalidBuiltinAttributeName(l0),
+        Self::InvalidBuiltinAttributeName(r0),
+      ) => l0 == r0,
+      (
+        Self::BuiltinArgumentsOnWrongEntry(l0, l1),
+        Self::BuiltinArgumentsOnWrongEntry(r0, r1),
+      ) => l0 == r0 && l1 == r1,
+      (
+        Self::BuiltInOperatorTakesNoArguments(l0),
+        Self::BuiltInOperatorTakesNoArguments(r0),
+      ) => l0 == r0,
+      (
+        Self::InvalidInterpolationSampling(l0, l1),
+        Self::InvalidInterpolationSampling(r0, r1),
+      ) => l0 == r0 && l1 == r1,
+      (Self::InvalidBuiltinType(l0), Self::InvalidBuiltinType(r0)) => {
+        l0 == r0
+      }
+      (
+        Self::InvalidBuiltinStructFieldName(l0),
+        Self::InvalidBuiltinStructFieldName(r0),
+      ) => l0 == r0,
+      (
+        Self::DuplicateBuiltinAttribute(l0, l1),
+        Self::DuplicateBuiltinAttribute(r0, r1),
+      ) => l0 == r0 && l1 == r1,
+      (
+        Self::InvalidBuiltinForEntryPoint(l0, l1, l2),
+        Self::InvalidBuiltinForEntryPoint(r0, r1, r2),
+      ) => l0 == r0 && l1 == r1 && l2 == r2,
+      (
+        Self::InvalidTypeForEntryPoint(l0, l1),
+        Self::InvalidTypeForEntryPoint(r0, r1),
+      ) => l0 == r0 && l1 == r1,
+      (
+        Self::CantAssignAttributesToFieldOfType(l0),
+        Self::CantAssignAttributesToFieldOfType(r0),
+      ) => l0 == r0,
+      (
+        Self::EntryInputOrOutputMustBeScalarOrStruct(l0),
+        Self::EntryInputOrOutputMustBeScalarOrStruct(r0),
+      ) => l0 == r0,
+      (
+        Self::ExpressionAfterControlFlow(l0),
+        Self::ExpressionAfterControlFlow(r0),
+      ) => l0 == r0,
+      (
+        Self::PassedReferenceFromInvalidAddressSpace(l0),
+        Self::PassedReferenceFromInvalidAddressSpace(r0),
+      ) => l0 == r0,
+      (
+        Self::WrongNumberOfGenericArguments(l0, l1),
+        Self::WrongNumberOfGenericArguments(r0, r1),
+      ) => l0 == r0 && l1 == r1,
+      (Self::TypeDependencyCycle(l0), Self::TypeDependencyCycle(r0)) => {
+        l0 == r0
+      }
       _ => core::mem::discriminant(self) == core::mem::discriminant(other),
     }
   }

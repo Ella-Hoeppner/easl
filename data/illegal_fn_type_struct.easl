@@ -1,4 +1,0 @@
-; this will cause an error
-#_(struct MyStruct
-    x: f32
-    f: (Fn [f32] f32))

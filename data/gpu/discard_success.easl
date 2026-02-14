@@ -1,0 +1,16 @@
+(struct VertexOutput
+  @{location 0} x: f32
+  @{builtin position} pos: vec4f)
+
+@fragment
+(defn f [in: VertexOutput]: @{location 0} vec4f
+  (discard))
+
+(defn discard-or-double [x: f32]: f32
+  (if (< x 0.)
+    (discard)
+    (* x 2.)))
+
+@fragment
+(defn f3 [in: VertexOutput]: @{location 0} vec4f
+  (vec4f (discard-or-double in.x)))

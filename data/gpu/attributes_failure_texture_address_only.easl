@@ -1,0 +1,2 @@
+@{address handle}
+(var h: (Texture2D f32))

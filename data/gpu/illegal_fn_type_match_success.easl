@@ -1,0 +1,3 @@
+(defn f1 [a: f32]: f32
+  (let [f +]
+    (f a a)))

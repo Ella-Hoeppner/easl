@@ -1,0 +1,11 @@
+(defn gradient-dir [a: f32]: vec2f
+  (normalize (vec2f (dpdx a) (dpdy a))))
+
+(struct VertexOutput
+  @{location 0} x: f32
+  @{builtin position} pos: vec4f)
+
+@fragment
+(defn f [in: VertexOutput]: @{location 0} vec4f
+  (let [x (sin in.pos.x)]
+    (vec4f (gradient-dir x) 0. 0.)))

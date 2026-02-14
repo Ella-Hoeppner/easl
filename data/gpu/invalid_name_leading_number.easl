@@ -1,0 +1,2 @@
+(defn 0-invalid-name [x: f32]: f32
+  (* x 2.))

@@ -1,0 +1,5 @@
+(defn make-two-floats [a: f32]: f32
+  (if true
+    (return 5.)
+    (let [b a]
+      b)))

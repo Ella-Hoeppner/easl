@@ -1,0 +1,4 @@
+(enum MyEnum
+  A
+  (B f32)
+  (C (Fn [f32] f32)))

@@ -1,0 +1,2 @@
+(defn f4 [@{builtin front-facing} a: f32]: f32
+  a)

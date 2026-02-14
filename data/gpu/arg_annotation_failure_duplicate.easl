@@ -1,0 +1,8 @@
+(struct VertexOut
+  @{builtin position} pos: vec4f)
+
+@fragment
+(defn f3 [@{builtin front-facing} a: bool
+          @{builtin front-facing} b: bool
+          c: VertexOut]: @{location 0} vec4f
+  (vec4f 1.))

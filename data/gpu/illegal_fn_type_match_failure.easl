@@ -1,0 +1,5 @@
+(defn f2 [a: f32]: f32
+    (let [f (match a
+              0. +
+              _ -)]
+      (f a a)))

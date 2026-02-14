@@ -1,0 +1,6 @@
+(defn increment [@var @ref x: f32]
+  (+= x 1.))
+
+(defn f []
+  (let [x: f32 0.]
+    (increment x)))

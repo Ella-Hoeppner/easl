@@ -1,0 +1,8 @@
+@{address workgroup}
+(var workgroup-float: f32)
+
+(defn increment [@var @ref x: f32]
+  (+= x 1.))
+
+(defn f []
+  (increment workgroup-float))

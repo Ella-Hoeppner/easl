@@ -1,0 +1,5 @@
+@fragment
+@{workgroup-size 16}
+(defn c3 []: ()
+  (let [@var x 0.25]
+    (+= x 0.5)))

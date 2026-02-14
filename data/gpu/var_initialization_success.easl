@@ -1,0 +1,21 @@
+(var a: f32
+     4.)
+
+@{address private}
+(var b: f32
+     5.)
+
+(var c: f32)
+
+@{address private}
+(var d: f32)
+
+@{group 0
+  binding 1
+  address uniform}
+(var g: f32)
+
+@{group 0
+  binding 2
+  address storage}
+(var h: f32)

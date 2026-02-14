@@ -1,0 +1,11 @@
+(struct (TwoOf T)
+  first: T
+  second: T)
+
+(defn (make-two-of T: Scalar)
+      [a: T]: (TwoOf T)
+      (let [two (TwoOf a a)]
+        two))
+
+(defn make-two-floats [a: f32]: (TwoOf f32)
+    (make-two-of a))

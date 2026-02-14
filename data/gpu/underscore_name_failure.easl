@@ -1,0 +1,3 @@
+(defn main []
+  (let [_ 0.]
+    (print 5.)))

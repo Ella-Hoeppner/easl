@@ -1,0 +1,8 @@
+(struct VertexOutput
+  @{location 0} x: f32
+  @{builtin position} pos: vec4f)
+
+@vertex
+(defn v [@{builtin vertex-index}
+         vertex-index: u32]: VertexOutput
+  discard)

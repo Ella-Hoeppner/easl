@@ -2827,8 +2827,8 @@ impl Display for TypeStateDescription {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TypeConstraintDescription {
-  name: String,
-  args: Vec<String>,
+  pub name: String,
+  pub args: Vec<String>,
 }
 impl From<TypeConstraint> for TypeConstraintDescription {
   fn from(constraint: TypeConstraint) -> Self {

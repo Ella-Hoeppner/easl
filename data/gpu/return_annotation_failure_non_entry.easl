@@ -1,0 +1,5 @@
+(struct VertexOut
+  @{builtin position} vertex-pos: vec4f)
+
+(defn f3 [b: VertexOut]: @{location 0} vec4f
+  (vec4f 1.))

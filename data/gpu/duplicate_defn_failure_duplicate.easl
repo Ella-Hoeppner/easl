@@ -1,0 +1,5 @@
+(defn f [a: f32]: f32
+  a)
+
+(defn f [a: f32]: f32
+    (+ a a))

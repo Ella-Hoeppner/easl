@@ -1,0 +1,25 @@
+@{address private}
+(var private-float: f32 0.)
+
+@{address workgroup}
+(var workgroup-float: f32)
+
+@{address uniform
+  group 0
+  binding 0}
+(var uniform-float: f32)
+
+@{group 0
+  binding 1}
+(var my-tex: (Texture2D f32))
+
+(defn increment [@var @ref x: f32]
+  (+= x 1.))
+
+(defn (print-ref T) [@ref x: T]
+  (print x))
+
+(defn f []
+  (increment private-float)
+  (let [@var x: f32 0.]
+    (increment x)))

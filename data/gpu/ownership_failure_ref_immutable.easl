@@ -1,0 +1,5 @@
+(defn (print-mut-ref T) [@var @ref x: T]
+  (print x))
+
+(defn g [@ref x: f32]
+  (print-mut-ref x))

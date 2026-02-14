@@ -1,0 +1,3 @@
+@{binding 1
+  group 2}
+(var e: f32)

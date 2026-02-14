@@ -1,0 +1,2 @@
+(defn g []: vec3f
+  (vec3f 1. (vec2u 1u 2u)))
