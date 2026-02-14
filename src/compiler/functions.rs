@@ -93,6 +93,20 @@ pub struct AbstractFunctionSignature {
   pub captured_scope: Option<AbstractStruct>,
 }
 
+impl Default for AbstractFunctionSignature {
+  fn default() -> Self {
+    Self {
+      name: "".into(),
+      generic_args: vec![],
+      arg_types: vec![],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
+      associative: false,
+      captured_scope: None,
+    }
+  }
+}
+
 pub fn is_vec_name(name: &str) -> bool {
   matches!(
     name,
