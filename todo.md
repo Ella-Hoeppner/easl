@@ -5,8 +5,6 @@
   * basically just implement `catch_illegal_match_functions`
   * also do this when the user tries to use a function type in a data structure
 
-* `bitcast`, at least for builtin scalar types
-
 * turn the examples into an actual test suite
   * for the successful examples, also try to feed the output wgsl into wgpu and compile them, so that we can catch some bugs in the emitted wgsl
   * for things that are currently commented out because they're examples of what would cause errors, move those to separate files and make tests that check that they produce the expected errors

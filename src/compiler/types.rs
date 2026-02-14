@@ -11,7 +11,7 @@ use fsexp::{document::DocumentPosition, syntax::EncloserOrOperator};
 
 use crate::{
   compiler::{
-    builtins::bitcast,
+    builtins::scalar_bitcast,
     enums::{AbstractEnum, Enum, UntypedEnum},
     error::{CompileError, CompileErrorKind},
     expression::{Accessor, ExpKind, Number, TypedExp},
@@ -255,15 +255,19 @@ impl AbstractType {
   }
   pub fn concretize(
     &self,
-    skolems: &Vec<Rc<str>>,
+    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Type> {
     match self {
       AbstractType::Unit => Ok(Type::Unit),
       AbstractType::Generic(name) => {
-        if skolems.contains(name) {
-          Ok(Type::Skolem(Rc::clone(name)))
+        if let Some(constraints) =
+          skolems.iter().find_map(|(skolem_name, constraints)| {
+            (skolem_name == name).then(|| constraints.clone())
+          })
+        {
+          Ok(Type::Skolem(Rc::clone(name), constraints))
         } else {
           err(UnrecognizedGeneric(name.to_string()), source_trace)
         }
@@ -358,21 +362,23 @@ impl AbstractType {
   pub fn from_easl_tree(
     tree: EaslTree,
     typedefs: &TypeDefs,
-    skolems: &Vec<Rc<str>>,
+    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
   ) -> CompileResult<Self> {
     match tree {
       EaslTree::Leaf(position, leaf) => {
         let leaf_rc: Rc<str> = leaf.into();
-        Ok(if skolems.contains(&leaf_rc) {
-          AbstractType::Generic(leaf_rc)
-        } else {
-          AbstractType::Type(Type::from_name(
-            leaf_rc,
-            position.clone(),
-            typedefs,
-            skolems,
-          )?)
-        })
+        Ok(
+          if skolems.iter().find(|(name, _)| *name == leaf_rc).is_some() {
+            AbstractType::Generic(leaf_rc)
+          } else {
+            AbstractType::Type(Type::from_name(
+              leaf_rc,
+              position.clone(),
+              typedefs,
+              skolems,
+            )?)
+          },
+        )
       }
       EaslTree::Inner(
         (position, EncloserOrOperator::Encloser(Encloser::Parens)),
@@ -500,7 +506,7 @@ impl AbstractType {
     position: DocumentPosition,
     typedefs: &TypeDefs,
     generic_args: &Vec<Rc<str>>,
-    skolems: &Vec<Rc<str>>,
+    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
   ) -> CompileResult<Self> {
     Ok(if generic_args.contains(&name) {
       AbstractType::Generic(name.into())
@@ -711,14 +717,23 @@ impl AbstractArraySize {
       ),
     }
   }
-  pub fn concretize(&self, skolems: &Vec<Rc<str>>) -> ConcreteArraySize {
+  pub fn concretize(
+    &self,
+    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
+  ) -> ConcreteArraySize {
     match self {
-      AbstractArraySize::Literal(x) => ConcreteArraySize::Literal(*x),
+      AbstractArraySize::Literal(value) => ConcreteArraySize::Literal(*value),
       AbstractArraySize::Unsized => ConcreteArraySize::Unsized,
-      AbstractArraySize::Constant(x) => ConcreteArraySize::Constant(x.clone()),
-      AbstractArraySize::Generic(x) => {
-        if skolems.iter().find(|s| *s == x).is_some() {
-          ConcreteArraySize::Skolem(x.clone())
+      AbstractArraySize::Constant(name) => {
+        ConcreteArraySize::Constant(name.clone())
+      }
+      AbstractArraySize::Generic(name) => {
+        if skolems
+          .iter()
+          .find(|(skolem_name, _)| *skolem_name == *name)
+          .is_some()
+        {
+          ConcreteArraySize::Skolem(name.clone())
         } else {
           panic!("unrecognized generic constant name")
         }
@@ -869,7 +884,7 @@ pub enum Type {
   Struct(Struct),
   Enum(Enum),
   Function(Box<FunctionSignature>),
-  Skolem(Rc<str>),
+  Skolem(Rc<str>, Vec<TypeConstraint>),
   Array(Option<ConcreteArraySize>, Box<ExpTypeInfo>),
 }
 impl Type {
@@ -883,7 +898,7 @@ impl Type {
       Type::Struct(_) => "Struct",
       Type::Enum(_) => "Enum",
       Type::Function(_) => "Function",
-      Type::Skolem(_) => "Skolem",
+      Type::Skolem(_, _) => "Skolem",
       Type::Array(_, _) => "Array",
     }
   }
@@ -952,7 +967,7 @@ impl Type {
       Type::Function(_) => {
         return err(UninlinableHigherOrderFunction, source_trace.clone());
       }
-      Type::Skolem(_) => panic!("tried to calculate size of skolem"),
+      Type::Skolem(_, _) => panic!("tried to calculate size of skolem"),
       Type::Array(size, inner_type) => {
         inner_type.unwrap_known().data_size_in_u32s(source_trace)?
           * match size {
@@ -968,23 +983,27 @@ impl Type {
     })
   }
   pub fn satisfies_constraints(&self, constraint: &TypeConstraint) -> bool {
-    match constraint.kind {
-      TypeConstraintKind::Scalar => {
-        *self == Type::I32 || *self == Type::F32 || *self == Type::U32
+    if let Type::Skolem(_, skolem_constraints) = self {
+      skolem_constraints.contains(&constraint)
+    } else {
+      match constraint.kind {
+        TypeConstraintKind::Scalar => {
+          *self == Type::I32 || *self == Type::F32 || *self == Type::U32
+        }
+        TypeConstraintKind::ScalarOrBool => {
+          *self == Type::I32
+            || *self == Type::F32
+            || *self == Type::U32
+            || *self == Type::Bool
+        }
+        TypeConstraintKind::Integer => *self == Type::I32 || *self == Type::U32,
       }
-      TypeConstraintKind::ScalarOrBool => {
-        *self == Type::I32
-          || *self == Type::F32
-          || *self == Type::U32
-          || *self == Type::Bool
-      }
-      TypeConstraintKind::Integer => *self == Type::I32 || *self == Type::U32,
     }
   }
   pub fn from_easl_tree(
     tree: EaslTree,
     typedefs: &TypeDefs,
-    skolems: &Vec<Rc<str>>,
+    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
   ) -> CompileResult<Self> {
     match tree {
       EaslTree::Leaf(position, type_name) => {
@@ -1167,7 +1186,7 @@ impl Type {
     name: Rc<str>,
     source_position: DocumentPosition,
     typedefs: &TypeDefs,
-    skolems: &Vec<Rc<str>>,
+    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
   ) -> CompileResult<Self> {
     use Type::*;
     let source_trace: SourceTrace = source_position.into();
@@ -1178,8 +1197,12 @@ impl Type {
       "U32" | "u32" => U32,
       "Bool" | "bool" => Bool,
       _ => {
-        if skolems.contains(&name) {
-          Skolem(name)
+        if let Some(constraints) =
+          skolems.iter().find_map(|(skolem_name, constraints)| {
+            (name == *skolem_name).then(|| constraints.clone())
+          })
+        {
+          Skolem(name, constraints)
         } else if let Some(s) =
           typedefs.structs.iter().find(|s| s.name.0 == name)
         {
@@ -1248,13 +1271,13 @@ impl Type {
         };
         f.borrow().representative_type(names).name.0.to_string()
       }
-      Type::Skolem(name) => {
+      Type::Skolem(name, _) => {
         panic!("Attempted to compile Skolem \"{name}\"")
       }
     }
   }
   pub fn replace_skolems(&mut self, skolems: &HashMap<Rc<str>, Type>) {
-    if let Type::Skolem(s) = &self {
+    if let Type::Skolem(s, _) = &self {
       std::mem::swap(self, &mut skolems.get(s).unwrap().clone())
     } else {
       match self {
@@ -1423,7 +1446,7 @@ impl Type {
           TypedExp {
             data: Type::Function(
               FunctionSignature {
-                abstract_ancestor: Some(RefCell::new(bitcast()).into()),
+                abstract_ancestor: Some(RefCell::new(scalar_bitcast()).into()),
                 args: vec![(
                   Variable::immutable(Type::U32.known().into()),
                   vec![],
@@ -1755,7 +1778,7 @@ pub fn extract_type_annotation_ast(
 pub fn extract_type_annotation(
   exp: EaslTree,
   typedefs: &TypeDefs,
-  skolems: &Vec<Rc<str>>,
+  skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
 ) -> CompileResult<(Option<AbstractType>, EaslTree)> {
   let (t, value) = extract_type_annotation_ast(exp);
   Ok((
@@ -2150,12 +2173,24 @@ impl TypeState {
       }
       TypeState::Known(t) => match t {
         Type::Function(signature) => {
-          let changed = signature.mutually_constrain_arguments(
-            arg_types,
-            source_trace.clone(),
-            errors,
-          );
-          changed
+          if !signature.are_args_compatible(
+            &arg_types.iter().map(|t| (*t).clone()).collect(),
+          ) {
+            errors.log(CompileError::new(
+              FunctionArgumentTypesIncompatible {
+                f: typestate.clone().into(),
+                args: arg_types.into_iter().map(|t| t.clone().into()).collect(),
+              },
+              source_trace.clone(),
+            ));
+            false
+          } else {
+            signature.mutually_constrain_arguments(
+              arg_types,
+              source_trace.clone(),
+              errors,
+            )
+          }
         }
         Type::Array(_, _) => arg_types[0].constrain(
           &TypeState::OneOf(vec![Type::I32, Type::U32]),
@@ -2201,7 +2236,7 @@ impl TypeState {
           None
         }
         TypeState::Known(t) => {
-          if let Type::Skolem(name) = t
+          if let Type::Skolem(name, _) = t
             && let Some(replacement) = replacements.get(name)
           {
             Some(replacement.kind.clone())
@@ -2349,6 +2384,15 @@ pub fn parse_type_constraint(
 pub enum GenericArgument {
   Type(Vec<TypeConstraint>),
   Constant,
+}
+
+impl GenericArgument {
+  pub fn type_constraints(&self) -> Vec<TypeConstraint> {
+    match self {
+      GenericArgument::Type(type_constraints) => type_constraints.clone(),
+      GenericArgument::Constant => vec![],
+    }
+  }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2696,7 +2740,7 @@ impl From<Type> for TypeDescription {
           .collect(),
         return_type: TypeStateDescription::from(f.return_type.kind).into(),
       },
-      Type::Skolem(name) => Self::Skolem(name.to_string()),
+      Type::Skolem(name, _) => Self::Skolem(name.to_string()),
       Type::Array(array_size, t) => Self::Array(
         array_size.map(|size| size.into()),
         TypeStateDescription::from(t.kind).into(),

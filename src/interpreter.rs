@@ -737,7 +737,7 @@ impl Value {
           .collect(),
       ),
       Type::Function(_) => return Err(CantCreateZeroedFunction),
-      Type::Skolem(_) => return Err(CantCreateZeroedSkolem),
+      Type::Skolem(_, _) => return Err(CantCreateZeroedSkolem),
       Type::Enum(e) => {
         let first_variant = &e.variants[0];
         Value::Enum(

@@ -1,13 +1,14 @@
 (struct (TwoOf T)
-        first: T
-        second: T)
+  first: T
+  second: T)
 
-(defn (make-two-of T: Scalar) [a: T]: (TwoOf T)
-  (let [two (TwoOf a a)]
-    two))
+(defn (make-two-of T: Scalar)
+      [a: T]: (TwoOf T)
+      (let [two (TwoOf a a)]
+        two))
 
-(defn make-two-floats [a: f32]: (TwoOf f32)
-  (make-two-of a))
+#_(defn make-two-floats [a: f32]: (TwoOf f32)
+    (make-two-of a))
 
 ; the following function will cause a type error, since bool doesn't satisfy Scalar
 #_(defn make-two-bools [a: bool]: (TwoOf bool)

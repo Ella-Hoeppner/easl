@@ -258,9 +258,9 @@ impl AbstractFunctionSignature {
       ));
       return None;
     };
-    let generic_arg_names: Vec<Rc<str>> = generic_args
+    let skolems = generic_args
       .iter()
-      .map(|(name, _, _)| name.clone())
+      .map(|(name, arg, _)| (name.clone(), arg.type_constraints()))
       .collect();
 
     if let Some((
@@ -272,7 +272,7 @@ impl AbstractFunctionSignature {
     )) = arg_list_and_return_type_from_easl_tree(
       arg_list_ast,
       &program.typedefs,
-      &generic_arg_names,
+      &skolems,
       errors,
     ) {
       let arg_types: Vec<AbstractType> = match arg_types
@@ -293,7 +293,7 @@ impl AbstractFunctionSignature {
       let (return_type, return_source, return_annotation) = return_info
         .unwrap_or_else(|| (AbstractType::Unit, source_path.clone(), None));
       match return_type.concretize(
-        &generic_arg_names,
+        &skolems,
         &program.typedefs,
         source_path.clone().into(),
       ) {
@@ -305,7 +305,7 @@ impl AbstractFunctionSignature {
               let ownership = annotation.ownership;
               let mut typestate: ExpTypeInfo = t
                 .concretize(
-                  &generic_arg_names,
+                  &skolems,
                   &program.typedefs,
                   source_path.clone().into(),
                 )?
@@ -354,7 +354,7 @@ impl AbstractFunctionSignature {
                 arg_names.clone(),
                 concrete_args,
                 &program.typedefs,
-                &generic_arg_names,
+                &skolems,
               ) {
                 Ok(expression) => {
                   let parsed_annotation = if let Some(annotation) = &annotation

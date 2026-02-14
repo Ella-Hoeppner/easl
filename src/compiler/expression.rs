@@ -390,7 +390,7 @@ pub type TypedExp = Exp<ExpTypeInfo>;
 pub fn arg_list_and_return_type_from_easl_tree(
   tree: EaslTree,
   typedefs: &TypeDefs,
-  skolems: &Vec<Rc<str>>,
+  skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
   errors: &mut ErrorLog,
 ) -> Option<(
   SourceTrace,
@@ -538,7 +538,7 @@ impl TypedExp {
     arg_names: Vec<(Rc<str>, SourceTrace)>,
     args: Vec<(Variable, Vec<TypeConstraint>)>,
     typedefs: &TypeDefs,
-    skolems: &Vec<Rc<str>>,
+    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
   ) -> CompileResult<Self> {
     let mut body_exps = body_trees
       .into_iter()
@@ -574,7 +574,7 @@ impl TypedExp {
   pub fn try_from_easl_tree(
     tree: EaslTree,
     typedefs: &TypeDefs,
-    skolems: &Vec<Rc<str>>,
+    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
     ctx: SyntaxTreeContext,
   ) -> CompileResult<Self> {
     Ok(match tree {
@@ -3147,15 +3147,13 @@ impl TypedExp {
                       unreachable!("")
                     }
                   } else if &**f_name == "bitcast" {
+                    let inner_type_name =
+                      exp.data.kind.unwrap_known().monomorphized_name(
+                        &mut new_program.names.borrow_mut(),
+                      );
                     std::mem::swap(
                       f_name,
-                      &mut format!(
-                        "bitcast<{}>",
-                        exp.data.kind.unwrap_known().monomorphized_name(
-                          &mut new_program.names.borrow_mut()
-                        )
-                      )
-                      .into(),
+                      &mut format!("bitcast<{inner_type_name}>",).into(),
                     )
                   } else {
                     {}

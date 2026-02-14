@@ -1,0 +1,6 @@
+(defn f [a: f32]: f32
+  (let [x 0.5
+        y: i32 (bitcast x)
+        x2 (vec3f 0.5)
+        y2: vec3i (bitcast x2)]
+    x))

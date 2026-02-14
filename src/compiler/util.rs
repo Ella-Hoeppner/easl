@@ -44,8 +44,24 @@ pub fn read_type_annotated_name(
 
 pub fn compile_word(word: Rc<str>) -> String {
   let compiled_word = match &*word {
-    "vec2<bool>" | "vec3<bool>" | "vec4<bool>" | "bitcast<f32>"
-    | "bitcast<i32>" | "bitcast<u32>" => word.to_string(),
+    "vec2<bool>"
+    | "vec3<bool>"
+    | "vec4<bool>"
+    | "bitcast<f32>"
+    | "bitcast<i32>"
+    | "bitcast<u32>"
+    | "bitcast<vec2f>"
+    | "bitcast<vec3f>"
+    | "bitcast<vec4f>"
+    | "bitcast<vec2i>"
+    | "bitcast<vec3i>"
+    | "bitcast<vec4i>"
+    | "bitcast<vec2u>"
+    | "bitcast<vec3u>"
+    | "bitcast<vec4u>"
+    | "bitcast<vec2<bool>>"
+    | "bitcast<vec3<bool>>"
+    | "bitcast<vec4<bool>>" => word.to_string(),
     _ => word
       .replace("-", "_")
       .replace("+", "PLUS")

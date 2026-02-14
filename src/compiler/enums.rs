@@ -10,7 +10,8 @@ use crate::{
     program::{NameContext, TypeDefs},
     types::{
       AbstractType, ConstGenericValue, ExpTypeInfo, GenericArgument,
-      GenericArgumentValue, Type, TypeState, contains_name_leaf,
+      GenericArgumentValue, Type, TypeConstraint, TypeState,
+      contains_name_leaf,
     },
     util::compile_word,
   },
@@ -67,7 +68,7 @@ impl UntypedEnumVariant {
   pub fn assign_type(
     self,
     typedefs: &TypeDefs,
-    skolems: &Vec<Rc<str>>,
+    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
   ) -> CompileResult<AbstractEnumVariant> {
     Ok(AbstractEnumVariant {
       name: self.name,
@@ -126,7 +127,7 @@ impl UntypedEnum {
             &self
               .generic_args
               .iter()
-              .map(|(n, _, _)| n.clone())
+              .map(|(n, arg, _)| (n.clone(), arg.type_constraints()))
               .collect(),
           )
         })
@@ -167,7 +168,7 @@ impl AbstractEnumVariant {
   pub fn concretize(
     &self,
     typedefs: &TypeDefs,
-    skolems: &Vec<Rc<str>>,
+    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
     source_trace: SourceTrace,
   ) -> CompileResult<EnumVariant> {
     Ok(EnumVariant {
@@ -247,7 +248,7 @@ impl AbstractEnum {
   pub fn concretize(
     s: Rc<Self>,
     typedefs: &TypeDefs,
-    skolems: &Vec<Rc<str>>,
+    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
     source_trace: SourceTrace,
   ) -> CompileResult<Enum> {
     Ok(Enum {

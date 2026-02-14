@@ -1398,7 +1398,7 @@ fn vector_functions() -> Vec<AbstractFunctionSignature> {
   .collect()
 }
 
-pub fn bitcast() -> AbstractFunctionSignature {
+pub fn scalar_bitcast() -> AbstractFunctionSignature {
   AbstractFunctionSignature {
     name: "bitcast".into(),
     generic_args: vec![
@@ -1419,6 +1419,35 @@ pub fn bitcast() -> AbstractFunctionSignature {
     associative: false,
     captured_scope: None,
   }
+}
+
+pub fn bitcast_functions() -> Vec<AbstractFunctionSignature> {
+  foreach_vec_type(|t| {
+    let t = AbstractType::AbstractStruct(t.into());
+    vec![AbstractFunctionSignature {
+      name: "bitcast".into(),
+      generic_args: vec![
+        (
+          "T".into(),
+          GenericArgument::Type(vec![TypeConstraint::scalar()]),
+          SourceTrace::empty(),
+        ),
+        (
+          "S".into(),
+          GenericArgument::Type(vec![TypeConstraint::scalar()]),
+          SourceTrace::empty(),
+        ),
+      ],
+      arg_types: vec![t.clone().owned()],
+      return_type: t.rename_generic("T", "S"),
+      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
+      associative: false,
+      captured_scope: None,
+    }]
+  })
+  .into_iter()
+  .chain(std::iter::once(scalar_bitcast()))
+  .collect()
 }
 
 fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
@@ -1975,7 +2004,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut trigonometry_functions());
   signatures.append(&mut exp_functions());
   signatures.append(&mut scalar_conversion_functions());
-  signatures.append(&mut vec![bitcast()]);
+  signatures.append(&mut bitcast_functions());
   signatures.append(&mut any_and_all());
   signatures.append(&mut misc_math_functions());
   signatures.append(&mut texture_functions());

@@ -13,7 +13,8 @@ use crate::{
     program::{NameContext, TypeDefs},
     types::{
       ConcreteArraySize, ConstGenericValue, GenericArgument,
-      GenericArgumentValue, contains_name_leaf, extract_type_annotation_ast,
+      GenericArgumentValue, TypeConstraint, contains_name_leaf,
+      extract_type_annotation_ast,
     },
     util::{compile_word, read_leaf},
   },
@@ -95,7 +96,7 @@ impl UntypedStructField {
   pub fn assign_type(
     self,
     typedefs: &TypeDefs,
-    skolems: &Vec<Rc<str>>,
+    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
   ) -> CompileResult<AbstractStructField> {
     Ok(AbstractStructField {
       attributes: self.attributes,
@@ -157,7 +158,7 @@ impl UntypedStruct {
             &self
               .generic_args
               .iter()
-              .map(|(n, _, _)| n.clone())
+              .map(|(n, arg, _)| (n.clone(), arg.type_constraints()))
               .collect(),
           )
         })
@@ -197,7 +198,7 @@ impl AbstractStructField {
   pub fn concretize(
     &self,
     typedefs: &TypeDefs,
-    skolems: &Vec<Rc<str>>,
+    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
     source_trace: SourceTrace,
   ) -> CompileResult<StructField> {
     Ok(StructField {
@@ -288,7 +289,7 @@ impl AbstractStruct {
   pub fn concretize(
     s: Rc<Self>,
     typedefs: &TypeDefs,
-    skolems: &Vec<Rc<str>>,
+    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
     source_trace: SourceTrace,
   ) -> CompileResult<Struct> {
     Ok(Struct {
