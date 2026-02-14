@@ -14,7 +14,7 @@ use crate::{
     entry::{EntryPoint, IOAttributes},
     enums::AbstractEnum,
     expression::{Exp, arg_list_and_return_type_from_easl_tree},
-    program::{NameContext, TypeDefs},
+    program::{CompilerTarget, NameContext, TypeDefs},
     structs::AbstractStructField,
     types::{
       ConstGenericValue, GenericArgument, Variable, VariableKind,
@@ -68,7 +68,10 @@ pub struct TopLevelFunction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FunctionImplementationKind {
-  Builtin(EffectType),
+  Builtin {
+    effect_type: EffectType,
+    target_configuration: FunctionTargetConfiguration,
+  },
   StructConstructor,
   EnumConstructor(Rc<str>),
   Composite(Rc<RefCell<TopLevelFunction>>),
@@ -80,6 +83,17 @@ pub enum Ownership {
   Reference,
   MutableReference,
   Pointer(VariableAddressSpace),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialCasedBuiltinFunction {
+  Print,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionTargetConfiguration {
+  Default,
+  SpecialCased(SpecialCasedBuiltinFunction),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -100,7 +114,10 @@ impl Default for AbstractFunctionSignature {
       generic_args: vec![],
       arg_types: vec![],
       return_type: AbstractType::Unit,
-      implementation: FunctionImplementationKind::Builtin(EffectType::empty()),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
       associative: false,
       captured_scope: None,
     }
@@ -130,8 +147,10 @@ pub fn is_vec_name(name: &str) -> bool {
 
 impl AbstractFunctionSignature {
   pub fn is_builtin_vector_constructor(&self) -> bool {
-    matches!(&self.implementation, FunctionImplementationKind::Builtin(_))
-      && is_vec_name(&*self.name)
+    matches!(
+      &self.implementation,
+      FunctionImplementationKind::Builtin { .. }
+    ) && is_vec_name(&*self.name)
   }
   pub fn reference_arg_positions(&self) -> Vec<usize> {
     self
@@ -996,7 +1015,9 @@ impl FunctionSignature {
         FunctionImplementationKind::Composite(f) => {
           return f.borrow().effects(program);
         }
-        FunctionImplementationKind::Builtin(effects) => return effects.clone(),
+        FunctionImplementationKind::Builtin { effect_type, .. } => {
+          return effect_type.clone();
+        }
         _ => {}
       }
     }
@@ -1023,6 +1044,7 @@ impl TopLevelFunction {
     self,
     name: &str,
     names: &mut NameContext,
+    target: CompilerTarget,
   ) -> CompileResult<String> {
     let TypedExp { data, kind, .. } = self.expression;
     let Type::Function(signature) = data.unwrap_known() else {
@@ -1088,7 +1110,8 @@ impl TopLevelFunction {
         } else {
           ExpressionCompilationPosition::Return
         },
-        names
+        names,
+        target
       ))
     ))
   }

@@ -22,9 +22,9 @@ use crate::{
     error::{CompileError, CompileErrorKind::*, CompileResult, err},
     functions::{
       AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
-      Ownership,
+      FunctionTargetConfiguration, Ownership, SpecialCasedBuiltinFunction,
     },
-    program::{NameContext, Program, TypeDefs},
+    program::{CompilerTarget, NameContext, Program, TypeDefs},
     structs::{AbstractStruct, Struct},
     types::{
       ConcreteArraySize, ExpTypeInfo, GenericArgumentValue, Type,
@@ -1661,6 +1661,7 @@ impl TypedExp {
     self,
     position: ExpressionCompilationPosition,
     names: &mut NameContext,
+    target: CompilerTarget,
   ) -> String {
     use ExpressionCompilationPosition::*;
     let wrap = |s: String| -> String {
@@ -1697,6 +1698,20 @@ impl TypedExp {
       Function(_, _) => panic!("Attempting to compile internal function"),
       Application(f, mut args) => wrap(match f.data.unwrap_known() {
         Type::Function(signature) => {
+          if let Some(abstract_ancestor) = &signature.abstract_ancestor
+            && let FunctionImplementationKind::Builtin {
+              target_configuration:
+                FunctionTargetConfiguration::SpecialCased(special_case),
+              ..
+            } = abstract_ancestor.borrow().implementation
+          {
+            match special_case {
+              SpecialCasedBuiltinFunction::Print => match target {
+                CompilerTarget::WGSL => return "".into(),
+                _ => {}
+              },
+            }
+          }
           let ExpKind::Name(name) = f.kind else {
             panic!("tried to compile application of non-name fn");
           };
@@ -1746,7 +1761,11 @@ impl TypedExp {
                 }
                 _ => "",
               };
-              format!("{}{}", prefix, arg.compile(InnerExpression, names))
+              format!(
+                "{}{}",
+                prefix,
+                arg.compile(InnerExpression, names, target)
+              )
             })
             .collect();
           if ASSIGNMENT_OPS.contains(&f_str.as_str()) {
@@ -1807,18 +1826,23 @@ impl TypedExp {
           }
         }
         Type::Array(_, _) => {
-          let f_str =
-            f.compile(ExpressionCompilationPosition::InnerExpression, names);
-          let index_str = args
-            .remove(0)
-            .compile(ExpressionCompilationPosition::InnerExpression, names);
+          let f_str = f.compile(
+            ExpressionCompilationPosition::InnerExpression,
+            names,
+            target,
+          );
+          let index_str = args.remove(0).compile(
+            ExpressionCompilationPosition::InnerExpression,
+            names,
+            target,
+          );
           format!("{f_str}[{index_str}]")
         }
         _ => panic!("tried to compile application of non-fn, non-array"),
       }),
       Access(accessor, subexp) => wrap(format!(
         "{}{}",
-        subexp.compile(InnerExpression, names),
+        subexp.compile(InnerExpression, names, target),
         accessor.compile()
       )),
       Let(bindings, body) => {
@@ -1838,29 +1862,29 @@ impl TypedExp {
                 variable_kind.compile(),
                 compile_word(name),
                 value_exp.data.monomorphized_name(names),
-                value_exp.compile(InnerExpression, names)
+                value_exp.compile(InnerExpression, names, target)
               )
             }
           })
           .collect();
-        let value_line = body.compile(position, names);
+        let value_line = body.compile(position, names, target);
         format!("\n{}{}", binding_lines.join("\n"), value_line)
       }
       Match(scrutinee, arms) => match scrutinee.data.unwrap_known() {
         Type::Bool => match arms.len() {
           1 => {
             let (pattern, case) = arms.into_iter().next().unwrap();
-            let compiled_case = case.compile(position, names);
+            let compiled_case = case.compile(position, names, target);
             match pattern.kind {
               ExpKind::Wildcard => compiled_case,
               ExpKind::BooleanLiteral(true) => format!(
                 "\nif ({}) {{{}\n}}",
-                scrutinee.compile(InnerExpression, names),
+                scrutinee.compile(InnerExpression, names, target),
                 indent(compiled_case),
               ),
               ExpKind::BooleanLiteral(false) => format!(
                 "\nif (!{}) {{{}\n}}",
-                scrutinee.compile(InnerExpression, names),
+                scrutinee.compile(InnerExpression, names, target),
                 indent(compiled_case),
               ),
               _ => unreachable!(),
@@ -1890,15 +1914,15 @@ impl TypedExp {
               if true_case.kind == ExpKind::Unit {
                 indent("\n".to_string())
               } else {
-                indent(true_case.compile(position, names))
+                indent(true_case.compile(position, names, target))
               },
               if false_case.kind == ExpKind::Unit {
                 indent("\n".to_string())
               } else {
-                indent(false_case.compile(position, names))
+                indent(false_case.compile(position, names, target))
               },
             );
-            let condition = scrutinee.compile(InnerExpression, names);
+            let condition = scrutinee.compile(InnerExpression, names, target);
             if position == InnerExpression {
               format!("select({false_case}, {true_case}, {condition})")
             } else {
@@ -1914,7 +1938,7 @@ impl TypedExp {
           let arm_count = arms.len();
           format!(
             "\nswitch({}.discriminant) {{\n  {}\n}}",
-            scrutinee.clone().compile(InnerExpression, names),
+            scrutinee.clone().compile(InnerExpression, names, target),
             indent(
               arms
                 .into_iter()
@@ -1929,7 +1953,7 @@ impl TypedExp {
                   match pattern.kind {
                     Wildcard => format!(
                       "default: {{{}\n{finisher}}}",
-                      indent(value.compile(position, names))
+                      indent(value.compile(position, names, target))
                     ),
                     ExpKind::Name(name) => {
                       let Type::Enum(e) = scrutinee.data.unwrap_known() else {
@@ -1968,7 +1992,7 @@ impl TypedExp {
                         } else {
                           format!("case {discriminant}u")
                         },
-                        indent(value.compile(position, names))
+                        indent(value.compile(position, names, target))
                       )
                     }
                     ExpKind::Application(mut f, mut args) => {
@@ -1999,7 +2023,7 @@ impl TypedExp {
                         .inner_type
                         .unwrap_known()
                         .bitcasted_from_enum_data(
-                          scrutinee.clone().compile(InnerExpression, names).into(),
+                          scrutinee.clone().compile(InnerExpression, names, target).into(),
                           &e,
                           names,
                         );
@@ -2013,9 +2037,10 @@ impl TypedExp {
                         compile_word(inner_value_name),
                         bitcasted_value.compile(
                           ExpressionCompilationPosition::InnerExpression,
-                          names
+                          names,
+                          target
                         ),
-                        indent(value.compile(position, names))
+                        indent(value.compile(position, names, target))
                       )
                     }
                     _ => panic!("invalid pattern type in enum match block"),
@@ -2029,7 +2054,7 @@ impl TypedExp {
         Type::I32 | Type::U32 => {
           format!(
             "\nswitch ({}) {{\n  {}\n}}",
-            scrutinee.compile(InnerExpression, names),
+            scrutinee.compile(InnerExpression, names, target),
             indent(
               arms
                 .into_iter()
@@ -2039,12 +2064,12 @@ impl TypedExp {
                     "default".to_string()
                   } else {
                     "case ".to_string()
-                      + &pattern.compile(InnerExpression, names)
+                      + &pattern.compile(InnerExpression, names, target)
                   },
                   if value.kind == ExpKind::Unit {
                     "".to_string()
                   } else {
-                    indent(value.compile(position, names))
+                    indent(value.compile(position, names, target))
                   },
                   if position == ExpressionCompilationPosition::Return {
                     ""
@@ -2059,7 +2084,8 @@ impl TypedExp {
         }
         other_type => {
           let arm_count = arms.len();
-          let compiled_scrutinee = scrutinee.compile(InnerExpression, names);
+          let compiled_scrutinee =
+            scrutinee.compile(InnerExpression, names, target);
           arms
             .into_iter()
             .enumerate()
@@ -2070,7 +2096,7 @@ impl TypedExp {
                 let equality_expression = format!(
                   "({} == {})",
                   compiled_scrutinee.clone(),
-                  &pattern.compile(InnerExpression, names),
+                  &pattern.compile(InnerExpression, names, target),
                 );
                 format!(
                   "{} {}",
@@ -2087,7 +2113,7 @@ impl TypedExp {
               format!(
                 "{} {{{}\n}}",
                 pattern_prefix,
-                indent(value.compile(position, names))
+                indent(value.compile(position, names, target))
               )
             })
             .collect::<Vec<String>>()
@@ -2110,6 +2136,7 @@ impl TypedExp {
                   ExpressionCompilationPosition::InnerLine
                 },
                 names,
+                target,
               )
             })
             .collect();
@@ -2127,47 +2154,68 @@ impl TypedExp {
         "\nfor (var {}: {} = {}; {}; {}) {{{}\n}}",
         increment_variable_name.0,
         increment_variable_type.monomorphized_name(names),
-        increment_variable_initial_value_expression
-          .compile(ExpressionCompilationPosition::InnerExpression, names),
-        continue_condition_expression
-          .compile(ExpressionCompilationPosition::InnerExpression, names),
+        increment_variable_initial_value_expression.compile(
+          ExpressionCompilationPosition::InnerExpression,
+          names,
+          target
+        ),
+        continue_condition_expression.compile(
+          ExpressionCompilationPosition::InnerExpression,
+          names,
+          target
+        ),
         if let Some(update_expression) = update_expression {
-          update_expression
-            .compile(ExpressionCompilationPosition::InnerExpression, names)
+          update_expression.compile(
+            ExpressionCompilationPosition::InnerExpression,
+            names,
+            target,
+          )
         } else {
           String::new()
         },
-        indent(
-          body_expression
-            .compile(ExpressionCompilationPosition::InnerLine, names)
-        )
+        indent(body_expression.compile(
+          ExpressionCompilationPosition::InnerLine,
+          names,
+          target
+        ))
       ),
       WhileLoop {
         condition_expression,
         body_expression,
       } => format!(
         "\nwhile ({}) {{{}\n}}",
-        condition_expression
-          .compile(ExpressionCompilationPosition::InnerExpression, names),
-        indent(
-          body_expression
-            .compile(ExpressionCompilationPosition::InnerLine, names)
-        )
+        condition_expression.compile(
+          ExpressionCompilationPosition::InnerExpression,
+          names,
+          target
+        ),
+        indent(body_expression.compile(
+          ExpressionCompilationPosition::InnerLine,
+          names,
+          target
+        ))
       ),
       Break => "\nbreak;".to_string(),
       Continue => "\ncontinue;".to_string(),
       Discard => "\ndiscard;".to_string(),
       ExpKind::Return(exp) => format!(
         "\nreturn {};",
-        exp.compile(ExpressionCompilationPosition::InnerExpression, names)
+        exp.compile(
+          ExpressionCompilationPosition::InnerExpression,
+          names,
+          target
+        )
       ),
       ArrayLiteral(children) => wrap(format!(
         "{}({})",
         self.data.monomorphized_name(names),
         children
           .into_iter()
-          .map(|child| child
-            .compile(ExpressionCompilationPosition::InnerExpression, names))
+          .map(|child| child.compile(
+            ExpressionCompilationPosition::InnerExpression,
+            names,
+            target
+          ))
           .collect::<Vec<String>>()
           .join(", ")
       )),
@@ -3157,7 +3205,7 @@ impl TypedExp {
               }
             {
               match &abstract_signature.borrow().implementation {
-                FunctionImplementationKind::Builtin(_) => {
+                FunctionImplementationKind::Builtin { .. } => {
                   if vec_and_mat_compile_names().contains(&**f_name) {
                     if let Type::Struct(s) = &exp.data.kind.unwrap_known() {
                       if let Some(mut compiled_name) = compiled_vec_or_mat_name(
@@ -4735,7 +4783,7 @@ impl TypedExp {
           if let Some(f) = &f.abstract_ancestor {
             let f = f.borrow();
             (match f.implementation {
-              FunctionImplementationKind::Builtin(_) => {
+              FunctionImplementationKind::Builtin { .. } => {
                 f.is_builtin_vector_constructor()
               }
               FunctionImplementationKind::StructConstructor => true,

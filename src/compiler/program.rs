@@ -24,7 +24,7 @@ use crate::{
     },
     functions::{
       AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
-      Ownership, TopLevelFunction,
+      FunctionTargetConfiguration, Ownership, TopLevelFunction,
     },
     structs::{AbstractStructField, UntypedStruct},
     types::{
@@ -54,6 +54,12 @@ use super::{
 };
 
 pub type EaslDocument<'s> = Document<'s, EaslSyntax>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompilerTarget {
+  CPU,
+  WGSL,
+}
 
 pub trait EaslDocumentMethods {
   fn override_def(&mut self, def_name: &str, new_def_value: &str) -> bool;
@@ -280,6 +286,7 @@ impl Program {
     &mut self,
     signature: Rc<RefCell<AbstractFunctionSignature>>,
   ) {
+    // print!("add_abstract_function");
     let name = Rc::clone(&signature.borrow().name);
     self.names.borrow_mut().track_user_name(&name);
     if let FunctionImplementationKind::Composite(f) =
@@ -1606,6 +1613,43 @@ impl Program {
     });
     changed
   }
+  // pub fn remove_target_ignored_functions(&mut self, target: CompilerTarget) {
+  //   for f in self.abstract_functions_iter_mut() {
+  //     let f = f.borrow_mut();
+  //     if let FunctionImplementationKind::Composite(implementation) =
+  //       &f.implementation
+  //     {
+  //       let mut implementation = implementation.borrow_mut();
+  //       implementation
+  //         .expression
+  //         .walk_mut(&mut |exp| {
+  //           match &mut exp.kind {
+  //             ExpKind::Application(f, _) => {
+  //               if let Type::Function(f2) = f.data.unwrap_known()
+  //                 && let Some(abstract_f) = f2.abstract_ancestor
+  //                 && let FunctionImplementationKind::Builtin {
+  //                   target_configuration,
+  //                   ..
+  //                 } = abstract_f.borrow().implementation
+  //                 && match (target_configuration, target) {
+  //                   (
+  //                     FunctionTargetConfiguration::IgnoreOnGpu,
+  //                     CompilerTarget::WGSL,
+  //                   ) => true,
+  //                   _ => false,
+  //                 }
+  //               {
+  //                 exp.kind = ExpKind::Unit;
+  //               }
+  //             }
+  //             _ => {}
+  //           }
+  //           Ok::<bool, Never>(true)
+  //         })
+  //         .unwrap()
+  //     }
+  //   }
+  // }
   pub fn remove_unitlike_values(&mut self) {
     let mut names = NameContext::empty();
     std::mem::swap(&mut names, &mut self.names.borrow_mut());
@@ -1679,7 +1723,7 @@ impl Program {
     let mut names = self.names.borrow_mut();
     let mut wgsl = String::new();
     for v in self.top_level_vars.iter() {
-      wgsl += &v.clone().compile(&mut names);
+      wgsl += &v.clone().compile(&mut names, CompilerTarget::WGSL);
       wgsl += ";\n";
     }
     wgsl += "\n";
@@ -1741,7 +1785,8 @@ impl Program {
                   "bitcast<u32>({})",
                   exp.compile(
                     ExpressionCompilationPosition::InnerExpression,
-                    &mut names
+                    &mut names,
+                    CompilerTarget::WGSL
                   )
                 )
               })
@@ -1780,10 +1825,11 @@ impl Program {
       {
         match f.implementation {
           FunctionImplementationKind::Composite(implementation) => {
-            wgsl += &implementation
-              .borrow()
-              .clone()
-              .compile(&f.name, &mut names)?;
+            wgsl += &implementation.borrow().clone().compile(
+              &f.name,
+              &mut names,
+              CompilerTarget::WGSL,
+            )?;
             wgsl += "\n\n";
           }
           _ => {}
@@ -2067,7 +2113,7 @@ impl Program {
     for (name, signatures) in self.abstract_functions.iter() {
       let mut normalized_signatures: Vec<(Option<SourceTrace>, _)> = vec![];
       for signature in signatures {
-        if let FunctionImplementationKind::Builtin(_)
+        if let FunctionImplementationKind::Builtin { .. }
         | FunctionImplementationKind::StructConstructor =
           signature.borrow().implementation
         {
@@ -2898,7 +2944,7 @@ impl Program {
       }
     }
   }
-  pub fn validate_raw_program(&mut self) -> ErrorLog {
+  pub fn validate_raw_program(&mut self, target: CompilerTarget) -> ErrorLog {
     let mut errors = ErrorLog::new();
     self.validate_names(&mut errors);
     if !errors.is_empty() {
@@ -2984,6 +3030,8 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    // println!("\n\nremove_target_ignored_functions\n\n");
+    // self.remove_target_ignored_functions(target);
     self.remove_unitlike_values();
     self.validate_top_level_fn_effects(&mut errors);
     if !errors.is_empty() {

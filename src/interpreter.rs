@@ -93,7 +93,7 @@ impl Function {
     env: &EvaluationEnvironment,
   ) -> Result<Self, EvaluationError> {
     match &f.implementation {
-      FunctionImplementationKind::Builtin(_) => {
+      FunctionImplementationKind::Builtin { .. } => {
         Ok(Function::Builtin(name.clone()))
       }
       FunctionImplementationKind::StructConstructor => {

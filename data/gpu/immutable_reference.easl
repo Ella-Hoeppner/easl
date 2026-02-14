@@ -1,0 +1,4 @@
+(defn (do-nothing T) [@ref x: T])
+
+(defn f [x: f32]
+  (do-nothing x))

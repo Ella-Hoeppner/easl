@@ -1,6 +1,8 @@
 use easl::{
-  compile_easl_source_to_wgsl, compiler::program::Program,
-  interpreter::run_program, parse::parse_easl_without_comments,
+  compile_easl_source_to_wgsl,
+  compiler::program::{CompilerTarget, Program},
+  interpreter::run_program,
+  parse::parse_easl_without_comments,
 };
 use std::fs;
 
@@ -53,7 +55,7 @@ fn _cpu_examples() {
       easl::compiler::builtins::built_in_macros(),
     );
     if errors.is_empty() {
-      let errors = program.validate_raw_program();
+      let errors = program.validate_raw_program(CompilerTarget::CPU);
       if errors.is_empty() {
         match run_program(program) {
           Ok(_) => {

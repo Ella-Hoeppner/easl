@@ -1,7 +1,10 @@
 use fsexp::ParseError;
 
 use crate::{
-  compiler::{info::ProgramInfo, program::EaslDocument},
+  compiler::{
+    info::ProgramInfo,
+    program::{CompilerTarget, EaslDocument},
+  },
   parse::parse_easl_without_comments,
 };
 
@@ -15,7 +18,7 @@ pub fn compile_easl_document_to_wgsl<'t>(
   if !errors.is_empty() {
     return Err((document, errors));
   }
-  let errors = program.validate_raw_program();
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
   if !errors.is_empty() {
     return Err((document, errors));
   }
@@ -44,7 +47,7 @@ pub fn get_easl_program_info(
   }
   let (mut program, _) =
     Program::from_easl_document(&document, built_in_macros());
-  let errors = program.validate_raw_program();
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
   Ok(if errors.is_empty() {
     Ok(ProgramInfo::from(&program))
   } else {

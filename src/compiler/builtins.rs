@@ -12,7 +12,9 @@ use crate::{
     effects::Effect,
     entry::IOAttributes,
     error::SourceTrace,
-    functions::Ownership,
+    functions::{
+      FunctionTargetConfiguration, Ownership, SpecialCasedBuiltinFunction,
+    },
     structs::AbstractStructField,
     types::{AbstractArraySize, GenericArgument},
   },
@@ -1103,23 +1105,23 @@ fn bit_manipulation_functions() -> Vec<AbstractFunctionSignature> {
   )
   .chain(generic_and_vec_types().into_iter().flat_map(|v| {
     [Type::U32, Type::I32].into_iter().map(move |inner_type| {
-        let generic_name: Rc<str> = "T".into();
-        let v = v.clone().fill_abstract_generics(
-          &[(generic_name, AbstractType::Type(inner_type.clone()))]
-            .into_iter()
-            .collect(),
-        );
-        AbstractFunctionSignature {
-          name: "extract-bits".into(),
-          arg_types: vec![
-            v.clone().owned(),
-            AbstractType::Type(Type::U32).owned(),
-            AbstractType::Type(Type::U32).owned(),
-          ],
-          return_type: v,
-          ..Default::default()
-        }
-      })
+      let generic_name: Rc<str> = "T".into();
+      let v = v.clone().fill_abstract_generics(
+        &[(generic_name, AbstractType::Type(inner_type.clone()))]
+          .into_iter()
+          .collect(),
+      );
+      AbstractFunctionSignature {
+        name: "extract-bits".into(),
+        arg_types: vec![
+          v.clone().owned(),
+          AbstractType::Type(Type::U32).owned(),
+          AbstractType::Type(Type::U32).owned(),
+        ],
+        return_type: v,
+        ..Default::default()
+      }
+    })
   }))
   .collect()
 }
@@ -1372,8 +1374,14 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
       .into_iter()
       .map(|(name, arg_count, associative)| AbstractFunctionSignature {
         name: name.into(),
-        generic_args: vec![("T".into(), GenericArgument::Type(vec![TypeConstraint::scalar()]), SourceTrace::empty())],
-        arg_types: std::iter::repeat(t.clone().owned()).take(arg_count).collect(),
+        generic_args: vec![(
+          "T".into(),
+          GenericArgument::Type(vec![TypeConstraint::scalar()]),
+          SourceTrace::empty(),
+        )],
+        arg_types: std::iter::repeat(t.clone().owned())
+          .take(arg_count)
+          .collect(),
         return_type: t.clone(),
         associative,
         ..Default::default()
@@ -1398,7 +1406,9 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
       .into_iter()
       .map(|(name, arg_count)| AbstractFunctionSignature {
         name: name.into(),
-        arg_types: std::iter::repeat(t.clone().owned()).take(arg_count).collect(),
+        arg_types: std::iter::repeat(t.clone().owned())
+          .take(arg_count)
+          .collect(),
         return_type: t.clone(),
         ..Default::default()
       })
@@ -1408,13 +1418,21 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
       vec![
         AbstractFunctionSignature {
           name: "mix".into(),
-          arg_types: vec![t.clone().owned(), t.clone().owned(), AbstractType::Type(Type::F32).owned()],
+          arg_types: vec![
+            t.clone().owned(),
+            t.clone().owned(),
+            AbstractType::Type(Type::F32).owned(),
+          ],
           return_type: t.clone(),
           ..Default::default()
         },
         AbstractFunctionSignature {
           name: "face-forward".into(),
-          arg_types: vec![t.clone().owned(), t.clone().owned(), t.clone().owned()],
+          arg_types: vec![
+            t.clone().owned(),
+            t.clone().owned(),
+            t.clone().owned(),
+          ],
           return_type: t.clone(),
           ..Default::default()
         },
@@ -1530,9 +1548,11 @@ fn texture_functions() -> Vec<AbstractFunctionSignature> {
         .owned(),
       ],
       return_type: vec4f(),
-      implementation: FunctionImplementationKind::Builtin(
-        Effect::FragmentExclusiveFunction("texture-sample".into()).into(),
-      ),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::FragmentExclusiveFunction("texture-sample".into())
+          .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
       ..Default::default()
     },
     AbstractFunctionSignature {
@@ -1549,9 +1569,13 @@ fn texture_functions() -> Vec<AbstractFunctionSignature> {
         AbstractType::Type(Type::F32).owned(),
       ],
       return_type: vec4f(),
-      implementation: FunctionImplementationKind::Builtin(
-        Effect::FragmentExclusiveFunction("texture-sample-bias".into()).into(),
-      ),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::FragmentExclusiveFunction(
+          "texture-sample-bias".into(),
+        )
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
       ..Default::default()
     },
     AbstractFunctionSignature {
@@ -1651,13 +1675,13 @@ fn data_packing_functions() -> Vec<AbstractFunctionSignature> {
     }];
     if unpack {
       signatures.push(AbstractFunctionSignature {
-      name: format!("unpack-{name}").into(),
-      arg_types: vec![AbstractType::Type(Type::U32).owned()],
-      return_type: AbstractType::AbstractStruct(
-        v.fill_abstract_generics(vec![AbstractType::Type(t)]).into(),
-      ),
-      ..Default::default()
-    });
+        name: format!("unpack-{name}").into(),
+        arg_types: vec![AbstractType::Type(Type::U32).owned()],
+        return_type: AbstractType::AbstractStruct(
+          v.fill_abstract_generics(vec![AbstractType::Type(t)]).into(),
+        ),
+        ..Default::default()
+      });
     }
     signatures
   })
@@ -1724,9 +1748,10 @@ fn derivative_functions() -> Vec<AbstractFunctionSignature> {
         name: name.into(),
         arg_types: vec![t.clone().owned()],
         return_type: t.clone(),
-        implementation: FunctionImplementationKind::Builtin(
-          Effect::FragmentExclusiveFunction(name.into()).into(),
-        ),
+        implementation: FunctionImplementationKind::Builtin {
+          effect_type: Effect::FragmentExclusiveFunction(name.into()).into(),
+          target_configuration: FunctionTargetConfiguration::Default,
+        },
         ..Default::default()
       })
     })
@@ -1743,7 +1768,12 @@ fn print_functions() -> Vec<AbstractFunctionSignature> {
     )],
     arg_types: vec![AbstractType::Generic("T".into()).owned()],
     return_type: AbstractType::Unit,
-    implementation: FunctionImplementationKind::Builtin(Effect::Print.into()),
+    implementation: FunctionImplementationKind::Builtin {
+      effect_type: Effect::Print.into(),
+      target_configuration: FunctionTargetConfiguration::SpecialCased(
+        SpecialCasedBuiltinFunction::Print,
+      ),
+    },
     ..Default::default()
   }]
 }

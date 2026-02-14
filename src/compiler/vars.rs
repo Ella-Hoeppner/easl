@@ -5,7 +5,7 @@ use crate::{
     annotation::Annotation,
     error::{CompileError, CompileErrorKind::*, ErrorLog},
     expression::ExpressionCompilationPosition,
-    program::{EaslDocument, NameContext, Program},
+    program::{CompilerTarget, EaslDocument, NameContext, Program},
     types::{Type, VariableKind},
     util::{compile_word, read_type_annotated_name},
   },
@@ -333,7 +333,11 @@ impl TopLevelVar {
       }
     }
   }
-  pub fn compile(self, names: &mut NameContext) -> String {
+  pub fn compile(
+    self,
+    names: &mut NameContext,
+    target: CompilerTarget,
+  ) -> String {
     let (bind_group_decoration, address_space) =
       if let TopLevelVariableKind::Var {
         group_and_binding,
@@ -366,7 +370,11 @@ impl TopLevelVar {
     let assignment = if let Some(value) = self.value {
       format!(
         " = {}",
-        value.compile(ExpressionCompilationPosition::InnerExpression, names)
+        value.compile(
+          ExpressionCompilationPosition::InnerExpression,
+          names,
+          target
+        )
       )
     } else {
       String::new()

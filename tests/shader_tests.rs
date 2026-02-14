@@ -47,7 +47,7 @@ fn validate_wgsl(name: &str, wgsl: &str) {
   let module = naga::front::wgsl::parse_str(wgsl).unwrap_or_else(|e| {
     panic!(
       "{name}: naga failed to parse generated WGSL:\n{e}\n\
-       See out/{name}.wgsl for the generated code."
+       See out/{name}.wgsl for the generated code.",
     )
   });
   let mut validator = naga::valid::Validator::new(
@@ -245,6 +245,8 @@ success_test!(arg_annotation_success);
 success_test!(return_annotation_success);
 success_test!(user_reference_success);
 success_test!(ownership_success);
+success_test!(unit_literal_in_block);
+success_test!(immutable_reference);
 
 // --- Error tests ---
 

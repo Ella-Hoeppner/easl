@@ -1,6 +1,8 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready
+* `immutable_reference.easl` demonstrates an issue with the reference system right now - wgsl doesn't let you use the `&` operator on `let` values. We'll need to detect when something being passed as a reference is immutable and like shadow it with an mutable copy during compilation.
+
 * fix type output failure in `complex_monomorphize`
 
 * have options on the builtin functions such that `print` isn't available when targetting wgsl
