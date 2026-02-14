@@ -423,6 +423,8 @@ pub enum CompileErrorKind {
   CantYieldFunctionFromMatch,
   #[error("Illegal function-typed value")]
   IllegalFunctionTypeExpressionKind,
+  #[error("Can't store functions in a data structure")]
+  CantStoreFunctionInDataStructure,
 }
 
 impl CompileErrorKind {

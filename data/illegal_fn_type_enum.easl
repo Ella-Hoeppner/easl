@@ -1,0 +1,5 @@
+; this will cause an error
+#_(enum MyEnum
+    A
+    (B f32)
+    (C (Fn [f32] f32)))

@@ -824,6 +824,37 @@ impl Program {
       }
     }
   }
+  pub fn catch_illegal_function_type_user_type_fields(
+    &self,
+    errors: &mut ErrorLog,
+  ) {
+    for s in self.typedefs.structs.iter() {
+      for f in s.fields.iter() {
+        match f.field_type {
+          AbstractType::Type(Type::Function(_)) => {
+            errors.log(CompileError::new(
+              CantStoreFunctionInDataStructure,
+              f.source_trace.clone(),
+            ))
+          }
+          _ => {}
+        }
+      }
+    }
+    for e in self.typedefs.enums.iter() {
+      for v in e.variants.iter() {
+        match v.inner_type {
+          AbstractType::Type(Type::Function(_)) => {
+            errors.log(CompileError::new(
+              CantStoreFunctionInDataStructure,
+              v.source.clone(),
+            ))
+          }
+          _ => {}
+        }
+      }
+    }
+  }
   pub fn fully_infer_types(&mut self, errors: &mut ErrorLog) {
     loop {
       let did_type_states_change = self.propagate_types(errors);
@@ -2925,6 +2956,7 @@ impl Program {
       return errors;
     }
     self.catch_illegal_function_type_expressions(&mut errors);
+    self.catch_illegal_function_type_user_type_fields(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
