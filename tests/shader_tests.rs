@@ -42,14 +42,36 @@ fn compile_shader(name: &str) -> Result<String, Vec<CompileErrorKind>> {
   }
 }
 
-/// Assert that a shader file compiles successfully to WGSL.
+/// Validate that a WGSL string is well-formed and type-correct according to naga.
+fn validate_wgsl(name: &str, wgsl: &str) {
+  let module = naga::front::wgsl::parse_str(wgsl).unwrap_or_else(|e| {
+    panic!(
+      "{name}: naga failed to parse generated WGSL:\n{e}\n\
+       See out/{name}.wgsl for the generated code."
+    )
+  });
+  let mut validator = naga::valid::Validator::new(
+    naga::valid::ValidationFlags::all(),
+    naga::valid::Capabilities::all(),
+  );
+  validator.validate(&module).unwrap_or_else(|e| {
+    panic!(
+      "{name}: naga validation failed on generated WGSL:\n{e}\n\
+       See out/{name}.wgsl for the generated code."
+    )
+  });
+}
+
+/// Assert that a shader file compiles successfully to WGSL,
+/// then validate the output with naga.
 fn assert_compiles(name: &str) {
-  compile_shader(name).unwrap_or_else(|errors| {
+  let wgsl = compile_shader(name).unwrap_or_else(|errors| {
     panic!(
       "{name}.easl failed to compile: {errors:?}\n\
        See out/{name}.wgsl for details."
     )
   });
+  validate_wgsl(name, &wgsl);
 }
 
 /// Assert that a shader file fails to compile with exactly the given errors.

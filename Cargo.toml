@@ -9,3 +9,6 @@ fsexp = { git = "https://github.com/Ella-Hoeppner/fsexp.git" }
 take_mut = "0.2.2"
 thiserror = "2.0.11"
 unicode-segmentation = "1.12.0"
+
+[dev-dependencies]
+naga = { version = "28", features = ["wgsl-in"] }

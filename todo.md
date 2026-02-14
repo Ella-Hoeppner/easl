@@ -1,7 +1,13 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready
-* in the test suite, try to feed the output wgsl into wgpu and compile them, so that we can catch some bugs in the emitted wgsl
+* fix type output failure in `complex_monomorphize`
+
+* have options on the builtin functions such that `print` isn't available when targetting wgsl
+  * I guess maybe `validate_raw_program` should take like an enum describing the target or smth, and have a `TargetExclusive(PlatformEnum)` effect or smth for functions like `print`, and have a final stage in `validate_raw_program` that catches 
+    * alternatively could just make it so `print` is allowed when compiling to wgsl but just doesn't do anything, I guess that's the behavior the user will want 99% of the time
+  * a few test cases are failing the wgsl checks cause of this, should make a different success tester macro for these few cases that just runs typechecking and doesn't actually compile to wgsl
+    * or maybe just roll these into the CPU tests idk
 
 
 

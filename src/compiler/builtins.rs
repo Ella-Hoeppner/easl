@@ -761,7 +761,7 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             AbstractType::AbstractStruct(matrix(inner, m).into()).owned(),
             AbstractType::AbstractStruct(matrix(n, inner).into()).owned(),
           ],
-          return_type: vecn(n),
+          return_type: AbstractType::AbstractStruct(matrix(n, m).into()),
           implementation: FunctionImplementationKind::Builtin(
             EffectType::empty(),
           ),

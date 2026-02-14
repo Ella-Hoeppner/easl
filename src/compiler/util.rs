@@ -69,6 +69,7 @@ pub fn compile_word(word: Rc<str>) -> String {
       .replace(">", "ABRACKET_RIGHT")
       .replace("<", "ABRACKET_LEFT")
       .replace("?", "QMARK")
+      .replace("!", "EMARK")
       .replace("=", "EQUAL_SIGN"),
   };
   if is_wgsl_reserved_word(&compiled_word) {
