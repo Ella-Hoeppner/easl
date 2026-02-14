@@ -1,0 +1,10 @@
+(defn f1 [a: f32]: f32
+  (let [f +]
+    (f a a)))
+
+; The below will cause an error
+#_(defn f2 [a: f32]: f32
+    (let [f (match a
+              0. +
+              _ -)]
+      (f a a)))

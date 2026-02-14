@@ -1,9 +1,7 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready
-* add a compiler error whenever a match expression has a function type
-  * basically just implement `catch_illegal_match_functions`
-  * also do this when the user tries to use a function type in a data structure
+* add a when the user tries to use a function type in a data structure
 
 * turn the examples into an actual test suite
   * for the successful examples, also try to feed the output wgsl into wgpu and compile them, so that we can catch some bugs in the emitted wgsl

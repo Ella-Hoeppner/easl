@@ -144,6 +144,7 @@ fn shader_examples() {
     "return_fn",
     "okhsl",
     "bitcast",
+    "illegal_fn_type_match",
   ] {
     print!("compiling {filename}...");
     let t = std::time::Instant::now();

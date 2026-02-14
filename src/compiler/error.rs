@@ -419,6 +419,10 @@ pub enum CompileErrorKind {
   FnMissingArgumentList,
   #[error("Closure has illegal effects")]
   IllegalEffectsInClosure,
+  #[error("`match` expression may not yield a function-typed value")]
+  CantYieldFunctionFromMatch,
+  #[error("Illegal function-typed value")]
+  IllegalFunctionTypeExpressionKind,
 }
 
 impl CompileErrorKind {

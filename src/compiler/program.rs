@@ -812,6 +812,18 @@ impl Program {
       }
     }
   }
+  pub fn catch_illegal_function_type_expressions(&self, errors: &mut ErrorLog) {
+    for abstract_function in self.abstract_functions_iter() {
+      if let FunctionImplementationKind::Composite(implementation) =
+        &abstract_function.borrow().implementation
+      {
+        (**implementation)
+          .borrow_mut()
+          .expression
+          .catch_illegal_function_type_expressions(errors);
+      }
+    }
+  }
   pub fn fully_infer_types(&mut self, errors: &mut ErrorLog) {
     loop {
       let did_type_states_change = self.propagate_types(errors);
@@ -1032,9 +1044,6 @@ impl Program {
         break;
       }
     }
-  }
-  pub fn catch_illegal_match_functions(&mut self, _errors: &mut ErrorLog) {
-    // todo!()
   }
   pub fn propagate_abstract_function_signatures(&mut self) {
     loop {
@@ -2915,6 +2924,10 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.catch_illegal_function_type_expressions(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     self.desugar_swizzle_assignments();
     self.deexpressionify();
     self.deshadow(&mut errors);
@@ -2925,7 +2938,6 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    self.catch_illegal_match_functions(&mut errors);
     if !errors.is_empty() {
       return errors;
     }

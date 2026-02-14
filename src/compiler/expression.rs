@@ -2321,6 +2321,29 @@ impl TypedExp {
       })
       .unwrap();
   }
+  pub fn catch_illegal_function_type_expressions(
+    &mut self,
+    errors: &mut ErrorLog,
+  ) {
+    self
+      .walk_mut(&mut |exp| {
+        if let Type::Function(_) = exp.data.unwrap_known() {
+          match &mut exp.kind {
+            Match(_, _) => errors.log(CompileError::new(
+              CantYieldFunctionFromMatch,
+              exp.source_trace.clone(),
+            )),
+            Uninitialized | Access(_, _) => errors.log(CompileError::new(
+              IllegalFunctionTypeExpressionKind,
+              exp.source_trace.clone(),
+            )),
+            _ => {}
+          }
+        }
+        Ok::<_, Never>(true)
+      })
+      .unwrap();
+  }
   fn try_deconstruct_untyped_enum_pattern<'a>(
     f: &'a mut Box<TypedExp>,
     args: &'a mut Vec<TypedExp>,
