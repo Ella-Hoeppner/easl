@@ -3194,6 +3194,31 @@ impl TypedExp {
                 .get_monomorphized_name(name.clone(), generic_arg_names);
             }
           }
+          // Monomorphize generic function references (e.g. passed as
+          // higher-order function arguments).
+          if let TypeState::Known(Type::Function(f)) = &mut exp.data.kind
+            && let Some(signature) = &f.abstract_ancestor
+            && let signature = signature.borrow()
+            && !signature.generic_args.is_empty()
+            && let FunctionImplementationKind::Composite(implementation) =
+              &signature.implementation
+          {
+            let monomorphized = signature.generate_monomorphized(
+              f.args
+                .iter()
+                .map(|(var, _)| var.var_type.unwrap_known())
+                .collect(),
+              f.return_type.unwrap_known(),
+              base_program,
+              new_program,
+              implementation.borrow().expression.source_trace.clone(),
+            )?;
+            *name = monomorphized.name.clone();
+            let monomorphized_rc = Rc::new(RefCell::new(monomorphized));
+            drop(signature);
+            f.abstract_ancestor = Some(monomorphized_rc.clone());
+            new_program.add_abstract_function(monomorphized_rc);
+          }
         }
         Application(f, args) => {
           if let ExpKind::Name(f_name) = &mut f.kind {

@@ -1613,43 +1613,6 @@ impl Program {
     });
     changed
   }
-  // pub fn remove_target_ignored_functions(&mut self, target: CompilerTarget) {
-  //   for f in self.abstract_functions_iter_mut() {
-  //     let f = f.borrow_mut();
-  //     if let FunctionImplementationKind::Composite(implementation) =
-  //       &f.implementation
-  //     {
-  //       let mut implementation = implementation.borrow_mut();
-  //       implementation
-  //         .expression
-  //         .walk_mut(&mut |exp| {
-  //           match &mut exp.kind {
-  //             ExpKind::Application(f, _) => {
-  //               if let Type::Function(f2) = f.data.unwrap_known()
-  //                 && let Some(abstract_f) = f2.abstract_ancestor
-  //                 && let FunctionImplementationKind::Builtin {
-  //                   target_configuration,
-  //                   ..
-  //                 } = abstract_f.borrow().implementation
-  //                 && match (target_configuration, target) {
-  //                   (
-  //                     FunctionTargetConfiguration::IgnoreOnGpu,
-  //                     CompilerTarget::WGSL,
-  //                   ) => true,
-  //                   _ => false,
-  //                 }
-  //               {
-  //                 exp.kind = ExpKind::Unit;
-  //               }
-  //             }
-  //             _ => {}
-  //           }
-  //           Ok::<bool, Never>(true)
-  //         })
-  //         .unwrap()
-  //     }
-  //   }
-  // }
   pub fn remove_unitlike_values(&mut self) {
     let mut names = NameContext::empty();
     std::mem::swap(&mut names, &mut self.names.borrow_mut());
@@ -3016,9 +2979,6 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    if !errors.is_empty() {
-      return errors;
-    }
     self.extract_inner_functions(&mut errors);
     if !errors.is_empty() {
       return errors;
@@ -3030,8 +2990,6 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    // println!("\n\nremove_target_ignored_functions\n\n");
-    // self.remove_target_ignored_functions(target);
     self.remove_unitlike_values();
     self.validate_top_level_fn_effects(&mut errors);
     if !errors.is_empty() {
