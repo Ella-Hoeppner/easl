@@ -2493,8 +2493,12 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
   pub fn bind(&mut self, name: &str, v: Variable, s: SourceTrace) {
     self.variables.insert(name.into(), (v, s));
   }
-  pub fn unbind(&mut self, name: &str) -> Variable {
-    self.variables.remove(name).unwrap().0
+  pub fn unbind(&mut self, name: &str) -> Option<Variable> {
+    self
+      .variables
+      .remove(name)
+      //.unwrap_or_else(|| panic!("failed to unbind {name}"))
+      .map(|x| x.0)
   }
   pub fn is_bound(&self, name: &str) -> bool {
     let name_rc: Rc<str> = name.to_string().into();

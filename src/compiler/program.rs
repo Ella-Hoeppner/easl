@@ -24,7 +24,7 @@ use crate::{
     },
     functions::{
       AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
-      FunctionTargetConfiguration, Ownership, TopLevelFunction,
+      Ownership, TopLevelFunction,
     },
     structs::{AbstractStructField, UntypedStruct},
     types::{
@@ -2264,7 +2264,7 @@ impl Program {
       }
     }
   }
-  pub fn deexpressionify(&mut self) {
+  pub fn deexpressionify(&mut self, target: CompilerTarget) {
     for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
       if let FunctionImplementationKind::Composite(f) =
@@ -2272,7 +2272,7 @@ impl Program {
       {
         let mut f = f.borrow_mut();
         f.expression.throw_away_inner_values_in_blocks(self);
-        f.expression.deexpressionify(self);
+        f.expression.deexpressionify(self, target);
       }
     }
   }
@@ -3007,7 +3007,7 @@ impl Program {
       return errors;
     }
     self.desugar_swizzle_assignments();
-    self.deexpressionify();
+    self.deexpressionify(target);
     self.deshadow(&mut errors);
     if !errors.is_empty() {
       return errors;
