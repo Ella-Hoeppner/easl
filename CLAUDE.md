@@ -85,19 +85,31 @@ The main pipeline lives in `Program::validate_raw_program` (program.rs). The maj
 - Keep `implementation` explicit when it has a non-empty effect (e.g. `FragmentExclusiveFunction`, `Print`)
 - Keep `associative: true` when the function is associative (e.g. `+`, `*`, `&&`)
 
+### Writing Easl Code
+
+- Integer literals like `0` or `5` are ambiguous — the type checker can't tell if they're `i32` or `u32`. Use `0i` / `5i` for signed or `0u` / `5u` for unsigned to help type inference.
+- `(if cond then else)` requires both branches and they must have compatible types. For side-effect-only conditionals (e.g. `(when cond (break))`), use the `when` macro instead, which handles the unit-typed else branch automatically.
+- Float literals should include a decimal point: `5.` not `5`. An `f` suffix is also valid: `5f`.
+
 ## Test Structure
 
-Tests live in `tests/shader_tests.rs`. Test source files are in `data/gpu/`.
+GPU tests live in `tests/shader_tests.rs` with source files in `data/gpu/`. CPU interpreter tests live in `tests/cpu_tests.rs` with source and expected-output files in `data/cpu/`.
 
 ```rust
+// GPU tests (shader_tests.rs):
 success_test!(test_name);  // compiles data/gpu/test_name.easl, validates output with naga
 error_test!(test_name, CompileErrorKind::SomeError);  // expects specific compile errors
+
+// CPU tests (cpu_tests.rs):
+cpu_test!(test_name);  // runs data/cpu/test_name.easl, compares stdout to data/cpu/test_name.txt
 ```
 
 - `assert_compiles` compiles the .easl file and validates the WGSL output through naga's parser and validator
 - `assert_errors` compiles and checks that exact error kinds match (uses `PartialEq`, not discriminant comparison)
+- CPU tests compile with `CompilerTarget::CPU`, run via `run_program_capturing_output`, and assert the captured print output matches the `.txt` file exactly
 - Compiled WGSL output is written to `out/` for inspection
 - The `#_` reader macro in .easl files comments out the next form — useful for disabling parts of test files
+- Run `cargo test --test shader_tests` or `cargo test --test cpu_tests` to target a specific test file
 
 ## Style Notes
 

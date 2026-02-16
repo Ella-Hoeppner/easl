@@ -1,0 +1,18 @@
+(defn find-first-above [threshold: i32]: i32
+  (for [i 0i (< i 100) (+= i 1)]
+    (when (> (* i i) threshold)
+      (return i)))
+  -1)
+
+(defn search-grid []: i32
+  (let [@var y 0i]
+    (while (< y 10)
+      (when (== (* y y) 49)
+        (return y))
+      (+= y 1)))
+  -1)
+
+(defn main []
+  (print (find-first-above 50))
+  (print (find-first-above 10000))
+  (print (search-grid)))

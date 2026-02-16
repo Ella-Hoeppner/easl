@@ -1,0 +1,7 @@
+(defn main []
+  (for [i 0i (< i 3) (+= i 1)]
+    (for [j 0i (< j 5) (+= j 1)]
+      (when (== (% j 2) 0)
+        (continue))
+      (print j))
+    (print i)))

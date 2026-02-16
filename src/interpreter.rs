@@ -45,7 +45,7 @@ impl Primitive {
 }
 
 #[derive(Clone, PartialEq, Debug)]
-pub enum EvaluationError {
+pub enum EvalError {
   EncounteredWildcard,
   InvalidNumberLiteralType,
   FloatInIntLiteral,
@@ -71,9 +71,10 @@ pub enum EvaluationError {
   Discard,
   BuiltinError(&'static str),
   NoMainFn,
+  ControlFlowExceptionEscapedToTopLevel,
 }
 
-use EvaluationError::*;
+use EvalError::*;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Function {
@@ -91,7 +92,7 @@ impl Function {
     f: &AbstractFunctionSignature,
     name: &Rc<str>,
     env: &EvaluationEnvironment<impl IOManager>,
-  ) -> Result<Self, EvaluationError> {
+  ) -> Result<Self, EvalError> {
     match &f.implementation {
       FunctionImplementationKind::Builtin { .. } => {
         Ok(Function::Builtin(name.clone()))
@@ -224,7 +225,7 @@ fn apply_builtin_fn(
   mut args: Vec<(Value, Type)>,
   return_type: Type,
   env: &mut EvaluationEnvironment<impl IOManager>,
-) -> Result<Value, EvaluationError> {
+) -> Result<Value, EvalError> {
   let construct_vec = |vec_length: usize| {
     let Type::Struct(return_struct) = return_type else {
       panic!()
@@ -273,9 +274,7 @@ fn apply_builtin_fn(
         _ => unreachable!(),
       })))
     }
-    "==" => {
-      todo!()
-    }
+    "==" => Ok(Value::Prim(Primitive::Bool(args[0] == args[1]))),
     "not" | "!" => match args.remove(0).0.unwrap_primitive() {
       Primitive::Bool(b) => Ok(Value::Prim(Primitive::Bool(!b))),
       _ => panic!(),
@@ -750,7 +749,7 @@ impl Value {
   fn zeroed(
     t: Type,
     env: &EvaluationEnvironment<impl IOManager>,
-  ) -> Result<Self, EvaluationError> {
+  ) -> Result<Self, EvalError> {
     Ok(match t {
       Type::Unit => Value::Unit,
       Type::F32 => Primitive::F32(0.).into(),
@@ -860,10 +859,7 @@ pub struct EvaluationEnvironment<IO: IOManager> {
 }
 
 impl<IO: IOManager> EvaluationEnvironment<IO> {
-  pub fn from_program(
-    program: Program,
-    io: IO,
-  ) -> Result<Self, EvaluationError> {
+  pub fn from_program(program: Program, io: IO) -> Result<Self, EvalError> {
     let mut env = Self {
       bindings: HashMap::new(),
       structs: program
@@ -908,7 +904,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       bindings.pop();
     }
   }
-  fn lookup(&self, name: &Rc<str>) -> Result<&Value, EvaluationError> {
+  fn lookup(&self, name: &Rc<str>) -> Result<&Value, EvalError> {
     self
       .bindings
       .get(name)
@@ -917,12 +913,34 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   }
 }
 
+pub enum EvalException {
+  Error(EvalError),
+  Break,
+  Continue,
+  Return(Value),
+}
+
+impl From<EvalError> for EvalException {
+  fn from(e: EvalError) -> Self {
+    Self::Error(e)
+  }
+}
+
+impl From<EvalException> for EvalError {
+  fn from(e: EvalException) -> Self {
+    match e {
+      EvalException::Error(err) => err,
+      _ => EvalError::ControlFlowExceptionEscapedToTopLevel,
+    }
+  }
+}
+
 pub fn eval(
   exp: Exp<ExpTypeInfo>,
   env: &mut EvaluationEnvironment<impl IOManager>,
-) -> Result<Value, EvaluationError> {
+) -> Result<Value, EvalException> {
   Ok(match exp.kind {
-    ExpKind::Wildcard => return Err(EncounteredWildcard),
+    ExpKind::Wildcard => return Err(EncounteredWildcard.into()),
     ExpKind::Unit => Value::Unit,
     ExpKind::Name(name) => env.lookup(&name)?.clone(),
     ExpKind::NumberLiteral(number) => match exp.data.kind.unwrap_known() {
@@ -932,13 +950,13 @@ pub fn eval(
       }),
       Type::I32 => Primitive::I32(match number {
         Number::Int(i) => i as i32,
-        Number::Float(_) => return Err(FloatInIntLiteral),
+        Number::Float(_) => return Err(FloatInIntLiteral.into()),
       }),
       Type::U32 => Primitive::U32(match number {
         Number::Int(i) => i as u32,
-        Number::Float(_) => return Err(FloatInIntLiteral),
+        Number::Float(_) => return Err(FloatInIntLiteral.into()),
       }),
-      _ => return Err(InvalidNumberLiteralType),
+      _ => return Err(InvalidNumberLiteralType.into()),
     }
     .into(),
     ExpKind::BooleanLiteral(b) => Primitive::Bool(b).into(),
@@ -954,7 +972,7 @@ pub fn eval(
     ExpKind::Application(f, args) => {
       let name = match f.kind {
         ExpKind::Name(name) => name,
-        _ => return Err(AppliedNonName),
+        _ => return Err(AppliedNonName.into()),
       };
       let Type::Function(f) = f.data.unwrap_known() else {
         panic!()
@@ -995,16 +1013,22 @@ pub fn eval(
             panic!()
           };
           if arg_names.len() != arg_values.len() {
-            return Err(WrongArity);
+            return Err(WrongArity.into());
           }
           for (name, value) in arg_names.iter().zip(arg_values.into_iter()) {
             env.bind(name.clone(), value);
           }
-          let value = eval(*body, env)?;
+          let value = match eval(*body, env) {
+            Ok(value) => Ok(value),
+            Err(exception) => match exception {
+              EvalException::Return(value) => Ok(value),
+              other => Err(other),
+            },
+          };
           for name in arg_names.iter() {
             env.unbind(name);
           }
-          value
+          value?
         }
       };
       if is_assignment_op {
@@ -1125,12 +1149,12 @@ pub fn eval(
       match accessor {
         Accessor::Field(field_name) => match value {
           Value::Struct(s) => s.get(&field_name).ok_or(NoSuchField)?.clone(),
-          _ => return Err(AccessedFieldOnNonStruct),
+          _ => return Err(AccessedFieldOnNonStruct.into()),
         },
         Accessor::Swizzle(swizzle_fields) => {
           let map = match value {
             Value::Struct(map) => map,
-            _ => return Err(AccessedFieldOnNonStruct),
+            _ => return Err(AccessedFieldOnNonStruct.into()),
           };
           let values: Vec<Value> = swizzle_fields
             .into_iter()
@@ -1178,7 +1202,7 @@ pub fn eval(
           return eval(body_exp, env);
         }
       }
-      return Err(NoMatchingArm);
+      return Err(NoMatchingArm.into());
     }
     ExpKind::Block(exps) => exps
       .into_iter()
@@ -1206,11 +1230,29 @@ pub fn eval(
               break;
             }
           }
-          _ => return Err(NonBooleanLoopCondition),
+          _ => return Err(NonBooleanLoopCondition.into()),
         }
-        eval(*body_expression.clone(), env)?;
-        if let Some(update_expression) = &update_expression {
-          eval(*update_expression.clone(), env)?;
+        let mut broke = false;
+        for maybe_exp in [
+          Some(*body_expression.clone()),
+          update_expression.as_ref().map(|x| (**x).clone()),
+        ] {
+          if let Some(exp) = maybe_exp {
+            match eval(exp, env) {
+              Ok(_) | Err(EvalException::Continue) => {}
+              Err(EvalException::Error(e)) => return Err(e.into()),
+              Err(EvalException::Break) => {
+                broke = true;
+                break;
+              }
+              Err(EvalException::Return(return_value)) => {
+                return Err(EvalException::Return(return_value));
+              }
+            }
+          }
+        }
+        if broke {
+          break;
         }
       }
       env.unbind(&increment_variable_name.0);
@@ -1228,16 +1270,25 @@ pub fn eval(
               break;
             }
           }
-          _ => return Err(NonBooleanLoopCondition),
+          _ => return Err(NonBooleanLoopCondition.into()),
         }
-        eval(*body_expression.clone(), env)?;
+        match eval(*body_expression.clone(), env) {
+          Ok(_) | Err(EvalException::Continue) => {}
+          Err(EvalException::Error(e)) => return Err(e.into()),
+          Err(EvalException::Break) => break,
+          Err(EvalException::Return(return_value)) => {
+            return Err(EvalException::Return(return_value));
+          }
+        }
       }
       Value::Unit
     }
-    ExpKind::Break => todo!("can't handle breaks in interpreter yet"),
-    ExpKind::Continue => todo!("can't handle continue in interpreter yet"),
-    ExpKind::Return(_) => todo!("can't handle return in interpreter yet"),
-    ExpKind::Discard => return Err(Discard),
+    ExpKind::Break => return Err(EvalException::Break),
+    ExpKind::Continue => return Err(EvalException::Continue),
+    ExpKind::Return(exp) => {
+      return Err(EvalException::Return(eval(*exp, env)?));
+    }
+    ExpKind::Discard => return Err(Discard.into()),
     ExpKind::ArrayLiteral(exps) => Value::Array(
       exps
         .into_iter()
@@ -1252,7 +1303,7 @@ pub fn eval(
 fn run_program_with<IO: IOManager>(
   program: Program,
   io: IO,
-) -> Result<IO, EvaluationError> {
+) -> Result<IO, EvalError> {
   if let Some(main_fn) = program.main_fn() {
     let FunctionImplementationKind::Composite(f) =
       &main_fn.borrow().implementation
@@ -1267,17 +1318,17 @@ fn run_program_with<IO: IOManager>(
     eval(*body.clone(), &mut env)?;
     Ok(env.io)
   } else {
-    Err(EvaluationError::NoMainFn)
+    Err(EvalError::NoMainFn)
   }
 }
 
-pub fn run_program(program: Program) -> Result<(), EvaluationError> {
+pub fn run_program(program: Program) -> Result<(), EvalError> {
   run_program_with(program, StdoutIO)?;
   Ok(())
 }
 
 pub fn run_program_capturing_output(
   program: Program,
-) -> Result<String, EvaluationError> {
+) -> Result<String, EvalError> {
   Ok(run_program_with(program, StringIO::new())?.output)
 }

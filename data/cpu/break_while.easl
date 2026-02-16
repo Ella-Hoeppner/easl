@@ -1,0 +1,7 @@
+(defn main []
+  (let [@var i 0i]
+    (while (< i 10)
+      (when (== i 5)
+        (break))
+      (print i)
+      (+= i 1))))

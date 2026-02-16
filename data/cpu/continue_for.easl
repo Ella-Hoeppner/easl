@@ -1,0 +1,5 @@
+(defn main []
+  (for [i 0i (< i 10) (+= i 1)]
+    (when (== (% i 2) 0)
+      (continue))
+    (print i)))

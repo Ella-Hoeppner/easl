@@ -1,0 +1,9 @@
+(defn first-positive [a: i32 b: i32 c: i32]: i32
+  (when (> a 0) (return a))
+  (when (> b 0) (return b))
+  c)
+
+(defn main []
+  (print (first-positive -1 -2 3))
+  (print (first-positive -1 2 3))
+  (print (first-positive 1 2 3)))
