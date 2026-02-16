@@ -1,9 +1,4 @@
-use easl::{
-  compile_easl_source_to_wgsl,
-  compiler::program::{CompilerTarget, Program},
-  interpreter::run_program,
-  parse::parse_easl_without_comments,
-};
+use easl::compile_easl_source_to_wgsl;
 use std::fs;
 
 fn benchmark_wgsl_compilation() {
@@ -28,48 +23,6 @@ fn benchmark_wgsl_compilation() {
     println!("{elapsed:?}");
   }
   println!("\n{} files, total: {total_time:.1}ms", entries.len());
-}
-
-fn _cpu_examples() {
-  unsafe {
-    std::env::set_var("RUST_BACKTRACE", "1");
-  }
-  fs::create_dir_all("./out/").expect("Unable to create out directory");
-  for filename in [
-    "print",
-    "def",
-    "assignment",
-    "field_assignment",
-    "for",
-    "while",
-    "fn",
-    "struct",
-    "enum",
-  ] {
-    print!("running {filename}...");
-    let easl_source =
-      fs::read_to_string(&format!("./data/cpu/{filename}.easl"))
-        .expect(&format!("Unable to read {filename}.easl"));
-    let (mut program, errors) = Program::from_easl_document(
-      &parse_easl_without_comments(&easl_source),
-      easl::compiler::builtins::built_in_macros(),
-    );
-    if errors.is_empty() {
-      let errors = program.validate_raw_program(CompilerTarget::CPU);
-      if errors.is_empty() {
-        match run_program(program) {
-          Ok(_) => {
-            println!("finished running successfully");
-          }
-          Err(err) => println!("encountered evaluation error: {err:#?}"),
-        }
-      } else {
-        println!("failed to run {filename}:\n{errors:#?}");
-      }
-    } else {
-      println!("failed to run {filename}:\n{errors:#?}");
-    }
-  }
 }
 
 fn main() {

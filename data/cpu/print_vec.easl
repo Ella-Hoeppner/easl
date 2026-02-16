@@ -1,0 +1,5 @@
+(defn main []
+  (print (vec2f 0. 1.))
+  (print (vec3i 0i 1i 2i))
+  (print (vec4u 0u 1u 2u 3u))
+  (print (vec4b false true false true)))

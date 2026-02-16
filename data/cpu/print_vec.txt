@@ -1,0 +1,4 @@
+(vec2f 0. 1.)
+(vec3i 0 1 2)
+(vec4u 0u 1u 2u 3u)
+(vec4b false true false true)

@@ -90,7 +90,7 @@ impl Function {
   fn from_abstract_signature(
     f: &AbstractFunctionSignature,
     name: &Rc<str>,
-    env: &EvaluationEnvironment,
+    env: &EvaluationEnvironment<impl IOManager>,
   ) -> Result<Self, EvaluationError> {
     match &f.implementation {
       FunctionImplementationKind::Builtin { .. } => {
@@ -223,6 +223,7 @@ fn apply_builtin_fn(
   f_name: Rc<str>,
   mut args: Vec<(Value, Type)>,
   return_type: Type,
+  env: &mut EvaluationEnvironment<impl IOManager>,
 ) -> Result<Value, EvaluationError> {
   let construct_vec = |vec_length: usize| {
     let Type::Struct(return_struct) = return_type else {
@@ -678,7 +679,8 @@ fn apply_builtin_fn(
     // todo!() matrix stuff
     // todo!() texture functions, for now I guess these should just error
     "print" => {
-      println!("{:?}", args[0].0);
+      let formatted = args[0].0.format_for_print(&args[0].1);
+      env.io.println(&formatted);
       Ok(Value::Unit)
     }
     _ => Err(UnimplementedBuiltin(f_name.to_string())),
@@ -686,9 +688,68 @@ fn apply_builtin_fn(
 }
 
 impl Value {
+  fn format_for_print(&self, t: &Type) -> String {
+    match (self, t) {
+      (Value::Prim(Primitive::F32(f)), _) => {
+        let s = f.to_string();
+        if s.contains('.') { s } else { format!("{s}.") }
+      }
+      (Value::Prim(Primitive::I32(i)), _) => i.to_string(),
+      (Value::Prim(Primitive::U32(u)), _) => format!("{u}u"),
+      (Value::Prim(Primitive::Bool(b)), _) => b.to_string(),
+      (Value::Struct(fields), Type::Struct(s)) => {
+        let formatted_fields: Vec<String> = s
+          .fields
+          .iter()
+          .map(|field| {
+            let value = &fields[&field.name];
+            let field_type = field.field_type.kind.unwrap_known();
+            value.format_for_print(&field_type)
+          })
+          .collect();
+        let name = match &*s.name {
+          "vec2" | "vec3" | "vec4" => {
+            let suffix = match s.fields[0].field_type.kind.unwrap_known() {
+              Type::F32 => "f",
+              Type::I32 => "i",
+              Type::U32 => "u",
+              Type::Bool => "b",
+              _ => "",
+            };
+            format!("{}{suffix}", s.name)
+          }
+          _ => s.name.to_string(),
+        };
+        format!("({name} {})", formatted_fields.join(" "))
+      }
+      (Value::Enum(variant, inner), Type::Enum(e)) => {
+        let variant_type = e
+          .variants
+          .iter()
+          .find(|v| &*v.name == &**variant)
+          .map(|v| v.inner_type.kind.unwrap_known())
+          .unwrap_or(Type::Unit);
+        match &variant_type {
+          Type::Unit => variant.to_string(),
+          t => format!("({} {})", variant, inner.format_for_print(t)),
+        }
+      }
+      (Value::Array(items), Type::Array(_, inner_type)) => {
+        let inner = inner_type.kind.unwrap_known();
+        let formatted: Vec<String> = items
+          .iter()
+          .map(|item| item.format_for_print(&inner))
+          .collect();
+        format!("[{}]", formatted.join(" "))
+      }
+      (Value::Unit, _) => "()".to_string(),
+      _ => format!("{:?}", self),
+    }
+  }
+
   fn zeroed(
     t: Type,
-    env: &EvaluationEnvironment,
+    env: &EvaluationEnvironment<impl IOManager>,
   ) -> Result<Self, EvaluationError> {
     Ok(match t {
       Type::Unit => Value::Unit,
@@ -761,13 +822,48 @@ impl From<Primitive> for Value {
   }
 }
 
-pub struct EvaluationEnvironment {
-  bindings: HashMap<Rc<str>, Vec<Value>>,
-  structs: HashMap<Rc<str>, AbstractStruct>,
+pub trait IOManager {
+  fn println(&mut self, s: &str);
 }
 
-impl EvaluationEnvironment {
-  pub fn from_program(program: Program) -> Result<Self, EvaluationError> {
+pub struct StdoutIO;
+
+impl IOManager for StdoutIO {
+  fn println(&mut self, s: &str) {
+    println!("{s}");
+  }
+}
+
+pub struct StringIO {
+  pub output: String,
+}
+
+impl StringIO {
+  pub fn new() -> Self {
+    Self {
+      output: String::new(),
+    }
+  }
+}
+
+impl IOManager for StringIO {
+  fn println(&mut self, s: &str) {
+    self.output.push_str(s);
+    self.output.push('\n');
+  }
+}
+
+pub struct EvaluationEnvironment<IO: IOManager> {
+  bindings: HashMap<Rc<str>, Vec<Value>>,
+  structs: HashMap<Rc<str>, AbstractStruct>,
+  pub io: IO,
+}
+
+impl<IO: IOManager> EvaluationEnvironment<IO> {
+  pub fn from_program(
+    program: Program,
+    io: IO,
+  ) -> Result<Self, EvaluationError> {
     let mut env = Self {
       bindings: HashMap::new(),
       structs: program
@@ -776,6 +872,7 @@ impl EvaluationEnvironment {
         .iter()
         .map(|s| (s.name.0.clone(), (&*s).clone()))
         .collect(),
+      io,
     };
     for var in program.top_level_vars {
       let value = match var.value {
@@ -822,7 +919,7 @@ impl EvaluationEnvironment {
 
 pub fn eval(
   exp: Exp<ExpTypeInfo>,
-  env: &mut EvaluationEnvironment,
+  env: &mut EvaluationEnvironment<impl IOManager>,
 ) -> Result<Value, EvaluationError> {
   Ok(match exp.kind {
     ExpKind::Wildcard => return Err(EncounteredWildcard),
@@ -878,6 +975,7 @@ pub fn eval(
           name,
           arg_values.into_iter().zip(arg_types.into_iter()).collect(),
           return_type,
+          env,
         )?,
         Function::StructConstructor(field_names) => Value::Struct(
           field_names
@@ -1151,7 +1249,10 @@ pub fn eval(
   })
 }
 
-pub fn run_program(program: Program) -> Result<(), EvaluationError> {
+fn run_program_with<IO: IOManager>(
+  program: Program,
+  io: IO,
+) -> Result<IO, EvaluationError> {
   if let Some(main_fn) = program.main_fn() {
     let FunctionImplementationKind::Composite(f) =
       &main_fn.borrow().implementation
@@ -1162,12 +1263,21 @@ pub fn run_program(program: Program) -> Result<(), EvaluationError> {
     let ExpKind::Function(_, body) = &f.expression.kind else {
       panic!()
     };
-    eval(
-      *body.clone(),
-      &mut EvaluationEnvironment::from_program(program)?,
-    )?;
-    Ok(())
+    let mut env = EvaluationEnvironment::from_program(program, io)?;
+    eval(*body.clone(), &mut env)?;
+    Ok(env.io)
   } else {
     Err(EvaluationError::NoMainFn)
   }
+}
+
+pub fn run_program(program: Program) -> Result<(), EvaluationError> {
+  run_program_with(program, StdoutIO)?;
+  Ok(())
+}
+
+pub fn run_program_capturing_output(
+  program: Program,
+) -> Result<String, EvaluationError> {
+  Ok(run_program_with(program, StringIO::new())?.output)
 }

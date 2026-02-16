@@ -1,5 +1,5 @@
 (defn main []
-  (print (+ (+ (vec4f 1. 2. 3. 4.) 2.) (vec4f 4. 3. 2. 1.)))
+  (print (+ (+ (vec4f 1. 2. 3. 4.) 2.)
+            (vec4f 4. 3. 2. 1.)))
   (let [x (vec2f 1. 2.)]
-    (print (vec4f 3. x 4.)))
-  ())
+    (print (vec4f 3. x 4.))))
