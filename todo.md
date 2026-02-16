@@ -1,10 +1,6 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready
-* fix type output failure in `complex_monomorphize`
-
-
-
 * when a match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
 
 * `*=` doesn't work when multiplying a vec by a matrix
