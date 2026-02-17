@@ -2648,8 +2648,8 @@ impl<'p> MutableProgramLocalContext<'p> {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ConcreteArraySizeDescription {
   Literal(u32),
-  Constant(Rc<str>),
-  Skolem(Rc<str>),
+  Constant(String),
+  Skolem(String),
   UnificationVariable(Option<u32>),
   Unsized,
 }
@@ -2658,8 +2658,8 @@ impl From<ConcreteArraySize> for ConcreteArraySizeDescription {
   fn from(value: ConcreteArraySize) -> Self {
     match value {
       ConcreteArraySize::Literal(x) => Self::Literal(x),
-      ConcreteArraySize::Constant(x) => Self::Constant(x),
-      ConcreteArraySize::Skolem(x) => Self::Skolem(x),
+      ConcreteArraySize::Constant(x) => Self::Constant(x.to_string()),
+      ConcreteArraySize::Skolem(x) => Self::Skolem(x.to_string()),
       ConcreteArraySize::UnificationVariable(value) => {
         Self::UnificationVariable(value.value.borrow().clone())
       }
