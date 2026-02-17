@@ -408,12 +408,198 @@ fn apply_builtin_fn(
             })
             .collect(),
         )),
+        // Matrix + matrix, matrix - matrix (component-wise on columns)
+        (Value::Array(a), Value::Array(b))
+          if matches!(&*f_name, "+" | "+=" | "-" | "-=") =>
+        {
+          Ok(Value::Array(
+            a.iter()
+              .zip(b.iter())
+              .map(|(col_a, col_b)| {
+                let (Value::Struct(va), Value::Struct(vb)) = (col_a, col_b)
+                else {
+                  panic!()
+                };
+                Value::Struct(
+                  va.iter()
+                    .map(|(name, value)| {
+                      (
+                        name.clone(),
+                        operator(
+                          &value.clone().unwrap_primitive(),
+                          &vb.get(name).unwrap().clone().unwrap_primitive(),
+                        ),
+                      )
+                    })
+                    .collect(),
+                )
+              })
+              .collect(),
+          ))
+        }
+        // Scalar * matrix, matrix * scalar
+        (Value::Prim(scalar), Value::Array(cols))
+        | (Value::Array(cols), Value::Prim(scalar)) => Ok(Value::Array(
+          cols
+            .iter()
+            .map(|col| {
+              let Value::Struct(v) = col else { panic!() };
+              Value::Struct(
+                v.iter()
+                  .map(|(name, value)| {
+                    (
+                      name.clone(),
+                      operator(scalar, &value.clone().unwrap_primitive()),
+                    )
+                  })
+                  .collect(),
+              )
+            })
+            .collect(),
+        )),
+        // Matrix * vector: result[i] = sum_j(mat[j][i] * v[j])
+        (Value::Array(cols), Value::Struct(v)) => {
+          let row_fields: Vec<&str> = ["x", "y", "z", "w"]
+            .into_iter()
+            .filter(|f| cols[0].as_struct().contains_key(*f))
+            .collect();
+          let v_fields: Vec<&str> = ["x", "y", "z", "w"]
+            .into_iter()
+            .filter(|f| v.contains_key(*f))
+            .collect();
+          Ok(Value::Struct(
+            row_fields
+              .iter()
+              .map(|row_field| {
+                let mut acc: Option<Value> = None;
+                for (col, &v_field) in cols.iter().zip(v_fields.iter()) {
+                  let product = operator(
+                    &col.as_struct().get(*row_field).unwrap().clone().unwrap_primitive(),
+                    &v.get(v_field).unwrap().clone().unwrap_primitive(),
+                  );
+                  acc = Some(match acc {
+                    None => product,
+                    Some(a) => primitive_arithmetic(
+                      a.unwrap_primitive(), product.unwrap_primitive(),
+                      |a, b| a + b, |a, b| a + b, |a, b| a + b,
+                    ),
+                  });
+                }
+                ((*row_field).into(), acc.unwrap())
+              })
+              .collect(),
+          ))
+        }
+        // Vector * matrix: result[j] = dot(v, col_j)
+        (Value::Struct(v), Value::Array(cols)) => {
+          let v_fields: Vec<&str> = ["x", "y", "z", "w"]
+            .into_iter()
+            .filter(|f| v.contains_key(*f))
+            .collect();
+          Ok(Value::Struct(
+            ["x", "y", "z", "w"]
+              .into_iter()
+              .zip(cols.iter())
+              .map(|(out_field, col)| {
+                let col = col.as_struct();
+                let mut acc: Option<Value> = None;
+                for &v_field in &v_fields {
+                  let product = operator(
+                    &v.get(v_field).unwrap().clone().unwrap_primitive(),
+                    &col.get(v_field).unwrap().clone().unwrap_primitive(),
+                  );
+                  acc = Some(match acc {
+                    None => product,
+                    Some(a) => primitive_arithmetic(
+                      a.unwrap_primitive(), product.unwrap_primitive(),
+                      |a, b| a + b, |a, b| a + b, |a, b| a + b,
+                    ),
+                  });
+                }
+                (out_field.into(), acc.unwrap())
+              })
+              .collect(),
+          ))
+        }
+        // Matrix * matrix: result_col_j = mat_a * col_j(mat_b)
+        (Value::Array(a_cols), Value::Array(b_cols)) => {
+          let a_row_fields: Vec<&str> = ["x", "y", "z", "w"]
+            .into_iter()
+            .filter(|f| a_cols[0].as_struct().contains_key(*f))
+            .collect();
+          Ok(Value::Array(
+            b_cols
+              .iter()
+              .map(|b_col| {
+                let b_col = b_col.as_struct();
+                let b_fields: Vec<&str> = ["x", "y", "z", "w"]
+                  .into_iter()
+                  .filter(|f| b_col.contains_key(*f))
+                  .collect();
+                Value::Struct(
+                  a_row_fields
+                    .iter()
+                    .map(|row_field| {
+                      let mut acc: Option<Value> = None;
+                      for (a_col, &b_field) in a_cols.iter().zip(b_fields.iter()) {
+                        let product = operator(
+                          &a_col.as_struct().get(*row_field).unwrap().clone().unwrap_primitive(),
+                          &b_col.get(b_field).unwrap().clone().unwrap_primitive(),
+                        );
+                        acc = Some(match acc {
+                          None => product,
+                          Some(a) => primitive_arithmetic(
+                            a.unwrap_primitive(), product.unwrap_primitive(),
+                            |a, b| a + b, |a, b| a + b, |a, b| a + b,
+                          ),
+                        });
+                      }
+                      ((*row_field).into(), acc.unwrap())
+                    })
+                    .collect(),
+                )
+              })
+              .collect(),
+          ))
+        }
         _ => panic!(),
       }
     }
     "vec2" | "vec2f" | "vec2i" | "vec2u" | "vec2b" => construct_vec(2),
     "vec3" | "vec3f" | "vec3i" | "vec3u" | "vec3b" => construct_vec(3),
     "vec4" | "vec4f" | "vec4i" | "vec4u" | "vec4b" => construct_vec(4),
+    name if name.starts_with("mat") => {
+      // Parse matNxM dimensions from the name
+      let dims: Vec<usize> = name
+        .trim_start_matches("mat")
+        .trim_end_matches(|c: char| c.is_alphabetic())
+        .split('x')
+        .map(|s| s.parse().unwrap())
+        .collect();
+      let (num_cols, num_rows) = (dims[0], dims[1]);
+      let values: Vec<Value> = args.into_iter().map(|(v, _)| v).collect();
+      if values.len() == num_cols * num_rows {
+        // Scalar constructor: group scalars into column vectors
+        let columns: Vec<Value> = values
+          .chunks(num_rows)
+          .map(|col_scalars| {
+            Value::Struct(
+              ["x", "y", "z", "w"]
+                .iter()
+                .zip(col_scalars)
+                .map(|(name, value)| ((*name).into(), value.clone()))
+                .collect(),
+            )
+          })
+          .collect();
+        Ok(Value::Array(columns))
+      } else if values.len() == num_cols {
+        // Column vector constructor
+        Ok(Value::Array(values))
+      } else {
+        panic!("invalid matrix constructor argument count")
+      }
+    }
     "length" => {
       let Value::Struct(s) = &args[0].0 else {
         panic!()
@@ -834,7 +1020,7 @@ fn apply_builtin_fn(
     }
     // todo!() data_packing_functions
     // todo!() bit_manipulation_functions
-    // todo!() matrix stuff
+    // todo!() matrix access (column indexing, etc.)
     // todo!() texture functions, for now I guess these should just error
     "print" => {
       let formatted = args[0].0.format_for_print(&args[0].1);
@@ -855,6 +1041,29 @@ impl Value {
       (Value::Prim(Primitive::I32(i)), _) => i.to_string(),
       (Value::Prim(Primitive::U32(u)), _) => format!("{u}u"),
       (Value::Prim(Primitive::Bool(b)), _) => b.to_string(),
+      (Value::Array(cols), Type::Struct(s)) if s.name.starts_with("mat") => {
+        let scalar_type = s.fields[0].field_type.kind.unwrap_known();
+        let suffix = match &scalar_type {
+          Type::F32 => "f",
+          Type::I32 => "i",
+          Type::U32 => "u",
+          _ => "",
+        };
+        // Format each column vector using its own value structure
+        let formatted_cols: Vec<String> = cols
+          .iter()
+          .map(|col| {
+            let Value::Struct(fields) = col else { panic!() };
+            let formatted: Vec<String> = ["x", "y", "z", "w"]
+              .iter()
+              .filter_map(|f| fields.get(*f))
+              .map(|v| v.format_for_print(&scalar_type))
+              .collect();
+            format!("(vec{}{suffix} {})", formatted.len(), formatted.join(" "))
+          })
+          .collect();
+        format!("({}{suffix} {})", s.name, formatted_cols.join(" "))
+      }
       (Value::Struct(fields), Type::Struct(s)) => {
         let formatted_fields: Vec<String> = s
           .fields
@@ -969,6 +1178,12 @@ impl Value {
   fn unwrap_primitive(self) -> Primitive {
     match self {
       Value::Prim(p) => p,
+      _ => panic!(),
+    }
+  }
+  fn as_struct(&self) -> &HashMap<Rc<str>, Value> {
+    match self {
+      Value::Struct(s) => s,
       _ => panic!(),
     }
   }

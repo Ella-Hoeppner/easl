@@ -1,0 +1,6 @@
+(defn main []
+  (let [m (mat2x2f 1. 2. 3. 4.)
+        r1 (* 2. m)
+        r2 (* m 3.)]
+    (print r1)
+    (print r2)))

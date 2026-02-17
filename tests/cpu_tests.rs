@@ -58,3 +58,8 @@ cpu_test!(reflect);
 cpu_test!(refract);
 cpu_test!(bitcast);
 cpu_test!(array_length);
+cpu_test!(mat_construct);
+cpu_test!(mat_add_sub);
+cpu_test!(mat_scalar_mul);
+cpu_test!(mat_vec_mul);
+cpu_test!(mat_mat_mul);
