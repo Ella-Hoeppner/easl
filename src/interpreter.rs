@@ -1018,8 +1018,203 @@ fn apply_builtin_fn(
       // These should have an effect that isn't handled by default on the CPU
       // so that this is a compile-time error instead
     }
-    // todo!() data_packing_functions
-    // todo!() bit_manipulation_functions
+    // --- bit_manipulation_functions ---
+    "count-leading-zeros" => Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
+      Primitive::U32(v) => Primitive::U32(v.leading_zeros()),
+      Primitive::I32(v) => Primitive::I32(v.leading_zeros() as i32),
+      _ => panic!(),
+    })),
+    "count-trailing-zeros" => Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
+      Primitive::U32(v) => Primitive::U32(v.trailing_zeros()),
+      Primitive::I32(v) => Primitive::I32(v.trailing_zeros() as i32),
+      _ => panic!(),
+    })),
+    "count-one-bits" => Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
+      Primitive::U32(v) => Primitive::U32(v.count_ones()),
+      Primitive::I32(v) => Primitive::I32(v.count_ones() as i32),
+      _ => panic!(),
+    })),
+    "reverse-bits" => Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
+      Primitive::U32(v) => Primitive::U32(v.reverse_bits()),
+      Primitive::I32(v) => Primitive::I32((v as u32).reverse_bits() as i32),
+      _ => panic!(),
+    })),
+    "first-leading-bit" => Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
+      Primitive::U32(v) => Primitive::U32(
+        if v == 0 { u32::MAX } else { 31 - v.leading_zeros() }
+      ),
+      Primitive::I32(v) => Primitive::I32(
+        if v == 0 || v == -1 { -1 }
+        else if v > 0 { (31 - v.leading_zeros()) as i32 }
+        else { (31 - (!v).leading_zeros()) as i32 }
+      ),
+      _ => panic!(),
+    })),
+    "first-trailing-bit" => Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
+      Primitive::U32(v) => Primitive::U32(
+        if v == 0 { u32::MAX } else { v.trailing_zeros() }
+      ),
+      Primitive::I32(v) => Primitive::I32(
+        if v == 0 { -1 } else { v.trailing_zeros() as i32 }
+      ),
+      _ => panic!(),
+    })),
+    "extract-bits" => {
+      let offset = match args[1].0 { Value::Prim(Primitive::U32(v)) => v, _ => panic!() };
+      let count = match args[2].0 { Value::Prim(Primitive::U32(v)) => v, _ => panic!() };
+      let o = offset.min(32);
+      let c = count.min(32 - o);
+      Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
+        Primitive::U32(e) => Primitive::U32(
+          if c == 0 { 0 } else { (e >> o) & ((1u32 << c) - 1) }
+        ),
+        Primitive::I32(e) => Primitive::I32(if c == 0 { 0 } else {
+          let extracted = ((e as u32) >> o) & ((1u32 << c) - 1);
+          let shift = 32 - c;
+          ((extracted << shift) as i32) >> shift
+        }),
+        _ => panic!(),
+      }))
+    }
+    "dot-4-u8-packed" => {
+      let (Value::Prim(Primitive::U32(e1)), Value::Prim(Primitive::U32(e2))) =
+        (&args[0].0, &args[1].0) else { panic!() };
+      let mut acc: u32 = 0;
+      for i in 0..4 {
+        acc = acc.wrapping_add(((e1 >> (i * 8)) & 0xFF) * ((e2 >> (i * 8)) & 0xFF));
+      }
+      Ok(Value::Prim(Primitive::U32(acc)))
+    }
+    "dot-4-i8-packed" => {
+      let (Value::Prim(Primitive::U32(e1)), Value::Prim(Primitive::U32(e2))) =
+        (&args[0].0, &args[1].0) else { panic!() };
+      let mut acc: i32 = 0;
+      for i in 0..4u32 {
+        let a = (((*e1 >> (i * 8)) & 0xFF) as i32) << 24 >> 24;
+        let b = (((*e2 >> (i * 8)) & 0xFF) as i32) << 24 >> 24;
+        acc += a * b;
+      }
+      Ok(Value::Prim(Primitive::I32(acc)))
+    }
+    // --- data_packing_functions ---
+    "pack-4x8-snorm" => {
+      let Value::Struct(v) = &args[0].0 else { panic!() };
+      let mut result: u32 = 0;
+      for (i, f) in ["x", "y", "z", "w"].iter().enumerate() {
+        let Value::Prim(Primitive::F32(val)) = v.get(*f).unwrap() else { panic!() };
+        let packed = (0.5 + 127.0 * val.clamp(-1.0, 1.0)).floor() as i8 as u8;
+        result |= (packed as u32) << (i * 8);
+      }
+      Ok(Value::Prim(Primitive::U32(result)))
+    }
+    "unpack-4x8-snorm" => {
+      let Value::Prim(Primitive::U32(e)) = &args[0].0 else { panic!() };
+      Ok(Value::Struct(["x", "y", "z", "w"].iter().enumerate().map(|(i, f)| {
+        let byte = ((e >> (i * 8)) & 0xFF) as u8 as i8;
+        ((*f).into(), Value::Prim(Primitive::F32((byte as f32 / 127.0).max(-1.0))))
+      }).collect()))
+    }
+    "pack-4x8-unorm" => {
+      let Value::Struct(v) = &args[0].0 else { panic!() };
+      let mut result: u32 = 0;
+      for (i, f) in ["x", "y", "z", "w"].iter().enumerate() {
+        let Value::Prim(Primitive::F32(val)) = v.get(*f).unwrap() else { panic!() };
+        let packed = (0.5 + 255.0 * val.clamp(0.0, 1.0)).floor() as u8;
+        result |= (packed as u32) << (i * 8);
+      }
+      Ok(Value::Prim(Primitive::U32(result)))
+    }
+    "unpack-4x8-unorm" => {
+      let Value::Prim(Primitive::U32(e)) = &args[0].0 else { panic!() };
+      Ok(Value::Struct(["x", "y", "z", "w"].iter().enumerate().map(|(i, f)| {
+        ((*f).into(), Value::Prim(Primitive::F32(((e >> (i * 8)) & 0xFF) as f32 / 255.0)))
+      }).collect()))
+    }
+    "pack-4x8-i8" => {
+      let Value::Struct(v) = &args[0].0 else { panic!() };
+      let mut result: u32 = 0;
+      for (i, f) in ["x", "y", "z", "w"].iter().enumerate() {
+        let Value::Prim(Primitive::I32(val)) = v.get(*f).unwrap() else { panic!() };
+        result |= ((*val as u32) & 0xFF) << (i * 8);
+      }
+      Ok(Value::Prim(Primitive::U32(result)))
+    }
+    "unpack-4x8-i8" => {
+      let Value::Prim(Primitive::U32(e)) = &args[0].0 else { panic!() };
+      Ok(Value::Struct(["x", "y", "z", "w"].iter().enumerate().map(|(i, f)| {
+        let byte = ((e >> (i * 8)) & 0xFF) as u8 as i8;
+        ((*f).into(), Value::Prim(Primitive::I32(byte as i32)))
+      }).collect()))
+    }
+    "pack-4x8-u8" => {
+      let Value::Struct(v) = &args[0].0 else { panic!() };
+      let mut result: u32 = 0;
+      for (i, f) in ["x", "y", "z", "w"].iter().enumerate() {
+        let Value::Prim(Primitive::U32(val)) = v.get(*f).unwrap() else { panic!() };
+        result |= (val & 0xFF) << (i * 8);
+      }
+      Ok(Value::Prim(Primitive::U32(result)))
+    }
+    "unpack-4x8-u8" => {
+      let Value::Prim(Primitive::U32(e)) = &args[0].0 else { panic!() };
+      Ok(Value::Struct(["x", "y", "z", "w"].iter().enumerate().map(|(i, f)| {
+        ((*f).into(), Value::Prim(Primitive::U32((e >> (i * 8)) & 0xFF)))
+      }).collect()))
+    }
+    "pack-4x8-i8-clamp" => {
+      let Value::Struct(v) = &args[0].0 else { panic!() };
+      let mut result: u32 = 0;
+      for (i, f) in ["x", "y", "z", "w"].iter().enumerate() {
+        let Value::Prim(Primitive::I32(val)) = v.get(*f).unwrap() else { panic!() };
+        result |= (*val.clamp(&-128, &127) as u8 as u32) << (i * 8);
+      }
+      Ok(Value::Prim(Primitive::U32(result)))
+    }
+    "pack-4x8-u8-clamp" => {
+      let Value::Struct(v) = &args[0].0 else { panic!() };
+      let mut result: u32 = 0;
+      for (i, f) in ["x", "y", "z", "w"].iter().enumerate() {
+        let Value::Prim(Primitive::U32(val)) = v.get(*f).unwrap() else { panic!() };
+        result |= val.min(&255) << (i * 8);
+      }
+      Ok(Value::Prim(Primitive::U32(result)))
+    }
+    "pack-2x16-snorm" => {
+      let Value::Struct(v) = &args[0].0 else { panic!() };
+      let mut result: u32 = 0;
+      for (i, f) in ["x", "y"].iter().enumerate() {
+        let Value::Prim(Primitive::F32(val)) = v.get(*f).unwrap() else { panic!() };
+        let packed = (0.5 + 32767.0 * val.clamp(-1.0, 1.0)).floor() as i16 as u16;
+        result |= (packed as u32) << (i * 16);
+      }
+      Ok(Value::Prim(Primitive::U32(result)))
+    }
+    "unpack-2x16-snorm" => {
+      let Value::Prim(Primitive::U32(e)) = &args[0].0 else { panic!() };
+      Ok(Value::Struct(["x", "y"].iter().enumerate().map(|(i, f)| {
+        let half = ((e >> (i * 16)) & 0xFFFF) as u16 as i16;
+        ((*f).into(), Value::Prim(Primitive::F32((half as f32 / 32767.0).max(-1.0))))
+      }).collect()))
+    }
+    "pack-2x16-unorm" => {
+      let Value::Struct(v) = &args[0].0 else { panic!() };
+      let mut result: u32 = 0;
+      for (i, f) in ["x", "y"].iter().enumerate() {
+        let Value::Prim(Primitive::F32(val)) = v.get(*f).unwrap() else { panic!() };
+        let packed = (0.5 + 65535.0 * val.clamp(0.0, 1.0)).floor() as u16;
+        result |= (packed as u32) << (i * 16);
+      }
+      Ok(Value::Prim(Primitive::U32(result)))
+    }
+    "unpack-2x16-unorm" => {
+      let Value::Prim(Primitive::U32(e)) = &args[0].0 else { panic!() };
+      Ok(Value::Struct(["x", "y"].iter().enumerate().map(|(i, f)| {
+        ((*f).into(), Value::Prim(Primitive::F32(((e >> (i * 16)) & 0xFFFF) as f32 / 65535.0)))
+      }).collect()))
+    }
+    "pack-2x16-float" | "unpack-2x16-float" => {
+      todo!("pack/unpack-2x16-float requires f16 conversion")
+    }
     // todo!() matrix access (column indexing, etc.)
     // todo!() texture functions, for now I guess these should just error
     "print" => {

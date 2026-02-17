@@ -1,0 +1,35 @@
+(defn main []
+  ; count-leading-zeros
+  (print (count-leading-zeros 0u))
+  (print (count-leading-zeros 1u))
+  (print (count-leading-zeros 255u))
+
+  ; count-trailing-zeros
+  (print (count-trailing-zeros 0u))
+  (print (count-trailing-zeros 4u))
+  (print (count-trailing-zeros 12u))
+
+  ; count-one-bits
+  (print (count-one-bits 0u))
+  (print (count-one-bits 7u))
+  (print (count-one-bits 255u))
+
+  ; reverse-bits
+  (print (reverse-bits 1u))
+
+  ; first-leading-bit
+  (print (first-leading-bit 0u))
+  (print (first-leading-bit 1u))
+  (print (first-leading-bit 255u))
+
+  ; first-trailing-bit
+  (print (first-trailing-bit 0u))
+  (print (first-trailing-bit 4u))
+
+  ; extract-bits
+  (print (extract-bits 255u 4u 4u))
+
+  ; dot-4-u8-packed: (1,2,3,4) dot (5,6,7,8) = 5+12+21+32 = 70
+  (let [a (+ 1u (* 2u 256u) (* 3u 65536u) (* 4u 16777216u))
+        b (+ 5u (* 6u 256u) (* 7u 65536u) (* 8u 16777216u))]
+    (print (dot-4-u8-packed a b))))

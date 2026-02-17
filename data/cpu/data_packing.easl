@@ -1,0 +1,40 @@
+(defn main []
+  ; pack and unpack 4x8 snorm: roundtrip
+  (let [v (vec4f -1. 0. 0.5 1.)
+        packed (pack-4x8-snorm v)
+        unpacked (unpack-4x8-snorm packed)]
+    (print packed)
+    (print unpacked))
+
+  ; pack and unpack 4x8 unorm: roundtrip
+  (let [v (vec4f 0. 0.25 0.5 1.)
+        packed (pack-4x8-unorm v)
+        unpacked (unpack-4x8-unorm packed)]
+    (print packed)
+    (print unpacked))
+
+  ; pack and unpack 2x16 snorm
+  (let [v (vec2f -1. 1.)
+        packed (pack-2x16-snorm v)
+        unpacked (unpack-2x16-snorm packed)]
+    (print packed)
+    (print unpacked))
+
+  ; pack and unpack 2x16 unorm
+  (let [v (vec2f 0. 1.)
+        packed (pack-2x16-unorm v)
+        unpacked (unpack-2x16-unorm packed)]
+    (print packed)
+    (print unpacked))
+
+  ; pack/unpack 4x8 u8
+  (let [v (vec4u 10u 20u 30u 40u)
+        packed (pack-4x8-u8 v)
+        unpacked (unpack-4x8-u8 packed)]
+    (print unpacked))
+
+  ; pack/unpack 4x8 i8
+  (let [v (vec4i -1i 0i 1i 127i)
+        packed (pack-4x8-i8 v)
+        unpacked (unpack-4x8-i8 packed)]
+    (print unpacked)))
