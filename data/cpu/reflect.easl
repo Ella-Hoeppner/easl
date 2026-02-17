@@ -1,0 +1,7 @@
+(defn main []
+  (let [incident (vec3f 1. -1. 0.)
+        normal (vec3f 0. 1. 0.)]
+    (print (reflect incident normal)))
+  (let [incident (vec2f 0.7071068 -0.7071068)
+        normal (vec2f 0. 1.)]
+    (print (reflect incident normal))))

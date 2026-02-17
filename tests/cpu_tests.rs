@@ -53,3 +53,8 @@ cpu_test!(nested_continue);
 cpu_test!(nested_break_while);
 cpu_test!(early_return);
 cpu_test!(return_from_loop);
+cpu_test!(bitwise_ops);
+cpu_test!(reflect);
+cpu_test!(refract);
+cpu_test!(bitcast);
+cpu_test!(array_length);

@@ -226,6 +226,7 @@ fn apply_builtin_fn(
   return_type: Type,
   env: &mut EvaluationEnvironment<impl IOManager>,
 ) -> Result<Value, EvalError> {
+  let return_type_clone = return_type.clone();
   let construct_vec = |vec_length: usize| {
     let Type::Struct(return_struct) = return_type else {
       panic!()
@@ -486,8 +487,83 @@ fn apply_builtin_fn(
       }
       Ok(Value::Prim(Primitive::F32(sum as f32)))
     }
-    "reflect" => todo!(),
-    "refract" => todo!(),
+    "reflect" => {
+      let Value::Struct(e1) = &args[0].0 else {
+        panic!()
+      };
+      let Value::Struct(e2) = &args[1].0 else {
+        panic!()
+      };
+      // reflect(e1, e2) = e1 - 2 * dot(e2, e1) * e2
+      let mut dot_val = 0.0_f64;
+      for f in ["x", "y", "z", "w"] {
+        if let Some(v1) = e1.get(f) {
+          let v1 = v1.clone().unwrap_primitive().as_num();
+          let v2 = e2.get(f).unwrap().clone().unwrap_primitive().as_num();
+          dot_val += v2 * v1;
+        }
+      }
+      Ok(Value::Struct(
+        e1.iter()
+          .map(|(f, value)| {
+            let v1 = value.clone().unwrap_primitive().as_num();
+            let v2 = e2.get(f).unwrap().clone().unwrap_primitive().as_num();
+            (
+              f.clone(),
+              Value::Prim(Primitive::F32(
+                (v1 - 2.0 * dot_val * v2) as f32,
+              )),
+            )
+          })
+          .collect(),
+      ))
+    }
+    "refract" => {
+      let Value::Struct(e1) = &args[0].0 else {
+        panic!()
+      };
+      let Value::Struct(e2) = &args[1].0 else {
+        panic!()
+      };
+      let Value::Prim(Primitive::F32(eta)) = &args[2].0 else {
+        panic!()
+      };
+      let eta = *eta as f64;
+      // dot(e2, e1)
+      let mut dot_val = 0.0_f64;
+      for f in ["x", "y", "z", "w"] {
+        if let Some(v2) = e2.get(f) {
+          let v2 = v2.clone().unwrap_primitive().as_num();
+          let v1 = e1.get(f).unwrap().clone().unwrap_primitive().as_num();
+          dot_val += v2 * v1;
+        }
+      }
+      let k = 1.0 - eta * eta * (1.0 - dot_val * dot_val);
+      if k < 0.0 {
+        // Total internal reflection: return zero vector
+        Ok(Value::Struct(
+          e1.iter()
+            .map(|(f, _)| (f.clone(), Value::Prim(Primitive::F32(0.0))))
+            .collect(),
+        ))
+      } else {
+        let coeff = eta * dot_val + k.sqrt();
+        Ok(Value::Struct(
+          e1.iter()
+            .map(|(f, value)| {
+              let v1 = value.clone().unwrap_primitive().as_num();
+              let v2 = e2.get(f).unwrap().clone().unwrap_primitive().as_num();
+              (
+                f.clone(),
+                Value::Prim(Primitive::F32(
+                  (eta * v1 - coeff * v2) as f32,
+                )),
+              )
+            })
+            .collect(),
+        ))
+      }
+    }
     "f32" => {
       let Value::Prim(x) = &args[0].0 else { panic!() };
       Ok(Value::Prim(Primitive::F32(x.clone().as_num() as f32)))
@@ -538,7 +614,64 @@ fn apply_builtin_fn(
         })
       }))
     }
-    "&" | "|" | "^" | "<<" | ">>" => todo!(),
+    "&" | "&=" | "|" | "|=" | "^" | "^=" | "<<" | "<<=" | ">>" | ">>=" => {
+      let operator = |a: &Primitive, b: &Primitive| match (a, b) {
+        (Primitive::I32(a), Primitive::I32(b)) => {
+          Value::Prim(Primitive::I32(match &*f_name {
+            "&" | "&=" => a & b,
+            "|" | "|=" => a | b,
+            "^" | "^=" => a ^ b,
+            "<<" | "<<=" => a << (b & 31),
+            ">>" | ">>=" => a >> (b & 31),
+            _ => unreachable!(),
+          }))
+        }
+        (Primitive::U32(a), Primitive::U32(b)) => {
+          Value::Prim(Primitive::U32(match &*f_name {
+            "&" | "&=" => a & b,
+            "|" | "|=" => a | b,
+            "^" | "^=" => a ^ b,
+            "<<" | "<<=" => a << (b & 31),
+            ">>" | ">>=" => a >> (b & 31),
+            _ => unreachable!(),
+          }))
+        }
+        _ => panic!("bitwise ops require integer types"),
+      };
+      match (&args[0].0, &args[1].0) {
+        (Value::Prim(a), Value::Prim(b)) => Ok(operator(a, b)),
+        (Value::Prim(scalar), Value::Struct(vector)) => Ok(Value::Struct(
+          vector
+            .iter()
+            .map(|(name, value)| {
+              (name.clone(), operator(scalar, &value.clone().unwrap_primitive()))
+            })
+            .collect(),
+        )),
+        (Value::Struct(vector), Value::Prim(scalar)) => Ok(Value::Struct(
+          vector
+            .iter()
+            .map(|(name, value)| {
+              (name.clone(), operator(&value.clone().unwrap_primitive(), scalar))
+            })
+            .collect(),
+        )),
+        (Value::Struct(a), Value::Struct(b)) => Ok(Value::Struct(
+          a.iter()
+            .map(|(name, value)| {
+              (
+                name.clone(),
+                operator(
+                  &value.clone().unwrap_primitive(),
+                  &b.get(name).unwrap().clone().unwrap_primitive(),
+                ),
+              )
+            })
+            .collect(),
+        )),
+        _ => panic!(),
+      }
+    }
     "pow" => Ok(Value::multi_map_primitive_or_vec_components(
       &args.into_iter().map(|(v, _)| v).collect(),
       |mut values| {
@@ -665,8 +798,34 @@ fn apply_builtin_fn(
         .unwrap(),
       _ => panic!(),
     }))),
-    "bitcast" => todo!(),
-    "array-length" => todo!(),
+    name if name.starts_with("bitcast") => {
+      let target_scalar_type = match &return_type_clone {
+        Type::F32 | Type::I32 | Type::U32 => return_type_clone.clone(),
+        Type::Struct(s) => s.fields[0].field_type.unwrap_known(),
+        _ => panic!("bitcast to unsupported type"),
+      };
+      let bitcast_prim = |p: Primitive| -> Primitive {
+        let bits: u32 = match p {
+          Primitive::F32(f) => f.to_bits(),
+          Primitive::I32(i) => i as u32,
+          Primitive::U32(u) => u,
+          _ => panic!("bitcast from unsupported type"),
+        };
+        match &target_scalar_type {
+          Type::F32 => Primitive::F32(f32::from_bits(bits)),
+          Type::I32 => Primitive::I32(bits as i32),
+          Type::U32 => Primitive::U32(bits),
+          _ => panic!("bitcast to unsupported scalar type"),
+        }
+      };
+      Ok(args[0].0.map_primitive_or_vec_components(bitcast_prim))
+    }
+    "array-length" => {
+      let Value::Array(arr) = &args[0].0 else {
+        panic!("array-length called on non-array")
+      };
+      Ok(Value::Prim(Primitive::U32(arr.len() as u32)))
+    }
     "dpdx" | "dpdy" | "dpdx-coarse" | "dpdy-coarse" | "dpdx-fine"
     | "dpdy-fine" => {
       Err(DerivativeFunctionCantBeUsed)

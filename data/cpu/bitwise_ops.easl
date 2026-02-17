@@ -1,0 +1,11 @@
+(defn main []
+  (print (& 6u 3u))
+  (print (| 6u 3u))
+  (print (^ 6u 3u))
+  (print (<< 1u 4u))
+  (print (>> 16u 2u))
+  (print (& 6i 3i))
+  (print (| 6i 3i))
+  (print (^ 6i 3i))
+  (print (<< 1i 4i))
+  (print (>> 16i 2i)))

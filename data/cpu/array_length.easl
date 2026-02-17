@@ -1,0 +1,5 @@
+(defn main []
+  (let [arr [1. 2. 3. 4. 5.]]
+    (print (array-length arr)))
+  (let [arr [1i 2i 3i]]
+    (print (array-length arr))))

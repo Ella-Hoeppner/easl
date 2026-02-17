@@ -1,0 +1,9 @@
+(defn main []
+  (let [x: i32 (bitcast 1u)]
+    (print x))
+  (let [x: u32 (bitcast 1i)]
+    (print x))
+  (let [x: f32 (bitcast 1065353216u)]
+    (print x))
+  (let [x: u32 (bitcast 1.)]
+    (print x)))
