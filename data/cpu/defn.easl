@@ -1,5 +1,6 @@
 (defn double [x: f32]: f32
   (* x 2.))
 
+@cpu
 (defn main []
   (print (double 2.)))

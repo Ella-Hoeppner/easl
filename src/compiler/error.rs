@@ -247,8 +247,8 @@ pub enum CompileErrorKind {
     "Internal compiler error: Cannot inline function without abstract ancestor"
   )]
   CantInlineFunctionWithoutAbstractAncestor,
-  #[error("No argument names for function")]
-  NoArgNamesForFunction,
+  #[error("Expected composite function")]
+  ExpectedCompositeFunction,
   #[error("zeroed-array shouldn't have any children")]
   ZeroedArrayShouldntHaveChildren,
   #[error("expected function, found non-function value")]
@@ -266,6 +266,8 @@ pub enum CompileErrorKind {
   DiscardOutsideFragment,
   #[error("function `{0}` can only occur in @fragment functions")]
   FragmentExclusiveFunctionOutsideFragment(String),
+  #[error("function `{0}` can only occur in @fragment functions")]
+  CPUExclusiveFunctionInGPUEntryPoint(String),
   #[error("`continue` can only occur inside a loop")]
   ContinueOutsideLoop,
   #[error("`break` can only occur inside a loop")]
@@ -355,6 +357,10 @@ pub enum CompileErrorKind {
   ComputeEntryReturnType,
   #[error("Compute entry-points may not be assigned attributes")]
   ComputeEntryReturnAttributes,
+  #[error("CPU entry point must return unit")]
+  CpuEntryHasReturnType,
+  #[error("CPU entry point may not have arguments")]
+  CpuEntryHasArguments,
   #[error("Duplicate {0} builtin attribute \"{1}\"")]
   DuplicateBuiltinAttribute(InputOrOutput, String),
   #[error("Builtin value \"{0}\" isn't a valid {2} for stage \"{1}\"")]
@@ -571,9 +577,7 @@ impl PartialEq for CompileErrorKind {
         Self::InvalidInterpolationSampling(l0, l1),
         Self::InvalidInterpolationSampling(r0, r1),
       ) => l0 == r0 && l1 == r1,
-      (Self::InvalidBuiltinType(l0), Self::InvalidBuiltinType(r0)) => {
-        l0 == r0
-      }
+      (Self::InvalidBuiltinType(l0), Self::InvalidBuiltinType(r0)) => l0 == r0,
       (
         Self::InvalidBuiltinStructFieldName(l0),
         Self::InvalidBuiltinStructFieldName(r0),

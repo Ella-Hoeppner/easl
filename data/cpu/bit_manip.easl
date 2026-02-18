@@ -1,3 +1,4 @@
+@cpu
 (defn main []
   ; count-leading-zeros
   (print (count-leading-zeros 0u))

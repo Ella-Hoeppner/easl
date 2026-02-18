@@ -1,3 +1,4 @@
+@cpu
 (defn main []
   (let [@var i 0i]
     (while (< i 3)

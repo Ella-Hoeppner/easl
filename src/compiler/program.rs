@@ -190,6 +190,13 @@ pub struct TypeDefs {
 }
 
 impl TypeDefs {
+  pub fn empty() -> Self {
+    Self {
+      structs: vec![],
+      enums: vec![],
+      type_aliases: vec![],
+    }
+  }
   pub fn get_attributable_components(
     &self,
     t: Type,
@@ -227,16 +234,6 @@ impl TypeDefs {
         ));
         vec![]
       }
-    }
-  }
-}
-
-impl TypeDefs {
-  pub fn empty() -> Self {
-    Self {
-      structs: vec![],
-      enums: vec![],
-      type_aliases: vec![],
     }
   }
 }
@@ -1635,21 +1632,36 @@ impl Program {
               applied_f.data.with_dereferenced_mut(|t| match t {
                 TypeState::Known(t) => match t {
                   Type::Function(applied_f_signature) => {
+                    let mut skip_inlining_fn_args = false;
                     if let Some(applied_f_abstract_signature) =
                       &mut applied_f_signature.abstract_ancestor
                     {
                       let applied_f_abstract_signature =
                         (**applied_f_abstract_signature).clone();
-                      applied_f_abstract_signature
-                        .borrow_mut()
-                        .remove_unitlike_arguments(&mut names);
-                      applied_f_signature.abstract_ancestor =
-                        Some(Rc::new(applied_f_abstract_signature));
+                      if matches!(
+                        applied_f_abstract_signature.borrow().implementation,
+                        FunctionImplementationKind::Composite(_),
+                      ) {
+                        applied_f_abstract_signature
+                          .borrow_mut()
+                          .remove_unitlike_arguments(&mut names);
+                        applied_f_signature.abstract_ancestor =
+                          Some(Rc::new(applied_f_abstract_signature));
+                      } else {
+                        skip_inlining_fn_args = true;
+                      }
                     }
                     let args_to_remove: Vec<usize> = (0..args.len())
                       .rev()
                       .filter(|i| {
-                        args[*i].data.unwrap_known().is_unitlike(&mut names)
+                        let arg_type = args[*i].data.unwrap_known();
+                        if skip_inlining_fn_args
+                          && matches!(arg_type, Type::Function(_))
+                        {
+                          false
+                        } else {
+                          arg_type.is_unitlike(&mut names)
+                        }
                       })
                       .collect();
                     for i in args_to_remove {
@@ -1791,6 +1803,7 @@ impl Program {
             wgsl += &implementation.borrow().clone().compile(
               &f.name,
               &mut names,
+              &self,
               CompilerTarget::WGSL,
             )?;
             wgsl += "\n\n";
@@ -2227,7 +2240,7 @@ impl Program {
       }
     }
   }
-  pub fn deexpressionify(&mut self, target: CompilerTarget) {
+  pub fn deexpressionify(&mut self) {
     for signature in self.abstract_functions_iter() {
       let signature = signature.borrow();
       if let FunctionImplementationKind::Composite(f) =
@@ -2235,7 +2248,7 @@ impl Program {
       {
         let mut f = f.borrow_mut();
         f.expression.throw_away_inner_values_in_blocks(self);
-        f.expression.deexpressionify(self, target);
+        f.expression.deexpressionify(self);
       }
     }
   }
@@ -2401,30 +2414,41 @@ impl Program {
         &signature.implementation
       {
         let f = f.borrow();
-        if let Some(entry_point) = f.entry_point
-          && let EntryPoint::Vertex | EntryPoint::Compute(_) = entry_point
-        {
+        if let Some(entry_point) = f.entry_point {
           let ExpKind::Function(_, body) = &f.expression.kind else {
             unreachable!()
           };
           let effects = body.effects(self);
-          for e in effects.0.iter() {
-            match e {
-              Effect::Discard => {
-                errors.log(CompileError {
-                  kind: DiscardOutsideFragment,
-                  source_trace: f.expression.source_trace.clone(),
-                });
+          if let EntryPoint::Vertex
+          | EntryPoint::Compute(_)
+          | EntryPoint::Fragment = entry_point
+          {
+            for f_name in effects.cpu_exclusive_functions() {
+              errors.log(CompileError {
+                kind: CPUExclusiveFunctionInGPUEntryPoint(f_name.to_string()),
+                source_trace: f.expression.source_trace.clone(),
+              });
+            }
+          }
+          if let EntryPoint::Vertex | EntryPoint::Compute(_) = entry_point {
+            for e in effects.0.iter() {
+              match e {
+                Effect::Discard => {
+                  errors.log(CompileError {
+                    kind: DiscardOutsideFragment,
+                    source_trace: f.expression.source_trace.clone(),
+                  });
+                }
+                Effect::FragmentExclusiveFunction(name) => {
+                  errors.log(CompileError {
+                    kind: FragmentExclusiveFunctionOutsideFragment(
+                      name.to_string(),
+                    ),
+                    source_trace: f.expression.source_trace.clone(),
+                  });
+                }
+                _ => {}
               }
-              Effect::FragmentExclusiveFunction(name) => {
-                errors.log(CompileError {
-                  kind: FragmentExclusiveFunctionOutsideFragment(
-                    name.to_string(),
-                  ),
-                  source_trace: f.expression.source_trace.clone(),
-                });
-              }
-              _ => {}
             }
           }
         }
@@ -2488,6 +2512,26 @@ impl Program {
               }
             }
             EntryPoint::Fragment => {}
+            EntryPoint::Cpu => {
+              let mut errored = false;
+              if Type::Unit != signature.return_type.unwrap_known() {
+                errors.log(CompileError::new(
+                  CpuEntryHasReturnType,
+                  f.expression.source_trace.clone(),
+                ));
+                errored = true;
+              }
+              if !signature.args.is_empty() {
+                errors.log(CompileError::new(
+                  CpuEntryHasArguments,
+                  f.expression.source_trace.clone(),
+                ));
+                errored = true;
+              }
+              if errored {
+                continue;
+              }
+            }
           }
 
           let check_for_duplicate_builtins =
@@ -2799,7 +2843,7 @@ impl Program {
                 ));
               }
             }
-            EntryPoint::Compute(_) => {}
+            _ => {}
           }
         } else {
           for attributes in f
@@ -2907,7 +2951,7 @@ impl Program {
       }
     }
   }
-  pub fn validate_raw_program(&mut self, target: CompilerTarget) -> ErrorLog {
+  pub fn validate_raw_program(&mut self) -> ErrorLog {
     let mut errors = ErrorLog::new();
     self.validate_names(&mut errors);
     if !errors.is_empty() {
@@ -2970,7 +3014,7 @@ impl Program {
       return errors;
     }
     self.desugar_swizzle_assignments();
-    self.deexpressionify(target);
+    self.deexpressionify();
     self.deshadow(&mut errors);
     if !errors.is_empty() {
       return errors;
@@ -3127,16 +3171,21 @@ impl Program {
       })
       .collect()
   }
-  pub fn main_fn(&self) -> Option<Rc<RefCell<AbstractFunctionSignature>>> {
-    if let Some(main_fns) = self.abstract_functions.get("main".into()) {
-      let main_fn = main_fns.iter().find(|f| {
+  pub fn cpu_entry_points(
+    &self,
+  ) -> Vec<Rc<RefCell<AbstractFunctionSignature>>> {
+    self
+      .abstract_functions_iter()
+      .filter(|f| {
         let f = f.borrow();
-        f.arg_types.is_empty() && f.return_type == AbstractType::Unit
-      });
-      main_fn.cloned()
-    } else {
-      None
-    }
+        if let FunctionImplementationKind::Composite(comp) = &f.implementation {
+          comp.borrow().entry_point == Some(EntryPoint::Cpu)
+        } else {
+          false
+        }
+      })
+      .cloned()
+      .collect()
   }
   pub fn find_definition(
     &self,

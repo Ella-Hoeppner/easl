@@ -14,6 +14,7 @@ pub enum EntryPoint {
   Vertex,
   Fragment,
   Compute(usize),
+  Cpu,
 }
 impl EntryPoint {
   pub fn compile(&self) -> String {
@@ -23,6 +24,7 @@ impl EntryPoint {
       EntryPoint::Compute(size) => {
         format!("@compute\n@workgroup_size({size})\n")
       }
+      EntryPoint::Cpu => "@cpu\n".to_string(),
     }
   }
   pub fn name(&self) -> &'static str {
@@ -30,6 +32,7 @@ impl EntryPoint {
       EntryPoint::Vertex => "vertex",
       EntryPoint::Fragment => "fragment",
       EntryPoint::Compute(_) => "compute",
+      EntryPoint::Cpu => "cpu",
     }
   }
 }

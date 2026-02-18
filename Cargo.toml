@@ -9,6 +9,12 @@ fsexp = { git = "https://github.com/Ella-Hoeppner/fsexp.git" }
 take_mut = "0.2.2"
 thiserror = "2.0.11"
 unicode-segmentation = "1.12.0"
+wgpu = { version = "28", optional = true }
+winit = { version = "0.30", optional = true }
+pollster = { version = "0.4", optional = true }
+
+[features]
+window = ["dep:wgpu", "dep:winit", "dep:pollster"]
 
 [dev-dependencies]
 naga = { version = "28", features = ["wgsl-in"] }

@@ -1,6 +1,7 @@
 (struct MyStruct
   a: f32)
 
+@cpu
 (defn main []
   (print (MyStruct 5.))
   (let [@var x (MyStruct 1.)]

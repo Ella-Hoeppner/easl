@@ -1,3 +1,4 @@
+@cpu
 (defn main []
   (let [@var x (vec2f 1. 1.)]
     (= x.x 2.)

@@ -9,6 +9,7 @@ pub enum Effect {
   Continue,
   Discard,
   FragmentExclusiveFunction(Rc<str>),
+  CPUExclusiveFunction(Rc<str>),
   Print,
 }
 
@@ -39,6 +40,19 @@ impl EffectType {
       }
     }
     true
+  }
+  pub fn cpu_exclusive_functions(&self) -> Vec<Rc<str>> {
+    self
+      .0
+      .iter()
+      .filter_map(|e| {
+        if let Effect::CPUExclusiveFunction(name) = e {
+          Some(name.clone())
+        } else {
+          None
+        }
+      })
+      .collect()
   }
 }
 

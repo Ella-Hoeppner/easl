@@ -1,3 +1,4 @@
+@cpu
 (defn main []
   (print (vec2f 0. 1.))
   (print (vec3i 0i 1i 2i))

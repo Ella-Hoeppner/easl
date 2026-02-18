@@ -1,3 +1,4 @@
+@cpu
 (defn main []
   (let [m1 (mat2x2f 1. 2. 3. 4.)
         m2 (mat2x2f (vec2f 1. 2.) (vec2f 3. 4.))

@@ -228,6 +228,7 @@ success_test!(bitcast);
 success_test!(mixed_vec);
 success_test!(flowers);
 success_test!(enum_type);
+success_test!(dispatch_shader_compiled_away);
 
 success_test!(generic_constraint_success);
 success_test!(return_success);
@@ -476,3 +477,9 @@ error_test!(reserved_name_let_defn, CompileErrorKind::InvalidName);
 error_test!(invalid_name_tilde, CompileErrorKind::InvalidName);
 error_test!(invalid_name_dot, CompileErrorKind::InvalidName);
 error_test!(invalid_name_leading_number, CompileErrorKind::InvalidName);
+error_test!(
+  dispatch_in_fragment,
+  CompileErrorKind::CPUExclusiveFunctionInGPUEntryPoint(
+    "dispatch-shader".to_string()
+  )
+);

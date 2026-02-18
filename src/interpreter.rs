@@ -2,6 +2,7 @@ use std::{collections::HashMap, rc::Rc, vec};
 
 use crate::compiler::{
   builtins::ASSIGNMENT_OPS,
+  error::CompileError,
   expression::{Accessor, Exp, ExpKind, Number, SwizzleField},
   functions::{AbstractFunctionSignature, FunctionImplementationKind},
   program::Program,
@@ -67,11 +68,22 @@ pub enum EvalError {
   NonBooleanLoopCondition,
   UnrecognizedStructName,
   UnimplementedBuiltin(String),
+  WindowFeatureNotEnabled,
+  NoCpuEntryPoint,
+  MultipleCpuEntryPoints,
+  CpuEntryPointNotFound(String),
   DerivativeFunctionCantBeUsed,
   Discard,
   BuiltinError(&'static str),
   NoMainFn,
   ControlFlowExceptionEscapedToTopLevel,
+  CompilationError(CompileError),
+}
+
+impl From<CompileError> for EvalError {
+  fn from(e: CompileError) -> Self {
+    Self::CompilationError(e)
+  }
 }
 
 use EvalError::*;
@@ -474,14 +486,22 @@ fn apply_builtin_fn(
                 let mut acc: Option<Value> = None;
                 for (col, &v_field) in cols.iter().zip(v_fields.iter()) {
                   let product = operator(
-                    &col.as_struct().get(*row_field).unwrap().clone().unwrap_primitive(),
+                    &col
+                      .as_struct()
+                      .get(*row_field)
+                      .unwrap()
+                      .clone()
+                      .unwrap_primitive(),
                     &v.get(v_field).unwrap().clone().unwrap_primitive(),
                   );
                   acc = Some(match acc {
                     None => product,
                     Some(a) => primitive_arithmetic(
-                      a.unwrap_primitive(), product.unwrap_primitive(),
-                      |a, b| a + b, |a, b| a + b, |a, b| a + b,
+                      a.unwrap_primitive(),
+                      product.unwrap_primitive(),
+                      |a, b| a + b,
+                      |a, b| a + b,
+                      |a, b| a + b,
                     ),
                   });
                 }
@@ -511,8 +531,11 @@ fn apply_builtin_fn(
                   acc = Some(match acc {
                     None => product,
                     Some(a) => primitive_arithmetic(
-                      a.unwrap_primitive(), product.unwrap_primitive(),
-                      |a, b| a + b, |a, b| a + b, |a, b| a + b,
+                      a.unwrap_primitive(),
+                      product.unwrap_primitive(),
+                      |a, b| a + b,
+                      |a, b| a + b,
+                      |a, b| a + b,
                     ),
                   });
                 }
@@ -541,16 +564,30 @@ fn apply_builtin_fn(
                     .iter()
                     .map(|row_field| {
                       let mut acc: Option<Value> = None;
-                      for (a_col, &b_field) in a_cols.iter().zip(b_fields.iter()) {
+                      for (a_col, &b_field) in
+                        a_cols.iter().zip(b_fields.iter())
+                      {
                         let product = operator(
-                          &a_col.as_struct().get(*row_field).unwrap().clone().unwrap_primitive(),
-                          &b_col.get(b_field).unwrap().clone().unwrap_primitive(),
+                          &a_col
+                            .as_struct()
+                            .get(*row_field)
+                            .unwrap()
+                            .clone()
+                            .unwrap_primitive(),
+                          &b_col
+                            .get(b_field)
+                            .unwrap()
+                            .clone()
+                            .unwrap_primitive(),
                         );
                         acc = Some(match acc {
                           None => product,
                           Some(a) => primitive_arithmetic(
-                            a.unwrap_primitive(), product.unwrap_primitive(),
-                            |a, b| a + b, |a, b| a + b, |a, b| a + b,
+                            a.unwrap_primitive(),
+                            product.unwrap_primitive(),
+                            |a, b| a + b,
+                            |a, b| a + b,
+                            |a, b| a + b,
                           ),
                         });
                       }
@@ -696,9 +733,7 @@ fn apply_builtin_fn(
             let v2 = e2.get(f).unwrap().clone().unwrap_primitive().as_num();
             (
               f.clone(),
-              Value::Prim(Primitive::F32(
-                (v1 - 2.0 * dot_val * v2) as f32,
-              )),
+              Value::Prim(Primitive::F32((v1 - 2.0 * dot_val * v2) as f32)),
             )
           })
           .collect(),
@@ -741,9 +776,7 @@ fn apply_builtin_fn(
               let v2 = e2.get(f).unwrap().clone().unwrap_primitive().as_num();
               (
                 f.clone(),
-                Value::Prim(Primitive::F32(
-                  (eta * v1 - coeff * v2) as f32,
-                )),
+                Value::Prim(Primitive::F32((eta * v1 - coeff * v2) as f32)),
               )
             })
             .collect(),
@@ -830,7 +863,10 @@ fn apply_builtin_fn(
           vector
             .iter()
             .map(|(name, value)| {
-              (name.clone(), operator(scalar, &value.clone().unwrap_primitive()))
+              (
+                name.clone(),
+                operator(scalar, &value.clone().unwrap_primitive()),
+              )
             })
             .collect(),
         )),
@@ -838,7 +874,10 @@ fn apply_builtin_fn(
           vector
             .iter()
             .map(|(name, value)| {
-              (name.clone(), operator(&value.clone().unwrap_primitive(), scalar))
+              (
+                name.clone(),
+                operator(&value.clone().unwrap_primitive(), scalar),
+              )
             })
             .collect(),
         )),
@@ -1019,56 +1058,84 @@ fn apply_builtin_fn(
       // so that this is a compile-time error instead
     }
     // --- bit_manipulation_functions ---
-    "count-leading-zeros" => Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
-      Primitive::U32(v) => Primitive::U32(v.leading_zeros()),
-      Primitive::I32(v) => Primitive::I32(v.leading_zeros() as i32),
-      _ => panic!(),
-    })),
-    "count-trailing-zeros" => Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
-      Primitive::U32(v) => Primitive::U32(v.trailing_zeros()),
-      Primitive::I32(v) => Primitive::I32(v.trailing_zeros() as i32),
-      _ => panic!(),
-    })),
-    "count-one-bits" => Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
-      Primitive::U32(v) => Primitive::U32(v.count_ones()),
-      Primitive::I32(v) => Primitive::I32(v.count_ones() as i32),
-      _ => panic!(),
-    })),
-    "reverse-bits" => Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
-      Primitive::U32(v) => Primitive::U32(v.reverse_bits()),
-      Primitive::I32(v) => Primitive::I32((v as u32).reverse_bits() as i32),
-      _ => panic!(),
-    })),
-    "first-leading-bit" => Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
-      Primitive::U32(v) => Primitive::U32(
-        if v == 0 { u32::MAX } else { 31 - v.leading_zeros() }
-      ),
-      Primitive::I32(v) => Primitive::I32(
-        if v == 0 || v == -1 { -1 }
-        else if v > 0 { (31 - v.leading_zeros()) as i32 }
-        else { (31 - (!v).leading_zeros()) as i32 }
-      ),
-      _ => panic!(),
-    })),
-    "first-trailing-bit" => Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
-      Primitive::U32(v) => Primitive::U32(
-        if v == 0 { u32::MAX } else { v.trailing_zeros() }
-      ),
-      Primitive::I32(v) => Primitive::I32(
-        if v == 0 { -1 } else { v.trailing_zeros() as i32 }
-      ),
-      _ => panic!(),
-    })),
+    "count-leading-zeros" => {
+      Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
+        Primitive::U32(v) => Primitive::U32(v.leading_zeros()),
+        Primitive::I32(v) => Primitive::I32(v.leading_zeros() as i32),
+        _ => panic!(),
+      }))
+    }
+    "count-trailing-zeros" => {
+      Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
+        Primitive::U32(v) => Primitive::U32(v.trailing_zeros()),
+        Primitive::I32(v) => Primitive::I32(v.trailing_zeros() as i32),
+        _ => panic!(),
+      }))
+    }
+    "count-one-bits" => {
+      Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
+        Primitive::U32(v) => Primitive::U32(v.count_ones()),
+        Primitive::I32(v) => Primitive::I32(v.count_ones() as i32),
+        _ => panic!(),
+      }))
+    }
+    "reverse-bits" => {
+      Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
+        Primitive::U32(v) => Primitive::U32(v.reverse_bits()),
+        Primitive::I32(v) => Primitive::I32((v as u32).reverse_bits() as i32),
+        _ => panic!(),
+      }))
+    }
+    "first-leading-bit" => {
+      Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
+        Primitive::U32(v) => Primitive::U32(if v == 0 {
+          u32::MAX
+        } else {
+          31 - v.leading_zeros()
+        }),
+        Primitive::I32(v) => Primitive::I32(if v == 0 || v == -1 {
+          -1
+        } else if v > 0 {
+          (31 - v.leading_zeros()) as i32
+        } else {
+          (31 - (!v).leading_zeros()) as i32
+        }),
+        _ => panic!(),
+      }))
+    }
+    "first-trailing-bit" => {
+      Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
+        Primitive::U32(v) => {
+          Primitive::U32(if v == 0 { u32::MAX } else { v.trailing_zeros() })
+        }
+        Primitive::I32(v) => Primitive::I32(if v == 0 {
+          -1
+        } else {
+          v.trailing_zeros() as i32
+        }),
+        _ => panic!(),
+      }))
+    }
     "extract-bits" => {
-      let offset = match args[1].0 { Value::Prim(Primitive::U32(v)) => v, _ => panic!() };
-      let count = match args[2].0 { Value::Prim(Primitive::U32(v)) => v, _ => panic!() };
+      let offset = match args[1].0 {
+        Value::Prim(Primitive::U32(v)) => v,
+        _ => panic!(),
+      };
+      let count = match args[2].0 {
+        Value::Prim(Primitive::U32(v)) => v,
+        _ => panic!(),
+      };
       let o = offset.min(32);
       let c = count.min(32 - o);
       Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
-        Primitive::U32(e) => Primitive::U32(
-          if c == 0 { 0 } else { (e >> o) & ((1u32 << c) - 1) }
-        ),
-        Primitive::I32(e) => Primitive::I32(if c == 0 { 0 } else {
+        Primitive::U32(e) => Primitive::U32(if c == 0 {
+          0
+        } else {
+          (e >> o) & ((1u32 << c) - 1)
+        }),
+        Primitive::I32(e) => Primitive::I32(if c == 0 {
+          0
+        } else {
           let extracted = ((e as u32) >> o) & ((1u32 << c) - 1);
           let shift = 32 - c;
           ((extracted << shift) as i32) >> shift
@@ -1078,16 +1145,23 @@ fn apply_builtin_fn(
     }
     "dot-4-u8-packed" => {
       let (Value::Prim(Primitive::U32(e1)), Value::Prim(Primitive::U32(e2))) =
-        (&args[0].0, &args[1].0) else { panic!() };
+        (&args[0].0, &args[1].0)
+      else {
+        panic!()
+      };
       let mut acc: u32 = 0;
       for i in 0..4 {
-        acc = acc.wrapping_add(((e1 >> (i * 8)) & 0xFF) * ((e2 >> (i * 8)) & 0xFF));
+        acc =
+          acc.wrapping_add(((e1 >> (i * 8)) & 0xFF) * ((e2 >> (i * 8)) & 0xFF));
       }
       Ok(Value::Prim(Primitive::U32(acc)))
     }
     "dot-4-i8-packed" => {
       let (Value::Prim(Primitive::U32(e1)), Value::Prim(Primitive::U32(e2))) =
-        (&args[0].0, &args[1].0) else { panic!() };
+        (&args[0].0, &args[1].0)
+      else {
+        panic!()
+      };
       let mut acc: i32 = 0;
       for i in 0..4u32 {
         let a = (((*e1 >> (i * 8)) & 0xFF) as i32) << 24 >> 24;
@@ -1098,119 +1172,219 @@ fn apply_builtin_fn(
     }
     // --- data_packing_functions ---
     "pack-4x8-snorm" => {
-      let Value::Struct(v) = &args[0].0 else { panic!() };
+      let Value::Struct(v) = &args[0].0 else {
+        panic!()
+      };
       let mut result: u32 = 0;
       for (i, f) in ["x", "y", "z", "w"].iter().enumerate() {
-        let Value::Prim(Primitive::F32(val)) = v.get(*f).unwrap() else { panic!() };
+        let Value::Prim(Primitive::F32(val)) = v.get(*f).unwrap() else {
+          panic!()
+        };
         let packed = (0.5 + 127.0 * val.clamp(-1.0, 1.0)).floor() as i8 as u8;
         result |= (packed as u32) << (i * 8);
       }
       Ok(Value::Prim(Primitive::U32(result)))
     }
     "unpack-4x8-snorm" => {
-      let Value::Prim(Primitive::U32(e)) = &args[0].0 else { panic!() };
-      Ok(Value::Struct(["x", "y", "z", "w"].iter().enumerate().map(|(i, f)| {
-        let byte = ((e >> (i * 8)) & 0xFF) as u8 as i8;
-        ((*f).into(), Value::Prim(Primitive::F32((byte as f32 / 127.0).max(-1.0))))
-      }).collect()))
+      let Value::Prim(Primitive::U32(e)) = &args[0].0 else {
+        panic!()
+      };
+      Ok(Value::Struct(
+        ["x", "y", "z", "w"]
+          .iter()
+          .enumerate()
+          .map(|(i, f)| {
+            let byte = ((e >> (i * 8)) & 0xFF) as u8 as i8;
+            (
+              (*f).into(),
+              Value::Prim(Primitive::F32((byte as f32 / 127.0).max(-1.0))),
+            )
+          })
+          .collect(),
+      ))
     }
     "pack-4x8-unorm" => {
-      let Value::Struct(v) = &args[0].0 else { panic!() };
+      let Value::Struct(v) = &args[0].0 else {
+        panic!()
+      };
       let mut result: u32 = 0;
       for (i, f) in ["x", "y", "z", "w"].iter().enumerate() {
-        let Value::Prim(Primitive::F32(val)) = v.get(*f).unwrap() else { panic!() };
+        let Value::Prim(Primitive::F32(val)) = v.get(*f).unwrap() else {
+          panic!()
+        };
         let packed = (0.5 + 255.0 * val.clamp(0.0, 1.0)).floor() as u8;
         result |= (packed as u32) << (i * 8);
       }
       Ok(Value::Prim(Primitive::U32(result)))
     }
     "unpack-4x8-unorm" => {
-      let Value::Prim(Primitive::U32(e)) = &args[0].0 else { panic!() };
-      Ok(Value::Struct(["x", "y", "z", "w"].iter().enumerate().map(|(i, f)| {
-        ((*f).into(), Value::Prim(Primitive::F32(((e >> (i * 8)) & 0xFF) as f32 / 255.0)))
-      }).collect()))
+      let Value::Prim(Primitive::U32(e)) = &args[0].0 else {
+        panic!()
+      };
+      Ok(Value::Struct(
+        ["x", "y", "z", "w"]
+          .iter()
+          .enumerate()
+          .map(|(i, f)| {
+            (
+              (*f).into(),
+              Value::Prim(Primitive::F32(
+                ((e >> (i * 8)) & 0xFF) as f32 / 255.0,
+              )),
+            )
+          })
+          .collect(),
+      ))
     }
     "pack-4x8-i8" => {
-      let Value::Struct(v) = &args[0].0 else { panic!() };
+      let Value::Struct(v) = &args[0].0 else {
+        panic!()
+      };
       let mut result: u32 = 0;
       for (i, f) in ["x", "y", "z", "w"].iter().enumerate() {
-        let Value::Prim(Primitive::I32(val)) = v.get(*f).unwrap() else { panic!() };
+        let Value::Prim(Primitive::I32(val)) = v.get(*f).unwrap() else {
+          panic!()
+        };
         result |= ((*val as u32) & 0xFF) << (i * 8);
       }
       Ok(Value::Prim(Primitive::U32(result)))
     }
     "unpack-4x8-i8" => {
-      let Value::Prim(Primitive::U32(e)) = &args[0].0 else { panic!() };
-      Ok(Value::Struct(["x", "y", "z", "w"].iter().enumerate().map(|(i, f)| {
-        let byte = ((e >> (i * 8)) & 0xFF) as u8 as i8;
-        ((*f).into(), Value::Prim(Primitive::I32(byte as i32)))
-      }).collect()))
+      let Value::Prim(Primitive::U32(e)) = &args[0].0 else {
+        panic!()
+      };
+      Ok(Value::Struct(
+        ["x", "y", "z", "w"]
+          .iter()
+          .enumerate()
+          .map(|(i, f)| {
+            let byte = ((e >> (i * 8)) & 0xFF) as u8 as i8;
+            ((*f).into(), Value::Prim(Primitive::I32(byte as i32)))
+          })
+          .collect(),
+      ))
     }
     "pack-4x8-u8" => {
-      let Value::Struct(v) = &args[0].0 else { panic!() };
+      let Value::Struct(v) = &args[0].0 else {
+        panic!()
+      };
       let mut result: u32 = 0;
       for (i, f) in ["x", "y", "z", "w"].iter().enumerate() {
-        let Value::Prim(Primitive::U32(val)) = v.get(*f).unwrap() else { panic!() };
+        let Value::Prim(Primitive::U32(val)) = v.get(*f).unwrap() else {
+          panic!()
+        };
         result |= (val & 0xFF) << (i * 8);
       }
       Ok(Value::Prim(Primitive::U32(result)))
     }
     "unpack-4x8-u8" => {
-      let Value::Prim(Primitive::U32(e)) = &args[0].0 else { panic!() };
-      Ok(Value::Struct(["x", "y", "z", "w"].iter().enumerate().map(|(i, f)| {
-        ((*f).into(), Value::Prim(Primitive::U32((e >> (i * 8)) & 0xFF)))
-      }).collect()))
+      let Value::Prim(Primitive::U32(e)) = &args[0].0 else {
+        panic!()
+      };
+      Ok(Value::Struct(
+        ["x", "y", "z", "w"]
+          .iter()
+          .enumerate()
+          .map(|(i, f)| {
+            (
+              (*f).into(),
+              Value::Prim(Primitive::U32((e >> (i * 8)) & 0xFF)),
+            )
+          })
+          .collect(),
+      ))
     }
     "pack-4x8-i8-clamp" => {
-      let Value::Struct(v) = &args[0].0 else { panic!() };
+      let Value::Struct(v) = &args[0].0 else {
+        panic!()
+      };
       let mut result: u32 = 0;
       for (i, f) in ["x", "y", "z", "w"].iter().enumerate() {
-        let Value::Prim(Primitive::I32(val)) = v.get(*f).unwrap() else { panic!() };
+        let Value::Prim(Primitive::I32(val)) = v.get(*f).unwrap() else {
+          panic!()
+        };
         result |= (*val.clamp(&-128, &127) as u8 as u32) << (i * 8);
       }
       Ok(Value::Prim(Primitive::U32(result)))
     }
     "pack-4x8-u8-clamp" => {
-      let Value::Struct(v) = &args[0].0 else { panic!() };
+      let Value::Struct(v) = &args[0].0 else {
+        panic!()
+      };
       let mut result: u32 = 0;
       for (i, f) in ["x", "y", "z", "w"].iter().enumerate() {
-        let Value::Prim(Primitive::U32(val)) = v.get(*f).unwrap() else { panic!() };
+        let Value::Prim(Primitive::U32(val)) = v.get(*f).unwrap() else {
+          panic!()
+        };
         result |= val.min(&255) << (i * 8);
       }
       Ok(Value::Prim(Primitive::U32(result)))
     }
     "pack-2x16-snorm" => {
-      let Value::Struct(v) = &args[0].0 else { panic!() };
+      let Value::Struct(v) = &args[0].0 else {
+        panic!()
+      };
       let mut result: u32 = 0;
       for (i, f) in ["x", "y"].iter().enumerate() {
-        let Value::Prim(Primitive::F32(val)) = v.get(*f).unwrap() else { panic!() };
-        let packed = (0.5 + 32767.0 * val.clamp(-1.0, 1.0)).floor() as i16 as u16;
+        let Value::Prim(Primitive::F32(val)) = v.get(*f).unwrap() else {
+          panic!()
+        };
+        let packed =
+          (0.5 + 32767.0 * val.clamp(-1.0, 1.0)).floor() as i16 as u16;
         result |= (packed as u32) << (i * 16);
       }
       Ok(Value::Prim(Primitive::U32(result)))
     }
     "unpack-2x16-snorm" => {
-      let Value::Prim(Primitive::U32(e)) = &args[0].0 else { panic!() };
-      Ok(Value::Struct(["x", "y"].iter().enumerate().map(|(i, f)| {
-        let half = ((e >> (i * 16)) & 0xFFFF) as u16 as i16;
-        ((*f).into(), Value::Prim(Primitive::F32((half as f32 / 32767.0).max(-1.0))))
-      }).collect()))
+      let Value::Prim(Primitive::U32(e)) = &args[0].0 else {
+        panic!()
+      };
+      Ok(Value::Struct(
+        ["x", "y"]
+          .iter()
+          .enumerate()
+          .map(|(i, f)| {
+            let half = ((e >> (i * 16)) & 0xFFFF) as u16 as i16;
+            (
+              (*f).into(),
+              Value::Prim(Primitive::F32((half as f32 / 32767.0).max(-1.0))),
+            )
+          })
+          .collect(),
+      ))
     }
     "pack-2x16-unorm" => {
-      let Value::Struct(v) = &args[0].0 else { panic!() };
+      let Value::Struct(v) = &args[0].0 else {
+        panic!()
+      };
       let mut result: u32 = 0;
       for (i, f) in ["x", "y"].iter().enumerate() {
-        let Value::Prim(Primitive::F32(val)) = v.get(*f).unwrap() else { panic!() };
+        let Value::Prim(Primitive::F32(val)) = v.get(*f).unwrap() else {
+          panic!()
+        };
         let packed = (0.5 + 65535.0 * val.clamp(0.0, 1.0)).floor() as u16;
         result |= (packed as u32) << (i * 16);
       }
       Ok(Value::Prim(Primitive::U32(result)))
     }
     "unpack-2x16-unorm" => {
-      let Value::Prim(Primitive::U32(e)) = &args[0].0 else { panic!() };
-      Ok(Value::Struct(["x", "y"].iter().enumerate().map(|(i, f)| {
-        ((*f).into(), Value::Prim(Primitive::F32(((e >> (i * 16)) & 0xFFFF) as f32 / 65535.0)))
-      }).collect()))
+      let Value::Prim(Primitive::U32(e)) = &args[0].0 else {
+        panic!()
+      };
+      Ok(Value::Struct(
+        ["x", "y"]
+          .iter()
+          .enumerate()
+          .map(|(i, f)| {
+            (
+              (*f).into(),
+              Value::Prim(Primitive::F32(
+                ((e >> (i * 16)) & 0xFFFF) as f32 / 65535.0,
+              )),
+            )
+          })
+          .collect(),
+      ))
     }
     "pack-2x16-float" | "unpack-2x16-float" => {
       todo!("pack/unpack-2x16-float requires f16 conversion")
@@ -1221,6 +1395,43 @@ fn apply_builtin_fn(
       let formatted = args[0].0.format_for_print(&args[0].1);
       env.io.println(&formatted);
       Ok(Value::Unit)
+    }
+    "dispatch-shader" => {
+      #[cfg(feature = "window")]
+      {
+        let (_, Type::Function(vert_f)) = &args[0] else {
+          panic!()
+        };
+        let vert_f_name = vert_f
+          .abstract_ancestor
+          .as_ref()
+          .unwrap()
+          .borrow()
+          .name
+          .clone();
+        let (_, Type::Function(frag_f)) = &args[1] else {
+          panic!()
+        };
+        let frag_f_name = frag_f
+          .abstract_ancestor
+          .as_ref()
+          .unwrap()
+          .borrow()
+          .name
+          .clone();
+        let (Value::Prim(Primitive::U32(vert_count)), _) = &args[2] else {
+          panic!()
+        };
+        crate::window::dispatch_shader(crate::window::DispatchConfig {
+          wgsl: env.wgsl.clone(),
+          vert_entry: vert_f_name.to_string(),
+          frag_entry: frag_f_name.to_string(),
+          vert_count: *vert_count,
+        });
+        Ok(Value::Unit)
+      }
+      #[cfg(not(feature = "window"))]
+      Err(WindowFeatureNotEnabled)
     }
     _ => Err(UnimplementedBuiltin(f_name.to_string())),
   }
@@ -1424,12 +1635,14 @@ impl IOManager for StringIO {
 pub struct EvaluationEnvironment<IO: IOManager> {
   bindings: HashMap<Rc<str>, Vec<Value>>,
   structs: HashMap<Rc<str>, AbstractStruct>,
+  wgsl: String,
   pub io: IO,
 }
 
 impl<IO: IOManager> EvaluationEnvironment<IO> {
   pub fn from_program(program: Program, io: IO) -> Result<Self, EvalError> {
     let mut env = Self {
+      wgsl: String::new(),
       bindings: HashMap::new(),
       structs: program
         .typedefs
@@ -1439,14 +1652,14 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         .collect(),
       io,
     };
-    for var in program.top_level_vars {
-      let value = match var.value {
-        Some(exp) => eval(exp, &mut env)?,
+    for var in program.top_level_vars.iter() {
+      let value = match &var.value {
+        Some(exp) => eval(exp.clone(), &mut env)?,
         None => Value::Uninitialized,
       };
       env.bind(var.name.clone(), value);
     }
-    for e in program.typedefs.enums {
+    for e in program.typedefs.enums.iter() {
       for v in e.variants.iter() {
         if v.inner_type == AbstractType::Type(Type::Unit) {
           env.bind(
@@ -1456,6 +1669,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         }
       }
     }
+    env.wgsl = program.compile_to_wgsl()?;
     Ok(env)
   }
   fn bind(&mut self, name: Rc<str>, value: Value) {
@@ -1555,7 +1769,20 @@ pub fn eval(
       let accessed_expression = is_assignment_op.then(|| args[0].clone());
       let arg_values: Vec<Value> = args
         .into_iter()
-        .map(|arg| eval(arg, env))
+        .map(|arg| {
+          if let Type::Function(f) = arg.data.unwrap_known()
+            && let Some(f) = f.abstract_ancestor
+            && let ExpKind::Name(f_name) = arg.kind
+          {
+            Ok(Value::Fun(Function::from_abstract_signature(
+              &f.borrow(),
+              &f_name,
+              env,
+            )?))
+          } else {
+            eval(arg, env)
+          }
+        })
         .collect::<Result<_, _>>()?;
       let return_value = match f {
         Function::Builtin(name) => apply_builtin_fn(
@@ -1730,11 +1957,11 @@ pub fn eval(
             .map(|field| {
               map
                 .get(match field {
-                  SwizzleField::X => "x".into(),
-                  SwizzleField::Y => "y".into(),
-                  SwizzleField::Z => "z".into(),
-                  SwizzleField::W => "w".into(),
-                })
+                  SwizzleField::X => "x",
+                  SwizzleField::Y => "y",
+                  SwizzleField::Z => "z",
+                  SwizzleField::W => "w",
+                } as &str)
                 .map(|v| v.clone())
                 .ok_or(NoSuchField)
             })
@@ -1871,33 +2098,55 @@ pub fn eval(
 
 fn run_program_with<IO: IOManager>(
   program: Program,
+  entry_point_name: Option<&str>,
   io: IO,
 ) -> Result<IO, EvalError> {
-  if let Some(main_fn) = program.main_fn() {
-    let FunctionImplementationKind::Composite(f) =
-      &main_fn.borrow().implementation
-    else {
-      panic!("main fn wasn't a composite function")
-    };
-    let f = f.borrow();
-    let ExpKind::Function(_, body) = &f.expression.kind else {
-      panic!()
-    };
-    let mut env = EvaluationEnvironment::from_program(program, io)?;
-    eval(*body.clone(), &mut env)?;
-    Ok(env.io)
-  } else {
-    Err(EvalError::NoMainFn)
-  }
+  let mut cpu_fns = program.cpu_entry_points();
+  let entry_fn = match entry_point_name {
+    Some(name) => {
+      let pos = cpu_fns
+        .iter()
+        .position(|f| &*f.borrow().name == name)
+        .ok_or_else(|| CpuEntryPointNotFound(name.to_string()))?;
+      cpu_fns.remove(pos)
+    }
+    None => match cpu_fns.len() {
+      0 => return Err(NoCpuEntryPoint),
+      1 => cpu_fns.remove(0),
+      _ => return Err(MultipleCpuEntryPoints),
+    },
+  };
+  let FunctionImplementationKind::Composite(f) =
+    &entry_fn.borrow().implementation
+  else {
+    panic!("cpu entry point wasn't a composite function")
+  };
+  let f = f.borrow();
+  let ExpKind::Function(_, body) = &f.expression.kind else {
+    panic!()
+  };
+  let body = *body.clone();
+  drop(f);
+  let mut env = EvaluationEnvironment::from_program(program, io)?;
+  eval(body, &mut env)?;
+  Ok(env.io)
 }
 
 pub fn run_program(program: Program) -> Result<(), EvalError> {
-  run_program_with(program, StdoutIO)?;
+  run_program_with(program, None, StdoutIO)?;
+  Ok(())
+}
+
+pub fn run_program_entry(
+  program: Program,
+  entry: Option<&str>,
+) -> Result<(), EvalError> {
+  run_program_with(program, entry, StdoutIO)?;
   Ok(())
 }
 
 pub fn run_program_capturing_output(
   program: Program,
 ) -> Result<String, EvalError> {
-  Ok(run_program_with(program, StringIO::new())?.output)
+  Ok(run_program_with(program, None, StringIO::new())?.output)
 }

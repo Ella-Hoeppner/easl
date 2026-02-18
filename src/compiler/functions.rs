@@ -534,7 +534,7 @@ impl AbstractFunctionSignature {
     if let FunctionImplementationKind::Composite(f) = &self.implementation {
       Ok(f.borrow().arg_names.clone())
     } else {
-      err(NoArgNamesForFunction, source_trace.clone())
+      err(ExpectedCompositeFunction, source_trace.clone())
     }
   }
   pub fn arg_annotations(
@@ -544,7 +544,7 @@ impl AbstractFunctionSignature {
     if let FunctionImplementationKind::Composite(f) = &self.implementation {
       Ok(f.borrow().arg_annotations.clone())
     } else {
-      err(NoArgNamesForFunction, source_trace)
+      err(ExpectedCompositeFunction, source_trace)
     }
   }
   pub fn implementation(
@@ -554,7 +554,7 @@ impl AbstractFunctionSignature {
     if let FunctionImplementationKind::Composite(f) = &self.implementation {
       Ok(f.borrow().clone())
     } else {
-      err(NoArgNamesForFunction, source_trace)
+      err(ExpectedCompositeFunction, source_trace)
     }
   }
   pub fn generate_monomorphized(
@@ -1044,6 +1044,7 @@ impl TopLevelFunction {
     self,
     name: &str,
     names: &mut NameContext,
+    program: &Program,
     target: CompilerTarget,
   ) -> CompileResult<String> {
     let TypedExp { data, kind, .. } = self.expression;
@@ -1058,6 +1059,7 @@ impl TopLevelFunction {
     } else {
       panic!("attempted to compile function with invalid ExpKind {kind:?}")
     };
+    let effects = body.effects(program);
     let args = arg_names
       .into_iter()
       .zip(args.into_iter())
@@ -1087,33 +1089,41 @@ impl TopLevelFunction {
       .collect::<Vec<String>>()
       .join(", ");
 
-    Ok(format!(
-      "{}fn {}({args}){} {{{}\n}}",
-      self
-        .entry_point
-        .as_ref()
-        .map(|e| e.compile())
-        .unwrap_or(String::new()),
-      compile_word(name.into()),
-      if return_type.kind.unwrap_known() == Type::Unit {
-        "".to_string()
-      } else {
+    Ok(
+      if Some(EntryPoint::Cpu) != self.entry_point
+        && effects.cpu_exclusive_functions().is_empty()
+      {
         format!(
-          " -> {}{}",
-          self.return_attributes.compile(),
-          return_type.monomorphized_name(names)
+          "{}fn {}({args}){} {{{}\n}}",
+          self
+            .entry_point
+            .as_ref()
+            .map(|e| e.compile())
+            .unwrap_or(String::new()),
+          compile_word(name.into()),
+          if return_type.kind.unwrap_known() == Type::Unit {
+            "".to_string()
+          } else {
+            format!(
+              " -> {}{}",
+              self.return_attributes.compile(),
+              return_type.monomorphized_name(names)
+            )
+          },
+          indent(body.compile(
+            if return_type.kind.unwrap_known() == Type::Unit {
+              ExpressionCompilationPosition::InnerLine
+            } else {
+              ExpressionCompilationPosition::Return
+            },
+            names,
+            target
+          ))
         )
+      } else {
+        String::new()
       },
-      indent(body.compile(
-        if return_type.kind.unwrap_known() == Type::Unit {
-          ExpressionCompilationPosition::InnerLine
-        } else {
-          ExpressionCompilationPosition::Return
-        },
-        names,
-        target
-      ))
-    ))
+    )
   }
   pub fn effects(&self, program: &Program) -> EffectType {
     if let ExpKind::Function(arg_names, body) = &self.expression.kind {

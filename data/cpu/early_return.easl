@@ -3,6 +3,7 @@
   (when (> b 0) (return b))
   c)
 
+@cpu
 (defn main []
   (print (first-positive -1 -2 3))
   (print (first-positive -1 2 3))

@@ -1,4 +1,5 @@
 (def x: f32 5.)
 
+@cpu
 (defn main []
   (print x))

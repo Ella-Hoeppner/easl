@@ -13,10 +13,12 @@ use crate::{
     entry::IOAttributes,
     error::SourceTrace,
     functions::{
-      FunctionTargetConfiguration, Ownership, SpecialCasedBuiltinFunction,
+      FunctionSignature, FunctionTargetConfiguration, Ownership,
+      SpecialCasedBuiltinFunction,
     },
+    program::TypeDefs,
     structs::AbstractStructField,
-    types::{AbstractArraySize, GenericArgument},
+    types::{AbstractArraySize, GenericArgument, Variable, VariableKind},
   },
   parse::{EaslTree, Encloser},
 };
@@ -1778,6 +1780,67 @@ fn print_functions() -> Vec<AbstractFunctionSignature> {
   }]
 }
 
+fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
+  vec![AbstractFunctionSignature {
+    name: "dispatch-shader".into(),
+    generic_args: vec![(
+      "T".into(),
+      GenericArgument::Type(vec![]),
+      SourceTrace::empty(),
+    )],
+    arg_types: vec![
+      AbstractType::Type(Type::Function(
+        FunctionSignature {
+          abstract_ancestor: None,
+          args: vec![(
+            Variable {
+              kind: VariableKind::Let,
+              var_type: Type::U32.known().into(),
+            },
+            vec![],
+          )],
+          return_type: Type::Skolem("T".into(), vec![]).known().into(),
+        }
+        .into(),
+      ))
+      .owned(),
+      AbstractType::Type(Type::Function(
+        FunctionSignature {
+          abstract_ancestor: None,
+          args: vec![(
+            Variable {
+              kind: VariableKind::Let,
+              var_type: Type::Skolem("T".into(), vec![]).known().into(),
+            },
+            vec![],
+          )],
+          return_type: Type::Struct(
+            AbstractStruct::concretize(
+              Rc::new(vec4().generate_monomorphized(vec![Type::F32]).unwrap()),
+              &TypeDefs::empty(),
+              &vec![],
+              SourceTrace::empty(),
+            )
+            .unwrap(),
+          )
+          .known()
+          .into(),
+        }
+        .into(),
+      ))
+      .owned(),
+      AbstractType::Type(Type::U32).owned(),
+    ],
+    return_type: AbstractType::Unit,
+    implementation: FunctionImplementationKind::Builtin {
+      effect_type: Effect::CPUExclusiveFunction("dispatch-shader".into())
+        .into(),
+      target_configuration: FunctionTargetConfiguration::Default,
+    },
+    ..Default::default()
+  }]
+}
+
 pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   let mut signatures = vec![assignment_function()];
   signatures.append(&mut boolean_functions());
@@ -1813,6 +1876,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut bit_manipulation_functions());
   signatures.append(&mut derivative_functions());
   signatures.append(&mut print_functions());
+  signatures.append(&mut shader_dispatch_functions());
   signatures
 }
 

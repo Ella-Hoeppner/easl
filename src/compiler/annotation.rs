@@ -248,12 +248,13 @@ impl Annotation {
             ));
           }
         }
-        ("fragment" | "vertex" | "compute", None) => {
+        ("fragment" | "vertex" | "compute" | "cpu", None) => {
           if parsed_annotation.entry.is_none() {
             parsed_annotation.entry = Some(match &*name {
               "fragment" => EntryPoint::Fragment,
               "vertex" => EntryPoint::Vertex,
               "compute" => EntryPoint::Compute(0),
+              "cpu" => EntryPoint::Cpu,
               _ => unreachable!(),
             })
           } else {

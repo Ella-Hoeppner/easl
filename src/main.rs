@@ -1,4 +1,9 @@
-use easl::compile_easl_source_to_wgsl;
+use easl::{
+  compile_easl_source_to_wgsl,
+  compiler::{builtins::built_in_macros, program::Program},
+  interpreter::run_program_entry,
+  parse::parse_easl_without_comments,
+};
 use std::fs;
 
 fn benchmark_wgsl_compilation() {
@@ -25,6 +30,25 @@ fn benchmark_wgsl_compilation() {
   println!("\n{} files, total: {total_time:.1}ms", entries.len());
 }
 
+fn run_demo(file_name: &str, entry: Option<&str>) {
+  let src = fs::read_to_string(format!("./data/dispatch/{file_name}.easl"))
+    .unwrap_or_else(|_| {
+      panic!("Unable to read data/dispatch/{file_name}.easl")
+    });
+  let document = parse_easl_without_comments(&src);
+  let (mut program, errors) =
+    Program::from_easl_document(&document, built_in_macros());
+  if !errors.is_empty() {
+    panic!("{errors:?}");
+  }
+  let errors = program.validate_raw_program();
+  if !errors.is_empty() {
+    panic!("{errors:?}");
+  }
+  run_program_entry(program, entry).unwrap();
+}
+
 fn main() {
-  benchmark_wgsl_compilation();
+  // benchmark_wgsl_compilation();
+  run_demo("indirect", None)
 }

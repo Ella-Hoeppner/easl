@@ -1,3 +1,4 @@
+@cpu
 (defn main []
   ; pack and unpack 4x8 snorm: roundtrip
   (let [v (vec4f -1. 0. 0.5 1.)

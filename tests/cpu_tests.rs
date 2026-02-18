@@ -1,4 +1,4 @@
-use easl::compiler::program::{CompilerTarget, Program};
+use easl::compiler::program::Program;
 use easl::interpreter::run_program_capturing_output;
 use easl::parse::parse_easl_without_comments;
 use std::fs;
@@ -15,7 +15,7 @@ fn run_cpu_test(name: &str) {
   );
   assert!(errors.is_empty(), "{name}: parse errors: {errors:#?}");
 
-  let errors = program.validate_raw_program(CompilerTarget::CPU);
+  let errors = program.validate_raw_program();
   assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
 
   let output = run_program_capturing_output(program).unwrap_or_else(|e| {

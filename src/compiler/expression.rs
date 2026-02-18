@@ -3519,8 +3519,9 @@ impl TypedExp {
         if let ExpKind::Name(f_name) = &mut f.kind {
           if let TypeState::Known(Type::Function(f)) = &mut f.data.kind
             && let Some(abstract_signature) = &mut f.abstract_ancestor
-          {
-            if let Some((inlinable_arg_index, inlinable_abstract_signature)) =
+            && let FunctionImplementationKind::Composite(_) =
+              abstract_signature.clone().borrow().implementation
+            && let Some((inlinable_arg_index, inlinable_abstract_signature)) =
               abstract_signature
                 .clone()
                 .borrow()
@@ -3542,28 +3543,26 @@ impl TypedExp {
                   }
                   _ => None,
                 })
-            {
-              let representative_struct = inlinable_abstract_signature
-                .borrow()
-                .representative_type(&mut new_ctx.names.borrow_mut());
-              let inlined_signature = abstract_signature
-                .borrow()
-                .generate_higher_order_argument_inlined_version(
-                  f_name.clone(),
-                  inlinable_arg_index,
-                  inlinable_abstract_signature,
-                  new_ctx,
-                  &exp.source_trace,
-                )?;
-              *f_name = inlined_signature.name.clone();
-              *abstract_signature =
-                Rc::new(RefCell::new(inlined_signature.clone()));
-              new_ctx.add_abstract_function(Rc::new(RefCell::new(
-                inlined_signature,
-              )));
-              new_ctx.add_monomorphized_struct(representative_struct);
-              changed = true;
-            }
+          {
+            let representative_struct = inlinable_abstract_signature
+              .borrow()
+              .representative_type(&mut new_ctx.names.borrow_mut());
+            let inlined_signature = abstract_signature
+              .borrow()
+              .generate_higher_order_argument_inlined_version(
+                f_name.clone(),
+                inlinable_arg_index,
+                inlinable_abstract_signature,
+                new_ctx,
+                &exp.source_trace,
+              )?;
+            *f_name = inlined_signature.name.clone();
+            *abstract_signature =
+              Rc::new(RefCell::new(inlined_signature.clone()));
+            new_ctx
+              .add_abstract_function(Rc::new(RefCell::new(inlined_signature)));
+            new_ctx.add_monomorphized_struct(representative_struct);
+            changed = true;
           }
         } else {
           return err(UninlinableHigherOrderFunction, exp.source_trace.clone());
@@ -3573,25 +3572,6 @@ impl TypedExp {
     })?;
     Ok(changed)
   }
-  pub fn inline_args(
-    &mut self,
-    param_names: &Vec<Rc<str>>,
-    arg_values: &Vec<TypedExp>,
-  ) {
-    self
-      .walk_mut::<()>(&mut |exp| {
-        if let Name(original_name) = &mut exp.kind {
-          if let Some(mut value) = (0..param_names.len()).find_map(|i| {
-            (param_names[i] == *original_name).then(|| arg_values[i].clone())
-          }) {
-            std::mem::swap(exp, &mut value);
-          }
-        }
-        Ok(true)
-      })
-      .unwrap()
-  }
-
   fn deshadow_inner(
     &mut self,
     globally_bound_names: &Vec<Rc<str>>,
@@ -4045,7 +4025,7 @@ impl TypedExp {
       })
       .unwrap()
   }
-  pub fn deexpressionify(&mut self, program: &Program, target: CompilerTarget) {
+  pub fn deexpressionify(&mut self, program: &Program) {
     let mut names = program.names.borrow_mut();
     loop {
       let mut changed = false;
@@ -4059,9 +4039,7 @@ impl TypedExp {
         .walk_mut_with_ctx::<()>(
           &mut |exp, ctx| {
             if let Application(f, args) = &mut exp.kind {
-              if target == CompilerTarget::WGSL
-                && let Type::Function(f_type) = f.data.unwrap_known()
-              {
+              if let Type::Function(f_type) = f.data.unwrap_known() {
                 for ((f_param, _), arg) in
                   f_type.args.iter().zip(args.iter_mut())
                 {
@@ -4073,7 +4051,6 @@ impl TypedExp {
                     && let Some(NameDefinitionSource::LocalBinding(_)) =
                       ctx.get_name_definition_source(&original_name)
                   {
-                    println!("\nNEW THING!!!\n{:?}", f.kind);
                     let new_name = names.gensym(&original_name);
                     let body_exp = Exp {
                       data: arg.data.clone(),

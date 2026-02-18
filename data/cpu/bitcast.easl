@@ -1,3 +1,4 @@
+@cpu
 (defn main []
   (let [x: i32 (bitcast 1u)]
     (print x))

@@ -12,6 +12,7 @@
       (+= y 1)))
   -1)
 
+@cpu
 (defn main []
   (print (find-first-above 50))
   (print (find-first-above 10000))

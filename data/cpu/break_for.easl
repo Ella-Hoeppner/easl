@@ -1,3 +1,4 @@
+@cpu
 (defn main []
   (for [i 0i (< i 10) (+= i 1)]
     (when (== i 5)

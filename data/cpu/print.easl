@@ -1,3 +1,4 @@
+@cpu
 (defn main []
   (print (+ (+ (vec4f 1. 2. 3. 4.) 2.)
             (vec4f 4. 3. 2. 1.)))

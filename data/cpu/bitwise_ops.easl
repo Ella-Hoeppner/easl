@@ -1,3 +1,4 @@
+@cpu
 (defn main []
   (print (& 6u 3u))
   (print (| 6u 3u))
