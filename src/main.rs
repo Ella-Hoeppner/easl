@@ -6,7 +6,7 @@ use easl::{
 };
 use std::fs;
 
-fn benchmark_wgsl_compilation() {
+fn _benchmark_wgsl_compilation() {
   let mut entries: Vec<_> = fs::read_dir("./data/gpu/")
     .expect("Unable to read data/gpu/ directory")
     .filter_map(|e| e.ok())
@@ -31,10 +31,8 @@ fn benchmark_wgsl_compilation() {
 }
 
 fn run_demo(file_name: &str, entry: Option<&str>) {
-  let src = fs::read_to_string(format!("./data/dispatch/{file_name}.easl"))
-    .unwrap_or_else(|_| {
-      panic!("Unable to read data/dispatch/{file_name}.easl")
-    });
+  let src = fs::read_to_string(format!("./data/window/{file_name}.easl"))
+    .unwrap_or_else(|_| panic!("Unable to read data/window/{file_name}.easl"));
   let document = parse_easl_without_comments(&src);
   let (mut program, errors) =
     Program::from_easl_document(&document, built_in_macros());
@@ -49,6 +47,9 @@ fn run_demo(file_name: &str, entry: Option<&str>) {
 }
 
 fn main() {
+  unsafe {
+    std::env::set_var("RUST_BACKTRACE", "1");
+  }
   // benchmark_wgsl_compilation();
-  run_demo("indirect", None)
+  run_demo("abstraction", None)
 }

@@ -1397,41 +1397,34 @@ fn apply_builtin_fn(
       Ok(Value::Unit)
     }
     "dispatch-shader" => {
-      #[cfg(feature = "window")]
-      {
-        let (_, Type::Function(vert_f)) = &args[0] else {
-          panic!()
-        };
-        let vert_f_name = vert_f
-          .abstract_ancestor
-          .as_ref()
-          .unwrap()
-          .borrow()
-          .name
-          .clone();
-        let (_, Type::Function(frag_f)) = &args[1] else {
-          panic!()
-        };
-        let frag_f_name = frag_f
-          .abstract_ancestor
-          .as_ref()
-          .unwrap()
-          .borrow()
-          .name
-          .clone();
-        let (Value::Prim(Primitive::U32(vert_count)), _) = &args[2] else {
-          panic!()
-        };
-        crate::window::dispatch_shader(crate::window::DispatchConfig {
-          wgsl: env.wgsl.clone(),
-          vert_entry: vert_f_name.to_string(),
-          frag_entry: frag_f_name.to_string(),
-          vert_count: *vert_count,
-        });
-        Ok(Value::Unit)
-      }
-      #[cfg(not(feature = "window"))]
-      Err(WindowFeatureNotEnabled)
+      let (_, Type::Function(vert_f)) = &args[0] else {
+        panic!()
+      };
+      let vert_f_name = vert_f
+        .abstract_ancestor
+        .as_ref()
+        .unwrap()
+        .borrow()
+        .name
+        .clone();
+      let (_, Type::Function(frag_f)) = &args[1] else {
+        panic!()
+      };
+      let frag_f_name = frag_f
+        .abstract_ancestor
+        .as_ref()
+        .unwrap()
+        .borrow()
+        .name
+        .clone();
+      let (Value::Prim(Primitive::U32(vert_count)), _) = &args[2] else {
+        panic!()
+      };
+      let wgsl = env.wgsl.clone();
+      env
+        .io
+        .dispatch_shader(&vert_f_name, &frag_f_name, *vert_count, &wgsl)?;
+      Ok(Value::Unit)
     }
     _ => Err(UnimplementedBuiltin(f_name.to_string())),
   }
@@ -1601,8 +1594,22 @@ impl From<Primitive> for Value {
   }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowEvent {
+  pub vert: String,
+  pub frag: String,
+  pub vert_count: u32,
+}
+
 pub trait IOManager {
   fn println(&mut self, s: &str);
+  fn dispatch_shader(
+    &mut self,
+    vert: &str,
+    frag: &str,
+    vert_count: u32,
+    wgsl: &str,
+  ) -> Result<(), EvalError>;
 }
 
 pub struct StdoutIO;
@@ -1611,16 +1618,42 @@ impl IOManager for StdoutIO {
   fn println(&mut self, s: &str) {
     println!("{s}");
   }
+
+  fn dispatch_shader(
+    &mut self,
+    vert: &str,
+    frag: &str,
+    vert_count: u32,
+    wgsl: &str,
+  ) -> Result<(), EvalError> {
+    #[cfg(feature = "window")]
+    {
+      crate::window::dispatch_shader(crate::window::DispatchConfig {
+        wgsl: wgsl.to_string(),
+        vert_entry: vert.to_string(),
+        frag_entry: frag.to_string(),
+        vert_count,
+      });
+      Ok(())
+    }
+    #[cfg(not(feature = "window"))]
+    {
+      let _ = (vert, frag, vert_count, wgsl);
+      Err(WindowFeatureNotEnabled)
+    }
+  }
 }
 
 pub struct StringIO {
   pub output: String,
+  pub dispatches: Vec<WindowEvent>,
 }
 
 impl StringIO {
   pub fn new() -> Self {
     Self {
       output: String::new(),
+      dispatches: vec![],
     }
   }
 }
@@ -1629,6 +1662,21 @@ impl IOManager for StringIO {
   fn println(&mut self, s: &str) {
     self.output.push_str(s);
     self.output.push('\n');
+  }
+
+  fn dispatch_shader(
+    &mut self,
+    vert: &str,
+    frag: &str,
+    vert_count: u32,
+    _wgsl: &str,
+  ) -> Result<(), EvalError> {
+    self.dispatches.push(WindowEvent {
+      vert: vert.to_string(),
+      frag: frag.to_string(),
+      vert_count,
+    });
+    Ok(())
   }
 }
 
@@ -1669,7 +1717,9 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         }
       }
     }
-    env.wgsl = program.compile_to_wgsl()?;
+    let wgsl = program.compile_to_wgsl()?;
+    println!("{wgsl}");
+    env.wgsl = wgsl;
     Ok(env)
   }
   fn bind(&mut self, name: Rc<str>, value: Value) {
@@ -2149,4 +2199,8 @@ pub fn run_program_capturing_output(
   program: Program,
 ) -> Result<String, EvalError> {
   Ok(run_program_with(program, None, StringIO::new())?.output)
+}
+
+pub fn run_program_test_io(program: Program) -> Result<StringIO, EvalError> {
+  run_program_with(program, None, StringIO::new())
 }

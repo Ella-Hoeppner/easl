@@ -1632,38 +1632,48 @@ impl Program {
               applied_f.data.with_dereferenced_mut(|t| match t {
                 TypeState::Known(t) => match t {
                   Type::Function(applied_f_signature) => {
-                    let mut skip_inlining_fn_args = false;
+                    let mut args_to_remove = vec![];
                     if let Some(applied_f_abstract_signature) =
                       &mut applied_f_signature.abstract_ancestor
                     {
                       let applied_f_abstract_signature =
                         (**applied_f_abstract_signature).clone();
-                      if matches!(
-                        applied_f_abstract_signature.borrow().implementation,
-                        FunctionImplementationKind::Composite(_),
-                      ) {
+                      if let FunctionImplementationKind::Composite(f) =
+                        &mut applied_f_abstract_signature
+                          .clone()
+                          .borrow_mut()
+                          .implementation
+                      {
+                        args_to_remove = (0..args.len())
+                          .rev()
+                          .filter(|i| {
+                            args[*i].data.unwrap_known().is_unitlike(&mut names)
+                          })
+                          .collect();
                         applied_f_abstract_signature
                           .borrow_mut()
                           .remove_unitlike_arguments(&mut names);
                         applied_f_signature.abstract_ancestor =
                           Some(Rc::new(applied_f_abstract_signature));
+                        let mut f = f.borrow_mut();
+                        for i in args_to_remove.iter() {
+                          f.arg_names.remove(*i);
+                          f.arg_annotations.remove(*i);
+                        }
                       } else {
-                        skip_inlining_fn_args = true;
+                        args_to_remove = (0..args.len())
+                          .rev()
+                          .filter(|i| {
+                            let arg_type = args[*i].data.unwrap_known();
+                            if matches!(arg_type, Type::Function(_)) {
+                              false
+                            } else {
+                              arg_type.is_unitlike(&mut names)
+                            }
+                          })
+                          .collect();
                       }
                     }
-                    let args_to_remove: Vec<usize> = (0..args.len())
-                      .rev()
-                      .filter(|i| {
-                        let arg_type = args[*i].data.unwrap_known();
-                        if skip_inlining_fn_args
-                          && matches!(arg_type, Type::Function(_))
-                        {
-                          false
-                        } else {
-                          arg_type.is_unitlike(&mut names)
-                        }
-                      })
-                      .collect();
                     for i in args_to_remove {
                       args.remove(i);
                       applied_f_signature.args.remove(i);
