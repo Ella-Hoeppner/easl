@@ -1,4 +1,5 @@
 use std::{collections::HashMap, rc::Rc, vec};
+use take_mut::take;
 
 use crate::compiler::{
   builtins::ASSIGNMENT_OPS,
@@ -232,11 +233,11 @@ fn primitive_arithmetic(
   }
 }
 
-fn apply_builtin_fn(
+fn apply_builtin_fn<IO: IOManager>(
   f_name: Rc<str>,
   mut args: Vec<(Value, Type)>,
   return_type: Type,
-  env: &mut EvaluationEnvironment<impl IOManager>,
+  env: &mut EvaluationEnvironment<IO>,
 ) -> Result<Value, EvalError> {
   let return_type_clone = return_type.clone();
   let construct_vec = |vec_length: usize| {
@@ -1396,7 +1397,7 @@ fn apply_builtin_fn(
       env.io.println(&formatted);
       Ok(Value::Unit)
     }
-    "dispatch-shader" => {
+    "dispatch-shaders" => {
       let (_, Type::Function(vert_f)) = &args[0] else {
         panic!()
       };
@@ -1420,10 +1421,35 @@ fn apply_builtin_fn(
       let (Value::Prim(Primitive::U32(vert_count)), _) = &args[2] else {
         panic!()
       };
-      let wgsl = env.wgsl.clone();
       env
         .io
-        .dispatch_shader(&vert_f_name, &frag_f_name, *vert_count, &wgsl)?;
+        .record_draw(&vert_f_name, &frag_f_name, *vert_count)?;
+      Ok(Value::Unit)
+    }
+    "spawn-window" => {
+      let (
+        Value::Fun(Function::Composite {
+          arg_names: _,
+          expression,
+        }),
+        _,
+      ) = args.remove(0)
+      else {
+        panic!("spawn-window: callback must be a composite function")
+      };
+      let ExpKind::Function(_, body) = expression.kind else {
+        panic!()
+      };
+      let body = *body;
+      let mut result: Result<(), EvalError> = Ok(());
+      take(env, |env| match IO::run_spawn_window(body, env) {
+        Ok(env) => env,
+        Err((env, e)) => {
+          result = Err(e);
+          env
+        }
+      });
+      result?;
       Ok(Value::Unit)
     }
     _ => Err(UnimplementedBuiltin(f_name.to_string())),
@@ -1594,6 +1620,8 @@ impl From<Primitive> for Value {
   }
 }
 
+/// Internal frame-level draw call, used by StdoutIO to pass draw commands to
+/// the wgpu renderer in window.rs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowEvent {
   pub vert: String,
@@ -1601,82 +1629,150 @@ pub struct WindowEvent {
   pub vert_count: u32,
 }
 
-pub trait IOManager {
+/// A single observable event emitted by the interpreter, recorded by StringIO
+/// in order of occurrence.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IOEvent {
+  Print(String),
+  SpawnWindow,
+  DispatchShaders {
+    vert: String,
+    frag: String,
+    vert_count: u32,
+  },
+}
+
+pub trait IOManager: Sized {
   fn println(&mut self, s: &str);
-  fn dispatch_shader(
+  fn record_draw(
     &mut self,
     vert: &str,
     frag: &str,
     vert_count: u32,
-    wgsl: &str,
   ) -> Result<(), EvalError>;
+  fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent>;
+  fn run_spawn_window(
+    body: Exp<ExpTypeInfo>,
+    env: EvaluationEnvironment<Self>,
+  ) -> Result<
+    EvaluationEnvironment<Self>,
+    (EvaluationEnvironment<Self>, EvalError),
+  >;
 }
 
-pub struct StdoutIO;
+pub struct StdoutIO {
+  frame_draw_calls: Vec<WindowEvent>,
+}
+
+impl StdoutIO {
+  pub fn new() -> Self {
+    Self {
+      frame_draw_calls: vec![],
+    }
+  }
+}
 
 impl IOManager for StdoutIO {
   fn println(&mut self, s: &str) {
     println!("{s}");
   }
 
-  fn dispatch_shader(
+  fn record_draw(
     &mut self,
     vert: &str,
     frag: &str,
     vert_count: u32,
-    wgsl: &str,
   ) -> Result<(), EvalError> {
-    #[cfg(feature = "window")]
-    {
-      crate::window::dispatch_shader(crate::window::DispatchConfig {
-        wgsl: wgsl.to_string(),
-        vert_entry: vert.to_string(),
-        frag_entry: frag.to_string(),
-        vert_count,
-      });
-      Ok(())
-    }
-    #[cfg(not(feature = "window"))]
-    {
-      let _ = (vert, frag, vert_count, wgsl);
-      Err(WindowFeatureNotEnabled)
-    }
-  }
-}
-
-pub struct StringIO {
-  pub output: String,
-  pub dispatches: Vec<WindowEvent>,
-}
-
-impl StringIO {
-  pub fn new() -> Self {
-    Self {
-      output: String::new(),
-      dispatches: vec![],
-    }
-  }
-}
-
-impl IOManager for StringIO {
-  fn println(&mut self, s: &str) {
-    self.output.push_str(s);
-    self.output.push('\n');
-  }
-
-  fn dispatch_shader(
-    &mut self,
-    vert: &str,
-    frag: &str,
-    vert_count: u32,
-    _wgsl: &str,
-  ) -> Result<(), EvalError> {
-    self.dispatches.push(WindowEvent {
+    self.frame_draw_calls.push(WindowEvent {
       vert: vert.to_string(),
       frag: frag.to_string(),
       vert_count,
     });
     Ok(())
+  }
+
+  fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent> {
+    std::mem::take(&mut self.frame_draw_calls)
+  }
+
+  fn run_spawn_window(
+    body: Exp<ExpTypeInfo>,
+    env: EvaluationEnvironment<Self>,
+  ) -> Result<
+    EvaluationEnvironment<Self>,
+    (EvaluationEnvironment<Self>, EvalError),
+  > {
+    #[cfg(feature = "window")]
+    return crate::window::run_window_loop(body, env);
+    #[cfg(not(feature = "window"))]
+    {
+      let _ = body;
+      Err((env, WindowFeatureNotEnabled))
+    }
+  }
+}
+
+/// Test/debug IO manager. Records all IO events in a single ordered log and
+/// simulates the window loop by running the frame callback `frame_count` times.
+pub struct StringIO {
+  pub events: Vec<IOEvent>,
+  pub frame_count: usize,
+}
+
+impl Default for StringIO {
+  fn default() -> Self {
+    Self {
+      events: vec![],
+      frame_count: 10,
+    }
+  }
+}
+
+impl StringIO {
+  pub fn new() -> Self {
+    Self::default()
+  }
+}
+
+impl IOManager for StringIO {
+  fn println(&mut self, s: &str) {
+    self.events.push(IOEvent::Print(s.to_string()));
+  }
+
+  fn record_draw(
+    &mut self,
+    vert: &str,
+    frag: &str,
+    vert_count: u32,
+  ) -> Result<(), EvalError> {
+    self.events.push(IOEvent::DispatchShaders {
+      vert: vert.to_string(),
+      frag: frag.to_string(),
+      vert_count,
+    });
+    Ok(())
+  }
+
+  fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent> {
+    vec![] // Events already logged directly; no rendering needed for StringIO
+  }
+
+  fn run_spawn_window(
+    body: Exp<ExpTypeInfo>,
+    mut env: EvaluationEnvironment<Self>,
+  ) -> Result<
+    EvaluationEnvironment<Self>,
+    (EvaluationEnvironment<Self>, EvalError),
+  > {
+    env.io.events.push(IOEvent::SpawnWindow);
+    let frame_count = env.io.frame_count;
+    for _ in 0..frame_count {
+      match eval(body.clone(), &mut env) {
+        Ok(_) => {}
+        Err(e) => return Err((env, e.into())),
+      }
+    }
+    Ok(env)
   }
 }
 
@@ -1721,6 +1817,9 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     println!("{wgsl}");
     env.wgsl = wgsl;
     Ok(env)
+  }
+  pub fn wgsl(&self) -> &str {
+    &self.wgsl
   }
   fn bind(&mut self, name: Rc<str>, value: Value) {
     if let Some(bindings) = self.bindings.get_mut(&name) {
@@ -2183,7 +2282,7 @@ fn run_program_with<IO: IOManager>(
 }
 
 pub fn run_program(program: Program) -> Result<(), EvalError> {
-  run_program_with(program, None, StdoutIO)?;
+  run_program_with(program, None, StdoutIO::new())?;
   Ok(())
 }
 
@@ -2191,14 +2290,22 @@ pub fn run_program_entry(
   program: Program,
   entry: Option<&str>,
 ) -> Result<(), EvalError> {
-  run_program_with(program, entry, StdoutIO)?;
+  run_program_with(program, entry, StdoutIO::new())?;
   Ok(())
 }
 
 pub fn run_program_capturing_output(
   program: Program,
 ) -> Result<String, EvalError> {
-  Ok(run_program_with(program, None, StringIO::new())?.output)
+  let io = run_program_with(program, None, StringIO::new())?;
+  let mut output = String::new();
+  for event in &io.events {
+    if let IOEvent::Print(s) = event {
+      output.push_str(s);
+      output.push('\n');
+    }
+  }
+  Ok(output)
 }
 
 pub fn run_program_test_io(program: Program) -> Result<StringIO, EvalError> {

@@ -1,1 +1,11 @@
-my-vertex my-fragment 3
+spawn-window
+dispatch-shaders my-vertex my-fragment 3
+dispatch-shaders my-vertex my-fragment 3
+dispatch-shaders my-vertex my-fragment 3
+dispatch-shaders my-vertex my-fragment 3
+dispatch-shaders my-vertex my-fragment 3
+dispatch-shaders my-vertex my-fragment 3
+dispatch-shaders my-vertex my-fragment 3
+dispatch-shaders my-vertex my-fragment 3
+dispatch-shaders my-vertex my-fragment 3
+dispatch-shaders my-vertex my-fragment 3

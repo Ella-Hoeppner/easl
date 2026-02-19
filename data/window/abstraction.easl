@@ -13,8 +13,9 @@
   (vec4f (* 0.001 pos.xy) 0. 1.))
 
 (defn run-purefrag-shader [frag: (Fn [vec4f] vec4f)]
-  (dispatch-shader trivial-vertex frag 3))
+  (dispatch-shaders trivial-vertex frag 3))
 
 @cpu
 (defn main []
-  (run-purefrag-shader my-fragment))
+  (spawn-window (fn []
+                    (run-purefrag-shader my-fragment))))

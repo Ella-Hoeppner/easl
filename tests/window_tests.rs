@@ -1,7 +1,35 @@
 use easl::compiler::program::Program;
-use easl::interpreter::{WindowEvent, run_program_test_io};
+use easl::interpreter::{IOEvent, run_program_test_io};
 use easl::parse::parse_easl_without_comments;
 use std::fs;
+
+fn parse_events(txt: &str, name: &str) -> Vec<IOEvent> {
+  txt
+    .lines()
+    .filter(|l| !l.trim().is_empty())
+    .map(|line| {
+      if let Some(msg) = line.strip_prefix("print: ") {
+        IOEvent::Print(msg.to_string())
+      } else if line == "spawn-window" {
+        IOEvent::SpawnWindow
+      } else if let Some(rest) = line.strip_prefix("dispatch-shaders ") {
+        let parts: Vec<&str> = rest.splitn(3, ' ').collect();
+        assert_eq!(
+          parts.len(),
+          3,
+          "{name}: malformed dispatch-shaders line: {line:?}"
+        );
+        IOEvent::DispatchShaders {
+          vert: parts[0].to_string(),
+          frag: parts[1].to_string(),
+          vert_count: parts[2].parse().expect("vert_count must be u32"),
+        }
+      } else {
+        panic!("{name}: unknown event format: {line:?}");
+      }
+    })
+    .collect()
+}
 
 fn run_window_test(name: &str) {
   let easl_source = fs::read_to_string(format!("./data/window/{name}.easl"))
@@ -22,21 +50,8 @@ fn run_window_test(name: &str) {
     panic!("{name}: evaluation error: {e:#?}");
   });
 
-  let expected: Vec<WindowEvent> = expected_txt
-    .lines()
-    .filter(|l| !l.trim().is_empty())
-    .map(|line| {
-      let parts: Vec<&str> = line.splitn(3, ' ').collect();
-      assert_eq!(parts.len(), 3, "{name}: malformed expected line: {line:?}");
-      WindowEvent {
-        vert: parts[0].to_string(),
-        frag: parts[1].to_string(),
-        vert_count: parts[2].parse().expect("vert_count must be u32"),
-      }
-    })
-    .collect();
-
-  assert_eq!(io.dispatches, expected, "{name}: dispatch mismatch");
+  let expected = parse_events(&expected_txt, name);
+  assert_eq!(io.events, expected, "{name}: event mismatch");
 }
 
 macro_rules! window_test {
@@ -52,3 +67,6 @@ window_test!(simple);
 window_test!(indirect);
 window_test!(vec4f_in_between);
 window_test!(abstraction);
+window_test!(print_and_render);
+window_test!(multi_render);
+window_test!(multi_window);

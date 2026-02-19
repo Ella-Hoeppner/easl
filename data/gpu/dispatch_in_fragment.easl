@@ -9,5 +9,5 @@
 
 @fragment
 (defn bad-frag [in: VertexOutput]: @{location 0} vec4f
-  (dispatch-shader vert-fn frag-fn 3u)
-  (vec4f 1. 0. 0. 1.))
+  (do (dispatch-shaders vert-fn frag-fn 3u)
+      (vec4f 1. 0. 0. 1.)))

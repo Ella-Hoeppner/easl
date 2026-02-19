@@ -480,6 +480,6 @@ error_test!(invalid_name_leading_number, CompileErrorKind::InvalidName);
 error_test!(
   dispatch_in_fragment,
   CompileErrorKind::CPUExclusiveFunctionInGPUEntryPoint(
-    "dispatch-shader".to_string()
+    "dispatch-shaders".to_string()
   )
 );

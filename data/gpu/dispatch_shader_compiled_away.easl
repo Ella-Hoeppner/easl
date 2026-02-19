@@ -19,4 +19,5 @@
 
 @cpu
 (defn main []
-  (dispatch-shader my-vertex my-fragment 3))
+  (spawn-window (fn []
+    (dispatch-shaders my-vertex my-fragment 3))))

@@ -15,9 +15,9 @@
          (* 0.001 pos.y)
          1.))
 
-(defn f []
-  (dispatch-shader my-vertex my-fragment 3))
+(defn draw-frame []
+  (dispatch-shaders my-vertex my-fragment 3))
 
 @cpu
 (defn main []
-  (f))
+  (spawn-window draw-frame))

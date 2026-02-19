@@ -1781,64 +1781,88 @@ fn print_functions() -> Vec<AbstractFunctionSignature> {
 }
 
 fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
-  vec![AbstractFunctionSignature {
-    name: "dispatch-shader".into(),
-    generic_args: vec![(
-      "T".into(),
-      GenericArgument::Type(vec![]),
-      SourceTrace::empty(),
-    )],
-    arg_types: vec![
-      AbstractType::Type(Type::Function(
-        FunctionSignature {
-          abstract_ancestor: None,
-          args: vec![(
-            Variable {
-              kind: VariableKind::Let,
-              var_type: Type::U32.known().into(),
-            },
-            vec![],
-          )],
-          return_type: Type::Skolem("T".into(), vec![]).known().into(),
-        }
-        .into(),
-      ))
-      .owned(),
-      AbstractType::Type(Type::Function(
-        FunctionSignature {
-          abstract_ancestor: None,
-          args: vec![(
-            Variable {
-              kind: VariableKind::Let,
-              var_type: Type::Skolem("T".into(), vec![]).known().into(),
-            },
-            vec![],
-          )],
-          return_type: Type::Struct(
-            AbstractStruct::concretize(
-              Rc::new(vec4().generate_monomorphized(vec![Type::F32]).unwrap()),
-              &TypeDefs::empty(),
-              &vec![],
-              SourceTrace::empty(),
-            )
-            .unwrap(),
-          )
-          .known()
+  vec![
+    AbstractFunctionSignature {
+      name: "dispatch-shaders".into(),
+      generic_args: vec![(
+        "T".into(),
+        GenericArgument::Type(vec![]),
+        SourceTrace::empty(),
+      )],
+      arg_types: vec![
+        AbstractType::Type(Type::Function(
+          FunctionSignature {
+            abstract_ancestor: None,
+            args: vec![(
+              Variable {
+                kind: VariableKind::Let,
+                var_type: Type::U32.known().into(),
+              },
+              vec![],
+            )],
+            return_type: Type::Skolem("T".into(), vec![]).known().into(),
+          }
           .into(),
-        }
-        .into(),
-      ))
-      .owned(),
-      AbstractType::Type(Type::U32).owned(),
-    ],
-    return_type: AbstractType::Unit,
-    implementation: FunctionImplementationKind::Builtin {
-      effect_type: Effect::CPUExclusiveFunction("dispatch-shader".into())
-        .into(),
-      target_configuration: FunctionTargetConfiguration::Default,
+        ))
+        .owned(),
+        AbstractType::Type(Type::Function(
+          FunctionSignature {
+            abstract_ancestor: None,
+            args: vec![(
+              Variable {
+                kind: VariableKind::Let,
+                var_type: Type::Skolem("T".into(), vec![]).known().into(),
+              },
+              vec![],
+            )],
+            return_type: Type::Struct(
+              AbstractStruct::concretize(
+                Rc::new(
+                  vec4().generate_monomorphized(vec![Type::F32]).unwrap(),
+                ),
+                &TypeDefs::empty(),
+                &vec![],
+                SourceTrace::empty(),
+              )
+              .unwrap(),
+            )
+            .known()
+            .into(),
+          }
+          .into(),
+        ))
+        .owned(),
+        AbstractType::Type(Type::U32).owned(),
+      ],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("dispatch-shaders".into())
+          .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
     },
-    ..Default::default()
-  }]
+    AbstractFunctionSignature {
+      name: "spawn-window".into(),
+      arg_types: vec![
+        AbstractType::Type(Type::Function(
+          FunctionSignature {
+            abstract_ancestor: None,
+            args: vec![],
+            return_type: Type::Unit.known().into(),
+          }
+          .into(),
+        ))
+        .owned(),
+      ],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("spawn-window".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
+  ]
 }
 
 pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {

@@ -1318,6 +1318,9 @@ impl Program {
                           None => None,
                         })
                       }
+                      Effect::CPUExclusiveFunction(_)
+                      | Effect::FragmentExclusiveFunction(_)
+                      | Effect::Print => Ok(None),
                       _ => {
                         err(IllegalEffectsInClosure, body.source_trace.clone())
                       }
