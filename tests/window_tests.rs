@@ -70,3 +70,4 @@ window_test!(abstraction);
 window_test!(print_and_render);
 window_test!(multi_render);
 window_test!(multi_window);
+window_test!(global_frame_counter);

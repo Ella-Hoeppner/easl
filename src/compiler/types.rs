@@ -1792,6 +1792,7 @@ pub fn extract_type_annotation(
 pub struct ExpTypeInfo {
   pub kind: TypeState,
   pub ownership: Ownership,
+  pub is_globally_bound: bool,
   pub subtree_fully_typed: bool,
   pub errored: bool,
   pub fully_known_cached: bool,
@@ -1819,6 +1820,7 @@ impl From<TypeState> for ExpTypeInfo {
       ownership: Ownership::Owned,
       subtree_fully_typed: false,
       fully_known_cached: false,
+      is_globally_bound: false,
       errored: false,
       already_constrained_against_signatures: false,
     }
@@ -2504,6 +2506,23 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
     let name_rc: Rc<str> = name.to_string().into();
     self.variables.contains_key(name)
       || self.program.abstract_functions.contains_key(&name_rc)
+      || self
+        .program
+        .top_level_vars
+        .iter()
+        .find(|top_level_var| &*top_level_var.name == name)
+        .is_some()
+      || self
+        .program
+        .typedefs
+        .enums
+        .iter()
+        .find(|e| e.has_unit_variant_named(name))
+        .is_some()
+  }
+  pub fn is_globally_bound(&self, name: &str) -> bool {
+    let name_rc: Rc<str> = name.to_string().into();
+    self.program.abstract_functions.contains_key(&name_rc)
       || self
         .program
         .top_level_vars

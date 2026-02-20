@@ -423,14 +423,20 @@ pub enum CompileErrorKind {
   TypeDependencyCycle(Vec<String>),
   #[error("Missing argument list in fn")]
   FnMissingArgumentList,
-  #[error("Closure has illegal effects")]
-  IllegalEffectsInClosure,
+  #[error("Closure has illegal effects: {0}")]
+  IllegalEffectsInClosure(String),
+  #[error("Can't modify local variable \"{0}\" inside a closure")]
+  CantModifyLocalVarInClosure(String),
   #[error("`match` expression may not yield a function-typed value")]
   CantYieldFunctionFromMatch,
   #[error("Illegal function-typed value")]
   IllegalFunctionTypeExpressionKind,
   #[error("Can't store functions in a data structure")]
   CantStoreFunctionInDataStructure,
+  #[error(
+    "GPU entry point wrote to variable \"{0}\" in illegal address space \"{1}\""
+  )]
+  IllegalAddressSpaceGpuWrite(String, VariableAddressSpace),
 }
 
 impl CompileErrorKind {

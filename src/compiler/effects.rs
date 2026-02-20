@@ -1,9 +1,15 @@
 use std::{collections::HashSet, rc::Rc};
 
+use crate::compiler::{
+  program::Program,
+  vars::{TopLevelVariableKind, VariableAddressSpace},
+};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Effect {
   ReadsVar(Rc<str>),
-  ModifiesVar(Rc<str>),
+  ModifiesLocalVar(Rc<str>),
+  ModifiesGlobalVar(Rc<str>),
   Break,
   Return,
   Continue,
@@ -48,6 +54,28 @@ impl EffectType {
       .filter_map(|e| {
         if let Effect::CPUExclusiveFunction(name) = e {
           Some(name.clone())
+        } else {
+          None
+        }
+      })
+      .collect()
+  }
+  pub fn gpu_illegal_address_space_writes(
+    &self,
+    program: &Program,
+  ) -> Vec<(Rc<str>, VariableAddressSpace)> {
+    self
+      .0
+      .iter()
+      .filter_map(|e| {
+        if let Effect::ModifiesGlobalVar(name) = e
+          && let Some(top_level_var) =
+            program.top_level_vars.iter().find(|v| v.name == *name)
+          && let TopLevelVariableKind::Var { address_space, .. } =
+            top_level_var.kind
+          && !address_space.may_write_from_gpu()
+        {
+          Some((name.clone(), address_space))
         } else {
           None
         }

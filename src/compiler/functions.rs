@@ -1060,6 +1060,8 @@ impl TopLevelFunction {
       panic!("attempted to compile function with invalid ExpKind {kind:?}")
     };
     let effects = body.effects(program);
+    let allowed_on_gpu = effects.cpu_exclusive_functions().is_empty()
+      && effects.gpu_illegal_address_space_writes(program).is_empty();
     let args = arg_names
       .into_iter()
       .zip(args.into_iter())
@@ -1117,9 +1119,7 @@ impl TopLevelFunction {
       ))
     );
     Ok(
-      if Some(EntryPoint::Cpu) != self.entry_point
-        && effects.cpu_exclusive_functions().is_empty()
-      {
+      if Some(EntryPoint::Cpu) != self.entry_point && allowed_on_gpu {
         fn_string
       } else {
         // String::new()
@@ -1134,7 +1134,7 @@ impl TopLevelFunction {
       let mut effects = body.effects(&program);
       for (name, _) in arg_names {
         effects.remove(&Effect::ReadsVar(name.clone()));
-        effects.remove(&Effect::ModifiesVar(name.clone()))
+        effects.remove(&Effect::ModifiesLocalVar(name.clone()))
       }
       effects
     } else {

@@ -1,0 +1,12 @@
+@{address uniform
+  group 0
+  binding 0}
+(var x: u32)
+
+(defn make-x-zero []
+  (= x 0u))
+
+@fragment
+(defn frag [@{builtin position} pos: vec4f]: vec4f
+  (make-x-zero)
+  pos)

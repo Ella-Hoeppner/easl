@@ -1,0 +1,11 @@
+spawn-window
+print: 1u
+print: 2u
+print: 3u
+print: 4u
+print: 5u
+print: 6u
+print: 7u
+print: 8u
+print: 9u
+print: 10u

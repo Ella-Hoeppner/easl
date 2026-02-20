@@ -32,7 +32,7 @@ impl Default for VariableAddressSpace {
 use VariableAddressSpace::*;
 
 impl VariableAddressSpace {
-  pub fn may_write(&self) -> bool {
+  pub fn may_write_from_gpu(&self) -> bool {
     match self {
       Function | Private | Workgroup | StorageReadWrite => true,
       Uniform | StorageRead | Handle => false,
@@ -324,13 +324,7 @@ impl TopLevelVar {
     match self.kind {
       TopLevelVariableKind::Const => VariableKind::Let,
       TopLevelVariableKind::Override => VariableKind::Override,
-      TopLevelVariableKind::Var { address_space, .. } => {
-        if address_space.may_write() {
-          VariableKind::Var
-        } else {
-          VariableKind::Let
-        }
-      }
+      TopLevelVariableKind::Var { .. } => VariableKind::Var,
     }
   }
   pub fn compile(

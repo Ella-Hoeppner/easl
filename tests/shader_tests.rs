@@ -420,7 +420,6 @@ error_test!(
   CompileErrorKind::PassedReferenceFromInvalidAddressSpace(
     VariableAddressSpace::Uniform
   ),
-  CompileErrorKind::ImmutableOwnedPassedAsMutableReference,
 );
 error_test!(
   user_reference_failure_handle,
@@ -481,5 +480,26 @@ error_test!(
   dispatch_in_fragment,
   CompileErrorKind::CPUExclusiveFunctionInGPUEntryPoint(
     "dispatch-shaders".to_string()
+  )
+);
+error_test!(
+  uniform_write_failure,
+  CompileErrorKind::IllegalAddressSpaceGpuWrite(
+    "x".to_string(),
+    VariableAddressSpace::Uniform
+  )
+);
+error_test!(
+  indirect_uniform_write_failure,
+  CompileErrorKind::IllegalAddressSpaceGpuWrite(
+    "x".to_string(),
+    VariableAddressSpace::Uniform
+  )
+);
+error_test!(
+  reference_uniform_write_failure,
+  CompileErrorKind::IllegalAddressSpaceGpuWrite(
+    "x".to_string(),
+    VariableAddressSpace::Uniform
   )
 );

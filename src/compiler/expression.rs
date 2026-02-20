@@ -2479,6 +2479,7 @@ impl TypedExp {
             self.source_trace.clone(),
           ));
         }
+        self.data.is_globally_bound = ctx.is_globally_bound(name);
         if let Some(ownership) = ctx.get_variable_ownership(name) {
           self.data.ownership = ownership;
         }
@@ -2650,6 +2651,7 @@ impl TypedExp {
                   &first_arg.source_trace,
                   errors,
                 );
+                self.data.is_globally_bound = first_arg.data.is_globally_bound;
               } else {
                 errors.log(CompileError::new(
                   ArrayLookupInvalidArity(args.len()),
@@ -2677,54 +2679,59 @@ impl TypedExp {
 
         anything_changed
       }
-      Access(accessor, subexp) => match accessor {
-        Accessor::Field(field_name) => {
-          let mut anything_changed = subexp.propagate_types_inner(ctx, errors);
-          if let Known(t) = &mut subexp.data.kind {
-            if let Type::Struct(s) = t {
-              if let Some(x) =
-                &mut s.fields.iter_mut().find(|f| f.name == *field_name)
-              {
-                anything_changed |= self.data.mutually_constrain(
-                  &mut x.field_type,
-                  &self.source_trace,
-                  errors,
-                );
+      Access(accessor, subexp) => {
+        let anything_changed = match accessor {
+          Accessor::Field(field_name) => {
+            let mut anything_changed =
+              subexp.propagate_types_inner(ctx, errors);
+            if let Known(t) = &mut subexp.data.kind {
+              if let Type::Struct(s) = t {
+                if let Some(x) =
+                  &mut s.fields.iter_mut().find(|f| f.name == *field_name)
+                {
+                  anything_changed |= self.data.mutually_constrain(
+                    &mut x.field_type,
+                    &self.source_trace,
+                    errors,
+                  );
+                } else {
+                  errors.log(CompileError::new(
+                    NoSuchField {
+                      struct_name: s.abstract_ancestor.name.0.to_string(),
+                      field_name: field_name.to_string(),
+                    },
+                    self.source_trace.clone(),
+                  ));
+                }
               } else {
                 errors.log(CompileError::new(
-                  NoSuchField {
-                    struct_name: s.abstract_ancestor.name.0.to_string(),
-                    field_name: field_name.to_string(),
-                  },
+                  AccessorOnNonStruct,
                   self.source_trace.clone(),
                 ));
               }
-            } else {
-              errors.log(CompileError::new(
-                AccessorOnNonStruct,
-                self.source_trace.clone(),
-              ));
             }
+            self.data.subtree_fully_typed = subexp.data.subtree_fully_typed;
+            anything_changed
           }
-          self.data.subtree_fully_typed = subexp.data.subtree_fully_typed;
-          anything_changed
-        }
-        Accessor::Swizzle(fields) => {
-          let mut anything_changed = self.data.constrain(
-            &swizzle_accessor_typestate(&subexp.data, fields).kind,
-            &self.source_trace,
-            errors,
-          );
-          anything_changed |= subexp.data.constrain(
-            &swizzle_accessed_possibilities(fields).kind,
-            &self.source_trace,
-            errors,
-          );
-          anything_changed |= subexp.propagate_types_inner(ctx, errors);
-          self.data.subtree_fully_typed = subexp.data.subtree_fully_typed;
-          anything_changed
-        }
-      },
+          Accessor::Swizzle(fields) => {
+            let mut anything_changed = self.data.constrain(
+              &swizzle_accessor_typestate(&subexp.data, fields).kind,
+              &self.source_trace,
+              errors,
+            );
+            anything_changed |= subexp.data.constrain(
+              &swizzle_accessed_possibilities(fields).kind,
+              &self.source_trace,
+              errors,
+            );
+            anything_changed |= subexp.propagate_types_inner(ctx, errors);
+            self.data.subtree_fully_typed = subexp.data.subtree_fully_typed;
+            anything_changed
+          }
+        };
+        self.data.is_globally_bound = subexp.data.is_globally_bound;
+        anything_changed
+      }
       Let(bindings, body) => {
         let mut anything_changed = body.data.mutually_constrain(
           &mut self.data,
@@ -3916,7 +3923,7 @@ impl TypedExp {
           .0
           .into_iter()
           .filter_map(|e| match &e {
-            Effect::ModifiesVar(name) | Effect::ReadsVar(name) => {
+            Effect::ModifiesLocalVar(name) | Effect::ReadsVar(name) => {
               (!bound_names.contains(name)).then(|| e)
             }
             _ => Some(e),
@@ -3932,15 +3939,18 @@ impl TypedExp {
           {
             effects.merge(arg.effects(program));
             if arg_var.var_type.ownership == Ownership::MutableReference {
-              effects.merge(Effect::ModifiesVar(
-                arg
-                  .name_or_inner_accessed_name()
-                  .expect(
-                    "No name found in mutated argument position. This should \
+              let name = arg
+                .name_or_inner_accessed_name()
+                .expect(
+                  "No name found in mutated argument position. This should \
                     never happen if validate_assignments has passed.",
-                  )
-                  .clone(),
-              ));
+                )
+                .clone();
+              effects.merge(if arg.data.is_globally_bound {
+                Effect::ModifiesGlobalVar(name)
+              } else {
+                Effect::ModifiesLocalVar(name)
+              });
             }
           }
           effects
@@ -3971,7 +3981,8 @@ impl TypedExp {
           effects.merge(update_expression.effects(program));
         }
         effects.merge(body_expression.effects(program));
-        effects.remove(&Effect::ModifiesVar(increment_variable_name.0.clone()));
+        effects
+          .remove(&Effect::ModifiesLocalVar(increment_variable_name.0.clone()));
         effects.remove(&Effect::ReadsVar(increment_variable_name.0.clone()));
         effects.remove(&Effect::Break);
         effects.remove(&Effect::Continue);
@@ -4180,7 +4191,7 @@ impl TypedExp {
                         for (name, t) in previously_referenced_names {
                           if effects
                             .0
-                            .contains(&Effect::ModifiesVar(name.clone()))
+                            .contains(&Effect::ModifiesLocalVar(name.clone()))
                           {
                             overridden_names.push((name, t));
                           }

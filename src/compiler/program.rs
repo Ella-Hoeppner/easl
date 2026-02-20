@@ -1318,12 +1318,19 @@ impl Program {
                           None => None,
                         })
                       }
+
+                      Effect::ModifiesLocalVar(var_name) => err(
+                        CantModifyLocalVarInClosure(var_name.to_string()),
+                        body.source_trace.clone(),
+                      ),
                       Effect::CPUExclusiveFunction(_)
                       | Effect::FragmentExclusiveFunction(_)
                       | Effect::Print => Ok(None),
-                      _ => {
-                        err(IllegalEffectsInClosure, body.source_trace.clone())
-                      }
+                      Effect::ModifiesGlobalVar(_) => Ok(None),
+                      _ => err(
+                        IllegalEffectsInClosure(format!("{e:?}")),
+                        body.source_trace.clone(),
+                      ),
                     })
                     .collect::<CompileResult<Vec<_>>>();
                   let captured_vars: Vec<(&Rc<str>, Type)> = captured_vars
@@ -2441,6 +2448,23 @@ impl Program {
                 kind: CPUExclusiveFunctionInGPUEntryPoint(f_name.to_string()),
                 source_trace: f.expression.source_trace.clone(),
               });
+            }
+            for effect in effects.0.iter() {
+              if let Effect::ModifiesGlobalVar(name) = effect
+                && let Some(top_level_var) =
+                  self.top_level_vars.iter().find(|v| v.name == *name)
+                && let TopLevelVariableKind::Var { address_space, .. } =
+                  top_level_var.kind
+                && !address_space.may_write_from_gpu()
+              {
+                errors.log(CompileError {
+                  kind: IllegalAddressSpaceGpuWrite(
+                    name.to_string(),
+                    address_space,
+                  ),
+                  source_trace: f.expression.source_trace.clone(),
+                });
+              }
             }
           }
           if let EntryPoint::Vertex | EntryPoint::Compute(_) = entry_point {

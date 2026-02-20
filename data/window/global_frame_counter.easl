@@ -1,0 +1,11 @@
+@{address uniform
+  group 0
+  binding 0}
+(var frame-index: u32)
+
+@cpu
+(defn main []
+  (= frame-index 0u)
+  (spawn-window (fn []
+                    (= frame-index (+ frame-index 1))
+                    (print frame-index))))

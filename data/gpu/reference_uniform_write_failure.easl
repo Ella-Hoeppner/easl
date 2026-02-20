@@ -1,0 +1,12 @@
+@{address uniform
+  group 0
+  binding 0}
+(var x: u32)
+
+(defn increment [@var @ref u: u32]
+  (= u 0u))
+
+@fragment
+(defn frag [@{builtin position} pos: vec4f]: vec4f
+  (increment x)
+  pos)
