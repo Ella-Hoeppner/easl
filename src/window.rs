@@ -58,6 +58,8 @@ struct RenderState {
   shader: wgpu::ShaderModule,
   pipeline_layout: wgpu::PipelineLayout,
   pipelines: HashMap<(String, String), wgpu::RenderPipeline>,
+  uniform_buffers: HashMap<(u8, u8), wgpu::Buffer>,
+  bind_groups: Vec<wgpu::BindGroup>,
 }
 
 impl<IO: IOManager> ApplicationHandler for App<IO> {
@@ -67,9 +69,11 @@ impl<IO: IOManager> ApplicationHandler for App<IO> {
         .create_window(Window::default_attributes().with_title("easl"))
         .unwrap(),
     );
-    let wgsl = self.env.as_ref().unwrap().wgsl().to_string();
+    let env = self.env.as_ref().unwrap();
+    let wgsl = env.wgsl().to_string();
+    let uniform_infos = env.uniform_infos();
     let state =
-      pollster::block_on(RenderState::new(window, &wgsl)).unwrap();
+      pollster::block_on(RenderState::new(window, &wgsl, &uniform_infos)).unwrap();
     self.state = Some(state);
   }
 
@@ -97,8 +101,10 @@ impl<IO: IOManager> ApplicationHandler for App<IO> {
             return;
           }
         }
+        let uniform_data = env.uniform_buffer_data();
         let draw_calls = env.io.take_frame_draw_calls();
         if let Some(state) = &mut self.state {
+          state.upload_uniforms(&uniform_data);
           state.render(&draw_calls);
           state.window.request_redraw();
         }
@@ -109,7 +115,11 @@ impl<IO: IOManager> ApplicationHandler for App<IO> {
 }
 
 impl RenderState {
-  async fn new(window: Arc<Window>, wgsl: &str) -> Result<Self, String> {
+  async fn new(
+    window: Arc<Window>,
+    wgsl: &str,
+    uniform_infos: &[((u8, u8), u64)],
+  ) -> Result<Self, String> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
       backends: wgpu::Backends::all(),
       ..Default::default()
@@ -165,10 +175,74 @@ impl RenderState {
       source: wgpu::ShaderSource::Wgsl(wgsl.into()),
     });
 
+    // Build uniform buffers, bind group layouts, and bind groups.
+    let max_group = uniform_infos
+      .iter()
+      .map(|((g, _), _)| *g as usize)
+      .max()
+      .map(|g| g + 1)
+      .unwrap_or(0);
+
+    let mut uniform_buffers: HashMap<(u8, u8), wgpu::Buffer> = HashMap::new();
+    for &((group, binding), size) in uniform_infos {
+      let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(&format!("uniform g{group}b{binding}")),
+        size: size.max(16),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+      });
+      uniform_buffers.insert((group, binding), buffer);
+    }
+
+    let bind_group_layouts: Vec<wgpu::BindGroupLayout> = (0..max_group)
+      .map(|group_idx| {
+        let entries: Vec<wgpu::BindGroupLayoutEntry> = uniform_infos
+          .iter()
+          .filter(|((g, _), _)| *g as usize == group_idx)
+          .map(|((_, b), _)| wgpu::BindGroupLayoutEntry {
+            binding: *b as u32,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+              ty: wgpu::BufferBindingType::Uniform,
+              has_dynamic_offset: false,
+              min_binding_size: None,
+            },
+            count: None,
+          })
+          .collect();
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+          label: Some(&format!("bind group layout {group_idx}")),
+          entries: &entries,
+        })
+      })
+      .collect();
+
+    let bind_groups: Vec<wgpu::BindGroup> = bind_group_layouts
+      .iter()
+      .enumerate()
+      .map(|(group_idx, layout)| {
+        let entries: Vec<wgpu::BindGroupEntry> = uniform_infos
+          .iter()
+          .filter(|((g, _), _)| *g as usize == group_idx)
+          .map(|((_, b), _)| wgpu::BindGroupEntry {
+            binding: *b as u32,
+            resource: uniform_buffers[&(group_idx as u8, *b)].as_entire_binding(),
+          })
+          .collect();
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+          label: Some(&format!("bind group {group_idx}")),
+          layout,
+          entries: &entries,
+        })
+      })
+      .collect();
+
+    let bind_group_layout_refs: Vec<&wgpu::BindGroupLayout> =
+      bind_group_layouts.iter().collect();
     let pipeline_layout =
       device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
-        bind_group_layouts: &[],
+        bind_group_layouts: &bind_group_layout_refs,
         immediate_size: 0,
       });
 
@@ -181,6 +255,8 @@ impl RenderState {
       shader,
       pipeline_layout,
       pipelines: HashMap::new(),
+      uniform_buffers,
+      bind_groups,
     })
   }
 
@@ -235,6 +311,14 @@ impl RenderState {
     &self.pipelines[&key]
   }
 
+  fn upload_uniforms(&self, data: &[((u8, u8), Vec<u8>)]) {
+    for ((group, binding), bytes) in data {
+      if let Some(buffer) = self.uniform_buffers.get(&(*group, *binding)) {
+        self.queue.write_buffer(buffer, 0, bytes);
+      }
+    }
+  }
+
   fn resize(&mut self, width: u32, height: u32) {
     if width > 0 && height > 0 {
       self.surface_config.width = width;
@@ -286,6 +370,9 @@ impl RenderState {
           timestamp_writes: None,
           multiview_mask: None,
         });
+      for (group_idx, bind_group) in self.bind_groups.iter().enumerate() {
+        render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
+      }
       for draw_call in draw_calls {
         let vert = draw_call.vert.replace('-', "_");
         let frag = draw_call.frag.replace('-', "_");

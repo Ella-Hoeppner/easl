@@ -1,0 +1,42 @@
+@{address uniform
+  group 0
+  binding 0}
+(var red-phase: f32)
+
+@{address uniform
+  group 0
+  binding 1}
+(var green-phase: f32)
+
+@{address uniform
+  group 0
+  binding 2}
+(var blue-phase: f32)
+
+@vertex
+(defn trivial-vertex [@{builtin vertex-index}
+                      vertex-index: u32]: @{builtin position} vec4f
+  (vec4f (match vertex-index
+           0 (vec2f -1.)
+           1 (vec2f -1. 3.)
+           _ (vec2f 3. -1.))
+         0.
+         1.))
+
+@fragment
+(defn my-fragment [@{builtin position} pos: vec4f]: @{location 0} vec4f
+  (vec4f (vec3f (-> red-phase cos (+ 1.) (* 0.5))
+                (-> green-phase
+                    cos
+                    (+ 1.)
+                    (* 0.5))
+                (-> blue-phase cos (+ 1.) (* 0.5)))
+         1.))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (+= red-phase 0.01)
+                    (+= green-phase 0.017)
+                    (+= blue-phase 0.13)
+                    (dispatch-shaders trivial-vertex my-fragment 3))))

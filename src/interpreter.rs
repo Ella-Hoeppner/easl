@@ -9,6 +9,7 @@ use crate::compiler::{
   program::Program,
   structs::AbstractStruct,
   types::{AbstractType, ConcreteArraySize, ExpTypeInfo, Type},
+  vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
 
 #[derive(Clone, PartialEq, Debug)]
@@ -1612,6 +1613,29 @@ impl Value {
       _ => panic!(),
     }
   }
+
+  /// Serializes this value to raw bytes for uploading to a uniform buffer.
+  /// The `ty` parameter is used to determine field ordering for struct types.
+  pub fn to_uniform_bytes(&self, ty: &Type) -> Vec<u8> {
+    match self {
+      Value::Prim(Primitive::F32(f)) => f.to_bits().to_ne_bytes().to_vec(),
+      Value::Prim(Primitive::U32(u)) => u.to_ne_bytes().to_vec(),
+      Value::Prim(Primitive::I32(i)) => i.to_ne_bytes().to_vec(),
+      Value::Prim(Primitive::Bool(b)) => (*b as u32).to_ne_bytes().to_vec(),
+      Value::Struct(fields) => {
+        let Type::Struct(s) = ty else { panic!() };
+        let mut bytes = vec![];
+        for field in &s.fields {
+          if let Some(v) = fields.get(&field.name) {
+            bytes.extend(v.to_uniform_bytes(&field.field_type.unwrap_known()));
+          }
+        }
+        bytes
+      }
+      Value::Uninitialized => vec![0u8; 4],
+      _ => vec![],
+    }
+  }
 }
 
 impl From<Primitive> for Value {
@@ -1781,10 +1805,27 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   structs: HashMap<Rc<str>, AbstractStruct>,
   wgsl: String,
   pub io: IO,
+  /// Uniform-address-space top-level vars, in declaration order.
+  uniform_vars: Vec<(GroupAndBinding, Rc<str>, Type)>,
 }
 
 impl<IO: IOManager> EvaluationEnvironment<IO> {
   pub fn from_program(program: Program, io: IO) -> Result<Self, EvalError> {
+    let uniform_vars: Vec<(GroupAndBinding, Rc<str>, Type)> = program
+      .top_level_vars
+      .iter()
+      .filter_map(|var| {
+        if let TopLevelVariableKind::Var {
+          address_space: VariableAddressSpace::Uniform,
+          group_and_binding: Some(gb),
+        } = var.kind
+        {
+          Some((gb, var.name.clone(), var.var_type.clone()))
+        } else {
+          None
+        }
+      })
+      .collect();
     let mut env = Self {
       wgsl: String::new(),
       bindings: HashMap::new(),
@@ -1795,11 +1836,12 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         .map(|s| (s.name.0.clone(), (&*s).clone()))
         .collect(),
       io,
+      uniform_vars,
     };
     for var in program.top_level_vars.iter() {
       let value = match &var.value {
         Some(exp) => eval(exp.clone(), &mut env)?,
-        None => Value::Uninitialized,
+        None => Value::zeroed(var.var_type.clone(), &env)?,
       };
       env.bind(var.name.clone(), value);
     }
@@ -1821,6 +1863,44 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   pub fn wgsl(&self) -> &str {
     &self.wgsl
   }
+
+  /// Returns `(group, binding, buffer_size_bytes)` for each uniform variable,
+  /// with size padded to a 16-byte multiple for GPU alignment.
+  pub fn uniform_infos(&self) -> Vec<((u8, u8), u64)> {
+    self
+      .uniform_vars
+      .iter()
+      .map(|(gb, name, ty)| {
+        let value = self.bindings.get(name).and_then(|v| v.last());
+        let byte_len = value
+          .map(|v| v.to_uniform_bytes(ty))
+          .unwrap_or(vec![0u8; 4])
+          .len() as u64;
+        let size = (byte_len.max(4) + 15) & !15;
+        ((gb.group, gb.binding), size)
+      })
+      .collect()
+  }
+
+  /// Returns the current byte representation of each uniform variable,
+  /// padded to a 16-byte multiple.
+  pub fn uniform_buffer_data(&self) -> Vec<((u8, u8), Vec<u8>)> {
+    self
+      .uniform_vars
+      .iter()
+      .map(|(gb, name, ty)| {
+        let value = self.bindings.get(name).and_then(|v| v.last());
+        let mut bytes = value
+          .map(|v| v.to_uniform_bytes(ty))
+          .unwrap_or(vec![0u8; 4]);
+        while bytes.len() % 16 != 0 {
+          bytes.push(0);
+        }
+        ((gb.group, gb.binding), bytes)
+      })
+      .collect()
+  }
+
   fn bind(&mut self, name: Rc<str>, value: Value) {
     if let Some(bindings) = self.bindings.get_mut(&name) {
       bindings.push(value);

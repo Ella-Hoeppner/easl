@@ -51,5 +51,5 @@ fn main() {
     std::env::set_var("RUST_BACKTRACE", "1");
   }
   // benchmark_wgsl_compilation();
-  run_demo("global_frame_counter", None)
+  run_demo("time_osc", None)
 }
