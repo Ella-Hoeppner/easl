@@ -2651,7 +2651,7 @@ impl TypedExp {
                   &first_arg.source_trace,
                   errors,
                 );
-                self.data.is_globally_bound = first_arg.data.is_globally_bound;
+                self.data.is_globally_bound = f.data.is_globally_bound;
               } else {
                 errors.log(CompileError::new(
                   ArrayLookupInvalidArity(args.len()),

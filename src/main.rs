@@ -51,5 +51,5 @@ fn main() {
     std::env::set_var("RUST_BACKTRACE", "1");
   }
   // benchmark_wgsl_compilation();
-  run_demo("time_osc", None)
+  run_demo("array_uniform_index_assignment", None)
 }

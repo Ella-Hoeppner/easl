@@ -3,7 +3,7 @@ use take_mut::take;
 
 use crate::compiler::{
   builtins::ASSIGNMENT_OPS,
-  error::CompileError,
+  error::{CompileError, SourceTrace},
   expression::{Accessor, Exp, ExpKind, Number, SwizzleField},
   functions::{AbstractFunctionSignature, FunctionImplementationKind},
   program::Program,
@@ -80,6 +80,8 @@ pub enum EvalError {
   NoMainFn,
   ControlFlowExceptionEscapedToTopLevel,
   CompilationError(CompileError),
+  ArrayIndexOutOfBounds(usize, usize),
+  NegativeArrayIndex(isize),
 }
 
 impl From<CompileError> for EvalError {
@@ -1632,7 +1634,16 @@ impl Value {
         }
         bytes
       }
-      Value::Uninitialized => vec![0u8; 4],
+      Value::Array(inner_values) => {
+        let Type::Array(_, inner_type) = &ty else {
+          panic!()
+        };
+        let mut bytes = vec![];
+        for value in inner_values {
+          bytes.extend(value.to_uniform_bytes(&inner_type.unwrap_known()));
+        }
+        bytes
+      }
       _ => vec![],
     }
   }
@@ -1856,7 +1867,6 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       }
     }
     let wgsl = program.compile_to_wgsl()?;
-    println!("{wgsl}");
     env.wgsl = wgsl;
     Ok(env)
   }
@@ -1870,13 +1880,9 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     self
       .uniform_vars
       .iter()
-      .map(|(gb, name, ty)| {
-        let value = self.bindings.get(name).and_then(|v| v.last());
-        let byte_len = value
-          .map(|v| v.to_uniform_bytes(ty))
-          .unwrap_or(vec![0u8; 4])
-          .len() as u64;
-        let size = (byte_len.max(4) + 15) & !15;
+      .map(|(gb, _, ty)| {
+        let u32s = ty.data_size_in_u32s(&SourceTrace::empty()).unwrap_or(1);
+        let size = ((u32s as u64 * 4).max(4) + 15) & !15;
         ((gb.group, gb.binding), size)
       })
       .collect()
@@ -1981,194 +1987,224 @@ pub fn eval(
         expression: *expression,
       })
     }
-    ExpKind::Application(f, args) => {
-      let name = match f.kind {
-        ExpKind::Name(name) => name,
-        _ => return Err(AppliedNonName.into()),
-      };
-      let Type::Function(f) = f.data.unwrap_known() else {
-        panic!()
-      };
-      let f = f.abstract_ancestor.unwrap();
-      let f = Function::from_abstract_signature(&*f.borrow(), &name, env)?;
-      let arg_types: Vec<Type> =
-        args.iter().map(|a| a.data.kind.unwrap_known()).collect();
-      let return_type = exp.data.unwrap_known();
-      let is_assignment_op = ASSIGNMENT_OPS.contains(&*name);
-      let accessed_expression = is_assignment_op.then(|| args[0].clone());
-      let arg_values: Vec<Value> = args
-        .into_iter()
-        .map(|arg| {
-          if let Type::Function(f) = arg.data.unwrap_known()
-            && let Some(f) = f.abstract_ancestor
-            && let ExpKind::Name(f_name) = arg.kind
-          {
-            Ok(Value::Fun(Function::from_abstract_signature(
-              &f.borrow(),
-              &f_name,
-              env,
-            )?))
-          } else {
-            eval(arg, env)
-          }
-        })
-        .collect::<Result<_, _>>()?;
-      let return_value = match f {
-        Function::Builtin(name) => apply_builtin_fn(
-          name,
-          arg_values.into_iter().zip(arg_types.into_iter()).collect(),
-          return_type,
-          env,
-        )?,
-        Function::StructConstructor(field_names) => Value::Struct(
-          field_names
-            .into_iter()
-            .zip(arg_values.into_iter())
-            .collect(),
-        ),
-        Function::EnumConstructor(variant_name) => Value::Enum(
-          variant_name,
-          arg_values.into_iter().next().unwrap().into(),
-        ),
-        Function::Composite {
-          arg_names,
-          expression,
-        } => {
-          let ExpKind::Function(_, body) = expression.kind else {
-            panic!()
-          };
-          if arg_names.len() != arg_values.len() {
-            return Err(WrongArity.into());
-          }
-          for (name, value) in arg_names.iter().zip(arg_values.into_iter()) {
-            env.bind(name.clone(), value);
-          }
-          let value = match eval(*body, env) {
-            Ok(value) => Ok(value),
-            Err(exception) => match exception {
-              EvalException::Return(value) => Ok(value),
-              other => Err(other),
-            },
-          };
-          for name in arg_names.iter() {
-            env.unbind(name);
-          }
-          value?
-        }
-      };
-      if is_assignment_op {
-        enum AccessKind {
-          Index(i64),
-          Field(Rc<str>),
-          Swizzle(Vec<SwizzleField>),
-        }
-        let mut accesses: Vec<AccessKind> = vec![];
-        let mut accessed_expression = accessed_expression.unwrap();
-        let accessed_name = loop {
-          match accessed_expression.kind {
-            ExpKind::Name(name) => break name,
-            ExpKind::Application(exp, mut index) => {
-              let Ok(Value::Prim(index)) = eval(index.remove(0), env) else {
-                panic!()
-              };
-              let index = match index {
-                Primitive::U32(u) => u as i64,
-                Primitive::I32(i) => i as i64,
-                _ => panic!(),
-              };
-              accesses.push(AccessKind::Index(index));
-              accessed_expression = *exp;
+    ExpKind::Application(f, mut args) => match f.data.unwrap_known() {
+      Type::Function(f_signature) => {
+        let name = match f.kind {
+          ExpKind::Name(name) => name,
+          _ => return Err(AppliedNonName.into()),
+        };
+        let f = f_signature.abstract_ancestor.unwrap();
+        let f = Function::from_abstract_signature(&*f.borrow(), &name, env)?;
+        let arg_types: Vec<Type> =
+          args.iter().map(|a| a.data.kind.unwrap_known()).collect();
+        let return_type = exp.data.unwrap_known();
+        let is_assignment_op = ASSIGNMENT_OPS.contains(&*name);
+        let accessed_expression = is_assignment_op.then(|| args[0].clone());
+        let arg_values: Vec<Value> = args
+          .into_iter()
+          .map(|arg| {
+            if let Type::Function(f) = arg.data.unwrap_known()
+              && let Some(f) = f.abstract_ancestor
+              && let ExpKind::Name(f_name) = arg.kind
+            {
+              Ok(Value::Fun(Function::from_abstract_signature(
+                &f.borrow(),
+                &f_name,
+                env,
+              )?))
+            } else {
+              eval(arg, env)
             }
-            ExpKind::Access(accessor, exp) => {
-              match accessor {
-                Accessor::Field(field_name) => {
-                  accesses.push(AccessKind::Field(field_name))
-                }
-                Accessor::Swizzle(swizzle_fields) => {
-                  accesses.push(AccessKind::Swizzle(swizzle_fields))
-                }
-              }
-              accessed_expression = *exp;
+          })
+          .collect::<Result<_, _>>()?;
+        let return_value = match f {
+          Function::Builtin(name) => apply_builtin_fn(
+            name,
+            arg_values.into_iter().zip(arg_types.into_iter()).collect(),
+            return_type,
+            env,
+          )?,
+          Function::StructConstructor(field_names) => Value::Struct(
+            field_names
+              .into_iter()
+              .zip(arg_values.into_iter())
+              .collect(),
+          ),
+          Function::EnumConstructor(variant_name) => Value::Enum(
+            variant_name,
+            arg_values.into_iter().next().unwrap().into(),
+          ),
+          Function::Composite {
+            arg_names,
+            expression,
+          } => {
+            let ExpKind::Function(_, body) = expression.kind else {
+              panic!()
+            };
+            if arg_names.len() != arg_values.len() {
+              return Err(WrongArity.into());
             }
-            _ => panic!(),
+            for (name, value) in arg_names.iter().zip(arg_values.into_iter()) {
+              env.bind(name.clone(), value);
+            }
+            let value = match eval(*body, env) {
+              Ok(value) => Ok(value),
+              Err(exception) => match exception {
+                EvalException::Return(value) => Ok(value),
+                other => Err(other),
+              },
+            };
+            for name in arg_names.iter() {
+              env.unbind(name);
+            }
+            value?
           }
         };
-        let mut accessed_value = env
-          .bindings
-          .get_mut(&*accessed_name)
-          .unwrap()
-          .last_mut()
-          .unwrap();
-        let mut active_swizzle_fields: Option<Vec<usize>> = None;
-        for access in accesses.into_iter().rev() {
-          match access {
-            AccessKind::Index(i) => {
-              let Value::Array(a) = accessed_value else {
-                panic!()
-              };
-              let length = a.len() as i64;
-              accessed_value =
-                &mut a[(((i % length) + length) % length) as usize];
-            }
-            AccessKind::Field(name) => {
-              if let Some(previous_swizzle_fields) = active_swizzle_fields {
-                active_swizzle_fields = Some(vec![
-                  previous_swizzle_fields
-                    [SwizzleField::from_name(&*name).index()],
-                ]);
-              } else {
-                let Value::Struct(s) = accessed_value else {
+        if is_assignment_op {
+          enum AccessKind {
+            Index(i64),
+            Field(Rc<str>),
+            Swizzle(Vec<SwizzleField>),
+          }
+          let mut accesses: Vec<AccessKind> = vec![];
+          let mut accessed_expression = accessed_expression.unwrap();
+          let accessed_name = loop {
+            match accessed_expression.kind {
+              ExpKind::Name(name) => break name,
+              ExpKind::Application(exp, mut index) => {
+                let Ok(Value::Prim(index)) = eval(index.remove(0), env) else {
                   panic!()
                 };
-                accessed_value = s.get_mut(&name).unwrap();
+                let index = match index {
+                  Primitive::U32(u) => u as i64,
+                  Primitive::I32(i) => i as i64,
+                  _ => panic!(),
+                };
+                accesses.push(AccessKind::Index(index));
+                accessed_expression = *exp;
               }
+              ExpKind::Access(accessor, exp) => {
+                match accessor {
+                  Accessor::Field(field_name) => {
+                    accesses.push(AccessKind::Field(field_name))
+                  }
+                  Accessor::Swizzle(swizzle_fields) => {
+                    accesses.push(AccessKind::Swizzle(swizzle_fields))
+                  }
+                }
+                accessed_expression = *exp;
+              }
+              _ => panic!(),
             }
-            AccessKind::Swizzle(swizzle_fields) => {
-              if let Some(previous_swizzle_fields) = active_swizzle_fields {
-                active_swizzle_fields = Some(
-                  swizzle_fields
-                    .into_iter()
-                    .map(|f| previous_swizzle_fields[f.index()])
-                    .collect(),
-                );
-              } else {
-                active_swizzle_fields =
-                  Some(swizzle_fields.into_iter().map(|f| f.index()).collect());
+          };
+          let mut accessed_value = env
+            .bindings
+            .get_mut(&*accessed_name)
+            .unwrap()
+            .last_mut()
+            .unwrap();
+          let mut active_swizzle_fields: Option<Vec<usize>> = None;
+          for access in accesses.into_iter().rev() {
+            match access {
+              AccessKind::Index(i) => {
+                let Value::Array(a) = accessed_value else {
+                  panic!()
+                };
+                let length = a.len() as i64;
+                accessed_value =
+                  &mut a[(((i % length) + length) % length) as usize];
+              }
+              AccessKind::Field(name) => {
+                if let Some(previous_swizzle_fields) = active_swizzle_fields {
+                  active_swizzle_fields = Some(vec![
+                    previous_swizzle_fields
+                      [SwizzleField::from_name(&*name).index()],
+                  ]);
+                } else {
+                  let Value::Struct(s) = accessed_value else {
+                    panic!()
+                  };
+                  accessed_value = s.get_mut(&name).unwrap();
+                }
+              }
+              AccessKind::Swizzle(swizzle_fields) => {
+                if let Some(previous_swizzle_fields) = active_swizzle_fields {
+                  active_swizzle_fields = Some(
+                    swizzle_fields
+                      .into_iter()
+                      .map(|f| previous_swizzle_fields[f.index()])
+                      .collect(),
+                  );
+                } else {
+                  active_swizzle_fields = Some(
+                    swizzle_fields.into_iter().map(|f| f.index()).collect(),
+                  );
+                }
               }
             }
           }
-        }
-        if let Some(active_swizzle_fields) = active_swizzle_fields {
-          if active_swizzle_fields.len() == 1 {
-            let Value::Struct(s) = accessed_value else {
-              panic!()
-            };
-            *s.get_mut(
-              SwizzleField::from_index(active_swizzle_fields[0]).name(),
-            )
-            .unwrap() = return_value;
+          if let Some(active_swizzle_fields) = active_swizzle_fields {
+            if active_swizzle_fields.len() == 1 {
+              let Value::Struct(s) = accessed_value else {
+                panic!()
+              };
+              *s.get_mut(
+                SwizzleField::from_index(active_swizzle_fields[0]).name(),
+              )
+              .unwrap() = return_value;
+            } else {
+              let Value::Struct(s) = accessed_value else {
+                panic!()
+              };
+              let Value::Struct(mut return_s) = return_value else {
+                panic!()
+              };
+              for (target_field, source_field) in
+                active_swizzle_fields.into_iter().zip(["x", "y", "z", "w"])
+              {
+                *s.get_mut(SwizzleField::from_index(target_field).name())
+                  .unwrap() = return_s.remove(source_field).unwrap();
+              }
+            }
           } else {
-            let Value::Struct(s) = accessed_value else {
-              panic!()
-            };
-            let Value::Struct(mut return_s) = return_value else {
-              panic!()
-            };
-            for (target_field, source_field) in
-              active_swizzle_fields.into_iter().zip(["x", "y", "z", "w"])
-            {
-              *s.get_mut(SwizzleField::from_index(target_field).name())
-                .unwrap() = return_s.remove(source_field).unwrap();
+            *accessed_value = return_value;
+          }
+          Value::Unit
+        } else {
+          return_value
+        }
+      }
+      Type::Array(_, _) => {
+        if args.len() != 1 {
+          panic!();
+        }
+        let array = eval(*f, env)?;
+        let index_value = eval(args.remove(0), env)?;
+        let Value::Array(array_values) = array else {
+          panic!()
+        };
+        let Value::Prim(primitive) = index_value else {
+          panic!();
+        };
+        let u = match primitive {
+          Primitive::U32(u) => u as usize,
+          Primitive::I32(i) => {
+            if i < 0 {
+              return Err(NegativeArrayIndex(i as isize).into());
+            } else {
+              i as usize
             }
           }
+          _ => panic!(),
+        };
+        if u < array_values.len() {
+          array_values[u].clone()
         } else {
-          *accessed_value = return_value;
+          return Err(ArrayIndexOutOfBounds(u, array_values.len()).into());
         }
-        Value::Unit
-      } else {
-        return_value
       }
-    }
+      _ => panic!(),
+    },
     ExpKind::Access(accessor, exp) => {
       let value = eval(*exp, env)?;
       match accessor {
@@ -2320,8 +2356,8 @@ pub fn eval(
         .map(|exp| eval(exp, env))
         .collect::<Result<_, _>>()?,
     ),
-    ExpKind::Uninitialized => Value::Uninitialized,
     ExpKind::ZeroedArray => Value::zeroed(exp.data.kind.unwrap_known(), env)?,
+    ExpKind::Uninitialized => Value::zeroed(exp.data.unwrap_known(), env)?,
   })
 }
 

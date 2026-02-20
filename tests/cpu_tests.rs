@@ -65,3 +65,4 @@ cpu_test!(mat_vec_mul);
 cpu_test!(mat_mat_mul);
 cpu_test!(bit_manip);
 cpu_test!(data_packing);
+cpu_test!(array_assignment);
