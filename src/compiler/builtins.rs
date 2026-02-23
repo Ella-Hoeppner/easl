@@ -1865,6 +1865,39 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
   ]
 }
 
+fn dynamic_array_functions() -> Vec<AbstractFunctionSignature> {
+  vec![AbstractFunctionSignature {
+    generic_args: vec![
+      (
+        "T".into(),
+        GenericArgument::Type(vec![]),
+        SourceTrace::empty(),
+      ),
+      ("C".into(), GenericArgument::Constant, SourceTrace::empty()),
+    ],
+    name: "into-dynamic-array".into(),
+    arg_types: vec![
+      AbstractType::AbstractArray {
+        size: AbstractArraySize::Generic("C".into()),
+        inner_type: AbstractType::Generic("T".into()).into(),
+        source_trace: SourceTrace::empty(),
+      }
+      .owned(),
+    ],
+    return_type: AbstractType::AbstractArray {
+      size: AbstractArraySize::Unsized,
+      inner_type: AbstractType::Generic("T".into()).into(),
+      source_trace: SourceTrace::empty(),
+    },
+    implementation: FunctionImplementationKind::Builtin {
+      effect_type: Effect::CPUExclusiveFunction("into-dynamic-array".into())
+        .into(),
+      target_configuration: FunctionTargetConfiguration::Default,
+    },
+    ..Default::default()
+  }]
+}
+
 pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   let mut signatures = vec![assignment_function()];
   signatures.append(&mut boolean_functions());
@@ -1901,6 +1934,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut derivative_functions());
   signatures.append(&mut print_functions());
   signatures.append(&mut shader_dispatch_functions());
+  signatures.append(&mut dynamic_array_functions());
   signatures
 }
 

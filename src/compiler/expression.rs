@@ -13,8 +13,8 @@ use crate::{
   compiler::{
     annotation::{Annotation, AnnotationKind, extract_annotation},
     builtins::{
-      ASSIGNMENT_OPS, INFIX_OPS, builtin_vec_constructor_type,
-      get_builtin_struct, rename_builtin_fn,
+      ASSIGNMENT_OPS, INFIX_OPS, assignment_function,
+      builtin_vec_constructor_type, get_builtin_struct, rename_builtin_fn,
     },
     effects::EffectType,
     entry::IOAttributes,
@@ -4608,7 +4608,9 @@ impl TypedExp {
                                 kind: ExpKind::Name("=".into()),
                                 data: Type::Function(
                                   FunctionSignature {
-                                    abstract_ancestor: None,
+                                    abstract_ancestor: Some(Rc::new(
+                                      RefCell::new(assignment_function()),
+                                    )),
                                     args: vec![
                                       (
                                         Variable::immutable({
@@ -4692,9 +4694,7 @@ impl TypedExp {
                   if let Some(last) = inner_exps.pop() {
                     inner_exps
                       .into_iter()
-                      .filter(|exp| {
-                        !exp.effects(program).is_pure_but_for_reads()
-                      })
+                      .filter(|exp| !exp.effects(program).is_side_effect_free())
                       .chain(std::iter::once(last))
                       .collect()
                   } else {

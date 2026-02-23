@@ -1,0 +1,7 @@
+(var my-arr: [f32])
+
+@cpu
+(defn main []
+  (= my-arr
+     (into-dynamic-array [0. 1. 2.]))
+  (print my-arr))

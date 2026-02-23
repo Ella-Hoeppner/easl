@@ -1455,6 +1455,7 @@ fn apply_builtin_fn<IO: IOManager>(
       result?;
       Ok(Value::Unit)
     }
+    "into-dynamic-array" => Ok(args.remove(0).0),
     _ => Err(UnimplementedBuiltin(f_name.to_string())),
   }
 }
@@ -1564,7 +1565,7 @@ impl Value {
       }),
       Type::Array(array_size, inner_type) => Value::Array(
         std::iter::repeat(Value::zeroed(inner_type.kind.unwrap_known(), env)?)
-          .take(match array_size.ok_or(CantCreateZeroedUnsizedArray)? {
+          .take(match array_size.unwrap() {
             ConcreteArraySize::Literal(size) => size as usize,
             ConcreteArraySize::Constant(name) => {
               let value = env.lookup(&(&*name).into())?;
@@ -1577,9 +1578,7 @@ impl Value {
                 _ => return Err(InvalidArraySize),
               }
             }
-            ConcreteArraySize::Unsized => {
-              return Err(CantCreateZeroedUnsizedArray);
-            }
+            ConcreteArraySize::Unsized => 0,
             ConcreteArraySize::Skolem(_) => {
               return Err(CantCreateZeroedSkolemSizedArray);
             }
@@ -1675,6 +1674,15 @@ pub enum IOEvent {
     frag: String,
     vert_count: u32,
   },
+}
+
+/// Describes the GPU buffer type for a top-level variable binding.
+/// Used by `window.rs` to create the correct wgpu binding.
+#[derive(Clone, Copy, PartialEq)]
+pub enum GpuBufferKind {
+  Uniform,
+  StorageReadOnly,
+  StorageReadWrite,
 }
 
 pub trait IOManager: Sized {
@@ -1816,22 +1824,33 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   structs: HashMap<Rc<str>, AbstractStruct>,
   wgsl: String,
   pub io: IO,
-  /// Uniform-address-space top-level vars, in declaration order.
-  uniform_vars: Vec<(GroupAndBinding, Rc<str>, Type)>,
+  /// GPU-bound top-level vars (uniform + storage), in declaration order.
+  binding_vars: Vec<(GroupAndBinding, Rc<str>, Type, VariableAddressSpace)>,
 }
 
 impl<IO: IOManager> EvaluationEnvironment<IO> {
   pub fn from_program(program: Program, io: IO) -> Result<Self, EvalError> {
-    let uniform_vars: Vec<(GroupAndBinding, Rc<str>, Type)> = program
+    let binding_vars: Vec<(
+      GroupAndBinding,
+      Rc<str>,
+      Type,
+      VariableAddressSpace,
+    )> = program
       .top_level_vars
       .iter()
       .filter_map(|var| {
         if let TopLevelVariableKind::Var {
-          address_space: VariableAddressSpace::Uniform,
+          address_space,
           group_and_binding: Some(gb),
         } = var.kind
         {
-          Some((gb, var.name.clone(), var.var_type.clone()))
+          matches!(
+            address_space,
+            VariableAddressSpace::Uniform
+              | VariableAddressSpace::StorageRead
+              | VariableAddressSpace::StorageReadWrite
+          )
+          .then(|| (gb, var.name.clone(), var.var_type.clone(), address_space))
         } else {
           None
         }
@@ -1847,12 +1866,15 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         .map(|s| (s.name.0.clone(), (&*s).clone()))
         .collect(),
       io,
-      uniform_vars,
+      binding_vars,
     };
     for var in program.top_level_vars.iter() {
       let value = match &var.value {
         Some(exp) => eval(exp.clone(), &mut env)?,
-        None => Value::zeroed(var.var_type.clone(), &env)?,
+        // Unsized arrays and other unzeroable types (e.g. dynamic storage
+        // buffers) fall back to Uninitialized; the user must assign before use.
+        None => Value::zeroed(var.var_type.clone(), &env)
+          .unwrap_or(Value::Uninitialized),
       };
       env.bind(var.name.clone(), value);
     }
@@ -1874,27 +1896,40 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     &self.wgsl
   }
 
-  /// Returns `(group, binding, buffer_size_bytes)` for each uniform variable,
-  /// with size padded to a 16-byte multiple for GPU alignment.
-  pub fn uniform_infos(&self) -> Vec<((u8, u8), u64)> {
+  /// Returns `(group, binding, kind, static_size_bytes)` for each GPU-bound
+  /// variable.  `size` is 0 for dynamically-sized (unsized array) bindings.
+  pub fn binding_infos(&self) -> Vec<((u8, u8), GpuBufferKind, u64)> {
     self
-      .uniform_vars
+      .binding_vars
       .iter()
-      .map(|(gb, _, ty)| {
-        let u32s = ty.data_size_in_u32s(&SourceTrace::empty()).unwrap_or(1);
-        let size = ((u32s as u64 * 4).max(4) + 15) & !15;
-        ((gb.group, gb.binding), size)
+      .map(|(gb, _, ty, addr)| {
+        let kind = match addr {
+          VariableAddressSpace::Uniform => GpuBufferKind::Uniform,
+          VariableAddressSpace::StorageRead => GpuBufferKind::StorageReadOnly,
+          VariableAddressSpace::StorageReadWrite => {
+            GpuBufferKind::StorageReadWrite
+          }
+          _ => unreachable!(),
+        };
+        // unwrap_or(0): unsized arrays → size 0, handled dynamically in window.rs
+        let u32s = ty.data_size_in_u32s(&SourceTrace::empty()).unwrap_or(0);
+        let size = if u32s == 0 {
+          0
+        } else {
+          ((u32s as u64 * 4).max(4) + 15) & !15
+        };
+        ((gb.group, gb.binding), kind, size)
       })
       .collect()
   }
 
-  /// Returns the current byte representation of each uniform variable,
+  /// Returns the current byte representation of each GPU-bound variable,
   /// padded to a 16-byte multiple.
-  pub fn uniform_buffer_data(&self) -> Vec<((u8, u8), Vec<u8>)> {
+  pub fn binding_buffer_data(&self) -> Vec<((u8, u8), Vec<u8>)> {
     self
-      .uniform_vars
+      .binding_vars
       .iter()
-      .map(|(gb, name, ty)| {
+      .map(|(gb, name, ty, _)| {
         let value = self.bindings.get(name).and_then(|v| v.last());
         let mut bytes = value
           .map(|v| v.to_uniform_bytes(ty))
@@ -1931,6 +1966,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   }
 }
 
+#[derive(Debug, Clone)]
 pub enum EvalException {
   Error(EvalError),
   Break,
@@ -1993,7 +2029,30 @@ pub fn eval(
           ExpKind::Name(name) => name,
           _ => return Err(AppliedNonName.into()),
         };
-        let f = f_signature.abstract_ancestor.unwrap();
+        let f = f_signature.abstract_ancestor.unwrap_or_else(|| {
+          panic!(
+            "couldn't find abstract ancestor for {name}, {:?}",
+            args
+              .clone()
+              .into_iter()
+              .map(|arg| {
+                if let Type::Function(f) = arg.data.unwrap_known()
+                  && let Some(f) = f.abstract_ancestor
+                  && let ExpKind::Name(f_name) = arg.kind
+                {
+                  Ok(Value::Fun(Function::from_abstract_signature(
+                    &f.borrow(),
+                    &f_name,
+                    env,
+                  )?))
+                } else {
+                  eval(arg, env)
+                }
+              })
+              .collect::<Result<Vec<Value>, _>>()
+              .unwrap()
+          );
+        });
         let f = Function::from_abstract_signature(&*f.borrow(), &name, env)?;
         let arg_types: Vec<Type> =
           args.iter().map(|a| a.data.kind.unwrap_known()).collect();

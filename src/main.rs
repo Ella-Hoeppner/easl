@@ -51,5 +51,5 @@ fn main() {
     std::env::set_var("RUST_BACKTRACE", "1");
   }
   // benchmark_wgsl_compilation();
-  run_demo("array_uniform_index_assignment", None)
+  run_demo("dynamic_array_uniform_resize", None)
 }

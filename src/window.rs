@@ -10,7 +10,9 @@ use winit::{
 
 use crate::{
   compiler::{expression::Exp, types::ExpTypeInfo},
-  interpreter::{eval, EvalError, EvaluationEnvironment, IOManager, WindowEvent},
+  interpreter::{
+    eval, EvalError, EvaluationEnvironment, GpuBufferKind, IOManager, WindowEvent,
+  },
 };
 
 // winit forbids creating more than one EventLoop per process. We keep one alive
@@ -49,6 +51,14 @@ struct App<IO: IOManager> {
   error: Option<EvalError>,
 }
 
+/// Metadata about a single GPU buffer binding, kept so we can recreate
+/// buffers with the correct usage flags when the size changes at runtime.
+struct BindingSlot {
+  group: u8,
+  binding: u8,
+  kind: GpuBufferKind,
+}
+
 struct RenderState {
   window: Arc<Window>,
   device: wgpu::Device,
@@ -58,7 +68,14 @@ struct RenderState {
   shader: wgpu::ShaderModule,
   pipeline_layout: wgpu::PipelineLayout,
   pipelines: HashMap<(String, String), wgpu::RenderPipeline>,
-  uniform_buffers: HashMap<(u8, u8), wgpu::Buffer>,
+  binding_slots: Vec<BindingSlot>,
+  binding_buffers: HashMap<(u8, u8), wgpu::Buffer>,
+  /// Tracks the byte-length of each buffer so we can detect when a dynamic
+  /// array is resized and the buffer needs to be recreated.
+  binding_buffer_sizes: HashMap<(u8, u8), u64>,
+  /// Kept alive so `rebuild_bind_groups` can recreate bind groups without
+  /// recreating the layouts (which would invalidate the pipeline layout).
+  bind_group_layouts: Vec<wgpu::BindGroupLayout>,
   bind_groups: Vec<wgpu::BindGroup>,
 }
 
@@ -71,9 +88,9 @@ impl<IO: IOManager> ApplicationHandler for App<IO> {
     );
     let env = self.env.as_ref().unwrap();
     let wgsl = env.wgsl().to_string();
-    let uniform_infos = env.uniform_infos();
+    let binding_infos = env.binding_infos();
     let state =
-      pollster::block_on(RenderState::new(window, &wgsl, &uniform_infos)).unwrap();
+      pollster::block_on(RenderState::new(window, &wgsl, &binding_infos)).unwrap();
     self.state = Some(state);
   }
 
@@ -101,10 +118,10 @@ impl<IO: IOManager> ApplicationHandler for App<IO> {
             return;
           }
         }
-        let uniform_data = env.uniform_buffer_data();
+        let binding_data = env.binding_buffer_data();
         let draw_calls = env.io.take_frame_draw_calls();
         if let Some(state) = &mut self.state {
-          state.upload_uniforms(&uniform_data);
+          state.upload_bindings(&binding_data);
           state.render(&draw_calls);
           state.window.request_redraw();
         }
@@ -114,11 +131,39 @@ impl<IO: IOManager> ApplicationHandler for App<IO> {
   }
 }
 
+fn gpu_buffer_usage(kind: GpuBufferKind) -> wgpu::BufferUsages {
+  match kind {
+    GpuBufferKind::Uniform => wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    GpuBufferKind::StorageReadOnly | GpuBufferKind::StorageReadWrite => {
+      wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST
+    }
+  }
+}
+
+fn gpu_binding_type(kind: GpuBufferKind) -> wgpu::BufferBindingType {
+  match kind {
+    GpuBufferKind::Uniform => wgpu::BufferBindingType::Uniform,
+    GpuBufferKind::StorageReadOnly => wgpu::BufferBindingType::Storage { read_only: true },
+    GpuBufferKind::StorageReadWrite => wgpu::BufferBindingType::Storage { read_only: false },
+  }
+}
+
+fn gpu_binding_visibility(kind: GpuBufferKind) -> wgpu::ShaderStages {
+  match kind {
+    // Read-only storage and uniforms are accessible from vertex shaders too.
+    GpuBufferKind::Uniform | GpuBufferKind::StorageReadOnly => {
+      wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT
+    }
+    // Read-write storage is not permitted in vertex shaders.
+    GpuBufferKind::StorageReadWrite => wgpu::ShaderStages::FRAGMENT,
+  }
+}
+
 impl RenderState {
   async fn new(
     window: Arc<Window>,
     wgsl: &str,
-    uniform_infos: &[((u8, u8), u64)],
+    binding_infos: &[((u8, u8), GpuBufferKind, u64)],
   ) -> Result<Self, String> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
       backends: wgpu::Backends::all(),
@@ -175,35 +220,46 @@ impl RenderState {
       source: wgpu::ShaderSource::Wgsl(wgsl.into()),
     });
 
-    // Build uniform buffers, bind group layouts, and bind groups.
-    let max_group = uniform_infos
+    // Collect binding metadata.
+    let binding_slots: Vec<BindingSlot> = binding_infos
       .iter()
-      .map(|((g, _), _)| *g as usize)
+      .map(|&((group, binding), kind, _)| BindingSlot { group, binding, kind })
+      .collect();
+
+    let max_group = binding_infos
+      .iter()
+      .map(|((g, _), _, _)| *g as usize)
       .max()
       .map(|g| g + 1)
       .unwrap_or(0);
 
-    let mut uniform_buffers: HashMap<(u8, u8), wgpu::Buffer> = HashMap::new();
-    for &((group, binding), size) in uniform_infos {
+    // Create one buffer per binding.  Dynamic bindings (size == 0) get a
+    // 16-byte placeholder; they will be resized on the first upload.
+    let mut binding_buffers: HashMap<(u8, u8), wgpu::Buffer> = HashMap::new();
+    let mut binding_buffer_sizes: HashMap<(u8, u8), u64> = HashMap::new();
+    for &((group, binding), kind, size) in binding_infos {
+      let alloc_size = size.max(16);
       let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(&format!("uniform g{group}b{binding}")),
-        size: size.max(16),
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        label: Some(&format!("binding g{group}b{binding}")),
+        size: alloc_size,
+        usage: gpu_buffer_usage(kind),
         mapped_at_creation: false,
       });
-      uniform_buffers.insert((group, binding), buffer);
+      binding_buffers.insert((group, binding), buffer);
+      binding_buffer_sizes.insert((group, binding), alloc_size);
     }
 
+    // Create bind group layouts (one per group number, 0-indexed).
     let bind_group_layouts: Vec<wgpu::BindGroupLayout> = (0..max_group)
       .map(|group_idx| {
-        let entries: Vec<wgpu::BindGroupLayoutEntry> = uniform_infos
+        let entries: Vec<wgpu::BindGroupLayoutEntry> = binding_infos
           .iter()
-          .filter(|((g, _), _)| *g as usize == group_idx)
-          .map(|((_, b), _)| wgpu::BindGroupLayoutEntry {
+          .filter(|((g, _), _, _)| *g as usize == group_idx)
+          .map(|((_, b), kind, _)| wgpu::BindGroupLayoutEntry {
             binding: *b as u32,
-            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            visibility: gpu_binding_visibility(*kind),
             ty: wgpu::BindingType::Buffer {
-              ty: wgpu::BufferBindingType::Uniform,
+              ty: gpu_binding_type(*kind),
               has_dynamic_offset: false,
               min_binding_size: None,
             },
@@ -217,16 +273,17 @@ impl RenderState {
       })
       .collect();
 
+    // Create initial bind groups.
     let bind_groups: Vec<wgpu::BindGroup> = bind_group_layouts
       .iter()
       .enumerate()
       .map(|(group_idx, layout)| {
-        let entries: Vec<wgpu::BindGroupEntry> = uniform_infos
+        let entries: Vec<wgpu::BindGroupEntry> = binding_slots
           .iter()
-          .filter(|((g, _), _)| *g as usize == group_idx)
-          .map(|((_, b), _)| wgpu::BindGroupEntry {
-            binding: *b as u32,
-            resource: uniform_buffers[&(group_idx as u8, *b)].as_entire_binding(),
+          .filter(|s| s.group as usize == group_idx)
+          .map(|s| wgpu::BindGroupEntry {
+            binding: s.binding as u32,
+            resource: binding_buffers[&(s.group, s.binding)].as_entire_binding(),
           })
           .collect();
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -255,9 +312,37 @@ impl RenderState {
       shader,
       pipeline_layout,
       pipelines: HashMap::new(),
-      uniform_buffers,
+      binding_slots,
+      binding_buffers,
+      binding_buffer_sizes,
+      bind_group_layouts,
       bind_groups,
     })
+  }
+
+  /// Recreates all bind groups to pick up any buffers that were just replaced.
+  fn rebuild_bind_groups(&mut self) {
+    self.bind_groups = self
+      .bind_group_layouts
+      .iter()
+      .enumerate()
+      .map(|(group_idx, layout)| {
+        let entries: Vec<wgpu::BindGroupEntry> = self
+          .binding_slots
+          .iter()
+          .filter(|s| s.group as usize == group_idx)
+          .map(|s| wgpu::BindGroupEntry {
+            binding: s.binding as u32,
+            resource: self.binding_buffers[&(s.group, s.binding)].as_entire_binding(),
+          })
+          .collect();
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+          label: Some(&format!("bind group {group_idx}")),
+          layout,
+          entries: &entries,
+        })
+      })
+      .collect();
   }
 
   fn get_or_create_pipeline(
@@ -311,11 +396,42 @@ impl RenderState {
     &self.pipelines[&key]
   }
 
-  fn upload_uniforms(&self, data: &[((u8, u8), Vec<u8>)]) {
+  /// Uploads binding data to the GPU.  If a buffer's size has changed (e.g.
+  /// a dynamic array was reassigned), the buffer is recreated and all bind
+  /// groups for the affected groups are rebuilt.
+  fn upload_bindings(&mut self, data: &[((u8, u8), Vec<u8>)]) {
+    let mut needs_rebuild = false;
+
     for ((group, binding), bytes) in data {
-      if let Some(buffer) = self.uniform_buffers.get(&(*group, *binding)) {
+      let key = (*group, *binding);
+      let incoming_size = bytes.len() as u64;
+      let stored_size = *self.binding_buffer_sizes.get(&key).unwrap_or(&0);
+
+      if incoming_size != stored_size {
+        let kind = self
+          .binding_slots
+          .iter()
+          .find(|s| s.group == *group && s.binding == *binding)
+          .map(|s| s.kind)
+          .unwrap_or(GpuBufferKind::Uniform);
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+          label: Some(&format!("binding g{group}b{binding}")),
+          size: incoming_size.max(16),
+          usage: gpu_buffer_usage(kind),
+          mapped_at_creation: false,
+        });
+        self.binding_buffers.insert(key, buffer);
+        self.binding_buffer_sizes.insert(key, incoming_size);
+        needs_rebuild = true;
+      }
+
+      if let Some(buffer) = self.binding_buffers.get(&key) {
         self.queue.write_buffer(buffer, 0, bytes);
       }
+    }
+
+    if needs_rebuild {
+      self.rebuild_bind_groups();
     }
   }
 

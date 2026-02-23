@@ -38,10 +38,12 @@ impl EffectType {
   pub fn contains(&self, e: &Effect) -> bool {
     self.0.contains(e)
   }
-  pub fn is_pure_but_for_reads(&self) -> bool {
+  pub fn is_side_effect_free(&self) -> bool {
     for e in self.0.iter() {
       match e {
-        Effect::ReadsVar(_) => {}
+        Effect::ReadsVar(_)
+        | Effect::FragmentExclusiveFunction(_)
+        | Effect::CPUExclusiveFunction(_) => {}
         _ => return false,
       }
     }

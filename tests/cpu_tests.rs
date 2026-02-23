@@ -66,3 +66,4 @@ cpu_test!(mat_mat_mul);
 cpu_test!(bit_manip);
 cpu_test!(data_packing);
 cpu_test!(array_assignment);
+cpu_test!(dynamic_array_assignment);
