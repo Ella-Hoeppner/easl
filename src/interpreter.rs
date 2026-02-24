@@ -1400,7 +1400,7 @@ fn apply_builtin_fn<IO: IOManager>(
       env.io.println(&formatted);
       Ok(Value::Unit)
     }
-    "dispatch-shaders" => {
+    "dispatch-render-shaders" => {
       let (_, Type::Function(vert_f)) = &args[0] else {
         panic!()
       };
@@ -1427,6 +1427,30 @@ fn apply_builtin_fn<IO: IOManager>(
       env
         .io
         .record_draw(&vert_f_name, &frag_f_name, *vert_count)?;
+      Ok(Value::Unit)
+    }
+    "dispatch-compute-shader" => {
+      let (_, Type::Function(compute_f)) = &args[0] else {
+        panic!()
+      };
+      let entry_name = compute_f
+        .abstract_ancestor
+        .as_ref()
+        .unwrap()
+        .borrow()
+        .name
+        .clone();
+      let (Value::Struct(wg), _) = &args[1] else {
+        panic!()
+      };
+      let get_u32 = |field: &str| {
+        let Value::Prim(Primitive::U32(v)) = wg[field] else {
+          panic!()
+        };
+        v
+      };
+      let workgroup_count = (get_u32("x"), get_u32("y"), get_u32("z"));
+      env.io.record_compute(&entry_name, workgroup_count)?;
       Ok(Value::Unit)
     }
     "spawn-window" => {
@@ -1654,13 +1678,19 @@ impl From<Primitive> for Value {
   }
 }
 
-/// Internal frame-level draw call, used by StdoutIO to pass draw commands to
+/// Internal frame-level GPU command, used by StdoutIO to pass commands to
 /// the wgpu renderer in window.rs.
 #[derive(Debug, Clone, PartialEq)]
-pub struct WindowEvent {
-  pub vert: String,
-  pub frag: String,
-  pub vert_count: u32,
+pub enum WindowEvent {
+  RenderShaders {
+    vert: String,
+    frag: String,
+    vert_count: u32,
+  },
+  ComputeShader {
+    entry: String,
+    workgroup_count: (u32, u32, u32),
+  },
 }
 
 /// A single observable event emitted by the interpreter, recorded by StringIO
@@ -1673,6 +1703,10 @@ pub enum IOEvent {
     vert: String,
     frag: String,
     vert_count: u32,
+  },
+  DispatchComputeShader {
+    entry: String,
+    workgroup_count: (u32, u32, u32),
   },
 }
 
@@ -1692,6 +1726,11 @@ pub trait IOManager: Sized {
     vert: &str,
     frag: &str,
     vert_count: u32,
+  ) -> Result<(), EvalError>;
+  fn record_compute(
+    &mut self,
+    entry: &str,
+    workgroup_count: (u32, u32, u32),
   ) -> Result<(), EvalError>;
   fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent>;
   fn run_spawn_window(
@@ -1726,10 +1765,22 @@ impl IOManager for StdoutIO {
     frag: &str,
     vert_count: u32,
   ) -> Result<(), EvalError> {
-    self.frame_draw_calls.push(WindowEvent {
+    self.frame_draw_calls.push(WindowEvent::RenderShaders {
       vert: vert.to_string(),
       frag: frag.to_string(),
       vert_count,
+    });
+    Ok(())
+  }
+
+  fn record_compute(
+    &mut self,
+    entry: &str,
+    workgroup_count: (u32, u32, u32),
+  ) -> Result<(), EvalError> {
+    self.frame_draw_calls.push(WindowEvent::ComputeShader {
+      entry: entry.to_string(),
+      workgroup_count,
     });
     Ok(())
   }
@@ -1792,6 +1843,18 @@ impl IOManager for StringIO {
       vert: vert.to_string(),
       frag: frag.to_string(),
       vert_count,
+    });
+    Ok(())
+  }
+
+  fn record_compute(
+    &mut self,
+    entry: &str,
+    workgroup_count: (u32, u32, u32),
+  ) -> Result<(), EvalError> {
+    self.events.push(IOEvent::DispatchComputeShader {
+      entry: entry.to_string(),
+      workgroup_count,
     });
     Ok(())
   }

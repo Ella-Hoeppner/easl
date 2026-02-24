@@ -27,4 +27,4 @@
                     (+= (color 0u) 0.001)
                     (+= (color 1u) 0.0017)
                     (+= (color 2u) 0.0013)
-                    (dispatch-shaders trivial-vertex my-fragment 3))))
+                    (dispatch-render-shaders trivial-vertex my-fragment 3))))

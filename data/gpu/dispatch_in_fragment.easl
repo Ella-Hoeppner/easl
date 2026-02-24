@@ -1,13 +1,15 @@
 (struct VertexOutput
   @{builtin position} vertex-pos: vec4f)
 
+@vertex
 (defn vert-fn [@{builtin vertex-index} vi: u32]: VertexOutput
   (VertexOutput (vec4f 0. 0. 0. 1.)))
 
+@fragment
 (defn frag-fn [in: VertexOutput]: vec4f
   (vec4f 1. 0. 0. 1.))
 
 @fragment
 (defn bad-frag [in: VertexOutput]: @{location 0} vec4f
-  (do (dispatch-shaders vert-fn frag-fn 3u)
+  (do (dispatch-render-shaders vert-fn frag-fn 3u)
       (vec4f 1. 0. 0. 1.)))

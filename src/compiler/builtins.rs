@@ -1783,7 +1783,7 @@ fn print_functions() -> Vec<AbstractFunctionSignature> {
 fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
   vec![
     AbstractFunctionSignature {
-      name: "dispatch-shaders".into(),
+      name: "dispatch-render-shaders".into(),
       generic_args: vec![(
         "T".into(),
         GenericArgument::Type(vec![]),
@@ -1836,8 +1836,38 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       ],
       return_type: AbstractType::Unit,
       implementation: FunctionImplementationKind::Builtin {
-        effect_type: Effect::CPUExclusiveFunction("dispatch-shaders".into())
-          .into(),
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("dispatch-render-shaders".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "dispatch-compute-shader".into(),
+      generic_args: vec![(
+        "F".into(),
+        GenericArgument::Type(vec![TypeConstraint::compute_entry_fn()]),
+        SourceTrace::empty(),
+      )],
+      arg_types: vec![
+        AbstractType::Generic("F".into()).owned(),
+        AbstractType::AbstractStruct(
+          vec3()
+            .fill_abstract_generics(vec![AbstractType::Type(Type::U32)])
+            .into(),
+        )
+        .owned(),
+      ],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("dispatch-compute-shader".into()),
+        ]
+        .into(),
         target_configuration: FunctionTargetConfiguration::Default,
       },
       ..Default::default()
@@ -1857,7 +1887,11 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       ],
       return_type: AbstractType::Unit,
       implementation: FunctionImplementationKind::Builtin {
-        effect_type: Effect::CPUExclusiveFunction("spawn-window".into()).into(),
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("spawn-window".into()),
+        ]
+        .into(),
         target_configuration: FunctionTargetConfiguration::Default,
       },
       ..Default::default()

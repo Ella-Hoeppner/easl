@@ -342,6 +342,7 @@ impl Program {
             implementation: FunctionImplementationKind::StructConstructor,
             associative: false,
             captured_scope: None,
+            entry_point: None,
           },
         )));
       }
@@ -366,6 +367,7 @@ impl Program {
                 ),
                 associative: false,
                 captured_scope: None,
+                entry_point: None,
               },
             )));
           }
@@ -1326,7 +1328,7 @@ impl Program {
                       Effect::CPUExclusiveFunction(_)
                       | Effect::FragmentExclusiveFunction(_)
                       | Effect::Print => Ok(None),
-                      Effect::ModifiesGlobalVar(_) => Ok(None),
+                      Effect::ModifiesGlobalVar(_) | Effect::Window => Ok(None),
                       _ => err(
                         IllegalEffectsInClosure(format!("{e:?}")),
                         body.source_trace.clone(),
@@ -1429,6 +1431,7 @@ impl Program {
                     name: name.clone(),
                     generic_args: vec![],
                     associative: false,
+                    entry_point: None,
                     arg_types,
                     return_type: AbstractType::Type(
                       f_signature.return_type.unwrap_known(),

@@ -24,4 +24,4 @@
                     (+= color.y 0.0017)
                     (+= color.z 0.0013)
                     (= color (% color (vec3f 1.)))
-                    (dispatch-shaders trivial-vertex my-fragment 3))))
+                    (dispatch-render-shaders trivial-vertex my-fragment 3))))

@@ -12,6 +12,7 @@ use fsexp::{document::DocumentPosition, syntax::EncloserOrOperator};
 use crate::{
   compiler::{
     builtins::scalar_bitcast,
+    entry::EntryPoint,
     enums::{AbstractEnum, Enum, UntypedEnum},
     error::{CompileError, CompileErrorKind},
     expression::{Accessor, ExpKind, Number, TypedExp},
@@ -982,7 +983,7 @@ impl Type {
       }
     })
   }
-  pub fn satisfies_constraints(&self, constraint: &TypeConstraint) -> bool {
+  pub fn satisfies_constraint(&self, constraint: &TypeConstraint) -> bool {
     if let Type::Skolem(_, skolem_constraints) = self {
       skolem_constraints.contains(&constraint)
     } else {
@@ -997,6 +998,16 @@ impl Type {
             || *self == Type::Bool
         }
         TypeConstraintKind::Integer => *self == Type::I32 || *self == Type::U32,
+        TypeConstraintKind::ComputeEntryFunction => {
+          if let Type::Function(f) = self
+            && let Some(f) = &f.abstract_ancestor
+            && let Some(EntryPoint::Compute(_)) = f.borrow().entry_point
+          {
+            true
+          } else {
+            false
+          }
+        }
       }
     }
   }
@@ -2302,6 +2313,7 @@ pub enum TypeConstraintKind {
   Scalar,
   ScalarOrBool,
   Integer,
+  ComputeEntryFunction,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2316,6 +2328,7 @@ impl TypeConstraint {
       TypeConstraintKind::Scalar => "Scalar",
       TypeConstraintKind::ScalarOrBool => "ScalarOrBool",
       TypeConstraintKind::Integer => "Integer",
+      TypeConstraintKind::ComputeEntryFunction => "ComputeEntryFn",
     }
     .to_string()
   }
@@ -2334,6 +2347,12 @@ impl TypeConstraint {
   pub fn integer() -> Self {
     Self {
       kind: TypeConstraintKind::Integer,
+      args: vec![],
+    }
+  }
+  pub fn compute_entry_fn() -> Self {
+    Self {
+      kind: TypeConstraintKind::ComputeEntryFunction,
       args: vec![],
     }
   }

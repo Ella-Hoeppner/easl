@@ -11,7 +11,8 @@ use winit::{
 use crate::{
   compiler::{expression::Exp, types::ExpTypeInfo},
   interpreter::{
-    eval, EvalError, EvaluationEnvironment, GpuBufferKind, IOManager, WindowEvent,
+    EvalError, EvaluationEnvironment, GpuBufferKind, IOManager, WindowEvent,
+    eval,
   },
 };
 
@@ -68,6 +69,7 @@ struct RenderState {
   shader: wgpu::ShaderModule,
   pipeline_layout: wgpu::PipelineLayout,
   pipelines: HashMap<(String, String), wgpu::RenderPipeline>,
+  compute_pipelines: HashMap<String, wgpu::ComputePipeline>,
   binding_slots: Vec<BindingSlot>,
   binding_buffers: HashMap<(u8, u8), wgpu::Buffer>,
   /// Tracks the byte-length of each buffer so we can detect when a dynamic
@@ -90,7 +92,8 @@ impl<IO: IOManager> ApplicationHandler for App<IO> {
     let wgsl = env.wgsl().to_string();
     let binding_infos = env.binding_infos();
     let state =
-      pollster::block_on(RenderState::new(window, &wgsl, &binding_infos)).unwrap();
+      pollster::block_on(RenderState::new(window, &wgsl, &binding_infos))
+        .unwrap();
     self.state = Some(state);
   }
 
@@ -133,7 +136,9 @@ impl<IO: IOManager> ApplicationHandler for App<IO> {
 
 fn gpu_buffer_usage(kind: GpuBufferKind) -> wgpu::BufferUsages {
   match kind {
-    GpuBufferKind::Uniform => wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    GpuBufferKind::Uniform => {
+      wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST
+    }
     GpuBufferKind::StorageReadOnly | GpuBufferKind::StorageReadWrite => {
       wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST
     }
@@ -143,19 +148,27 @@ fn gpu_buffer_usage(kind: GpuBufferKind) -> wgpu::BufferUsages {
 fn gpu_binding_type(kind: GpuBufferKind) -> wgpu::BufferBindingType {
   match kind {
     GpuBufferKind::Uniform => wgpu::BufferBindingType::Uniform,
-    GpuBufferKind::StorageReadOnly => wgpu::BufferBindingType::Storage { read_only: true },
-    GpuBufferKind::StorageReadWrite => wgpu::BufferBindingType::Storage { read_only: false },
+    GpuBufferKind::StorageReadOnly => {
+      wgpu::BufferBindingType::Storage { read_only: true }
+    }
+    GpuBufferKind::StorageReadWrite => {
+      wgpu::BufferBindingType::Storage { read_only: false }
+    }
   }
 }
 
 fn gpu_binding_visibility(kind: GpuBufferKind) -> wgpu::ShaderStages {
   match kind {
-    // Read-only storage and uniforms are accessible from vertex shaders too.
+    // Read-only storage and uniforms are accessible from vertex, fragment, and compute shaders.
     GpuBufferKind::Uniform | GpuBufferKind::StorageReadOnly => {
-      wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT
+      wgpu::ShaderStages::VERTEX
+        | wgpu::ShaderStages::FRAGMENT
+        | wgpu::ShaderStages::COMPUTE
     }
-    // Read-write storage is not permitted in vertex shaders.
-    GpuBufferKind::StorageReadWrite => wgpu::ShaderStages::FRAGMENT,
+    // Read-write storage is not permitted in vertex shaders, but is in compute.
+    GpuBufferKind::StorageReadWrite => {
+      wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE
+    }
   }
 }
 
@@ -223,7 +236,11 @@ impl RenderState {
     // Collect binding metadata.
     let binding_slots: Vec<BindingSlot> = binding_infos
       .iter()
-      .map(|&((group, binding), kind, _)| BindingSlot { group, binding, kind })
+      .map(|&((group, binding), kind, _)| BindingSlot {
+        group,
+        binding,
+        kind,
+      })
       .collect();
 
     let max_group = binding_infos
@@ -283,7 +300,8 @@ impl RenderState {
           .filter(|s| s.group as usize == group_idx)
           .map(|s| wgpu::BindGroupEntry {
             binding: s.binding as u32,
-            resource: binding_buffers[&(s.group, s.binding)].as_entire_binding(),
+            resource: binding_buffers[&(s.group, s.binding)]
+              .as_entire_binding(),
           })
           .collect();
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -312,6 +330,7 @@ impl RenderState {
       shader,
       pipeline_layout,
       pipelines: HashMap::new(),
+      compute_pipelines: HashMap::new(),
       binding_slots,
       binding_buffers,
       binding_buffer_sizes,
@@ -333,7 +352,8 @@ impl RenderState {
           .filter(|s| s.group as usize == group_idx)
           .map(|s| wgpu::BindGroupEntry {
             binding: s.binding as u32,
-            resource: self.binding_buffers[&(s.group, s.binding)].as_entire_binding(),
+            resource: self.binding_buffers[&(s.group, s.binding)]
+              .as_entire_binding(),
           })
           .collect();
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -352,48 +372,67 @@ impl RenderState {
   ) -> &wgpu::RenderPipeline {
     let key = (vert_entry.to_string(), frag_entry.to_string());
     if !self.pipelines.contains_key(&key) {
-      let pipeline = self.device.create_render_pipeline(
-        &wgpu::RenderPipelineDescriptor {
-          label: Some("easl pipeline"),
-          layout: Some(&self.pipeline_layout),
-          vertex: wgpu::VertexState {
-            module: &self.shader,
-            entry_point: Some(vert_entry),
-            buffers: &[],
-            compilation_options: Default::default(),
-          },
-          fragment: Some(wgpu::FragmentState {
-            module: &self.shader,
-            entry_point: Some(frag_entry),
-            targets: &[Some(wgpu::ColorTargetState {
-              format: self.surface_config.format,
-              blend: Some(wgpu::BlendState::REPLACE),
-              write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: Default::default(),
-          }),
-          primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            unclipped_depth: false,
-            conservative: false,
-          },
-          depth_stencil: None,
-          multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-          },
-          multiview_mask: None,
-          cache: None,
-        },
-      );
+      let pipeline =
+        self
+          .device
+          .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("easl pipeline"),
+            layout: Some(&self.pipeline_layout),
+            vertex: wgpu::VertexState {
+              module: &self.shader,
+              entry_point: Some(vert_entry),
+              buffers: &[],
+              compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+              module: &self.shader,
+              entry_point: Some(frag_entry),
+              targets: &[Some(wgpu::ColorTargetState {
+                format: self.surface_config.format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+              })],
+              compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+              topology: wgpu::PrimitiveTopology::TriangleList,
+              strip_index_format: None,
+              front_face: wgpu::FrontFace::Ccw,
+              cull_mode: None,
+              polygon_mode: wgpu::PolygonMode::Fill,
+              unclipped_depth: false,
+              conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+              count: 1,
+              mask: !0,
+              alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+          });
       self.pipelines.insert(key.clone(), pipeline);
     }
     &self.pipelines[&key]
+  }
+
+  fn get_or_create_compute_pipeline(&mut self, entry: &str) {
+    if self.compute_pipelines.contains_key(entry) {
+      return;
+    }
+    let pipeline =
+      self
+        .device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+          label: Some(&format!("easl compute pipeline {entry}")),
+          layout: Some(&self.pipeline_layout),
+          module: &self.shader,
+          entry_point: Some(entry),
+          compilation_options: Default::default(),
+          cache: None,
+        });
+    self.compute_pipelines.insert(entry.to_string(), pipeline);
   }
 
   /// Uploads binding data to the GPU.  If a buffer's size has changed (e.g.
@@ -444,36 +483,80 @@ impl RenderState {
   }
 
   fn render(&mut self, draw_calls: &[WindowEvent]) {
-    // Ensure all needed pipelines exist before borrowing for render pass.
-    for draw_call in draw_calls {
-      let vert = draw_call.vert.replace('-', "_");
-      let frag = draw_call.frag.replace('-', "_");
-      self.get_or_create_pipeline(&vert, &frag);
+    if draw_calls.is_empty() {
+      return;
     }
 
-    let output = match self.surface.get_current_texture() {
-      Ok(texture) => texture,
-      Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => return,
-      Err(e) => {
-        eprintln!("Surface error: {e:?}");
-        return;
+    // Pre-create all pipelines before we start recording.
+    for draw_call in draw_calls {
+      match draw_call {
+        WindowEvent::RenderShaders { vert, frag, .. } => {
+          let vert = vert.replace('-', "_");
+          let frag = frag.replace('-', "_");
+          self.get_or_create_pipeline(&vert, &frag);
+        }
+        WindowEvent::ComputeShader { entry, .. } => {
+          let entry = entry.replace('-', "_");
+          self.get_or_create_compute_pipeline(&entry);
+        }
       }
+    }
+
+    let has_render =
+      draw_calls.iter().any(|c| matches!(c, WindowEvent::RenderShaders { .. }));
+
+    let output = if has_render {
+      match self.surface.get_current_texture() {
+        Ok(texture) => Some(texture),
+        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => return,
+        Err(e) => {
+          eprintln!("Surface error: {e:?}");
+          return;
+        }
+      }
+    } else {
+      None
     };
+
     let view = output
-      .texture
-      .create_view(&wgpu::TextureViewDescriptor::default());
+      .as_ref()
+      .map(|o| o.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+
     let mut encoder =
       self
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
           label: Some("render encoder"),
         });
-    {
+
+    // Compute dispatches first (in order).
+    for draw_call in draw_calls {
+      if let WindowEvent::ComputeShader {
+        entry,
+        workgroup_count: (x, y, z),
+      } = draw_call
+      {
+        let entry = entry.replace('-', "_");
+        let mut compute_pass =
+          encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("compute pass"),
+            timestamp_writes: None,
+          });
+        for (group_idx, bind_group) in self.bind_groups.iter().enumerate() {
+          compute_pass.set_bind_group(group_idx as u32, bind_group, &[]);
+        }
+        compute_pass.set_pipeline(&self.compute_pipelines[&entry]);
+        compute_pass.dispatch_workgroups(*x, *y, *z);
+      }
+    }
+
+    // One render pass for all render calls.
+    if let Some(view) = &view {
       let mut render_pass =
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
           label: Some("render pass"),
           color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: &view,
+            view,
             resolve_target: None,
             depth_slice: None,
             ops: wgpu::Operations {
@@ -490,13 +573,18 @@ impl RenderState {
         render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
       }
       for draw_call in draw_calls {
-        let vert = draw_call.vert.replace('-', "_");
-        let frag = draw_call.frag.replace('-', "_");
-        render_pass.set_pipeline(&self.pipelines[&(vert, frag)]);
-        render_pass.draw(0..draw_call.vert_count, 0..1);
+        if let WindowEvent::RenderShaders { vert, frag, vert_count } = draw_call {
+          let vert = vert.replace('-', "_");
+          let frag = frag.replace('-', "_");
+          render_pass.set_pipeline(&self.pipelines[&(vert, frag)]);
+          render_pass.draw(0..*vert_count, 0..1);
+        }
       }
     }
+
     self.queue.submit(std::iter::once(encoder.finish()));
-    output.present();
+    if let Some(output) = output {
+      output.present();
+    }
   }
 }

@@ -39,4 +39,4 @@
                     (+= red-phase 0.01)
                     (+= green-phase 0.017)
                     (+= blue-phase 0.13)
-                    (dispatch-shaders trivial-vertex my-fragment 3))))
+                    (dispatch-render-shaders trivial-vertex my-fragment 3))))

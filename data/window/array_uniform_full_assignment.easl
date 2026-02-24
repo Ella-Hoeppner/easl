@@ -36,4 +36,4 @@
                           (vec4f (* t 0.0017))
                           (vec4f (* t 0.0013))
                           (vec4f 0.)]))
-                    (dispatch-shaders trivial-vertex my-fragment 3))))
+                    (dispatch-render-shaders trivial-vertex my-fragment 3))))

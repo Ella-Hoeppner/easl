@@ -35,4 +35,4 @@
                            0 (into-dynamic-array [(vec4f 0.) (vec4f 0.)])
                            1 (into-dynamic-array [(vec4f 1. 0. 0. 0.)])
                            _ (into-dynamic-array [(vec4f 1.)]))))
-                    (dispatch-shaders trivial-vertex my-fragment 3))))
+                    (dispatch-render-shaders trivial-vertex my-fragment 3))))

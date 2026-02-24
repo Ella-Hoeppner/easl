@@ -1,21 +1,21 @@
 spawn-window
 print: 0.
-dispatch-shaders my-vertex my-fragment 3
+dispatch-render-shaders my-vertex my-fragment 3
 print: 0.
-dispatch-shaders my-vertex my-fragment 3
+dispatch-render-shaders my-vertex my-fragment 3
 print: 0.
-dispatch-shaders my-vertex my-fragment 3
+dispatch-render-shaders my-vertex my-fragment 3
 print: 0.
-dispatch-shaders my-vertex my-fragment 3
+dispatch-render-shaders my-vertex my-fragment 3
 print: 0.
-dispatch-shaders my-vertex my-fragment 3
+dispatch-render-shaders my-vertex my-fragment 3
 print: 0.
-dispatch-shaders my-vertex my-fragment 3
+dispatch-render-shaders my-vertex my-fragment 3
 print: 0.
-dispatch-shaders my-vertex my-fragment 3
+dispatch-render-shaders my-vertex my-fragment 3
 print: 0.
-dispatch-shaders my-vertex my-fragment 3
+dispatch-render-shaders my-vertex my-fragment 3
 print: 0.
-dispatch-shaders my-vertex my-fragment 3
+dispatch-render-shaders my-vertex my-fragment 3
 print: 0.
-dispatch-shaders my-vertex my-fragment 3
+dispatch-render-shaders my-vertex my-fragment 3

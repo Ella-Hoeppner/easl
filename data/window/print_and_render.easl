@@ -16,4 +16,4 @@
 (defn main []
   (spawn-window (fn []
                     (print 0.)
-                    (dispatch-shaders my-vertex my-fragment 3))))
+                    (dispatch-render-shaders my-vertex my-fragment 3))))

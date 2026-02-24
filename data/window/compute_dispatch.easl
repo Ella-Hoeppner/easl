@@ -1,0 +1,10 @@
+@compute
+@{workgroup-size 16}
+(defn c []: ()
+  (let [@var x 0.25]
+    (+= x 0.5)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-compute-shader c (vec3u 1u 1u 1u)))))

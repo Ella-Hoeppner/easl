@@ -25,5 +25,5 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (dispatch-shaders v1 f1 3)
-                    (dispatch-shaders v2 f1 3))))
+                    (dispatch-render-shaders v1 f1 3)
+                    (dispatch-render-shaders v2 f1 3))))

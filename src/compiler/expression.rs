@@ -3370,6 +3370,7 @@ impl TypedExp {
                             ),
                           associative: false,
                           captured_scope: None,
+                          entry_point: None,
                         },
                       )));
                       new_program.add_monomorphized_enum(Rc::unwrap_or_clone(

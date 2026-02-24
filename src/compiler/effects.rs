@@ -17,6 +17,7 @@ pub enum Effect {
   FragmentExclusiveFunction(Rc<str>),
   CPUExclusiveFunction(Rc<str>),
   Print,
+  Window,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,5 +96,11 @@ impl From<HashSet<Effect>> for EffectType {
 impl From<Effect> for EffectType {
   fn from(e: Effect) -> Self {
     Self([e].into_iter().collect())
+  }
+}
+
+impl From<Vec<Effect>> for EffectType {
+  fn from(effects: Vec<Effect>) -> Self {
+    Self(effects.into_iter().collect())
   }
 }

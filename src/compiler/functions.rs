@@ -105,6 +105,7 @@ pub struct AbstractFunctionSignature {
   pub implementation: FunctionImplementationKind,
   pub associative: bool,
   pub captured_scope: Option<AbstractStruct>,
+  pub entry_point: Option<EntryPoint>,
 }
 
 impl Default for AbstractFunctionSignature {
@@ -120,6 +121,7 @@ impl Default for AbstractFunctionSignature {
       },
       associative: false,
       captured_scope: None,
+      entry_point: None,
     }
   }
 }
@@ -440,6 +442,7 @@ impl AbstractFunctionSignature {
                     return_type,
                     implementation,
                     associative: parsed_annotation.associative,
+                    entry_point: parsed_annotation.entry,
                     captured_scope: None,
                   });
                 }
@@ -588,7 +591,7 @@ impl AbstractFunctionSignature {
           let generic_type = generic_type_bindings.get(arg).unwrap();
           if let Some(unsatisfied_bound) = bounds
             .iter()
-            .find(|constraint| !generic_type.satisfies_constraints(constraint))
+            .find(|constraint| !generic_type.satisfies_constraint(constraint))
           {
             err(
               UnsatisfiedTypeConstraint(unsatisfied_bound.clone().into()),
@@ -737,6 +740,7 @@ impl AbstractFunctionSignature {
       )),
       associative: self.associative,
       captured_scope: self.captured_scope.clone(),
+      entry_point: self.entry_point,
     })
   }
   pub fn concretize(
@@ -938,7 +942,7 @@ impl FunctionSignature {
             }
             if let TypeState::Known(t) = arg_typestate {
               for constraint in arg_constraints.iter() {
-                if !t.satisfies_constraints(constraint) {
+                if !t.satisfies_constraint(constraint) {
                   return false;
                 }
               }
@@ -956,7 +960,7 @@ impl FunctionSignature {
       }
       if let TypeState::Known(t) = &arg_types[i] {
         for constraint in arg_constraints {
-          if !t.satisfies_constraints(constraint) {
+          if !t.satisfies_constraint(constraint) {
             return false;
           }
         }
