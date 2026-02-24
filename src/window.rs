@@ -11,8 +11,8 @@ use winit::{
 use crate::{
   compiler::{expression::Exp, types::ExpTypeInfo},
   interpreter::{
-    EvalError, EvaluationEnvironment, GpuBufferKind, IOManager, WindowEvent,
-    eval,
+    EvalError, EvalException, EvaluationEnvironment, GpuBufferKind, IOManager,
+    WindowEvent, eval,
   },
 };
 
@@ -115,6 +115,10 @@ impl<IO: IOManager> ApplicationHandler for App<IO> {
         let env = self.env.as_mut().unwrap();
         match eval(self.body.clone(), env) {
           Ok(_) => {}
+          Err(EvalException::Error(EvalError::CloseWindow)) => {
+            event_loop.exit();
+            return;
+          }
           Err(e) => {
             self.error = Some(e.into());
             event_loop.exit();

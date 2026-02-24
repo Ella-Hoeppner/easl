@@ -51,5 +51,5 @@ fn main() {
     std::env::set_var("RUST_BACKTRACE", "1");
   }
   // benchmark_wgsl_compilation();
-  run_demo("delta_tracking_pathtracer", None)
+  run_demo("close_window", None)
 }

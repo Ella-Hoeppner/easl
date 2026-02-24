@@ -1,0 +1,34 @@
+@{address uniform
+  group 0
+  binding 0}
+(var frame-index: u32)
+
+(def total-frame-count: u32
+     5)
+
+@vertex
+(defn v [@{builtin vertex-index}
+         vertex-index: u32]: @{builtin position} vec4f
+  (vec4f (match vertex-index
+           0 (vec2f -1.)
+           1 (vec2f -1. 3.)
+           _ (vec2f 3. -1.))
+         0.
+         1.))
+
+@fragment
+(defn f [@{builtin position} pos: vec4f]: @{location 0} vec4f
+  (vec4f (-> frame-index
+             f32
+             (/ (f32 (- total-frame-count 1)))
+             vec3f)
+         1.))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (print frame-index)
+                    (dispatch-render-shaders v f 3)
+                    (+= frame-index 1)
+                    (when (> frame-index total-frame-count)
+                      (close-window)))))

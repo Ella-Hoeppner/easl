@@ -25,19 +25,30 @@ fn parse_events(txt: &str, name: &str) -> Vec<IOEvent> {
           vert_count: parts[2].parse().expect("vert_count must be u32"),
         }
       } else if let Some(rest) = line.strip_prefix("dispatch-compute-shader ") {
-        let (entry, counts) = rest
-          .split_once(" (vec3u ")
-          .unwrap_or_else(|| panic!("{name}: malformed dispatch-compute-shader line: {line:?}"));
+        let (entry, counts) =
+          rest.split_once(" (vec3u ").unwrap_or_else(|| {
+            panic!("{name}: malformed dispatch-compute-shader line: {line:?}")
+          });
         let counts = counts.trim_end_matches(')');
         let parts: Vec<u32> = counts
           .split(' ')
-          .map(|s| s.trim_end_matches('u').parse().expect("workgroup count must be u32"))
+          .map(|s| {
+            s.trim_end_matches('u')
+              .parse()
+              .expect("workgroup count must be u32")
+          })
           .collect();
-        assert_eq!(parts.len(), 3, "{name}: expected 3 workgroup counts in: {line:?}");
+        assert_eq!(
+          parts.len(),
+          3,
+          "{name}: expected 3 workgroup counts in: {line:?}"
+        );
         IOEvent::DispatchComputeShader {
           entry: entry.to_string(),
           workgroup_count: (parts[0], parts[1], parts[2]),
         }
+      } else if line == "close-window" {
+        IOEvent::CloseWindow
       } else {
         panic!("{name}: unknown event format: {line:?}");
       }
@@ -86,3 +97,4 @@ window_test!(multi_render);
 window_test!(multi_window);
 window_test!(global_frame_counter);
 window_test!(compute_dispatch);
+window_test!(close_window);

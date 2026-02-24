@@ -76,6 +76,7 @@ pub enum EvalError {
   CpuEntryPointNotFound(String),
   DerivativeFunctionCantBeUsed,
   Discard,
+  CloseWindow,
   BuiltinError(&'static str),
   NoMainFn,
   ControlFlowExceptionEscapedToTopLevel,
@@ -1453,6 +1454,10 @@ fn apply_builtin_fn<IO: IOManager>(
       env.io.record_compute(&entry_name, workgroup_count)?;
       Ok(Value::Unit)
     }
+    "close-window" => {
+      env.io.record_close_window();
+      Err(CloseWindow)
+    }
     "spawn-window" => {
       let (
         Value::Fun(Function::Composite {
@@ -1708,6 +1713,7 @@ pub enum IOEvent {
     entry: String,
     workgroup_count: (u32, u32, u32),
   },
+  CloseWindow,
 }
 
 /// Describes the GPU buffer type for a top-level variable binding.
@@ -1733,6 +1739,7 @@ pub trait IOManager: Sized {
     workgroup_count: (u32, u32, u32),
   ) -> Result<(), EvalError>;
   fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent>;
+  fn record_close_window(&mut self);
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
     env: EvaluationEnvironment<Self>,
@@ -1788,6 +1795,8 @@ impl IOManager for StdoutIO {
   fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent> {
     std::mem::take(&mut self.frame_draw_calls)
   }
+
+  fn record_close_window(&mut self) {}
 
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
@@ -1863,6 +1872,10 @@ impl IOManager for StringIO {
     vec![] // Events already logged directly; no rendering needed for StringIO
   }
 
+  fn record_close_window(&mut self) {
+    self.events.push(IOEvent::CloseWindow);
+  }
+
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
     mut env: EvaluationEnvironment<Self>,
@@ -1875,6 +1888,7 @@ impl IOManager for StringIO {
     for _ in 0..frame_count {
       match eval(body.clone(), &mut env) {
         Ok(_) => {}
+        Err(EvalException::Error(CloseWindow)) => break,
         Err(e) => return Err((env, e.into())),
       }
     }

@@ -15,7 +15,8 @@ cargo run                         # runs benchmark (compiles all .easl files in 
 - `src/lib.rs` — public API: `compile_easl_source_to_wgsl`, `get_easl_program_info`, `format_easl_source`
 - `src/parse.rs` — S-expression parser (uses the `fsexp` crate)
 - `src/format.rs` — source formatter
-- `src/interpreter.rs` — CPU-side interpreter (WIP)
+- `src/interpreter.rs` — CPU-side interpreter; also defines the `IOManager` trait, `WindowEvent`/`IOEvent` enums, `GpuBufferKind`, `EvaluationEnvironment`, and `Value::to_uniform_bytes`
+- `src/window.rs` — wgpu-based GPU renderer; creates the winit window, manages wgpu device/surface/pipelines, uploads CPU bindings each frame, dispatches compute and render passes
 - `src/main.rs` — CLI entry point, currently just runs a compilation benchmark
 - `src/compiler/` — the compiler:
   - `core.rs` — top-level compilation entry point
@@ -26,7 +27,7 @@ cargo run                         # runs benchmark (compiles all .easl files in 
   - `structs.rs` — `AbstractStruct`, struct monomorphization
   - `enums.rs` — `AbstractEnum`, enum monomorphization
   - `builtins.rs` — all built-in function/struct/macro definitions
-  - `effects.rs` — effect types (fragment-exclusive functions, print, etc.)
+  - `effects.rs` — effect types (fragment-exclusive functions, print, window/spawn-window, etc.)
   - `entry.rs` — shader entry point validation (vertex/fragment/compute)
   - `error.rs` — `CompileErrorKind` enum and error reporting
   - `vars.rs` — top-level variables and address spaces
@@ -90,26 +91,126 @@ The main pipeline lives in `Program::validate_raw_program` (program.rs). The maj
 - Integer literals like `0` or `5` are ambiguous — the type checker can't tell if they're `i32` or `u32`. Use `0i` / `5i` for signed or `0u` / `5u` for unsigned to help type inference.
 - `(if cond then else)` requires both branches and they must have compatible types. For side-effect-only conditionals (e.g. `(when cond (break))`), use the `when` macro instead, which handles the unit-typed else branch automatically.
 - Float literals should include a decimal point: `5.` not `5`. An `f` suffix is also valid: `5f`.
+- When printing values, the type is included in the output: `u32` prints as `1u`, `i32` as `1i`, `f32` as `1` (no suffix). This matters for `.txt` expected-output files.
+
+### Entry point annotations
+
+Easl programs can have multiple annotated sections compiled/run separately:
+- `@cpu` — marks the CPU entry point, compiled with `CompilerTarget::CPU` and run by the interpreter
+- `@vertex`, `@fragment`, `@compute` — mark GPU shader entry points
+- `@{workgroup-size N}` — required on `@compute` functions; sets threads per workgroup (can also be `@{workgroup-size X Y Z}`)
+- `@{builtin vertex-index}`, `@{builtin global-invocation-id}`, `@{builtin position}`, etc. — bind WGSL builtins to function arguments or return values
+- `@{location N}` — binds vertex inputs / fragment outputs
+
+### GPU-bound top-level variables
+
+`(var name: type)` with an address-space annotation creates a GPU-accessible variable visible to shaders and tracked by the interpreter's `binding_vars`:
+```
+@{address uniform        group 0  binding 0}  (var frame-index: u32)
+@{address storage-read   group 0  binding 1}  (var read-only-buf: [N: vec4f])
+@{address storage-write  group 0  binding 2}  (var rw-buf: [N: vec4f])
+```
+- `uniform` — maps to `GpuBufferKind::Uniform` (read-only from shader, writable from CPU)
+- `storage-read` — maps to `GpuBufferKind::StorageReadOnly`
+- `storage-write` — maps to `GpuBufferKind::StorageReadWrite` (GPU can write; vertex shaders cannot access)
+- Unsized arrays (`[vec4f]`) are valid for storage bindings; the buffer is sized at runtime
+
+### Windowing builtins
+
+- `(spawn-window (fn [] ...))` — open a GPU window; the lambda body is the per-frame callback
+- `(dispatch-render-shaders vert-fn frag-fn vert-count)` — queue a render pass for this frame
+- `(dispatch-compute-shader compute-fn (vec3u X Y Z))` — queue a compute dispatch for this frame
+- `(into-dynamic-array arr)` — convert a fixed-size array to a dynamically-sized `[T]`
+
+Compute dispatches are always submitted before the render pass within a frame.
+
+## Interpreter & Window System
+
+The interpreter evaluates `@cpu`-annotated easl code on the CPU, driving GPU work through the `IOManager` trait.
+
+### `IOManager` trait
+Two implementations: `StdoutIO` (real windowing via wgpu) and `StringIO` (test/debug, no GPU).
+- `println` — print output
+- `record_draw(vert, frag, vert_count)` — called by `dispatch-render-shaders`
+- `record_compute(entry, workgroup_count)` — called by `dispatch-compute-shader`
+- `take_frame_draw_calls() -> Vec<WindowEvent>` — drains the current frame's GPU commands
+- `run_spawn_window(body, env)` — called by `spawn-window`; `StdoutIO` opens a real window, `StringIO` simulates N frames (default 10)
+
+### Key types in `interpreter.rs`
+- **`WindowEvent`** — frame-level GPU command passed from interpreter to `window.rs`:
+  - `RenderShaders { vert: String, frag: String, vert_count: u32 }`
+  - `ComputeShader { entry: String, workgroup_count: (u32, u32, u32) }`
+- **`IOEvent`** — unified ordered log used by `StringIO` for testing:
+  - `Print(String)`, `SpawnWindow`, `DispatchShaders { vert, frag, vert_count }`, `DispatchComputeShader { entry, workgroup_count }`
+- **`GpuBufferKind`** — `Uniform | StorageReadOnly | StorageReadWrite`; exposed from `interpreter.rs` so `window.rs` doesn't need to reach into the compiler
+- **`EvaluationEnvironment`** — holds `binding_vars: Vec<(GroupAndBinding, Rc<str>, Type, VariableAddressSpace)>` for all GPU-bound top-level variables (Uniform + StorageRead + StorageReadWrite)
+  - `binding_infos() -> Vec<((u8,u8), GpuBufferKind, u64)>` — size is 0 for unsized/dynamic arrays
+  - `binding_buffer_data() -> Vec<((u8,u8), Vec<u8>)>` — serializes current interpreter values, padded to 16 bytes; called every frame before rendering
+- **`Value::to_uniform_bytes(&self, ty: &Type) -> Vec<u8>`** — serializes a value to GPU bytes; uses `ty` for struct field ordering (walks `s.fields` in declaration order)
+
+### Interpreter implementation notes
+
+**Getting function names from dispatch-style builtins:**
+When a builtin receives a function as an argument (e.g. `dispatch-render-shaders`, `dispatch-compute-shader`), extract the original pre-monomorphization name via `abstract_ancestor`:
+```rust
+let (_, Type::Function(f)) = &args[0] else { panic!() };
+let name = f.abstract_ancestor.as_ref().unwrap().borrow().name.clone();
+```
+
+**Buffer sizing — use `data_size_in_u32s`, not serialization:**
+`ty.data_size_in_u32s(&SourceTrace::empty())` is the canonical way to compute how many u32s (×4 = bytes) a type occupies on the GPU. Do **not** use `value.to_uniform_bytes(ty).len()` for this — if the value is `Uninitialized` (common at startup for storage arrays), it returns 0 and produces the wrong buffer size.
+
+**Unsized arrays and `Value::zeroed()`:**
+`Value::zeroed()` returns `Err(CantCreateZeroedUnsizedArray)` for unsized array types. When initializing `binding_vars` for a variable that might be unsized, use `.unwrap_or(Value::Uninitialized)`.
+
+**`GpuBufferKind` ↔ `VariableAddressSpace` mapping:**
+- `VariableAddressSpace::Uniform` → `GpuBufferKind::Uniform`
+- `VariableAddressSpace::Storage(AccessMode::Read)` → `GpuBufferKind::StorageReadOnly`
+- `VariableAddressSpace::Storage(AccessMode::ReadWrite)` → `GpuBufferKind::StorageReadWrite`
+
+### `window.rs`
+- One `wgpu::ShaderModule` and one `wgpu::PipelineLayout` shared by all render and compute pipelines
+- `bind_group_layouts` stored as a field on `RenderState` (not dropped after creation) so `rebuild_bind_groups` can recreate bind groups without invalidating the pipeline layout
+- `upload_bindings`: detects when a buffer's byte size changes (dynamic arrays resized by the interpreter) → recreates the buffer → calls `rebuild_bind_groups`
+- `render`: pre-creates all pipelines, dispatches all `ComputeShader` calls first (each in its own compute pass), then does one render pass for all `RenderShaders` calls
+- winit `EventLoop` is stored in a thread-local and reused across multiple `spawn-window` calls via `run_app_on_demand`
+- **Known limitation**: `binding_buffer_data` serializes and uploads *all* bindings every frame, including large GPU-written storage buffers the CPU never touches. A dirty-flag system is planned.
 
 ## Test Structure
 
-GPU tests live in `tests/shader_tests.rs` with source files in `data/gpu/`. CPU interpreter tests live in `tests/cpu_tests.rs` with source and expected-output files in `data/cpu/`.
+There are three test suites:
 
+### GPU/compiler tests (`tests/shader_tests.rs`, sources in `data/gpu/`)
 ```rust
-// GPU tests (shader_tests.rs):
-success_test!(test_name);  // compiles data/gpu/test_name.easl, validates output with naga
+success_test!(test_name);  // compiles data/gpu/test_name.easl, validates WGSL output with naga
 error_test!(test_name, CompileErrorKind::SomeError);  // expects specific compile errors
+```
+- `assert_compiles` validates the WGSL output through naga's parser and validator
+- `assert_errors` checks that exact error kinds match (uses `PartialEq`, not discriminant comparison)
+- Compiled WGSL is written to `out/` for inspection
 
-// CPU tests (cpu_tests.rs):
+### CPU interpreter tests (`tests/cpu_tests.rs`, sources in `data/cpu/`)
+```rust
 cpu_test!(test_name);  // runs data/cpu/test_name.easl, compares stdout to data/cpu/test_name.txt
 ```
+- Compiles with `CompilerTarget::CPU`, runs via `run_program_capturing_output`
+- Asserts that captured `(print ...)` output matches the `.txt` file exactly
 
-- `assert_compiles` compiles the .easl file and validates the WGSL output through naga's parser and validator
-- `assert_errors` compiles and checks that exact error kinds match (uses `PartialEq`, not discriminant comparison)
-- CPU tests compile with `CompilerTarget::CPU`, run via `run_program_capturing_output`, and assert the captured print output matches the `.txt` file exactly
-- Compiled WGSL output is written to `out/` for inspection
-- The `#_` reader macro in .easl files comments out the next form — useful for disabling parts of test files
-- Run `cargo test --test shader_tests` or `cargo test --test cpu_tests` to target a specific test file
+### Window/interpreter tests (`tests/window_tests.rs`, sources in `data/window/`)
+```rust
+window_test!(test_name);  // runs data/window/test_name.easl, compares IOEvent log to data/window/test_name.txt
+```
+- Runs the program with `StringIO` (no real GPU), which simulates 10 window frames
+- Asserts that `io.events` matches the events parsed from the `.txt` file
+- **`.txt` event format** (one event per line):
+  - `spawn-window`
+  - `print: <message>`
+  - `dispatch-render-shaders <vert_fn> <frag_fn> <vert_count>`
+  - `dispatch-compute-shader <entry_fn> (vec3u <x>u <y>u <z>u)`
+
+### Shared notes
+- `#_` reader macro in `.easl` files comments out the next form — useful for disabling parts of test files
+- Target a specific suite: `cargo test --test shader_tests`, `--test cpu_tests`, `--test window_tests`
 
 ## Style Notes
 

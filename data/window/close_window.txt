@@ -1,0 +1,14 @@
+spawn-window
+print: 0u
+dispatch-render-shaders v f 3
+print: 1u
+dispatch-render-shaders v f 3
+print: 2u
+dispatch-render-shaders v f 3
+print: 3u
+dispatch-render-shaders v f 3
+print: 4u
+dispatch-render-shaders v f 3
+print: 5u
+dispatch-render-shaders v f 3
+close-window
