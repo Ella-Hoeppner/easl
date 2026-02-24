@@ -1013,11 +1013,11 @@ impl FunctionSignature {
       .as_ref()
       .map(|abstract_ancestor| abstract_ancestor.borrow().name.clone())
   }
-  pub fn effects(&self, program: &Program) -> EffectType {
+  pub fn effects(&self) -> EffectType {
     if let Some(abstract_ancestor) = &self.abstract_ancestor {
       match &abstract_ancestor.borrow().implementation {
         FunctionImplementationKind::Composite(f) => {
-          return f.borrow().effects(program);
+          return f.borrow().effects();
         }
         FunctionImplementationKind::Builtin { effect_type, .. } => {
           return effect_type.clone();
@@ -1063,7 +1063,7 @@ impl TopLevelFunction {
     } else {
       panic!("attempted to compile function with invalid ExpKind {kind:?}")
     };
-    let effects = body.effects(program);
+    let effects = body.effects();
     let allowed_on_gpu = effects.cpu_exclusive_functions().is_empty()
       && effects.gpu_illegal_address_space_writes(program).is_empty();
     let args = arg_names
@@ -1133,9 +1133,9 @@ impl TopLevelFunction {
       },
     )
   }
-  pub fn effects(&self, program: &Program) -> EffectType {
+  pub fn effects(&self) -> EffectType {
     if let ExpKind::Function(arg_names, body) = &self.expression.kind {
-      let mut effects = body.effects(&program);
+      let mut effects = body.effects();
       for (name, _) in arg_names {
         effects.remove(&Effect::ReadsVar(name.clone()));
         effects.remove(&Effect::ModifiesLocalVar(name.clone()))

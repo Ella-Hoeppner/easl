@@ -1301,7 +1301,7 @@ impl Program {
                   root_encountered = true;
                   return Ok(true);
                 }
-                let effects = exp.effects(self);
+                let effects = exp.effects();
                 if let ExpKind::Function(arg_names, body) = &mut exp.kind {
                   let name = self.names.borrow_mut().gensym("inner_fn");
                   let Type::Function(f_signature) = exp.data.unwrap_known()
@@ -2441,7 +2441,7 @@ impl Program {
           let ExpKind::Function(_, body) = &f.expression.kind else {
             unreachable!()
           };
-          let effects = body.effects(self);
+          let effects = body.effects();
           if let EntryPoint::Vertex
           | EntryPoint::Compute(_)
           | EntryPoint::Fragment = entry_point

@@ -6,7 +6,8 @@ use easl::{
 };
 use std::fs;
 
-fn _benchmark_wgsl_compilation() {
+#[allow(unused)]
+fn benchmark_wgsl_compilation() {
   let mut entries: Vec<_> = fs::read_dir("./data/gpu/")
     .expect("Unable to read data/gpu/ directory")
     .filter_map(|e| e.ok())
@@ -30,9 +31,27 @@ fn _benchmark_wgsl_compilation() {
   println!("\n{} files, total: {total_time:.1}ms", entries.len());
 }
 
-fn run_demo(file_name: &str, entry: Option<&str>) {
+#[allow(unused)]
+fn run_window_demo(file_name: &str, entry: Option<&str>) {
   let src = fs::read_to_string(format!("./data/window/{file_name}.easl"))
     .unwrap_or_else(|_| panic!("Unable to read data/window/{file_name}.easl"));
+  let document = parse_easl_without_comments(&src);
+  let (mut program, errors) =
+    Program::from_easl_document(&document, built_in_macros());
+  if !errors.is_empty() {
+    panic!("{errors:?}");
+  }
+  let errors = program.validate_raw_program();
+  if !errors.is_empty() {
+    panic!("{errors:?}");
+  }
+  run_program_entry(program, entry).unwrap();
+}
+
+#[allow(unused)]
+fn run_buffer_demo(file_name: &str, entry: Option<&str>) {
+  let src = fs::read_to_string(format!("./data/buffer/{file_name}.easl"))
+    .unwrap_or_else(|_| panic!("Unable to read data/buffer/{file_name}.easl"));
   let document = parse_easl_without_comments(&src);
   let (mut program, errors) =
     Program::from_easl_document(&document, built_in_macros());
@@ -51,5 +70,6 @@ fn main() {
     std::env::set_var("RUST_BACKTRACE", "1");
   }
   // benchmark_wgsl_compilation();
-  run_demo("close_window", None)
+  run_window_demo("delta_tracking_pathtracer", None)
+  // run_buffer_demo("bidirectional_transfer", None)
 }

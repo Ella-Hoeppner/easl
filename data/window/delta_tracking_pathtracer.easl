@@ -4,25 +4,93 @@
 @{address storage-write
   group 0
   binding 0}
-(var my-array: [65536: vec4f])
+(var accumulated-colors: [65536: vec4f])
 
 @{address uniform
   group 0
   binding 1}
 (var frame-index: u32)
 
+(var rand-state: f32
+     0.)
+
+(defn set-rand-seed [x: f32]: f32
+  (= rand-state x)
+  x)
+
+(defn rand []: f32
+  (= rand-state
+     (+ rand-state 0.025))
+  (fract (* 43758.5453123
+            (sin (* rand-state 78.233)))))
+
+(defn rand-norm []: vec2f
+  (let [u1 (rand)
+        u2 (rand)
+        r (sqrt (* -2. (log u1)))
+        theta (* 6.2831853 u2)]
+    (vec2f (* r (cos theta))
+           (* r (sin theta)))))
+
+(defn rand-dir []: vec3f
+  (let [n1 (rand-norm)
+        n2 (rand-norm)]
+    (normalize (vec3f n1.x n1.y n2.x))))
+
+(defn rand-exp []: f32
+  (- (log (rand))))
+
+(defn scene-geometry [pos: vec3f]: vec4f
+  (let [offset-pos (+ pos
+                      (* (* 0.6 (vec3f 0.1 0.3 -0.1))
+                         (-> pos
+                             (dot (vec3f -0.2 0.1 0.1))
+                             (* 190.)
+                             cos)))]
+    (if (< (length offset-pos) 0.5)
+      (vec4f 0.95 0.3 0.1 1.)
+      (vec4f 0.))))
+
+(defn skybox-luminance [x: vec3f]: vec3f
+  (* (vec3f 1.)
+     (smoothstep 0.7
+                 0.8
+                 (dot (normalize (vec3f 1. 0. -0.5))
+                      (normalize x)))))
+
+(defn uni->bi [x: f32]: f32
+  (-> x (* 2.) (- 1.)))
+
 @compute
 @{workgroup-size 256}
 (defn c [@{builtin global-invocation-id}
          id: vec3u]
   (let [id id.x]
-    (= (my-array id)
-       (-> id
-           (+ (/ frame-index 1))
-           f32
-           (/ (-> (f32 grid-size) (* <> <>)))
-           vec3f
-           (vec4f 1.)))))
+    (set-rand-seed (+ (* (f32 id) 0.00033333)
+                      (* (f32 frame-index) 0.0555555)))
+    (+= (accumulated-colors id)
+        (let [x (-> id
+                    (% grid-size)
+                    f32
+                    (/ (f32 grid-size))
+                    uni->bi)
+              y (-> id
+                    (/ grid-size)
+                    f32
+                    (/ (f32 grid-size))
+                    uni->bi)
+              @var pos (vec3f 0. 0. -0.99)
+              @var dir (normalize (vec3f x y 1.))
+              @var tint (vec3f 1.)]
+          (for [i 0i (< i 50) (+= i 1)]
+            (let [sample (scene-geometry pos)]
+              (when (< (rand) sample.w)
+                (*= tint sample.xyz)
+                (= dir (rand-dir)))
+              (+= pos
+                  (* (* 0.05 (rand-exp)) dir))))
+          (vec4f (* tint (skybox-luminance dir))
+                 1.)))))
 
 @vertex
 (defn v [@{builtin vertex-index}
@@ -36,9 +104,13 @@
 
 @fragment
 (defn f [@{builtin position} pos: vec4f]: @{location 0} vec4f
-  (let [x (u32 (* pos.x 0.01))
-        y (u32 (* pos.y 0.01))]
-    (my-array (+ x (* y grid-size)))))
+  (let [x (u32 (* pos.x 0.2))
+        y (u32 (* pos.y 0.2))]
+    (if (or (>= x grid-size)
+            (>= y grid-size))
+      (vec4f (vec3f 0.) 1.)
+      (/ (accumulated-colors (+ x (* y grid-size)))
+         (f32 frame-index)))))
 
 @cpu
 (defn main []

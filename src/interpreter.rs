@@ -1397,7 +1397,10 @@ fn apply_builtin_fn<IO: IOManager>(
     // todo!() matrix access (column indexing, etc.)
     // todo!() texture functions, for now I guess these should just error
     "print" => {
-      let formatted = args[0].0.format_for_print(&args[0].1);
+      let formatted = args
+        .get(0)
+        .map(|arg| arg.0.format_for_print(&args[0].1))
+        .unwrap_or_else(|| "()".to_string());
       env.io.println(&formatted);
       Ok(Value::Unit)
     }
@@ -1405,6 +1408,9 @@ fn apply_builtin_fn<IO: IOManager>(
       let (_, Type::Function(vert_f)) = &args[0] else {
         panic!()
       };
+      let vert_effects = vert_f.effects();
+      let (vert_read_global_variable_names, vert_written_global_variable_names) =
+        vert_effects.read_and_written_globals();
       let vert_f_name = vert_f
         .abstract_ancestor
         .as_ref()
@@ -1415,6 +1421,9 @@ fn apply_builtin_fn<IO: IOManager>(
       let (_, Type::Function(frag_f)) = &args[1] else {
         panic!()
       };
+      let frag_effects = frag_f.effects();
+      let (frag_read_global_variable_names, frag_written_global_variable_names) =
+        frag_effects.read_and_written_globals();
       let frag_f_name = frag_f
         .abstract_ancestor
         .as_ref()
@@ -1422,12 +1431,27 @@ fn apply_builtin_fn<IO: IOManager>(
         .borrow()
         .name
         .clone();
+      let read_global_variable_names: Vec<Rc<str>> =
+        vert_read_global_variable_names
+          .into_iter()
+          .chain(frag_read_global_variable_names.into_iter())
+          .collect();
+      let written_global_variable_names: Vec<Rc<str>> =
+        vert_written_global_variable_names
+          .into_iter()
+          .chain(frag_written_global_variable_names.into_iter())
+          .collect();
       let (Value::Prim(Primitive::U32(vert_count)), _) = &args[2] else {
         panic!()
       };
-      env
-        .io
-        .record_draw(&vert_f_name, &frag_f_name, *vert_count)?;
+      let pre_upload = env.collect_dirty_uploads(&read_global_variable_names);
+      env.io.record_draw(
+        &vert_f_name,
+        &frag_f_name,
+        *vert_count,
+        pre_upload,
+      )?;
+      env.mark_gpu_written(&written_global_variable_names);
       Ok(Value::Unit)
     }
     "dispatch-compute-shader" => {
@@ -1441,6 +1465,9 @@ fn apply_builtin_fn<IO: IOManager>(
         .borrow()
         .name
         .clone();
+      let effects = compute_f.effects();
+      let (read_global_variable_names, written_global_variable_names) =
+        effects.read_and_written_globals();
       let (Value::Struct(wg), _) = &args[1] else {
         panic!()
       };
@@ -1451,7 +1478,11 @@ fn apply_builtin_fn<IO: IOManager>(
         v
       };
       let workgroup_count = (get_u32("x"), get_u32("y"), get_u32("z"));
-      env.io.record_compute(&entry_name, workgroup_count)?;
+      let pre_upload = env.collect_dirty_uploads(&read_global_variable_names);
+      env
+        .io
+        .record_compute(&entry_name, workgroup_count, pre_upload)?;
+      env.mark_gpu_written(&written_global_variable_names);
       Ok(Value::Unit)
     }
     "close-window" => {
@@ -1691,10 +1722,12 @@ pub enum WindowEvent {
     vert: String,
     frag: String,
     vert_count: u32,
+    pre_upload: Vec<((u8, u8), Vec<u8>)>,
   },
   ComputeShader {
     entry: String,
     workgroup_count: (u32, u32, u32),
+    pre_upload: Vec<((u8, u8), Vec<u8>)>,
   },
 }
 
@@ -1725,6 +1758,17 @@ pub enum GpuBufferKind {
   StorageReadWrite,
 }
 
+/// Tracks whether a GPU-bound buffer is in sync between CPU and GPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedBufferState {
+  /// CPU and GPU hold the same data.
+  Synced,
+  /// The GPU wrote to this buffer; the CPU value is stale.
+  CPUOutOfDate,
+  /// The CPU wrote to this buffer; the GPU copy needs to be uploaded.
+  GPUOutOfDate,
+}
+
 pub trait IOManager: Sized {
   fn println(&mut self, s: &str);
   fn record_draw(
@@ -1732,14 +1776,18 @@ pub trait IOManager: Sized {
     vert: &str,
     frag: &str,
     vert_count: u32,
+    pre_upload: Vec<((u8, u8), Vec<u8>)>,
   ) -> Result<(), EvalError>;
   fn record_compute(
     &mut self,
     entry: &str,
     workgroup_count: (u32, u32, u32),
+    pre_upload: Vec<((u8, u8), Vec<u8>)>,
   ) -> Result<(), EvalError>;
   fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent>;
   fn record_close_window(&mut self);
+  /// Stub: copy a GPU-written buffer back to CPU. Not yet implemented.
+  fn sync_gpu_to_cpu(&mut self, name: &str);
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
     env: EvaluationEnvironment<Self>,
@@ -1771,11 +1819,13 @@ impl IOManager for StdoutIO {
     vert: &str,
     frag: &str,
     vert_count: u32,
+    pre_upload: Vec<((u8, u8), Vec<u8>)>,
   ) -> Result<(), EvalError> {
     self.frame_draw_calls.push(WindowEvent::RenderShaders {
       vert: vert.to_string(),
       frag: frag.to_string(),
       vert_count,
+      pre_upload,
     });
     Ok(())
   }
@@ -1784,10 +1834,12 @@ impl IOManager for StdoutIO {
     &mut self,
     entry: &str,
     workgroup_count: (u32, u32, u32),
+    pre_upload: Vec<((u8, u8), Vec<u8>)>,
   ) -> Result<(), EvalError> {
     self.frame_draw_calls.push(WindowEvent::ComputeShader {
       entry: entry.to_string(),
       workgroup_count,
+      pre_upload,
     });
     Ok(())
   }
@@ -1797,6 +1849,10 @@ impl IOManager for StdoutIO {
   }
 
   fn record_close_window(&mut self) {}
+
+  fn sync_gpu_to_cpu(&mut self, _name: &str) {
+    panic!("GPU→CPU sync not yet implemented")
+  }
 
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
@@ -1847,6 +1903,7 @@ impl IOManager for StringIO {
     vert: &str,
     frag: &str,
     vert_count: u32,
+    _pre_upload: Vec<((u8, u8), Vec<u8>)>,
   ) -> Result<(), EvalError> {
     self.events.push(IOEvent::DispatchShaders {
       vert: vert.to_string(),
@@ -1860,6 +1917,7 @@ impl IOManager for StringIO {
     &mut self,
     entry: &str,
     workgroup_count: (u32, u32, u32),
+    _pre_upload: Vec<((u8, u8), Vec<u8>)>,
   ) -> Result<(), EvalError> {
     self.events.push(IOEvent::DispatchComputeShader {
       entry: entry.to_string(),
@@ -1874,6 +1932,10 @@ impl IOManager for StringIO {
 
   fn record_close_window(&mut self) {
     self.events.push(IOEvent::CloseWindow);
+  }
+
+  fn sync_gpu_to_cpu(&mut self, _name: &str) {
+    panic!("GPU→CPU sync not yet implemented")
   }
 
   fn run_spawn_window(
@@ -1903,6 +1965,8 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   pub io: IO,
   /// GPU-bound top-level vars (uniform + storage), in declaration order.
   binding_vars: Vec<(GroupAndBinding, Rc<str>, Type, VariableAddressSpace)>,
+  /// Sync state for each GPU-bound variable, keyed by name.
+  buffer_states: HashMap<Rc<str>, SharedBufferState>,
 }
 
 impl<IO: IOManager> EvaluationEnvironment<IO> {
@@ -1933,6 +1997,10 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         }
       })
       .collect();
+    let buffer_states = binding_vars
+      .iter()
+      .map(|(_, name, _, _)| (name.clone(), SharedBufferState::GPUOutOfDate))
+      .collect();
     let mut env = Self {
       wgsl: String::new(),
       bindings: HashMap::new(),
@@ -1944,6 +2012,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         .collect(),
       io,
       binding_vars,
+      buffer_states,
     };
     for var in program.top_level_vars.iter() {
       let value = match &var.value {
@@ -2019,6 +2088,77 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       .collect()
   }
 
+  fn is_binding_var(&self, name: &Rc<str>) -> bool {
+    self.binding_vars.iter().any(|(_, n, _, _)| n == name)
+  }
+
+  /// Serializes the current CPU value of each GPUOutOfDate binding var whose
+  /// name appears in `names`, marks those buffers Synced, and returns the data
+  /// ready for upload.
+  fn collect_dirty_uploads(
+    &mut self,
+    names: &[Rc<str>],
+  ) -> Vec<((u8, u8), Vec<u8>)> {
+    let mut result = vec![];
+    for (gb, name, ty, _) in &self.binding_vars {
+      if !names.contains(name) {
+        continue;
+      }
+      if self.buffer_states.get(name) != Some(&SharedBufferState::GPUOutOfDate)
+      {
+        continue;
+      }
+      let value = self.bindings.get(name).and_then(|v| v.last());
+      let mut bytes = value
+        .map(|v| v.to_uniform_bytes(ty))
+        .unwrap_or(vec![0u8; 4]);
+      while bytes.len() % 16 != 0 {
+        bytes.push(0);
+      }
+      result.push(((gb.group, gb.binding), bytes));
+      self
+        .buffer_states
+        .insert(name.clone(), SharedBufferState::Synced);
+    }
+    result
+  }
+
+  /// Marks GPU-bound vars in `names` as CPUOutOfDate (GPU wrote them).
+  fn mark_gpu_written(&mut self, names: &[Rc<str>]) {
+    for name in names {
+      if self.is_binding_var(name) {
+        self
+          .buffer_states
+          .insert(name.clone(), SharedBufferState::CPUOutOfDate);
+      }
+    }
+  }
+
+  /// Marks GPU-bound vars in `names` as GPUOutOfDate (CPU wrote them).
+  fn mark_cpu_written(&mut self, names: &[Rc<str>]) {
+    for name in names {
+      if self.is_binding_var(name) {
+        self
+          .buffer_states
+          .insert(name.clone(), SharedBufferState::GPUOutOfDate);
+      }
+    }
+  }
+
+  /// For any GPU-bound var in `names` that is CPUOutOfDate, triggers a
+  /// GPU→CPU readback. Currently a panic stub — async readback not yet
+  /// implemented.
+  fn check_cpu_readable(&mut self, names: &[Rc<str>]) {
+    for name in names {
+      if self.is_binding_var(name)
+        && self.buffer_states.get(name)
+          == Some(&SharedBufferState::CPUOutOfDate)
+      {
+        self.io.sync_gpu_to_cpu(name);
+      }
+    }
+  }
+
   fn bind(&mut self, name: Rc<str>, value: Value) {
     if let Some(bindings) = self.bindings.get_mut(&name) {
       bindings.push(value);
@@ -2070,6 +2210,7 @@ pub fn eval(
   exp: Exp<ExpTypeInfo>,
   env: &mut EvaluationEnvironment<impl IOManager>,
 ) -> Result<Value, EvalException> {
+  let exp_effects = exp.effects();
   Ok(match exp.kind {
     ExpKind::Wildcard => return Err(EncounteredWildcard.into()),
     ExpKind::Unit => Value::Unit,
@@ -2153,7 +2294,10 @@ pub fn eval(
             }
           })
           .collect::<Result<_, _>>()?;
-        let return_value = match f {
+        let (read_global_variable_names, written_global_variable_names) =
+          exp_effects.read_and_written_globals();
+        env.check_cpu_readable(&read_global_variable_names);
+        let mut return_value = match f {
           Function::Builtin(name) => apply_builtin_fn(
             name,
             arg_values.into_iter().zip(arg_types.into_iter()).collect(),
@@ -2196,7 +2340,7 @@ pub fn eval(
             value?
           }
         };
-        if is_assignment_op {
+        return_value = if is_assignment_op {
           enum AccessKind {
             Index(i64),
             Field(Rc<str>),
@@ -2308,7 +2452,9 @@ pub fn eval(
           Value::Unit
         } else {
           return_value
-        }
+        };
+        env.mark_cpu_written(&written_global_variable_names);
+        return_value
       }
       Type::Array(_, _) => {
         if args.len() != 1 {

@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, sync::Arc};
+use std::{cell::RefCell, collections::HashMap, sync::Arc, time::Instant};
 
 use winit::{
   application::ApplicationHandler,
@@ -36,6 +36,8 @@ pub fn run_window_loop<IO: IOManager>(
       env: Some(env),
       state: None,
       error: None,
+      closed: false,
+      last_frame_time: None,
     };
     event_loop.run_app_on_demand(&mut app).unwrap();
     match app.error {
@@ -50,6 +52,8 @@ struct App<IO: IOManager> {
   env: Option<EvaluationEnvironment<IO>>,
   state: Option<RenderState>,
   error: Option<EvalError>,
+  closed: bool,
+  last_frame_time: Option<Instant>,
 }
 
 /// Metadata about a single GPU buffer binding, kept so we can recreate
@@ -112,23 +116,32 @@ impl<IO: IOManager> ApplicationHandler for App<IO> {
         }
       }
       WinitWindowEvent::RedrawRequested => {
+        if self.closed {
+          return;
+        }
+        let now = Instant::now();
+        // if let Some(last) = self.last_frame_time {
+        //   let fps = 1.0 / last.elapsed().as_secs_f64();
+        //   println!("fps: {fps:.1}"); // fps logging
+        // }
+        self.last_frame_time = Some(now);
         let env = self.env.as_mut().unwrap();
         match eval(self.body.clone(), env) {
           Ok(_) => {}
           Err(EvalException::Error(EvalError::CloseWindow)) => {
+            self.closed = true;
             event_loop.exit();
             return;
           }
           Err(e) => {
+            self.closed = true;
             self.error = Some(e.into());
             event_loop.exit();
             return;
           }
         }
-        let binding_data = env.binding_buffer_data();
         let draw_calls = env.io.take_frame_draw_calls();
         if let Some(state) = &mut self.state {
-          state.upload_bindings(&binding_data);
           state.render(&draw_calls);
           state.window.request_redraw();
         }
@@ -469,6 +482,10 @@ impl RenderState {
       }
 
       if let Some(buffer) = self.binding_buffers.get(&key) {
+        // println!(
+        //   "cpu->gpu upload: g{group}b{binding} ({} bytes)",
+        //   bytes.len()
+        // );
         self.queue.write_buffer(buffer, 0, bytes);
       }
     }
@@ -491,23 +508,34 @@ impl RenderState {
       return;
     }
 
-    // Pre-create all pipelines before we start recording.
+    // Upload any CPU-modified buffers needed by each dispatch, then
+    // pre-create all pipelines before recording.
     for draw_call in draw_calls {
       match draw_call {
-        WindowEvent::RenderShaders { vert, frag, .. } => {
+        WindowEvent::RenderShaders {
+          vert,
+          frag,
+          pre_upload,
+          ..
+        } => {
+          self.upload_bindings(pre_upload);
           let vert = vert.replace('-', "_");
           let frag = frag.replace('-', "_");
           self.get_or_create_pipeline(&vert, &frag);
         }
-        WindowEvent::ComputeShader { entry, .. } => {
+        WindowEvent::ComputeShader {
+          entry, pre_upload, ..
+        } => {
+          self.upload_bindings(pre_upload);
           let entry = entry.replace('-', "_");
           self.get_or_create_compute_pipeline(&entry);
         }
       }
     }
 
-    let has_render =
-      draw_calls.iter().any(|c| matches!(c, WindowEvent::RenderShaders { .. }));
+    let has_render = draw_calls
+      .iter()
+      .any(|c| matches!(c, WindowEvent::RenderShaders { .. }));
 
     let output = if has_render {
       match self.surface.get_current_texture() {
@@ -522,9 +550,10 @@ impl RenderState {
       None
     };
 
-    let view = output
-      .as_ref()
-      .map(|o| o.texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    let view = output.as_ref().map(|o| {
+      o.texture
+        .create_view(&wgpu::TextureViewDescriptor::default())
+    });
 
     let mut encoder =
       self
@@ -538,6 +567,7 @@ impl RenderState {
       if let WindowEvent::ComputeShader {
         entry,
         workgroup_count: (x, y, z),
+        ..
       } = draw_call
       {
         let entry = entry.replace('-', "_");
@@ -577,7 +607,13 @@ impl RenderState {
         render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
       }
       for draw_call in draw_calls {
-        if let WindowEvent::RenderShaders { vert, frag, vert_count } = draw_call {
+        if let WindowEvent::RenderShaders {
+          vert,
+          frag,
+          vert_count,
+          ..
+        } = draw_call
+        {
           let vert = vert.replace('-', "_");
           let frag = frag.replace('-', "_");
           render_pass.set_pipeline(&self.pipelines[&(vert, frag)]);

@@ -85,6 +85,26 @@ impl EffectType {
       })
       .collect()
   }
+  pub fn read_and_written_globals(&self) -> (Vec<Rc<str>>, Vec<Rc<str>>) {
+    (
+      self
+        .0
+        .iter()
+        .filter_map(|effect| match effect {
+          Effect::ReadsVar(name) => Some(name.clone()),
+          _ => None,
+        })
+        .collect(),
+      self
+        .0
+        .iter()
+        .filter_map(|effect| match effect {
+          Effect::ModifiesGlobalVar(name) => Some(name.clone()),
+          _ => None,
+        })
+        .collect(),
+    )
+  }
 }
 
 impl From<HashSet<Effect>> for EffectType {

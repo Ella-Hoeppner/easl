@@ -1,0 +1,20 @@
+@{address storage-write
+  group 0
+  binding 0}
+(var x: u32)
+
+@compute
+@{workgroup-size 16}
+(defn square-x [@{builtin global-invocation-id}
+                id: vec3u]
+  (when (all (== id (vec3u 0u)))
+    (= x (* x x))))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (= x 5)
+                    (print x)
+                    (dispatch-compute-shader square-x (vec3u 1u))
+                    (print x)
+                    (close-window))))
