@@ -8,15 +8,15 @@ This repository contains the core compiler code. This repository can be used as 
 ## Feature goals:
 | Feature | Explanation | Implementation Status |
 | :------ | :---------- | :-------------------: |
-| Full feature parity with wgsl | Anything that can be expressed with wgsl will also be directly expressible with easl, including all builtin functions and control operators. | 🚧* |
+| Full feature parity with wgsl | Anything that can be expressed with wgsl will also be directly expressible with easl, including all builtin functions and control operators. | 🚧¹ |
 | Fully expression-based | Inline `if` and `match` blocks, and scoped `let` blocks that return values | ✅ |
 | Powerful type inference | Top-level functions are required to have explicit type signatures for clarity, but inside the body of a function, Easl has a type inference system that obviates the need for most explicit type ascriptions. | ✅ |
 | Generic types and functions | | ✅ |
 | Function overloading | You can overload functions with multiple different type signatures, including built-in functions like `+`. | ✅ |
-| Sum Types | aka rust-style Enums | ✅* |
+| Sum Types | aka rust-style Enums | ✅² |
 | Tuples | | ❌ |
-| Higher-order functions | Functions that can accept other functions as inputs, and return other functions as outputs | ✅* |
-| Closures | Anonymous functions that capture variables from the scope in which they're created | ❌ |
+| Higher-order functions | Functions that can accept other functions as inputs, and return other functions as outputs | ✅³ |
+| Closures | Anonymous functions that capture bindings from the scope in which they're created | ✅⁴ |
 | Type Constraints | Similar to typeclasses/traits/interfaces, but able to coexist seamlessly with arbitrary function overloading | 🚧 |
 | Modules | Organize types and functions into modules for code organization and re-use, including the ability to use refer to modules defined in other files | ❌ |
 | Anonymous Structs | Structs without names, characterized only by the names and types of their fields. Useful for grouping values together in a way that offers more clarity than a tuple, without having to explicitly declare a new type. | ❌ |
@@ -24,9 +24,10 @@ This repository contains the core compiler code. This repository can be used as 
 | Algebraic Effects | Sophisticated, type-safe manipulation of control flow. There will be some limitations compared to other algebraic effect systems: continuations will be single-shot, cannot escape the scope of the handler, and can only be called in the tail position | 🚧 |
 | CPU-side interpreter | While the primary goal of easl is to be a shader language that is executed on the GPU, there will also be an interpreter for the language that can run on the CPU. This will be useful for testing and debugging code in ways that are impossible on the GPU, and for making simple applications and demos that involve both CPU and GPU logic without having to use a separate "host" language. | 🚧 |
 
-* All core types, math functions, and control flow operations from wgsl are already implemented. Missing features include atomics, barrier functions, texture types other than basic 2d textures, and extension features like subgroup/quad functions. Finishing support for these missing features is a top priority.
-* Sum Types are supported, but for now may only contain at most a single internal field. This limitation will be resolved as soon as tuple are implemented.
-* Higher-order functions currently have a significant restriction: all function-type arguments must be inlinable at compile time. A function `f` that takes another function as an argument may be called like `(f g)`, but not like `(f (if a f g))`, because the compiler needs to be able to inline the higher-order argument at compile time. If you violate this restriction, you'll get a compilation error. This limitation will eventually be resolved, but is blocked behind several other unimplemented internal features, so it may take some time.
+* ¹ All core types, math functions, and control flow operations from wgsl are already implemented. Missing features include atomics, barrier functions, texture types other than basic 2d textures, and extension features like subgroup/quad functions. Finishing support for these missing features is a top priority.
+* ² Sum Types are supported, but for now may only contain at most a single internal field. This limitation will be resolved as soon as tuple are implemented.
+* ³ Higher-order functions currently have a significant restriction: all function-type arguments must be inlinable at compile time. A function `f` that takes another function as an argument may be called like `(f g)`, but not like `(f (if a g h))`, because the compiler needs to be able to inline the higher-order argument at compile time. If you violate this restriction, you'll get a compilation error. This limitation will eventually be resolved, but is blocked behind several other unimplemented internal features, so it may take some time.
+* ⁴ Closures work but have one signicant restriction: they may not modify any locally-bound values that they capture. This restriction will eventually be relaxed.
 
 ---
 
