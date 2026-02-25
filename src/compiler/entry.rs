@@ -1,4 +1,6 @@
-use std::{fmt::Display, rc::Rc};
+use std::fmt::Display;
+
+use std::sync::Arc;
 
 use crate::compiler::{
   annotation::Annotation,
@@ -278,10 +280,10 @@ pub struct IOAttribute {
 
 impl IOAttribute {
   fn try_parse_from_annotation_property(
-    name: &Rc<str>,
+    name: &Arc<str>,
     name_source: SourceTrace,
-    value: Option<(Rc<str>, SourceTrace)>,
-    arg_or_field_name: Option<(Rc<str>, SourceTrace)>,
+    value: Option<(Arc<str>, SourceTrace)>,
+    arg_or_field_name: Option<(Arc<str>, SourceTrace)>,
   ) -> CompileResult<Option<Self>> {
     match (&**name, value) {
       ("builtin", value) => {
@@ -433,11 +435,11 @@ impl IOAttributes {
   }
   pub fn parse_from_annotation(
     annotation: Annotation,
-    arg_or_field_name: Option<(Rc<str>, SourceTrace)>,
+    arg_or_field_name: Option<(Arc<str>, SourceTrace)>,
     errors: &mut ErrorLog,
   ) -> (
     Self,
-    Vec<(Rc<str>, SourceTrace, Option<(Rc<str>, SourceTrace)>)>,
+    Vec<(Arc<str>, SourceTrace, Option<(Arc<str>, SourceTrace)>)>,
   ) {
     let mut attributes = Self::empty(
       arg_or_field_name

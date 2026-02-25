@@ -1,7 +1,6 @@
-use std::{
-  collections::{HashMap, HashSet},
-  rc::Rc,
-};
+use std::collections::{HashMap, HashSet};
+
+use std::sync::Arc;
 
 use lazy_static::lazy_static;
 
@@ -461,7 +460,7 @@ pub fn built_in_structs() -> Vec<AbstractStruct> {
     .collect()
 }
 
-pub fn built_in_type_aliases() -> Vec<(Rc<str>, Rc<AbstractStruct>)> {
+pub fn built_in_type_aliases() -> Vec<(Arc<str>, Arc<AbstractStruct>)> {
   [
     ("f", Type::F32),
     ("i", Type::I32),
@@ -521,7 +520,7 @@ fn arithmetic_functions(
   name: &str,
   associative: bool,
 ) -> Vec<AbstractFunctionSignature> {
-  let assignment_name: Rc<str> = format!("{}=", name).into();
+  let assignment_name: Arc<str> = format!("{}=", name).into();
   vec![
     AbstractFunctionSignature {
       name: name.into(),
@@ -539,7 +538,7 @@ fn arithmetic_functions(
       ..Default::default()
     },
     AbstractFunctionSignature {
-      name: Rc::clone(&assignment_name),
+      name: Arc::clone(&assignment_name),
       generic_args: vec![(
         "T".into(),
         GenericArgument::Type(vec![TypeConstraint::scalar()]),
@@ -558,7 +557,7 @@ fn arithmetic_functions(
   ]
   .into_iter()
   .chain(foreach_vec_type(|vec| {
-    let vec = Rc::new(vec);
+    let vec = Arc::new(vec);
     [
       (false, vec![[true, true], [true, false], [false, true]]),
       (true, vec![[true, true], [true, false]]),
@@ -569,7 +568,7 @@ fn arithmetic_functions(
         .into_iter()
         .map(|arg_vecs_or_scalars| AbstractFunctionSignature {
           name: if assignment_fn {
-            Rc::clone(&assignment_name)
+            Arc::clone(&assignment_name)
           } else {
             name.into()
           },
@@ -722,7 +721,7 @@ fn bitwise_functions(
   name: &str,
   associative: bool,
 ) -> Vec<AbstractFunctionSignature> {
-  let assignment_name: Rc<str> = format!("{}=", name).into();
+  let assignment_name: Arc<str> = format!("{}=", name).into();
   vec![
     AbstractFunctionSignature {
       name: name.into(),
@@ -740,7 +739,7 @@ fn bitwise_functions(
       ..Default::default()
     },
     AbstractFunctionSignature {
-      name: Rc::clone(&assignment_name),
+      name: Arc::clone(&assignment_name),
       generic_args: vec![(
         "T".into(),
         GenericArgument::Type(vec![TypeConstraint::integer()]),
@@ -759,7 +758,7 @@ fn bitwise_functions(
   ]
   .into_iter()
   .chain(foreach_vec_type(|vec| {
-    let vec = Rc::new(vec);
+    let vec = Arc::new(vec);
     [
       (false, vec![[true, true], [true, false], [false, true]]),
       (true, vec![[true, true], [true, false]]),
@@ -770,7 +769,7 @@ fn bitwise_functions(
         .into_iter()
         .map(|arg_vecs_or_scalars| AbstractFunctionSignature {
           name: if assignment_fn {
-            Rc::clone(&assignment_name)
+            Arc::clone(&assignment_name)
           } else {
             name.into()
           },
@@ -850,7 +849,7 @@ fn exp_functions() -> Vec<AbstractFunctionSignature> {
   })
   .into_iter()
   .chain(foreach_generic_scalar_or_vec_type(|t| {
-    let generic_name: Rc<str> = "T".into();
+    let generic_name: Arc<str> = "T".into();
     let f = t.clone().fill_abstract_generics(
       &[(generic_name.clone(), AbstractType::Type(Type::F32))]
         .into_iter()
@@ -873,7 +872,7 @@ fn exp_functions() -> Vec<AbstractFunctionSignature> {
 
 fn negation_functions() -> Vec<AbstractFunctionSignature> {
   foreach_generic_scalar_or_vec_type(|t| {
-    let generic_name: Rc<str> = "T".into();
+    let generic_name: Arc<str> = "T".into();
     [Type::F32, Type::I32]
       .into_iter()
       .map(|scalar| {
@@ -1089,7 +1088,7 @@ fn bit_manipulation_functions() -> Vec<AbstractFunctionSignature> {
     .flat_map(|name| {
       [Type::U32, Type::I32].into_iter().flat_map(move |t| {
         generic_and_vec_types().into_iter().map(move |v| {
-          let generic_name: Rc<str> = "T".into();
+          let generic_name: Arc<str> = "T".into();
           let v = v.fill_abstract_generics(
             &[(generic_name, AbstractType::Type(t.clone()))]
               .into_iter()
@@ -1107,7 +1106,7 @@ fn bit_manipulation_functions() -> Vec<AbstractFunctionSignature> {
   )
   .chain(generic_and_vec_types().into_iter().flat_map(|v| {
     [Type::U32, Type::I32].into_iter().map(move |inner_type| {
-      let generic_name: Rc<str> = "T".into();
+      let generic_name: Arc<str> = "T".into();
       let v = v.clone().fill_abstract_generics(
         &[(generic_name, AbstractType::Type(inner_type.clone()))]
           .into_iter()
@@ -1339,7 +1338,7 @@ fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
 
 fn any_and_all() -> Vec<AbstractFunctionSignature> {
   foreach_generic_scalar_or_vec_type(|t| {
-    let generic_name: Rc<str> = "T".into();
+    let generic_name: Arc<str> = "T".into();
     let t = t.clone().fill_abstract_generics(
       &[(generic_name.clone(), AbstractType::Type(Type::Bool))]
         .into_iter()
@@ -1817,7 +1816,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
             )],
             return_type: Type::Struct(
               AbstractStruct::concretize(
-                Rc::new(
+                Arc::new(
                   vec4().generate_monomorphized(vec![Type::F32]).unwrap(),
                 ),
                 &TypeDefs::empty(),
@@ -2185,7 +2184,7 @@ pub fn built_in_macros() -> Vec<Macro> {
               }
               fn walk_thread_expression(
                 tree: EaslTree,
-                binding_name: Rc<str>,
+                binding_name: Arc<str>,
                 mut positioner_traces: Vec<SourceTrace>,
               ) -> (EaslTree, Vec<SourceTrace>) {
                 match tree {
@@ -2223,14 +2222,14 @@ pub fn built_in_macros() -> Vec<Macro> {
                   }
                 }
               }
-              let binding_names: Vec<Rc<str>> =
+              let binding_names: Vec<Arc<str>> =
                 std::iter::repeat_with(|| names.gensym("thread_gensym"))
                   .take(children.len() - 1)
                   .collect();
               let null_position = DocumentPosition::new(0..0, vec![]);
               let bindings: Result<
-                Vec<(Rc<str>, EaslTree)>,
-                (SourceTrace, Rc<str>),
+                Vec<(Arc<str>, EaslTree)>,
+                (SourceTrace, Arc<str>),
               > = children
                 .into_iter()
                 .skip(1)

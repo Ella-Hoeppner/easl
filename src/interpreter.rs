@@ -1,5 +1,7 @@
-use std::{collections::HashMap, rc::Rc, vec};
+use std::{collections::HashMap, vec};
 use take_mut::take;
+
+use std::sync::Arc;
 
 use crate::compiler::{
   builtins::ASSIGNMENT_OPS,
@@ -52,7 +54,7 @@ pub enum EvalError {
   EncounteredWildcard,
   InvalidNumberLiteralType,
   FloatInIntLiteral,
-  UnboundName(Rc<str>),
+  UnboundName(Arc<str>),
   UnboundFunctionName,
   AppliedNonName,
   WrongArity,
@@ -95,11 +97,11 @@ use EvalError::*;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Function {
-  StructConstructor(Vec<Rc<str>>),
-  EnumConstructor(Rc<str>),
-  Builtin(Rc<str>),
+  StructConstructor(Vec<Arc<str>>),
+  EnumConstructor(Arc<str>),
+  Builtin(Arc<str>),
   Composite {
-    arg_names: Vec<Rc<str>>,
+    arg_names: Vec<Arc<str>>,
     expression: Exp<ExpTypeInfo>,
   },
 }
@@ -107,7 +109,7 @@ pub enum Function {
 impl Function {
   fn from_abstract_signature(
     f: &AbstractFunctionSignature,
-    name: &Rc<str>,
+    name: &Arc<str>,
     env: &EvaluationEnvironment<impl IOManager>,
   ) -> Result<Self, EvalError> {
     match &f.implementation {
@@ -127,7 +129,7 @@ impl Function {
         Ok(Function::EnumConstructor(variant_name.clone()))
       }
       FunctionImplementationKind::Composite(f) => {
-        let f = f.borrow();
+        let f = f.read().unwrap();
         Ok(Function::Composite {
           arg_names: f
             .arg_names
@@ -145,8 +147,8 @@ impl Function {
 pub enum Value {
   Unit,
   Prim(Primitive),
-  Struct(HashMap<Rc<str>, Value>),
-  Enum(Rc<str>, Box<Value>),
+  Struct(HashMap<Arc<str>, Value>),
+  Enum(Arc<str>, Box<Value>),
   Fun(Function),
   Array(Vec<Value>),
   Uninitialized,
@@ -238,7 +240,7 @@ fn primitive_arithmetic(
 }
 
 fn apply_builtin_fn<IO: IOManager>(
-  f_name: Rc<str>,
+  f_name: Arc<str>,
   mut args: Vec<(Value, Type)>,
   return_type: Type,
   env: &mut EvaluationEnvironment<IO>,
@@ -1415,7 +1417,7 @@ fn apply_builtin_fn<IO: IOManager>(
         .abstract_ancestor
         .as_ref()
         .unwrap()
-        .borrow()
+        .read().unwrap()
         .name
         .clone();
       let (_, Type::Function(frag_f)) = &args[1] else {
@@ -1428,15 +1430,15 @@ fn apply_builtin_fn<IO: IOManager>(
         .abstract_ancestor
         .as_ref()
         .unwrap()
-        .borrow()
+        .read().unwrap()
         .name
         .clone();
-      let read_global_variable_names: Vec<Rc<str>> =
+      let read_global_variable_names: Vec<Arc<str>> =
         vert_read_global_variable_names
           .into_iter()
           .chain(frag_read_global_variable_names.into_iter())
           .collect();
-      let written_global_variable_names: Vec<Rc<str>> =
+      let written_global_variable_names: Vec<Arc<str>> =
         vert_written_global_variable_names
           .into_iter()
           .chain(frag_written_global_variable_names.into_iter())
@@ -1462,7 +1464,7 @@ fn apply_builtin_fn<IO: IOManager>(
         .abstract_ancestor
         .as_ref()
         .unwrap()
-        .borrow()
+        .read().unwrap()
         .name
         .clone();
       let effects = compute_f.effects();
@@ -1643,7 +1645,7 @@ impl Value {
               return Err(CantCreateZeroedSkolemSizedArray);
             }
             ConcreteArraySize::UnificationVariable(const_generic_value) => {
-              match &*const_generic_value.value.borrow() {
+              match &*const_generic_value.value.read().unwrap() {
                 Some(x) => *x as usize,
                 None => return Err(CantCreateZeroedSkolemSizedArray),
               }
@@ -1668,7 +1670,7 @@ impl Value {
       _ => panic!(),
     }
   }
-  fn as_struct(&self) -> &HashMap<Rc<str>, Value> {
+  fn as_struct(&self) -> &HashMap<Arc<str>, Value> {
     match self {
       Value::Struct(s) => s,
       _ => panic!(),
@@ -1959,21 +1961,21 @@ impl IOManager for StringIO {
 }
 
 pub struct EvaluationEnvironment<IO: IOManager> {
-  bindings: HashMap<Rc<str>, Vec<Value>>,
-  structs: HashMap<Rc<str>, AbstractStruct>,
+  bindings: HashMap<Arc<str>, Vec<Value>>,
+  structs: HashMap<Arc<str>, AbstractStruct>,
   wgsl: String,
   pub io: IO,
   /// GPU-bound top-level vars (uniform + storage), in declaration order.
-  binding_vars: Vec<(GroupAndBinding, Rc<str>, Type, VariableAddressSpace)>,
+  binding_vars: Vec<(GroupAndBinding, Arc<str>, Type, VariableAddressSpace)>,
   /// Sync state for each GPU-bound variable, keyed by name.
-  buffer_states: HashMap<Rc<str>, SharedBufferState>,
+  buffer_states: HashMap<Arc<str>, SharedBufferState>,
 }
 
 impl<IO: IOManager> EvaluationEnvironment<IO> {
   pub fn from_program(program: Program, io: IO) -> Result<Self, EvalError> {
     let binding_vars: Vec<(
       GroupAndBinding,
-      Rc<str>,
+      Arc<str>,
       Type,
       VariableAddressSpace,
     )> = program
@@ -2088,7 +2090,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       .collect()
   }
 
-  fn is_binding_var(&self, name: &Rc<str>) -> bool {
+  fn is_binding_var(&self, name: &Arc<str>) -> bool {
     self.binding_vars.iter().any(|(_, n, _, _)| n == name)
   }
 
@@ -2097,7 +2099,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   /// ready for upload.
   fn collect_dirty_uploads(
     &mut self,
-    names: &[Rc<str>],
+    names: &[Arc<str>],
   ) -> Vec<((u8, u8), Vec<u8>)> {
     let mut result = vec![];
     for (gb, name, ty, _) in &self.binding_vars {
@@ -2124,7 +2126,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   }
 
   /// Marks GPU-bound vars in `names` as CPUOutOfDate (GPU wrote them).
-  fn mark_gpu_written(&mut self, names: &[Rc<str>]) {
+  fn mark_gpu_written(&mut self, names: &[Arc<str>]) {
     for name in names {
       if self.is_binding_var(name) {
         self
@@ -2135,7 +2137,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   }
 
   /// Marks GPU-bound vars in `names` as GPUOutOfDate (CPU wrote them).
-  fn mark_cpu_written(&mut self, names: &[Rc<str>]) {
+  fn mark_cpu_written(&mut self, names: &[Arc<str>]) {
     for name in names {
       if self.is_binding_var(name) {
         self
@@ -2148,7 +2150,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   /// For any GPU-bound var in `names` that is CPUOutOfDate, triggers a
   /// GPU→CPU readback. Currently a panic stub — async readback not yet
   /// implemented.
-  fn check_cpu_readable(&mut self, names: &[Rc<str>]) {
+  fn check_cpu_readable(&mut self, names: &[Arc<str>]) {
     for name in names {
       if self.is_binding_var(name)
         && self.buffer_states.get(name)
@@ -2159,14 +2161,14 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     }
   }
 
-  fn bind(&mut self, name: Rc<str>, value: Value) {
+  fn bind(&mut self, name: Arc<str>, value: Value) {
     if let Some(bindings) = self.bindings.get_mut(&name) {
       bindings.push(value);
     } else {
       self.bindings.insert(name, vec![value]);
     }
   }
-  fn unbind(&mut self, name: &Rc<str>) {
+  fn unbind(&mut self, name: &Arc<str>) {
     let bindings = self.bindings.get_mut(name).unwrap();
     if bindings.len() == 1 {
       self.bindings.remove(name);
@@ -2174,7 +2176,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       bindings.pop();
     }
   }
-  fn lookup(&self, name: &Rc<str>) -> Result<&Value, EvalError> {
+  fn lookup(&self, name: &Arc<str>) -> Result<&Value, EvalError> {
     self
       .bindings
       .get(name)
@@ -2259,7 +2261,7 @@ pub fn eval(
                   && let ExpKind::Name(f_name) = arg.kind
                 {
                   Ok(Value::Fun(Function::from_abstract_signature(
-                    &f.borrow(),
+                    &f.read().unwrap(),
                     &f_name,
                     env,
                   )?))
@@ -2271,7 +2273,7 @@ pub fn eval(
               .unwrap()
           );
         });
-        let f = Function::from_abstract_signature(&*f.borrow(), &name, env)?;
+        let f = Function::from_abstract_signature(&*f.read().unwrap(), &name, env)?;
         let arg_types: Vec<Type> =
           args.iter().map(|a| a.data.kind.unwrap_known()).collect();
         let return_type = exp.data.unwrap_known();
@@ -2285,7 +2287,7 @@ pub fn eval(
               && let ExpKind::Name(f_name) = arg.kind
             {
               Ok(Value::Fun(Function::from_abstract_signature(
-                &f.borrow(),
+                &f.read().unwrap(),
                 &f_name,
                 env,
               )?))
@@ -2343,7 +2345,7 @@ pub fn eval(
         return_value = if is_assignment_op {
           enum AccessKind {
             Index(i64),
-            Field(Rc<str>),
+            Field(Arc<str>),
             Swizzle(Vec<SwizzleField>),
           }
           let mut accesses: Vec<AccessKind> = vec![];
@@ -2524,7 +2526,7 @@ pub fn eval(
       }
     }
     ExpKind::Let(items, exp) => {
-      let names: Vec<Rc<str>> =
+      let names: Vec<Arc<str>> =
         items.iter().map(|(name, _, _, _)| name.clone()).collect();
       for (name, _, _, exp) in items {
         let value = eval(exp, env)?;
@@ -2653,7 +2655,7 @@ fn run_program_with<IO: IOManager>(
     Some(name) => {
       let pos = cpu_fns
         .iter()
-        .position(|f| &*f.borrow().name == name)
+        .position(|f| &*f.read().unwrap().name == name)
         .ok_or_else(|| CpuEntryPointNotFound(name.to_string()))?;
       cpu_fns.remove(pos)
     }
@@ -2664,11 +2666,11 @@ fn run_program_with<IO: IOManager>(
     },
   };
   let FunctionImplementationKind::Composite(f) =
-    &entry_fn.borrow().implementation
+    &entry_fn.read().unwrap().implementation
   else {
     panic!("cpu entry point wasn't a composite function")
   };
-  let f = f.borrow();
+  let f = f.read().unwrap();
   let ExpKind::Function(_, body) = &f.expression.kind else {
     panic!()
   };

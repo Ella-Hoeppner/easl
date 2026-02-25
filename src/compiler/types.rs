@@ -1,11 +1,11 @@
 use core::fmt::Debug;
 use std::{
-  cell::RefCell,
   collections::{HashMap, HashSet},
   fmt::Display,
   ops::{Deref, DerefMut},
-  rc::Rc,
 };
+
+use std::sync::{Arc, RwLock};
 
 use fsexp::{document::DocumentPosition, syntax::EncloserOrOperator};
 
@@ -32,7 +32,7 @@ use super::{
   util::compile_word,
 };
 
-pub fn contains_name_leaf(name: &Rc<str>, tree: &EaslTree) -> bool {
+pub fn contains_name_leaf(name: &Arc<str>, tree: &EaslTree) -> bool {
   match &tree {
     EaslTree::Leaf(_, leaf) => leaf == &**name,
     EaslTree::Inner(_, children) => children
@@ -47,7 +47,7 @@ pub enum UntypedType {
   Enum(UntypedEnum),
 }
 impl UntypedType {
-  pub fn references_type_name(&self, name: &Rc<str>) -> bool {
+  pub fn references_type_name(&self, name: &Arc<str>) -> bool {
     match self {
       UntypedType::Struct(untyped_struct) => {
         untyped_struct.references_type_name(name)
@@ -58,7 +58,7 @@ impl UntypedType {
     }
   }
 
-  pub fn name(&self) -> &Rc<str> {
+  pub fn name(&self) -> &Arc<str> {
     match self {
       UntypedType::Struct(untyped_struct) => &untyped_struct.name.0,
       UntypedType::Enum(untyped_enum) => &untyped_enum.name.0,
@@ -74,7 +74,7 @@ impl UntypedType {
 
   pub fn sort_by_references(
     unsorted_types: &Vec<Self>,
-  ) -> Result<Vec<Self>, Vec<Rc<str>>> {
+  ) -> Result<Vec<Self>, Vec<Arc<str>>> {
     let mut sorted = Vec::new();
     let mut sorted_names = HashSet::new();
 
@@ -122,18 +122,18 @@ impl UntypedType {
   fn find_cycle_path(
     start: &Self,
     all_types: &[Self],
-    already_added: &HashSet<Rc<str>>,
-  ) -> Option<Vec<Rc<str>>> {
+    already_added: &HashSet<Arc<str>>,
+  ) -> Option<Vec<Arc<str>>> {
     let mut visited = HashSet::new();
     let mut path = Vec::new();
 
     fn trace_dependencies(
-      current_name: &Rc<str>,
+      current_name: &Arc<str>,
       all_types: &[UntypedType],
-      already_added: &HashSet<Rc<str>>,
-      visited: &mut HashSet<Rc<str>>,
-      path: &mut Vec<Rc<str>>,
-    ) -> Option<Vec<Rc<str>>> {
+      already_added: &HashSet<Arc<str>>,
+      visited: &mut HashSet<Arc<str>>,
+      path: &mut Vec<Arc<str>>,
+    ) -> Option<Vec<Arc<str>>> {
       if let Some(cycle_start_idx) = path.iter().position(|n| n == current_name)
       {
         let mut cycle = path[cycle_start_idx..].to_vec();
@@ -182,10 +182,10 @@ impl UntypedType {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AbstractType {
   Unit,
-  Generic(Rc<str>),
+  Generic(Arc<str>),
   Type(Type),
-  AbstractStruct(Rc<AbstractStruct>),
-  AbstractEnum(Rc<AbstractEnum>),
+  AbstractStruct(Arc<AbstractStruct>),
+  AbstractEnum(Arc<AbstractEnum>),
   AbstractArray {
     size: AbstractArraySize,
     inner_type: Box<Self>,
@@ -194,7 +194,7 @@ pub enum AbstractType {
 }
 
 impl AbstractType {
-  pub(crate) fn track_generic_names(&self, names: &mut Vec<Rc<str>>) {
+  pub(crate) fn track_generic_names(&self, names: &mut Vec<Arc<str>>) {
     match self {
       AbstractType::Generic(name) => names.push(name.clone()),
       AbstractType::AbstractArray { inner_type, .. } => {
@@ -210,8 +210,8 @@ impl AbstractType {
   }
   pub fn fill_generics(
     &self,
-    generics: &HashMap<Rc<str>, ExpTypeInfo>,
-    generic_constants: &HashMap<Rc<str>, ConstGenericValue>,
+    generics: &HashMap<Arc<str>, ExpTypeInfo>,
+    generic_constants: &HashMap<Arc<str>, ConstGenericValue>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<ExpTypeInfo> {
@@ -256,7 +256,7 @@ impl AbstractType {
   }
   pub fn concretize(
     &self,
-    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
+    skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Type> {
@@ -268,7 +268,7 @@ impl AbstractType {
             (skolem_name == name).then(|| constraints.clone())
           })
         {
-          Ok(Type::Skolem(Rc::clone(name), constraints))
+          Ok(Type::Skolem(Arc::clone(name), constraints))
         } else {
           err(UnrecognizedGeneric(name.to_string()), source_trace)
         }
@@ -295,7 +295,7 @@ impl AbstractType {
   }
   pub fn fill_abstract_generics(
     self,
-    generics: &HashMap<Rc<str>, AbstractType>,
+    generics: &HashMap<Arc<str>, AbstractType>,
   ) -> Self {
     match self {
       AbstractType::Unit => AbstractType::Unit,
@@ -305,12 +305,12 @@ impl AbstractType {
         .expect("unrecognized generic name in struct")
         .clone(),
       AbstractType::Type(t) => AbstractType::Type(t),
-      AbstractType::AbstractStruct(s) => AbstractType::AbstractStruct(Rc::new(
+      AbstractType::AbstractStruct(s) => AbstractType::AbstractStruct(Arc::new(
         (*s)
           .clone()
           .partially_fill_abstract_generics(generics.clone()),
       )),
-      AbstractType::AbstractEnum(e) => AbstractType::AbstractEnum(Rc::new(
+      AbstractType::AbstractEnum(e) => AbstractType::AbstractEnum(Arc::new(
         (*e)
           .clone()
           .partially_fill_abstract_generics(generics.clone()),
@@ -343,10 +343,10 @@ impl AbstractType {
         panic!("attempted to compile generic struct field")
       }
       AbstractType::Type(t) => t.monomorphized_name(names),
-      AbstractType::AbstractStruct(t) => Rc::unwrap_or_clone(t)
+      AbstractType::AbstractStruct(t) => Arc::unwrap_or_clone(t)
         .compile_if_non_generic(typedefs, names)?
         .expect("failed to compile abstract struct"),
-      AbstractType::AbstractEnum(e) => Rc::unwrap_or_clone(e)
+      AbstractType::AbstractEnum(e) => Arc::unwrap_or_clone(e)
         .compile_if_non_generic(typedefs, names)?
         .expect("failed to compile abstract enum"),
       AbstractType::AbstractArray {
@@ -363,11 +363,11 @@ impl AbstractType {
   pub fn from_easl_tree(
     tree: EaslTree,
     typedefs: &TypeDefs,
-    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
+    skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
   ) -> CompileResult<Self> {
     match tree {
       EaslTree::Leaf(position, leaf) => {
-        let leaf_rc: Rc<str> = leaf.into();
+        let leaf_rc: Arc<str> = leaf.into();
         Ok(
           if skolems.iter().find(|(name, _)| *name == leaf_rc).is_some() {
             AbstractType::Generic(leaf_rc)
@@ -428,7 +428,7 @@ impl AbstractType {
                   Self::from_easl_tree(subtree, typedefs, skolems)
                 })
                 .collect::<CompileResult<Vec<_>>>()?;
-              Ok(AbstractType::AbstractStruct(Rc::new(
+              Ok(AbstractType::AbstractStruct(Arc::new(
                 generic_struct.clone().fill_abstract_generics(generic_args),
               )))
             }
@@ -438,7 +438,7 @@ impl AbstractType {
                   Self::from_easl_tree(subtree, typedefs, skolems)
                 })
                 .collect::<CompileResult<Vec<_>>>()?;
-              Ok(AbstractType::AbstractEnum(Rc::new(
+              Ok(AbstractType::AbstractEnum(Arc::new(
                 generic_enum.clone().fill_abstract_generics(generic_args),
               )))
             }
@@ -503,11 +503,11 @@ impl AbstractType {
     }
   }
   pub fn from_name(
-    name: Rc<str>,
+    name: Arc<str>,
     position: DocumentPosition,
     typedefs: &TypeDefs,
-    generic_args: &Vec<Rc<str>>,
-    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
+    generic_args: &Vec<Arc<str>>,
+    skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
   ) -> CompileResult<Self> {
     Ok(if generic_args.contains(&name) {
       AbstractType::Generic(name.into())
@@ -518,8 +518,8 @@ impl AbstractType {
   pub fn extract_generic_bindings(
     &self,
     concrete_type: &Type,
-    type_bindings: &mut HashMap<Rc<str>, Type>,
-    constant_bindings: &mut HashMap<Rc<str>, u32>,
+    type_bindings: &mut HashMap<Arc<str>, Type>,
+    constant_bindings: &mut HashMap<Arc<str>, u32>,
   ) {
     match self {
       AbstractType::Generic(generic) => {
@@ -561,7 +561,7 @@ impl AbstractType {
         })
       }
       AbstractType::AbstractStruct(s) => {
-        let mut s = Rc::unwrap_or_clone(s);
+        let mut s = Arc::unwrap_or_clone(s);
         s.generic_args = s
           .generic_args
           .into_iter()
@@ -585,7 +585,7 @@ impl AbstractType {
             f
           })
           .collect();
-        AbstractType::AbstractStruct(Rc::new(s))
+        AbstractType::AbstractStruct(Arc::new(s))
       }
       other => other,
     }
@@ -673,16 +673,16 @@ impl AbstractType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AbstractArraySize {
   Literal(u32),
-  Constant(Rc<str>),
-  Generic(Rc<str>),
+  Constant(Arc<str>),
+  Generic(Arc<str>),
   Unsized,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConcreteArraySize {
   Literal(u32),
-  Constant(Rc<str>),
-  Skolem(Rc<str>),
+  Constant(Arc<str>),
+  Skolem(Arc<str>),
   UnificationVariable(ConstGenericValue),
   Unsized,
 }
@@ -704,7 +704,7 @@ impl AbstractArraySize {
   }
   pub fn fill_generics(
     &self,
-    generics: &HashMap<Rc<str>, ConstGenericValue>,
+    generics: &HashMap<Arc<str>, ConstGenericValue>,
   ) -> ConcreteArraySize {
     match self {
       AbstractArraySize::Literal(x) => ConcreteArraySize::Literal(*x),
@@ -720,7 +720,7 @@ impl AbstractArraySize {
   }
   pub fn concretize(
     &self,
-    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
+    skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
   ) -> ConcreteArraySize {
     match self {
       AbstractArraySize::Literal(value) => ConcreteArraySize::Literal(*value),
@@ -755,7 +755,7 @@ impl ConcreteArraySize {
         ", {}",
         value
           .value
-          .borrow()
+          .read().unwrap()
           .expect("ConcreteArraySize unification var wasn't unified")
       ),
       ConcreteArraySize::Skolem(_) => {
@@ -806,7 +806,7 @@ impl ConcreteArraySize {
         ConcreteArraySize::UnificationVariable(var),
         ConcreteArraySize::Literal(value),
       ) => {
-        let mut unification_value = var.value.borrow_mut();
+        let mut unification_value = var.value.write().unwrap();
         match &*unification_value {
           Some(unification_value) => {
             if unification_value == value {
@@ -845,12 +845,12 @@ impl ConcreteArraySize {
       (ConcreteArraySize::Unsized, ConcreteArraySize::Unsized) => true,
       (ConcreteArraySize::UnificationVariable(u), other)
       | (other, ConcreteArraySize::UnificationVariable(u)) => match other {
-        ConcreteArraySize::Literal(x) => match &*u.value.borrow() {
+        ConcreteArraySize::Literal(x) => match &*u.value.read().unwrap() {
           Some(u_value) => u_value == x,
           None => true,
         },
         ConcreteArraySize::UnificationVariable(other_u) => {
-          match (&*u.value.borrow(), &*other_u.value.borrow()) {
+          match (&*u.value.read().unwrap(), &*other_u.value.read().unwrap()) {
             (Some(a), Some(b)) => a == b,
             _ => true,
           }
@@ -862,15 +862,20 @@ impl ConcreteArraySize {
   }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct ConstGenericValue {
-  pub(crate) value: Rc<RefCell<Option<u32>>>,
+  pub(crate) value: Arc<RwLock<Option<u32>>>,
+}
+impl PartialEq for ConstGenericValue {
+  fn eq(&self, other: &Self) -> bool {
+    *self.value.read().unwrap() == *other.value.read().unwrap()
+  }
 }
 
 impl ConstGenericValue {
   pub fn fresh() -> Self {
     Self {
-      value: Rc::new(RefCell::new(None)),
+      value: Arc::new(RwLock::new(None)),
     }
   }
 }
@@ -885,7 +890,7 @@ pub enum Type {
   Struct(Struct),
   Enum(Enum),
   Function(Box<FunctionSignature>),
-  Skolem(Rc<str>, Vec<TypeConstraint>),
+  Skolem(Arc<str>, Vec<TypeConstraint>),
   Array(Option<ConcreteArraySize>, Box<ExpTypeInfo>),
 }
 impl Type {
@@ -933,7 +938,7 @@ impl Type {
       Type::Function(function_signature) => function_signature
         .abstract_ancestor
         .as_ref()
-        .map(|f| f.borrow().representative_type(names).is_unitlike(names))
+        .map(|f| f.read().unwrap().representative_type(names).is_unitlike(names))
         .unwrap_or(false),
       Type::Array(array_size, inner_type) => {
         inner_type.kind.with_dereferenced(|f| match f {
@@ -1001,7 +1006,7 @@ impl Type {
         TypeConstraintKind::ComputeEntryFunction => {
           if let Type::Function(f) = self
             && let Some(f) = &f.abstract_ancestor
-            && let Some(EntryPoint::Compute(_)) = f.borrow().entry_point
+            && let Some(EntryPoint::Compute(_)) = f.read().unwrap().entry_point
           {
             true
           } else {
@@ -1014,7 +1019,7 @@ impl Type {
   pub fn from_easl_tree(
     tree: EaslTree,
     typedefs: &TypeDefs,
-    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
+    skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
   ) -> CompileResult<Self> {
     match tree {
       EaslTree::Leaf(position, type_name) => {
@@ -1091,7 +1096,7 @@ impl Type {
                 typedefs.structs.iter().find(|s| &*s.name.0 == type_name)
               {
                 Ok(Type::Struct(AbstractStruct::fill_generics_ordered(
-                  Rc::new(s.clone()),
+                  Arc::new(s.clone()),
                   generic_args,
                   typedefs,
                   source_trace.clone(),
@@ -1194,10 +1199,10 @@ impl Type {
       .collect()
   }
   pub fn from_name(
-    name: Rc<str>,
+    name: Arc<str>,
     source_position: DocumentPosition,
     typedefs: &TypeDefs,
-    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
+    skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
   ) -> CompileResult<Self> {
     use Type::*;
     let source_trace: SourceTrace = source_position.into();
@@ -1218,7 +1223,7 @@ impl Type {
           typedefs.structs.iter().find(|s| s.name.0 == name)
         {
           Struct(AbstractStruct::fill_generics_with_unification_variables(
-            Rc::new(s.clone()),
+            Arc::new(s.clone()),
             &typedefs,
             source_trace.clone(),
           )?)
@@ -1280,14 +1285,14 @@ impl Type {
             "Attempted to compile ConcreteFunction type with no abstract ancestor"
           );
         };
-        f.borrow().representative_type(names).name.0.to_string()
+        f.read().unwrap().representative_type(names).name.0.to_string()
       }
       Type::Skolem(name, _) => {
         panic!("Attempted to compile Skolem \"{name}\"")
       }
     }
   }
-  pub fn replace_skolems(&mut self, skolems: &HashMap<Rc<str>, Type>) {
+  pub fn replace_skolems(&mut self, skolems: &HashMap<Arc<str>, Type>) {
     if let Type::Skolem(s, _) = &self {
       std::mem::swap(self, &mut skolems.get(s).unwrap().clone())
     } else {
@@ -1321,7 +1326,7 @@ impl Type {
   }
   pub fn bitcastable_chunk_accessors(
     &self,
-    value_name: Rc<str>,
+    value_name: Arc<str>,
   ) -> Vec<TypedExp> {
     match self {
       Type::Unit => vec![],
@@ -1411,7 +1416,7 @@ impl Type {
   }
   fn bitcasted_from_enum_data_inner(
     &self,
-    enum_value_name: &Rc<str>,
+    enum_value_name: &Arc<str>,
     enum_type: &Enum,
     current_index: usize,
     names: &mut NameContext,
@@ -1457,7 +1462,7 @@ impl Type {
           TypedExp {
             data: Type::Function(
               FunctionSignature {
-                abstract_ancestor: Some(RefCell::new(scalar_bitcast()).into()),
+                abstract_ancestor: Some(RwLock::new(scalar_bitcast()).into()),
                 args: vec![(
                   Variable::immutable(Type::U32.known().into()),
                   vec![],
@@ -1611,7 +1616,7 @@ impl Type {
   }
   pub fn bitcasted_from_enum_data(
     &self,
-    enum_value_name: Rc<str>,
+    enum_value_name: Arc<str>,
     enum_type: &Enum,
     names: &mut NameContext,
   ) -> TypedExp {
@@ -1621,7 +1626,7 @@ impl Type {
   }
   pub fn replace_skolems_with_unification_variables(
     &mut self,
-    replacements: &HashMap<Rc<str>, ExpTypeInfo>,
+    replacements: &HashMap<Arc<str>, ExpTypeInfo>,
   ) {
     match self {
       Type::Struct(s) => {
@@ -1789,7 +1794,7 @@ pub fn extract_type_annotation_ast(
 pub fn extract_type_annotation(
   exp: EaslTree,
   typedefs: &TypeDefs,
-  skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
+  skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
 ) -> CompileResult<(Option<AbstractType>, EaslTree)> {
   let (t, value) = extract_type_annotation_ast(exp);
   Ok((
@@ -1850,12 +1855,25 @@ impl ExpTypeInfo {
   }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum TypeState {
   Unknown,
   OneOf(Vec<Type>),
   Known(Type),
-  UnificationVariable(Rc<RefCell<TypeState>>),
+  UnificationVariable(Arc<RwLock<TypeState>>),
+}
+impl PartialEq for TypeState {
+  fn eq(&self, other: &Self) -> bool {
+    match (self, other) {
+      (TypeState::Unknown, TypeState::Unknown) => true,
+      (TypeState::OneOf(a), TypeState::OneOf(b)) => a == b,
+      (TypeState::Known(a), TypeState::Known(b)) => a == b,
+      (TypeState::UnificationVariable(a), TypeState::UnificationVariable(b)) => {
+        *a.read().unwrap() == *b.read().unwrap()
+      }
+      _ => false,
+    }
+  }
 }
 
 impl TypeState {
@@ -1929,12 +1947,12 @@ impl TypeState {
     Self::OneOf(type_possibilities).simplified()
   }
   pub fn fresh_unification_variable() -> Self {
-    TypeState::UnificationVariable(Rc::new(RefCell::new(TypeState::Unknown)))
+    TypeState::UnificationVariable(Arc::new(RwLock::new(TypeState::Unknown)))
   }
   pub fn with_dereferenced<T>(&self, f: impl FnOnce(&Self) -> T) -> T {
     match self {
       TypeState::UnificationVariable(var) => {
-        (&*var.borrow()).with_dereferenced(f)
+        (&*var.read().unwrap()).with_dereferenced(f)
       }
       other => f(other),
     }
@@ -1945,7 +1963,7 @@ impl TypeState {
   ) -> T {
     match self {
       TypeState::UnificationVariable(var) => {
-        (&mut *var.borrow_mut()).with_dereferenced_mut(f)
+        (&mut *var.write().unwrap()).with_dereferenced_mut(f)
       }
       other => f(other),
     }
@@ -2238,7 +2256,7 @@ impl TypeState {
   }
   pub fn replace_skolems_with_unification_variables(
     &mut self,
-    replacements: &HashMap<Rc<str>, ExpTypeInfo>,
+    replacements: &HashMap<Arc<str>, ExpTypeInfo>,
   ) {
     if let Some(replacement) =
       self.with_dereferenced_mut(|typestate| match typestate {
@@ -2361,7 +2379,7 @@ impl TypeConstraint {
 pub fn parse_type_constraint(
   ast: EaslTree,
   _typedefs: &TypeDefs,
-  _generic_args: &Vec<Rc<str>>,
+  _generic_args: &Vec<Arc<str>>,
 ) -> CompileResult<TypeConstraint> {
   match ast {
     EaslTree::Leaf(position, name) => match name.as_str() {
@@ -2425,8 +2443,8 @@ pub enum GenericArgumentValue {
 pub fn parse_generic_argument(
   ast: EaslTree,
   typedefs: &TypeDefs,
-  generic_args: &Vec<Rc<str>>,
-) -> CompileResult<(Rc<str>, GenericArgument, SourceTrace)> {
+  generic_args: &Vec<Arc<str>>,
+) -> CompileResult<(Arc<str>, GenericArgument, SourceTrace)> {
   match ast {
     EaslTree::Leaf(pos, generic_name) => Ok((
       generic_name.into(),
@@ -2487,7 +2505,7 @@ pub fn parse_generic_argument(
 
 #[derive(Debug)]
 pub struct LocalContext<P: Deref<Target = Program>> {
-  pub variables: HashMap<Rc<str>, (Variable, SourceTrace)>,
+  pub variables: HashMap<Arc<str>, (Variable, SourceTrace)>,
   pub enclosing_function_types: Vec<TypeState>,
   pub inside_pattern: bool,
   pub program: P,
@@ -2522,7 +2540,7 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
       .map(|x| x.0)
   }
   pub fn is_bound(&self, name: &str) -> bool {
-    let name_rc: Rc<str> = name.to_string().into();
+    let name_rc: Arc<str> = name.to_string().into();
     self.variables.contains_key(name)
       || self.program.abstract_functions.contains_key(&name_rc)
       || self
@@ -2540,7 +2558,7 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
         .is_some()
   }
   pub fn is_globally_bound(&self, name: &str) -> bool {
-    let name_rc: Rc<str> = name.to_string().into();
+    let name_rc: Arc<str> = name.to_string().into();
     self.program.abstract_functions.contains_key(&name_rc)
       || self
         .program
@@ -2644,7 +2662,7 @@ impl<'p> MutableProgramLocalContext<'p> {
   }
   pub fn constrain_name_type(
     &mut self,
-    name: &Rc<str>,
+    name: &Arc<str>,
     source_trace: &SourceTrace,
     t: &mut ExpTypeInfo,
     errors: &mut ErrorLog,
@@ -2699,7 +2717,7 @@ impl From<ConcreteArraySize> for ConcreteArraySizeDescription {
       ConcreteArraySize::Constant(x) => Self::Constant(x.to_string()),
       ConcreteArraySize::Skolem(x) => Self::Skolem(x.to_string()),
       ConcreteArraySize::UnificationVariable(value) => {
-        Self::UnificationVariable(value.value.borrow().clone())
+        Self::UnificationVariable(value.value.read().unwrap().clone())
       }
       ConcreteArraySize::Unsized => Self::Unsized,
     }

@@ -1,5 +1,5 @@
 use std::fmt::Display;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::str::FromStr;
 
 use fsexp::syntax::EncloserOrOperator::{self, *};
@@ -17,8 +17,8 @@ use super::error::{
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AnnotationKind {
-  Singular(Rc<str>, SourceTrace),
-  Map(Vec<(Rc<str>, SourceTrace, Rc<str>, SourceTrace)>),
+  Singular(Arc<str>, SourceTrace),
+  Map(Vec<(Arc<str>, SourceTrace, Arc<str>, SourceTrace)>),
   Multiple(Vec<Annotation>),
 }
 
@@ -83,7 +83,7 @@ impl Annotation {
                     )
                   }
                 })
-                .collect::<CompileResult<Vec<(Rc<str>, SourceTrace)>>>()?
+                .collect::<CompileResult<Vec<(Arc<str>, SourceTrace)>>>()?
                 .chunks(2)
                 .map(|arr| {
                   (
@@ -134,7 +134,7 @@ impl Annotation {
   }
   pub fn properties(
     &self,
-  ) -> Vec<(Rc<str>, SourceTrace, Option<(Rc<str>, SourceTrace)>)> {
+  ) -> Vec<(Arc<str>, SourceTrace, Option<(Arc<str>, SourceTrace)>)> {
     match &self.kind {
       AnnotationKind::Singular(name, source_trace) => {
         vec![(name.clone(), source_trace.clone(), None)]

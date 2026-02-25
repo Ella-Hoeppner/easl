@@ -1,7 +1,6 @@
-use std::{
-  collections::{HashMap, HashSet},
-  rc::Rc,
-};
+use std::collections::{HashMap, HashSet};
+
+use std::sync::Arc;
 
 use crate::{
   compiler::{
@@ -31,7 +30,7 @@ use super::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct UntypedStructField {
   attributes: IOAttributes,
-  name: Rc<str>,
+  name: Arc<str>,
   type_ast: EaslTree,
   source_trace: SourceTrace,
 }
@@ -90,13 +89,13 @@ impl UntypedStructField {
       source_trace,
     })
   }
-  pub fn references_type_name(&self, name: &Rc<str>) -> bool {
+  pub fn references_type_name(&self, name: &Arc<str>) -> bool {
     contains_name_leaf(&name, &self.type_ast)
   }
   pub fn assign_type(
     self,
     typedefs: &TypeDefs,
-    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
+    skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
   ) -> CompileResult<AbstractStructField> {
     Ok(AbstractStructField {
       attributes: self.attributes,
@@ -113,16 +112,16 @@ impl UntypedStructField {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UntypedStruct {
-  pub name: (Rc<str>, SourceTrace),
+  pub name: (Arc<str>, SourceTrace),
   pub fields: Vec<UntypedStructField>,
-  pub generic_args: Vec<(Rc<str>, GenericArgument, SourceTrace)>,
+  pub generic_args: Vec<(Arc<str>, GenericArgument, SourceTrace)>,
   pub source_trace: SourceTrace,
 }
 
 impl UntypedStruct {
   pub fn from_field_trees(
-    name: (Rc<str>, SourceTrace),
-    generic_args: Vec<(Rc<str>, GenericArgument, SourceTrace)>,
+    name: (Arc<str>, SourceTrace),
+    generic_args: Vec<(Arc<str>, GenericArgument, SourceTrace)>,
     field_asts: Vec<EaslTree>,
     source_trace: SourceTrace,
     errors: &mut ErrorLog,
@@ -137,7 +136,7 @@ impl UntypedStruct {
       source_trace,
     }
   }
-  pub fn references_type_name(&self, name: &Rc<str>) -> bool {
+  pub fn references_type_name(&self, name: &Arc<str>) -> bool {
     self
       .fields
       .iter()
@@ -175,7 +174,7 @@ impl UntypedStruct {
 pub fn compiled_vec_or_mat_name(
   base_struct_name: &str,
   inner_type: Type,
-) -> Option<Rc<str>> {
+) -> Option<Arc<str>> {
   match inner_type {
     Type::F32 => Some("f"),
     Type::I32 => Some("i"),
@@ -189,7 +188,7 @@ pub fn compiled_vec_or_mat_name(
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractStructField {
   pub attributes: IOAttributes,
-  pub name: Rc<str>,
+  pub name: Arc<str>,
   pub field_type: AbstractType,
   pub source_trace: SourceTrace,
 }
@@ -198,12 +197,12 @@ impl AbstractStructField {
   pub fn concretize(
     &self,
     typedefs: &TypeDefs,
-    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
+    skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
     source_trace: SourceTrace,
   ) -> CompileResult<StructField> {
     Ok(StructField {
       attributes: self.attributes.clone(),
-      name: Rc::clone(&self.name),
+      name: Arc::clone(&self.name),
       field_type: self
         .field_type
         .concretize(skolems, typedefs, source_trace)?
@@ -213,8 +212,8 @@ impl AbstractStructField {
   }
   pub fn fill_generics(
     &self,
-    generics: &HashMap<Rc<str>, ExpTypeInfo>,
-    generic_constants: &HashMap<Rc<str>, ConstGenericValue>,
+    generics: &HashMap<Arc<str>, ExpTypeInfo>,
+    generic_constants: &HashMap<Arc<str>, ConstGenericValue>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<StructField> {
@@ -231,7 +230,7 @@ impl AbstractStructField {
   }
   fn fill_abstract_generics(
     self,
-    generics: &HashMap<Rc<str>, AbstractType>,
+    generics: &HashMap<Arc<str>, AbstractType>,
   ) -> Self {
     AbstractStructField {
       attributes: self.attributes,
@@ -266,11 +265,11 @@ pub fn vec_and_mat_compile_names() -> HashSet<String> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractStruct {
-  pub name: (Rc<str>, SourceTrace),
-  pub filled_generics: HashMap<Rc<str>, AbstractType>,
+  pub name: (Arc<str>, SourceTrace),
+  pub filled_generics: HashMap<Arc<str>, AbstractType>,
   pub fields: Vec<AbstractStructField>,
-  pub generic_args: Vec<(Rc<str>, GenericArgument, SourceTrace)>,
-  pub abstract_ancestor: Option<Rc<Self>>,
+  pub generic_args: Vec<(Arc<str>, GenericArgument, SourceTrace)>,
+  pub abstract_ancestor: Option<Arc<Self>>,
   pub source_trace: SourceTrace,
   pub opaque: bool,
 }
@@ -287,13 +286,13 @@ impl AbstractStruct {
     !self.fields.iter().any(|f| !f.field_type.is_unitlike(names))
   }
   pub fn concretize(
-    s: Rc<Self>,
+    s: Arc<Self>,
     typedefs: &TypeDefs,
-    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
+    skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
     source_trace: SourceTrace,
   ) -> CompileResult<Struct> {
     Ok(Struct {
-      name: Rc::clone(&s.name.0),
+      name: Arc::clone(&s.name.0),
       fields: s
         .fields
         .iter()
@@ -338,7 +337,7 @@ impl AbstractStruct {
     &self,
     field_types: &Vec<Type>,
     names: &mut NameContext,
-  ) -> Rc<str> {
+  ) -> Arc<str> {
     let mut generic_type_bindings = HashMap::new();
     let mut generic_constant_bindings = HashMap::new();
     for (field, field_type) in self
@@ -391,11 +390,11 @@ impl AbstractStruct {
       .into()
   }
   pub fn concretized_name(
-    s: Rc<Self>,
+    s: Arc<Self>,
     typedefs: &TypeDefs,
     names: &mut NameContext,
     source_trace: SourceTrace,
-  ) -> CompileResult<Rc<str>> {
+  ) -> CompileResult<Arc<str>> {
     let concretized =
       Self::concretize(s.clone(), typedefs, &vec![], source_trace)?;
     Ok(
@@ -466,9 +465,9 @@ impl AbstractStruct {
     })
   }
   pub fn fill_generics(
-    s: Rc<Self>,
-    generics: &HashMap<Rc<str>, ExpTypeInfo>,
-    generic_constants: &HashMap<Rc<str>, ConstGenericValue>,
+    s: Arc<Self>,
+    generics: &HashMap<Arc<str>, ExpTypeInfo>,
+    generic_constants: &HashMap<Arc<str>, ConstGenericValue>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Struct> {
@@ -491,7 +490,7 @@ impl AbstractStruct {
     })
   }
   pub fn fill_generics_ordered(
-    s: Rc<Self>,
+    s: Arc<Self>,
     generics: Vec<GenericArgumentValue>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
@@ -502,8 +501,8 @@ impl AbstractStruct {
         source_trace,
       );
     }
-    let mut generics_map: HashMap<Rc<str>, ExpTypeInfo> = HashMap::new();
-    let mut generic_constants_map: HashMap<Rc<str>, ConstGenericValue> =
+    let mut generics_map: HashMap<Arc<str>, ExpTypeInfo> = HashMap::new();
+    let mut generic_constants_map: HashMap<Arc<str>, ConstGenericValue> =
       HashMap::new();
     for ((name, generic_argument, _), generic_value) in
       s.generic_args.iter().cloned().zip(generics.into_iter())
@@ -536,7 +535,7 @@ impl AbstractStruct {
     )
   }
   pub fn fill_generics_with_unification_variables(
-    s: Rc<Self>,
+    s: Arc<Self>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<Struct> {
@@ -556,7 +555,7 @@ impl AbstractStruct {
   }
   pub fn partially_fill_abstract_generics(
     self,
-    generics: HashMap<Rc<str>, AbstractType>,
+    generics: HashMap<Arc<str>, AbstractType>,
   ) -> AbstractStruct {
     let abstract_ancestor = self.clone().into();
     AbstractStruct {
@@ -585,7 +584,7 @@ impl AbstractStruct {
     self,
     generics: Vec<AbstractType>,
   ) -> AbstractStruct {
-    let generics_map: HashMap<Rc<str>, AbstractType> = self
+    let generics_map: HashMap<Arc<str>, AbstractType> = self
       .generic_args
       .iter()
       .map(|(n, _, _)| n)
@@ -597,8 +596,8 @@ impl AbstractStruct {
   pub fn extract_generic_bindings(
     &self,
     concrete_struct: &Struct,
-    generic_bindings: &mut HashMap<Rc<str>, Type>,
-    constant_bindings: &mut HashMap<Rc<str>, u32>,
+    generic_bindings: &mut HashMap<Arc<str>, Type>,
+    constant_bindings: &mut HashMap<Arc<str>, u32>,
   ) {
     for i in 0..concrete_struct.fields.len() {
       self.fields[i].field_type.extract_generic_bindings(
@@ -624,15 +623,15 @@ impl AbstractStruct {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructField {
   pub attributes: IOAttributes,
-  pub name: Rc<str>,
+  pub name: Arc<str>,
   pub field_type: ExpTypeInfo,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Struct {
-  pub name: Rc<str>,
+  pub name: Arc<str>,
   pub fields: Vec<StructField>,
-  pub abstract_ancestor: Rc<AbstractStruct>,
+  pub abstract_ancestor: Arc<AbstractStruct>,
 }
 
 impl Struct {
@@ -657,7 +656,7 @@ impl Struct {
       },
     )
   }
-  pub fn monomorphized_name(&self, names: &mut NameContext) -> Rc<str> {
+  pub fn monomorphized_name(&self, names: &mut NameContext) -> Arc<str> {
     self.abstract_ancestor.monomorphized_name(
       &self
         .fields
@@ -676,7 +675,7 @@ impl Struct {
       let access = TypedExp {
         data: f.field_type.clone(),
         kind: ExpKind::Access(
-          Accessor::Field(Rc::clone(&f.name)),
+          Accessor::Field(Arc::clone(&f.name)),
           value.clone().into(),
         ),
         source_trace: SourceTrace::empty(),
@@ -755,7 +754,7 @@ impl Struct {
   }
   pub fn bitcastable_chunk_accessors(
     &self,
-    value_name: Rc<str>,
+    value_name: Arc<str>,
   ) -> Vec<TypedExp> {
     let mut chunks = vec![];
     self.bitcastable_chunk_accessors_inner(

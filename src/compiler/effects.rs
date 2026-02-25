@@ -1,4 +1,6 @@
-use std::{collections::HashSet, rc::Rc};
+use std::collections::HashSet;
+
+use std::sync::Arc;
 
 use crate::compiler::{
   program::Program,
@@ -7,15 +9,15 @@ use crate::compiler::{
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Effect {
-  ReadsVar(Rc<str>),
-  ModifiesLocalVar(Rc<str>),
-  ModifiesGlobalVar(Rc<str>),
+  ReadsVar(Arc<str>),
+  ModifiesLocalVar(Arc<str>),
+  ModifiesGlobalVar(Arc<str>),
   Break,
   Return,
   Continue,
   Discard,
-  FragmentExclusiveFunction(Rc<str>),
-  CPUExclusiveFunction(Rc<str>),
+  FragmentExclusiveFunction(Arc<str>),
+  CPUExclusiveFunction(Arc<str>),
   Print,
   Window,
 }
@@ -50,7 +52,7 @@ impl EffectType {
     }
     true
   }
-  pub fn cpu_exclusive_functions(&self) -> Vec<Rc<str>> {
+  pub fn cpu_exclusive_functions(&self) -> Vec<Arc<str>> {
     self
       .0
       .iter()
@@ -66,7 +68,7 @@ impl EffectType {
   pub fn gpu_illegal_address_space_writes(
     &self,
     program: &Program,
-  ) -> Vec<(Rc<str>, VariableAddressSpace)> {
+  ) -> Vec<(Arc<str>, VariableAddressSpace)> {
     self
       .0
       .iter()
@@ -85,7 +87,7 @@ impl EffectType {
       })
       .collect()
   }
-  pub fn read_and_written_globals(&self) -> (Vec<Rc<str>>, Vec<Rc<str>>) {
+  pub fn read_and_written_globals(&self) -> (Vec<Arc<str>>, Vec<Arc<str>>) {
     (
       self
         .0

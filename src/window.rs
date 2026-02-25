@@ -1,4 +1,6 @@
-use std::{cell::RefCell, collections::HashMap, sync::Arc, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
+
+use std::sync::RwLock;
 
 use winit::{
   application::ApplicationHandler,
@@ -20,7 +22,7 @@ use crate::{
 // in a thread-local and reuse it across multiple spawn-window calls via
 // run_app_on_demand, which takes &mut self instead of consuming the loop.
 thread_local! {
-  static EVENT_LOOP: RefCell<Option<EventLoop<()>>> = RefCell::new(None);
+  static EVENT_LOOP: RwLock<Option<EventLoop<()>>> = RwLock::new(None);
 }
 
 pub fn run_window_loop<IO: IOManager>(
@@ -28,7 +30,7 @@ pub fn run_window_loop<IO: IOManager>(
   env: EvaluationEnvironment<IO>,
 ) -> Result<EvaluationEnvironment<IO>, (EvaluationEnvironment<IO>, EvalError)> {
   EVENT_LOOP.with(|cell| {
-    let mut opt = cell.borrow_mut();
+    let mut opt = cell.write().unwrap();
     let event_loop = opt.get_or_insert_with(|| EventLoop::new().unwrap());
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {

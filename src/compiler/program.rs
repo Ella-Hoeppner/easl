@@ -1,8 +1,6 @@
-use std::{
-  cell::RefCell,
-  collections::{HashMap, HashSet},
-  rc::Rc,
-};
+use std::collections::{HashMap, HashSet};
+
+use std::sync::{Arc, RwLock};
 
 use fsexp::{Ast, document::Document, syntax::EncloserOrOperator};
 use take_mut::take;
@@ -93,21 +91,21 @@ impl<'s> EaslDocumentMethods for EaslDocument<'s> {
 }
 
 thread_local! {
-  pub static DEFAULT_PROGRAM: RefCell<Program> =
-    RefCell::new(
+  pub static DEFAULT_PROGRAM: RwLock<Program> =
+    RwLock::new(
       Program::empty()
         .with_functions(built_in_functions())
         .with_structs(
-          built_in_structs().into_iter().map(|s| Rc::new(s)).collect(),
+          built_in_structs().into_iter().map(|s| Arc::new(s)).collect(),
         )
         .with_type_aliases(built_in_type_aliases()));
 }
 
 #[derive(Debug, Clone)]
 pub struct NameContext {
-  user_names: HashSet<Rc<str>>,
-  generated_names: HashSet<Rc<str>>,
-  monomorphized_names: HashMap<(Rc<str>, Vec<Rc<str>>), Rc<str>>,
+  user_names: HashSet<Arc<str>>,
+  generated_names: HashSet<Arc<str>>,
+  monomorphized_names: HashMap<(Arc<str>, Vec<Arc<str>>), Arc<str>>,
 }
 
 impl NameContext {
@@ -132,10 +130,10 @@ impl NameContext {
   fn is_taken(&self, name: &str) -> bool {
     self.user_names.contains(name) || self.generated_names.contains(name)
   }
-  pub fn gensym(&mut self, base_name: &str) -> Rc<str> {
+  pub fn gensym(&mut self, base_name: &str) -> Arc<str> {
     if self.is_taken(base_name) {
       let mut i = 0;
-      let final_name: Rc<str> = loop {
+      let final_name: Arc<str> = loop {
         let modified_name = base_name.to_string() + &format!("_{i}");
         if !self.is_taken(&modified_name) {
           break modified_name.into();
@@ -151,9 +149,9 @@ impl NameContext {
   }
   pub(crate) fn get_monomorphized_name(
     &mut self,
-    base_type_name: Rc<str>,
-    generic_arg_names: Vec<Rc<str>>,
-  ) -> Rc<str> {
+    base_type_name: Arc<str>,
+    generic_arg_names: Vec<Arc<str>>,
+  ) -> Arc<str> {
     if generic_arg_names.is_empty() {
       return base_type_name;
     }
@@ -163,7 +161,7 @@ impl NameContext {
       .get(&monomorphization_id)
       .map(|name| name.clone())
       .unwrap_or_else(|| {
-        let full_name: Rc<str> = monomorphization_id
+        let full_name: Arc<str> = monomorphization_id
           .1
           .clone()
           .into_iter()
@@ -186,7 +184,7 @@ impl NameContext {
 pub struct TypeDefs {
   pub structs: Vec<AbstractStruct>,
   pub enums: Vec<AbstractEnum>,
-  pub type_aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
+  pub type_aliases: Vec<(Arc<str>, Arc<AbstractStruct>)>,
 }
 
 impl TypeDefs {
@@ -203,7 +201,7 @@ impl TypeDefs {
     input_or_output: InputOrOutput,
     source_trace: SourceTrace,
     errors: &mut ErrorLog,
-  ) -> Vec<(Rc<AbstractStruct>, Rc<str>, IOAttributes)> {
+  ) -> Vec<(Arc<AbstractStruct>, Arc<str>, IOAttributes)> {
     match t {
       Type::Struct(s) => s
         .fields
@@ -238,18 +236,28 @@ impl TypeDefs {
   }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Program {
-  pub names: RefCell<NameContext>,
+  pub names: RwLock<NameContext>,
   pub typedefs: TypeDefs,
   pub abstract_functions:
-    HashMap<Rc<str>, Vec<Rc<RefCell<AbstractFunctionSignature>>>>,
+    HashMap<Arc<str>, Vec<Arc<RwLock<AbstractFunctionSignature>>>>,
   pub top_level_vars: Vec<TopLevelVar>,
+}
+impl Clone for Program {
+  fn clone(&self) -> Self {
+    Self {
+      names: RwLock::new(self.names.read().unwrap().clone()),
+      typedefs: self.typedefs.clone(),
+      abstract_functions: self.abstract_functions.clone(),
+      top_level_vars: self.top_level_vars.clone(),
+    }
+  }
 }
 
 impl Default for Program {
   fn default() -> Self {
-    DEFAULT_PROGRAM.with_borrow(|ctx| ctx.clone())
+    DEFAULT_PROGRAM.with(|lock| lock.read().unwrap().clone())
   }
 }
 
@@ -276,27 +284,27 @@ impl Program {
           .insert_as_secondary(previous_var.source_trace.clone()),
       })
     }
-    self.names.borrow_mut().track_user_name(&var.name);
+    self.names.write().unwrap().track_user_name(&var.name);
     self.top_level_vars.push(var);
   }
   pub fn add_abstract_function(
     &mut self,
-    signature: Rc<RefCell<AbstractFunctionSignature>>,
+    signature: Arc<RwLock<AbstractFunctionSignature>>,
   ) {
     // print!("add_abstract_function");
-    let name = Rc::clone(&signature.borrow().name);
-    self.names.borrow_mut().track_user_name(&name);
+    let name = Arc::clone(&signature.read().unwrap().name);
+    self.names.write().unwrap().track_user_name(&name);
     if let FunctionImplementationKind::Composite(f) =
-      &signature.borrow().implementation
+      &signature.read().unwrap().implementation
     {
-      let f = f.borrow();
+      let f = f.read().unwrap();
       for (arg_name, _) in f.arg_names.iter() {
-        self.names.borrow_mut().track_user_name(&arg_name);
+        self.names.write().unwrap().track_user_name(&arg_name);
       }
       f.expression
         .walk(&mut |exp| {
           if let ExpKind::Name(name) = &exp.kind {
-            self.names.borrow_mut().track_user_name(&name);
+            self.names.write().unwrap().track_user_name(&name);
           }
           Ok::<bool, Never>(true)
         })
@@ -305,7 +313,7 @@ impl Program {
     if let Some(bucket) = self.abstract_functions.get_mut(&name) {
       let mut novel = true;
       for existing_signature in bucket.iter() {
-        if existing_signature == &signature {
+        if *existing_signature.read().unwrap() == *signature.read().unwrap() {
           novel = false;
           break;
         }
@@ -322,14 +330,14 @@ impl Program {
     functions: Vec<AbstractFunctionSignature>,
   ) -> Self {
     for f in functions {
-      self.add_abstract_function(Rc::new(RefCell::new(f)));
+      self.add_abstract_function(Arc::new(RwLock::new(f)));
     }
     self
   }
-  pub fn with_struct(mut self, s: Rc<AbstractStruct>) -> Self {
+  pub fn with_struct(mut self, s: Arc<AbstractStruct>) -> Self {
     if !self.typedefs.structs.contains(&s) {
       if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&&*s.name.0) {
-        self.add_abstract_function(Rc::new(RefCell::new(
+        self.add_abstract_function(Arc::new(RwLock::new(
           AbstractFunctionSignature {
             name: s.name.0.clone(),
             generic_args: s.generic_args.clone(),
@@ -356,7 +364,7 @@ impl Program {
       if !ABNORMAL_CONSTRUCTOR_STRUCTS.contains(&&*e.name.0) {
         for variant in e.variants.iter() {
           if variant.inner_type != AbstractType::Type(Type::Unit) {
-            self.add_abstract_function(Rc::new(RefCell::new(
+            self.add_abstract_function(Arc::new(RwLock::new(
               AbstractFunctionSignature {
                 name: variant.name.clone(),
                 generic_args: e.generic_args.clone(),
@@ -378,12 +386,12 @@ impl Program {
     }
     self
   }
-  pub fn with_structs(self, structs: Vec<Rc<AbstractStruct>>) -> Self {
+  pub fn with_structs(self, structs: Vec<Arc<AbstractStruct>>) -> Self {
     structs.into_iter().fold(self, |ctx, s| ctx.with_struct(s))
   }
   pub fn with_type_aliases(
     mut self,
-    mut aliases: Vec<(Rc<str>, Rc<AbstractStruct>)>,
+    mut aliases: Vec<(Arc<str>, Arc<AbstractStruct>)>,
   ) -> Self {
     self.typedefs.type_aliases.append(&mut aliases);
     self
@@ -418,7 +426,7 @@ impl Program {
   }
   pub fn concrete_signatures(
     &mut self,
-    fn_name: &Rc<str>,
+    fn_name: &Arc<str>,
     source_trace: SourceTrace,
   ) -> CompileResult<Option<Vec<Type>>> {
     if let Some(signatures) = self.abstract_functions.get(fn_name) {
@@ -427,7 +435,7 @@ impl Program {
         .map(|signature| {
           Ok(Type::Function(Box::new(
             AbstractFunctionSignature::concretize(
-              Rc::new(RefCell::new(signature.borrow().clone())),
+              Arc::new(RwLock::new(signature.read().unwrap().clone())),
               &self.typedefs,
               source_trace.clone(),
             )?,
@@ -441,7 +449,7 @@ impl Program {
   }
   pub fn abstract_functions_iter(
     &self,
-  ) -> impl Iterator<Item = &Rc<RefCell<AbstractFunctionSignature>>> {
+  ) -> impl Iterator<Item = &Arc<RwLock<AbstractFunctionSignature>>> {
     self
       .abstract_functions
       .values()
@@ -450,7 +458,7 @@ impl Program {
   }
   pub fn abstract_functions_iter_mut(
     &mut self,
-  ) -> impl Iterator<Item = &mut Rc<RefCell<AbstractFunctionSignature>>> {
+  ) -> impl Iterator<Item = &mut Arc<RwLock<AbstractFunctionSignature>>> {
     self
       .abstract_functions
       .values_mut()
@@ -551,7 +559,7 @@ impl Program {
                     ),
                   })
                   .collect::<(
-                    Vec<Option<(Rc<str>, SourceTrace)>>,
+                    Vec<Option<(Arc<str>, SourceTrace)>>,
                     Vec<Option<CompileError>>,
                   )>();
                 let filtered_signature_errors: Vec<CompileError> =
@@ -629,7 +637,7 @@ impl Program {
       Ok(sorted_untyped_types) => {
         for name in macros.iter().flat_map(|m| m.reserved_names.iter().cloned())
         {
-          program.names.borrow_mut().user_names.insert(name);
+          program.names.write().unwrap().user_names.insert(name);
         }
         for untyped_type in sorted_untyped_types {
           match untyped_type {
@@ -712,7 +720,7 @@ impl Program {
                 &program,
                 &mut errors,
               ) {
-                program.add_abstract_function(Rc::new(RefCell::new(f)));
+                program.add_abstract_function(Arc::new(RwLock::new(f)));
               }
             }
             _ => {
@@ -764,10 +772,10 @@ impl Program {
     }
     for f in self.abstract_functions_iter_mut() {
       if let FunctionImplementationKind::Composite(implementation) =
-        &f.borrow().implementation
+        &f.read().unwrap().implementation
       {
         let changed = implementation
-          .borrow_mut()
+          .write().unwrap()
           .expression
           .propagate_types(&mut base_context, errors);
         anything_changed |= changed;
@@ -780,9 +788,9 @@ impl Program {
       .abstract_functions_iter()
       .map(|f| {
         if let FunctionImplementationKind::Composite(implementation) =
-          &f.borrow().implementation
+          &f.read().unwrap().implementation
         {
-          implementation.borrow_mut().expression.find_untyped()
+          implementation.write().unwrap().expression.find_untyped()
         } else {
           vec![]
         }
@@ -809,10 +817,10 @@ impl Program {
   pub fn validate_match_blocks(&self, errors: &mut ErrorLog) {
     for abstract_function in self.abstract_functions_iter() {
       if let FunctionImplementationKind::Composite(implementation) =
-        &abstract_function.borrow().implementation
+        &abstract_function.read().unwrap().implementation
       {
         (**implementation)
-          .borrow_mut()
+          .write().unwrap()
           .expression
           .validate_match_blocks(errors);
       }
@@ -821,10 +829,10 @@ impl Program {
   pub fn catch_illegal_function_type_expressions(&self, errors: &mut ErrorLog) {
     for abstract_function in self.abstract_functions_iter() {
       if let FunctionImplementationKind::Composite(implementation) =
-        &abstract_function.borrow().implementation
+        &abstract_function.read().unwrap().implementation
       {
         (**implementation)
-          .borrow_mut()
+          .write().unwrap()
           .expression
           .catch_illegal_function_type_expressions(errors);
       }
@@ -879,11 +887,11 @@ impl Program {
   }
   pub fn validate_assignments(&mut self, errors: &mut ErrorLog) {
     for abstract_f in self.abstract_functions_iter() {
-      let abstract_f = abstract_f.borrow();
+      let abstract_f = abstract_f.read().unwrap();
       if let FunctionImplementationKind::Composite(implementation) =
         &abstract_f.implementation
       {
-        let implementation = implementation.borrow_mut();
+        let implementation = implementation.write().unwrap();
         if let Err(e) = implementation.expression.validate_assignments(self) {
           errors.log(e);
         }
@@ -892,29 +900,29 @@ impl Program {
   }
   pub fn monomorphize(&mut self, errors: &mut ErrorLog) {
     let mut monomorphized_ctx = Program::default();
-    monomorphized_ctx.names = self.names.clone();
+    monomorphized_ctx.names = RwLock::new(self.names.read().unwrap().clone());
     for f in self.abstract_functions_iter() {
-      if f.borrow().generic_args.is_empty()
+      if f.read().unwrap().generic_args.is_empty()
         && let FunctionImplementationKind::Composite(implementation) =
-          &f.borrow().implementation
+          &f.read().unwrap().implementation
       {
-        let mut borrowed_implementation = implementation.borrow_mut();
+        let mut borrowed_implementation = implementation.write().unwrap();
         match borrowed_implementation
           .expression
           .monomorphize(&self, &mut monomorphized_ctx)
         {
           Ok(_) => {
-            let mut new_f = (**f).borrow().clone();
+            let mut new_f = (**f).read().unwrap().clone();
             new_f.implementation =
               FunctionImplementationKind::Composite(implementation.clone());
             drop(borrowed_implementation);
             monomorphized_ctx
-              .add_abstract_function(Rc::new(RefCell::new(new_f)));
+              .add_abstract_function(Arc::new(RwLock::new(new_f)));
           }
           Err(e) => errors.log(e),
         }
       } else {
-        monomorphized_ctx.add_abstract_function(Rc::clone(f));
+        monomorphized_ctx.add_abstract_function(Arc::clone(f));
       }
     }
     for s in self.typedefs.structs.iter() {
@@ -934,11 +942,11 @@ impl Program {
   }
   pub fn validate_argument_ownership(&mut self, errors: &mut ErrorLog) {
     for f in self.abstract_functions_iter() {
-      let mut borrowed_f = f.borrow_mut();
+      let mut borrowed_f = f.write().unwrap();
       if let FunctionImplementationKind::Composite(implementation) =
         &mut borrowed_f.implementation
       {
-        let mut implementation = implementation.borrow_mut();
+        let mut implementation = implementation.write().unwrap();
         implementation
           .expression
           .walk_mut_with_ctx::<Never>(
@@ -947,7 +955,7 @@ impl Program {
                 ExpKind::Application(f, args) => {
                   if let Type::Function(f) = f.data.unwrap_known()
                     && let Some(abstract_f) = f.abstract_ancestor
-                    && let abstract_f = abstract_f.borrow()
+                    && let abstract_f = abstract_f.read().unwrap()
                     && let FunctionImplementationKind::Composite(_) =
                       abstract_f.implementation
                   {
@@ -1046,28 +1054,28 @@ impl Program {
   pub fn monomorphize_reference_address_spaces(&mut self) {
     loop {
       let mut monomorphized_ctx = Program::default();
-      monomorphized_ctx.names = self.names.clone();
+      monomorphized_ctx.names = RwLock::new(self.names.read().unwrap().clone());
       monomorphized_ctx.typedefs = self.typedefs.clone();
       let mut changed = false;
       for f in self.abstract_functions_iter() {
-        let borrowed_f = f.borrow();
+        let borrowed_f = f.read().unwrap();
         if let FunctionImplementationKind::Composite(implementation) =
-          &f.borrow().implementation
+          &f.read().unwrap().implementation
         {
           if borrowed_f.reference_arg_positions().is_empty() {
-            let mut borrowed_implementation = implementation.borrow_mut();
+            let mut borrowed_implementation = implementation.write().unwrap();
             changed |= borrowed_implementation
               .expression
               .monomorphize_reference_address_spaces(
                 &self,
                 &mut monomorphized_ctx,
               );
-            let mut new_f = (**f).borrow().clone();
+            let mut new_f = (**f).read().unwrap().clone();
             new_f.implementation =
               FunctionImplementationKind::Composite(implementation.clone());
             drop(borrowed_implementation);
             monomorphized_ctx
-              .add_abstract_function(Rc::new(RefCell::new(new_f)));
+              .add_abstract_function(Arc::new(RwLock::new(new_f)));
           }
         } else {
           monomorphized_ctx.add_abstract_function(f.clone());
@@ -1087,10 +1095,10 @@ impl Program {
       let mut changed = false;
       let copy_program = self.clone();
       for top_level_f in self.abstract_functions_iter() {
-        let mut borrowed_f = top_level_f.borrow_mut();
+        let mut borrowed_f = top_level_f.write().unwrap();
         match &borrowed_f.implementation {
           FunctionImplementationKind::Composite(implementation) => {
-            let mut borrowed_implementation = implementation.borrow_mut();
+            let mut borrowed_implementation = implementation.write().unwrap();
             borrowed_implementation
               .expression
               .walk_mut_with_ctx(
@@ -1120,11 +1128,11 @@ impl Program {
                               applied_f.return_type.unwrap_known()
                             && let Some(signatures) = self
                               .abstract_functions
-                              .get(&abstract_applied_f.borrow().name)
+                              .get(&abstract_applied_f.read().unwrap().name)
                             && let Some(signature) = signatures.get(0)
                             && let AbstractType::Type(Type::Function(
                               returned_f,
-                            )) = &signature.borrow().return_type
+                            )) = &signature.read().unwrap().return_type
                             && let Some(returned_abstract_ancestor) =
                               &returned_f.abstract_ancestor
                           {
@@ -1210,10 +1218,10 @@ impl Program {
   pub fn inline_local_bound_function_applications(&mut self) {
     let mut representative_structs = vec![];
     for f in self.abstract_functions_iter() {
-      let borrowed_f = f.borrow();
+      let borrowed_f = f.read().unwrap();
       match &borrowed_f.implementation {
         FunctionImplementationKind::Composite(implementation) => implementation
-          .borrow_mut()
+          .write().unwrap()
           .expression
           .walk_mut_with_ctx(
             &mut |exp, ctx| match &mut exp.kind {
@@ -1238,7 +1246,7 @@ impl Program {
                         if let Some(abstract_fn) =
                           bound_signature.abstract_ancestor
                         {
-                          let abstract_fn = abstract_fn.borrow();
+                          let abstract_fn = abstract_fn.read().unwrap();
                           let new_name = abstract_fn.name.clone();
                           if let Some(captured_scope) =
                             abstract_fn.captured_scope.as_ref()
@@ -1246,7 +1254,7 @@ impl Program {
                             args.push(Exp {
                               data: Type::Struct(
                                 AbstractStruct::concretize(
-                                  Rc::new(captured_scope.clone()),
+                                  Arc::new(captured_scope.clone()),
                                   &self.typedefs,
                                   &vec![],
                                   f.source_trace.clone(),
@@ -1285,7 +1293,7 @@ impl Program {
   pub fn extract_inner_functions(&mut self, errors: &mut ErrorLog) {
     let mut new_signatures: Vec<AbstractFunctionSignature> = vec![];
     for f in self.abstract_functions_iter() {
-      let borrowed_f = f.borrow();
+      let borrowed_f = f.read().unwrap();
       if !borrowed_f.generic_args.is_empty() {
         continue;
       }
@@ -1293,7 +1301,7 @@ impl Program {
         FunctionImplementationKind::Composite(implementation) => {
           let mut root_encountered = false;
           implementation
-            .borrow_mut()
+            .write().unwrap()
             .expression
             .walk_mut_with_ctx(
               &mut |exp, ctx| {
@@ -1303,7 +1311,7 @@ impl Program {
                 }
                 let effects = exp.effects();
                 if let ExpKind::Function(arg_names, body) = &mut exp.kind {
-                  let name = self.names.borrow_mut().gensym("inner_fn");
+                  let name = self.names.write().unwrap().gensym("inner_fn");
                   let Type::Function(f_signature) = exp.data.unwrap_known()
                   else {
                     panic!()
@@ -1335,7 +1343,7 @@ impl Program {
                       ),
                     })
                     .collect::<CompileResult<Vec<_>>>();
-                  let captured_vars: Vec<(&Rc<str>, Type)> = captured_vars
+                  let captured_vars: Vec<(&Arc<str>, Type)> = captured_vars
                     .unwrap_or_else(|e| {
                       errors.log(e);
                       vec![]
@@ -1350,7 +1358,7 @@ impl Program {
                       name: (
                         self
                           .names
-                          .borrow_mut()
+                          .write().unwrap()
                           .gensym(&format!("{name}_scope"))
                           .into(),
                         exp.source_trace.clone(),
@@ -1387,14 +1395,14 @@ impl Program {
                   let captured_scope = captured_scope.map(|captured_scope| {
                     (
                       captured_scope.clone(),
-                      AbstractType::AbstractStruct(Rc::new(captured_scope))
+                      AbstractType::AbstractStruct(Arc::new(captured_scope))
                         .concretize(
                           &vec![],
                           &self.typedefs,
                           exp.source_trace.clone(),
                         )
                         .unwrap(),
-                      self.names.borrow_mut().gensym("scope"),
+                      self.names.write().unwrap().gensym("scope"),
                     )
                   });
                   if let Some((
@@ -1421,7 +1429,7 @@ impl Program {
                       ));
                     });
                     arg_types.push((
-                      AbstractType::AbstractStruct(Rc::new(
+                      AbstractType::AbstractStruct(Arc::new(
                         captured_scope.clone(),
                       )),
                       Ownership::Owned,
@@ -1437,7 +1445,7 @@ impl Program {
                       f_signature.return_type.unwrap_known(),
                     ),
                     implementation: FunctionImplementationKind::Composite(
-                      Rc::new(RefCell::new(TopLevelFunction {
+                      Arc::new(RwLock::new(TopLevelFunction {
                         name_source_trace: exp.source_trace.clone(),
                         arg_names: arg_names.clone(),
                         arg_annotations: arg_names
@@ -1512,7 +1520,7 @@ impl Program {
                   new_signatures.push(signature.clone());
                   *exp = Exp {
                     data: Type::Function(Box::new(FunctionSignature {
-                      abstract_ancestor: Some(Rc::new(RefCell::new(signature))),
+                      abstract_ancestor: Some(Arc::new(RwLock::new(signature))),
                       args: f_signature.args,
                       return_type: f_signature.return_type,
                     }))
@@ -1570,7 +1578,7 @@ impl Program {
       }
     }
     for s in new_signatures {
-      self.add_abstract_function(Rc::new(RefCell::new(s)));
+      self.add_abstract_function(Arc::new(RwLock::new(s)));
     }
   }
   pub fn inline_all_higher_order_arguments(&mut self, errors: &mut ErrorLog) {
@@ -1587,14 +1595,14 @@ impl Program {
   ) -> bool {
     let mut changed = false;
     let mut inlined_ctx = Program::default();
-    inlined_ctx.names = self.names.clone();
+    inlined_ctx.names = RwLock::new(self.names.read().unwrap().clone());
     inlined_ctx.typedefs = self.typedefs.clone();
     for f in self.abstract_functions_iter() {
-      let borrowed_f = f.borrow();
+      let borrowed_f = f.read().unwrap();
       if !borrowed_f.has_uninlined_higher_order_arguments() {
         match &borrowed_f.implementation {
           FunctionImplementationKind::Composite(implementation) => {
-            let mut borrowed_implementation = implementation.borrow_mut();
+            let mut borrowed_implementation = implementation.write().unwrap();
             match borrowed_implementation
               .expression
               .inline_higher_order_arguments(&mut inlined_ctx)
@@ -1605,13 +1613,13 @@ impl Program {
                 drop(borrowed_implementation);
                 new_f.implementation =
                   FunctionImplementationKind::Composite(implementation.clone());
-                inlined_ctx.add_abstract_function(Rc::new(RefCell::new(new_f)));
+                inlined_ctx.add_abstract_function(Arc::new(RwLock::new(new_f)));
               }
               Err(e) => errors.log(e),
             }
           }
           FunctionImplementationKind::EnumConstructor(_) => {
-            inlined_ctx.add_abstract_function(Rc::clone(f));
+            inlined_ctx.add_abstract_function(Arc::clone(f));
           }
           _ => {}
         }
@@ -1625,7 +1633,7 @@ impl Program {
   }
   pub fn remove_unitlike_values(&mut self) {
     let mut names = NameContext::empty();
-    std::mem::swap(&mut names, &mut self.names.borrow_mut());
+    std::mem::swap(&mut names, &mut self.names.write().unwrap());
     take(&mut self.typedefs.structs, |structs| {
       structs
         .into_iter()
@@ -1633,11 +1641,11 @@ impl Program {
         .collect()
     });
     for f in self.abstract_functions_iter_mut() {
-      let f = f.borrow_mut();
+      let f = f.write().unwrap();
       if let FunctionImplementationKind::Composite(implementation) =
         &f.implementation
       {
-        let mut implementation = implementation.borrow_mut();
+        let mut implementation = implementation.write().unwrap();
         implementation
           .expression
           .walk_mut(&mut |exp| match &mut exp.kind {
@@ -1649,26 +1657,28 @@ impl Program {
                     if let Some(applied_f_abstract_signature) =
                       &mut applied_f_signature.abstract_ancestor
                     {
-                      let applied_f_abstract_signature =
-                        (**applied_f_abstract_signature).clone();
-                      if let FunctionImplementationKind::Composite(f) =
-                        &mut applied_f_abstract_signature
-                          .clone()
-                          .borrow_mut()
-                          .implementation
+                      let cloned_sig =
+                        applied_f_abstract_signature.read().unwrap().clone();
+                      let composite_f = if let FunctionImplementationKind::Composite(ref f) =
+                        cloned_sig.implementation
                       {
+                        Some(Arc::clone(f))
+                      } else {
+                        None
+                      };
+                      if let Some(f) = composite_f {
                         args_to_remove = (0..args.len())
                           .rev()
                           .filter(|i| {
                             args[*i].data.unwrap_known().is_unitlike(&mut names)
                           })
                           .collect();
-                        applied_f_abstract_signature
-                          .borrow_mut()
+                        let new_sig = Arc::new(RwLock::new(cloned_sig));
+                        new_sig
+                          .write().unwrap()
                           .remove_unitlike_arguments(&mut names);
-                        applied_f_signature.abstract_ancestor =
-                          Some(Rc::new(applied_f_abstract_signature));
-                        let mut f = f.borrow_mut();
+                        applied_f_signature.abstract_ancestor = Some(Arc::clone(&new_sig));
+                        let mut f = f.write().unwrap();
                         for i in args_to_remove.iter() {
                           f.arg_names.remove(*i);
                           f.arg_annotations.remove(*i);
@@ -1715,10 +1725,10 @@ impl Program {
           .unwrap();
       }
     }
-    std::mem::swap(&mut names, &mut self.names.borrow_mut());
+    std::mem::swap(&mut names, &mut self.names.write().unwrap());
   }
   pub fn compile_to_wgsl(self) -> CompileResult<String> {
-    let mut names = self.names.borrow_mut();
+    let mut names = self.names.write().unwrap();
     let mut wgsl = String::new();
     for v in self.top_level_vars.iter() {
       wgsl += &v.clone().compile(&mut names, CompilerTarget::WGSL);
@@ -1749,7 +1759,7 @@ impl Program {
       }
     }
     for f in self.abstract_functions_iter() {
-      let f = f.borrow().clone();
+      let f = f.read().unwrap().clone();
       if f.generic_args.is_empty() && !f.has_uninlined_higher_order_arguments()
       {
         match f.implementation {
@@ -1818,12 +1828,12 @@ impl Program {
       }
     }
     for f in self.abstract_functions_iter() {
-      let f = f.borrow().clone();
+      let f = f.read().unwrap().clone();
       if f.generic_args.is_empty() && !f.has_uninlined_higher_order_arguments()
       {
         match f.implementation {
           FunctionImplementationKind::Composite(implementation) => {
-            wgsl += &implementation.borrow().clone().compile(
+            wgsl += &implementation.read().unwrap().clone().compile(
               &f.name,
               &mut names,
               &self,
@@ -1845,9 +1855,9 @@ impl Program {
       .flatten()
     {
       if let FunctionImplementationKind::Composite(f) =
-        &f.borrow().implementation
+        &f.read().unwrap().implementation
       {
-        f.borrow_mut()
+        f.write().unwrap()
           .expression
           .walk_mut::<()>(&mut |exp| {
             take(&mut exp.kind, |exp_kind| {
@@ -1855,7 +1865,7 @@ impl Program {
                 if let ExpKind::Name(_) = &f.kind
                   && let Type::Function(x) = f.data.kind.unwrap_known()
                   && let Some(abstract_ancestor) = &x.abstract_ancestor
-                  && abstract_ancestor.borrow().associative
+                  && abstract_ancestor.read().unwrap().associative
                   && args.len() != 2
                 {
                   let mut args_iter = args.into_iter();
@@ -1885,27 +1895,27 @@ impl Program {
     }
   }
   fn deshadow(&mut self, errors: &mut ErrorLog) {
-    let globally_bound_names: Vec<Rc<str>> = self
+    let globally_bound_names: Vec<Arc<str>> = self
       .top_level_vars
       .iter()
-      .map(|v| Rc::clone(&v.name))
+      .map(|v| Arc::clone(&v.name))
       .chain(
         self
           .abstract_functions
           .iter()
-          .map(|(name, _)| Rc::clone(name)),
+          .map(|(name, _)| Arc::clone(name)),
       )
       .collect();
     for (_, signatures) in self.abstract_functions.iter_mut() {
       for signature in signatures.iter_mut() {
-        let mut signature = signature.borrow_mut();
+        let mut signature = signature.write().unwrap();
         if let FunctionImplementationKind::Composite(f) =
           &mut signature.implementation
         {
-          f.borrow_mut().expression.deshadow(
+          f.write().unwrap().expression.deshadow(
             &globally_bound_names,
             errors,
-            &mut self.names.borrow_mut(),
+            &mut self.names.write().unwrap(),
           );
         }
       }
@@ -1914,9 +1924,9 @@ impl Program {
   fn wrap_mutable_function_args(&mut self) {
     for signature in self.abstract_functions_iter() {
       if let FunctionImplementationKind::Composite(implementation) =
-        &signature.borrow().implementation
+        &signature.read().unwrap().implementation
       {
-        let mut implementation = implementation.borrow_mut();
+        let mut implementation = implementation.write().unwrap();
         if let Type::Function(f) =
           &mut implementation.expression.data.unwrap_known()
           && let ExpKind::Function(arg_names, body) =
@@ -1969,11 +1979,11 @@ impl Program {
   }
   fn validate_names(&self, errors: &mut ErrorLog) {
     for signature in self.abstract_functions_iter() {
-      let signature = signature.borrow();
+      let signature = signature.read().unwrap();
       if let FunctionImplementationKind::Composite(implementation) =
         &signature.implementation
       {
-        let implementation = implementation.borrow();
+        let implementation = implementation.read().unwrap();
         if !is_valid_name(&signature.name) {
           errors.log(CompileError::new(
             CompileErrorKind::InvalidName,
@@ -2087,7 +2097,7 @@ impl Program {
   }
   fn validate_associative_signatures(&self, errors: &mut ErrorLog) {
     for signature in self.abstract_functions_iter() {
-      let signature = signature.borrow();
+      let signature = signature.read().unwrap();
       if signature.associative
         && (signature.arg_types.len() != 2
           || signature.arg_types[0] != signature.arg_types[1]
@@ -2099,7 +2109,7 @@ impl Program {
           errors.log(CompileError {
             kind: CompileErrorKind::InvalidAssociativeSignature,
             source_trace: implementation
-              .borrow()
+              .read().unwrap()
               .expression
               .source_trace
               .clone(),
@@ -2114,18 +2124,18 @@ impl Program {
       for signature in signatures {
         if let FunctionImplementationKind::Builtin { .. }
         | FunctionImplementationKind::StructConstructor =
-          signature.borrow().implementation
+          signature.read().unwrap().implementation
         {
-          let normalized = signature.borrow().normalized_signature();
+          let normalized = signature.read().unwrap().normalized_signature();
           normalized_signatures.push((None, normalized));
         }
       }
       for signature in signatures {
         if let FunctionImplementationKind::Composite(f) =
-          &signature.borrow().implementation
+          &signature.read().unwrap().implementation
         {
-          let source = f.borrow().expression.source_trace.clone();
-          let normalized = signature.borrow().normalized_signature();
+          let source = f.read().unwrap().expression.source_trace.clone();
+          let normalized = signature.read().unwrap().normalized_signature();
           for (previous_signature, previous_normalized) in
             normalized_signatures.iter()
           {
@@ -2158,9 +2168,9 @@ impl Program {
     for (_, signatures) in self.abstract_functions.iter() {
       for signature in signatures {
         if let FunctionImplementationKind::Composite(f) =
-          &signature.borrow().implementation
+          &signature.read().unwrap().implementation
         {
-          let f = f.borrow();
+          let f = f.read().unwrap();
           for (arg_name, _) in f.arg_names.iter() {
             if self.abstract_functions.get(arg_name).is_some()
               || self
@@ -2226,12 +2236,12 @@ impl Program {
   }
   fn ensure_no_typeless_bindings(&self, errors: &mut ErrorLog) {
     for signature in self.abstract_functions_iter() {
-      let signature = signature.borrow();
+      let signature = signature.read().unwrap();
       if let FunctionImplementationKind::Composite(implementation) =
         &signature.implementation
       {
         implementation
-          .borrow()
+          .read().unwrap()
           .expression
           .walk(&mut |exp| {
             match &exp.kind {
@@ -2255,21 +2265,21 @@ impl Program {
   }
   pub fn validate_control_flow(&mut self, errors: &mut ErrorLog) {
     for signature in self.abstract_functions_iter() {
-      let signature = signature.borrow();
+      let signature = signature.read().unwrap();
       if let FunctionImplementationKind::Composite(f) =
         &signature.implementation
       {
-        f.borrow().expression.validate_control_flow(errors, 0);
+        f.read().unwrap().expression.validate_control_flow(errors, 0);
       }
     }
   }
   pub fn deexpressionify(&mut self) {
     for signature in self.abstract_functions_iter() {
-      let signature = signature.borrow();
+      let signature = signature.read().unwrap();
       if let FunctionImplementationKind::Composite(f) =
         &signature.implementation
       {
-        let mut f = f.borrow_mut();
+        let mut f = f.write().unwrap();
         f.expression.throw_away_inner_values_in_blocks(self);
         f.expression.deexpressionify(self);
       }
@@ -2280,12 +2290,12 @@ impl Program {
     for (_, signatures) in self.abstract_functions.iter() {
       if signatures.len() > 1 {
         for s in signatures.iter() {
-          let mut s = s.borrow_mut();
+          let mut s = s.write().unwrap();
           let base_name = s.name.clone();
           let type_signature = if s.generic_args.is_empty()
             && let FunctionImplementationKind::Composite(f) =
               &mut s.implementation
-            && let Type::Function(f) = f.borrow().expression.data.unwrap_known()
+            && let Type::Function(f) = f.read().unwrap().expression.data.unwrap_known()
           {
             f.unwrap_type_signature()
           } else {
@@ -2295,10 +2305,10 @@ impl Program {
             + "_"
             + &type_signature
               .iter()
-              .map(|t| t.monomorphized_name(&mut self.names.borrow_mut()))
+              .map(|t| t.monomorphized_name(&mut self.names.write().unwrap()))
               .collect::<Vec<String>>()
               .join("_");
-          let new_name: Rc<str> = new_name.into();
+          let new_name: Arc<str> = new_name.into();
           s.name = new_name.clone();
           if !renames.contains_key(&base_name) {
             renames.insert(base_name.clone(), vec![]);
@@ -2311,11 +2321,11 @@ impl Program {
       }
     }
     for signature in self.abstract_functions_iter() {
-      let signature = signature.borrow();
+      let signature = signature.read().unwrap();
       if let FunctionImplementationKind::Composite(f) =
         &signature.implementation
       {
-        f.borrow_mut()
+        f.write().unwrap()
           .expression
           .walk_mut(&mut |exp| {
             if let ExpKind::Name(name) = &mut exp.kind {
@@ -2339,7 +2349,7 @@ impl Program {
     }
   }
   pub fn inline_def_array_sizes(&mut self) {
-    let u32_constants: HashMap<Rc<str>, u32> = self
+    let u32_constants: HashMap<Arc<str>, u32> = self
       .top_level_vars
       .iter()
       .filter_map(|v| {
@@ -2359,9 +2369,9 @@ impl Program {
       .collect();
     for f in self.abstract_functions_iter_mut() {
       if let FunctionImplementationKind::Composite(f) =
-        &f.borrow_mut().implementation
+        &f.write().unwrap().implementation
       {
-        f.borrow_mut()
+        f.write().unwrap()
           .expression
           .walk_mut(&mut |exp| {
             if let TypeState::Known(t) = &mut exp.data.kind {
@@ -2383,9 +2393,9 @@ impl Program {
   pub fn inline_static_array_length_calls(&mut self) {
     for f in self.abstract_functions_iter_mut() {
       if let FunctionImplementationKind::Composite(f) =
-        &f.borrow_mut().implementation
+        &f.write().unwrap().implementation
       {
-        f.borrow_mut()
+        f.write().unwrap()
           .expression
           .walk_mut(&mut |exp| {
             if let ExpKind::Application(f, args) = &exp.kind
@@ -2397,7 +2407,7 @@ impl Program {
               let size = match size {
                 ConcreteArraySize::Literal(x) => x,
                 ConcreteArraySize::UnificationVariable(const_generic_value) => {
-                  const_generic_value.value.borrow().unwrap()
+                  const_generic_value.value.read().unwrap().unwrap()
                 }
                 _ => panic!("can't handle this kind of ConcreteArraySize here"),
               };
@@ -2414,13 +2424,13 @@ impl Program {
     }
   }
   pub fn desugar_swizzle_assignments(&mut self) {
-    let mut names = self.names.borrow_mut();
+    let mut names = self.names.write().unwrap();
     for signature in self.abstract_functions_iter() {
-      let signature = signature.borrow();
+      let signature = signature.read().unwrap();
       if let FunctionImplementationKind::Composite(f) =
         &signature.implementation
       {
-        f.borrow_mut()
+        f.write().unwrap()
           .expression
           .walk_mut(&mut |exp| {
             exp.desugar_swizzle_assignments(&mut names);
@@ -2432,11 +2442,11 @@ impl Program {
   }
   pub fn validate_top_level_fn_effects(&mut self, errors: &mut ErrorLog) {
     for signature in self.abstract_functions_iter() {
-      let signature = signature.borrow();
+      let signature = signature.read().unwrap();
       if let FunctionImplementationKind::Composite(f) =
         &signature.implementation
       {
-        let f = f.borrow();
+        let f = f.read().unwrap();
         if let Some(entry_point) = f.entry_point {
           let ExpKind::Function(_, body) = &f.expression.kind else {
             unreachable!()
@@ -2497,16 +2507,16 @@ impl Program {
   }
   pub fn validate_entry_points(&mut self, errors: &mut ErrorLog) {
     let mut inferred_struct_field_locations: Vec<(
-      Rc<AbstractStruct>,
-      Rc<str>,
+      Arc<AbstractStruct>,
+      Arc<str>,
       usize,
     )> = vec![];
     for signature in self.abstract_functions_iter() {
-      let signature = signature.borrow();
+      let signature = signature.read().unwrap();
       if let FunctionImplementationKind::Composite(f) =
         &signature.implementation
       {
-        let mut f = f.borrow_mut();
+        let mut f = f.write().unwrap();
         let f_source = f.expression.source_trace.clone();
         if let Some(entry) = f.entry_point {
           let Type::Function(signature) = f.expression.data.unwrap_known()
@@ -2579,7 +2589,7 @@ impl Program {
               Type,
               Result<
                 &mut IOAttributes,
-                (Rc<AbstractStruct>, Rc<str>, IOAttributes),
+                (Arc<AbstractStruct>, Arc<str>, IOAttributes),
               >,
             )>|
              -> Vec<(String, SourceTrace)> {
@@ -2609,13 +2619,13 @@ impl Program {
               Type,
               Result<
                 &mut IOAttributes,
-                (Rc<AbstractStruct>, Rc<str>, IOAttributes),
+                (Arc<AbstractStruct>, Arc<str>, IOAttributes),
               >,
             )>,
              input_or_output: InputOrOutput,
              errors: &mut ErrorLog|
              -> (
-              HashMap<usize, (SourceTrace, Result<Type, Rc<AbstractStruct>>)>,
+              HashMap<usize, (SourceTrace, Result<Type, Arc<AbstractStruct>>)>,
               HashMap<BuiltinIOAttribute, Result<Type, AbstractType>>,
             ) {
               for (name, source) in check_for_duplicate_builtins(&attributables)
@@ -2627,7 +2637,7 @@ impl Program {
               }
               let mut used_locations: HashMap<
                 usize,
-                (SourceTrace, Result<Type, Rc<AbstractStruct>>),
+                (SourceTrace, Result<Type, Arc<AbstractStruct>>),
               > = HashMap::new();
               let mut used_builtins: HashMap<
                 BuiltinIOAttribute,
@@ -2747,7 +2757,7 @@ impl Program {
             Type,
             Result<
               &mut IOAttributes,
-              (Rc<AbstractStruct>, Rc<str>, IOAttributes),
+              (Arc<AbstractStruct>, Arc<str>, IOAttributes),
             >,
           )> = f
             .arg_annotations
@@ -2794,7 +2804,7 @@ impl Program {
             Type,
             Result<
               &mut IOAttributes,
-              (Rc<AbstractStruct>, Rc<str>, IOAttributes),
+              (Arc<AbstractStruct>, Arc<str>, IOAttributes),
             >,
           )> = if return_type.is_attributable() {
             vec![(return_type, Ok(&mut f.return_attributes))]
@@ -2946,12 +2956,12 @@ impl Program {
     errors: &mut ErrorLog,
   ) {
     for signature in self.abstract_functions_iter() {
-      let signature = signature.borrow();
+      let signature = signature.read().unwrap();
       if let FunctionImplementationKind::Composite(implementation) =
         &signature.implementation
       {
         implementation
-          .borrow()
+          .read().unwrap()
           .expression
           .walk(&mut |exp| {
             match &exp.kind {
@@ -3098,14 +3108,14 @@ impl Program {
   pub fn gather_type_annotations(&self) -> Vec<(SourceTrace, TypeState)> {
     let mut type_annotations = vec![];
     for signature in self.abstract_functions_iter() {
-      let signature = signature.borrow();
+      let signature = signature.read().unwrap();
       let FunctionImplementationKind::Composite(implementation) =
         &signature.implementation
       else {
         continue;
       };
       implementation
-        .borrow()
+        .read().unwrap()
         .expression
         .walk(&mut |exp: &TypedExp| {
           type_annotations
@@ -3140,9 +3150,9 @@ impl Program {
         NameDefinitionSource::Enum(t.name.1.primary_path()),
       );
     }
-    let mut defn_locations: HashMap<Rc<str>, Vec<Vec<usize>>> = HashMap::new();
+    let mut defn_locations: HashMap<Arc<str>, Vec<Vec<usize>>> = HashMap::new();
     for f in self.abstract_functions_iter() {
-      let f = f.borrow();
+      let f = f.read().unwrap();
       if let FunctionImplementationKind::Composite(implementation) =
         &f.implementation
       {
@@ -3152,7 +3162,7 @@ impl Program {
         defn_locations
           .get_mut(&f.name)
           .unwrap()
-          .push(implementation.borrow().name_source_trace.primary_path());
+          .push(implementation.read().unwrap().name_source_trace.primary_path());
       }
     }
     for (name, sources) in defn_locations {
@@ -3161,9 +3171,9 @@ impl Program {
     }
     let mut sites = HashMap::new();
     for f in self.abstract_functions_iter() {
-      let f = f.borrow();
+      let f = f.read().unwrap();
       if let FunctionImplementationKind::Composite(f) = &f.implementation {
-        f.borrow()
+        f.read().unwrap()
           .expression
           .walk_with_ctx(
             &mut |exp, ctx| {
@@ -3198,10 +3208,10 @@ impl Program {
     self
       .abstract_functions_iter()
       .filter_map(|abstract_f| {
-        let abstract_f = abstract_f.borrow();
+        let abstract_f = abstract_f.read().unwrap();
         if let FunctionImplementationKind::Composite(f) =
           &abstract_f.implementation
-          && let Some(entry_point) = f.borrow().entry_point
+          && let Some(entry_point) = f.read().unwrap().entry_point
           && entry_kind_predicate(entry_point)
         {
           Some(abstract_f.name.to_string())
@@ -3213,13 +3223,13 @@ impl Program {
   }
   pub fn cpu_entry_points(
     &self,
-  ) -> Vec<Rc<RefCell<AbstractFunctionSignature>>> {
+  ) -> Vec<Arc<RwLock<AbstractFunctionSignature>>> {
     self
       .abstract_functions_iter()
       .filter(|f| {
-        let f = f.borrow();
+        let f = f.read().unwrap();
         if let FunctionImplementationKind::Composite(comp) = &f.implementation {
-          comp.borrow().entry_point == Some(EntryPoint::Cpu)
+          comp.read().unwrap().entry_point == Some(EntryPoint::Cpu)
         } else {
           false
         }
@@ -3246,10 +3256,10 @@ impl Program {
     }
     let mut defn_locations: HashSet<Vec<usize>> = HashSet::new();
     for f in self.abstract_functions_iter() {
-      let f = f.borrow();
+      let f = f.read().unwrap();
       if &*f.name == name {
         if let FunctionImplementationKind::Composite(f) = &f.implementation {
-          defn_locations.insert(f.borrow().name_source_trace.primary_path());
+          defn_locations.insert(f.read().unwrap().name_source_trace.primary_path());
         }
       }
     }
@@ -3259,14 +3269,14 @@ impl Program {
       ));
     }
     for f in self.abstract_functions_iter() {
-      let f = f.borrow();
+      let f = f.read().unwrap();
       if let FunctionImplementationKind::Composite(f) = &f.implementation {
         let mut definition_source: Option<NameDefinitionSource> = None;
         fn is_prefix(a: &Vec<usize>, b: &Vec<usize>) -> bool {
           a.len() < b.len()
             && a.iter().zip(b.iter()).find(|(a, b)| a != b).is_none()
         }
-        f.borrow()
+        f.read().unwrap()
           .expression
           .walk(&mut |exp| {
             let exp_path = exp.source_trace.primary_path();
