@@ -13,8 +13,8 @@ use winit::{
 use crate::{
   compiler::{expression::Exp, types::ExpTypeInfo},
   interpreter::{
-    EvalError, EvalException, EvaluationEnvironment, GpuBufferKind, IOManager,
-    WindowEvent, eval,
+    BufferUpload, EvalError, EvalException, EvaluationEnvironment, GpuBufferKind,
+    IOManager, WindowEvent, eval,
   },
 };
 
@@ -136,12 +136,20 @@ impl GpuCore {
   /// Uploads binding data to the GPU. If a buffer's size has changed (e.g.
   /// a dynamic array was reassigned), the buffer is recreated and all bind
   /// groups are rebuilt.
-  pub fn upload_bindings(&mut self, data: &[((u8, u8), Vec<u8>)]) {
+  ///
+  /// `BufferUpload::Clear` buffers are zeroed via `encoder.clear_buffer` (a
+  /// fast GPU-side zero-fill with no CPU allocation) rather than copying a
+  /// zeroed slice from the CPU.
+  pub fn upload_bindings(&mut self, data: &[((u8, u8), BufferUpload)]) {
     let mut needs_rebuild = false;
 
-    for ((group, binding), bytes) in data {
+    // First pass: recreate any buffers whose size changed.
+    for ((group, binding), upload) in data {
       let key = (*group, *binding);
-      let incoming_size = bytes.len() as u64;
+      let incoming_size = match upload {
+        BufferUpload::Data(bytes) => bytes.len() as u64,
+        BufferUpload::Clear { byte_count } => *byte_count,
+      };
       let stored_size = *self.binding_buffer_sizes.get(&key).unwrap_or(&0);
 
       if incoming_size != stored_size {
@@ -161,18 +169,38 @@ impl GpuCore {
         self.binding_buffer_sizes.insert(key, incoming_size);
         needs_rebuild = true;
       }
-
-      if let Some(buffer) = self.binding_buffers.get(&key) {
-        // println!(
-        //   "cpu->gpu upload: g{group}b{binding} ({} bytes)",
-        //   bytes.len()
-        // );
-        self.queue.write_buffer(buffer, 0, bytes);
-      }
     }
 
     if needs_rebuild {
       self.rebuild_bind_groups();
+    }
+
+    // Second pass: write data or issue GPU clears.
+    let mut encoder: Option<wgpu::CommandEncoder> = None;
+    for ((group, binding), upload) in data {
+      let key = (*group, *binding);
+      match upload {
+        BufferUpload::Data(bytes) => {
+          if let Some(buffer) = self.binding_buffers.get(&key) {
+            self.queue.write_buffer(buffer, 0, bytes);
+          }
+        }
+        BufferUpload::Clear { .. } => {
+          if let Some(buffer) = self.binding_buffers.get(&key) {
+            let enc = encoder.get_or_insert_with(|| {
+              self.device.create_command_encoder(
+                &wgpu::CommandEncoderDescriptor {
+                  label: Some("clear encoder"),
+                },
+              )
+            });
+            enc.clear_buffer(buffer, 0, None);
+          }
+        }
+      }
+    }
+    if let Some(enc) = encoder {
+      self.queue.submit(std::iter::once(enc.finish()));
     }
   }
 
@@ -182,7 +210,7 @@ impl GpuCore {
     &mut self,
     entry: &str,
     workgroup_count: (u32, u32, u32),
-    pre_upload: Vec<((u8, u8), Vec<u8>)>,
+    pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) {
     let entry = entry.replace('-', "_");
     self.upload_bindings(&pre_upload);

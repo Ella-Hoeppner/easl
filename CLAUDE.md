@@ -137,15 +137,19 @@ Two implementations: `StdoutIO` (real windowing via wgpu) and `StringIO` (test/d
 - `run_spawn_window(body, env)` — called by `spawn-window`; `StdoutIO` opens a real window, `StringIO` simulates N frames (default 10)
 
 ### Key types in `interpreter.rs`
+- **`BufferUpload`** — payload for a single binding upload:
+  - `Data(Vec<u8>)` — upload the given bytes
+  - `Clear { byte_count: u64 }` — zero the buffer on the GPU via `encoder.clear_buffer` (no CPU allocation)
 - **`WindowEvent`** — frame-level GPU command passed from interpreter to `window.rs`:
-  - `RenderShaders { vert: String, frag: String, vert_count: u32 }`
-  - `ComputeShader { entry: String, workgroup_count: (u32, u32, u32) }`
+  - `RenderShaders { vert: String, frag: String, vert_count: u32, pre_upload: Vec<((u8,u8), BufferUpload)> }`
+  - `ComputeShader { entry: String, workgroup_count: (u32, u32, u32), pre_upload: Vec<((u8,u8), BufferUpload)> }`
 - **`IOEvent`** — unified ordered log used by `StringIO` for testing:
   - `Print(String)`, `SpawnWindow`, `DispatchShaders { vert, frag, vert_count }`, `DispatchComputeShader { entry, workgroup_count }`
 - **`GpuBufferKind`** — `Uniform | StorageReadOnly | StorageReadWrite`; exposed from `interpreter.rs` so `window.rs` doesn't need to reach into the compiler
 - **`EvaluationEnvironment`** — holds `binding_vars: Vec<(GroupAndBinding, Rc<str>, Type, VariableAddressSpace)>` for all GPU-bound top-level variables (Uniform + StorageRead + StorageReadWrite)
   - `binding_infos() -> Vec<((u8,u8), GpuBufferKind, u64)>` — size is 0 for unsized/dynamic arrays
-  - `binding_buffer_data() -> Vec<((u8,u8), Vec<u8>)>` — serializes current interpreter values, padded to 16 bytes; called every frame before rendering
+  - `binding_buffer_data() -> Vec<((u8,u8), BufferUpload)>` — returns current interpreter values as upload payloads, padded to 16 bytes
+- **`Value::ZeroedArray { length: usize, zero_element: Box<Value> }`** — lazily-materialized zeroed array created by `zeroed-array`. Avoids allocating a huge `Vec`. Converted to `BufferUpload::Clear` on upload; expanded to `Value::Array` only if a CPU write to an individual element is needed.
 - **`Value::to_uniform_bytes(&self, ty: &Type) -> Vec<u8>`** — serializes a value to GPU bytes; uses `ty` for struct field ordering (walks `s.fields` in declaration order)
 
 ### Interpreter implementation notes
@@ -171,10 +175,10 @@ let name = f.abstract_ancestor.as_ref().unwrap().borrow().name.clone();
 ### `window.rs`
 - One `wgpu::ShaderModule` and one `wgpu::PipelineLayout` shared by all render and compute pipelines
 - `bind_group_layouts` stored as a field on `RenderState` (not dropped after creation) so `rebuild_bind_groups` can recreate bind groups without invalidating the pipeline layout
-- `upload_bindings`: detects when a buffer's byte size changes (dynamic arrays resized by the interpreter) → recreates the buffer → calls `rebuild_bind_groups`
+- `upload_bindings`: detects when a buffer's byte size changes → recreates the buffer → calls `rebuild_bind_groups`; handles `BufferUpload::Clear` via `encoder.clear_buffer` (efficient GPU-side zero-fill, no CPU→GPU data copy)
 - `render`: pre-creates all pipelines, dispatches all `ComputeShader` calls first (each in its own compute pass), then does one render pass for all `RenderShaders` calls
 - winit `EventLoop` is stored in a thread-local and reused across multiple `spawn-window` calls via `run_app_on_demand`
-- **Known limitation**: `binding_buffer_data` serializes and uploads *all* bindings every frame, including large GPU-written storage buffers the CPU never touches. A dirty-flag system is planned.
+- **Known limitation**: `binding_buffer_data` / `collect_dirty_uploads` serialize and upload *all* dirty bindings every frame, including large GPU-written storage buffers the CPU never touches. A dirty-flag system is planned. `ZeroedArray` bindings are exempt — they become `BufferUpload::Clear` with no CPU allocation.
 
 ## Test Structure
 

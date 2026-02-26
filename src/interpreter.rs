@@ -151,6 +151,13 @@ pub enum Value {
   Enum(Arc<str>, Box<Value>),
   Fun(Function),
   Array(Vec<Value>),
+  /// A lazily-materialized array of a fixed number of zero elements.
+  /// Created by `zeroed-array` to avoid allocating huge zero-filled Vecs.
+  /// When uploaded to the GPU the window system clears the buffer efficiently
+  /// instead of copying bytes from the CPU.
+  ZeroedArray {
+    length: usize,
+  },
   Uninitialized,
 }
 
@@ -296,9 +303,10 @@ fn apply_builtin_fn<IO: IOManager>(
     }
     "==" => {
       let values = vec![args.remove(0).0, args.remove(0).0];
-      Ok(Value::multi_map_primitive_or_vec_components(&values, |prims| {
-        Primitive::Bool(prims[0] == prims[1])
-      }))
+      Ok(Value::multi_map_primitive_or_vec_components(
+        &values,
+        |prims| Primitive::Bool(prims[0] == prims[1]),
+      ))
     }
     "not" | "!" => match args.remove(0).0.unwrap_primitive() {
       Primitive::Bool(b) => Ok(Value::Prim(Primitive::Bool(!b))),
@@ -1058,10 +1066,12 @@ fn apply_builtin_fn<IO: IOManager>(
       Ok(args[0].0.map_primitive_or_vec_components(bitcast_prim))
     }
     "array-length" => {
-      let Value::Array(arr) = &args[0].0 else {
-        panic!("array-length called on non-array")
+      let len = match &args[0].0 {
+        Value::Array(arr) => arr.len(),
+        Value::ZeroedArray { length } => *length,
+        _ => panic!("array-length called on non-array"),
       };
-      Ok(Value::Prim(Primitive::U32(arr.len() as u32)))
+      Ok(Value::Prim(Primitive::U32(len as u32)))
     }
     "dpdx" | "dpdy" | "dpdx-coarse" | "dpdy-coarse" | "dpdx-fine"
     | "dpdy-fine" => {
@@ -1404,11 +1414,11 @@ fn apply_builtin_fn<IO: IOManager>(
     // todo!() matrix access (column indexing, etc.)
     // todo!() texture functions, for now I guess these should just error
     "print" => {
-      let formatted = args
-        .get(0)
-        .map(|arg| arg.0.format_for_print(&args[0].1))
-        .unwrap_or_else(|| "()".to_string());
-      env.io.println(&formatted);
+      if let Some(arg) = args.get(0) {
+        env.io.println(&arg.0.format_for_print(&args[0].1, env)?);
+      } else {
+        env.io.println("()");
+      }
       Ok(Value::Unit)
     }
     "dispatch-render-shaders" => {
@@ -1538,7 +1548,7 @@ fn apply_builtin_fn<IO: IOManager>(
       ))
     }
     "zeroed-array" => {
-      let Type::Array(size, inner_type) = return_type else {
+      let Type::Array(size, _) = return_type else {
         panic!()
       };
       let size = if let Some(arg) = args.get(0) {
@@ -1554,19 +1564,21 @@ fn apply_builtin_fn<IO: IOManager>(
         };
         size
       };
-      Ok(Value::Array(
-        std::iter::repeat(Value::zeroed(inner_type.unwrap_known(), env)?)
-          .take(size as usize)
-          .collect(),
-      ))
+      Ok(Value::ZeroedArray {
+        length: size as usize,
+      })
     }
     _ => Err(UnimplementedBuiltin(f_name.to_string())),
   }
 }
 
 impl Value {
-  fn format_for_print(&self, t: &Type) -> String {
-    match (self, t) {
+  fn format_for_print(
+    &self,
+    t: &Type,
+    env: &EvaluationEnvironment<impl IOManager>,
+  ) -> Result<String, EvalError> {
+    Ok(match (self, t) {
       (Value::Prim(Primitive::F32(f)), _) => {
         let s = f.to_string();
         if s.contains('.') { s } else { format!("{s}.") }
@@ -1590,11 +1602,15 @@ impl Value {
             let formatted: Vec<String> = ["x", "y", "z", "w"]
               .iter()
               .filter_map(|f| fields.get(*f))
-              .map(|v| v.format_for_print(&scalar_type))
-              .collect();
-            format!("(vec{}{suffix} {})", formatted.len(), formatted.join(" "))
+              .map(|v| v.format_for_print(&scalar_type, env))
+              .collect::<Result<_, EvalError>>()?;
+            Ok(format!(
+              "(vec{}{suffix} {})",
+              formatted.len(),
+              formatted.join(" ")
+            ))
           })
-          .collect();
+          .collect::<Result<_, EvalError>>()?;
         format!("({}{suffix} {})", s.name, formatted_cols.join(" "))
       }
       (Value::Struct(fields), Type::Struct(s)) => {
@@ -1604,9 +1620,9 @@ impl Value {
           .map(|field| {
             let value = &fields[&field.name];
             let field_type = field.field_type.kind.unwrap_known();
-            value.format_for_print(&field_type)
+            value.format_for_print(&field_type, env)
           })
-          .collect();
+          .collect::<Result<_, _>>()?;
         let name = match &*s.name {
           "vec2" | "vec3" | "vec4" => {
             let suffix = match s.fields[0].field_type.kind.unwrap_known() {
@@ -1631,20 +1647,29 @@ impl Value {
           .unwrap_or(Type::Unit);
         match &variant_type {
           Type::Unit => variant.to_string(),
-          t => format!("({} {})", variant, inner.format_for_print(t)),
+          t => format!("({} {})", variant, inner.format_for_print(t, env)?),
         }
       }
       (Value::Array(items), Type::Array(_, inner_type)) => {
         let inner = inner_type.kind.unwrap_known();
         let formatted: Vec<String> = items
           .iter()
-          .map(|item| item.format_for_print(&inner))
-          .collect();
+          .map(|item| item.format_for_print(&inner, env))
+          .collect::<Result<_, _>>()?;
         format!("[{}]", formatted.join(" "))
+      }
+      (Value::ZeroedArray { length }, Type::Array(_, inner_type)) => {
+        let inner = inner_type.kind.unwrap_known();
+        let zero_val = Value::zeroed(inner.clone(), env)?;
+        let items: Vec<String> =
+          std::iter::repeat(zero_val.format_for_print(&inner, env))
+            .take(*length)
+            .collect::<Result<_, _>>()?;
+        format!("[{}]", items.join(" "))
       }
       (Value::Unit, _) => "()".to_string(),
       _ => format!("{:?}", self),
-    }
+    })
   }
 
   fn zeroed(
@@ -1747,6 +1772,16 @@ impl Value {
         }
         bytes
       }
+      Value::ZeroedArray { length } => {
+        let Type::Array(_, inner_type) = &ty else {
+          panic!()
+        };
+        let elem_u32s = inner_type
+          .unwrap_known()
+          .data_size_in_u32s(&SourceTrace::empty())
+          .unwrap_or(0);
+        vec![0u8; length * elem_u32s * 4]
+      }
       _ => vec![],
     }
   }
@@ -1803,6 +1838,15 @@ impl From<Primitive> for Value {
   }
 }
 
+/// Describes what data to write into a GPU buffer binding before a dispatch.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BufferUpload {
+  /// Upload the given bytes verbatim.
+  Data(Vec<u8>),
+  /// Zero-fill `byte_count` bytes on the GPU side (no CPU allocation needed).
+  Clear { byte_count: u64 },
+}
+
 /// Internal frame-level GPU command, used by StdoutIO to pass commands to
 /// the wgpu renderer in window.rs.
 #[derive(Debug, Clone, PartialEq)]
@@ -1811,12 +1855,12 @@ pub enum WindowEvent {
     vert: String,
     frag: String,
     vert_count: u32,
-    pre_upload: Vec<((u8, u8), Vec<u8>)>,
+    pre_upload: Vec<((u8, u8), BufferUpload)>,
   },
   ComputeShader {
     entry: String,
     workgroup_count: (u32, u32, u32),
-    pre_upload: Vec<((u8, u8), Vec<u8>)>,
+    pre_upload: Vec<((u8, u8), BufferUpload)>,
   },
 }
 
@@ -1865,13 +1909,13 @@ pub trait IOManager: Sized {
     vert: &str,
     frag: &str,
     vert_count: u32,
-    pre_upload: Vec<((u8, u8), Vec<u8>)>,
+    pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) -> Result<(), EvalError>;
   fn record_compute(
     &mut self,
     entry: &str,
     workgroup_count: (u32, u32, u32),
-    pre_upload: Vec<((u8, u8), Vec<u8>)>,
+    pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) -> Result<(), EvalError>;
   fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent>;
   fn record_close_window(&mut self);
@@ -1931,7 +1975,7 @@ impl IOManager for StdoutIO {
     vert: &str,
     frag: &str,
     vert_count: u32,
-    pre_upload: Vec<((u8, u8), Vec<u8>)>,
+    pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) -> Result<(), EvalError> {
     self.frame_draw_calls.push(WindowEvent::RenderShaders {
       vert: vert.to_string(),
@@ -1946,7 +1990,7 @@ impl IOManager for StdoutIO {
     &mut self,
     entry: &str,
     workgroup_count: (u32, u32, u32),
-    pre_upload: Vec<((u8, u8), Vec<u8>)>,
+    pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) -> Result<(), EvalError> {
     #[cfg(feature = "window")]
     if let Some(gpu) = &self.gpu {
@@ -2048,7 +2092,7 @@ impl IOManager for StringIO {
     vert: &str,
     frag: &str,
     vert_count: u32,
-    _pre_upload: Vec<((u8, u8), Vec<u8>)>,
+    _pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) -> Result<(), EvalError> {
     self.events.push(IOEvent::DispatchShaders {
       vert: vert.to_string(),
@@ -2062,7 +2106,7 @@ impl IOManager for StringIO {
     &mut self,
     entry: &str,
     workgroup_count: (u32, u32, u32),
-    _pre_upload: Vec<((u8, u8), Vec<u8>)>,
+    _pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) -> Result<(), EvalError> {
     self.events.push(IOEvent::DispatchComputeShader {
       entry: entry.to_string(),
@@ -2113,7 +2157,7 @@ impl IOManager for StringIO {
 }
 
 pub struct EvaluationEnvironment<IO: IOManager> {
-  bindings: HashMap<Arc<str>, Vec<Value>>,
+  bindings: HashMap<Arc<str>, Vec<(Value, Type)>>,
   structs: HashMap<Arc<str>, AbstractStruct>,
   wgsl: String,
   pub io: IO,
@@ -2176,7 +2220,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         None => Value::zeroed(var.var_type.clone(), &env)
           .unwrap_or(Value::Uninitialized),
       };
-      env.bind(var.name.clone(), value);
+      env.bind(var.name.clone(), value, var.var_type.clone());
     }
     for e in program.typedefs.enums.iter() {
       for v in e.variants.iter() {
@@ -2184,6 +2228,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           env.bind(
             v.name.clone(),
             Value::Enum(v.name.clone(), Value::Unit.into()),
+            Type::Unit, // enum unit constructors are never ZeroedArray
           );
         }
       }
@@ -2225,19 +2270,40 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
 
   /// Returns the current byte representation of each GPU-bound variable,
   /// padded to a 16-byte multiple.
-  pub fn binding_buffer_data(&self) -> Vec<((u8, u8), Vec<u8>)> {
+  pub fn binding_buffer_data(&self) -> Vec<((u8, u8), BufferUpload)> {
     self
       .binding_vars
       .iter()
       .map(|(gb, name, ty, _)| {
-        let value = self.bindings.get(name).and_then(|v| v.last());
-        let mut bytes = value
-          .map(|v| v.to_uniform_bytes(ty))
-          .unwrap_or(vec![0u8; 4]);
-        while bytes.len() % 16 != 0 {
-          bytes.push(0);
-        }
-        ((gb.group, gb.binding), bytes)
+        let value = self
+          .bindings
+          .get(name)
+          .and_then(|v| v.last())
+          .map(|(v, _)| v);
+        let upload = match value {
+          Some(Value::ZeroedArray { length }) => {
+            let Type::Array(_, inner_type_info) = ty else {
+              panic!()
+            };
+            let inner_ty = inner_type_info.unwrap_known();
+            let elem_u32s = inner_ty
+              .data_size_in_u32s(&SourceTrace::empty())
+              .unwrap_or(1);
+            let raw_bytes = *length as u64 * elem_u32s as u64 * 4;
+            let padded = ((raw_bytes + 15) / 16) * 16;
+            BufferUpload::Clear { byte_count: padded }
+          }
+          _ => {
+            let mut bytes = value
+              .map(|v| v.to_uniform_bytes(ty))
+              .unwrap_or(vec![0u8; 4]);
+            while bytes.len() % 16 != 0 {
+              bytes.push(0);
+            }
+            BufferUpload::Data(bytes)
+          }
+        };
+        ((gb.group, gb.binding), upload)
       })
       .collect()
   }
@@ -2252,7 +2318,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   fn collect_dirty_uploads(
     &mut self,
     names: &[Arc<str>],
-  ) -> Vec<((u8, u8), Vec<u8>)> {
+  ) -> Vec<((u8, u8), BufferUpload)> {
     let mut result = vec![];
     for (gb, name, ty, _) in &self.binding_vars {
       if !names.contains(name) {
@@ -2262,14 +2328,35 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       {
         continue;
       }
-      let value = self.bindings.get(name).and_then(|v| v.last());
-      let mut bytes = value
-        .map(|v| v.to_uniform_bytes(ty))
-        .unwrap_or(vec![0u8; 4]);
-      while bytes.len() % 16 != 0 {
-        bytes.push(0);
-      }
-      result.push(((gb.group, gb.binding), bytes));
+      let value = self
+        .bindings
+        .get(name)
+        .and_then(|v| v.last())
+        .map(|(v, _)| v);
+      let upload = match value {
+        Some(Value::ZeroedArray { length }) => {
+          let Type::Array(_, inner_type_info) = ty else {
+            panic!()
+          };
+          let inner_ty = inner_type_info.unwrap_known();
+          let elem_u32s = inner_ty
+            .data_size_in_u32s(&SourceTrace::empty())
+            .unwrap_or(1);
+          let raw_bytes = *length as u64 * elem_u32s as u64 * 4;
+          let padded = ((raw_bytes + 15) / 16) * 16;
+          BufferUpload::Clear { byte_count: padded }
+        }
+        _ => {
+          let mut bytes = value
+            .map(|v| v.to_uniform_bytes(ty))
+            .unwrap_or(vec![0u8; 4]);
+          while bytes.len() % 16 != 0 {
+            bytes.push(0);
+          }
+          BufferUpload::Data(bytes)
+        }
+      };
+      result.push(((gb.group, gb.binding), upload));
       self
         .buffer_states
         .insert(name.clone(), SharedBufferState::Synced);
@@ -2321,7 +2408,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         let value = Value::from_gpu_bytes(&bytes, &ty);
         if let Some(stack) = self.bindings.get_mut(&name) {
           if let Some(slot) = stack.last_mut() {
-            *slot = value;
+            slot.0 = value;
           }
         }
         self
@@ -2331,11 +2418,11 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     }
   }
 
-  fn bind(&mut self, name: Arc<str>, value: Value) {
+  fn bind(&mut self, name: Arc<str>, value: Value, ty: Type) {
     if let Some(bindings) = self.bindings.get_mut(&name) {
-      bindings.push(value);
+      bindings.push((value, ty));
     } else {
-      self.bindings.insert(name, vec![value]);
+      self.bindings.insert(name, vec![(value, ty)]);
     }
   }
   fn unbind(&mut self, name: &Arc<str>) {
@@ -2350,7 +2437,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     self
       .bindings
       .get(name)
-      .map(|values| values.last().unwrap())
+      .map(|values| &values.last().unwrap().0)
       .ok_or(UnboundName(name.clone()))
   }
 }
@@ -2499,8 +2586,11 @@ pub fn eval(
             if arg_names.len() != arg_values.len() {
               return Err(WrongArity.into());
             }
-            for (name, value) in arg_names.iter().zip(arg_values.into_iter()) {
-              env.bind(name.clone(), value);
+            for (name, (value, ty)) in arg_names
+              .iter()
+              .zip(arg_values.into_iter().zip(arg_types.into_iter()))
+            {
+              env.bind(name.clone(), value, ty);
             }
             let value = match eval(*body, env) {
               Ok(value) => Ok(value),
@@ -2552,12 +2642,33 @@ pub fn eval(
               _ => panic!(),
             }
           };
-          let mut accessed_value = env
+          // Pre-expand any ZeroedArray at the top-level binding before taking a
+          // mutable reference. Value::zeroed needs an immutable &env borrow,
+          // which would conflict with &mut env.bindings during traversal.
+          if let Some((Value::ZeroedArray { length }, Type::Array(_, inner))) =
+            env.bindings.get(&*accessed_name).and_then(|s| s.last())
+          {
+            let length = *length;
+            let elem_ty = inner.unwrap_known();
+            let zero_val = Value::zeroed(elem_ty, env)?;
+            take(
+              &mut env
+                .bindings
+                .get_mut(&*accessed_name)
+                .unwrap()
+                .last_mut()
+                .unwrap()
+                .0,
+              |_| Value::Array(vec![zero_val; length]),
+            );
+          }
+          let mut accessed_value = &mut env
             .bindings
             .get_mut(&*accessed_name)
             .unwrap()
             .last_mut()
-            .unwrap();
+            .unwrap()
+            .0;
           let mut active_swizzle_fields: Option<Vec<usize>> = None;
           for access in accesses.into_iter().rev() {
             match access {
@@ -2631,15 +2742,13 @@ pub fn eval(
         env.mark_cpu_written(&written_global_variable_names);
         return_value
       }
-      Type::Array(_, _) => {
+      Type::Array(_, inner_type) => {
         if args.len() != 1 {
           panic!();
         }
+        let elem_type = inner_type.unwrap_known();
         let array = eval(*f, env)?;
         let index_value = eval(args.remove(0), env)?;
-        let Value::Array(array_values) = array else {
-          panic!()
-        };
         let Value::Prim(primitive) = index_value else {
           panic!();
         };
@@ -2654,10 +2763,22 @@ pub fn eval(
           }
           _ => panic!(),
         };
-        if u < array_values.len() {
-          array_values[u].clone()
-        } else {
-          return Err(ArrayIndexOutOfBounds(u, array_values.len()).into());
+        match array {
+          Value::Array(array_values) => {
+            if u < array_values.len() {
+              array_values[u].clone()
+            } else {
+              return Err(ArrayIndexOutOfBounds(u, array_values.len()).into());
+            }
+          }
+          Value::ZeroedArray { length } => {
+            if u < length {
+              Value::zeroed(elem_type, env)?
+            } else {
+              return Err(ArrayIndexOutOfBounds(u, length).into());
+            }
+          }
+          _ => panic!(),
         }
       }
       _ => panic!(),
@@ -2702,8 +2823,9 @@ pub fn eval(
       let names: Vec<Arc<str>> =
         items.iter().map(|(name, _, _, _)| name.clone()).collect();
       for (name, _, _, exp) in items {
+        let ty = exp.data.kind.unwrap_known();
         let value = eval(exp, env)?;
-        env.bind(name, value);
+        env.bind(name, value, ty);
       }
       let value = eval(*exp, env)?;
       for name in names {
@@ -2736,9 +2858,13 @@ pub fn eval(
       body_expression,
       ..
     } => {
+      let initial_ty = increment_variable_initial_value_expression
+        .data
+        .kind
+        .unwrap_known();
       let initial_value =
         eval(*increment_variable_initial_value_expression, env)?;
-      env.bind(increment_variable_name.0.clone(), initial_value);
+      env.bind(increment_variable_name.0.clone(), initial_value, initial_ty);
       loop {
         let should_continue =
           eval(*continue_condition_expression.clone(), env)?;
