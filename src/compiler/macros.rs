@@ -1,16 +1,16 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::{compiler::program::NameContext, parse::EaslTree};
 
 use super::error::{CompileError, CompileErrorKind, ErrorLog, SourceTrace};
 
 pub struct Macro {
-  pub reserved_names: Vec<Rc<str>>,
+  pub reserved_names: Vec<Arc<str>>,
   pub rewrite: Box<
     dyn Fn(
       &EaslTree,
       &mut NameContext,
-    ) -> Option<Result<EaslTree, (SourceTrace, Rc<str>)>>,
+    ) -> Option<Result<EaslTree, (SourceTrace, Arc<str>)>>,
   >,
 }
 

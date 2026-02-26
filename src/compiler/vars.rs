@@ -1,4 +1,6 @@
-use std::{fmt::Display, rc::Rc};
+use std::fmt::Display;
+
+use std::sync::Arc;
 
 use crate::{
   compiler::{
@@ -107,7 +109,7 @@ pub enum TopLevelVariableKind {
 
 #[derive(Debug, Clone)]
 pub struct TopLevelVar {
-  pub name: Rc<str>,
+  pub name: Arc<str>,
   pub kind: TopLevelVariableKind,
   pub var_type: Type,
   pub value: Option<TypedExp>,

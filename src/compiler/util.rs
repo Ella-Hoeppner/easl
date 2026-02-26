@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use fsexp::syntax::EncloserOrOperator;
 use unicode_segmentation::UnicodeSegmentation;
@@ -14,7 +14,7 @@ pub fn indent(s: String) -> String {
   s.replace("\n", "\n  ")
 }
 
-pub fn read_leaf(ast: EaslTree) -> CompileResult<Rc<str>> {
+pub fn read_leaf(ast: EaslTree) -> CompileResult<Arc<str>> {
   if let EaslTree::Leaf(_, word) = ast {
     Ok(word.into())
   } else {
@@ -24,7 +24,7 @@ pub fn read_leaf(ast: EaslTree) -> CompileResult<Rc<str>> {
 
 pub fn read_type_annotated_name(
   ast: EaslTree,
-) -> CompileResult<(Rc<str>, EaslTree)> {
+) -> CompileResult<(Arc<str>, EaslTree)> {
   if let EaslTree::Inner(
     (position, EncloserOrOperator::Operator(Operator::TypeAscription)),
     mut children,
@@ -42,7 +42,7 @@ pub fn read_type_annotated_name(
   }
 }
 
-pub fn compile_word(word: Rc<str>) -> String {
+pub fn compile_word(word: Arc<str>) -> String {
   let compiled_word = match &*word {
     "vec2<bool>"
     | "vec3<bool>"
@@ -79,7 +79,7 @@ pub fn compile_word(word: Rc<str>) -> String {
   }
 }
 
-pub fn is_valid_name(word: &Rc<str>) -> bool {
+pub fn is_valid_name(word: &Arc<str>) -> bool {
   match &**word {
     "defn" | "def" | "struct" | "enum" | "let" | "return" | "if" | "when"
     | "match" | "break" | "continue" => false,

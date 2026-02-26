@@ -1,8 +1,6 @@
-use std::{
-  cell::RefCell,
-  collections::{HashMap, HashSet},
-  rc::Rc,
-};
+use std::collections::{HashMap, HashSet};
+
+use std::sync::{Arc, RwLock};
 
 use take_mut::take;
 
@@ -59,22 +57,44 @@ impl FunctionArgumentAnnotation {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TopLevelFunction {
   pub name_source_trace: SourceTrace,
-  pub arg_names: Vec<(Rc<str>, SourceTrace)>,
+  pub arg_names: Vec<(Arc<str>, SourceTrace)>,
   pub arg_annotations: Vec<FunctionArgumentAnnotation>,
   pub return_attributes: IOAttributes,
   pub entry_point: Option<EntryPoint>,
   pub expression: TypedExp,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum FunctionImplementationKind {
   Builtin {
     effect_type: EffectType,
     target_configuration: FunctionTargetConfiguration,
   },
   StructConstructor,
-  EnumConstructor(Rc<str>),
-  Composite(Rc<RefCell<TopLevelFunction>>),
+  EnumConstructor(Arc<str>),
+  Composite(Arc<RwLock<TopLevelFunction>>),
+}
+impl PartialEq for FunctionImplementationKind {
+  fn eq(&self, other: &Self) -> bool {
+    match (self, other) {
+      (
+        FunctionImplementationKind::Builtin {
+          effect_type: a_et,
+          target_configuration: a_tc,
+        },
+        FunctionImplementationKind::Builtin {
+          effect_type: b_et,
+          target_configuration: b_tc,
+        },
+      ) => a_et == b_et && a_tc == b_tc,
+      (FunctionImplementationKind::StructConstructor, FunctionImplementationKind::StructConstructor) => true,
+      (FunctionImplementationKind::EnumConstructor(a), FunctionImplementationKind::EnumConstructor(b)) => a == b,
+      (FunctionImplementationKind::Composite(a), FunctionImplementationKind::Composite(b)) => {
+        *a.read().unwrap() == *b.read().unwrap()
+      }
+      _ => false,
+    }
+  }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -98,8 +118,8 @@ pub enum FunctionTargetConfiguration {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractFunctionSignature {
-  pub name: Rc<str>,
-  pub generic_args: Vec<(Rc<str>, GenericArgument, SourceTrace)>,
+  pub name: Arc<str>,
+  pub generic_args: Vec<(Arc<str>, GenericArgument, SourceTrace)>,
   pub arg_types: Vec<(AbstractType, Ownership)>,
   pub return_type: AbstractType,
   pub implementation: FunctionImplementationKind,
@@ -170,7 +190,7 @@ impl AbstractFunctionSignature {
     if let FunctionImplementationKind::Composite(implementation) =
       &self.implementation
     {
-      let mut implementation = implementation.borrow_mut();
+      let mut implementation = implementation.write().unwrap();
       loop {
         let mut changed = false;
         for i in 0..arg_types.len() {
@@ -207,7 +227,7 @@ impl AbstractFunctionSignature {
       .get_monomorphized_name(self.name.clone(), vec!["Representative".into()]);
     let source_trace = match &self.implementation {
       FunctionImplementationKind::Composite(f) => {
-        f.borrow().name_source_trace.clone()
+        f.read().unwrap().name_source_trace.clone()
       }
       _ => SourceTrace::empty(),
     };
@@ -244,9 +264,9 @@ impl AbstractFunctionSignature {
       return None;
     };
     let fn_and_generic_names: Option<(
-      Rc<str>,
+      Arc<str>,
       SourceTrace,
-      Vec<(Rc<str>, GenericArgument, SourceTrace)>,
+      Vec<(Arc<str>, GenericArgument, SourceTrace)>,
     )> = match name_ast {
       EaslTree::Leaf(pos, name) => Some((name.into(), pos.into(), vec![])),
       EaslTree::Inner((_, Encloser(Parens)), subtrees) => {
@@ -423,7 +443,7 @@ impl AbstractFunctionSignature {
                       IOAttributes::empty(return_source)
                     };
                   let implementation = FunctionImplementationKind::Composite(
-                    Rc::new(RefCell::new(TopLevelFunction {
+                    Arc::new(RwLock::new(TopLevelFunction {
                       name_source_trace: fn_name_source,
                       arg_names,
                       arg_annotations,
@@ -482,7 +502,7 @@ impl AbstractFunctionSignature {
     self
       .return_type
       .track_generic_names(&mut used_generic_names);
-    let generic_name_order: Vec<Rc<str>> = {
+    let generic_name_order: Vec<Arc<str>> = {
       let mut duplicate_generic_names = HashSet::new();
       used_generic_names
         .into_iter()
@@ -533,9 +553,9 @@ impl AbstractFunctionSignature {
   pub fn arg_names(
     &self,
     source_trace: &SourceTrace,
-  ) -> CompileResult<Vec<(Rc<str>, SourceTrace)>> {
+  ) -> CompileResult<Vec<(Arc<str>, SourceTrace)>> {
     if let FunctionImplementationKind::Composite(f) = &self.implementation {
-      Ok(f.borrow().arg_names.clone())
+      Ok(f.read().unwrap().arg_names.clone())
     } else {
       err(ExpectedCompositeFunction, source_trace.clone())
     }
@@ -545,7 +565,7 @@ impl AbstractFunctionSignature {
     source_trace: SourceTrace,
   ) -> CompileResult<Vec<FunctionArgumentAnnotation>> {
     if let FunctionImplementationKind::Composite(f) = &self.implementation {
-      Ok(f.borrow().arg_annotations.clone())
+      Ok(f.read().unwrap().arg_annotations.clone())
     } else {
       err(ExpectedCompositeFunction, source_trace)
     }
@@ -555,7 +575,7 @@ impl AbstractFunctionSignature {
     source_trace: SourceTrace,
   ) -> CompileResult<TopLevelFunction> {
     if let FunctionImplementationKind::Composite(f) = &self.implementation {
-      Ok(f.borrow().clone())
+      Ok(f.read().unwrap().clone())
     } else {
       err(ExpectedCompositeFunction, source_trace)
     }
@@ -600,7 +620,7 @@ impl AbstractFunctionSignature {
           } else {
             Ok(
               generic_type
-                .monomorphized_name(&mut new_program.names.borrow_mut())
+                .monomorphized_name(&mut new_program.names.write().unwrap())
                 .into(),
             )
           }
@@ -609,10 +629,10 @@ impl AbstractFunctionSignature {
           Ok(format!("{}", generic_constant_bindings.get(arg).unwrap()).into())
         }
       })
-      .collect::<CompileResult<Vec<Rc<str>>>>()?;
+      .collect::<CompileResult<Vec<Arc<str>>>>()?;
     monomorphized.name = new_program
       .names
-      .borrow_mut()
+      .write().unwrap()
       .get_monomorphized_name(self.name.clone(), generic_arg_names);
     monomorphized.generic_args = vec![];
     for t in monomorphized
@@ -633,14 +653,14 @@ impl AbstractFunctionSignature {
     if let FunctionImplementationKind::Composite(monomorphized_fn) =
       &mut monomorphized.implementation
     {
-      let mut new_fn = monomorphized_fn.borrow().clone();
-      let replacement_pairs: HashMap<Rc<str>, Type> = generic_type_bindings
+      let mut new_fn = monomorphized_fn.read().unwrap().clone();
+      let replacement_pairs: HashMap<Arc<str>, Type> = generic_type_bindings
         .iter()
         .map(|(x, y)| (x.clone(), y.clone()))
         .collect();
       new_fn.expression.replace_skolems(&replacement_pairs);
       new_fn.expression.monomorphize(base_program, new_program)?;
-      std::mem::swap(monomorphized_fn, &mut Rc::new(RefCell::new(new_fn)));
+      std::mem::swap(monomorphized_fn, &mut Arc::new(RwLock::new(new_fn)));
     } else {
       panic!("attempted to monomorphize non-composite abstract function")
     }
@@ -648,15 +668,15 @@ impl AbstractFunctionSignature {
   }
   pub fn generate_higher_order_argument_inlined_version(
     &self,
-    f_name: Rc<str>,
+    f_name: Arc<str>,
     argument_index: usize,
-    signature: Rc<RefCell<AbstractFunctionSignature>>,
+    signature: Arc<RwLock<AbstractFunctionSignature>>,
     ctx: &mut Program,
     source_trace: &SourceTrace,
   ) -> CompileResult<Self> {
     let mut implementation = self.implementation(source_trace.clone())?;
     let arg_name = &self.arg_names(source_trace)?[argument_index].0;
-    let inlined_fn_name = &signature.borrow().name;
+    let inlined_fn_name = &signature.read().unwrap().name;
     if let TypeState::Known(Type::Function(f)) =
       &mut implementation.expression.data.kind
       && let TypeState::Known(Type::Function(f_arg)) =
@@ -674,13 +694,13 @@ impl AbstractFunctionSignature {
             let ExpKind::Name(name) = &mut f_name.kind else {
               panic!()
             };
-            if let Some(captured_scope) = &signature.borrow().captured_scope
+            if let Some(captured_scope) = &signature.read().unwrap().captured_scope
               && name == arg_name
             {
               f_name.data.as_known_mut(|f_type| {
                 let Type::Function(f) = f_type else { panic!() };
                 let new_arg_type =
-                  AbstractType::AbstractStruct(Rc::new(captured_scope.clone()))
+                  AbstractType::AbstractStruct(Arc::new(captured_scope.clone()))
                     .concretize(
                       &vec![],
                       &ctx.typedefs,
@@ -730,13 +750,13 @@ impl AbstractFunctionSignature {
     Ok(AbstractFunctionSignature {
       name: ctx
         .names
-        .borrow_mut()
+        .write().unwrap()
         .get_monomorphized_name(f_name.clone(), vec![inlined_fn_name.clone()]),
       generic_args: self.generic_args.clone(),
       arg_types,
       return_type: self.return_type.clone(),
-      implementation: FunctionImplementationKind::Composite(Rc::new(
-        RefCell::new(implementation),
+      implementation: FunctionImplementationKind::Composite(Arc::new(
+        RwLock::new(implementation),
       )),
       associative: self.associative,
       captured_scope: self.captured_scope.clone(),
@@ -744,14 +764,14 @@ impl AbstractFunctionSignature {
     })
   }
   pub fn concretize(
-    f: Rc<RefCell<Self>>,
+    f: Arc<RwLock<Self>>,
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
   ) -> CompileResult<FunctionSignature> {
-    let f_borrowed = f.borrow();
+    let f_borrowed = f.read().unwrap();
     let (generic_variables, generic_constraints): (
-      HashMap<Rc<str>, ExpTypeInfo>,
-      HashMap<Rc<str>, Vec<TypeConstraint>>,
+      HashMap<Arc<str>, ExpTypeInfo>,
+      HashMap<Arc<str>, Vec<TypeConstraint>>,
     ) = f_borrowed
       .generic_args
       .iter()
@@ -766,7 +786,7 @@ impl AbstractFunctionSignature {
         }
       })
       .collect();
-    let generic_constants: HashMap<Rc<str>, ConstGenericValue> = f_borrowed
+    let generic_constants: HashMap<Arc<str>, ConstGenericValue> = f_borrowed
       .generic_args
       .iter()
       .filter_map(|(name, generic_arg, _)| {
@@ -902,7 +922,7 @@ impl AbstractFunctionSignature {
 
 #[derive(Debug, Clone)]
 pub struct FunctionSignature {
-  pub abstract_ancestor: Option<Rc<RefCell<AbstractFunctionSignature>>>,
+  pub abstract_ancestor: Option<Arc<RwLock<AbstractFunctionSignature>>>,
   pub args: Vec<(Variable, Vec<TypeConstraint>)>,
   pub return_type: ExpTypeInfo,
 }
@@ -931,7 +951,7 @@ impl FunctionSignature {
   pub fn are_args_compatible(&self, arg_types: &Vec<TypeState>) -> bool {
     if arg_types.len() != self.args.len() {
       if let Some(ancestor) = &self.abstract_ancestor {
-        if ancestor.borrow().associative {
+        if ancestor.read().unwrap().associative {
           if arg_types.len() == 0 {
             return false;
           }
@@ -987,7 +1007,7 @@ impl FunctionSignature {
       any_arg_changed
     } else {
       if let Some(ancestor) = &self.abstract_ancestor {
-        if ancestor.borrow().associative {
+        if ancestor.read().unwrap().associative {
           if args.len() != 0 {
             let arg_type = &mut self.args.get_mut(0).unwrap().0.var_type;
             let mut any_arg_changed = false;
@@ -1007,17 +1027,17 @@ impl FunctionSignature {
       false
     }
   }
-  pub fn name(&self) -> Option<Rc<str>> {
+  pub fn name(&self) -> Option<Arc<str>> {
     self
       .abstract_ancestor
       .as_ref()
-      .map(|abstract_ancestor| abstract_ancestor.borrow().name.clone())
+      .map(|abstract_ancestor| abstract_ancestor.read().unwrap().name.clone())
   }
   pub fn effects(&self) -> EffectType {
     if let Some(abstract_ancestor) = &self.abstract_ancestor {
-      match &abstract_ancestor.borrow().implementation {
+      match &abstract_ancestor.read().unwrap().implementation {
         FunctionImplementationKind::Composite(f) => {
-          return f.borrow().effects();
+          return f.read().unwrap().effects();
         }
         FunctionImplementationKind::Builtin { effect_type, .. } => {
           return effect_type.clone();
@@ -1039,7 +1059,7 @@ impl FunctionSignature {
 }
 
 pub struct BuiltInFunction {
-  pub name: Rc<str>,
+  pub name: Arc<str>,
   pub signature: AbstractFunctionSignature,
 }
 

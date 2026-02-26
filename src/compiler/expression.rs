@@ -1,10 +1,8 @@
 use core::fmt::Debug;
 use fsexp::syntax::EncloserOrOperator;
-use std::{
-  cell::RefCell,
-  collections::{HashMap, HashSet},
-  rc::Rc,
-};
+use std::collections::{HashMap, HashSet};
+
+use std::sync::{Arc, RwLock};
 use take_mut::take;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -184,7 +182,7 @@ impl SwizzleField {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Accessor {
-  Field(Rc<str>),
+  Field(Arc<str>),
   Swizzle(Vec<SwizzleField>),
 }
 
@@ -265,7 +263,7 @@ pub fn swizzle_accessed_possibilities(
 }
 
 impl Accessor {
-  pub fn new(name: Rc<str>) -> Self {
+  pub fn new(name: Arc<str>) -> Self {
     let chars: Vec<char> = name.chars().collect();
     (chars.len() >= 2 && chars.len() <= 4)
       .then(|| {
@@ -285,7 +283,7 @@ impl Accessor {
       .map(|indeces| Self::Swizzle(indeces))
       .unwrap_or(Accessor::Field(name))
   }
-  pub fn compile(self) -> Rc<str> {
+  pub fn compile(self) -> Arc<str> {
     match self {
       Accessor::Field(field_name) => {
         format!(".{}", compile_word(field_name)).into()
@@ -307,20 +305,20 @@ impl Accessor {
 pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Wildcard,
   Unit,
-  Name(Rc<str>),
+  Name(Arc<str>),
   NumberLiteral(Number),
   BooleanLiteral(bool),
-  Function(Vec<(Rc<str>, SourceTrace)>, Box<Exp<D>>),
+  Function(Vec<(Arc<str>, SourceTrace)>, Box<Exp<D>>),
   Application(Box<Exp<D>>, Vec<Exp<D>>),
   Access(Accessor, Box<Exp<D>>),
   Let(
-    Vec<(Rc<str>, SourceTrace, VariableKind, Exp<D>)>,
+    Vec<(Arc<str>, SourceTrace, VariableKind, Exp<D>)>,
     Box<Exp<D>>,
   ),
   Match(Box<Exp<D>>, Vec<(Exp<D>, Exp<D>)>),
   Block(Vec<Exp<D>>),
   ForLoop {
-    increment_variable_name: (Rc<str>, SourceTrace),
+    increment_variable_name: (Arc<str>, SourceTrace),
     increment_variable_type: TypeState,
     increment_variable_initial_value_expression: Box<Exp<D>>,
     continue_condition_expression: Box<Exp<D>>,
@@ -391,11 +389,11 @@ pub type TypedExp = Exp<ExpTypeInfo>;
 pub fn arg_list_and_return_type_from_easl_tree(
   tree: EaslTree,
   typedefs: &TypeDefs,
-  skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
+  skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
   errors: &mut ErrorLog,
 ) -> Option<(
   SourceTrace,
-  Vec<(Rc<str>, SourceTrace)>,
+  Vec<(Arc<str>, SourceTrace)>,
   Vec<Option<AbstractType>>,
   Vec<FunctionArgumentAnnotation>,
   Option<(AbstractType, SourceTrace, Option<Annotation>)>,
@@ -501,7 +499,7 @@ pub fn arg_list_and_return_type_from_easl_tree(
       })
       .collect::<CompileResult<(
         (Vec<Option<AbstractType>>, Vec<FunctionArgumentAnnotation>),
-        Vec<(Rc<str>, SourceTrace)>,
+        Vec<(Arc<str>, SourceTrace)>,
       )>>() {
       Ok(x) => x,
       Err(e) => {
@@ -536,10 +534,10 @@ impl TypedExp {
     source_trace: SourceTrace,
     body_trees: Vec<EaslTree>,
     return_type: ExpTypeInfo,
-    arg_names: Vec<(Rc<str>, SourceTrace)>,
+    arg_names: Vec<(Arc<str>, SourceTrace)>,
     args: Vec<(Variable, Vec<TypeConstraint>)>,
     typedefs: &TypeDefs,
-    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
+    skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
   ) -> CompileResult<Self> {
     let mut body_exps = body_trees
       .into_iter()
@@ -575,12 +573,12 @@ impl TypedExp {
   pub fn try_from_easl_tree(
     tree: EaslTree,
     typedefs: &TypeDefs,
-    skolems: &Vec<(Rc<str>, Vec<TypeConstraint>)>,
+    skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
     ctx: SyntaxTreeContext,
   ) -> CompileResult<Self> {
     Ok(match tree {
       EaslTree::Leaf(position, leaf) => {
-        let leaf: Rc<str> = leaf.into();
+        let leaf: Arc<str> = leaf.into();
         let source_trace: SourceTrace = position.into();
         if &*leaf == "true" || &*leaf == "false" {
           Exp {
@@ -726,8 +724,8 @@ impl TypedExp {
                               None => TypeState::Unknown,
                             };
                           let concrete_return_type: ExpTypeInfo =
-                            TypeState::UnificationVariable(Rc::new(
-                              RefCell::new(concrete_return_type),
+                            TypeState::UnificationVariable(Arc::new(
+                              RwLock::new(concrete_return_type),
                             ))
                             .into();
                           Some(Exp {
@@ -1704,7 +1702,7 @@ impl TypedExp {
               target_configuration:
                 FunctionTargetConfiguration::SpecialCased(special_case),
               ..
-            } = abstract_ancestor.borrow().implementation
+            } = abstract_ancestor.read().unwrap().implementation
           {
             match special_case {
               SpecialCasedBuiltinFunction::Print => match target {
@@ -1736,7 +1734,7 @@ impl TypedExp {
             .into_iter()
             .zip(if let Some(ancestor) = signature.abstract_ancestor {
               ancestor
-                .borrow()
+                .read().unwrap()
                 .arg_types
                 .iter()
                 .map(|(_, ownership)| *ownership)
@@ -2005,7 +2003,7 @@ impl TypedExp {
                       let f_abstract_ancestor = f.abstract_ancestor.clone().unwrap();
                       let FunctionImplementationKind::EnumConstructor(
                         variant_name,
-                      ) = &f_abstract_ancestor.borrow().implementation
+                      ) = &f_abstract_ancestor.read().unwrap().implementation
                       else {
                         panic!("invalid pattern type in enum match block")
                       };
@@ -2409,11 +2407,11 @@ impl TypedExp {
   fn try_deconstruct_enum_pattern_mut<'a>(
     f: &'a mut Box<TypedExp>,
     args: &'a mut Vec<TypedExp>,
-  ) -> Option<(&'a mut Box<FunctionSignature>, &'a mut TypedExp, Rc<str>)> {
+  ) -> Option<(&'a mut Box<FunctionSignature>, &'a mut TypedExp, Arc<str>)> {
     if let TypeState::Known(Type::Function(f)) = &mut *f.data
       && let Some(abstract_f) = &f.abstract_ancestor
       && matches!(
-        &abstract_f.borrow().implementation,
+        &abstract_f.read().unwrap().implementation,
         FunctionImplementationKind::EnumConstructor(_)
       )
       && args.len() == 1
@@ -2428,11 +2426,11 @@ impl TypedExp {
   pub fn try_deconstruct_enum_pattern<'a>(
     f: &'a Box<TypedExp>,
     args: &'a Vec<TypedExp>,
-  ) -> Option<(&'a Box<FunctionSignature>, &'a TypedExp, Rc<str>)> {
+  ) -> Option<(&'a Box<FunctionSignature>, &'a TypedExp, Arc<str>)> {
     if let TypeState::Known(Type::Function(f)) = &*f.data
       && let Some(abstract_f) = &f.abstract_ancestor
       && let FunctionImplementationKind::EnumConstructor(_) =
-        &abstract_f.borrow().implementation
+        &abstract_f.read().unwrap().implementation
       && args.len() == 1
       && let arg = &args[0]
       && let ExpKind::Name(inner_value_name) = &arg.kind
@@ -2518,7 +2516,7 @@ impl TypedExp {
           match f_type {
             Type::Function(signature) => {
               let (name, arg_count, arg_type_states, return_type_state): (
-                Option<Rc<str>>,
+                Option<Arc<str>>,
                 usize,
                 &Vec<ExpTypeInfo>,
                 &mut ExpTypeInfo,
@@ -2613,7 +2611,7 @@ impl TypedExp {
               if signature
                 .abstract_ancestor
                 .as_ref()
-                .map(|ancestor| ancestor.borrow().associative)
+                .map(|ancestor| ancestor.read().unwrap().associative)
                 .unwrap_or(false)
                 || args.len() == signature.args.len()
               {
@@ -3042,7 +3040,7 @@ impl TypedExp {
   ) -> bool {
     self.propagate_types_inner(&mut LocalContext::empty(program), errors)
   }
-  pub fn name_or_inner_accessed_name(&self) -> Option<&Rc<str>> {
+  pub fn name_or_inner_accessed_name(&self) -> Option<&Arc<str>> {
     let mut exp = self;
     loop {
       match &exp.kind {
@@ -3159,7 +3157,7 @@ impl TypedExp {
       program,
     ))
   }
-  pub fn replace_skolems(&mut self, skolems: &HashMap<Rc<str>, Type>) {
+  pub fn replace_skolems(&mut self, skolems: &HashMap<Arc<str>, Type>) {
     self
       .walk_mut::<()>(&mut |exp| {
         if let Known(t) = &mut exp.data.kind {
@@ -3193,11 +3191,11 @@ impl TypedExp {
               let generic_arg_names = original_e
                 .generic_arg_monomorphized_names(
                   &variant_types,
-                  &mut new_program.names.borrow_mut(),
+                  &mut new_program.names.write().unwrap(),
                 );
               *name = new_program
                 .names
-                .borrow_mut()
+                .write().unwrap()
                 .get_monomorphized_name(name.clone(), generic_arg_names);
             }
           }
@@ -3205,7 +3203,7 @@ impl TypedExp {
           // higher-order function arguments).
           if let TypeState::Known(Type::Function(f)) = &mut exp.data.kind
             && let Some(signature) = &f.abstract_ancestor
-            && let signature = signature.borrow()
+            && let signature = signature.read().unwrap()
             && !signature.generic_args.is_empty()
             && let FunctionImplementationKind::Composite(implementation) =
               &signature.implementation
@@ -3218,10 +3216,10 @@ impl TypedExp {
               f.return_type.unwrap_known(),
               base_program,
               new_program,
-              implementation.borrow().expression.source_trace.clone(),
+              implementation.read().unwrap().expression.source_trace.clone(),
             )?;
             *name = monomorphized.name.clone();
-            let monomorphized_rc = Rc::new(RefCell::new(monomorphized));
+            let monomorphized_rc = Arc::new(RwLock::new(monomorphized));
             drop(signature);
             f.abstract_ancestor = Some(monomorphized_rc.clone());
             new_program.add_abstract_function(monomorphized_rc);
@@ -3236,7 +3234,7 @@ impl TypedExp {
                 None
               }
             {
-              match &abstract_signature.borrow().implementation {
+              match &abstract_signature.read().unwrap().implementation {
                 FunctionImplementationKind::Builtin { .. } => {
                   if vec_and_mat_compile_names().contains(&**f_name) {
                     if let Type::Struct(s) = &exp.data.kind.unwrap_known() {
@@ -3252,7 +3250,7 @@ impl TypedExp {
                   } else if &**f_name == "bitcast" {
                     let inner_type_name =
                       exp.data.kind.unwrap_known().monomorphized_name(
-                        &mut new_program.names.borrow_mut(),
+                        &mut new_program.names.write().unwrap(),
                       );
                     std::mem::swap(
                       f_name,
@@ -3276,13 +3274,13 @@ impl TypedExp {
                         .generate_monomorphized(arg_types.clone())
                     {
                       let monomorphized_struct_rc =
-                        Rc::new(monomorphized_struct.clone());
+                        Arc::new(monomorphized_struct.clone());
                       std::mem::swap(
                         f_name,
                         &mut AbstractStruct::concretized_name(
                           monomorphized_struct_rc.clone(),
                           &base_program.typedefs,
-                          &mut new_program.names.borrow_mut(),
+                          &mut new_program.names.write().unwrap(),
                           exp.source_trace.clone(),
                         )?,
                       );
@@ -3316,7 +3314,7 @@ impl TypedExp {
                     })
                   {
                     if abstract_enum.generic_args.is_empty() {
-                      new_program.add_monomorphized_enum(Rc::unwrap_or_clone(
+                      new_program.add_monomorphized_enum(Arc::unwrap_or_clone(
                         abstract_enum.clone().into(),
                       ));
                     } else if let Some(monomorphized_enum) =
@@ -3329,19 +3327,19 @@ impl TypedExp {
                             .iter()
                             .map(|variant| variant.inner_type.unwrap_known())
                             .collect(),
-                          &mut new_program.names.borrow_mut(),
+                          &mut new_program.names.write().unwrap(),
                         );
                       std::mem::swap(
                         f_name,
                         &mut new_program
                           .names
-                          .borrow_mut()
+                          .write().unwrap()
                           .get_monomorphized_name(
                             f_name.clone(),
                             generic_arg_names,
                           ),
                       );
-                      let monomorphized_enum = Rc::new(monomorphized_enum);
+                      let monomorphized_enum = Arc::new(monomorphized_enum);
                       let mut new_typestate =
                         Type::Enum(AbstractEnum::fill_generics_ordered(
                           monomorphized_enum.clone(),
@@ -3353,12 +3351,12 @@ impl TypedExp {
                       exp.data.with_dereferenced_mut(|typestate| {
                         std::mem::swap(typestate, &mut new_typestate)
                       });
-                      new_program.add_abstract_function(Rc::new(RefCell::new(
+                      new_program.add_abstract_function(Arc::new(RwLock::new(
                         AbstractFunctionSignature {
                           name: f_name.clone(),
                           generic_args: vec![],
                           arg_types: abstract_signature
-                            .borrow()
+                            .read().unwrap()
                             .arg_types
                             .clone(),
                           return_type: AbstractType::AbstractEnum(
@@ -3373,16 +3371,16 @@ impl TypedExp {
                           entry_point: None,
                         },
                       )));
-                      new_program.add_monomorphized_enum(Rc::unwrap_or_clone(
+                      new_program.add_monomorphized_enum(Arc::unwrap_or_clone(
                         monomorphized_enum,
                       ));
                     }
                   }
                 }
                 FunctionImplementationKind::Composite(composite) => {
-                  if !abstract_signature.borrow().generic_args.is_empty() {
+                  if !abstract_signature.read().unwrap().generic_args.is_empty() {
                     let monomorphized =
-                      abstract_signature.borrow().generate_monomorphized(
+                      abstract_signature.read().unwrap().generate_monomorphized(
                         args
                           .iter()
                           .map(|arg| arg.data.unwrap_known())
@@ -3390,10 +3388,10 @@ impl TypedExp {
                         exp.data.unwrap_known().clone(),
                         base_program,
                         new_program,
-                        composite.borrow().expression.source_trace.clone(),
+                        composite.read().unwrap().expression.source_trace.clone(),
                       )?;
                     std::mem::swap(f_name, &mut monomorphized.name.clone());
-                    let monomorphized = Rc::new(RefCell::new(monomorphized));
+                    let monomorphized = Arc::new(RwLock::new(monomorphized));
                     std::mem::swap(
                       &mut f.data.kind,
                       &mut Type::Function(
@@ -3439,14 +3437,14 @@ impl TypedExp {
                 && let Some(abstract_ancestor) =
                   &mut signature.abstract_ancestor
                 && let FunctionImplementationKind::Composite(top_level_f) =
-                  abstract_ancestor.clone().borrow().implementation.clone()
+                  abstract_ancestor.clone().read().unwrap().implementation.clone()
               {
                 let reference_arg_positions =
-                  abstract_ancestor.borrow().reference_arg_positions();
+                  abstract_ancestor.read().unwrap().reference_arg_positions();
                 if !reference_arg_positions.is_empty() {
                   let mut new_abstract_ancestor =
-                    (**abstract_ancestor).borrow().clone();
-                  let mut new_top_level_f = top_level_f.borrow().clone();
+                    (**abstract_ancestor).read().unwrap().clone();
+                  let mut new_top_level_f = top_level_f.read().unwrap().clone();
                   let mut address_space_names = vec![];
                   for i in reference_arg_positions {
                     let name = args[i].name_or_inner_accessed_name().unwrap();
@@ -3489,19 +3487,19 @@ impl TypedExp {
                     address_space_names.push(address_space.name().into());
                   }
                   new_abstract_ancestor.implementation =
-                    FunctionImplementationKind::Composite(Rc::new(
-                      RefCell::new(new_top_level_f),
+                    FunctionImplementationKind::Composite(Arc::new(
+                      RwLock::new(new_top_level_f),
                     ));
                   let new_name =
-                    new_program.names.borrow_mut().get_monomorphized_name(
+                    new_program.names.write().unwrap().get_monomorphized_name(
                       f_name.clone(),
                       address_space_names,
                     );
                   *f_name = new_name.clone();
                   new_abstract_ancestor.name = new_name;
                   *abstract_ancestor =
-                    Rc::new(RefCell::new(new_abstract_ancestor.clone()));
-                  new_program.add_abstract_function(Rc::new(RefCell::new(
+                    Arc::new(RwLock::new(new_abstract_ancestor.clone()));
+                  new_program.add_abstract_function(Arc::new(RwLock::new(
                     new_abstract_ancestor,
                   )));
                   changed = true;
@@ -3528,11 +3526,11 @@ impl TypedExp {
           if let TypeState::Known(Type::Function(f)) = &mut f.data.kind
             && let Some(abstract_signature) = &mut f.abstract_ancestor
             && let FunctionImplementationKind::Composite(_) =
-              abstract_signature.clone().borrow().implementation
+              abstract_signature.clone().read().unwrap().implementation
             && let Some((inlinable_arg_index, inlinable_abstract_signature)) =
               abstract_signature
                 .clone()
-                .borrow()
+                .read().unwrap()
                 .arg_types
                 .iter()
                 .enumerate()
@@ -3553,10 +3551,10 @@ impl TypedExp {
                 })
           {
             let representative_struct = inlinable_abstract_signature
-              .borrow()
-              .representative_type(&mut new_ctx.names.borrow_mut());
+              .read().unwrap()
+              .representative_type(&mut new_ctx.names.write().unwrap());
             let inlined_signature = abstract_signature
-              .borrow()
+              .read().unwrap()
               .generate_higher_order_argument_inlined_version(
                 f_name.clone(),
                 inlinable_arg_index,
@@ -3566,9 +3564,9 @@ impl TypedExp {
               )?;
             *f_name = inlined_signature.name.clone();
             *abstract_signature =
-              Rc::new(RefCell::new(inlined_signature.clone()));
+              Arc::new(RwLock::new(inlined_signature.clone()));
             new_ctx
-              .add_abstract_function(Rc::new(RefCell::new(inlined_signature)));
+              .add_abstract_function(Arc::new(RwLock::new(inlined_signature)));
             new_ctx.add_monomorphized_struct(representative_struct);
             changed = true;
           }
@@ -3582,17 +3580,17 @@ impl TypedExp {
   }
   fn deshadow_inner(
     &mut self,
-    globally_bound_names: &Vec<Rc<str>>,
-    bindings: &mut HashMap<Rc<str>, Vec<Rc<str>>>,
-    reverse_bindings: &mut HashMap<Rc<str>, Rc<str>>,
+    globally_bound_names: &Vec<Arc<str>>,
+    bindings: &mut HashMap<Arc<str>, Vec<Arc<str>>>,
+    reverse_bindings: &mut HashMap<Arc<str>, Arc<str>>,
     errors: &mut ErrorLog,
     first_in_walk: bool,
     names: &mut NameContext,
   ) -> bool {
-    let bind = |name: &mut Rc<str>,
+    let bind = |name: &mut Arc<str>,
                 source_trace: &SourceTrace,
-                bindings: &mut HashMap<Rc<str>, Vec<Rc<str>>>,
-                reverse_bindings: &mut HashMap<Rc<str>, Rc<str>>,
+                bindings: &mut HashMap<Arc<str>, Vec<Arc<str>>>,
+                reverse_bindings: &mut HashMap<Arc<str>, Arc<str>>,
                 names: &mut NameContext,
                 errors: &mut ErrorLog| {
       if globally_bound_names.contains(&name) {
@@ -3611,9 +3609,9 @@ impl TypedExp {
       }
     };
     let unbind =
-      |name: &mut Rc<str>,
-       bindings: &mut HashMap<Rc<str>, Vec<Rc<str>>>,
-       reverse_bindings: &mut HashMap<Rc<str>, Rc<str>>| {
+      |name: &mut Arc<str>,
+       bindings: &mut HashMap<Arc<str>, Vec<Arc<str>>>,
+       reverse_bindings: &mut HashMap<Arc<str>, Arc<str>>| {
         if bindings.remove(name).is_none() {
           let original_name = reverse_bindings.get(name).unwrap();
           bindings.get_mut(original_name).unwrap().pop();
@@ -3783,7 +3781,7 @@ impl TypedExp {
       Name(name) => {
         if let Some(renames) = bindings.get(name) {
           if let Some(rename) = renames.last() {
-            std::mem::swap(name, &mut Rc::clone(rename));
+            std::mem::swap(name, &mut Arc::clone(rename));
           }
         }
         false
@@ -3811,7 +3809,7 @@ impl TypedExp {
   }
   pub fn deshadow(
     &mut self,
-    globally_bound_names: &Vec<Rc<str>>,
+    globally_bound_names: &Vec<Arc<str>>,
     errors: &mut ErrorLog,
     names: &mut NameContext,
   ) {
@@ -3879,7 +3877,7 @@ impl TypedExp {
       })
       .unwrap();
   }
-  fn internally_referenced_names(&self) -> Vec<(Rc<str>, Type)> {
+  fn internally_referenced_names(&self) -> Vec<(Arc<str>, Type)> {
     let mut names = HashSet::new();
     let mut name_type_pairs = vec![];
     self
@@ -3918,7 +3916,7 @@ impl TypedExp {
               e.merge(value_exp.effects());
               e
             });
-        let bound_names: HashSet<Rc<str>> =
+        let bound_names: HashSet<Arc<str>> =
           items.iter().map(|(name, _, _, _)| name.clone()).collect();
         effects
           .0
@@ -4025,7 +4023,7 @@ impl TypedExp {
       ZeroedArray => EffectType::empty(),
     }
   }
-  fn replace_internal_names(&mut self, new_names: &HashMap<Rc<str>, Rc<str>>) {
+  fn replace_internal_names(&mut self, new_names: &HashMap<Arc<str>, Arc<str>>) {
     self
       .walk_mut::<()>(&mut |exp| {
         match &mut exp.kind {
@@ -4041,7 +4039,7 @@ impl TypedExp {
       .unwrap()
   }
   pub fn deexpressionify(&mut self, program: &Program) {
-    let mut names = program.names.borrow_mut();
+    let mut names = program.names.write().unwrap();
     loop {
       let mut changed = false;
       let placeholder_exp_kind = ExpKind::Wildcard;
@@ -4179,7 +4177,7 @@ impl TypedExp {
                   std::mem::swap(exp, &mut control_flow_exp);
                   changed = true;
                 } else {
-                  let mut previously_referenced_names: Vec<(Rc<str>, Type)> =
+                  let mut previously_referenced_names: Vec<(Arc<str>, Type)> =
                     vec![];
                   let mut restructure_index: Option<usize> = None;
                   for arg_index in 0..slots.len() {
@@ -4191,7 +4189,7 @@ impl TypedExp {
                       Block(_) | Match(_, _) | Let(_, _) => {
                         restructure_index = Some(arg_index);
                         let effects = arg.effects();
-                        let mut overridden_names: Vec<(Rc<str>, Type)> = vec![];
+                        let mut overridden_names: Vec<(Arc<str>, Type)> = vec![];
                         for (name, t) in previously_referenced_names {
                           if effects
                             .0
@@ -4202,9 +4200,9 @@ impl TypedExp {
                         }
                         if !overridden_names.is_empty() {
                           changed = true;
-                          let mut replacement_types: HashMap<Rc<str>, Type> =
+                          let mut replacement_types: HashMap<Arc<str>, Type> =
                             HashMap::new();
-                          let mut replacement_names: HashMap<Rc<str>, Rc<str>> =
+                          let mut replacement_names: HashMap<Arc<str>, Arc<str>> =
                             HashMap::new();
                           for (name, t) in overridden_names {
                             let replacement_name =
@@ -4303,7 +4301,7 @@ impl TypedExp {
                         });
                       }
                       Match(_, _) => {
-                        let name: Rc<str> = names.gensym("match_gensym");
+                        let name: Arc<str> = names.gensym("match_gensym");
                         let mut match_exp = TypedExp {
                           kind: Name(name.clone()),
                           data: arg.data.clone(),
@@ -4612,8 +4610,8 @@ impl TypedExp {
                                 kind: ExpKind::Name("=".into()),
                                 data: Type::Function(
                                   FunctionSignature {
-                                    abstract_ancestor: Some(Rc::new(
-                                      RefCell::new(assignment_function()),
+                                    abstract_ancestor: Some(Arc::new(
+                                      RwLock::new(assignment_function()),
                                     )),
                                     args: vec![
                                       (
@@ -4735,7 +4733,7 @@ impl TypedExp {
                     source_trace: inner_exp.source_trace.clone(),
                     kind: ExpKind::Let(
                       vec![(
-                        program.names.borrow_mut().gensym("throwaway"),
+                        program.names.write().unwrap().gensym("throwaway"),
                         SourceTrace::empty(),
                         VariableKind::Let,
                         inner_exp,
@@ -4767,7 +4765,7 @@ impl TypedExp {
       && let ExpKind::Access(accessor, accessed) = &first_arg.kind
       && let Accessor::Swizzle(fields) = accessor
     {
-      let gensym_name: Rc<str> = names.gensym("swizzle_assignment");
+      let gensym_name: Arc<str> = names.gensym("swizzle_assignment");
       std::mem::swap(
         self,
         &mut Exp {
@@ -4854,7 +4852,7 @@ impl TypedExp {
       Application(f, args) => match &f.data.unwrap_known() {
         Type::Function(f) => {
           if let Some(f) = &f.abstract_ancestor {
-            let f = f.borrow();
+            let f = f.read().unwrap();
             (match f.implementation {
               FunctionImplementationKind::Builtin { .. } => {
                 f.is_builtin_vector_constructor()
