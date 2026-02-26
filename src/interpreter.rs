@@ -247,7 +247,7 @@ fn apply_builtin_fn<IO: IOManager>(
 ) -> Result<Value, EvalError> {
   let return_type_clone = return_type.clone();
   let construct_vec = |vec_length: usize| {
-    let Type::Struct(return_struct) = return_type else {
+    let Type::Struct(return_struct) = &return_type else {
       panic!()
     };
     let inner_type = return_struct.fields[0].field_type.unwrap_known();
@@ -1530,6 +1530,29 @@ fn apply_builtin_fn<IO: IOManager>(
         ]
         .into_iter()
         .collect(),
+      ))
+    }
+    "zeroed-array" => {
+      let Type::Array(size, inner_type) = return_type else {
+        panic!()
+      };
+      let size = if let Some(arg) = args.get(0) {
+        // dynamically sized
+        let Value::Prim(Primitive::U32(size)) = arg.0 else {
+          panic!()
+        };
+        size
+      } else {
+        // statically sized
+        let Some(ConcreteArraySize::Literal(size)) = size else {
+          panic!()
+        };
+        size
+      };
+      Ok(Value::Array(
+        std::iter::repeat(Value::zeroed(inner_type.unwrap_known(), env)?)
+          .take(size as usize)
+          .collect(),
       ))
     }
     _ => Err(UnimplementedBuiltin(f_name.to_string())),

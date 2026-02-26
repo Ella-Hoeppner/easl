@@ -67,3 +67,5 @@ cpu_test!(bit_manip);
 cpu_test!(data_packing);
 cpu_test!(array_assignment);
 cpu_test!(dynamic_array_assignment);
+cpu_test!(dynamic_zeroed_array);
+cpu_test!(static_zeroed_array);

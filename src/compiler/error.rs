@@ -249,8 +249,6 @@ pub enum CompileErrorKind {
   CantInlineFunctionWithoutAbstractAncestor,
   #[error("Expected composite function")]
   ExpectedCompositeFunction,
-  #[error("zeroed-array shouldn't have any children")]
-  ZeroedArrayShouldntHaveChildren,
   #[error("expected function, found non-function value")]
   ExpectedFunctionFoundNonFunction,
   #[error("Can't shadow top-level binding `{0}`")]

@@ -1,0 +1,3 @@
+@cpu
+(defn main []
+  (print (zeroed-array 5): [u32]))

@@ -1747,6 +1747,25 @@ fn array_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
+    AbstractFunctionSignature {
+      name: "zeroed-array".into(),
+      generic_args: vec![(
+        "T".into(),
+        GenericArgument::Type(vec![]),
+        SourceTrace::empty(),
+      )],
+      arg_types: vec![AbstractType::Type(Type::U32).owned()],
+      return_type: AbstractType::AbstractArray {
+        size: AbstractArraySize::Unsized,
+        inner_type: AbstractType::Generic("T".into()).into(),
+        source_trace: SourceTrace::empty(),
+      },
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("zeroed-array".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
   ]
 }
 
