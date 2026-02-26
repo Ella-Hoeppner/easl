@@ -69,7 +69,7 @@ fn main() {
   unsafe {
     std::env::set_var("RUST_BACKTRACE", "1");
   }
-  benchmark_wgsl_compilation();
+  // benchmark_wgsl_compilation();
   // run_window_demo("delta_tracking_pathtracer", None)
-  // run_buffer_demo("bidirectional_transfer", None)
+  run_buffer_demo("bidirectional_transfer", None)
 }

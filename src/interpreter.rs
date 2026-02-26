@@ -1708,6 +1708,57 @@ impl Value {
       _ => vec![],
     }
   }
+
+  /// Deserializes a `Value` from raw GPU bytes, given the expected `Type`.
+  pub fn from_gpu_bytes(bytes: &[u8], ty: &Type) -> Value {
+    Self::from_gpu_bytes_at(bytes, ty, &mut 0)
+  }
+
+  fn from_gpu_bytes_at(bytes: &[u8], ty: &Type, offset: &mut usize) -> Value {
+    fn read_u32(bytes: &[u8], offset: &mut usize) -> u32 {
+      let v = u32::from_ne_bytes(
+        bytes[*offset..*offset + 4].try_into().unwrap_or([0; 4]),
+      );
+      *offset += 4;
+      v
+    }
+    match ty {
+      Type::U32 => Value::Prim(Primitive::U32(read_u32(bytes, offset))),
+      Type::I32 => {
+        Value::Prim(Primitive::I32(read_u32(bytes, offset) as i32))
+      }
+      Type::F32 => {
+        Value::Prim(Primitive::F32(f32::from_bits(read_u32(bytes, offset))))
+      }
+      Type::Bool => {
+        Value::Prim(Primitive::Bool(read_u32(bytes, offset) != 0))
+      }
+      Type::Struct(s) => {
+        let mut fields = HashMap::new();
+        for field in &s.fields {
+          let inner_ty = field.field_type.unwrap_known();
+          let v = Self::from_gpu_bytes_at(bytes, &inner_ty, offset);
+          fields.insert(field.name.clone(), v);
+        }
+        Value::Struct(fields)
+      }
+      Type::Array(Some(size), inner_type) => {
+        let inner_ty = inner_type.unwrap_known();
+        let count = match size {
+          crate::compiler::types::ConcreteArraySize::Literal(n) => {
+            *n as usize
+          }
+          _ => 0,
+        };
+        Value::Array(
+          (0..count)
+            .map(|_| Self::from_gpu_bytes_at(bytes, &inner_ty, offset))
+            .collect(),
+        )
+      }
+      _ => Value::Uninitialized,
+    }
+  }
 }
 
 impl From<Primitive> for Value {
@@ -1788,8 +1839,18 @@ pub trait IOManager: Sized {
   ) -> Result<(), EvalError>;
   fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent>;
   fn record_close_window(&mut self);
-  /// Stub: copy a GPU-written buffer back to CPU. Not yet implemented.
-  fn sync_gpu_to_cpu(&mut self, name: &str);
+  /// Copy a GPU-written buffer back to CPU. Returns Some(bytes) on success,
+  /// None if GPU readback is not available (e.g. in StringIO).
+  fn sync_gpu_to_cpu(
+    &mut self,
+    group: u8,
+    binding: u8,
+    size: u64,
+  ) -> Option<Vec<u8>>;
+  /// Called after the wgpu device is created so compute dispatches can run
+  /// synchronously. Default no-op for IO managers without real GPU access.
+  #[cfg(feature = "window")]
+  fn set_gpu(&mut self, _gpu: std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>) {}
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
     env: EvaluationEnvironment<Self>,
@@ -1801,12 +1862,16 @@ pub trait IOManager: Sized {
 
 pub struct StdoutIO {
   frame_draw_calls: Vec<WindowEvent>,
+  #[cfg(feature = "window")]
+  gpu: Option<std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>>,
 }
 
 impl StdoutIO {
   pub fn new() -> Self {
     Self {
       frame_draw_calls: vec![],
+      #[cfg(feature = "window")]
+      gpu: None,
     }
   }
 }
@@ -1838,6 +1903,11 @@ impl IOManager for StdoutIO {
     workgroup_count: (u32, u32, u32),
     pre_upload: Vec<((u8, u8), Vec<u8>)>,
   ) -> Result<(), EvalError> {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      gpu.write().unwrap().execute_compute(entry, workgroup_count, pre_upload);
+      return Ok(());
+    }
     self.frame_draw_calls.push(WindowEvent::ComputeShader {
       entry: entry.to_string(),
       workgroup_count,
@@ -1852,8 +1922,25 @@ impl IOManager for StdoutIO {
 
   fn record_close_window(&mut self) {}
 
-  fn sync_gpu_to_cpu(&mut self, _name: &str) {
-    panic!("GPU→CPU sync not yet implemented")
+  fn sync_gpu_to_cpu(
+    &mut self,
+    #[allow(unused_variables)] group: u8,
+    #[allow(unused_variables)] binding: u8,
+    #[allow(unused_variables)] size: u64,
+  ) -> Option<Vec<u8>> {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return Some(gpu.read().unwrap().read_buffer(group, binding, size));
+    }
+    None
+  }
+
+  #[cfg(feature = "window")]
+  fn set_gpu(
+    &mut self,
+    gpu: std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>,
+  ) {
+    self.gpu = Some(gpu);
   }
 
   fn run_spawn_window(
@@ -1936,8 +2023,8 @@ impl IOManager for StringIO {
     self.events.push(IOEvent::CloseWindow);
   }
 
-  fn sync_gpu_to_cpu(&mut self, _name: &str) {
-    panic!("GPU→CPU sync not yet implemented")
+  fn sync_gpu_to_cpu(&mut self, _group: u8, _binding: u8, _size: u64) -> Option<Vec<u8>> {
+    None
   }
 
   fn run_spawn_window(
@@ -2147,16 +2234,36 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     }
   }
 
-  /// For any GPU-bound var in `names` that is CPUOutOfDate, triggers a
-  /// GPU→CPU readback. Currently a panic stub — async readback not yet
-  /// implemented.
+  /// For any GPU-bound var in `names` that is CPUOutOfDate, reads the buffer
+  /// back from GPU and updates the CPU-side binding.
   fn check_cpu_readable(&mut self, names: &[Arc<str>]) {
-    for name in names {
-      if self.is_binding_var(name)
-        && self.buffer_states.get(name)
-          == Some(&SharedBufferState::CPUOutOfDate)
+    let vars: Vec<(GroupAndBinding, Arc<str>, Type)> = self
+      .binding_vars
+      .iter()
+      .filter(|(_, name, _, _)| {
+        names.contains(name)
+          && self.buffer_states.get(name)
+            == Some(&SharedBufferState::CPUOutOfDate)
+      })
+      .map(|(gb, name, ty, _)| (*gb, name.clone(), ty.clone()))
+      .collect();
+    for (gb, name, ty) in vars {
+      let u32s = ty
+        .data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+        .unwrap_or(0);
+      let size = ((u32s as u64 * 4).max(4) + 15) & !15;
+      if let Some(bytes) =
+        self.io.sync_gpu_to_cpu(gb.group, gb.binding, size)
       {
-        self.io.sync_gpu_to_cpu(name);
+        let value = Value::from_gpu_bytes(&bytes, &ty);
+        if let Some(stack) = self.bindings.get_mut(&name) {
+          if let Some(slot) = stack.last_mut() {
+            *slot = value;
+          }
+        }
+        self
+          .buffer_states
+          .insert(name.clone(), SharedBufferState::Synced);
       }
     }
   }
@@ -2279,6 +2386,11 @@ pub fn eval(
         let return_type = exp.data.unwrap_known();
         let is_assignment_op = ASSIGNMENT_OPS.contains(&*name);
         let accessed_expression = is_assignment_op.then(|| args[0].clone());
+        // Sync any GPU-written globals before evaluating args so we see the
+        // updated values when the args are looked up.
+        let (read_global_variable_names, written_global_variable_names) =
+          exp_effects.read_and_written_globals();
+        env.check_cpu_readable(&read_global_variable_names);
         let arg_values: Vec<Value> = args
           .into_iter()
           .map(|arg| {
@@ -2296,9 +2408,6 @@ pub fn eval(
             }
           })
           .collect::<Result<_, _>>()?;
-        let (read_global_variable_names, written_global_variable_names) =
-          exp_effects.read_and_written_globals();
-        env.check_cpu_readable(&read_global_variable_names);
         let mut return_value = match f {
           Function::Builtin(name) => apply_builtin_fn(
             name,
