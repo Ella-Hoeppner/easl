@@ -1907,6 +1907,23 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
+    AbstractFunctionSignature {
+      name: "window-resolution".into(),
+      return_type: AbstractType::AbstractStruct(
+        vec2()
+          .fill_abstract_generics(vec![AbstractType::Type(Type::U32)])
+          .into(),
+      ),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("window-resolution".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
   ]
 }
 

@@ -1,0 +1,31 @@
+@{address storage-write
+  group 0
+  binding 0}
+(var color: vec4f)
+
+@vertex
+(defn v [@{builtin vertex-index}
+         vertex-index: u32]: @{builtin position} vec4f
+  (vec4f (match vertex-index
+           0 (vec2f -1.)
+           1 (vec2f -1. 3.)
+           _ (vec2f 3. -1.))
+         0.
+         1.))
+
+@fragment
+(defn f [@{builtin position} pos: vec4f]: @{location 0} vec4f
+  color)
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (print (window-resolution))
+                    (= color
+                       (-> (window-resolution)
+                           (* (.x <>) (.y <>))
+                           f32
+                           (* 0.0000001)
+                           vec3f
+                           (vec4f 1.)))
+                    (dispatch-render-shaders v f 3))))

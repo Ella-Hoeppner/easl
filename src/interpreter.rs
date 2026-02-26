@@ -1417,7 +1417,8 @@ fn apply_builtin_fn<IO: IOManager>(
         .abstract_ancestor
         .as_ref()
         .unwrap()
-        .read().unwrap()
+        .read()
+        .unwrap()
         .name
         .clone();
       let (_, Type::Function(frag_f)) = &args[1] else {
@@ -1430,7 +1431,8 @@ fn apply_builtin_fn<IO: IOManager>(
         .abstract_ancestor
         .as_ref()
         .unwrap()
-        .read().unwrap()
+        .read()
+        .unwrap()
         .name
         .clone();
       let read_global_variable_names: Vec<Arc<str>> =
@@ -1464,7 +1466,8 @@ fn apply_builtin_fn<IO: IOManager>(
         .abstract_ancestor
         .as_ref()
         .unwrap()
-        .read().unwrap()
+        .read()
+        .unwrap()
         .name
         .clone();
       let effects = compute_f.effects();
@@ -1518,6 +1521,17 @@ fn apply_builtin_fn<IO: IOManager>(
       Ok(Value::Unit)
     }
     "into-dynamic-array" => Ok(args.remove(0).0),
+    "window-resolution" => {
+      let (w, h) = env.io.window_size();
+      Ok(Value::Struct(
+        [
+          ("x".into(), Value::Prim(Primitive::U32(w))),
+          ("y".into(), Value::Prim(Primitive::U32(h))),
+        ]
+        .into_iter()
+        .collect(),
+      ))
+    }
     _ => Err(UnimplementedBuiltin(f_name.to_string())),
   }
 }
@@ -1724,15 +1738,11 @@ impl Value {
     }
     match ty {
       Type::U32 => Value::Prim(Primitive::U32(read_u32(bytes, offset))),
-      Type::I32 => {
-        Value::Prim(Primitive::I32(read_u32(bytes, offset) as i32))
-      }
+      Type::I32 => Value::Prim(Primitive::I32(read_u32(bytes, offset) as i32)),
       Type::F32 => {
         Value::Prim(Primitive::F32(f32::from_bits(read_u32(bytes, offset))))
       }
-      Type::Bool => {
-        Value::Prim(Primitive::Bool(read_u32(bytes, offset) != 0))
-      }
+      Type::Bool => Value::Prim(Primitive::Bool(read_u32(bytes, offset) != 0)),
       Type::Struct(s) => {
         let mut fields = HashMap::new();
         for field in &s.fields {
@@ -1745,9 +1755,7 @@ impl Value {
       Type::Array(Some(size), inner_type) => {
         let inner_ty = inner_type.unwrap_known();
         let count = match size {
-          crate::compiler::types::ConcreteArraySize::Literal(n) => {
-            *n as usize
-          }
+          crate::compiler::types::ConcreteArraySize::Literal(n) => *n as usize,
           _ => 0,
         };
         Value::Array(
@@ -1847,10 +1855,19 @@ pub trait IOManager: Sized {
     binding: u8,
     size: u64,
   ) -> Option<Vec<u8>>;
+  /// Returns the current window dimensions in pixels, or (1, 1) if no window
+  /// is open.
+  fn window_size(&self) -> (u32, u32) {
+    (1, 1)
+  }
   /// Called after the wgpu device is created so compute dispatches can run
   /// synchronously. Default no-op for IO managers without real GPU access.
   #[cfg(feature = "window")]
-  fn set_gpu(&mut self, _gpu: std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>) {}
+  fn set_gpu(
+    &mut self,
+    _gpu: std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>,
+  ) {
+  }
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
     env: EvaluationEnvironment<Self>,
@@ -1905,7 +1922,10 @@ impl IOManager for StdoutIO {
   ) -> Result<(), EvalError> {
     #[cfg(feature = "window")]
     if let Some(gpu) = &self.gpu {
-      gpu.write().unwrap().execute_compute(entry, workgroup_count, pre_upload);
+      gpu
+        .write()
+        .unwrap()
+        .execute_compute(entry, workgroup_count, pre_upload);
       return Ok(());
     }
     self.frame_draw_calls.push(WindowEvent::ComputeShader {
@@ -1941,6 +1961,14 @@ impl IOManager for StdoutIO {
     gpu: std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>,
   ) {
     self.gpu = Some(gpu);
+  }
+
+  fn window_size(&self) -> (u32, u32) {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return gpu.read().unwrap().window_size;
+    }
+    (1, 1)
   }
 
   fn run_spawn_window(
@@ -2023,8 +2051,17 @@ impl IOManager for StringIO {
     self.events.push(IOEvent::CloseWindow);
   }
 
-  fn sync_gpu_to_cpu(&mut self, _group: u8, _binding: u8, _size: u64) -> Option<Vec<u8>> {
+  fn sync_gpu_to_cpu(
+    &mut self,
+    _group: u8,
+    _binding: u8,
+    _size: u64,
+  ) -> Option<Vec<u8>> {
     None
+  }
+
+  fn window_size(&self) -> (u32, u32) {
+    (800, 600)
   }
 
   fn run_spawn_window(
@@ -2252,9 +2289,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         .data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
         .unwrap_or(0);
       let size = ((u32s as u64 * 4).max(4) + 15) & !15;
-      if let Some(bytes) =
-        self.io.sync_gpu_to_cpu(gb.group, gb.binding, size)
-      {
+      if let Some(bytes) = self.io.sync_gpu_to_cpu(gb.group, gb.binding, size) {
         let value = Value::from_gpu_bytes(&bytes, &ty);
         if let Some(stack) = self.bindings.get_mut(&name) {
           if let Some(slot) = stack.last_mut() {
@@ -2380,7 +2415,8 @@ pub fn eval(
               .unwrap()
           );
         });
-        let f = Function::from_abstract_signature(&*f.read().unwrap(), &name, env)?;
+        let f =
+          Function::from_abstract_signature(&*f.read().unwrap(), &name, env)?;
         let arg_types: Vec<Type> =
           args.iter().map(|a| a.data.kind.unwrap_known()).collect();
         let return_type = exp.data.unwrap_known();

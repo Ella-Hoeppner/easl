@@ -84,6 +84,8 @@ pub struct GpuCore {
   /// recreating the layouts (which would invalidate the pipeline layout).
   pub bind_group_layouts: Vec<wgpu::BindGroupLayout>,
   pub bind_groups: Vec<wgpu::BindGroup>,
+  /// Current window dimensions in pixels.
+  pub window_size: (u32, u32),
 }
 
 impl GpuCore {
@@ -534,6 +536,7 @@ impl RenderState {
       binding_buffer_sizes,
       bind_group_layouts,
       bind_groups,
+      window_size: (surface_config.width, surface_config.height),
     }));
 
     Ok(Self {
@@ -603,9 +606,9 @@ impl RenderState {
     if width > 0 && height > 0 {
       self.surface_config.width = width;
       self.surface_config.height = height;
-      self
-        .surface
-        .configure(&self.gpu.read().unwrap().device, &self.surface_config);
+      let mut gpu = self.gpu.write().unwrap();
+      gpu.window_size = (width, height);
+      self.surface.configure(&gpu.device, &self.surface_config);
     }
   }
 
