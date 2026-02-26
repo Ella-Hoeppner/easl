@@ -1,6 +1,8 @@
 # todo
 ## Highest priority
 ### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready
+* trying to do an early return in a function that returns unit crashes the compile rn. You have to do `(return ())`, but then you get an error about compiling unit in an inner position
+
 * when a match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
 
 * `*=` doesn't work when multiplying a vec by a matrix
