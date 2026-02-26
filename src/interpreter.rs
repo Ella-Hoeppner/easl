@@ -2785,7 +2785,6 @@ pub fn eval(
         .map(|exp| eval(exp, env))
         .collect::<Result<_, _>>()?,
     ),
-    ExpKind::ZeroedArray => Value::zeroed(exp.data.kind.unwrap_known(), env)?,
     ExpKind::Uninitialized => Value::zeroed(exp.data.unwrap_known(), env)?,
   })
 }

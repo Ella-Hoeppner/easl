@@ -335,7 +335,6 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Return(Box<Exp<D>>),
   ArrayLiteral(Vec<Exp<D>>),
   Uninitialized,
-  ZeroedArray,
 }
 use ExpKind::*;
 
@@ -361,7 +360,6 @@ impl<D: Debug + Clone + PartialEq> ExpKind<D> {
       Return(_) => "Return",
       ArrayLiteral(_) => "ArrayLiteral",
       Uninitialized => "Uninitialized",
-      ZeroedArray => "ZeroedArray",
     }
   }
 }
@@ -1147,25 +1145,6 @@ impl TypedExp {
                             ));
                           }
                         }
-                        "zeroed-array" => {
-                          if children_iter.len() == 0 {
-                            Some(TypedExp {
-                              data: Type::Array(
-                                None,
-                                Box::new(TypeState::Unknown.into()),
-                              )
-                              .known()
-                              .into(),
-                              kind: ExpKind::ZeroedArray,
-                              source_trace,
-                            })
-                          } else {
-                            return Err(CompileError::new(
-                              ZeroedArrayShouldntHaveChildren,
-                              source_trace,
-                            ));
-                          }
-                        }
                         _ => None,
                       }
                     }
@@ -1709,6 +1688,9 @@ impl TypedExp {
                 CompilerTarget::WGSL => return "".into(),
                 _ => {}
               },
+              SpecialCasedBuiltinFunction::ZeroedArray => {
+                return self.data.kind.monomorphized_name(names) + "()";
+              }
             }
           }
           let ExpKind::Name(name) = f.kind else {
@@ -1734,7 +1716,8 @@ impl TypedExp {
             .into_iter()
             .zip(if let Some(ancestor) = signature.abstract_ancestor {
               ancestor
-                .read().unwrap()
+                .read()
+                .unwrap()
                 .arg_types
                 .iter()
                 .map(|(_, ownership)| *ownership)
@@ -2218,7 +2201,6 @@ impl TypedExp {
           .collect::<Vec<String>>()
           .join(", ")
       )),
-      ZeroedArray => self.data.kind.monomorphized_name(names) + "()",
     }
   }
 
@@ -3025,10 +3007,6 @@ impl TypedExp {
             .unwrap_or(true);
         anything_changed
       }
-      ZeroedArray => {
-        self.data.subtree_fully_typed = true;
-        false
-      }
     };
     self.data.subtree_fully_typed &= self.data.check_is_fully_known();
     changed
@@ -3195,7 +3173,8 @@ impl TypedExp {
                 );
               *name = new_program
                 .names
-                .write().unwrap()
+                .write()
+                .unwrap()
                 .get_monomorphized_name(name.clone(), generic_arg_names);
             }
           }
@@ -3216,7 +3195,12 @@ impl TypedExp {
               f.return_type.unwrap_known(),
               base_program,
               new_program,
-              implementation.read().unwrap().expression.source_trace.clone(),
+              implementation
+                .read()
+                .unwrap()
+                .expression
+                .source_trace
+                .clone(),
             )?;
             *name = monomorphized.name.clone();
             let monomorphized_rc = Arc::new(RwLock::new(monomorphized));
@@ -3333,7 +3317,8 @@ impl TypedExp {
                         f_name,
                         &mut new_program
                           .names
-                          .write().unwrap()
+                          .write()
+                          .unwrap()
                           .get_monomorphized_name(
                             f_name.clone(),
                             generic_arg_names,
@@ -3356,7 +3341,8 @@ impl TypedExp {
                           name: f_name.clone(),
                           generic_args: vec![],
                           arg_types: abstract_signature
-                            .read().unwrap()
+                            .read()
+                            .unwrap()
                             .arg_types
                             .clone(),
                           return_type: AbstractType::AbstractEnum(
@@ -3378,9 +3364,12 @@ impl TypedExp {
                   }
                 }
                 FunctionImplementationKind::Composite(composite) => {
-                  if !abstract_signature.read().unwrap().generic_args.is_empty() {
-                    let monomorphized =
-                      abstract_signature.read().unwrap().generate_monomorphized(
+                  if !abstract_signature.read().unwrap().generic_args.is_empty()
+                  {
+                    let monomorphized = abstract_signature
+                      .read()
+                      .unwrap()
+                      .generate_monomorphized(
                         args
                           .iter()
                           .map(|arg| arg.data.unwrap_known())
@@ -3388,7 +3377,12 @@ impl TypedExp {
                         exp.data.unwrap_known().clone(),
                         base_program,
                         new_program,
-                        composite.read().unwrap().expression.source_trace.clone(),
+                        composite
+                          .read()
+                          .unwrap()
+                          .expression
+                          .source_trace
+                          .clone(),
                       )?;
                     std::mem::swap(f_name, &mut monomorphized.name.clone());
                     let monomorphized = Arc::new(RwLock::new(monomorphized));
@@ -3437,7 +3431,12 @@ impl TypedExp {
                 && let Some(abstract_ancestor) =
                   &mut signature.abstract_ancestor
                 && let FunctionImplementationKind::Composite(top_level_f) =
-                  abstract_ancestor.clone().read().unwrap().implementation.clone()
+                  abstract_ancestor
+                    .clone()
+                    .read()
+                    .unwrap()
+                    .implementation
+                    .clone()
               {
                 let reference_arg_positions =
                   abstract_ancestor.read().unwrap().reference_arg_positions();
@@ -3530,7 +3529,8 @@ impl TypedExp {
             && let Some((inlinable_arg_index, inlinable_abstract_signature)) =
               abstract_signature
                 .clone()
-                .read().unwrap()
+                .read()
+                .unwrap()
                 .arg_types
                 .iter()
                 .enumerate()
@@ -3551,10 +3551,12 @@ impl TypedExp {
                 })
           {
             let representative_struct = inlinable_abstract_signature
-              .read().unwrap()
+              .read()
+              .unwrap()
               .representative_type(&mut new_ctx.names.write().unwrap());
             let inlined_signature = abstract_signature
-              .read().unwrap()
+              .read()
+              .unwrap()
               .generate_higher_order_argument_inlined_version(
                 f_name.clone(),
                 inlinable_arg_index,
@@ -4020,10 +4022,12 @@ impl TypedExp {
       NumberLiteral(_) => EffectType::empty(),
       BooleanLiteral(_) => EffectType::empty(),
       Uninitialized => EffectType::empty(),
-      ZeroedArray => EffectType::empty(),
     }
   }
-  fn replace_internal_names(&mut self, new_names: &HashMap<Arc<str>, Arc<str>>) {
+  fn replace_internal_names(
+    &mut self,
+    new_names: &HashMap<Arc<str>, Arc<str>>,
+  ) {
     self
       .walk_mut::<()>(&mut |exp| {
         match &mut exp.kind {
@@ -4189,7 +4193,8 @@ impl TypedExp {
                       Block(_) | Match(_, _) | Let(_, _) => {
                         restructure_index = Some(arg_index);
                         let effects = arg.effects();
-                        let mut overridden_names: Vec<(Arc<str>, Type)> = vec![];
+                        let mut overridden_names: Vec<(Arc<str>, Type)> =
+                          vec![];
                         for (name, t) in previously_referenced_names {
                           if effects
                             .0
@@ -4202,8 +4207,10 @@ impl TypedExp {
                           changed = true;
                           let mut replacement_types: HashMap<Arc<str>, Type> =
                             HashMap::new();
-                          let mut replacement_names: HashMap<Arc<str>, Arc<str>> =
-                            HashMap::new();
+                          let mut replacement_names: HashMap<
+                            Arc<str>,
+                            Arc<str>,
+                          > = HashMap::new();
                           for (name, t) in overridden_names {
                             let replacement_name =
                               names.gensym(&format!("original_{name}"));

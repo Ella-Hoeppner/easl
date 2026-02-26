@@ -87,11 +87,18 @@ impl PartialEq for FunctionImplementationKind {
           target_configuration: b_tc,
         },
       ) => a_et == b_et && a_tc == b_tc,
-      (FunctionImplementationKind::StructConstructor, FunctionImplementationKind::StructConstructor) => true,
-      (FunctionImplementationKind::EnumConstructor(a), FunctionImplementationKind::EnumConstructor(b)) => a == b,
-      (FunctionImplementationKind::Composite(a), FunctionImplementationKind::Composite(b)) => {
-        *a.read().unwrap() == *b.read().unwrap()
-      }
+      (
+        FunctionImplementationKind::StructConstructor,
+        FunctionImplementationKind::StructConstructor,
+      ) => true,
+      (
+        FunctionImplementationKind::EnumConstructor(a),
+        FunctionImplementationKind::EnumConstructor(b),
+      ) => a == b,
+      (
+        FunctionImplementationKind::Composite(a),
+        FunctionImplementationKind::Composite(b),
+      ) => *a.read().unwrap() == *b.read().unwrap(),
       _ => false,
     }
   }
@@ -108,6 +115,7 @@ pub enum Ownership {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpecialCasedBuiltinFunction {
   Print,
+  ZeroedArray,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -632,7 +640,8 @@ impl AbstractFunctionSignature {
       .collect::<CompileResult<Vec<Arc<str>>>>()?;
     monomorphized.name = new_program
       .names
-      .write().unwrap()
+      .write()
+      .unwrap()
       .get_monomorphized_name(self.name.clone(), generic_arg_names);
     monomorphized.generic_args = vec![];
     for t in monomorphized
@@ -694,19 +703,17 @@ impl AbstractFunctionSignature {
             let ExpKind::Name(name) = &mut f_name.kind else {
               panic!()
             };
-            if let Some(captured_scope) = &signature.read().unwrap().captured_scope
+            if let Some(captured_scope) =
+              &signature.read().unwrap().captured_scope
               && name == arg_name
             {
               f_name.data.as_known_mut(|f_type| {
                 let Type::Function(f) = f_type else { panic!() };
-                let new_arg_type =
-                  AbstractType::AbstractStruct(Arc::new(captured_scope.clone()))
-                    .concretize(
-                      &vec![],
-                      &ctx.typedefs,
-                      f_name.source_trace.clone(),
-                    )
-                    .unwrap();
+                let new_arg_type = AbstractType::AbstractStruct(Arc::new(
+                  captured_scope.clone(),
+                ))
+                .concretize(&vec![], &ctx.typedefs, f_name.source_trace.clone())
+                .unwrap();
                 args.push(Exp {
                   data: new_arg_type.clone().known().into(),
                   kind: ExpKind::Name(name.clone()),
@@ -750,7 +757,8 @@ impl AbstractFunctionSignature {
     Ok(AbstractFunctionSignature {
       name: ctx
         .names
-        .write().unwrap()
+        .write()
+        .unwrap()
         .get_monomorphized_name(f_name.clone(), vec![inlined_fn_name.clone()]),
       generic_args: self.generic_args.clone(),
       arg_types,

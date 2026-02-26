@@ -6,6 +6,7 @@ use lazy_static::lazy_static;
 
 use fsexp::{document::DocumentPosition, syntax::EncloserOrOperator};
 
+use crate::compiler::effects::EffectType;
 use crate::{
   compiler::{
     effects::Effect,
@@ -1716,7 +1717,7 @@ fn array_functions() -> Vec<AbstractFunctionSignature> {
     },
     AbstractFunctionSignature {
       name: "array-length".into(),
-      generic_args,
+      generic_args: generic_args.clone(),
       arg_types: vec![(
         AbstractType::AbstractArray {
           size: AbstractArraySize::Unsized,
@@ -1727,6 +1728,23 @@ fn array_functions() -> Vec<AbstractFunctionSignature> {
         Ownership::Reference,
       )],
       return_type: AbstractType::Type(Type::U32),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "zeroed-array".into(),
+      generic_args,
+      arg_types: vec![],
+      return_type: AbstractType::AbstractArray {
+        size: AbstractArraySize::Generic("S".into()),
+        inner_type: AbstractType::Generic("T".into()).into(),
+        source_trace: SourceTrace::empty(),
+      },
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::SpecialCased(
+          SpecialCasedBuiltinFunction::ZeroedArray,
+        ),
+      },
       ..Default::default()
     },
   ]
