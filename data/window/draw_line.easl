@@ -1,0 +1,54 @@
+(var frame-index: u32
+     0)
+
+@{address uniform
+  group 0
+  binding 0}
+(var line-pos: vec2f)
+
+@{address uniform
+  group 0
+  binding 1}
+(var line-offset: vec2f)
+
+@vertex
+(defn v [@{builtin vertex-index}
+         vertex-index: u32]: @{builtin position} vec4f
+  (let [x (if (or (== vertex-index 0)
+                  (== vertex-index 1)
+                  (== vertex-index 3))
+            -1.
+            1.)
+        y (if (or (== vertex-index 0)
+                  (== vertex-index 3)
+                  (== vertex-index 4))
+            0.
+            1.)
+        perp (-> line-offset
+                 (vec2f (- (.y <>)) (.x <>))
+                 normalize)]
+    (vec4f (+ line-pos
+              (* (* 0.05 x) perp)
+              (* y line-offset))
+           0.
+           1.)))
+
+@fragment
+(defn f [@{builtin position} pos: vec4f]: @{location 0} vec4f
+  (vec4f 1. 0. 0. 1.))
+
+(defn draw-line [a: vec2f
+                 b: vec2f]
+  (= line-pos a)
+  (= line-offset (- b a))
+  (dispatch-render-shaders v f 6))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (draw-line (vec2f 0.)
+                               (-> frame-index
+                                   f32
+                                   (* 0.01)
+                                   (vec2f (cos <>) (sin <>))))
+                    (+= frame-index 1))))

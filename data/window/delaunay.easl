@@ -1,0 +1,117 @@
+(def particle-count: u32
+     10)
+
+(var frame-index: u32)
+
+@{address uniform
+  group 0
+  binding 0}
+(var screenspace-scale: vec2f)
+
+@{address uniform
+  group 0
+  binding 1}
+(var solid-color: vec3f)
+
+@{address uniform
+  group 0
+  binding 2}
+(var line-pos: vec2f)
+
+@{address uniform
+  group 0
+  binding 3}
+(var line-offset: vec2f)
+
+@{address uniform
+  group 0
+  binding 4}
+(var line-width: f32)
+
+@{address storage-write
+  group 0
+  binding 5}
+(var particles: [vec4f])
+
+@{address storage
+  group 0
+  binding 6}
+(var particles-readonly: [vec4f])
+
+(defn bi->uni [x: f32]: f32
+  (-> x (+ 1.) (* 0.5)))
+
+(defn vert-index-square-pos [i: u32]: vec2f
+  (vec2f (if (or (== i 0) (== i 1) (== i 3))
+           -1.
+           1.)
+         (if (or (== i 0) (== i 3) (== i 4))
+           -1.
+           1.)))
+
+@vertex
+(defn line-vertex [@{builtin vertex-index}
+                   vertex-index: u32]: @{builtin position} vec4f
+  (let [square-pos (vert-index-square-pos vertex-index)
+        perp (-> line-offset
+                 (vec2f (- (.y <>)) (.x <>))
+                 normalize)]
+    (vec4f (* screenspace-scale
+              (+ line-pos
+                 (* (* line-width square-pos.x)
+                    perp)
+                 (* (bi->uni square-pos.y)
+                    line-offset)))
+           0.
+           1.)))
+
+@vertex
+(defn particle-dots-vertex [@{builtin vertex-index}
+                            vertex-index: u32]: @{builtin position} vec4f
+  (let [square-pos (vert-index-square-pos (% vertex-index 6))
+        particle (particles-readonly (/ vertex-index 6))]
+    (vec4f (+ particle.xy
+              (* line-width square-pos))
+           0.
+           1.)))
+
+@fragment
+(defn solid-color-frag [@{builtin position} pos: vec4f]: @{location 0} vec4f
+  (vec4f solid-color 1.))
+
+(defn draw-line [a: vec2f
+                 b: vec2f
+                 width: f32
+                 color: vec3f]
+  (= line-pos a)
+  (= line-offset (- b a))
+  (= solid-color color)
+  (= line-width width)
+  (dispatch-render-shaders line-vertex
+                           solid-color-frag
+                           6))
+
+(defn draw-particles [radius: f32
+                      color: vec3f]
+  (= solid-color color)
+  (= line-width radius)
+  (dispatch-render-shaders particle-dots-vertex
+                           solid-color-frag
+                           (* 6 particle-count)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (let [resolution (window-resolution)]
+                      (= screenspace-scale
+                         (/ (f32 (min resolution.x resolution.y))
+                            (vec2f resolution))))
+                    (draw-particles 0.01 (vec3f 1.))
+                    (draw-line (vec2f 0.)
+                               (-> frame-index
+                                   f32
+                                   (* 0.01)
+                                   (vec2f (cos <>) (sin <>)))
+                               0.003
+                               (vec3f 1. 0. 1.))
+                    (+= frame-index 1))))
