@@ -248,6 +248,10 @@ success_test!(user_reference_success);
 success_test!(ownership_success);
 success_test!(unit_literal_in_block);
 success_test!(immutable_reference);
+success_test!(atomic_type);
+success_test!(atomic_store);
+success_test!(atomic_load);
+success_test!(atomic_ops);
 
 // --- Error tests ---
 

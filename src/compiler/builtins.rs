@@ -181,6 +181,27 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
     .collect()
 }
 
+pub fn atomic() -> AbstractStruct {
+  AbstractStruct {
+    name: ("Atomic".into(), SourceTrace::empty()),
+    fields: vec![AbstractStructField {
+      attributes: IOAttributes::empty(SourceTrace::empty()),
+      name: "_".into(),
+      field_type: AbstractType::Generic("T".into()),
+      source_trace: SourceTrace::empty(),
+    }],
+    generic_args: vec![(
+      "T".into(),
+      GenericArgument::Type(vec![TypeConstraint::integer()]),
+      SourceTrace::empty(),
+    )],
+    filled_generics: HashMap::new(),
+    abstract_ancestor: None,
+    source_trace: SourceTrace::empty(),
+    opaque: true,
+  }
+}
+
 pub fn vec2() -> AbstractStruct {
   AbstractStruct {
     name: ("vec2".into(), SourceTrace::empty()),
@@ -455,7 +476,7 @@ pub fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
 }
 
 pub fn built_in_structs() -> Vec<AbstractStruct> {
-  vec![vec2(), vec3(), vec4(), texture_2d(), sampler()]
+  vec![vec2(), vec3(), vec4(), texture_2d(), sampler(), atomic()]
     .into_iter()
     .chain((2..=4).flat_map(|n| (2..=4).map(move |m| matrix(n, m))))
     .collect()
@@ -1997,6 +2018,177 @@ fn dynamic_array_functions() -> Vec<AbstractFunctionSignature> {
   }]
 }
 
+fn atomic_functions() -> Vec<AbstractFunctionSignature> {
+  vec![
+    AbstractFunctionSignature {
+      generic_args: vec![(
+        "T".into(),
+        GenericArgument::Type(vec![]),
+        SourceTrace::empty(),
+      )],
+      name: "atomic-store".into(),
+      arg_types: vec![
+        (
+          AbstractType::AbstractStruct(atomic().into()),
+          Ownership::MutableReference,
+        ),
+        AbstractType::Generic("T".into()).owned(),
+      ],
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      generic_args: vec![(
+        "T".into(),
+        GenericArgument::Type(vec![]),
+        SourceTrace::empty(),
+      )],
+      name: "atomic-load".into(),
+      arg_types: vec![(
+        AbstractType::AbstractStruct(atomic().into()),
+        Ownership::Reference,
+      )],
+      return_type: AbstractType::Generic("T".into()),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      generic_args: vec![(
+        "T".into(),
+        GenericArgument::Type(vec![]),
+        SourceTrace::empty(),
+      )],
+      name: "atomic-add".into(),
+      arg_types: vec![
+        (
+          AbstractType::AbstractStruct(atomic().into()),
+          Ownership::MutableReference,
+        ),
+        AbstractType::Generic("T".into()).owned(),
+      ],
+      return_type: AbstractType::Generic("T".into()),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      generic_args: vec![(
+        "T".into(),
+        GenericArgument::Type(vec![]),
+        SourceTrace::empty(),
+      )],
+      name: "atomic-sub".into(),
+      arg_types: vec![
+        (
+          AbstractType::AbstractStruct(atomic().into()),
+          Ownership::MutableReference,
+        ),
+        AbstractType::Generic("T".into()).owned(),
+      ],
+      return_type: AbstractType::Generic("T".into()),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      generic_args: vec![(
+        "T".into(),
+        GenericArgument::Type(vec![]),
+        SourceTrace::empty(),
+      )],
+      name: "atomic-max".into(),
+      arg_types: vec![
+        (
+          AbstractType::AbstractStruct(atomic().into()),
+          Ownership::MutableReference,
+        ),
+        AbstractType::Generic("T".into()).owned(),
+      ],
+      return_type: AbstractType::Generic("T".into()),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      generic_args: vec![(
+        "T".into(),
+        GenericArgument::Type(vec![]),
+        SourceTrace::empty(),
+      )],
+      name: "atomic-min".into(),
+      arg_types: vec![
+        (
+          AbstractType::AbstractStruct(atomic().into()),
+          Ownership::MutableReference,
+        ),
+        AbstractType::Generic("T".into()).owned(),
+      ],
+      return_type: AbstractType::Generic("T".into()),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      generic_args: vec![(
+        "T".into(),
+        GenericArgument::Type(vec![]),
+        SourceTrace::empty(),
+      )],
+      name: "atomic-and".into(),
+      arg_types: vec![
+        (
+          AbstractType::AbstractStruct(atomic().into()),
+          Ownership::MutableReference,
+        ),
+        AbstractType::Generic("T".into()).owned(),
+      ],
+      return_type: AbstractType::Generic("T".into()),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      generic_args: vec![(
+        "T".into(),
+        GenericArgument::Type(vec![]),
+        SourceTrace::empty(),
+      )],
+      name: "atomic-or".into(),
+      arg_types: vec![
+        (
+          AbstractType::AbstractStruct(atomic().into()),
+          Ownership::MutableReference,
+        ),
+        AbstractType::Generic("T".into()).owned(),
+      ],
+      return_type: AbstractType::Generic("T".into()),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      generic_args: vec![(
+        "T".into(),
+        GenericArgument::Type(vec![]),
+        SourceTrace::empty(),
+      )],
+      name: "atomic-xor".into(),
+      arg_types: vec![
+        (
+          AbstractType::AbstractStruct(atomic().into()),
+          Ownership::MutableReference,
+        ),
+        AbstractType::Generic("T".into()).owned(),
+      ],
+      return_type: AbstractType::Generic("T".into()),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      generic_args: vec![(
+        "T".into(),
+        GenericArgument::Type(vec![]),
+        SourceTrace::empty(),
+      )],
+      name: "atomic-exchange".into(),
+      arg_types: vec![
+        (
+          AbstractType::AbstractStruct(atomic().into()),
+          Ownership::MutableReference,
+        ),
+        AbstractType::Generic("T".into()).owned(),
+      ],
+      return_type: AbstractType::Generic("T".into()),
+      ..Default::default()
+    },
+  ]
+}
+
 pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   let mut signatures = vec![assignment_function()];
   signatures.append(&mut boolean_functions());
@@ -2034,6 +2226,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut print_functions());
   signatures.append(&mut shader_dispatch_functions());
   signatures.append(&mut dynamic_array_functions());
+  signatures.append(&mut atomic_functions());
   signatures
 }
 
@@ -2456,6 +2649,16 @@ pub fn rename_builtin_fn(name: &str) -> Option<String> {
     "count-leading-zeros" => Some("countLeadingZeros"),
     "count-one-bits" => Some("countOneBits"),
     "count-trailing-zeros" => Some("countTrailingZeros"),
+    "atomic-store" => Some("atomicStore"),
+    "atomic-load" => Some("atomicLoad"),
+    "atomic-add" => Some("atomicAdd"),
+    "atomic-sub" => Some("atomicSub"),
+    "atomic-max" => Some("atomicMax"),
+    "atomic-min" => Some("atomicMin"),
+    "atomic-and" => Some("atomicAnd"),
+    "atomic-or" => Some("atomicOr"),
+    "atomic-xor" => Some("atomicXor"),
+    "atomic-exchange" => Some("atomicExchange"),
     _ => None,
   }
   .map(|name| name.to_string())

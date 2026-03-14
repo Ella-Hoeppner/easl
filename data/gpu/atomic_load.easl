@@ -1,0 +1,15 @@
+@{group 0
+  binding 0
+  address storage-write}
+(var x: (Atomic u32))
+
+@{group 0
+  binding 1
+  address storage-write}
+(var y: (Atomic u32))
+
+@compute
+@{workgroup-size 1}
+(defn set-x-to-twice-y []
+  (let [x-value (atomic-load x)]
+    (atomic-store y (* x-value))))
