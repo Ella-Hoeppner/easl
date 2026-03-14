@@ -1498,6 +1498,7 @@ fn apply_builtin_fn<IO: IOManager>(
         v
       };
       let workgroup_count = (get_u32("x"), get_u32("y"), get_u32("z"));
+      env.setup_gpu_if_needed();
       let pre_upload = env.collect_dirty_uploads(&read_global_variable_names);
       env
         .io
@@ -1788,6 +1789,23 @@ impl Value {
 
   /// Deserializes a `Value` from raw GPU bytes, given the expected `Type`.
   pub fn from_gpu_bytes(bytes: &[u8], ty: &Type) -> Value {
+    use crate::compiler::types::ConcreteArraySize;
+    // Unsized arrays: the type carries no element count, so derive it from
+    // how many whole elements fit in the returned byte slice.
+    if let Type::Array(Some(ConcreteArraySize::Unsized), inner_type) = ty {
+      let inner_ty = inner_type.unwrap_known();
+      let elem_u32s = inner_ty
+        .data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+        .unwrap_or(0);
+      let elem_bytes = elem_u32s * 4;
+      let count = if elem_bytes > 0 { bytes.len() / elem_bytes } else { 0 };
+      let mut offset = 0;
+      return Value::Array(
+        (0..count)
+          .map(|_| Self::from_gpu_bytes_at(bytes, &inner_ty, &mut offset))
+          .collect(),
+      );
+    }
     Self::from_gpu_bytes_at(bytes, ty, &mut 0)
   }
 
@@ -1940,6 +1958,22 @@ pub trait IOManager: Sized {
     _gpu: std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>,
   ) {
   }
+  /// Called before a compute dispatch to lazily initialize a headless GPU
+  /// context if no window-provided GPU is available yet. Default no-op.
+  #[cfg(feature = "window")]
+  fn ensure_gpu_ready(
+    &mut self,
+    _wgsl: &str,
+    _binding_infos: &[((u8, u8), GpuBufferKind, u64)],
+  ) {
+  }
+  /// Returns the current allocated byte size of the GPU buffer for the given
+  /// binding. Used to determine readback size for dynamically-sized buffers
+  /// (unsized arrays) whose size can't be derived from the type alone.
+  /// Default returns `None`; overridden by IO managers with real GPU access.
+  fn get_buffer_byte_size(&self, _group: u8, _binding: u8) -> Option<u64> {
+    None
+  }
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
     env: EvaluationEnvironment<Self>,
@@ -2033,6 +2067,30 @@ impl IOManager for StdoutIO {
     gpu: std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>,
   ) {
     self.gpu = Some(gpu);
+  }
+
+  #[cfg(feature = "window")]
+  fn ensure_gpu_ready(
+    &mut self,
+    wgsl: &str,
+    binding_infos: &[((u8, u8), GpuBufferKind, u64)],
+  ) {
+    if self.gpu.is_none() {
+      self.gpu =
+        Some(crate::window::create_headless_gpu_core(wgsl, binding_infos));
+    }
+  }
+
+  #[cfg(feature = "window")]
+  fn get_buffer_byte_size(&self, group: u8, binding: u8) -> Option<u64> {
+    self.gpu.as_ref().and_then(|gpu| {
+      gpu
+        .read()
+        .unwrap()
+        .binding_buffer_sizes
+        .get(&(group, binding))
+        .copied()
+    })
   }
 
   fn window_size(&self) -> (u32, u32) {
@@ -2146,6 +2204,108 @@ impl IOManager for StringIO {
     env.io.events.push(IOEvent::SpawnWindow);
     let frame_count = env.io.frame_count;
     for _ in 0..frame_count {
+      match eval(body.clone(), &mut env) {
+        Ok(_) => {}
+        Err(EvalException::Error(CloseWindow)) => break,
+        Err(e) => return Err((env, e.into())),
+      }
+    }
+    Ok(env)
+  }
+}
+
+/// IO manager for buffer/GPU integration tests: does real GPU dispatches
+/// (same as `StdoutIO`) but also captures all `print` calls into a
+/// `Vec<String>`. All behavior is delegated to the inner `StdoutIO`.
+pub struct CaptureIO {
+  pub prints: Vec<String>,
+  pub inner: StdoutIO,
+}
+
+impl CaptureIO {
+  pub fn new() -> Self {
+    Self {
+      prints: vec![],
+      inner: StdoutIO::new(),
+    }
+  }
+}
+
+impl IOManager for CaptureIO {
+  fn println(&mut self, s: &str) {
+    self.prints.push(s.to_string());
+    self.inner.println(s);
+  }
+
+  fn record_draw(
+    &mut self,
+    vert: &str,
+    frag: &str,
+    vert_count: u32,
+    pre_upload: Vec<((u8, u8), BufferUpload)>,
+  ) -> Result<(), EvalError> {
+    self.inner.record_draw(vert, frag, vert_count, pre_upload)
+  }
+
+  fn record_compute(
+    &mut self,
+    entry: &str,
+    workgroup_count: (u32, u32, u32),
+    pre_upload: Vec<((u8, u8), BufferUpload)>,
+  ) -> Result<(), EvalError> {
+    self.inner.record_compute(entry, workgroup_count, pre_upload)
+  }
+
+  fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent> {
+    self.inner.take_frame_draw_calls()
+  }
+
+  fn record_close_window(&mut self) {
+    self.inner.record_close_window()
+  }
+
+  fn sync_gpu_to_cpu(&mut self, group: u8, binding: u8, size: u64) -> Option<Vec<u8>> {
+    self.inner.sync_gpu_to_cpu(group, binding, size)
+  }
+
+  #[cfg(feature = "window")]
+  fn set_gpu(
+    &mut self,
+    gpu: std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>,
+  ) {
+    self.inner.set_gpu(gpu)
+  }
+
+  #[cfg(feature = "window")]
+  fn ensure_gpu_ready(
+    &mut self,
+    wgsl: &str,
+    binding_infos: &[((u8, u8), GpuBufferKind, u64)],
+  ) {
+    self.inner.ensure_gpu_ready(wgsl, binding_infos)
+  }
+
+  #[cfg(feature = "window")]
+  fn get_buffer_byte_size(&self, group: u8, binding: u8) -> Option<u64> {
+    self.inner.get_buffer_byte_size(group, binding)
+  }
+
+  fn window_size(&self) -> (u32, u32) {
+    self.inner.window_size()
+  }
+
+  fn run_spawn_window(
+    body: Exp<ExpTypeInfo>,
+    mut env: EvaluationEnvironment<Self>,
+  ) -> Result<
+    EvaluationEnvironment<Self>,
+    (EvaluationEnvironment<Self>, EvalError),
+  > {
+    // Run a headless eval loop rather than going through winit, since tests
+    // can't create an EventLoop off the main thread (macOS restriction). All
+    // GPU operations still delegate to `inner` (the same StdoutIO instance),
+    // so GPU state is shared and consistent with the non-window path.
+    loop {
       match eval(body.clone(), &mut env) {
         Ok(_) => {}
         Err(EvalException::Error(CloseWindow)) => break,
@@ -2400,10 +2560,15 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       .map(|(gb, name, ty, _)| (*gb, name.clone(), ty.clone()))
       .collect();
     for (gb, name, ty) in vars {
-      let u32s = ty
+      // For statically-sized types, derive the readback size from the type.
+      // For dynamically-sized types (e.g. unsized arrays), fall back to the
+      // actual allocated buffer size tracked by the GPU core.
+      let size = ty
         .data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
-        .unwrap_or(0);
-      let size = ((u32s as u64 * 4).max(4) + 15) & !15;
+        .ok()
+        .map(|u32s| ((u32s as u64 * 4 + 15) & !15).max(16))
+        .or_else(|| self.io.get_buffer_byte_size(gb.group, gb.binding))
+        .unwrap_or(16);
       if let Some(bytes) = self.io.sync_gpu_to_cpu(gb.group, gb.binding, size) {
         let value = Value::from_gpu_bytes(&bytes, &ty);
         if let Some(stack) = self.bindings.get_mut(&name) {
@@ -2414,6 +2579,41 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         self
           .buffer_states
           .insert(name.clone(), SharedBufferState::Synced);
+      }
+    }
+  }
+
+  /// Ensures a GPU context is available for compute dispatches. If the IO
+  /// manager supports real GPU but none has been set yet (i.e. no window was
+  /// opened), this lazily creates a headless GPU core.
+  fn setup_gpu_if_needed(&mut self) {
+    #[cfg(feature = "window")]
+    {
+      let wgsl = self.wgsl.clone();
+      let binding_infos = self.binding_infos();
+      self.io.ensure_gpu_ready(&wgsl, &binding_infos);
+    }
+  }
+
+  /// Syncs all GPU-written (CPUOutOfDate) buffers back to CPU, then marks
+  /// them GPUOutOfDate so that when a new GPU is created (e.g. transitioning
+  /// from headless to windowed), it will receive the correct data on next use.
+  pub fn sync_gpu_written_to_cpu(&mut self) {
+    let names: Vec<Arc<str>> = self
+      .buffer_states
+      .iter()
+      .filter(|(_, s)| **s == SharedBufferState::CPUOutOfDate)
+      .map(|(n, _)| n.clone())
+      .collect();
+    if names.is_empty() {
+      return;
+    }
+    self.check_cpu_readable(&names);
+    for name in &names {
+      if self.buffer_states.get(name) == Some(&SharedBufferState::Synced) {
+        self
+          .buffer_states
+          .insert(name.clone(), SharedBufferState::GPUOutOfDate);
       }
     }
   }
@@ -3008,4 +3208,11 @@ pub fn run_program_capturing_output(
 
 pub fn run_program_test_io(program: Program) -> Result<StringIO, EvalError> {
   run_program_with(program, None, StringIO::new())
+}
+
+pub fn run_program_with_capture(
+  program: Program,
+) -> Result<Vec<String>, EvalError> {
+  let io = run_program_with(program, None, CaptureIO::new())?;
+  Ok(io.prints)
 }

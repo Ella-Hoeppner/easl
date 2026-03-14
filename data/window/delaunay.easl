@@ -33,11 +33,6 @@
   binding 5}
 (var particles: [vec4f])
 
-@{address storage
-  group 0
-  binding 6}
-(var particles-readonly: [vec4f])
-
 (defn bi->uni [x: f32]: f32
   (-> x (+ 1.) (* 0.5)))
 
@@ -48,6 +43,17 @@
          (if (or (== i 0) (== i 3) (== i 4))
            -1.
            1.)))
+
+@compute
+@{workgroup-size 1}
+(defn randomize-particles [@{builtin global-invocation-id}
+                           id: vec3u]
+  (= (particles id.x)
+     (vec4f 1.)
+     #_(-> id.x
+           f32
+           (/ (f32 particle-count))
+           (vec4f (vec3f 0.)))))
 
 @vertex
 (defn line-vertex [@{builtin vertex-index}
@@ -65,15 +71,27 @@
            0.
            1.)))
 
+(struct DotVertOutput
+  @{builtin position} pos: vec4f
+  square-pos: vec2f)
+
 @vertex
 (defn particle-dots-vertex [@{builtin vertex-index}
-                            vertex-index: u32]: @{builtin position} vec4f
+                            vertex-index: u32]: DotVertOutput
   (let [square-pos (vert-index-square-pos (% vertex-index 6))
-        particle (particles-readonly (/ vertex-index 6))]
-    (vec4f (+ particle.xy
-              (* line-width square-pos))
-           0.
-           1.)))
+        particle (particles (/ vertex-index 6))]
+    (DotVertOutput (vec4f (* screenspace-scale
+                             (+ particle.xy
+                                (* line-width square-pos)))
+                          0.
+                          1.)
+                   square-pos)))
+
+@fragment
+(defn dot-frag [in: DotVertOutput]: @{location 0} vec4f
+  (when (> (length in.square-pos) 1.)
+    (discard))
+  (vec4f solid-color 1.))
 
 @fragment
 (defn solid-color-frag [@{builtin position} pos: vec4f]: @{location 0} vec4f
@@ -96,22 +114,27 @@
   (= solid-color color)
   (= line-width radius)
   (dispatch-render-shaders particle-dots-vertex
-                           solid-color-frag
+                           dot-frag
                            (* 6 particle-count)))
 
 @cpu
 (defn main []
-  (spawn-window (fn []
-                    (let [resolution (window-resolution)]
-                      (= screenspace-scale
-                         (/ (f32 (min resolution.x resolution.y))
-                            (vec2f resolution))))
-                    (draw-particles 0.01 (vec3f 1.))
-                    (draw-line (vec2f 0.)
-                               (-> frame-index
-                                   f32
-                                   (* 0.01)
-                                   (vec2f (cos <>) (sin <>)))
-                               0.003
-                               (vec3f 1. 0. 1.))
-                    (+= frame-index 1))))
+  (= particles
+     (zeroed-array particle-count))
+  (dispatch-compute-shader randomize-particles
+                           (vec3u particle-count 0u 0u))
+  (print particles)
+  #_(spawn-window (fn []
+                      (let [resolution (window-resolution)]
+                        (= screenspace-scale
+                           (/ (f32 (min resolution.x resolution.y))
+                              (vec2f resolution))))
+                      (draw-line (vec2f 0.)
+                                 (-> frame-index
+                                     f32
+                                     (* 0.01)
+                                     (vec2f (cos <>) (sin <>)))
+                                 0.003
+                                 (vec3f 1. 0. 1.))
+                      (draw-particles 0.1 (vec3f 1.))
+                      (+= frame-index 1))))

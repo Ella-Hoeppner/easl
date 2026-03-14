@@ -1,0 +1,124 @@
+(def particle-count: u32
+     50000)
+
+(def dot-radius: f32
+     0.003)
+
+(def dot-color: vec3f
+     (vec3f 1.))
+
+@{address uniform
+  group 0
+  binding 0}
+(var screenspace-scale: vec2f)
+
+@{address storage-write
+  group 0
+  binding 1}
+(var particles: [vec4f])
+
+(defn rand [seed: f32]: f32
+  (fract (* 43758.5453123
+            (sin (* seed 78.233)))))
+
+(defn uni->bi [x: f32]: f32
+  (-> x (* 2.) (- 1.)))
+
+(defn uni->bi [x: vec2f]: vec2f
+  (-> x (* 2.) (- 1.)))
+
+(defn uni->bi [x: vec3f]: vec3f
+  (-> x (* 2.) (- 1.)))
+
+(defn uni->bi [x: vec4f]: vec4f
+  (-> x (* 2.) (- 1.)))
+
+(defn bi->uni [x: f32]: f32
+  (-> x (+ 1.) (* 0.5)))
+
+(defn bi->uni [x: vec2f]: vec2f
+  (-> x (+ 1.) (* 0.5)))
+
+(defn bi->uni [x: vec3f]: vec3f
+  (-> x (+ 1.) (* 0.5)))
+
+(defn bi->uni [x: vec4f]: vec4f
+  (-> x (+ 1.) (* 0.5)))
+
+@compute
+@{workgroup-size 1}
+(defn randomize-particles [@{builtin global-invocation-id}
+                           id: vec3u]
+  (= (particles id.x)
+     (-> (vec2f (rand (/ (f32 id.x)
+                         (- (f32 particle-count) 1)))
+                (rand (- (/ (+ (f32 id.x) 0.5)
+                            (- (f32 particle-count) 1))
+                         0.2711)))
+         uni->bi
+         (vec4f 0. 0.))))
+
+@compute
+@{workgroup-size 1}
+(defn clifford-update [@{builtin global-invocation-id}
+                       id: vec3u]
+  (let [a -1.4
+        b 1.6
+        c 1.0
+        d 0.7
+        particle (particles id.x)]
+    (= (particles id.x)
+       (vec4f (+ (sin (* a particle.y))
+                 (* c (cos (* a particle.x))))
+              (+ (sin (* b particle.x))
+                 (* d (cos (* b particle.y))))
+              0.
+              0.))))
+
+(defn vert-index-square-pos [i: u32]: vec2f
+  (vec2f (if (or (== i 0) (== i 1) (== i 3))
+           -1.
+           1.)
+         (if (or (== i 0) (== i 3) (== i 4))
+           -1.
+           1.)))
+
+(struct DotVertOutput
+  @{builtin position} pos: vec4f
+  square-pos: vec2f)
+
+@vertex
+(defn particle-dots-vertex [@{builtin vertex-index}
+                            vertex-index: u32]: DotVertOutput
+  (let [square-pos (vert-index-square-pos (% vertex-index 6))
+        particle (particles (/ vertex-index 6))]
+    (DotVertOutput (vec4f (* 0.5
+                             (* screenspace-scale
+                                (+ particle.xy
+                                   (* dot-radius square-pos))))
+                          0.
+                          1.)
+                   square-pos)))
+
+@fragment
+(defn dot-frag [in: DotVertOutput]: @{location 0} vec4f
+  (when (> (length in.square-pos) 1.)
+    (discard))
+  (vec4f dot-color 1.))
+
+@cpu
+(defn main []
+  (= particles
+     (zeroed-array particle-count))
+  (dispatch-compute-shader randomize-particles
+                           (vec3u particle-count 1u 1u))
+  (spawn-window (fn []
+                    (let [resolution (window-resolution)]
+                      (= screenspace-scale
+                         (/ (f32 (min resolution.x resolution.y))
+                            (vec2f resolution))))
+                    (dispatch-compute-shader clifford-update
+                                             (vec3u particle-count 1u 1u))
+                    (dispatch-render-shaders particle-dots-vertex
+                                             dot-frag
+                                             (* 6 particle-count)))))

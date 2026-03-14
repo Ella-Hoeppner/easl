@@ -1,0 +1,348 @@
+(def max-steps: u32
+     500)
+
+(def step-size: f32
+     0.005)
+
+(def TAU: f32
+     6.28318530718)
+
+(def resolution-division: u32
+     1)
+
+@{address uniform
+  group 0
+  binding 0}
+(var resolution: vec2u)
+
+@{address uniform
+  group 0
+  binding 1}
+(var screenspace-scale: vec2f)
+
+@{address uniform
+  group 0
+  binding 2}
+(var frame-index: u32)
+
+@{address storage-write
+  group 0
+  binding 3}
+(var accumulated-colors: [vec4f])
+
+(var rand-state: vec2f
+     (vec2f 0.))
+
+(defn set-rand-seed [x: vec2f]
+  (= rand-state x))
+
+(defn rand []: f32
+  (= rand-state
+     (+ rand-state 0.025))
+  (fract (* 43758.5453123
+            (+ (sin (* rand-state.x 78.233))
+               (sin (* rand-state.y 51.237))))))
+
+(defn rand-norm []: vec2f
+  (let [u1 (rand)
+        u2 (rand)
+        r (sqrt (* -2. (log u1)))
+        theta (* 6.2831853 u2)]
+    (vec2f (* r (cos theta))
+           (* r (sin theta)))))
+
+(defn rand-dir []: vec3f
+  (let [n1 (rand-norm)
+        n2 (rand-norm)]
+    (normalize (vec3f n1.x n1.y n2.x))))
+
+(defn rand-exp []: f32
+  (- (log (rand))))
+
+(defn mix-exp [bottom: f32
+               top: f32
+               p: f32]: f32
+  (* bottom (pow (/ top bottom) p)))
+
+(defn uni->bi [x: f32]: f32
+  (-> x (* 2.) (- 1.)))
+
+(defn uni->bi [x: vec2f]: vec2f
+  (vec2f (-> x (* 2.) (- 1.))))
+
+(defn uni->bi [x: vec3]: vec3
+  (vec3f (-> x (* 2.) (- 1.))))
+
+(defn noise [n: u32
+             amp-range: vec2f
+             freq-range: vec2f
+             feedback: vec2f]: (Fn [vec3f] vec3f)
+  (fn [pos]
+      (set-rand-seed (vec2f 0.5))
+      (let [@var seed-pos pos
+            @var off-sum (vec3f 0.)
+            @var restricted-off-sum (vec3f 0.)
+            height-restriction-range (vec2f 0.7250441 0.8507471)]
+        (for [i 0u (< i n) (+= i 1)]
+          (let [p (/ (f32 i) (- (f32 n) 1.))
+                alignment (-> (vec3f (rand) (rand) (rand))
+                              uni->bi
+                              normalize)
+                push (-> (vec3f (rand) (rand) (rand))
+                         uni->bi
+                         normalize)
+                amp (mix-exp (.x amp-range)
+                             (.y amp-range)
+                             p)
+                freq (mix-exp (.x freq-range)
+                              (.y freq-range)
+                              p)
+                phase (* TAU (rand))
+                feedback (mix (.x feedback) (.y feedback) p)
+                off (-> seed-pos
+                        (dot alignment)
+                        (* freq)
+                        cos
+                        (* push)
+                        (* amp))]
+            (+= off-sum off)
+            (+= restricted-off-sum
+                (* off
+                   (smoothstep (.y height-restriction-range)
+                               (.x height-restriction-range)
+                               p)))
+            (= seed-pos
+               (+ seed-pos (* off feedback)))))
+        (vec3f (.xy off-sum)
+               (.z restricted-off-sum)))))
+
+(defn sd-line [pos: vec3f
+               a: vec3f
+               b: vec3f]: f32
+  (let [pa (- pos a)
+        ba (- b a)
+        h (clamp (/ (dot pa ba) (dot ba ba))
+                 0.
+                 1.)]
+    (length (- pa (* ba h)))))
+
+(defn rotate [pos: vec3f
+              axis: vec3f
+              angle: f32]: vec3f
+  (let [a (normalize axis)
+        co (cos angle)
+        si (sin angle)
+        t (- 1. co)
+        x a.x
+        y a.y
+        z a.z]
+    (* (mat3x3f (+ (* t x x) co)
+                (+ (* t x y) (* si z))
+                (- (* t x z) (* si y))
+                (- (* t x y) (* si z))
+                (+ (* t y y) co)
+                (+ (* t y z) (* si x))
+                (+ (* t x z) (* si y))
+                (- (* t y z) (* si x))
+                (+ (* t z z) co))
+       pos)))
+
+(defn sd-box [pos: vec3f
+              size: vec3f]: f32
+  (let [q (- (abs pos) size)]
+    (+ (length (max q (vec3f 0.)))
+       (min (max q.x (max q.y q.z)) 0.))))
+
+(defn sd-box-frame [pos: vec3f
+                    size: vec3f
+                    thickness: f32]: f32
+  (let [p (- (abs pos) size)
+        q (- (abs (+ p (vec3f thickness)))
+             thickness)]
+    (min (min (+ (length (max (vec3f p.x q.y q.z)
+                              (vec3f 0.)))
+                 (min (max p.x (max q.y q.z)) 0.))
+              (+ (length (max (vec3f q.x p.y q.z)
+                              (vec3f 0.)))
+                 (min (max q.x (max p.y q.z)) 0.)))
+         (+ (length (max (vec3f q.x q.y p.z)
+                         (vec3f 0.)))
+            (min (max q.x (max q.y p.z)) 0.)))))
+
+(defn unmix [a: f32
+             b: f32
+             x: f32]: f32
+  (/ (- x a) (- b a)))
+
+(struct SceneSample
+  opacity: f32
+  tint: vec3f
+  luminosity: vec3f)
+
+(defn scene-geometry [pos: vec3f]: SceneSample
+  (let [radius 0.5
+        stretch-dir (normalize (vec3f 1. -0.1 0.))
+        vertical-noise-stretch-dir (cross stretch-dir (vec3f 0. 0. 1.))
+        stretch-along (fn [p: vec3f
+                           dir: vec3f
+                           factor: f32]
+                          (let [proj (* dir (dot p dir))
+                                rej (- p proj)]
+                            (+ rej (/ proj factor))))
+        surface-shape-big-distortion ((noise 4
+                                             (vec2f 0.1 0.025)
+                                             (vec2f 2.6 15.)
+                                             (vec2f 0.5 0.1))
+                                      pos)
+        coarse-shape-pos (-> pos
+                             (stretch-along stretch-dir 2.)
+                             (+ surface-shape-big-distortion))
+        surface-shape-vertical-noise ((noise 6
+                                             (vec2f 0.0075 0.01)
+                                             (vec2f 11.6 60.)
+                                             (vec2f 1. 0.5))
+                                      (stretch-along pos
+                                                     vertical-noise-stretch-dir
+                                                     0.05))
+        internal-light-noise ((noise 7
+                                     (vec2f 0.7 0.125)
+                                     (vec2f 20.6 120.)
+                                     (vec2f 0.2 0.0))
+                              (stretch-along coarse-shape-pos
+                                             vertical-noise-stretch-dir
+                                             0.1))
+        coarse-d (-> coarse-shape-pos
+                     length
+                     (- radius))
+        fine-d (-> coarse-shape-pos
+                   (+ surface-shape-vertical-noise)
+                   length
+                   (- radius))
+        @var sample (SceneSample 0. (vec3f 0.) (vec3f 0.))]
+    (when (< fine-d 0.)
+      (= sample.luminosity
+         (* (* (smoothstep 0.07
+                           0.05
+                           (abs internal-light-noise.x))
+               (smoothstep 0. -0.02 coarse-d))
+            (vec3f 1. 0.1 0.)))
+      (= sample.tint
+         (vec3f 0.4 0.2 0.05))
+      (= sample.opacity 1.))
+    sample))
+
+(defn skybox-luminosity [x: vec3f]: vec3f
+  (* (vec3f 1.5)
+     (smoothstep 0.5
+                 0.6
+                 (dot (normalize (vec3f 1. 0. -0.5))
+                      (normalize x)))))
+
+(defn aces-tonemap [rgb: vec3f]: vec3f
+  (clamp (/ (* rgb (+ 0.03 (* 2.51 rgb)))
+            (+ 0.14
+               (* rgb (+ 0.59 (* 2.43 rgb)))))
+         (vec3f 0.)
+         (vec3f 1.)))
+
+@compute
+@{workgroup-size 256}
+(defn c [@{builtin global-invocation-id}
+         id: vec3u]
+  (let [pixel-id id.x]
+    (when (< pixel-id
+             (* resolution.x resolution.y))
+      (set-rand-seed (vec2f (+ (* (f32 pixel-id) 0.000031751)
+                               (* (f32 frame-index)
+                                  -0.00005290125))
+                            (+ (* (f32 pixel-id) -0.0000204394)
+                               (* (f32 frame-index)
+                                  0.0000917823479))))
+      (let [screen-pos (* screenspace-scale
+                          (vec2f (-> pixel-id
+                                     (% resolution.x)
+                                     f32
+                                     (+ (- (rand) 0.5))
+                                     (/ (f32 resolution.x))
+                                     uni->bi)
+                                 (-> pixel-id
+                                     (/ resolution.x)
+                                     f32
+                                     (+ (- (rand) 0.5))
+                                     (/ (f32 resolution.y))
+                                     uni->bi)))
+            @var pos (vec3f 0. 0. -0.9)
+            @var dir (normalize (vec3f screen-pos 1.))
+            @var tint (vec3f 1.)
+            @var accumulated-color (vec3f 0.)]
+        (for [i 0u (< i max-steps) (+= i 1)]
+          (let [sample (scene-geometry pos)]
+            (set-rand-seed (vec2f (+ (* (f32 pixel-id) 0.000099751)
+                                     (* (f32 frame-index)
+                                        0.00005990125)
+                                     (* (f32 i) 0.003157234))
+                                  (+ (* (f32 pixel-id) -0.0000391394)
+                                     (* (f32 frame-index)
+                                        0.0000717823479)
+                                     (* (f32 i) -0.0012316239))))
+            (when (< (rand) sample.opacity)
+              (+= accumulated-color
+                  (* sample.luminosity tint))
+              (*= tint sample.tint)
+              (= dir (rand-dir)))
+            (+= pos
+                (* (* step-size (rand-exp)) dir))
+            (when (> (length pos) 1.)
+              (break))))
+        (+= (accumulated-colors pixel-id)
+            (vec4f (+ accumulated-color
+                      (* tint (skybox-luminosity dir)))
+                   1.))))))
+
+@vertex
+(defn v [@{builtin vertex-index}
+         vertex-index: u32]: @{builtin position} vec4f
+  (vec4f (match vertex-index
+           0 (vec2f -1.)
+           1 (vec2f -1. 3.)
+           _ (vec2f 3. -1.))
+         0.
+         1.))
+
+@fragment
+(defn f [@{builtin position} pos: vec4f]: @{location 0} vec4f
+  (let [x (/ (u32 pos.x)
+             resolution-division)
+        y (/ (u32 pos.y)
+             resolution-division)]
+    (if (or (>= x resolution.x)
+            (>= y resolution.y))
+      (vec4f (vec3f 0.) 1.)
+      (-> (accumulated-colors (+ x (* y resolution.x)))
+          .xyz
+          (/ (f32 frame-index))
+          aces-tonemap
+          (vec4f 1.)))))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (let [new-resolution (/ (window-resolution)
+                                            (vec2u resolution-division))]
+                      (= screenspace-scale
+                         (/ (vec2f resolution)
+                            (f32 (min resolution.x resolution.y))))
+                      (when (not (and (== resolution.x new-resolution.x)
+                                      (== resolution.y new-resolution.y)))
+                        (= resolution new-resolution)
+                        (= accumulated-colors
+                           (zeroed-array (* resolution.x resolution.y)))
+                        (= frame-index 0u)
+                        (print new-resolution)))
+                    (+= frame-index 1u)
+                    (dispatch-compute-shader c
+                                             (vec3u (u32 (ceil (/ (f32 (* resolution.x resolution.y))
+                                                                  256)))
+                                                    1u
+                                                    1u))
+                    (dispatch-render-shaders v f 3))))

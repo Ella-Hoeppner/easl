@@ -13,8 +13,8 @@ use winit::{
 use crate::{
   compiler::{expression::Exp, types::ExpTypeInfo},
   interpreter::{
-    BufferUpload, EvalError, EvalException, EvaluationEnvironment, GpuBufferKind,
-    IOManager, WindowEvent, eval,
+    BufferUpload, EvalError, EvalException, EvaluationEnvironment,
+    GpuBufferKind, IOManager, WindowEvent, eval,
   },
 };
 
@@ -281,6 +281,142 @@ impl GpuCore {
   }
 }
 
+/// Creates a headless wgpu GPU core without a window or surface, suitable for
+/// running compute shaders outside of a windowed context (e.g. in tests).
+pub(crate) fn create_headless_gpu_core(
+  wgsl: &str,
+  binding_infos: &[((u8, u8), GpuBufferKind, u64)],
+) -> Arc<RwLock<GpuCore>> {
+  pollster::block_on(async {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+      backends: wgpu::Backends::all(),
+      ..Default::default()
+    });
+
+    let adapter = instance
+      .request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::default(),
+        compatible_surface: None,
+        force_fallback_adapter: false,
+      })
+      .await
+      .expect("No wgpu adapter found for headless GPU core");
+
+    let (device, queue) = adapter
+      .request_device(&wgpu::DeviceDescriptor {
+        label: None,
+        required_features: wgpu::Features::VERTEX_WRITABLE_STORAGE,
+        required_limits: wgpu::Limits::default(),
+        memory_hints: wgpu::MemoryHints::default(),
+        ..Default::default()
+      })
+      .await
+      .expect("Failed to create headless wgpu device");
+
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+      label: Some("easl shader"),
+      source: wgpu::ShaderSource::Wgsl(wgsl.into()),
+    });
+
+    let binding_slots: Vec<BindingSlot> = binding_infos
+      .iter()
+      .map(|&((group, binding), kind, _)| BindingSlot {
+        group,
+        binding,
+        kind,
+      })
+      .collect();
+
+    let max_group = binding_infos
+      .iter()
+      .map(|((g, _), _, _)| *g as usize)
+      .max()
+      .map(|g| g + 1)
+      .unwrap_or(0);
+
+    let mut binding_buffers: HashMap<(u8, u8), wgpu::Buffer> = HashMap::new();
+    let mut binding_buffer_sizes: HashMap<(u8, u8), u64> = HashMap::new();
+    for &((group, binding), kind, size) in binding_infos {
+      let alloc_size = size.max(16);
+      let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(&format!("binding g{group}b{binding}")),
+        size: alloc_size,
+        usage: gpu_buffer_usage(kind),
+        mapped_at_creation: false,
+      });
+      binding_buffers.insert((group, binding), buffer);
+      binding_buffer_sizes.insert((group, binding), alloc_size);
+    }
+
+    let bind_group_layouts: Vec<wgpu::BindGroupLayout> = (0..max_group)
+      .map(|group_idx| {
+        let entries: Vec<wgpu::BindGroupLayoutEntry> = binding_infos
+          .iter()
+          .filter(|((g, _), _, _)| *g as usize == group_idx)
+          .map(|((_, b), kind, _)| wgpu::BindGroupLayoutEntry {
+            binding: *b as u32,
+            visibility: gpu_binding_visibility(*kind),
+            ty: wgpu::BindingType::Buffer {
+              ty: gpu_binding_type(*kind),
+              has_dynamic_offset: false,
+              min_binding_size: None,
+            },
+            count: None,
+          })
+          .collect();
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+          label: Some(&format!("bind group layout {group_idx}")),
+          entries: &entries,
+        })
+      })
+      .collect();
+
+    let bind_groups: Vec<wgpu::BindGroup> = bind_group_layouts
+      .iter()
+      .enumerate()
+      .map(|(group_idx, layout)| {
+        let entries: Vec<wgpu::BindGroupEntry> = binding_slots
+          .iter()
+          .filter(|s| s.group as usize == group_idx)
+          .map(|s| wgpu::BindGroupEntry {
+            binding: s.binding as u32,
+            resource: binding_buffers[&(s.group, s.binding)]
+              .as_entire_binding(),
+          })
+          .collect();
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+          label: Some(&format!("bind group {group_idx}")),
+          layout,
+          entries: &entries,
+        })
+      })
+      .collect();
+
+    let bind_group_layout_refs: Vec<&wgpu::BindGroupLayout> =
+      bind_group_layouts.iter().collect();
+    let pipeline_layout =
+      device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &bind_group_layout_refs,
+        immediate_size: 0,
+      });
+
+    Arc::new(RwLock::new(GpuCore {
+      device,
+      queue,
+      shader,
+      pipeline_layout,
+      compute_pipelines: HashMap::new(),
+      binding_slots,
+      binding_buffers,
+      binding_buffer_sizes,
+      bind_group_layouts,
+      bind_groups,
+      window_size: (1, 1),
+    }))
+  })
+}
+
 struct RenderState {
   window: Arc<Window>,
   surface: wgpu::Surface<'static>,
@@ -296,6 +432,9 @@ impl<IO: IOManager> ApplicationHandler for App<IO> {
         .create_window(Window::default_attributes().with_title("easl"))
         .unwrap(),
     );
+    // Sync any GPU-written buffers back to CPU before replacing the GPU, so
+    // data written by a prior headless compute dispatch is not lost.
+    self.env.as_mut().unwrap().sync_gpu_written_to_cpu();
     let env = self.env.as_ref().unwrap();
     let wgsl = env.wgsl().to_string();
     let binding_infos = env.binding_infos();
@@ -399,7 +538,9 @@ fn gpu_binding_visibility(kind: GpuBufferKind) -> wgpu::ShaderStages {
     }
     // Read-write storage is not permitted in vertex shaders, but is in compute.
     GpuBufferKind::StorageReadWrite => {
-      wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE
+      wgpu::ShaderStages::FRAGMENT
+        | wgpu::ShaderStages::COMPUTE
+        | wgpu::ShaderStages::VERTEX
     }
   }
 }
@@ -431,7 +572,12 @@ impl RenderState {
     let (device, queue) = adapter
       .request_device(&wgpu::DeviceDescriptor {
         label: None,
-        required_features: wgpu::Features::empty(),
+        // todo! right now this feature is necessary to make `delaunay.easl`,
+        // but eventually this should be `Features::empty()`. The delaunay
+        // example should be refactored once it's possible to have a
+        // global var like `particles` be treated as storage-write from inside
+        // compute shaders, but just storage from inside render shaders
+        required_features: wgpu::Features::VERTEX_WRITABLE_STORAGE,
         required_limits: wgpu::Limits::default(),
         memory_hints: wgpu::MemoryHints::default(),
         ..Default::default()
@@ -647,18 +793,13 @@ impl RenderState {
 
     let format = self.surface_config.format;
 
-    // Pre-pass: upload CPU-modified buffers and ensure all pipelines exist.
+    // Pre-pass: ensure all pipeline objects exist. No buffer uploads here —
+    // uploads are done per-draw-call below so each draw sees its own values.
     {
       let mut gpu = self.gpu.write().unwrap();
       for draw_call in draw_calls {
         match draw_call {
-          WindowEvent::RenderShaders {
-            vert,
-            frag,
-            pre_upload,
-            ..
-          } => {
-            gpu.upload_bindings(pre_upload);
+          WindowEvent::RenderShaders { vert, frag, .. } => {
             let vert = vert.replace('-', "_");
             let frag = frag.replace('-', "_");
             Self::get_or_create_render_pipeline(
@@ -669,12 +810,9 @@ impl RenderState {
               format,
             );
           }
-          WindowEvent::ComputeShader {
-            entry, pre_upload, ..
-          } => {
+          WindowEvent::ComputeShader { entry, .. } => {
             // Compute shaders are normally executed immediately by
             // record_compute, but handle defensively here too.
-            gpu.upload_bindings(pre_upload);
             let entry = entry.replace('-', "_");
             gpu.get_or_create_compute_pipeline(&entry);
           }
@@ -704,77 +842,97 @@ impl RenderState {
         .create_view(&wgpu::TextureViewDescriptor::default())
     });
 
-    {
-      let gpu = self.gpu.write().unwrap();
-
-      let mut encoder =
-        gpu
-          .device
-          .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("render encoder"),
-          });
-
-      // Compute dispatches first (in order).
-      for draw_call in draw_calls {
-        if let WindowEvent::ComputeShader {
+    // Process each draw call in order, uploading its bindings and submitting a
+    // dedicated command encoder before moving to the next. This ensures that
+    // buffer writes for draw call N are committed before its commands execute
+    // and are not overwritten by draw call N+1's uploads (which would happen
+    // if all uploads were batched ahead of a single combined render pass).
+    let mut first_render = true;
+    for draw_call in draw_calls {
+      match draw_call {
+        WindowEvent::ComputeShader {
           entry,
           workgroup_count: (x, y, z),
-          ..
-        } = draw_call
-        {
+          pre_upload,
+        } => {
+          let mut gpu = self.gpu.write().unwrap();
+          gpu.upload_bindings(pre_upload);
           let entry = entry.replace('-', "_");
-          let mut compute_pass =
-            encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-              label: Some("compute pass"),
-              timestamp_writes: None,
-            });
-          for (group_idx, bind_group) in gpu.bind_groups.iter().enumerate() {
-            compute_pass.set_bind_group(group_idx as u32, bind_group, &[]);
-          }
-          compute_pass.set_pipeline(&gpu.compute_pipelines[&entry]);
-          compute_pass.dispatch_workgroups(*x, *y, *z);
-        }
-      }
-
-      // One render pass for all render calls.
-      if let Some(view) = &view {
-        let mut render_pass =
-          encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("render pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-              view,
-              resolve_target: None,
-              depth_slice: None,
-              ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                store: wgpu::StoreOp::Store,
-              },
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: None,
-          });
-        for (group_idx, bind_group) in gpu.bind_groups.iter().enumerate() {
-          render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
-        }
-        for draw_call in draw_calls {
-          if let WindowEvent::RenderShaders {
-            vert,
-            frag,
-            vert_count,
-            ..
-          } = draw_call
+          let mut encoder =
+            gpu
+              .device
+              .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("compute encoder"),
+              });
           {
+            let mut compute_pass =
+              encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("compute pass"),
+                timestamp_writes: None,
+              });
+            for (group_idx, bind_group) in gpu.bind_groups.iter().enumerate() {
+              compute_pass.set_bind_group(group_idx as u32, bind_group, &[]);
+            }
+            compute_pass.set_pipeline(&gpu.compute_pipelines[&entry]);
+            compute_pass.dispatch_workgroups(*x, *y, *z);
+          }
+          gpu.queue.submit(std::iter::once(encoder.finish()));
+        }
+        WindowEvent::RenderShaders {
+          vert,
+          frag,
+          vert_count,
+          pre_upload,
+        } => {
+          if let Some(view) = &view {
+            let mut gpu = self.gpu.write().unwrap();
+            // Upload this draw call's bindings. wgpu guarantees write_buffer
+            // calls are committed before commands in the subsequent submit.
+            gpu.upload_bindings(pre_upload);
             let vert = vert.replace('-', "_");
             let frag = frag.replace('-', "_");
-            render_pass.set_pipeline(&self.pipelines[&(vert, frag)]);
-            render_pass.draw(0..*vert_count, 0..1);
+            let load_op = if first_render {
+              first_render = false;
+              wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+            } else {
+              wgpu::LoadOp::Load
+            };
+            let mut encoder =
+              gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                  label: Some("render encoder"),
+                });
+            {
+              let mut render_pass =
+                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                  label: Some("render pass"),
+                  color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                      load: load_op,
+                      store: wgpu::StoreOp::Store,
+                    },
+                  })],
+                  depth_stencil_attachment: None,
+                  occlusion_query_set: None,
+                  timestamp_writes: None,
+                  multiview_mask: None,
+                });
+              for (group_idx, bind_group) in gpu.bind_groups.iter().enumerate()
+              {
+                render_pass
+                  .set_bind_group(group_idx as u32, bind_group, &[]);
+              }
+              render_pass.set_pipeline(&self.pipelines[&(vert, frag)]);
+              render_pass.draw(0..*vert_count, 0..1);
+            }
+            gpu.queue.submit(std::iter::once(encoder.finish()));
           }
         }
       }
-
-      gpu.queue.submit(std::iter::once(encoder.finish()));
     }
 
     if let Some(output) = output {

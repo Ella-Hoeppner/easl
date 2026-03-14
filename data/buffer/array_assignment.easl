@@ -1,0 +1,20 @@
+(def array-size: u32
+     3)
+
+@{address storage-write
+  group 0
+  binding 0}
+(var arr: [vec4u])
+
+@compute
+@{workgroup-size 1}
+(defn fill-array-with-ones [@{builtin global-invocation-id}
+                            id: vec3u]
+  (= (arr id.x) (vec4 1u)))
+
+@cpu
+(defn main []
+  (= arr (zeroed-array array-size))
+  (dispatch-compute-shader fill-array-with-ones
+                           (vec3u array-size 1u 1u))
+  (print arr))
