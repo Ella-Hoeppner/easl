@@ -252,6 +252,7 @@ success_test!(atomic_type);
 success_test!(atomic_store);
 success_test!(atomic_load);
 success_test!(atomic_ops);
+success_test!(atomic_store_array);
 
 // --- Error tests ---
 
