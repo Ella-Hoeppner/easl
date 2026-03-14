@@ -508,3 +508,10 @@ error_test!(
     VariableAddressSpace::Uniform
   )
 );
+error_test!(
+  atomic_type_failure,
+  CompileErrorKind::UnsatisfiedTypeConstraint(TypeConstraintDescription {
+    name: "Integer".into(),
+    args: vec![]
+  })
+);
