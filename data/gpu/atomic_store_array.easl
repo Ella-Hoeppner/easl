@@ -1,0 +1,10 @@
+@{group 0
+  binding 0
+  address storage-write}
+(var x: [10: (Atomic u32)])
+
+@compute
+@{workgroup-size 1}
+(defn f [@{builtin global-invocation-id}
+         id: vec3u]
+  (atomic-store (x id.x) id.x))

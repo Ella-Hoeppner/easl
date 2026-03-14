@@ -635,6 +635,36 @@ pub struct Struct {
 }
 
 impl Struct {
+  pub fn check_type_constraints(
+    &self,
+    source_trace: &SourceTrace,
+    errors: &mut ErrorLog,
+  ) {
+    let abstract_s = self.abstract_ancestor.clone();
+    let ancestor_s = abstract_s.original_ancestor();
+    let mut generic_bindings = HashMap::new();
+    let mut constant_bindings = HashMap::new();
+    ancestor_s.extract_generic_bindings(
+      self,
+      &mut generic_bindings,
+      &mut constant_bindings,
+    );
+    for (name, generic_arg, _) in ancestor_s.generic_args.iter() {
+      let generic_arg_type = generic_bindings
+        .get(name)
+        .expect("couldn't find filled generic argument");
+      if let GenericArgument::Type(constraints) = generic_arg {
+        for constraint in constraints {
+          if !generic_arg_type.satisfies_constraint(&constraint) {
+            errors.log(CompileError::new(
+              UnsatisfiedTypeConstraint(constraint.clone().into()),
+              source_trace.clone(),
+            ));
+          }
+        }
+      }
+    }
+  }
   pub fn compatible(&self, other: &Self) -> bool {
     self.fields.iter().zip(other.fields.iter()).fold(
       self.name == other.name,

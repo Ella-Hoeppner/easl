@@ -1,0 +1,18 @@
+@{group 0
+  binding 0
+  address storage-write}
+(var x: (Atomic u32))
+
+@compute
+@{workgroup-size 1}
+(defn set-x-to-twice-y []
+  (let [a (atomic-add x 5)
+        b (atomic-sub x a)
+        c (atomic-max x b)
+        d (atomic-min x c)
+        e (atomic-and x d)
+        f (atomic-or x e)
+        g (atomic-xor x f)
+        h (atomic-and x g)
+        i (atomic-exchange x h)]
+    (atomic-store x (+ h i))))

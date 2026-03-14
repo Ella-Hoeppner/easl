@@ -248,6 +248,11 @@ success_test!(user_reference_success);
 success_test!(ownership_success);
 success_test!(unit_literal_in_block);
 success_test!(immutable_reference);
+success_test!(atomic_type);
+success_test!(atomic_store);
+success_test!(atomic_load);
+success_test!(atomic_ops);
+success_test!(atomic_store_array);
 
 // --- Error tests ---
 
@@ -502,4 +507,11 @@ error_test!(
     "x".to_string(),
     VariableAddressSpace::Uniform
   )
+);
+error_test!(
+  atomic_type_failure,
+  CompileErrorKind::UnsatisfiedTypeConstraint(TypeConstraintDescription {
+    name: "Integer".into(),
+    args: vec![]
+  })
 );

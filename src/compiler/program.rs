@@ -775,7 +775,8 @@ impl Program {
         &f.read().unwrap().implementation
       {
         let changed = implementation
-          .write().unwrap()
+          .write()
+          .unwrap()
           .expression
           .propagate_types(&mut base_context, errors);
         anything_changed |= changed;
@@ -820,7 +821,8 @@ impl Program {
         &abstract_function.read().unwrap().implementation
       {
         (**implementation)
-          .write().unwrap()
+          .write()
+          .unwrap()
           .expression
           .validate_match_blocks(errors);
       }
@@ -832,7 +834,8 @@ impl Program {
         &abstract_function.read().unwrap().implementation
       {
         (**implementation)
-          .write().unwrap()
+          .write()
+          .unwrap()
           .expression
           .catch_illegal_function_type_expressions(errors);
       }
@@ -1051,6 +1054,30 @@ impl Program {
       }
     }
   }
+  pub fn validate_field_type_constraints(&mut self, errors: &mut ErrorLog) {
+    for v in self.top_level_vars.iter() {
+      if let Type::Struct(s) = &v.var_type {
+        s.check_type_constraints(&v.source_trace, errors);
+      }
+    }
+    for f in self.abstract_functions_iter() {
+      let mut borrowed_f = f.write().unwrap();
+      if let FunctionImplementationKind::Composite(implementation) =
+        &mut borrowed_f.implementation
+      {
+        let implementation = implementation.write().unwrap();
+        implementation
+          .expression
+          .walk::<Never>(&mut |exp| {
+            if let Type::Struct(s) = exp.data.unwrap_known() {
+              s.check_type_constraints(&exp.source_trace, errors);
+            }
+            Ok(true)
+          })
+          .unwrap();
+      }
+    }
+  }
   pub fn monomorphize_reference_address_spaces(&mut self) {
     loop {
       let mut monomorphized_ctx = Program::default();
@@ -1221,7 +1248,8 @@ impl Program {
       let borrowed_f = f.read().unwrap();
       match &borrowed_f.implementation {
         FunctionImplementationKind::Composite(implementation) => implementation
-          .write().unwrap()
+          .write()
+          .unwrap()
           .expression
           .walk_mut_with_ctx(
             &mut |exp, ctx| match &mut exp.kind {
@@ -1301,7 +1329,8 @@ impl Program {
         FunctionImplementationKind::Composite(implementation) => {
           let mut root_encountered = false;
           implementation
-            .write().unwrap()
+            .write()
+            .unwrap()
             .expression
             .walk_mut_with_ctx(
               &mut |exp, ctx| {
@@ -1358,7 +1387,8 @@ impl Program {
                       name: (
                         self
                           .names
-                          .write().unwrap()
+                          .write()
+                          .unwrap()
                           .gensym(&format!("{name}_scope"))
                           .into(),
                         exp.source_trace.clone(),
@@ -1659,13 +1689,14 @@ impl Program {
                     {
                       let cloned_sig =
                         applied_f_abstract_signature.read().unwrap().clone();
-                      let composite_f = if let FunctionImplementationKind::Composite(ref f) =
-                        cloned_sig.implementation
-                      {
-                        Some(Arc::clone(f))
-                      } else {
-                        None
-                      };
+                      let composite_f =
+                        if let FunctionImplementationKind::Composite(ref f) =
+                          cloned_sig.implementation
+                        {
+                          Some(Arc::clone(f))
+                        } else {
+                          None
+                        };
                       if let Some(f) = composite_f {
                         args_to_remove = (0..args.len())
                           .rev()
@@ -1675,9 +1706,11 @@ impl Program {
                           .collect();
                         let new_sig = Arc::new(RwLock::new(cloned_sig));
                         new_sig
-                          .write().unwrap()
+                          .write()
+                          .unwrap()
                           .remove_unitlike_arguments(&mut names);
-                        applied_f_signature.abstract_ancestor = Some(Arc::clone(&new_sig));
+                        applied_f_signature.abstract_ancestor =
+                          Some(Arc::clone(&new_sig));
                         let mut f = f.write().unwrap();
                         for i in args_to_remove.iter() {
                           f.arg_names.remove(*i);
@@ -1857,7 +1890,8 @@ impl Program {
       if let FunctionImplementationKind::Composite(f) =
         &f.read().unwrap().implementation
       {
-        f.write().unwrap()
+        f.write()
+          .unwrap()
           .expression
           .walk_mut::<()>(&mut |exp| {
             take(&mut exp.kind, |exp_kind| {
@@ -2109,7 +2143,8 @@ impl Program {
           errors.log(CompileError {
             kind: CompileErrorKind::InvalidAssociativeSignature,
             source_trace: implementation
-              .read().unwrap()
+              .read()
+              .unwrap()
               .expression
               .source_trace
               .clone(),
@@ -2241,7 +2276,8 @@ impl Program {
         &signature.implementation
       {
         implementation
-          .read().unwrap()
+          .read()
+          .unwrap()
           .expression
           .walk(&mut |exp| {
             match &exp.kind {
@@ -2269,7 +2305,10 @@ impl Program {
       if let FunctionImplementationKind::Composite(f) =
         &signature.implementation
       {
-        f.read().unwrap().expression.validate_control_flow(errors, 0);
+        f.read()
+          .unwrap()
+          .expression
+          .validate_control_flow(errors, 0);
       }
     }
   }
@@ -2295,7 +2334,8 @@ impl Program {
           let type_signature = if s.generic_args.is_empty()
             && let FunctionImplementationKind::Composite(f) =
               &mut s.implementation
-            && let Type::Function(f) = f.read().unwrap().expression.data.unwrap_known()
+            && let Type::Function(f) =
+              f.read().unwrap().expression.data.unwrap_known()
           {
             f.unwrap_type_signature()
           } else {
@@ -2325,7 +2365,8 @@ impl Program {
       if let FunctionImplementationKind::Composite(f) =
         &signature.implementation
       {
-        f.write().unwrap()
+        f.write()
+          .unwrap()
           .expression
           .walk_mut(&mut |exp| {
             if let ExpKind::Name(name) = &mut exp.kind {
@@ -2371,7 +2412,8 @@ impl Program {
       if let FunctionImplementationKind::Composite(f) =
         &f.write().unwrap().implementation
       {
-        f.write().unwrap()
+        f.write()
+          .unwrap()
           .expression
           .walk_mut(&mut |exp| {
             if let TypeState::Known(t) = &mut exp.data.kind {
@@ -2395,7 +2437,8 @@ impl Program {
       if let FunctionImplementationKind::Composite(f) =
         &f.write().unwrap().implementation
       {
-        f.write().unwrap()
+        f.write()
+          .unwrap()
           .expression
           .walk_mut(&mut |exp| {
             if let ExpKind::Application(f, args) = &exp.kind
@@ -2430,7 +2473,8 @@ impl Program {
       if let FunctionImplementationKind::Composite(f) =
         &signature.implementation
       {
-        f.write().unwrap()
+        f.write()
+          .unwrap()
           .expression
           .walk_mut(&mut |exp| {
             exp.desugar_swizzle_assignments(&mut names);
@@ -2961,7 +3005,8 @@ impl Program {
         &signature.implementation
       {
         implementation
-          .read().unwrap()
+          .read()
+          .unwrap()
           .expression
           .walk(&mut |exp| {
             match &exp.kind {
@@ -3101,6 +3146,10 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.validate_field_type_constraints(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     self.inline_static_array_length_calls();
     self.monomorphize_reference_address_spaces();
     errors
@@ -3115,7 +3164,8 @@ impl Program {
         continue;
       };
       implementation
-        .read().unwrap()
+        .read()
+        .unwrap()
         .expression
         .walk(&mut |exp: &TypedExp| {
           type_annotations
@@ -3159,10 +3209,13 @@ impl Program {
         if !defn_locations.contains_key(&f.name) {
           defn_locations.insert(f.name.clone(), vec![]);
         }
-        defn_locations
-          .get_mut(&f.name)
-          .unwrap()
-          .push(implementation.read().unwrap().name_source_trace.primary_path());
+        defn_locations.get_mut(&f.name).unwrap().push(
+          implementation
+            .read()
+            .unwrap()
+            .name_source_trace
+            .primary_path(),
+        );
       }
     }
     for (name, sources) in defn_locations {
@@ -3173,7 +3226,8 @@ impl Program {
     for f in self.abstract_functions_iter() {
       let f = f.read().unwrap();
       if let FunctionImplementationKind::Composite(f) = &f.implementation {
-        f.read().unwrap()
+        f.read()
+          .unwrap()
           .expression
           .walk_with_ctx(
             &mut |exp, ctx| {
@@ -3259,7 +3313,8 @@ impl Program {
       let f = f.read().unwrap();
       if &*f.name == name {
         if let FunctionImplementationKind::Composite(f) = &f.implementation {
-          defn_locations.insert(f.read().unwrap().name_source_trace.primary_path());
+          defn_locations
+            .insert(f.read().unwrap().name_source_trace.primary_path());
         }
       }
     }
@@ -3276,7 +3331,8 @@ impl Program {
           a.len() < b.len()
             && a.iter().zip(b.iter()).find(|(a, b)| a != b).is_none()
         }
-        f.read().unwrap()
+        f.read()
+          .unwrap()
           .expression
           .walk(&mut |exp| {
             let exp_path = exp.source_trace.primary_path();

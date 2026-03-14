@@ -305,11 +305,13 @@ impl AbstractType {
         .expect("unrecognized generic name in struct")
         .clone(),
       AbstractType::Type(t) => AbstractType::Type(t),
-      AbstractType::AbstractStruct(s) => AbstractType::AbstractStruct(Arc::new(
-        (*s)
-          .clone()
-          .partially_fill_abstract_generics(generics.clone()),
-      )),
+      AbstractType::AbstractStruct(s) => {
+        AbstractType::AbstractStruct(Arc::new(
+          (*s)
+            .clone()
+            .partially_fill_abstract_generics(generics.clone()),
+        ))
+      }
       AbstractType::AbstractEnum(e) => AbstractType::AbstractEnum(Arc::new(
         (*e)
           .clone()
@@ -755,7 +757,8 @@ impl ConcreteArraySize {
         ", {}",
         value
           .value
-          .read().unwrap()
+          .read()
+          .unwrap()
           .expect("ConcreteArraySize unification var wasn't unified")
       ),
       ConcreteArraySize::Skolem(_) => {
@@ -938,7 +941,12 @@ impl Type {
       Type::Function(function_signature) => function_signature
         .abstract_ancestor
         .as_ref()
-        .map(|f| f.read().unwrap().representative_type(names).is_unitlike(names))
+        .map(|f| {
+          f.read()
+            .unwrap()
+            .representative_type(names)
+            .is_unitlike(names)
+        })
         .unwrap_or(false),
       Type::Array(array_size, inner_type) => {
         inner_type.kind.with_dereferenced(|f| match f {
@@ -1266,6 +1274,13 @@ impl Type {
             .monomorphized_name(names)
         ),
         "Sampler" => "sampler".to_string(),
+        "Atomic" => format!(
+          "atomic<{}>",
+          s.fields[0]
+            .field_type
+            .unwrap_known()
+            .monomorphized_name(names)
+        ),
         _ => compile_word(s.monomorphized_name(names)),
       },
       Type::Enum(e) => compile_word(e.monomorphized_name(names)),
@@ -1285,7 +1300,12 @@ impl Type {
             "Attempted to compile ConcreteFunction type with no abstract ancestor"
           );
         };
-        f.read().unwrap().representative_type(names).name.0.to_string()
+        f.read()
+          .unwrap()
+          .representative_type(names)
+          .name
+          .0
+          .to_string()
       }
       Type::Skolem(name, _) => {
         panic!("Attempted to compile Skolem \"{name}\"")
@@ -1868,9 +1888,10 @@ impl PartialEq for TypeState {
       (TypeState::Unknown, TypeState::Unknown) => true,
       (TypeState::OneOf(a), TypeState::OneOf(b)) => a == b,
       (TypeState::Known(a), TypeState::Known(b)) => a == b,
-      (TypeState::UnificationVariable(a), TypeState::UnificationVariable(b)) => {
-        *a.read().unwrap() == *b.read().unwrap()
-      }
+      (
+        TypeState::UnificationVariable(a),
+        TypeState::UnificationVariable(b),
+      ) => *a.read().unwrap() == *b.read().unwrap(),
       _ => false,
     }
   }

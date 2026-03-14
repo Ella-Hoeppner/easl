@@ -1,0 +1,9 @@
+@{group 0
+  binding 0
+  address storage-write}
+(var x: (Atomic u32))
+
+@compute
+@{workgroup-size 1}
+(defn f []
+  (atomic-store x 5u))
