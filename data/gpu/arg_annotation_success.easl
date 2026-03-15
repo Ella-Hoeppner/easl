@@ -7,6 +7,7 @@
   (vec4f 1.))
 
 @fragment
-(defn f1 [@builtin front-facing: bool
+(defn f1 [@{builtin front-facing}
+          is-front-facing: bool
           b: VertexOut]: @{location 0} vec4f
   (vec4f 1.))

@@ -253,6 +253,10 @@ success_test!(atomic_store);
 success_test!(atomic_load);
 success_test!(atomic_ops);
 success_test!(atomic_store_array);
+success_test!(get_global_invocation_id);
+success_test!(get_global_invocation_id_argument);
+success_test!(get_global_invocation_id_argument_field);
+success_test!(get_global_invocation_id_indirect);
 
 // --- Error tests ---
 
@@ -514,4 +518,13 @@ error_test!(
     name: "Integer".into(),
     args: vec![]
   })
+);
+
+error_test!(
+  get_global_invocation_id_failure,
+  CompileErrorKind::InvalidBuiltinForEntryPoint(
+    "global-invocation-id".into(),
+    InputOrOutput::Input,
+    "fragment".into(),
+  )
 );

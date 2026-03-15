@@ -1,6 +1,6 @@
 use std::fmt::Display;
-use std::sync::Arc;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use fsexp::syntax::EncloserOrOperator::{self, *};
 

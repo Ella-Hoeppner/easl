@@ -7,6 +7,7 @@ use lazy_static::lazy_static;
 use fsexp::{document::DocumentPosition, syntax::EncloserOrOperator};
 
 use crate::compiler::effects::EffectType;
+use crate::compiler::entry::BuiltinIOAttribute;
 use crate::{
   compiler::{
     effects::Effect,
@@ -2189,6 +2190,24 @@ fn atomic_functions() -> Vec<AbstractFunctionSignature> {
   ]
 }
 
+fn builtin_attribute_lookup_functions() -> Vec<AbstractFunctionSignature> {
+  BuiltinIOAttribute::all()
+    .into_iter()
+    .map(|attribute| AbstractFunctionSignature {
+      generic_args: vec![],
+      name: attribute.name().into(),
+      arg_types: vec![],
+      return_type: attribute.abstract_type(),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::LookupBuiltinAttribute(attribute).into(),
+        target_configuration:
+          FunctionTargetConfiguration::BuiltinAttributeLookup(attribute),
+      },
+      ..Default::default()
+    })
+    .collect()
+}
+
 pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   let mut signatures = vec![assignment_function()];
   signatures.append(&mut boolean_functions());
@@ -2227,6 +2246,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut shader_dispatch_functions());
   signatures.append(&mut dynamic_array_functions());
   signatures.append(&mut atomic_functions());
+  signatures.append(&mut builtin_attribute_lookup_functions());
   signatures
 }
 

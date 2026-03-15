@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::compiler::{
+  entry::BuiltinIOAttribute,
   program::Program,
   vars::{TopLevelVariableKind, VariableAddressSpace},
 };
@@ -20,6 +21,7 @@ pub enum Effect {
   CPUExclusiveFunction(Arc<str>),
   Print,
   Window,
+  LookupBuiltinAttribute(BuiltinIOAttribute),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +108,16 @@ impl EffectType {
         })
         .collect(),
     )
+  }
+  pub fn looked_up_builtin_attributes(&self) -> Vec<BuiltinIOAttribute> {
+    self
+      .0
+      .iter()
+      .filter_map(|effect| match effect {
+        Effect::LookupBuiltinAttribute(a) => Some(*a),
+        _ => None,
+      })
+      .collect()
   }
 }
 

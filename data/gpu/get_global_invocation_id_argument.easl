@@ -1,0 +1,11 @@
+@{address storage-write
+  group 0
+  binding 1}
+(var arr: [vec4f])
+
+@compute
+@{workgroup-size 16}
+(defn c [@{builtin global-invocation-id}
+         id: vec3u]: ()
+  (let [i (.x (global-invocation-id))]
+    (= (arr i) (vec4f i))))

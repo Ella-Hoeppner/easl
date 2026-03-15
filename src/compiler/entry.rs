@@ -4,11 +4,14 @@ use std::sync::Arc;
 
 use crate::compiler::{
   annotation::Annotation,
+  builtins::{vec3, vec4},
   error::{
     CompileError, CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace,
     err,
   },
-  types::Type,
+  program::TypeDefs,
+  structs::AbstractStruct,
+  types::{AbstractType, Type},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +79,74 @@ pub enum BuiltinIOAttribute {
 use BuiltinIOAttribute::*;
 
 impl BuiltinIOAttribute {
+  pub fn all() -> Vec<Self> {
+    vec![
+      VertexIndex,
+      InstanceIndex,
+      Position,
+      FrontFacing,
+      FragDepth,
+      SampleIndex,
+      SampleMask,
+      LocalInvocationId,
+      LocalInvocationIndex,
+      GlobalInvocationId,
+      WorkgroupId,
+      NumWorkgroups,
+    ]
+  }
+  pub fn value_type(&self) -> Type {
+    match self {
+      VertexIndex | InstanceIndex | LocalInvocationIndex | SampleIndex
+      | SampleMask => Type::U32,
+      FrontFacing => Type::Bool,
+      FragDepth => Type::F32,
+      LocalInvocationId | GlobalInvocationId | WorkgroupId | NumWorkgroups => {
+        Type::Struct(
+          AbstractStruct::concretize(
+            vec3()
+              .fill_abstract_generics(vec![AbstractType::Type(Type::U32)])
+              .into(),
+            &TypeDefs::empty(),
+            &vec![],
+            SourceTrace::empty(),
+          )
+          .unwrap(),
+        )
+      }
+      Position => Type::Struct(
+        AbstractStruct::concretize(
+          vec4()
+            .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+            .into(),
+          &TypeDefs::empty(),
+          &vec![],
+          SourceTrace::empty(),
+        )
+        .unwrap(),
+      ),
+    }
+  }
+  pub fn abstract_type(&self) -> AbstractType {
+    match self {
+      VertexIndex | InstanceIndex | LocalInvocationIndex | SampleIndex
+      | SampleMask => AbstractType::Type(Type::U32),
+      FrontFacing => AbstractType::Type(Type::Bool),
+      FragDepth => AbstractType::Type(Type::F32),
+      LocalInvocationId | GlobalInvocationId | WorkgroupId | NumWorkgroups => {
+        AbstractType::AbstractStruct(
+          vec3()
+            .fill_abstract_generics(vec![AbstractType::Type(Type::U32)])
+            .into(),
+        )
+      }
+      Position => AbstractType::AbstractStruct(
+        vec4()
+          .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+          .into(),
+      ),
+    }
+  }
   pub fn is_type_compatible(&self, t: &Type) -> bool {
     match self {
       VertexIndex | InstanceIndex | LocalInvocationIndex | SampleIndex
@@ -287,12 +358,8 @@ impl IOAttribute {
   ) -> CompileResult<Option<Self>> {
     match (&**name, value) {
       ("builtin", value) => {
-        let Some((builtin_name, value_source)) = value.or(arg_or_field_name)
-        else {
-          return Err(CompileError {
-            kind: BuiltinAttributeNeedsName,
-            source_trace: name_source.clone(),
-          });
+        let Some((builtin_name, value_source)) = value else {
+          return Ok(None);
         };
         if let Some(builtin) = BuiltinIOAttribute::from_name(&builtin_name) {
           Ok(Some(Self {
@@ -341,7 +408,7 @@ impl IOAttribute {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IOAttributes {
-  attributes: Vec<IOAttribute>,
+  pub attributes: Vec<IOAttribute>,
   pub attributed_source: SourceTrace,
 }
 
@@ -354,6 +421,14 @@ impl IOAttributes {
   }
   pub fn is_empty(&self) -> bool {
     self.attributes.is_empty()
+  }
+  pub fn has_builtin_io_attribute(
+    &self,
+    attribute: BuiltinIOAttribute,
+  ) -> bool {
+    self.attributes.iter().any(|arg_attribute| {
+      arg_attribute.kind == IOAttributeKind::Builtin(attribute)
+    })
   }
   pub fn source_trace_if_not_empty(&self) -> Option<SourceTrace> {
     if !self.attributes.is_empty() {

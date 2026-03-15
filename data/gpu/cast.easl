@@ -57,11 +57,10 @@
   @{location 0} screen-pos: vec2f)
 
 @vertex
-(defn background-vertex [@{builtin vertex-index}
-                         vertex-index: u32]: BackgroundVertexOutput
-  (let [vertex-pos (vec4f (if (== vertex-index 0u)
+(defn background-vertex [@{builtin vertex-index} i: u32]: BackgroundVertexOutput
+  (let [vertex-pos (vec4f (if (== i 0u)
                             (vec2f 3. -1.)
-                            (if (== vertex-index 1u)
+                            (if (== i 1u)
                               (vec2f -1. 3.)
                               (vec2f -1. -1.)))
                           0.
@@ -195,9 +194,7 @@
   @{location 1} character-coords: vec2u)
 
 @vertex
-(defn char-vertex [in: CharVertexInput
-                   @{builtin vertex-index}
-                   vertex-index: u32]: CharVertexOutput
+(defn char-vertex [in: CharVertexInput]: CharVertexOutput
   (CharVertexOutput (vec4 (-> (vec2f (+ in.character-box.x
                                         (* in.corner-position.x
                                            in.character-box.z))
@@ -261,9 +258,7 @@
   @{location 5} element-color: vec3f)
 
 @vertex
-(defn ui-vertex [in: UIVertexInput
-                 @{builtin vertex-index}
-                 vertex-index: u32]: UIVertexOutput
+(defn ui-vertex [in: UIVertexInput]: UIVertexOutput
   (let [element-pos in.element-pos
         element-size (/ in.element-size view.z)
         element-radius (/ in.element-radius view.z)

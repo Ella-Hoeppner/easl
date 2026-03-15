@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 use lazy_static::lazy_static;
+use std::collections::HashSet;
 
 pub const WGSL_RESERVED_WORDS: &[&'static str] = &[
   // Keywords (16.1)

@@ -4,6 +4,7 @@ use std::sync::{Arc, RwLock};
 
 use take_mut::take;
 
+use crate::compiler::entry::BuiltinIOAttribute;
 use crate::{
   Never,
   compiler::{
@@ -122,6 +123,7 @@ pub enum SpecialCasedBuiltinFunction {
 pub enum FunctionTargetConfiguration {
   Default,
   SpecialCased(SpecialCasedBuiltinFunction),
+  BuiltinAttributeLookup(BuiltinIOAttribute),
 }
 
 #[derive(Debug, Clone, PartialEq)]

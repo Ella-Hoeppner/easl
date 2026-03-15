@@ -5,6 +5,9 @@ use std::sync::{Arc, RwLock};
 use fsexp::{Ast, document::Document, syntax::EncloserOrOperator};
 use take_mut::take;
 
+use crate::compiler::functions::FunctionTargetConfiguration;
+use crate::compiler::types::ExpTypeInfo;
+use crate::compiler::vars::VariableAddressSpace;
 use crate::{
   Never,
   compiler::{
@@ -1115,6 +1118,193 @@ impl Program {
       if !changed {
         break;
       }
+    }
+  }
+  pub fn extract_builtin_attribute_lookup_functions(
+    &mut self,
+    errors: &mut ErrorLog,
+  ) {
+    let mut used_attributes: HashSet<BuiltinIOAttribute> = HashSet::new();
+    for f in self.abstract_functions_iter() {
+      let borrowed_f = f.read().unwrap();
+      if let FunctionImplementationKind::Composite(implementation) =
+        &f.read().unwrap().implementation
+      {
+        let mut implementation = implementation.write().unwrap();
+        if let Some(entry_point) = borrowed_f.entry_point {
+          let attributes =
+            implementation.effects().looked_up_builtin_attributes();
+          let Type::Function(signature) =
+            implementation.expression.data.unwrap_known()
+          else {
+            panic!()
+          };
+          for attribute in attributes {
+            if !attribute.is_valid_input_for_stage(&entry_point) {
+              errors.log(CompileError::new(
+                InvalidBuiltinForEntryPoint(
+                  attribute.name().into(),
+                  InputOrOutput::Input,
+                  entry_point.name().into(),
+                ),
+                implementation.name_source_trace.clone(),
+              ));
+            }
+            used_attributes.insert(attribute);
+            let global_var_name = attribute.compiled_name();
+            let value_type_info: ExpTypeInfo =
+              attribute.value_type().known().into();
+            let assignment_value = if let Some(arg_name) = implementation
+              .arg_annotations
+              .iter()
+              .zip(implementation.arg_names.iter())
+              .find_map(|(annotation, arg_name)| {
+                if annotation.attributes.has_builtin_io_attribute(attribute) {
+                  Some(arg_name.0.clone())
+                } else {
+                  None
+                }
+              }) {
+              Exp {
+                data: value_type_info.clone(),
+                kind: ExpKind::Name(arg_name),
+                source_trace: SourceTrace::empty(),
+              }
+            } else if let Some((struct_type, arg_name, field_name)) = signature
+              .args
+              .iter()
+              .zip(implementation.arg_names.iter())
+              .find_map(|((arg, _), (name, _))| {
+                if let Type::Struct(s) = arg.var_type.unwrap_known() {
+                  s.fields.iter().find_map(|field| {
+                    if field.attributes.has_builtin_io_attribute(attribute) {
+                      Some((s.clone(), name.clone(), field.name.clone()))
+                    } else {
+                      None
+                    }
+                  })
+                } else {
+                  None
+                }
+              })
+            {
+              Exp {
+                data: value_type_info.clone(),
+                kind: ExpKind::Access(
+                  Accessor::Field(field_name),
+                  Exp {
+                    data: Type::Struct(struct_type).known().into(),
+                    kind: ExpKind::Name(arg_name),
+                    source_trace: SourceTrace::empty(),
+                  }
+                  .into(),
+                ),
+                source_trace: SourceTrace::empty(),
+              }
+            } else {
+              let arg_name =
+                self.names.write().unwrap().gensym(&global_var_name);
+              implementation
+                .arg_annotations
+                .push(FunctionArgumentAnnotation {
+                  var: false,
+                  ownership: Ownership::Owned,
+                  attributes: IOAttributes {
+                    attributes: vec![IOAttribute {
+                      kind: IOAttributeKind::Builtin(attribute),
+                      source_trace: SourceTrace::empty(),
+                    }],
+                    attributed_source: SourceTrace::empty(),
+                  },
+                });
+              let ExpKind::Function(args, _) =
+                &mut implementation.expression.kind
+              else {
+                panic!()
+              };
+              args.push((arg_name.clone(), SourceTrace::empty()));
+              implementation.expression.data.as_known_mut(|t| {
+                let Type::Function(signature) = t else {
+                  panic!()
+                };
+                signature.args.push((
+                  Variable {
+                    kind: VariableKind::Let,
+                    var_type: attribute.value_type().known().into(),
+                  },
+                  vec![],
+                ));
+              });
+              Exp {
+                data: value_type_info.clone(),
+                kind: ExpKind::Name(arg_name),
+                source_trace: SourceTrace::empty(),
+              }
+            };
+            let ExpKind::Function(_, body) =
+              &mut implementation.expression.kind
+            else {
+              panic!()
+            };
+            *body = Exp {
+              data: body.data.clone(),
+              kind: ExpKind::Block(vec![
+                Exp {
+                  data: Type::Unit.known().into(),
+                  kind: ExpKind::Application(
+                    TypedExp::assignment_function(value_type_info.clone())
+                      .into(),
+                    vec![
+                      Exp {
+                        data: value_type_info.clone(),
+                        kind: ExpKind::Name(global_var_name.into()),
+                        source_trace: SourceTrace::empty(),
+                      },
+                      assignment_value,
+                    ],
+                  ),
+                  source_trace: SourceTrace::empty(),
+                },
+                *body.clone(),
+              ]),
+              source_trace: body.source_trace.clone(),
+            }
+            .into();
+          }
+        }
+        // implementation
+        //   .expression
+        //   .walk_mut(&mut |exp| {
+        //     use FunctionTargetConfiguration::*;
+        //     if let ExpKind::Application(f, _) = &exp.kind
+        //       && let Type::Function(f) = f.data.unwrap_known()
+        //       && let Some(abstract_f) = f.abstract_ancestor
+        //       && let FunctionImplementationKind::Builtin {
+        //         target_configuration: BuiltinAttributeLookup(attribute),
+        //         ..
+        //       } = abstract_f.read().unwrap().implementation
+        //     {
+        //       exp.kind = ExpKind::Name(get_attribute_name(
+        //         attribute,
+        //         &mut global_builtin_attribute_vars,
+        //       ));
+        //     }
+        //     Ok::<bool, Never>(true)
+        //   })
+        //   .unwrap();
+      }
+    }
+    for attribute in used_attributes {
+      self.top_level_vars.push(TopLevelVar {
+        name: attribute.compiled_name().into(),
+        kind: TopLevelVariableKind::Var {
+          address_space: VariableAddressSpace::Private,
+          group_and_binding: None,
+        },
+        var_type: attribute.value_type(),
+        value: None,
+        source_trace: SourceTrace::empty(),
+      })
     }
   }
   pub fn propagate_abstract_function_signatures(&mut self) {
@@ -3152,6 +3342,10 @@ impl Program {
     }
     self.inline_static_array_length_calls();
     self.monomorphize_reference_address_spaces();
+    self.extract_builtin_attribute_lookup_functions(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     errors
   }
   pub fn gather_type_annotations(&self) -> Vec<(SourceTrace, TypeState)> {

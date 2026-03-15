@@ -134,9 +134,7 @@
   @{location 0} square-pos: vec2f)
 
 @vertex
-(defn vertex [@{builtin instance-index}
-              instance-index: u32
-              in: VertexInput]: VertexOutput
+(defn vertex [in: VertexInput]: VertexOutput
   (VertexOutput (vec4f in.corner-pos 0. 1.)
                 in.corner-pos))
 

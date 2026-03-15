@@ -1676,20 +1676,28 @@ impl TypedExp {
       Function(_, _) => panic!("Attempting to compile internal function"),
       Application(f, mut args) => wrap(match f.data.unwrap_known() {
         Type::Function(signature) => {
-          if let Some(abstract_ancestor) = &signature.abstract_ancestor
-            && let FunctionImplementationKind::Builtin {
-              target_configuration:
-                FunctionTargetConfiguration::SpecialCased(special_case),
+          if let Some(abstract_ancestor) = &signature.abstract_ancestor {
+            if let FunctionImplementationKind::Builtin {
+              target_configuration,
               ..
             } = abstract_ancestor.read().unwrap().implementation
-          {
-            match special_case {
-              SpecialCasedBuiltinFunction::Print => match target {
-                CompilerTarget::WGSL => return "".into(),
-                _ => {}
-              },
-              SpecialCasedBuiltinFunction::ZeroedArray => {
-                return self.data.kind.monomorphized_name(names) + "()";
+            {
+              match target_configuration {
+                FunctionTargetConfiguration::SpecialCased(special_case) => {
+                  match special_case {
+                    SpecialCasedBuiltinFunction::Print => match target {
+                      CompilerTarget::WGSL => return "".into(),
+                      _ => {}
+                    },
+                    SpecialCasedBuiltinFunction::ZeroedArray => {
+                      return self.data.kind.monomorphized_name(names) + "()";
+                    }
+                  }
+                }
+                FunctionTargetConfiguration::BuiltinAttributeLookup(
+                  builtin_ioattribute,
+                ) => return builtin_ioattribute.compiled_name().into(),
+                FunctionTargetConfiguration::Default => {}
               }
             }
           }
@@ -3580,6 +3588,33 @@ impl TypedExp {
     })?;
     Ok(changed)
   }
+  pub fn assignment_function(inner_type: ExpTypeInfo) -> Self {
+    TypedExp {
+      kind: ExpKind::Name("=".into()),
+      data: Type::Function(
+        FunctionSignature {
+          abstract_ancestor: Some(Arc::new(RwLock::new(assignment_function()))),
+          args: vec![
+            (
+              Variable::immutable({
+                let mut reference_type = inner_type.clone();
+                reference_type.ownership = Ownership::MutableReference;
+                reference_type
+              }),
+              vec![],
+            ),
+            (Variable::immutable(inner_type.clone()), vec![]),
+          ],
+          return_type: Type::Unit.known().into(),
+        }
+        .into(),
+      )
+      .known()
+      .into(),
+      source_trace: SourceTrace::empty(),
+    }
+    .into()
+  }
   fn deshadow_inner(
     &mut self,
     globally_bound_names: &Vec<Arc<str>>,
@@ -4613,40 +4648,8 @@ impl TypedExp {
                           take(arm_body, |arm_body| TypedExp {
                             data: Type::Unit.known().into(),
                             kind: ExpKind::Application(
-                              TypedExp {
-                                kind: ExpKind::Name("=".into()),
-                                data: Type::Function(
-                                  FunctionSignature {
-                                    abstract_ancestor: Some(Arc::new(
-                                      RwLock::new(assignment_function()),
-                                    )),
-                                    args: vec![
-                                      (
-                                        Variable::immutable({
-                                          let mut reference_type =
-                                            binding_type.clone();
-                                          reference_type.ownership =
-                                            Ownership::MutableReference;
-                                          reference_type
-                                        }),
-                                        vec![],
-                                      ),
-                                      (
-                                        Variable::immutable(
-                                          binding_type.clone(),
-                                        ),
-                                        vec![],
-                                      ),
-                                    ],
-                                    return_type: Type::Unit.known().into(),
-                                  }
-                                  .into(),
-                                )
-                                .known()
+                              Self::assignment_function(binding_type.clone())
                                 .into(),
-                                source_trace: SourceTrace::empty(),
-                              }
-                              .into(),
                               vec![
                                 TypedExp {
                                   data: binding_type.clone(),

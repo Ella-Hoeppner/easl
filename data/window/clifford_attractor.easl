@@ -88,10 +88,9 @@
   square-pos: vec2f)
 
 @vertex
-(defn particle-dots-vertex [@{builtin vertex-index}
-                            vertex-index: u32]: DotVertOutput
-  (let [square-pos (vert-index-square-pos (% vertex-index 6))
-        particle (particles (/ vertex-index 6))]
+(defn particle-dots-vertex [@{builtin vertex-index} i: u32]: DotVertOutput
+  (let [square-pos (vert-index-square-pos (% i 6))
+        particle (particles (/ i 6))]
     (DotVertOutput (vec4f (* 0.5
                              (* screenspace-scale
                                 (+ particle.xy

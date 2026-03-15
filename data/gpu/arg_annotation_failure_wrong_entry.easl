@@ -2,5 +2,6 @@
   @{builtin position} pos: vec4f)
 
 @vertex
-(defn v [@builtin front-facing: bool]: VertexOut
+(defn v [@{builtin front-facing}
+         is-front-facing: bool]: VertexOut
   (VertexOut (vec4f 1.)))

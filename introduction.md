@@ -607,19 +607,19 @@ Annotations are also used to denote builtin input/output values in structs and e
 
 ```
 (struct VertexOutput
-  @{builtin position} position: vec4f
+  @{builtin position} pos: vec4f
   @{location 0} corner-pos: vec2f)
 
 @vertex
 (defn vertex [@{builtin vertex-index}
-              vertex-index: u32
+              v-index: u32
               @{builtin instance-index}
-              instance-index: u32]: VertexOutput
-  (let [corner (match vertex-index
+              i-index: u32]: VertexOutput
+  (let [corner (match v-index
                  0 (vec2f -1.)
                  1 (vec2f -1. 3.)
                  _ (vec2f 3. -1.))]
-    (VertexOutput (vec4f corner 0. 1.) corner)))
+    (VertexOutput (vec4f corner i-index 1.) corner)))
 
 @fragment
 (defn fragment [in: VertexOutput]: @{location 0} vec4f
@@ -640,21 +640,20 @@ Easl also includes several helpful shortcuts that cut down on the need for many 
   ...)
 ```
 
-Additionally, when an input/output value or a struct in a type used in the input or output of an entry point doesn't have any annotations, it will be inferred to have a `@{location <N>}` annotation, with `N` determined by its positioning relative to the other fields. Finally, instead of doing the full `@{builtin ...} ...` annotation to specify a builtin input/output attribute, you can simply use the name of a builtin value for the field, and prefix it with the more concise `@builtin` annotation. With these two shortcuts, the annotations previous example can be significantly simplified:
+Additionally, when an input/output value or a struct in a type used in the input or output of an entry point doesn't have any annotations, it will be inferred to have a `@{location <N>}` annotation, with `N` determined by its positioning relative to the other fields. Finally, for input attributes, instead of doing the full `@{builtin ...} ...` annotation, you can simply use the name of a builtin value as a function to look up the value, without declaring it as an input to the function. With these two shortcuts, the annotations previous example can be significantly simplified:
 
 ```
 (struct VertexOutput
-  @builtin position: vec4f
+  @{builtin position} pos: vec4f
   corner-pos: vec2f)
 
 @vertex
-(defn vertex [@builtin vertex-index: u32
-              @builtin instance-index: u32]: VertexOutput
-  (let [corner (match vertex-index
+(defn vertex []: VertexOutput
+  (let [corner (match (vertex-index)
                  0 (vec2f -1.)
                  1 (vec2f -1. 3.)
                  _ (vec2f 3. -1.))]
-    (VertexOutput (vec4f corner 0. 1.) corner)))
+    (VertexOutput (vec4f corner (instance-index) 1.) corner)))
 
 @fragment
 (defn fragment [in: VertexOutput]: vec4f

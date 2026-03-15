@@ -6,6 +6,7 @@
   @{builtin position} pos: vec4f)
 
 @vertex
-(defn v [@{builtin vertex-index} vertex-index: u32]: VertexOutput
-  (let [x (f32 vertex-index)]
-    (VertexOutput 5 (vec4f (gradient-dir x) 0. 0.))))
+(defn v [@{builtin vertex-index} i: u32]: VertexOutput
+  (let [x (f32 i)]
+    (VertexOutput 5
+                  (vec4f (gradient-dir x) 0. 0.))))

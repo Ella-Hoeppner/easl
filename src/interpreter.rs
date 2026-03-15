@@ -1798,7 +1798,11 @@ impl Value {
         .data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
         .unwrap_or(0);
       let elem_bytes = elem_u32s * 4;
-      let count = if elem_bytes > 0 { bytes.len() / elem_bytes } else { 0 };
+      let count = if elem_bytes > 0 {
+        bytes.len() / elem_bytes
+      } else {
+        0
+      };
       let mut offset = 0;
       return Value::Array(
         (0..count)
@@ -2269,7 +2273,9 @@ impl IOManager for CaptureIO {
     workgroup_count: (u32, u32, u32),
     pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) -> Result<(), EvalError> {
-    self.inner.record_compute(entry, workgroup_count, pre_upload)
+    self
+      .inner
+      .record_compute(entry, workgroup_count, pre_upload)
   }
 
   fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent> {
@@ -2280,7 +2286,12 @@ impl IOManager for CaptureIO {
     self.inner.record_close_window()
   }
 
-  fn sync_gpu_to_cpu(&mut self, group: u8, binding: u8, size: u64) -> Option<Vec<u8>> {
+  fn sync_gpu_to_cpu(
+    &mut self,
+    group: u8,
+    binding: u8,
+    size: u64,
+  ) -> Option<Vec<u8>> {
     self.inner.sync_gpu_to_cpu(group, binding, size)
   }
 

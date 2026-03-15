@@ -5,7 +5,7 @@
      2000)
 
 (def grid-size: u32
-     2000)
+     1000)
 
 @{address uniform
   group 0
@@ -187,10 +187,9 @@
   square-pos: vec2f)
 
 @vertex
-(defn seed-dot-vertex [@{builtin vertex-index}
-                       vertex-index: u32]: SquarePosVertOutput
-  (let [square-pos (vert-index-square-pos (% vertex-index 6))
-        seed (seeds (/ vertex-index 6))]
+(defn seed-dot-vertex [@{builtin vertex-index} i: u32]: SquarePosVertOutput
+  (let [square-pos (vert-index-square-pos (% i 6))
+        seed (seeds (/ i 6))]
     (SquarePosVertOutput (vec4f (* screenspace-scale
                                    (+ seed.xy (* 0.002 square-pos)))
                                 0.
@@ -204,9 +203,8 @@
   (vec4f 1. 0. 0. 1.))
 
 @vertex
-(defn grid-vertex [@{builtin vertex-index}
-                   vertex-index: u32]: SquarePosVertOutput
-  (let [square-pos (vert-index-square-pos vertex-index)]
+(defn grid-vertex [@{builtin vertex-index} i: u32]: SquarePosVertOutput
+  (let [square-pos (vert-index-square-pos (vertex-index))]
     (SquarePosVertOutput (vec4f (* screenspace-scale square-pos)
                                 0.
                                 1.)

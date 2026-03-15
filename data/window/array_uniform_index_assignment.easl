@@ -4,9 +4,8 @@
 (var color: [4: vec4f])
 
 @vertex
-(defn trivial-vertex [@{builtin vertex-index}
-                      vertex-index: u32]: @{builtin position} vec4f
-  (vec4f (match vertex-index
+(defn trivial-vertex []: @{builtin position} vec4f
+  (vec4f (match (vertex-index)
            0 (vec2f -1.)
            1 (vec2f -1. 3.)
            _ (vec2f 3. -1.))

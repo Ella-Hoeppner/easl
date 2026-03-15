@@ -9,6 +9,6 @@
 
 @vertex
 (defn v2 [@{builtin vertex-index}
-          vertex-index: u32]: VertexOutput
+          v-index: u32]: VertexOutput
   (VertexOutput (discard-or-double 0.)
                 (vec4f 0.)))
