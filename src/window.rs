@@ -70,6 +70,10 @@ pub struct BindingSlot {
 /// All GPU resources needed for compute dispatch and buffer management.
 /// Shared between `RenderState` and `StdoutIO` via `Arc<RwLock<GpuCore>>`.
 pub struct GpuCore {
+  /// The wgpu instance this device was created from. Kept alive so that
+  /// a window surface can be created on the same instance later (e.g. when
+  /// transitioning from a headless compute context to a windowed one).
+  pub instance: wgpu::Instance,
   pub device: wgpu::Device,
   pub queue: wgpu::Queue,
   shader: wgpu::ShaderModule,
@@ -402,6 +406,7 @@ pub(crate) fn create_headless_gpu_core(
       });
 
     Arc::new(RwLock::new(GpuCore {
+      instance,
       device,
       queue,
       shader,
@@ -432,15 +437,20 @@ impl<IO: IOManager> ApplicationHandler for App<IO> {
         .create_window(Window::default_attributes().with_title("easl"))
         .unwrap(),
     );
-    // Sync any GPU-written buffers back to CPU before replacing the GPU, so
-    // data written by a prior headless compute dispatch is not lost.
-    self.env.as_mut().unwrap().sync_gpu_written_to_cpu();
     let env = self.env.as_ref().unwrap();
-    let wgsl = env.wgsl().to_string();
-    let binding_infos = env.binding_infos();
-    let state =
+    // If a headless GPU already exists (from a prior dispatch-compute-shader),
+    // reuse it by adding a render surface on top. This avoids the expensive
+    // GPU→CPU→GPU round-trip that would otherwise be needed to preserve
+    // GPU-written buffer contents (e.g. large compute output arrays).
+    let state = if let Some(existing_gpu) = env.io.get_gpu() {
+      pollster::block_on(RenderState::from_existing_gpu(window, existing_gpu))
+        .unwrap()
+    } else {
+      let wgsl = env.wgsl().to_string();
+      let binding_infos = env.binding_infos();
       pollster::block_on(RenderState::new(window, &wgsl, &binding_infos))
-        .unwrap();
+        .unwrap()
+    };
     // Give the interpreter's IO manager direct access to GPU resources so
     // compute dispatches can execute synchronously within eval().
     self
@@ -471,10 +481,10 @@ impl<IO: IOManager> ApplicationHandler for App<IO> {
           return;
         }
         let now = Instant::now();
-        // if let Some(last) = self.last_frame_time {
-        //   let fps = 1.0 / last.elapsed().as_secs_f64();
-        //   println!("fps: {fps:.1}"); // fps logging
-        // }
+        if let Some(last) = self.last_frame_time {
+          let fps = 1.0 / last.elapsed().as_secs_f64();
+          println!("fps: {fps:.1}"); // fps logging
+        }
         self.last_frame_time = Some(now);
         let env = self.env.as_mut().unwrap();
         match eval(self.body.clone(), env) {
@@ -700,6 +710,7 @@ impl RenderState {
       });
 
     let gpu = Arc::new(RwLock::new(GpuCore {
+      instance,
       device,
       queue,
       shader,
@@ -712,6 +723,66 @@ impl RenderState {
       bind_groups,
       window_size: (surface_config.width, surface_config.height),
     }));
+
+    Ok(Self {
+      window,
+      surface,
+      surface_config,
+      pipelines: HashMap::new(),
+      gpu,
+    })
+  }
+
+  /// Builds a `RenderState` by adding a render surface to an already-running
+  /// headless `GpuCore`. Reuses the existing device, buffers, and bind groups —
+  /// no GPU↔CPU data transfer needed.
+  async fn from_existing_gpu(
+    window: Arc<Window>,
+    gpu: Arc<RwLock<GpuCore>>,
+  ) -> Result<Self, String> {
+    let gpu_read = gpu.read().unwrap();
+
+    let surface = gpu_read
+      .instance
+      .create_surface(window.clone())
+      .map_err(|e| e.to_string())?;
+
+    // Request an adapter compatible with the surface (for capability queries
+    // only — we reuse the existing device for all actual GPU work).
+    let adapter = gpu_read
+      .instance
+      .request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::default(),
+        compatible_surface: Some(&surface),
+        force_fallback_adapter: false,
+      })
+      .await
+      .map_err(|e| e.to_string())?;
+
+    let size = window.inner_size();
+    let surface_caps = surface.get_capabilities(&adapter);
+    let surface_format = surface_caps
+      .formats
+      .iter()
+      .find(|f| f.is_srgb())
+      .copied()
+      .unwrap_or(surface_caps.formats[0]);
+
+    let surface_config = wgpu::SurfaceConfiguration {
+      usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+      format: surface_format,
+      width: size.width.max(1),
+      height: size.height.max(1),
+      present_mode: wgpu::PresentMode::Fifo,
+      alpha_mode: surface_caps.alpha_modes[0],
+      view_formats: vec![],
+      desired_maximum_frame_latency: 2,
+    };
+    surface.configure(&gpu_read.device, &surface_config);
+    drop(gpu_read);
+
+    gpu.write().unwrap().window_size =
+      (surface_config.width, surface_config.height);
 
     Ok(Self {
       window,
@@ -858,12 +929,11 @@ impl RenderState {
           let mut gpu = self.gpu.write().unwrap();
           gpu.upload_bindings(pre_upload);
           let entry = entry.replace('-', "_");
-          let mut encoder =
-            gpu
-              .device
-              .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("compute encoder"),
-              });
+          let mut encoder = gpu.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor {
+              label: Some("compute encoder"),
+            },
+          );
           {
             let mut compute_pass =
               encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -897,12 +967,11 @@ impl RenderState {
             } else {
               wgpu::LoadOp::Load
             };
-            let mut encoder =
-              gpu
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                  label: Some("render encoder"),
-                });
+            let mut encoder = gpu.device.create_command_encoder(
+              &wgpu::CommandEncoderDescriptor {
+                label: Some("render encoder"),
+              },
+            );
             {
               let mut render_pass =
                 encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -923,8 +992,7 @@ impl RenderState {
                 });
               for (group_idx, bind_group) in gpu.bind_groups.iter().enumerate()
               {
-                render_pass
-                  .set_bind_group(group_idx as u32, bind_group, &[]);
+                render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
               }
               render_pass.set_pipeline(&self.pipelines[&(vert, frag)]);
               render_pass.draw(0..*vert_count, 0..1);

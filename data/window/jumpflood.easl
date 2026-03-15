@@ -1,0 +1,264 @@
+(def TAU: f32
+     6.28318530718)
+
+(def seed-count: u32
+     2000)
+
+(def grid-size: u32
+     2000)
+
+@{address uniform
+  group 0
+  binding 0}
+(var screenspace-scale: vec2f)
+
+@{address storage-write
+  group 0
+  binding 1}
+(var seeds: [vec4f])
+
+@{address storage-write
+  group 0
+  binding 2}
+(var grid: [vec4u])
+
+@{address storage-write
+  group 0
+  binding 3}
+(var jumpflood-distance: u32)
+
+@{address storage
+  group 0
+  binding 4}
+(var frame-index: u32)
+
+(defn rand [seed: f32]: f32
+  (fract (* 43758.5453123
+            (sin (* seed 78.233)))))
+
+(defn uni->bi [x: f32]: f32
+  (-> x (* 2.) (- 1.)))
+
+(defn uni->bi [x: vec2f]: vec2f
+  (-> x (* 2.) (- 1.)))
+
+(defn uni->bi [x: vec3f]: vec3f
+  (-> x (* 2.) (- 1.)))
+
+(defn uni->bi [x: vec4f]: vec4f
+  (-> x (* 2.) (- 1.)))
+
+(defn bi->uni [x: f32]: f32
+  (-> x (+ 1.) (* 0.5)))
+
+(defn bi->uni [x: vec2f]: vec2f
+  (-> x (+ 1.) (* 0.5)))
+
+(defn bi->uni [x: vec3f]: vec3f
+  (-> x (+ 1.) (* 0.5)))
+
+(defn bi->uni [x: vec4f]: vec4f
+  (-> x (+ 1.) (* 0.5)))
+
+(defn cis [x: f32]: vec2f
+  (vec2f (cos x) (sin x)))
+
+@compute
+@{workgroup-size 1}
+(defn position-seeds [@{builtin global-invocation-id}
+                      id: vec3u]
+  (= (seeds id.x)
+     (-> (vec4f (let [base-pos (vec2f (rand (/ (f32 id.x)
+                                               (- (f32 seed-count) 1)))
+                                      (rand (+ (/ (+ (f32 id.x) 0.5)
+                                                  (- (f32 seed-count) 1))
+                                               0.2711)))
+                      base-angle (* TAU
+                                    (rand (+ (/ (+ (f32 id.x) 0.5)
+                                                (- (f32 seed-count) 1))
+                                             -0.1992)))
+                      spin-radius 0.1]
+                  (+ (* (- 1. spin-radius)
+                        (uni->bi base-pos))
+                     (* spin-radius
+                        (cis (+ base-angle
+                                (* (f32 frame-index) 0.01))))))
+                0.
+                0.))))
+
+(defn coords->grid-index [coords: vec2i]: i32
+  (+ coords.x
+     (* coords.y (i32 grid-size))))
+
+@compute
+@{workgroup-size 1}
+(defn jumpflood-grid-update [@{builtin global-invocation-id}
+                             id: vec3u]
+  (let [coords (vec2i id.xy)
+        @var current-indeces (grid (coords->grid-index coords))
+        offsets [(vec2i 1i 0i)
+                 (vec2i -1i 0i)
+                 (vec2i 0i 1i)
+                 (vec2i 0i -1i)]
+        @var indeces-to-consider: [20: u32] (zeroed-array)]
+    (for [i 0u (< i 4) (+= i 1)]
+      (let [offset (offsets i)
+            offset-coords (+ coords
+                             (* offset
+                                (i32 jumpflood-distance)))]
+        (when (and (all (< offset-coords
+                           (vec2i grid-size)))
+                   (all (>= offset-coords (vec2i 0i))))
+          (let [offset-indeces (grid (coords->grid-index offset-coords))]
+            (= (indeces-to-consider (+ (* i 4) 0))
+               offset-indeces.x)
+            (= (indeces-to-consider (+ (* i 4) 1))
+               offset-indeces.y)
+            (= (indeces-to-consider (+ (* i 4) 2))
+               offset-indeces.z)
+            (= (indeces-to-consider (+ (* i 4) 3))
+               offset-indeces.w)))))
+    (for [i
+          16u
+          (< i
+             (array-length indeces-to-consider))
+          (+= i 1)]
+      (= (indeces-to-consider i)
+         (u32 (* (rand (+ (% (* (f32 frame-index) 0.0014123)
+                             1)
+                          (* (f32 jumpflood-distance)
+                             -0.0021992)
+                          (* (f32 coords.x) -0.037123)
+                          (* (f32 coords.y) 0.029123)))
+                 (f32 seed-count)))))
+    (let [cell-pos (-> coords
+                       vec2f
+                       (/ (f32 grid-size))
+                       uni->bi)
+          distance-to-seed (fn [index: u32]: f32
+                               (distance (.xy (seeds index)) cell-pos))
+          @var current-distances (vec4f (distance-to-seed current-indeces.x)
+                                        (distance-to-seed current-indeces.y)
+                                        (distance-to-seed current-indeces.z)
+                                        (distance-to-seed current-indeces.w))]
+      (for [i
+            0u
+            (< i
+               (array-length indeces-to-consider))
+            (+= i 1u)]
+        (let [seed-index (indeces-to-consider i)
+              d (distance-to-seed seed-index)]
+          (when (< d current-distances.x)
+            (= current-distances
+               (vec4f d current-distances.xyz))
+            (= current-indeces
+               (vec4u seed-index
+                      current-indeces.xyz))
+            (continue))
+          (when (< d current-distances.y)
+            (= current-distances.yzw
+               (vec3f d current-distances.yz))
+            (= current-indeces.yzw
+               (vec3u seed-index current-indeces.yz))
+            (continue))
+          (when (< d current-distances.z)
+            (= current-distances.zw
+               (vec2f d current-distances.z))
+            (= current-indeces.zw
+               (vec2u seed-index current-indeces.z))
+            (continue))
+          (when (< d current-distances.w)
+            (= current-distances.w d)
+            (= current-indeces.w seed-index)
+            (continue)))))
+    (= (grid (coords->grid-index coords))
+       current-indeces)))
+
+(defn vert-index-square-pos [i: u32]: vec2f
+  (vec2f (if (or (== i 0) (== i 1) (== i 3))
+           -1.
+           1.)
+         (if (or (== i 0) (== i 3) (== i 4))
+           -1.
+           1.)))
+
+(struct SquarePosVertOutput
+  @{builtin position} pos: vec4f
+  square-pos: vec2f)
+
+@vertex
+(defn seed-dot-vertex [@{builtin vertex-index}
+                       vertex-index: u32]: SquarePosVertOutput
+  (let [square-pos (vert-index-square-pos (% vertex-index 6))
+        seed (seeds (/ vertex-index 6))]
+    (SquarePosVertOutput (vec4f (* screenspace-scale
+                                   (+ seed.xy (* 0.002 square-pos)))
+                                0.
+                                1.)
+                         square-pos)))
+
+@fragment
+(defn seed-dot-frag [in: SquarePosVertOutput]: @{location 0} vec4f
+  (when (> (length in.square-pos) 1.)
+    (discard))
+  (vec4f 1. 0. 0. 1.))
+
+@vertex
+(defn grid-vertex [@{builtin vertex-index}
+                   vertex-index: u32]: SquarePosVertOutput
+  (let [square-pos (vert-index-square-pos vertex-index)]
+    (SquarePosVertOutput (vec4f (* screenspace-scale square-pos)
+                                0.
+                                1.)
+                         square-pos)))
+
+@fragment
+(defn grid-frag [in: SquarePosVertOutput]: @{location 0} vec4f
+  (when (or (any (< in.square-pos (vec2f -1.)))
+            (any (> in.square-pos (vec2f 1.))))
+    (return (vec4f (vec3f 0f) 1.)))
+  (let [coords (-> in.square-pos
+                   bi->uni
+                   (* (f32 grid-size))
+                   vec2i)
+        grid-value (grid (coords->grid-index coords))]
+    (vec4f (vec3f (/ (vec3f grid-value.xyz)
+                     (f32 seed-count)))
+           1.)))
+
+(defn run-jumpflood-step [d: u32]
+  (= jumpflood-distance d)
+  (dispatch-compute-shader jumpflood-grid-update
+                           (vec3u grid-size grid-size 1u)))
+
+@cpu
+(defn main []
+  (= seeds
+     (zeroed-array seed-count))
+  (= grid
+     (zeroed-array (* grid-size grid-size)))
+  (dispatch-compute-shader position-seeds
+                           (vec3u seed-count 1u 1u))
+  (let [@var d (/ grid-size 2)]
+    (while (>= d 1)
+      (run-jumpflood-step d)
+      (/= d 2))
+    (run-jumpflood-step 1))
+  (spawn-window (fn []
+                    (let [resolution (window-resolution)]
+                      (= screenspace-scale
+                         (/ (f32 (min resolution.x resolution.y))
+                            (vec2f resolution))))
+                    (dispatch-compute-shader position-seeds
+                                             (vec3u seed-count 1u 1u))
+                    (let [distances [4u 2u 1u]]
+                      (for [i
+                            0u
+                            (< i (array-length distances))
+                            (+= i 1)]
+                        (run-jumpflood-step (distances i))))
+                    (dispatch-render-shaders grid-vertex grid-frag 6)
+                    (dispatch-render-shaders seed-dot-vertex
+                                             seed-dot-frag
+                                             (* 6 seed-count))
+                    (+= frame-index 1))))

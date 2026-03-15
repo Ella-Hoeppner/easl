@@ -1950,6 +1950,15 @@ pub trait IOManager: Sized {
   fn window_size(&self) -> (u32, u32) {
     (1, 1)
   }
+  /// Returns the current GPU, if any. Used by `App::resumed` to detect an
+  /// existing headless GPU so it can be reused rather than replaced.
+  /// Default returns `None`; overridden by IO managers with real GPU access.
+  #[cfg(feature = "window")]
+  fn get_gpu(
+    &self,
+  ) -> Option<std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>> {
+    None
+  }
   /// Called after the wgpu device is created so compute dispatches can run
   /// synchronously. Default no-op for IO managers without real GPU access.
   #[cfg(feature = "window")]
@@ -2059,6 +2068,13 @@ impl IOManager for StdoutIO {
       return Some(gpu.read().unwrap().read_buffer(group, binding, size));
     }
     None
+  }
+
+  #[cfg(feature = "window")]
+  fn get_gpu(
+    &self,
+  ) -> Option<std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>> {
+    self.gpu.clone()
   }
 
   #[cfg(feature = "window")]
@@ -2266,6 +2282,13 @@ impl IOManager for CaptureIO {
 
   fn sync_gpu_to_cpu(&mut self, group: u8, binding: u8, size: u64) -> Option<Vec<u8>> {
     self.inner.sync_gpu_to_cpu(group, binding, size)
+  }
+
+  #[cfg(feature = "window")]
+  fn get_gpu(
+    &self,
+  ) -> Option<std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>> {
+    self.inner.get_gpu()
   }
 
   #[cfg(feature = "window")]
