@@ -17,9 +17,8 @@ use crate::{
       FunctionSignature, FunctionTargetConfiguration, Ownership,
       SpecialCasedBuiltinFunction,
     },
-    program::TypeDefs,
     structs::AbstractStructField,
-    types::{AbstractArraySize, GenericArgument, Variable, VariableKind},
+    types::{AbstractArraySize, GenericArgument},
   },
   parse::{EaslTree, Encloser},
 };
@@ -1842,54 +1841,21 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
   vec![
     AbstractFunctionSignature {
       name: "dispatch-render-shaders".into(),
-      generic_args: vec![(
-        "T".into(),
-        GenericArgument::Type(vec![]),
-        SourceTrace::empty(),
-      )],
+      generic_args: vec![
+        (
+          "V".into(),
+          GenericArgument::Type(vec![TypeConstraint::function()]),
+          SourceTrace::empty(),
+        ),
+        (
+          "F".into(),
+          GenericArgument::Type(vec![TypeConstraint::function()]),
+          SourceTrace::empty(),
+        ),
+      ],
       arg_types: vec![
-        AbstractType::Type(Type::Function(
-          FunctionSignature {
-            abstract_ancestor: None,
-            args: vec![(
-              Variable {
-                kind: VariableKind::Let,
-                var_type: Type::U32.known().into(),
-              },
-              vec![],
-            )],
-            return_type: Type::Skolem("T".into(), vec![]).known().into(),
-          }
-          .into(),
-        ))
-        .owned(),
-        AbstractType::Type(Type::Function(
-          FunctionSignature {
-            abstract_ancestor: None,
-            args: vec![(
-              Variable {
-                kind: VariableKind::Let,
-                var_type: Type::Skolem("T".into(), vec![]).known().into(),
-              },
-              vec![],
-            )],
-            return_type: Type::Struct(
-              AbstractStruct::concretize(
-                Arc::new(
-                  vec4().generate_monomorphized(vec![Type::F32]).unwrap(),
-                ),
-                &TypeDefs::empty(),
-                &vec![],
-                SourceTrace::empty(),
-              )
-              .unwrap(),
-            )
-            .known()
-            .into(),
-          }
-          .into(),
-        ))
-        .owned(),
+        AbstractType::Generic("V".into()).owned(),
+        AbstractType::Generic("F".into()).owned(),
         AbstractType::Type(Type::U32).owned(),
       ],
       return_type: AbstractType::Unit,
@@ -1907,7 +1873,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       name: "dispatch-compute-shader".into(),
       generic_args: vec![(
         "F".into(),
-        GenericArgument::Type(vec![TypeConstraint::compute_entry_fn()]),
+        GenericArgument::Type(vec![TypeConstraint::function()]),
         SourceTrace::empty(),
       )],
       arg_types: vec![

@@ -12,7 +12,6 @@ use fsexp::{document::DocumentPosition, syntax::EncloserOrOperator};
 use crate::{
   compiler::{
     builtins::scalar_bitcast,
-    entry::EntryPoint,
     enums::{AbstractEnum, Enum, UntypedEnum},
     error::{CompileError, CompileErrorKind},
     expression::{Accessor, ExpKind, Number, TypedExp},
@@ -897,6 +896,19 @@ pub enum Type {
   Array(Option<ConcreteArraySize>, Box<ExpTypeInfo>),
 }
 impl Type {
+  pub fn gather_location_annotations(
+    &self,
+    annotations: &mut HashMap<usize, Type>,
+  ) {
+    let Type::Struct(s) = self else {
+      return;
+    };
+    for f in s.fields.iter() {
+      if let Some((location, _)) = f.attributes.location() {
+        annotations.insert(location, f.field_type.unwrap_known());
+      }
+    }
+  }
   pub fn tag(&self) -> &str {
     match self {
       Type::Unit => "Unit",
@@ -1011,16 +1023,7 @@ impl Type {
             || *self == Type::Bool
         }
         TypeConstraintKind::Integer => *self == Type::I32 || *self == Type::U32,
-        TypeConstraintKind::ComputeEntryFunction => {
-          if let Type::Function(f) = self
-            && let Some(f) = &f.abstract_ancestor
-            && let Some(EntryPoint::Compute(_)) = f.read().unwrap().entry_point
-          {
-            true
-          } else {
-            false
-          }
-        }
+        TypeConstraintKind::Function => matches!(self, Type::Function(_)),
       }
     }
   }
@@ -2352,7 +2355,7 @@ pub enum TypeConstraintKind {
   Scalar,
   ScalarOrBool,
   Integer,
-  ComputeEntryFunction,
+  Function,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2367,7 +2370,7 @@ impl TypeConstraint {
       TypeConstraintKind::Scalar => "Scalar",
       TypeConstraintKind::ScalarOrBool => "ScalarOrBool",
       TypeConstraintKind::Integer => "Integer",
-      TypeConstraintKind::ComputeEntryFunction => "ComputeEntryFn",
+      TypeConstraintKind::Function => "Function",
     }
     .to_string()
   }
@@ -2389,9 +2392,9 @@ impl TypeConstraint {
       args: vec![],
     }
   }
-  pub fn compute_entry_fn() -> Self {
+  pub fn function() -> Self {
     Self {
-      kind: TypeConstraintKind::ComputeEntryFunction,
+      kind: TypeConstraintKind::Function,
       args: vec![],
     }
   }

@@ -354,7 +354,7 @@ impl IOAttribute {
     name: &Arc<str>,
     name_source: SourceTrace,
     value: Option<(Arc<str>, SourceTrace)>,
-    arg_or_field_name: Option<(Arc<str>, SourceTrace)>,
+    _arg_or_field_name: Option<(Arc<str>, SourceTrace)>,
   ) -> CompileResult<Option<Self>> {
     match (&**name, value) {
       ("builtin", value) => {

@@ -1,0 +1,27 @@
+(struct VertexOutput
+  @{builtin position} vertex-pos: vec4f
+  @{location 0} x: f32)
+
+(struct FragmentInput
+  @{builtin position} vertex-pos: vec4f)
+
+@vertex
+(defn my-vertex [@{builtin vertex-index} i: u32]: VertexOutput
+  (VertexOutput (vec4f (match i
+                         0 (vec2f -1.)
+                         1 (vec2f -1. 3.)
+                         _ (vec2f 3. -1.))
+                       0.
+                       1.)
+                0.))
+
+@fragment
+(defn my-fragment [in: FragmentInput]: @{location 0} vec4f
+  (vec4f (* 0.001 in.vertex-pos.xy)
+         0.
+         1.))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-render-shaders my-vertex my-fragment 3))))

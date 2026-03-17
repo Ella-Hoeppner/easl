@@ -528,3 +528,19 @@ error_test!(
     "fragment".into(),
   )
 );
+
+error_test!(
+  dispatch_shader_compiled_away_failure_too_many_outputs,
+  CompileErrorKind::IncompatibleRenderEntryPoints(
+    "my-vertex".into(),
+    "my-fragment".into(),
+  )
+);
+
+error_test!(
+  dispatch_shader_compiled_away_failure_too_many_inputs,
+  CompileErrorKind::IncompatibleRenderEntryPoints(
+    "my-vertex".into(),
+    "my-fragment".into(),
+  )
+);

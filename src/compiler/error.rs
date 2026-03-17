@@ -435,6 +435,20 @@ pub enum CompileErrorKind {
     "GPU entry point wrote to variable \"{0}\" in illegal address space \"{1}\""
   )]
   IllegalAddressSpaceGpuWrite(String, VariableAddressSpace),
+  #[error("dispatch-compute-shader expects a `@compute` function, got `@{0}`")]
+  WrongEntryPointTypeForDispatchComputeShader(String),
+  #[error(
+    "dispatch-render-shaders expects a `@vertex` function for first argument, got `@{0}`"
+  )]
+  WrongEntryPointTypeForDispatchVertexShader(String),
+  #[error(
+    "dispatch-compute-shaders expects a `@fragment` function for second argument, got `@{0}`"
+  )]
+  WrongEntryPointTypeForDispatchFragmentShader(String),
+  #[error("Function `{0}` is not a valid shader entry point")]
+  InvalidShaderEntry(String),
+  #[error("Vertex function `{0}` and Fragment function {1} are incompatible")]
+  IncompatibleRenderEntryPoints(String, String),
 }
 
 impl CompileErrorKind {

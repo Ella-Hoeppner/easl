@@ -99,3 +99,4 @@ window_test!(global_frame_counter);
 window_test!(compute_dispatch);
 window_test!(close_window);
 window_test!(immediate_close_window);
+window_test!(implicit_render_entry_points);

@@ -5,7 +5,6 @@ use std::sync::{Arc, RwLock};
 use fsexp::{Ast, document::Document, syntax::EncloserOrOperator};
 use take_mut::take;
 
-use crate::compiler::functions::FunctionTargetConfiguration;
 use crate::compiler::types::ExpTypeInfo;
 use crate::compiler::vars::VariableAddressSpace;
 use crate::{
@@ -1078,6 +1077,199 @@ impl Program {
             Ok(true)
           })
           .unwrap();
+      }
+    }
+  }
+  pub fn validate_shader_dispatch_function_types_and_mark_implicit_entry_points(
+    &mut self,
+    errors: &mut ErrorLog,
+  ) {
+    for f in self.abstract_functions_iter() {
+      if let FunctionImplementationKind::Composite(implementation) =
+        &f.read().unwrap().implementation
+      {
+        implementation
+          .read()
+          .unwrap()
+          .expression
+          .walk(&mut |exp| {
+            'breakable: {
+              if let ExpKind::Application(f, args) = &exp.kind
+                && let ExpKind::Name(f_name) = &f.kind
+              {
+                match &**f_name {
+                  "dispatch-compute-shader" => {
+                    if let Type::Function(compute_entry_fn) =
+                      args[0].data.unwrap_known()
+                      && let Some(compute_entry_fn) =
+                        compute_entry_fn.abstract_ancestor
+                    {
+                      let mut compute_entry_fn =
+                        compute_entry_fn.write().unwrap();
+                      if let Some(entry_point) = compute_entry_fn.entry_point {
+                        if !matches!(entry_point, EntryPoint::Compute(_)) {
+                          errors.log(CompileError::new(
+                            WrongEntryPointTypeForDispatchComputeShader(
+                              entry_point.name().into(),
+                            ),
+                            exp.source_trace.clone(),
+                          ))
+                        }
+                      } else {
+                        compute_entry_fn.entry_point =
+                          Some(EntryPoint::Compute(1))
+                      }
+                    }
+                  }
+                  "dispatch-render-shaders" => {
+                    if let Type::Function(vertex_fn) =
+                      args[0].data.unwrap_known()
+                      && let Some(abstract_vertex_fn) =
+                        &vertex_fn.abstract_ancestor
+                      && let Type::Function(fragment_fn) =
+                        args[1].data.unwrap_known()
+                      && let Some(abstract_fragment_fn) =
+                        &fragment_fn.abstract_ancestor
+                    {
+                      let mut abstract_vertex_fn =
+                        abstract_vertex_fn.write().unwrap();
+                      if let Some(entry_point) = abstract_vertex_fn.entry_point
+                      {
+                        if entry_point != EntryPoint::Vertex {
+                          errors.log(CompileError::new(
+                            WrongEntryPointTypeForDispatchVertexShader(
+                              entry_point.name().into(),
+                            ),
+                            exp.source_trace.clone(),
+                          ))
+                        }
+                      } else {
+                        println!(
+                          "assining implicit vertex entry {}",
+                          abstract_vertex_fn.name
+                        );
+                        abstract_vertex_fn.entry_point =
+                          Some(EntryPoint::Vertex);
+                        for other_f in self.abstract_functions_iter() {
+                          let other_f = other_f.read().unwrap();
+                          if other_f.name == abstract_vertex_fn.name
+                            && let FunctionImplementationKind::Composite(
+                              other_f,
+                            ) = &other_f.implementation
+                          {
+                            println!(
+                              "assining global implicit vertex entry {}",
+                              abstract_vertex_fn.name
+                            );
+                            other_f.write().unwrap().entry_point =
+                              Some(EntryPoint::Vertex);
+                            other_f.write().unwrap().entry_point =
+                              Some(EntryPoint::Vertex);
+                          }
+                        }
+                      }
+                      let mut abstract_fragment_fn =
+                        abstract_fragment_fn.write().unwrap();
+                      if let Some(entry_point) =
+                        abstract_fragment_fn.entry_point
+                      {
+                        if entry_point != EntryPoint::Fragment {
+                          errors.log(CompileError::new(
+                            WrongEntryPointTypeForDispatchFragmentShader(
+                              entry_point.name().into(),
+                            ),
+                            exp.source_trace.clone(),
+                          ))
+                        }
+                      } else {
+                        println!(
+                          "assining implicit fragment entry {}",
+                          abstract_fragment_fn.name
+                        );
+                        abstract_fragment_fn.entry_point =
+                          Some(EntryPoint::Fragment);
+                        for other_f in self.abstract_functions_iter() {
+                          let other_f = other_f.read().unwrap();
+                          if other_f.name == abstract_fragment_fn.name
+                            && let FunctionImplementationKind::Composite(
+                              other_f,
+                            ) = &other_f.implementation
+                          {
+                            println!(
+                              "assining global implicit fragment entry {}",
+                              abstract_fragment_fn.name
+                            );
+                            other_f.write().unwrap().entry_point =
+                              Some(EntryPoint::Fragment);
+                            other_f.write().unwrap().entry_point =
+                              Some(EntryPoint::Fragment);
+                          }
+                        }
+                      }
+
+                      let FunctionImplementationKind::Composite(
+                        frag_implementation,
+                      ) = &abstract_fragment_fn.implementation
+                      else {
+                        errors.log(CompileError::new(
+                          InvalidShaderEntry(
+                            abstract_fragment_fn.name.to_string(),
+                          ),
+                          exp.source_trace.clone(),
+                        ));
+                        break 'breakable;
+                      };
+                      let mut output_locations: HashMap<usize, Type> =
+                        HashMap::new();
+                      vertex_fn
+                        .return_type
+                        .unwrap_known()
+                        .gather_location_annotations(&mut output_locations);
+                      let mut input_locations: HashMap<usize, Type> =
+                        HashMap::new();
+                      for ((arg, _), annotation) in fragment_fn.args.iter().zip(
+                        frag_implementation
+                          .read()
+                          .unwrap()
+                          .arg_annotations
+                          .iter(),
+                      ) {
+                        let arg_type = arg.var_type.unwrap_known();
+                        if let Some((location, _)) =
+                          annotation.attributes.location()
+                        {
+                          input_locations.insert(location, arg_type);
+                        } else {
+                          arg_type
+                            .gather_location_annotations(&mut input_locations);
+                        }
+                      }
+                      if input_locations.len() != output_locations.len()
+                        || input_locations.iter().any(|(location, in_ty)| {
+                          if let Some(out_ty) = output_locations.get(location) {
+                            in_ty.compatible(out_ty)
+                          } else {
+                            true
+                          }
+                        })
+                      {
+                        errors.log(CompileError::new(
+                          IncompatibleRenderEntryPoints(
+                            abstract_vertex_fn.name.to_string(),
+                            abstract_fragment_fn.name.to_string(),
+                          ),
+                          exp.source_trace.clone(),
+                        ));
+                      }
+                    }
+                  }
+                  _ => {}
+                }
+              }
+            }
+            Ok::<bool, Never>(true)
+          })
+          .unwrap()
       }
     }
   }
@@ -3324,10 +3516,6 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    self.validate_entry_points(&mut errors);
-    if !errors.is_empty() {
-      return errors;
-    }
     self.catch_expressions_after_control_flow(&mut errors);
     if !errors.is_empty() {
       return errors;
@@ -3343,6 +3531,17 @@ impl Program {
     self.inline_static_array_length_calls();
     self.monomorphize_reference_address_spaces();
     self.extract_builtin_attribute_lookup_functions(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self
+      .validate_shader_dispatch_function_types_and_mark_implicit_entry_points(
+        &mut errors,
+      );
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.validate_entry_points(&mut errors);
     if !errors.is_empty() {
       return errors;
     }

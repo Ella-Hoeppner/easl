@@ -1,0 +1,11 @@
+spawn-window
+dispatch-render-shaders trivial-vertex my-fragment 3
+dispatch-render-shaders trivial-vertex my-fragment 3
+dispatch-render-shaders trivial-vertex my-fragment 3
+dispatch-render-shaders trivial-vertex my-fragment 3
+dispatch-render-shaders trivial-vertex my-fragment 3
+dispatch-render-shaders trivial-vertex my-fragment 3
+dispatch-render-shaders trivial-vertex my-fragment 3
+dispatch-render-shaders trivial-vertex my-fragment 3
+dispatch-render-shaders trivial-vertex my-fragment 3
+dispatch-render-shaders trivial-vertex my-fragment 3
