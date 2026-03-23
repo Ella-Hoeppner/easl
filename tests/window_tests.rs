@@ -1,3 +1,4 @@
+use easl::compile_easl_source_to_wgsl;
 use easl::compiler::program::Program;
 use easl::interpreter::{IOEvent, run_program_test_io};
 use easl::parse::parse_easl_without_comments;
@@ -62,6 +63,38 @@ fn run_window_test(name: &str) {
   let expected_txt = fs::read_to_string(format!("./data/window/{name}.txt"))
     .unwrap_or_else(|_| panic!("Unable to read data/window/{name}.txt"));
 
+  fs::create_dir_all("./out/").expect("Unable to create out directory");
+  let wgsl = match compile_easl_source_to_wgsl(&easl_source) {
+    Ok(Ok(wgsl)) => {
+      fs::write(format!("./out/{name}.wgsl"), &wgsl)
+        .expect("Unable to write output file");
+      wgsl
+    }
+    Ok(Err((document, error_log))) => {
+      fs::write(format!("./out/{name}.wgsl"), error_log.describe(&document))
+        .expect("Unable to write output file");
+      panic!("{name}: WGSL compile errors: {}", error_log.describe(&document));
+    }
+    Err(document) => panic!("{name}: parse errors: {:?}", document.parsing_failures),
+  };
+  let module = naga::front::wgsl::parse_str(&wgsl).unwrap_or_else(|e| {
+    panic!(
+      "{name}: naga failed to parse generated WGSL:\n{e}\n\
+       See out/{name}.wgsl for the generated code."
+    )
+  });
+  naga::valid::Validator::new(
+    naga::valid::ValidationFlags::all(),
+    naga::valid::Capabilities::all(),
+  )
+  .validate(&module)
+  .unwrap_or_else(|e| {
+    panic!(
+      "{name}: naga validation failed on generated WGSL:\n{e}\n\
+       See out/{name}.wgsl for the generated code."
+    )
+  });
+
   let (mut program, errors) = Program::from_easl_document(
     &parse_easl_without_comments(&easl_source),
     easl::compiler::builtins::built_in_macros(),
@@ -100,3 +133,4 @@ window_test!(compute_dispatch);
 window_test!(close_window);
 window_test!(immediate_close_window);
 window_test!(implicit_render_entry_points);
+window_test!(closure_render_entry_points);

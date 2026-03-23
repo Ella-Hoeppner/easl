@@ -1,0 +1,15 @@
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-render-shaders (fn []
+                                                 (vec4f (match (vertex-index)
+                                                          0 (vec2f 0.)
+                                                          1 (vec2f 1. 0.)
+                                                          _ (vec2f 0. 1.))
+                                                        0.
+                                                        1.))
+                                             (fn []
+                                                 (vec4f (/ (.xy (position)) 1000.)
+                                                        0.
+                                                        1.))
+                                             3))))

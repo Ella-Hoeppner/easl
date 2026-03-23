@@ -1,0 +1,11 @@
+spawn-window
+dispatch-render-shaders inner_fn_0 inner_fn_1 3
+dispatch-render-shaders inner_fn_0 inner_fn_1 3
+dispatch-render-shaders inner_fn_0 inner_fn_1 3
+dispatch-render-shaders inner_fn_0 inner_fn_1 3
+dispatch-render-shaders inner_fn_0 inner_fn_1 3
+dispatch-render-shaders inner_fn_0 inner_fn_1 3
+dispatch-render-shaders inner_fn_0 inner_fn_1 3
+dispatch-render-shaders inner_fn_0 inner_fn_1 3
+dispatch-render-shaders inner_fn_0 inner_fn_1 3
+dispatch-render-shaders inner_fn_0 inner_fn_1 3

@@ -1525,15 +1525,7 @@ fn apply_builtin_fn<IO: IOManager>(
         panic!()
       };
       let body = *body;
-      let mut result: Result<(), EvalError> = Ok(());
-      take(env, |env| match IO::run_spawn_window(body, env) {
-        Ok(env) => env,
-        Err((env, e)) => {
-          result = Err(e);
-          env
-        }
-      });
-      result?;
+      IO::run_spawn_window(body, env)?;
       Ok(Value::Unit)
     }
     "into-dynamic-array" => Ok(args.remove(0).0),
@@ -1989,11 +1981,8 @@ pub trait IOManager: Sized {
   }
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
-    env: EvaluationEnvironment<Self>,
-  ) -> Result<
-    EvaluationEnvironment<Self>,
-    (EvaluationEnvironment<Self>, EvalError),
-  >;
+    env: &mut EvaluationEnvironment<Self>,
+  ) -> Result<(), EvalError>;
 }
 
 pub struct StdoutIO {
@@ -2123,17 +2112,14 @@ impl IOManager for StdoutIO {
 
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
-    env: EvaluationEnvironment<Self>,
-  ) -> Result<
-    EvaluationEnvironment<Self>,
-    (EvaluationEnvironment<Self>, EvalError),
-  > {
+    env: &mut EvaluationEnvironment<Self>,
+  ) -> Result<(), EvalError> {
     #[cfg(feature = "window")]
     return crate::window::run_window_loop(body, env);
     #[cfg(not(feature = "window"))]
     {
-      let _ = body;
-      Err((env, WindowFeatureNotEnabled))
+      let _ = (body, env);
+      Err(WindowFeatureNotEnabled)
     }
   }
 }
@@ -2216,21 +2202,18 @@ impl IOManager for StringIO {
 
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
-    mut env: EvaluationEnvironment<Self>,
-  ) -> Result<
-    EvaluationEnvironment<Self>,
-    (EvaluationEnvironment<Self>, EvalError),
-  > {
+    env: &mut EvaluationEnvironment<Self>,
+  ) -> Result<(), EvalError> {
     env.io.events.push(IOEvent::SpawnWindow);
     let frame_count = env.io.frame_count;
     for _ in 0..frame_count {
-      match eval(body.clone(), &mut env) {
+      match eval(body.clone(), env) {
         Ok(_) => {}
         Err(EvalException::Error(CloseWindow)) => break,
-        Err(e) => return Err((env, e.into())),
+        Err(e) => return Err(e.into()),
       }
     }
-    Ok(env)
+    Ok(())
   }
 }
 
@@ -2330,23 +2313,20 @@ impl IOManager for CaptureIO {
 
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
-    mut env: EvaluationEnvironment<Self>,
-  ) -> Result<
-    EvaluationEnvironment<Self>,
-    (EvaluationEnvironment<Self>, EvalError),
-  > {
+    env: &mut EvaluationEnvironment<Self>,
+  ) -> Result<(), EvalError> {
     // Run a headless eval loop rather than going through winit, since tests
     // can't create an EventLoop off the main thread (macOS restriction). All
     // GPU operations still delegate to `inner` (the same StdoutIO instance),
     // so GPU state is shared and consistent with the non-window path.
     loop {
-      match eval(body.clone(), &mut env) {
+      match eval(body.clone(), env) {
         Ok(_) => {}
         Err(EvalException::Error(CloseWindow)) => break,
-        Err(e) => return Err((env, e.into())),
+        Err(e) => return Err(e.into()),
       }
     }
-    Ok(env)
+    Ok(())
   }
 }
 

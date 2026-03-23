@@ -27,15 +27,15 @@ thread_local! {
 
 pub fn run_window_loop<IO: IOManager>(
   body: Exp<ExpTypeInfo>,
-  env: EvaluationEnvironment<IO>,
-) -> Result<EvaluationEnvironment<IO>, (EvaluationEnvironment<IO>, EvalError)> {
+  env: &mut EvaluationEnvironment<IO>,
+) -> Result<(), EvalError> {
   EVENT_LOOP.with(|cell| {
     let mut opt = cell.write().unwrap();
     let event_loop = opt.get_or_insert_with(|| EventLoop::new().unwrap());
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
       body,
-      env: Some(env),
+      env,
       state: None,
       error: None,
       closed: false,
@@ -43,15 +43,15 @@ pub fn run_window_loop<IO: IOManager>(
     };
     event_loop.run_app_on_demand(&mut app).unwrap();
     match app.error {
-      None => Ok(app.env.unwrap()),
-      Some(e) => Err((app.env.unwrap(), e)),
+      None => Ok(()),
+      Some(e) => Err(e),
     }
   })
 }
 
-struct App<IO: IOManager> {
+struct App<'a, IO: IOManager> {
   body: Exp<ExpTypeInfo>,
-  env: Option<EvaluationEnvironment<IO>>,
+  env: &'a mut EvaluationEnvironment<IO>,
   state: Option<RenderState>,
   error: Option<EvalError>,
   closed: bool,
@@ -430,35 +430,29 @@ struct RenderState {
   pub gpu: Arc<RwLock<GpuCore>>,
 }
 
-impl<IO: IOManager> ApplicationHandler for App<IO> {
+impl<'a, IO: IOManager> ApplicationHandler for App<'a, IO> {
   fn resumed(&mut self, event_loop: &ActiveEventLoop) {
     let window = Arc::new(
       event_loop
         .create_window(Window::default_attributes().with_title("easl"))
         .unwrap(),
     );
-    let env = self.env.as_ref().unwrap();
     // If a headless GPU already exists (from a prior dispatch-compute-shader),
     // reuse it by adding a render surface on top. This avoids the expensive
     // GPU→CPU→GPU round-trip that would otherwise be needed to preserve
     // GPU-written buffer contents (e.g. large compute output arrays).
-    let state = if let Some(existing_gpu) = env.io.get_gpu() {
+    let state = if let Some(existing_gpu) = self.env.io.get_gpu() {
       pollster::block_on(RenderState::from_existing_gpu(window, existing_gpu))
         .unwrap()
     } else {
-      let wgsl = env.wgsl().to_string();
-      let binding_infos = env.binding_infos();
+      let wgsl = self.env.wgsl().to_string();
+      let binding_infos = self.env.binding_infos();
       pollster::block_on(RenderState::new(window, &wgsl, &binding_infos))
         .unwrap()
     };
     // Give the interpreter's IO manager direct access to GPU resources so
     // compute dispatches can execute synchronously within eval().
-    self
-      .env
-      .as_mut()
-      .unwrap()
-      .io
-      .set_gpu(Arc::clone(&state.gpu));
+    self.env.io.set_gpu(Arc::clone(&state.gpu));
     self.state = Some(state);
   }
 
@@ -486,8 +480,7 @@ impl<IO: IOManager> ApplicationHandler for App<IO> {
           println!("fps: {fps:.1}"); // fps logging
         }
         self.last_frame_time = Some(now);
-        let env = self.env.as_mut().unwrap();
-        match eval(self.body.clone(), env) {
+        match eval(self.body.clone(), self.env) {
           Ok(_) => {}
           Err(EvalException::Error(EvalError::CloseWindow)) => {
             self.closed = true;
@@ -501,7 +494,7 @@ impl<IO: IOManager> ApplicationHandler for App<IO> {
             return;
           }
         }
-        let draw_calls = env.io.take_frame_draw_calls();
+        let draw_calls = self.env.io.take_frame_draw_calls();
         if let Some(state) = &mut self.state {
           state.render(&draw_calls);
           state.window.request_redraw();

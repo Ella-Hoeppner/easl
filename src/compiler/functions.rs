@@ -1125,41 +1125,44 @@ impl TopLevelFunction {
       .collect::<Vec<String>>()
       .join(", ");
 
-    let fn_string = format!(
-      "{}fn {}({args}){} {{{}\n}}",
-      self
-        .entry_point
-        .as_ref()
-        .map(|e| e.compile())
-        .unwrap_or(String::new()),
-      compile_word(name.into()),
-      if return_type.kind.unwrap_known() == Type::Unit {
-        "".to_string()
-      } else {
-        format!(
-          " -> {}{}",
-          self.return_attributes.compile(),
-          return_type.monomorphized_name(names)
-        )
-      },
-      indent(body.compile(
+    let fn_string = || {
+      format!(
+        "{}fn {}({args}){} {{{}\n}}",
+        self
+          .entry_point
+          .as_ref()
+          .map(|e| e.compile())
+          .unwrap_or(String::new()),
+        compile_word(name.into()),
         if return_type.kind.unwrap_known() == Type::Unit {
-          ExpressionCompilationPosition::InnerLine
+          "".to_string()
         } else {
-          ExpressionCompilationPosition::Return
+          format!(
+            " -> {}{}",
+            self.return_attributes.compile(),
+            return_type.monomorphized_name(names)
+          )
         },
-        names,
-        target
-      ))
-    );
+        indent(body.compile(
+          if return_type.kind.unwrap_known() == Type::Unit {
+            ExpressionCompilationPosition::InnerLine
+          } else {
+            ExpressionCompilationPosition::Return
+          },
+          names,
+          target
+        ))
+      )
+    };
     Ok(
       if Some(EntryPoint::Cpu) != self.entry_point && allowed_on_gpu {
-        fn_string
+        fn_string()
       } else {
         // String::new()
         // DEBUG: uncommenting the following will compile CPU-exclusive
         // functions as commented-out pseudocode in the final WGSL file
-        "// ".to_string() + &fn_string.replace("\n", "\n// ")
+        //"// ".to_string() + &fn_string().replace("\n", "\n// ")
+        String::new()
       },
     )
   }
