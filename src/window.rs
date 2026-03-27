@@ -474,12 +474,12 @@ impl<'a, IO: IOManager> ApplicationHandler for App<'a, IO> {
         if self.closed {
           return;
         }
-        let now = Instant::now();
-        if let Some(last) = self.last_frame_time {
-          let fps = 1.0 / last.elapsed().as_secs_f64();
-          println!("fps: {fps:.1}"); // fps logging
-        }
-        self.last_frame_time = Some(now);
+        // let now = Instant::now();
+        // if let Some(last) = self.last_frame_time {
+        //   let fps = 1.0 / last.elapsed().as_secs_f64();
+        //   println!("fps: {fps:.1}"); // fps logging
+        // }
+        // self.last_frame_time = Some(now);
         match eval(self.body.clone(), self.env) {
           Ok(_) => {}
           Err(EvalException::CloseWindow) => {
