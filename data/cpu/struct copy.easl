@@ -1,8 +1,0 @@
-(struct MyStruct
-  a: f32)
-
-(defn main []
-  (print (MyStruct 5.))
-  (let [@var x (MyStruct 1.)]
-    (= x.a 2.)
-    (print x)))

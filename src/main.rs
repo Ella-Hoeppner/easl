@@ -70,6 +70,6 @@ fn main() {
     std::env::set_var("RUST_BACKTRACE", "1");
   }
   // benchmark_wgsl_compilation();
-  run_window_demo("closure_render_entry_points", None)
+  run_window_demo("print_after_close_window", None)
   // run_buffer_demo("array_assignment_cross_window", None)
 }

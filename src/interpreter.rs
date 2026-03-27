@@ -1,5 +1,6 @@
 use std::{collections::HashMap, vec};
 use take_mut::take;
+use thiserror::Error;
 
 use std::sync::Arc;
 
@@ -49,51 +50,109 @@ impl Primitive {
   }
 }
 
-#[derive(Clone, PartialEq, Debug)]
-pub enum EvalError {
+#[derive(Clone, PartialEq, Debug, Error)]
+pub enum InternalEvalError {
+  #[error("Encountered a wildcard expression")]
   EncounteredWildcard,
+  #[error("Invalid type for number literal expression")]
   InvalidNumberLiteralType,
+  #[error("Floating point value encountered in integer-typed expression")]
   FloatInIntLiteral,
+  #[error("Unbound name")]
   UnboundName(Arc<str>),
-  UnboundFunctionName,
+  #[error("Attempted to apply a non-name expression as a function")]
   AppliedNonName,
-  WrongArity,
-  AccessedFieldOnNonStruct,
-  AccessedIndexOnNonArray,
-  AccessorIndexMustBeInteger,
-  NoSuchField,
+  #[error("Wrong arity. Expected {0} arguments, got {1}")]
+  WrongArity(usize, usize),
+  #[error("Attempted to access a field `{0}` on a non-struct")]
+  AccessedFieldOnNonStruct(Arc<str>),
+  #[error("Attempted to access non-existent field {0}")]
+  NoSuchField(Arc<str>),
+  #[error("No arm of match block matched scrutinee value")]
   NoMatchingArm,
+  #[error("Attempted to create a zeroed function")]
   CantCreateZeroedFunction,
+  #[error("Attempted to create a zeroed skolem")]
   CantCreateZeroedSkolem,
-  CantCreateZeroedReference,
-  CantCreateZeroedUnsizedArray,
+  #[error("Attempted to create a zeroed skolem-sized array")]
   CantCreateZeroedSkolemSizedArray,
+  #[error("Attempted to array with invalid size")]
   InvalidArraySize,
+  #[error("Loop conditional didn't have a boolean-typed value")]
   NonBooleanLoopCondition,
-  UnrecognizedStructName,
-  UnimplementedBuiltin(String),
-  WindowFeatureNotEnabled,
-  NoCpuEntryPoint,
-  MultipleCpuEntryPoints,
-  CpuEntryPointNotFound(String),
+  #[error("Unrecognized struct name `{0}`")]
+  UnrecognizedStructName(Arc<str>),
+  #[error("Missing implementation for builtin function `{0}`")]
+  UnimplementedBuiltin(Arc<str>),
+  #[error("Deriviative function invoked on CPU")]
   DerivativeFunctionCantBeUsed,
+  #[error("`discard` invoked on CPU")]
   Discard,
-  CloseWindow,
-  BuiltinError(&'static str),
-  NoMainFn,
-  ControlFlowExceptionEscapedToTopLevel,
+  #[error("Control flow exception `{0}` escaped to top-level")]
+  ControlFlowExceptionEscapedToTopLevel(Arc<str>),
+}
+
+#[derive(Clone, PartialEq, Debug, Error)]
+pub enum UserspaceEvalError {
+  #[error("Compilation error: {0}")]
   CompilationError(CompileError),
+  #[error("Array index out of bounds: index {0} in array of size {1}")]
   ArrayIndexOutOfBounds(usize, usize),
+  #[error("Negative array index: {0}")]
   NegativeArrayIndex(isize),
+  #[error("`window` feature not enabled")]
+  WindowFeatureNotEnabled,
+  #[error("No `@cpu` entry point found")]
+  NoCpuEntryPoint,
+  #[error("Multiple `@cpu` entry points found, must specify a particle one")]
+  MultipleCpuEntryPoints,
+  #[error("Couldn't find `@cpu` entry point named {0}")]
+  CpuEntryPointNotFound(Arc<str>),
+}
+
+#[derive(Clone, PartialEq, Debug, Error)]
+pub enum EvalError {
+  #[error(
+    "Internal Interpreter Error: {0}\n\n\
+     Please report this issue on github!"
+  )]
+  Internal(InternalEvalError),
+  #[error("{0}")]
+  Userspace(UserspaceEvalError),
 }
 
 impl From<CompileError> for EvalError {
   fn from(e: CompileError) -> Self {
-    Self::CompilationError(e)
+    Self::Userspace(UserspaceEvalError::CompilationError(e))
   }
 }
 
-use EvalError::*;
+impl From<UserspaceEvalError> for EvalError {
+  fn from(e: UserspaceEvalError) -> Self {
+    Self::Userspace(e)
+  }
+}
+
+impl From<InternalEvalError> for EvalError {
+  fn from(e: InternalEvalError) -> Self {
+    Self::Internal(e)
+  }
+}
+
+impl From<UserspaceEvalError> for EvalException {
+  fn from(e: UserspaceEvalError) -> Self {
+    EvalError::Userspace(e).into()
+  }
+}
+
+impl From<InternalEvalError> for EvalException {
+  fn from(e: InternalEvalError) -> Self {
+    EvalError::Internal(e).into()
+  }
+}
+
+use InternalEvalError::*;
+use UserspaceEvalError::*;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Function {
@@ -120,7 +179,7 @@ impl Function {
         Ok(Function::StructConstructor({
           let s = match env.structs.get(name) {
             Some(s) => s,
-            None => return Err(UnrecognizedStructName),
+            None => return Err(UnrecognizedStructName(name.clone()).into()),
           };
           s.fields.iter().map(|field| field.name.clone()).collect()
         }))
@@ -251,7 +310,7 @@ fn apply_builtin_fn<IO: IOManager>(
   mut args: Vec<(Value, Type)>,
   return_type: Type,
   env: &mut EvaluationEnvironment<IO>,
-) -> Result<Value, EvalError> {
+) -> Result<Value, EvalException> {
   let return_type_clone = return_type.clone();
   let construct_vec = |vec_length: usize| {
     let Type::Struct(return_struct) = &return_type else {
@@ -1075,7 +1134,7 @@ fn apply_builtin_fn<IO: IOManager>(
     }
     "dpdx" | "dpdy" | "dpdx-coarse" | "dpdy-coarse" | "dpdx-fine"
     | "dpdy-fine" => {
-      Err(DerivativeFunctionCantBeUsed)
+      Err(DerivativeFunctionCantBeUsed.into())
       // These should have an effect that isn't handled by default on the CPU
       // so that this is a compile-time error instead
     }
@@ -1508,7 +1567,7 @@ fn apply_builtin_fn<IO: IOManager>(
     }
     "close-window" => {
       env.io.record_close_window();
-      Err(CloseWindow)
+      Err(EvalException::CloseWindow)
     }
     "spawn-window" => {
       let (
@@ -1561,7 +1620,7 @@ fn apply_builtin_fn<IO: IOManager>(
         length: size as usize,
       })
     }
-    _ => Err(UnimplementedBuiltin(f_name.to_string())),
+    _ => Err(UnimplementedBuiltin(f_name.into()).into()),
   }
 }
 
@@ -1695,26 +1754,26 @@ impl Value {
                 Value::Prim(primitive) => match primitive {
                   Primitive::U32(u) => *u as usize,
                   Primitive::I32(i) => *i as usize,
-                  _ => return Err(InvalidArraySize),
+                  _ => return Err(InvalidArraySize.into()),
                 },
-                _ => return Err(InvalidArraySize),
+                _ => return Err(InvalidArraySize.into()),
               }
             }
             ConcreteArraySize::Unsized => 0,
             ConcreteArraySize::Skolem(_) => {
-              return Err(CantCreateZeroedSkolemSizedArray);
+              return Err(CantCreateZeroedSkolemSizedArray.into());
             }
             ConcreteArraySize::UnificationVariable(const_generic_value) => {
               match &*const_generic_value.value.read().unwrap() {
                 Some(x) => *x as usize,
-                None => return Err(CantCreateZeroedSkolemSizedArray),
+                None => return Err(CantCreateZeroedSkolemSizedArray.into()),
               }
             }
           })
           .collect(),
       ),
-      Type::Function(_) => return Err(CantCreateZeroedFunction),
-      Type::Skolem(_, _) => return Err(CantCreateZeroedSkolem),
+      Type::Function(_) => return Err(CantCreateZeroedFunction.into()),
+      Type::Skolem(_, _) => return Err(CantCreateZeroedSkolem.into()),
       Type::Enum(e) => {
         let first_variant = &e.variants[0];
         Value::Enum(
@@ -2119,7 +2178,7 @@ impl IOManager for StdoutIO {
     #[cfg(not(feature = "window"))]
     {
       let _ = (body, env);
-      Err(WindowFeatureNotEnabled)
+      Err(WindowFeatureNotEnabled.into())
     }
   }
 }
@@ -2209,7 +2268,7 @@ impl IOManager for StringIO {
     for _ in 0..frame_count {
       match eval(body.clone(), env) {
         Ok(_) => {}
-        Err(EvalException::Error(CloseWindow)) => break,
+        Err(EvalException::CloseWindow) => break,
         Err(e) => return Err(e.into()),
       }
     }
@@ -2322,7 +2381,7 @@ impl IOManager for CaptureIO {
     loop {
       match eval(body.clone(), env) {
         Ok(_) => {}
-        Err(EvalException::Error(CloseWindow)) => break,
+        Err(EvalException::CloseWindow) => break,
         Err(e) => return Err(e.into()),
       }
     }
@@ -2652,7 +2711,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       .bindings
       .get(name)
       .map(|values| &values.last().unwrap().0)
-      .ok_or(UnboundName(name.clone()))
+      .ok_or(UnboundName(name.clone()).into())
   }
 }
 
@@ -2662,6 +2721,19 @@ pub enum EvalException {
   Break,
   Continue,
   Return(Value),
+  CloseWindow,
+}
+
+impl EvalException {
+  fn name(&self) -> &str {
+    match self {
+      EvalException::Error(_) => "Evaluation Error",
+      EvalException::Break => "break",
+      EvalException::Continue => "continue",
+      EvalException::Return(_) => "return",
+      EvalException::CloseWindow => "close-window",
+    }
+  }
 }
 
 impl From<EvalError> for EvalException {
@@ -2674,7 +2746,9 @@ impl From<EvalException> for EvalError {
   fn from(e: EvalException) -> Self {
     match e {
       EvalException::Error(err) => err,
-      _ => EvalError::ControlFlowExceptionEscapedToTopLevel,
+      other => {
+        ControlFlowExceptionEscapedToTopLevel(other.name().into()).into()
+      }
     }
   }
 }
@@ -2798,7 +2872,7 @@ pub fn eval(
               panic!()
             };
             if arg_names.len() != arg_values.len() {
-              return Err(WrongArity.into());
+              return Err(WrongArity(arg_names.len(), arg_values.len()).into());
             }
             for (name, (value, ty)) in arg_names
               .iter()
@@ -3001,13 +3075,30 @@ pub fn eval(
       let value = eval(*exp, env)?;
       match accessor {
         Accessor::Field(field_name) => match value {
-          Value::Struct(s) => s.get(&field_name).ok_or(NoSuchField)?.clone(),
-          _ => return Err(AccessedFieldOnNonStruct.into()),
+          Value::Struct(s) => s
+            .get(&field_name)
+            .ok_or_else(|| NoSuchField(field_name.clone()))?
+            .clone(),
+          _ => return Err(AccessedFieldOnNonStruct(field_name.clone()).into()),
         },
         Accessor::Swizzle(swizzle_fields) => {
           let map = match value {
             Value::Struct(map) => map,
-            _ => return Err(AccessedFieldOnNonStruct.into()),
+            _ => {
+              return Err(
+                AccessedFieldOnNonStruct(
+                  swizzle_fields
+                    .iter()
+                    .map(|f| f.name())
+                    .fold(String::new(), |mut acc, name| {
+                      acc += name;
+                      acc
+                    })
+                    .into(),
+                )
+                .into(),
+              );
+            }
           };
           let values: Vec<Value> = swizzle_fields
             .into_iter()
@@ -3020,7 +3111,7 @@ pub fn eval(
                   SwizzleField::W => "w",
                 } as &str)
                 .map(|v| v.clone())
-                .ok_or(NoSuchField)
+                .ok_or_else(|| NoSuchField(field.name().into()))
             })
             .collect::<Result<Vec<Value>, _>>()?;
           Value::Struct(
@@ -3098,13 +3189,12 @@ pub fn eval(
           if let Some(exp) = maybe_exp {
             match eval(exp, env) {
               Ok(_) | Err(EvalException::Continue) => {}
-              Err(EvalException::Error(e)) => return Err(e.into()),
               Err(EvalException::Break) => {
                 broke = true;
                 break;
               }
-              Err(EvalException::Return(return_value)) => {
-                return Err(EvalException::Return(return_value));
+              Err(e) => {
+                return Err(e);
               }
             }
           }
@@ -3132,10 +3222,9 @@ pub fn eval(
         }
         match eval(*body_expression.clone(), env) {
           Ok(_) | Err(EvalException::Continue) => {}
-          Err(EvalException::Error(e)) => return Err(e.into()),
           Err(EvalException::Break) => break,
-          Err(EvalException::Return(return_value)) => {
-            return Err(EvalException::Return(return_value));
+          Err(e) => {
+            return Err(e);
           }
         }
       }
@@ -3168,13 +3257,13 @@ fn run_program_with<IO: IOManager>(
       let pos = cpu_fns
         .iter()
         .position(|f| &*f.read().unwrap().name == name)
-        .ok_or_else(|| CpuEntryPointNotFound(name.to_string()))?;
+        .ok_or_else(|| CpuEntryPointNotFound(name.into()))?;
       cpu_fns.remove(pos)
     }
     None => match cpu_fns.len() {
-      0 => return Err(NoCpuEntryPoint),
+      0 => return Err(NoCpuEntryPoint.into()),
       1 => cpu_fns.remove(0),
-      _ => return Err(MultipleCpuEntryPoints),
+      _ => return Err(MultipleCpuEntryPoints.into()),
     },
   };
   let FunctionImplementationKind::Composite(f) =

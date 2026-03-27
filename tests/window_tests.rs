@@ -73,9 +73,14 @@ fn run_window_test(name: &str) {
     Ok(Err((document, error_log))) => {
       fs::write(format!("./out/{name}.wgsl"), error_log.describe(&document))
         .expect("Unable to write output file");
-      panic!("{name}: WGSL compile errors: {}", error_log.describe(&document));
+      panic!(
+        "{name}: WGSL compile errors: {}",
+        error_log.describe(&document)
+      );
     }
-    Err(document) => panic!("{name}: parse errors: {:?}", document.parsing_failures),
+    Err(document) => {
+      panic!("{name}: parse errors: {:?}", document.parsing_failures)
+    }
   };
   let module = naga::front::wgsl::parse_str(&wgsl).unwrap_or_else(|e| {
     panic!(
@@ -134,3 +139,4 @@ window_test!(close_window);
 window_test!(immediate_close_window);
 window_test!(implicit_render_entry_points);
 window_test!(closure_render_entry_points);
+window_test!(print_after_close_window);

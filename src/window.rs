@@ -482,7 +482,7 @@ impl<'a, IO: IOManager> ApplicationHandler for App<'a, IO> {
         self.last_frame_time = Some(now);
         match eval(self.body.clone(), self.env) {
           Ok(_) => {}
-          Err(EvalException::Error(EvalError::CloseWindow)) => {
+          Err(EvalException::CloseWindow) => {
             self.closed = true;
             event_loop.exit();
             return;
