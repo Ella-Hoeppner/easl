@@ -1,0 +1,12 @@
+(defn partial [f: (Fn [u32 u32] u32)
+               x: u32]: (Fn [u32] u32)
+  (fn [y] (f x y)))
+
+(defn add [x: u32
+           y: u32]: u32
+  (+ x y))
+
+(defn main []: u32
+  (let [inc (partial add 1)]
+    (inc 2)))
+

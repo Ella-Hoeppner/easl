@@ -1691,12 +1691,16 @@ impl Program {
       self.add_monomorphized_struct(s);
     }
   }
-  pub fn extract_inner_functions(&mut self, errors: &mut ErrorLog) {
+  pub fn extract_inner_functions(&mut self, errors: &mut ErrorLog) -> bool {
+    let mut any_extracted = false;
     loop {
       let mut new_signatures: Vec<AbstractFunctionSignature> = vec![];
+      let mut new_structs: Vec<AbstractStruct> = vec![];
       for f in self.abstract_functions_iter() {
         let borrowed_f = f.read().unwrap();
-        if !borrowed_f.generic_args.is_empty() {
+        if !borrowed_f.generic_args.is_empty()
+          || borrowed_f.has_uninlined_higher_order_arguments()
+        {
           continue;
         }
         match &borrowed_f.implementation {
@@ -1931,6 +1935,9 @@ impl Program {
                         .map(|(s, _, _)| s.clone()),
                     };
                     new_signatures.push(signature.clone());
+                    if let Some((s, _, _)) = &captured_scope {
+                      new_structs.push(s.clone());
+                    }
                     *exp = Exp {
                       data: Type::Function(Box::new(FunctionSignature {
                         abstract_ancestor: Some(Arc::new(RwLock::new(
@@ -1996,18 +2003,26 @@ impl Program {
       if new_signatures.is_empty() {
         break;
       }
+      any_extracted = true;
       for s in new_signatures {
         self.add_abstract_function(Arc::new(RwLock::new(s)));
       }
+      for s in new_structs {
+        self.add_monomorphized_struct(s);
+      }
     }
+    any_extracted
   }
-  pub fn inline_all_higher_order_arguments(&mut self, errors: &mut ErrorLog) {
+  pub fn inline_all_higher_order_arguments(&mut self, errors: &mut ErrorLog) -> bool {
+    let mut any_inlined = false;
     loop {
       let changed = self.inline_higher_order_arguments(errors);
       if !errors.is_empty() || !changed {
         break;
       }
+      any_inlined = true;
     }
+    any_inlined
   }
   pub fn inline_higher_order_arguments(
     &mut self,
@@ -3508,16 +3523,21 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    self.extract_inner_functions(&mut errors);
-    if !errors.is_empty() {
-      return errors;
-    }
     self.separate_overloaded_fns();
-    self.propagate_abstract_function_signatures();
-    self.inline_local_bound_function_applications();
-    self.inline_all_higher_order_arguments(&mut errors);
-    if !errors.is_empty() {
-      return errors;
+    loop {
+      let extracted = self.extract_inner_functions(&mut errors);
+      if !errors.is_empty() {
+        return errors;
+      }
+      self.propagate_abstract_function_signatures();
+      self.inline_local_bound_function_applications();
+      let inlined = self.inline_all_higher_order_arguments(&mut errors);
+      if !errors.is_empty() {
+        return errors;
+      }
+      if !extracted && !inlined {
+        break;
+      }
     }
     self.remove_unitlike_values();
     self.validate_top_level_fn_effects(&mut errors);

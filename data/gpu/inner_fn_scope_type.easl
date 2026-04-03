@@ -1,0 +1,3 @@
+(defn constantly-n [n: u32]: (Fn [] u32)
+  (fn [] n))
+

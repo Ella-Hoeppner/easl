@@ -117,6 +117,9 @@
 
 ## Secondary priority
 ### nice features to have once the language is at wgsl-parity
+* should make it possible to have the infix `.` syntax for accessing fields on the `<>` in thread expressions
+  * just feels a lot cleaner to do e.g. `<>.x` than `(.x <>)`, and I think it's fine to special-case any token starting with `<>` tbh
+
 * support destructuring structs in `match` and `let` blocks
 
 * more threading macros

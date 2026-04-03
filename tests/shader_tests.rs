@@ -257,6 +257,8 @@ success_test!(get_global_invocation_id);
 success_test!(get_global_invocation_id_argument);
 success_test!(get_global_invocation_id_argument_field);
 success_test!(get_global_invocation_id_indirect);
+success_test!(inner_fn_scope_type);
+success_test!(partial_application);
 
 // --- Error tests ---
 
