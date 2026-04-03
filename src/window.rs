@@ -426,7 +426,7 @@ struct RenderState {
   window: Arc<Window>,
   surface: wgpu::Surface<'static>,
   surface_config: wgpu::SurfaceConfiguration,
-  pipelines: HashMap<(String, String), wgpu::RenderPipeline>,
+  pipelines: HashMap<(String, String, bool), wgpu::RenderPipeline>,
   pub gpu: Arc<RwLock<GpuCore>>,
 }
 
@@ -787,16 +787,33 @@ impl RenderState {
   }
 
   fn get_or_create_render_pipeline(
-    pipelines: &mut HashMap<(String, String), wgpu::RenderPipeline>,
+    pipelines: &mut HashMap<(String, String, bool), wgpu::RenderPipeline>,
     vert_entry: &str,
     frag_entry: &str,
+    additive: bool,
     gpu: &GpuCore,
     format: wgpu::TextureFormat,
   ) {
-    let key = (vert_entry.to_string(), frag_entry.to_string());
+    let key = (vert_entry.to_string(), frag_entry.to_string(), additive);
     if pipelines.contains_key(&key) {
       return;
     }
+    let blend = if additive {
+      wgpu::BlendState {
+        color: wgpu::BlendComponent {
+          src_factor: wgpu::BlendFactor::One,
+          dst_factor: wgpu::BlendFactor::One,
+          operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent {
+          src_factor: wgpu::BlendFactor::One,
+          dst_factor: wgpu::BlendFactor::One,
+          operation: wgpu::BlendOperation::Add,
+        },
+      }
+    } else {
+      wgpu::BlendState::REPLACE
+    };
     let pipeline =
       gpu
         .device
@@ -814,7 +831,7 @@ impl RenderState {
             entry_point: Some(frag_entry),
             targets: &[Some(wgpu::ColorTargetState {
               format,
-              blend: Some(wgpu::BlendState::REPLACE),
+              blend: Some(blend),
               write_mask: wgpu::ColorWrites::ALL,
             })],
             compilation_options: Default::default(),
@@ -863,13 +880,14 @@ impl RenderState {
       let mut gpu = self.gpu.write().unwrap();
       for draw_call in draw_calls {
         match draw_call {
-          WindowEvent::RenderShaders { vert, frag, .. } => {
+          WindowEvent::RenderShaders { vert, frag, additive, .. } => {
             let vert = vert.replace('-', "_");
             let frag = frag.replace('-', "_");
             Self::get_or_create_render_pipeline(
               &mut self.pipelines,
               &vert,
               &frag,
+              *additive,
               &gpu,
               format,
             );
@@ -946,6 +964,7 @@ impl RenderState {
           frag,
           vert_count,
           pre_upload,
+          additive,
         } => {
           if let Some(view) = &view {
             let mut gpu = self.gpu.write().unwrap();
@@ -987,7 +1006,7 @@ impl RenderState {
               {
                 render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
               }
-              render_pass.set_pipeline(&self.pipelines[&(vert, frag)]);
+              render_pass.set_pipeline(&self.pipelines[&(vert, frag, *additive)]);
               render_pass.draw(0..*vert_count, 0..1);
             }
             gpu.queue.submit(std::iter::once(encoder.finish()));

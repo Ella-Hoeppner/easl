@@ -1869,6 +1869,38 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
+    // 4-argument variant: (vert frag vert-count additive-blend?)
+    AbstractFunctionSignature {
+      name: "dispatch-render-shaders".into(),
+      generic_args: vec![
+        (
+          "V".into(),
+          GenericArgument::Type(vec![TypeConstraint::function()]),
+          SourceTrace::empty(),
+        ),
+        (
+          "F".into(),
+          GenericArgument::Type(vec![TypeConstraint::function()]),
+          SourceTrace::empty(),
+        ),
+      ],
+      arg_types: vec![
+        AbstractType::Generic("V".into()).owned(),
+        AbstractType::Generic("F".into()).owned(),
+        AbstractType::Type(Type::U32).owned(),
+        AbstractType::Type(Type::Bool).owned(),
+      ],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("dispatch-render-shaders".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
     AbstractFunctionSignature {
       name: "dispatch-compute-shader".into(),
       generic_args: vec![(

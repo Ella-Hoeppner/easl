@@ -1522,12 +1522,18 @@ fn apply_builtin_fn<IO: IOManager>(
       let (Value::Prim(Primitive::U32(vert_count)), _) = &args[2] else {
         panic!()
       };
+      let additive = if let Some((Value::Prim(Primitive::Bool(b)), _)) = args.get(3) {
+        *b
+      } else {
+        false
+      };
       let pre_upload = env.collect_dirty_uploads(&read_global_variable_names);
       env.io.record_draw(
         &vert_f_name,
         &frag_f_name,
         *vert_count,
         pre_upload,
+        additive,
       )?;
       env.mark_gpu_written(&written_global_variable_names);
       Ok(Value::Unit)
@@ -1929,6 +1935,7 @@ pub enum WindowEvent {
     frag: String,
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
+    additive: bool,
   },
   ComputeShader {
     entry: String,
@@ -1983,6 +1990,7 @@ pub trait IOManager: Sized {
     frag: &str,
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
+    additive: bool,
   ) -> Result<(), EvalError>;
   fn record_compute(
     &mut self,
@@ -2071,12 +2079,14 @@ impl IOManager for StdoutIO {
     frag: &str,
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
+    additive: bool,
   ) -> Result<(), EvalError> {
     self.frame_draw_calls.push(WindowEvent::RenderShaders {
       vert: vert.to_string(),
       frag: frag.to_string(),
       vert_count,
       pre_upload,
+      additive,
     });
     Ok(())
   }
@@ -2216,6 +2226,7 @@ impl IOManager for StringIO {
     frag: &str,
     vert_count: u32,
     _pre_upload: Vec<((u8, u8), BufferUpload)>,
+    _additive: bool,
   ) -> Result<(), EvalError> {
     self.events.push(IOEvent::DispatchShaders {
       vert: vert.to_string(),
@@ -2305,8 +2316,9 @@ impl IOManager for CaptureIO {
     frag: &str,
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
+    additive: bool,
   ) -> Result<(), EvalError> {
-    self.inner.record_draw(vert, frag, vert_count, pre_upload)
+    self.inner.record_draw(vert, frag, vert_count, pre_upload, additive)
   }
 
   fn record_compute(
