@@ -1590,7 +1590,9 @@ fn apply_builtin_fn<IO: IOManager>(
         panic!()
       };
       let body = *body;
-      IO::run_spawn_window(body, env)?;
+      if IO::run_spawn_window(body, env)? {
+        return Err(EvalException::ReloadRequested);
+      }
       Ok(Value::Unit)
     }
     "into-dynamic-array" => Ok(args.remove(0).0),
@@ -2046,16 +2048,28 @@ pub trait IOManager: Sized {
   fn get_buffer_byte_size(&self, _group: u8, _binding: u8) -> Option<u64> {
     None
   }
+  /// Returns true if a hot-reload has been requested (e.g. the source file
+  /// changed). Checked by the window loop after each frame. Default: false.
+  fn reload_requested(&self) -> bool {
+    false
+  }
+  /// Called before re-running the program after a reload. Resets transient
+  /// state (GPU handle, reload flag) so the new run starts clean.
+  fn reset_for_reload(&mut self) {}
+  /// Runs the spawn-window event loop. Returns `true` if the loop exited
+  /// because a hot-reload was requested, `false` for a normal exit.
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
     env: &mut EvaluationEnvironment<Self>,
-  ) -> Result<(), EvalError>;
+  ) -> Result<bool, EvalError>;
 }
 
 pub struct StdoutIO {
   frame_draw_calls: Vec<WindowEvent>,
   #[cfg(feature = "window")]
   gpu: Option<std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>>,
+  #[cfg(feature = "window")]
+  reload_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl StdoutIO {
@@ -2064,6 +2078,22 @@ impl StdoutIO {
       frame_draw_calls: vec![],
       #[cfg(feature = "window")]
       gpu: None,
+      #[cfg(feature = "window")]
+      reload_flag: None,
+    }
+  }
+
+  /// Creates a `StdoutIO` that will signal hot-reload readiness via `flag`.
+  /// When `flag` is set to `true` the window loop exits and the program
+  /// returns `ReloadRequested` so the caller can recompile and rerun.
+  #[cfg(feature = "window")]
+  pub fn with_reload_flag(
+    flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+  ) -> Self {
+    Self {
+      frame_draw_calls: vec![],
+      gpu: None,
+      reload_flag: Some(flag),
     }
   }
 }
@@ -2179,10 +2209,28 @@ impl IOManager for StdoutIO {
     (1, 1)
   }
 
+  fn reload_requested(&self) -> bool {
+    #[cfg(feature = "window")]
+    if let Some(flag) = &self.reload_flag {
+      return flag.load(std::sync::atomic::Ordering::Relaxed);
+    }
+    false
+  }
+
+  fn reset_for_reload(&mut self) {
+    #[cfg(feature = "window")]
+    {
+      self.gpu = None;
+      if let Some(flag) = &self.reload_flag {
+        flag.store(false, std::sync::atomic::Ordering::Relaxed);
+      }
+    }
+  }
+
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
     env: &mut EvaluationEnvironment<Self>,
-  ) -> Result<(), EvalError> {
+  ) -> Result<bool, EvalError> {
     #[cfg(feature = "window")]
     return crate::window::run_window_loop(body, env);
     #[cfg(not(feature = "window"))]
@@ -2273,7 +2321,7 @@ impl IOManager for StringIO {
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
     env: &mut EvaluationEnvironment<Self>,
-  ) -> Result<(), EvalError> {
+  ) -> Result<bool, EvalError> {
     env.io.events.push(IOEvent::SpawnWindow);
     let frame_count = env.io.frame_count;
     for _ in 0..frame_count {
@@ -2283,7 +2331,7 @@ impl IOManager for StringIO {
         Err(e) => return Err(e.into()),
       }
     }
-    Ok(())
+    Ok(false)
   }
 }
 
@@ -2385,7 +2433,7 @@ impl IOManager for CaptureIO {
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
     env: &mut EvaluationEnvironment<Self>,
-  ) -> Result<(), EvalError> {
+  ) -> Result<bool, EvalError> {
     // Run a headless eval loop rather than going through winit, since tests
     // can't create an EventLoop off the main thread (macOS restriction). All
     // GPU operations still delegate to `inner` (the same StdoutIO instance),
@@ -2397,7 +2445,7 @@ impl IOManager for CaptureIO {
         Err(e) => return Err(e.into()),
       }
     }
-    Ok(())
+    Ok(false)
   }
 }
 
@@ -2734,6 +2782,7 @@ pub enum EvalException {
   Continue,
   Return(Value),
   CloseWindow,
+  ReloadRequested,
 }
 
 impl EvalException {
@@ -2744,6 +2793,7 @@ impl EvalException {
       EvalException::Continue => "continue",
       EvalException::Return(_) => "return",
       EvalException::CloseWindow => "close-window",
+      EvalException::ReloadRequested => "reload-requested",
     }
   }
 }
@@ -3262,7 +3312,7 @@ fn run_program_with<IO: IOManager>(
   program: Program,
   entry_point_name: Option<&str>,
   io: IO,
-) -> Result<IO, EvalError> {
+) -> Result<(IO, bool), EvalError> {
   let mut cpu_fns = program.cpu_entry_points();
   let entry_fn = match entry_point_name {
     Some(name) => {
@@ -3290,8 +3340,11 @@ fn run_program_with<IO: IOManager>(
   let body = *body.clone();
   drop(f);
   let mut env = EvaluationEnvironment::from_program(program, io)?;
-  eval(body, &mut env)?;
-  Ok(env.io)
+  match eval(body, &mut env) {
+    Ok(_) => Ok((env.io, false)),
+    Err(EvalException::ReloadRequested) => Ok((env.io, true)),
+    Err(e) => Err(e.into()),
+  }
 }
 
 pub fn run_program(program: Program) -> Result<(), EvalError> {
@@ -3307,10 +3360,21 @@ pub fn run_program_entry(
   Ok(())
 }
 
+/// Runs the program with a caller-supplied IO manager and returns it together
+/// with a flag indicating whether a hot-reload was requested (`true`) or the
+/// program finished normally (`false`).
+pub fn run_program_entry_with_io<IO: IOManager>(
+  program: Program,
+  entry: Option<&str>,
+  io: IO,
+) -> Result<(IO, bool), EvalError> {
+  run_program_with(program, entry, io)
+}
+
 pub fn run_program_capturing_output(
   program: Program,
 ) -> Result<String, EvalError> {
-  let io = run_program_with(program, None, StringIO::new())?;
+  let (io, _) = run_program_with(program, None, StringIO::new())?;
   let mut output = String::new();
   for event in &io.events {
     if let IOEvent::Print(s) = event {
@@ -3322,12 +3386,17 @@ pub fn run_program_capturing_output(
 }
 
 pub fn run_program_test_io(program: Program) -> Result<StringIO, EvalError> {
-  run_program_with(program, None, StringIO::new())
+  Ok(run_program_with(program, None, StringIO::new())?.0)
 }
 
 pub fn run_program_with_capture(
   program: Program,
 ) -> Result<Vec<String>, EvalError> {
-  let io = run_program_with(program, None, CaptureIO::new())?;
+  let (io, _) = run_program_with(program, None, CaptureIO::new())?;
   Ok(io.prints)
 }
+
+/// Re-export so downstream crates (e.g. `easl_cli`) can call this without
+/// reaching into the `pub(crate)` `window` module.
+#[cfg(feature = "window")]
+pub use crate::window::close_persistent_window;

@@ -4,6 +4,7 @@ use std::sync::RwLock;
 
 use winit::{
   application::ApplicationHandler,
+  dpi::{PhysicalPosition, PhysicalSize},
   event::WindowEvent as WinitWindowEvent,
   event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
   platform::run_on_demand::EventLoopExtRunOnDemand,
@@ -23,12 +24,29 @@ use crate::{
 // run_app_on_demand, which takes &mut self instead of consuming the loop.
 thread_local! {
   static EVENT_LOOP: RwLock<Option<EventLoop<()>>> = RwLock::new(None);
+  /// On hot-reload, the RenderState (including the wgpu surface and window) is
+  /// moved here before the event loop exits.  The next run picks it up and
+  /// updates only the shader and pipeline layout in-place, so the OS window and
+  /// Metal layer are never torn down — no flash, no z-order change.
+  static PERSISTENT_RELOAD_STATE: std::cell::RefCell<Option<RenderState>> =
+    std::cell::RefCell::new(None);
+  /// Fallback: last known window geometry, used when the hot-reload path is
+  /// unavailable and a fresh window must be opened at the same position/size.
+  static PREV_GEOMETRY: std::cell::RefCell<
+    Option<(PhysicalPosition<i32>, PhysicalSize<u32>)>,
+  > = std::cell::RefCell::new(None);
+}
+
+/// Drop the persistent render state (if any). Called by the CLI watch loop
+/// when the reloaded program exits without opening a window.
+pub fn close_persistent_window() {
+  PERSISTENT_RELOAD_STATE.with(|cell| cell.borrow_mut().take());
 }
 
 pub fn run_window_loop<IO: IOManager>(
   body: Exp<ExpTypeInfo>,
   env: &mut EvaluationEnvironment<IO>,
-) -> Result<(), EvalError> {
+) -> Result<bool, EvalError> {
   EVENT_LOOP.with(|cell| {
     let mut opt = cell.write().unwrap();
     let event_loop = opt.get_or_insert_with(|| EventLoop::new().unwrap());
@@ -40,10 +58,22 @@ pub fn run_window_loop<IO: IOManager>(
       error: None,
       closed: false,
       last_frame_time: None,
+      reload: false,
     };
     event_loop.run_app_on_demand(&mut app).unwrap();
+    // If a reload is pending, re-show the window immediately so it stays
+    // visible while the main thread recompiles.  macOS orders the window
+    // out when the RunLoop stops; showing it here (before the next
+    // run_app_on_demand) minimises the flicker.
+    if app.reload {
+      PERSISTENT_RELOAD_STATE.with(|c| {
+        if let Some(state) = c.borrow().as_ref() {
+          state.window.set_visible(true);
+        }
+      });
+    }
     match app.error {
-      None => Ok(()),
+      None => Ok(app.reload),
       Some(e) => Err(e),
     }
   })
@@ -56,6 +86,8 @@ struct App<'a, IO: IOManager> {
   error: Option<EvalError>,
   closed: bool,
   last_frame_time: Option<Instant>,
+  /// Set to true when the loop exits because a hot-reload was requested.
+  reload: bool,
 }
 
 /// Metadata about a single GPU buffer binding, kept so we can recreate
@@ -117,6 +149,101 @@ impl GpuCore {
         })
       })
       .collect();
+  }
+
+  /// Hot-reload: swap the shader module and rebuild everything that depends on
+  /// it (compute pipelines, bind group layouts, bind groups, pipeline layout).
+  /// Buffers whose size is unchanged are reused so GPU-written data survives.
+  pub fn update_for_reload(
+    &mut self,
+    wgsl: &str,
+    binding_infos: &[((u8, u8), GpuBufferKind, u64)],
+  ) {
+    // 1. New shader module.
+    self.shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+      label: Some("easl shader"),
+      source: wgpu::ShaderSource::Wgsl(wgsl.into()),
+    });
+
+    // 2. Clear compute pipelines (they reference the old shader module).
+    self.compute_pipelines.clear();
+
+    // 3. Update binding slots.
+    self.binding_slots = binding_infos
+      .iter()
+      .map(|&((group, binding), kind, _)| BindingSlot { group, binding, kind })
+      .collect();
+
+    // 4. Rebuild buffers.  Reuse existing buffers whose size didn't change so
+    // that GPU-written storage data (e.g. compute results) survives the reload.
+    let mut new_buffers: HashMap<(u8, u8), wgpu::Buffer> = HashMap::new();
+    let mut new_sizes: HashMap<(u8, u8), u64> = HashMap::new();
+    for &((group, binding), kind, size) in binding_infos {
+      let key = (group, binding);
+      let alloc_size = size.max(16);
+      let old_size = self.binding_buffer_sizes.get(&key).copied().unwrap_or(0);
+      if old_size == alloc_size {
+        if let Some(buf) = self.binding_buffers.remove(&key) {
+          new_buffers.insert(key, buf);
+          new_sizes.insert(key, alloc_size);
+          continue;
+        }
+      }
+      new_buffers.insert(
+        key,
+        self.device.create_buffer(&wgpu::BufferDescriptor {
+          label: Some(&format!("binding g{group}b{binding}")),
+          size: alloc_size,
+          usage: gpu_buffer_usage(kind),
+          mapped_at_creation: false,
+        }),
+      );
+      new_sizes.insert(key, alloc_size);
+    }
+    self.binding_buffers = new_buffers;
+    self.binding_buffer_sizes = new_sizes;
+
+    // 5. Rebuild bind group layouts.
+    let max_group = binding_infos
+      .iter()
+      .map(|((g, _), _, _)| *g as usize)
+      .max()
+      .map(|g| g + 1)
+      .unwrap_or(0);
+    self.bind_group_layouts = (0..max_group)
+      .map(|group_idx| {
+        let entries: Vec<wgpu::BindGroupLayoutEntry> = binding_infos
+          .iter()
+          .filter(|((g, _), _, _)| *g as usize == group_idx)
+          .map(|((_, b), kind, _)| wgpu::BindGroupLayoutEntry {
+            binding: *b as u32,
+            visibility: gpu_binding_visibility(*kind),
+            ty: wgpu::BindingType::Buffer {
+              ty: gpu_binding_type(*kind),
+              has_dynamic_offset: false,
+              min_binding_size: None,
+            },
+            count: None,
+          })
+          .collect();
+        self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+          label: Some(&format!("bind group layout {group_idx}")),
+          entries: &entries,
+        })
+      })
+      .collect();
+
+    // 6. Rebuild bind groups.
+    self.rebuild_bind_groups();
+
+    // 7. Rebuild pipeline layout (references the new bind group layouts).
+    let refs: Vec<&wgpu::BindGroupLayout> = self.bind_group_layouts.iter().collect();
+    self.pipeline_layout =
+      self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &refs,
+        immediate_size: 0,
+      });
   }
 
   pub fn get_or_create_compute_pipeline(&mut self, entry: &str) {
@@ -430,13 +557,58 @@ struct RenderState {
   pub gpu: Arc<RwLock<GpuCore>>,
 }
 
-impl<'a, IO: IOManager> ApplicationHandler for App<'a, IO> {
-  fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-    let window = Arc::new(
-      event_loop
-        .create_window(Window::default_attributes().with_title("easl"))
-        .unwrap(),
-    );
+impl<'a, IO: IOManager> App<'a, IO> {
+  /// Creates or reuses a window and builds the initial `RenderState`.
+  ///
+  /// On first run this always creates a fresh window. On hot-reload, the same
+  /// `Arc<Window>` is taken from `PERSISTENT_WINDOW` so the OS window stays
+  /// visible without flashing or focus changes.
+  fn setup_window(&mut self, event_loop: &ActiveEventLoop) {
+    // Hot-reload path: reuse the existing render state (window + surface +
+    // device) from the previous run, updating only the shader and pipelines.
+    // This keeps the Metal layer alive so the window never flashes.
+    if let Some(mut state) =
+      PERSISTENT_RELOAD_STATE.with(|cell| cell.borrow_mut().take())
+    {
+      let wgsl = self.env.wgsl().to_string();
+      let binding_infos = self.env.binding_infos();
+      state
+        .gpu
+        .write()
+        .unwrap()
+        .update_for_reload(&wgsl, &binding_infos);
+      state.pipelines.clear();
+      // Reconfigure the surface in case it became outdated during the gap
+      // between event loop runs (e.g. the window was resized or the display
+      // changed while the event loop was not active).
+      {
+        let gpu = state.gpu.read().unwrap();
+        state.surface.configure(&gpu.device, &state.surface_config);
+      }
+      // Re-show the window: macOS may have ordered it out during the
+      // resign-active → become-active lifecycle that happens while the main
+      // thread was busy recompiling between run_app_on_demand calls.
+      state.window.set_visible(true);
+      self.env.io.set_gpu(Arc::clone(&state.gpu));
+      self.state = Some(state);
+      return;
+    }
+
+    // Fresh-start path: create a new window and full GPU state.
+    // If we have a previous geometry, open the window there instead of the
+    // OS default position so reloads don't move the window.
+    let attrs = PREV_GEOMETRY
+      .with(|c| *c.borrow())
+      .map(|(pos, size)| {
+        Window::default_attributes()
+          .with_title("easl")
+          .with_position(pos)
+          .with_inner_size(size)
+          .with_active(false)
+      })
+      .unwrap_or_else(|| Window::default_attributes().with_title("easl"));
+    let window = Arc::new(event_loop.create_window(attrs).unwrap());
+
     // If a headless GPU already exists (from a prior dispatch-compute-shader),
     // reuse it by adding a render surface on top. This avoids the expensive
     // GPU→CPU→GPU round-trip that would otherwise be needed to preserve
@@ -454,6 +626,29 @@ impl<'a, IO: IOManager> ApplicationHandler for App<'a, IO> {
     // compute dispatches can execute synchronously within eval().
     self.env.io.set_gpu(Arc::clone(&state.gpu));
     self.state = Some(state);
+  }
+}
+
+impl<'a, IO: IOManager> ApplicationHandler for App<'a, IO> {
+  fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+    // Only run setup if we haven't already (about_to_wait may have beaten us
+    // to it on platforms where resumed fires late or not at all after reload).
+    if self.state.is_none() {
+      self.setup_window(event_loop);
+    }
+  }
+
+  /// Fallback for platforms (macOS) where `resumed` is not re-fired on the
+  /// second `run_app_on_demand` call because the app never went inactive.
+  /// With `ControlFlow::Poll` this fires every iteration, so we guard with
+  /// `self.state.is_none()` to run setup at most once.
+  fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    if self.state.is_none() && !self.closed && !self.reload {
+      self.setup_window(event_loop);
+      if let Some(state) = &self.state {
+        state.window.request_redraw();
+      }
+    }
   }
 
   fn window_event(
@@ -498,6 +693,26 @@ impl<'a, IO: IOManager> ApplicationHandler for App<'a, IO> {
         if let Some(state) = &mut self.state {
           state.render(&draw_calls);
           state.window.request_redraw();
+        }
+        // Check for hot-reload after every successful frame.
+        if self.env.io.reload_requested() {
+          // Save current window geometry as a fallback for the fresh-start path.
+          if let Some(state) = &self.state {
+            let pos = state
+              .window
+              .outer_position()
+              .unwrap_or(PhysicalPosition::new(100, 100));
+            let size = state.window.inner_size();
+            PREV_GEOMETRY.with(|c| *c.borrow_mut() = Some((pos, size)));
+          }
+          // Move the whole RenderState into PERSISTENT_RELOAD_STATE so that
+          // the window and Metal surface stay alive while the event loop is
+          // between runs. setup_window() will pick it up and update only the
+          // shader and pipelines, never touching the window or surface.
+          PERSISTENT_RELOAD_STATE
+            .with(|cell| *cell.borrow_mut() = self.state.take());
+          self.reload = true;
+          event_loop.exit();
         }
       }
       _ => {}
