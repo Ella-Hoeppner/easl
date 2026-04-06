@@ -117,6 +117,8 @@
 
 ## Secondary priority
 ### nice features to have once the language is at wgsl-parity
+* when you use a higher-order fn to generate vertex shader or fragment shader, such that it like returns a closure, that closure gets treated as an input of the inlined function. But having extra inputs on vert/frag entry points like that isn't really valid, the shaders won't run. So in the case of an entry-point closure that has a captured scope, I think we'll need to like turn the captured scope into a global uniform or something, rather than a function argument
+
 * should make it possible to have the infix `.` syntax for accessing fields on the `<>` in thread expressions
   * just feels a lot cleaner to do e.g. `<>.x` than `(.x <>)`, and I think it's fine to special-case any token starting with `<>` tbh
 

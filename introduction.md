@@ -24,7 +24,7 @@ If you're already familiar with wgsl, you'll find that everything you can expres
 
 You can expect that any function or type from wgsl (with a few caveats, see [the README](https://github.com/Ella-Hoeppner/easl/blob/main/README.md)) will also be available in easl. However, function names have all been changed from camel case to kebab case, e.g. `textureSample` becomes `texture-sample`, and all type names have been changed to use camel case with a capital first letter, e.g. `texture_2d` becomes `Texture2D`.
 
-Easl attempts to make the compiled wgsl human-readable whenever possible. Most variable names will be preserved through compilation, though with any `-` symbols replace with `_`. If you're curious about how easl handles certain abstractions, looking at the compiled wgsl code may provide some insight.
+Easl attempts to make the compiled wgsl relatively human-readable whenever possible. Most variable names will be preserved through compilation, though with any `-` symbols replace with `_`. If you're curious about how easl handles certain abstractions, looking at the compiled wgsl code may provide some insight.
 
 ### Let bindings
 To bind names to values in easl, you use the special `let` form inside a pair of parentheses, followed by the values you want to bind. For instance, here's some easl code that declares some let bindings and uses them, and then the equivalent wgsl code:
@@ -53,7 +53,7 @@ The `let` form always expects there to be a pair of square brackets `[...]` imme
 ```
 
 ### Comments
-Easl supports several different types of comments. Easl supports single-line comments, multi-line comments, and expression comments.
+Easl supports several different types of comments: single-line, multi-line, and expression comments.
 
 Single-line comments start with `;` and continue to the end of the line:
 
@@ -225,7 +225,7 @@ Easl supports swizzling, as in wgsl and other shader languages. This means you c
   ...)
 ```
 
-Swizzles can be used with both the infix `<name>.<value>` syntax or the prefix `(.<value> <name>)` syntax.
+Swizzles can be used with both the infix `<name>.<fields>` syntax or the prefix `(.<fields> <name>)` syntax.
 
 Additionally, easl supports the ability to assign into swizzles, which wgsl lacks.
 
@@ -258,7 +258,7 @@ As demonstrated in the first example in this section, you don't have to explicit
   (return (i32 (+ x y))))
 ```
 
-You can also use the `return` operator to express a conditional early return by only using it inside of certain branches of an `if` or `match` statement.
+You can also use the `return` operator to express a conditional early return by only using it inside of certain branches of an `if`, `when`, or `match` statement.
 
 ### If expressions
 The special keyword `if` is used to branch your code conditional on some boolean value, just like in most other languages. For instance:
@@ -338,19 +338,17 @@ Easl supports `for` and `while` loops.
 `for` loops are written like so:
 
 ```
-(for [i 0 (< i 10) (= i (+ i 1))]
+(for [i 0i (< i 10) (= i (+ i 1))]
   (+= x (* i i)))
 ```
 
-The `for` must be followed by a pair of square brackets enclosing four elements: a name (`i`) for an incrementation variable, a value of type `i32`, (`0`), a conditional that determines whether the loop should continue (`(< i 10)`), and finally an expression that modifies the incrementation variable to progress the loop `(= i (+ i 1))`. This translates very directly into the equivalent wgsl code:
+The `for` must be followed by a pair of square brackets enclosing four elements: a name (`i`) for an incrementation variable, an initial value, (`0`), a conditional that determines whether the loop should continue (`(< i 10)`), and finally an expression that modifies the incrementation variable to progress the loop (`(= i (+ i 1))`). This translates very directly into the equivalent wgsl code:
 
 ```
 for (var i = 0; i < 10; i = i + 1) {
   x += i * i;
 }
 ```
-
-For now, the incrementation variable must be of type `i32`, but this limitation will be addressed soon.
 
 `while` loops are written as:
 
@@ -361,7 +359,7 @@ For now, the incrementation variable must be of type `i32`, but this limitation 
 
 The first expression after the `while` is treated as the conditional used to check whether the loop will continue after each iteration, and must be a boolean. After that, there may be any number of other expressions that will all be executed in each iteration of the loop.
 
-`while` and `for` expressions both always have the unit type, meaning they do not return a value. Therefore, their only effect on the program will happen via the side effects that they cause to occur inside their bodies.
+`while` and `for` expressions both always have the unit type, meaning they do not return a value.
 
 `break` and `continue` can be used to modify the control flow of loops, just like in wgsl and other C-like languages. These operator are treated as functions of zero arguments, so call them by placing them alone inside a pair of parentheses, i.e. `(break)` or `(continue)`. For instance:
 
@@ -431,7 +429,7 @@ However, it's also valid to create `var`s without giving them initial values:
 (var my-constant: f32)
 ```
 
-Whether or not it's valid to provide an initial value depends on the *address space* of the variable. Variables in the `private` address space may be given initial values, while variables in other address spaces (`workgroup`, `uniform`, `storage`, or `handle`) must not. See the "Annotations" section for for info on how to specify an address space, or the [wgsl spec](https://www.w3.org/TR/WGSL/#address-space) for more information on what they are. If you don't annotate any address space on a `var`, it will default to the `private` address space, so you'll be allowed to provide an initial value.
+Whether or not it's valid to provide an initial value depends on the *address space* of the variable. Variables in the `private` address space may be given initial values, while variables in other address spaces (`workgroup`, `uniform`, `storage`, or `handle`) must not. See the "Annotations" section for info on how to specify an address space, or the [wgsl spec](https://www.w3.org/TR/WGSL/#address-space) for more information on what they are. If you don't annotate any address space on a `var`, it will default to the `private` address space, so you'll be allowed to provide an initial value.
 
 There's also an `override` keyword that can be used to define [override constants](https://www.w3.org/TR/WGSL/#override-expressions). This keyword behaves indentically to `def`, but the compiled wgsl code will mark those bindings with `override` rather than `const`, allowing them to be overriden at pipeline-creation time in WebGPU.
 
@@ -480,7 +478,7 @@ Currently, enums may only contain at most a single field. However, this limitati
 As with structs, enums may not be recursive.
 
 ### Match blocks
-In place of the `case` statements that exist in traditional C-like shader languages, easl provides `match` expressions. `match` expressions allow your program to branch into multiple different paths, similar to an `if` statement but with (potentially) more than two branches. For instance:
+In place of the `switch`/`case` statements that exist in traditional C-like shader languages, easl provides `match` expressions. `match` expressions allow your program to branch into multiple different paths, similar to an `if` statement but with (potentially) more than two branches. For instance:
 
 ```
 (let [a (match x
@@ -495,7 +493,7 @@ The `match` keyword must be followed by a value called the *scrutinee*, followed
 
 When a match block executes, it checks the value of the scrutinee against each pattern, in the order that they appear in the code, executing and returning the body corresponding to the first matched pattern. The `_` character is a special "wildcard" pattern that will match any value. It can be used as the last pattern in a match block to catch any remaining value not caught by the earlier arms.
 
-`match` blocks in easl are most closely analgous to `switch` statements in wgsl, but there are several important differences. For one, `match` blocks don't require `break` statements to end the bodies of their arms - each body will be invoked in its entirity if and only if it's pattern is the one matched. Additionally, `match` expressions can, like any other expression, return a value to the location in which they are invoked, whereas a `switch` statement doesn't return a value and therefore can only influence the program via it's side effects.
+There are several important differences between easl's match blocks and traditional `switch` blocks. For one, `match` blocks don't require `break` statements to end the bodies of their arms - each body will be invoked in its entirity if and only if it's pattern is the one matched. Additionally, `match` expressions can, like any other expression, return a value to the location in which they are invoked, whereas a `switch` statement doesn't return a value and therefore can only influence the program via it's side effects.
 
 Because the above example returns a value from the match block, there is no direct translation of it to wgsl. The closest representation to the above logic in wgsl would look like:
 
@@ -551,7 +549,7 @@ This compile error occurs because there would be no body to execute, and therefo
 
 A match block where the scrutinee is of type `f32`, `u32`, or `i32` *must* have a wildcard pattern `_` for it's last arm. This is the only way to guarantee exhaustivity for these types, since it isn't possible to provide individual arms for each possible value. However, when matching on an enum, a wildcard pattern isn't necessary as long as every possible variant that the enum could have is covered by a pattern.
 
-For now, the scrutinee of a match block can only be a `bool`, `f32`, `u32`, `i32`, or an enum. It isn't currently possible to match on a vector or any custom struct type. This restriction will eventually be lifted.
+For now, the scrutinee of a match block can only be used with primtiive types (`bool`, `f32`, `u32`, `i32`), vectors, and enums. It isn't currently possible to match on a custom struct type. This restriction will eventually be lifted.
 
 ### Annotations
 Earlier we saw that a binding in a `let` expression can be marked as mutable by prefixing its name with `@var`, e.g.:
@@ -631,11 +629,13 @@ The available `builtin` annotation kinds are the same [as in wgsl](https://www.w
 Easl also includes several helpful shortcuts that cut down on the need for many of these explicit annotations. For instance, whenever a vertex shader returns a `vec4f`, which would normally need to have the `@{builtin position }` annotation to be a valid vertex shader, the annotation can be emitted. In other words, the following are equivalent:
 
 ```
+@vertex
 (defn v [...]: @{builtin position} vec4f
   ...)
 ```
 
 ```
+@vertex
 (defn v [...]: vec4f
   ...)
 ```
@@ -675,7 +675,9 @@ While a non-generic struct, as described in the previous section, simply has a n
 Functions and enums also use this approach of replacing what would normally be a simple name with a parenthesized expression containing the name followed by generic variables. For instance:
 
 ```
-(enum (Option T) (Some T) None)
+(enum (Option T)
+  (Some T)
+  None)
 ```
 
 This version of the `Option` enum is similar to the one described earlier, but instead of always containing an `f32` like the original version, it can be used to contain any type `T`, making it useful in a much wider variety of circumstances. We can also rewrite the `unwrap-or` function to work on generic `Option`s:
@@ -733,7 +735,39 @@ This limitation will eventually be lifted as the compiler matures. But for now, 
               center))))
 ```
 
-### Associative functions
+### Closures
+
+In addition to defining global functions with the `defn` syntax, there's also special `fn` syntax to define functions locally. For instance:
+
+```
+(defn add-five-twice [x: f32]: f32
+  (let [add-five (fn [a] (+ a 5.))]
+    (apply-twice add-five x)))
+```
+
+Here we define a local function called that accepts a single argument `a`, and returns `(+ a 5.)`. We bind that function locally under the named `add-twice`, and then pass it to the higher-order `apply-twice` function as defined in the previous section.
+
+Functions defined locally like this don't require their types to be annotated, unlike `defn` functions. In the above function, the `add-five` has the type `(Fn [f32] f32)`, but we didn't have to annotate either the input type or the return type. However, if we wanted to, we could annotate the types involve in the function signature, in the same way we would for a `defn` function:
+
+```
+(defn add-five-twice [x: f32]: f32
+  (let [add-five (fn [a: f32]: f32
+                     (+ a 5.))]
+    (apply-twice add-five x)))
+```
+
+Local functions can also capture bindings from the surrounding context, or in other words they are "closures". For instance:
+
+
+```
+(defn add-n-twice [x: f32
+                   n: f32]: f32
+  (let [add-n (fn [a: f32]: f32
+                  (+ a n))]
+    (apply-twice add-n x)))
+```
+
+Here we've replaced `add-five` with a function `add-n`, which uses the `n` binding from it's surrounding scope.
 
 ### Shadowing
 Easl allows you to shadow local bindings with other local bindings, by reusing a name inside a `let` expression that was previously used in the enclosing scope. However, easl forbids shadowing of global bindings.
@@ -805,7 +839,7 @@ With these shortcuts, the original example of the thread expression given in thi
 
 You may also use the `<>` expression twice inside a single step. For instance, `(-> x (* <> <>))` is the equivalent of `(* x x)`. When this syntax is used, each intermediate value will only be computed once, even if it is used multiple times in the next stage, so the threading expression will never have a negative impact on performance compared to another way of writing the expression.
 
-This feature is heavily inspired by Clojure's [threading macros](https://clojure.org/guides/threading_macros), but aims to be simpler and more flexible. Rather than the several different threading macros like `->`, `->>`, and `as->` that clojure provides, easl opts for a single, flexible threading expression `->` that acts as a combination of clojure's `->` and `as->`. Easl thread expression makes use of the special "hole" symbol `<>` to declare position the threaded expression rather than requiring an explicit name like clojure's `as->` does, whole falling back to the behavior of the clojure's `->` macro if the hole symbol isn't used.
+This feature is heavily inspired by Clojure's [threading macros](https://clojure.org/guides/threading_macros), but aims to be simpler and more flexible. Rather than the several different threading macros like `->`, `->>`, and `as->` that clojure provides, easl opts for a single, flexible threading expression `->` that acts as a combination of clojure's `->` and `as->`. Easl thread expression makes use of the special "hole" symbol `<>` to explicitly position the threaded expression rather than requiring an explicit name like clojure's `as->` does, while falling back to the behavior of the clojure's `->` macro if the hole symbol isn't used.
 
 Easl may eventually include other kinds of threading expressions, such as a `cond->` expression similar to clojure's.
 
@@ -823,15 +857,12 @@ The following is an example of a full shader program, one of the examples packag
   address uniform}
 (var time: f32)
 
-(def triangles: u32
-     1)
-
 (defn uni->bi [x: vec2f]: vec2f
   (-> x (* 2.) (- 1.)))
 
 @vertex
-(defn vertex [@builtin vertex-index: u32]: vec4f
-  (vec4f (match vertex-index
+(defn vertex []: vec4f
+  (vec4f (match (vertex-index)
            0 (vec2f -1.)
            1 (vec2f -1. 3.)
            _ (vec2f 3. -1.))
@@ -860,7 +891,7 @@ The following is an example of a full shader program, one of the examples packag
 (defn raymarch [sdf: (Fn [vec3f] f32)
                 ray: Ray]: (Option vec3f)
   (let [@var current-dist 0.]
-    (for [i 0 (< i 256) (= i (+ i 1))]
+    (for [i 0u (< i 256) (= i (+ i 1))]
       (let [current-pos (.pos (advance ray current-dist))
             dist (sdf current-pos)]
         (when (< (abs dist) 0.001)
@@ -898,8 +929,8 @@ The following is an example of a full shader program, one of the examples packag
         (cos (+ 5. (* 7. pos.z) (* 6.25 time))))))
 
 @fragment
-(defn fragment [@builtin position: vec4f]: vec4f
-  (let [screen-pos (-> position
+(defn fragment []: vec4f
+  (let [screen-pos (-> (position)
                        .xy
                        (/ dimensions)
                        uni->bi
@@ -913,17 +944,59 @@ The following is an example of a full shader program, one of the examples packag
                                 (vec3f 2.2))
                            1.)
       None (vec4f (vec3f 0.) 1.))))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (= dimensions
+                       (vec2f (window-resolution)))
+                    (= time (+ time (/ 120.)))
+                    (print time)
+                    (dispatch-render-shaders vertex fragment 3))))
 ```
 
 The `raymarch` function in the above example is structured quite differently than you would see in a traditional shader language. This raymarch function takes in a `Ray` and a function called `sdf`, which should be a [signed distance function](https://en.wikipedia.org/wiki/Signed_distance_function). The `sdf` accepts a `vec3f` representing a position, and returns an `f32` representing the distance to a surface. The raymarcher itself returns an `(Option vec3f)`, which represents the surface normal of the location where the ray intersected the sdf, if any was found. In the case that the ray never intersects the surface, the `None` variant will be returned, otherwise the `Some` variant will be returned, containing the surface normal.
 
-The fact that our `raymarch` function accepts the `sdf` function *as an argument* makes it much more general and powerful than any equivalent function in a traditional shader language. If you were to rewrite the above shader in a language like glsl or wgsl, you'd have to omit the `sdf` argument to `raymarch`, and instead just directly inline a call to `sd-scene` inside the body of `raymarch`.
-
-That approach comes with a big downside, which is that if you ever wanted to raymarch another sdf in the same shader, you'd have to just duplicate the entire `raymarch` function, but with the inlined call to `sd-scene` swapped with a call to whatever other sdf you wanted to use. In easl, you could simply call the same `raymarch` function in several different places with several other functions in place of the `sdf` argument, and your code would work just fine, but with much less duplicated code. And there is no performance penalty associated with this usage of higher-order functions, because all calls to higher-order functions are transformed at compile-time into versions of the function with all the higher-order arguments inlined, just as if you had written it that way by hand.
+The fact that our `raymarch` function accepts the `sdf` function *as an argument* makes it much more general and powerful than any similar function in a traditional shader language. If you were to rewrite the above shader in a language like glsl or wgsl, you'd have to omit the `sdf` argument to `raymarch`, and instead just directly inline a call to `sd-scene` inside the body of `raymarch`. That approach comes with a big downside, which is that if you ever wanted to raymarch another sdf, you'd have to just copy-paste the entire `raymarch` function and replace the inlined sdf call with a call to the new sdf. In easl, you could simply call the same `raymarch` function in several different places with several other functions in place of the `sdf` argument, and your code would work just fine, but with much less duplicated code. And there's no performance penalty associated with this usage of higher-order functions, because all calls to higher-order functions are transformed at compile time into versions of the function with all the higher-order arguments inlined, just as if you had written it that way by hand.
 
 To put it another way, our `raymarch` function is a direct representation of the concept of a raymarcher itself, abstracted away from the details of any specific sdf. Traditional shader languages are completely incapable of representing this kind of abstraction.
 
-Additionally, the `Option` enum provides a nice way to represent of the fact that raymarchers do not always hit their target. In a traditional shader language, without sum types, you'd have to use some other convention to denote that the raymarcher exited without converging on the surface. For instance, you might decide to return a special value like `(vec3f 0.)` when the ray diverges, and then just check for that value everywhere you use the raymarching function. Or, you might return a struct containing both a `vec3f` and a `bool`, such that the `bool` is set to false when the ray diverges. However, both of these are more error-prone and less maintainable than the `Option`-based approach that easl provides. Both other approaches make it very easy to accidentally forget to check the validity of the output before using the `vec3f` value, which can lead bugs. The `Option` approach makes that kind of mistake impossible, since there's not even any `vec3f` to access unless you use a `match` block to handle both possible cases of the returned value.
+Additionally, the `Option` enum provides a nice way to represent of the fact that raymarchers do not always hit their target. In a traditional shader language, without sum types, you'd have to use some other convention to denote that the raymarcher exited without converging on the surface. For instance, you might decide to return a special value like `(vec3f 0.)` when the ray diverges, and then just check for that value everywhere you use the raymarching function. Or, you might return a struct containing both a `vec3f` and a `bool`, such that the `bool` is set to false when the ray diverges. However, both of these are more error-prone and less maintainable than the `Option`-based approach that easl provides. Both other approaches make it very easy to accidentally forget to check the validity of the output before using the `vec3f` value, which can lead to bugs. The `Option` approach makes that kind of mistake impossible, since there's not even any `vec3f` to access unless you use a `match` block to handle both possible cases of the returned value.
+
+### CPU Runtime
+
+Easl has an experiemental CPU-based interpreter, allowing easl code to be executed on the CPU, not just the GPU.
+
+In an easl file, you can annotate a function as a `@cpu` entry point, which will indicate to the compiler that this function will be executed on the CPU, rather than the GPU. For instance, the example raymarching program described in the above section has a `@cpu` entry point function called `main` at the very end of the file:
+
+```
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (= dimensions
+                       (vec2f (window-resolution)))
+                    (= time (+ time (/ 120.)))
+                    (print time)
+                    (dispatch-render-shaders vertex fragment 3))))
+```
+
+This function invokes several functions that are only available in CPU entry points. Most notably is `spawn-window`, which spawns a window that can be rendered to. `spawn-window` takes a function of 0 arguments with the unit return type, and in the above example we define such a function in-place using the `fn` syntax. This function is a draw-loop callback function, which will be called on every frame that the window is open.
+
+Our draw-loop function first assigns to the `dimensions` and `time` uniforms, which are declared earlier in the file. Most of the time, trying to assign to a uniform value would result in a compilation error, because you can't assign to uniforms from inside shaders, but these are allowed as a special case inside `@cpu` entry points (or helper functions called from `@cpu` entry points). In assigning to the `dimension` variable we use the special `window-resolution` function, which can only be called from inside a function passed to `spawn-window`, and returns the current resolution of the window in pixels.
+
+After those assignments, we call `(print time)`, to print the current time to the console. This `print` function is another special function that can only be called from the cpu interpreter. Easl doesn't (yet) have strings, so instead you can just call `print` with any primitive or struct type, which can still be pretty useful debugging.
+
+Finally, at the end of the draw call we call `dispatch-render-shaders`, which, as the name implies, dispatches a set of shader calls to the GPU. Of course, this is another function that can only be called from the CPU.
+
+`dispatch-render-shaders` takes three arguments: a vertex shader entry function, a fragment shader entry function, and a number of vertices to render. Here we pass the functions `vertex` and `fragment`, defined earlier in the file, as our entry points, and just render `3` vertices. The `vertex` function is set up to just draw one giant triangle over all of clip-space, hence why we only draw 3 vertices, while the `fragment` function runs the raymarcher for each pixel.
+
+So overall our cpu entry point just spawns a window and renders a single fragment shader to the whole window, while keeping the dimensions and time variables updated for use in the shaders.
+
+You can run this example for yourself with the [Easl CLI](https://github.com/Ella-Hoeppner/easl_cli), with the following command: `easl run raymarch.easl` (assuming you have the example program from the previous section saved as `raymarch.easl`).
+
+The intention with the CPU runtime is to allow you to run simple shader programs like this purely just using the easl toolchain, without needing a whole separate "host language" to do the CPU-side orchestration. Easl's interpreter offers a lot of conveniences compared to traditional shader frameworks, in that the pipelines and buffers and shader objects are all managed for you behind the scenes, along with data transfers between the CPU and GPU. The `main` function example given above is *much* more concise than an equivalent program in, say, rust with winit and wgpu.
+
+However, the interpreter isn't very optimized at this point, so if you try to do heavy computations on the CPU side of things you might run into significant performance issues. Additionally, the interpreter doesn't offer as much flexibility as real host language with full access to the the WebGPU API. These things may improve over time, but for now the CPU runtime should be thought of as just a convenicnce feature that can be useful for making quick demos or for creative coding purposes, but not for serious application development.
 
 ### Details on the compilation of Enum types
 
