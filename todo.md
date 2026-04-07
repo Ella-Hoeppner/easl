@@ -1,6 +1,18 @@
 # todo
 ## Highest priority
-### necessary for basic wgsl feature parity + stuff I wanna get done before calling the language "production ready
+### necessary for wgsl feature parity + stuff I wanna get done before calling the language "production ready"
+* nested unsized array types seem to break the interpreter
+
+* calling an array with 0 args doesn't produce an error, and seems to crash the compiler
+
+* should throw an error when there are conflicting bind groups/bindings
+
+* for loop increment variable names don't seem to have unusual characters replaced properly - names like `x-off` just get compiled as such and cause invalid wgsl
+
+
+
+
+
 * trying to do an early return in a function that returns unit crashes the compile rn. You have to do `(return ())`, but then you get an error about compiling unit in an inner position
 
 * when a match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body

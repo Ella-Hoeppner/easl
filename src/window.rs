@@ -43,6 +43,15 @@ pub fn close_persistent_window() {
   PERSISTENT_RELOAD_STATE.with(|cell| cell.borrow_mut().take());
 }
 
+/// Returns the GPU core from the persistent reload state (if any), without
+/// consuming it. Used by `ensure_gpu_ready` so that pre-spawn-window compute
+/// dispatches (e.g. one-shot initialisation shaders) run on the same GPU that
+/// the window will later reuse, rather than on a freshly-created headless GPU
+/// that gets thrown away when `setup_window` takes `PERSISTENT_RELOAD_STATE`.
+pub fn persistent_gpu() -> Option<Arc<RwLock<GpuCore>>> {
+  PERSISTENT_RELOAD_STATE.with(|c| c.borrow().as_ref().map(|s| Arc::clone(&s.gpu)))
+}
+
 pub fn run_window_loop<IO: IOManager>(
   body: Exp<ExpTypeInfo>,
   env: &mut EvaluationEnvironment<IO>,
@@ -570,13 +579,20 @@ impl<'a, IO: IOManager> App<'a, IO> {
     if let Some(mut state) =
       PERSISTENT_RELOAD_STATE.with(|cell| cell.borrow_mut().take())
     {
-      let wgsl = self.env.wgsl().to_string();
-      let binding_infos = self.env.binding_infos();
-      state
-        .gpu
-        .write()
-        .unwrap()
-        .update_for_reload(&wgsl, &binding_infos);
+      // Only update the GPU's shader/layouts if ensure_gpu_ready hasn't already
+      // done so (which happens when dispatch-compute-shader is called before
+      // spawn-window). Calling update_for_reload a second time would recreate
+      // unsized-array buffers (type_size=0 → alloc_size=16) regardless of their
+      // actual size, wiping any data the pre-spawn-window compute just wrote.
+      if self.env.io.get_gpu().is_none() {
+        let wgsl = self.env.wgsl().to_string();
+        let binding_infos = self.env.binding_infos();
+        state
+          .gpu
+          .write()
+          .unwrap()
+          .update_for_reload(&wgsl, &binding_infos);
+      }
       state.pipelines.clear();
       // Reconfigure the surface in case it became outdated during the gap
       // between event loop runs (e.g. the window was resized or the display

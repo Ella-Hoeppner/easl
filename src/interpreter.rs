@@ -2184,8 +2184,17 @@ impl IOManager for StdoutIO {
     binding_infos: &[((u8, u8), GpuBufferKind, u64)],
   ) {
     if self.gpu.is_none() {
-      self.gpu =
-        Some(crate::window::create_headless_gpu_core(wgsl, binding_infos));
+      // On hot-reload, reuse the GPU that's already in PERSISTENT_RELOAD_STATE
+      // rather than creating a brand-new headless GPU.  Without this, a
+      // pre-spawn-window compute dispatch (e.g. one-shot init shader) would run
+      // on a throwaway GPU and its results would be lost when setup_window()
+      // replaces self.gpu with the persistent one.
+      if let Some(gpu) = crate::window::persistent_gpu() {
+        gpu.write().unwrap().update_for_reload(wgsl, binding_infos);
+        self.gpu = Some(gpu);
+      } else {
+        self.gpu = Some(crate::window::create_headless_gpu_core(wgsl, binding_infos));
+      }
     }
   }
 

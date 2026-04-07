@@ -18,10 +18,10 @@ This repository contains the core compiler code. This repository can be used as 
 | Higher-order functions | Functions that can accept other functions as inputs, and return other functions as outputs | ✅³ |
 | Closures | Anonymous functions that capture bindings from the scope in which they're created | ✅⁴ |
 | Type Constraints | Similar to typeclasses/traits/interfaces, but able to coexist seamlessly with arbitrary function overloading | 🚧 |
-| Modules | Organize types and functions into modules for code organization and re-use, including the ability to use refer to modules defined in other files | ❌ |
+| Modules | Organize types and functions into modules, and refer to modules defined in other files | ❌ |
 | Anonymous Structs | Structs without names, characterized only by the names and types of their fields. Useful for grouping values together in a way that offers more clarity than a tuple, without having to explicitly declare a new type. | ❌ |
 | Row Polymorphism | The ability to define functions that operate on any struct matching a certain shape, e.g. a function that can operate over any struct type with a field named `x` | ❌ |
-| Algebraic Effects | Sophisticated, type-safe manipulation of control flow. There will be some limitations compared to other algebraic effect systems: continuations will be single-shot, cannot escape the scope of the handler, and can only be called in the tail position | 🚧 |
+| Effect Typing | For additional type safety, the type system will track the side-effects of each function, in addition to the input/return types. There will also be support for a limited version of Algebraic Effect handling. | 🚧 |
 | CPU-side interpreter | While the primary goal of easl is to be a shader language that is executed on the GPU, there will also be an interpreter for the language that can run on the CPU. This will be useful for testing and debugging code in ways that are impossible on the GPU, and for making simple applications and demos that involve both CPU and GPU logic without having to use a separate "host" language. | 🚧 |
 
 * ¹ All core types, math functions, and control flow operations from wgsl are already implemented. Missing features include barrier functions, texture types other than basic 2d textures, and extension features like subgroup/quad functions.
