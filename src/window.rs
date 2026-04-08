@@ -49,7 +49,8 @@ pub fn close_persistent_window() {
 /// the window will later reuse, rather than on a freshly-created headless GPU
 /// that gets thrown away when `setup_window` takes `PERSISTENT_RELOAD_STATE`.
 pub fn persistent_gpu() -> Option<Arc<RwLock<GpuCore>>> {
-  PERSISTENT_RELOAD_STATE.with(|c| c.borrow().as_ref().map(|s| Arc::clone(&s.gpu)))
+  PERSISTENT_RELOAD_STATE
+    .with(|c| c.borrow().as_ref().map(|s| Arc::clone(&s.gpu)))
 }
 
 pub fn run_window_loop<IO: IOManager>(
@@ -67,6 +68,7 @@ pub fn run_window_loop<IO: IOManager>(
       error: None,
       closed: false,
       last_frame_time: None,
+      window_start_time: None,
       reload: false,
     };
     event_loop.run_app_on_demand(&mut app).unwrap();
@@ -95,6 +97,7 @@ struct App<'a, IO: IOManager> {
   error: Option<EvalError>,
   closed: bool,
   last_frame_time: Option<Instant>,
+  window_start_time: Option<Instant>,
   /// Set to true when the loop exits because a hot-reload was requested.
   reload: bool,
 }
@@ -131,6 +134,10 @@ pub struct GpuCore {
   pub bind_groups: Vec<wgpu::BindGroup>,
   /// Current window dimensions in pixels.
   pub window_size: (u32, u32),
+  /// Time in seconds since the window was opened, updated at the start of each frame.
+  pub window_time: f32,
+  /// Time in seconds between the previous frame and the current frame.
+  pub window_delta_time: f32,
 }
 
 impl GpuCore {
@@ -169,10 +176,13 @@ impl GpuCore {
     binding_infos: &[((u8, u8), GpuBufferKind, u64)],
   ) {
     // 1. New shader module.
-    self.shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-      label: Some("easl shader"),
-      source: wgpu::ShaderSource::Wgsl(wgsl.into()),
-    });
+    self.shader =
+      self
+        .device
+        .create_shader_module(wgpu::ShaderModuleDescriptor {
+          label: Some("easl shader"),
+          source: wgpu::ShaderSource::Wgsl(wgsl.into()),
+        });
 
     // 2. Clear compute pipelines (they reference the old shader module).
     self.compute_pipelines.clear();
@@ -180,7 +190,11 @@ impl GpuCore {
     // 3. Update binding slots.
     self.binding_slots = binding_infos
       .iter()
-      .map(|&((group, binding), kind, _)| BindingSlot { group, binding, kind })
+      .map(|&((group, binding), kind, _)| BindingSlot {
+        group,
+        binding,
+        kind,
+      })
       .collect();
 
     // 4. Rebuild buffers.  Reuse existing buffers whose size didn't change so
@@ -235,10 +249,12 @@ impl GpuCore {
             count: None,
           })
           .collect();
-        self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-          label: Some(&format!("bind group layout {group_idx}")),
-          entries: &entries,
-        })
+        self
+          .device
+          .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some(&format!("bind group layout {group_idx}")),
+            entries: &entries,
+          })
       })
       .collect();
 
@@ -246,13 +262,16 @@ impl GpuCore {
     self.rebuild_bind_groups();
 
     // 7. Rebuild pipeline layout (references the new bind group layouts).
-    let refs: Vec<&wgpu::BindGroupLayout> = self.bind_group_layouts.iter().collect();
+    let refs: Vec<&wgpu::BindGroupLayout> =
+      self.bind_group_layouts.iter().collect();
     self.pipeline_layout =
-      self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: None,
-        bind_group_layouts: &refs,
-        immediate_size: 0,
-      });
+      self
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+          label: None,
+          bind_group_layouts: &refs,
+          immediate_size: 0,
+        });
   }
 
   pub fn get_or_create_compute_pipeline(&mut self, entry: &str) {
@@ -554,6 +573,8 @@ pub(crate) fn create_headless_gpu_core(
       bind_group_layouts,
       bind_groups,
       window_size: (1, 1),
+      window_time: 0.0,
+      window_delta_time: 0.0,
     }))
   })
 }
@@ -685,12 +706,20 @@ impl<'a, IO: IOManager> ApplicationHandler for App<'a, IO> {
         if self.closed {
           return;
         }
-        // let now = Instant::now();
-        // if let Some(last) = self.last_frame_time {
-        //   let fps = 1.0 / last.elapsed().as_secs_f64();
-        //   println!("fps: {fps:.1}"); // fps logging
-        // }
-        // self.last_frame_time = Some(now);
+        let now = Instant::now();
+        if self.window_start_time.is_none() {
+          self.window_start_time = Some(now);
+        }
+        let window_time = (now - self.window_start_time.unwrap()).as_secs_f32();
+        let window_delta_time = self
+          .last_frame_time
+          .map_or(0.0, |last| (now - last).as_secs_f32());
+        self.last_frame_time = Some(now);
+        if let Some(state) = &self.state {
+          let mut gpu = state.gpu.write().unwrap();
+          gpu.window_time = window_time;
+          gpu.window_delta_time = window_delta_time;
+        }
         match eval(self.body.clone(), self.env) {
           Ok(_) => {}
           Err(EvalException::CloseWindow) => {
@@ -946,6 +975,8 @@ impl RenderState {
       bind_group_layouts,
       bind_groups,
       window_size: (surface_config.width, surface_config.height),
+      window_time: 0.0,
+      window_delta_time: 0.0,
     }));
 
     Ok(Self {
@@ -1111,7 +1142,12 @@ impl RenderState {
       let mut gpu = self.gpu.write().unwrap();
       for draw_call in draw_calls {
         match draw_call {
-          WindowEvent::RenderShaders { vert, frag, additive, .. } => {
+          WindowEvent::RenderShaders {
+            vert,
+            frag,
+            additive,
+            ..
+          } => {
             let vert = vert.replace('-', "_");
             let frag = frag.replace('-', "_");
             Self::get_or_create_render_pipeline(
@@ -1237,7 +1273,8 @@ impl RenderState {
               {
                 render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
               }
-              render_pass.set_pipeline(&self.pipelines[&(vert, frag, *additive)]);
+              render_pass
+                .set_pipeline(&self.pipelines[&(vert, frag, *additive)]);
               render_pass.draw(0..*vert_count, 0..1);
             }
             gpu.queue.submit(std::iter::once(encoder.finish()));

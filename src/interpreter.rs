@@ -1607,6 +1607,10 @@ fn apply_builtin_fn<IO: IOManager>(
         .collect(),
       ))
     }
+    "window-time" => Ok(Value::Prim(Primitive::F32(env.io.window_time()))),
+    "window-delta-time" => {
+      Ok(Value::Prim(Primitive::F32(env.io.window_delta_time())))
+    }
     "zeroed-array" => {
       let Type::Array(size, _) = return_type else {
         panic!()
@@ -2015,6 +2019,16 @@ pub trait IOManager: Sized {
   fn window_size(&self) -> (u32, u32) {
     (1, 1)
   }
+  /// Returns the time in seconds since the window was opened, or 0.0 if no
+  /// window is open.
+  fn window_time(&self) -> f32 {
+    0.0
+  }
+  /// Returns the time in seconds between the previous frame and the current
+  /// frame, or 0.0 if no window is open.
+  fn window_delta_time(&self) -> f32 {
+    0.0
+  }
   /// Returns the current GPU, if any. Used by `App::resumed` to detect an
   /// existing headless GPU so it can be reused rather than replaced.
   /// Default returns `None`; overridden by IO managers with real GPU access.
@@ -2218,6 +2232,22 @@ impl IOManager for StdoutIO {
     (1, 1)
   }
 
+  fn window_time(&self) -> f32 {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return gpu.read().unwrap().window_time;
+    }
+    0.0
+  }
+
+  fn window_delta_time(&self) -> f32 {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return gpu.read().unwrap().window_delta_time;
+    }
+    0.0
+  }
+
   fn reload_requested(&self) -> bool {
     #[cfg(feature = "window")]
     if let Some(flag) = &self.reload_flag {
@@ -2255,6 +2285,9 @@ impl IOManager for StdoutIO {
 pub struct StringIO {
   pub events: Vec<IOEvent>,
   pub frame_count: usize,
+  /// Tracks which frame is currently being evaluated (0-indexed). Used to
+  /// return deterministic values from `window_time` and `window_delta_time`.
+  pub frame_index: usize,
 }
 
 impl Default for StringIO {
@@ -2262,6 +2295,7 @@ impl Default for StringIO {
     Self {
       events: vec![],
       frame_count: 10,
+      frame_index: 0,
     }
   }
 }
@@ -2327,13 +2361,26 @@ impl IOManager for StringIO {
     (800, 600)
   }
 
+  fn window_time(&self) -> f32 {
+    self.frame_index as f32 / 60.0
+  }
+
+  fn window_delta_time(&self) -> f32 {
+    if self.frame_index == 0 {
+      0.0
+    } else {
+      1.0 / 60.0
+    }
+  }
+
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
     env: &mut EvaluationEnvironment<Self>,
   ) -> Result<bool, EvalError> {
     env.io.events.push(IOEvent::SpawnWindow);
     let frame_count = env.io.frame_count;
-    for _ in 0..frame_count {
+    for i in 0..frame_count {
+      env.io.frame_index = i;
       match eval(body.clone(), env) {
         Ok(_) => {}
         Err(EvalException::CloseWindow) => break,
@@ -2437,6 +2484,14 @@ impl IOManager for CaptureIO {
 
   fn window_size(&self) -> (u32, u32) {
     self.inner.window_size()
+  }
+
+  fn window_time(&self) -> f32 {
+    self.inner.window_time()
+  }
+
+  fn window_delta_time(&self) -> f32 {
+    self.inner.window_delta_time()
   }
 
   fn run_spawn_window(
