@@ -259,6 +259,8 @@ success_test!(get_global_invocation_id_argument_field);
 success_test!(get_global_invocation_id_indirect);
 success_test!(inner_fn_scope_type);
 success_test!(partial_application);
+success_test!(for_dash_var_name);
+success_test!(when_discards_final_value);
 
 // --- Error tests ---
 
@@ -546,3 +548,15 @@ error_test!(
     "my-fragment".into(),
   )
 );
+
+error_test!(
+  array_zero_arg_failure,
+  CompileErrorKind::ArrayLookupInvalidArity(0)
+);
+
+error_test!(
+  bind_group_collision,
+  CompileErrorKind::BindGroupCollision("a".to_string(), "b".to_string())
+);
+
+error_test!(atomic_binding_failure, CompileErrorKind::CantBindAtomic);

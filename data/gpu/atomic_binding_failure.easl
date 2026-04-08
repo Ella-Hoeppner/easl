@@ -1,0 +1,9 @@
+@{address storage-write
+  group 0
+  binding 0}
+(var arr: [(Atomic u32)])
+
+(defn f []: u32
+  (let [x (arr 0u)]
+    (atomic-load x)))
+

@@ -2247,11 +2247,21 @@ impl TypeState {
             )
           }
         }
-        Type::Array(_, _) => arg_types[0].constrain(
-          &TypeState::OneOf(vec![Type::I32, Type::U32]),
-          source_trace,
-          errors,
-        ),
+        Type::Array(_, _) => {
+          if arg_types.len() == 1 {
+            arg_types[0].constrain(
+              &TypeState::OneOf(vec![Type::I32, Type::U32]),
+              source_trace,
+              errors,
+            )
+          } else {
+            errors.log(CompileError::new(
+              ArrayLookupInvalidArity(arg_types.len()),
+              source_trace.clone(),
+            ));
+            false
+          }
+        }
         _ => {
           errors.log(CompileError::new(
             ExpectedFunctionFoundNonFunction,

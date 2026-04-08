@@ -2359,6 +2359,17 @@ pub fn built_in_macros() -> Vec<Macro> {
                     "do".into(),
                   ),
                 );
+                let unit_expression = EaslTree::Inner(
+                  (
+                    DocumentPosition {
+                      span: 0..0,
+                      path: vec![],
+                    },
+                    EncloserOrOperator::Encloser(Encloser::Parens),
+                  ),
+                  vec![],
+                );
+                children.push(unit_expression.clone());
                 Some(Ok(EaslTree::Inner(
                   (
                     position.clone(),
@@ -2397,16 +2408,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                       },
                       "false".into(),
                     ),
-                    EaslTree::Inner(
-                      (
-                        DocumentPosition {
-                          span: 0..0,
-                          path: vec![],
-                        },
-                        EncloserOrOperator::Encloser(Encloser::Parens),
-                      ),
-                      vec![],
-                    ),
+                    unit_expression,
                   ],
                 )))
               } else {

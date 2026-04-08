@@ -6,7 +6,7 @@ use fsexp::{Ast, document::Document, syntax::EncloserOrOperator};
 use take_mut::take;
 
 use crate::compiler::types::ExpTypeInfo;
-use crate::compiler::vars::VariableAddressSpace;
+use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
 use crate::{
   Never,
   compiler::{
@@ -2013,7 +2013,10 @@ impl Program {
     }
     any_extracted
   }
-  pub fn inline_all_higher_order_arguments(&mut self, errors: &mut ErrorLog) -> bool {
+  pub fn inline_all_higher_order_arguments(
+    &mut self,
+    errors: &mut ErrorLog,
+  ) -> bool {
     let mut any_inlined = false;
     loop {
       let changed = self.inline_higher_order_arguments(errors);
@@ -3400,6 +3403,68 @@ impl Program {
         remaining_inferred_struct_field_locations;
     }
   }
+  pub fn catch_bind_group_collisions(&self, errors: &mut ErrorLog) {
+    let mut existing_groups_and_bindings: HashMap<GroupAndBinding, String> =
+      HashMap::new();
+    for var in self.top_level_vars.iter() {
+      if let TopLevelVariableKind::Var {
+        group_and_binding: Some(group_and_binding),
+        ..
+      } = var.kind
+      {
+        if let Some(prior_name) =
+          existing_groups_and_bindings.get(&group_and_binding)
+        {
+          errors.log(CompileError::new(
+            BindGroupCollision(prior_name.clone(), var.name.to_string()),
+            var.source_trace.clone(),
+          ));
+        } else {
+          existing_groups_and_bindings
+            .insert(group_and_binding, var.name.to_string());
+        }
+      }
+    }
+  }
+  pub fn catch_atomic_bindings(&self, errors: &mut ErrorLog) {
+    let mut inferred_struct_field_locations: Vec<(
+      Arc<AbstractStruct>,
+      Arc<str>,
+      usize,
+    )> = vec![];
+    for signature in self.abstract_functions_iter() {
+      let signature = signature.read().unwrap();
+      if let FunctionImplementationKind::Composite(f) =
+        &signature.implementation
+      {
+        f.read()
+          .unwrap()
+          .expression
+          .walk(&mut |exp| {
+            match &exp.kind {
+              ExpKind::Let(bindings, _) => {
+                for (_, _, _, value) in bindings {
+                  match value.data.unwrap_known() {
+                    Type::Struct(s) => {
+                      if &*s.name == "Atomic" {
+                        errors.log(CompileError::new(
+                          CantBindAtomic,
+                          exp.source_trace.clone(),
+                        ));
+                      }
+                    }
+                    _ => {}
+                  }
+                }
+              }
+              _ => {}
+            }
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
+      }
+    }
+  }
   pub fn catch_expressions_after_control_flow(
     &mut self,
     errors: &mut ErrorLog,
@@ -3432,6 +3497,7 @@ impl Program {
                           _ => unreachable!(),
                         });
                     }
+                    ExpKind::Unit => {}
                     _ => {
                       if let Some(name) = &encountered_control_flow_operator {
                         errors.log(CompileError::new(
@@ -3570,6 +3636,14 @@ impl Program {
       return errors;
     }
     self.validate_entry_points(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.catch_bind_group_collisions(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.catch_atomic_bindings(&mut errors);
     if !errors.is_empty() {
       return errors;
     }

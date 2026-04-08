@@ -305,6 +305,8 @@ pub enum CompileErrorKind {
     `@{{group 0 binding 0}}`"
   )]
   NeedsGroupAndBinding(String),
+  #[error("Variables {0} and {1} have the same binding and group numbers")]
+  BindGroupCollision(String, String),
   #[error("Variables in `{0}` may not be given an initial value")]
   DisallowedInitializationValue(VariableAddressSpace),
   #[error("The name `{0}` is used for more than one top-level variable")]
@@ -449,6 +451,8 @@ pub enum CompileErrorKind {
   InvalidShaderEntry(String),
   #[error("Vertex function `{0}` and Fragment function {1} are incompatible")]
   IncompatibleRenderEntryPoints(String, String),
+  #[error("Can't create a binding to an atomic value")]
+  CantBindAtomic,
 }
 
 impl CompileErrorKind {

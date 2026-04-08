@@ -2142,7 +2142,7 @@ impl TypedExp {
         body_expression,
       } => format!(
         "\nfor (var {}: {} = {}; {}; {}) {{{}\n}}",
-        increment_variable_name.0,
+        compile_word(increment_variable_name.0),
         increment_variable_type.monomorphized_name(names),
         increment_variable_initial_value_expression.compile(
           ExpressionCompilationPosition::InnerExpression,

@@ -91,7 +91,7 @@ impl Display for VariableAddressSpace {
     write!(f, "{}", self.name())
   }
 }
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GroupAndBinding {
   pub group: u8,
   pub binding: u8,
