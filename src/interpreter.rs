@@ -2083,6 +2083,8 @@ pub struct StdoutIO {
   #[cfg(feature = "window")]
   gpu: Option<std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>>,
   #[cfg(feature = "window")]
+  windowed: bool,
+  #[cfg(feature = "window")]
   reload_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
@@ -2092,6 +2094,8 @@ impl StdoutIO {
       frame_draw_calls: vec![],
       #[cfg(feature = "window")]
       gpu: None,
+      #[cfg(feature = "window")]
+      windowed: false,
       #[cfg(feature = "window")]
       reload_flag: None,
     }
@@ -2107,6 +2111,7 @@ impl StdoutIO {
     Self {
       frame_draw_calls: vec![],
       gpu: None,
+      windowed: false,
       reload_flag: Some(flag),
     }
   }
@@ -2142,12 +2147,14 @@ impl IOManager for StdoutIO {
     pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) -> Result<(), EvalError> {
     #[cfg(feature = "window")]
-    if let Some(gpu) = &self.gpu {
-      gpu
-        .write()
-        .unwrap()
-        .execute_compute(entry, workgroup_count, pre_upload);
-      return Ok(());
+    if !self.windowed {
+      if let Some(gpu) = &self.gpu {
+        gpu
+          .write()
+          .unwrap()
+          .execute_compute(entry, workgroup_count, pre_upload);
+        return Ok(());
+      }
     }
     self.frame_draw_calls.push(WindowEvent::ComputeShader {
       entry: entry.to_string(),
@@ -2189,6 +2196,7 @@ impl IOManager for StdoutIO {
     gpu: std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>,
   ) {
     self.gpu = Some(gpu);
+    self.windowed = true;
   }
 
   #[cfg(feature = "window")]
@@ -2260,6 +2268,7 @@ impl IOManager for StdoutIO {
     #[cfg(feature = "window")]
     {
       self.gpu = None;
+      self.windowed = false;
       if let Some(flag) = &self.reload_flag {
         flag.store(false, std::sync::atomic::Ordering::Relaxed);
       }
