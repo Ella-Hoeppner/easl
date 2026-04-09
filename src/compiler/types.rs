@@ -1008,6 +1008,72 @@ impl Type {
       }
     })
   }
+  /// Returns the WGSL AlignOf for this type, in u32s (bytes / 4).
+  /// See https://www.w3.org/TR/WGSL/#alignment-and-size
+  pub fn wgsl_alignment_in_u32s(&self) -> usize {
+    match self {
+      Type::F32 | Type::I32 | Type::U32 | Type::Bool => 1,
+      Type::Struct(s) => match &*s.name {
+        "vec2" => 2,
+        "vec3" | "vec4" => 4,
+        _ => s
+          .fields
+          .iter()
+          .map(|f| f.field_type.unwrap_known().wgsl_alignment_in_u32s())
+          .max()
+          .unwrap_or(1),
+      },
+      Type::Array(_, inner) => inner.unwrap_known().wgsl_alignment_in_u32s(),
+      _ => 1,
+    }
+  }
+  /// Returns the WGSL SizeOf for this type, in u32s (bytes / 4).
+  /// For vec3, this is 3 (12 bytes), NOT rounded up to its AlignOf of 16.
+  /// For user-defined structs and arrays, inter-field / stride padding IS included.
+  /// See https://www.w3.org/TR/WGSL/#alignment-and-size
+  pub fn wgsl_data_size_in_u32s(&self) -> usize {
+    fn round_up(align: usize, size: usize) -> usize {
+      if align == 0 {
+        return size;
+      }
+      ((size + align - 1) / align) * align
+    }
+    match self {
+      Type::F32 | Type::I32 | Type::U32 | Type::Bool => 1,
+      Type::Unit => 0,
+      Type::Struct(s) => match &*s.name {
+        // For vec types, SizeOf != round_up(AlignOf, SizeOf).
+        // vec3 SizeOf = 12 bytes (3 u32s), AlignOf = 16 bytes (4 u32s).
+        "vec2" => 2,
+        "vec3" => 3,
+        "vec4" => 4,
+        _ => {
+          let mut offset = 0usize;
+          for field in &s.fields {
+            let ft = field.field_type.unwrap_known();
+            offset =
+              round_up(ft.wgsl_alignment_in_u32s(), offset);
+            offset += ft.wgsl_data_size_in_u32s();
+          }
+          round_up(self.wgsl_alignment_in_u32s(), offset)
+        }
+      },
+      Type::Enum(e) => {
+        // Compiled as struct { discriminant: u32, data: array<u32, N> }
+        e.inner_data_size_in_u32s().unwrap_or(0) + 1
+      }
+      Type::Array(size, inner_type) => {
+        let inner_ty = inner_type.unwrap_known();
+        let stride =
+          round_up(inner_ty.wgsl_alignment_in_u32s(), inner_ty.wgsl_data_size_in_u32s());
+        match size {
+          Some(ConcreteArraySize::Literal(x)) => stride * *x as usize,
+          _ => 0,
+        }
+      }
+      _ => 0,
+    }
+  }
   pub fn satisfies_constraint(&self, constraint: &TypeConstraint) -> bool {
     if let Type::Skolem(_, skolem_constraints) = self {
       skolem_constraints.contains(&constraint)

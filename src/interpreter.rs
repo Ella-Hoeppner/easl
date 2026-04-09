@@ -1818,21 +1818,39 @@ impl Value {
       Value::Prim(Primitive::Bool(b)) => (*b as u32).to_ne_bytes().to_vec(),
       Value::Struct(fields) => {
         let Type::Struct(s) = ty else { panic!() };
+        let struct_size_u32s = ty.wgsl_data_size_in_u32s();
         let mut bytes = vec![];
+        let mut offset_u32s = 0usize;
         for field in &s.fields {
+          let ft = field.field_type.unwrap_known();
+          let align = ft.wgsl_alignment_in_u32s();
+          let field_size = ft.wgsl_data_size_in_u32s();
+          let target = ((offset_u32s + align - 1) / align) * align;
+          bytes.extend(std::iter::repeat(0u8).take((target - offset_u32s) * 4));
+          offset_u32s = target;
           if let Some(v) = fields.get(&field.name) {
-            bytes.extend(v.to_uniform_bytes(&field.field_type.unwrap_known()));
+            bytes.extend(v.to_uniform_bytes(&ft));
+          } else {
+            bytes.extend(std::iter::repeat(0u8).take(field_size * 4));
           }
+          offset_u32s += field_size;
         }
+        bytes.extend(std::iter::repeat(0u8).take((struct_size_u32s - offset_u32s) * 4));
         bytes
       }
       Value::Array(inner_values) => {
         let Type::Array(_, inner_type) = &ty else {
           panic!()
         };
+        let inner_ty = inner_type.unwrap_known();
+        let elem_size = inner_ty.wgsl_data_size_in_u32s();
+        let stride =
+          ((elem_size + inner_ty.wgsl_alignment_in_u32s() - 1) / inner_ty.wgsl_alignment_in_u32s())
+            * inner_ty.wgsl_alignment_in_u32s();
         let mut bytes = vec![];
         for value in inner_values {
-          bytes.extend(value.to_uniform_bytes(&inner_type.unwrap_known()));
+          bytes.extend(value.to_uniform_bytes(&inner_ty));
+          bytes.extend(std::iter::repeat(0u8).take((stride - elem_size) * 4));
         }
         bytes
       }
@@ -1840,11 +1858,11 @@ impl Value {
         let Type::Array(_, inner_type) = &ty else {
           panic!()
         };
-        let elem_u32s = inner_type
-          .unwrap_known()
-          .data_size_in_u32s(&SourceTrace::empty())
-          .unwrap_or(0);
-        vec![0u8; length * elem_u32s * 4]
+        let inner_ty = inner_type.unwrap_known();
+        let elem_size = inner_ty.wgsl_data_size_in_u32s();
+        let align = inner_ty.wgsl_alignment_in_u32s();
+        let stride = ((elem_size + align - 1) / align) * align;
+        vec![0u8; length * stride * 4]
       }
       _ => vec![],
     }
@@ -1857,19 +1875,24 @@ impl Value {
     // how many whole elements fit in the returned byte slice.
     if let Type::Array(Some(ConcreteArraySize::Unsized), inner_type) = ty {
       let inner_ty = inner_type.unwrap_known();
-      let elem_u32s = inner_ty
-        .data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
-        .unwrap_or(0);
-      let elem_bytes = elem_u32s * 4;
-      let count = if elem_bytes > 0 {
-        bytes.len() / elem_bytes
+      let elem_size = inner_ty.wgsl_data_size_in_u32s();
+      let align = inner_ty.wgsl_alignment_in_u32s();
+      let stride = ((elem_size + align - 1) / align) * align;
+      let stride_bytes = stride * 4;
+      let count = if stride_bytes > 0 {
+        bytes.len() / stride_bytes
       } else {
         0
       };
       let mut offset = 0;
       return Value::Array(
         (0..count)
-          .map(|_| Self::from_gpu_bytes_at(bytes, &inner_ty, &mut offset))
+          .map(|_| {
+            let start = offset;
+            let v = Self::from_gpu_bytes_at(bytes, &inner_ty, &mut offset);
+            offset = start + stride_bytes;
+            v
+          })
           .collect(),
       );
     }
@@ -1892,23 +1915,40 @@ impl Value {
       }
       Type::Bool => Value::Prim(Primitive::Bool(read_u32(bytes, offset) != 0)),
       Type::Struct(s) => {
-        let mut fields = HashMap::new();
+        let struct_start = *offset;
+        let struct_size_u32s = ty.wgsl_data_size_in_u32s();
+        let mut field_cursor = 0usize;
+        let mut fields_map = HashMap::new();
         for field in &s.fields {
           let inner_ty = field.field_type.unwrap_known();
+          let align = inner_ty.wgsl_alignment_in_u32s();
+          let size = inner_ty.wgsl_data_size_in_u32s();
+          field_cursor = ((field_cursor + align - 1) / align) * align;
+          *offset = struct_start + field_cursor * 4;
           let v = Self::from_gpu_bytes_at(bytes, &inner_ty, offset);
-          fields.insert(field.name.clone(), v);
+          field_cursor += size;
+          fields_map.insert(field.name.clone(), v);
         }
-        Value::Struct(fields)
+        *offset = struct_start + struct_size_u32s * 4;
+        Value::Struct(fields_map)
       }
       Type::Array(Some(size), inner_type) => {
         let inner_ty = inner_type.unwrap_known();
+        let elem_size = inner_ty.wgsl_data_size_in_u32s();
+        let align = inner_ty.wgsl_alignment_in_u32s();
+        let stride = ((elem_size + align - 1) / align) * align;
         let count = match size {
           crate::compiler::types::ConcreteArraySize::Literal(n) => *n as usize,
           _ => 0,
         };
         Value::Array(
           (0..count)
-            .map(|_| Self::from_gpu_bytes_at(bytes, &inner_ty, offset))
+            .map(|_| {
+              let start = *offset;
+              let v = Self::from_gpu_bytes_at(bytes, &inner_ty, offset);
+              *offset = start + stride * 4;
+              v
+            })
             .collect(),
         )
       }
@@ -2622,8 +2662,8 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           }
           _ => unreachable!(),
         };
-        // unwrap_or(0): unsized arrays → size 0, handled dynamically in window.rs
-        let u32s = ty.data_size_in_u32s(&SourceTrace::empty()).unwrap_or(0);
+        // 0 for unsized arrays → size handled dynamically in window.rs
+        let u32s = ty.wgsl_data_size_in_u32s();
         let size = if u32s == 0 {
           0
         } else {
@@ -2652,10 +2692,10 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
               panic!()
             };
             let inner_ty = inner_type_info.unwrap_known();
-            let elem_u32s = inner_ty
-              .data_size_in_u32s(&SourceTrace::empty())
-              .unwrap_or(1);
-            let raw_bytes = *length as u64 * elem_u32s as u64 * 4;
+            let elem_size = inner_ty.wgsl_data_size_in_u32s();
+            let align = inner_ty.wgsl_alignment_in_u32s();
+            let stride = ((elem_size + align - 1) / align) * align;
+            let raw_bytes = *length as u64 * stride as u64 * 4;
             let padded = ((raw_bytes + 15) / 16) * 16;
             BufferUpload::Clear { byte_count: padded }
           }
@@ -2705,10 +2745,10 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             panic!()
           };
           let inner_ty = inner_type_info.unwrap_known();
-          let elem_u32s = inner_ty
-            .data_size_in_u32s(&SourceTrace::empty())
-            .unwrap_or(1);
-          let raw_bytes = *length as u64 * elem_u32s as u64 * 4;
+          let elem_size = inner_ty.wgsl_data_size_in_u32s();
+          let align = inner_ty.wgsl_alignment_in_u32s();
+          let stride = ((elem_size + align - 1) / align) * align;
+          let raw_bytes = *length as u64 * stride as u64 * 4;
           let padded = ((raw_bytes + 15) / 16) * 16;
           BufferUpload::Clear { byte_count: padded }
         }

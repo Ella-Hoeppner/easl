@@ -1,6 +1,12 @@
 # todo
 ## Highest priority
 ### necessary for wgsl feature parity + stuff I wanna get done before calling the language "production ready"
+* `(break)` inside a match statement doesn't work, need to fix this before release
+
+
+
+
+
 * nested unsized array types seem to break the interpreter
 
 * trying to do an early return in a function that returns unit crashes the compile rn. You have to do `(return ())`, but then you get an error about compiling unit in an inner position
