@@ -1,12 +1,6 @@
 # todo
 ## Highest priority
 ### necessary for wgsl feature parity + stuff I wanna get done before calling the language "production ready"
-* `(break)` inside a match statement doesn't work, need to fix this before release
-
-
-
-
-
 * nested unsized array types seem to break the interpreter
 
 * trying to do an early return in a function that returns unit crashes the compile rn. You have to do `(return ())`, but then you get an error about compiling unit in an inner position
@@ -93,9 +87,6 @@
   * or maybe have something like rust's `PhantomData`?
 
 * flesh out support for `break`
-  * Right now if you try to `break` inside of a `match` block, you get invalid wgsl code, since the compiled wgsl `break` will just get caught by the surrounding `switch`
-    * demonstrated in the `break_in_match.easl` test
-    * so there needs to be a more sophisticated system for matching individual `break` statements up with the specific scopes that they should break too, and adding extra variables to track `break`s that cross boundaries
   * support a `breakable` construct, such that you can surround a block and then call `break` arbitrarily inside it
     * should make it so that these `breakable` expressions can optionally return a value, and the `break` used inside them will accept a value of the proper type as an "argument". So basically make `break` just take an argument in general, and make the zero-argument `(break)` syntax just be shorthand for a unit argument
     * maybe go ahead and support labels on this too, so you can do like:
