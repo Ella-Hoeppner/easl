@@ -563,7 +563,7 @@ impl AbstractStruct {
       generic_args: self
         .generic_args
         .into_iter()
-        .filter(|(name, _, _)| generics.contains_key(name))
+        .filter(|(name, _, _)| !generics.contains_key(name))
         .collect(),
       fields: self
         .fields

@@ -399,30 +399,18 @@ impl Program {
     self
   }
   pub fn add_monomorphized_struct(&mut self, s: AbstractStruct) {
-    if self
-      .typedefs
-      .structs
-      .iter()
-      .find(|existing_struct| {
-        existing_struct.name == s.name
-          && existing_struct.filled_generics == s.filled_generics
-      })
-      .is_none()
-    {
+    if !self.typedefs.structs.iter().any(|existing_struct| {
+      existing_struct.name == s.name
+        && existing_struct.filled_generics == s.filled_generics
+    }) {
       self.typedefs.structs.push(s);
     }
   }
   pub fn add_monomorphized_enum(&mut self, e: AbstractEnum) {
-    if self
-      .typedefs
-      .enums
-      .iter()
-      .find(|existing_struct| {
-        existing_struct.name == e.name
-          && existing_struct.filled_generics == e.filled_generics
-      })
-      .is_none()
-    {
+    if !self.typedefs.enums.iter().any(|existing_enum| {
+      existing_enum.name == e.name
+        && existing_enum.filled_generics == e.filled_generics
+    }) {
       self.typedefs.enums.push(e);
     }
   }

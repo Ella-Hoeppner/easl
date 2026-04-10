@@ -44,7 +44,8 @@ pub fn read_type_annotated_name(
 
 pub fn compile_word(word: Arc<str>) -> String {
   let compiled_word = match &*word {
-    "vec2<bool>"
+    "!"
+    | "vec2<bool>"
     | "vec3<bool>"
     | "vec4<bool>"
     | "bitcast<f32>"

@@ -331,8 +331,8 @@
                       (= screenspace-scale
                          (/ (vec2f resolution)
                             (f32 (min resolution.x resolution.y))))
-                      (when (not (and (== resolution.x new-resolution.x)
-                                      (== resolution.y new-resolution.y)))
+                      (when (! (and (== resolution.x new-resolution.x)
+                                    (== resolution.y new-resolution.y)))
                         (= resolution new-resolution)
                         (= accumulated-colors
                            (zeroed-array (* resolution.x resolution.y)))
@@ -345,3 +345,4 @@
                                                     1u
                                                     1u))
                     (dispatch-render-shaders v f 3))))
+
