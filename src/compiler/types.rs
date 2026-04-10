@@ -1051,8 +1051,7 @@ impl Type {
           let mut offset = 0usize;
           for field in &s.fields {
             let ft = field.field_type.unwrap_known();
-            offset =
-              round_up(ft.wgsl_alignment_in_u32s(), offset);
+            offset = round_up(ft.wgsl_alignment_in_u32s(), offset);
             offset += ft.wgsl_data_size_in_u32s();
           }
           round_up(self.wgsl_alignment_in_u32s(), offset)
@@ -1064,8 +1063,10 @@ impl Type {
       }
       Type::Array(size, inner_type) => {
         let inner_ty = inner_type.unwrap_known();
-        let stride =
-          round_up(inner_ty.wgsl_alignment_in_u32s(), inner_ty.wgsl_data_size_in_u32s());
+        let stride = round_up(
+          inner_ty.wgsl_alignment_in_u32s(),
+          inner_ty.wgsl_data_size_in_u32s(),
+        );
         match size {
           Some(ConcreteArraySize::Literal(x)) => stride * *x as usize,
           _ => 0,
@@ -1902,6 +1903,7 @@ pub struct ExpTypeInfo {
   pub errored: bool,
   pub fully_known_cached: bool,
   pub already_constrained_against_signatures: bool,
+  pub already_match_breaks_extracted: bool,
 }
 
 impl Deref for ExpTypeInfo {
@@ -1928,6 +1930,7 @@ impl From<TypeState> for ExpTypeInfo {
       is_globally_bound: false,
       errored: false,
       already_constrained_against_signatures: false,
+      already_match_breaks_extracted: false,
     }
   }
 }

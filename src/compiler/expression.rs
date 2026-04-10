@@ -4154,7 +4154,7 @@ impl TypedExp {
                 }
               }
             }
-            if let Match(scrutinee, _) = &mut exp.kind {
+            if let Match(scrutinee, arms) = &mut exp.kind {
               match &scrutinee.kind {
                 Name(_) | NumberLiteral(_) | BooleanLiteral(_) => {}
                 _ => {
@@ -4184,6 +4184,217 @@ impl TypedExp {
                   changed = true;
                   return Ok(true);
                 }
+              }
+              if !exp.data.already_match_breaks_extracted
+                && arms
+                  .iter()
+                  .any(|(_, body)| body.effects().contains(&Effect::Break))
+              {
+                exp.data.already_match_breaks_extracted = true;
+                let broke_gensym = names.gensym("broke");
+                for (_, arm_body) in arms.iter_mut() {
+                  arm_body
+                    .walk_mut(&mut |arm_exp| match &mut arm_exp.kind {
+                      ForLoop { .. } | WhileLoop { .. } => Ok(false),
+                      Match { .. } => {
+                        arm_exp.data.already_match_breaks_extracted = true;
+                        Ok(true)
+                      }
+                      Break => {
+                        take(arm_exp, |arm_exp| Exp {
+                          data: arm_exp.data.clone(),
+                          source_trace: arm_exp.source_trace.clone(),
+                          kind: ExpKind::Block(vec![
+                            Exp {
+                              data: Type::Unit.known().into(),
+                              source_trace: arm_exp.source_trace.clone(),
+                              kind: ExpKind::Application(
+                                Self::assignment_function(
+                                  Type::Bool.known().into(),
+                                )
+                                .into(),
+                                vec![
+                                  Exp {
+                                    data: Type::Bool.known().into(),
+                                    source_trace: arm_exp.source_trace.clone(),
+                                    kind: ExpKind::Name(broke_gensym.clone()),
+                                  },
+                                  Exp {
+                                    data: Type::Bool.known().into(),
+                                    source_trace: arm_exp.source_trace.clone(),
+                                    kind: ExpKind::BooleanLiteral(true),
+                                  },
+                                ],
+                              ),
+                            },
+                            arm_exp,
+                          ]),
+                        });
+                        Ok(false)
+                      }
+                      _ => Ok::<bool, Never>(true),
+                    })
+                    .unwrap();
+                }
+                let mut temp = placeholder_exp.clone();
+                std::mem::swap(exp, &mut temp);
+
+                let temp_source_trace = temp.source_trace.clone();
+                temp = if temp.data.unwrap_known() == Type::Unit {
+                  Exp {
+                    data: temp.data.clone(),
+                    source_trace: temp.source_trace.clone(),
+                    kind: ExpKind::Let(
+                      vec![(
+                        broke_gensym.clone(),
+                        temp.source_trace.clone(),
+                        VariableKind::Var,
+                        Exp {
+                          data: Type::Bool.known().into(),
+                          kind: ExpKind::BooleanLiteral(false),
+                          source_trace: temp.source_trace.clone(),
+                        },
+                      )],
+                      Box::new(Exp {
+                        data: Type::Unit.known().into(),
+                        source_trace: temp.source_trace.clone(),
+                        kind: ExpKind::Block(vec![
+                          temp,
+                          Exp {
+                            data: {
+                              let mut type_info: ExpTypeInfo =
+                                Type::Unit.known().into();
+                              type_info.already_match_breaks_extracted = true;
+                              type_info
+                            },
+                            source_trace: temp_source_trace.clone(),
+                            kind: ExpKind::Match(
+                              Box::new(Exp {
+                                data: Type::Bool.known().into(),
+                                source_trace: temp_source_trace.clone(),
+                                kind: ExpKind::Name(broke_gensym),
+                              }),
+                              vec![
+                                (
+                                  Exp {
+                                    data: Type::Bool.known().into(),
+                                    source_trace: temp_source_trace.clone(),
+                                    kind: ExpKind::BooleanLiteral(true),
+                                  },
+                                  Exp {
+                                    data: Type::Unit.known().into(),
+                                    source_trace: temp_source_trace.clone(),
+                                    kind: ExpKind::Break,
+                                  },
+                                ),
+                                (
+                                  Exp {
+                                    data: Type::Bool.known().into(),
+                                    source_trace: temp_source_trace.clone(),
+                                    kind: ExpKind::BooleanLiteral(false),
+                                  },
+                                  Exp {
+                                    data: Type::Unit.known().into(),
+                                    source_trace: temp_source_trace.clone(),
+                                    kind: ExpKind::Unit,
+                                  },
+                                ),
+                              ],
+                            ),
+                          },
+                        ]),
+                      }),
+                    ),
+                  }
+                } else {
+                  let match_result_gensym = names.gensym("match_result_gensym");
+                  let result_exp = Exp {
+                    data: temp.data.clone(),
+                    source_trace: temp.source_trace.clone(),
+                    kind: ExpKind::Name(match_result_gensym.clone()),
+                  };
+                  let value_type = temp.data.clone();
+                  Exp {
+                    data: temp.data.clone(),
+                    source_trace: temp.source_trace.clone(),
+                    kind: ExpKind::Let(
+                      vec![
+                        (
+                          broke_gensym.clone(),
+                          temp.source_trace.clone(),
+                          VariableKind::Var,
+                          Exp {
+                            data: Type::Bool.known().into(),
+                            kind: ExpKind::BooleanLiteral(false),
+                            source_trace: temp.source_trace.clone(),
+                          },
+                        ),
+                        (
+                          match_result_gensym.clone(),
+                          temp.source_trace.clone(),
+                          VariableKind::Let,
+                          temp,
+                        ),
+                      ],
+                      Box::new(Exp {
+                        data: Type::Unit.known().into(),
+                        source_trace: temp_source_trace.clone(),
+                        kind: ExpKind::Block(vec![
+                          Exp {
+                            data: {
+                              let mut type_info: ExpTypeInfo =
+                                Type::Unit.known().into();
+                              type_info.already_match_breaks_extracted = true;
+                              type_info
+                            },
+                            source_trace: temp_source_trace.clone(),
+                            kind: ExpKind::Match(
+                              Box::new(Exp {
+                                data: Type::Bool.known().into(),
+                                source_trace: temp_source_trace.clone(),
+                                kind: ExpKind::Name(broke_gensym),
+                              }),
+                              vec![
+                                (
+                                  Exp {
+                                    data: Type::Bool.known().into(),
+                                    source_trace: temp_source_trace.clone(),
+                                    kind: ExpKind::BooleanLiteral(true),
+                                  },
+                                  Exp {
+                                    data: Type::Unit.known().into(),
+                                    source_trace: temp_source_trace.clone(),
+                                    kind: ExpKind::Break,
+                                  },
+                                ),
+                                (
+                                  Exp {
+                                    data: Type::Bool.known().into(),
+                                    source_trace: temp_source_trace.clone(),
+                                    kind: ExpKind::BooleanLiteral(false),
+                                  },
+                                  Exp {
+                                    data: Type::Unit.known().into(),
+                                    source_trace: temp_source_trace.clone(),
+                                    kind: ExpKind::Unit,
+                                  },
+                                ),
+                              ],
+                            ),
+                          },
+                          Exp {
+                            data: value_type,
+                            source_trace: temp_source_trace.clone(),
+                            kind: ExpKind::Name(match_result_gensym),
+                          },
+                        ]),
+                      }),
+                    ),
+                  }
+                };
+                std::mem::swap(exp, &mut temp);
+                changed = true;
+                return Ok(true);
               }
             }
             match &mut exp.kind {

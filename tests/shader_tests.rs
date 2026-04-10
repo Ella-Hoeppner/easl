@@ -196,7 +196,6 @@ success_test!(overload_builtin);
 success_test!(trig);
 success_test!(any_and_all);
 success_test!(vecb);
-success_test!(break_in_match);
 success_test!(array_literal_access);
 success_test!(location_inference);
 success_test!(double_monomorphize);

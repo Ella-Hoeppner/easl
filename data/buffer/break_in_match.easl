@@ -1,0 +1,20 @@
+@{address storage-write
+  group 0
+  binding 0}
+(var x: u32)
+
+@compute
+@{workgroup-size 1}
+(defn f [@{builtin global-invocation-id}
+         id: vec3u]
+  (for [i 0u (< i 2) (+= i 1)]
+    (+= x i)
+    (match x
+      0 (break)
+      _ ())))
+
+@cpu
+(defn main []
+  (dispatch-compute-shader f (vec3u 1u))
+  (print x))
+

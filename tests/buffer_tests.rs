@@ -1,3 +1,4 @@
+use easl::compile_easl_source_to_wgsl;
 use easl::compiler::program::Program;
 use easl::interpreter::run_program_with_capture;
 use easl::parse::parse_easl_without_comments;
@@ -8,6 +9,29 @@ fn run_buffer_test(name: &str) {
     .unwrap_or_else(|_| panic!("Unable to read data/buffer/{name}.easl"));
   let expected = fs::read_to_string(format!("./data/buffer/{name}.txt"))
     .unwrap_or_else(|_| panic!("Unable to read data/buffer/{name}.txt"));
+
+  fs::create_dir_all("./out/").expect("Unable to create out directory");
+  match compile_easl_source_to_wgsl(&easl_source) {
+    Ok(Ok(wgsl)) => {
+      fs::write(format!("./out/{name}.wgsl"), &wgsl)
+        .expect("Unable to write output file");
+    }
+    Ok(Err((document, error_log))) => {
+      fs::write(format!("./out/{name}.wgsl"), error_log.describe(&document))
+        .expect("Unable to write output file");
+    }
+    Err(mut failed_document) => {
+      let mut errors = vec![];
+      std::mem::swap(&mut errors, &mut failed_document.parsing_failures);
+      let description = errors
+        .into_iter()
+        .map(|err| err.describe(&failed_document))
+        .collect::<Vec<String>>()
+        .join("\n\n");
+      fs::write(format!("./out/{name}.wgsl"), &description)
+        .expect("Unable to write output file");
+    }
+  }
 
   let (mut program, errors) = Program::from_easl_document(
     &parse_easl_without_comments(&easl_source),
@@ -38,3 +62,5 @@ buffer_test!(bidirectional_transfer);
 buffer_test!(bidirectional_transfer_windowless);
 buffer_test!(array_assignment);
 buffer_test!(array_assignment_cross_window);
+buffer_test!(break_in_match);
+buffer_test!(break_in_nonunit_match);
