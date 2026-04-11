@@ -1158,11 +1158,10 @@ impl TopLevelFunction {
       if Some(EntryPoint::Cpu) != self.entry_point && allowed_on_gpu {
         fn_string()
       } else {
-        // String::new()
+        String::new()
         // DEBUG: uncommenting the following will compile CPU-exclusive
         // functions as commented-out pseudocode in the final WGSL file
-        //"// ".to_string() + &fn_string().replace("\n", "\n// ")
-        String::new()
+        // "// ".to_string() + &fn_string().replace("\n", "\n// ")
       },
     )
   }

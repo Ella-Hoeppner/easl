@@ -733,7 +733,7 @@ fn apply_builtin_fn<IO: IOManager>(
       let Value::Struct(a) = &args[0].0 else {
         panic!()
       };
-      let Value::Struct(b) = &args[0].0 else {
+      let Value::Struct(b) = &args[1].0 else {
         panic!()
       };
       let mut sum = 0.;
@@ -904,7 +904,13 @@ fn apply_builtin_fn<IO: IOManager>(
           "floor" => x.floor(),
           "ceil" => x.ceil(),
           "round" => x.round(),
-          "fract" => x.fract(),
+          "fract" => {
+            if x > 0. {
+              x.fract()
+            } else {
+              1. + x.fract()
+            }
+          }
           "sqrt" => x.sqrt(),
           "trunc" => x.trunc(),
           "saturate" => x.clamp(0., 1.),
@@ -1522,11 +1528,12 @@ fn apply_builtin_fn<IO: IOManager>(
       let (Value::Prim(Primitive::U32(vert_count)), _) = &args[2] else {
         panic!()
       };
-      let additive = if let Some((Value::Prim(Primitive::Bool(b)), _)) = args.get(3) {
-        *b
-      } else {
-        false
-      };
+      let additive =
+        if let Some((Value::Prim(Primitive::Bool(b)), _)) = args.get(3) {
+          *b
+        } else {
+          false
+        };
       let pre_upload = env.collect_dirty_uploads(&read_global_variable_names);
       env.io.record_draw(
         &vert_f_name,
@@ -1835,7 +1842,9 @@ impl Value {
           }
           offset_u32s += field_size;
         }
-        bytes.extend(std::iter::repeat(0u8).take((struct_size_u32s - offset_u32s) * 4));
+        bytes.extend(
+          std::iter::repeat(0u8).take((struct_size_u32s - offset_u32s) * 4),
+        );
         bytes
       }
       Value::Array(inner_values) => {
@@ -1844,9 +1853,9 @@ impl Value {
         };
         let inner_ty = inner_type.unwrap_known();
         let elem_size = inner_ty.wgsl_data_size_in_u32s();
-        let stride =
-          ((elem_size + inner_ty.wgsl_alignment_in_u32s() - 1) / inner_ty.wgsl_alignment_in_u32s())
-            * inner_ty.wgsl_alignment_in_u32s();
+        let stride = ((elem_size + inner_ty.wgsl_alignment_in_u32s() - 1)
+          / inner_ty.wgsl_alignment_in_u32s())
+          * inner_ty.wgsl_alignment_in_u32s();
         let mut bytes = vec![];
         for value in inner_values {
           bytes.extend(value.to_uniform_bytes(&inner_ty));
@@ -2189,10 +2198,11 @@ impl IOManager for StdoutIO {
     #[cfg(feature = "window")]
     if !self.windowed {
       if let Some(gpu) = &self.gpu {
-        gpu
-          .write()
-          .unwrap()
-          .execute_compute(entry, workgroup_count, pre_upload);
+        gpu.write().unwrap().execute_compute(
+          entry,
+          workgroup_count,
+          pre_upload,
+        );
         return Ok(());
       }
     }
@@ -2255,7 +2265,8 @@ impl IOManager for StdoutIO {
         gpu.write().unwrap().update_for_reload(wgsl, binding_infos);
         self.gpu = Some(gpu);
       } else {
-        self.gpu = Some(crate::window::create_headless_gpu_core(wgsl, binding_infos));
+        self.gpu =
+          Some(crate::window::create_headless_gpu_core(wgsl, binding_infos));
       }
     }
   }
@@ -2471,7 +2482,9 @@ impl IOManager for CaptureIO {
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     additive: bool,
   ) -> Result<(), EvalError> {
-    self.inner.record_draw(vert, frag, vert_count, pre_upload, additive)
+    self
+      .inner
+      .record_draw(vert, frag, vert_count, pre_upload, additive)
   }
 
   fn record_compute(
@@ -3329,7 +3342,7 @@ pub fn eval(
       .map(|exp| eval(exp, env))
       .collect::<Result<Vec<Value>, _>>()?
       .pop()
-      .unwrap(),
+      .unwrap_or_else(|| Value::Unit),
     ExpKind::ForLoop {
       increment_variable_name,
       increment_variable_initial_value_expression,
