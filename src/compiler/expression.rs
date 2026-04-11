@@ -4186,6 +4186,7 @@ impl TypedExp {
                 }
               }
               if !exp.data.already_match_breaks_extracted
+                && scrutinee.data.unwrap_known() != Type::Bool
                 && arms
                   .iter()
                   .any(|(_, body)| body.effects().contains(&Effect::Break))
