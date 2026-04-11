@@ -3,8 +3,6 @@
 ### necessary for wgsl feature parity + stuff I wanna get done before calling the language "production ready"
 * don't need to do the break deexpressionification stuff when the scrutinee type is a bool, cause those'll get compiled as `if` statements
 
-* enums with no inner fields on any of the types actually break the compiler
-
 
 
 

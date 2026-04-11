@@ -402,9 +402,11 @@ impl AbstractEnum {
               ));
               Some(format!(
                 "const {const_name}: {monomorphized_name} = \
-                {monomorphized_name}({i}, {});",
-                {
-                  let mut zeroed_array_string = "array(".to_string();
+                {monomorphized_name}({i}{});",
+                if size == 0 {
+                  String::new()
+                } else {
+                  let mut zeroed_array_string = ", array(".to_string();
                   for i in 0..self.inner_data_size_in_u32s()? {
                     zeroed_array_string += if i == 0 { "0" } else { ", 0" }
                   }
@@ -421,12 +423,20 @@ impl AbstractEnum {
           .filter_map(|x| x)
           .collect();
         Ok(unit_constructor_constants.into_iter().fold(
-          format!(
-            "struct {monomorphized_name} {{\n  \
-          discriminant: u32,\n  \
-          data: array<u32, {size}>\n\
-          }}"
-          ),
+          if size == 0 {
+            format!(
+              "struct {monomorphized_name} {{\n  \
+                discriminant: u32\n\
+              }}"
+            )
+          } else {
+            format!(
+              "struct {monomorphized_name} {{\n  \
+                discriminant: u32,\n  \
+                data: array<u32, {size}>\n\
+              }}"
+            )
+          },
           |acc, constant_string| acc + "\n\n" + &constant_string,
         ))
       })
