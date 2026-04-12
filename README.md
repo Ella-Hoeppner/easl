@@ -5,6 +5,9 @@ Easl provides a powerful type system and supports high-level abstractions that a
 
 This repository contains the core compiler code. This repository can be used as a crate, so you can use the easl compiler directly as part of a rust project to convert easl source code to wgsl code. If you want to use easl in a standalone way, rather than as a crate from another rust project, check out the [Easl CLI](https://github.com/Ella-Hoeppner/easl_cli). Easl also has [a WIP language server](https://github.com/Ella-Hoeppner/easl_lsp) and client for VS Code.
 
+Easl doesn't yet have fully-fledged documentation. For now, an explanation of easl's syntax and language features is available in [introduction.md](https://github.com/Ella-Hoeppner/easl/blob/main/introduction.md), and some [simple example programs are included with the Easl CLI repo](https://github.com/Ella-Hoeppner/easl_cli/tree/main/examples).
+
+
 ## Feature goals:
 | Feature | Explanation | Implementation Status |
 | :------ | :---------- | :-------------------: |
@@ -28,7 +31,3 @@ This repository contains the core compiler code. This repository can be used as 
 * ² Sum Types are supported, but for now may only contain at most a single internal field. This limitation will be resolved as soon as tuple are implemented.
 * ³ Higher-order functions currently have a significant restriction: all function-type arguments must be inlinable at compile time. A function `f` that takes another function as an argument may be called like `(f g)`, but not like `(f (if a g h))`, because the compiler needs to be able to inline the higher-order argument at compile time. If you violate this restriction, you'll get a compilation error. This limitation will eventually be resolved, but is blocked behind several other unimplemented internal features, so it may take some time.
 * ⁴ Closures work but have one signicant restriction: they may not modify any locally-bound values that they capture. This restriction will eventually be relaxed.
-
----
-
-Easl doesn't yet have fully-fledged documentation. For now, an explanation of easl's syntax and language features is available in [introduction.md](https://github.com/Ella-Hoeppner/easl/blob/main/introduction.md), and some [simple example programs are included with the Easl CLI repo](https://github.com/Ella-Hoeppner/easl_cli/tree/main/examples).
