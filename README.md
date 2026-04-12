@@ -3,7 +3,7 @@ A shader language with a lispy syntax that compiles to wgsl.
 
 Easl provides a powerful type system and supports high-level abstractions that aren't available in traditional shader languages. Easl is currently a work-in-progress, and breaking changes should be expected, but it's already mature enough for certain use-cases.
 
-This repository contains the core compiler code. This repository can be used as a crate, so you can use the easl compiler directly as part of a rust project to convert easl source code to wgsl code. If you want to use easl in a standalone way, rather than as a crate from another rust project, check out the [Easl CLI](https://github.com/Ella-Hoeppner/easl_cli).
+This repository contains the core compiler code. This repository can be used as a crate, so you can use the easl compiler directly as part of a rust project to convert easl source code to wgsl code. If you want to use easl in a standalone way, rather than as a crate from another rust project, check out the [Easl CLI](https://github.com/Ella-Hoeppner/easl_cli). Easl also has [a WIP language server](https://github.com/Ella-Hoeppner/easl_lsp) and client for VS Code.
 
 ## Feature goals:
 | Feature | Explanation | Implementation Status |
@@ -22,7 +22,7 @@ This repository contains the core compiler code. This repository can be used as 
 | Anonymous Structs | Structs without names, characterized only by the names and types of their fields. Useful for grouping values together in a way that offers more clarity than a tuple, without having to explicitly declare a new type. | ❌ |
 | Row Polymorphism | The ability to define functions that operate on any struct matching a certain shape, e.g. a function that can operate over any struct type with a field named `x` | ❌ |
 | Effect Typing | For additional type safety, the type system will track the side-effects of each function, in addition to the input/return types. There will also be support for a limited version of Algebraic Effect handling. | 🚧 |
-| CPU-side interpreter | While the primary goal of easl is to be a shader language that is executed on the GPU, there will also be an interpreter for the language that can run on the CPU. This will be useful for testing and debugging code in ways that are impossible on the GPU, and for making simple applications and demos that involve both CPU and GPU logic without having to use a separate "host" language. | 🚧 |
+| CPU-side interpreter | While the primary goal of easl is to be a shader language that is executed on the GPU, there's also an interpreter for the language that can run on the CPU, which can dispatch shader calls to the GPU with a very straightforward API. This can be useful for testing and debugging code in ways that are impossible on the GPU, and for making simple applications and demos that involve both CPU and GPU logic without having to use a separate "host" language. | 🚧 |
 
 * ¹ All core types, math functions, and control flow operations from wgsl are already implemented. Missing features include barrier functions, texture types other than basic 2d textures, and extension features like subgroup/quad functions.
 * ² Sum Types are supported, but for now may only contain at most a single internal field. This limitation will be resolved as soon as tuple are implemented.
@@ -31,4 +31,4 @@ This repository contains the core compiler code. This repository can be used as 
 
 ---
 
-Easl doesn't yet have fully-fledged documentation. For now, an explanation of easl's syntax and language features is available in [introduction.md](https://github.com/Ella-Hoeppner/easl/blob/main/introduction.md), and some [simple example shaders are included with the Easl CLI repo](https://github.com/Ella-Hoeppner/easl_cli/tree/main/examples).
+Easl doesn't yet have fully-fledged documentation. For now, an explanation of easl's syntax and language features is available in [introduction.md](https://github.com/Ella-Hoeppner/easl/blob/main/introduction.md), and some [simple example programs are included with the Easl CLI repo](https://github.com/Ella-Hoeppner/easl_cli/tree/main/examples).
