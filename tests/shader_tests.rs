@@ -262,6 +262,8 @@ success_test!(for_dash_var_name);
 success_test!(when_discards_final_value);
 success_test!(duplicate_enum_compilation);
 success_test!(fieldless_enum);
+success_test!(higher_order_sdf_ops);
+success_test!(higher_order_sdf_ops_closures);
 
 // --- Error tests ---
 

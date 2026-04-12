@@ -738,7 +738,9 @@ impl AbstractFunctionSignature {
             if name == arg_name {
               exp.data.as_known_mut(|exp_type| {
                 if let Type::Function(f) = exp_type {
-                  *name = inlined_fn_name.clone();
+                  if signature.read().unwrap().captured_scope.is_none() {
+                    *name = inlined_fn_name.clone();
+                  }
                   f.abstract_ancestor = Some(signature.clone());
                 }
               });

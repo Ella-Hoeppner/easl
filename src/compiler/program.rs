@@ -2262,6 +2262,20 @@ impl Program {
       {
         match f.implementation {
           FunctionImplementationKind::Composite(implementation) => {
+            {
+              let implementation = implementation.read().unwrap();
+              let Type::Function(signature) =
+                implementation.expression.data.unwrap_known()
+              else {
+                panic!()
+              };
+              let return_type = signature.return_type.unwrap_known();
+              if matches!(return_type, Type::Function(_))
+                && return_type.is_unitlike(&mut names)
+              {
+                continue;
+              }
+            }
             wgsl += &implementation.read().unwrap().clone().compile(
               &f.name,
               &mut names,

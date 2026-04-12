@@ -1,0 +1,98 @@
+@{group 0
+  binding 0
+  address uniform}
+(var dimensions: vec2f)
+
+@{group 0
+  binding 1
+  address uniform}
+(var time: f32)
+
+(defn uni->bi [x: vec2f]: vec2f
+  (-> x (* 2.) (- 1.)))
+
+@vertex
+(defn vertex []: vec4f
+  (vec4f (match (vertex-index)
+           0 (vec2f -1.)
+           1 (vec2f -1. 3.)
+           _ (vec2f 3. -1.))
+         0.
+         1.))
+
+(enum (Option T)
+  None
+  (Some T))
+
+(struct Ray
+  pos: vec3f
+  dir: vec3f)
+
+(defn advance [r: Ray
+               d: f32]: Ray
+  (Ray (+ r.pos (* d r.dir)) r.dir))
+
+(defn gradient [f: (Fn [vec3f] f32)
+                x: vec3f]: vec3f
+  (- (vec3f (f (+ x (vec3f 0.001 0. 0.)))
+            (f (+ x (vec3f 0. 0.001 0.)))
+            (f (+ x (vec3f 0. 0. 0.001))))
+     (f x)))
+
+(defn raymarch [sdf: (Fn [vec3f] f32)
+                ray: Ray]: (Option vec3f)
+  (let [@var current-dist 0.]
+    (for [i 0u (< i 256) (= i (+ i 1))]
+      (let [current-pos (.pos (advance ray current-dist))
+            dist (sdf current-pos)]
+        (when (< (abs dist) 0.001)
+          (return (Some (normalize (gradient sdf current-pos)))))
+        (when (> dist 5.)
+          (break))
+        (+= current-dist (* 0.9 dist))))
+    None))
+
+(defn sd-sphere [x: vec3f
+                 radius: f32]: f32
+  (- (length x) radius))
+
+(defn sd-box [pos: vec3f
+              size: vec3f]: f32
+  (let [q (- (abs pos) size)]
+    (+ (length (max q (vec3f 0.)))
+       (min 0. (max q.x q.y q.z)))))
+
+(defn union [sdf-a: (Fn [vec3f] f32)
+             sdf-b: (Fn [vec3f] f32)]: (Fn [vec3f] f32)
+  (fn [pos: vec3f]
+      (min (sdf-a pos) (sdf-b pos))))
+
+@fragment
+(defn fragment []: vec4f
+  (let [screen-pos (-> (position)
+                       .xy
+                       (/ dimensions)
+                       uni->bi
+                       (* (/ dimensions
+                             (min dimensions.x dimensions.y))))
+        surface-normal (raymarch (union (fn [pos]
+                                            (sd-sphere (- pos (vec3f 0. 0. 2.5)) 0.5))
+                                        (fn [pos]
+                                            (sd-box (- pos (vec3f 0. 0. 2.5))
+                                                    (vec3f 0.4))))
+                                 (Ray (vec3f 0.)
+                                      (normalize (vec3f screen-pos 1.))))]
+    (match surface-normal
+      (Some normal) (vec4f (pow (* (+ normal 1.) 0.5)
+                                (vec3f 2.2))
+                           1.)
+      None (vec4f (vec3f 0.) 1.))))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (= dimensions
+                       (vec2f (window-resolution)))
+                    (= time (+ time (/ 120.)))
+                    (dispatch-render-shaders vertex fragment 3))))
+
