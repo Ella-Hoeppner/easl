@@ -1713,7 +1713,7 @@ impl Program {
                     };
                     let mut unitlike_fn_substitutions: HashMap<
                       Arc<str>,
-                      Arc<str>,
+                      (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>),
                     > = HashMap::new();
                     let captured_vars: Vec<(&Arc<str>, Type)> = effects
                       .0
@@ -1733,7 +1733,10 @@ impl Program {
                                 {
                                   unitlike_fn_substitutions.insert(
                                     var_name.clone(),
-                                    ancestor.read().unwrap().name.clone(),
+                                    (
+                                      ancestor.read().unwrap().name.clone(),
+                                      ancestor.clone(),
+                                    ),
                                   );
                                 }
                                 None
@@ -1890,11 +1893,17 @@ impl Program {
                               body
                                 .walk_mut(&mut |e| -> Result<bool, Never> {
                                   if let ExpKind::Name(name) = &mut e.kind {
-                                    if let Some(concrete) =
+                                    if let Some((concrete_name, signature)) =
                                       unitlike_fn_substitutions
                                         .get(name.as_ref())
                                     {
-                                      *name = concrete.clone();
+                                      *name = concrete_name.clone();
+                                      e.data.as_known_mut(|t| {
+                                        if let Type::Function(f) = t {
+                                          f.abstract_ancestor =
+                                            Some(signature.clone());
+                                        }
+                                      });
                                     }
                                   }
                                   Ok(true)
