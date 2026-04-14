@@ -3956,6 +3956,7 @@ impl TypedExp {
       Application(f, args) => match f.data.kind.unwrap_known() {
         Type::Function(function_signature) => {
           let mut effects = function_signature.effects();
+          effects.merge(f.effects());
           for ((arg_var, _), arg) in
             function_signature.args.iter().zip(args.iter())
           {

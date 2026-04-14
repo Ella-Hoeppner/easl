@@ -1711,14 +1711,35 @@ impl Program {
                     else {
                       panic!()
                     };
-                    let captured_vars = effects
+                    let mut unitlike_fn_substitutions: HashMap<
+                      Arc<str>,
+                      Arc<str>,
+                    > = HashMap::new();
+                    let captured_vars: Vec<(&Arc<str>, Type)> = effects
                       .0
                       .iter()
                       .map(|e| match e {
                         Effect::ReadsVar(var_name) => {
                           Ok(match ctx.variables.get(var_name) {
                             Some((var, _)) => {
-                              Some((var_name, var.var_type.unwrap_known()))
+                              let var_type = var.var_type.unwrap_known();
+                              if matches!(var_type, Type::Function(_))
+                                && var_type.is_unitlike(
+                                  &mut *self.names.write().unwrap(),
+                                )
+                              {
+                                if let Type::Function(sig) = var_type
+                                  && let Some(ancestor) = &sig.abstract_ancestor
+                                {
+                                  unitlike_fn_substitutions.insert(
+                                    var_name.clone(),
+                                    ancestor.read().unwrap().name.clone(),
+                                  );
+                                }
+                                None
+                              } else {
+                                Some((var_name, var.var_type.unwrap_known()))
+                              }
                             }
                             None => None,
                           })
@@ -1740,8 +1761,7 @@ impl Program {
                           body.source_trace.clone(),
                         ),
                       })
-                      .collect::<CompileResult<Vec<_>>>();
-                    let captured_vars: Vec<(&Arc<str>, Type)> = captured_vars
+                      .collect::<CompileResult<Vec<_>>>()
                       .unwrap_or_else(|e| {
                         errors.log(e);
                         vec![]
@@ -1861,6 +1881,26 @@ impl Program {
                           entry_point: None,
                           expression: {
                             let mut new_exp = exp.clone();
+                            if !unitlike_fn_substitutions.is_empty() {
+                              let ExpKind::Function(_, body) =
+                                &mut new_exp.kind
+                              else {
+                                panic!()
+                              };
+                              body
+                                .walk_mut(&mut |e| -> Result<bool, Never> {
+                                  if let ExpKind::Name(name) = &mut e.kind {
+                                    if let Some(concrete) =
+                                      unitlike_fn_substitutions
+                                        .get(name.as_ref())
+                                    {
+                                      *name = concrete.clone();
+                                    }
+                                  }
+                                  Ok(true)
+                                })
+                                .unwrap();
+                            }
                             if let Some((
                               _,
                               concrete_captured_scope_type,

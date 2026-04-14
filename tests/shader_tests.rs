@@ -265,6 +265,7 @@ success_test!(fieldless_enum);
 success_test!(higher_order_sdf_ops);
 success_test!(higher_order_sdf_ops_closures);
 success_test!(block_deshadow);
+success_test!(eta_abstracted_local_function);
 
 // --- Error tests ---
 
