@@ -1730,11 +1730,11 @@ impl Program {
                         ),
                         Effect::CPUExclusiveFunction(_)
                         | Effect::FragmentExclusiveFunction(_)
-                        | Effect::Print => Ok(None),
-                        Effect::ModifiesGlobalVar(_) | Effect::Window => {
-                          Ok(None)
-                        }
-                        Effect::LookupBuiltinAttribute(_) => Ok(None),
+                        | Effect::Print
+                        | Effect::ModifiesGlobalVar(_)
+                        | Effect::Window
+                        | Effect::LookupBuiltinAttribute(_)
+                        | Effect::InvokesUnknownFunction => Ok(None),
                         _ => err(
                           IllegalEffectsInClosure(format!("{e:?}")),
                           body.source_trace.clone(),

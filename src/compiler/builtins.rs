@@ -2298,63 +2298,42 @@ pub fn built_in_macros() -> Vec<Macro> {
         children,
       ) => {
         let mut children = children.clone();
-        if children.is_empty() {
-          None
-        } else {
-          if let EaslTree::Leaf(_, leaf) = &children[0] {
-            if leaf.as_str() == "if" {
-              if children.len() == 4 {
-                let false_branch = children.remove(3);
-                let true_branch = children.remove(2);
-                let condition = children.remove(1);
-                Some(Ok(EaslTree::Inner(
-                  (
-                    position.clone(),
-                    EncloserOrOperator::Encloser(Encloser::Parens),
-                  ),
-                  vec![
-                    EaslTree::Leaf(
-                      DocumentPosition {
-                        span: 0..0,
-                        path: vec![],
-                      },
-                      "match".into(),
-                    ),
-                    condition,
-                    EaslTree::Leaf(
-                      DocumentPosition {
-                        span: 0..0,
-                        path: vec![],
-                      },
-                      "true".into(),
-                    ),
-                    true_branch,
-                    EaslTree::Leaf(
-                      DocumentPosition {
-                        span: 0..0,
-                        path: vec![],
-                      },
-                      "false".into(),
-                    ),
-                    false_branch,
-                  ],
-                )))
-              } else {
-                Some(Err((
-                  SourceTrace::from(position),
-                  format!(
-                    "\"if\" statement expects 3 arguments, found {}",
-                    children.len()
-                  )
-                  .into(),
-                )))
-              }
-            } else {
-              None
-            }
+        if !children.is_empty()
+          && let EaslTree::Leaf(if_position, leaf) = &children[0]
+          && leaf.as_str() == "if"
+        {
+          if children.len() == 4 {
+            let if_position = if_position.clone();
+            let false_branch = children.remove(3);
+            let true_branch = children.remove(2);
+            let condition = children.remove(1);
+            let condition_position = condition.position().clone();
+            Some(Ok(EaslTree::Inner(
+              (
+                position.clone(),
+                EncloserOrOperator::Encloser(Encloser::Parens),
+              ),
+              vec![
+                EaslTree::Leaf(if_position.clone(), "match".into()),
+                condition,
+                EaslTree::Leaf(condition_position.clone(), "true".into()),
+                true_branch,
+                EaslTree::Leaf(condition_position, "false".into()),
+                false_branch,
+              ],
+            )))
           } else {
-            None
+            Some(Err((
+              SourceTrace::from(position),
+              format!(
+                "\"if\" statement expects 3 arguments, found {}",
+                children.len()
+              )
+              .into(),
+            )))
           }
+        } else {
+          None
         }
       }
       _ => None,
@@ -2364,93 +2343,60 @@ pub fn built_in_macros() -> Vec<Macro> {
     reserved_names: vec!["when".into()],
     rewrite: Box::new(|tree, _names| match tree {
       EaslTree::Inner(
-        (position, EncloserOrOperator::Encloser(Encloser::Parens)),
+        (enclosing_position, EncloserOrOperator::Encloser(Encloser::Parens)),
         children,
       ) => {
         let mut children = children.clone();
-        if children.is_empty() {
-          None
-        } else {
-          if let EaslTree::Leaf(_, leaf) = &children[0] {
-            if leaf.as_str() == "when" {
-              if children.len() > 2 {
-                let condition = children.remove(1);
-                std::mem::swap(
-                  &mut children[0],
-                  &mut EaslTree::Leaf(
-                    DocumentPosition {
-                      span: 0..0,
-                      path: vec![],
-                    },
-                    "do".into(),
-                  ),
-                );
-                let unit_expression = EaslTree::Inner(
+        if !children.is_empty()
+          && let EaslTree::Leaf(when_position, leaf) = &children[0]
+          && leaf.as_str() == "when"
+        {
+          let when_position = when_position.clone();
+          if children.len() > 2 {
+            let condition = children.remove(1);
+            let condition_position = condition.position().clone();
+            std::mem::swap(
+              &mut children[0],
+              &mut EaslTree::Leaf(when_position.clone(), "do".into()),
+            );
+            let unit_expression = EaslTree::Inner(
+              (
+                when_position.clone(),
+                EncloserOrOperator::Encloser(Encloser::Parens),
+              ),
+              vec![],
+            );
+            children.push(unit_expression.clone());
+            Some(Ok(EaslTree::Inner(
+              (
+                enclosing_position.clone(),
+                EncloserOrOperator::Encloser(Encloser::Parens),
+              ),
+              vec![
+                EaslTree::Leaf(when_position, "match".into()),
+                condition,
+                EaslTree::Leaf(condition_position.clone(), "true".into()),
+                EaslTree::Inner(
                   (
-                    DocumentPosition {
-                      span: 0..0,
-                      path: vec![],
-                    },
+                    enclosing_position.clone(),
                     EncloserOrOperator::Encloser(Encloser::Parens),
                   ),
-                  vec![],
-                );
-                children.push(unit_expression.clone());
-                Some(Ok(EaslTree::Inner(
-                  (
-                    position.clone(),
-                    EncloserOrOperator::Encloser(Encloser::Parens),
-                  ),
-                  vec![
-                    EaslTree::Leaf(
-                      DocumentPosition {
-                        span: 0..0,
-                        path: vec![],
-                      },
-                      "match".into(),
-                    ),
-                    condition,
-                    EaslTree::Leaf(
-                      DocumentPosition {
-                        span: 0..0,
-                        path: vec![],
-                      },
-                      "true".into(),
-                    ),
-                    EaslTree::Inner(
-                      (
-                        DocumentPosition {
-                          span: 0..0,
-                          path: vec![],
-                        },
-                        EncloserOrOperator::Encloser(Encloser::Parens),
-                      ),
-                      children,
-                    ),
-                    EaslTree::Leaf(
-                      DocumentPosition {
-                        span: 0..0,
-                        path: vec![],
-                      },
-                      "false".into(),
-                    ),
-                    unit_expression,
-                  ],
-                )))
-              } else {
-                Some(Err((
-                  SourceTrace::from(position),
-                  "\"when\" statement expects a condition and at least 1 body \
-                  statement"
-                    .into(),
-                )))
-              }
-            } else {
-              None
-            }
+                  children,
+                ),
+                EaslTree::Leaf(condition_position, "false".into()),
+                unit_expression,
+              ],
+            )))
           } else {
-            None
+            Some(Err((
+              SourceTrace::from(enclosing_position),
+              "\"when\" statement expects a condition and at least 1 body \
+                  statement"
+                .into(),
+            )))
           }
+        } else {
+          None
         }
       }
       _ => None,

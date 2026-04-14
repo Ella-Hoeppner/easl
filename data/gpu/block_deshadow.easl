@@ -1,0 +1,10 @@
+@compute
+@{workgroup-size 1}
+(defn grow-lines []
+  (let [a 0u
+        a (i32 a)
+        @var flag 0i]
+    ()
+    (when false
+      (= flag a))))
+

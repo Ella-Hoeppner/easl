@@ -1,0 +1,14 @@
+(defn print-1 []
+  (print 1u))
+
+(defn print-2 []
+  (print 2u))
+
+@cpu
+(defn main []
+  (let [do-twice (fn [f: (Fn [] ())]
+                     (f)
+                     (f))]
+    (do-twice print-1)
+    (do-twice print-2)))
+

@@ -3615,6 +3615,21 @@ impl TypedExp {
     }
     .into()
   }
+  pub fn deshadow(
+    &mut self,
+    globally_bound_names: &Vec<Arc<str>>,
+    errors: &mut ErrorLog,
+    names: &mut NameContext,
+  ) {
+    self.deshadow_inner(
+      globally_bound_names,
+      &mut HashMap::new(),
+      &mut HashMap::new(),
+      errors,
+      true,
+      names,
+    );
+  }
   fn deshadow_inner(
     &mut self,
     globally_bound_names: &Vec<Arc<str>>,
@@ -3623,7 +3638,7 @@ impl TypedExp {
     errors: &mut ErrorLog,
     first_in_walk: bool,
     names: &mut NameContext,
-  ) -> bool {
+  ) {
     let bind = |name: &mut Arc<str>,
                 source_trace: &SourceTrace,
                 bindings: &mut HashMap<Arc<str>, Vec<Arc<str>>>,
@@ -3654,143 +3669,111 @@ impl TypedExp {
           bindings.get_mut(original_name).unwrap().pop();
         }
       };
-    match &mut self.kind {
-      Function(arg_names, body) => {
-        for (name, name_source_trace) in arg_names.iter_mut() {
-          bind(
-            name,
-            name_source_trace,
-            bindings,
-            reverse_bindings,
-            names,
-            errors,
-          );
-        }
-        body.deshadow_inner(
-          globally_bound_names,
-          bindings,
-          reverse_bindings,
-          errors,
-          first_in_walk,
-          names,
-        );
-        for (name, _) in arg_names.iter_mut().rev() {
-          unbind(name, bindings, reverse_bindings);
-        }
-        false
-      }
-      Let(let_bindings, body) => {
-        for (name, source_trace, _, value) in let_bindings.iter_mut() {
-          value.deshadow_inner(
-            globally_bound_names,
-            bindings,
-            reverse_bindings,
-            errors,
-            true,
-            names,
-          );
-          bind(
-            name,
-            &source_trace,
-            bindings,
-            reverse_bindings,
-            names,
-            errors,
-          );
-        }
-        body.deshadow_inner(
-          globally_bound_names,
-          bindings,
-          reverse_bindings,
-          errors,
-          true,
-          names,
-        );
-        for (name, _, _, _) in let_bindings.iter_mut().rev() {
-          unbind(name, bindings, reverse_bindings);
-        }
-        false
-      }
-      ForLoop {
-        increment_variable_name,
-        continue_condition_expression,
-        update_expression,
-        body_expression,
-        ..
-      } => {
-        bind(
-          &mut increment_variable_name.0,
-          &self.source_trace,
-          bindings,
-          reverse_bindings,
-          names,
-          errors,
-        );
-        continue_condition_expression.deshadow_inner(
-          globally_bound_names,
-          bindings,
-          reverse_bindings,
-          errors,
-          true,
-          names,
-        );
-        if let Some(update_expression) = update_expression {
-          update_expression.deshadow_inner(
-            globally_bound_names,
-            bindings,
-            reverse_bindings,
-            errors,
-            true,
-            names,
-          );
-        }
-        body_expression.deshadow_inner(
-          globally_bound_names,
-          bindings,
-          reverse_bindings,
-          errors,
-          true,
-          names,
-        );
-        unbind(&mut increment_variable_name.0, bindings, reverse_bindings);
-        false
-      }
-      Match(scrutinee, arms) => {
-        scrutinee.deshadow_inner(
-          globally_bound_names,
-          bindings,
-          reverse_bindings,
-          errors,
-          first_in_walk,
-          names,
-        );
-        for (pattern, value) in arms.iter_mut() {
-          if let Application(f, args) = &mut pattern.kind
-            && let Some(arg) =
-              Self::try_deconstruct_untyped_enum_pattern(f, args)
-          {
-            {
-              let ExpKind::Name(arg_name) = &mut arg.kind else {
-                unreachable!()
-              };
+    self
+      .walk_mut(&mut |exp| {
+        Ok::<bool, Never>(match &mut exp.kind {
+          Function(arg_names, body) => {
+            for (name, name_source_trace) in arg_names.iter_mut() {
               bind(
-                arg_name,
-                &arg.source_trace,
+                name,
+                name_source_trace,
                 bindings,
                 reverse_bindings,
                 names,
                 errors,
               );
-              arg.deshadow_inner(
+            }
+            body.deshadow_inner(
+              globally_bound_names,
+              bindings,
+              reverse_bindings,
+              errors,
+              first_in_walk,
+              names,
+            );
+            for (name, _) in arg_names.iter_mut().rev() {
+              unbind(name, bindings, reverse_bindings);
+            }
+            false
+          }
+          Let(let_bindings, body) => {
+            for (name, source_trace, _, value) in let_bindings.iter_mut() {
+              value.deshadow_inner(
                 globally_bound_names,
                 bindings,
                 reverse_bindings,
                 errors,
-                first_in_walk,
+                true,
+                names,
+              );
+              bind(
+                name,
+                &source_trace,
+                bindings,
+                reverse_bindings,
+                names,
+                errors,
+              );
+            }
+            body.deshadow_inner(
+              globally_bound_names,
+              bindings,
+              reverse_bindings,
+              errors,
+              true,
+              names,
+            );
+            for (name, _, _, _) in let_bindings.iter_mut().rev() {
+              unbind(name, bindings, reverse_bindings);
+            }
+            false
+          }
+          ForLoop {
+            increment_variable_name,
+            continue_condition_expression,
+            update_expression,
+            body_expression,
+            ..
+          } => {
+            bind(
+              &mut increment_variable_name.0,
+              &exp.source_trace,
+              bindings,
+              reverse_bindings,
+              names,
+              errors,
+            );
+            continue_condition_expression.deshadow_inner(
+              globally_bound_names,
+              bindings,
+              reverse_bindings,
+              errors,
+              true,
+              names,
+            );
+            if let Some(update_expression) = update_expression {
+              update_expression.deshadow_inner(
+                globally_bound_names,
+                bindings,
+                reverse_bindings,
+                errors,
+                true,
                 names,
               );
             }
-            value.deshadow_inner(
+            body_expression.deshadow_inner(
+              globally_bound_names,
+              bindings,
+              reverse_bindings,
+              errors,
+              true,
+              names,
+            );
+            unbind(&mut increment_variable_name.0, bindings, reverse_bindings);
+            false
+          }
+          Match(scrutinee, arms) => {
+            scrutinee.deshadow_inner(
               globally_bound_names,
               bindings,
               reverse_bindings,
@@ -3798,66 +3781,69 @@ impl TypedExp {
               first_in_walk,
               names,
             );
-            let ExpKind::Name(arg_name) = &mut arg.kind else {
-              unreachable!()
-            };
-            unbind(arg_name, bindings, reverse_bindings);
-          } else {
-            value.deshadow_inner(
-              globally_bound_names,
-              bindings,
-              reverse_bindings,
-              errors,
-              first_in_walk,
-              names,
-            );
+            for (pattern, value) in arms.iter_mut() {
+              if let Application(f, args) = &mut pattern.kind
+                && let Some(arg) =
+                  Self::try_deconstruct_untyped_enum_pattern(f, args)
+              {
+                {
+                  let ExpKind::Name(arg_name) = &mut arg.kind else {
+                    unreachable!()
+                  };
+                  bind(
+                    arg_name,
+                    &arg.source_trace,
+                    bindings,
+                    reverse_bindings,
+                    names,
+                    errors,
+                  );
+                  arg.deshadow_inner(
+                    globally_bound_names,
+                    bindings,
+                    reverse_bindings,
+                    errors,
+                    first_in_walk,
+                    names,
+                  );
+                }
+                value.deshadow_inner(
+                  globally_bound_names,
+                  bindings,
+                  reverse_bindings,
+                  errors,
+                  first_in_walk,
+                  names,
+                );
+                let ExpKind::Name(arg_name) = &mut arg.kind else {
+                  unreachable!()
+                };
+                unbind(arg_name, bindings, reverse_bindings);
+              } else {
+                value.deshadow_inner(
+                  globally_bound_names,
+                  bindings,
+                  reverse_bindings,
+                  errors,
+                  first_in_walk,
+                  names,
+                );
+              }
+            }
+            false
           }
-        }
-        false
-      }
-      Name(name) => {
-        if let Some(renames) = bindings.get(name) {
-          if let Some(rename) = renames.last() {
-            std::mem::swap(name, &mut Arc::clone(rename));
+          Name(name) => {
+            if let Some(renames) = bindings.get(name) {
+              if let Some(rename) = renames.last() {
+                std::mem::swap(name, &mut Arc::clone(rename));
+              }
+            }
+            false
           }
-        }
-        false
-      }
-      _ => {
-        if first_in_walk {
-          self
-            .walk_mut::<()>(&mut |exp| {
-              Ok(exp.deshadow_inner(
-                globally_bound_names,
-                bindings,
-                reverse_bindings,
-                errors,
-                false,
-                names,
-              ))
-            })
-            .unwrap();
-          false
-        } else {
-          true
-        }
-      }
-    }
-  }
-  pub fn deshadow(
-    &mut self,
-    globally_bound_names: &Vec<Arc<str>>,
-    errors: &mut ErrorLog,
-    names: &mut NameContext,
-  ) {
-    self.deshadow_inner(
-      globally_bound_names,
-      &mut HashMap::new(),
-      &mut HashMap::new(),
-      errors,
-      true,
-      names,
-    );
+          _ => true,
+        })
+      })
+      .unwrap()
   }
   pub fn validate_control_flow(
     &self,
@@ -4309,11 +4295,6 @@ impl TypedExp {
                   }
                 } else {
                   let match_result_gensym = names.gensym("match_result_gensym");
-                  let result_exp = Exp {
-                    data: temp.data.clone(),
-                    source_trace: temp.source_trace.clone(),
-                    kind: ExpKind::Name(match_result_gensym.clone()),
-                  };
                   let value_type = temp.data.clone();
                   Exp {
                     data: temp.data.clone(),

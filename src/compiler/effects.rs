@@ -22,6 +22,7 @@ pub enum Effect {
   Print,
   Window,
   LookupBuiltinAttribute(BuiltinIOAttribute),
+  InvokesUnknownFunction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

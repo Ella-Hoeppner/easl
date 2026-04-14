@@ -264,6 +264,7 @@ success_test!(duplicate_enum_compilation);
 success_test!(fieldless_enum);
 success_test!(higher_order_sdf_ops);
 success_test!(higher_order_sdf_ops_closures);
+success_test!(block_deshadow);
 
 // --- Error tests ---
 

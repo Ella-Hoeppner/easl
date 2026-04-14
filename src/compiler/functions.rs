@@ -1048,16 +1048,15 @@ impl FunctionSignature {
   pub fn effects(&self) -> EffectType {
     if let Some(abstract_ancestor) = &self.abstract_ancestor {
       match &abstract_ancestor.read().unwrap().implementation {
-        FunctionImplementationKind::Composite(f) => {
-          return f.read().unwrap().effects();
-        }
+        FunctionImplementationKind::Composite(f) => f.read().unwrap().effects(),
         FunctionImplementationKind::Builtin { effect_type, .. } => {
-          return effect_type.clone();
+          effect_type.clone()
         }
-        _ => {}
+        _ => EffectType::empty(),
       }
+    } else {
+      Effect::InvokesUnknownFunction.into()
     }
-    EffectType::empty()
   }
   pub fn unwrap_type_signature(&self) -> Vec<Type> {
     self
