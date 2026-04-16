@@ -622,7 +622,10 @@ fn arithmetic_functions(
           } else {
             AbstractType::AbstractStruct(vec.clone())
           },
-          associative: !assignment_fn && arg_vecs_or_scalars == [true, true],
+          associative: associative
+            && !assignment_fn
+            && arg_vecs_or_scalars[0]
+            && arg_vecs_or_scalars[1],
           ..Default::default()
         })
         .collect::<Vec<_>>()

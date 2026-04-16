@@ -1,0 +1,2 @@
+(defn f [x: vec2f]: vec2f
+  (- x))
