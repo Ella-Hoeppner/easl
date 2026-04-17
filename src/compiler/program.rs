@@ -2214,15 +2214,12 @@ impl Program {
     }
     wgsl += "\n";
     let default_structs = built_in_structs();
-    for s in self
-      .typedefs
-      .structs
-      .iter()
-      .cloned()
-      .filter(|s| !default_structs.contains(s))
-    {
-      if let Some(compiled_struct) =
-        s.compile_if_non_generic(&self.typedefs, &mut names)?
+    for s in self.typedefs.structs.iter() {
+      if !s.opaque
+        && !default_structs.contains(&s)
+        && let Some(compiled_struct) = s
+          .clone()
+          .compile_if_non_generic(&self.typedefs, &mut names)?
       {
         wgsl += &compiled_struct;
         wgsl += "\n\n";

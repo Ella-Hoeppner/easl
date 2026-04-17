@@ -64,3 +64,4 @@ buffer_test!(array_assignment);
 buffer_test!(array_assignment_cross_window);
 buffer_test!(break_in_match);
 buffer_test!(break_in_nonunit_match);
+buffer_test!(cpu_atomic_assignment);

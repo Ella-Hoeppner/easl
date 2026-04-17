@@ -184,9 +184,9 @@ impl Function {
       }
       FunctionImplementationKind::StructConstructor => {
         Ok(Function::StructConstructor({
-          let s = match env.structs.get(name) {
+          let s = match env.structs.get(&f.name) {
             Some(s) => s,
-            None => return Err(UnrecognizedStructName(name.clone()).into()),
+            None => return Err(UnrecognizedStructName(f.name.clone()).into()),
           };
           s.fields.iter().map(|field| field.name.clone()).collect()
         }))
@@ -1602,7 +1602,11 @@ fn apply_builtin_fn<IO: IOManager>(
           (*body, None)
         }
         Value::Fun(Function::Scoped { inner, scope }) => {
-          let Function::Composite { arg_names, expression } = *inner else {
+          let Function::Composite {
+            arg_names,
+            expression,
+          } = *inner
+          else {
             panic!("spawn-window: scoped inner must be composite")
           };
           let ExpKind::Function(_, body) = expression.kind else {
@@ -3025,9 +3029,8 @@ pub fn eval(
               .into_iter()
               .map(|arg| eval(arg, env))
               .collect::<Result<_, _>>()?;
-            let scope_struct = Value::Struct(
-              field_names.into_iter().zip(arg_values).collect(),
-            );
+            let scope_struct =
+              Value::Struct(field_names.into_iter().zip(arg_values).collect());
             if let Type::Function(outer_sig) = exp.data.unwrap_known()
               && let Some(inner_fn_arc) = outer_sig.abstract_ancestor
             {
@@ -3043,8 +3046,11 @@ pub fn eval(
             return Ok(scope_struct);
           }
         };
-        let f =
-          Function::from_abstract_signature(&*f_arc.read().unwrap(), &name, env)?;
+        let f = Function::from_abstract_signature(
+          &*f_arc.read().unwrap(),
+          &name,
+          env,
+        )?;
         let arg_types: Vec<Type> =
           args.iter().map(|a| a.data.kind.unwrap_known()).collect();
         let return_type = exp.data.unwrap_known();
@@ -3123,7 +3129,11 @@ pub fn eval(
               std::iter::once(*scope).chain(arg_values).collect();
             let scoped_types: Vec<Type> =
               std::iter::once(Type::Unit).chain(arg_types).collect();
-            let Function::Composite { arg_names, expression } = *inner else {
+            let Function::Composite {
+              arg_names,
+              expression,
+            } = *inner
+            else {
               panic!("Scoped inner must be Composite")
             };
             let ExpKind::Function(_, body) = expression.kind else {

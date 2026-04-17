@@ -1,0 +1,16 @@
+@{address storage-write
+  group 0
+  binding 0}
+(var my-atomic: (Atomic u32))
+
+@{address storage-write
+  group 0
+  binding 1}
+(var my-value: vec2f)
+
+@cpu
+(defn main []
+  (= my-atomic (Atomic 1u))
+  (= my-value (vec2f 0.))
+  (print my-atomic))
+
