@@ -163,6 +163,13 @@ pub enum Function {
     arg_names: Vec<Arc<str>>,
     expression: Exp<ExpTypeInfo>,
   },
+  /// A closure with a captured scope struct. `inner` is the extracted composite
+  /// function (which takes the scope struct as its first argument), and `scope`
+  /// is the already-evaluated scope struct value.
+  Scoped {
+    inner: Box<Function>,
+    scope: Box<Value>,
+  },
 }
 
 impl Function {
@@ -1583,21 +1590,40 @@ fn apply_builtin_fn<IO: IOManager>(
       Err(EvalException::CloseWindow)
     }
     "spawn-window" => {
-      let (
+      let (callback, _) = args.remove(0);
+      let (body, scope_binding) = match callback {
         Value::Fun(Function::Composite {
           arg_names: _,
           expression,
-        }),
-        _,
-      ) = args.remove(0)
-      else {
-        panic!("spawn-window: callback must be a composite function")
+        }) => {
+          let ExpKind::Function(_, body) = expression.kind else {
+            panic!()
+          };
+          (*body, None)
+        }
+        Value::Fun(Function::Scoped { inner, scope }) => {
+          let Function::Composite { arg_names, expression } = *inner else {
+            panic!("spawn-window: scoped inner must be composite")
+          };
+          let ExpKind::Function(_, body) = expression.kind else {
+            panic!()
+          };
+          let scope_arg = arg_names
+            .into_iter()
+            .next()
+            .expect("scoped function must have a scope arg");
+          (*body, Some((scope_arg, *scope)))
+        }
+        _ => panic!("spawn-window: callback must be a function"),
       };
-      let ExpKind::Function(_, body) = expression.kind else {
-        panic!()
-      };
-      let body = *body;
-      if IO::run_spawn_window(body, env)? {
+      if let Some((ref scope_arg, ref scope_val)) = scope_binding {
+        env.bind(scope_arg.clone(), scope_val.clone(), Type::Unit);
+      }
+      let reload = IO::run_spawn_window(body, env)?;
+      if let Some((scope_arg, _)) = scope_binding {
+        env.unbind(&scope_arg);
+      }
+      if reload {
         return Err(EvalException::ReloadRequested);
       }
       Ok(Value::Unit)
@@ -2982,32 +3008,43 @@ pub fn eval(
           ExpKind::Name(name) => name,
           _ => return Err(AppliedNonName.into()),
         };
-        let f = f_signature.abstract_ancestor.unwrap_or_else(|| {
-          panic!(
-            "couldn't find abstract ancestor for {name}, {:?}",
-            args
-              .clone()
+        let f_arc = match f_signature.abstract_ancestor {
+          Some(arc) => arc,
+          None => {
+            // Struct constructor for a captured scope, produced by
+            // extract_inner_functions. Evaluate it directly and wrap the
+            // resulting scope struct as Function::Scoped.
+            let field_names: Vec<Arc<str>> = {
+              let s = env
+                .structs
+                .get(&name)
+                .unwrap_or_else(|| panic!("unknown struct: {name}"));
+              s.fields.iter().map(|f| f.name.clone()).collect()
+            };
+            let arg_values: Vec<Value> = args
               .into_iter()
-              .map(|arg| {
-                if let Type::Function(f) = arg.data.unwrap_known()
-                  && let Some(f) = f.abstract_ancestor
-                  && let ExpKind::Name(f_name) = arg.kind
-                {
-                  Ok(Value::Fun(Function::from_abstract_signature(
-                    &f.read().unwrap(),
-                    &f_name,
-                    env,
-                  )?))
-                } else {
-                  eval(arg, env)
-                }
-              })
-              .collect::<Result<Vec<Value>, _>>()
-              .unwrap()
-          );
-        });
+              .map(|arg| eval(arg, env))
+              .collect::<Result<_, _>>()?;
+            let scope_struct = Value::Struct(
+              field_names.into_iter().zip(arg_values).collect(),
+            );
+            if let Type::Function(outer_sig) = exp.data.unwrap_known()
+              && let Some(inner_fn_arc) = outer_sig.abstract_ancestor
+            {
+              let inner_fn = {
+                let sig = inner_fn_arc.read().unwrap();
+                Function::from_abstract_signature(&sig, &sig.name.clone(), env)?
+              };
+              return Ok(Value::Fun(Function::Scoped {
+                inner: Box::new(inner_fn),
+                scope: Box::new(scope_struct),
+              }));
+            }
+            return Ok(scope_struct);
+          }
+        };
         let f =
-          Function::from_abstract_signature(&*f.read().unwrap(), &name, env)?;
+          Function::from_abstract_signature(&*f_arc.read().unwrap(), &name, env)?;
         let arg_types: Vec<Type> =
           args.iter().map(|a| a.data.kind.unwrap_known()).collect();
         let return_type = exp.data.unwrap_known();
@@ -3065,6 +3102,41 @@ pub fn eval(
             for (name, (value, ty)) in arg_names
               .iter()
               .zip(arg_values.into_iter().zip(arg_types.into_iter()))
+            {
+              env.bind(name.clone(), value, ty);
+            }
+            let value = match eval(*body, env) {
+              Ok(value) => Ok(value),
+              Err(exception) => match exception {
+                EvalException::Return(value) => Ok(value),
+                other => Err(other),
+              },
+            };
+            for name in arg_names.iter() {
+              env.unbind(name);
+            }
+            value?
+          }
+          Function::Scoped { inner, scope } => {
+            // Call the inner function with scope prepended to args.
+            let scoped_values: Vec<Value> =
+              std::iter::once(*scope).chain(arg_values).collect();
+            let scoped_types: Vec<Type> =
+              std::iter::once(Type::Unit).chain(arg_types).collect();
+            let Function::Composite { arg_names, expression } = *inner else {
+              panic!("Scoped inner must be Composite")
+            };
+            let ExpKind::Function(_, body) = expression.kind else {
+              panic!()
+            };
+            if arg_names.len() != scoped_values.len() {
+              return Err(
+                WrongArity(arg_names.len(), scoped_values.len()).into(),
+              );
+            }
+            for (name, (value, ty)) in arg_names
+              .iter()
+              .zip(scoped_values.into_iter().zip(scoped_types))
             {
               env.bind(name.clone(), value, ty);
             }

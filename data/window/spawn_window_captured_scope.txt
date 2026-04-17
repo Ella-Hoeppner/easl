@@ -1,0 +1,3 @@
+spawn-window
+print: 1.
+close-window
