@@ -2282,6 +2282,19 @@ lazy_static! {
     ["=", "+=", "-=", "*=", "/=", "%=", "^=", ">>=", "<<="]
       .into_iter()
       .collect();
+  pub static ref ATOMIC_MUTATION_OPS: HashSet<&'static str> = [
+    "atomic-store",
+    "atomic-add",
+    "atomic-sub",
+    "atomic-max",
+    "atomic-min",
+    "atomic-and",
+    "atomic-or",
+    "atomic-xor",
+    "atomic-exchange",
+  ]
+  .into_iter()
+  .collect();
   pub static ref INFIX_OPS: HashSet<&'static str> = [
     "==", "!=", ">=", ">", "<=", "<", "||", "&&", "+", "-", "*", "/", "%", "^",
     ">>", "<<"

@@ -5,7 +5,7 @@ use thiserror::Error;
 use std::sync::Arc;
 
 use crate::compiler::{
-  builtins::ASSIGNMENT_OPS,
+  builtins::{ASSIGNMENT_OPS, ATOMIC_MUTATION_OPS},
   error::{CompileError, SourceTrace},
   expression::{Accessor, Exp, ExpKind, Number, SwizzleField},
   functions::{AbstractFunctionSignature, FunctionImplementationKind},
@@ -1669,6 +1669,50 @@ fn apply_builtin_fn<IO: IOManager>(
         length: size as usize,
       })
     }
+    "atomic-load" => {
+      let Value::Struct(fields) = args.remove(0).0 else {
+        panic!()
+      };
+      Ok(fields["_"].clone())
+    }
+    "atomic-store" | "atomic-exchange" => {
+      let val = args.remove(1).0;
+      Ok(Value::Struct([("_".into(), val)].into_iter().collect()))
+    }
+    "atomic-add" | "atomic-sub" | "atomic-max" | "atomic-min" | "atomic-and"
+    | "atomic-or" | "atomic-xor" => {
+      let Value::Struct(ref fields) = args[0].0 else {
+        panic!()
+      };
+      let old = fields["_"].clone().unwrap_primitive();
+      let val = args[1].0.clone().unwrap_primitive();
+      let new_prim = match (old, val) {
+        (Primitive::U32(a), Primitive::U32(b)) => Primitive::U32(match &*f_name {
+          "atomic-add" => a.wrapping_add(b),
+          "atomic-sub" => a.wrapping_sub(b),
+          "atomic-max" => a.max(b),
+          "atomic-min" => a.min(b),
+          "atomic-and" => a & b,
+          "atomic-or" => a | b,
+          "atomic-xor" => a ^ b,
+          _ => unreachable!(),
+        }),
+        (Primitive::I32(a), Primitive::I32(b)) => Primitive::I32(match &*f_name {
+          "atomic-add" => a.wrapping_add(b),
+          "atomic-sub" => a.wrapping_sub(b),
+          "atomic-max" => a.max(b),
+          "atomic-min" => a.min(b),
+          "atomic-and" => a & b,
+          "atomic-or" => a | b,
+          "atomic-xor" => a ^ b,
+          _ => unreachable!(),
+        }),
+        _ => panic!("atomic operations require integer types"),
+      };
+      Ok(Value::Struct(
+        [("_".into(), Value::Prim(new_prim))].into_iter().collect(),
+      ))
+    }
     _ => Err(UnimplementedBuiltin(f_name.into()).into()),
   }
 }
@@ -3055,7 +3099,9 @@ pub fn eval(
           args.iter().map(|a| a.data.kind.unwrap_known()).collect();
         let return_type = exp.data.unwrap_known();
         let is_assignment_op = ASSIGNMENT_OPS.contains(&*name);
-        let accessed_expression = is_assignment_op.then(|| args[0].clone());
+        let is_atomic_op = ATOMIC_MUTATION_OPS.contains(&*name);
+        let accessed_expression =
+          (is_assignment_op || is_atomic_op).then(|| args[0].clone());
         // Sync any GPU-written globals before evaluating args so we see the
         // updated values when the args are looked up.
         let (read_global_variable_names, written_global_variable_names) =
@@ -3294,6 +3340,72 @@ pub fn eval(
             *accessed_value = return_value;
           }
           Value::Unit
+        } else if is_atomic_op {
+          enum AccessKind {
+            Index(i64),
+            Field(Arc<str>),
+          }
+          let mut accesses: Vec<AccessKind> = vec![];
+          let mut accessed_expression = accessed_expression.unwrap();
+          let accessed_name = loop {
+            match accessed_expression.kind {
+              ExpKind::Name(name) => break name,
+              ExpKind::Application(exp, mut index) => {
+                let Ok(Value::Prim(index)) = eval(index.remove(0), env) else {
+                  panic!()
+                };
+                let index = match index {
+                  Primitive::U32(u) => u as i64,
+                  Primitive::I32(i) => i as i64,
+                  _ => panic!(),
+                };
+                accesses.push(AccessKind::Index(index));
+                accessed_expression = *exp;
+              }
+              ExpKind::Access(accessor, exp) => {
+                if let Accessor::Field(field_name) = accessor {
+                  accesses.push(AccessKind::Field(field_name));
+                }
+                accessed_expression = *exp;
+              }
+              _ => panic!(),
+            }
+          };
+          let mut accessed_value = &mut env
+            .bindings
+            .get_mut(&*accessed_name)
+            .unwrap()
+            .last_mut()
+            .unwrap()
+            .0;
+          for access in accesses.into_iter().rev() {
+            match access {
+              AccessKind::Index(i) => {
+                let Value::Array(a) = accessed_value else {
+                  panic!()
+                };
+                let length = a.len() as i64;
+                accessed_value =
+                  &mut a[(((i % length) + length) % length) as usize];
+              }
+              AccessKind::Field(field_name) => {
+                let Value::Struct(s) = accessed_value else {
+                  panic!()
+                };
+                accessed_value = s.get_mut(&field_name).unwrap();
+              }
+            }
+          }
+          let old_inner = match &*accessed_value {
+            Value::Struct(fields) => fields["_"].clone(),
+            _ => panic!("atomic op applied to non-atomic value"),
+          };
+          *accessed_value = return_value;
+          if &*name == "atomic-store" {
+            Value::Unit
+          } else {
+            old_inner
+          }
         } else {
           return_value
         };

@@ -481,7 +481,7 @@ pub(crate) fn create_headless_gpu_core(
       .request_device(&wgpu::DeviceDescriptor {
         label: None,
         required_features: wgpu::Features::VERTEX_WRITABLE_STORAGE,
-        required_limits: wgpu::Limits::default(),
+        required_limits: adapter.limits(),
         memory_hints: wgpu::MemoryHints::default(),
         ..Default::default()
       })
@@ -857,7 +857,7 @@ impl RenderState {
         // global var like `particles` be treated as storage-write from inside
         // compute shaders, but just storage from inside render shaders
         required_features: wgpu::Features::VERTEX_WRITABLE_STORAGE,
-        required_limits: wgpu::Limits::default(),
+        required_limits: adapter.limits(),
         memory_hints: wgpu::MemoryHints::default(),
         ..Default::default()
       })
