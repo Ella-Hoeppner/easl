@@ -68,6 +68,7 @@ The main pipeline lives in `Program::validate_raw_program` (program.rs). The maj
 - Monomorphization creates concrete copies: `map_f32_TwoOf_f32`
 - The monomorphizer lives in `TypedExp::monomorphize` (expression.rs) and `AbstractFunctionSignature::generate_monomorphized` (functions.rs)
 - It handles: struct constructors, enum constructors, composite function calls, and generic function references passed as HoF arguments
+- `AbstractStruct::opaque: true` marks WGSL built-in types (`atomic`, `texture_2d`, `sampler`) that must never be emitted as struct definitions in WGSL output. The `compile_to_wgsl` filter in `program.rs` skips structs where `s.opaque == true`. Any new built-in type that is a WGSL primitive (not a user-definable struct) should have `opaque: true` set in `builtins.rs`.
 
 ### Enums (Sum Types)
 - Compiled to WGSL as a struct with a `discriminant: u32` and `data: array<u32, N>` where N fits the largest variant
@@ -146,13 +147,19 @@ Two implementations: `StdoutIO` (real windowing via wgpu) and `StringIO` (test/d
 - **`IOEvent`** — unified ordered log used by `StringIO` for testing:
   - `Print(String)`, `SpawnWindow`, `DispatchShaders { vert, frag, vert_count }`, `DispatchComputeShader { entry, workgroup_count }`
 - **`GpuBufferKind`** — `Uniform | StorageReadOnly | StorageReadWrite`; exposed from `interpreter.rs` so `window.rs` doesn't need to reach into the compiler
-- **`EvaluationEnvironment`** — holds `binding_vars: Vec<(GroupAndBinding, Rc<str>, Type, VariableAddressSpace)>` for all GPU-bound top-level variables (Uniform + StorageRead + StorageReadWrite)
+- **`EvaluationEnvironment`** — holds `binding_vars: Vec<(GroupAndBinding, Arc<str>, Type, VariableAddressSpace)>` for all GPU-bound top-level variables (Uniform + StorageRead + StorageReadWrite)
   - `binding_infos() -> Vec<((u8,u8), GpuBufferKind, u64)>` — size is 0 for unsized/dynamic arrays
   - `binding_buffer_data() -> Vec<((u8,u8), BufferUpload)>` — returns current interpreter values as upload payloads, padded to 16 bytes
 - **`Value::ZeroedArray { length: usize, zero_element: Box<Value> }`** — lazily-materialized zeroed array created by `zeroed-array`. Avoids allocating a huge `Vec`. Converted to `BufferUpload::Clear` on upload; expanded to `Value::Array` only if a CPU write to an individual element is needed.
 - **`Value::to_uniform_bytes(&self, ty: &Type) -> Vec<u8>`** — serializes a value to GPU bytes; uses `ty` for struct field ordering (walks `s.fields` in declaration order)
 
 ### Interpreter implementation notes
+
+**`Function::Scoped` — closures with captured scope:**
+`extract_inner_functions` transforms a lambda that captures outer `let` bindings into a top-level function whose first argument is a scope struct. At the call site the lambda is replaced with `Application(Name("inner_fn_scope"), captured_vars)`. The interpreter evaluates this as a `Function::Scoped { inner: Box<Function>, scope: Box<Value> }` — where `inner` is the extracted composite function (taking scope as first arg) and `scope` is the evaluated scope struct. `spawn-window` and general function calls both handle this variant.
+
+**`env.structs` is keyed by base name, not monomorphized name:**
+`env.structs` (a `HashMap<Arc<str>, AbstractStruct>`) is populated from `typedefs.structs` using `s.name.0` as the key. After monomorphization `s.name.0` is still the base name (e.g. `"Atomic"`), NOT the monomorphized name (e.g. `"Atomic_u32"`). In `Function::from_abstract_signature` for `StructConstructor`, look up `f.name` (the abstract function's base name), not the `name` parameter (the monomorphized function name).
 
 **Getting function names from dispatch-style builtins:**
 When a builtin receives a function as an argument (e.g. `dispatch-render-shaders`, `dispatch-compute-shader`), extract the original pre-monomorphization name via `abstract_ancestor`:

@@ -2634,15 +2634,41 @@ impl IOManager for CaptureIO {
     body: Exp<ExpTypeInfo>,
     env: &mut EvaluationEnvironment<Self>,
   ) -> Result<bool, EvalError> {
-    // Run a headless eval loop rather than going through winit, since tests
-    // can't create an EventLoop off the main thread (macOS restriction). All
-    // GPU operations still delegate to `inner` (the same StdoutIO instance),
-    // so GPU state is shared and consistent with the non-window path.
+    // Mirror the real winit loop: mark as windowed so record_compute queues
+    // work per-frame rather than executing inline. This makes the test
+    // environment behave identically to the real window runtime.
+    #[cfg(feature = "window")]
+    {
+      env.io.inner.windowed = true;
+    }
     loop {
       match eval(body.clone(), env) {
         Ok(_) => {}
         Err(EvalException::CloseWindow) => break,
         Err(e) => return Err(e.into()),
+      }
+      // Flush queued GPU work after each frame, same as the winit loop does.
+      // Execute compute calls; skip render calls (no surface in headless mode).
+      #[cfg(feature = "window")]
+      {
+        let draw_calls = env.io.take_frame_draw_calls();
+        if let Some(gpu) =
+          env.io.inner.gpu.as_ref().map(|g| std::sync::Arc::clone(g))
+        {
+          for event in draw_calls {
+            if let WindowEvent::ComputeShader {
+              entry,
+              workgroup_count,
+              pre_upload,
+            } = event
+            {
+              gpu
+                .write()
+                .unwrap()
+                .execute_compute(&entry, workgroup_count, pre_upload);
+            }
+          }
+        }
       }
     }
     Ok(false)

@@ -1,0 +1,19 @@
+@{address storage-write
+  group 0
+  binding 0}
+(var arr: [vec2u])
+
+@compute
+@{workgroup-size 1}
+(defn c []
+  (= (arr 0u) (vec2u 1u)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (= arr (zeroed-array 4))
+                    (print arr)
+                    (dispatch-compute-shader c (vec3u 1u))
+                    (print arr)
+                    (close-window))))
+
