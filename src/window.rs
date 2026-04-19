@@ -413,6 +413,47 @@ impl GpuCore {
       .unwrap();
   }
 
+  /// Batches multiple compute dispatches into one encoder, one submit, one
+  /// poll. Much cheaper than calling `execute_compute` N times (which creates
+  /// N encoders, N submits, and N blocking polls).
+  pub fn execute_compute_batch(
+    &mut self,
+    calls: Vec<(String, (u32, u32, u32), Vec<((u8, u8), BufferUpload)>)>,
+  ) {
+    if calls.is_empty() {
+      return;
+    }
+    let all_uploads: Vec<_> =
+      calls.iter().flat_map(|(_, _, u)| u.iter().cloned()).collect();
+    self.upload_bindings(&all_uploads);
+
+    let mut encoder =
+      self
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+          label: Some("compute encoder"),
+        });
+    for (entry, (x, y, z), _) in &calls {
+      let entry = entry.replace('-', "_");
+      self.get_or_create_compute_pipeline(&entry);
+      let mut compute_pass =
+        encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+          label: Some("compute pass"),
+          timestamp_writes: None,
+        });
+      for (group_idx, bind_group) in self.bind_groups.iter().enumerate() {
+        compute_pass.set_bind_group(group_idx as u32, bind_group, &[]);
+      }
+      compute_pass.set_pipeline(&self.compute_pipelines[&entry]);
+      compute_pass.dispatch_workgroups(*x, *y, *z);
+    }
+    self.queue.submit(std::iter::once(encoder.finish()));
+    self
+      .device
+      .poll(wgpu::PollType::wait_indefinitely())
+      .unwrap();
+  }
+
   /// Reads a GPU buffer back to CPU, blocking until done. Returns raw bytes.
   pub fn read_buffer(&self, group: u8, binding: u8, size: u64) -> Vec<u8> {
     // eprintln!(

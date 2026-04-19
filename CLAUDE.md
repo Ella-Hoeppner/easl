@@ -179,6 +179,20 @@ let name = f.abstract_ancestor.as_ref().unwrap().borrow().name.clone();
 - `VariableAddressSpace::Storage(AccessMode::Read)` → `GpuBufferKind::StorageReadOnly`
 - `VariableAddressSpace::Storage(AccessMode::ReadWrite)` → `GpuBufferKind::StorageReadWrite`
 
+### ⚠️ Synchronous GPU↔CPU semantics — DO NOT BREAK
+
+**This is a hard language design requirement.** Easl programs must be able to write to a variable from the GPU (via `dispatch-compute-shader`) and then immediately read it back from the CPU (e.g. `print`) in the same frame body, without any explicit sync call, and get the updated value. Similarly, CPU writes must be visible to subsequent GPU dispatches. This is an intentional, load-bearing design constraint of the language — not an implementation detail to be optimised away.
+
+**How it works:** `check_cpu_readable` (called before any function reads a global variable) calls `io.flush_queued_compute()` if any of the variables it needs are `CPUOutOfDate`. This flushes all pending compute dispatches as a single batched encoder + submit + poll (`GpuCore::execute_compute_batch`) before the readback. Render shader events stay deferred to end-of-frame (they target the framebuffer, not CPU-readable storage).
+
+**What must NOT change:**
+- `StdoutIO::flush_queued_compute` must execute queued compute synchronously (one batched submit + blocking poll), not defer it
+- `CaptureIO::run_spawn_window` must set `windowed = true` before running frames, so that `record_compute` queues work (same as the real winit loop) rather than executing inline — this keeps test behaviour identical to production
+- `check_cpu_readable` must call `flush_queued_compute` before attempting GPU→CPU readback
+- Do NOT collapse all frame work into a single deferred submit; compute must be flushable mid-frame on demand
+
+**Performance note:** `flush_queued_compute` uses `execute_compute_batch` to run all queued dispatches in one encoder/submit/poll rather than N separate ones. If you need to improve GPU throughput, batch *within* a flush, but do not remove the flush or make it async.
+
 ### `window.rs`
 - One `wgpu::ShaderModule` and one `wgpu::PipelineLayout` shared by all render and compute pipelines
 - `bind_group_layouts` stored as a field on `RenderState` (not dropped after creation) so `rebuild_bind_groups` can recreate bind groups without invalidating the pipeline layout

@@ -1679,34 +1679,38 @@ fn apply_builtin_fn<IO: IOManager>(
       let val = args.remove(1).0;
       Ok(Value::Struct([("_".into(), val)].into_iter().collect()))
     }
-    "atomic-add" | "atomic-sub" | "atomic-max" | "atomic-min" | "atomic-and"
-    | "atomic-or" | "atomic-xor" => {
+    "atomic-add" | "atomic-sub" | "atomic-max" | "atomic-min"
+    | "atomic-and" | "atomic-or" | "atomic-xor" => {
       let Value::Struct(ref fields) = args[0].0 else {
         panic!()
       };
       let old = fields["_"].clone().unwrap_primitive();
       let val = args[1].0.clone().unwrap_primitive();
       let new_prim = match (old, val) {
-        (Primitive::U32(a), Primitive::U32(b)) => Primitive::U32(match &*f_name {
-          "atomic-add" => a.wrapping_add(b),
-          "atomic-sub" => a.wrapping_sub(b),
-          "atomic-max" => a.max(b),
-          "atomic-min" => a.min(b),
-          "atomic-and" => a & b,
-          "atomic-or" => a | b,
-          "atomic-xor" => a ^ b,
-          _ => unreachable!(),
-        }),
-        (Primitive::I32(a), Primitive::I32(b)) => Primitive::I32(match &*f_name {
-          "atomic-add" => a.wrapping_add(b),
-          "atomic-sub" => a.wrapping_sub(b),
-          "atomic-max" => a.max(b),
-          "atomic-min" => a.min(b),
-          "atomic-and" => a & b,
-          "atomic-or" => a | b,
-          "atomic-xor" => a ^ b,
-          _ => unreachable!(),
-        }),
+        (Primitive::U32(a), Primitive::U32(b)) => {
+          Primitive::U32(match &*f_name {
+            "atomic-add" => a.wrapping_add(b),
+            "atomic-sub" => a.wrapping_sub(b),
+            "atomic-max" => a.max(b),
+            "atomic-min" => a.min(b),
+            "atomic-and" => a & b,
+            "atomic-or" => a | b,
+            "atomic-xor" => a ^ b,
+            _ => unreachable!(),
+          })
+        }
+        (Primitive::I32(a), Primitive::I32(b)) => {
+          Primitive::I32(match &*f_name {
+            "atomic-add" => a.wrapping_add(b),
+            "atomic-sub" => a.wrapping_sub(b),
+            "atomic-max" => a.max(b),
+            "atomic-min" => a.min(b),
+            "atomic-and" => a & b,
+            "atomic-or" => a | b,
+            "atomic-xor" => a ^ b,
+            _ => unreachable!(),
+          })
+        }
         _ => panic!("atomic operations require integer types"),
       };
       Ok(Value::Struct(
@@ -2193,6 +2197,11 @@ pub trait IOManager: Sized {
   /// Called before re-running the program after a reload. Resets transient
   /// state (GPU handle, reload flag) so the new run starts clean.
   fn reset_for_reload(&mut self) {}
+  /// Executes all queued compute events immediately, keeping render events
+  /// deferred for end of frame. Called by `check_cpu_readable` when a
+  /// CPU instruction needs to read a GPU-written variable mid-frame.
+  /// Default no-op (used by StringIO and non-GPU paths).
+  fn flush_queued_compute(&mut self) {}
   /// Runs the spawn-window event loop. Returns `true` if the loop exited
   /// because a hot-reload was requested, `false` for a normal exit.
   fn run_spawn_window(
@@ -2206,8 +2215,6 @@ pub struct StdoutIO {
   #[cfg(feature = "window")]
   gpu: Option<std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>>,
   #[cfg(feature = "window")]
-  windowed: bool,
-  #[cfg(feature = "window")]
   reload_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
@@ -2217,8 +2224,6 @@ impl StdoutIO {
       frame_draw_calls: vec![],
       #[cfg(feature = "window")]
       gpu: None,
-      #[cfg(feature = "window")]
-      windowed: false,
       #[cfg(feature = "window")]
       reload_flag: None,
     }
@@ -2234,7 +2239,6 @@ impl StdoutIO {
     Self {
       frame_draw_calls: vec![],
       gpu: None,
-      windowed: false,
       reload_flag: Some(flag),
     }
   }
@@ -2269,17 +2273,6 @@ impl IOManager for StdoutIO {
     workgroup_count: (u32, u32, u32),
     pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) -> Result<(), EvalError> {
-    #[cfg(feature = "window")]
-    if !self.windowed {
-      if let Some(gpu) = &self.gpu {
-        gpu.write().unwrap().execute_compute(
-          entry,
-          workgroup_count,
-          pre_upload,
-        );
-        return Ok(());
-      }
-    }
     self.frame_draw_calls.push(WindowEvent::ComputeShader {
       entry: entry.to_string(),
       workgroup_count,
@@ -2320,7 +2313,6 @@ impl IOManager for StdoutIO {
     gpu: std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>,
   ) {
     self.gpu = Some(gpu);
-    self.windowed = true;
   }
 
   #[cfg(feature = "window")]
@@ -2393,10 +2385,32 @@ impl IOManager for StdoutIO {
     #[cfg(feature = "window")]
     {
       self.gpu = None;
-      self.windowed = false;
       if let Some(flag) = &self.reload_flag {
         flag.store(false, std::sync::atomic::Ordering::Relaxed);
       }
+    }
+  }
+
+  fn flush_queued_compute(&mut self) {
+    #[cfg(feature = "window")]
+    {
+      let gpu = match self.gpu.as_ref().map(std::sync::Arc::clone) {
+        Some(gpu) => gpu,
+        None => return,
+      };
+      let all = std::mem::take(&mut self.frame_draw_calls);
+      let mut batch = vec![];
+      for event in all {
+        match event {
+          WindowEvent::ComputeShader {
+            entry,
+            workgroup_count,
+            pre_upload,
+          } => batch.push((entry, workgroup_count, pre_upload)),
+          render => self.frame_draw_calls.push(render),
+        }
+      }
+      gpu.write().unwrap().execute_compute_batch(batch);
     }
   }
 
@@ -2630,46 +2644,24 @@ impl IOManager for CaptureIO {
     self.inner.window_delta_time()
   }
 
+  fn flush_queued_compute(&mut self) {
+    self.inner.flush_queued_compute();
+  }
+
   fn run_spawn_window(
     body: Exp<ExpTypeInfo>,
     env: &mut EvaluationEnvironment<Self>,
   ) -> Result<bool, EvalError> {
-    // Mirror the real winit loop: mark as windowed so record_compute queues
-    // work per-frame rather than executing inline. This makes the test
-    // environment behave identically to the real window runtime.
-    #[cfg(feature = "window")]
-    {
-      env.io.inner.windowed = true;
-    }
     loop {
       match eval(body.clone(), env) {
         Ok(_) => {}
         Err(EvalException::CloseWindow) => break,
         Err(e) => return Err(e.into()),
       }
-      // Flush queued GPU work after each frame, same as the winit loop does.
-      // Execute compute calls; skip render calls (no surface in headless mode).
-      #[cfg(feature = "window")]
-      {
-        let draw_calls = env.io.take_frame_draw_calls();
-        if let Some(gpu) =
-          env.io.inner.gpu.as_ref().map(|g| std::sync::Arc::clone(g))
-        {
-          for event in draw_calls {
-            if let WindowEvent::ComputeShader {
-              entry,
-              workgroup_count,
-              pre_upload,
-            } = event
-            {
-              gpu
-                .write()
-                .unwrap()
-                .execute_compute(&entry, workgroup_count, pre_upload);
-            }
-          }
-        }
-      }
+      // Flush any compute not already flushed mid-frame, then discard
+      // render events (no surface in headless mode).
+      env.io.flush_queued_compute();
+      let _ = env.io.take_frame_draw_calls();
     }
     Ok(false)
   }
@@ -2918,6 +2910,11 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       })
       .map(|(gb, name, ty, _)| (*gb, name.clone(), ty.clone()))
       .collect();
+    if !vars.is_empty() {
+      // Flush any queued compute before reading back, so the GPU has actually
+      // run and the buffers contain up-to-date values.
+      self.io.flush_queued_compute();
+    }
     for (gb, name, ty) in vars {
       // For statically-sized types, derive the readback size from the type.
       // For dynamically-sized types (e.g. unsized arrays), fall back to the
