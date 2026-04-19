@@ -3475,11 +3475,6 @@ impl Program {
     }
   }
   pub fn catch_atomic_bindings(&self, errors: &mut ErrorLog) {
-    let mut inferred_struct_field_locations: Vec<(
-      Arc<AbstractStruct>,
-      Arc<str>,
-      usize,
-    )> = vec![];
     for signature in self.abstract_functions_iter() {
       let signature = signature.read().unwrap();
       if let FunctionImplementationKind::Composite(f) =

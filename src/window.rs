@@ -123,6 +123,9 @@ pub struct GpuCore {
   shader: wgpu::ShaderModule,
   pipeline_layout: wgpu::PipelineLayout,
   pub compute_pipelines: HashMap<String, wgpu::ComputePipeline>,
+  /// Cached render pipelines. Keyed by (vert_entry, frag_entry, additive, format)
+  /// so the same cache covers both surface-format and offscreen-format pipelines.
+  render_pipelines: HashMap<(String, String, bool, wgpu::TextureFormat), wgpu::RenderPipeline>,
   pub binding_slots: Vec<BindingSlot>,
   pub binding_buffers: HashMap<(u8, u8), wgpu::Buffer>,
   /// Tracks the byte-length of each buffer so we can detect when a dynamic
@@ -138,6 +141,16 @@ pub struct GpuCore {
   pub window_time: f32,
   /// Time in seconds between the previous frame and the current frame.
   pub window_delta_time: f32,
+  /// The window surface, if a window is open. Set by `RenderState::new` /
+  /// `from_existing_gpu`. Used by `execute_render_batch` to render directly to
+  /// the real surface instead of an offscreen texture.
+  pub surface: Option<wgpu::Surface<'static>>,
+  /// Surface configuration (format, size, present mode, …). Present iff `surface` is Some.
+  pub surface_config: Option<wgpu::SurfaceConfiguration>,
+  /// A surface texture acquired mid-frame by `execute_render_batch`. At
+  /// end-of-frame `RenderState::render` calls `present()` on this rather than
+  /// re-rendering.
+  pub pending_present: Option<wgpu::SurfaceTexture>,
 }
 
 impl GpuCore {
@@ -184,8 +197,9 @@ impl GpuCore {
           source: wgpu::ShaderSource::Wgsl(wgsl.into()),
         });
 
-    // 2. Clear compute pipelines (they reference the old shader module).
+    // 2. Clear compute and render pipelines (they reference the old shader module).
     self.compute_pipelines.clear();
+    self.render_pipelines.clear();
 
     // 3. Update binding slots.
     self.binding_slots = binding_infos
@@ -454,6 +468,193 @@ impl GpuCore {
       .unwrap();
   }
 
+  /// Texture format used for the offscreen render target (headless fallback).
+  const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+  /// Creates and caches a render pipeline for the given format (if not already cached).
+  pub fn get_or_create_render_pipeline(
+    &mut self,
+    vert_entry: &str,
+    frag_entry: &str,
+    additive: bool,
+    format: wgpu::TextureFormat,
+  ) {
+    let key = (vert_entry.to_string(), frag_entry.to_string(), additive, format);
+    if self.render_pipelines.contains_key(&key) {
+      return;
+    }
+    let blend = if additive {
+      wgpu::BlendState {
+        color: wgpu::BlendComponent {
+          src_factor: wgpu::BlendFactor::One,
+          dst_factor: wgpu::BlendFactor::One,
+          operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent {
+          src_factor: wgpu::BlendFactor::One,
+          dst_factor: wgpu::BlendFactor::One,
+          operation: wgpu::BlendOperation::Add,
+        },
+      }
+    } else {
+      wgpu::BlendState::REPLACE
+    };
+    let pipeline =
+      self
+        .device
+        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+          label: Some("easl render pipeline"),
+          layout: Some(&self.pipeline_layout),
+          vertex: wgpu::VertexState {
+            module: &self.shader,
+            entry_point: Some(vert_entry),
+            buffers: &[],
+            compilation_options: Default::default(),
+          },
+          fragment: Some(wgpu::FragmentState {
+            module: &self.shader,
+            entry_point: Some(frag_entry),
+            targets: &[Some(wgpu::ColorTargetState {
+              format,
+              blend: Some(blend),
+              write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+          }),
+          primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            unclipped_depth: false,
+            conservative: false,
+          },
+          depth_stencil: None,
+          multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+          },
+          multiview_mask: None,
+          cache: None,
+        });
+    self.render_pipelines.insert(key, pipeline);
+  }
+
+  /// Executes a batch of render shader calls, blocking until the GPU finishes.
+  /// Used by `flush_queued_compute` so that CPU reads after
+  /// `dispatch-render-shaders` see the shader's storage writes.
+  ///
+  /// If `self.surface` is present (a window is open), renders to the real
+  /// surface texture and stores it in `self.pending_present` so that
+  /// `RenderState::render` can just call `present()` at end-of-frame without
+  /// re-running the shaders. Falls back to a 1×1 offscreen texture otherwise
+  /// (headless / test mode).
+  pub fn execute_render_batch(
+    &mut self,
+    calls: Vec<(String, String, u32, Vec<((u8, u8), BufferUpload)>, bool)>,
+  ) {
+    if calls.is_empty() {
+      return;
+    }
+    let all_uploads: Vec<_> = calls
+      .iter()
+      .flat_map(|(_, _, _, u, _)| u.iter().cloned())
+      .collect();
+    self.upload_bindings(&all_uploads);
+
+    // Try to acquire the real surface texture; fall back to offscreen if
+    // unavailable or if no surface exists (headless mode).
+    let surface_texture: Option<wgpu::SurfaceTexture> =
+      self.surface.as_ref().and_then(|s| match s.get_current_texture() {
+        Ok(t) => Some(t),
+        Err(_) => None,
+      });
+
+    let format = if surface_texture.is_some() {
+      self.surface_config.as_ref().unwrap().format
+    } else {
+      Self::OFFSCREEN_FORMAT
+    };
+
+    // Pre-create all pipelines before the render pass borrow begins.
+    for (vert, frag, _, _, additive) in &calls {
+      let vert = vert.replace('-', "_");
+      let frag = frag.replace('-', "_");
+      self.get_or_create_render_pipeline(&vert, &frag, *additive, format);
+    }
+
+    // Create the view: real surface or offscreen 1×1.
+    // `offscreen_texture` is declared here so it lives long enough.
+    let offscreen_texture;
+    let view = if let Some(st) = &surface_texture {
+      st.texture
+        .create_view(&wgpu::TextureViewDescriptor::default())
+    } else {
+      offscreen_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("offscreen render target"),
+        size: wgpu::Extent3d {
+          width: 1,
+          height: 1,
+          depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: Self::OFFSCREEN_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+      });
+      offscreen_texture.create_view(&wgpu::TextureViewDescriptor::default())
+    };
+
+    let mut encoder =
+      self
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+          label: Some("render encoder"),
+        });
+    {
+      let mut render_pass =
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+          label: Some("flush render pass"),
+          color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &view,
+            resolve_target: None,
+            depth_slice: None,
+            ops: wgpu::Operations {
+              load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+              store: wgpu::StoreOp::Store,
+            },
+          })],
+          depth_stencil_attachment: None,
+          occlusion_query_set: None,
+          timestamp_writes: None,
+          multiview_mask: None,
+        });
+      for (vert, frag, vert_count, _, additive) in &calls {
+        let vert = vert.replace('-', "_");
+        let frag = frag.replace('-', "_");
+        let key = (vert, frag, *additive, format);
+        for (group_idx, bind_group) in self.bind_groups.iter().enumerate() {
+          render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
+        }
+        render_pass.set_pipeline(&self.render_pipelines[&key]);
+        render_pass.draw(0..*vert_count, 0..1);
+      }
+    }
+    self.queue.submit(std::iter::once(encoder.finish()));
+    self
+      .device
+      .poll(wgpu::PollType::wait_indefinitely())
+      .unwrap();
+
+    // If we rendered to the real surface, save the texture so end-of-frame
+    // can just call present() rather than re-rendering.
+    self.pending_present = surface_texture;
+  }
+
   /// Reads a GPU buffer back to CPU, blocking until done. Returns raw bytes.
   pub fn read_buffer(&self, group: u8, binding: u8, size: u64) -> Vec<u8> {
     // eprintln!(
@@ -624,6 +825,7 @@ pub(crate) fn create_headless_gpu_core(
       shader,
       pipeline_layout,
       compute_pipelines: HashMap::new(),
+      render_pipelines: HashMap::new(),
       binding_slots,
       binding_buffers,
       binding_buffer_sizes,
@@ -632,15 +834,15 @@ pub(crate) fn create_headless_gpu_core(
       window_size: (1, 1),
       window_time: 0.0,
       window_delta_time: 0.0,
+      surface: None,
+      surface_config: None,
+      pending_present: None,
     }))
   })
 }
 
 struct RenderState {
   window: Arc<Window>,
-  surface: wgpu::Surface<'static>,
-  surface_config: wgpu::SurfaceConfiguration,
-  pipelines: HashMap<(String, String, bool), wgpu::RenderPipeline>,
   pub gpu: Arc<RwLock<GpuCore>>,
 }
 
@@ -671,13 +873,15 @@ impl<'a, IO: IOManager> App<'a, IO> {
           .unwrap()
           .update_for_reload(&wgsl, &binding_infos);
       }
-      state.pipelines.clear();
       // Reconfigure the surface in case it became outdated during the gap
       // between event loop runs (e.g. the window was resized or the display
       // changed while the event loop was not active).
+      // Render pipelines were already cleared by update_for_reload above.
       {
         let gpu = state.gpu.read().unwrap();
-        state.surface.configure(&gpu.device, &state.surface_config);
+        if let (Some(surface), Some(config)) = (&gpu.surface, &gpu.surface_config) {
+          surface.configure(&gpu.device, config);
+        }
       }
       // Re-show the window: macOS may have ordered it out during the
       // resign-active → become-active lifecycle that happens while the main
@@ -1026,6 +1230,7 @@ impl RenderState {
       shader,
       pipeline_layout,
       compute_pipelines: HashMap::new(),
+      render_pipelines: HashMap::new(),
       binding_slots,
       binding_buffers,
       binding_buffer_sizes,
@@ -1034,15 +1239,12 @@ impl RenderState {
       window_size: (surface_config.width, surface_config.height),
       window_time: 0.0,
       window_delta_time: 0.0,
+      surface: Some(surface),
+      surface_config: Some(surface_config),
+      pending_present: None,
     }));
 
-    Ok(Self {
-      window,
-      surface,
-      surface_config,
-      pipelines: HashMap::new(),
-      gpu,
-    })
+    Ok(Self { window, gpu })
   }
 
   /// Builds a `RenderState` by adding a render surface to an already-running
@@ -1093,135 +1295,77 @@ impl RenderState {
     surface.configure(&gpu_read.device, &surface_config);
     drop(gpu_read);
 
-    gpu.write().unwrap().window_size =
-      (surface_config.width, surface_config.height);
-
-    Ok(Self {
-      window,
-      surface,
-      surface_config,
-      pipelines: HashMap::new(),
-      gpu,
-    })
-  }
-
-  fn get_or_create_render_pipeline(
-    pipelines: &mut HashMap<(String, String, bool), wgpu::RenderPipeline>,
-    vert_entry: &str,
-    frag_entry: &str,
-    additive: bool,
-    gpu: &GpuCore,
-    format: wgpu::TextureFormat,
-  ) {
-    let key = (vert_entry.to_string(), frag_entry.to_string(), additive);
-    if pipelines.contains_key(&key) {
-      return;
+    {
+      let mut gpu_write = gpu.write().unwrap();
+      gpu_write.window_size = (surface_config.width, surface_config.height);
+      gpu_write.surface = Some(surface);
+      gpu_write.surface_config = Some(surface_config);
     }
-    let blend = if additive {
-      wgpu::BlendState {
-        color: wgpu::BlendComponent {
-          src_factor: wgpu::BlendFactor::One,
-          dst_factor: wgpu::BlendFactor::One,
-          operation: wgpu::BlendOperation::Add,
-        },
-        alpha: wgpu::BlendComponent {
-          src_factor: wgpu::BlendFactor::One,
-          dst_factor: wgpu::BlendFactor::One,
-          operation: wgpu::BlendOperation::Add,
-        },
-      }
-    } else {
-      wgpu::BlendState::REPLACE
-    };
-    let pipeline =
-      gpu
-        .device
-        .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-          label: Some("easl pipeline"),
-          layout: Some(&gpu.pipeline_layout),
-          vertex: wgpu::VertexState {
-            module: &gpu.shader,
-            entry_point: Some(vert_entry),
-            buffers: &[],
-            compilation_options: Default::default(),
-          },
-          fragment: Some(wgpu::FragmentState {
-            module: &gpu.shader,
-            entry_point: Some(frag_entry),
-            targets: &[Some(wgpu::ColorTargetState {
-              format,
-              blend: Some(blend),
-              write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: Default::default(),
-          }),
-          primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            unclipped_depth: false,
-            conservative: false,
-          },
-          depth_stencil: None,
-          multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-          },
-          multiview_mask: None,
-          cache: None,
-        });
-    pipelines.insert(key, pipeline);
+
+    Ok(Self { window, gpu })
   }
 
   fn resize(&mut self, width: u32, height: u32) {
     if width > 0 && height > 0 {
-      self.surface_config.width = width;
-      self.surface_config.height = height;
       let mut gpu = self.gpu.write().unwrap();
       gpu.window_size = (width, height);
-      self.surface.configure(&gpu.device, &self.surface_config);
+      if let Some(config) = &mut gpu.surface_config {
+        config.width = width;
+        config.height = height;
+      }
+      if let (Some(surface), Some(config)) = (&gpu.surface, &gpu.surface_config) {
+        surface.configure(&gpu.device, config);
+      }
     }
   }
 
   fn render(&mut self, draw_calls: &[WindowEvent]) {
+    // Fast path: if flush_queued_compute already rendered to the real surface
+    // mid-frame, just present that pre-rendered texture. Render events were
+    // drained by flush_queued_compute so draw_calls should be empty here.
+    {
+      let mut gpu = self.gpu.write().unwrap();
+      if let Some(pending) = gpu.pending_present.take() {
+        if draw_calls.is_empty() {
+          pending.present();
+          return;
+        }
+        // New draw calls arrived after the flush (unusual). The first render's
+        // storage writes are already committed; discard its visual output and
+        // fall through to re-render below.
+        drop(pending);
+      }
+    }
+
     if draw_calls.is_empty() {
       return;
     }
 
-    let format = self.surface_config.format;
+    let mut gpu = self.gpu.write().unwrap();
+
+    let format = gpu
+      .surface_config
+      .as_ref()
+      .map(|c| c.format)
+      .unwrap_or(GpuCore::OFFSCREEN_FORMAT);
 
     // Pre-pass: ensure all pipeline objects exist. No buffer uploads here —
     // uploads are done per-draw-call below so each draw sees its own values.
-    {
-      let mut gpu = self.gpu.write().unwrap();
-      for draw_call in draw_calls {
-        match draw_call {
-          WindowEvent::RenderShaders {
-            vert,
-            frag,
-            additive,
-            ..
-          } => {
-            let vert = vert.replace('-', "_");
-            let frag = frag.replace('-', "_");
-            Self::get_or_create_render_pipeline(
-              &mut self.pipelines,
-              &vert,
-              &frag,
-              *additive,
-              &gpu,
-              format,
-            );
-          }
-          WindowEvent::ComputeShader { entry, .. } => {
-            // Compute shaders are normally executed immediately by
-            // record_compute, but handle defensively here too.
-            let entry = entry.replace('-', "_");
-            gpu.get_or_create_compute_pipeline(&entry);
-          }
+    for draw_call in draw_calls {
+      match draw_call {
+        WindowEvent::RenderShaders {
+          vert,
+          frag,
+          additive,
+          ..
+        } => {
+          let vert = vert.replace('-', "_");
+          let frag = frag.replace('-', "_");
+          gpu.get_or_create_render_pipeline(&vert, &frag, *additive, format);
+        }
+        WindowEvent::ComputeShader { entry, .. } => {
+          let entry = entry.replace('-', "_");
+          gpu.get_or_create_compute_pipeline(&entry);
         }
       }
     }
@@ -1231,7 +1375,7 @@ impl RenderState {
       .any(|c| matches!(c, WindowEvent::RenderShaders { .. }));
 
     let output = if has_render {
-      match self.surface.get_current_texture() {
+      match gpu.surface.as_ref().expect("RenderState has no surface").get_current_texture() {
         Ok(texture) => Some(texture),
         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => return,
         Err(e) => {
@@ -1256,7 +1400,6 @@ impl RenderState {
     // binding appears in multiple pre_uploads, the last write wins, which is
     // correct because collect_dirty_uploads marks each binding Synced on first
     // upload so only the first dispatch in the frame will carry each binding.
-    let mut gpu = self.gpu.write().unwrap();
 
     // --- Compute pass (one encoder, one submit) ---
     let compute_calls: Vec<_> = draw_calls
@@ -1355,11 +1498,11 @@ impl RenderState {
           for (vert, frag, vert_count, _, additive) in &render_calls {
             let vert = vert.replace('-', "_");
             let frag = frag.replace('-', "_");
+            let key = (vert, frag, **additive, format);
             for (group_idx, bind_group) in gpu.bind_groups.iter().enumerate() {
               render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
             }
-            render_pass
-              .set_pipeline(&self.pipelines[&(vert, frag, **additive)]);
+            render_pass.set_pipeline(&gpu.render_pipelines[&key]);
             render_pass.draw(0..**vert_count, 0..1);
           }
         }

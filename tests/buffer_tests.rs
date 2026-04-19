@@ -66,3 +66,4 @@ buffer_test!(break_in_match);
 buffer_test!(break_in_nonunit_match);
 buffer_test!(cpu_atomic_assignment);
 buffer_test!(bidirectional_transfer_array);
+buffer_test!(bidirectional_transfer_render);

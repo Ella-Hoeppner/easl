@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::compiler::{
   builtins::{ASSIGNMENT_OPS, ATOMIC_MUTATION_OPS},
-  error::{CompileError, SourceTrace},
+  error::CompileError,
   expression::{Accessor, Exp, ExpKind, Number, SwizzleField},
   functions::{AbstractFunctionSignature, FunctionImplementationKind},
   program::Program,
@@ -1541,6 +1541,7 @@ fn apply_builtin_fn<IO: IOManager>(
         } else {
           false
         };
+      env.setup_gpu_if_needed();
       let pre_upload = env.collect_dirty_uploads(&read_global_variable_names);
       env.io.record_draw(
         &vert_f_name,
@@ -2398,19 +2399,35 @@ impl IOManager for StdoutIO {
         Some(gpu) => gpu,
         None => return,
       };
+      // Drain all queued events. Compute events are executed and discarded.
+      // Render events are executed on the real surface (if available) via
+      // execute_render_batch, which stores the surface texture in
+      // pending_present so RenderState::render can just call present() at
+      // end-of-frame without re-running the shaders.
       let all = std::mem::take(&mut self.frame_draw_calls);
-      let mut batch = vec![];
+      let mut compute_batch = vec![];
+      let mut render_batch = vec![];
       for event in all {
         match event {
           WindowEvent::ComputeShader {
             entry,
             workgroup_count,
             pre_upload,
-          } => batch.push((entry, workgroup_count, pre_upload)),
-          render => self.frame_draw_calls.push(render),
+          } => compute_batch.push((entry, workgroup_count, pre_upload)),
+          WindowEvent::RenderShaders {
+            vert,
+            frag,
+            vert_count,
+            pre_upload,
+            additive,
+          } => {
+            render_batch.push((vert, frag, vert_count, pre_upload, additive))
+          }
         }
       }
-      gpu.write().unwrap().execute_compute_batch(batch);
+      let mut g = gpu.write().unwrap();
+      g.execute_compute_batch(compute_batch);
+      g.execute_render_batch(render_batch);
     }
   }
 
