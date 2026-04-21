@@ -1,0 +1,13 @@
+@{address storage-write
+  group 0
+  binding 1}
+(var x: u32)
+
+@cpu
+(defn main []
+  (= x 5)
+  (print x)
+  (dispatch-compute-shader (fn [] (= x (* x x)))
+                           (vec3u 1u))
+  (print x))
+

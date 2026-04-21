@@ -1096,6 +1096,7 @@ impl TopLevelFunction {
     };
     let effects = body.effects();
     let allowed_on_gpu = effects.cpu_exclusive_functions().is_empty()
+      && effects.cpu_exclusive_types().is_empty()
       && effects.gpu_illegal_address_space_writes(program).is_empty();
     let args = arg_names
       .into_iter()

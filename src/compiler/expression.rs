@@ -308,6 +308,7 @@ pub enum ExpKind<D: Debug + Clone + PartialEq> {
   Name(Arc<str>),
   NumberLiteral(Number),
   BooleanLiteral(bool),
+  StringLiteral(Arc<str>),
   Function(Vec<(Arc<str>, SourceTrace)>, Box<Exp<D>>),
   Application(Box<Exp<D>>, Vec<Exp<D>>),
   Access(Accessor, Box<Exp<D>>),
@@ -346,6 +347,7 @@ impl<D: Debug + Clone + PartialEq> ExpKind<D> {
       Name(_) => "Name",
       NumberLiteral(_) => "NumberLiteral",
       BooleanLiteral(_) => "BooleanLiteral",
+      StringLiteral(_) => "StringLiteral",
       Function(_, _) => "Function",
       Application(_, _) => "Application",
       Access(_, _) => "Access",
@@ -1210,6 +1212,20 @@ impl TypedExp {
                   encloser_or_operator_source_trace,
                 );
               }
+              E::Quote => TypedExp {
+                data: Type::String.known().into(),
+                kind: ExpKind::StringLiteral(
+                  if let Some(child) = children_iter.next() {
+                    let EaslTree::Leaf(_, text) = child else {
+                      panic!("string literal somehow had an inner node inside")
+                    };
+                    text.into()
+                  } else {
+                    "".into()
+                  },
+                ),
+                source_trace: encloser_or_operator_source_trace,
+              },
             }
           }
           Operator(o) => match o {
@@ -1673,6 +1689,7 @@ impl TypedExp {
         Number::Float(f) => format!("{f}f"),
       }),
       BooleanLiteral(b) => wrap(format!("{b}")),
+      StringLiteral(s) => panic!("Attempting to compile string"),
       Function(_, _) => panic!("Attempting to compile internal function"),
       Application(f, mut args) => wrap(match f.data.unwrap_known() {
         Type::Function(signature) => {
@@ -2498,6 +2515,15 @@ impl TypedExp {
           self
             .data
             .constrain(&Type::Bool.known(), &self.source_trace, errors);
+        changed
+      }
+      StringLiteral(_) => {
+        self.data.subtree_fully_typed = true;
+        let changed = self.data.constrain(
+          &Type::String.known(),
+          &self.source_trace,
+          errors,
+        );
         changed
       }
       Function(arg_names, body) => {
@@ -3920,7 +3946,7 @@ impl TypedExp {
     name_type_pairs
   }
   pub fn effects(&self) -> EffectType {
-    match &self.kind {
+    let mut e = match &self.kind {
       Name(name) => Effect::ReadsVar(name.clone()).into(),
       Block(exps) | ArrayLiteral(exps) => exps
         .into_iter()
@@ -4039,12 +4065,13 @@ impl TypedExp {
       }
       Continue => Effect::Continue.into(),
       Discard => Effect::Discard.into(),
-      Wildcard => EffectType::empty(),
-      Unit => EffectType::empty(),
-      NumberLiteral(_) => EffectType::empty(),
-      BooleanLiteral(_) => EffectType::empty(),
-      Uninitialized => EffectType::empty(),
+      _ => EffectType::empty(),
+    };
+    match self.data.unwrap_known() {
+      Type::String => e.merge(Effect::CPUExclusiveType("String".into())),
+      _ => {}
     }
+    e
   }
   fn replace_internal_names(
     &mut self,

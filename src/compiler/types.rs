@@ -889,6 +889,7 @@ pub enum Type {
   I32,
   U32,
   Bool,
+  String,
   Struct(Struct),
   Enum(Enum),
   Function(Box<FunctionSignature>),
@@ -916,6 +917,7 @@ impl Type {
       Type::I32 => "I32",
       Type::U32 => "U32",
       Type::Bool => "Bool",
+      Type::String => "String",
       Type::Struct(_) => "Struct",
       Type::Enum(_) => "Enum",
       Type::Function(_) => "Function",
@@ -1005,6 +1007,9 @@ impl Type {
               ));
             }
           }
+      }
+      Type::String => {
+        return err(CantComputeSizeOfString, source_trace.clone());
       }
     })
   }
@@ -1380,6 +1385,7 @@ impl Type {
       Type::Skolem(name, _) => {
         panic!("Attempted to compile Skolem \"{name}\"")
       }
+      Type::String => "String".into(),
     }
   }
   pub fn replace_skolems(&mut self, skolems: &HashMap<Arc<str>, Type>) {
@@ -2855,6 +2861,7 @@ pub enum TypeDescription {
   I32,
   U32,
   Bool,
+  String,
   Struct(String),
   Enum(String),
   Function {
@@ -2875,6 +2882,7 @@ impl From<Type> for TypeDescription {
       Type::I32 => Self::I32,
       Type::U32 => Self::U32,
       Type::Bool => Self::Bool,
+      Type::String => Self::String,
       Type::Struct(s) => Self::Struct(match &*s.name {
         "Texture2D" => format!(
           "(Texture2D {})",
@@ -2923,6 +2931,7 @@ impl Display for TypeDescription {
         Self::I32 => "i32".to_string(),
         Self::U32 => "u32".to_string(),
         Self::Bool => "bool".to_string(),
+        Self::String => "String".to_string(),
         Self::Struct(name) => name.clone(),
         Self::Enum(name) => name.clone(),
         Self::Array(size, inner_type) => {

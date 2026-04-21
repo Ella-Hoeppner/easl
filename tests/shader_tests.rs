@@ -268,6 +268,9 @@ success_test!(block_deshadow);
 success_test!(eta_abstracted_local_function);
 success_test!(local_sdf_op);
 success_test!(vec_negation);
+success_test!(compute_success_inferred_workgroup_size);
+success_test!(hanging_io_attribute_helper);
+success_test!(string_using_functions_ignored);
 
 // --- Error tests ---
 
@@ -366,12 +369,8 @@ error_test!(
   CompileErrorKind::VariableFunctionNameCollision("a".into())
 );
 error_test!(
-  compute_failure_no_workgroup,
-  CompileErrorKind::ComputeEntryMissingWorkgroupSize
-);
-error_test!(
   compute_failure_workgroup_on_fragment,
-  CompileErrorKind::InvalidWorkgroupSizeAnnotation
+  CompileErrorKind::WorkgroupSizeAnnotationOnInvalidEntry
 );
 error_test!(
   dpdx_failure,
@@ -567,3 +566,8 @@ error_test!(
 );
 
 error_test!(atomic_binding_failure, CompileErrorKind::CantBindAtomic);
+
+error_test!(
+  string_usage_failure,
+  CompileErrorKind::CPUExclusiveTypeInGPUEntryPoint("String".to_string())
+);

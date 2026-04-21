@@ -198,9 +198,7 @@ pub enum CompileErrorKind {
     "workgroup-size annotations are only allowed on functions marked as \
     `@compute` entry points"
   )]
-  InvalidWorkgroupSizeAnnotation,
-  #[error("compute entry points must specify a workgroup-size")]
-  ComputeEntryMissingWorkgroupSize,
+  WorkgroupSizeAnnotationOnInvalidEntry,
   #[error("Invalid assignment target")]
   InvalidAssignmentTarget,
   #[error("Assignment target must be a variable: `{0}`")]
@@ -266,6 +264,8 @@ pub enum CompileErrorKind {
   FragmentExclusiveFunctionOutsideFragment(String),
   #[error("function `{0}` can only occur in @fragment functions")]
   CPUExclusiveFunctionInGPUEntryPoint(String),
+  #[error("Type `{0}` cannot be used on the GPU")]
+  CPUExclusiveTypeInGPUEntryPoint(String),
   #[error("`continue` can only occur inside a loop")]
   ContinueOutsideLoop,
   #[error("`break` can only occur inside a loop")]
@@ -453,6 +453,8 @@ pub enum CompileErrorKind {
   IncompatibleRenderEntryPoints(String, String),
   #[error("Can't create a binding to an atomic value")]
   CantBindAtomic,
+  #[error("Can't compute the size of a value of type String")]
+  CantComputeSizeOfString,
 }
 
 impl CompileErrorKind {

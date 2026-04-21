@@ -1,0 +1,8 @@
+(defn f []: f32
+  (let [x "Hi!"]
+    0.5))
+
+@cpu
+(defn main []
+  (print (f)))
+

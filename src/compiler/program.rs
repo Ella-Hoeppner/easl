@@ -1087,14 +1087,15 @@ impl Program {
               {
                 match &**f_name {
                   "dispatch-compute-shader" => {
-                    if let Type::Function(compute_entry_fn) =
+                    if let Type::Function(compute_fn) =
                       args[0].data.unwrap_known()
-                      && let Some(compute_entry_fn) =
-                        compute_entry_fn.abstract_ancestor
+                      && let Some(abstract_compute_fn) =
+                        compute_fn.abstract_ancestor
                     {
-                      let mut compute_entry_fn =
-                        compute_entry_fn.write().unwrap();
-                      if let Some(entry_point) = compute_entry_fn.entry_point {
+                      let mut abstract_compute_fn =
+                        abstract_compute_fn.write().unwrap();
+                      if let Some(entry_point) = abstract_compute_fn.entry_point
+                      {
                         if !matches!(entry_point, EntryPoint::Compute(_)) {
                           errors.log(CompileError::new(
                             WrongEntryPointTypeForDispatchComputeShader(
@@ -1104,8 +1105,24 @@ impl Program {
                           ))
                         }
                       } else {
-                        compute_entry_fn.entry_point =
+                        abstract_compute_fn.entry_point =
                           Some(EntryPoint::Compute(1))
+                      }
+                      for other_abstract_f in self.abstract_functions_iter() {
+                        if let Ok(mut other_abstract_f) =
+                          other_abstract_f.try_write()
+                        {
+                          if other_abstract_f.name == abstract_compute_fn.name
+                            && let FunctionImplementationKind::Composite(
+                              other_f,
+                            ) = &other_abstract_f.implementation
+                          {
+                            other_f.write().unwrap().entry_point =
+                              abstract_compute_fn.entry_point;
+                            other_abstract_f.entry_point =
+                              abstract_compute_fn.entry_point;
+                          }
+                        }
                       }
                     }
                   }
@@ -1302,15 +1319,16 @@ impl Program {
         &f.read().unwrap().implementation
       {
         let mut implementation = implementation.write().unwrap();
-        if let Some(entry_point) = borrowed_f.entry_point {
-          let attributes =
-            implementation.effects().looked_up_builtin_attributes();
-          let Type::Function(signature) =
-            implementation.expression.data.unwrap_known()
-          else {
-            panic!()
-          };
-          for attribute in attributes {
+        let attributes =
+          implementation.effects().looked_up_builtin_attributes();
+        let Type::Function(signature) =
+          implementation.expression.data.unwrap_known()
+        else {
+          panic!()
+        };
+        for attribute in attributes {
+          used_attributes.insert(attribute);
+          if let Some(entry_point) = borrowed_f.entry_point {
             if !attribute.is_valid_input_for_stage(&entry_point) {
               errors.log(CompileError::new(
                 InvalidBuiltinForEntryPoint(
@@ -1321,7 +1339,6 @@ impl Program {
                 implementation.name_source_trace.clone(),
               ));
             }
-            used_attributes.insert(attribute);
             let global_var_name = attribute.compiled_name();
             let value_type_info: ExpTypeInfo =
               attribute.value_type().known().into();
@@ -1443,26 +1460,6 @@ impl Program {
             .into();
           }
         }
-        // implementation
-        //   .expression
-        //   .walk_mut(&mut |exp| {
-        //     use FunctionTargetConfiguration::*;
-        //     if let ExpKind::Application(f, _) = &exp.kind
-        //       && let Type::Function(f) = f.data.unwrap_known()
-        //       && let Some(abstract_f) = f.abstract_ancestor
-        //       && let FunctionImplementationKind::Builtin {
-        //         target_configuration: BuiltinAttributeLookup(attribute),
-        //         ..
-        //       } = abstract_f.read().unwrap().implementation
-        //     {
-        //       exp.kind = ExpKind::Name(get_attribute_name(
-        //         attribute,
-        //         &mut global_builtin_attribute_vars,
-        //       ));
-        //     }
-        //     Ok::<bool, Never>(true)
-        //   })
-        //   .unwrap();
       }
     }
     for attribute in used_attributes {
@@ -2959,6 +2956,12 @@ impl Program {
             for f_name in effects.cpu_exclusive_functions() {
               errors.log(CompileError {
                 kind: CPUExclusiveFunctionInGPUEntryPoint(f_name.to_string()),
+                source_trace: f.expression.source_trace.clone(),
+              });
+            }
+            for type_name in effects.cpu_exclusive_types() {
+              errors.log(CompileError {
+                kind: CPUExclusiveTypeInGPUEntryPoint(type_name.to_string()),
                 source_trace: f.expression.source_trace.clone(),
               });
             }

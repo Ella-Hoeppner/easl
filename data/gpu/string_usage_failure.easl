@@ -1,0 +1,5 @@
+@fragment
+(defn f []: vec4f
+  (let [x "Hi!"]
+    (vec4f 1.)))
+

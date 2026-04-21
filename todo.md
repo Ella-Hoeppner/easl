@@ -1,11 +1,6 @@
 # todo
 ## Highest priority
 ### necessary for wgsl feature parity + stuff I wanna get done before calling the language "production ready"
-* seems like when a helper function uses an input attribute accessor function, if it isn't called from an entry point that generates the global var that the accessor function would refer to, the resulting wgsl is invalid because the global var doesn't get emitted
-
-
-
-
 * nested unsized array types seem to break the interpreter
 
 * trying to do an early return in a function that returns unit crashes the compile rn. You have to do `(return ())`, but then you get an error about compiling unit in an inner position

@@ -141,3 +141,4 @@ window_test!(implicit_render_entry_points);
 window_test!(closure_render_entry_points);
 window_test!(print_after_close_window);
 window_test!(spawn_window_captured_scope);
+window_test!(print_string);

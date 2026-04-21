@@ -19,6 +19,7 @@ pub enum Effect {
   Discard,
   FragmentExclusiveFunction(Arc<str>),
   CPUExclusiveFunction(Arc<str>),
+  CPUExclusiveType(Arc<str>),
   Print,
   Window,
   LookupBuiltinAttribute(BuiltinIOAttribute),
@@ -49,7 +50,8 @@ impl EffectType {
       match e {
         Effect::ReadsVar(_)
         | Effect::FragmentExclusiveFunction(_)
-        | Effect::CPUExclusiveFunction(_) => {}
+        | Effect::CPUExclusiveFunction(_)
+        | Effect::CPUExclusiveType(_) => {}
         _ => return false,
       }
     }
@@ -61,6 +63,19 @@ impl EffectType {
       .iter()
       .filter_map(|e| {
         if let Effect::CPUExclusiveFunction(name) = e {
+          Some(name.clone())
+        } else {
+          None
+        }
+      })
+      .collect()
+  }
+  pub fn cpu_exclusive_types(&self) -> Vec<Arc<str>> {
+    self
+      .0
+      .iter()
+      .filter_map(|e| {
+        if let Effect::CPUExclusiveType(name) = e {
           Some(name.clone())
         } else {
           None

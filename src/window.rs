@@ -564,6 +564,10 @@ impl GpuCore {
       .collect();
     self.upload_bindings(&all_uploads);
 
+    // Drop any stale pending texture before acquiring a new one — wgpu allows
+    // at most one live SurfaceTexture at a time.
+    self.pending_present = None;
+
     // Try to acquire the real surface texture; fall back to offscreen if
     // unavailable or if no surface exists (headless mode).
     let surface_texture: Option<wgpu::SurfaceTexture> =
@@ -878,7 +882,9 @@ impl<'a, IO: IOManager> App<'a, IO> {
       // changed while the event loop was not active).
       // Render pipelines were already cleared by update_for_reload above.
       {
-        let gpu = state.gpu.read().unwrap();
+        let mut gpu = state.gpu.write().unwrap();
+        // Drop any stale surface texture before reconfiguring.
+        gpu.pending_present = None;
         if let (Some(surface), Some(config)) = (&gpu.surface, &gpu.surface_config) {
           surface.configure(&gpu.device, config);
         }
@@ -1308,6 +1314,8 @@ impl RenderState {
   fn resize(&mut self, width: u32, height: u32) {
     if width > 0 && height > 0 {
       let mut gpu = self.gpu.write().unwrap();
+      // wgpu requires no live SurfaceTexture when configure is called.
+      gpu.pending_present = None;
       gpu.window_size = (width, height);
       if let Some(config) = &mut gpu.surface_config {
         config.width = width;

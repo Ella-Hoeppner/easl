@@ -272,24 +272,20 @@ impl Annotation {
         }
       }
     }
-    if let Some(workgroup_size) = workgroup_size {
-      match parsed_annotation.entry {
-        Some(EntryPoint::Compute(_)) | None => {
-          parsed_annotation.entry = Some(EntryPoint::Compute(workgroup_size))
+    if let Some(entry) = parsed_annotation.entry {
+      match entry {
+        EntryPoint::Compute(_) => {
+          parsed_annotation.entry =
+            Some(EntryPoint::Compute(workgroup_size.unwrap_or(1)))
         }
         _ => {
-          return Err(CompileError::new(
-            InvalidWorkgroupSizeAnnotation,
-            self.source_trace.clone(),
-          ));
+          if workgroup_size.is_some() {
+            return Err(CompileError::new(
+              WorkgroupSizeAnnotationOnInvalidEntry,
+              self.source_trace.clone(),
+            ));
+          }
         }
-      }
-    } else {
-      if let Some(EntryPoint::Compute(_)) = parsed_annotation.entry {
-        return Err(CompileError::new(
-          ComputeEntryMissingWorkgroupSize,
-          self.source_trace.clone(),
-        ));
       }
     }
     Ok(parsed_annotation)

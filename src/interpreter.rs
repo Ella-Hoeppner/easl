@@ -225,6 +225,7 @@ pub enum Value {
     length: usize,
   },
   Uninitialized,
+  String(String),
 }
 
 impl Value {
@@ -1818,6 +1819,7 @@ impl Value {
         format!("[{}]", items.join(" "))
       }
       (Value::Unit, _) => "()".to_string(),
+      (Value::String(s), _) => s.clone(),
       _ => format!("{:?}", self),
     })
   }
@@ -1879,6 +1881,7 @@ impl Value {
           Self::zeroed(first_variant.inner_type.unwrap_known(), env)?.into(),
         )
       }
+      Type::String => Value::String(String::new()),
     })
   }
   fn unwrap_primitive(self) -> Primitive {
@@ -3081,6 +3084,7 @@ pub fn eval(
     }
     .into(),
     ExpKind::BooleanLiteral(b) => Primitive::Bool(b).into(),
+    ExpKind::StringLiteral(s) => Value::String(s.to_string()),
     ExpKind::Function(arg_names, expression) => {
       Value::Fun(Function::Composite {
         arg_names: arg_names

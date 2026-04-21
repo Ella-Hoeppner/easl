@@ -13,6 +13,7 @@ pub enum Context {
   Default,
   StructuredComment,
   UnstructuredComment,
+  String,
 }
 
 impl ContextId for Context {
@@ -33,6 +34,7 @@ pub enum Encloser {
   Curly,
   LineComment,
   BlockComment,
+  Quote,
 }
 impl SSEEncloser for Encloser {
   fn opening_encloser_str(&self) -> &str {
@@ -43,6 +45,7 @@ impl SSEEncloser for Encloser {
       Curly => "{",
       LineComment => ";",
       BlockComment => ";*",
+      Quote => "\"",
     }
   }
 
@@ -54,6 +57,7 @@ impl SSEEncloser for Encloser {
       Curly => "}",
       LineComment => "\n",
       BlockComment => "*;",
+      Quote => "\"",
     }
   }
 }
@@ -98,6 +102,7 @@ static DEFAULT_CTX: LazyLock<SSEContext<Encloser, Operator>> =
         Encloser::Curly,
         Encloser::LineComment,
         Encloser::BlockComment,
+        Encloser::Quote,
       ],
       vec![
         Operator::Annotation,
@@ -126,7 +131,7 @@ impl Syntax for EaslSyntax {
   fn context<'a>(&'a self, id: &Self::C) -> &'a SSEContext<Self::E, Self::O> {
     match id {
       Context::Default | Context::StructuredComment => &*DEFAULT_CTX,
-      Context::UnstructuredComment => &*TRIVIAL_CTX,
+      Context::UnstructuredComment | Context::String => &*TRIVIAL_CTX,
     }
   }
   fn encloser_context(&self, encloser: &Self::E) -> Option<Self::C> {
@@ -134,6 +139,7 @@ impl Syntax for EaslSyntax {
       Encloser::LineComment | Encloser::BlockComment => {
         Some(Context::UnstructuredComment)
       }
+      Encloser::Quote => Some(Context::String),
       _ => None,
     }
   }
