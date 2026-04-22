@@ -1689,7 +1689,7 @@ impl TypedExp {
         Number::Float(f) => format!("{f}f"),
       }),
       BooleanLiteral(b) => wrap(format!("{b}")),
-      StringLiteral(s) => panic!("Attempting to compile string"),
+      StringLiteral(_) => panic!("Attempting to compile string"),
       Function(_, _) => panic!("Attempting to compile internal function"),
       Application(f, mut args) => wrap(match f.data.unwrap_known() {
         Type::Function(signature) => {

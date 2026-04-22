@@ -1555,28 +1555,27 @@ fn apply_builtin_fn<IO: IOManager>(
           false
         };
       env.setup_gpu_if_needed();
-      let mut pre_upload = env.collect_dirty_uploads(&read_global_variable_names);
-      let render_target = env
-        .current_render_target
-        .map(|gb| (gb.group, gb.binding));
+      let mut pre_upload =
+        env.collect_dirty_uploads(&read_global_variable_names);
+      let render_target =
+        env.current_render_target.map(|gb| (gb.group, gb.binding));
       // If rendering to an offscreen texture, also upload it now (even though
       // the shader doesn't read it) so the GPU has the correctly-sized texture
       // to render into.  Collect its upload separately to avoid marking it
       // Synced before the render has run.
       if let Some((rt_group, rt_binding)) = render_target {
-        if let Some((gb, name, _, _)) = env
-          .binding_vars
-          .iter()
-          .find(|(gb, _, _, addr)| {
+        if let Some((_, name, _, _)) =
+          env.binding_vars.iter().find(|(gb, _, _, addr)| {
             gb.group == rt_group
               && gb.binding == rt_binding
               && *addr == VariableAddressSpace::Handle
           })
         {
-          let gb = *gb;
           let name = name.clone();
           // Only upload if the CPU has a value that the GPU doesn't know about yet.
-          if env.buffer_states.get(&name) == Some(&SharedBufferState::GPUOutOfDate) {
+          if env.buffer_states.get(&name)
+            == Some(&SharedBufferState::GPUOutOfDate)
+          {
             let extra = env.collect_dirty_uploads(&[name.clone()]);
             pre_upload.extend(extra);
           }
@@ -1595,10 +1594,10 @@ fn apply_builtin_fn<IO: IOManager>(
       // value is now stale.  Mark it CPUOutOfDate so subsequent compute
       // dispatches don't re-upload the CPU value and overwrite the result.
       if let Some((rt_group, rt_binding)) = render_target {
-        if let Some((_, name, _, _)) = env
-          .binding_vars
-          .iter()
-          .find(|(gb, _, _, _)| gb.group == rt_group && gb.binding == rt_binding)
+        if let Some((_, name, _, _)) =
+          env.binding_vars.iter().find(|(gb, _, _, _)| {
+            gb.group == rt_group && gb.binding == rt_binding
+          })
         {
           let name = name.clone();
           env.mark_gpu_written(&[name]);
@@ -1700,13 +1699,18 @@ fn apply_builtin_fn<IO: IOManager>(
       };
       let img = image::open(&resolved)
         .map_err(|e| {
-          UserspaceEvalError::RuntimeError(
-            format!("load-image: failed to open \"{path}\": {e}"),
-          )
+          UserspaceEvalError::RuntimeError(format!(
+            "load-image: failed to open \"{path}\": {e}"
+          ))
         })?
         .into_rgba8();
       let (width, height) = img.dimensions();
-      Ok(Value::Texture { width, height, data: img.into_raw(), binding: None })
+      Ok(Value::Texture {
+        width,
+        height,
+        data: img.into_raw(),
+        binding: None,
+      })
     }
     "blank-texture" => {
       let (width, height) = if args.len() == 2 {
@@ -1730,7 +1734,12 @@ fn apply_builtin_fn<IO: IOManager>(
         (w, h)
       };
       let data = vec![0u8; (width * height * 4) as usize];
-      Ok(Value::Texture { width, height, data, binding: None })
+      Ok(Value::Texture {
+        width,
+        height,
+        data,
+        binding: None,
+      })
     }
     "texture-dimensions" => {
       // Both overloads: (tex) and (tex level). The mip level arg is ignored on
@@ -1748,7 +1757,10 @@ fn apply_builtin_fn<IO: IOManager>(
       ))
     }
     "set-render-target" => {
-      let Value::Texture { binding: Some(gb), .. } = args.remove(0).0 else {
+      let Value::Texture {
+        binding: Some(gb), ..
+      } = args.remove(0).0
+      else {
         panic!(
           "set-render-target: texture must be assigned to a binding variable \
            before it can be used as a render target"
@@ -2188,7 +2200,11 @@ pub enum BufferUpload {
   /// Zero-fill `byte_count` bytes on the GPU side (no CPU allocation needed).
   Clear { byte_count: u64 },
   /// Upload RGBA8 pixel data to a texture binding.
-  TextureData { width: u32, height: u32, data: Vec<u8> },
+  TextureData {
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+  },
 }
 
 /// Internal frame-level GPU command, used by StdoutIO to pass commands to
@@ -2534,7 +2550,8 @@ impl IOManager for StdoutIO {
   fn flush_queued_compute(&mut self) {
     #[cfg(feature = "window")]
     {
-      type ComputeCall = (String, (u32, u32, u32), Vec<((u8, u8), BufferUpload)>);
+      type ComputeCall =
+        (String, (u32, u32, u32), Vec<((u8, u8), BufferUpload)>);
       type RenderCall = (
         String,
         String,
@@ -2580,7 +2597,9 @@ impl IOManager for StdoutIO {
             // results are visible to this render), then execute the render
             // before any subsequent compute (so compute can read its output).
             if !pending_compute.is_empty() {
-              work.push(WorkItem::ComputeBatch(std::mem::take(&mut pending_compute)));
+              work.push(WorkItem::ComputeBatch(std::mem::take(
+                &mut pending_compute,
+              )));
             }
             work.push(WorkItem::RenderBatch(vec![(
               vert,
@@ -2599,7 +2618,8 @@ impl IOManager for StdoutIO {
             additive,
             render_target: None,
           } => {
-            deferred_screen_renders.push((vert, frag, vert_count, pre_upload, additive, None));
+            deferred_screen_renders
+              .push((vert, frag, vert_count, pre_upload, additive, None));
           }
         }
       }
@@ -2778,9 +2798,14 @@ impl IOManager for CaptureIO {
     additive: bool,
     render_target: Option<(u8, u8)>,
   ) -> Result<(), EvalError> {
-    self
-      .inner
-      .record_draw(vert, frag, vert_count, pre_upload, additive, render_target)
+    self.inner.record_draw(
+      vert,
+      frag,
+      vert_count,
+      pre_upload,
+      additive,
+      render_target,
+    )
   }
 
   fn record_compute(
@@ -3010,7 +3035,11 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           0
         } else {
           let u32s = ty.wgsl_data_size_in_u32s();
-          if u32s == 0 { 0 } else { ((u32s as u64 * 4).max(4) + 15) & !15 }
+          if u32s == 0 {
+            0
+          } else {
+            ((u32s as u64 * 4).max(4) + 15) & !15
+          }
         };
         ((gb.group, gb.binding), kind, size)
       })
@@ -3042,13 +3071,16 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             let padded = ((raw_bytes + 15) / 16) * 16;
             BufferUpload::Clear { byte_count: padded }
           }
-          Some(Value::Texture { width, height, data, .. }) => {
-            BufferUpload::TextureData {
-              width: *width,
-              height: *height,
-              data: data.clone(),
-            }
-          }
+          Some(Value::Texture {
+            width,
+            height,
+            data,
+            ..
+          }) => BufferUpload::TextureData {
+            width: *width,
+            height: *height,
+            data: data.clone(),
+          },
           _ if *addr == VariableAddressSpace::Handle => {
             // Uninitialized texture — skip; placeholder texture is used on GPU.
             return None;
@@ -3106,13 +3138,16 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           let padded = ((raw_bytes + 15) / 16) * 16;
           BufferUpload::Clear { byte_count: padded }
         }
-        Some(Value::Texture { width, height, data, .. }) => {
-          BufferUpload::TextureData {
-            width: *width,
-            height: *height,
-            data: data.clone(),
-          }
-        }
+        Some(Value::Texture {
+          width,
+          height,
+          data,
+          ..
+        }) => BufferUpload::TextureData {
+          width: *width,
+          height: *height,
+          data: data.clone(),
+        },
         _ if *addr == VariableAddressSpace::Handle => {
           // Uninitialized texture — skip upload; the placeholder texture
           // created during GPU init remains bound.
