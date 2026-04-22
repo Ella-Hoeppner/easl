@@ -2010,6 +2010,89 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
+    AbstractFunctionSignature {
+      name: "load-image".into(),
+      arg_types: vec![AbstractType::Type(Type::String).owned()],
+      return_type: AbstractType::AbstractStruct(
+        texture_2d()
+          .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+          .into(),
+      ),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("load-image".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "blank-texture".into(),
+      arg_types: vec![
+        AbstractType::Type(Type::U32).owned(),
+        AbstractType::Type(Type::U32).owned(),
+      ],
+      return_type: AbstractType::AbstractStruct(
+        texture_2d()
+          .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+          .into(),
+      ),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("blank-texture".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "set-render-target".into(),
+      arg_types: vec![AbstractType::AbstractStruct(
+        texture_2d()
+          .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+          .into(),
+      )
+      .owned()],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("set-render-target".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "clear-render-target".into(),
+      arg_types: vec![],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("clear-render-target".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "blank-texture".into(),
+      arg_types: vec![AbstractType::AbstractStruct(
+        vec2()
+          .fill_abstract_generics(vec![AbstractType::Type(Type::U32)])
+          .into(),
+      )
+      .owned()],
+      return_type: AbstractType::AbstractStruct(
+        texture_2d()
+          .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+          .into(),
+      ),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("blank-texture".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
   ]
 }
 

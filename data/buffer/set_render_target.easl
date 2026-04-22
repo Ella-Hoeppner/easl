@@ -1,0 +1,36 @@
+@{group 0
+  binding 0}
+(var tex: (Texture2D f32))
+
+@{address storage-write
+  group 0
+  binding 1}
+(var value: vec4f)
+
+@{address storage-write
+  group 0
+  binding 2}
+(var frame-counter: u32)
+
+@cpu
+(defn main []
+  (= tex
+     (blank-texture (vec2u 2u)))
+  (print (texture-dimensions tex))
+  (set-render-target tex)
+  (dispatch-render-shaders (fn []
+                               (vec4f (match (vertex-index)
+                                        0 (vec2f -1.)
+                                        1 (vec2f -1. 3.)
+                                        _ (vec2f 3. -1.))
+                                      0.
+                                      1.))
+                           (fn [] (vec4f 1. 0. 0. 1.))
+                           3)
+  (clear-render-target)
+  (dispatch-compute-shader (fn []
+                               (= value
+                                  (texture-load tex (vec2u 0u) 0u)))
+                           (vec3u 1u))
+  (print value))
+

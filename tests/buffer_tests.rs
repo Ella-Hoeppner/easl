@@ -1,6 +1,6 @@
 use easl::compile_easl_source_to_wgsl;
 use easl::compiler::program::Program;
-use easl::interpreter::run_program_with_capture;
+use easl::interpreter::run_program_with_capture_from_path;
 use easl::parse::parse_easl_without_comments;
 use std::fs;
 
@@ -42,9 +42,12 @@ fn run_buffer_test(name: &str) {
   let errors = program.validate_raw_program();
   assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
 
-  let prints = run_program_with_capture(program).unwrap_or_else(|e| {
-    panic!("{name}: evaluation error: {e:#?}");
-  });
+  let source_path_str = format!("./data/buffer/{name}.easl");
+  let source_path = std::path::Path::new(&source_path_str);
+  let prints = run_program_with_capture_from_path(program, source_path)
+    .unwrap_or_else(|e| {
+      panic!("{name}: evaluation error: {e:#?}");
+    });
   let output: String = prints.into_iter().map(|s| format!("{s}\n")).collect();
   assert_eq!(output, expected, "{name}: output mismatch");
 }
@@ -68,3 +71,5 @@ buffer_test!(cpu_atomic_assignment);
 buffer_test!(bidirectional_transfer_array);
 buffer_test!(bidirectional_transfer_render);
 buffer_test!(closure_compute_entry_point);
+buffer_test!(load_red_pixel);
+buffer_test!(set_render_target);

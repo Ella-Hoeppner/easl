@@ -1,4 +1,4 @@
-use std::{collections::HashMap, vec};
+use std::{collections::HashMap, path::PathBuf, vec};
 use take_mut::take;
 use thiserror::Error;
 
@@ -108,6 +108,8 @@ pub enum UserspaceEvalError {
   MultipleCpuEntryPoints,
   #[error("Couldn't find `@cpu` entry point named {0}")]
   CpuEntryPointNotFound(Arc<str>),
+  #[error("{0}")]
+  RuntimeError(String),
 }
 
 #[derive(Clone, PartialEq, Debug, Error)]
@@ -226,6 +228,16 @@ pub enum Value {
   },
   Uninitialized,
   String(String),
+  /// A CPU-loaded texture, created by `load-image` or `blank-texture`. Holds
+  /// RGBA8 pixel data. Uploaded to the GPU as a `wgpu::Texture` (not a
+  /// buffer) when needed. `binding` is set when the texture is assigned to a
+  /// GPU binding var, so `set-render-target` can identify the GPU slot.
+  Texture {
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+    binding: Option<GroupAndBinding>,
+  },
 }
 
 impl Value {
@@ -1543,15 +1555,55 @@ fn apply_builtin_fn<IO: IOManager>(
           false
         };
       env.setup_gpu_if_needed();
-      let pre_upload = env.collect_dirty_uploads(&read_global_variable_names);
+      let mut pre_upload = env.collect_dirty_uploads(&read_global_variable_names);
+      let render_target = env
+        .current_render_target
+        .map(|gb| (gb.group, gb.binding));
+      // If rendering to an offscreen texture, also upload it now (even though
+      // the shader doesn't read it) so the GPU has the correctly-sized texture
+      // to render into.  Collect its upload separately to avoid marking it
+      // Synced before the render has run.
+      if let Some((rt_group, rt_binding)) = render_target {
+        if let Some((gb, name, _, _)) = env
+          .binding_vars
+          .iter()
+          .find(|(gb, _, _, addr)| {
+            gb.group == rt_group
+              && gb.binding == rt_binding
+              && *addr == VariableAddressSpace::Handle
+          })
+        {
+          let gb = *gb;
+          let name = name.clone();
+          // Only upload if the CPU has a value that the GPU doesn't know about yet.
+          if env.buffer_states.get(&name) == Some(&SharedBufferState::GPUOutOfDate) {
+            let extra = env.collect_dirty_uploads(&[name.clone()]);
+            pre_upload.extend(extra);
+          }
+        }
+      }
       env.io.record_draw(
         &vert_f_name,
         &frag_f_name,
         *vert_count,
         pre_upload,
         additive,
+        render_target,
       )?;
       env.mark_gpu_written(&written_global_variable_names);
+      // The render writes to the offscreen texture on the GPU, so the CPU's
+      // value is now stale.  Mark it CPUOutOfDate so subsequent compute
+      // dispatches don't re-upload the CPU value and overwrite the result.
+      if let Some((rt_group, rt_binding)) = render_target {
+        if let Some((_, name, _, _)) = env
+          .binding_vars
+          .iter()
+          .find(|(gb, _, _, _)| gb.group == rt_group && gb.binding == rt_binding)
+        {
+          let name = name.clone();
+          env.mark_gpu_written(&[name]);
+        }
+      }
       Ok(Value::Unit)
     }
     "dispatch-compute-shader" => {
@@ -1635,6 +1687,80 @@ fn apply_builtin_fn<IO: IOManager>(
       Ok(Value::Unit)
     }
     "into-dynamic-array" => Ok(args.remove(0).0),
+    "load-image" => {
+      let Value::String(path) = args.remove(0).0 else {
+        panic!("load-image: expected string path argument")
+      };
+      let resolved = if std::path::Path::new(&*path).is_absolute() {
+        std::path::PathBuf::from(&*path)
+      } else if let Some(dir) = &env.source_dir {
+        dir.join(&*path)
+      } else {
+        std::path::PathBuf::from(&*path)
+      };
+      let img = image::open(&resolved)
+        .map_err(|e| {
+          UserspaceEvalError::RuntimeError(
+            format!("load-image: failed to open \"{path}\": {e}"),
+          )
+        })?
+        .into_rgba8();
+      let (width, height) = img.dimensions();
+      Ok(Value::Texture { width, height, data: img.into_raw(), binding: None })
+    }
+    "blank-texture" => {
+      let (width, height) = if args.len() == 2 {
+        let Value::Prim(Primitive::U32(w)) = args.remove(0).0 else {
+          panic!("blank-texture: expected u32 width")
+        };
+        let Value::Prim(Primitive::U32(h)) = args.remove(0).0 else {
+          panic!("blank-texture: expected u32 height")
+        };
+        (w, h)
+      } else {
+        let Value::Struct(dims) = args.remove(0).0 else {
+          panic!("blank-texture: expected vec2u")
+        };
+        let Value::Prim(Primitive::U32(w)) = dims["x"] else {
+          panic!()
+        };
+        let Value::Prim(Primitive::U32(h)) = dims["y"] else {
+          panic!()
+        };
+        (w, h)
+      };
+      let data = vec![0u8; (width * height * 4) as usize];
+      Ok(Value::Texture { width, height, data, binding: None })
+    }
+    "texture-dimensions" => {
+      // Both overloads: (tex) and (tex level). The mip level arg is ignored on
+      // CPU since Value::Texture always holds the base level.
+      let Value::Texture { width, height, .. } = args.remove(0).0 else {
+        panic!("texture-dimensions: expected Texture argument")
+      };
+      Ok(Value::Struct(
+        [
+          ("x".into(), Value::Prim(Primitive::U32(width))),
+          ("y".into(), Value::Prim(Primitive::U32(height))),
+        ]
+        .into_iter()
+        .collect(),
+      ))
+    }
+    "set-render-target" => {
+      let Value::Texture { binding: Some(gb), .. } = args.remove(0).0 else {
+        panic!(
+          "set-render-target: texture must be assigned to a binding variable \
+           before it can be used as a render target"
+        )
+      };
+      env.current_render_target = Some(gb);
+      Ok(Value::Unit)
+    }
+    "clear-render-target" => {
+      env.current_render_target = None;
+      Ok(Value::Unit)
+    }
     "window-resolution" => {
       let (w, h) = env.io.window_size();
       Ok(Value::Struct(
@@ -2061,6 +2187,8 @@ pub enum BufferUpload {
   Data(Vec<u8>),
   /// Zero-fill `byte_count` bytes on the GPU side (no CPU allocation needed).
   Clear { byte_count: u64 },
+  /// Upload RGBA8 pixel data to a texture binding.
+  TextureData { width: u32, height: u32, data: Vec<u8> },
 }
 
 /// Internal frame-level GPU command, used by StdoutIO to pass commands to
@@ -2073,6 +2201,8 @@ pub enum WindowEvent {
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     additive: bool,
+    /// If Some, render to this texture binding instead of the screen.
+    render_target: Option<(u8, u8)>,
   },
   ComputeShader {
     entry: String,
@@ -2106,6 +2236,9 @@ pub enum GpuBufferKind {
   Uniform,
   StorageReadOnly,
   StorageReadWrite,
+  /// A 2D texture bound via `@group/@binding` with `Handle` address space.
+  /// Backed by a `wgpu::Texture` rather than a `wgpu::Buffer`.
+  Texture2D,
 }
 
 /// Tracks whether a GPU-bound buffer is in sync between CPU and GPU.
@@ -2128,6 +2261,7 @@ pub trait IOManager: Sized {
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     additive: bool,
+    render_target: Option<(u8, u8)>,
   ) -> Result<(), EvalError>;
   fn record_compute(
     &mut self,
@@ -2260,6 +2394,7 @@ impl IOManager for StdoutIO {
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     additive: bool,
+    render_target: Option<(u8, u8)>,
   ) -> Result<(), EvalError> {
     self.frame_draw_calls.push(WindowEvent::RenderShaders {
       vert: vert.to_string(),
@@ -2267,6 +2402,7 @@ impl IOManager for StdoutIO {
       vert_count,
       pre_upload,
       additive,
+      render_target,
     });
     Ok(())
   }
@@ -2398,39 +2534,89 @@ impl IOManager for StdoutIO {
   fn flush_queued_compute(&mut self) {
     #[cfg(feature = "window")]
     {
+      type ComputeCall = (String, (u32, u32, u32), Vec<((u8, u8), BufferUpload)>);
+      type RenderCall = (
+        String,
+        String,
+        u32,
+        Vec<((u8, u8), BufferUpload)>,
+        bool,
+        Option<(u8, u8)>,
+      );
+      enum WorkItem {
+        ComputeBatch(Vec<ComputeCall>),
+        RenderBatch(Vec<RenderCall>),
+      }
+
       let gpu = match self.gpu.as_ref().map(std::sync::Arc::clone) {
         Some(gpu) => gpu,
         None => return,
       };
-      // Drain all queued events. Compute events are executed and discarded.
-      // Render events are executed on the real surface (if available) via
-      // execute_render_batch, which stores the surface texture in
-      // pending_present so RenderState::render can just call present() at
-      // end-of-frame without re-running the shaders.
+      // Process events in original order to preserve GPU write→read dependencies.
+      // Offscreen renders (render_target.is_some()) are executed in-order
+      // relative to compute shaders.  Screen renders (render_target.is_none())
+      // are deferred to end-of-frame so present() can be called once.
       let all = std::mem::take(&mut self.frame_draw_calls);
-      let mut compute_batch = vec![];
-      let mut render_batch = vec![];
+      let mut work: Vec<WorkItem> = vec![];
+      let mut pending_compute: Vec<ComputeCall> = vec![];
+      let mut deferred_screen_renders: Vec<RenderCall> = vec![];
+
       for event in all {
         match event {
           WindowEvent::ComputeShader {
             entry,
             workgroup_count,
             pre_upload,
-          } => compute_batch.push((entry, workgroup_count, pre_upload)),
+          } => pending_compute.push((entry, workgroup_count, pre_upload)),
           WindowEvent::RenderShaders {
             vert,
             frag,
             vert_count,
             pre_upload,
             additive,
+            render_target: Some(rt),
           } => {
-            render_batch.push((vert, frag, vert_count, pre_upload, additive))
+            // Offscreen render: flush any preceding compute first (so compute
+            // results are visible to this render), then execute the render
+            // before any subsequent compute (so compute can read its output).
+            if !pending_compute.is_empty() {
+              work.push(WorkItem::ComputeBatch(std::mem::take(&mut pending_compute)));
+            }
+            work.push(WorkItem::RenderBatch(vec![(
+              vert,
+              frag,
+              vert_count,
+              pre_upload,
+              additive,
+              Some(rt),
+            )]));
+          }
+          WindowEvent::RenderShaders {
+            vert,
+            frag,
+            vert_count,
+            pre_upload,
+            additive,
+            render_target: None,
+          } => {
+            deferred_screen_renders.push((vert, frag, vert_count, pre_upload, additive, None));
           }
         }
       }
+      // Flush any remaining pending compute.
+      if !pending_compute.is_empty() {
+        work.push(WorkItem::ComputeBatch(pending_compute));
+      }
+
       let mut g = gpu.write().unwrap();
-      g.execute_compute_batch(compute_batch);
-      g.execute_render_batch(render_batch);
+      for item in work {
+        match item {
+          WorkItem::ComputeBatch(b) => g.execute_compute_batch(b),
+          WorkItem::RenderBatch(b) => g.execute_render_batch(b),
+        }
+      }
+      // Execute deferred screen renders last.
+      g.execute_render_batch(deferred_screen_renders);
     }
   }
 
@@ -2486,6 +2672,7 @@ impl IOManager for StringIO {
     vert_count: u32,
     _pre_upload: Vec<((u8, u8), BufferUpload)>,
     _additive: bool,
+    _render_target: Option<(u8, u8)>,
   ) -> Result<(), EvalError> {
     self.events.push(IOEvent::DispatchShaders {
       vert: vert.to_string(),
@@ -2589,10 +2776,11 @@ impl IOManager for CaptureIO {
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     additive: bool,
+    render_target: Option<(u8, u8)>,
   ) -> Result<(), EvalError> {
     self
       .inner
-      .record_draw(vert, frag, vert_count, pre_upload, additive)
+      .record_draw(vert, frag, vert_count, pre_upload, additive, render_target)
   }
 
   fn record_compute(
@@ -2696,10 +2884,20 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   binding_vars: Vec<(GroupAndBinding, Arc<str>, Type, VariableAddressSpace)>,
   /// Sync state for each GPU-bound variable, keyed by name.
   buffer_states: HashMap<Arc<str>, SharedBufferState>,
+  /// Directory of the source .easl file, used to resolve relative paths.
+  source_dir: Option<PathBuf>,
+  /// Render target for subsequent `dispatch-render-shaders` calls. None means
+  /// render to the screen. Set by `set-render-target`, cleared by
+  /// `clear-render-target`.
+  current_render_target: Option<GroupAndBinding>,
 }
 
 impl<IO: IOManager> EvaluationEnvironment<IO> {
-  pub fn from_program(program: Program, io: IO) -> Result<Self, EvalError> {
+  pub fn from_program(
+    program: Program,
+    io: IO,
+    source_dir: Option<PathBuf>,
+  ) -> Result<Self, EvalError> {
     let binding_vars: Vec<(
       GroupAndBinding,
       Arc<str>,
@@ -2719,6 +2917,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             VariableAddressSpace::Uniform
               | VariableAddressSpace::StorageRead
               | VariableAddressSpace::StorageReadWrite
+              | VariableAddressSpace::Handle
           )
           .then(|| (gb, var.name.clone(), var.var_type.clone(), address_space))
         } else {
@@ -2742,14 +2941,31 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       io,
       binding_vars,
       buffer_states,
+      source_dir,
+      current_render_target: None,
     };
     for var in program.top_level_vars.iter() {
       let value = match &var.value {
         Some(exp) => eval(exp.clone(), &mut env)?,
-        // Unsized arrays and other unzeroable types (e.g. dynamic storage
-        // buffers) fall back to Uninitialized; the user must assign before use.
-        None => Value::zeroed(var.var_type.clone(), &env)
-          .unwrap_or(Value::Uninitialized),
+        None => {
+          // Texture (Handle) bindings must be loaded via load-image; start
+          // Uninitialized so no spurious zeroed struct is created for them.
+          let is_handle = matches!(
+            var.kind,
+            TopLevelVariableKind::Var {
+              address_space: VariableAddressSpace::Handle,
+              ..
+            }
+          );
+          if is_handle {
+            Value::Uninitialized
+          } else {
+            // Unsized arrays and other unzeroable types fall back to
+            // Uninitialized; the user must assign before use.
+            Value::zeroed(var.var_type.clone(), &env)
+              .unwrap_or(Value::Uninitialized)
+          }
+        }
       };
       env.bind(var.name.clone(), value, var.var_type.clone());
     }
@@ -2785,14 +3001,16 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           VariableAddressSpace::StorageReadWrite => {
             GpuBufferKind::StorageReadWrite
           }
+          VariableAddressSpace::Handle => GpuBufferKind::Texture2D,
           _ => unreachable!(),
         };
-        // 0 for unsized arrays → size handled dynamically in window.rs
-        let u32s = ty.wgsl_data_size_in_u32s();
-        let size = if u32s == 0 {
+        // Textures have no buffer size (handled separately in window.rs).
+        // 0 for unsized arrays → size handled dynamically in window.rs.
+        let size = if kind == GpuBufferKind::Texture2D {
           0
         } else {
-          ((u32s as u64 * 4).max(4) + 15) & !15
+          let u32s = ty.wgsl_data_size_in_u32s();
+          if u32s == 0 { 0 } else { ((u32s as u64 * 4).max(4) + 15) & !15 }
         };
         ((gb.group, gb.binding), kind, size)
       })
@@ -2805,7 +3023,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     self
       .binding_vars
       .iter()
-      .map(|(gb, name, ty, _)| {
+      .filter_map(|(gb, name, ty, addr)| {
         let value = self
           .bindings
           .get(name)
@@ -2824,6 +3042,17 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             let padded = ((raw_bytes + 15) / 16) * 16;
             BufferUpload::Clear { byte_count: padded }
           }
+          Some(Value::Texture { width, height, data, .. }) => {
+            BufferUpload::TextureData {
+              width: *width,
+              height: *height,
+              data: data.clone(),
+            }
+          }
+          _ if *addr == VariableAddressSpace::Handle => {
+            // Uninitialized texture — skip; placeholder texture is used on GPU.
+            return None;
+          }
           _ => {
             let mut bytes = value
               .map(|v| v.to_uniform_bytes(ty))
@@ -2834,7 +3063,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             BufferUpload::Data(bytes)
           }
         };
-        ((gb.group, gb.binding), upload)
+        Some(((gb.group, gb.binding), upload))
       })
       .collect()
   }
@@ -2851,7 +3080,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     names: &[Arc<str>],
   ) -> Vec<((u8, u8), BufferUpload)> {
     let mut result = vec![];
-    for (gb, name, ty, _) in &self.binding_vars {
+    for (gb, name, ty, addr) in &self.binding_vars {
       if !names.contains(name) {
         continue;
       }
@@ -2876,6 +3105,18 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           let raw_bytes = *length as u64 * stride as u64 * 4;
           let padded = ((raw_bytes + 15) / 16) * 16;
           BufferUpload::Clear { byte_count: padded }
+        }
+        Some(Value::Texture { width, height, data, .. }) => {
+          BufferUpload::TextureData {
+            width: *width,
+            height: *height,
+            data: data.clone(),
+          }
+        }
+        _ if *addr == VariableAddressSpace::Handle => {
+          // Uninitialized texture — skip upload; the placeholder texture
+          // created during GPU init remains bound.
+          continue;
         }
         _ => {
           let mut bytes = value
@@ -2907,12 +3148,32 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   }
 
   /// Marks GPU-bound vars in `names` as GPUOutOfDate (CPU wrote them).
+  /// Also tags any texture value with its binding location so that
+  /// `set-render-target` can later identify the GPU slot.
   fn mark_cpu_written(&mut self, names: &[Arc<str>]) {
     for name in names {
       if self.is_binding_var(name) {
         self
           .buffer_states
           .insert(name.clone(), SharedBufferState::GPUOutOfDate);
+        // Tag texture values with their binding so set-render-target can
+        // identify the GPU slot without scanning all binding vars.
+        let gb = self
+          .binding_vars
+          .iter()
+          .find(|(_, n, _, addr)| {
+            n == name && *addr == VariableAddressSpace::Handle
+          })
+          .map(|(gb, _, _, _)| *gb);
+        if let Some(gb) = gb {
+          if let Some(slot) =
+            self.bindings.get_mut(name).and_then(|s| s.last_mut())
+          {
+            if let Value::Texture { binding, .. } = &mut slot.0 {
+              *binding = Some(gb);
+            }
+          }
+        }
       }
     }
   }
@@ -2923,8 +3184,11 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     let vars: Vec<(GroupAndBinding, Arc<str>, Type)> = self
       .binding_vars
       .iter()
-      .filter(|(_, name, _, _)| {
-        names.contains(name)
+      .filter(|(_, name, _, addr)| {
+        // Textures (Handle) are written to by render passes and cannot be read
+        // back as buffers — skip them.
+        *addr != VariableAddressSpace::Handle
+          && names.contains(name)
           && self.buffer_states.get(name)
             == Some(&SharedBufferState::CPUOutOfDate)
       })
@@ -3676,6 +3940,7 @@ fn run_program_with<IO: IOManager>(
   program: Program,
   entry_point_name: Option<&str>,
   io: IO,
+  source_dir: Option<PathBuf>,
 ) -> Result<(IO, bool), EvalError> {
   let mut cpu_fns = program.cpu_entry_points();
   let entry_fn = match entry_point_name {
@@ -3703,7 +3968,7 @@ fn run_program_with<IO: IOManager>(
   };
   let body = *body.clone();
   drop(f);
-  let mut env = EvaluationEnvironment::from_program(program, io)?;
+  let mut env = EvaluationEnvironment::from_program(program, io, source_dir)?;
   match eval(body, &mut env) {
     Ok(_) => Ok((env.io, false)),
     Err(EvalException::ReloadRequested) => Ok((env.io, true)),
@@ -3712,7 +3977,7 @@ fn run_program_with<IO: IOManager>(
 }
 
 pub fn run_program(program: Program) -> Result<(), EvalError> {
-  run_program_with(program, None, StdoutIO::new())?;
+  run_program_with(program, None, StdoutIO::new(), None)?;
   Ok(())
 }
 
@@ -3720,7 +3985,17 @@ pub fn run_program_entry(
   program: Program,
   entry: Option<&str>,
 ) -> Result<(), EvalError> {
-  run_program_with(program, entry, StdoutIO::new())?;
+  run_program_with(program, entry, StdoutIO::new(), None)?;
+  Ok(())
+}
+
+pub fn run_program_entry_from_path(
+  program: Program,
+  entry: Option<&str>,
+  source_path: &std::path::Path,
+) -> Result<(), EvalError> {
+  let source_dir = source_path.parent().map(|p| p.to_path_buf());
+  run_program_with(program, entry, StdoutIO::new(), source_dir)?;
   Ok(())
 }
 
@@ -3732,13 +4007,23 @@ pub fn run_program_entry_with_io<IO: IOManager>(
   entry: Option<&str>,
   io: IO,
 ) -> Result<(IO, bool), EvalError> {
-  run_program_with(program, entry, io)
+  run_program_with(program, entry, io, None)
+}
+
+pub fn run_program_entry_with_io_from_path<IO: IOManager>(
+  program: Program,
+  entry: Option<&str>,
+  io: IO,
+  source_path: &std::path::Path,
+) -> Result<(IO, bool), EvalError> {
+  let source_dir = source_path.parent().map(|p| p.to_path_buf());
+  run_program_with(program, entry, io, source_dir)
 }
 
 pub fn run_program_capturing_output(
   program: Program,
 ) -> Result<String, EvalError> {
-  let (io, _) = run_program_with(program, None, StringIO::new())?;
+  let (io, _) = run_program_with(program, None, StringIO::new(), None)?;
   let mut output = String::new();
   for event in &io.events {
     if let IOEvent::Print(s) = event {
@@ -3750,13 +4035,22 @@ pub fn run_program_capturing_output(
 }
 
 pub fn run_program_test_io(program: Program) -> Result<StringIO, EvalError> {
-  Ok(run_program_with(program, None, StringIO::new())?.0)
+  Ok(run_program_with(program, None, StringIO::new(), None)?.0)
 }
 
 pub fn run_program_with_capture(
   program: Program,
 ) -> Result<Vec<String>, EvalError> {
-  let (io, _) = run_program_with(program, None, CaptureIO::new())?;
+  let (io, _) = run_program_with(program, None, CaptureIO::new(), None)?;
+  Ok(io.prints)
+}
+
+pub fn run_program_with_capture_from_path(
+  program: Program,
+  source_path: &std::path::Path,
+) -> Result<Vec<String>, EvalError> {
+  let source_dir = source_path.parent().map(|p| p.to_path_buf());
+  let (io, _) = run_program_with(program, None, CaptureIO::new(), source_dir)?;
   Ok(io.prints)
 }
 

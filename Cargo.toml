@@ -12,6 +12,7 @@ unicode-segmentation = "1.12.0"
 wgpu = { version = "28", optional = true }
 winit = { version = "0.30", optional = true }
 pollster = { version = "0.4", optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [features]
 window = ["dep:wgpu", "dep:winit", "dep:pollster"]

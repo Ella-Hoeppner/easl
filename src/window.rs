@@ -128,9 +128,13 @@ pub struct GpuCore {
   render_pipelines: HashMap<(String, String, bool, wgpu::TextureFormat), wgpu::RenderPipeline>,
   pub binding_slots: Vec<BindingSlot>,
   pub binding_buffers: HashMap<(u8, u8), wgpu::Buffer>,
-  /// Tracks the byte-length of each buffer so we can detect when a dynamic
-  /// array is resized and the buffer needs to be recreated.
+  /// Tracks the byte-length of each buffer (or width*height*4 for textures)
+  /// so we can detect when a binding's size changes and needs to be recreated.
   pub binding_buffer_sizes: HashMap<(u8, u8), u64>,
+  /// GPU textures for `Texture2D` bindings (keyed by group, binding).
+  pub textures: HashMap<(u8, u8), wgpu::Texture>,
+  /// Texture views for `Texture2D` bindings, used in bind groups.
+  pub texture_views: HashMap<(u8, u8), wgpu::TextureView>,
   /// Kept alive so `rebuild_bind_groups` can recreate bind groups without
   /// recreating the layouts (which would invalidate the pipeline layout).
   pub bind_group_layouts: Vec<wgpu::BindGroupLayout>,
@@ -151,24 +155,55 @@ pub struct GpuCore {
   /// end-of-frame `RenderState::render` calls `present()` on this rather than
   /// re-rendering.
   pub pending_present: Option<wgpu::SurfaceTexture>,
+  /// A 1×1 Rgba8Unorm texture used as a stand-in in bind groups when a real
+  /// texture is simultaneously the render target (COLOR_TARGET + RESOURCE is
+  /// forbidden by wgpu within the same render pass).
+  placeholder_texture_view: wgpu::TextureView,
 }
 
 impl GpuCore {
   /// Recreates all bind groups to pick up any buffers that were just replaced.
   fn rebuild_bind_groups(&mut self) {
+    // Collect binding resources ahead of time to satisfy the borrow checker:
+    // we need &wgpu::TextureView and &wgpu::Buffer simultaneously.
+    let entries_per_group: Vec<Vec<(u32, bool, (u8, u8))>> = self
+      .bind_group_layouts
+      .iter()
+      .enumerate()
+      .map(|(group_idx, _)| {
+        self
+          .binding_slots
+          .iter()
+          .filter(|s| s.group as usize == group_idx)
+          .map(|s| {
+            (
+              s.binding as u32,
+              s.kind == GpuBufferKind::Texture2D,
+              (s.group, s.binding),
+            )
+          })
+          .collect()
+      })
+      .collect();
     self.bind_groups = self
       .bind_group_layouts
       .iter()
       .enumerate()
       .map(|(group_idx, layout)| {
-        let entries: Vec<wgpu::BindGroupEntry> = self
-          .binding_slots
+        let entries: Vec<wgpu::BindGroupEntry> = entries_per_group[group_idx]
           .iter()
-          .filter(|s| s.group as usize == group_idx)
-          .map(|s| wgpu::BindGroupEntry {
-            binding: s.binding as u32,
-            resource: self.binding_buffers[&(s.group, s.binding)]
-              .as_entire_binding(),
+          .map(|(binding, is_texture, key)| wgpu::BindGroupEntry {
+            binding: *binding,
+            resource: if *is_texture {
+              wgpu::BindingResource::TextureView(
+                self
+                  .texture_views
+                  .get(key)
+                  .expect("texture view missing for bind group rebuild"),
+              )
+            } else {
+              self.binding_buffers[key].as_entire_binding()
+            },
           })
           .collect();
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -178,6 +213,63 @@ impl GpuCore {
         })
       })
       .collect();
+  }
+
+  /// Build bind groups identical to `self.bind_groups` except that the slot
+  /// for `render_target` is replaced with `self.placeholder_texture_view`.
+  /// This avoids the wgpu validation error that fires when a texture is
+  /// simultaneously a color attachment (COLOR_TARGET) and a shader resource
+  /// (RESOURCE) within the same render pass.
+  fn bind_groups_with_placeholder_for(
+    &self,
+    render_target: (u8, u8),
+  ) -> Vec<wgpu::BindGroup> {
+    let entries_per_group: Vec<Vec<(u32, bool, (u8, u8))>> = self
+      .bind_group_layouts
+      .iter()
+      .enumerate()
+      .map(|(group_idx, _)| {
+        self
+          .binding_slots
+          .iter()
+          .filter(|s| s.group as usize == group_idx)
+          .map(|s| (s.binding as u32, s.kind == GpuBufferKind::Texture2D, (s.group, s.binding)))
+          .collect()
+      })
+      .collect();
+    self
+      .bind_group_layouts
+      .iter()
+      .enumerate()
+      .map(|(group_idx, layout)| {
+        let entries: Vec<wgpu::BindGroupEntry> = entries_per_group[group_idx]
+          .iter()
+          .map(|(binding, is_texture, key)| wgpu::BindGroupEntry {
+            binding: *binding,
+            resource: if *is_texture {
+              wgpu::BindingResource::TextureView(if *key == render_target {
+                &self.placeholder_texture_view
+              } else {
+                self
+                  .texture_views
+                  .get(key)
+                  .expect("texture view missing")
+              })
+            } else {
+              self.binding_buffers[key].as_entire_binding()
+            },
+          })
+          .collect();
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+          label: Some(&format!(
+            "bind group {group_idx} (rt g{}b{} excluded)",
+            render_target.0, render_target.1
+          )),
+          layout,
+          entries: &entries,
+        })
+      })
+      .collect()
   }
 
   /// Hot-reload: swap the shader module and rebuild everything that depends on
@@ -213,10 +305,38 @@ impl GpuCore {
 
     // 4. Rebuild buffers.  Reuse existing buffers whose size didn't change so
     // that GPU-written storage data (e.g. compute results) survives the reload.
+    // For Texture2D slots, keep existing textures/views (no buffer).
     let mut new_buffers: HashMap<(u8, u8), wgpu::Buffer> = HashMap::new();
     let mut new_sizes: HashMap<(u8, u8), u64> = HashMap::new();
     for &((group, binding), kind, size) in binding_infos {
       let key = (group, binding);
+      if kind == GpuBufferKind::Texture2D {
+        // Keep existing texture if one exists; create a placeholder if not.
+        if !self.textures.contains_key(&key) {
+          let texture =
+            self.device.create_texture(&wgpu::TextureDescriptor {
+              label: Some(&format!("texture g{group}b{binding}")),
+              size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+              },
+              mip_level_count: 1,
+              sample_count: 1,
+              dimension: wgpu::TextureDimension::D2,
+              format: wgpu::TextureFormat::Rgba8Unorm,
+              usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
+              view_formats: &[],
+            });
+          let view =
+            texture.create_view(&wgpu::TextureViewDescriptor::default());
+          self.textures.insert(key, texture);
+          self.texture_views.insert(key, view);
+        }
+        continue;
+      }
       let alloc_size = size.max(16);
       let old_size = self.binding_buffer_sizes.get(&key).copied().unwrap_or(0);
       if old_size == alloc_size {
@@ -255,10 +375,20 @@ impl GpuCore {
           .map(|((_, b), kind, _)| wgpu::BindGroupLayoutEntry {
             binding: *b as u32,
             visibility: gpu_binding_visibility(*kind),
-            ty: wgpu::BindingType::Buffer {
-              ty: gpu_binding_type(*kind),
-              has_dynamic_offset: false,
-              min_binding_size: None,
+            ty: if *kind == GpuBufferKind::Texture2D {
+              wgpu::BindingType::Texture {
+                multisampled: false,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                sample_type: wgpu::TextureSampleType::Float {
+                  filterable: true,
+                },
+              }
+            } else {
+              wgpu::BindingType::Buffer {
+                ty: gpu_binding_type(*kind),
+                has_dynamic_offset: false,
+                min_binding_size: None,
+              }
             },
             count: None,
           })
@@ -316,31 +446,66 @@ impl GpuCore {
   pub fn upload_bindings(&mut self, data: &[((u8, u8), BufferUpload)]) {
     let mut needs_rebuild = false;
 
-    // First pass: recreate any buffers whose size changed.
+    // First pass: recreate any buffers/textures whose size changed.
     for ((group, binding), upload) in data {
       let key = (*group, *binding);
-      let incoming_size = match upload {
-        BufferUpload::Data(bytes) => bytes.len() as u64,
-        BufferUpload::Clear { byte_count } => *byte_count,
-      };
-      let stored_size = *self.binding_buffer_sizes.get(&key).unwrap_or(&0);
-
-      if incoming_size != stored_size {
-        let kind = self
-          .binding_slots
-          .iter()
-          .find(|s| s.group == *group && s.binding == *binding)
-          .map(|s| s.kind)
-          .unwrap_or(GpuBufferKind::Uniform);
-        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-          label: Some(&format!("binding g{group}b{binding}")),
-          size: incoming_size.max(16),
-          usage: gpu_buffer_usage(kind),
-          mapped_at_creation: false,
-        });
-        self.binding_buffers.insert(key, buffer);
-        self.binding_buffer_sizes.insert(key, incoming_size);
-        needs_rebuild = true;
+      match upload {
+        BufferUpload::TextureData { width, height, .. } => {
+          let incoming_size = *width as u64 * *height as u64 * 4;
+          let stored_size =
+            *self.binding_buffer_sizes.get(&key).unwrap_or(&0);
+          if incoming_size != stored_size {
+            let texture =
+              self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(&format!("texture g{group}b{binding}")),
+                size: wgpu::Extent3d {
+                  width: *width,
+                  height: *height,
+                  depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                  | wgpu::TextureUsages::COPY_DST
+                  | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+              });
+            let view =
+              texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.textures.insert(key, texture);
+            self.texture_views.insert(key, view);
+            self.binding_buffer_sizes.insert(key, incoming_size);
+            needs_rebuild = true;
+          }
+        }
+        _ => {
+          let incoming_size = match upload {
+            BufferUpload::Data(bytes) => bytes.len() as u64,
+            BufferUpload::Clear { byte_count } => *byte_count,
+            BufferUpload::TextureData { .. } => unreachable!(),
+          };
+          let stored_size =
+            *self.binding_buffer_sizes.get(&key).unwrap_or(&0);
+          if incoming_size != stored_size {
+            let kind = self
+              .binding_slots
+              .iter()
+              .find(|s| s.group == *group && s.binding == *binding)
+              .map(|s| s.kind)
+              .unwrap_or(GpuBufferKind::Uniform);
+            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+              label: Some(&format!("binding g{group}b{binding}")),
+              size: incoming_size.max(16),
+              usage: gpu_buffer_usage(kind),
+              mapped_at_creation: false,
+            });
+            self.binding_buffers.insert(key, buffer);
+            self.binding_buffer_sizes.insert(key, incoming_size);
+            needs_rebuild = true;
+          }
+        }
       }
     }
 
@@ -348,30 +513,18 @@ impl GpuCore {
       self.rebuild_bind_groups();
     }
 
-    // Second pass: write data or issue GPU clears.
+    // Second pass: write data, issue GPU clears, or upload texture pixels.
     let mut encoder: Option<wgpu::CommandEncoder> = None;
     for ((group, binding), upload) in data {
       let key = (*group, *binding);
       match upload {
         BufferUpload::Data(bytes) => {
           if let Some(buffer) = self.binding_buffers.get(&key) {
-            // eprintln!(
-            //   "[GPU-XFER] CPU→GPU upload: g{}b{}, {} bytes",
-            //   group,
-            //   binding,
-            //   bytes.len()
-            // );
             self.queue.write_buffer(buffer, 0, bytes);
           }
         }
         BufferUpload::Clear { byte_count } => {
           if let Some(buffer) = self.binding_buffers.get(&key) {
-            // eprintln!(
-            //   "[GPU-XFER] CPU→GPU clear: g{}b{}, {} bytes (GPU-side zero-fill)",
-            //   group,
-            //   binding,
-            //   byte_count
-            // );
             let enc = encoder.get_or_insert_with(|| {
               self.device.create_command_encoder(
                 &wgpu::CommandEncoderDescriptor {
@@ -380,6 +533,29 @@ impl GpuCore {
               )
             });
             enc.clear_buffer(buffer, 0, None);
+          }
+        }
+        BufferUpload::TextureData { width, height, data } => {
+          if let Some(texture) = self.textures.get(&key) {
+            self.queue.write_texture(
+              wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+              },
+              data,
+              wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(*width * 4),
+                rows_per_image: Some(*height),
+              },
+              wgpu::Extent3d {
+                width: *width,
+                height: *height,
+                depth_or_array_layers: 1,
+              },
+            );
           }
         }
       }
@@ -553,14 +729,21 @@ impl GpuCore {
   /// (headless / test mode).
   pub fn execute_render_batch(
     &mut self,
-    calls: Vec<(String, String, u32, Vec<((u8, u8), BufferUpload)>, bool)>,
+    calls: Vec<(
+      String,
+      String,
+      u32,
+      Vec<((u8, u8), BufferUpload)>,
+      bool,
+      Option<(u8, u8)>,
+    )>,
   ) {
     if calls.is_empty() {
       return;
     }
     let all_uploads: Vec<_> = calls
       .iter()
-      .flat_map(|(_, _, _, u, _)| u.iter().cloned())
+      .flat_map(|(_, _, _, u, _, _)| u.iter().cloned())
       .collect();
     self.upload_bindings(&all_uploads);
 
@@ -568,49 +751,62 @@ impl GpuCore {
     // at most one live SurfaceTexture at a time.
     self.pending_present = None;
 
-    // Try to acquire the real surface texture; fall back to offscreen if
-    // unavailable or if no surface exists (headless mode).
-    let surface_texture: Option<wgpu::SurfaceTexture> =
+    // Acquire the real surface texture if any call renders to screen
+    // (render_target == None).
+    let needs_screen = calls.iter().any(|(_, _, _, _, _, rt)| rt.is_none());
+    let surface_texture: Option<wgpu::SurfaceTexture> = if needs_screen {
       self.surface.as_ref().and_then(|s| match s.get_current_texture() {
         Ok(t) => Some(t),
         Err(_) => None,
-      });
+      })
+    } else {
+      None
+    };
 
-    let format = if surface_texture.is_some() {
+    let screen_format = if surface_texture.is_some() {
       self.surface_config.as_ref().unwrap().format
     } else {
       Self::OFFSCREEN_FORMAT
     };
 
-    // Pre-create all pipelines before the render pass borrow begins.
-    for (vert, frag, _, _, additive) in &calls {
+    // Pre-create all pipelines before the render pass borrows begin.
+    for (vert, frag, _, _, additive, rt) in &calls {
+      let format = if rt.is_none() {
+        screen_format
+      } else {
+        Self::OFFSCREEN_FORMAT
+      };
       let vert = vert.replace('-', "_");
       let frag = frag.replace('-', "_");
       self.get_or_create_render_pipeline(&vert, &frag, *additive, format);
     }
 
-    // Create the view: real surface or offscreen 1×1.
-    // `offscreen_texture` is declared here so it lives long enough.
+    // Create the screen view: real surface or a throwaway 1×1 offscreen.
+    // Declared in outer scope so it outlives all render passes.
     let offscreen_texture;
-    let view = if let Some(st) = &surface_texture {
-      st.texture
-        .create_view(&wgpu::TextureViewDescriptor::default())
+    let screen_view: Option<wgpu::TextureView> = if needs_screen {
+      Some(if let Some(st) = &surface_texture {
+        st.texture
+          .create_view(&wgpu::TextureViewDescriptor::default())
+      } else {
+        offscreen_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+          label: Some("offscreen render target"),
+          size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+          },
+          mip_level_count: 1,
+          sample_count: 1,
+          dimension: wgpu::TextureDimension::D2,
+          format: Self::OFFSCREEN_FORMAT,
+          usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+          view_formats: &[],
+        });
+        offscreen_texture.create_view(&wgpu::TextureViewDescriptor::default())
+      })
     } else {
-      offscreen_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("offscreen render target"),
-        size: wgpu::Extent3d {
-          width: 1,
-          height: 1,
-          depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: Self::OFFSCREEN_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[],
-      });
-      offscreen_texture.create_view(&wgpu::TextureViewDescriptor::default())
+      None
     };
 
     let mut encoder =
@@ -619,35 +815,75 @@ impl GpuCore {
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
           label: Some("render encoder"),
         });
-    {
-      let mut render_pass =
-        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-          label: Some("flush render pass"),
-          color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: &view,
-            resolve_target: None,
-            depth_slice: None,
-            ops: wgpu::Operations {
-              load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-              store: wgpu::StoreOp::Store,
-            },
-          })],
-          depth_stencil_attachment: None,
-          occlusion_query_set: None,
-          timestamp_writes: None,
-          multiview_mask: None,
+
+    // Process calls grouped by consecutive render target, one render pass
+    // per group.
+    let mut i = 0;
+    while i < calls.len() {
+      let current_rt = calls[i].5;
+      let end = calls[i..]
+        .iter()
+        .position(|c| c.5 != current_rt)
+        .map_or(calls.len(), |j| i + j);
+      let group = &calls[i..end];
+
+      // Create a fresh view for texture render targets. The borrow of
+      // `self.textures` is released before the render pass scope.
+      let texture_target_view: Option<wgpu::TextureView> =
+        current_rt.map(|rt| {
+          self.textures[&rt].create_view(&wgpu::TextureViewDescriptor::default())
         });
-      for (vert, frag, vert_count, _, additive) in &calls {
-        let vert = vert.replace('-', "_");
-        let frag = frag.replace('-', "_");
-        let key = (vert, frag, *additive, format);
-        for (group_idx, bind_group) in self.bind_groups.iter().enumerate() {
-          render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
+      // For render target passes, replace the target slot in the bind group
+      // with a placeholder to avoid COLOR_TARGET + RESOURCE conflict.
+      let modified_bind_groups: Option<Vec<wgpu::BindGroup>> =
+        current_rt.map(|rt| self.bind_groups_with_placeholder_for(rt));
+      let bind_groups_ref: &[wgpu::BindGroup] = modified_bind_groups
+        .as_deref()
+        .unwrap_or(&self.bind_groups);
+
+      let view = match &texture_target_view {
+        Some(v) => v,
+        None => screen_view.as_ref().unwrap(),
+      };
+      let format = if current_rt.is_none() {
+        screen_format
+      } else {
+        Self::OFFSCREEN_FORMAT
+      };
+
+      {
+        let mut render_pass =
+          encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("flush render pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+              view,
+              resolve_target: None,
+              depth_slice: None,
+              ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+              },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+          });
+        for (vert, frag, vert_count, _, additive, _) in group {
+          let vert = vert.replace('-', "_");
+          let frag = frag.replace('-', "_");
+          let key = (vert, frag, *additive, format);
+          for (group_idx, bind_group) in bind_groups_ref.iter().enumerate() {
+            render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
+          }
+          render_pass.set_pipeline(&self.render_pipelines[&key]);
+          render_pass.draw(0..*vert_count, 0..1);
         }
-        render_pass.set_pipeline(&self.render_pipelines[&key]);
-        render_pass.draw(0..*vert_count, 0..1);
       }
+
+      i = end;
     }
+
     self.queue.submit(std::iter::once(encoder.finish()));
     self
       .device
@@ -757,16 +993,42 @@ pub(crate) fn create_headless_gpu_core(
 
     let mut binding_buffers: HashMap<(u8, u8), wgpu::Buffer> = HashMap::new();
     let mut binding_buffer_sizes: HashMap<(u8, u8), u64> = HashMap::new();
+    let mut textures: HashMap<(u8, u8), wgpu::Texture> = HashMap::new();
+    let mut texture_views: HashMap<(u8, u8), wgpu::TextureView> =
+      HashMap::new();
     for &((group, binding), kind, size) in binding_infos {
-      let alloc_size = size.max(16);
-      let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(&format!("binding g{group}b{binding}")),
-        size: alloc_size,
-        usage: gpu_buffer_usage(kind),
-        mapped_at_creation: false,
-      });
-      binding_buffers.insert((group, binding), buffer);
-      binding_buffer_sizes.insert((group, binding), alloc_size);
+      let key = (group, binding);
+      if kind == GpuBufferKind::Texture2D {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+          label: Some(&format!("texture g{group}b{binding}")),
+          size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+          },
+          mip_level_count: 1,
+          sample_count: 1,
+          dimension: wgpu::TextureDimension::D2,
+          format: wgpu::TextureFormat::Rgba8Unorm,
+          usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::RENDER_ATTACHMENT,
+          view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        textures.insert(key, texture);
+        texture_views.insert(key, view);
+      } else {
+        let alloc_size = size.max(16);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+          label: Some(&format!("binding g{group}b{binding}")),
+          size: alloc_size,
+          usage: gpu_buffer_usage(kind),
+          mapped_at_creation: false,
+        });
+        binding_buffers.insert(key, buffer);
+        binding_buffer_sizes.insert(key, alloc_size);
+      }
     }
 
     let bind_group_layouts: Vec<wgpu::BindGroupLayout> = (0..max_group)
@@ -777,10 +1039,20 @@ pub(crate) fn create_headless_gpu_core(
           .map(|((_, b), kind, _)| wgpu::BindGroupLayoutEntry {
             binding: *b as u32,
             visibility: gpu_binding_visibility(*kind),
-            ty: wgpu::BindingType::Buffer {
-              ty: gpu_binding_type(*kind),
-              has_dynamic_offset: false,
-              min_binding_size: None,
+            ty: if *kind == GpuBufferKind::Texture2D {
+              wgpu::BindingType::Texture {
+                multisampled: false,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                sample_type: wgpu::TextureSampleType::Float {
+                  filterable: true,
+                },
+              }
+            } else {
+              wgpu::BindingType::Buffer {
+                ty: gpu_binding_type(*kind),
+                has_dynamic_offset: false,
+                min_binding_size: None,
+              }
             },
             count: None,
           })
@@ -799,10 +1071,16 @@ pub(crate) fn create_headless_gpu_core(
         let entries: Vec<wgpu::BindGroupEntry> = binding_slots
           .iter()
           .filter(|s| s.group as usize == group_idx)
-          .map(|s| wgpu::BindGroupEntry {
-            binding: s.binding as u32,
-            resource: binding_buffers[&(s.group, s.binding)]
-              .as_entire_binding(),
+          .map(|s| {
+            let key = (s.group, s.binding);
+            wgpu::BindGroupEntry {
+              binding: s.binding as u32,
+              resource: if s.kind == GpuBufferKind::Texture2D {
+                wgpu::BindingResource::TextureView(&texture_views[&key])
+              } else {
+                binding_buffers[&key].as_entire_binding()
+              },
+            }
           })
           .collect();
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -822,6 +1100,19 @@ pub(crate) fn create_headless_gpu_core(
         immediate_size: 0,
       });
 
+    let placeholder_texture_view = {
+      let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("placeholder texture"),
+        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+      });
+      tex.create_view(&wgpu::TextureViewDescriptor::default())
+    };
     Arc::new(RwLock::new(GpuCore {
       instance,
       device,
@@ -833,6 +1124,8 @@ pub(crate) fn create_headless_gpu_core(
       binding_slots,
       binding_buffers,
       binding_buffer_sizes,
+      textures,
+      texture_views,
       bind_group_layouts,
       bind_groups,
       window_size: (1, 1),
@@ -841,6 +1134,7 @@ pub(crate) fn create_headless_gpu_core(
       surface: None,
       surface_config: None,
       pending_present: None,
+      placeholder_texture_view,
     }))
   })
 }
@@ -1043,6 +1337,9 @@ fn gpu_buffer_usage(kind: GpuBufferKind) -> wgpu::BufferUsages {
         | wgpu::BufferUsages::COPY_DST
         | wgpu::BufferUsages::COPY_SRC
     }
+    GpuBufferKind::Texture2D => {
+      unreachable!("gpu_buffer_usage called for Texture2D binding")
+    }
   }
 }
 
@@ -1054,6 +1351,9 @@ fn gpu_binding_type(kind: GpuBufferKind) -> wgpu::BufferBindingType {
     }
     GpuBufferKind::StorageReadWrite => {
       wgpu::BufferBindingType::Storage { read_only: false }
+    }
+    GpuBufferKind::Texture2D => {
+      unreachable!("gpu_binding_type called for Texture2D binding")
     }
   }
 }
@@ -1071,6 +1371,12 @@ fn gpu_binding_visibility(kind: GpuBufferKind) -> wgpu::ShaderStages {
       wgpu::ShaderStages::FRAGMENT
         | wgpu::ShaderStages::COMPUTE
         | wgpu::ShaderStages::VERTEX
+    }
+    // Textures are readable from vertex, fragment, and compute shaders.
+    GpuBufferKind::Texture2D => {
+      wgpu::ShaderStages::VERTEX
+        | wgpu::ShaderStages::FRAGMENT
+        | wgpu::ShaderStages::COMPUTE
     }
   }
 }
@@ -1158,20 +1464,47 @@ impl RenderState {
       .map(|g| g + 1)
       .unwrap_or(0);
 
-    // Create one buffer per binding.  Dynamic bindings (size == 0) get a
-    // 16-byte placeholder; they will be resized on the first upload.
+    // Create one buffer per non-texture binding.  Dynamic bindings (size == 0)
+    // get a 16-byte placeholder; they will be resized on the first upload.
+    // Texture bindings get a placeholder 1×1 RGBA texture instead of a buffer.
     let mut binding_buffers: HashMap<(u8, u8), wgpu::Buffer> = HashMap::new();
     let mut binding_buffer_sizes: HashMap<(u8, u8), u64> = HashMap::new();
+    let mut textures: HashMap<(u8, u8), wgpu::Texture> = HashMap::new();
+    let mut texture_views: HashMap<(u8, u8), wgpu::TextureView> =
+      HashMap::new();
     for &((group, binding), kind, size) in binding_infos {
-      let alloc_size = size.max(16);
-      let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(&format!("binding g{group}b{binding}")),
-        size: alloc_size,
-        usage: gpu_buffer_usage(kind),
-        mapped_at_creation: false,
-      });
-      binding_buffers.insert((group, binding), buffer);
-      binding_buffer_sizes.insert((group, binding), alloc_size);
+      let key = (group, binding);
+      if kind == GpuBufferKind::Texture2D {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+          label: Some(&format!("texture g{group}b{binding}")),
+          size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+          },
+          mip_level_count: 1,
+          sample_count: 1,
+          dimension: wgpu::TextureDimension::D2,
+          format: wgpu::TextureFormat::Rgba8Unorm,
+          usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::RENDER_ATTACHMENT,
+          view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        textures.insert(key, texture);
+        texture_views.insert(key, view);
+      } else {
+        let alloc_size = size.max(16);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+          label: Some(&format!("binding g{group}b{binding}")),
+          size: alloc_size,
+          usage: gpu_buffer_usage(kind),
+          mapped_at_creation: false,
+        });
+        binding_buffers.insert(key, buffer);
+        binding_buffer_sizes.insert(key, alloc_size);
+      }
     }
 
     // Create bind group layouts (one per group number, 0-indexed).
@@ -1183,10 +1516,20 @@ impl RenderState {
           .map(|((_, b), kind, _)| wgpu::BindGroupLayoutEntry {
             binding: *b as u32,
             visibility: gpu_binding_visibility(*kind),
-            ty: wgpu::BindingType::Buffer {
-              ty: gpu_binding_type(*kind),
-              has_dynamic_offset: false,
-              min_binding_size: None,
+            ty: if *kind == GpuBufferKind::Texture2D {
+              wgpu::BindingType::Texture {
+                multisampled: false,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                sample_type: wgpu::TextureSampleType::Float {
+                  filterable: true,
+                },
+              }
+            } else {
+              wgpu::BindingType::Buffer {
+                ty: gpu_binding_type(*kind),
+                has_dynamic_offset: false,
+                min_binding_size: None,
+              }
             },
             count: None,
           })
@@ -1206,10 +1549,16 @@ impl RenderState {
         let entries: Vec<wgpu::BindGroupEntry> = binding_slots
           .iter()
           .filter(|s| s.group as usize == group_idx)
-          .map(|s| wgpu::BindGroupEntry {
-            binding: s.binding as u32,
-            resource: binding_buffers[&(s.group, s.binding)]
-              .as_entire_binding(),
+          .map(|s| {
+            let key = (s.group, s.binding);
+            wgpu::BindGroupEntry {
+              binding: s.binding as u32,
+              resource: if s.kind == GpuBufferKind::Texture2D {
+                wgpu::BindingResource::TextureView(&texture_views[&key])
+              } else {
+                binding_buffers[&key].as_entire_binding()
+              },
+            }
           })
           .collect();
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1229,6 +1578,19 @@ impl RenderState {
         immediate_size: 0,
       });
 
+    let placeholder_texture_view = {
+      let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("placeholder texture"),
+        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+      });
+      tex.create_view(&wgpu::TextureViewDescriptor::default())
+    };
     let gpu = Arc::new(RwLock::new(GpuCore {
       instance,
       device,
@@ -1240,6 +1602,8 @@ impl RenderState {
       binding_slots,
       binding_buffers,
       binding_buffer_sizes,
+      textures,
+      texture_views,
       bind_group_layouts,
       bind_groups,
       window_size: (surface_config.width, surface_config.height),
@@ -1248,6 +1612,7 @@ impl RenderState {
       surface: Some(surface),
       surface_config: Some(surface_config),
       pending_present: None,
+      placeholder_texture_view,
     }));
 
     Ok(Self { window, gpu })
@@ -1351,7 +1716,7 @@ impl RenderState {
 
     let mut gpu = self.gpu.write().unwrap();
 
-    let format = gpu
+    let screen_format = gpu
       .surface_config
       .as_ref()
       .map(|c| c.format)
@@ -1365,8 +1730,14 @@ impl RenderState {
           vert,
           frag,
           additive,
+          render_target,
           ..
         } => {
+          let format = if render_target.is_none() {
+            screen_format
+          } else {
+            GpuCore::OFFSCREEN_FORMAT
+          };
           let vert = vert.replace('-', "_");
           let frag = frag.replace('-', "_");
           gpu.get_or_create_render_pipeline(&vert, &frag, *additive, format);
@@ -1378,12 +1749,17 @@ impl RenderState {
       }
     }
 
-    let has_render = draw_calls
-      .iter()
-      .any(|c| matches!(c, WindowEvent::RenderShaders { .. }));
+    let has_screen_render = draw_calls.iter().any(|c| {
+      matches!(c, WindowEvent::RenderShaders { render_target: None, .. })
+    });
 
-    let output = if has_render {
-      match gpu.surface.as_ref().expect("RenderState has no surface").get_current_texture() {
+    let output = if has_screen_render {
+      match gpu
+        .surface
+        .as_ref()
+        .expect("RenderState has no surface")
+        .get_current_texture()
+      {
         Ok(texture) => Some(texture),
         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => return,
         Err(e) => {
@@ -1395,19 +1771,14 @@ impl RenderState {
       None
     };
 
-    let view = output.as_ref().map(|o| {
+    let screen_view = output.as_ref().map(|o| {
       o.texture
         .create_view(&wgpu::TextureViewDescriptor::default())
     });
 
     // Batch all compute dispatches into one encoder (multiple passes) and all
-    // render draws into one encoder (one render pass, multiple draw calls).
+    // render draws into one encoder (one render pass per render-target group).
     // This reduces queue.submit() calls from N to at most 2 per frame.
-    //
-    // Uploads are aggregated across all calls of each kind — if the same
-    // binding appears in multiple pre_uploads, the last write wins, which is
-    // correct because collect_dirty_uploads marks each binding Synced on first
-    // upload so only the first dispatch in the frame will carry each binding.
 
     // --- Compute pass (one encoder, one submit) ---
     let compute_calls: Vec<_> = draw_calls
@@ -1453,38 +1824,73 @@ impl RenderState {
       gpu.queue.submit(std::iter::once(encoder.finish()));
     }
 
-    // --- Render pass (one encoder, one submit) ---
-    if let Some(view) = &view {
-      let render_calls: Vec<_> = draw_calls
+    // --- Render passes (one encoder, one submit; one pass per target group) ---
+    let render_calls: Vec<_> = draw_calls
+      .iter()
+      .filter_map(|c| {
+        if let WindowEvent::RenderShaders {
+          vert,
+          frag,
+          vert_count,
+          pre_upload,
+          additive,
+          render_target,
+        } = c
+        {
+          Some((vert, frag, vert_count, pre_upload, additive, render_target))
+        } else {
+          None
+        }
+      })
+      .collect();
+
+    if !render_calls.is_empty() {
+      let all_uploads: Vec<_> = render_calls
         .iter()
-        .filter_map(|c| {
-          if let WindowEvent::RenderShaders {
-            vert,
-            frag,
-            vert_count,
-            pre_upload,
-            additive,
-          } = c
-          {
-            Some((vert, frag, vert_count, pre_upload, additive))
-          } else {
-            None
-          }
-        })
+        .flat_map(|(_, _, _, u, _, _)| u.iter().cloned())
         .collect();
+      gpu.upload_bindings(&all_uploads);
 
-      if !render_calls.is_empty() {
-        let all_uploads: Vec<_> = render_calls
+      let mut encoder = gpu.device.create_command_encoder(
+        &wgpu::CommandEncoderDescriptor {
+          label: Some("render encoder"),
+        },
+      );
+
+      // Group consecutive calls by render target, one render pass per group.
+      let mut i = 0;
+      while i < render_calls.len() {
+        let current_rt = render_calls[i].5;
+        let end = render_calls[i..]
           .iter()
-          .flat_map(|(_, _, _, u, _)| u.iter().cloned())
-          .collect();
-        gpu.upload_bindings(&all_uploads);
+          .position(|c| c.5 != current_rt)
+          .map_or(render_calls.len(), |j| i + j);
+        let group = &render_calls[i..end];
 
-        let mut encoder = gpu.device.create_command_encoder(
-          &wgpu::CommandEncoderDescriptor {
-            label: Some("render encoder"),
-          },
-        );
+        // Create a fresh view for texture render targets. Borrow of
+        // `gpu.textures` is released before the render pass scope.
+        let texture_target_view: Option<wgpu::TextureView> =
+          current_rt.map(|rt| {
+            gpu.textures[&rt].create_view(&wgpu::TextureViewDescriptor::default())
+          });
+        // For render target passes, replace the target slot in the bind group
+        // with a placeholder to avoid COLOR_TARGET + RESOURCE conflict.
+        let modified_bind_groups: Option<Vec<wgpu::BindGroup>> =
+          current_rt.map(|rt| gpu.bind_groups_with_placeholder_for(rt));
+        let bind_groups_ref: &[wgpu::BindGroup] = modified_bind_groups
+          .as_deref()
+          .unwrap_or(&gpu.bind_groups);
+
+        let view = match &texture_target_view {
+          Some(v) => v,
+          None => screen_view.as_ref().unwrap(),
+        };
+        let format = if current_rt.is_none() {
+          screen_format
+        } else {
+          GpuCore::OFFSCREEN_FORMAT
+        };
+
         {
           let mut render_pass =
             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1503,19 +1909,22 @@ impl RenderState {
               timestamp_writes: None,
               multiview_mask: None,
             });
-          for (vert, frag, vert_count, _, additive) in &render_calls {
+          for (vert, frag, vert_count, _, additive, _) in group {
             let vert = vert.replace('-', "_");
             let frag = frag.replace('-', "_");
             let key = (vert, frag, **additive, format);
-            for (group_idx, bind_group) in gpu.bind_groups.iter().enumerate() {
+            for (group_idx, bind_group) in bind_groups_ref.iter().enumerate() {
               render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
             }
             render_pass.set_pipeline(&gpu.render_pipelines[&key]);
             render_pass.draw(0..**vert_count, 0..1);
           }
         }
-        gpu.queue.submit(std::iter::once(encoder.finish()));
+
+        i = end;
       }
+
+      gpu.queue.submit(std::iter::once(encoder.finish()));
     }
 
     if let Some(output) = output {

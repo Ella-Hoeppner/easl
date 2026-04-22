@@ -1,0 +1,19 @@
+@{group 0
+  binding 0}
+(var tex: (Texture2D f32))
+
+@{address storage-write
+  group 0
+  binding 1}
+(var value: vec4f)
+
+@cpu
+(defn main []
+  (= tex
+     (load-image "red_pixel.png"))
+  (dispatch-compute-shader (fn []
+                               (= value
+                                  (texture-load tex (vec2u 0u) 0u)))
+                           (vec3u 1u))
+  (print value))
+

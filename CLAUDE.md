@@ -5,10 +5,12 @@ Easl (Enhanced Abstraction Shader Language) is a Lisp-like shader language that 
 ## Build & Test
 
 ```bash
-cargo test                        # run all tests
-cargo test <test_name>            # run a specific test
-cargo run                         # runs benchmark (compiles all .easl files in data/gpu/)
+cargo test --features window                        # run all tests (ALWAYS use this flag)
+cargo test --features window <test_name>            # run a specific test
+cargo run                                           # runs benchmark (compiles all .easl files in data/gpu/)
 ```
+
+> **IMPORTANT**: Always pass `--features window` when running tests. Without it, the interpreter, wgpu GPU execution, and windowing code are all compiled out, causing most buffer/cpu/window tests to silently produce wrong results or be skipped. The `window` feature is required for any test that involves the interpreter, GPU compute/render, or the `IOManager` trait.
 
 ## Project Structure
 
