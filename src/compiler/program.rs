@@ -1612,10 +1612,10 @@ impl Program {
           .walk_mut_with_ctx(
             &mut |exp, ctx| match &mut exp.kind {
               ExpKind::Application(f, args) => {
-                let ExpKind::Name(original_name) = &mut f.kind else {
-                  panic!("non-name fn being applied")
-                };
                 if let Type::Function(_) = f.data.unwrap_known() {
+                  let ExpKind::Name(original_name) = &mut f.kind else {
+                    panic!("non-name fn being applied")
+                  };
                   match ctx.get_name_definition_source(&original_name) {
                     Some(source) => match source {
                       NameDefinitionSource::LocalBinding(_) => {
@@ -1750,6 +1750,7 @@ impl Program {
                           body.source_trace.clone(),
                         ),
                         Effect::CPUExclusiveFunction(_)
+                        | Effect::CPUExclusiveType(_)
                         | Effect::FragmentExclusiveFunction(_)
                         | Effect::Print
                         | Effect::ModifiesGlobalVar(_)
@@ -2794,6 +2795,9 @@ impl Program {
           } else {
             continue;
           };
+          if type_signature.iter().any(|t| matches!(t, Type::Function(_))) {
+            continue;
+          }
           let new_name = base_name.to_string()
             + "_"
             + &type_signature

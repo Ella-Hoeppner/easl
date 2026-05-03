@@ -1,0 +1,36 @@
+(struct Path
+  points: [100: vec2f]
+  current-segment-count: u32)
+
+@{address storage-write
+  group 0
+  binding 0}
+(var paths: [Path])
+
+(var frame-index: u32)
+
+@vertex
+(defn path-vertex []: vec4f
+  (vec4f (.current-segment-count (paths 0u))))
+
+@fragment
+(defn path-frag []: vec4f
+  (vec4f 1.))
+
+@compute
+(defn progress-paths []
+  (let [path-index (.x (global-invocation-id))
+        @var path (paths path-index)]
+    (+= path.current-segment-count 1)
+    (= (paths path-index) path)))
+
+@cpu
+(defn main []
+  (= paths (zeroed-array 10))
+  (spawn-window (fn []
+                    (dispatch-render-shaders path-vertex path-frag 6)
+                    (dispatch-compute-shader progress-paths (vec3u 1u))
+                    (when (> frame-index 0u)
+                      (close-window))
+                    (+= frame-index 1u))))
+

@@ -73,3 +73,5 @@ buffer_test!(bidirectional_transfer_render);
 buffer_test!(closure_compute_entry_point);
 buffer_test!(load_red_pixel);
 buffer_test!(set_render_target);
+buffer_test!(struct_array_buffer);
+buffer_test!(print_enum);

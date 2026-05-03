@@ -1,0 +1,8 @@
+(struct Line
+  points: [2: vec2f])
+
+(defn f []
+  (let [@var line (Line (zeroed-array))]
+    (= ((.points line) 1u)
+       (vec2f 1.))))
+

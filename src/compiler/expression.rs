@@ -3457,9 +3457,6 @@ impl TypedExp {
         &mut |exp: &mut TypedExp, ctx: &ImmutableProgramLocalContext| {
           match &mut exp.kind {
             Application(f, args) => {
-              let ExpKind::Name(f_name) = &mut f.kind else {
-                panic!()
-              };
               if let TypeState::Known(Type::Function(signature)) =
                 &mut f.data.kind
                 && let Some(abstract_ancestor) =
@@ -3472,6 +3469,9 @@ impl TypedExp {
                     .implementation
                     .clone()
               {
+                let ExpKind::Name(f_name) = &mut f.kind else {
+                  panic!()
+                };
                 let reference_arg_positions =
                   abstract_ancestor.read().unwrap().reference_arg_positions();
                 if !reference_arg_positions.is_empty() {
@@ -3555,59 +3555,67 @@ impl TypedExp {
     let mut changed = false;
     self.walk_mut::<CompileError>(&mut |exp: &mut TypedExp| {
       if let Application(f, args) = &mut exp.kind {
-        if let ExpKind::Name(f_name) = &mut f.kind {
-          if let TypeState::Known(Type::Function(f)) = &mut f.data.kind
-            && let Some(abstract_signature) = &mut f.abstract_ancestor
-            && let FunctionImplementationKind::Composite(_) =
-              abstract_signature.clone().read().unwrap().implementation
-            && let Some((inlinable_arg_index, inlinable_abstract_signature)) =
-              abstract_signature
-                .clone()
+        if let TypeState::Known(Type::Function(f_signature)) = &mut f.data.kind
+        {
+          if let ExpKind::Name(f_name) = &mut f.kind {
+            if let Some(abstract_signature) = &mut f_signature.abstract_ancestor
+              && let FunctionImplementationKind::Composite(_) =
+                abstract_signature.clone().read().unwrap().implementation
+              && let Some((inlinable_arg_index, inlinable_abstract_signature)) =
+                abstract_signature
+                  .clone()
+                  .read()
+                  .unwrap()
+                  .arg_types
+                  .iter()
+                  .enumerate()
+                  .find_map(|(i, (t, _))| match t {
+                    AbstractType::Type(Type::Function(f))
+                      if f.abstract_ancestor.is_none() =>
+                    {
+                      if let Type::Function(arg_f) =
+                        &args[i].data.unwrap_known()
+                        && let Some(arg_abstract_signature) =
+                          &arg_f.abstract_ancestor
+                      {
+                        Some((i, arg_abstract_signature.clone()))
+                      } else {
+                        None
+                      }
+                    }
+                    _ => None,
+                  })
+            {
+              let representative_struct = inlinable_abstract_signature
                 .read()
                 .unwrap()
-                .arg_types
-                .iter()
-                .enumerate()
-                .find_map(|(i, (t, _))| match t {
-                  AbstractType::Type(Type::Function(f))
-                    if f.abstract_ancestor.is_none() =>
-                  {
-                    if let Type::Function(arg_f) = &args[i].data.unwrap_known()
-                      && let Some(arg_abstract_signature) =
-                        &arg_f.abstract_ancestor
-                    {
-                      Some((i, arg_abstract_signature.clone()))
-                    } else {
-                      None
-                    }
-                  }
-                  _ => None,
-                })
-          {
-            let representative_struct = inlinable_abstract_signature
-              .read()
-              .unwrap()
-              .representative_type(&mut new_ctx.names.write().unwrap());
-            let inlined_signature = abstract_signature
-              .read()
-              .unwrap()
-              .generate_higher_order_argument_inlined_version(
-                f_name.clone(),
-                inlinable_arg_index,
-                inlinable_abstract_signature,
-                new_ctx,
-                &exp.source_trace,
-              )?;
-            *f_name = inlined_signature.name.clone();
-            *abstract_signature =
-              Arc::new(RwLock::new(inlined_signature.clone()));
-            new_ctx
-              .add_abstract_function(Arc::new(RwLock::new(inlined_signature)));
-            new_ctx.add_monomorphized_struct(representative_struct);
-            changed = true;
+                .representative_type(&mut new_ctx.names.write().unwrap());
+              let inlined_signature = abstract_signature
+                .read()
+                .unwrap()
+                .generate_higher_order_argument_inlined_version(
+                  f_name.clone(),
+                  inlinable_arg_index,
+                  inlinable_abstract_signature,
+                  new_ctx,
+                  &exp.source_trace,
+                )?;
+              *f_name = inlined_signature.name.clone();
+              *abstract_signature =
+                Arc::new(RwLock::new(inlined_signature.clone()));
+              new_ctx.add_abstract_function(Arc::new(RwLock::new(
+                inlined_signature,
+              )));
+              new_ctx.add_monomorphized_struct(representative_struct);
+              changed = true;
+            }
+          } else {
+            println!("b");
+            return err(
+              UninlinableHigherOrderFunction,
+              exp.source_trace.clone(),
+            );
           }
-        } else {
-          return err(UninlinableHigherOrderFunction, exp.source_trace.clone());
         }
       }
       Ok(true)
@@ -4138,33 +4146,33 @@ impl TypedExp {
                     })
                   }
                 }
-              }
-              match f.kind {
-                Name(_) => {}
-                _ => {
-                  let f_name = names.gensym("f_binding");
-                  let mut name_exp = Exp {
-                    kind: ExpKind::Name(f_name.clone()),
-                    data: f.data.clone(),
-                    source_trace: f.source_trace.clone(),
-                  };
-                  std::mem::swap(f.as_mut(), &mut name_exp);
-                  let mut temp = placeholder_exp.clone();
-                  std::mem::swap(exp, &mut temp);
-                  temp = Exp {
-                    data: temp.data.clone(),
-                    source_trace: temp.source_trace.clone(),
-                    kind: ExpKind::Let(
-                      vec![(
-                        f_name,
-                        temp.source_trace.clone(),
-                        VariableKind::Let,
-                        name_exp,
-                      )],
-                      Box::new(temp),
-                    ),
-                  };
-                  std::mem::swap(exp, &mut temp);
+                match f.kind {
+                  Name(_) => {}
+                  _ => {
+                    let f_name = names.gensym("f_binding");
+                    let mut name_exp = Exp {
+                      kind: ExpKind::Name(f_name.clone()),
+                      data: f.data.clone(),
+                      source_trace: f.source_trace.clone(),
+                    };
+                    std::mem::swap(f.as_mut(), &mut name_exp);
+                    let mut temp = placeholder_exp.clone();
+                    std::mem::swap(exp, &mut temp);
+                    temp = Exp {
+                      data: temp.data.clone(),
+                      source_trace: temp.source_trace.clone(),
+                      kind: ExpKind::Let(
+                        vec![(
+                          f_name,
+                          temp.source_trace.clone(),
+                          VariableKind::Let,
+                          name_exp,
+                        )],
+                        Box::new(temp),
+                      ),
+                    };
+                    std::mem::swap(exp, &mut temp);
+                  }
                 }
               }
             }

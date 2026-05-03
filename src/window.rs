@@ -1,12 +1,13 @@
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{collections::{HashMap, HashSet}, sync::Arc, time::Instant};
 
 use std::sync::RwLock;
 
 use winit::{
   application::ApplicationHandler,
   dpi::{PhysicalPosition, PhysicalSize},
-  event::WindowEvent as WinitWindowEvent,
+  event::{ElementState, MouseButton, WindowEvent as WinitWindowEvent},
   event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+  keyboard::Key,
   platform::run_on_demand::EventLoopExtRunOnDemand,
   window::{Window, WindowId},
 };
@@ -146,6 +147,22 @@ pub struct GpuCore {
   pub window_time: f32,
   /// Time in seconds between the previous frame and the current frame.
   pub window_delta_time: f32,
+  /// Number of frames rendered since the window opened (0 on the first frame).
+  pub window_frame_index: u32,
+  /// Set of lowercase character keys currently held down.
+  pub keys_down: HashSet<String>,
+  /// Set of lowercase character keys pressed this frame (not held from a previous frame).
+  /// Cleared after each frame's eval completes.
+  pub keys_just_down: HashSet<String>,
+  /// Pixel position of the mouse cursor relative to the window, in physical pixels.
+  pub mouse_coords: (u32, u32),
+  /// True if the mouse cursor is currently inside the window.
+  pub mouse_present: bool,
+  /// True if the left mouse button is currently held down.
+  pub mouse_down: bool,
+  /// True if the left mouse button was pressed this frame (not held from a previous frame).
+  /// Cleared after each frame's eval completes.
+  pub mouse_just_down: bool,
   /// The window surface, if a window is open. Set by `RenderState::new` /
   /// `from_existing_gpu`. Used by `execute_render_batch` to render directly to
   /// the real surface instead of an offscreen texture.
@@ -1151,6 +1168,13 @@ pub(crate) fn create_headless_gpu_core(
       window_size: (1, 1),
       window_time: 0.0,
       window_delta_time: 0.0,
+      window_frame_index: 0,
+      keys_down: HashSet::new(),
+      keys_just_down: HashSet::new(),
+      mouse_coords: (0, 0),
+      mouse_present: false,
+      mouse_down: false,
+      mouse_just_down: false,
       surface: None,
       surface_config: None,
       pending_present: None,
@@ -1204,6 +1228,17 @@ impl<'a, IO: IOManager> App<'a, IO> {
         {
           surface.configure(&gpu.device, config);
         }
+      }
+      // Reset per-run GPU state so the new program starts from a clean slate.
+      {
+        let mut gpu = state.gpu.write().unwrap();
+        gpu.window_frame_index = 0;
+        gpu.keys_down.clear();
+        gpu.keys_just_down.clear();
+        gpu.mouse_coords = (0, 0);
+        gpu.mouse_present = false;
+        gpu.mouse_down = false;
+        gpu.mouse_just_down = false;
       }
       // Re-show the window: macOS may have ordered it out during the
       // resign-active → become-active lifecycle that happens while the main
@@ -1302,6 +1337,8 @@ impl<'a, IO: IOManager> ApplicationHandler for App<'a, IO> {
           let mut gpu = state.gpu.write().unwrap();
           gpu.window_time = window_time;
           gpu.window_delta_time = window_delta_time;
+          // window_frame_index is already the correct value for this frame
+          // (0 on first frame); it is incremented after eval below.
         }
         match eval(self.body.clone(), self.env) {
           Ok(_) => {}
@@ -1316,6 +1353,14 @@ impl<'a, IO: IOManager> ApplicationHandler for App<'a, IO> {
             event_loop.exit();
             return;
           }
+        }
+        if let Some(state) = &self.state {
+          let mut gpu = state.gpu.write().unwrap();
+          gpu.window_frame_index += 1;
+          // keys_just_down / mouse_just_down track inputs since the last frame's eval.
+          // Clear them now so only newly-triggered inputs show up next frame.
+          gpu.keys_just_down.clear();
+          gpu.mouse_just_down = false;
         }
         let draw_calls = self.env.io.take_frame_draw_calls();
         if let Some(state) = &mut self.state {
@@ -1341,6 +1386,54 @@ impl<'a, IO: IOManager> ApplicationHandler for App<'a, IO> {
             .with(|cell| *cell.borrow_mut() = self.state.take());
           self.reload = true;
           event_loop.exit();
+        }
+      }
+      WinitWindowEvent::KeyboardInput { event, .. } => {
+        if let Some(state) = &self.state
+          && let Key::Character(c) = &event.logical_key
+        {
+          let key = c.to_lowercase();
+          let mut gpu = state.gpu.write().unwrap();
+          match event.state {
+            ElementState::Pressed if !event.repeat => {
+              gpu.keys_down.insert(key.clone());
+              gpu.keys_just_down.insert(key);
+            }
+            ElementState::Released => {
+              gpu.keys_down.remove(&key);
+            }
+            _ => {}
+          }
+        }
+      }
+      WinitWindowEvent::CursorMoved { position, .. } => {
+        if let Some(state) = &self.state {
+          let mut gpu = state.gpu.write().unwrap();
+          gpu.mouse_coords = (position.x as u32, position.y as u32);
+        }
+      }
+      WinitWindowEvent::CursorEntered { .. } => {
+        if let Some(state) = &self.state {
+          state.gpu.write().unwrap().mouse_present = true;
+        }
+      }
+      WinitWindowEvent::CursorLeft { .. } => {
+        if let Some(state) = &self.state {
+          state.gpu.write().unwrap().mouse_present = false;
+        }
+      }
+      WinitWindowEvent::MouseInput { state: btn_state, button: MouseButton::Left, .. } => {
+        if let Some(state) = &self.state {
+          let mut gpu = state.gpu.write().unwrap();
+          match btn_state {
+            ElementState::Pressed => {
+              gpu.mouse_down = true;
+              gpu.mouse_just_down = true;
+            }
+            ElementState::Released => {
+              gpu.mouse_down = false;
+            }
+          }
         }
       }
       _ => {}
@@ -1635,6 +1728,13 @@ impl RenderState {
       window_size: (surface_config.width, surface_config.height),
       window_time: 0.0,
       window_delta_time: 0.0,
+      window_frame_index: 0,
+      keys_down: HashSet::new(),
+      keys_just_down: HashSet::new(),
+      mouse_coords: (0, 0),
+      mouse_present: false,
+      mouse_down: false,
+      mouse_just_down: false,
       surface: Some(surface),
       surface_config: Some(surface_config),
       pending_present: None,
@@ -1813,6 +1913,26 @@ impl RenderState {
     // render draws into one encoder (one render pass per render-target group).
     // This reduces queue.submit() calls from N to at most 2 per frame.
 
+    // Apply ALL pre_uploads (compute + render) upfront before any dispatch.
+    // Compute runs before render by design, but render pre_uploads may
+    // contain buffer initialisation (e.g. sizing an unsized storage buffer)
+    // that compute needs.  Pre_uploads are NOT re-applied before the render
+    // dispatch below to avoid overwriting compute's GPU output.
+    {
+      let all_pre_uploads: Vec<_> = draw_calls
+        .iter()
+        .flat_map(|c| match c {
+          WindowEvent::ComputeShader { pre_upload, .. } => {
+            pre_upload.iter().cloned().collect::<Vec<_>>()
+          }
+          WindowEvent::RenderShaders { pre_upload, .. } => {
+            pre_upload.iter().cloned().collect::<Vec<_>>()
+          }
+        })
+        .collect();
+      gpu.upload_bindings(&all_pre_uploads);
+    }
+
     // --- Compute pass (one encoder, one submit) ---
     let compute_calls: Vec<_> = draw_calls
       .iter()
@@ -1831,11 +1951,7 @@ impl RenderState {
       .collect();
 
     if !compute_calls.is_empty() {
-      let all_uploads: Vec<_> = compute_calls
-        .iter()
-        .flat_map(|(_, _, u)| u.iter().cloned())
-        .collect();
-      gpu.upload_bindings(&all_uploads);
+      // pre_uploads already applied above; no per-batch upload needed.
 
       let mut encoder =
         gpu
@@ -1880,11 +1996,8 @@ impl RenderState {
       .collect();
 
     if !render_calls.is_empty() {
-      let all_uploads: Vec<_> = render_calls
-        .iter()
-        .flat_map(|(_, _, _, u, _, _)| u.iter().cloned())
-        .collect();
-      gpu.upload_bindings(&all_uploads);
+      // pre_uploads already applied before compute above; not re-applied here
+      // to avoid overwriting GPU data written by compute shaders.
 
       let mut encoder =
         gpu

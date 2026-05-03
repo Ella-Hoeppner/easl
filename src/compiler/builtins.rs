@@ -2011,6 +2011,103 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       ..Default::default()
     },
     AbstractFunctionSignature {
+      name: "window-frame-index".into(),
+      return_type: AbstractType::Type(Type::U32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("window-frame-index".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "mouse-coords".into(),
+      return_type: AbstractType::AbstractStruct(
+        vec2()
+          .fill_abstract_generics(vec![AbstractType::Type(Type::U32)])
+          .into(),
+      ),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("mouse-coords".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "mouse-present?".into(),
+      return_type: AbstractType::Type(Type::Bool),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("mouse-present?".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "mouse-down?".into(),
+      return_type: AbstractType::Type(Type::Bool),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("mouse-down?".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "mouse-just-down?".into(),
+      return_type: AbstractType::Type(Type::Bool),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("mouse-just-down?".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "key-down?".into(),
+      arg_types: vec![AbstractType::Type(Type::String).owned()],
+      return_type: AbstractType::Type(Type::Bool),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("key-down?".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "key-just-down?".into(),
+      arg_types: vec![AbstractType::Type(Type::String).owned()],
+      return_type: AbstractType::Type(Type::Bool),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("key-just-down?".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
       name: "load-image".into(),
       arg_types: vec![AbstractType::Type(Type::String).owned()],
       return_type: AbstractType::AbstractStruct(
@@ -2036,19 +2133,22 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
           .into(),
       ),
       implementation: FunctionImplementationKind::Builtin {
-        effect_type: Effect::CPUExclusiveFunction("blank-texture".into()).into(),
+        effect_type: Effect::CPUExclusiveFunction("blank-texture".into())
+          .into(),
         target_configuration: FunctionTargetConfiguration::Default,
       },
       ..Default::default()
     },
     AbstractFunctionSignature {
       name: "set-render-target".into(),
-      arg_types: vec![AbstractType::AbstractStruct(
-        texture_2d()
-          .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
-          .into(),
-      )
-      .owned()],
+      arg_types: vec![
+        AbstractType::AbstractStruct(
+          texture_2d()
+            .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+            .into(),
+        )
+        .owned(),
+      ],
       return_type: AbstractType::Unit,
       implementation: FunctionImplementationKind::Builtin {
         effect_type: vec![
@@ -2076,19 +2176,22 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
     },
     AbstractFunctionSignature {
       name: "blank-texture".into(),
-      arg_types: vec![AbstractType::AbstractStruct(
-        vec2()
-          .fill_abstract_generics(vec![AbstractType::Type(Type::U32)])
-          .into(),
-      )
-      .owned()],
+      arg_types: vec![
+        AbstractType::AbstractStruct(
+          vec2()
+            .fill_abstract_generics(vec![AbstractType::Type(Type::U32)])
+            .into(),
+        )
+        .owned(),
+      ],
       return_type: AbstractType::AbstractStruct(
         texture_2d()
           .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
           .into(),
       ),
       implementation: FunctionImplementationKind::Builtin {
-        effect_type: Effect::CPUExclusiveFunction("blank-texture".into()).into(),
+        effect_type: Effect::CPUExclusiveFunction("blank-texture".into())
+          .into(),
         target_configuration: FunctionTargetConfiguration::Default,
       },
       ..Default::default()
@@ -2379,8 +2482,8 @@ lazy_static! {
   .into_iter()
   .collect();
   pub static ref INFIX_OPS: HashSet<&'static str> = [
-    "==", "!=", ">=", ">", "<=", "<", "||", "&&", "+", "-", "*", "/", "%", "^",
-    ">>", "<<"
+    "==", "!=", ">=", ">", "<=", "<", "||", "&&", "+", "-", "*", "/", "%",
+    ">>", "<<", "|", "&", "^",
   ]
   .into_iter()
   .collect();

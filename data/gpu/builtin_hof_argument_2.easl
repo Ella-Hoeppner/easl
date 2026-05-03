@@ -1,0 +1,10 @@
+(defn do-twice [f: (Fn [f32] f32)
+                x: f32]: f32
+  (f (f x)))
+
+(defn a []: f32
+  (do-twice (fn [x] (sqrt x)) 5.))
+
+(defn b []: f32
+  (do-twice sqrt 5.))
+

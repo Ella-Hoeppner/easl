@@ -456,50 +456,12 @@ impl AbstractType {
       EaslTree::Inner(
         (position, EncloserOrOperator::Encloser(Encloser::Square)),
         array_children,
-      ) => {
-        let source_trace: SourceTrace = position.clone().into();
-        if array_children.len() == 1 {
-          match array_children.iter().next().unwrap().clone() {
-            EaslTree::Inner(
-              (
-                position,
-                EncloserOrOperator::Operator(Operator::TypeAscription),
-              ),
-              mut type_annotation_children,
-            ) => {
-              let source_trace: SourceTrace = position.into();
-              if let EaslTree::Leaf(_, num_str) =
-                type_annotation_children.remove(0)
-              {
-                let inner_type = Type::from_easl_tree(
-                  type_annotation_children.remove(0),
-                  typedefs,
-                  skolems,
-                )?;
-                Ok(AbstractType::Type(Type::Array(
-                  Some(if let Ok(array_size) = num_str.parse::<u32>() {
-                    ConcreteArraySize::Literal(array_size)
-                  } else {
-                    ConcreteArraySize::Constant(num_str.into())
-                  }),
-                  Box::new(inner_type.known().into()),
-                )))
-              } else {
-                return err(InvalidArraySignature, source_trace);
-              }
-            }
-            other => {
-              let inner_type = Type::from_easl_tree(other, typedefs, skolems)?;
-              Ok(AbstractType::Type(Type::Array(
-                Some(ConcreteArraySize::Unsized),
-                Box::new(inner_type.known().into()),
-              )))
-            }
-          }
-        } else {
-          return err(InvalidArraySignature, source_trace);
-        }
-      }
+      ) => Ok(AbstractType::Type(parse_array_type_tree(
+        array_children,
+        position.into(),
+        typedefs,
+        skolems,
+      )?)),
       _ => err(InvalidStructFieldType, tree.position().clone().into()),
     }
   }
@@ -864,6 +826,61 @@ impl ConcreteArraySize {
   }
 }
 
+/// Parse an array-size token that may carry a `u` or `i` numeric suffix
+/// (e.g. `"3u"`, `"16i"`) into a `ConcreteArraySize`. Suffixed literals are
+/// treated identically to their bare counterparts; an unparseable token is
+/// returned as a `Constant` (named-constant reference).
+fn parse_array_size(num_str: &str) -> ConcreteArraySize {
+  if let Ok(n) = num_str
+    .trim_end_matches(|c| c == 'u' || c == 'i')
+    .parse::<u32>()
+  {
+    ConcreteArraySize::Literal(n)
+  } else {
+    ConcreteArraySize::Constant(num_str.into())
+  }
+}
+
+fn parse_array_type_tree(
+  array_children: Vec<EaslTree>,
+  source_trace: SourceTrace,
+  typedefs: &TypeDefs,
+  skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
+) -> CompileResult<Type> {
+  if array_children.len() != 1 {
+    return err(InvalidArraySignature, source_trace);
+  }
+  let child = array_children.into_iter().next().unwrap();
+  match child {
+    EaslTree::Inner(
+      (position, EncloserOrOperator::Operator(Operator::TypeAscription)),
+      mut type_annotation_children,
+    ) => {
+      let source_trace: SourceTrace = position.into();
+      if let EaslTree::Leaf(_, num_str) = type_annotation_children.remove(0) {
+        let inner_type = Type::from_easl_tree(
+          type_annotation_children.remove(0),
+          typedefs,
+          skolems,
+        )?;
+        Ok(Type::Array(
+          Some(parse_array_size(&num_str)),
+          Box::new(inner_type.known().into()),
+        ))
+      } else {
+        err(InvalidArraySignature, source_trace)
+      }
+    }
+    other => {
+      let inner_type = Type::from_easl_tree(other, typedefs, skolems)?;
+      Ok(Type::Array(
+        Some(ConcreteArraySize::Unsized),
+        Box::new(inner_type.known().into()),
+      ))
+    }
+  }
+}
+
 #[derive(Debug, Clone)]
 pub struct ConstGenericValue {
   pub(crate) value: Arc<RwLock<Option<u32>>>,
@@ -993,6 +1010,7 @@ impl Type {
         .sum::<usize>(),
       Type::Enum(e) => e.inner_data_size_in_u32s()? + 1,
       Type::Function(_) => {
+        println!("a");
         return err(UninlinableHigherOrderFunction, source_trace.clone());
       }
       Type::Skolem(_, _) => panic!("tried to calculate size of skolem"),
@@ -1204,51 +1222,12 @@ impl Type {
       EaslTree::Inner(
         (position, EncloserOrOperator::Encloser(Encloser::Square)),
         array_children,
-      ) => {
-        let source_trace: SourceTrace = position.into();
-        if array_children.len() == 1 {
-          let child = array_children.into_iter().next().unwrap();
-          match child {
-            EaslTree::Inner(
-              (
-                position,
-                EncloserOrOperator::Operator(Operator::TypeAscription),
-              ),
-              mut type_annotation_children,
-            ) => {
-              let source_trace: SourceTrace = position.into();
-              if let EaslTree::Leaf(_, num_str) =
-                type_annotation_children.remove(0)
-              {
-                let inner_type = Type::from_easl_tree(
-                  type_annotation_children.remove(0),
-                  typedefs,
-                  skolems,
-                )?;
-                Ok(Type::Array(
-                  Some(if let Ok(array_size) = num_str.parse::<u32>() {
-                    ConcreteArraySize::Literal(array_size)
-                  } else {
-                    ConcreteArraySize::Constant(num_str.into())
-                  }),
-                  Box::new(inner_type.known().into()),
-                ))
-              } else {
-                return err(InvalidArraySignature, source_trace);
-              }
-            }
-            other => {
-              let inner_type = Type::from_easl_tree(other, typedefs, skolems)?;
-              Ok(Type::Array(
-                Some(ConcreteArraySize::Unsized),
-                Box::new(inner_type.known().into()),
-              ))
-            }
-          }
-        } else {
-          return err(InvalidArraySignature, source_trace);
-        }
-      }
+      ) => parse_array_type_tree(
+        array_children,
+        position.into(),
+        typedefs,
+        skolems,
+      ),
       other => {
         let source_trace = other.position().clone().into();
         return err(InvalidType(other), source_trace);
@@ -2208,8 +2187,12 @@ impl TypeState {
             changed
           }
           (TypeState::OneOf(possibilities), TypeState::Known(t)) => {
-            if t.compatible_with_any(&possibilities) {
-              std::mem::swap(this, &mut t.clone().known());
+            let compatible = t.filter_compatibles(&possibilities);
+            if !compatible.is_empty() {
+              std::mem::swap(
+                this,
+                &mut TypeState::OneOf(compatible).simplified(),
+              );
               true
             } else {
               errors.log(CompileError::new(

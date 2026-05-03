@@ -271,6 +271,11 @@ success_test!(vec_negation);
 success_test!(compute_success_inferred_workgroup_size);
 success_test!(hanging_io_attribute_helper);
 success_test!(string_using_functions_ignored);
+success_test!(assign_array_in_struct);
+success_test!(infix_bitwise);
+success_test!(overloaded_hof);
+success_test!(builtin_hof_argument);
+success_test!(builtin_hof_argument_2);
 
 // --- Error tests ---
 

@@ -1,9 +1,13 @@
 # todo
 ## Highest priority
 ### necessary for wgsl feature parity + stuff I wanna get done before calling the language "production ready"
-* nested unsized array types seem to break the interpreter
+* let closures captures mutable variables, and just throw an error if more than one closure tries to capture the same one
+
+* enable a syntax like `<>.x`
 
 * trying to do an early return in a function that returns unit crashes the compile rn. You have to do `(return ())`, but then you get an error about compiling unit in an inner position
+
+* nested unsized array types seem to break the interpreter
 
 * when a match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
 
@@ -13,7 +17,6 @@
   * for now just a simple string-concatenation approach will be fine I think, eventually probably want a proper module system but for now this will be enough
     * I guess file origin will need to be tracked as part of a `SourceTrace`? might be tricky to get that right
 
-* atomics
 * barrier functions
 * `workgroupUniformLoad`
 * subgroup functions

@@ -1,0 +1,8 @@
+(defn self-composed [f: (Fn [f32] f32)]: (Fn [f32] f32)
+  (fn [x] (f (f x))))
+
+(defn a []: vec2f
+  (let [f1 (self-composed sqrt)
+        f2 (self-composed (fn [x] (sqrt x)))]
+    (vec2f (f1 2.) (f2 2.))))
+

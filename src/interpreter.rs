@@ -1788,6 +1788,37 @@ fn apply_builtin_fn<IO: IOManager>(
     "window-delta-time" => {
       Ok(Value::Prim(Primitive::F32(env.io.window_delta_time())))
     }
+    "window-frame-index" => {
+      Ok(Value::Prim(Primitive::U32(env.io.window_frame_index())))
+    }
+    "key-down?" => {
+      let Value::String(key) = &args[0].0 else { panic!() };
+      Ok(Value::Prim(Primitive::Bool(env.io.key_down(key))))
+    }
+    "key-just-down?" => {
+      let Value::String(key) = &args[0].0 else { panic!() };
+      Ok(Value::Prim(Primitive::Bool(env.io.key_just_down(key))))
+    }
+    "mouse-coords" => {
+      let (x, y) = env.io.mouse_coords();
+      Ok(Value::Struct(
+        [
+          ("x".into(), Value::Prim(Primitive::U32(x))),
+          ("y".into(), Value::Prim(Primitive::U32(y))),
+        ]
+        .into_iter()
+        .collect(),
+      ))
+    }
+    "mouse-present?" => {
+      Ok(Value::Prim(Primitive::Bool(env.io.mouse_present())))
+    }
+    "mouse-down?" => {
+      Ok(Value::Prim(Primitive::Bool(env.io.mouse_down())))
+    }
+    "mouse-just-down?" => {
+      Ok(Value::Prim(Primitive::Bool(env.io.mouse_just_down())))
+    }
     "zeroed-array" => {
       let Type::Array(size, _) = return_type else {
         panic!()
@@ -2093,6 +2124,29 @@ impl Value {
         let stride = ((elem_size + align - 1) / align) * align;
         vec![0u8; length * stride * 4]
       }
+      Value::Enum(variant, inner) => {
+        let Type::Enum(e) = ty else { return vec![]; };
+        let discriminant = e
+          .variants
+          .iter()
+          .position(|v| v.name == *variant)
+          .unwrap_or(0) as u32;
+        let max_inner_size = e.inner_data_size_in_u32s().unwrap_or(0);
+        let mut bytes = discriminant.to_ne_bytes().to_vec();
+        if max_inner_size > 0 {
+          if let Some(variant_def) =
+            e.variants.iter().find(|v| v.name == *variant)
+          {
+            let inner_ty = variant_def.inner_type.unwrap_known();
+            if inner_ty != Type::Unit {
+              bytes.extend(inner.to_uniform_bytes(&inner_ty));
+            }
+          }
+          // Pad inner data to max_inner_size u32s
+          bytes.resize((1 + max_inner_size) * 4, 0);
+        }
+        bytes
+      }
       _ => vec![],
     }
   }
@@ -2180,6 +2234,26 @@ impl Value {
             })
             .collect(),
         )
+      }
+      Type::Enum(e) => {
+        // GPU layout: { discriminant: u32, data: array<u32, N> }
+        // where N = inner_data_size_in_u32s() (max inner size across variants).
+        let inner_size = e.inner_data_size_in_u32s().unwrap_or(0);
+        let discriminant = read_u32(bytes, offset) as usize;
+        let inner_data_start = *offset;
+        *offset += inner_size * 4;
+        if let Some(variant) = e.variants.get(discriminant) {
+          let inner_ty = variant.inner_type.unwrap_known();
+          let inner_value = if inner_ty == Type::Unit {
+            Value::Unit
+          } else {
+            let mut inner_offset = inner_data_start;
+            Self::from_gpu_bytes_at(bytes, &inner_ty, &mut inner_offset)
+          };
+          Value::Enum(variant.name.clone(), inner_value.into())
+        } else {
+          Value::Uninitialized
+        }
       }
       _ => Value::Uninitialized,
     }
@@ -2309,6 +2383,42 @@ pub trait IOManager: Sized {
   /// frame, or 0.0 if no window is open.
   fn window_delta_time(&self) -> f32 {
     0.0
+  }
+  /// Returns the number of frames rendered since the window opened (0 on the
+  /// first frame), or 0 if no window is open.
+  fn window_frame_index(&self) -> u32 {
+    0
+  }
+  /// Returns true if the given key is currently held down. `key` should be a
+  /// lowercase single character like `"a"` or `"b"`. Always returns false
+  /// outside of a real window (e.g. in tests).
+  fn key_down(&self, _key: &str) -> bool {
+    false
+  }
+  /// Returns true if the given key was pressed this frame (not held from a
+  /// previous frame). Always returns false outside of a real window.
+  fn key_just_down(&self, _key: &str) -> bool {
+    false
+  }
+  /// Returns the pixel position of the mouse cursor relative to the window.
+  /// Defaults to (0, 0) when outside a real window or before any mouse event.
+  fn mouse_coords(&self) -> (u32, u32) {
+    (0, 0)
+  }
+  /// Returns true if the mouse cursor is currently inside the window.
+  /// Always returns false outside of a real window.
+  fn mouse_present(&self) -> bool {
+    false
+  }
+  /// Returns true if the left mouse button is currently held down.
+  /// Always returns false outside of a real window.
+  fn mouse_down(&self) -> bool {
+    false
+  }
+  /// Returns true if the left mouse button was pressed this frame (not held
+  /// from a previous frame). Always returns false outside of a real window.
+  fn mouse_just_down(&self) -> bool {
+    false
   }
   /// Returns the current GPU, if any. Used by `App::resumed` to detect an
   /// existing headless GPU so it can be reused rather than replaced.
@@ -2529,6 +2639,62 @@ impl IOManager for StdoutIO {
     0.0
   }
 
+  fn window_frame_index(&self) -> u32 {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return gpu.read().unwrap().window_frame_index;
+    }
+    0
+  }
+
+  fn key_down(&self, _key: &str) -> bool {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return gpu.read().unwrap().keys_down.contains(_key);
+    }
+    false
+  }
+
+  fn key_just_down(&self, _key: &str) -> bool {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return gpu.read().unwrap().keys_just_down.contains(_key);
+    }
+    false
+  }
+
+  fn mouse_coords(&self) -> (u32, u32) {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return gpu.read().unwrap().mouse_coords;
+    }
+    (0, 0)
+  }
+
+  fn mouse_present(&self) -> bool {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return gpu.read().unwrap().mouse_present;
+    }
+    false
+  }
+
+  fn mouse_down(&self) -> bool {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return gpu.read().unwrap().mouse_down;
+    }
+    false
+  }
+
+  fn mouse_just_down(&self) -> bool {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return gpu.read().unwrap().mouse_just_down;
+    }
+    false
+  }
+
   fn reload_requested(&self) -> bool {
     #[cfg(feature = "window")]
     if let Some(flag) = &self.reload_flag {
@@ -2629,13 +2795,26 @@ impl IOManager for StdoutIO {
       }
 
       let mut g = gpu.write().unwrap();
+
+      // Before dispatching any work, drain and apply all pre_uploads from
+      // deferred screen renders.  Compute always runs before screen renders
+      // by design, but the render pre_uploads may contain buffer
+      // initialisation (e.g. sizing an unsized storage buffer) that compute
+      // needs.  Draining them here prevents execute_render_batch from
+      // re-applying them later, which would overwrite compute's GPU output.
+      let screen_render_uploads: Vec<_> = deferred_screen_renders
+        .iter_mut()
+        .flat_map(|(_, _, _, u, _, _)| std::mem::take(u))
+        .collect();
+      g.upload_bindings(&screen_render_uploads);
+
       for item in work {
         match item {
           WorkItem::ComputeBatch(b) => g.execute_compute_batch(b),
           WorkItem::RenderBatch(b) => g.execute_render_batch(b),
         }
       }
-      // Execute deferred screen renders last.
+      // Execute deferred screen renders last (pre_uploads already applied above).
       g.execute_render_batch(deferred_screen_renders);
     }
   }
@@ -2746,6 +2925,10 @@ impl IOManager for StringIO {
     } else {
       1.0 / 60.0
     }
+  }
+
+  fn window_frame_index(&self) -> u32 {
+    self.frame_index as u32
   }
 
   fn run_spawn_window(
@@ -2875,6 +3058,34 @@ impl IOManager for CaptureIO {
 
   fn window_delta_time(&self) -> f32 {
     self.inner.window_delta_time()
+  }
+
+  fn window_frame_index(&self) -> u32 {
+    self.inner.window_frame_index()
+  }
+
+  fn key_down(&self, key: &str) -> bool {
+    self.inner.key_down(key)
+  }
+
+  fn key_just_down(&self, key: &str) -> bool {
+    self.inner.key_just_down(key)
+  }
+
+  fn mouse_coords(&self) -> (u32, u32) {
+    self.inner.mouse_coords()
+  }
+
+  fn mouse_present(&self) -> bool {
+    self.inner.mouse_present()
+  }
+
+  fn mouse_down(&self) -> bool {
+    self.inner.mouse_down()
+  }
+
+  fn mouse_just_down(&self) -> bool {
+    self.inner.mouse_just_down()
   }
 
   fn flush_queued_compute(&mut self) {

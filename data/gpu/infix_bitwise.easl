@@ -1,0 +1,4 @@
+(defn f []: u32
+  (let [a 0u
+        b 0u]
+    (& a b)))

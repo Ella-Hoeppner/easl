@@ -1,0 +1,6 @@
+(defn f []: f32
+  0.)
+
+(defn f [x: f32]: (Fn [vec3f] f32)
+  (fn [pos] 0.))
+
