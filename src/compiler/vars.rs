@@ -7,7 +7,7 @@ use crate::{
     annotation::Annotation,
     error::{CompileError, CompileErrorKind::*, ErrorLog},
     expression::ExpressionCompilationPosition,
-    program::{CompilerTarget, EaslDocument, NameContext, Program},
+    program::{CompilerTarget, NameContext, Program},
     types::{Type, VariableKind},
     util::{compile_word, read_type_annotated_name},
   },
@@ -122,7 +122,6 @@ impl TopLevelVar {
     parens_source_trace: &SourceTrace,
     mut internal_forms: impl ExactSizeIterator<Item = EaslTree>,
     program: &Program,
-    document: &EaslDocument,
     annotation: Option<Annotation>,
     errors: &mut ErrorLog,
   ) -> Option<Self> {
@@ -142,7 +141,6 @@ impl TopLevelVar {
         } {
           match read_type_annotated_name(name_and_type_ast) {
             Ok((name, type_ast)) => {
-              let type_ast_span = type_ast.position().span.clone();
               match Type::from_easl_tree(type_ast, &program.typedefs, &vec![]) {
                 Err(e) => errors.log(e),
                 Ok(t) => {
@@ -161,9 +159,7 @@ impl TopLevelVar {
                                   && group_and_binding == None
                                 {
                                   errors.log(CompileError::new(
-                                    NeedsGroupAndBinding(
-                                      document.text[type_ast_span].to_string(),
-                                    ),
+                                    NeedsGroupAndBinding,
                                     parens_source_trace.clone(),
                                   ));
                                   None
@@ -217,9 +213,7 @@ impl TopLevelVar {
                         && required_address_space.needs_group_and_binding()
                       {
                         errors.log(CompileError::new(
-                          NeedsGroupAndBinding(
-                            document.text[type_ast_span].to_string(),
-                          ),
+                          NeedsGroupAndBinding,
                           parens_source_trace.clone(),
                         ));
                       }

@@ -53,7 +53,7 @@ use super::{
   vars::TopLevelVar,
 };
 
-pub type EaslDocument<'s> = Document<'s, EaslSyntax>;
+pub type EaslDocument = Document<EaslSyntax>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompilerTarget {
@@ -64,7 +64,7 @@ pub enum CompilerTarget {
 pub trait EaslDocumentMethods {
   fn override_def(&mut self, def_name: &str, new_def_value: &str) -> bool;
 }
-impl<'s> EaslDocumentMethods for EaslDocument<'s> {
+impl EaslDocumentMethods for EaslDocument {
   fn override_def(&mut self, def_name: &str, new_def_value: &str) -> bool {
     let new_def_document = parse_easl(new_def_value);
     if let Some(new_value_ast) = new_def_document.syntax_trees.first() {
@@ -694,7 +694,6 @@ impl Program {
                 &parens_source_trace,
                 children_iter,
                 &program,
-                document,
                 annotation,
                 &mut errors,
               ) {
@@ -2795,7 +2794,10 @@ impl Program {
           } else {
             continue;
           };
-          if type_signature.iter().any(|t| matches!(t, Type::Function(_))) {
+          if type_signature
+            .iter()
+            .any(|t| matches!(t, Type::Function(_)))
+          {
             continue;
           }
           let new_name = base_name.to_string()

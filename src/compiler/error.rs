@@ -301,10 +301,10 @@ pub enum CompileErrorKind {
   #[error("Can't assign `group` or `binding` in address space `{0}`")]
   DisallowedGroupAndBinding(VariableAddressSpace),
   #[error(
-    "Type `{0}` needs `group` and `binding` annotations, e.g. \
+    "Variable needs `group` and `binding` annotations, e.g. \
     `@{{group 0 binding 0}}`"
   )]
-  NeedsGroupAndBinding(String),
+  NeedsGroupAndBinding,
   #[error("Variables {0} and {1} have the same binding and group numbers")]
   BindGroupCollision(String, String),
   #[error("Variables in `{0}` may not be given an initial value")]
@@ -571,9 +571,6 @@ impl PartialEq for CompileErrorKind {
         Self::DisallowedGroupAndBinding(l0),
         Self::DisallowedGroupAndBinding(r0),
       ) => l0 == r0,
-      (Self::NeedsGroupAndBinding(l0), Self::NeedsGroupAndBinding(r0)) => {
-        l0 == r0
-      }
       (
         Self::DisallowedInitializationValue(l0),
         Self::DisallowedInitializationValue(r0),
@@ -663,9 +660,9 @@ impl CompileError {
   pub fn new(kind: CompileErrorKind, source_trace: SourceTrace) -> Self {
     Self { kind, source_trace }
   }
-  pub fn describe(&self, document: &EaslDocument<'_>) -> String {
+  pub fn describe(&self, document: &EaslDocument, text: &str) -> String {
     let mut description = match &self.source_trace.primary_position {
-      Some(pos) => document.describe_document_position(pos.span.clone()),
+      Some(pos) => document.describe_document_position(pos.span.clone(), text),
       None => "[[Internal compiler failure: Couldn't locate source location \
               for error]]"
         .to_string(),
@@ -725,11 +722,11 @@ impl ErrorLog {
   pub fn iter(&self) -> impl Iterator<Item = CompileError> {
     self.clone().into_iter()
   }
-  pub fn describe(&self, document: &EaslDocument<'_>) -> String {
+  pub fn describe(&self, document: &EaslDocument, text: &str) -> String {
     self
       .errors
       .iter()
-      .map(|e| e.describe(document))
+      .map(|e| e.describe(document, text))
       .collect::<Vec<String>>()
       .join("\n")
   }

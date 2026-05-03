@@ -154,11 +154,11 @@ impl Syntax for EaslSyntax {
   }
 }
 
-pub fn parse_easl(easl_source: &'_ str) -> EaslDocument<'_> {
+pub fn parse_easl(easl_source: &str) -> EaslDocument {
   Document::from_text_with_syntax(EaslSyntax, easl_source)
 }
 
-pub fn parse_easl_without_comments(easl_source: &'_ str) -> EaslDocument<'_> {
+pub fn parse_easl_without_comments(easl_source: &str) -> EaslDocument {
   let mut doc = parse_easl(easl_source);
   doc.strip_comments();
   doc

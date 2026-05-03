@@ -1,5 +1,6 @@
 use fsexp::{
   Encloser as SSEEncloser, EncloserOrOperator, Operator as SSEOperator,
+  ParseError,
 };
 
 use crate::{
@@ -482,15 +483,18 @@ pub fn format_easl_trees(asts: Vec<EaslTree>) -> String {
   s
 }
 
-pub fn format_document(document: EaslDocument) -> String {
-  if !document.parsing_failures.is_empty() {
-    document.text.to_string()
+pub fn format_document(
+  document: EaslDocument,
+) -> Result<String, Vec<ParseError>> {
+  if document.parsing_failures.is_empty() {
+    Ok(format_easl_trees(document.syntax_trees))
   } else {
-    format_easl_trees(document.syntax_trees)
+    Err(document.parsing_failures.clone())
   }
 }
 
-pub fn format_easl_source(easl_source: &str) -> String {
-  let doc = parse_easl(easl_source);
-  format_document(doc)
+pub fn format_easl_source(
+  easl_source: &str,
+) -> Result<String, Vec<ParseError>> {
+  format_document(parse_easl(easl_source))
 }

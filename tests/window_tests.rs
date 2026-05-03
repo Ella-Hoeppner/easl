@@ -71,11 +71,14 @@ fn run_window_test(name: &str) {
       wgsl
     }
     Ok(Err((document, error_log))) => {
-      fs::write(format!("./out/{name}.wgsl"), error_log.describe(&document))
-        .expect("Unable to write output file");
+      fs::write(
+        format!("./out/{name}.wgsl"),
+        error_log.describe(&document, &easl_source),
+      )
+      .expect("Unable to write output file");
       panic!(
         "{name}: WGSL compile errors: {}",
-        error_log.describe(&document)
+        error_log.describe(&document, &easl_source)
       );
     }
     Err(document) => {

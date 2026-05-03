@@ -23,8 +23,11 @@ fn compile_shader(name: &str) -> Result<String, Vec<CompileErrorKind>> {
       Ok(wgsl)
     }
     Ok(Err((document, error_log))) => {
-      fs::write(format!("./out/{name}.wgsl"), error_log.describe(&document))
-        .expect("Unable to write output file");
+      fs::write(
+        format!("./out/{name}.wgsl"),
+        error_log.describe(&document, &easl_source),
+      )
+      .expect("Unable to write output file");
       Err(error_log.errors.into_iter().map(|e| e.kind).collect())
     }
     Err(mut failed_document) => {
@@ -32,7 +35,7 @@ fn compile_shader(name: &str) -> Result<String, Vec<CompileErrorKind>> {
       std::mem::swap(&mut errors, &mut failed_document.parsing_failures);
       let description = errors
         .into_iter()
-        .map(|err| err.describe(&failed_document))
+        .map(|err| err.describe(&failed_document, &easl_source))
         .collect::<Vec<String>>()
         .join("\n\n");
       fs::write(format!("./out/{name}.wgsl"), &description)
@@ -348,11 +351,11 @@ error_test!(
 );
 error_test!(
   attributes_failure_texture_no_binding,
-  CompileErrorKind::NeedsGroupAndBinding("(Texture2D f32)".into())
+  CompileErrorKind::NeedsGroupAndBinding
 );
 error_test!(
   attributes_failure_texture_address_only,
-  CompileErrorKind::NeedsGroupAndBinding("(Texture2D f32)".into())
+  CompileErrorKind::NeedsGroupAndBinding
 );
 error_test!(
   var_initialization_failure_uniform,

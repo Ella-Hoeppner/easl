@@ -17,15 +17,18 @@ fn run_buffer_test(name: &str) {
         .expect("Unable to write output file");
     }
     Ok(Err((document, error_log))) => {
-      fs::write(format!("./out/{name}.wgsl"), error_log.describe(&document))
-        .expect("Unable to write output file");
+      fs::write(
+        format!("./out/{name}.wgsl"),
+        error_log.describe(&document, &easl_source),
+      )
+      .expect("Unable to write output file");
     }
     Err(mut failed_document) => {
       let mut errors = vec![];
       std::mem::swap(&mut errors, &mut failed_document.parsing_failures);
       let description = errors
         .into_iter()
-        .map(|err| err.describe(&failed_document))
+        .map(|err| err.describe(&failed_document, &easl_source))
         .collect::<Vec<String>>()
         .join("\n\n");
       fs::write(format!("./out/{name}.wgsl"), &description)
