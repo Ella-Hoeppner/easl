@@ -1875,7 +1875,10 @@ impl TypedExp {
           })
           .collect();
         let value_line = body.compile(position, names, target);
-        format!("\n{}{}", binding_lines.join("\n"), value_line)
+        format!(
+          "\n{{{}\n}}",
+          indent(format!("\n{}{}", binding_lines.join("\n"), value_line))
+        )
       }
       Match(scrutinee, arms) => match scrutinee.data.unwrap_known() {
         Type::Bool => match arms.len() {

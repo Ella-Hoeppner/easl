@@ -276,6 +276,7 @@ success_test!(infix_bitwise);
 success_test!(overloaded_hof);
 success_test!(builtin_hof_argument);
 success_test!(builtin_hof_argument_2);
+success_test!(adjacent_let_shadow);
 
 // --- Error tests ---
 

@@ -1,0 +1,7 @@
+@fragment
+(defn test []: vec4f
+  (let [@var p: f32 0.]
+    (let [@var d: f32 1.]
+      (+= p d))
+    (let [d: f32 3.]
+      (vec4f p d 0. 1.))))
