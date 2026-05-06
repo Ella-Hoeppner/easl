@@ -1,4 +1,4 @@
-use easl::compile_easl_source_to_wgsl;
+use easl::compiler::core::compile_easl_file_to_wgsl;
 use easl::compiler::entry::InputOrOutput;
 use easl::compiler::error::CompileErrorKind;
 use easl::compiler::types::{
@@ -6,42 +6,48 @@ use easl::compiler::types::{
 };
 use easl::compiler::vars::VariableAddressSpace;
 use std::fs;
+use std::path::Path;
 
 /// Compiles a .easl file from data/ and writes output (WGSL or error description) to out/.
 /// Returns Ok(wgsl) on success, or Err(Vec<CompileErrorKind>) on compile error.
 /// Panics on parse errors, since those indicate a broken test file rather than
 /// the kind of user-facing error we'd want to test for.
 fn compile_shader(name: &str) -> Result<String, Vec<CompileErrorKind>> {
-  let easl_source = fs::read_to_string(format!("./data/gpu/{name}.easl"))
-    .unwrap_or_else(|_| panic!("Unable to read data/{name}.easl"));
   fs::create_dir_all("./out/").expect("Unable to create out directory");
-
-  match compile_easl_source_to_wgsl(&easl_source) {
-    Ok(Ok(wgsl)) => {
+  match compile_easl_file_to_wgsl(&Path::new(&format!(
+    "./data/gpu/{name}.easl"
+  ))) {
+    Ok(Ok(Ok(wgsl))) => {
       fs::write(format!("./out/{name}.wgsl"), &wgsl)
         .expect("Unable to write output file");
       Ok(wgsl)
     }
-    Ok(Err((document, error_log))) => {
-      fs::write(
-        format!("./out/{name}.wgsl"),
-        error_log.describe(&document, &easl_source),
-      )
-      .expect("Unable to write output file");
+    Ok(Ok(Err((document, error_log)))) => {
+      fs::write(format!("./out/{name}.wgsl"), error_log.describe(&document))
+        .expect("Unable to write output file");
       Err(error_log.errors.into_iter().map(|e| e.kind).collect())
     }
-    Err(mut failed_document) => {
+    Ok(Err(mut failed_documents)) => {
       let mut errors = vec![];
-      std::mem::swap(&mut errors, &mut failed_document.parsing_failures);
+      std::mem::swap(
+        &mut errors,
+        &mut failed_documents
+          .sources
+          .last_mut()
+          .unwrap()
+          .0
+          .parsing_failures,
+      );
       let description = errors
         .into_iter()
-        .map(|err| err.describe(&failed_document, &easl_source))
+        .map(|err| failed_documents.describe_parse_error(err))
         .collect::<Vec<String>>()
         .join("\n\n");
       fs::write(format!("./out/{name}.wgsl"), &description)
         .expect("Unable to write output file");
       panic!("Unexpected parse error in {name}:\n{description}");
     }
+    Err(e) => panic!("IO error, couldn't load file {name}: \n{e:?}"),
   }
 }
 

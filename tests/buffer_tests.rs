@@ -1,58 +1,57 @@
-use easl::compile_easl_source_to_wgsl;
-use easl::compiler::program::Program;
+use easl::compiler::core::load_easl_program_from_file;
 use easl::interpreter::run_program_with_capture_from_path;
-use easl::parse::parse_easl_without_comments;
 use std::fs;
+use std::path::Path;
 
 fn run_buffer_test(name: &str) {
-  let easl_source = fs::read_to_string(format!("./data/buffer/{name}.easl"))
-    .unwrap_or_else(|_| panic!("Unable to read data/buffer/{name}.easl"));
   let expected = fs::read_to_string(format!("./data/buffer/{name}.txt"))
     .unwrap_or_else(|_| panic!("Unable to read data/buffer/{name}.txt"));
 
+  let source_path_str = format!("./data/buffer/{name}.easl");
+  let source_path = Path::new(&source_path_str);
+
   fs::create_dir_all("./out/").expect("Unable to create out directory");
-  match compile_easl_source_to_wgsl(&easl_source) {
-    Ok(Ok(wgsl)) => {
-      fs::write(format!("./out/{name}.wgsl"), &wgsl)
+  match load_easl_program_from_file(source_path) {
+    Ok(Ok((_, Ok(mut program)))) => {
+      let errors = program.validate_raw_program();
+      assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
+
+      let prints = run_program_with_capture_from_path(program, source_path)
+        .unwrap_or_else(|e| {
+          panic!("{name}: evaluation error: {e:#?}");
+        });
+      let output: String =
+        prints.into_iter().map(|s| format!("{s}\n")).collect();
+      assert_eq!(output, expected, "{name}: output mismatch");
+    }
+    Ok(Ok((document, Err(errors)))) => {
+      let description = errors.describe(&document);
+      fs::write(format!("./out/{name}.wgsl"), description.clone())
         .expect("Unable to write output file");
+      panic!("{description}");
     }
-    Ok(Err((document, error_log))) => {
-      fs::write(
-        format!("./out/{name}.wgsl"),
-        error_log.describe(&document, &easl_source),
-      )
-      .expect("Unable to write output file");
-    }
-    Err(mut failed_document) => {
+    Ok(Err(mut failed_documents)) => {
       let mut errors = vec![];
-      std::mem::swap(&mut errors, &mut failed_document.parsing_failures);
+      std::mem::swap(
+        &mut errors,
+        &mut failed_documents
+          .sources
+          .last_mut()
+          .unwrap()
+          .0
+          .parsing_failures,
+      );
       let description = errors
         .into_iter()
-        .map(|err| err.describe(&failed_document, &easl_source))
+        .map(|err| failed_documents.describe_parse_error(err))
         .collect::<Vec<String>>()
         .join("\n\n");
       fs::write(format!("./out/{name}.wgsl"), &description)
         .expect("Unable to write output file");
+      panic!("Unexpected parse error in {name}:\n{description}");
     }
+    Err(e) => panic!("IO error, couldn't load file {name}: \n{e:?}"),
   }
-
-  let (mut program, errors) = Program::from_easl_document(
-    &parse_easl_without_comments(&easl_source),
-    easl::compiler::builtins::built_in_macros(),
-  );
-  assert!(errors.is_empty(), "{name}: parse errors: {errors:#?}");
-
-  let errors = program.validate_raw_program();
-  assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
-
-  let source_path_str = format!("./data/buffer/{name}.easl");
-  let source_path = std::path::Path::new(&source_path_str);
-  let prints = run_program_with_capture_from_path(program, source_path)
-    .unwrap_or_else(|e| {
-      panic!("{name}: evaluation error: {e:#?}");
-    });
-  let output: String = prints.into_iter().map(|s| format!("{s}\n")).collect();
-  assert_eq!(output, expected, "{name}: output mismatch");
 }
 
 macro_rules! buffer_test {

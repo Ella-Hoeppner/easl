@@ -7,6 +7,7 @@ use take_mut::take;
 
 use crate::compiler::types::ExpTypeInfo;
 use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
+use crate::parse::EaslMultiDocument;
 use crate::{
   Never,
   compiler::{
@@ -455,19 +456,23 @@ impl Program {
       .map(|fs| fs.iter_mut())
       .flatten()
   }
-  pub fn from_easl_document(
-    document: &'_ EaslDocument,
+  pub fn from_easl_documents(
+    documents: &'_ EaslMultiDocument,
     macros: Vec<Macro>,
   ) -> (Self, ErrorLog) {
     let mut errors = ErrorLog::new();
     let mut names = NameContext::empty();
-    for tree in document.syntax_trees.iter() {
+    let all_syntax_trees: Vec<EaslTree> = documents
+      .sources
+      .iter()
+      .map(|(document, _, _)| document.syntax_trees.clone())
+      .flatten()
+      .collect();
+    for tree in all_syntax_trees.iter() {
       names.track_all_ast_names(tree);
     }
-    let trees = document
-      .syntax_trees
-      .iter()
-      .cloned()
+    let trees = all_syntax_trees
+      .into_iter()
       .map(|tree| macroexpand(tree, &macros, &mut names, &mut errors))
       .collect::<Vec<EaslTree>>();
 
@@ -688,6 +693,7 @@ impl Program {
           let first_child_source_trace: SourceTrace =
             first_child_position.clone().into();
           match first_child.as_str() {
+            "import" => {}
             "var" | "def" | "override" => {
               if let Some(var) = TopLevelVar::from_ast(
                 first_child.as_str(),

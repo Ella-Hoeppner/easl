@@ -3613,7 +3613,6 @@ impl TypedExp {
               changed = true;
             }
           } else {
-            println!("b");
             return err(
               UninlinableHigherOrderFunction,
               exp.source_trace.clone(),

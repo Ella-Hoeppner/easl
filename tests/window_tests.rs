@@ -1,8 +1,7 @@
-use easl::compile_easl_source_to_wgsl;
-use easl::compiler::program::Program;
+use easl::compiler::core::load_easl_program_from_file;
 use easl::interpreter::{IOEvent, run_program_test_io};
-use easl::parse::parse_easl_without_comments;
 use std::fs;
+use std::path::Path;
 
 fn parse_events(txt: &str, name: &str) -> Vec<IOEvent> {
   txt
@@ -58,66 +57,52 @@ fn parse_events(txt: &str, name: &str) -> Vec<IOEvent> {
 }
 
 fn run_window_test(name: &str) {
-  let easl_source = fs::read_to_string(format!("./data/window/{name}.easl"))
-    .unwrap_or_else(|_| panic!("Unable to read data/window/{name}.easl"));
   let expected_txt = fs::read_to_string(format!("./data/window/{name}.txt"))
     .unwrap_or_else(|_| panic!("Unable to read data/window/{name}.txt"));
 
   fs::create_dir_all("./out/").expect("Unable to create out directory");
-  let wgsl = match compile_easl_source_to_wgsl(&easl_source) {
-    Ok(Ok(wgsl)) => {
-      fs::write(format!("./out/{name}.wgsl"), &wgsl)
+  match load_easl_program_from_file(Path::new(&format!(
+    "./data/window/{name}.easl"
+  ))) {
+    Ok(Ok((_, Ok(mut program)))) => {
+      let errors = program.validate_raw_program();
+      assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
+
+      let io = run_program_test_io(program).unwrap_or_else(|e| {
+        panic!("{name}: evaluation error: {e:#?}");
+      });
+
+      let expected = parse_events(&expected_txt, name);
+      assert_eq!(io.events, expected, "{name}: event mismatch");
+    }
+    Ok(Ok((document, Err(errors)))) => {
+      let description = errors.describe(&document);
+      fs::write(format!("./out/{name}.wgsl"), description.clone())
         .expect("Unable to write output file");
-      wgsl
+      panic!("{description}");
     }
-    Ok(Err((document, error_log))) => {
-      fs::write(
-        format!("./out/{name}.wgsl"),
-        error_log.describe(&document, &easl_source),
-      )
-      .expect("Unable to write output file");
-      panic!(
-        "{name}: WGSL compile errors: {}",
-        error_log.describe(&document, &easl_source)
+    Ok(Err(mut failed_documents)) => {
+      let mut errors = vec![];
+      std::mem::swap(
+        &mut errors,
+        &mut failed_documents
+          .sources
+          .last_mut()
+          .unwrap()
+          .0
+          .parsing_failures,
       );
+      let description = errors
+        .into_iter()
+        .map(|err| failed_documents.describe_parse_error(err))
+        .collect::<Vec<String>>()
+        .join("\n\n");
+      fs::write(format!("./out/{name}.wgsl"), &description)
+        .expect("Unable to write output file");
+      panic!("Unexpected parse error in {name}:\n{description}");
     }
-    Err(document) => {
-      panic!("{name}: parse errors: {:?}", document.parsing_failures)
-    }
-  };
-  let module = naga::front::wgsl::parse_str(&wgsl).unwrap_or_else(|e| {
-    panic!(
-      "{name}: naga failed to parse generated WGSL:\n{e}\n\
-       See out/{name}.wgsl for the generated code."
-    )
-  });
-  naga::valid::Validator::new(
-    naga::valid::ValidationFlags::all(),
-    naga::valid::Capabilities::all(),
-  )
-  .validate(&module)
-  .unwrap_or_else(|e| {
-    panic!(
-      "{name}: naga validation failed on generated WGSL:\n{e}\n\
-       See out/{name}.wgsl for the generated code."
-    )
-  });
-
-  let (mut program, errors) = Program::from_easl_document(
-    &parse_easl_without_comments(&easl_source),
-    easl::compiler::builtins::built_in_macros(),
-  );
-  assert!(errors.is_empty(), "{name}: parse errors: {errors:#?}");
-
-  let errors = program.validate_raw_program();
-  assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
-
-  let io = run_program_test_io(program).unwrap_or_else(|e| {
-    panic!("{name}: evaluation error: {e:#?}");
-  });
-
-  let expected = parse_events(&expected_txt, name);
-  assert_eq!(io.events, expected, "{name}: event mismatch");
+    Err(e) => panic!("IO error, couldn't load file {name}: \n{e:?}"),
+  }
 }
 
 macro_rules! window_test {

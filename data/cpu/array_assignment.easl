@@ -3,3 +3,4 @@
   (let [@var arr [0u 0u 0u]]
     (= (arr 1u) 1u)
     (print arr)))
+

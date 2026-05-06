@@ -8,7 +8,7 @@ use crate::{
     annotation::AnnotationKind, entry::InputOrOutput, program::EaslDocument,
     types::ConcreteArraySizeDescription, vars::VariableAddressSpace,
   },
-  parse::EaslTree,
+  parse::{EaslMultiDocument, EaslTree},
 };
 
 use super::{
@@ -455,6 +455,8 @@ pub enum CompileErrorKind {
   CantBindAtomic,
   #[error("Can't compute the size of a value of type String")]
   CantComputeSizeOfString,
+  #[error("Invalid `import` expression")]
+  InvalidImportStatement,
 }
 
 impl CompileErrorKind {
@@ -660,9 +662,9 @@ impl CompileError {
   pub fn new(kind: CompileErrorKind, source_trace: SourceTrace) -> Self {
     Self { kind, source_trace }
   }
-  pub fn describe(&self, document: &EaslDocument, text: &str) -> String {
+  pub fn describe(&self, documents: &EaslMultiDocument) -> String {
     let mut description = match &self.source_trace.primary_position {
-      Some(pos) => document.describe_document_position(pos.span.clone(), text),
+      Some(pos) => documents.describe_document_position(pos.clone()),
       None => "[[Internal compiler failure: Couldn't locate source location \
               for error]]"
         .to_string(),
@@ -722,11 +724,11 @@ impl ErrorLog {
   pub fn iter(&self) -> impl Iterator<Item = CompileError> {
     self.clone().into_iter()
   }
-  pub fn describe(&self, document: &EaslDocument, text: &str) -> String {
+  pub fn describe(&self, document: &EaslMultiDocument) -> String {
     self
       .errors
       .iter()
-      .map(|e| e.describe(document, text))
+      .map(|e| e.describe(document))
       .collect::<Vec<String>>()
       .join("\n")
   }

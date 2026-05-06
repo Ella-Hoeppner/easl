@@ -1,0 +1,5 @@
+(import "main.easl")
+
+(defn get-color []: vec3f
+  color)
+

@@ -1010,7 +1010,6 @@ impl Type {
         .sum::<usize>(),
       Type::Enum(e) => e.inner_data_size_in_u32s()? + 1,
       Type::Function(_) => {
-        println!("a");
         return err(UninlinableHigherOrderFunction, source_trace.clone());
       }
       Type::Skolem(_, _) => panic!("tried to calculate size of skolem"),

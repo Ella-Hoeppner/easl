@@ -1,28 +1,52 @@
-use easl::compiler::program::Program;
+use easl::compiler::core::load_easl_program_from_file;
 use easl::interpreter::run_program_capturing_output;
-use easl::parse::parse_easl_without_comments;
 use std::fs;
+use std::path::Path;
 
 fn run_cpu_test(name: &str) {
-  let easl_source = fs::read_to_string(format!("./data/cpu/{name}.easl"))
-    .unwrap_or_else(|_| panic!("Unable to read data/cpu/{name}.easl"));
   let expected = fs::read_to_string(format!("./data/cpu/{name}.txt"))
     .unwrap_or_else(|_| panic!("Unable to read data/cpu/{name}.txt"));
+  let x =
+    load_easl_program_from_file(Path::new(&format!("./data/cpu/{name}.easl")));
+  match x {
+    Ok(Ok((_, Ok(mut program)))) => {
+      let errors = program.validate_raw_program();
+      assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
 
-  let (mut program, errors) = Program::from_easl_document(
-    &parse_easl_without_comments(&easl_source),
-    easl::compiler::builtins::built_in_macros(),
-  );
-  assert!(errors.is_empty(), "{name}: parse errors: {errors:#?}");
+      let output = run_program_capturing_output(program).unwrap_or_else(|e| {
+        panic!("{name}: evaluation error: {e:#?}");
+      });
 
-  let errors = program.validate_raw_program();
-  assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
-
-  let output = run_program_capturing_output(program).unwrap_or_else(|e| {
-    panic!("{name}: evaluation error: {e:#?}");
-  });
-
-  assert_eq!(output, expected, "{name}: output mismatch");
+      assert_eq!(output, expected, "{name}: output mismatch");
+    }
+    Ok(Ok((document, Err(errors)))) => {
+      let description = errors.describe(&document);
+      fs::write(format!("./out/{name}.wgsl"), description.clone())
+        .expect("Unable to write output file");
+      panic!("{description}");
+    }
+    Ok(Err(mut failed_documents)) => {
+      let mut errors = vec![];
+      std::mem::swap(
+        &mut errors,
+        &mut failed_documents
+          .sources
+          .last_mut()
+          .unwrap()
+          .0
+          .parsing_failures,
+      );
+      let description = errors
+        .into_iter()
+        .map(|err| failed_documents.describe_parse_error(err))
+        .collect::<Vec<String>>()
+        .join("\n\n");
+      fs::write(format!("./out/{name}.wgsl"), &description)
+        .expect("Unable to write output file");
+      panic!("Unexpected parse error in {name}:\n{description}");
+    }
+    Err(e) => panic!("IO error, couldn't load file {name}: \n{e:?}"),
+  }
 }
 
 macro_rules! cpu_test {

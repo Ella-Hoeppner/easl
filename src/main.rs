@@ -1,8 +1,6 @@
 use easl::{
-  compile_easl_source_to_wgsl,
-  compiler::{builtins::built_in_macros, program::Program},
+  compile_easl_source_to_wgsl, compiler::core::load_easl_program_from_file,
   interpreter::run_program_entry,
-  parse::parse_easl_without_comments,
 };
 use std::fs;
 
@@ -33,14 +31,13 @@ fn benchmark_wgsl_compilation() {
 
 #[allow(unused)]
 fn run_window_demo(file_name: &str, entry: Option<&str>) {
-  let src = fs::read_to_string(format!("./data/window/{file_name}.easl"))
-    .unwrap_or_else(|_| panic!("Unable to read data/window/{file_name}.easl"));
-  let document = parse_easl_without_comments(&src);
-  let (mut program, errors) =
-    Program::from_easl_document(&document, built_in_macros());
-  if !errors.is_empty() {
-    panic!("{errors:?}");
-  }
+  let path_str = format!("./data/window/{file_name}.easl");
+  let (_, program_or_errors) =
+    load_easl_program_from_file(std::path::Path::new(&path_str))
+      .unwrap_or_else(|e| panic!("IO error: {e}"))
+      .unwrap_or_else(|_| panic!("Parse error in {file_name}"));
+  let mut program =
+    program_or_errors.unwrap_or_else(|errors| panic!("{errors:?}"));
   let errors = program.validate_raw_program();
   if !errors.is_empty() {
     panic!("{errors:?}");
@@ -50,14 +47,13 @@ fn run_window_demo(file_name: &str, entry: Option<&str>) {
 
 #[allow(unused)]
 fn run_buffer_demo(file_name: &str, entry: Option<&str>) {
-  let src = fs::read_to_string(format!("./data/buffer/{file_name}.easl"))
-    .unwrap_or_else(|_| panic!("Unable to read data/buffer/{file_name}.easl"));
-  let document = parse_easl_without_comments(&src);
-  let (mut program, errors) =
-    Program::from_easl_document(&document, built_in_macros());
-  if !errors.is_empty() {
-    panic!("{errors:?}");
-  }
+  let path_str = format!("./data/buffer/{file_name}.easl");
+  let (_, program_or_errors) =
+    load_easl_program_from_file(std::path::Path::new(&path_str))
+      .unwrap_or_else(|e| panic!("IO error: {e}"))
+      .unwrap_or_else(|_| panic!("Parse error in {file_name}"));
+  let mut program =
+    program_or_errors.unwrap_or_else(|errors| panic!("{errors:?}"));
   let errors = program.validate_raw_program();
   if !errors.is_empty() {
     panic!("{errors:?}");
@@ -69,7 +65,7 @@ fn main() {
   unsafe {
     std::env::set_var("RUST_BACKTRACE", "1");
   }
-  // benchmark_wgsl_compilation();
-  run_window_demo("print_after_close_window", None)
+  benchmark_wgsl_compilation();
+  // run_window_demo("print_after_close_window", None)
   // run_buffer_demo("array_assignment_cross_window", None)
 }

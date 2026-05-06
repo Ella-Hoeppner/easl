@@ -1,0 +1,9 @@
+(import "color.easl")
+
+(def color: vec3f
+     (vec3f 1. 0. 0.))
+
+@fragment
+(defn f []: vec4f
+  (vec4f (get-color) 1.))
+

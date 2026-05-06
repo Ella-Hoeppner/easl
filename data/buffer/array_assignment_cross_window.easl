@@ -18,3 +18,4 @@
   (dispatch-compute-shader fill-array-with-ones
                            (vec3u array-size 1u 1u))
   (spawn-window (fn [] (print arr) (close-window))))
+

@@ -18,3 +18,4 @@
 (defn main []
   (spawn-window (fn []
                     (run-purefrag-shader my-fragment))))
+
