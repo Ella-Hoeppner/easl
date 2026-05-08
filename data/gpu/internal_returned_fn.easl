@@ -1,0 +1,6 @@
+(defn f []: (Fn [f32] f32)
+  (fn [x] x))
+
+(defn main-sdf [x: f32]: f32
+  (- ((f) x)))
+

@@ -1,0 +1,7 @@
+(defn generate-identity []: (Fn [vec3f] vec3f)
+  (fn [pos] pos))
+
+(defn generate-identity-2 []: (Fn [vec3f] vec3f)
+  (let [identity (generate-identity)]
+    (fn [pos] (identity pos))))
+

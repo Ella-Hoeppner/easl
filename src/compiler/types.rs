@@ -2868,7 +2868,7 @@ impl From<Type> for TypeDescription {
       Type::Struct(s) => Self::Struct(match &*s.name {
         "Texture2D" => format!(
           "(Texture2D {})",
-          TypeDescription::from(s.fields[0].field_type.unwrap_known())
+          TypeStateDescription::from(s.fields[0].field_type.kind.clone())
             .to_string()
         ),
         _ => {

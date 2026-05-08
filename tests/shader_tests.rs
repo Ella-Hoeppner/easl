@@ -237,7 +237,8 @@ success_test!(mixed_vec);
 success_test!(flowers);
 success_test!(enum_type);
 success_test!(dispatch_shader_compiled_away);
-
+success_test!(internal_returned_fn);
+success_test!(nested_identity_abstraction);
 success_test!(generic_constraint_success);
 success_test!(return_success);
 success_test!(duplicate_defn_success);

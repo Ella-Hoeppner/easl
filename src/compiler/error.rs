@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::{
   compiler::{
-    annotation::AnnotationKind, entry::InputOrOutput, program::EaslDocument,
+    annotation::AnnotationKind, entry::InputOrOutput,
     types::ConcreteArraySizeDescription, vars::VariableAddressSpace,
   },
   parse::{EaslMultiDocument, EaslTree},

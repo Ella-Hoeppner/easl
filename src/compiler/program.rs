@@ -1708,6 +1708,21 @@ impl Program {
                   }
                   let effects = exp.effects();
                   if let ExpKind::Function(arg_names, body) = &mut exp.kind {
+                    // If any captured variable is a function whose abstract
+                    // ancestor hasn't been resolved yet, defer extraction until
+                    // propagate_abstract_function_signatures has set it.
+                    if effects.0.iter().any(|e| {
+                      if let Effect::ReadsVar(var_name) = e
+                        && let Some((var, _)) = ctx.variables.get(var_name)
+                        && let Type::Function(f) = var.var_type.unwrap_known()
+                      {
+                        f.abstract_ancestor.is_none()
+                      } else {
+                        false
+                      }
+                    }) {
+                      return Ok(true);
+                    }
                     let name = self.names.write().unwrap().gensym("inner_fn");
                     let Type::Function(f_signature) = exp.data.unwrap_known()
                     else {

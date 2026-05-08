@@ -4148,33 +4148,31 @@ impl TypedExp {
                     })
                   }
                 }
-                match f.kind {
-                  Name(_) => {}
-                  _ => {
-                    let f_name = names.gensym("f_binding");
-                    let mut name_exp = Exp {
-                      kind: ExpKind::Name(f_name.clone()),
-                      data: f.data.clone(),
-                      source_trace: f.source_trace.clone(),
-                    };
-                    std::mem::swap(f.as_mut(), &mut name_exp);
-                    let mut temp = placeholder_exp.clone();
-                    std::mem::swap(exp, &mut temp);
-                    temp = Exp {
-                      data: temp.data.clone(),
-                      source_trace: temp.source_trace.clone(),
-                      kind: ExpKind::Let(
-                        vec![(
-                          f_name,
-                          temp.source_trace.clone(),
-                          VariableKind::Let,
-                          name_exp,
-                        )],
-                        Box::new(temp),
-                      ),
-                    };
-                    std::mem::swap(exp, &mut temp);
-                  }
+                if !matches!(f.kind, Name(_)) {
+                  let f_name = names.gensym("f_binding");
+                  let mut name_exp = Exp {
+                    kind: ExpKind::Name(f_name.clone()),
+                    data: f.data.clone(),
+                    source_trace: f.source_trace.clone(),
+                  };
+                  std::mem::swap(f.as_mut(), &mut name_exp);
+                  let mut temp = placeholder_exp.clone();
+                  std::mem::swap(exp, &mut temp);
+                  temp = Exp {
+                    data: temp.data.clone(),
+                    source_trace: temp.source_trace.clone(),
+                    kind: ExpKind::Let(
+                      vec![(
+                        f_name,
+                        temp.source_trace.clone(),
+                        VariableKind::Let,
+                        name_exp,
+                      )],
+                      Box::new(temp),
+                    ),
+                  };
+                  std::mem::swap(exp, &mut temp);
+                  changed = true;
                 }
               }
             }
