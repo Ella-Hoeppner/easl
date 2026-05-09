@@ -5,7 +5,7 @@ use fsexp::ParseError;
 use crate::{
   compiler::{info::ProgramInfo, program::EaslDocument},
   parse::{
-    EaslMultiDocument, load_and_parse_easl_multidocument,
+    EaslMultiDocument, load_and_parse_easl_multidocument_with_lookup_function,
     parse_easl_without_comments,
   },
 };
@@ -80,12 +80,16 @@ pub fn compile_easl_file_to_wgsl(
   }
 }
 
-pub fn load_easl_program_from_file(
+pub fn load_easl_program_from_file_with_lookup_function(
   primary_easl_file_path: &Path,
+  lookup: impl FnMut(&Path) -> std::io::Result<String>,
 ) -> std::io::Result<
   Result<(EaslMultiDocument, Result<Program, ErrorLog>), EaslMultiDocument>,
 > {
-  match load_and_parse_easl_multidocument(primary_easl_file_path)? {
+  match load_and_parse_easl_multidocument_with_lookup_function(
+    primary_easl_file_path,
+    lookup,
+  )? {
     Ok(Ok(docs)) => {
       let (program, errors) =
         Program::from_easl_documents(&docs, built_in_macros());
@@ -101,6 +105,17 @@ pub fn load_easl_program_from_file(
     Ok(Err((doc, e))) => Ok(Ok((doc, Err(e)))),
     Err(e) => Ok(Err(e)),
   }
+}
+
+pub fn load_easl_program_from_file(
+  primary_easl_file_path: &Path,
+) -> std::io::Result<
+  Result<(EaslMultiDocument, Result<Program, ErrorLog>), EaslMultiDocument>,
+> {
+  load_easl_program_from_file_with_lookup_function(
+    primary_easl_file_path,
+    |path| std::fs::read_to_string(path),
+  )
 }
 
 pub fn get_easl_program_info(

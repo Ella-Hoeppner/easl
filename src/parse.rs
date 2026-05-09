@@ -230,8 +230,9 @@ impl EaslMultiDocument {
   }
 }
 
-pub fn load_and_parse_easl_multidocument(
+pub fn load_and_parse_easl_multidocument_with_lookup_function(
   primary_easl_file_path: &Path,
+  mut lookup: impl FnMut(&Path) -> std::io::Result<String>,
 ) -> std::io::Result<
   Result<
     Result<EaslMultiDocument, (EaslMultiDocument, ErrorLog)>,
@@ -239,7 +240,7 @@ pub fn load_and_parse_easl_multidocument(
   >,
 > {
   let primary_easl_file_path = primary_easl_file_path.canonicalize()?;
-  let easl_source = std::fs::read_to_string(&primary_easl_file_path)?;
+  let easl_source = lookup(&primary_easl_file_path)?;
   let document = parse_easl_without_comments(&easl_source);
   let mut documents = EaslMultiDocument::from_singular_document(
     document,
@@ -320,7 +321,7 @@ pub fn load_and_parse_easl_multidocument(
   }
   while !unprocessed_imports.is_empty() {
     let import_path = unprocessed_imports.remove(0);
-    let easl_subsource = std::fs::read_to_string(&import_path)?;
+    let easl_subsource = lookup(&import_path)?;
     let subdocument = parse_easl_without_comments(&easl_subsource);
     documents.add_document(
       subdocument.clone(),
@@ -351,4 +352,18 @@ pub fn load_and_parse_easl_multidocument(
     }
   }
   Ok(Ok(Ok(documents)))
+}
+
+pub fn load_and_parse_easl_multidocument(
+  primary_easl_file_path: &Path,
+) -> std::io::Result<
+  Result<
+    Result<EaslMultiDocument, (EaslMultiDocument, ErrorLog)>,
+    EaslMultiDocument,
+  >,
+> {
+  load_and_parse_easl_multidocument_with_lookup_function(
+    primary_easl_file_path,
+    |path| std::fs::read_to_string(path),
+  )
 }
