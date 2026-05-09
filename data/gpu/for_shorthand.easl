@@ -1,0 +1,11 @@
+(defn f []: f32
+  (let [@var x: f32 0.
+        loop-limit 5u]
+    (for [i 0u (< i 5) (+= i 1)]
+      (+= x 1.))
+    (for [i 5u]
+      (+= x 1.))
+    (for [5u]
+      (+= x 1.))
+    x))
+

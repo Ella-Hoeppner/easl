@@ -227,6 +227,7 @@ impl TopLevelVar {
                         &program.typedefs,
                         &vec![],
                         crate::compiler::expression::SyntaxTreeContext::Default,
+                        &mut program.names.write().unwrap(),
                       ) {
                         Ok(exp) => Some(exp),
                         Err(e) => {
@@ -271,6 +272,7 @@ impl TopLevelVar {
                 &program.typedefs,
                 &vec![],
                 crate::compiler::expression::SyntaxTreeContext::Default,
+                &mut program.names.write().unwrap(),
               ) {
                 Ok(value_expression) => {
                   match Type::from_easl_tree(

@@ -538,6 +538,7 @@ impl TypedExp {
     args: Vec<(Variable, Vec<TypeConstraint>)>,
     typedefs: &TypeDefs,
     skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
+    names: &mut NameContext,
   ) -> CompileResult<Self> {
     let mut body_exps = body_trees
       .into_iter()
@@ -547,6 +548,7 @@ impl TypedExp {
           typedefs,
           skolems,
           SyntaxTreeContext::Default,
+          names,
         )
       })
       .collect::<CompileResult<Vec<TypedExp>>>()?;
@@ -575,6 +577,7 @@ impl TypedExp {
     typedefs: &TypeDefs,
     skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
     ctx: SyntaxTreeContext,
+    names: &mut NameContext,
   ) -> CompileResult<Self> {
     Ok(match tree {
       EaslTree::Leaf(position, leaf) => {
@@ -631,392 +634,385 @@ impl TypedExp {
         let encloser_or_operator_source_trace: SourceTrace = position.into();
         let mut children_iter = children.into_iter();
         match encloser_or_operator {
-          Encloser(e) => {
-            match e {
-              E::Parens => {
-                if let Some(first_child) = children_iter.next() {
-                  match &first_child {
-                  EaslTree::Leaf(position, first_child_name) => {
-                    let source_trace: SourceTrace = position.clone().into();
-                    if first_child_name.starts_with(".") {
-                      if children_iter.len() == 1 {
-                        Some(Exp {
-                          data: Unknown.into(),
-                          kind: ExpKind::Access(
-                            Accessor::new(
-                              first_child_name
-                                .chars()
-                                .skip(1)
-                                .collect::<String>()
-                                .into(),
+          Encloser(E::Parens) => {
+            if let Some(first_child) = children_iter.next() {
+              match &first_child {
+                EaslTree::Leaf(position, first_child_name) => {
+                  let source_trace: SourceTrace = position.clone().into();
+                  if first_child_name.starts_with(".") {
+                    if children_iter.len() == 1 {
+                      Some(Exp {
+                        data: Unknown.into(),
+                        kind: ExpKind::Access(
+                          Accessor::new(
+                            first_child_name
+                              .chars()
+                              .skip(1)
+                              .collect::<String>()
+                              .into(),
+                          ),
+                          Box::new(Self::try_from_easl_tree(
+                            children_iter.next().unwrap(),
+                            typedefs,
+                            skolems,
+                            ctx,
+                            names,
+                          )?),
+                        ),
+                        source_trace,
+                      })
+                    } else {
+                      return err(AccessorHadMultipleArguments, source_trace);
+                    }
+                  } else {
+                    match first_child_name.as_str() {
+                      "discard" | "break" | "continue" => {
+                        if children_iter.len() == 0 {
+                          Some(Exp {
+                            data: Unknown.into(),
+                            kind: match first_child_name.as_str() {
+                              "discard" => ExpKind::Discard,
+                              "break" => ExpKind::Break,
+                              "continue" => ExpKind::Continue,
+                              _ => unreachable!(),
+                            },
+                            source_trace,
+                          })
+                        } else {
+                          return err(
+                            BuiltInOperatorTakesNoArguments(
+                              first_child_name.clone(),
                             ),
-                            Box::new(Self::try_from_easl_tree(
-                              children_iter.next().unwrap(),
-                              typedefs,
-                              skolems,
-                              ctx,
-                            )?),
+                            position.into(),
+                          );
+                        }
+                      }
+                      "fn" => {
+                        let Some(arg_list_ast) = children_iter.next() else {
+                          return err(FnMissingArgumentList, source_trace);
+                        };
+                        let mut errors = ErrorLog::new();
+                        let parsed_arg_list =
+                          arg_list_and_return_type_from_easl_tree(
+                            arg_list_ast,
+                            typedefs,
+                            skolems,
+                            &mut errors,
+                          );
+                        if let Some(err) = errors.into_iter().next() {
+                          return Err(err);
+                        }
+                        let Some((_, arg_names, arg_types, _, return_info)) =
+                          parsed_arg_list
+                        else {
+                          return err(FnMissingArgumentList, source_trace);
+                        };
+                        if children_iter.len() == 0 {
+                          return err(FunctionMissingBody, source_trace);
+                        }
+                        let concrete_return_type: TypeState = match return_info
+                        {
+                          Some((return_type, return_type_source_trace, _)) => {
+                            return_type
+                              .concretize(
+                                skolems,
+                                typedefs,
+                                return_type_source_trace,
+                              )?
+                              .known()
+                          }
+                          None => TypeState::Unknown,
+                        };
+                        let concrete_return_type: ExpTypeInfo =
+                          TypeState::UnificationVariable(Arc::new(
+                            RwLock::new(concrete_return_type),
+                          ))
+                          .into();
+                        Some(Exp {
+                          data: Type::Function(Box::new(FunctionSignature {
+                            abstract_ancestor: None,
+                            args: arg_types
+                              .into_iter()
+                              .zip(arg_names.iter())
+                              .map(|(t, (_, arg_source_trace))| {
+                                Ok((
+                                  Variable {
+                                    kind: VariableKind::Let,
+                                    var_type: match t {
+                                      Some(t) => t
+                                        .concretize(
+                                          skolems,
+                                          typedefs,
+                                          arg_source_trace.clone(),
+                                        )?
+                                        .known()
+                                        .into(),
+                                      None => TypeState::Unknown.into(),
+                                    },
+                                  },
+                                  vec![],
+                                ))
+                              })
+                              .collect::<Result<Vec<_>, _>>()?,
+                            return_type: concrete_return_type.clone(),
+                          }))
+                          .known()
+                          .into(),
+                          kind: ExpKind::Function(
+                            arg_names,
+                            Box::new(Exp {
+                              data: concrete_return_type,
+                              kind: ExpKind::Block({
+                                let mut body_forms = vec![];
+                                while let Some(exp) = children_iter.next() {
+                                  body_forms.push(
+                                    TypedExp::try_from_easl_tree(
+                                      exp, typedefs, skolems, ctx, names,
+                                    )?,
+                                  );
+                                }
+                                body_forms
+                              }),
+                              source_trace: source_trace.clone(),
+                            }),
                           ),
                           source_trace,
                         })
-                      } else {
-                        return err(AccessorHadMultipleArguments, source_trace);
                       }
-                    } else {
-                      match first_child_name.as_str() {
-                        "discard" | "break" | "continue" => {
-                          if children_iter.len() == 0 {
-                            Some(Exp {
-                              data: Unknown.into(),
-                              kind: match first_child_name.as_str() {
-                                "discard" => ExpKind::Discard,
-                                "break" => ExpKind::Break,
-                                "continue" => ExpKind::Continue,
-                                _ => unreachable!(),
-                              },
-                              source_trace,
-                            })
-                          } else {
-                            return err(
-                              BuiltInOperatorTakesNoArguments(
-                                first_child_name.clone(),
-                              ),
-                              position.into(),
-                            );
-                          }
+                      "let" => {
+                        if children_iter.len() < 1 {
+                          return err(LetBlockMissingBindings, source_trace);
                         }
-                        "fn" => {
-                          let Some(arg_list_ast) = children_iter.next() else {
-                            return err(FnMissingArgumentList, source_trace);
-                          };
-                          let mut errors = ErrorLog::new();
-                          let parsed_arg_list =
-                            arg_list_and_return_type_from_easl_tree(
-                              arg_list_ast,
-                              typedefs,
-                              skolems,
-                              &mut errors,
-                            );
-                          if let Some(err) = errors.into_iter().next() {
-                            return Err(err);
-                          }
-                          let Some((_, arg_names, arg_types, _, return_info)) =
-                            parsed_arg_list
-                          else {
-                            return err(FnMissingArgumentList, source_trace);
-                          };
-                          if children_iter.len() == 0 {
-                            return err(FunctionMissingBody, source_trace);
-                          }
-                          let concrete_return_type: TypeState =
-                            match return_info {
-                              Some((
-                                return_type,
-                                return_type_source_trace,
-                                _,
-                              )) => return_type
-                                .concretize(
-                                  skolems,
-                                  typedefs,
-                                  return_type_source_trace,
-                                )?
-                                .known(),
-                              None => TypeState::Unknown,
-                            };
-                          let concrete_return_type: ExpTypeInfo =
-                            TypeState::UnificationVariable(Arc::new(
-                              RwLock::new(concrete_return_type),
-                            ))
-                            .into();
-                          Some(Exp {
-                            data: Type::Function(Box::new(FunctionSignature {
-                              abstract_ancestor: None,
-                              args: arg_types
-                                .into_iter()
-                                .zip(arg_names.iter())
-                                .map(|(t, (_, arg_source_trace))| {
-                                  Ok((
-                                    Variable {
-                                      kind: VariableKind::Let,
-                                      var_type: match t {
-                                        Some(t) => t
-                                          .concretize(
-                                            skolems,
-                                            typedefs,
-                                            arg_source_trace.clone(),
-                                          )?
-                                          .known()
-                                          .into(),
-                                        None => TypeState::Unknown.into(),
-                                      },
-                                    },
-                                    vec![],
-                                  ))
-                                })
-                                .collect::<Result<Vec<_>, _>>()?,
-                              return_type: concrete_return_type.clone(),
-                            }))
-                            .known()
-                            .into(),
-                            kind: ExpKind::Function(
-                              arg_names,
-                              Box::new(Exp {
-                                data: concrete_return_type,
-                                kind: ExpKind::Block({
-                                  let mut body_forms = vec![];
-                                  while let Some(exp) = children_iter.next() {
-                                    body_forms.push(
-                                      TypedExp::try_from_easl_tree(
-                                        exp, typedefs, skolems, ctx,
-                                      )?,
-                                    );
-                                  }
-                                  body_forms
-                                }),
-                                source_trace: source_trace.clone(),
-                              }),
-                            ),
-                            source_trace,
+                        let bindings_ast = children_iter.next().unwrap();
+                        let mut child_exps = children_iter
+                          .clone()
+                          .map(|child| {
+                            Self::try_from_easl_tree(
+                              child, typedefs, skolems, ctx, names,
+                            )
                           })
-                        }
-                        "let" => {
-                          if children_iter.len() < 1 {
-                            return err(LetBlockMissingBindings, source_trace);
+                          .collect::<CompileResult<Vec<Self>>>()?;
+                        let body_exp = if child_exps.len() == 1 {
+                          child_exps.remove(0)
+                        } else {
+                          Exp {
+                            data: Unknown.into(),
+                            kind: ExpKind::Block(child_exps),
+                            source_trace: encloser_or_operator_source_trace
+                              .clone(),
                           }
-                          let bindings_ast = children_iter.next().unwrap();
-                          let mut child_exps = children_iter
-                            .clone()
-                            .map(|child| {
-                              Self::try_from_easl_tree(
-                                child, typedefs, skolems, ctx,
-                              )
-                            })
-                            .collect::<CompileResult<Vec<Self>>>()?;
-                          let body_exp = if child_exps.len() == 1 {
-                            child_exps.remove(0)
-                          } else {
-                            Exp {
-                              data: Unknown.into(),
-                              kind: ExpKind::Block(child_exps),
-                              source_trace: encloser_or_operator_source_trace
-                                .clone(),
-                            }
-                          };
-                          if let EaslTree::Inner(
-                            (_, Encloser(E::Square)),
-                            binding_asts,
-                          ) = bindings_ast
-                          {
-                            if binding_asts.len() % 2 == 0 {
-                              let mut binding_asts_iter =
-                                binding_asts.into_iter();
-                              let mut bindings = vec![];
-                              while let Some(name_ast) =
-                                binding_asts_iter.next()
+                        };
+                        if let EaslTree::Inner(
+                          (_, Encloser(E::Square)),
+                          binding_asts,
+                        ) = bindings_ast
+                        {
+                          if binding_asts.len() % 2 == 0 {
+                            let mut binding_asts_iter =
+                              binding_asts.into_iter();
+                            let mut bindings = vec![];
+                            while let Some(name_ast) = binding_asts_iter.next()
+                            {
+                              let value_ast = binding_asts_iter.next().unwrap();
+                              let (ty, name_ast) = extract_type_annotation(
+                                name_ast, typedefs, skolems,
+                              )?;
+                              let mut errors = ErrorLog::new();
+                              let (name_ast, name_annotation) =
+                                extract_annotation(name_ast, &mut errors);
+                              if let Some(annotation_error) =
+                                errors.into_iter().next()
                               {
-                                let value_ast =
-                                  binding_asts_iter.next().unwrap();
-                                let (ty, name_ast) = extract_type_annotation(
-                                  name_ast, typedefs, skolems,
-                                )?;
-                                let mut errors = ErrorLog::new();
-                                let (name_ast, name_annotation) =
-                                  extract_annotation(name_ast, &mut errors);
-                                if let Some(annotation_error) =
-                                  errors.into_iter().next()
-                                {
-                                  return Err(annotation_error.clone());
-                                }
-                                match name_ast {
-                                  EaslTree::Leaf(pos, name) => {
-                                    if name == "_" {
-                                      return err(
-                                        WildcardOutsidePattern,
-                                        pos.into(),
-                                      );
-                                    } else {
-                                      bindings.push((
-                                        name.into(),
-                                        pos.into(),
-                                        match name_annotation {
-                                          None => VariableKind::Let,
-                                          Some(
-                                            ref annotation @ Annotation {
-                                              kind:
-                                                AnnotationKind::Singular(
-                                                  ref tag,
-                                                  ..,
-                                                ),
-                                              ..
-                                            },
-                                          ) => match &**tag {
-                                            "var" => VariableKind::Var,
-                                            _ => {
-                                              let source_trace =
-                                                annotation.source_trace.clone();
-                                              return err(
-                                                InvalidVariableAnnotation(
-                                                  annotation.clone().into(),
-                                                ),
-                                                source_trace,
-                                              );
-                                            }
+                                return Err(annotation_error.clone());
+                              }
+                              match name_ast {
+                                EaslTree::Leaf(pos, name) => {
+                                  if name == "_" {
+                                    return err(
+                                      WildcardOutsidePattern,
+                                      pos.into(),
+                                    );
+                                  } else {
+                                    bindings.push((
+                                      name.into(),
+                                      pos.into(),
+                                      match name_annotation {
+                                        None => VariableKind::Let,
+                                        Some(
+                                          ref annotation @ Annotation {
+                                            kind:
+                                              AnnotationKind::Singular(
+                                                ref tag,
+                                                ..,
+                                              ),
+                                            ..
                                           },
-                                          Some(annotation) => {
+                                        ) => match &**tag {
+                                          "var" => VariableKind::Var,
+                                          _ => {
                                             let source_trace =
                                               annotation.source_trace.clone();
                                             return err(
                                               InvalidVariableAnnotation(
-                                                annotation.into(),
+                                                annotation.clone().into(),
                                               ),
                                               source_trace,
                                             );
                                           }
                                         },
-                                        {
-                                          let mut value_exp =
-                                            Self::try_from_easl_tree(
-                                              value_ast, typedefs, skolems, ctx,
-                                            )?;
-                                          if let Some(ty) = ty {
-                                            value_exp.data = ty
-                                              .concretize(
-                                                skolems,
-                                                typedefs,
-                                                source_trace.clone(),
-                                              )?
-                                              .known()
-                                              .into();
-                                          }
-                                          value_exp
-                                        },
-                                      ));
-                                    }
-                                  }
-                                  EaslTree::Inner((position, _), _) => {
-                                    return err(
-                                      ExpectedBindingName,
-                                      position.into(),
-                                    );
+                                        Some(annotation) => {
+                                          let source_trace =
+                                            annotation.source_trace.clone();
+                                          return err(
+                                            InvalidVariableAnnotation(
+                                              annotation.into(),
+                                            ),
+                                            source_trace,
+                                          );
+                                        }
+                                      },
+                                      {
+                                        let mut value_exp =
+                                          Self::try_from_easl_tree(
+                                            value_ast, typedefs, skolems, ctx,
+                                            names,
+                                          )?;
+                                        if let Some(ty) = ty {
+                                          value_exp.data = ty
+                                            .concretize(
+                                              skolems,
+                                              typedefs,
+                                              source_trace.clone(),
+                                            )?
+                                            .known()
+                                            .into();
+                                        }
+                                        value_exp
+                                      },
+                                    ));
                                   }
                                 }
+                                EaslTree::Inner((position, _), _) => {
+                                  return err(
+                                    ExpectedBindingName,
+                                    position.into(),
+                                  );
+                                }
                               }
-                              Some(Exp {
-                                data: Unknown.into(),
-                                kind: ExpKind::Let(
-                                  bindings,
-                                  Box::new(body_exp),
-                                ),
-                                source_trace: encloser_or_operator_source_trace
-                                  .clone(),
-                              })
-                            } else {
-                              return err(
-                                OddNumberOfChildrenInLetBindings,
-                                source_trace,
-                              );
                             }
+                            Some(Exp {
+                              data: Unknown.into(),
+                              kind: ExpKind::Let(bindings, Box::new(body_exp)),
+                              source_trace: encloser_or_operator_source_trace
+                                .clone(),
+                            })
                           } else {
                             return err(
-                              LetBindingsNotSquareBracketed,
+                              OddNumberOfChildrenInLetBindings,
                               source_trace,
                             );
                           }
-                        }
-                        "do" => {
-                          let child_exps = children_iter
-                            .clone()
-                            .map(|child| {
-                              Self::try_from_easl_tree(
-                                child, typedefs, skolems, ctx,
-                              )
-                            })
-                            .collect::<CompileResult<Vec<Self>>>()?;
-                          Some(Exp {
-                            data: Unknown.into(),
-                            kind: ExpKind::Block(child_exps),
+                        } else {
+                          return err(
+                            LetBindingsNotSquareBracketed,
                             source_trace,
-                          })
+                          );
                         }
-                        "match" => {
-                          let scrutinee = Self::try_from_easl_tree(
-                            children_iter.next().ok_or_else(|| {
-                              CompileError::new(
-                                MatchMissingScrutinee,
-                                source_trace.clone(),
-                              )
-                            })?,
-                            typedefs,
-                            skolems,
-                            ctx,
-                          )?;
-                          let mut arms = vec![];
-                          while let Some(pattern_subtree) = children_iter.next()
-                          {
-                            let value_subtree =
-                              children_iter.next().ok_or(CompileError::new(
-                                MatchIncompleteArm,
-                                source_trace.clone(),
-                              ))?;
-                            arms.push((
-                              Self::try_from_easl_tree(
-                                pattern_subtree,
-                                typedefs,
-                                skolems,
-                                SyntaxTreeContext::MatchPattern,
-                              )?,
-                              Self::try_from_easl_tree(
-                                value_subtree,
-                                typedefs,
-                                skolems,
-                                ctx,
-                              )?,
-                            ));
-                          }
-                          if arms.is_empty() {
-                            return err(MatchMissingArms, source_trace);
-                          }
-                          Some(Exp {
-                            kind: Match(Box::new(scrutinee), arms),
-                            data: Unknown.into(),
-                            source_trace,
+                      }
+                      "do" => {
+                        let child_exps = children_iter
+                          .clone()
+                          .map(|child| {
+                            Self::try_from_easl_tree(
+                              child, typedefs, skolems, ctx, names,
+                            )
                           })
+                          .collect::<CompileResult<Vec<Self>>>()?;
+                        Some(Exp {
+                          data: Unknown.into(),
+                          kind: ExpKind::Block(child_exps),
+                          source_trace,
+                        })
+                      }
+                      "match" => {
+                        let scrutinee = Self::try_from_easl_tree(
+                          children_iter.next().ok_or_else(|| {
+                            CompileError::new(
+                              MatchMissingScrutinee,
+                              source_trace.clone(),
+                            )
+                          })?,
+                          typedefs,
+                          skolems,
+                          ctx,
+                          names,
+                        )?;
+                        let mut arms = vec![];
+                        while let Some(pattern_subtree) = children_iter.next() {
+                          let value_subtree =
+                            children_iter.next().ok_or(CompileError::new(
+                              MatchIncompleteArm,
+                              source_trace.clone(),
+                            ))?;
+                          arms.push((
+                            Self::try_from_easl_tree(
+                              pattern_subtree,
+                              typedefs,
+                              skolems,
+                              SyntaxTreeContext::MatchPattern,
+                              names,
+                            )?,
+                            Self::try_from_easl_tree(
+                              value_subtree,
+                              typedefs,
+                              skolems,
+                              ctx,
+                              names,
+                            )?,
+                          ));
                         }
-                        "for" => {
-                          let header_tree =
-                            children_iter.next().ok_or_else(|| {
-                              CompileError::new(
-                                InvalidForLoopHeader,
-                                source_trace.clone(),
-                              )
-                            })?;
-                          let (
-                            increment_variable_name,
-                            increment_variable_type,
-                            increment_variable_initial_value_expression,
-                            continue_condition_expression,
-                            update_expression,
-                          ) = if let EaslTree::Inner(
-                            (
-                              header_source_position,
-                              EncloserOrOperator::Encloser(E::Square),
-                            ),
-                            mut header_subtrees,
-                          ) = header_tree
-                          {
-                            if header_subtrees.len() == 4 {
-                              let var_name_subtree = header_subtrees.remove(0);
-                              let increment_variable_initial_value_subtree =
+                        if arms.is_empty() {
+                          return err(MatchMissingArms, source_trace);
+                        }
+                        Some(Exp {
+                          kind: Match(Box::new(scrutinee), arms),
+                          data: Unknown.into(),
+                          source_trace,
+                        })
+                      }
+                      "for" => {
+                        let header_tree =
+                          children_iter.next().ok_or_else(|| {
+                            CompileError::new(
+                              InvalidForLoopHeader,
+                              source_trace.clone(),
+                            )
+                          })?;
+                        let (
+                          increment_variable_name,
+                          increment_variable_type,
+                          increment_variable_initial_value_expression,
+                          continue_condition_expression,
+                          update_expression,
+                        ) = if let EaslTree::Inner(
+                          (
+                            header_source_position,
+                            EncloserOrOperator::Encloser(E::Square),
+                          ),
+                          mut header_subtrees,
+                        ) = header_tree
+                        {
+                          match header_subtrees.len() {
+                            4 => {
+                              let name_subtree = header_subtrees.remove(0);
+                              let init_value_subtree =
                                 header_subtrees.remove(0);
-                              let continue_condition_subtree =
-                                header_subtrees.remove(0);
-                              let update_condition_subtree =
-                                header_subtrees.remove(0);
-                              let (var_type_subtree, var_name_subtree) =
-                                extract_type_annotation_ast(var_name_subtree);
+                              let condition_subtree = header_subtrees.remove(0);
+                              let update_subtree = header_subtrees.remove(0);
+                              let (var_type_subtree, name_subtree) =
+                                extract_type_annotation_ast(name_subtree);
                               (
-                                if let EaslTree::Leaf(pos, name) =
-                                  var_name_subtree
+                                if let EaslTree::Leaf(pos, name) = name_subtree
                                 {
                                   (name.into(), pos.into())
                                 } else {
@@ -1036,198 +1032,303 @@ impl TypedExp {
                                   })
                                   .unwrap_or(Ok(TypeState::Unknown))?,
                                 TypedExp::try_from_easl_tree(
-                                  increment_variable_initial_value_subtree,
+                                  init_value_subtree,
                                   typedefs,
                                   skolems,
                                   ctx,
+                                  names,
                                 )?,
                                 TypedExp::try_from_easl_tree(
-                                  continue_condition_subtree,
+                                  condition_subtree,
                                   typedefs,
                                   skolems,
                                   ctx,
+                                  names,
                                 )?,
                                 TypedExp::try_from_easl_tree(
-                                  update_condition_subtree,
+                                  update_subtree,
                                   typedefs,
                                   skolems,
                                   ctx,
+                                  names,
                                 )?,
                               )
-                            } else {
+                            }
+                            1 | 2 => {
+                              let max_value_subtree =
+                                header_subtrees.pop().unwrap();
+                              let (name, name_pos, var_type_subtree) =
+                                if let Some(name_subtree) =
+                                  header_subtrees.pop()
+                                {
+                                  let (var_type_subtree, name_subtree) =
+                                    extract_type_annotation_ast(name_subtree);
+                                  let EaslTree::Leaf(pos, name) = name_subtree
+                                  else {
+                                    return Err(CompileError::new(
+                                      InvalidForLoopHeader,
+                                      header_source_position.into(),
+                                    ));
+                                  };
+                                  (name, pos, var_type_subtree)
+                                } else {
+                                  (
+                                    names.gensym("loop_index").to_string(),
+                                    max_value_subtree.position().clone(),
+                                    None,
+                                  )
+                                };
+                              (
+                                (name.clone().into(), name_pos.clone().into()),
+                                var_type_subtree
+                                  .map(|var_type_subtree| {
+                                    Type::from_easl_tree(
+                                      var_type_subtree,
+                                      typedefs,
+                                      skolems,
+                                    )
+                                    .map(|t| t.known())
+                                  })
+                                  .unwrap_or(Ok(TypeState::Unknown))?,
+                                TypedExp {
+                                  data: TypeState::OneOf(vec![
+                                    Type::F32,
+                                    Type::U32,
+                                    Type::I32,
+                                  ])
+                                  .into(),
+                                  kind: ExpKind::NumberLiteral(Number::Int(0)),
+                                  source_trace: name_pos.clone().into(),
+                                },
+                                TypedExp::try_from_easl_tree(
+                                  EaslTree::Inner(
+                                    (
+                                      name_pos.clone(),
+                                      EncloserOrOperator::Encloser(E::Parens),
+                                    ),
+                                    vec![
+                                      EaslTree::Leaf(
+                                        name_pos.clone(),
+                                        "<".to_string(),
+                                      ),
+                                      EaslTree::Leaf(
+                                        name_pos.clone(),
+                                        name.clone(),
+                                      ),
+                                      max_value_subtree,
+                                    ],
+                                  ),
+                                  typedefs,
+                                  skolems,
+                                  ctx,
+                                  names,
+                                )?,
+                                TypedExp::try_from_easl_tree(
+                                  EaslTree::Inner(
+                                    (
+                                      name_pos.clone(),
+                                      EncloserOrOperator::Encloser(E::Parens),
+                                    ),
+                                    vec![
+                                      EaslTree::Leaf(
+                                        name_pos.clone(),
+                                        "+=".to_string(),
+                                      ),
+                                      EaslTree::Leaf(name_pos.clone(), name),
+                                      EaslTree::Leaf(
+                                        name_pos.clone(),
+                                        "1".to_string(),
+                                      ),
+                                    ],
+                                  ),
+                                  typedefs,
+                                  skolems,
+                                  ctx,
+                                  names,
+                                )?,
+                              )
+                            }
+                            _ => {
                               return Err(CompileError::new(
                                 InvalidForLoopHeader,
                                 header_source_position.into(),
                               ));
                             }
-                          } else {
-                            return Err(CompileError::new(
-                              InvalidForLoopHeader,
-                              source_trace,
-                            ));
-                          };
-                          let body_expressions = children_iter
-                            .clone()
-                            .map(|child| {
-                              TypedExp::try_from_easl_tree(
-                                child, typedefs, skolems, ctx,
-                              )
-                            })
-                            .collect::<CompileResult<Vec<TypedExp>>>()?;
-                          Some(Exp {
-                            kind: ForLoop {
-                              increment_variable_name,
-                              increment_variable_type,
-                              increment_variable_initial_value_expression:
-                                Box::new(
-                                  increment_variable_initial_value_expression,
-                                ),
-                              continue_condition_expression: Box::new(
-                                continue_condition_expression,
-                              ),
-                              update_expression: Some(Box::new(update_expression)),
-                              body_expression: Box::new(TypedExp {
-                                data: Type::Unit.known().into(),
-                                kind: ExpKind::Block(body_expressions),
-                                source_trace: source_trace.clone(),
-                              }),
-                            },
-                            data: Known(Type::Unit).into(),
-                            source_trace,
-                          })
-                        }
-                        "while" => {
-                          let mut sub_expressions = children_iter
-                            .clone()
-                            .map(|child| {
-                              TypedExp::try_from_easl_tree(
-                                child, typedefs, skolems, ctx,
-                              )
-                            })
-                            .collect::<CompileResult<Vec<TypedExp>>>()?;
-                          if sub_expressions.len() < 1 {
-                            return Err(CompileError::new(
-                              InvalidWhileLoop,
-                              source_trace,
-                            ));
                           }
-                          let condition_expression = sub_expressions.remove(0);
-                          Some(Exp {
-                            kind: ExpKind::WhileLoop {
-                              condition_expression: Box::new(
-                                condition_expression,
-                              ),
-                              body_expression: Box::new(TypedExp {
-                                data: Type::Unit.known().into(),
-                                kind: ExpKind::Block(sub_expressions),
-                                source_trace: source_trace.clone(),
-                              }),
-                            },
-                            data: Known(Type::Unit).into(),
+                        } else {
+                          return Err(CompileError::new(
+                            InvalidForLoopHeader,
                             source_trace,
+                          ));
+                        };
+                        let body_expressions = children_iter
+                          .clone()
+                          .map(|child| {
+                            TypedExp::try_from_easl_tree(
+                              child, typedefs, skolems, ctx, names,
+                            )
                           })
-                        }
-                        "return" => {
-                          if children_iter.len() == 1 {
-                            let exp = TypedExp::try_from_easl_tree(
-                              children_iter.next().unwrap(),
-                              typedefs,
-                              skolems,
-                              ctx,
-                            )?;
-                            Some(Exp {
-                              kind: ExpKind::Return(Box::new(exp)),
-                              data: TypeState::Unknown.into(),
-                              source_trace,
-                            })
-                          } else {
-                            return Err(CompileError::new(
-                              InvalidReturn,
-                              source_trace,
-                            ));
-                          }
-                        }
-                        _ => None,
+                          .collect::<CompileResult<Vec<TypedExp>>>()?;
+                        Some(Exp {
+                          kind: ForLoop {
+                            increment_variable_name,
+                            increment_variable_type,
+                            increment_variable_initial_value_expression:
+                              Box::new(
+                                increment_variable_initial_value_expression,
+                              ),
+                            continue_condition_expression: Box::new(
+                              continue_condition_expression,
+                            ),
+                            update_expression: Some(Box::new(
+                              update_expression,
+                            )),
+                            body_expression: Box::new(TypedExp {
+                              data: Type::Unit.known().into(),
+                              kind: ExpKind::Block(body_expressions),
+                              source_trace: source_trace.clone(),
+                            }),
+                          },
+                          data: Known(Type::Unit).into(),
+                          source_trace,
+                        })
                       }
+                      "while" => {
+                        let mut sub_expressions = children_iter
+                          .clone()
+                          .map(|child| {
+                            TypedExp::try_from_easl_tree(
+                              child, typedefs, skolems, ctx, names,
+                            )
+                          })
+                          .collect::<CompileResult<Vec<TypedExp>>>()?;
+                        if sub_expressions.len() < 1 {
+                          return Err(CompileError::new(
+                            InvalidWhileLoop,
+                            source_trace,
+                          ));
+                        }
+                        let condition_expression = sub_expressions.remove(0);
+                        Some(Exp {
+                          kind: ExpKind::WhileLoop {
+                            condition_expression: Box::new(
+                              condition_expression,
+                            ),
+                            body_expression: Box::new(TypedExp {
+                              data: Type::Unit.known().into(),
+                              kind: ExpKind::Block(sub_expressions),
+                              source_trace: source_trace.clone(),
+                            }),
+                          },
+                          data: Known(Type::Unit).into(),
+                          source_trace,
+                        })
+                      }
+                      "return" => {
+                        if children_iter.len() == 1 {
+                          let exp = TypedExp::try_from_easl_tree(
+                            children_iter.next().unwrap(),
+                            typedefs,
+                            skolems,
+                            ctx,
+                            names,
+                          )?;
+                          Some(Exp {
+                            kind: ExpKind::Return(Box::new(exp)),
+                            data: TypeState::Unknown.into(),
+                            source_trace,
+                          })
+                        } else {
+                          return Err(CompileError::new(
+                            InvalidReturn,
+                            source_trace,
+                          ));
+                        }
+                      }
+                      _ => None,
                     }
                   }
-                  _ => None,
                 }
-                .unwrap_or(Exp {
-                  kind: Application(
-                    Box::new(Self::try_from_easl_tree(
-                      first_child,
-                      typedefs,
-                      skolems,
-                      ctx,
-                    )?),
-                    children_iter
-                      .map(|arg| {
-                        Self::try_from_easl_tree(arg, typedefs, skolems, ctx)
-                      })
-                      .collect::<CompileResult<_>>()?,
-                  ),
-                  data: Unknown.into(),
-                  source_trace: encloser_or_operator_source_trace,
-                })
-                } else {
-                  Exp {
-                    data: Type::Unit.known().into(),
-                    kind: ExpKind::Unit,
-                    source_trace: encloser_or_operator_source_trace,
-                  }
-                }
+                _ => None,
               }
-              E::Square => Exp {
-                data: Type::Array(
-                  Some(ConcreteArraySize::Literal(children_iter.len() as u32)),
-                  Box::new(TypeState::Unknown.into()),
-                )
-                .known()
-                .into(),
-                kind: ArrayLiteral(
+              .unwrap_or(Exp {
+                kind: Application(
+                  Box::new(Self::try_from_easl_tree(
+                    first_child,
+                    typedefs,
+                    skolems,
+                    ctx,
+                    names,
+                  )?),
                   children_iter
-                    .map(|ast| {
-                      TypedExp::try_from_easl_tree(ast, typedefs, skolems, ctx)
+                    .map(|arg| {
+                      Self::try_from_easl_tree(
+                        arg, typedefs, skolems, ctx, names,
+                      )
                     })
-                    .collect::<CompileResult<Vec<TypedExp>>>()?,
+                    .collect::<CompileResult<_>>()?,
                 ),
+                data: Unknown.into(),
                 source_trace: encloser_or_operator_source_trace,
-              },
-              E::Curly => {
-                return err(
-                  AnonymousStructsNotYetSupported,
-                  encloser_or_operator_source_trace,
-                );
-              }
-              E::LineComment => {
-                return err(
-                  EncounteredCommentInSource,
-                  encloser_or_operator_source_trace,
-                );
-              }
-              E::BlockComment => {
-                return err(
-                  EncounteredCommentInSource,
-                  encloser_or_operator_source_trace,
-                );
-              }
-              E::Quote => TypedExp {
-                data: Type::String.known().into(),
-                kind: ExpKind::StringLiteral(
-                  if let Some(child) = children_iter.next() {
-                    let EaslTree::Leaf(_, text) = child else {
-                      panic!("string literal somehow had an inner node inside")
-                    };
-                    text.into()
-                  } else {
-                    "".into()
-                  },
-                ),
+              })
+            } else {
+              Exp {
+                data: Type::Unit.known().into(),
+                kind: ExpKind::Unit,
                 source_trace: encloser_or_operator_source_trace,
-              },
+              }
             }
           }
+          Encloser(E::Square) => Exp {
+            data: Type::Array(
+              Some(ConcreteArraySize::Literal(children_iter.len() as u32)),
+              Box::new(TypeState::Unknown.into()),
+            )
+            .known()
+            .into(),
+            kind: ArrayLiteral(
+              children_iter
+                .map(|ast| {
+                  TypedExp::try_from_easl_tree(
+                    ast, typedefs, skolems, ctx, names,
+                  )
+                })
+                .collect::<CompileResult<Vec<TypedExp>>>()?,
+            ),
+            source_trace: encloser_or_operator_source_trace,
+          },
+          Encloser(E::Curly) => {
+            return err(
+              AnonymousStructsNotYetSupported,
+              encloser_or_operator_source_trace,
+            );
+          }
+          Encloser(E::LineComment) => {
+            return err(
+              EncounteredCommentInSource,
+              encloser_or_operator_source_trace,
+            );
+          }
+          Encloser(E::BlockComment) => {
+            return err(
+              EncounteredCommentInSource,
+              encloser_or_operator_source_trace,
+            );
+          }
+          Encloser(E::Quote) => TypedExp {
+            data: Type::String.known().into(),
+            kind: ExpKind::StringLiteral(
+              if let Some(child) = children_iter.next() {
+                let EaslTree::Leaf(_, text) = child else {
+                  panic!("string literal somehow had an inner node inside")
+                };
+                text.into()
+              } else {
+                "".into()
+              },
+            ),
+            source_trace: encloser_or_operator_source_trace,
+          },
           Operator(o) => match o {
             O::Annotation => {
               return err(
@@ -1241,6 +1342,7 @@ impl TypedExp {
                 typedefs,
                 skolems,
                 ctx,
+                names,
               )?;
               exp.data = Type::from_easl_tree(
                 children_iter.next().unwrap(),

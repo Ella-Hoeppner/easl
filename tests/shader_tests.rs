@@ -289,6 +289,7 @@ success_test!(builtin_hof_argument_2);
 success_test!(adjacent_let_shadow);
 success_test!(noise_hof_nested_capture);
 success_test!(hof_nested_capture);
+success_test!(for_shorthand);
 
 // --- Error tests ---
 

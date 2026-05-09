@@ -420,6 +420,7 @@ impl AbstractFunctionSignature {
                 concrete_args,
                 &program.typedefs,
                 &skolems,
+                &mut program.names.write().unwrap(),
               ) {
                 Ok(expression) => {
                   let parsed_annotation = if let Some(annotation) = &annotation
