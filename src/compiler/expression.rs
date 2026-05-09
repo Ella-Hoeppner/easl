@@ -3993,11 +3993,17 @@ impl TypedExp {
         Type::Function(function_signature) => {
           let mut effects = function_signature.effects();
           effects.merge(f.effects());
-          for ((arg_var, _), arg) in
-            function_signature.args.iter().zip(args.iter())
+          for (arg_var, arg) in function_signature
+            .args
+            .iter()
+            .map(|(a, _)| Some(a))
+            .chain(std::iter::repeat(None))
+            .zip(args.iter())
           {
             effects.merge(arg.effects());
-            if arg_var.var_type.ownership == Ownership::MutableReference {
+            if let Some(arg_var) = arg_var
+              && arg_var.var_type.ownership == Ownership::MutableReference
+            {
               let name = arg
                 .name_or_inner_accessed_name()
                 .expect(
@@ -4012,6 +4018,7 @@ impl TypedExp {
               });
             }
           }
+
           effects
         }
         Type::Array(_, _) => {

@@ -1,0 +1,15 @@
+; Tests that a lambda capturing a closure (with non-empty scope) works as a
+; HoF argument, and that the outer closure properly captures the inner one.
+(defn make-fn [seed: f32]: (Fn [f32] f32)
+  (fn [x]
+      (+ x seed)))
+
+(defn wrap [f: (Fn [f32] f32)]: (Fn [f32] f32)
+  (fn [x]
+      (f x)))
+
+@fragment
+(defn frag []: vec4f
+  (let [inner (make-fn 2.)
+        outer (wrap (fn [x] (inner x)))]
+    (vec4f (outer 1.) 0. 0. 1.)))

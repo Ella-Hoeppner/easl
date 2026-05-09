@@ -1,0 +1,106 @@
+(defn mix-exp [bottom: f32
+               top: f32
+               p: f32]: f32
+  (* bottom (pow (/ top bottom) p)))
+
+(var rand-state: f32
+     0.)
+
+(defn set-rand-seed [x: f32]
+  (= rand-state x))
+
+(defn hash [@var x: u32]: u32
+  (+= x (<< x 10))
+  (= x (^ x (>> x 6)))
+  (+= x (<< x 3))
+  (= x (^ x (>> x 11)))
+  (+= x (<< x 15))
+  x)
+
+(defn rand []: f32
+  ; based on https://amindforeverprogramming.blogspot.com/2013/07/random-floats-in-glsl-330.html
+
+  (= rand-state
+     (+ rand-state 0.025))
+  (let [mantissa-mask 8388607u
+        one 1065353216u]
+    (-> rand-state
+        (bitcast <>): u32
+        hash
+        (& mantissa-mask)
+        (| one)
+        (bitcast <>): f32
+        (- 1.))))
+
+(defn uni->bi [x: f32]: f32
+  (-> x (* 2.) (- 1.)))
+
+(defn uni->bi [x: vec2f]: vec2f
+  (-> x (* 2.) (- 1.)))
+
+(defn uni->bi [x: vec3f]: vec3f
+  (-> x (* 2.) (- 1.)))
+
+(defn uni->bi [x: vec4f]: vec4f
+  (-> x (* 2.) (- 1.)))
+
+(defn bi->uni [x: f32]: f32
+  (-> x (+ 1.) (* 0.5)))
+
+(defn bi->uni [x: vec2f]: vec2f
+  (-> x (+ 1.) (* 0.5)))
+
+(defn bi->uni [x: vec3f]: vec3f
+  (-> x (+ 1.) (* 0.5)))
+
+(defn bi->uni [x: vec4f]: vec4f
+  (-> x (+ 1.) (* 0.5)))
+
+(var rand-seed-offset: f32)
+
+(defn noise [n: u32
+             amp: (Fn [f32 vec3f] f32)
+             freq: (Fn [f32] f32)
+             feedback: (Fn [f32 vec3f] f32)]: (Fn [vec3f] vec3f)
+  (+= rand-seed-offset 0.2)
+  (let [current-offset rand-seed-offset]
+    (fn [pos]
+        (set-rand-seed current-offset)
+        (let [@var seed-pos pos
+              @var off-sum (vec3f 0.)]
+          (for [i 0u (< i n) (= i (+ i 1))]
+            (let [p (/ (f32 i) (- (f32 n) 1.))
+                  alignment (-> (vec3f (rand) (rand) (rand))
+                                uni->bi
+                                normalize)
+                  push (-> (vec3f (rand) (rand) (rand))
+                           uni->bi
+                           normalize)
+                  amp (amp p pos)
+                  freq (freq p)
+                  feedback (feedback p pos)
+                  off (-> seed-pos
+                          (dot alignment)
+                          (* freq)
+                          cos
+                          (* push)
+                          (* amp))]
+              (+= off-sum off)
+              (= seed-pos
+                 (+ seed-pos (* off feedback)))))
+          off-sum))))
+
+@fragment
+(defn frag []: vec4f
+  (let [background-noise (noise 6
+                                (fn [p pos] (mix-exp 1. 0.3 p))
+                                (fn [p] (mix-exp 8. 30. p))
+                                (fn [p pos] (mix 0. 0.8 p)))
+        main-noise (noise 16
+                          (fn [p pos] (mix-exp 1. 0.1 p))
+                          (fn [p] (mix-exp 12. 60. p))
+                          (fn [p pos]
+                              (.x (background-noise pos))))]
+    (vec4f (main-noise (.xyz (position)))
+           1.)))
+
