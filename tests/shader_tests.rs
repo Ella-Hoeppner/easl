@@ -290,6 +290,7 @@ success_test!(adjacent_let_shadow);
 success_test!(noise_hof_nested_capture);
 success_test!(hof_nested_capture);
 success_test!(for_shorthand);
+success_test!(var_annotation_shorthand);
 
 // --- Error tests ---
 

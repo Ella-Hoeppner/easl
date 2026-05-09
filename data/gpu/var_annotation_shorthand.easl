@@ -1,0 +1,9 @@
+@[uniform 0 0]
+(var a: f32)
+
+@[storage 0 1]
+(var b: f32)
+
+@[0 2]
+(var tex: (Texture2D f32))
+

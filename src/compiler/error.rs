@@ -766,6 +766,7 @@ impl From<Vec<CompileError>> for ErrorLog {
 pub enum AnnotationDescription {
   Singular(String),
   Map(Vec<(String, String)>),
+  Array(Vec<String>),
   Multiple(Vec<Self>),
 }
 
@@ -786,6 +787,12 @@ impl From<Annotation> for AnnotationDescription {
           sub_annotations.into_iter().map(|m| m.into()).collect(),
         )
       }
+      AnnotationKind::Array(items) => AnnotationDescription::Array(
+        items
+          .into_iter()
+          .map(|(name, _)| name.to_string())
+          .collect(),
+      ),
     }
   }
 }

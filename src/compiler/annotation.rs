@@ -19,6 +19,7 @@ use super::error::{
 pub enum AnnotationKind {
   Singular(Arc<str>, SourceTrace),
   Map(Vec<(Arc<str>, SourceTrace, Arc<str>, SourceTrace)>),
+  Array(Vec<(Arc<str>, SourceTrace)>),
   Multiple(Vec<Annotation>),
 }
 
@@ -32,6 +33,13 @@ impl Display for AnnotationKind {
           write!(f, "  {} {}\n", key, val)?;
         }
         write!(f, "\n}}")
+      }
+      AnnotationKind::Array(items) => {
+        write!(f, "[")?;
+        for (val, _) in items {
+          write!(f, "{val}")?;
+        }
+        write!(f, "]")
       }
       AnnotationKind::Multiple(sub_annotations) => {
         for annotation in sub_annotations.iter() {
@@ -104,6 +112,27 @@ impl Annotation {
           )
         }
       }
+      EaslTree::Inner((pos, Encloser(Square)), array_fields) => {
+        let source_trace: SourceTrace = pos.into();
+        Ok(Self {
+          kind: AnnotationKind::Array(
+            array_fields
+              .into_iter()
+              .map(|field| {
+                if let EaslTree::Leaf(pos, field_string) = field {
+                  Ok((field_string.into(), pos.into()))
+                } else {
+                  err(
+                    InvalidAnnotation("fields must all be leaves".into()),
+                    source_trace.clone(),
+                  )
+                }
+              })
+              .collect::<CompileResult<_>>()?,
+          ),
+          source_trace,
+        })
+      }
       _ => err(
         InvalidAnnotation("fields must all be leaves".into()),
         ast.position().clone().into(),
@@ -154,6 +183,10 @@ impl Annotation {
           a
         })
         .unwrap_or(vec![]),
+      AnnotationKind::Array(items) => items
+        .iter()
+        .map(|(name, source_trace)| (name.clone(), source_trace.clone(), None))
+        .collect(),
     }
   }
   pub fn validate_as_top_level_var_data(
@@ -163,7 +196,9 @@ impl Annotation {
     let mut group = None;
     let mut binding = None;
     let mut address_space = None;
-    for (name, name_source, value) in self.properties().into_iter() {
+    let properties = self.properties();
+    let property_count = properties.len();
+    for (i, (name, name_source, value)) in properties.into_iter().enumerate() {
       match (&*name, value) {
         ("group", Some((value, value_source))) => match u8::from_str(&*value) {
           Ok(value) => group = Some(value),
@@ -195,6 +230,41 @@ impl Annotation {
             }
           }
         }
+        (array_value, None) => match (i, property_count) {
+          (0, 3) => match VariableAddressSpace::from_str(array_value) {
+            Some(a) => address_space = Some(a),
+            None => {
+              return err(
+                InvalidVariableAnnotation(self.clone().into()),
+                name_source,
+              );
+            }
+          },
+          (1, 3) | (0, 2) => match u8::from_str(array_value) {
+            Ok(value) => group = Some(value),
+            Err(_) => {
+              return err(
+                InvalidVariableAnnotation(self.clone().into()),
+                name_source,
+              );
+            }
+          },
+          (2, 3) | (1, 2) => match u8::from_str(array_value) {
+            Ok(value) => binding = Some(value),
+            Err(_) => {
+              return err(
+                InvalidVariableAnnotation(self.clone().into()),
+                name_source,
+              );
+            }
+          },
+          _ => {
+            return err(
+              InvalidVariableAnnotation(self.clone().into()),
+              name_source,
+            );
+          }
+        },
         _ => {
           return err(
             InvalidVariableAnnotation(self.clone().into()),
