@@ -403,9 +403,7 @@ pub enum CompileErrorKind {
   DuplicateEnumVariantName,
   #[error("Argument must be an owned value, found a reference")]
   ArgumentMustBeOwnedValue,
-  #[error(
-    "Argument must be a name, as this function expects reference, not a value"
-  )]
+  #[error("Argument must be a named value, as this function expects reference")]
   ReferenceArgumentMustBeName,
   #[error(
     "Function expects a mutable reference, found a non-mutable reference"

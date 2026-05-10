@@ -971,7 +971,8 @@ impl Program {
                           }
                         }
                         Ownership::Reference | Ownership::MutableReference => {
-                          if let ExpKind::Name(name) = &arg.kind {
+                          if let Some(name) = arg.name_or_inner_accessed_name()
+                          {
                             let top_level_var = self
                               .top_level_vars
                               .iter()

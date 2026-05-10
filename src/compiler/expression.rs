@@ -1864,38 +1864,40 @@ impl TypedExp {
                     needs_ref = true;
                   }
                 }
-                (Ownership::MutableReference, Ownership::MutableReference) => {
-                  if i == 0 && is_assignment_operator {
-                    needs_deref = true;
+                _ => {
+                  needs_deref = true;
+                  if !(i == 0 && is_assignment_operator) {
+                    needs_ref = true;
                   }
                 }
-                _ => {}
               }
-              if needs_deref {
-                let mut arg_inner_value = arg;
-                let mut surrounding_accessors = vec![];
-                while let ExpKind::Access(accessor, inner_value) =
-                  arg_inner_value.kind
-                {
-                  surrounding_accessors.push(accessor);
-                  arg_inner_value = *inner_value;
-                }
-                let compiled_inner_value = format!(
-                  "*{}",
-                  arg_inner_value.compile(InnerExpression, names, target)
-                );
-                if surrounding_accessors.is_empty() {
-                  compiled_inner_value
-                } else {
-                  surrounding_accessors.into_iter().fold(
-                    format!("({compiled_inner_value})"),
-                    |acc, accessor| acc + &accessor.compile(),
-                  )
-                }
-              } else if needs_ref {
-                format!("&{}", arg.compile(InnerExpression, names, target))
+
+              let mut arg_inner_value = arg;
+              let mut surrounding_accessors = vec![];
+              while let ExpKind::Access(accessor, inner_value) =
+                arg_inner_value.kind
+              {
+                surrounding_accessors.push(accessor);
+                arg_inner_value = *inner_value;
+              }
+              let mut compiled_inner_value =
+                arg_inner_value.compile(InnerExpression, names, target);
+              if needs_ref == needs_deref && surrounding_accessors.is_empty() {
+                compiled_inner_value
               } else {
-                arg.compile(InnerExpression, names, target)
+                if needs_deref {
+                  compiled_inner_value = format!("(*{compiled_inner_value})");
+                }
+                let compiled_full_value =
+                  surrounding_accessors.into_iter().rev().fold(
+                    format!("{compiled_inner_value}"),
+                    |acc, accessor| acc + &accessor.compile(),
+                  );
+                if needs_ref {
+                  format!("&{compiled_full_value}")
+                } else {
+                  compiled_full_value
+                }
               }
             })
             .collect();

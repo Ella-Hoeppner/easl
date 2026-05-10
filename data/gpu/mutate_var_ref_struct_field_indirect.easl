@@ -5,8 +5,11 @@
 (defn increment [@var @ref x: f32]
   (+= x 1.))
 
+(defn increment-indirect [@var @ref x: f32]
+  (increment x))
+
 (defn increment-a [@var @ref s: MyStruct]
-  (increment s.a))
+  (increment-indirect s.a))
 
 (defn main []
   (let [@var s (MyStruct 0. 1.)]
