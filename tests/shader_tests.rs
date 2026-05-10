@@ -291,6 +291,8 @@ success_test!(noise_hof_nested_capture);
 success_test!(hof_nested_capture);
 success_test!(for_shorthand);
 success_test!(var_annotation_shorthand);
+success_test!(mutate_var_ref_struct_field);
+success_test!(mutate_var_ref_struct_field_indirect);
 
 // --- Error tests ---
 

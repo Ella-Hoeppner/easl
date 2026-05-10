@@ -1835,10 +1835,6 @@ impl TypedExp {
             .iter()
             .map(|a| a.data.unwrap_known())
             .collect::<Vec<_>>();
-          let first_arg_is_owned = args
-            .first()
-            .map(|arg| arg.data.ownership == Ownership::Owned)
-            .unwrap_or(false);
           let arg_strs: Vec<String> = args
             .into_iter()
             .zip(if let Some(ancestor) = signature.abstract_ancestor {
@@ -1858,34 +1854,54 @@ impl TypedExp {
             })
             .enumerate()
             .map(|(i, (arg, ownership))| {
-              let prefix = match (ownership, arg.data.ownership) {
-                (Ownership::Owned, Ownership::Owned) => "",
-                (Ownership::Owned, _) => "*",
+              let mut needs_ref = false;
+              let mut needs_deref = false;
+              match (ownership, arg.data.ownership) {
+                (Ownership::Owned, Ownership::Owned) => {}
+                (Ownership::Owned, _) => needs_deref = true,
                 (_, Ownership::Owned) => {
-                  if i == 0 && is_assignment_operator {
-                    ""
-                  } else {
-                    "&"
+                  if !(i == 0 && is_assignment_operator) {
+                    needs_ref = true;
                   }
                 }
-                _ => "",
-              };
-              format!(
-                "{}{}",
-                prefix,
+                (Ownership::MutableReference, Ownership::MutableReference) => {
+                  if i == 0 && is_assignment_operator {
+                    needs_deref = true;
+                  }
+                }
+                _ => {}
+              }
+              if needs_deref {
+                let mut arg_inner_value = arg;
+                let mut surrounding_accessors = vec![];
+                while let ExpKind::Access(accessor, inner_value) =
+                  arg_inner_value.kind
+                {
+                  surrounding_accessors.push(accessor);
+                  arg_inner_value = *inner_value;
+                }
+                let compiled_inner_value = format!(
+                  "*{}",
+                  arg_inner_value.compile(InnerExpression, names, target)
+                );
+                if surrounding_accessors.is_empty() {
+                  compiled_inner_value
+                } else {
+                  surrounding_accessors.into_iter().fold(
+                    format!("({compiled_inner_value})"),
+                    |acc, accessor| acc + &accessor.compile(),
+                  )
+                }
+              } else if needs_ref {
+                format!("&{}", arg.compile(InnerExpression, names, target))
+              } else {
                 arg.compile(InnerExpression, names, target)
-              )
+              }
             })
             .collect();
           if ASSIGNMENT_OPS.contains(&f_str.as_str()) {
             if arg_strs.len() == 2 {
-              format!(
-                "{}{} {} {}",
-                if first_arg_is_owned { "" } else { "*" },
-                arg_strs[0],
-                f_str,
-                arg_strs[1]
-              )
+              format!("{} {} {}", arg_strs[0], f_str, arg_strs[1])
             } else {
               panic!(
                 "{} arguments to assignment op, expected 2",
@@ -2828,6 +2844,10 @@ impl TypedExp {
                   self.source_trace.clone(),
                 ));
               }
+            }
+            if subexp.data.ownership != self.data.ownership {
+              self.data.ownership = subexp.data.ownership;
+              anything_changed = true;
             }
             self.data.subtree_fully_typed = subexp.data.subtree_fully_typed;
             anything_changed

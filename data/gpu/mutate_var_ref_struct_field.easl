@@ -1,0 +1,11 @@
+(struct MyStruct
+  a: f32
+  b: f32)
+
+(defn increment-a [@var @ref s: MyStruct]
+  (+= s.a 1.))
+
+(defn main []
+  (let [@var s (MyStruct 0. 1.)]
+    (increment-a s)))
+

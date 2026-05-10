@@ -1,5 +1,6 @@
 @{address private}
-(var private-float: f32 0.)
+(var private-float: f32
+     0.)
 
 (defn increment [@var @ref x: f32]
   (+= x 1.))
@@ -12,3 +13,4 @@
   (increment-twice private-float)
   (let [@var x: f32 0.]
     (increment-twice x)))
+
