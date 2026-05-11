@@ -1940,47 +1940,34 @@ impl Program {
                               else {
                                 panic!()
                               };
-                              take(&mut **body, |body| Exp {
-                                data: body.data.clone(),
-                                kind: ExpKind::Let(
-                                  captured_vars
-                                    .iter()
-                                    .map(|(arg_name, t)| {
-                                      (
-                                        (**arg_name).clone(),
-                                        exp.source_trace.clone(),
-                                        VariableKind::Let,
-                                        Exp {
-                                          data: t.clone().known().into(),
-                                          kind: ExpKind::Access(
-                                            Accessor::Field(
-                                              (**arg_name).clone(),
-                                            ),
-                                            Box::new(Exp {
-                                              data:
-                                                concrete_captured_scope_type
-                                                  .clone()
-                                                  .known()
-                                                  .into(),
-                                              kind: ExpKind::Name(
-                                                scope_name.clone(),
-                                              ),
-                                              source_trace: exp
-                                                .source_trace
-                                                .clone(),
-                                            }),
+                              body
+                                .walk_mut(&mut |e| {
+                                  if let ExpKind::Name(name) = &mut e.kind {
+                                    if captured_vars
+                                      .iter()
+                                      .any(|(arg_name, _)| *arg_name == name)
+                                    {
+                                      let name = name.clone();
+                                      e.kind = ExpKind::Access(
+                                        Accessor::Field(name.clone()),
+                                        Box::new(Exp {
+                                          data: concrete_captured_scope_type
+                                            .clone()
+                                            .known()
+                                            .into(),
+                                          kind: ExpKind::Name(
+                                            scope_name.clone(),
                                           ),
                                           source_trace: exp
                                             .source_trace
                                             .clone(),
-                                        },
-                                      )
-                                    })
-                                    .collect(),
-                                  Box::new(body),
-                                ),
-                                source_trace: exp.source_trace.clone(),
-                              })
+                                        }),
+                                      );
+                                    }
+                                  }
+                                  Ok::<bool, Never>(true)
+                                })
+                                .unwrap();
                             }
                             new_exp
                           },
