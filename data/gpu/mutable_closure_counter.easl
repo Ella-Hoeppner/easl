@@ -1,0 +1,11 @@
+(defn create-counter []: (Fn [] u32)
+  (let [@var c 0u]
+    (fn [] (+= c 1) c)))
+
+(defn f []: u32
+  (let [@var x 0u
+        counter (create-counter)]
+    (+= x (counter))
+    (+= x (counter))
+    x))
+

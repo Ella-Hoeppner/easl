@@ -4306,6 +4306,112 @@ impl TypedExp {
       })
       .unwrap()
   }
+  pub fn catch_duplicate_closures_capturing_mutable_variables(
+    &mut self,
+    program: &Program,
+    errors: &mut ErrorLog,
+  ) {
+    #[derive(PartialEq, Clone, Copy, Debug)]
+    enum VarUsageState {
+      Uncaptured,
+      Captured,
+      CapturedMutably,
+    }
+    use VarUsageState::*;
+    let mut var_usages: HashMap<Arc<str>, VarUsageState> = HashMap::new();
+    self
+      .walk_mut_with_ctx(
+        &mut |exp, ctx| {
+          let mut usages_to_delete: Vec<Arc<str>> = vec![];
+          for name in var_usages.keys() {
+            if ctx.variables.get(name).is_none() {
+              usages_to_delete.push(name.clone());
+            }
+          }
+          for name in usages_to_delete {
+            var_usages.remove(&name);
+          }
+          let e = exp.effects();
+          match &mut exp.kind {
+            ExpKind::Function(_, body) => {
+              let mut read_vars = HashSet::new();
+              let mut written_vars = HashSet::new();
+              for e in e.0.iter() {
+                match e {
+                  Effect::ReadsVar(var) => {
+                    read_vars.insert(var);
+                  }
+                  Effect::ModifiesLocalVar(var) => {
+                    written_vars.insert(var);
+                  }
+                  _ => {}
+                }
+              }
+              for var in written_vars {
+                read_vars.remove(var);
+                if var_usages.get(var).cloned().unwrap_or(Uncaptured)
+                  != Uncaptured
+                {
+                  errors.log(CompileError::new(
+                    MutableCaptureAfterCapture(var.to_string()),
+                    exp.source_trace.clone(),
+                  ));
+                } else {
+                  var_usages.insert(var.clone(), CapturedMutably);
+                }
+              }
+              for var in read_vars {
+                if var_usages.get(var).cloned().unwrap_or(Uncaptured)
+                  == CapturedMutably
+                {
+                  errors.log(CompileError::new(
+                    CaptureAfterMutableCapture(var.to_string()),
+                    exp.source_trace.clone(),
+                  ));
+                } else {
+                  var_usages.insert(var.clone(), Captured);
+                }
+              }
+              body.catch_duplicate_closures_capturing_mutable_variables(
+                program, errors,
+              );
+              return Ok(false);
+            }
+            ExpKind::Application(f, args) => {
+              if let Type::Function(f) = f.data.unwrap_known() {
+                for (i, (arg, _)) in f.args.iter().enumerate() {
+                  if arg.var_type.ownership == Ownership::MutableReference {
+                    if let Some(name) = args[i].name_or_inner_accessed_name()
+                      && let Some(Captured | CapturedMutably) =
+                        var_usages.get(name)
+                    {
+                      errors.log(CompileError::new(
+                        CapturedVariablePassedAsMutableReference(
+                          name.to_string(),
+                        ),
+                        args[i].source_trace.clone(),
+                      ));
+                    }
+                  }
+                }
+              }
+            }
+            ExpKind::Name(name) => {
+              if var_usages.get(name) == Some(&CapturedMutably) {
+                errors.log(CompileError::new(
+                  UseOfMutablyCapturedVariable(name.to_string()),
+                  exp.source_trace.clone(),
+                ));
+              }
+            }
+            _ => {}
+          }
+          Ok::<bool, Never>(true)
+        },
+        &mut ImmutableProgramLocalContext::empty(program),
+      )
+      .unwrap()
+  }
   pub fn deexpressionify(&mut self, program: &Program) {
     let mut names = program.names.write().unwrap();
     loop {

@@ -1,0 +1,7 @@
+(defn f []
+  (let [@var x 0u
+        @var y 0u
+        inc-x (fn [] (+= x 1u))]
+    (inc-x)
+    (+= y x)))
+

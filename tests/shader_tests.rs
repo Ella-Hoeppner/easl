@@ -294,6 +294,7 @@ success_test!(for_shorthand);
 success_test!(var_annotation_shorthand);
 success_test!(mutate_var_ref_struct_field);
 success_test!(mutate_var_ref_struct_field_indirect);
+success_test!(mutable_closure_counter);
 
 // --- Error tests ---
 
@@ -593,4 +594,20 @@ error_test!(atomic_binding_failure, CompileErrorKind::CantBindAtomic);
 error_test!(
   string_usage_failure,
   CompileErrorKind::CPUExclusiveTypeInGPUEntryPoint("String".to_string())
+);
+
+error_test!(
+  var_mutated_after_closed,
+  CompileErrorKind::UseOfMutablyCapturedVariable("x".to_string()),
+  CompileErrorKind::CapturedVariablePassedAsMutableReference("x".to_string())
+);
+
+error_test!(
+  var_double_mutably_closed,
+  CompileErrorKind::MutableCaptureAfterCapture("x".to_string()),
+);
+
+error_test!(
+  var_used_after_mutably_closed,
+  CompileErrorKind::UseOfMutablyCapturedVariable("x".to_string()),
 );

@@ -455,6 +455,26 @@ pub enum CompileErrorKind {
   CantComputeSizeOfString,
   #[error("Invalid `import` expression")]
   InvalidImportStatement,
+  #[error(
+    "Variable `{0}` cannot be captured: it is already mutably captured by \
+    another closure"
+  )]
+  CaptureAfterMutableCapture(String),
+  #[error(
+    "Variable `{0}` cannot be mutably captured: it is already captured by \
+    another closure"
+  )]
+  MutableCaptureAfterCapture(String),
+  #[error(
+    "Variable `{0}` is captured by a closure and cannot be passed as a \
+    mutable reference"
+  )]
+  CapturedVariablePassedAsMutableReference(String),
+  #[error(
+    "Variable `{0}` has been mutably captured by a closure and cannot be \
+    used directly"
+  )]
+  UseOfMutablyCapturedVariable(String),
 }
 
 impl CompileErrorKind {

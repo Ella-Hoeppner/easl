@@ -1708,6 +1708,23 @@ impl Program {
       self.add_monomorphized_struct(s);
     }
   }
+  pub fn catch_duplicate_closures_capturing_mutable_variables(
+    &mut self,
+    errors: &mut ErrorLog,
+  ) {
+    for f in self.abstract_functions_iter() {
+      let borrowed_f = f.read().unwrap();
+      if let FunctionImplementationKind::Composite(implementation) =
+        &borrowed_f.implementation
+      {
+        let exp = &mut implementation.write().unwrap().expression;
+        let ExpKind::Function(_, body) = &mut exp.kind else {
+          panic!()
+        };
+        body.catch_duplicate_closures_capturing_mutable_variables(self, errors);
+      }
+    }
+  }
   pub fn extract_inner_functions(&mut self, errors: &mut ErrorLog) -> bool {
     let mut any_extracted = false;
     loop {
@@ -1798,11 +1815,8 @@ impl Program {
                             })
                           }
 
-                          Effect::ModifiesLocalVar(var_name) => err(
-                            CantModifyLocalVarInClosure(var_name.to_string()),
-                            body.source_trace.clone(),
-                          ),
-                          Effect::CPUExclusiveFunction(_)
+                          Effect::ModifiesLocalVar(_)
+                          | Effect::CPUExclusiveFunction(_)
                           | Effect::CPUExclusiveType(_)
                           | Effect::FragmentExclusiveFunction(_)
                           | Effect::Print
@@ -3690,6 +3704,10 @@ impl Program {
       return errors;
     }
     self.separate_overloaded_fns();
+    self.catch_duplicate_closures_capturing_mutable_variables(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     loop {
       let extracted = self.extract_inner_functions(&mut errors);
       if !errors.is_empty() {
