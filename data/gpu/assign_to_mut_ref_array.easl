@@ -1,0 +1,10 @@
+(defn set-a-to-five [@ref @var x: f32]
+  (= x 5))
+
+(defn set-second-element-to-five [@ref @var a: [2: u32]]
+  (= (a 0u) 5))
+
+(defn f []
+  (let [@var arr [0u 1u]]
+    (set-second-element-to-five arr)))
+

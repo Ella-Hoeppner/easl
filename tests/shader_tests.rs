@@ -295,6 +295,7 @@ success_test!(var_annotation_shorthand);
 success_test!(mutate_var_ref_struct_field);
 success_test!(mutate_var_ref_struct_field_indirect);
 success_test!(mutable_closure_counter);
+success_test!(assign_to_mut_ref_array);
 
 // --- Error tests ---
 

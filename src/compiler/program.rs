@@ -883,6 +883,36 @@ impl Program {
       }
     }
   }
+  pub fn normalize_array_accesses(&mut self) {
+    for abstract_f in self.abstract_functions_iter() {
+      let abstract_f = abstract_f.read().unwrap();
+      if let FunctionImplementationKind::Composite(implementation) =
+        &abstract_f.implementation
+      {
+        implementation
+          .write()
+          .unwrap()
+          .expression
+          .walk_mut(&mut |exp| {
+            if let ExpKind::Application(f, _) = &exp.kind
+              && let Type::Array(_, _) = f.data.unwrap_known()
+            {
+              take(&mut exp.kind, |kind| {
+                let ExpKind::Application(f, mut args) = kind else {
+                  panic!()
+                };
+                ExpKind::Access(
+                  Accessor::ArrayIndex(args.remove(0).into()),
+                  f.into(),
+                )
+              });
+            }
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
+      }
+    }
+  }
   pub fn validate_assignments(&mut self, errors: &mut ErrorLog) {
     for abstract_f in self.abstract_functions_iter() {
       let abstract_f = abstract_f.read().unwrap();
@@ -3695,6 +3725,7 @@ impl Program {
     }
     self.desugar_swizzle_assignments();
     self.deexpressionify();
+    self.normalize_array_accesses();
     self.deshadow(&mut errors);
     if !errors.is_empty() {
       return errors;

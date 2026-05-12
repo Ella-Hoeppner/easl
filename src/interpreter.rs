@@ -1792,11 +1792,15 @@ fn apply_builtin_fn<IO: IOManager>(
       Ok(Value::Prim(Primitive::U32(env.io.window_frame_index())))
     }
     "key-down?" => {
-      let Value::String(key) = &args[0].0 else { panic!() };
+      let Value::String(key) = &args[0].0 else {
+        panic!()
+      };
       Ok(Value::Prim(Primitive::Bool(env.io.key_down(key))))
     }
     "key-just-down?" => {
-      let Value::String(key) = &args[0].0 else { panic!() };
+      let Value::String(key) = &args[0].0 else {
+        panic!()
+      };
       Ok(Value::Prim(Primitive::Bool(env.io.key_just_down(key))))
     }
     "mouse-coords" => {
@@ -1813,9 +1817,7 @@ fn apply_builtin_fn<IO: IOManager>(
     "mouse-present?" => {
       Ok(Value::Prim(Primitive::Bool(env.io.mouse_present())))
     }
-    "mouse-down?" => {
-      Ok(Value::Prim(Primitive::Bool(env.io.mouse_down())))
-    }
+    "mouse-down?" => Ok(Value::Prim(Primitive::Bool(env.io.mouse_down()))),
     "mouse-just-down?" => {
       Ok(Value::Prim(Primitive::Bool(env.io.mouse_just_down())))
     }
@@ -2125,7 +2127,9 @@ impl Value {
         vec![0u8; length * stride * 4]
       }
       Value::Enum(variant, inner) => {
-        let Type::Enum(e) = ty else { return vec![]; };
+        let Type::Enum(e) = ty else {
+          return vec![];
+        };
         let discriminant = e
           .variants
           .iter()
@@ -3775,7 +3779,7 @@ pub fn eval(
             match accessed_expression.kind {
               ExpKind::Name(name) => break name,
               ExpKind::Application(exp, mut index) => {
-                let Ok(Value::Prim(index)) = eval(index.remove(0), env) else {
+                let Value::Prim(index) = eval(index.remove(0), env)? else {
                   panic!()
                 };
                 let index = match index {
@@ -3793,6 +3797,17 @@ pub fn eval(
                   }
                   Accessor::Swizzle(swizzle_fields) => {
                     accesses.push(AccessKind::Swizzle(swizzle_fields))
+                  }
+                  Accessor::ArrayIndex(index_exp) => {
+                    let Value::Prim(index) = eval(*index_exp, env)? else {
+                      panic!()
+                    };
+                    let index = match index {
+                      Primitive::U32(u) => u as i64,
+                      Primitive::I32(i) => i as i64,
+                      _ => panic!(),
+                    };
+                    accesses.push(AccessKind::Index(index));
                   }
                 }
                 accessed_expression = *exp;
@@ -4057,6 +4072,18 @@ pub fn eval(
               .zip(values.into_iter())
               .collect(),
           )
+        }
+        Accessor::ArrayIndex(exp) => {
+          let index = eval(*exp, env)?;
+          let Value::Array(values) = value else {
+            panic!()
+          };
+          values[match index.unwrap_primitive() {
+            Primitive::U32(u) => u as usize % values.len(),
+            Primitive::I32(i) => i.rem_euclid(values.len() as i32) as usize,
+            _ => panic!(),
+          }]
+          .clone()
         }
       }
     }

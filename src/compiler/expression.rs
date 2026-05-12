@@ -184,6 +184,7 @@ impl SwizzleField {
 pub enum Accessor {
   Field(Arc<str>),
   Swizzle(Vec<SwizzleField>),
+  ArrayIndex(Box<TypedExp>),
 }
 
 pub fn swizzle_accessor_typestate(
@@ -283,7 +284,11 @@ impl Accessor {
       .map(|indeces| Self::Swizzle(indeces))
       .unwrap_or(Accessor::Field(name))
   }
-  pub fn compile(self) -> Arc<str> {
+  pub fn compile(
+    self,
+    names: &mut NameContext,
+    target: CompilerTarget,
+  ) -> Arc<str> {
     match self {
       Accessor::Field(field_name) => {
         format!(".{}", compile_word(field_name)).into()
@@ -297,6 +302,15 @@ impl Accessor {
         .collect::<Vec<&str>>()
         .join("")
         .into(),
+      Accessor::ArrayIndex(exp) => format!(
+        "[{}]",
+        exp.compile(
+          ExpressionCompilationPosition::InnerExpression,
+          names,
+          target
+        )
+      )
+      .into(),
     }
   }
 }
@@ -1964,7 +1978,7 @@ impl TypedExp {
                 let compiled_full_value =
                   surrounding_accessors.into_iter().rev().fold(
                     format!("{compiled_inner_value}"),
-                    |acc, accessor| acc + &accessor.compile(),
+                    |acc, accessor| acc + &accessor.compile(names, target),
                   );
                 if needs_ref {
                   format!("&{compiled_full_value}")
@@ -2043,7 +2057,7 @@ impl TypedExp {
       Access(accessor, subexp) => wrap(format!(
         "{}{}",
         subexp.compile(InnerExpression, names, target),
-        accessor.compile()
+        accessor.compile(names, target)
       )),
       Let(bindings, body) => {
         let binding_lines: Vec<String> = bindings
@@ -2861,6 +2875,12 @@ impl TypedExp {
                   &first_arg.source_trace,
                   errors,
                 );
+
+                if f.data.ownership != self.data.ownership {
+                  self.data.ownership = f.data.ownership;
+                  anything_changed = true;
+                }
+
                 self.data.is_globally_bound = f.data.is_globally_bound;
               } else {
                 errors.log(CompileError::new(
@@ -2942,6 +2962,9 @@ impl TypedExp {
             self.data.subtree_fully_typed = subexp.data.subtree_fully_typed;
             anything_changed
           }
+          Accessor::ArrayIndex(_) => panic!(
+            "encountered Accessor::ArrayIndex at unexpected compiler stage"
+          ),
         };
         self.data.is_globally_bound = subexp.data.is_globally_bound;
         anything_changed
@@ -3287,6 +3310,11 @@ impl TypedExp {
                   || assigned_expression.data.ownership
                     == Ownership::MutableReference)
                 {
+                  println!(
+                    "var_name: {var_name}: {:?} / {:?}",
+                    ctx.get_variable_kind(var_name),
+                    assigned_expression.data.ownership
+                  );
                   return err(
                     AssignmentTargetMustBeVariable(var_name.to_string()),
                     exp.source_trace.clone(),
