@@ -938,6 +938,32 @@ impl Program {
       monomorphized_ctx
     });
   }
+  pub fn extract_non_bound_mutable_references(&mut self) {
+    for f in self.abstract_functions_iter() {
+      let borrowed_f = f.read().unwrap();
+      if borrowed_f.generic_args.is_empty()
+        && !borrowed_f.has_uninlined_higher_order_arguments()
+      {
+        if let FunctionImplementationKind::Composite(implementation) =
+          &borrowed_f.implementation
+        {
+          let mut implementation = implementation.write().unwrap();
+          let exp = &mut implementation.expression;
+          let ExpKind::Function(_, body) = &mut exp.kind else {
+            panic!()
+          };
+          let pending = body.extract_non_bound_mutable_references(&self.names);
+          if !pending.is_empty() {
+            take(&mut **body, |old_body| TypedExp {
+              data: old_body.data.clone(),
+              source_trace: old_body.source_trace.clone(),
+              kind: ExpKind::Let(pending, Box::new(old_body)),
+            });
+          }
+        }
+      }
+    }
+  }
   pub fn validate_argument_ownership(&mut self, errors: &mut ErrorLog) {
     for f in self.abstract_functions_iter() {
       let mut borrowed_f = f.write().unwrap();
@@ -1733,64 +1759,70 @@ impl Program {
                       Arc<str>,
                       (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>),
                     > = HashMap::new();
-                    let captured_vars: Vec<(&Arc<str>, Type)> = effects
-                      .0
-                      .iter()
-                      .map(|e| match e {
-                        Effect::ReadsVar(var_name) => {
-                          Ok(match ctx.variables.get(var_name) {
-                            Some((var, _)) => {
-                              let var_type = var.var_type.unwrap_known();
-                              if matches!(var_type, Type::Function(_))
-                                && var_type.is_unitlike(
-                                  &mut *self.names.write().unwrap(),
-                                )
-                              {
-                                if let Type::Function(sig) = var_type
-                                  && let Some(ancestor) = &sig.abstract_ancestor
+                    let captured_vars: Vec<(&Arc<str>, Type, Ownership)> =
+                      effects
+                        .0
+                        .iter()
+                        .map(|e| match e {
+                          Effect::ReadsVar(var_name) => {
+                            Ok(match ctx.variables.get(var_name) {
+                              Some((var, _)) => {
+                                let var_type = var.var_type.unwrap_known();
+                                if matches!(var_type, Type::Function(_))
+                                  && var_type.is_unitlike(
+                                    &mut *self.names.write().unwrap(),
+                                  )
                                 {
-                                  unitlike_fn_substitutions.insert(
-                                    var_name.clone(),
-                                    (
-                                      ancestor.read().unwrap().name.clone(),
-                                      ancestor.clone(),
-                                    ),
-                                  );
+                                  if let Type::Function(sig) = var_type
+                                    && let Some(ancestor) =
+                                      &sig.abstract_ancestor
+                                  {
+                                    unitlike_fn_substitutions.insert(
+                                      var_name.clone(),
+                                      (
+                                        ancestor.read().unwrap().name.clone(),
+                                        ancestor.clone(),
+                                      ),
+                                    );
+                                  }
+                                  None
+                                } else {
+                                  Some((
+                                    var_name,
+                                    var.var_type.unwrap_known(),
+                                    var.var_type.ownership,
+                                  ))
                                 }
-                                None
-                              } else {
-                                Some((var_name, var.var_type.unwrap_known()))
                               }
-                            }
-                            None => None,
-                          })
-                        }
+                              None => None,
+                            })
+                          }
 
-                        Effect::ModifiesLocalVar(var_name) => err(
-                          CantModifyLocalVarInClosure(var_name.to_string()),
-                          body.source_trace.clone(),
-                        ),
-                        Effect::CPUExclusiveFunction(_)
-                        | Effect::CPUExclusiveType(_)
-                        | Effect::FragmentExclusiveFunction(_)
-                        | Effect::Print
-                        | Effect::ModifiesGlobalVar(_)
-                        | Effect::Window
-                        | Effect::LookupBuiltinAttribute(_)
-                        | Effect::InvokesUnknownFunction => Ok(None),
-                        _ => err(
-                          IllegalEffectsInClosure(format!("{e:?}")),
-                          body.source_trace.clone(),
-                        ),
-                      })
-                      .collect::<CompileResult<Vec<_>>>()
-                      .unwrap_or_else(|e| {
-                        errors.log(e);
-                        vec![]
-                      })
-                      .into_iter()
-                      .filter_map(|x| x)
-                      .collect();
+                          Effect::ModifiesLocalVar(var_name) => err(
+                            CantModifyLocalVarInClosure(var_name.to_string()),
+                            body.source_trace.clone(),
+                          ),
+                          Effect::CPUExclusiveFunction(_)
+                          | Effect::CPUExclusiveType(_)
+                          | Effect::FragmentExclusiveFunction(_)
+                          | Effect::Print
+                          | Effect::ModifiesGlobalVar(_)
+                          | Effect::Window
+                          | Effect::LookupBuiltinAttribute(_)
+                          | Effect::InvokesUnknownFunction => Ok(None),
+                          _ => err(
+                            IllegalEffectsInClosure(format!("{e:?}")),
+                            body.source_trace.clone(),
+                          ),
+                        })
+                        .collect::<CompileResult<Vec<_>>>()
+                        .unwrap_or_else(|e| {
+                          errors.log(e);
+                          vec![]
+                        })
+                        .into_iter()
+                        .filter_map(|x| x)
+                        .collect();
                     let captured_scope = if captured_vars.is_empty() {
                       None
                     } else {
@@ -1807,7 +1839,7 @@ impl Program {
                         filled_generics: HashMap::new(),
                         fields: captured_vars
                           .iter()
-                          .map(|(name, t)| AbstractStructField {
+                          .map(|(name, t, _)| AbstractStructField {
                             attributes: IOAttributes::empty(
                               exp.source_trace.clone(),
                             ),
@@ -1858,13 +1890,13 @@ impl Program {
                         let Type::Function(f) = t else {
                           panic!();
                         };
+                        let mut var_type: ExpTypeInfo =
+                          concrete_captured_scope_type.clone().known().into();
+                        var_type.ownership = Ownership::MutableReference;
                         f.args.push((
                           Variable {
-                            kind: VariableKind::Let,
-                            var_type: concrete_captured_scope_type
-                              .clone()
-                              .known()
-                              .into(),
+                            kind: VariableKind::Var,
+                            var_type,
                           },
                           vec![],
                         ));
@@ -1873,7 +1905,7 @@ impl Program {
                         AbstractType::AbstractStruct(Arc::new(
                           captured_scope.clone(),
                         )),
-                        Ownership::Owned,
+                        Ownership::MutableReference,
                       ));
                     }
                     let signature = AbstractFunctionSignature {
@@ -1945,16 +1977,19 @@ impl Program {
                                   if let ExpKind::Name(name) = &mut e.kind {
                                     if captured_vars
                                       .iter()
-                                      .any(|(arg_name, _)| *arg_name == name)
+                                      .any(|(arg_name, _, _)| *arg_name == name)
                                     {
                                       let name = name.clone();
+                                      let mut t: ExpTypeInfo =
+                                        concrete_captured_scope_type
+                                          .clone()
+                                          .known()
+                                          .into();
+                                      t.ownership = Ownership::MutableReference;
                                       e.kind = ExpKind::Access(
                                         Accessor::Field(name.clone()),
                                         Box::new(Exp {
-                                          data: concrete_captured_scope_type
-                                            .clone()
-                                            .known()
-                                            .into(),
+                                          data: t,
                                           kind: ExpKind::Name(
                                             scope_name.clone(),
                                           ),
@@ -1999,7 +2034,7 @@ impl Program {
                               abstract_ancestor: None,
                               args: captured_vars
                                 .iter()
-                                .map(|(_, t)| {
+                                .map(|(_, t, _)| {
                                   (
                                     Variable {
                                       kind: VariableKind::Let,
@@ -2018,10 +2053,14 @@ impl Program {
                           }),
                           captured_vars
                             .into_iter()
-                            .map(|(name, t)| Exp {
-                              data: t.known().into(),
-                              kind: ExpKind::Name(name.clone()),
-                              source_trace: exp.source_trace.clone(),
+                            .map(|(name, t, ownership)| {
+                              let mut data: ExpTypeInfo = t.known().into();
+                              data.ownership = ownership;
+                              Exp {
+                                data,
+                                kind: ExpKind::Name(name.clone()),
+                                source_trace: exp.source_trace.clone(),
+                              }
                             })
                             .collect(),
                         )
@@ -3667,6 +3706,7 @@ impl Program {
       }
     }
     self.remove_unitlike_values();
+    self.extract_non_bound_mutable_references();
     self.validate_top_level_fn_effects(&mut errors);
     if !errors.is_empty() {
       return errors;

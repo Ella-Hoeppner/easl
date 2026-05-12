@@ -530,6 +530,79 @@ pub enum SyntaxTreeContext {
 }
 
 impl TypedExp {
+  pub fn extract_non_bound_mutable_references(
+    &mut self,
+    names: &RwLock<NameContext>,
+  ) -> Vec<(Arc<str>, SourceTrace, VariableKind, TypedExp)> {
+    let mut pending = vec![];
+    self
+      .walk_mut(&mut |node: &mut TypedExp| -> Result<bool, Never> {
+        if let ExpKind::Let(bindings, body) = &mut node.kind {
+          let mut new_bindings = Vec::with_capacity(bindings.len());
+          for (name, st, kind, mut value) in bindings.drain(..) {
+            new_bindings
+              .extend(value.extract_non_bound_mutable_references(names));
+            new_bindings.push((name, st, kind, value));
+          }
+          new_bindings.extend(body.extract_non_bound_mutable_references(names));
+          *bindings = new_bindings;
+          return Ok(false);
+        }
+        let ExpKind::Application(f_exp, args) = &mut node.kind else {
+          return Ok(true);
+        };
+        let args_to_lift: Vec<usize> = {
+          let Type::Function(f) = f_exp.data.unwrap_known() else {
+            return Ok(true);
+          };
+          let Some(abstract_f) = &f.abstract_ancestor else {
+            return Ok(true);
+          };
+          let abstract_f = abstract_f.read().unwrap();
+          let FunctionImplementationKind::Composite(_) =
+            abstract_f.implementation
+          else {
+            return Ok(true);
+          };
+          abstract_f
+            .arg_types
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (_, ownership))| {
+              if *ownership == Ownership::MutableReference
+                && i < args.len()
+                && args[i].name_or_inner_accessed_name().is_none()
+              {
+                Some(i)
+              } else {
+                None
+              }
+            })
+            .collect()
+        };
+        for i in args_to_lift {
+          let gensym: Arc<str> = names.write().unwrap().gensym("scope_arg");
+          let old_arg = args[i].clone();
+          args[i] = TypedExp {
+            data: old_arg.data.clone(),
+            kind: ExpKind::Name(gensym.clone()),
+            source_trace: old_arg.source_trace.clone(),
+          };
+          let mut value = old_arg;
+          pending.extend(value.extract_non_bound_mutable_references(names));
+          pending.push((
+            gensym,
+            value.source_trace.clone(),
+            VariableKind::Var,
+            value,
+          ));
+        }
+        Ok(true)
+      })
+      .unwrap();
+    pending
+  }
+
   pub fn function_from_body_tree(
     source_trace: SourceTrace,
     body_trees: Vec<EaslTree>,
@@ -3640,8 +3713,9 @@ impl TypedExp {
                     };
                     new_abstract_ancestor.arg_types[i].1 =
                       Ownership::Pointer(address_space);
-                    signature.args[i].0.var_type.ownership =
-                      Ownership::Pointer(address_space);
+                    signature.args.get_mut(i).map(|x| {
+                      x.0.var_type.ownership = Ownership::Pointer(address_space)
+                    });
                     new_signature.args[i].0.var_type.ownership =
                       Ownership::Pointer(address_space);
                     address_space_names.push(address_space.name().into());
@@ -4934,6 +5008,9 @@ impl TypedExp {
                 for (index, (binding_name, _, variable_kind, value)) in
                   items.iter_mut().enumerate()
                 {
+                  if let Type::Function(_) = value.data.unwrap_known() {
+                    *variable_kind = VariableKind::Var;
+                  }
                   match &value.kind {
                     Let(_, _) => {
                       restructured = true;

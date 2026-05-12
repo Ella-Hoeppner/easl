@@ -691,10 +691,16 @@ impl AbstractFunctionSignature {
     let inlined_fn_name = &signature.read().unwrap().name;
     if let TypeState::Known(Type::Function(f)) =
       &mut implementation.expression.data.kind
-      && let TypeState::Known(Type::Function(f_arg)) =
-        &mut f.args[argument_index].0.var_type.kind
     {
-      f_arg.abstract_ancestor = Some(signature.clone());
+      f.args[argument_index].0.kind = VariableKind::Var;
+      if signature.read().unwrap().captured_scope.is_some() {
+        f.args[argument_index].0.var_type.ownership =
+          Ownership::MutableReference;
+      }
+      let f_arg = &mut f.args[argument_index].0.var_type.kind;
+      if let TypeState::Known(Type::Function(f_arg)) = f_arg {
+        f_arg.abstract_ancestor = Some(signature.clone());
+      }
     } else {
       panic!()
     }
@@ -726,7 +732,7 @@ impl AbstractFunctionSignature {
                 f.args.push((
                   Variable {
                     var_type: new_arg_type.known().into(),
-                    kind: VariableKind::Let,
+                    kind: VariableKind::Var,
                   },
                   vec![],
                 ));
@@ -745,6 +751,7 @@ impl AbstractFunctionSignature {
                   f.abstract_ancestor = Some(signature.clone());
                 }
               });
+              exp.data.ownership = Ownership::MutableReference;
             }
             Ok(true)
           }
@@ -753,11 +760,14 @@ impl AbstractFunctionSignature {
       })
       .unwrap();
     let mut arg_types = self.arg_types.clone();
-    let AbstractType::Type(Type::Function(f)) =
-      &mut arg_types[argument_index].0
+    let (AbstractType::Type(Type::Function(f)), ownership) =
+      &mut arg_types[argument_index]
     else {
       panic!("tried to inline higher order fn for non-fn argument type");
     };
+    if signature.read().unwrap().captured_scope.is_some() {
+      *ownership = Ownership::MutableReference;
+    }
     f.abstract_ancestor = Some(signature.clone());
     Ok(AbstractFunctionSignature {
       name: ctx

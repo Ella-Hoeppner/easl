@@ -1,0 +1,16 @@
+(defn apply-to-one [f: (Fn [f32] f32)]: f32
+  (f 1.))
+
+(defn apply-from-let []: vec4f
+  (let [seed 2.]
+    (vec4f (apply-to-one (fn [x] (+ x seed)))
+           0.
+           0.
+           1.)))
+
+(defn apply-from-arg [seed: f32]: vec4f
+  (vec4f (apply-to-one (fn [x] (+ x seed)))
+         0.
+         0.
+         1.))
+

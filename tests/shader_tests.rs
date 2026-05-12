@@ -289,6 +289,7 @@ success_test!(builtin_hof_argument_2);
 success_test!(adjacent_let_shadow);
 success_test!(noise_hof_nested_capture);
 success_test!(hof_nested_capture);
+success_test!(hof_tail_position_scope);
 success_test!(for_shorthand);
 success_test!(var_annotation_shorthand);
 success_test!(mutate_var_ref_struct_field);
