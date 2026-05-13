@@ -1,0 +1,2 @@
+(defn f []: f32
+  (f32 (reverse-bits 16711680u)))

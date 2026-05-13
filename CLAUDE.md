@@ -113,6 +113,12 @@ Easl programs can have multiple annotated sections compiled/run separately:
 @{address storage-read   group 0  binding 1}  (var read-only-buf: [N: vec4f])
 @{address storage-write  group 0  binding 2}  (var rw-buf: [N: vec4f])
 ```
+There is also a shorthand `@[address group binding]` array annotation that specifies the three values positionally:
+```
+@[uniform        0 0]  (var frame-index: u32)
+@[storage-read   0 1]  (var read-only-buf: [N: vec4f])
+@[storage-write  0 2]  (var rw-buf: [N: vec4f])
+```
 - `uniform` — maps to `GpuBufferKind::Uniform` (read-only from shader, writable from CPU)
 - `storage-read` — maps to `GpuBufferKind::StorageReadOnly`
 - `storage-write` — maps to `GpuBufferKind::StorageReadWrite` (GPU can write; vertex shaders cannot access)
@@ -205,7 +211,7 @@ let name = f.abstract_ancestor.as_ref().unwrap().borrow().name.clone();
 
 ## Test Structure
 
-There are three test suites:
+There are four test suites:
 
 ### GPU/compiler tests (`tests/shader_tests.rs`, sources in `data/gpu/`)
 ```rust
@@ -235,9 +241,20 @@ window_test!(test_name);  // runs data/window/test_name.easl, compares IOEvent l
   - `dispatch-render-shaders <vert_fn> <frag_fn> <vert_count>`
   - `dispatch-compute-shader <entry_fn> (vec3u <x>u <y>u <z>u)`
 
+### Conformance tests (`tests/conformance_tests.rs`, sources in `data/conformance/`)
+```rust
+conformance_test!(test_name);          // exact CPU/GPU match
+conformance_test!(test_name, 0.001);   // match within tolerance (for irrational results)
+```
+- Each file in `data/conformance/` defines a single function `f` that returns `f32`. The test harness appends boilerplate that calls `f` on the CPU (printing the result), dispatches a compute shader that writes `f()` into a storage variable, then reads it back and prints it again.
+- Asserts the two printed values agree — proving the interpreter and GPU produce identical output for the given expression.
+- With no tolerance argument the comparison is exact string equality; with a tolerance the two values are parsed as `f64` and the test passes if `|cpu - gpu| <= tolerance`.
+- Tests cover arithmetic, rounding, trigonometry (including hyperbolic), exponentials/logarithms, sqrt/pow, min/max/clamp, mix/smoothstep/fma/ldexp, vector ops (dot, cross, length, normalize, distance), integer arithmetic, type conversions, bitcast, and bit manipulation.
+- The test runner uses `load_easl_program_from_file_with_lookup_function` to inject the boilerplate into the source string rather than requiring it in each file, so test files can stay minimal.
+
 ### Shared notes
 - `#_` reader macro in `.easl` files comments out the next form — useful for disabling parts of test files
-- Target a specific suite: `cargo test --test shader_tests`, `--test cpu_tests`, `--test window_tests`
+- Target a specific suite: `cargo test --test shader_tests`, `--test cpu_tests`, `--test window_tests`, `--test conformance_tests`
 
 ## Style Notes
 

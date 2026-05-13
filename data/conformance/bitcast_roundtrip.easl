@@ -1,0 +1,3 @@
+(defn f []: f32
+  (let [bits: u32 (bitcast 42.)]
+    (bitcast bits)))

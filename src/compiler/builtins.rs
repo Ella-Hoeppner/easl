@@ -1421,12 +1421,15 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
         ("round", 1),
         ("fract", 1),
         ("sqrt", 1),
+        ("inverse-sqrt", 1),
         ("trunc", 1),
         ("saturate", 1),
+        ("degrees", 1),
+        ("radians", 1),
         ("pow", 2),
         ("mix", 3),
         ("smoothstep", 3),
-        ("step", 3),
+        ("step", 2),
         ("fma", 3),
       ]
       .into_iter()
@@ -2853,6 +2856,7 @@ pub fn rename_builtin_fn(name: &str) -> Option<String> {
     "atomic-or" => Some("atomicOr"),
     "atomic-xor" => Some("atomicXor"),
     "atomic-exchange" => Some("atomicExchange"),
+    "inverse-sqrt" => Some("inverseSqrt"),
     _ => None,
   }
   .map(|name| name.to_string())

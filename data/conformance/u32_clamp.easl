@@ -1,0 +1,2 @@
+(defn f []: f32
+  (f32 (clamp 10u 0u 5u)))

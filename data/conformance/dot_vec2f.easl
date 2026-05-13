@@ -1,0 +1,2 @@
+(defn f []: f32
+  (dot (vec2f 3. 4.) (vec2f 1. 0.)))

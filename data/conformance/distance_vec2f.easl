@@ -1,0 +1,2 @@
+(defn f []: f32
+  (distance (vec2f 0. 0.) (vec2f 3. 4.)))

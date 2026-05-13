@@ -1,0 +1,2 @@
+(defn f []: f32
+  (determinant (mat2x2f 1. 2. 3. 4.)))

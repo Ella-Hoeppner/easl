@@ -1,0 +1,2 @@
+(defn f []: f32
+  (f32 (extract-bits 240u 4u 4u)))

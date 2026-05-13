@@ -406,6 +406,15 @@ fn apply_builtin_fn<IO: IOManager>(
         _ => panic!(),
       }
     }
+    "atan2" => {
+      let Value::Prim(Primitive::F32(y)) = args[0].0 else {
+        panic!()
+      };
+      let Value::Prim(Primitive::F32(x)) = args[1].0 else {
+        panic!()
+      };
+      Ok(Value::Prim(Primitive::F32(y.atan2(x))))
+    }
     "sin" | "cos" | "tan" | "sinh" | "cosh" | "tanh" | "asin" | "acos"
     | "atan" | "asinh" | "acosh" | "atanh" => {
       let Value::Prim(Primitive::F32(x)) = args[0].0 else {
@@ -796,7 +805,7 @@ fn apply_builtin_fn<IO: IOManager>(
       let Value::Struct(a) = &args[0].0 else {
         panic!()
       };
-      let Value::Struct(b) = &args[0].0 else {
+      let Value::Struct(b) = &args[1].0 else {
         panic!()
       };
       let mut sum = 0.;
@@ -808,6 +817,41 @@ fn apply_builtin_fn<IO: IOManager>(
         }
       }
       Ok(Value::Prim(Primitive::F32(sum as f32)))
+    }
+    "cross" => {
+      let Value::Struct(a) = &args[0].0 else {
+        panic!()
+      };
+      let Value::Struct(b) = &args[1].0 else {
+        panic!()
+      };
+      let get = |s: &HashMap<Arc<str>, Value>, f: &str| -> f64 {
+        s.get(f).unwrap().clone().unwrap_primitive().as_num()
+      };
+      let ax = get(a, "x");
+      let ay = get(a, "y");
+      let az = get(a, "z");
+      let bx = get(b, "x");
+      let by = get(b, "y");
+      let bz = get(b, "z");
+      Ok(Value::Struct(
+        [
+          (
+            Arc::from("x"),
+            Value::Prim(Primitive::F32((ay * bz - az * by) as f32)),
+          ),
+          (
+            Arc::from("y"),
+            Value::Prim(Primitive::F32((az * bx - ax * bz) as f32)),
+          ),
+          (
+            Arc::from("z"),
+            Value::Prim(Primitive::F32((ax * by - ay * bx) as f32)),
+          ),
+        ]
+        .into_iter()
+        .collect(),
+      ))
     }
     "reflect" => {
       let Value::Struct(e1) = &args[0].0 else {
@@ -882,6 +926,94 @@ fn apply_builtin_fn<IO: IOManager>(
         ))
       }
     }
+    "face-forward" => {
+      let Value::Struct(e1) = &args[0].0 else {
+        panic!()
+      };
+      let Value::Struct(e2) = &args[1].0 else {
+        panic!()
+      };
+      let Value::Struct(e3) = &args[2].0 else {
+        panic!()
+      };
+      let mut dot_val = 0.0_f64;
+      for f in ["x", "y", "z", "w"] {
+        if let Some(v2) = e2.get(f) {
+          let v2 = v2.clone().unwrap_primitive().as_num();
+          let v3 = e3.get(f).unwrap().clone().unwrap_primitive().as_num();
+          dot_val += v2 * v3;
+        }
+      }
+      if dot_val < 0.0 {
+        Ok(Value::Struct(e1.clone()))
+      } else {
+        Ok(Value::Struct(
+          e1.iter()
+            .map(|(f, v)| {
+              let Primitive::F32(x) = v.clone().unwrap_primitive() else {
+                panic!()
+              };
+              (f.clone(), Value::Prim(Primitive::F32(-x)))
+            })
+            .collect(),
+        ))
+      }
+    }
+    "determinant" => {
+      let Value::Array(cols) = &args[0].0 else {
+        panic!()
+      };
+      let n = cols.len();
+      let get = |col: usize, row: &str| -> f64 {
+        cols[col]
+          .as_struct()
+          .get(row)
+          .unwrap()
+          .clone()
+          .unwrap_primitive()
+          .as_num()
+      };
+      let det = if n == 2 {
+        get(0, "x") * get(1, "y") - get(0, "y") * get(1, "x")
+      } else if n == 3 {
+        let (a00, a10, a20) = (get(0, "x"), get(0, "y"), get(0, "z"));
+        let (a01, a11, a21) = (get(1, "x"), get(1, "y"), get(1, "z"));
+        let (a02, a12, a22) = (get(2, "x"), get(2, "y"), get(2, "z"));
+        a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20)
+          + a02 * (a10 * a21 - a11 * a20)
+      } else {
+        panic!("determinant: unsupported matrix size {n}")
+      };
+      Ok(Value::Prim(Primitive::F32(det as f32)))
+    }
+    "transpose" => {
+      let Value::Array(cols) = &args[0].0 else {
+        panic!()
+      };
+      let num_cols = cols.len();
+      let row_fields: Vec<&str> = ["x", "y", "z", "w"]
+        .into_iter()
+        .filter(|f| cols[0].as_struct().contains_key(*f))
+        .collect();
+      let col_fields: Vec<&str> = ["x", "y", "z", "w"][..num_cols].to_vec();
+      let new_cols: Vec<Value> = row_fields
+        .iter()
+        .map(|row_field| {
+          Value::Struct(
+            col_fields
+              .iter()
+              .enumerate()
+              .map(|(col_idx, col_field)| {
+                let v =
+                  cols[col_idx].as_struct().get(*row_field).unwrap().clone();
+                ((*col_field).into(), v)
+              })
+              .collect(),
+          )
+        })
+        .collect();
+      Ok(Value::Array(new_cols))
+    }
     "f32" => {
       let Value::Prim(x) = &args[0].0 else { panic!() };
       Ok(Value::Prim(Primitive::F32(x.clone().as_num() as f32)))
@@ -934,7 +1066,8 @@ fn apply_builtin_fn<IO: IOManager>(
       }),
       other => other,
     })),
-    "floor" | "ceil" | "round" | "fract" | "sqrt" | "trunc" | "saturate" => {
+    "floor" | "ceil" | "round" | "fract" | "sqrt" | "trunc" | "saturate"
+    | "degrees" | "radians" | "inverse-sqrt" => {
       Ok(args[0].0.map_primitive_or_vec_components(|p| {
         let Primitive::F32(x) = p else { panic!() };
         Primitive::F32(match &*f_name {
@@ -951,6 +1084,9 @@ fn apply_builtin_fn<IO: IOManager>(
           "sqrt" => x.sqrt(),
           "trunc" => x.trunc(),
           "saturate" => x.clamp(0., 1.),
+          "degrees" => x.to_degrees(),
+          "radians" => x.to_radians(),
+          "inverse-sqrt" => 1.0 / x.sqrt(),
           _ => panic!(),
         })
       }))
@@ -1075,13 +1211,13 @@ fn apply_builtin_fn<IO: IOManager>(
     "smoothstep" => Ok(Value::multi_map_primitive_or_vec_components(
       &args.into_iter().map(|(v, _)| v).collect(),
       |mut values| {
-        let max = values.remove(2);
-        let min = values.remove(1);
-        let x = values.remove(0);
-        match (x, min, max) {
-          (Primitive::F32(x), Primitive::F32(min), Primitive::F32(max)) => {
-            let x = ((x - min) / (max - min)).clamp(0., 1.);
-            Primitive::F32(x * x * (3. - 2. * x))
+        let x = values.remove(2);
+        let max = values.remove(1);
+        let min = values.remove(0);
+        match (min, max, x) {
+          (Primitive::F32(min), Primitive::F32(max), Primitive::F32(x)) => {
+            let t = ((x - min) / (max - min)).clamp(0., 1.);
+            Primitive::F32(t * t * (3. - 2. * t))
           }
           _ => panic!(),
         }
@@ -1126,6 +1262,15 @@ fn apply_builtin_fn<IO: IOManager>(
         _ => panic!(),
       },
     ))),
+    "ldexp" => {
+      let Value::Prim(Primitive::F32(e)) = args[0].0 else {
+        panic!()
+      };
+      let Value::Prim(Primitive::I32(exp)) = args[1].0 else {
+        panic!()
+      };
+      Ok(Value::Prim(Primitive::F32(e * (2.0f32).powi(exp))))
+    }
     "any" | "all" => Ok(Value::Prim(Primitive::Bool(match args.remove(0).0 {
       Value::Struct(fields) => ["x", "y", "z", "w"]
         .into_iter()
@@ -4141,7 +4286,7 @@ pub fn eval(
               _ => panic!(),
             }]
             .clone(),
-            Value::ZeroedArray { length } => {
+            Value::ZeroedArray { .. } => {
               let Type::Array(_, inner_type) = exp_type else {
                 panic!()
               };

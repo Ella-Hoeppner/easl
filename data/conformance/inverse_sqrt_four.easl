@@ -1,0 +1,2 @@
+(defn f []: f32
+  (inverse-sqrt 4.))

@@ -1,0 +1,2 @@
+(defn f []: f32
+  (f32 (count-leading-zeros 1u)))

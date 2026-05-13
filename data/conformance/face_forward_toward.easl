@@ -1,0 +1,3 @@
+(defn f []: f32
+  (let [v (face-forward (vec2f 1. 0.) (vec2f 1. 0.) (vec2f -1. 0.))]
+    (.x v)))
