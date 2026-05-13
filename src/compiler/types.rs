@@ -207,6 +207,31 @@ impl AbstractType {
       _ => {}
     }
   }
+  pub fn walk_mut<E>(
+    &mut self,
+    prewalk_handler: &mut impl FnMut(&mut Self) -> Result<bool, E>,
+  ) -> Result<(), E> {
+    if !prewalk_handler(self)? {
+      return Ok(());
+    }
+    match self {
+      AbstractType::AbstractStruct(s) => {
+        for field in Arc::make_mut(s).fields.iter_mut() {
+          field.field_type.walk_mut(prewalk_handler)?;
+        }
+      }
+      AbstractType::AbstractEnum(e) => {
+        for variant in Arc::make_mut(e).variants.iter_mut() {
+          variant.inner_type.walk_mut(prewalk_handler)?;
+        }
+      }
+      AbstractType::AbstractArray { inner_type, .. } => {
+        inner_type.walk_mut(prewalk_handler)?;
+      }
+      _ => {}
+    }
+    Ok(())
+  }
   pub fn fill_generics(
     &self,
     generics: &HashMap<Arc<str>, ExpTypeInfo>,
@@ -993,6 +1018,24 @@ impl Type {
       }
       _ => false,
     }
+  }
+  pub fn inline_def_array_sizes(
+    &mut self,
+    u32_constants: &HashMap<Arc<str>, u32>,
+  ) {
+    self.walk_mut(&|t| {
+      if let Type::Function(f) = t
+        && let Some(f) = &f.abstract_ancestor
+      {
+        f.write().unwrap().inline_def_array_sizes(&u32_constants);
+      }
+      if let Type::Array(Some(size), _) = t
+        && let ConcreteArraySize::Constant(constant_name) = size
+        && let Some(n) = u32_constants.get(constant_name)
+      {
+        *size = ConcreteArraySize::Literal(*n);
+      }
+    });
   }
   pub fn data_size_in_u32s(
     &self,

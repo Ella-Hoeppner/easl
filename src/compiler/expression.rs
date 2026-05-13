@@ -3310,11 +3310,6 @@ impl TypedExp {
                   || assigned_expression.data.ownership
                     == Ownership::MutableReference)
                 {
-                  println!(
-                    "var_name: {var_name}: {:?} / {:?}",
-                    ctx.get_variable_kind(var_name),
-                    assigned_expression.data.ownership
-                  );
                   return err(
                     AssignmentTargetMustBeVariable(var_name.to_string()),
                     exp.source_trace.clone(),

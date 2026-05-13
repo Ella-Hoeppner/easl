@@ -5,6 +5,7 @@ use std::sync::{Arc, RwLock};
 use take_mut::take;
 
 use crate::compiler::entry::BuiltinIOAttribute;
+use crate::compiler::types::AbstractArraySize;
 use crate::{
   Never,
   compiler::{
@@ -228,6 +229,41 @@ impl AbstractFunctionSignature {
       }
     }
     self.arg_types = arg_types;
+  }
+  pub fn inline_def_array_sizes(
+    &mut self,
+    u32_constants: &HashMap<Arc<str>, u32>,
+  ) {
+    for (arg_type, _) in self.arg_types.iter_mut() {
+      arg_type
+        .walk_mut(&mut |t| {
+          match t {
+            AbstractType::AbstractArray { size, .. } => {
+              if let AbstractArraySize::Constant(constant_name) = size
+                && let Some(n) = u32_constants.get(constant_name)
+              {
+                *size = AbstractArraySize::Literal(*n);
+              }
+            }
+            AbstractType::Type(t) => t.inline_def_array_sizes(u32_constants),
+            _ => {}
+          }
+          Ok::<bool, Never>(true)
+        })
+        .unwrap();
+    }
+    self
+      .return_type
+      .walk_mut(&mut |t| {
+        if let AbstractType::AbstractArray { size, .. } = t
+          && let AbstractArraySize::Constant(constant_name) = size
+          && let Some(n) = u32_constants.get(constant_name)
+        {
+          *size = AbstractArraySize::Literal(*n);
+        }
+        Ok::<bool, Never>(true)
+      })
+      .unwrap();
   }
   pub fn representative_type(&self, names: &mut NameContext) -> AbstractStruct {
     if let Some(captured_scope) = &self.captured_scope {

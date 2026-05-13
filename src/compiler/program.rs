@@ -2960,22 +2960,19 @@ impl Program {
       })
       .collect();
     for f in self.abstract_functions_iter_mut() {
-      if let FunctionImplementationKind::Composite(f) =
-        &f.write().unwrap().implementation
-      {
+      let mut f = f.write().unwrap();
+
+      if let FunctionImplementationKind::Composite(_) = &f.implementation {
+        f.inline_def_array_sizes(&u32_constants);
+      }
+
+      if let FunctionImplementationKind::Composite(f) = &f.implementation {
         f.write()
           .unwrap()
           .expression
           .walk_mut(&mut |exp| {
             if let TypeState::Known(t) = &mut exp.data.kind {
-              t.walk_mut(&|t| {
-                if let Type::Array(Some(size), _) = t
-                  && let ConcreteArraySize::Constant(constant_name) = size
-                  && let Some(n) = u32_constants.get(constant_name)
-                {
-                  *size = ConcreteArraySize::Literal(*n);
-                }
-              });
+              t.inline_def_array_sizes(&u32_constants);
             }
             Ok::<bool, Never>(true)
           })

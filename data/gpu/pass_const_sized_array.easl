@@ -1,0 +1,15 @@
+(def array-size: u32
+     5)
+
+(defn sum-array [a: [array-size: u32]]: u32
+  (let [@var sum 0]
+    (for [i array-size]
+      (+= sum (a i)))
+    sum))
+
+(defn f []: u32
+  (let [@var my-array: [array-size: u32] (zeroed-array)]
+    (= (my-array 0u) 1)
+    (= (my-array 1u) 2)
+    (sum-array my-array)))
+
