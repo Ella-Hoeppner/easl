@@ -1,0 +1,54 @@
+@[storage-write 0 0]
+(var arr: [u32])
+
+@[storage-write 0 1]
+(var scratch: [u32])
+
+@[uniform 0 2]
+(var bit-pos: u32)
+
+; Each thread i scatters arr[i] into scratch at its sorted position for the
+; current bit. Does an O(n) prefix-count inline so no inter-dispatch sync needed.
+@compute
+@{workgroup-size 1}
+(defn scatter-pass []
+  (let [i (.x (global-invocation-id))
+        n (array-length arr)
+        val (arr i)
+        bit (& (>> val bit-pos) 1u)
+        @var zeros-before-me 0u
+        @var total-zeros 0u]
+    (for [j 0u (< j n) (+= j 1u)]
+      (when (== 0u
+                (& (>> (arr j) bit-pos) 1u))
+        (+= total-zeros 1u)
+        (when (< j i)
+          (+= zeros-before-me 1u))))
+    (if (== bit 0u)
+      (= (scratch zeros-before-me) val)
+      (let [ones-before-me (- i zeros-before-me)]
+        (= (scratch (+ total-zeros ones-before-me))
+           val)))))
+
+@compute
+@{workgroup-size 1}
+(defn copy-scratch []
+  (let [i (.x (global-invocation-id))]
+    (= (arr i) (scratch i))))
+
+(defn radix-sort []
+  (let [n (array-length arr)]
+    (= scratch (zeroed-array n))
+    (for [b 0u (< b 32u) (+= b 1u)]
+      (= bit-pos b)
+      (dispatch-compute-shader scatter-pass (vec3u n 1u 1u))
+      (dispatch-compute-shader copy-scratch (vec3u n 1u 1u))
+      #_(print arr))))
+
+@cpu
+(defn main []
+  (= arr
+     (into-dynamic-array [0 3 7 6 4 1 2 5]))
+  (radix-sort)
+  (print arr))
+

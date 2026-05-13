@@ -917,6 +917,23 @@ fn apply_builtin_fn<IO: IOManager>(
       Primitive::I32(i) => Primitive::I32(i.abs()),
       other => other,
     })),
+    "sign" => Ok(args[0].0.map_primitive_or_vec_components(|p| match p {
+      Primitive::F32(f) => Primitive::F32(if f == 0. {
+        0.
+      } else if f > 0. {
+        1.
+      } else {
+        -1.
+      }),
+      Primitive::I32(i) => Primitive::I32(if i == 0 {
+        0
+      } else if i > 0 {
+        1
+      } else {
+        -1
+      }),
+      other => other,
+    })),
     "floor" | "ceil" | "round" | "fract" | "sqrt" | "trunc" | "saturate" => {
       Ok(args[0].0.map_primitive_or_vec_components(|p| {
         let Primitive::F32(x) = p else { panic!() };

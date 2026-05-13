@@ -625,9 +625,12 @@ impl GpuCore {
       .unwrap();
   }
 
-  /// Batches multiple compute dispatches into one encoder, one submit, one
-  /// poll. Much cheaper than calling `execute_compute` N times (which creates
-  /// N encoders, N submits, and N blocking polls).
+  /// Batches multiple compute dispatches into the minimum number of submits,
+  /// splitting only when a call's pre_upload would overwrite a binding already
+  /// uploaded for the current in-flight encoder. Consecutive calls with
+  /// non-conflicting uploads are merged into a single encoder and submitted
+  /// together. Always uses a single final poll, saving N-1 blocking waits vs.
+  /// calling `execute_compute` N times.
   pub fn execute_compute_batch(
     &mut self,
     calls: Vec<(String, (u32, u32, u32), Vec<((u8, u8), BufferUpload)>)>,
@@ -635,33 +638,56 @@ impl GpuCore {
     if calls.is_empty() {
       return;
     }
-    let all_uploads: Vec<_> = calls
-      .iter()
-      .flat_map(|(_, _, u)| u.iter().cloned())
-      .collect();
-    self.upload_bindings(&all_uploads);
+    // Tracks bindings uploaded for dispatches already encoded into the current
+    // encoder but not yet submitted.
+    let mut pending_bindings: std::collections::HashSet<(u8, u8)> =
+      std::collections::HashSet::new();
+    let mut current_encoder: Option<wgpu::CommandEncoder> = None;
 
-    let mut encoder =
-      self
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-          label: Some("compute encoder"),
-        });
-    for (entry, (x, y, z), _) in &calls {
+    for (entry, (x, y, z), pre_upload) in calls {
       let entry = entry.replace('-', "_");
-      self.get_or_create_compute_pipeline(&entry);
-      let mut compute_pass =
-        encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-          label: Some("compute pass"),
-          timestamp_writes: None,
-        });
-      for (group_idx, bind_group) in self.bind_groups.iter().enumerate() {
-        compute_pass.set_bind_group(group_idx as u32, bind_group, &[]);
+
+      // If this call would overwrite a binding already uploaded for the
+      // current encoder's dispatches, submit that encoder first so those
+      // dispatches see the old values, then start a fresh encoder.
+      let has_conflict =
+        pre_upload.iter().any(|(gb, _)| pending_bindings.contains(gb));
+      if has_conflict {
+        if let Some(enc) = current_encoder.take() {
+          self.queue.submit(std::iter::once(enc.finish()));
+        }
+        pending_bindings.clear();
       }
-      compute_pass.set_pipeline(&self.compute_pipelines[&entry]);
-      compute_pass.dispatch_workgroups(*x, *y, *z);
+
+      self.upload_bindings(&pre_upload);
+      for (gb, _) in &pre_upload {
+        pending_bindings.insert(*gb);
+      }
+      self.get_or_create_compute_pipeline(&entry);
+
+      let encoder = current_encoder.get_or_insert_with(|| {
+        self
+          .device
+          .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("compute encoder"),
+          })
+      });
+      {
+        let mut compute_pass =
+          encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("compute pass"),
+            timestamp_writes: None,
+          });
+        for (group_idx, bind_group) in self.bind_groups.iter().enumerate() {
+          compute_pass.set_bind_group(group_idx as u32, bind_group, &[]);
+        }
+        compute_pass.set_pipeline(&self.compute_pipelines[&entry]);
+        compute_pass.dispatch_workgroups(x, y, z);
+      }
     }
-    self.queue.submit(std::iter::once(encoder.finish()));
+    if let Some(enc) = current_encoder.take() {
+      self.queue.submit(std::iter::once(enc.finish()));
+    }
     self
       .device
       .poll(wgpu::PollType::wait_indefinitely())
