@@ -117,10 +117,7 @@ conformance_test!(abs_positive);
 conformance_test!(abs_negative);
 conformance_test!(sign_positive);
 conformance_test!(sign_negative);
-// TODO, below test fails but gpu side seems to contradict what the wgsl spec
-// says, sign(0.) should be 0. but we get 1.
-// maybe a naga bug?
-// conformance_test!(sign_zero);
+conformance_test!(sign_zero);
 conformance_test!(saturate_above);
 conformance_test!(saturate_below);
 conformance_test!(clamp_high);

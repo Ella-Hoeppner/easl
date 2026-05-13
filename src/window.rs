@@ -426,8 +426,8 @@ impl GpuCore {
     self.rebuild_bind_groups();
 
     // 7. Rebuild pipeline layout (references the new bind group layouts).
-    let refs: Vec<&wgpu::BindGroupLayout> =
-      self.bind_group_layouts.iter().collect();
+    let refs: Vec<Option<&wgpu::BindGroupLayout>> =
+      self.bind_group_layouts.iter().map(Some).collect();
     self.pipeline_layout =
       self
         .device
@@ -814,8 +814,9 @@ impl GpuCore {
         .surface
         .as_ref()
         .and_then(|s| match s.get_current_texture() {
-          Ok(t) => Some(t),
-          Err(_) => None,
+          wgpu::CurrentSurfaceTexture::Success(t)
+          | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
+          _ => None,
         })
     } else {
       None
@@ -1004,9 +1005,9 @@ pub(crate) fn create_headless_gpu_core(
   binding_infos: &[((u8, u8), GpuBufferKind, u64)],
 ) -> Arc<RwLock<GpuCore>> {
   pollster::block_on(async {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
       backends: wgpu::Backends::all(),
-      ..Default::default()
+      ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let adapter = instance
@@ -1150,8 +1151,8 @@ pub(crate) fn create_headless_gpu_core(
       })
       .collect();
 
-    let bind_group_layout_refs: Vec<&wgpu::BindGroupLayout> =
-      bind_group_layouts.iter().collect();
+    let bind_group_layout_refs: Vec<Option<&wgpu::BindGroupLayout>> =
+      bind_group_layouts.iter().map(Some).collect();
     let pipeline_layout =
       device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
@@ -1528,9 +1529,9 @@ impl RenderState {
     wgsl: &str,
     binding_infos: &[((u8, u8), GpuBufferKind, u64)],
   ) -> Result<Self, String> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
       backends: wgpu::Backends::all(),
-      ..Default::default()
+      ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
 
     let surface = instance
@@ -1710,8 +1711,8 @@ impl RenderState {
       })
       .collect();
 
-    let bind_group_layout_refs: Vec<&wgpu::BindGroupLayout> =
-      bind_group_layouts.iter().collect();
+    let bind_group_layout_refs: Vec<Option<&wgpu::BindGroupLayout>> =
+      bind_group_layouts.iter().map(Some).collect();
     let pipeline_layout =
       device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
@@ -1919,10 +1920,11 @@ impl RenderState {
         .expect("RenderState has no surface")
         .get_current_texture()
       {
-        Ok(texture) => Some(texture),
-        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => return,
-        Err(e) => {
-          eprintln!("Surface error: {e:?}");
+        wgpu::CurrentSurfaceTexture::Success(texture)
+        | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Some(texture),
+        wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => return,
+        other => {
+          eprintln!("Surface error: {other:?}");
           return;
         }
       }
