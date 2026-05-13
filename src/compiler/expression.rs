@@ -1461,7 +1461,12 @@ impl TypedExp {
           }
         }
         Function(_, body) => body.walk(prewalk_handler)?,
-        Access(_, body) => body.walk(prewalk_handler)?,
+        Access(access, body) => {
+          if let Accessor::ArrayIndex(index_exp) = access {
+            index_exp.walk(prewalk_handler)?
+          }
+          body.walk(prewalk_handler)?
+        }
         Let(bindings, body) => {
           for (_, _, _, value) in bindings {
             value.walk(prewalk_handler)?;
@@ -1525,7 +1530,13 @@ impl TypedExp {
           }
         }
         Function(_, body) => body.walk_mut(prewalk_handler)?,
-        Access(_, body) => body.walk_mut(prewalk_handler)?,
+
+        Access(access, body) => {
+          if let Accessor::ArrayIndex(index_exp) = access {
+            index_exp.walk_mut(prewalk_handler)?
+          }
+          body.walk_mut(prewalk_handler)?
+        }
         Let(bindings, body) => {
           for (_, _, _, value) in bindings {
             value.walk_mut(prewalk_handler)?;
@@ -1607,7 +1618,13 @@ impl TypedExp {
             ctx.unbind(name);
           }
         }
-        Access(_, body) => body.walk_with_ctx(prewalk_handler, ctx)?,
+
+        Access(access, body) => {
+          if let Accessor::ArrayIndex(index_exp) = access {
+            index_exp.walk_with_ctx(prewalk_handler, ctx)?
+          }
+          body.walk_with_ctx(prewalk_handler, ctx)?
+        }
         Let(bindings, body) => {
           for (name, name_source_trace, kind, value) in bindings.iter() {
             value.walk_with_ctx(prewalk_handler, ctx)?;
@@ -1737,7 +1754,13 @@ impl TypedExp {
             ctx.unbind(&name.0);
           }
         }
-        Access(_, body) => body.walk_mut_with_ctx(prewalk_handler, ctx)?,
+
+        Access(access, body) => {
+          if let Accessor::ArrayIndex(index_exp) = access {
+            index_exp.walk_mut_with_ctx(prewalk_handler, ctx)?
+          }
+          body.walk_mut_with_ctx(prewalk_handler, ctx)?
+        }
         Let(bindings, body) => {
           for (name, name_source_trace, kind, value) in bindings.iter_mut() {
             value.walk_mut_with_ctx(prewalk_handler, ctx)?;
@@ -4249,7 +4272,13 @@ impl TypedExp {
         }
         _ => unreachable!(),
       },
-      Access(_, exp) => exp.effects(),
+      Access(accessor, exp) => {
+        let mut effects = exp.effects();
+        if let Accessor::ArrayIndex(index_exp) = accessor {
+          effects.merge(index_exp.effects())
+        }
+        effects
+      }
       Match(exp, items) => {
         let mut effects = exp.effects();
         for (_, arm) in items {

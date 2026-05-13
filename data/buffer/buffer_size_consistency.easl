@@ -1,0 +1,16 @@
+@[storage-write 0 0]
+(var nearest-particle-connections: [u32])
+
+(defn update-particle-nearest-connection []
+  (= (nearest-particle-connections (.x (global-invocation-id)))
+     1u))
+
+@cpu
+(defn main []
+  (= nearest-particle-connections
+     (zeroed-array 10))
+  (print (array-length nearest-particle-connections))
+  (dispatch-compute-shader update-particle-nearest-connection
+                           (vec3u 10u 1u 1u))
+  (print (array-length nearest-particle-connections)))
+

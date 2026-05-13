@@ -77,3 +77,4 @@ buffer_test!(load_red_pixel);
 buffer_test!(set_render_target);
 buffer_test!(struct_array_buffer);
 buffer_test!(print_enum);
+buffer_test!(buffer_size_consistency);

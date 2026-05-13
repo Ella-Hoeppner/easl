@@ -101,8 +101,8 @@ The main pipeline lives in `Program::validate_raw_program` (program.rs). The maj
 Easl programs can have multiple annotated sections compiled/run separately:
 - `@cpu` — marks the CPU entry point, compiled with `CompilerTarget::CPU` and run by the interpreter
 - `@vertex`, `@fragment`, `@compute` — mark GPU shader entry points
-- `@{workgroup-size N}` — required on `@compute` functions; sets threads per workgroup (can also be `@{workgroup-size X Y Z}`)
-- `@{builtin vertex-index}`, `@{builtin global-invocation-id}`, `@{builtin position}`, etc. — bind WGSL builtins to function arguments or return values
+- `@{workgroup-size N}` — optional on `@compute` functions; sets threads per workgroup (defaults to 1 if omitted; can also be `@{workgroup-size X Y Z}`)
+- `@{builtin vertex-index}`, `@{builtin global-invocation-id}`, `@{builtin position}`, etc. — bind WGSL builtins to function arguments or return values. Note: some builtins (e.g. `global-invocation-id`) are also available as zero-argument helper functions that can be called anywhere in a shader without needing an annotated parameter.
 - `@{location N}` — binds vertex inputs / fragment outputs
 
 ### GPU-bound top-level variables

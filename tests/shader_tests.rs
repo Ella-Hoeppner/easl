@@ -297,6 +297,7 @@ success_test!(mutate_var_ref_struct_field_indirect);
 success_test!(mutable_closure_counter);
 success_test!(assign_to_mut_ref_array);
 success_test!(pass_const_sized_array);
+success_test!(effect_in_array_access);
 
 // --- Error tests ---
 

@@ -3451,13 +3451,40 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     }
     for (gb, name, ty) in vars {
       // For statically-sized types, derive the readback size from the type.
-      // For dynamically-sized types (e.g. unsized arrays), fall back to the
-      // actual allocated buffer size tracked by the GPU core.
+      // For dynamically-sized types (unsized arrays), compute from the
+      // CPU-side element count rather than the padded GPU allocation size:
+      // the buffer is padded to a 16-byte multiple on upload, and using that
+      // padded size for readback would cause from_gpu_bytes to count the
+      // padding bytes as extra elements.
       let size = ty
         .data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
         .ok()
         .map(|u32s| ((u32s as u64 * 4 + 15) & !15).max(16))
-        .or_else(|| self.io.get_buffer_byte_size(gb.group, gb.binding))
+        .or_else(|| {
+          if let Type::Array(
+            Some(crate::compiler::types::ConcreteArraySize::Unsized),
+            inner,
+          ) = &ty
+          {
+            let inner_ty = inner.unwrap_known();
+            let elem_size = inner_ty.wgsl_data_size_in_u32s();
+            let align = inner_ty.wgsl_alignment_in_u32s();
+            let stride = ((elem_size + align - 1) / align) * align;
+            let count = self
+              .bindings
+              .get(&name)
+              .and_then(|v| v.last())
+              .map(|(v, _)| match v {
+                Value::ZeroedArray { length } => *length,
+                Value::Array(elems) => elems.len(),
+                _ => 0,
+              })
+              .unwrap_or(0);
+            Some((count as u64 * stride as u64 * 4).max(16))
+          } else {
+            self.io.get_buffer_byte_size(gb.group, gb.binding)
+          }
+        })
         .unwrap_or(16);
       if let Some(bytes) = self.io.sync_gpu_to_cpu(gb.group, gb.binding, size) {
         let value = Value::from_gpu_bytes(&bytes, &ty);
@@ -3932,8 +3959,22 @@ pub fn eval(
                 accessed_expression = *exp;
               }
               ExpKind::Access(accessor, exp) => {
-                if let Accessor::Field(field_name) = accessor {
-                  accesses.push(AccessKind::Field(field_name));
+                match accessor {
+                  Accessor::Field(field_name) => {
+                    accesses.push(AccessKind::Field(field_name));
+                  }
+                  Accessor::ArrayIndex(index_exp) => {
+                    let Ok(Value::Prim(index)) = eval(*index_exp, env) else {
+                      panic!()
+                    };
+                    let index = match index {
+                      Primitive::U32(u) => u as i64,
+                      Primitive::I32(i) => i as i64,
+                      _ => panic!(),
+                    };
+                    accesses.push(AccessKind::Index(index));
+                  }
+                  Accessor::Swizzle(_) => panic!(),
                 }
                 accessed_expression = *exp;
               }
@@ -4023,6 +4064,7 @@ pub fn eval(
       _ => panic!(),
     },
     ExpKind::Access(accessor, exp) => {
+      let exp_type = exp.data.unwrap_known();
       let value = eval(*exp, env)?;
       match accessor {
         Accessor::Field(field_name) => match value {
@@ -4075,15 +4117,21 @@ pub fn eval(
         }
         Accessor::ArrayIndex(exp) => {
           let index = eval(*exp, env)?;
-          let Value::Array(values) = value else {
-            panic!()
-          };
-          values[match index.unwrap_primitive() {
-            Primitive::U32(u) => u as usize % values.len(),
-            Primitive::I32(i) => i.rem_euclid(values.len() as i32) as usize,
+          match value {
+            Value::Array(values) => values[match index.unwrap_primitive() {
+              Primitive::U32(u) => u as usize % values.len(),
+              Primitive::I32(i) => i.rem_euclid(values.len() as i32) as usize,
+              _ => panic!(),
+            }]
+            .clone(),
+            Value::ZeroedArray { length } => {
+              let Type::Array(_, inner_type) = exp_type else {
+                panic!()
+              };
+              Value::zeroed(inner_type.unwrap_known(), env)?
+            }
             _ => panic!(),
-          }]
-          .clone()
+          }
         }
       }
     }

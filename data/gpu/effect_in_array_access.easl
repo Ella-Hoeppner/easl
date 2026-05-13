@@ -1,0 +1,10 @@
+@{address storage-write
+  group 0
+  binding 0}
+(var arr: [u32])
+
+@compute
+(defn c []
+  (= (arr (.x (global-invocation-id)))
+     1u))
+
