@@ -173,6 +173,7 @@ pub fn parse_easl_without_comments(easl_source: &str) -> EaslDocument {
 
 pub type EaslTree = DocumentSyntaxTree<Encloser, Operator>;
 
+#[derive(Debug)]
 pub struct EaslMultiDocument {
   pub sources: Vec<(EaslDocument, String, String)>,
 }
