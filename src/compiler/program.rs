@@ -1566,16 +1566,16 @@ impl Program {
                             changed = true;
                           }
                         }
-                        ExpKind::Application(applied_f, _) => {
-                          if let Type::Function(applied_f) =
-                            applied_f.data.unwrap_known()
-                            && let Some(abstract_applied_f) =
-                              applied_f.abstract_ancestor
+                        ExpKind::Application(applied_f_exp, _) => {
+                          if let ExpKind::Name(applied_f_name) =
+                            &applied_f_exp.kind
+                            && let Type::Function(applied_f_sig) =
+                              applied_f_exp.data.unwrap_known()
+                            && applied_f_sig.abstract_ancestor.is_some()
                             && let Type::Function(_) =
-                              applied_f.return_type.unwrap_known()
-                            && let Some(signatures) = self
-                              .abstract_functions
-                              .get(&abstract_applied_f.read().unwrap().name)
+                              applied_f_sig.return_type.unwrap_known()
+                            && let Some(signatures) =
+                              self.abstract_functions.get(applied_f_name)
                             && let Some(signature) = signatures.get(0)
                             && let AbstractType::Type(Type::Function(
                               returned_f,
@@ -1629,20 +1629,23 @@ impl Program {
             } else {
               None
             };
-            if let TypeState::Known(Type::Function(signature)) =
-              &mut borrowed_implementation.expression.data.kind
-              && let TypeState::Known(Type::Function(return_signature)) =
-                &mut signature.return_type.kind
-            {
-              if let Some(inner_abstract_ancestor) =
-                inner_abstract_ancestor.clone()
-                && return_signature.abstract_ancestor.is_none()
-              {
-                return_signature.abstract_ancestor =
-                  Some(inner_abstract_ancestor);
-                changed = true;
-              }
-            }
+            borrowed_implementation
+              .expression
+              .data
+              .with_dereferenced_mut(|ts| {
+                if let TypeState::Known(Type::Function(signature)) = ts {
+                  signature.return_type.with_dereferenced_mut(|rt| {
+                    if let TypeState::Known(Type::Function(return_signature)) =
+                      rt
+                      && let Some(anc) = inner_abstract_ancestor.clone()
+                      && return_signature.abstract_ancestor.is_none()
+                    {
+                      return_signature.abstract_ancestor = Some(anc);
+                      changed = true;
+                    }
+                  });
+                }
+              });
             drop(borrowed_implementation);
             if let AbstractType::Type(Type::Function(f)) =
               &mut borrowed_f.return_type
@@ -2886,15 +2889,24 @@ impl Program {
           } else {
             continue;
           };
-          if type_signature
+          let suffix_types: Vec<&Type> = if type_signature
             .iter()
             .any(|t| matches!(t, Type::Function(_)))
           {
-            continue;
-          }
+            let non_fn: Vec<&Type> = type_signature
+              .iter()
+              .filter(|t| !matches!(t, Type::Function(_)))
+              .collect();
+            if non_fn.is_empty() {
+              continue;
+            }
+            non_fn
+          } else {
+            type_signature.iter().collect()
+          };
           let new_name = base_name.to_string()
             + "_"
-            + &type_signature
+            + &suffix_types
               .iter()
               .map(|t| t.monomorphized_name(&mut self.names.write().unwrap()))
               .collect::<Vec<String>>()
@@ -2938,6 +2950,15 @@ impl Program {
           })
           .unwrap();
       }
+    }
+    // Rebuild abstract_functions to use new function names
+    if renames.is_empty() {
+      return;
+    }
+    let old_abstract_functions = std::mem::take(&mut self.abstract_functions);
+    for sig in old_abstract_functions.into_values().flatten() {
+      let name = sig.read().unwrap().name.clone();
+      self.abstract_functions.entry(name).or_default().push(sig);
     }
   }
   pub fn inline_def_array_sizes(&mut self) {

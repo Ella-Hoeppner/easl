@@ -2487,7 +2487,7 @@ pub enum IOEvent {
 
 /// Describes the GPU buffer type for a top-level variable binding.
 /// Used by `window.rs` to create the correct wgpu binding.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GpuBufferKind {
   Uniform,
   StorageReadOnly,

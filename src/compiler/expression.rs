@@ -3825,13 +3825,19 @@ impl TypedExp {
                         && let Some(arg_abstract_signature) =
                           &arg_f.abstract_ancestor
                       {
-                        Some((i, arg_abstract_signature.clone()))
+                        // Found an inlinable HOF arg — proceed.
+                        Some(Some((i, arg_abstract_signature.clone())))
                       } else {
-                        None
+                        // This abstract HOF arg position has no ancestor at
+                        // the call site yet, so stop searching. We want to
+                        // inline higher-order args in left-to-right order
+                        // for name consistency
+                        Some(None)
                       }
                     }
                     _ => None,
                   })
+                  .flatten()
             {
               let representative_struct = inlinable_abstract_signature
                 .read()
@@ -3847,12 +3853,25 @@ impl TypedExp {
                   new_ctx,
                   &exp.source_trace,
                 )?;
-              *f_name = inlined_signature.name.clone();
-              *abstract_signature =
-                Arc::new(RwLock::new(inlined_signature.clone()));
-              new_ctx.add_abstract_function(Arc::new(RwLock::new(
-                inlined_signature,
-              )));
+              let inlined_name = inlined_signature.name.clone();
+              *f_name = inlined_name.clone();
+              // Reuse existing specialization Arc if already present in
+              // new_ctx (by name), to prevent duplicate copies that would
+              // be extracted separately and accumulate as distinct functions.
+              let existing_signature = new_ctx
+                .abstract_functions
+                .get(&inlined_name)
+                .and_then(|sigs| sigs.first())
+                .cloned();
+              if let Some(signature) = existing_signature {
+                *abstract_signature = signature;
+              } else {
+                *abstract_signature =
+                  Arc::new(RwLock::new(inlined_signature.clone()));
+                new_ctx.add_abstract_function(Arc::new(RwLock::new(
+                  inlined_signature,
+                )));
+              }
               new_ctx.add_monomorphized_struct(representative_struct);
               changed = true;
             }
