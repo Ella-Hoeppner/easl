@@ -1913,30 +1913,6 @@ impl RenderState {
       )
     });
 
-    let output = if has_screen_render {
-      match gpu
-        .surface
-        .as_ref()
-        .expect("RenderState has no surface")
-        .get_current_texture()
-      {
-        wgpu::CurrentSurfaceTexture::Success(texture)
-        | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Some(texture),
-        wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => return,
-        other => {
-          eprintln!("Surface error: {other:?}");
-          return;
-        }
-      }
-    } else {
-      None
-    };
-
-    let screen_view = output.as_ref().map(|o| {
-      o.texture
-        .create_view(&wgpu::TextureViewDescriptor::default())
-    });
-
     // Batch all compute dispatches into one encoder (multiple passes) and all
     // render draws into one encoder (one render pass per render-target group).
     // This reduces queue.submit() calls from N to at most 2 per frame.
@@ -2003,6 +1979,36 @@ impl RenderState {
       gpu.queue.submit(std::iter::once(encoder.finish()));
     }
 
+    // Acquire the surface texture for screen renders.  This is done after
+    // uploads and compute so that Occluded (window minimised / covered on
+    // macOS) only skips the visual output — compute work still runs.
+    // Lost/Outdated require surface reconfiguration so we return early;
+    // Occluded is treated as "no screen output this frame" (None).
+    let output = if has_screen_render {
+      match gpu
+        .surface
+        .as_ref()
+        .expect("RenderState has no surface")
+        .get_current_texture()
+      {
+        wgpu::CurrentSurfaceTexture::Success(texture)
+        | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Some(texture),
+        wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => return,
+        wgpu::CurrentSurfaceTexture::Occluded => None,
+        other => {
+          eprintln!("Surface error: {other:?}");
+          None
+        }
+      }
+    } else {
+      None
+    };
+
+    let screen_view = output.as_ref().map(|o| {
+      o.texture
+        .create_view(&wgpu::TextureViewDescriptor::default())
+    });
+
     // --- Render passes (one encoder, one submit; one pass per target group) ---
     let render_calls: Vec<_> = draw_calls
       .iter()
@@ -2060,7 +2066,14 @@ impl RenderState {
 
         let view = match &texture_target_view {
           Some(v) => v,
-          None => screen_view.as_ref().unwrap(),
+          None => {
+            let Some(sv) = screen_view.as_ref() else {
+              // Surface unavailable this frame (e.g. Occluded): skip screen renders.
+              i = end;
+              continue;
+            };
+            sv
+          }
         };
         let format = if current_rt.is_none() {
           screen_format
