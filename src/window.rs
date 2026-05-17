@@ -955,80 +955,23 @@ impl GpuCore {
     self.pending_present = surface_texture;
   }
 
-  /// Reads a GPU buffer back to CPU, blocking until done. Returns raw bytes.
-  pub fn read_buffer(&self, group: u8, binding: u8, size: u64) -> Vec<u8> {
-    // eprintln!(
-    //   "[GPU-XFER] GPU→CPU readback: g{}b{}, {} bytes (BLOCKING)",
-    //   group, binding, size
-    // );
-    let source = &self.binding_buffers[&(group, binding)];
-    let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
-      label: Some("staging readback buffer"),
-      size,
-      usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-      mapped_at_creation: false,
-    });
-
-    let mut encoder =
-      self
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-          label: Some("readback encoder"),
-        });
-    encoder.copy_buffer_to_buffer(source, 0, &staging, 0, size);
-    self.queue.submit(std::iter::once(encoder.finish()));
-
-    let (sender, receiver) = std::sync::mpsc::channel();
-    staging
-      .slice(..)
-      .map_async(wgpu::MapMode::Read, move |result| {
-        sender.send(result).unwrap();
-      });
-    self
-      .device
-      .poll(wgpu::PollType::wait_indefinitely())
-      .unwrap();
-    receiver.recv().unwrap().unwrap();
-
-    let data = staging.slice(..).get_mapped_range();
-    let bytes = data.to_vec();
-    drop(data);
-    staging.unmap();
-    bytes
-  }
-}
-
-/// Creates a headless wgpu GPU core without a window or surface, suitable for
-/// running compute shaders outside of a windowed context (e.g. in tests).
-pub(crate) fn create_headless_gpu_core(
-  wgsl: &str,
-  binding_infos: &[((u8, u8), GpuBufferKind, u64)],
-) -> Arc<RwLock<GpuCore>> {
-  pollster::block_on(async {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-      backends: wgpu::Backends::all(),
-      ..wgpu::InstanceDescriptor::new_without_display_handle()
-    });
-
-    let adapter = instance
-      .request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::default(),
-        compatible_surface: None,
-        force_fallback_adapter: false,
-      })
-      .await
-      .expect("No wgpu adapter found for headless GPU core");
-
-    let (device, queue) = adapter
-      .request_device(&wgpu::DeviceDescriptor {
-        label: None,
-        required_features: wgpu::Features::VERTEX_WRITABLE_STORAGE,
-        required_limits: adapter.limits(),
-        memory_hints: wgpu::MemoryHints::default(),
-        ..Default::default()
-      })
-      .await
-      .expect("Failed to create headless wgpu device");
+  /// Creates a new `GpuCore` from an existing wgpu device and queue.
+  ///
+  /// This allows sharing the device/queue with an external renderer (e.g.
+  /// easl_studio's `WGPUController`) so that textures produced here can be
+  /// directly consumed in the caller's render passes without cross-device
+  /// copies.  A dummy `wgpu::Instance` is created internally; it is only used
+  /// for hot-reload surface creation, which is not needed in the studio.
+  pub fn new_from_parts(
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    wgsl: &str,
+    binding_infos: &[((u8, u8), GpuBufferKind, u64)],
+  ) -> Arc<RwLock<Self>> {
+    // Dummy instance — the field is only used for hot-reload surface creation.
+    let instance = wgpu::Instance::new(
+      wgpu::InstanceDescriptor::new_without_display_handle(),
+    );
 
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
       label: Some("easl shader"),
@@ -1177,6 +1120,7 @@ pub(crate) fn create_headless_gpu_core(
       });
       tex.create_view(&wgpu::TextureViewDescriptor::default())
     };
+
     Arc::new(RwLock::new(GpuCore {
       instance,
       device,
@@ -1207,6 +1151,197 @@ pub(crate) fn create_headless_gpu_core(
       pending_present: None,
       placeholder_texture_view,
     }))
+  }
+
+  /// Executes a batch of render shader calls, rendering screen-targeted calls
+  /// (`render_target == None`) into the provided `screen_view` with
+  /// `screen_format` instead of acquiring from `self.surface`.  Offscreen
+  /// render targets (`render_target == Some(...)`) work as in
+  /// [`execute_render_batch`].  Blocks until the GPU finishes.
+  pub fn execute_render_batch_to_view(
+    &mut self,
+    calls: Vec<(
+      String,
+      String,
+      u32,
+      Vec<((u8, u8), BufferUpload)>,
+      bool,
+      Option<(u8, u8)>,
+    )>,
+    screen_view: &wgpu::TextureView,
+    screen_format: wgpu::TextureFormat,
+  ) {
+    if calls.is_empty() {
+      return;
+    }
+    let all_uploads: Vec<_> = calls
+      .iter()
+      .flat_map(|(_, _, _, u, _, _)| u.iter().cloned())
+      .collect();
+    self.upload_bindings(&all_uploads);
+
+    // Pre-create all pipelines before render-pass borrows begin.
+    for (vert, frag, _, _, additive, rt) in &calls {
+      let format =
+        if rt.is_none() { screen_format } else { Self::OFFSCREEN_FORMAT };
+      let vert = vert.replace('-', "_");
+      let frag = frag.replace('-', "_");
+      self.get_or_create_render_pipeline(&vert, &frag, *additive, format);
+    }
+
+    let mut encoder =
+      self
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+          label: Some("render-to-view encoder"),
+        });
+
+    // Group consecutive calls by render target; one render pass per group.
+    let mut i = 0;
+    while i < calls.len() {
+      let current_rt = calls[i].5;
+      let end = calls[i..]
+        .iter()
+        .position(|c| c.5 != current_rt)
+        .map_or(calls.len(), |j| i + j);
+      let group = &calls[i..end];
+
+      let texture_target_view: Option<wgpu::TextureView> =
+        current_rt.map(|rt| {
+          self.textures[&rt]
+            .create_view(&wgpu::TextureViewDescriptor::default())
+        });
+      let modified_bind_groups: Option<Vec<wgpu::BindGroup>> =
+        current_rt.map(|rt| self.bind_groups_with_placeholder_for(rt));
+      let bind_groups_ref: &[wgpu::BindGroup] =
+        modified_bind_groups.as_deref().unwrap_or(&self.bind_groups);
+
+      let view = match &texture_target_view {
+        Some(v) => v,
+        None => screen_view,
+      };
+      let format = if current_rt.is_none() {
+        screen_format
+      } else {
+        Self::OFFSCREEN_FORMAT
+      };
+
+      {
+        let mut render_pass =
+          encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("render-to-view pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+              view,
+              resolve_target: None,
+              depth_slice: None,
+              ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+              },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+          });
+        for (vert, frag, vert_count, _, additive, _) in group {
+          let vert = vert.replace('-', "_");
+          let frag = frag.replace('-', "_");
+          let key = (vert, frag, *additive, format);
+          for (group_idx, bind_group) in bind_groups_ref.iter().enumerate() {
+            render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
+          }
+          render_pass.set_pipeline(&self.render_pipelines[&key]);
+          render_pass.draw(0..*vert_count, 0..1);
+        }
+      }
+
+      i = end;
+    }
+
+    self.queue.submit(std::iter::once(encoder.finish()));
+    self
+      .device
+      .poll(wgpu::PollType::wait_indefinitely())
+      .unwrap();
+  }
+
+  /// Reads a GPU buffer back to CPU, blocking until done. Returns raw bytes.
+  pub fn read_buffer(&self, group: u8, binding: u8, size: u64) -> Vec<u8> {
+    // eprintln!(
+    //   "[GPU-XFER] GPU→CPU readback: g{}b{}, {} bytes (BLOCKING)",
+    //   group, binding, size
+    // );
+    let source = &self.binding_buffers[&(group, binding)];
+    let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+      label: Some("staging readback buffer"),
+      size,
+      usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+      mapped_at_creation: false,
+    });
+
+    let mut encoder =
+      self
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+          label: Some("readback encoder"),
+        });
+    encoder.copy_buffer_to_buffer(source, 0, &staging, 0, size);
+    self.queue.submit(std::iter::once(encoder.finish()));
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    staging
+      .slice(..)
+      .map_async(wgpu::MapMode::Read, move |result| {
+        sender.send(result).unwrap();
+      });
+    self
+      .device
+      .poll(wgpu::PollType::wait_indefinitely())
+      .unwrap();
+    receiver.recv().unwrap().unwrap();
+
+    let data = staging.slice(..).get_mapped_range();
+    let bytes = data.to_vec();
+    drop(data);
+    staging.unmap();
+    bytes
+  }
+}
+
+/// Creates a headless wgpu GPU core without a window or surface, suitable for
+/// running compute shaders outside of a windowed context (e.g. in tests).
+pub fn create_headless_gpu_core(
+  wgsl: &str,
+  binding_infos: &[((u8, u8), GpuBufferKind, u64)],
+) -> Arc<RwLock<GpuCore>> {
+  pollster::block_on(async {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+      backends: wgpu::Backends::all(),
+      ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+
+    let adapter = instance
+      .request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::default(),
+        compatible_surface: None,
+        force_fallback_adapter: false,
+      })
+      .await
+      .expect("No wgpu adapter found for headless GPU core");
+
+    let (device, queue) = adapter
+      .request_device(&wgpu::DeviceDescriptor {
+        label: None,
+        required_features: wgpu::Features::VERTEX_WRITABLE_STORAGE,
+        required_limits: adapter.limits(),
+        memory_hints: wgpu::MemoryHints::default(),
+        ..Default::default()
+      })
+      .await
+      .expect("Failed to create headless wgpu device");
+
+    GpuCore::new_from_parts(device, queue, wgsl, binding_infos)
   })
 }
 

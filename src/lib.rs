@@ -3,7 +3,7 @@ pub mod format;
 pub mod interpreter;
 pub mod parse;
 #[cfg(feature = "window")]
-pub(crate) mod window;
+pub mod window;
 
 #[derive(Debug)]
 pub(crate) enum Never {}
