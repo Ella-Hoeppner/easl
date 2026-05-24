@@ -1,0 +1,7 @@
+@[storage-write 0 0]
+(var buf: [f32])
+
+@compute
+(defn main []: ()
+  (= (buf (-> 1u (+ <> <>))) 0.)
+  (= (buf 0u) 0.))

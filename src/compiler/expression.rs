@@ -3307,6 +3307,7 @@ impl TypedExp {
           Type::Array(_, _) => exp = f,
           _ => break,
         },
+        ExpKind::Let(_, body) => exp = body,
         _ => break,
       }
     }

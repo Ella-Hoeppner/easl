@@ -299,6 +299,7 @@ success_test!(assign_to_mut_ref_array);
 success_test!(pass_const_sized_array);
 success_test!(effect_in_array_access);
 success_test!(sdf_hofs);
+success_test!(deexpressionify_array_assign_with_let);
 
 // --- Error tests ---
 
