@@ -54,6 +54,75 @@ pub fn persistent_gpu() -> Option<Arc<RwLock<GpuCore>>> {
     .with(|c| c.borrow().as_ref().map(|s| Arc::clone(&s.gpu)))
 }
 
+/// The texture format used for binding textures that can serve as render
+/// targets, and for the headless offscreen fallback.  Rgba16Float gives 16-bit
+/// float precision per channel, avoiding the colour banding / distortion that
+/// Rgba8Unorm produces when many semi-transparent layers are blended.
+const BINDING_TEXTURE_FORMAT: wgpu::TextureFormat =
+  wgpu::TextureFormat::Rgba16Float;
+
+/// Bytes per texel for [`BINDING_TEXTURE_FORMAT`] (Rgba16Float = 8).
+const BINDING_TEXTURE_BPP: u32 = 8;
+
+/// Convert an f32 in [0, 1] to an IEEE 754 half-precision (f16) value.
+fn f32_to_f16(value: f32) -> u16 {
+  let bits = value.to_bits();
+  let sign = (bits >> 16) & 0x8000;
+  let exp = ((bits >> 23) & 0xFF) as i32;
+  let man = bits & 0x7F_FFFF;
+  if exp == 0 {
+    sign as u16
+  } else if exp == 0xFF {
+    (sign | 0x7C00 | if man != 0 { 0x200 } else { 0 }) as u16
+  } else {
+    let new_exp = exp - 127 + 15;
+    if new_exp >= 31 {
+      (sign | 0x7C00) as u16
+    } else if new_exp <= 0 {
+      sign as u16
+    } else {
+      (sign | ((new_exp as u32) << 10) | (man >> 13)) as u16
+    }
+  }
+}
+
+/// Convert RGBA8 (`&[u8]`, 4 bytes/pixel) to RGBA16Float (`Vec<u8>`, 8
+/// bytes/pixel).  Each u8 channel is normalised to [0, 1] and stored as f16.
+fn rgba8_to_rgba16float(data: &[u8]) -> Vec<u8> {
+  let mut out = Vec::with_capacity(data.len() * 2);
+  for &byte in data {
+    let f = byte as f32 / 255.0;
+    out.extend_from_slice(&f32_to_f16(f).to_le_bytes());
+  }
+  out
+}
+
+fn create_texture_and_view(
+  device: &wgpu::Device,
+  label: &str,
+  width: u32,
+  height: u32,
+  format: wgpu::TextureFormat,
+  usage: wgpu::TextureUsages,
+) -> (wgpu::Texture, wgpu::TextureView) {
+  let texture = device.create_texture(&wgpu::TextureDescriptor {
+    label: Some(label),
+    size: wgpu::Extent3d {
+      width,
+      height,
+      depth_or_array_layers: 1,
+    },
+    mip_level_count: 1,
+    sample_count: 1,
+    dimension: wgpu::TextureDimension::D2,
+    format,
+    usage,
+    view_formats: &[],
+  });
+  let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+  (texture, view)
+}
+
 pub fn run_window_loop<IO: IOManager>(
   body: Exp<ExpTypeInfo>,
   env: &mut EvaluationEnvironment<IO>,
@@ -173,7 +242,7 @@ pub struct GpuCore {
   /// end-of-frame `RenderState::render` calls `present()` on this rather than
   /// re-rendering.
   pub pending_present: Option<wgpu::SurfaceTexture>,
-  /// A 1×1 Rgba8Unorm texture used as a stand-in in bind groups when a real
+  /// A 1×1 placeholder texture used as a stand-in in bind groups when a real
   /// texture is simultaneously the render target (COLOR_TARGET + RESOURCE is
   /// forbidden by wgpu within the same render pass).
   placeholder_texture_view: wgpu::TextureView,
@@ -334,24 +403,16 @@ impl GpuCore {
       if kind == GpuBufferKind::Texture2D {
         // Keep existing texture if one exists; create a placeholder if not.
         if !self.textures.contains_key(&key) {
-          let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(&format!("texture g{group}b{binding}")),
-            size: wgpu::Extent3d {
-              width: 1,
-              height: 1,
-              depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
+          let (texture, view) = create_texture_and_view(
+            &self.device,
+            &format!("texture g{group}b{binding}"),
+            1,
+            1,
+            BINDING_TEXTURE_FORMAT,
+            wgpu::TextureUsages::TEXTURE_BINDING
               | wgpu::TextureUsages::COPY_DST
               | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-          });
-          let view =
-            texture.create_view(&wgpu::TextureViewDescriptor::default());
+          );
           self.textures.insert(key, texture);
           self.texture_views.insert(key, view);
         }
@@ -471,28 +532,20 @@ impl GpuCore {
       let key = (*group, *binding);
       match upload {
         BufferUpload::TextureData { width, height, .. } => {
-          let incoming_size = *width as u64 * *height as u64 * 4;
+          let incoming_size =
+            *width as u64 * *height as u64 * BINDING_TEXTURE_BPP as u64;
           let stored_size = *self.binding_buffer_sizes.get(&key).unwrap_or(&0);
           if incoming_size != stored_size {
-            let texture =
-              self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(&format!("texture g{group}b{binding}")),
-                size: wgpu::Extent3d {
-                  width: *width,
-                  height: *height,
-                  depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                  | wgpu::TextureUsages::COPY_DST
-                  | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-              });
-            let view =
-              texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let (texture, view) = create_texture_and_view(
+              &self.device,
+              &format!("texture g{group}b{binding}"),
+              *width,
+              *height,
+              BINDING_TEXTURE_FORMAT,
+              wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            );
             self.textures.insert(key, texture);
             self.texture_views.insert(key, view);
             self.binding_buffer_sizes.insert(key, incoming_size);
@@ -559,6 +612,7 @@ impl GpuCore {
           data,
         } => {
           if let Some(texture) = self.textures.get(&key) {
+            let f16_data = rgba8_to_rgba16float(data);
             self.queue.write_texture(
               wgpu::TexelCopyTextureInfo {
                 texture,
@@ -566,10 +620,10 @@ impl GpuCore {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
               },
-              data,
+              &f16_data,
               wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(*width * 4),
+                bytes_per_row: Some(*width * BINDING_TEXTURE_BPP),
                 rows_per_image: Some(*height),
               },
               wgpu::Extent3d {
@@ -694,8 +748,8 @@ impl GpuCore {
       .unwrap();
   }
 
-  /// Texture format used for the offscreen render target (headless fallback).
-  const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+  /// Texture format used for the offscreen render target and render-to-texture.
+  const OFFSCREEN_FORMAT: wgpu::TextureFormat = BINDING_TEXTURE_FORMAT;
 
   /// Creates and caches a render pipeline for the given format (if not already cached).
   pub fn get_or_create_render_pipeline(
@@ -842,28 +896,22 @@ impl GpuCore {
 
     // Create the screen view: real surface or a throwaway 1×1 offscreen.
     // Declared in outer scope so it outlives all render passes.
-    let offscreen_texture;
+    let _offscreen_texture;
     let screen_view: Option<wgpu::TextureView> = if needs_screen {
       Some(if let Some(st) = &surface_texture {
         st.texture
           .create_view(&wgpu::TextureViewDescriptor::default())
       } else {
-        offscreen_texture =
-          self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("offscreen render target"),
-            size: wgpu::Extent3d {
-              width: 1,
-              height: 1,
-              depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: Self::OFFSCREEN_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-          });
-        offscreen_texture.create_view(&wgpu::TextureViewDescriptor::default())
+        let (tex, view) = create_texture_and_view(
+          &self.device,
+          "offscreen render target",
+          1,
+          1,
+          Self::OFFSCREEN_FORMAT,
+          wgpu::TextureUsages::RENDER_ATTACHMENT,
+        );
+        _offscreen_texture = tex;
+        view
       })
     } else {
       None
@@ -1002,23 +1050,16 @@ impl GpuCore {
     for &((group, binding), kind, size) in binding_infos {
       let key = (group, binding);
       if kind == GpuBufferKind::Texture2D {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-          label: Some(&format!("texture g{group}b{binding}")),
-          size: wgpu::Extent3d {
-            width: 1,
-            height: 1,
-            depth_or_array_layers: 1,
-          },
-          mip_level_count: 1,
-          sample_count: 1,
-          dimension: wgpu::TextureDimension::D2,
-          format: wgpu::TextureFormat::Rgba8Unorm,
-          usage: wgpu::TextureUsages::TEXTURE_BINDING
+        let (texture, view) = create_texture_and_view(
+          &device,
+          &format!("texture g{group}b{binding}"),
+          1,
+          1,
+          BINDING_TEXTURE_FORMAT,
+          wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::COPY_DST
             | wgpu::TextureUsages::RENDER_ATTACHMENT,
-          view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        );
         textures.insert(key, texture);
         texture_views.insert(key, view);
       } else {
@@ -1104,21 +1145,15 @@ impl GpuCore {
       });
 
     let placeholder_texture_view = {
-      let tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("placeholder texture"),
-        size: wgpu::Extent3d {
-          width: 1,
-          height: 1,
-          depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-      });
-      tex.create_view(&wgpu::TextureViewDescriptor::default())
+      let (_, view) = create_texture_and_view(
+        &device,
+        "placeholder texture",
+        1,
+        1,
+        wgpu::TextureFormat::Rgba8Unorm,
+        wgpu::TextureUsages::TEXTURE_BINDING,
+      );
+      view
     };
 
     Arc::new(RwLock::new(GpuCore {
@@ -1752,23 +1787,16 @@ impl RenderState {
     for &((group, binding), kind, size) in binding_infos {
       let key = (group, binding);
       if kind == GpuBufferKind::Texture2D {
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-          label: Some(&format!("texture g{group}b{binding}")),
-          size: wgpu::Extent3d {
-            width: 1,
-            height: 1,
-            depth_or_array_layers: 1,
-          },
-          mip_level_count: 1,
-          sample_count: 1,
-          dimension: wgpu::TextureDimension::D2,
-          format: wgpu::TextureFormat::Rgba8Unorm,
-          usage: wgpu::TextureUsages::TEXTURE_BINDING
+        let (texture, view) = create_texture_and_view(
+          &device,
+          &format!("texture g{group}b{binding}"),
+          1,
+          1,
+          BINDING_TEXTURE_FORMAT,
+          wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::COPY_DST
             | wgpu::TextureUsages::RENDER_ATTACHMENT,
-          view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        );
         textures.insert(key, texture);
         texture_views.insert(key, view);
       } else {
@@ -1856,21 +1884,15 @@ impl RenderState {
       });
 
     let placeholder_texture_view = {
-      let tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("placeholder texture"),
-        size: wgpu::Extent3d {
-          width: 1,
-          height: 1,
-          depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-      });
-      tex.create_view(&wgpu::TextureViewDescriptor::default())
+      let (_, view) = create_texture_and_view(
+        &device,
+        "placeholder texture",
+        1,
+        1,
+        wgpu::TextureFormat::Rgba8Unorm,
+        wgpu::TextureUsages::TEXTURE_BINDING,
+      );
+      view
     };
     let gpu = Arc::new(RwLock::new(GpuCore {
       instance,
