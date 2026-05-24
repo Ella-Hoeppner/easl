@@ -14,11 +14,11 @@ cargo run                                           # runs benchmark (compiles a
 
 ## Project Structure
 
-- `src/lib.rs` — public API: `compile_easl_source_to_wgsl`, `get_easl_program_info`, `format_easl_source`
+- `src/lib.rs` — public API: `compile_easl_source_to_wgsl`, `get_easl_program_info`, `format_easl_source`; also re-exports `pub mod window` when the `window` feature is enabled
 - `src/parse.rs` — S-expression parser (uses the `fsexp` crate)
 - `src/format.rs` — source formatter
 - `src/interpreter.rs` — CPU-side interpreter; also defines the `IOManager` trait, `WindowEvent`/`IOEvent` enums, `GpuBufferKind`, `EvaluationEnvironment`, and `Value::to_uniform_bytes`
-- `src/window.rs` — wgpu-based GPU renderer; creates the winit window, manages wgpu device/surface/pipelines, uploads CPU bindings each frame, dispatches compute and render passes
+- `src/window.rs` — wgpu-based GPU renderer; `GpuCore` struct (public) manages device/surface/pipelines/buffers and is the central GPU resource type; `StdoutIO` opens a real winit window; also exports `create_headless_gpu_core` for surfaceless GPU use
 - `src/main.rs` — CLI entry point, currently just runs a compilation benchmark
 - `src/compiler/` — the compiler:
   - `core.rs` — top-level compilation entry point
@@ -138,7 +138,12 @@ Compute dispatches are always submitted before the render pass within a frame.
 The interpreter evaluates `@cpu`-annotated easl code on the CPU, driving GPU work through the `IOManager` trait.
 
 ### `IOManager` trait
-Two implementations: `StdoutIO` (real windowing via wgpu) and `StringIO` (test/debug, no GPU).
+Three implementations:
+- `StdoutIO` — real windowing via wgpu; opens a winit window, runs a real render loop
+- `StringIO` — test/debug, no GPU; simulates N frames (default 10), records all events to `events: Vec<IOEvent>`
+- `CaptureIO` — wraps `StdoutIO`, additionally captures `println` output to `prints: Vec<String>`; used by `run_program_capturing_output`
+
+Key methods:
 - `println` — print output
 - `record_draw(vert, frag, vert_count)` — called by `dispatch-render-shaders`
 - `record_compute(entry, workgroup_count)` — called by `dispatch-compute-shader`
@@ -208,6 +213,12 @@ let name = f.abstract_ancestor.as_ref().unwrap().borrow().name.clone();
 - `render`: pre-creates all pipelines, dispatches all `ComputeShader` calls first (each in its own compute pass), then does one render pass for all `RenderShaders` calls
 - winit `EventLoop` is stored in a thread-local and reused across multiple `spawn-window` calls via `run_app_on_demand`
 - **Known limitation**: `binding_buffer_data` / `collect_dirty_uploads` serialize and upload *all* dirty bindings every frame, including large GPU-written storage buffers the CPU never touches. A dirty-flag system is planned. `ZeroedArray` bindings are exempt — they become `BufferUpload::Clear` with no CPU allocation.
+
+**Public API (accessible via `easl::window` with the `window` feature):**
+- `GpuCore` — the central GPU resource type; holds device, queue, shader module, pipeline layout, bind groups, and per-binding buffers
+- `GpuCore::new_from_parts(device, queue, wgsl, binding_infos) -> Arc<RwLock<GpuCore>>` — creates a headless `GpuCore` from an existing `wgpu::Device` and `wgpu::Queue`; intended for embedders (e.g. easl_studio) that want to share a device with their own renderer instead of creating a second one
+- `create_headless_gpu_core(wgsl, binding_infos) -> Arc<RwLock<GpuCore>>` — creates a `GpuCore` with a freshly-created device and no surface; useful for pure compute / offscreen rendering
+- `GpuCore::execute_render_batch_to_view(calls, view: &wgpu::TextureView, format: wgpu::TextureFormat)` — runs a batch of screen-targeted render calls against an external `TextureView` instead of acquiring one from an internal surface; used by easl_studio to render into its own offscreen RT
 
 ## Test Structure
 

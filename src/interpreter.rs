@@ -387,6 +387,13 @@ fn apply_builtin_fn<IO: IOManager>(
         |prims| Primitive::Bool(prims[0] == prims[1]),
       ))
     }
+    "!=" => {
+      let values = vec![args.remove(0).0, args.remove(0).0];
+      Ok(Value::multi_map_primitive_or_vec_components(
+        &values,
+        |prims| Primitive::Bool(prims[0] != prims[1]),
+      ))
+    }
     "not" | "!" => match args.remove(0).0.unwrap_primitive() {
       Primitive::Bool(b) => Ok(Value::Prim(Primitive::Bool(!b))),
       _ => panic!(),
