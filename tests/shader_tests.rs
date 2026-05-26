@@ -300,7 +300,7 @@ success_test!(pass_const_sized_array);
 success_test!(effect_in_array_access);
 success_test!(sdf_hofs);
 success_test!(deexpressionify_array_assign_with_let);
-success_test!(problem);
+success_test!(const_sized_array_struct);
 
 // --- Error tests ---
 
