@@ -255,11 +255,16 @@ impl AbstractFunctionSignature {
     self
       .return_type
       .walk_mut(&mut |t| {
-        if let AbstractType::AbstractArray { size, .. } = t
-          && let AbstractArraySize::Constant(constant_name) = size
-          && let Some(n) = u32_constants.get(constant_name)
-        {
-          *size = AbstractArraySize::Literal(*n);
+        match t {
+          AbstractType::AbstractArray { size, .. } => {
+            if let AbstractArraySize::Constant(constant_name) = size
+              && let Some(n) = u32_constants.get(constant_name)
+            {
+              *size = AbstractArraySize::Literal(*n);
+            }
+          }
+          AbstractType::Type(t) => t.inline_def_array_sizes(u32_constants),
+          _ => {}
         }
         Ok::<bool, Never>(true)
       })

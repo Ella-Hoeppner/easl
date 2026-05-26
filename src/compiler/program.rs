@@ -29,7 +29,7 @@ use crate::{
     },
     structs::{AbstractStructField, UntypedStruct},
     types::{
-      AbstractType, ConcreteArraySize, GenericArgument,
+      AbstractArraySize, AbstractType, ConcreteArraySize, GenericArgument,
       ImmutableProgramLocalContext, NameDefinitionSource, Type, TypeState,
       UntypedType, Variable, VariableKind,
     },
@@ -2980,12 +2980,26 @@ impl Program {
         }
       })
       .collect();
+    for s in self.typedefs.structs.iter_mut() {
+      for field in s.fields.iter_mut() {
+        field
+          .field_type
+          .walk_mut(&mut |t| {
+            if let AbstractType::AbstractArray { size, .. } = t
+              && let AbstractArraySize::Constant(constant_name) = size
+              && let Some(n) = u32_constants.get(constant_name)
+            {
+              *size = AbstractArraySize::Literal(*n);
+            }
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
+      }
+    }
     for f in self.abstract_functions_iter_mut() {
       let mut f = f.write().unwrap();
 
-      if let FunctionImplementationKind::Composite(_) = &f.implementation {
-        f.inline_def_array_sizes(&u32_constants);
-      }
+      f.inline_def_array_sizes(&u32_constants);
 
       if let FunctionImplementationKind::Composite(f) = &f.implementation {
         f.write()

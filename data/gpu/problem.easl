@@ -1,0 +1,9 @@
+(def max-stack-size: u32
+     5)
+
+(struct Stack
+  values: [max-stack-size: f32]
+  current-size: u32)
+
+(defn empty-stack []: Stack
+  (Stack (zeroed-array) 0u))
