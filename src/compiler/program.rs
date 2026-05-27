@@ -2980,6 +2980,9 @@ impl Program {
         }
       })
       .collect();
+    for v in self.top_level_vars.iter_mut() {
+      v.var_type.inline_def_array_sizes(&u32_constants);
+    }
     for s in self.typedefs.structs.iter_mut() {
       for field in s.fields.iter_mut() {
         field

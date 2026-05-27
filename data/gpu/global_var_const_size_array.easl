@@ -1,0 +1,12 @@
+(def arr-length: u32
+     10)
+
+@[uniform 0 0]
+(var my-arr: [arr-length: vec4f])
+
+(defn f [arr: [arr-length: vec4f]]: f32
+  (.x (arr 0u)))
+
+(defn main []: f32
+  (f my-arr))
+
