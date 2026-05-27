@@ -1863,6 +1863,31 @@ impl TypedExp {
     }
     Ok(())
   }
+
+  fn compile_with_deref(
+    self,
+    names: &mut NameContext,
+    target: CompilerTarget,
+  ) -> String {
+    let mut inner = self;
+    let mut accessors = vec![];
+    while let ExpKind::Access(accessor, subexp) = inner.kind {
+      accessors.push(accessor);
+      inner = *subexp;
+    }
+    let compiled_inner = inner.compile(
+      ExpressionCompilationPosition::InnerExpression,
+      names,
+      target,
+    );
+    accessors
+      .into_iter()
+      .rev()
+      .fold(format!("(*{compiled_inner})"), |acc, accessor| {
+        acc + &accessor.compile(names, target)
+      })
+  }
+
   pub fn compile(
     self,
     position: ExpressionCompilationPosition,
@@ -2094,12 +2119,19 @@ impl TypedExp {
                 value_exp.data.monomorphized_name(names),
               )
             } else {
+              let type_name = value_exp.data.monomorphized_name(names);
+              let compiled_value =
+                if value_exp.data.ownership != Ownership::Owned {
+                  value_exp.compile_with_deref(names, target)
+                } else {
+                  value_exp.compile(InnerExpression, names, target)
+                };
               format!(
                 "{} {}: {} = {};",
                 variable_kind.compile(),
                 compile_word(name),
-                value_exp.data.monomorphized_name(names),
-                value_exp.compile(InnerExpression, names, target)
+                type_name,
+                compiled_value
               )
             }
           })
@@ -3000,9 +3032,11 @@ impl TypedExp {
         );
         for (name, name_source_trace, _, value) in bindings.iter_mut() {
           anything_changed |= value.propagate_types_inner(ctx, errors);
+          let mut binding_data = value.data.clone();
+          binding_data.ownership = Ownership::Owned;
           ctx.bind(
             name,
-            Variable::immutable(value.data.clone()),
+            Variable::immutable(binding_data),
             name_source_trace.clone(),
           );
         }

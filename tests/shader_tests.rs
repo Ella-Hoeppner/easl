@@ -301,6 +301,7 @@ success_test!(effect_in_array_access);
 success_test!(sdf_hofs);
 success_test!(deexpressionify_array_assign_with_let);
 success_test!(const_sized_array_struct);
+success_test!(let_ref_field);
 
 // --- Error tests ---
 

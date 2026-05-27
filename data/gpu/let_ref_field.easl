@@ -1,0 +1,39 @@
+(def stack-size: u32
+     5)
+
+(enum Op
+  Abs
+  (Swap u32))
+
+(struct ProgramState
+  pos: vec2f
+  stack: [stack-size: f32]
+  current-size: u32)
+
+(defn empty-program-state [pos: vec2f]: ProgramState
+  (ProgramState pos (zeroed-array) 0u))
+
+(defn can-apply? [op: Op
+                  @ref state: ProgramState]: bool
+  (match op
+    Abs (>= state.current-size 1u)
+    (Swap depth) (>= state.current-size
+                     (+ depth 2))))
+
+(defn apply [op: Op
+             @var @ref state: ProgramState]
+  (match op
+    Abs (= (state.stack (- state.current-size 1))
+           (abs (state.stack (- state.current-size 1))))
+    (Swap depth) (let [top-index (- state.current-size 1u)
+                       inner-index (- state.current-size
+                                      (+ 2u depth))
+                       tmp (state.stack top-index)]
+                   (= (state.stack top-index)
+                      (state.stack inner-index))
+                   (= (state.stack inner-index) tmp))))
+
+(defn f []
+  (let [@var state (empty-program-state (-> (position) .xy (/ 500.)))]
+    (apply Abs state)))
+
