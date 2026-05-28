@@ -29,7 +29,8 @@ use crate::{
     },
     structs::{AbstractStructField, UntypedStruct},
     types::{
-      AbstractArraySize, AbstractType, ConcreteArraySize, GenericArgument,
+      AbstractArraySize, AbstractType, ConcreteArraySize, ConstGenericResolution,
+      GenericArgument,
       ImmutableProgramLocalContext, NameDefinitionSource, Type, TypeState,
       UntypedType, Variable, VariableKind,
     },
@@ -3034,16 +3035,22 @@ impl Program {
               && size != ConcreteArraySize::Unsized
             {
               let size = match size {
-                ConcreteArraySize::Literal(x) => x,
+                ConcreteArraySize::Literal(x) => Some(x),
                 ConcreteArraySize::UnificationVariable(const_generic_value) => {
-                  const_generic_value.value.read().unwrap().unwrap()
+                  match &*const_generic_value.value.read().unwrap() {
+                    Some(ConstGenericResolution::Literal(n)) => Some(*n),
+                    _ => None,
+                  }
                 }
+                ConcreteArraySize::Skolem(_) => None,
                 _ => panic!("can't handle this kind of ConcreteArraySize here"),
               };
-              *exp = TypedExp {
-                data: Type::U32.known().into(),
-                kind: ExpKind::NumberLiteral(Number::Int(size as i64)),
-                source_trace: exp.source_trace.clone(),
+              if let Some(size) = size {
+                *exp = TypedExp {
+                  data: Type::U32.known().into(),
+                  kind: ExpKind::NumberLiteral(Number::Int(size as i64)),
+                  source_trace: exp.source_trace.clone(),
+                }
               }
             }
             Ok::<bool, Never>(true)

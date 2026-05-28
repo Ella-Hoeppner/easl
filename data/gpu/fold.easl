@@ -1,0 +1,18 @@
+(defn (fold A
+            V
+            C: u32)
+      [f: (Fn [V A] V)
+       @var value: V
+       arr: [C: A]]: V
+      (for [i (array-length arr)]
+        (= value (f value (arr i))))
+      value)
+
+(defn main []: f32
+  (let [my-arr: [3: u32] [0u 1u 2u]]
+    (fold (fn [sum: f32
+               value: u32]
+              (+ sum (sqrt (f32 value))))
+          0.
+          my-arr)))
+

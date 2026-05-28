@@ -1,0 +1,4 @@
+(defn (set-last-value-to-one C: u32)
+      [@var @ref arr: [C: f32]]
+      (= (arr (- C 1u)) 1.))
+

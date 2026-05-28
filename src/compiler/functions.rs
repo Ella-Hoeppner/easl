@@ -701,6 +701,7 @@ impl AbstractFunctionSignature {
             .map(|(a, b)| (a.clone(), AbstractType::Type(b.clone())))
             .collect::<HashMap<_, _>>(),
         )
+        .fill_const_generics(&generic_constant_bindings)
       })
     }
     if let FunctionImplementationKind::Composite(monomorphized_fn) =
@@ -712,6 +713,9 @@ impl AbstractFunctionSignature {
         .map(|(x, y)| (x.clone(), y.clone()))
         .collect();
       new_fn.expression.replace_skolems(&replacement_pairs);
+      new_fn
+        .expression
+        .replace_const_generic_skolems(&generic_constant_bindings);
       new_fn.expression.monomorphize(base_program, new_program)?;
       std::mem::swap(monomorphized_fn, &mut Arc::new(RwLock::new(new_fn)));
     } else {

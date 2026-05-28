@@ -1,0 +1,22 @@
+(defn (sum C: u32)
+      [arr: [C: f32]]: f32
+      (reduce arr (fn [a b] (+ a b))))
+
+(defn (reduce T
+              C: u32)
+      [arr: [C: T]
+       f: (Fn [T T] T)]: T
+      (if (> (array-length arr) 1)
+        (let [@var x (f (arr 0u) (arr 1u))]
+          (for [i
+                2u
+                (< i (array-length arr))
+                (+= i 1)]
+            (= x (f x (arr i))))
+          x)
+        (arr 0u)))
+
+(defn main []: f32
+  (let [my-arr: [3: f32] [0. 1. 2.]]
+    (sum my-arr)))
+

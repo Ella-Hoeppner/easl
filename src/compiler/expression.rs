@@ -1863,7 +1863,6 @@ impl TypedExp {
     }
     Ok(())
   }
-
   fn compile_with_deref(
     self,
     names: &mut NameContext,
@@ -3455,6 +3454,19 @@ impl TypedExp {
       .walk_mut::<()>(&mut |exp| {
         if let Known(t) = &mut exp.data.kind {
           t.replace_skolems(skolems);
+        }
+        Ok(true)
+      })
+      .unwrap()
+  }
+  pub fn replace_const_generic_skolems(
+    &mut self,
+    bindings: &HashMap<Arc<str>, u32>,
+  ) {
+    self
+      .walk_mut::<()>(&mut |exp| {
+        if let Known(t) = &mut exp.data.kind {
+          t.replace_const_generic_skolems(bindings);
         }
         Ok(true)
       })

@@ -8,6 +8,7 @@ use std::{
 use std::sync::{Arc, RwLock};
 
 use fsexp::{document::DocumentPosition, syntax::EncloserOrOperator};
+use take_mut::take;
 
 use crate::{
   compiler::{
@@ -352,6 +353,62 @@ impl AbstractType {
       },
     }
   }
+  pub fn fill_const_generics(self, bindings: &HashMap<Arc<str>, u32>) -> Self {
+    match self {
+      AbstractType::AbstractArray {
+        size,
+        inner_type,
+        source_trace,
+      } => {
+        let inner = inner_type.fill_const_generics(bindings);
+        match size {
+          AbstractArraySize::Generic(ref name) => {
+            if let Some(&value) = bindings.get(name) {
+              AbstractType::Type(Type::Array(
+                Some(ConcreteArraySize::Literal(value)),
+                Box::new(
+                  match inner {
+                    AbstractType::Type(t) => t,
+                    _ => panic!(
+                      "expected concrete inner type after fill_const_generics"
+                    ),
+                  }
+                  .known()
+                  .into(),
+                ),
+              ))
+            } else {
+              AbstractType::AbstractArray {
+                size,
+                inner_type: Box::new(inner),
+                source_trace,
+              }
+            }
+          }
+          _ => AbstractType::AbstractArray {
+            size,
+            inner_type: Box::new(inner),
+            source_trace,
+          },
+        }
+      }
+      AbstractType::AbstractStruct(s) => {
+        let mut s = Arc::unwrap_or_clone(s);
+        for f in s.fields.iter_mut() {
+          take(&mut f.field_type, |t| t.fill_const_generics(bindings))
+        }
+        AbstractType::AbstractStruct(Arc::new(s))
+      }
+      AbstractType::AbstractEnum(e) => {
+        let mut e = Arc::unwrap_or_clone(e);
+        for v in e.variants.iter_mut() {
+          take(&mut v.inner_type, |t| t.fill_const_generics(bindings));
+        }
+        AbstractType::AbstractEnum(Arc::new(e))
+      }
+      other => other,
+    }
+  }
   pub fn compile(
     self,
     typedefs: &TypeDefs,
@@ -481,12 +538,28 @@ impl AbstractType {
       EaslTree::Inner(
         (position, EncloserOrOperator::Encloser(Encloser::Square)),
         array_children,
-      ) => Ok(AbstractType::Type(parse_array_type_tree(
-        array_children,
-        position.into(),
-        typedefs,
-        skolems,
-      )?)),
+      ) => {
+        let source_trace: SourceTrace = position.into();
+        let array_type = parse_array_type_tree(
+          array_children,
+          source_trace.clone(),
+          typedefs,
+          skolems,
+        )?;
+        // If the array has a Skolem size, it's a const-generic array that needs
+        // to stay abstract until monomorphization.
+        if let Type::Array(Some(ConcreteArraySize::Skolem(name)), inner) =
+          array_type
+        {
+          Ok(AbstractType::AbstractArray {
+            size: AbstractArraySize::Generic(name),
+            inner_type: Box::new(AbstractType::Type(inner.unwrap_known())),
+            source_trace,
+          })
+        } else {
+          Ok(AbstractType::Type(array_type))
+        }
+      }
       _ => err(InvalidStructFieldType, tree.position().clone().into()),
     }
   }
@@ -535,8 +608,34 @@ impl AbstractType {
           panic!("incompatible types in extract_generic_bindings")
         }
       }
-      AbstractType::AbstractArray { .. } => todo!(),
-      _ => {}
+      AbstractType::AbstractArray {
+        size, inner_type, ..
+      } => {
+        if let Type::Array(Some(concrete_size), inner) = concrete_type {
+          if let AbstractArraySize::Generic(name) = size
+            && let Some(lit) = concrete_size.as_literal()
+          {
+            constant_bindings.insert(name.clone(), lit);
+          }
+          inner_type.extract_generic_bindings(
+            &inner.unwrap_known(),
+            type_bindings,
+            constant_bindings,
+          );
+        } else {
+          panic!(
+            "incompatible types in extract_generic_bindings: expected Array"
+          )
+        }
+      }
+      AbstractType::Type(t) => {
+        t.extract_skolem_bindings(
+          concrete_type,
+          type_bindings,
+          constant_bindings,
+        );
+      }
+      AbstractType::Unit => {}
     }
   }
   pub fn rename_generic(self, old_name: &str, new_name: &str) -> Self {
@@ -732,6 +831,18 @@ impl AbstractArraySize {
 }
 
 impl ConcreteArraySize {
+  pub fn as_literal(&self) -> Option<u32> {
+    match self {
+      ConcreteArraySize::Literal(n) => Some(*n),
+      ConcreteArraySize::UnificationVariable(v) => {
+        match &*v.value.read().unwrap() {
+          Some(ConstGenericResolution::Literal(n)) => Some(*n),
+          _ => None,
+        }
+      }
+      _ => None,
+    }
+  }
   pub fn compile_type(&self) -> String {
     match self {
       ConcreteArraySize::Literal(size) => format!(", {size}"),
@@ -739,14 +850,21 @@ impl ConcreteArraySize {
         format!(", {}", compile_word(format!("{name}").into()))
       }
       ConcreteArraySize::Unsized => String::new(),
-      ConcreteArraySize::UnificationVariable(value) => format!(
-        ", {}",
-        value
-          .value
-          .read()
-          .unwrap()
-          .expect("ConcreteArraySize unification var wasn't unified")
-      ),
+      ConcreteArraySize::UnificationVariable(value) => {
+        let guard = value.value.read().unwrap();
+        match &*guard {
+          Some(ConstGenericResolution::Literal(n)) => format!(", {n}"),
+          Some(ConstGenericResolution::Skolem(_)) => {
+            panic!(
+              "compiling UnificationVariable resolved to skolem, \
+              this should have been replaced"
+            )
+          }
+          None => {
+            panic!("ConcreteArraySize unification var wasn't unified")
+          }
+        }
+      }
       ConcreteArraySize::Skolem(_) => {
         panic!(
           "compiling ConcreteArraySize skolem, this should have been replaced"
@@ -797,8 +915,8 @@ impl ConcreteArraySize {
       ) => {
         let mut unification_value = var.value.write().unwrap();
         match &*unification_value {
-          Some(unification_value) => {
-            if unification_value == value {
+          Some(ConstGenericResolution::Literal(existing)) => {
+            if existing == value {
               Ok(false)
             } else {
               err(
@@ -810,8 +928,27 @@ impl ConcreteArraySize {
               )
             }
           }
+          Some(ConstGenericResolution::Skolem(_)) => Ok(false),
           None => {
-            *unification_value = Some(*value);
+            *unification_value = Some(ConstGenericResolution::Literal(*value));
+            Ok(true)
+          }
+        }
+      }
+      (
+        ConcreteArraySize::UnificationVariable(var),
+        ConcreteArraySize::Skolem(name),
+      )
+      | (
+        ConcreteArraySize::Skolem(name),
+        ConcreteArraySize::UnificationVariable(var),
+      ) => {
+        let mut unification_value = var.value.write().unwrap();
+        match &*unification_value {
+          Some(_) => Ok(false),
+          None => {
+            *unification_value =
+              Some(ConstGenericResolution::Skolem(name.clone()));
             Ok(true)
           }
         }
@@ -835,8 +972,8 @@ impl ConcreteArraySize {
       (ConcreteArraySize::UnificationVariable(u), other)
       | (other, ConcreteArraySize::UnificationVariable(u)) => match other {
         ConcreteArraySize::Literal(x) => match &*u.value.read().unwrap() {
-          Some(u_value) => u_value == x,
-          None => true,
+          Some(ConstGenericResolution::Literal(u_value)) => u_value == x,
+          _ => true,
         },
         ConcreteArraySize::UnificationVariable(other_u) => {
           match (&*u.value.read().unwrap(), &*other_u.value.read().unwrap()) {
@@ -844,6 +981,7 @@ impl ConcreteArraySize {
             _ => true,
           }
         }
+        ConcreteArraySize::Skolem(_) => true,
         _ => false,
       },
       _ => false,
@@ -855,12 +993,17 @@ impl ConcreteArraySize {
 /// (e.g. `"3u"`, `"16i"`) into a `ConcreteArraySize`. Suffixed literals are
 /// treated identically to their bare counterparts; an unparseable token is
 /// returned as a `Constant` (named-constant reference).
-fn parse_array_size(num_str: &str) -> ConcreteArraySize {
+fn parse_array_size(
+  num_str: &str,
+  skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
+) -> ConcreteArraySize {
   if let Ok(n) = num_str
     .trim_end_matches(|c| c == 'u' || c == 'i')
     .parse::<u32>()
   {
     ConcreteArraySize::Literal(n)
+  } else if skolems.iter().any(|(name, _)| &**name == num_str) {
+    ConcreteArraySize::Skolem(num_str.into())
   } else {
     ConcreteArraySize::Constant(num_str.into())
   }
@@ -889,7 +1032,7 @@ fn parse_array_type_tree(
           skolems,
         )?;
         Ok(Type::Array(
-          Some(parse_array_size(&num_str)),
+          Some(parse_array_size(&num_str, skolems)),
           Box::new(inner_type.known().into()),
         ))
       } else {
@@ -906,9 +1049,15 @@ fn parse_array_type_tree(
   }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConstGenericResolution {
+  Literal(u32),
+  Skolem(Arc<str>),
+}
+
 #[derive(Debug, Clone)]
 pub struct ConstGenericValue {
-  pub(crate) value: Arc<RwLock<Option<u32>>>,
+  pub(crate) value: Arc<RwLock<Option<ConstGenericResolution>>>,
 }
 impl PartialEq for ConstGenericValue {
   fn eq(&self, other: &Self) -> bool {
@@ -1409,6 +1558,95 @@ impl Type {
       Type::String => "String".into(),
     }
   }
+  /// Extract generic bindings from a Type that may contain Skolems, by
+  /// walking it in parallel with the corresponding concrete type.
+  pub fn extract_skolem_bindings(
+    &self,
+    concrete: &Type,
+    type_bindings: &mut HashMap<Arc<str>, Type>,
+    constant_bindings: &mut HashMap<Arc<str>, u32>,
+  ) {
+    match (self, concrete) {
+      (Type::Skolem(name, _), _) => {
+        type_bindings.insert(name.clone(), concrete.clone());
+      }
+      (Type::Function(abstract_f), Type::Function(concrete_f)) => {
+        for (i, (abs_arg, _)) in abstract_f.args.iter().enumerate() {
+          if let Some((conc_arg, _)) = concrete_f.args.get(i) {
+            if let (TypeState::Known(abs_t), TypeState::Known(conc_t)) =
+              (&abs_arg.var_type.kind, &conc_arg.var_type.kind)
+            {
+              abs_t.extract_skolem_bindings(
+                conc_t,
+                type_bindings,
+                constant_bindings,
+              );
+            }
+          }
+        }
+        if let (TypeState::Known(abs_ret), TypeState::Known(conc_ret)) =
+          (&abstract_f.return_type.kind, &concrete_f.return_type.kind)
+        {
+          abs_ret.extract_skolem_bindings(
+            conc_ret,
+            type_bindings,
+            constant_bindings,
+          );
+        }
+      }
+      (
+        Type::Array(abs_size, abs_inner),
+        Type::Array(conc_size, conc_inner),
+      ) => {
+        if let (Some(ConcreteArraySize::Skolem(name)), Some(conc_size)) =
+          (abs_size, conc_size)
+        {
+          if let Some(lit) = conc_size.as_literal() {
+            constant_bindings.insert(name.clone(), lit);
+          }
+        }
+        if let (TypeState::Known(abs_t), TypeState::Known(conc_t)) =
+          (&abs_inner.kind, &conc_inner.kind)
+        {
+          abs_t.extract_skolem_bindings(
+            conc_t,
+            type_bindings,
+            constant_bindings,
+          );
+        }
+      }
+      (Type::Struct(abs_s), Type::Struct(conc_s)) => {
+        for (abs_field, conc_field) in
+          abs_s.fields.iter().zip(conc_s.fields.iter())
+        {
+          if let (TypeState::Known(abs_t), TypeState::Known(conc_t)) =
+            (&abs_field.field_type.kind, &conc_field.field_type.kind)
+          {
+            abs_t.extract_skolem_bindings(
+              conc_t,
+              type_bindings,
+              constant_bindings,
+            );
+          }
+        }
+      }
+      (Type::Enum(abs_e), Type::Enum(conc_e)) => {
+        for (abs_v, conc_v) in abs_e.variants.iter().zip(conc_e.variants.iter())
+        {
+          if let (TypeState::Known(abs_t), TypeState::Known(conc_t)) =
+            (&abs_v.inner_type.kind, &conc_v.inner_type.kind)
+          {
+            abs_t.extract_skolem_bindings(
+              conc_t,
+              type_bindings,
+              constant_bindings,
+            );
+          }
+        }
+      }
+      _ => {}
+    }
+  }
   pub fn replace_skolems(&mut self, skolems: &HashMap<Arc<str>, Type>) {
     if let Type::Skolem(s, _) = &self {
       std::mem::swap(self, &mut skolems.get(s).unwrap().clone())
@@ -1439,6 +1677,63 @@ impl Type {
         }
         _ => {}
       }
+    }
+  }
+  pub fn replace_const_generic_skolems(
+    &mut self,
+    bindings: &HashMap<Arc<str>, u32>,
+  ) {
+    match self {
+      Type::Array(size, inner_type) => {
+        if let Some(concrete_size) = size {
+          match concrete_size {
+            ConcreteArraySize::Skolem(name) => {
+              if let Some(&value) = bindings.get(name) {
+                *size = Some(ConcreteArraySize::Literal(value));
+              }
+            }
+            ConcreteArraySize::UnificationVariable(v) => {
+              let resolved_name =
+                if let Some(ConstGenericResolution::Skolem(name)) =
+                  &*v.value.read().unwrap()
+                {
+                  bindings.get(name).copied()
+                } else {
+                  None
+                };
+              if let Some(value) = resolved_name {
+                *size = Some(ConcreteArraySize::Literal(value));
+              }
+            }
+            _ => {}
+          }
+        }
+        inner_type.as_known_mut(|t| t.replace_const_generic_skolems(bindings));
+      }
+      Type::Struct(s) => {
+        for field in s.fields.iter_mut() {
+          field
+            .field_type
+            .as_known_mut(|t| t.replace_const_generic_skolems(bindings));
+        }
+      }
+      Type::Enum(e) => {
+        for variant in e.variants.iter_mut() {
+          variant
+            .inner_type
+            .as_known_mut(|t| t.replace_const_generic_skolems(bindings));
+        }
+      }
+      Type::Function(f) => {
+        f.return_type
+          .as_known_mut(|t| t.replace_const_generic_skolems(bindings));
+        for (arg, _) in f.args.iter_mut() {
+          arg
+            .var_type
+            .as_known_mut(|t| t.replace_const_generic_skolems(bindings))
+        }
+      }
+      _ => {}
     }
   }
   pub fn bitcastable_chunk_accessors(
@@ -2597,6 +2892,15 @@ pub fn parse_generic_argument(
       }
       let bounds_tree = children.remove(1);
       if let EaslTree::Leaf(_, generic_name) = children.remove(0) {
+        if let EaslTree::Leaf(ref pos, ref constraint_name) = bounds_tree {
+          if constraint_name == "u32" {
+            return Ok((
+              generic_name.into(),
+              GenericArgument::Constant,
+              pos.clone().into(),
+            ));
+          }
+        }
         match bounds_tree {
           EaslTree::Inner(
             (pos, EncloserOrOperator::Encloser(Encloser::Square)),
@@ -2851,7 +3155,15 @@ impl From<ConcreteArraySize> for ConcreteArraySizeDescription {
       ConcreteArraySize::Constant(x) => Self::Constant(x.to_string()),
       ConcreteArraySize::Skolem(x) => Self::Skolem(x.to_string()),
       ConcreteArraySize::UnificationVariable(value) => {
-        Self::UnificationVariable(value.value.read().unwrap().clone())
+        Self::UnificationVariable(
+          if let Some(ConstGenericResolution::Literal(n)) =
+            value.value.read().unwrap().clone()
+          {
+            Some(n)
+          } else {
+            None
+          },
+        )
       }
       ConcreteArraySize::Unsized => Self::Unsized,
     }

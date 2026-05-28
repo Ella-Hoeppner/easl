@@ -303,6 +303,15 @@ success_test!(deexpressionify_array_assign_with_let);
 success_test!(const_sized_array_struct);
 success_test!(let_ref_field);
 success_test!(global_var_const_size_array);
+success_test!(user_const_generic);
+success_test!(reduce);
+success_test!(generic_reduce);
+success_test!(map);
+success_test!(fold);
+// todo! this next test fails because we can't use const-generics at the
+// expression level, not a horrible limitation since you can get the value \
+// via array-length but it would be a nice QoL feature at some point
+// success_test!(const_generic_value_usage);
 
 // --- Error tests ---
 

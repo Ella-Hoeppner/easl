@@ -1,0 +1,15 @@
+(defn (map I
+           O
+           C: u32)
+      [f: (Fn [I] O)
+       arr: [C: I]]: [C: O]
+      (let [@var new-arr (zeroed-array)]
+        (for [i (array-length arr)]
+          (= (new-arr i) (f (arr i))))
+        new-arr))
+
+(defn main []: [3: f32]
+  (let [my-arr: [3: u32] [0u 1u 2u]]
+    (map (fn [x] (* 2. (f32 x)))
+         my-arr)))
+

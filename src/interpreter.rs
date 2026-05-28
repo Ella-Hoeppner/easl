@@ -11,7 +11,7 @@ use crate::compiler::{
   functions::{AbstractFunctionSignature, FunctionImplementationKind},
   program::Program,
   structs::AbstractStruct,
-  types::{AbstractType, ConcreteArraySize, ExpTypeInfo, Type},
+  types::{AbstractType, ConcreteArraySize, ConstGenericResolution, ExpTypeInfo, Type},
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
 
@@ -2205,8 +2205,8 @@ impl Value {
             }
             ConcreteArraySize::UnificationVariable(const_generic_value) => {
               match &*const_generic_value.value.read().unwrap() {
-                Some(x) => *x as usize,
-                None => return Err(CantCreateZeroedSkolemSizedArray.into()),
+                Some(ConstGenericResolution::Literal(x)) => *x as usize,
+                _ => return Err(CantCreateZeroedSkolemSizedArray.into()),
               }
             }
           })
