@@ -1,0 +1,3 @@
+(struct Bucket
+  particles: [10: u32]
+  current-size: (Atomic u32))

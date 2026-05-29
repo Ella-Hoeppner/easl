@@ -426,12 +426,16 @@ impl AbstractType {
         panic!("attempted to compile generic struct field")
       }
       AbstractType::Type(t) => t.monomorphized_name(names),
-      AbstractType::AbstractStruct(t) => Arc::unwrap_or_clone(t)
-        .compile_if_non_generic(typedefs, names)?
-        .expect("failed to compile abstract struct"),
-      AbstractType::AbstractEnum(e) => Arc::unwrap_or_clone(e)
-        .compile_if_non_generic(typedefs, names)?
-        .expect("failed to compile abstract enum"),
+      AbstractType::AbstractStruct(t) => {
+        let concrete =
+          AbstractStruct::concretize(t, typedefs, &vec![], source_trace.clone())?;
+        Type::Struct(concrete).monomorphized_name(names)
+      }
+      AbstractType::AbstractEnum(e) => {
+        let concrete =
+          AbstractEnum::concretize(e, typedefs, &vec![], source_trace.clone())?;
+        Type::Enum(concrete).monomorphized_name(names)
+      }
       AbstractType::AbstractArray {
         size, inner_type, ..
       } => {
