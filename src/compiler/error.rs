@@ -309,6 +309,8 @@ pub enum CompileErrorKind {
   BindGroupCollision(String, String),
   #[error("Variables in `{0}` may not be given an initial value")]
   DisallowedInitializationValue(VariableAddressSpace),
+  #[error("Unsized arrays are not allowed in the `uniform` address space")]
+  UnsizedArrayInUniform,
   #[error("The name `{0}` is used for more than one top-level variable")]
   VariableNameCollision(String),
   #[error("The name `{0}` is used as both a variable name and a function name")]

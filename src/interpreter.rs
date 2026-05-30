@@ -3451,7 +3451,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             let elem_size = inner_ty.wgsl_data_size_in_u32s();
             let align = inner_ty.wgsl_alignment_in_u32s();
             let stride = ((elem_size + align - 1) / align) * align;
-            let raw_bytes = *length as u64 * stride as u64 * 4;
+            let raw_bytes = (*length as u64 * stride as u64 * 4).max(stride as u64 * 4);
             let padded = ((raw_bytes + 15) / 16) * 16;
             BufferUpload::Clear { byte_count: padded }
           }
@@ -3518,7 +3518,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           let elem_size = inner_ty.wgsl_data_size_in_u32s();
           let align = inner_ty.wgsl_alignment_in_u32s();
           let stride = ((elem_size + align - 1) / align) * align;
-          let raw_bytes = *length as u64 * stride as u64 * 4;
+          let raw_bytes = (*length as u64 * stride as u64 * 4).max(stride as u64 * 4);
           let padded = ((raw_bytes + 15) / 16) * 16;
           BufferUpload::Clear { byte_count: padded }
         }

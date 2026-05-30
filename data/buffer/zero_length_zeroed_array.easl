@@ -1,0 +1,31 @@
+; Regression test: zeroed-array with length 0 must still create a buffer
+; large enough for wgpu's minimum binding size (one element stride).
+; The vec3f field gives the struct alignment 16 and stride 48, which
+; exceeds the 16-byte minimum buffer allocation and triggers the bug.
+
+(struct Particle
+  pos: vec2f
+  vel: vec2f
+  mass: f32
+  color: vec3f)
+
+@[uniform 0 0]
+(var frame-index: u32)
+
+@[storage-write 0 1]
+(var particles: [Particle])
+
+@compute
+(defn compute-pass [@{builtin global-invocation-id} id: vec3u]
+  (when (< id.x 1u)
+    (= (particles 0u)
+       (Particle (vec2f 0.) (vec2f 0.) 0. (vec3f 0.)))))
+
+@cpu
+(defn main []
+  (= frame-index 0u)
+  (= particles (zeroed-array 0u))
+  (spawn-window (fn []
+    (dispatch-compute-shader compute-pass (vec3u 1u 1u 1u))
+    (+= frame-index 1u)
+    (when (>= frame-index 2u) (close-window)))))

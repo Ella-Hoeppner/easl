@@ -397,6 +397,10 @@ error_test!(
   )
 );
 error_test!(
+  unsized_array_in_uniform,
+  CompileErrorKind::UnsizedArrayInUniform
+);
+error_test!(
   var_initialization_failure_storage,
   CompileErrorKind::DisallowedInitializationValue(
     VariableAddressSpace::StorageRead

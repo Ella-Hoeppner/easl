@@ -79,3 +79,5 @@ buffer_test!(struct_array_buffer);
 buffer_test!(print_enum);
 buffer_test!(buffer_size_consistency);
 buffer_test!(iterative_compute_uniform);
+buffer_test!(zero_length_zeroed_array);
+buffer_test!(raymarching_sdf);

@@ -8,7 +8,7 @@ use crate::{
     error::{CompileError, CompileErrorKind::*, ErrorLog},
     expression::ExpressionCompilationPosition,
     program::{CompilerTarget, NameContext, Program},
-    types::{Type, VariableKind},
+    types::{ConcreteArraySize, Type, VariableKind},
     util::{compile_word, read_type_annotated_name},
   },
   parse::EaslTree,
@@ -220,6 +220,14 @@ impl TopLevelVar {
                       None
                     }
                     .unwrap_or_else(|| (None, VariableAddressSpace::default()));
+                  if address_space == Uniform
+                    && matches!(t, Type::Array(Some(ConcreteArraySize::Unsized), _))
+                  {
+                    errors.log(CompileError::new(
+                      UnsizedArrayInUniform,
+                      parens_source_trace.clone(),
+                    ));
+                  }
                   let value = value_ast
                     .map(|value_ast| {
                       match TypedExp::try_from_easl_tree(
