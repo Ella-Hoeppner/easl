@@ -1,4 +1,8 @@
-use std::{collections::{HashMap, HashSet}, sync::Arc, time::Instant};
+use std::{
+  collections::{HashMap, HashSet},
+  sync::Arc,
+  time::Instant,
+};
 
 use std::sync::RwLock;
 
@@ -704,8 +708,9 @@ impl GpuCore {
       // If this call would overwrite a binding already uploaded for the
       // current encoder's dispatches, submit that encoder first so those
       // dispatches see the old values, then start a fresh encoder.
-      let has_conflict =
-        pre_upload.iter().any(|(gb, _)| pending_bindings.contains(gb));
+      let has_conflict = pre_upload
+        .iter()
+        .any(|(gb, _)| pending_bindings.contains(gb));
       if has_conflict {
         if let Some(enc) = current_encoder.take() {
           self.queue.submit(std::iter::once(enc.finish()));
@@ -1217,8 +1222,11 @@ impl GpuCore {
 
     // Pre-create all pipelines before render-pass borrows begin.
     for (vert, frag, _, _, additive, rt) in &calls {
-      let format =
-        if rt.is_none() { screen_format } else { Self::OFFSCREEN_FORMAT };
+      let format = if rt.is_none() {
+        screen_format
+      } else {
+        Self::OFFSCREEN_FORMAT
+      };
       let vert = vert.replace('-', "_");
       let frag = frag.replace('-', "_");
       self.get_or_create_render_pipeline(&vert, &frag, *additive, format);
@@ -1376,7 +1384,9 @@ pub fn create_headless_gpu_core(
       .await
       .expect("Failed to create headless wgpu device");
 
-    GpuCore::new_from_parts(device, queue, wgsl, binding_infos)
+    let gpu = GpuCore::new_from_parts(device, queue, wgsl, binding_infos);
+    gpu.write().unwrap().instance = instance;
+    gpu
   })
 }
 
@@ -1457,6 +1467,18 @@ impl<'a, IO: IOManager> App<'a, IO> {
           .with_position(pos)
           .with_inner_size(size)
           .with_active(false)
+      })
+      .or_else(|| {
+        self
+          .env
+          .io
+          .preferred_window_hints()
+          .map(|((w, h), activate)| {
+            Window::default_attributes()
+              .with_title("easl")
+              .with_inner_size(PhysicalSize::new(w, h))
+              .with_active(activate)
+          })
       })
       .unwrap_or_else(|| Window::default_attributes().with_title("easl"));
     let window = Arc::new(event_loop.create_window(attrs).unwrap());
@@ -1619,7 +1641,11 @@ impl<'a, IO: IOManager> ApplicationHandler for App<'a, IO> {
           state.gpu.write().unwrap().mouse_present = false;
         }
       }
-      WinitWindowEvent::MouseInput { state: btn_state, button: MouseButton::Left, .. } => {
+      WinitWindowEvent::MouseInput {
+        state: btn_state,
+        button: MouseButton::Left,
+        ..
+      } => {
         if let Some(state) = &self.state {
           let mut gpu = state.gpu.write().unwrap();
           match btn_state {
@@ -2150,7 +2176,8 @@ impl RenderState {
       {
         wgpu::CurrentSurfaceTexture::Success(texture)
         | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Some(texture),
-        wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => return,
+        wgpu::CurrentSurfaceTexture::Lost
+        | wgpu::CurrentSurfaceTexture::Outdated => return,
         wgpu::CurrentSurfaceTexture::Occluded => None,
         other => {
           eprintln!("Surface error: {other:?}");

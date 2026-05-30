@@ -19,3 +19,7 @@ window = ["dep:wgpu", "dep:winit", "dep:pollster"]
 
 [dev-dependencies]
 naga = { version = "29.0.3", features = ["wgsl-in"] }
+
+[[test]]
+name = "full_tests"
+harness = false

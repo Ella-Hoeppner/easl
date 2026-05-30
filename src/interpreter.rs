@@ -2639,6 +2639,12 @@ pub trait IOManager: Sized {
   /// CPU instruction needs to read a GPU-written variable mid-frame.
   /// Default no-op (used by StringIO and non-GPU paths).
   fn flush_queued_compute(&mut self) {}
+  /// Returns a preferred window size and whether the window should steal
+  /// focus.  Defaults to `None` (OS-default size, window takes focus).
+  /// Override to create a small non-intrusive window during tests.
+  fn preferred_window_hints(&self) -> Option<((u32, u32), bool)> {
+    None
+  }
   /// Runs the spawn-window event loop. Returns `true` if the loop exited
   /// because a hot-reload was requested, `false` for a normal exit.
   fn run_spawn_window(
@@ -2653,6 +2659,8 @@ pub struct StdoutIO {
   gpu: Option<std::sync::Arc<std::sync::RwLock<crate::window::GpuCore>>>,
   #[cfg(feature = "window")]
   reload_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+  /// When set, the window will be created at this size without taking focus.
+  window_hints: Option<((u32, u32), bool)>,
 }
 
 impl StdoutIO {
@@ -2663,6 +2671,7 @@ impl StdoutIO {
       gpu: None,
       #[cfg(feature = "window")]
       reload_flag: None,
+      window_hints: None,
     }
   }
 
@@ -2677,7 +2686,14 @@ impl StdoutIO {
       frame_draw_calls: vec![],
       gpu: None,
       reload_flag: Some(flag),
+      window_hints: None,
     }
+  }
+
+  /// Sets window hints: a preferred size and whether the window should take
+  /// focus.  Used by the test suite to create small non-intrusive windows.
+  pub fn set_window_hints(&mut self, size: (u32, u32), activate: bool) {
+    self.window_hints = Some((size, activate));
   }
 }
 
@@ -2874,6 +2890,10 @@ impl IOManager for StdoutIO {
       return flag.load(std::sync::atomic::Ordering::Relaxed);
     }
     false
+  }
+
+  fn preferred_window_hints(&self) -> Option<((u32, u32), bool)> {
+    self.window_hints
   }
 
   fn reset_for_reload(&mut self) {
