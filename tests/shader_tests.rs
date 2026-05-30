@@ -607,7 +607,10 @@ error_test!(
   CompileErrorKind::BindGroupCollision("a".to_string(), "b".to_string())
 );
 
-error_test!(atomic_binding_failure, CompileErrorKind::CantBindAtomic);
+error_test!(
+  atomic_binding_failure,
+  CompileErrorKind::CantBindNonConstructible
+);
 
 error_test!(
   string_usage_failure,
@@ -628,4 +631,9 @@ error_test!(
 error_test!(
   var_used_after_mutably_closed,
   CompileErrorKind::UseOfMutablyCapturedVariable("x".to_string()),
+);
+
+error_test!(
+  non_constructible_binding,
+  CompileErrorKind::CantBindNonConstructible
 );

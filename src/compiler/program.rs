@@ -3617,7 +3617,7 @@ impl Program {
       }
     }
   }
-  pub fn catch_atomic_bindings(&self, errors: &mut ErrorLog) {
+  pub fn catch_non_constructible_bindings(&self, errors: &mut ErrorLog) {
     for signature in self.abstract_functions_iter() {
       let signature = signature.read().unwrap();
       if let FunctionImplementationKind::Composite(f) =
@@ -3630,16 +3630,11 @@ impl Program {
             match &exp.kind {
               ExpKind::Let(bindings, _) => {
                 for (_, _, _, value) in bindings {
-                  match value.data.unwrap_known() {
-                    Type::Struct(s) => {
-                      if &*s.name == "Atomic" {
-                        errors.log(CompileError::new(
-                          CantBindAtomic,
-                          exp.source_trace.clone(),
-                        ));
-                      }
-                    }
-                    _ => {}
+                  if !value.data.unwrap_known().is_constructible() {
+                    errors.log(CompileError::new(
+                      CantBindNonConstructible,
+                      exp.source_trace.clone(),
+                    ));
                   }
                 }
               }
@@ -3835,7 +3830,7 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    self.catch_atomic_bindings(&mut errors);
+    self.catch_non_constructible_bindings(&mut errors);
     if !errors.is_empty() {
       return errors;
     }

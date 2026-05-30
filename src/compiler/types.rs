@@ -427,8 +427,12 @@ impl AbstractType {
       }
       AbstractType::Type(t) => t.monomorphized_name(names),
       AbstractType::AbstractStruct(t) => {
-        let concrete =
-          AbstractStruct::concretize(t, typedefs, &vec![], source_trace.clone())?;
+        let concrete = AbstractStruct::concretize(
+          t,
+          typedefs,
+          &vec![],
+          source_trace.clone(),
+        )?;
         Type::Struct(concrete).monomorphized_name(names)
       }
       AbstractType::AbstractEnum(e) => {
@@ -1092,6 +1096,28 @@ pub enum Type {
   Array(Option<ConcreteArraySize>, Box<ExpTypeInfo>),
 }
 impl Type {
+  pub fn is_constructible(&self) -> bool {
+    match self {
+      Type::F32 | Type::I32 | Type::U32 | Type::Bool => true,
+      Type::Struct(s) => match &*s.name {
+        "Atomic" | "Texture2D" | "Sampler" => false,
+        _ => s
+          .fields
+          .iter()
+          .all(|f| f.field_type.unwrap_known().is_constructible()),
+      },
+      Type::Enum(e) => e
+        .variants
+        .iter()
+        .all(|v| v.inner_type.unwrap_known().is_constructible()),
+      Type::Array(size, inner) => {
+        size.is_some() && inner.unwrap_known().is_constructible()
+      }
+      Type::Unit | Type::Function(_) | Type::String | Type::Skolem(_, _) => {
+        true
+      }
+    }
+  }
   pub fn gather_location_annotations(
     &self,
     annotations: &mut HashMap<usize, Type>,

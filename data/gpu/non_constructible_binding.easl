@@ -1,0 +1,40 @@
+(struct Particle
+  pos: vec2f
+  vel: vec2f)
+
+(def bucket-size: u32
+     10u)
+
+(def grid-size: u32
+     100u)
+
+(struct Bucket
+  particles: [bucket-size: u32]
+  current-size: (Atomic u32))
+
+@[storage-write 1 0]
+(var particles: [Particle])
+
+@[storage-write 1 1]
+(var grid: [Bucket])
+
+(def particle-count: u32
+     1000u)
+
+(defn update-particles []: ()
+  (let [particle-index (.x (global-invocation-id))
+        @var particle (particles particle-index)
+        grid-pos (-> particle
+                     .pos
+                     (* (f32 grid-size))
+                     vec2u)]
+    (let [bucket (grid (-> grid-pos
+                           vec2i
+                           (+ (.x <>)
+                              (* (i32 grid-size) (.y <>)))))]
+      (+= particle.vel
+          (vec2f (array-length bucket.particles))))
+    (+= particle.pos particle.vel)
+    (= (particles particle-index)
+       particle)))
+

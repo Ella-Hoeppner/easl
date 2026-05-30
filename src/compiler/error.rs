@@ -449,8 +449,8 @@ pub enum CompileErrorKind {
   InvalidShaderEntry(String),
   #[error("Vertex function `{0}` and Fragment function {1} are incompatible")]
   IncompatibleRenderEntryPoints(String, String),
-  #[error("Can't create a binding to an atomic value")]
-  CantBindAtomic,
+  #[error("Can't create a binding to a non-constructible type (contains an atomic or unsized array)")]
+  CantBindNonConstructible,
   #[error("Can't compute the size of a value of type String")]
   CantComputeSizeOfString,
   #[error("Invalid `import` expression")]
