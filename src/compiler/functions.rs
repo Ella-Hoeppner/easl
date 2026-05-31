@@ -678,7 +678,10 @@ impl AbstractFunctionSignature {
           }
         }
         GenericArgument::Constant => {
-          Ok(format!("{}", generic_constant_bindings.get(arg).unwrap()).into())
+          match generic_constant_bindings.get(arg) {
+            Some(value) => Ok(format!("{value}").into()),
+            None => err(CouldntInferTypes, source_trace.clone()),
+          }
         }
       })
       .collect::<CompileResult<Vec<Arc<str>>>>()?;

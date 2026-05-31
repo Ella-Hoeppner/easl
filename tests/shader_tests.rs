@@ -644,3 +644,7 @@ error_test!(
   non_constructible_binding,
   CompileErrorKind::CantBindNonConstructible
 );
+error_test!(
+  unresolved_const_generic_failure,
+  CompileErrorKind::CouldntInferTypes
+);

@@ -1,0 +1,5 @@
+(defn (f C: u32) []: [C: f32]
+  (zeroed-array))
+
+(defn main []: u32
+  (array-length (f)))
