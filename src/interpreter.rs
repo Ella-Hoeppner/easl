@@ -11,7 +11,9 @@ use crate::compiler::{
   functions::{AbstractFunctionSignature, FunctionImplementationKind},
   program::Program,
   structs::AbstractStruct,
-  types::{AbstractType, ConcreteArraySize, ConstGenericResolution, ExpTypeInfo, Type},
+  types::{
+    AbstractType, ConcreteArraySize, ConstGenericResolution, ExpTypeInfo, Type,
+  },
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
 
@@ -2002,10 +2004,7 @@ fn apply_builtin_fn<IO: IOManager>(
         size
       } else {
         // statically sized
-        let Some(ConcreteArraySize::Literal(size)) = size else {
-          panic!()
-        };
-        size
+        size.unwrap().as_literal().unwrap()
       };
       Ok(Value::ZeroedArray {
         length: size as usize,
@@ -3471,7 +3470,8 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             let elem_size = inner_ty.wgsl_data_size_in_u32s();
             let align = inner_ty.wgsl_alignment_in_u32s();
             let stride = ((elem_size + align - 1) / align) * align;
-            let raw_bytes = (*length as u64 * stride as u64 * 4).max(stride as u64 * 4);
+            let raw_bytes =
+              (*length as u64 * stride as u64 * 4).max(stride as u64 * 4);
             let padded = ((raw_bytes + 15) / 16) * 16;
             BufferUpload::Clear { byte_count: padded }
           }
@@ -3538,7 +3538,8 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           let elem_size = inner_ty.wgsl_data_size_in_u32s();
           let align = inner_ty.wgsl_alignment_in_u32s();
           let stride = ((elem_size + align - 1) / align) * align;
-          let raw_bytes = (*length as u64 * stride as u64 * 4).max(stride as u64 * 4);
+          let raw_bytes =
+            (*length as u64 * stride as u64 * 4).max(stride as u64 * 4);
           let padded = ((raw_bytes + 15) / 16) * 16;
           BufferUpload::Clear { byte_count: padded }
         }

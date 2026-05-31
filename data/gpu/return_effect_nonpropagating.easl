@@ -1,0 +1,6 @@
+(defn returns-zero []: f32
+  (return 0.))
+
+@cpu
+(defn main []: ()
+  (spawn-window (fn [] (print (returns-zero)))))

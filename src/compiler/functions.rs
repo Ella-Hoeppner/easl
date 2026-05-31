@@ -1230,6 +1230,7 @@ impl TopLevelFunction {
         effects.remove(&Effect::ReadsVar(name.clone()));
         effects.remove(&Effect::ModifiesLocalVar(name.clone()))
       }
+      effects.remove(&Effect::Return);
       effects
     } else {
       EffectType::empty()
