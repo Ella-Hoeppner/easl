@@ -514,24 +514,34 @@ impl AbstractType {
               .find(|e| &*e.name.0 == generic_type_name.as_str()),
           ) {
             (Some(generic_struct), None) => {
-              let generic_args = children_iter
-                .map(|subtree: EaslTree| {
-                  Self::from_easl_tree(subtree, typedefs, skolems)
-                })
-                .collect::<CompileResult<Vec<_>>>()?;
-              Ok(AbstractType::AbstractStruct(Arc::new(
-                generic_struct.clone().fill_abstract_generics(generic_args),
-              )))
+              let (type_args, const_args) =
+                parse_type_and_const_generic_args(
+                  children_iter,
+                  &generic_struct.generic_args,
+                  typedefs,
+                  skolems,
+                  &position,
+                )?;
+              let mut s = generic_struct.clone().fill_abstract_generics(type_args);
+              if !const_args.is_empty() {
+                s = s.fill_const_generics(&const_args);
+              }
+              Ok(AbstractType::AbstractStruct(Arc::new(s)))
             }
             (None, Some(generic_enum)) => {
-              let generic_args = children_iter
-                .map(|subtree: EaslTree| {
-                  Self::from_easl_tree(subtree, typedefs, skolems)
-                })
-                .collect::<CompileResult<Vec<_>>>()?;
-              Ok(AbstractType::AbstractEnum(Arc::new(
-                generic_enum.clone().fill_abstract_generics(generic_args),
-              )))
+              let (type_args, const_args) =
+                parse_type_and_const_generic_args(
+                  children_iter,
+                  &generic_enum.generic_args,
+                  typedefs,
+                  skolems,
+                  &position,
+                )?;
+              let mut e = generic_enum.clone().fill_abstract_generics(type_args);
+              if !const_args.is_empty() {
+                e = e.fill_const_generics(&const_args);
+              }
+              Ok(AbstractType::AbstractEnum(Arc::new(e)))
             }
             (None, None) => {
               return Err(CompileError::new(
@@ -1055,6 +1065,47 @@ fn parse_array_type_tree(
       ))
     }
   }
+}
+
+fn parse_type_and_const_generic_args(
+  children_iter: impl Iterator<Item = EaslTree>,
+  generic_arg_defs: &[(Arc<str>, GenericArgument, SourceTrace)],
+  typedefs: &TypeDefs,
+  skolems: &Vec<(Arc<str>, Vec<TypeConstraint>)>,
+  position: &DocumentPosition,
+) -> CompileResult<(Vec<AbstractType>, HashMap<Arc<str>, u32>)> {
+  let mut type_args = vec![];
+  let mut const_args = HashMap::new();
+  for (subtree, (name, generic_arg, _)) in
+    children_iter.zip(generic_arg_defs.iter())
+  {
+    match generic_arg {
+      GenericArgument::Type(_) => {
+        type_args
+          .push(AbstractType::from_easl_tree(subtree, typedefs, skolems)?);
+      }
+      GenericArgument::Constant => {
+        if let EaslTree::Leaf(pos, value_str) = &subtree {
+          if let Ok(n) = value_str
+            .trim_end_matches(|c: char| c == 'u' || c == 'i')
+            .parse::<u32>()
+          {
+            const_args.insert(name.clone(), n);
+          } else if skolems.iter().any(|(s, _)| **s == **value_str) {
+            // Skolem forwarding — leave unfilled, monomorphization handles it later
+          } else {
+            return err(
+              UnrecognizedTypeName(value_str.to_string()),
+              pos.clone().into(),
+            );
+          }
+        } else {
+          return err(InvalidTypeName, position.clone().into());
+        }
+      }
+    }
+  }
+  Ok((type_args, const_args))
 }
 
 #[derive(Debug, Clone, PartialEq)]

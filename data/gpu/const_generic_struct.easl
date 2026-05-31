@@ -1,0 +1,6 @@
+(struct (Container C: u32)
+  arr: [C: f32])
+
+(defn empty []: (Container 5u)
+  (Container (zeroed-array)))
+

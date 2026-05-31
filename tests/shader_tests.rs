@@ -310,6 +310,8 @@ success_test!(map);
 success_test!(fold);
 success_test!(atomic_field);
 success_test!(return_effect_nonpropagating);
+success_test!(const_generic_struct);
+success_test!(const_generic_struct_indirect);
 // todo! this next test fails because we can't use const-generics at the
 // expression level, not a horrible limitation since you can get the value \
 // via array-length but it would be a nice QoL feature at some point

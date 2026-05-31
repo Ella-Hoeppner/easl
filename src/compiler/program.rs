@@ -30,7 +30,7 @@ use crate::{
     structs::{AbstractStructField, UntypedStruct},
     types::{
       AbstractArraySize, AbstractType, ConcreteArraySize, ConstGenericResolution,
-      GenericArgument,
+      parse_generic_argument,
       ImmutableProgramLocalContext, NameDefinitionSource, Type, TypeState,
       UntypedType, Variable, VariableKind,
     },
@@ -540,77 +540,66 @@ impl Program {
                 signature_children,
               ) => {
                 let source_trace: SourceTrace = position.clone().into();
-                let (signature_leaves, signature_errors) = signature_children
-                  .into_iter()
-                  .map(|child| match child {
-                    EaslTree::Leaf(pos, name) => {
-                      (Some((name.clone().into(), pos.into())), None)
-                    }
-                    _ => (
-                      None,
-                      Some(CompileError::new(
-                        InvalidTypeName,
-                        child.position().clone().into(),
-                      )),
-                    ),
-                  })
-                  .collect::<(
-                    Vec<Option<(Arc<str>, SourceTrace)>>,
-                    Vec<Option<CompileError>>,
-                  )>();
-                let filtered_signature_errors: Vec<CompileError> =
-                  signature_errors.into_iter().filter_map(|x| x).collect();
-                if filtered_signature_errors.is_empty() {
-                  let mut filtered_signature_leaves = signature_leaves
-                    .into_iter()
-                    .filter_map(|x| x)
-                    .collect::<Vec<_>>()
-                    .into_iter();
-                  if let Some((type_name, type_name_source)) =
-                    filtered_signature_leaves.next()
+                let mut signature_iter =
+                  signature_children.iter().cloned();
+                if let Some(EaslTree::Leaf(name_pos, type_name)) =
+                  signature_iter.next()
+                {
+                  let type_name: Arc<str> = type_name.into();
+                  let type_name_source: SourceTrace = name_pos.into();
+                  match signature_iter
+                    .map(|subtree| {
+                      parse_generic_argument(
+                        subtree,
+                        &TypeDefs::empty(),
+                        &vec![],
+                      )
+                    })
+                    .collect::<CompileResult<Vec<_>>>()
                   {
-                    if filtered_signature_leaves.len() == 0 {
-                      errors
-                        .log(CompileError::new(InvalidTypeName, source_trace));
-                    } else {
-                      match first_child.as_str() {
-                        "struct" => untyped_types.push(UntypedType::Struct(
-                          UntypedStruct::from_field_trees(
-                            (type_name, type_name_source),
-                            filtered_signature_leaves
-                              .into_iter()
-                              .map(|(name, source)| {
-                                (name, GenericArgument::Type(vec![]), source)
-                              })
-                              .collect(),
-                            children_iter.cloned().collect(),
-                            source_trace,
-                            &mut errors,
-                          ),
-                        )),
-                        "enum" => match UntypedEnum::from_field_trees(
-                          (type_name, type_name_source),
-                          filtered_signature_leaves
-                            .into_iter()
-                            .map(|(name, source)| {
-                              (name, GenericArgument::Type(vec![]), source)
-                            })
-                            .collect(),
-                          children_iter.cloned().collect(),
+                    Ok(generic_args) => {
+                      if generic_args.is_empty() {
+                        errors.log(CompileError::new(
+                          InvalidTypeName,
                           source_trace,
-                        ) {
-                          Ok(e) => untyped_types.push(UntypedType::Enum(e)),
-                          Err(e) => errors.log(e),
-                        },
-                        _ => unreachable!(),
+                        ));
+                      } else {
+                        match first_child.as_str() {
+                          "struct" => {
+                            untyped_types.push(UntypedType::Struct(
+                              UntypedStruct::from_field_trees(
+                                (type_name, type_name_source),
+                                generic_args,
+                                children_iter.cloned().collect(),
+                                source_trace,
+                                &mut errors,
+                              ),
+                            ))
+                          }
+                          "enum" => {
+                            match UntypedEnum::from_field_trees(
+                              (type_name, type_name_source),
+                              generic_args,
+                              children_iter.cloned().collect(),
+                              source_trace,
+                            ) {
+                              Ok(e) => {
+                                untyped_types.push(UntypedType::Enum(e))
+                              }
+                              Err(e) => errors.log(e),
+                            }
+                          }
+                          _ => unreachable!(),
+                        }
                       }
                     }
-                  } else {
-                    errors
-                      .log(CompileError::new(InvalidTypeName, source_trace));
+                    Err(e) => errors.log(e),
                   }
                 } else {
-                  errors.log_all(filtered_signature_errors);
+                  errors.log(CompileError::new(
+                    InvalidTypeName,
+                    source_trace,
+                  ));
                 }
               }
               EaslTree::Inner((position, _), _) => {

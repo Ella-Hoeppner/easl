@@ -415,28 +415,28 @@ impl AbstractStruct {
     if self.generic_args.is_empty() {
       return None;
     }
-    let generic_args: Vec<Type> = self
+    let mut generic_type_bindings = HashMap::new();
+    let mut generic_constant_bindings = HashMap::new();
+    for (field, field_type) in self.fields.iter().zip(field_types.iter()) {
+      field.field_type.extract_generic_bindings(
+        field_type,
+        &mut generic_type_bindings,
+        &mut generic_constant_bindings,
+      );
+    }
+    let filled_generics: HashMap<Arc<str>, AbstractType> = self
       .generic_args
       .iter()
-      .cloned()
-      .map(|(var, _, _)| {
-        let var = AbstractType::Generic(var);
-        let first_usage_index = self
-          .fields
-          .iter()
-          .enumerate()
-          .find_map(|(index, field)| (field.field_type == var).then(|| index))
-          .expect("unused generic variable");
-        field_types[first_usage_index].clone()
+      .filter_map(|(name, arg, _)| match arg {
+        GenericArgument::Type(_) => generic_type_bindings
+          .get(name)
+          .map(|t| (name.clone(), AbstractType::Type(t.clone()))),
+        GenericArgument::Constant => None,
       })
       .collect();
     Some(AbstractStruct {
       name: self.name.clone(),
-      filled_generics: generic_args
-        .iter()
-        .zip(self.generic_args.iter().cloned())
-        .map(|(t, (name, _, _))| (name, AbstractType::Type(t.clone())))
-        .collect(),
+      filled_generics,
       generic_args: vec![],
       fields: self
         .fields
@@ -444,17 +444,17 @@ impl AbstractStruct {
         .map(|field| {
           let mut new_field = field.clone();
           if let AbstractType::Generic(generic_var) = &new_field.field_type {
-            new_field.field_type = AbstractType::Type(
-              generic_args[self
-                .generic_args
-                .iter()
-                .enumerate()
-                .find_map(|(index, (generic_arg_name, _, _))| {
-                  (generic_var == generic_arg_name).then(|| index)
-                })
-                .expect("unrecognized generic variable")]
-              .clone(),
-            )
+            if let Some(concrete_type) =
+              generic_type_bindings.get(generic_var)
+            {
+              new_field.field_type =
+                AbstractType::Type(concrete_type.clone());
+            }
+          }
+          if !generic_constant_bindings.is_empty() {
+            new_field.field_type = new_field
+              .field_type
+              .fill_const_generics(&generic_constant_bindings);
           }
           new_field
         })
@@ -593,6 +593,35 @@ impl AbstractStruct {
       .collect();
     self.partially_fill_abstract_generics(generics_map)
   }
+  pub fn fill_const_generics(
+    self,
+    bindings: &HashMap<Arc<str>, u32>,
+  ) -> AbstractStruct {
+    let abstract_ancestor = self.clone().into();
+    AbstractStruct {
+      name: self.name.clone(),
+      generic_args: self
+        .generic_args
+        .into_iter()
+        .filter(|(name, arg, _)| match arg {
+          GenericArgument::Constant => !bindings.contains_key(name),
+          GenericArgument::Type(_) => true,
+        })
+        .collect(),
+      fields: self
+        .fields
+        .into_iter()
+        .map(|mut field| {
+          field.field_type = field.field_type.fill_const_generics(bindings);
+          field
+        })
+        .collect(),
+      filled_generics: self.filled_generics,
+      abstract_ancestor: Some(abstract_ancestor),
+      source_trace: self.source_trace,
+      opaque: self.opaque,
+    }
+  }
   pub fn extract_generic_bindings(
     &self,
     concrete_struct: &Struct,
@@ -650,10 +679,10 @@ impl Struct {
       &mut constant_bindings,
     );
     for (name, generic_arg, _) in ancestor_s.generic_args.iter() {
-      let generic_arg_type = generic_bindings
-        .get(name)
-        .expect("couldn't find filled generic argument");
       if let GenericArgument::Type(constraints) = generic_arg {
+        let generic_arg_type = generic_bindings
+          .get(name)
+          .expect("couldn't find filled generic argument");
         for constraint in constraints {
           if !generic_arg_type.satisfies_constraint(&constraint) {
             errors.log(CompileError::new(

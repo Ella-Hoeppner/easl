@@ -500,6 +500,35 @@ impl AbstractEnum {
       .collect();
     self.partially_fill_abstract_generics(generics_map)
   }
+  pub fn fill_const_generics(
+    self,
+    bindings: &HashMap<Arc<str>, u32>,
+  ) -> AbstractEnum {
+    let abstract_ancestor = self.clone().into();
+    AbstractEnum {
+      name: self.name.clone(),
+      generic_args: self
+        .generic_args
+        .into_iter()
+        .filter(|(name, arg, _)| match arg {
+          GenericArgument::Constant => !bindings.contains_key(name),
+          GenericArgument::Type(_) => true,
+        })
+        .collect(),
+      variants: self
+        .variants
+        .into_iter()
+        .map(|mut variant| {
+          variant.inner_type =
+            variant.inner_type.fill_const_generics(bindings);
+          variant
+        })
+        .collect(),
+      filled_generics: self.filled_generics,
+      abstract_ancestor: Some(abstract_ancestor),
+      source_trace: self.source_trace,
+    }
+  }
   pub fn extract_generic_bindings(
     &self,
     concrete_enum: &Enum,
@@ -528,19 +557,19 @@ impl AbstractEnum {
       &mut generic_arg_type_map,
       &mut generic_arg_constant_map,
     );
-    let generic_args: Vec<Type> = self
+    let filled_generics: HashMap<Arc<str>, AbstractType> = self
       .generic_args
       .iter()
-      .cloned()
-      .map(|(var, _, _)| generic_arg_type_map.remove(&var).unwrap())
+      .filter_map(|(name, arg, _)| match arg {
+        GenericArgument::Type(_) => generic_arg_type_map
+          .get(name)
+          .map(|t| (name.clone(), AbstractType::Type(t.clone()))),
+        GenericArgument::Constant => None,
+      })
       .collect();
     Some(AbstractEnum {
       name: self.name.clone(),
-      filled_generics: generic_args
-        .iter()
-        .zip(self.generic_args.iter().cloned())
-        .map(|(t, (name, _, _))| (name, AbstractType::Type(t.clone())))
-        .collect(),
+      filled_generics,
       generic_args: vec![],
       variants: self
         .variants
@@ -548,17 +577,17 @@ impl AbstractEnum {
         .map(|variant| {
           let mut new_variant = variant.clone();
           if let AbstractType::Generic(generic_var) = &new_variant.inner_type {
-            new_variant.inner_type = AbstractType::Type(
-              generic_args[self
-                .generic_args
-                .iter()
-                .enumerate()
-                .find_map(|(index, (generic_arg, _, _))| {
-                  (generic_var == generic_arg).then(|| index)
-                })
-                .expect("unrecognized generic variable")]
-              .clone(),
-            )
+            if let Some(concrete_type) =
+              generic_arg_type_map.get(generic_var)
+            {
+              new_variant.inner_type =
+                AbstractType::Type(concrete_type.clone());
+            }
+          }
+          if !generic_arg_constant_map.is_empty() {
+            new_variant.inner_type = new_variant
+              .inner_type
+              .fill_const_generics(&generic_arg_constant_map);
           }
           new_variant
         })
