@@ -1,0 +1,6 @@
+(defn add-1 [@var @ref x: vec2f]
+  (+= x (vec2f 1.)))
+
+(defn main []
+  (let [@var v (vec3f 1. 2. 3.)]
+    (add-1 v.zy)))

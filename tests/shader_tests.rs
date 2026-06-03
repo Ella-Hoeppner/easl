@@ -312,6 +312,7 @@ success_test!(atomic_field);
 success_test!(return_effect_nonpropagating);
 success_test!(const_generic_struct);
 success_test!(const_generic_struct_indirect);
+success_test!(swizzle_mut_ref);
 // todo! this next test fails because we can't use const-generics at the
 // expression level, not a horrible limitation since you can get the value \
 // via array-length but it would be a nice QoL feature at some point
