@@ -221,7 +221,10 @@ impl TopLevelVar {
                     }
                     .unwrap_or_else(|| (None, VariableAddressSpace::default()));
                   if address_space == Uniform
-                    && matches!(t, Type::Array(Some(ConcreteArraySize::Unsized), _))
+                    && matches!(
+                      t,
+                      Type::Array(Some(ConcreteArraySize::Unsized), _)
+                    )
                   {
                     errors.log(CompileError::new(
                       UnsizedArrayInUniform,

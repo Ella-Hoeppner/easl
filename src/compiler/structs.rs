@@ -444,11 +444,9 @@ impl AbstractStruct {
         .map(|field| {
           let mut new_field = field.clone();
           if let AbstractType::Generic(generic_var) = &new_field.field_type {
-            if let Some(concrete_type) =
-              generic_type_bindings.get(generic_var)
+            if let Some(concrete_type) = generic_type_bindings.get(generic_var)
             {
-              new_field.field_type =
-                AbstractType::Type(concrete_type.clone());
+              new_field.field_type = AbstractType::Type(concrete_type.clone());
             }
           }
           if !generic_constant_bindings.is_empty() {

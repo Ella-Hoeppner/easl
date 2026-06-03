@@ -29,10 +29,10 @@ use crate::{
     },
     structs::{AbstractStructField, UntypedStruct},
     types::{
-      AbstractArraySize, AbstractType, ConcreteArraySize, ConstGenericResolution,
-      parse_generic_argument,
-      ImmutableProgramLocalContext, NameDefinitionSource, Type, TypeState,
-      UntypedType, Variable, VariableKind,
+      AbstractArraySize, AbstractType, ConcreteArraySize,
+      ConstGenericResolution, ImmutableProgramLocalContext,
+      NameDefinitionSource, Type, TypeState, UntypedType, Variable,
+      VariableKind, parse_generic_argument,
     },
     util::{compile_word, is_valid_name},
     vars::TopLevelVariableKind,
@@ -540,8 +540,7 @@ impl Program {
                 signature_children,
               ) => {
                 let source_trace: SourceTrace = position.clone().into();
-                let mut signature_iter =
-                  signature_children.iter().cloned();
+                let mut signature_iter = signature_children.iter().cloned();
                 if let Some(EaslTree::Leaf(name_pos, type_name)) =
                   signature_iter.next()
                 {
@@ -565,17 +564,15 @@ impl Program {
                         ));
                       } else {
                         match first_child.as_str() {
-                          "struct" => {
-                            untyped_types.push(UntypedType::Struct(
-                              UntypedStruct::from_field_trees(
-                                (type_name, type_name_source),
-                                generic_args,
-                                children_iter.cloned().collect(),
-                                source_trace,
-                                &mut errors,
-                              ),
-                            ))
-                          }
+                          "struct" => untyped_types.push(UntypedType::Struct(
+                            UntypedStruct::from_field_trees(
+                              (type_name, type_name_source),
+                              generic_args,
+                              children_iter.cloned().collect(),
+                              source_trace,
+                              &mut errors,
+                            ),
+                          )),
                           "enum" => {
                             match UntypedEnum::from_field_trees(
                               (type_name, type_name_source),
@@ -583,9 +580,7 @@ impl Program {
                               children_iter.cloned().collect(),
                               source_trace,
                             ) {
-                              Ok(e) => {
-                                untyped_types.push(UntypedType::Enum(e))
-                              }
+                              Ok(e) => untyped_types.push(UntypedType::Enum(e)),
                               Err(e) => errors.log(e),
                             }
                           }
@@ -596,10 +591,7 @@ impl Program {
                     Err(e) => errors.log(e),
                   }
                 } else {
-                  errors.log(CompileError::new(
-                    InvalidTypeName,
-                    source_trace,
-                  ));
+                  errors.log(CompileError::new(InvalidTypeName, source_trace));
                 }
               }
               EaslTree::Inner((position, _), _) => {
@@ -857,10 +849,7 @@ impl Program {
       }
     }
   }
-  pub fn catch_illegal_function_type_variables(
-    &self,
-    errors: &mut ErrorLog,
-  ) {
+  pub fn catch_illegal_function_type_variables(&self, errors: &mut ErrorLog) {
     for v in self.top_level_vars.iter() {
       if matches!(v.var_type, Type::Function(_)) {
         errors.log(CompileError::new(

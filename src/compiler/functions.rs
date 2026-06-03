@@ -677,12 +677,10 @@ impl AbstractFunctionSignature {
             )
           }
         }
-        GenericArgument::Constant => {
-          match generic_constant_bindings.get(arg) {
-            Some(value) => Ok(format!("{value}").into()),
-            None => err(CouldntInferTypes, source_trace.clone()),
-          }
-        }
+        GenericArgument::Constant => match generic_constant_bindings.get(arg) {
+          Some(value) => Ok(format!("{value}").into()),
+          None => err(CouldntInferTypes, source_trace.clone()),
+        },
       })
       .collect::<CompileResult<Vec<Arc<str>>>>()?;
     monomorphized.name = new_program

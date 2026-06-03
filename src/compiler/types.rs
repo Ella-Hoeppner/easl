@@ -514,30 +514,30 @@ impl AbstractType {
               .find(|e| &*e.name.0 == generic_type_name.as_str()),
           ) {
             (Some(generic_struct), None) => {
-              let (type_args, const_args) =
-                parse_type_and_const_generic_args(
-                  children_iter,
-                  &generic_struct.generic_args,
-                  typedefs,
-                  skolems,
-                  &position,
-                )?;
-              let mut s = generic_struct.clone().fill_abstract_generics(type_args);
+              let (type_args, const_args) = parse_type_and_const_generic_args(
+                children_iter,
+                &generic_struct.generic_args,
+                typedefs,
+                skolems,
+                &position,
+              )?;
+              let mut s =
+                generic_struct.clone().fill_abstract_generics(type_args);
               if !const_args.is_empty() {
                 s = s.fill_const_generics(&const_args);
               }
               Ok(AbstractType::AbstractStruct(Arc::new(s)))
             }
             (None, Some(generic_enum)) => {
-              let (type_args, const_args) =
-                parse_type_and_const_generic_args(
-                  children_iter,
-                  &generic_enum.generic_args,
-                  typedefs,
-                  skolems,
-                  &position,
-                )?;
-              let mut e = generic_enum.clone().fill_abstract_generics(type_args);
+              let (type_args, const_args) = parse_type_and_const_generic_args(
+                children_iter,
+                &generic_enum.generic_args,
+                typedefs,
+                skolems,
+                &position,
+              )?;
+              let mut e =
+                generic_enum.clone().fill_abstract_generics(type_args);
               if !const_args.is_empty() {
                 e = e.fill_const_generics(&const_args);
               }

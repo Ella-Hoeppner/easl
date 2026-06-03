@@ -519,8 +519,7 @@ impl AbstractEnum {
         .variants
         .into_iter()
         .map(|mut variant| {
-          variant.inner_type =
-            variant.inner_type.fill_const_generics(bindings);
+          variant.inner_type = variant.inner_type.fill_const_generics(bindings);
           variant
         })
         .collect(),
@@ -577,9 +576,7 @@ impl AbstractEnum {
         .map(|variant| {
           let mut new_variant = variant.clone();
           if let AbstractType::Generic(generic_var) = &new_variant.inner_type {
-            if let Some(concrete_type) =
-              generic_arg_type_map.get(generic_var)
-            {
+            if let Some(concrete_type) = generic_arg_type_map.get(generic_var) {
               new_variant.inner_type =
                 AbstractType::Type(concrete_type.clone());
             }
