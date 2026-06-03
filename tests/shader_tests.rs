@@ -370,6 +370,10 @@ error_test!(
   CompileErrorKind::CantYieldFunctionFromMatch
 );
 error_test!(
+  global_var_fn_failure,
+  CompileErrorKind::CantHaveFunctionTypeVariable
+);
+error_test!(
   attributes_failure_group_only,
   CompileErrorKind::GroupMissingBinding
 );

@@ -433,6 +433,8 @@ pub enum CompileErrorKind {
   IllegalFunctionTypeExpressionKind,
   #[error("Can't store functions in a data structure")]
   CantStoreFunctionInDataStructure,
+  #[error("Top-level variables may not have a function type")]
+  CantHaveFunctionTypeVariable,
   #[error(
     "GPU entry point wrote to variable \"{0}\" in illegal address space \"{1}\""
   )]

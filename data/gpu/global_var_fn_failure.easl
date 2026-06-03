@@ -1,0 +1,6 @@
+(var v: (Fn [f32] f32))
+
+(defn main []
+  (let [f (fn [x] (* x 2.))]
+    (= v f)))
+

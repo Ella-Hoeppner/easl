@@ -857,6 +857,19 @@ impl Program {
       }
     }
   }
+  pub fn catch_illegal_function_type_variables(
+    &self,
+    errors: &mut ErrorLog,
+  ) {
+    for v in self.top_level_vars.iter() {
+      if matches!(v.var_type, Type::Function(_)) {
+        errors.log(CompileError::new(
+          CantHaveFunctionTypeVariable,
+          v.source_trace.clone(),
+        ));
+      }
+    }
+  }
   pub fn fully_infer_types(&mut self, errors: &mut ErrorLog) {
     loop {
       let did_type_states_change = self.propagate_types(errors);
@@ -3746,6 +3759,7 @@ impl Program {
     }
     self.catch_illegal_function_type_expressions(&mut errors);
     self.catch_illegal_function_type_user_type_fields(&mut errors);
+    self.catch_illegal_function_type_variables(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
