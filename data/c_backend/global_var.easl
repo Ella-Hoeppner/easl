@@ -1,0 +1,11 @@
+(var x: f32)
+
+(defn increment-x []
+  (+= x 1.))
+
+(var y: f32
+     1.)
+
+(defn increment-y []
+  (+= y 1.))
+

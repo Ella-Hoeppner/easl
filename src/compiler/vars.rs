@@ -341,49 +341,72 @@ impl TopLevelVar {
     names: &mut NameContext,
     target: CompilerTarget,
   ) -> String {
-    let (bind_group_decoration, address_space) =
-      if let TopLevelVariableKind::Var {
-        group_and_binding,
-        address_space,
-      } = &self.kind
-      {
-        (
-          if let Some(GroupAndBinding { group, binding }) = group_and_binding {
-            format!("@group({group}) @binding({binding}) ")
+    match target {
+      CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+        let (bind_group_decoration, address_space) =
+          if let TopLevelVariableKind::Var {
+            group_and_binding,
+            address_space,
+          } = &self.kind
+          {
+            (
+              if let Some(GroupAndBinding { group, binding }) =
+                group_and_binding
+              {
+                format!("@group({group}) @binding({binding}) ")
+              } else {
+                String::new()
+              },
+              address_space
+                .compile()
+                .map(|s| format!("<{s}>"))
+                .unwrap_or_default(),
+            )
           } else {
-            String::new()
-          },
-          address_space
-            .compile()
-            .map(|s| format!("<{s}>"))
-            .unwrap_or_default(),
-        )
-      } else {
-        (String::new(), String::new())
-      };
+            (String::new(), String::new())
+          };
 
-    let kind_name = match self.kind {
-      TopLevelVariableKind::Var { .. } => "var",
-      TopLevelVariableKind::Override => "override",
-      TopLevelVariableKind::Const => "const",
-    };
+        let kind_name = match self.kind {
+          TopLevelVariableKind::Var { .. } => "var",
+          TopLevelVariableKind::Override => "override",
+          TopLevelVariableKind::Const => "const",
+        };
 
-    let name = compile_word(self.name);
-    let var_type = self.var_type.monomorphized_name(names, target);
-    let assignment = if let Some(value) = self.value {
-      format!(
-        " = {}",
-        value.compile(
-          ExpressionCompilationPosition::InnerExpression,
-          names,
-          target
+        let name = compile_word(self.name);
+        let var_type = self.var_type.monomorphized_name(names, target);
+        let assignment = if let Some(value) = self.value {
+          format!(
+            " = {}",
+            value.compile(
+              ExpressionCompilationPosition::InnerExpression,
+              names,
+              target
+            )
+          )
+        } else {
+          String::new()
+        };
+        format!(
+          "{bind_group_decoration}{kind_name}{address_space} {name}: {var_type}{assignment}"
         )
-      )
-    } else {
-      String::new()
-    };
-    format!(
-      "{bind_group_decoration}{kind_name}{address_space} {name}: {var_type}{assignment}"
-    )
+      }
+      CompilerTarget::C => {
+        let name = compile_word(self.name);
+        let var_type = self.var_type.monomorphized_name(names, target);
+        let assignment = if let Some(value) = self.value {
+          format!(
+            " = {}",
+            value.compile(
+              ExpressionCompilationPosition::InnerExpression,
+              names,
+              target
+            )
+          )
+        } else {
+          String::new()
+        };
+        format!("{var_type} {name}{assignment}")
+      }
+    }
   }
 }

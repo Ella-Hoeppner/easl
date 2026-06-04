@@ -159,5 +159,6 @@ macro_rules! c_error_test {
 // --- Success tests ---
 
 c_success_test!(double);
+c_success_test!(global_var);
 
 // --- Error tests ---
