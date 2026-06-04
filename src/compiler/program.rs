@@ -59,7 +59,8 @@ pub type EaslDocument = Document<EaslSyntax>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompilerTarget {
-  CPU,
+  Interpreter,
+  C,
   WGSL,
 }
 
@@ -918,7 +919,11 @@ impl Program {
       }
     }
   }
-  pub fn monomorphize(&mut self, errors: &mut ErrorLog) {
+  pub fn monomorphize(
+    &mut self,
+    errors: &mut ErrorLog,
+    target: CompilerTarget,
+  ) {
     let mut monomorphized_ctx = Program::default();
     monomorphized_ctx.names = RwLock::new(self.names.read().unwrap().clone());
     for f in self.abstract_functions_iter() {
@@ -927,10 +932,11 @@ impl Program {
           &f.read().unwrap().implementation
       {
         let mut borrowed_implementation = implementation.write().unwrap();
-        match borrowed_implementation
-          .expression
-          .monomorphize(&self, &mut monomorphized_ctx)
-        {
+        match borrowed_implementation.expression.monomorphize(
+          &self,
+          &mut monomorphized_ctx,
+          target,
+        ) {
           Ok(_) => {
             let mut new_f = (**f).read().unwrap().clone();
             new_f.implementation =
@@ -2289,32 +2295,37 @@ impl Program {
     }
     std::mem::swap(&mut names, &mut self.names.write().unwrap());
   }
-  pub fn compile_to_wgsl(self) -> CompileResult<String> {
+  pub fn compile_to_target(
+    self,
+    target: CompilerTarget,
+  ) -> CompileResult<String> {
     let mut names = self.names.write().unwrap();
-    let mut wgsl = String::new();
+    let mut compiled_string = String::new();
     for v in self.top_level_vars.iter() {
-      wgsl += &v.clone().compile(&mut names, CompilerTarget::WGSL);
-      wgsl += ";\n";
+      compiled_string += &v.clone().compile(&mut names, target);
+      compiled_string += ";\n";
     }
-    wgsl += "\n";
+    compiled_string += "\n";
     let default_structs = built_in_structs();
     for s in self.typedefs.structs.iter() {
       if !s.opaque
         && !default_structs.contains(&s)
-        && let Some(compiled_struct) = s
-          .clone()
-          .compile_if_non_generic(&self.typedefs, &mut names)?
+        && let Some(compiled_struct) = s.clone().compile_if_non_generic(
+          &self.typedefs,
+          &mut names,
+          target,
+        )?
       {
-        wgsl += &compiled_struct;
-        wgsl += "\n\n";
+        compiled_string += &compiled_struct;
+        compiled_string += "\n\n";
       }
     }
     for e in self.typedefs.enums.iter().cloned() {
       if let Some(compiled_enum) =
-        e.compile_if_non_generic(&self.typedefs, &mut names)?
+        e.compile_if_non_generic(&self.typedefs, &mut names, target)?
       {
-        wgsl += &compiled_enum;
-        wgsl += "\n\n";
+        compiled_string += &compiled_enum;
+        compiled_string += "\n\n";
       }
     }
     for f in self.abstract_functions_iter() {
@@ -2341,7 +2352,8 @@ impl Program {
             let args_str = if *inner_type == Type::Unit {
               String::new()
             } else {
-              let inner_type_name = inner_type.monomorphized_name(&mut names);
+              let inner_type_name =
+                inner_type.monomorphized_name(&mut names, target);
               format!("value: {inner_type_name}")
             };
             let bitcast_inner_values = inner_type
@@ -2353,7 +2365,7 @@ impl Program {
                   exp.compile(
                     ExpressionCompilationPosition::InnerExpression,
                     &mut names,
-                    CompilerTarget::WGSL
+                    target
                   )
                 )
               })
@@ -2373,14 +2385,15 @@ impl Program {
                   })
                   .collect(),
                 &mut names,
+                target,
               ),
             );
-            wgsl += &format!(
+            compiled_string += &format!(
               "fn {variant_name}({args_str}) -> {enum_name} {{\n  \
               return {enum_name}({discriminant}u, array({bitcast_inner_values}));\n\
               }}"
             );
-            wgsl += "\n\n";
+            compiled_string += "\n\n";
           }
           _ => {}
         }
@@ -2406,19 +2419,18 @@ impl Program {
                 continue;
               }
             }
-            wgsl += &implementation.read().unwrap().clone().compile(
-              &f.name,
-              &mut names,
-              &self,
-              CompilerTarget::WGSL,
-            )?;
-            wgsl += "\n\n";
+            compiled_string += &implementation
+              .read()
+              .unwrap()
+              .clone()
+              .compile(&f.name, &mut names, &self, target)?;
+            compiled_string += "\n\n";
           }
           _ => {}
         }
       }
     }
-    Ok(wgsl)
+    Ok(compiled_string)
   }
   pub fn expand_associative_applications(&mut self) {
     for f in self
@@ -2864,7 +2876,7 @@ impl Program {
       }
     }
   }
-  pub fn separate_overloaded_fns(&mut self) {
+  pub fn separate_overloaded_fns(&mut self, target: CompilerTarget) {
     let mut renames = HashMap::new();
     for (_, signatures) in self.abstract_functions.iter() {
       if signatures.len() > 1 {
@@ -2900,7 +2912,9 @@ impl Program {
             + "_"
             + &suffix_types
               .iter()
-              .map(|t| t.monomorphized_name(&mut self.names.write().unwrap()))
+              .map(|t| {
+                t.monomorphized_name(&mut self.names.write().unwrap(), target)
+              })
               .collect::<Vec<String>>()
               .join("_");
           let new_name: Arc<str> = new_name.into();
@@ -3689,7 +3703,7 @@ impl Program {
       }
     }
   }
-  pub fn validate_raw_program(&mut self) -> ErrorLog {
+  pub fn validate_raw_program(&mut self, target: CompilerTarget) -> ErrorLog {
     let mut errors = ErrorLog::new();
     self.validate_names(&mut errors);
     if !errors.is_empty() {
@@ -3759,11 +3773,11 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    self.monomorphize(&mut errors);
+    self.monomorphize(&mut errors, target);
     if !errors.is_empty() {
       return errors;
     }
-    self.separate_overloaded_fns();
+    self.separate_overloaded_fns(target);
     self.catch_duplicate_closures_capturing_mutable_variables(&mut errors);
     if !errors.is_empty() {
       return errors;

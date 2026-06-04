@@ -3,7 +3,10 @@ use std::path::Path;
 use fsexp::ParseError;
 
 use crate::{
-  compiler::{info::ProgramInfo, program::EaslDocument},
+  compiler::{
+    info::ProgramInfo,
+    program::{CompilerTarget, EaslDocument},
+  },
   parse::{
     EaslMultiDocument, load_and_parse_easl_multidocument_with_lookup_function,
     parse_easl_without_comments,
@@ -20,13 +23,13 @@ pub fn compile_easl_documents_to_wgsl(
   if !errors.is_empty() {
     return Err((documents, errors));
   }
-  let errors = program.validate_raw_program();
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
   if !errors.is_empty() {
     return Err((documents, errors));
   }
 
   program
-    .compile_to_wgsl()
+    .compile_to_target(CompilerTarget::WGSL)
     .map_err(|e| (documents, ErrorLog::from(e)))
 }
 
@@ -65,13 +68,13 @@ pub fn compile_easl_file_to_wgsl(
 > {
   match load_easl_program_from_file(primary_easl_file_path)? {
     Ok((documents, Ok(mut program))) => {
-      let errors = program.validate_raw_program();
+      let errors = program.validate_raw_program(CompilerTarget::WGSL);
       if !errors.is_empty() {
         return Ok(Ok(Err((documents, errors))));
       }
       Ok(Ok(
         program
-          .compile_to_wgsl()
+          .compile_to_target(CompilerTarget::WGSL)
           .map_err(|e| (documents, ErrorLog::from(e))),
       ))
     }
@@ -120,6 +123,7 @@ pub fn load_easl_program_from_file(
 
 pub fn get_easl_program_info(
   easl_source: &str,
+  target: CompilerTarget,
 ) -> Result<Result<ProgramInfo, ErrorLog>, Vec<ParseError>> {
   let document = parse_easl_without_comments(easl_source);
   if !document.parsing_failures.is_empty() {
@@ -133,7 +137,7 @@ pub fn get_easl_program_info(
     ),
     built_in_macros(),
   );
-  let errors = program.validate_raw_program();
+  let errors = program.validate_raw_program(target);
   Ok(if errors.is_empty() {
     Ok(ProgramInfo::from(&program))
   } else {

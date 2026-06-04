@@ -17,7 +17,7 @@ use crate::{
     error::{CompileError, CompileErrorKind},
     expression::{Accessor, ExpKind, Number, TypedExp},
     functions::Ownership,
-    program::{NameContext, TypeDefs},
+    program::{CompilerTarget, NameContext, TypeDefs},
     structs::UntypedStruct,
     vars::VariableAddressSpace,
   },
@@ -414,6 +414,7 @@ impl AbstractType {
     typedefs: &TypeDefs,
     names: &mut NameContext,
     source_trace: &SourceTrace,
+    target: CompilerTarget,
   ) -> CompileResult<String> {
     Ok(match self {
       AbstractType::Unit => {
@@ -425,7 +426,7 @@ impl AbstractType {
       AbstractType::Generic(_) => {
         panic!("attempted to compile generic struct field")
       }
-      AbstractType::Type(t) => t.monomorphized_name(names),
+      AbstractType::Type(t) => t.monomorphized_name(names, target),
       AbstractType::AbstractStruct(t) => {
         let concrete = AbstractStruct::concretize(
           t,
@@ -433,19 +434,19 @@ impl AbstractType {
           &vec![],
           source_trace.clone(),
         )?;
-        Type::Struct(concrete).monomorphized_name(names)
+        Type::Struct(concrete).monomorphized_name(names, target)
       }
       AbstractType::AbstractEnum(e) => {
         let concrete =
           AbstractEnum::concretize(e, typedefs, &vec![], source_trace.clone())?;
-        Type::Enum(concrete).monomorphized_name(names)
+        Type::Enum(concrete).monomorphized_name(names, target)
       }
       AbstractType::AbstractArray {
         size, inner_type, ..
       } => {
         format!(
           "array<{}{}>",
-          inner_type.compile(typedefs, names, source_trace)?,
+          inner_type.compile(typedefs, names, source_trace, target)?,
           format!("{}", size.compile_type())
         )
       }
@@ -1584,59 +1585,118 @@ impl Type {
       }
     })
   }
-  pub fn monomorphized_name(&self, names: &mut NameContext) -> String {
-    match self {
-      Type::Unit => "()".to_string(),
-      Type::F32 => "f32".to_string(),
-      Type::I32 => "i32".to_string(),
-      Type::U32 => "u32".to_string(),
-      Type::Bool => "bool".to_string(),
-      Type::Struct(s) => match &*s.name {
-        "Texture2D" => format!(
-          "texture_2d<{}>",
-          s.fields[0]
-            .field_type
-            .unwrap_known()
-            .monomorphized_name(names)
-        ),
-        "Sampler" => "sampler".to_string(),
-        "Atomic" => format!(
-          "atomic<{}>",
-          s.fields[0]
-            .field_type
-            .unwrap_known()
-            .monomorphized_name(names)
-        ),
-        _ => compile_word(s.monomorphized_name(names)),
+  pub fn monomorphized_name(
+    &self,
+    names: &mut NameContext,
+    target: CompilerTarget,
+  ) -> String {
+    match target {
+      CompilerTarget::Interpreter | CompilerTarget::WGSL => match self {
+        Type::Unit => "()".to_string(),
+        Type::F32 => "f32".to_string(),
+        Type::I32 => "i32".to_string(),
+        Type::U32 => "u32".to_string(),
+        Type::Bool => "bool".to_string(),
+        Type::Struct(s) => match &*s.name {
+          "Texture2D" => format!(
+            "texture_2d<{}>",
+            s.fields[0]
+              .field_type
+              .unwrap_known()
+              .monomorphized_name(names, target)
+          ),
+          "Sampler" => "sampler".to_string(),
+          "Atomic" => format!(
+            "atomic<{}>",
+            s.fields[0]
+              .field_type
+              .unwrap_known()
+              .monomorphized_name(names, target)
+          ),
+          _ => compile_word(s.monomorphized_name(names, target)),
+        },
+        Type::Enum(e) => compile_word(e.monomorphized_name(names, target)),
+        Type::Array(size, inner_type) => {
+          format!(
+            "array<{}{}>",
+            inner_type.monomorphized_name(names, target),
+            size
+              .clone()
+              .map(|size| format!("{}", size.compile_type()))
+              .unwrap_or(String::new())
+          )
+        }
+        Type::Function(f) => {
+          let Some(f) = &f.abstract_ancestor else {
+            panic!(
+              "Attempted to compile ConcreteFunction type with no abstract ancestor"
+            );
+          };
+          f.read()
+            .unwrap()
+            .representative_type(names)
+            .name
+            .0
+            .to_string()
+        }
+        Type::Skolem(name, _) => {
+          panic!("Attempted to compile Skolem \"{name}\"")
+        }
+        Type::String => "String".into(),
       },
-      Type::Enum(e) => compile_word(e.monomorphized_name(names)),
-      Type::Array(size, inner_type) => {
-        format!(
-          "array<{}{}>",
-          inner_type.monomorphized_name(names),
-          size
-            .clone()
-            .map(|size| format!("{}", size.compile_type()))
-            .unwrap_or(String::new())
-        )
-      }
-      Type::Function(f) => {
-        let Some(f) = &f.abstract_ancestor else {
-          panic!(
-            "Attempted to compile ConcreteFunction type with no abstract ancestor"
-          );
-        };
-        f.read()
-          .unwrap()
-          .representative_type(names)
-          .name
-          .0
-          .to_string()
-      }
-      Type::Skolem(name, _) => {
-        panic!("Attempted to compile Skolem \"{name}\"")
-      }
-      Type::String => "String".into(),
+      CompilerTarget::C => match self {
+        Type::Unit => "void".to_string(),
+        Type::F32 => "float".to_string(),
+        Type::I32 => "int".to_string(),
+        Type::U32 => "uint".to_string(),
+        Type::Bool => "bool".to_string(),
+        Type::Struct(s) => match &*s.name {
+          "Texture2D" => format!(
+            "texture_2d<{}>",
+            s.fields[0]
+              .field_type
+              .unwrap_known()
+              .monomorphized_name(names, target)
+          ),
+          "Sampler" => "sampler".to_string(),
+          "Atomic" => format!(
+            "atomic<{}>",
+            s.fields[0]
+              .field_type
+              .unwrap_known()
+              .monomorphized_name(names, target)
+          ),
+          _ => compile_word(s.monomorphized_name(names, target)),
+        },
+        Type::Enum(e) => compile_word(e.monomorphized_name(names, target)),
+        Type::Array(size, inner_type) => {
+          format!(
+            "{}[{}]",
+            inner_type.monomorphized_name(names, target),
+            size
+              .clone()
+              .map(|size| format!("{}", size.compile_type()))
+              .unwrap_or(String::new())
+          )
+        }
+        Type::Function(f) => {
+          let Some(f) = &f.abstract_ancestor else {
+            panic!(
+              "Attempted to compile ConcreteFunction type with no abstract ancestor"
+            );
+          };
+          f.read()
+            .unwrap()
+            .representative_type(names)
+            .name
+            .0
+            .to_string()
+        }
+        Type::Skolem(name, _) => {
+          panic!("Attempted to compile Skolem \"{name}\"")
+        }
+        Type::String => "String".into(),
+      },
     }
   }
   /// Extract generic bindings from a Type that may contain Skolems, by
@@ -1913,6 +1973,7 @@ impl Type {
     enum_type: &Enum,
     current_index: usize,
     names: &mut NameContext,
+    target: CompilerTarget,
   ) -> (TypedExp, usize) {
     let data_array_access = |offset: usize| TypedExp {
       data: Type::U32.known().into(),
@@ -1967,7 +2028,8 @@ impl Type {
             .known()
             .into(),
             kind: ExpKind::Name(
-              format!("bitcast<{}>", self.monomorphized_name(names)).into(),
+              format!("bitcast<{}>", self.monomorphized_name(names, target))
+                .into(),
             ),
             source_trace: SourceTrace::empty(),
           }
@@ -1977,7 +2039,7 @@ impl Type {
         1,
       ),
       Type::Enum(e) => {
-        let name = e.monomorphized_name(names);
+        let name = e.monomorphized_name(names, target);
         let inner_data_array_type: ExpTypeInfo = Type::Array(
           Some(ConcreteArraySize::Literal(
             e.inner_data_size_in_u32s().unwrap() as u32,
@@ -2038,6 +2100,7 @@ impl Type {
                 enum_type,
                 current_index + consumed_indeces,
                 names,
+                target,
               );
             constructor_args.push(arg);
             (constructor_args, consumed_indeces + arg_consumed_indeces)
@@ -2086,6 +2149,7 @@ impl Type {
                     enum_type,
                     current_index + i * inner_type_size,
                     names,
+                    target,
                   )
                   .0
               })
@@ -2112,9 +2176,16 @@ impl Type {
     enum_value_name: Arc<str>,
     enum_type: &Enum,
     names: &mut NameContext,
+    target: CompilerTarget,
   ) -> TypedExp {
     self
-      .bitcasted_from_enum_data_inner(&enum_value_name, enum_type, 0, names)
+      .bitcasted_from_enum_data_inner(
+        &enum_value_name,
+        enum_type,
+        0,
+        names,
+        target,
+      )
       .0
   }
   pub fn replace_skolems_with_unification_variables(
@@ -2761,8 +2832,12 @@ impl TypeState {
     self.simplify();
     self
   }
-  pub fn monomorphized_name(&self, names: &mut NameContext) -> String {
-    self.unwrap_known().monomorphized_name(names)
+  pub fn monomorphized_name(
+    &self,
+    names: &mut NameContext,
+    target: CompilerTarget,
+  ) -> String {
+    self.unwrap_known().monomorphized_name(names, target)
   }
   pub fn replace_skolems_with_unification_variables(
     &mut self,

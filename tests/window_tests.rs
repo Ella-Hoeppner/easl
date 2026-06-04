@@ -1,4 +1,5 @@
 use easl::compiler::core::load_easl_program_from_file;
+use easl::compiler::program::CompilerTarget;
 use easl::interpreter::{IOEvent, run_program_test_io};
 use std::fs;
 use std::path::Path;
@@ -60,12 +61,12 @@ fn run_window_test(name: &str) {
   let expected_txt = fs::read_to_string(format!("./data/window/{name}.txt"))
     .unwrap_or_else(|_| panic!("Unable to read data/window/{name}.txt"));
 
-  fs::create_dir_all("./out/").expect("Unable to create out directory");
+  fs::create_dir_all("./out/window/").expect("Unable to create out directory");
   match load_easl_program_from_file(Path::new(&format!(
     "./data/window/{name}.easl"
   ))) {
     Ok(Ok((_, Ok(mut program)))) => {
-      let errors = program.validate_raw_program();
+      let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
 
       let io = run_program_test_io(program).unwrap_or_else(|e| {
@@ -77,7 +78,7 @@ fn run_window_test(name: &str) {
     }
     Ok(Ok((document, Err(errors)))) => {
       let description = errors.describe(&document);
-      fs::write(format!("./out/{name}.wgsl"), description.clone())
+      fs::write(format!("./out/window/{name}.wgsl"), description.clone())
         .expect("Unable to write output file");
       panic!("{description}");
     }
@@ -97,7 +98,7 @@ fn run_window_test(name: &str) {
         .map(|err| failed_documents.describe_parse_error(err))
         .collect::<Vec<String>>()
         .join("\n\n");
-      fs::write(format!("./out/{name}.wgsl"), &description)
+      fs::write(format!("./out/window/{name}.wgsl"), &description)
         .expect("Unable to write output file");
       panic!("Unexpected parse error in {name}:\n{description}");
     }

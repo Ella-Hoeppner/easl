@@ -1,4 +1,5 @@
 use easl::compiler::core::load_easl_program_from_file_with_lookup_function;
+use easl::compiler::program::CompilerTarget;
 use easl::interpreter::run_program_with_capture;
 use std::fs;
 use std::path::Path;
@@ -22,12 +23,13 @@ fn run_conformance_test(name: &str, tolerance: f64) {
     .unwrap_or_else(|e| panic!("IO error, couldn't read file {name}: {e:?}"));
   let combined_source = user_source + BOILERPLATE;
 
-  fs::create_dir_all("./out/").expect("Unable to create out directory");
+  fs::create_dir_all("./out/conformance/")
+    .expect("Unable to create out directory");
   match load_easl_program_from_file_with_lookup_function(source_path, |_| {
     Ok(combined_source.clone())
   }) {
     Ok(Ok((_, Ok(mut program)))) => {
-      let errors = program.validate_raw_program();
+      let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
 
       let prints = run_program_with_capture(program).unwrap_or_else(|e| {
@@ -59,8 +61,11 @@ fn run_conformance_test(name: &str, tolerance: f64) {
     }
     Ok(Ok((document, Err(errors)))) => {
       let description = errors.describe(&document);
-      fs::write(format!("./out/{name}.wgsl"), description.clone())
-        .expect("Unable to write output file");
+      fs::write(
+        format!("./out/conformance/{name}.wgsl"),
+        description.clone(),
+      )
+      .expect("Unable to write output file");
       panic!("{description}");
     }
     Ok(Err(mut failed_documents)) => {
@@ -79,7 +84,7 @@ fn run_conformance_test(name: &str, tolerance: f64) {
         .map(|err| failed_documents.describe_parse_error(err))
         .collect::<Vec<String>>()
         .join("\n\n");
-      fs::write(format!("./out/{name}.wgsl"), &description)
+      fs::write(format!("./out/conformance/{name}.wgsl"), &description)
         .expect("Unable to write output file");
       panic!("Unexpected parse error in {name}:\n{description}");
     }

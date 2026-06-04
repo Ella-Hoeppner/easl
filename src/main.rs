@@ -1,5 +1,6 @@
 use easl::{
-  compile_easl_source_to_wgsl, compiler::core::load_easl_program_from_file,
+  compile_easl_source_to_wgsl,
+  compiler::{core::load_easl_program_from_file, program::CompilerTarget},
   interpreter::run_program_entry,
 };
 use std::fs;
@@ -38,7 +39,7 @@ fn run_window_demo(file_name: &str, entry: Option<&str>) {
       .unwrap_or_else(|_| panic!("Parse error in {file_name}"));
   let mut program =
     program_or_errors.unwrap_or_else(|errors| panic!("{errors:?}"));
-  let errors = program.validate_raw_program();
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
   if !errors.is_empty() {
     panic!("{errors:?}");
   }
@@ -54,7 +55,7 @@ fn run_buffer_demo(file_name: &str, entry: Option<&str>) {
       .unwrap_or_else(|_| panic!("Parse error in {file_name}"));
   let mut program =
     program_or_errors.unwrap_or_else(|errors| panic!("{errors:?}"));
-  let errors = program.validate_raw_program();
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
   if !errors.is_empty() {
     panic!("{errors:?}");
   }

@@ -369,7 +369,7 @@ impl TopLevelVar {
     };
 
     let name = compile_word(self.name);
-    let var_type = self.var_type.monomorphized_name(names);
+    let var_type = self.var_type.monomorphized_name(names, target);
     let assignment = if let Some(value) = self.value {
       format!(
         " = {}",

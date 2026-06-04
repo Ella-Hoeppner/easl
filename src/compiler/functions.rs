@@ -638,6 +638,7 @@ impl AbstractFunctionSignature {
     return_type: Type,
     base_program: &Program,
     new_program: &mut Program,
+    target: CompilerTarget,
     source_trace: SourceTrace,
   ) -> CompileResult<Self> {
     let mut monomorphized = self.clone();
@@ -672,7 +673,10 @@ impl AbstractFunctionSignature {
           } else {
             Ok(
               generic_type
-                .monomorphized_name(&mut new_program.names.write().unwrap())
+                .monomorphized_name(
+                  &mut new_program.names.write().unwrap(),
+                  target,
+                )
                 .into(),
             )
           }
@@ -717,7 +721,9 @@ impl AbstractFunctionSignature {
       new_fn
         .expression
         .replace_const_generic_skolems(&generic_constant_bindings);
-      new_fn.expression.monomorphize(base_program, new_program)?;
+      new_fn
+        .expression
+        .monomorphize(base_program, new_program, target)?;
       std::mem::swap(monomorphized_fn, &mut Arc::new(RwLock::new(new_fn)));
     } else {
       panic!("attempted to monomorphize non-composite abstract function")
@@ -1155,63 +1161,87 @@ impl TopLevelFunction {
     let allowed_on_gpu = effects.cpu_exclusive_functions().is_empty()
       && effects.cpu_exclusive_types().is_empty()
       && effects.gpu_illegal_address_space_writes(program).is_empty();
-    let args = arg_names
-      .into_iter()
-      .zip(args.into_iter())
-      .zip(self.arg_annotations.into_iter())
-      .map(|(((name, _), (arg, _)), annotation)| {
-        format!(
-          "{}{}: {}",
-          annotation.attributes.compile(),
-          compile_word(name),
-          {
-            let base_type = arg.var_type.monomorphized_name(names);
-            match arg.var_type.ownership {
-              Ownership::Owned => base_type,
-              Ownership::Pointer(address_space) => {
-                format!("ptr<{}, {base_type}>", address_space.name())
-              }
-              Ownership::Reference | Ownership::MutableReference => {
-                panic!(
-                  "encountered raw reference in argument ownership, this \
-                  should have been monomorphized into a pointer"
-                )
-              }
-            }
-          }
-        )
-      })
-      .collect::<Vec<String>>()
-      .join(", ");
 
     let fn_string = || {
-      format!(
-        "{}fn {}({args}){} {{{}\n}}",
-        self
-          .entry_point
-          .as_ref()
-          .map(|e| e.compile())
-          .unwrap_or(String::new()),
-        compile_word(name.into()),
+      let args = arg_names
+        .into_iter()
+        .zip(args.into_iter())
+        .zip(self.arg_annotations.into_iter())
+        .map(|(((name, _), (arg, _)), annotation)| match target {
+          CompilerTarget::Interpreter | CompilerTarget::WGSL => format!(
+            "{}{}: {}",
+            annotation.attributes.compile(),
+            compile_word(name),
+            {
+              let base_type = arg.var_type.monomorphized_name(names, target);
+              match arg.var_type.ownership {
+                Ownership::Owned => base_type,
+                Ownership::Pointer(address_space) => {
+                  format!("ptr<{}, {base_type}>", address_space.name())
+                }
+                Ownership::Reference | Ownership::MutableReference => {
+                  panic!(
+                    "encountered raw reference in argument ownership, this \
+                  should have been monomorphized into a pointer"
+                  )
+                }
+              }
+            }
+          ),
+          CompilerTarget::C => format!(
+            "{} {}",
+            {
+              let base_type = arg.var_type.monomorphized_name(names, target);
+              match arg.var_type.ownership {
+                Ownership::Owned => base_type,
+                Ownership::Pointer(_) => {
+                  format!("&{base_type}")
+                }
+                Ownership::Reference | Ownership::MutableReference => {
+                  panic!(
+                    "encountered raw reference in argument ownership, this \
+                    should have been monomorphized into a pointer"
+                  )
+                }
+              }
+            },
+            compile_word(name),
+          ),
+        })
+        .collect::<Vec<String>>()
+        .join(", ");
+      let return_type_name = return_type.monomorphized_name(names, target);
+      let fn_name = compile_word(name.into());
+      let body = indent(body.compile(
         if return_type.kind.unwrap_known() == Type::Unit {
-          "".to_string()
+          ExpressionCompilationPosition::InnerLine
         } else {
-          format!(
-            " -> {}{}",
-            self.return_attributes.compile(),
-            return_type.monomorphized_name(names)
-          )
+          ExpressionCompilationPosition::Return
         },
-        indent(body.compile(
+        names,
+        target,
+      ));
+      match target {
+        CompilerTarget::C => {
+          format!("{return_type_name} {fn_name}({args}) {{{body}\n}}")
+        }
+        CompilerTarget::WGSL | CompilerTarget::Interpreter => format!(
+          "{}fn {fn_name}({args}){} {{{body}\n}}",
+          self
+            .entry_point
+            .as_ref()
+            .map(|e| e.compile())
+            .unwrap_or(String::new()),
           if return_type.kind.unwrap_known() == Type::Unit {
-            ExpressionCompilationPosition::InnerLine
+            "".to_string()
           } else {
-            ExpressionCompilationPosition::Return
+            format!(
+              " -> {}{return_type_name}",
+              self.return_attributes.compile()
+            )
           },
-          names,
-          target
-        ))
-      )
+        ),
+      }
     };
     Ok(
       if Some(EntryPoint::Cpu) != self.entry_point && allowed_on_gpu {

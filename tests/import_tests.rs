@@ -7,17 +7,17 @@ use std::path::Path;
 /// description) to out/. Returns Ok(wgsl) on success, or
 /// Err(Vec<CompileErrorKind>) on compile error. Panics on parse errors.
 fn compile_import(name: &str) -> Result<String, Vec<CompileErrorKind>> {
-  fs::create_dir_all("./out/").expect("Unable to create out directory");
+  fs::create_dir_all("./out/import/").expect("Unable to create out directory");
   match compile_easl_file_to_wgsl(Path::new(&format!(
     "./data/import/{name}/main.easl"
   ))) {
     Ok(Ok(Ok(wgsl))) => {
-      fs::write(format!("./out/{name}.wgsl"), &wgsl)
+      fs::write(format!("./out/import/{name}.wgsl"), &wgsl)
         .expect("Unable to write output file");
       Ok(wgsl)
     }
     Ok(Ok(Err((document, error_log)))) => {
-      fs::write(format!("./out/{name}.wgsl"), error_log.describe(&document))
+      fs::write(format!("./out/import/{name}.wgsl"), error_log.describe(&document))
         .expect("Unable to write output file");
       Err(error_log.errors.into_iter().map(|e| e.kind).collect())
     }
@@ -37,7 +37,7 @@ fn compile_import(name: &str) -> Result<String, Vec<CompileErrorKind>> {
         .map(|err| failed_documents.describe_parse_error(err))
         .collect::<Vec<String>>()
         .join("\n\n");
-      fs::write(format!("./out/{name}.wgsl"), &description)
+      fs::write(format!("./out/import/{name}.wgsl"), &description)
         .expect("Unable to write output file");
       panic!("Unexpected parse error in {name}:\n{description}");
     }
@@ -50,7 +50,7 @@ fn validate_wgsl(name: &str, wgsl: &str) {
   let module = naga::front::wgsl::parse_str(wgsl).unwrap_or_else(|e| {
     panic!(
       "{name}: naga failed to parse generated WGSL:\n{e}\n\
-       See out/{name}.wgsl for the generated code.",
+       See out/import/{name}.wgsl for the generated code.",
     )
   });
   let mut validator = naga::valid::Validator::new(
@@ -60,7 +60,7 @@ fn validate_wgsl(name: &str, wgsl: &str) {
   validator.validate(&module).unwrap_or_else(|e| {
     panic!(
       "{name}: naga validation failed on generated WGSL:\n{e}\n\
-       See out/{name}.wgsl for the generated code."
+       See out/import/{name}.wgsl for the generated code."
     )
   });
 }
@@ -70,7 +70,7 @@ fn assert_compiles(name: &str) {
   let wgsl = compile_import(name).unwrap_or_else(|errors| {
     panic!(
       "{name}/main.easl failed to compile: {errors:?}\n\
-       See out/{name}.wgsl for details."
+       See out/import/{name}.wgsl for details."
     )
   });
   validate_wgsl(name, &wgsl);

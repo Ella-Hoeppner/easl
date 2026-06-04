@@ -9,7 +9,7 @@ use crate::compiler::{
   error::CompileError,
   expression::{Accessor, Exp, ExpKind, Number, SwizzleField},
   functions::{AbstractFunctionSignature, FunctionImplementationKind},
-  program::Program,
+  program::{CompilerTarget, Program},
   structs::AbstractStruct,
   types::{
     AbstractType, ConcreteArraySize, ConstGenericResolution, ExpTypeInfo, Type,
@@ -3408,7 +3408,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         }
       }
     }
-    let wgsl = program.compile_to_wgsl()?;
+    let wgsl = program.compile_to_target(CompilerTarget::WGSL)?;
     env.wgsl = wgsl;
     Ok(env)
   }

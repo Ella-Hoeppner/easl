@@ -1,0 +1,3 @@
+(defn double-value [x: f32]: f32
+  (* x 2.))
+

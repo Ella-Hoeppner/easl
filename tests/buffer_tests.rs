@@ -1,4 +1,5 @@
 use easl::compiler::core::load_easl_program_from_file;
+use easl::compiler::program::CompilerTarget;
 use easl::interpreter::run_program_with_capture_from_path;
 use std::fs;
 use std::path::Path;
@@ -10,10 +11,10 @@ fn run_buffer_test(name: &str) {
   let source_path_str = format!("./data/buffer/{name}.easl");
   let source_path = Path::new(&source_path_str);
 
-  fs::create_dir_all("./out/").expect("Unable to create out directory");
+  fs::create_dir_all("./out/buffer/").expect("Unable to create out directory");
   match load_easl_program_from_file(source_path) {
     Ok(Ok((_, Ok(mut program)))) => {
-      let errors = program.validate_raw_program();
+      let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
 
       let prints = run_program_with_capture_from_path(program, source_path)
@@ -26,7 +27,7 @@ fn run_buffer_test(name: &str) {
     }
     Ok(Ok((document, Err(errors)))) => {
       let description = errors.describe(&document);
-      fs::write(format!("./out/{name}.wgsl"), description.clone())
+      fs::write(format!("./out/buffer/{name}.wgsl"), description.clone())
         .expect("Unable to write output file");
       panic!("{description}");
     }
@@ -46,7 +47,7 @@ fn run_buffer_test(name: &str) {
         .map(|err| failed_documents.describe_parse_error(err))
         .collect::<Vec<String>>()
         .join("\n\n");
-      fs::write(format!("./out/{name}.wgsl"), &description)
+      fs::write(format!("./out/buffer/{name}.wgsl"), &description)
         .expect("Unable to write output file");
       panic!("Unexpected parse error in {name}:\n{description}");
     }

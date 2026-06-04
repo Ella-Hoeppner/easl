@@ -1922,7 +1922,13 @@ impl TypedExp {
             }
           )
         }
-        Number::Float(f) => format!("{f}f"),
+        Number::Float(f) => match target {
+          CompilerTarget::WGSL | CompilerTarget::Interpreter => format!("{f}f"),
+          CompilerTarget::C => {
+            let s = f.to_string();
+            if s.contains('.') { s } else { format!("{s}.") }
+          }
+        },
       }),
       BooleanLiteral(b) => wrap(format!("{b}")),
       StringLiteral(_) => panic!("Attempting to compile string"),
@@ -1943,7 +1949,8 @@ impl TypedExp {
                       _ => {}
                     },
                     SpecialCasedBuiltinFunction::ZeroedArray => {
-                      return self.data.kind.monomorphized_name(names) + "()";
+                      return self.data.kind.monomorphized_name(names, target)
+                        + "()";
                     }
                   }
                 }
@@ -2115,10 +2122,10 @@ impl TypedExp {
                 "{} {}: {};",
                 variable_kind.compile(),
                 compile_word(name),
-                value_exp.data.monomorphized_name(names),
+                value_exp.data.monomorphized_name(names, target),
               )
             } else {
-              let type_name = value_exp.data.monomorphized_name(names);
+              let type_name = value_exp.data.monomorphized_name(names, target);
               let compiled_value =
                 if value_exp.data.ownership != Ownership::Owned {
                   value_exp.compile_with_deref(names, target)
@@ -2238,7 +2245,7 @@ impl TypedExp {
                             .iter()
                             .map(|variant| variant.inner_type.unwrap_known())
                             .collect(),
-                          names,
+                          names, target
                         );
                       let Some(discriminant) = e
                         .variants
@@ -2297,6 +2304,7 @@ impl TypedExp {
                           scrutinee.clone().compile(InnerExpression, names, target).into(),
                           &e,
                           names,
+                          target
                         );
                       format!(
                         "{}: {{\n  let {} = {};{}\n{finisher}}}",
@@ -2424,7 +2432,7 @@ impl TypedExp {
       } => format!(
         "\nfor (var {}: {} = {}; {}; {}) {{{}\n}}",
         compile_word(increment_variable_name.0),
-        increment_variable_type.monomorphized_name(names),
+        increment_variable_type.monomorphized_name(names, target),
         increment_variable_initial_value_expression.compile(
           ExpressionCompilationPosition::InnerExpression,
           names,
@@ -2479,7 +2487,7 @@ impl TypedExp {
       ),
       ArrayLiteral(children) => wrap(format!(
         "{}({})",
-        self.data.monomorphized_name(names),
+        self.data.monomorphized_name(names, target),
         children
           .into_iter()
           .map(|child| child.compile(
@@ -3476,6 +3484,7 @@ impl TypedExp {
     &mut self,
     base_program: &Program,
     new_program: &mut Program,
+    target: CompilerTarget,
   ) -> CompileResult<()> {
     let source_trace = self.source_trace.clone();
     self.walk_mut::<CompileError>(&mut |exp: &mut TypedExp| {
@@ -3497,6 +3506,7 @@ impl TypedExp {
                 .generic_arg_monomorphized_names(
                   &variant_types,
                   &mut new_program.names.write().unwrap(),
+                  target,
                 );
               *name = new_program
                 .names
@@ -3522,6 +3532,7 @@ impl TypedExp {
               f.return_type.unwrap_known(),
               base_program,
               new_program,
+              target,
               implementation
                 .read()
                 .unwrap()
@@ -3562,6 +3573,7 @@ impl TypedExp {
                     let inner_type_name =
                       exp.data.kind.unwrap_known().monomorphized_name(
                         &mut new_program.names.write().unwrap(),
+                        target,
                       );
                     std::mem::swap(
                       f_name,
@@ -3592,6 +3604,7 @@ impl TypedExp {
                           monomorphized_struct_rc.clone(),
                           &base_program.typedefs,
                           &mut new_program.names.write().unwrap(),
+                          target,
                           exp.source_trace.clone(),
                         )?,
                       );
@@ -3639,6 +3652,7 @@ impl TypedExp {
                             .map(|variant| variant.inner_type.unwrap_known())
                             .collect(),
                           &mut new_program.names.write().unwrap(),
+                          target,
                         );
                       std::mem::swap(
                         f_name,
@@ -3704,6 +3718,7 @@ impl TypedExp {
                         exp.data.unwrap_known().clone(),
                         base_program,
                         new_program,
+                        target,
                         composite
                           .read()
                           .unwrap()

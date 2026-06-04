@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use std::sync::Arc;
 
+use crate::compiler::program::CompilerTarget;
 use crate::{
   compiler::{
     annotation::extract_annotation,
@@ -243,13 +244,14 @@ impl AbstractStructField {
     self,
     typedefs: &TypeDefs,
     names: &mut NameContext,
+    target: CompilerTarget,
   ) -> CompileResult<String> {
     let annotation = self.attributes.compile();
     let name = compile_word(self.name);
     let field_type =
       self
         .field_type
-        .compile(typedefs, names, &self.source_trace)?;
+        .compile(typedefs, names, &self.source_trace, target)?;
     Ok(format!("  {annotation}{name}: {field_type}"))
   }
 }
@@ -305,6 +307,7 @@ impl AbstractStruct {
     self,
     typedefs: &TypeDefs,
     names: &mut NameContext,
+    target: CompilerTarget,
   ) -> CompileResult<Option<String>> {
     self
       .generic_args
@@ -322,11 +325,11 @@ impl AbstractStruct {
           })
           .collect::<CompileResult<Vec<Type>>>()?;
         let monomorphized_name =
-          compile_word(self.monomorphized_name(&field_types, names));
+          compile_word(self.monomorphized_name(&field_types, names, target));
         let fields = self
           .fields
           .into_iter()
-          .map(|field| field.compile(typedefs, names))
+          .map(|field| field.compile(typedefs, names, target))
           .collect::<CompileResult<Vec<String>>>()?
           .join(",\n");
         Ok(format!("struct {monomorphized_name} {{\n{fields}\n}}"))
@@ -337,6 +340,7 @@ impl AbstractStruct {
     &self,
     field_types: &Vec<Type>,
     names: &mut NameContext,
+    target: CompilerTarget,
   ) -> Arc<str> {
     let mut generic_type_bindings = HashMap::new();
     let mut generic_constant_bindings = HashMap::new();
@@ -376,7 +380,7 @@ impl AbstractStruct {
                 + "_"
                 + &generic_type_bindings
                   .get(generic_arg_name)
-                  .map(|x| x.monomorphized_name(names))
+                  .map(|x| x.monomorphized_name(names, target))
                   .unwrap_or_else(|| {
                     format!(
                       "{}",
@@ -393,6 +397,7 @@ impl AbstractStruct {
     s: Arc<Self>,
     typedefs: &TypeDefs,
     names: &mut NameContext,
+    target: CompilerTarget,
     source_trace: SourceTrace,
   ) -> CompileResult<Arc<str>> {
     let concretized =
@@ -405,6 +410,7 @@ impl AbstractStruct {
           .map(|f| f.field_type.unwrap_known())
           .collect(),
         names,
+        target,
       ),
     )
   }
@@ -713,7 +719,11 @@ impl Struct {
       },
     )
   }
-  pub fn monomorphized_name(&self, names: &mut NameContext) -> Arc<str> {
+  pub fn monomorphized_name(
+    &self,
+    names: &mut NameContext,
+    target: CompilerTarget,
+  ) -> Arc<str> {
     self.abstract_ancestor.monomorphized_name(
       &self
         .fields
@@ -721,6 +731,7 @@ impl Struct {
         .map(|f| f.field_type.unwrap_known())
         .collect(),
       names,
+      target,
     )
   }
   fn bitcastable_chunk_accessors_inner(

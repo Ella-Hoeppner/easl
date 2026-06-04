@@ -25,7 +25,9 @@ fn run_full_test(name: &str) {
 
   match load_easl_program_from_file(source_path) {
     Ok(Ok((_, Ok(mut program)))) => {
-      let errors = program.validate_raw_program();
+      use easl::compiler::program::CompilerTarget;
+
+      let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
 
       // Use a pre-set reload flag so the window auto-closes after the first

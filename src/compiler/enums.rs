@@ -9,7 +9,7 @@ use crate::{
     error::{
       CompileError, CompileErrorKind::*, CompileResult, SourceTrace, err,
     },
-    program::{NameContext, TypeDefs},
+    program::{CompilerTarget, NameContext, TypeDefs},
     types::{
       AbstractType, ConstGenericValue, ExpTypeInfo, GenericArgument,
       GenericArgumentValue, Type, TypeConstraint, TypeState,
@@ -369,6 +369,7 @@ impl AbstractEnum {
     self,
     typedefs: &TypeDefs,
     names: &mut NameContext,
+    target: CompilerTarget,
   ) -> CompileResult<Option<String>> {
     self
       .generic_args
@@ -386,7 +387,7 @@ impl AbstractEnum {
           })
           .collect::<CompileResult<Vec<Type>>>()?;
         let monomorphized_name =
-          compile_word(self.monomorphized_name(&field_types, names));
+          compile_word(self.monomorphized_name(&field_types, names, target));
         let size = self.inner_data_size_in_u32s()?;
         let unit_constructor_constants: Vec<String> = self
           .variants
@@ -394,8 +395,11 @@ impl AbstractEnum {
           .enumerate()
           .map(|(i, variant)| {
             Ok(if variant.inner_type == AbstractType::Type(Type::Unit) {
-              let generic_arg_names =
-                self.generic_arg_monomorphized_names(&field_types, names);
+              let generic_arg_names = self.generic_arg_monomorphized_names(
+                &field_types,
+                names,
+                target,
+              );
               let const_name = compile_word(names.get_monomorphized_name(
                 variant.name.clone(),
                 generic_arg_names,
@@ -446,6 +450,7 @@ impl AbstractEnum {
     &self,
     variant_types: &Vec<Type>,
     names: &mut NameContext,
+    target: CompilerTarget,
   ) -> Vec<Arc<str>> {
     let mut generic_type_bindings = HashMap::new();
     let mut generic_constant_bindings = HashMap::new();
@@ -470,7 +475,7 @@ impl AbstractEnum {
         GenericArgument::Type(_) => generic_type_bindings
           .get(name)
           .unwrap()
-          .monomorphized_name(names)
+          .monomorphized_name(names, target)
           .into(),
         GenericArgument::Constant => {
           format!("{}", generic_constant_bindings.get(name).unwrap()).into()
@@ -482,9 +487,10 @@ impl AbstractEnum {
     &self,
     variant_types: &Vec<Type>,
     names: &mut NameContext,
+    target: CompilerTarget,
   ) -> Arc<str> {
     let generic_arg_names =
-      self.generic_arg_monomorphized_names(variant_types, names);
+      self.generic_arg_monomorphized_names(variant_types, names, target);
     names.get_monomorphized_name(self.name.0.clone(), generic_arg_names)
   }
   pub fn fill_abstract_generics(
@@ -598,6 +604,7 @@ impl AbstractEnum {
     typedefs: &TypeDefs,
     source_trace: SourceTrace,
     names: &mut NameContext,
+    target: CompilerTarget,
   ) -> CompileResult<Arc<str>> {
     let concretized =
       Self::concretize(e.clone(), typedefs, &vec![], source_trace)?;
@@ -609,6 +616,7 @@ impl AbstractEnum {
           .map(|variant| variant.inner_type.unwrap_known())
           .collect(),
         names,
+        target,
       ),
     )
   }
@@ -649,7 +657,11 @@ impl Enum {
       },
     )
   }
-  pub fn monomorphized_name(&self, names: &mut NameContext) -> Arc<str> {
+  pub fn monomorphized_name(
+    &self,
+    names: &mut NameContext,
+    target: CompilerTarget,
+  ) -> Arc<str> {
     self.abstract_ancestor.monomorphized_name(
       &self
         .variants
@@ -657,6 +669,7 @@ impl Enum {
         .map(|v| v.inner_type.unwrap_known())
         .collect(),
       names,
+      target,
     )
   }
   pub fn inner_data_size_in_u32s(&self) -> CompileResult<usize> {

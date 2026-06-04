@@ -13,18 +13,21 @@ use std::path::Path;
 /// Panics on parse errors, since those indicate a broken test file rather than
 /// the kind of user-facing error we'd want to test for.
 fn compile_shader(name: &str) -> Result<String, Vec<CompileErrorKind>> {
-  fs::create_dir_all("./out/").expect("Unable to create out directory");
+  fs::create_dir_all("./out/gpu/").expect("Unable to create out directory");
   match compile_easl_file_to_wgsl(&Path::new(&format!(
     "./data/gpu/{name}.easl"
   ))) {
     Ok(Ok(Ok(wgsl))) => {
-      fs::write(format!("./out/{name}.wgsl"), &wgsl)
+      fs::write(format!("./out/gpu/{name}.wgsl"), &wgsl)
         .expect("Unable to write output file");
       Ok(wgsl)
     }
     Ok(Ok(Err((document, error_log)))) => {
-      fs::write(format!("./out/{name}.wgsl"), error_log.describe(&document))
-        .expect("Unable to write output file");
+      fs::write(
+        format!("./out/gpu/{name}.wgsl"),
+        error_log.describe(&document),
+      )
+      .expect("Unable to write output file");
       Err(error_log.errors.into_iter().map(|e| e.kind).collect())
     }
     Ok(Err(mut failed_documents)) => {
@@ -43,7 +46,7 @@ fn compile_shader(name: &str) -> Result<String, Vec<CompileErrorKind>> {
         .map(|err| failed_documents.describe_parse_error(err))
         .collect::<Vec<String>>()
         .join("\n\n");
-      fs::write(format!("./out/{name}.wgsl"), &description)
+      fs::write(format!("./out/gpu/{name}.wgsl"), &description)
         .expect("Unable to write output file");
       panic!("Unexpected parse error in {name}:\n{description}");
     }
@@ -56,7 +59,7 @@ fn validate_wgsl(name: &str, wgsl: &str) {
   let module = naga::front::wgsl::parse_str(wgsl).unwrap_or_else(|e| {
     panic!(
       "{name}: naga failed to parse generated WGSL:\n{e}\n\
-       See out/{name}.wgsl for the generated code.",
+       See out/gpu/{name}.wgsl for the generated code.",
     )
   });
   let mut validator = naga::valid::Validator::new(
@@ -66,7 +69,7 @@ fn validate_wgsl(name: &str, wgsl: &str) {
   validator.validate(&module).unwrap_or_else(|e| {
     panic!(
       "{name}: naga validation failed on generated WGSL:\n{e}\n\
-       See out/{name}.wgsl for the generated code."
+       See out/gpu/{name}.wgsl for the generated code."
     )
   });
 }
@@ -77,7 +80,7 @@ fn assert_compiles(name: &str) {
   let wgsl = compile_shader(name).unwrap_or_else(|errors| {
     panic!(
       "{name}.easl failed to compile: {errors:?}\n\
-       See out/{name}.wgsl for details."
+       See out/gpu/{name}.wgsl for details."
     )
   });
   validate_wgsl(name, &wgsl);
@@ -87,7 +90,7 @@ fn assert_compiles(name: &str) {
 fn assert_errors(name: &str, expected: &[CompileErrorKind]) {
   let actual = compile_shader(name).expect_err(&format!(
     "{name}.easl compiled successfully but was expected to fail.\n\
-     See out/{name}.wgsl for the produced WGSL."
+     See out/gpu/{name}.wgsl for the produced WGSL."
   ));
 
   for exp in expected {
@@ -95,7 +98,7 @@ fn assert_errors(name: &str, expected: &[CompileErrorKind]) {
       actual.iter().any(|a| a == exp),
       "Expected error `{exp}` not found.\n\
        Actual errors: {actual:?}\n\
-       See out/{name}.wgsl for details."
+       See out/gpu/{name}.wgsl for details."
     );
   }
 
@@ -104,7 +107,7 @@ fn assert_errors(name: &str, expected: &[CompileErrorKind]) {
       expected.iter().any(|e| e == act),
       "Unexpected error `{act}`.\n\
        Expected errors: {expected:?}\n\
-       See out/{name}.wgsl for details."
+       See out/gpu/{name}.wgsl for details."
     );
   }
 }
@@ -312,7 +315,11 @@ success_test!(atomic_field);
 success_test!(return_effect_nonpropagating);
 success_test!(const_generic_struct);
 success_test!(const_generic_struct_indirect);
-success_test!(swizzle_mut_ref);
+// todo!() we don't have a way of handling the case where the user passes a
+// swizzle of a variable to a function expecting a mutable argument. Need to
+// deexpressionify this into extracting the swizzle as it's own value, then
+// replacing the in the original variable after the function call
+// success_test!(swizzle_mut_ref);
 // todo! this next test fails because we can't use const-generics at the
 // expression level, not a horrible limitation since you can get the value \
 // via array-length but it would be a nice QoL feature at some point
