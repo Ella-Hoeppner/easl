@@ -71,7 +71,7 @@ pub enum FunctionImplementationKind {
   Builtin {
     effect_type: EffectType,
     target_configuration: FunctionTargetConfiguration,
-    target_specific_emulations: HashMap<CompilerTarget, String>,
+    target_specific_emulations: HashSet<CompilerTarget>,
   },
   StructConstructor,
   EnumConstructor(Arc<str>),
@@ -152,7 +152,7 @@ impl Default for AbstractFunctionSignature {
       implementation: FunctionImplementationKind::Builtin {
         effect_type: EffectType::empty(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       associative: false,
       captured_scope: None,

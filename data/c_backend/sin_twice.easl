@@ -1,0 +1,3 @@
+(defn sin-twice [x: f32]: f32
+  (sin (sin x)))
+

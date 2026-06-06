@@ -5,7 +5,10 @@ use std::sync::{Arc, RwLock};
 use fsexp::{Ast, document::Document, syntax::EncloserOrOperator};
 use take_mut::take;
 
-use crate::compiler::builtins::built_in_structs_for_target;
+use crate::compiler::builtins::{
+  EmulatedFunctionResult, EmulatedFunctionSignature,
+  built_in_structs_for_target, generate_emulated_builtin,
+};
 use crate::compiler::types::ExpTypeInfo;
 use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
 use crate::parse::EaslMultiDocument;
@@ -249,6 +252,8 @@ pub struct Program {
   pub abstract_functions:
     HashMap<Arc<str>, Vec<Arc<RwLock<AbstractFunctionSignature>>>>,
   pub top_level_vars: Vec<TopLevelVar>,
+  pub emulated_functions:
+    HashMap<EmulatedFunctionSignature, EmulatedFunctionResult>,
 }
 impl Clone for Program {
   fn clone(&self) -> Self {
@@ -257,6 +262,7 @@ impl Clone for Program {
       typedefs: self.typedefs.clone(),
       abstract_functions: self.abstract_functions.clone(),
       top_level_vars: self.top_level_vars.clone(),
+      emulated_functions: self.emulated_functions.clone(),
     }
   }
 }
@@ -274,6 +280,7 @@ impl Program {
       typedefs: TypeDefs::empty(),
       abstract_functions: HashMap::new(),
       top_level_vars: vec![],
+      emulated_functions: HashMap::new(),
     }
   }
   pub fn add_top_level_var(&mut self, var: TopLevelVar, errors: &mut ErrorLog) {
@@ -2400,22 +2407,15 @@ impl Program {
         }
       }
     }
+    for (_, result) in self.emulated_functions.iter() {
+      compiled_string += &result.content;
+      compiled_string += "\n\n";
+    }
     for f in self.abstract_functions_iter() {
       let f = f.read().unwrap().clone();
       if f.generic_args.is_empty() && !f.has_uninlined_higher_order_arguments()
       {
         match f.implementation {
-          FunctionImplementationKind::Builtin {
-            target_specific_emulations,
-            ..
-          } => {
-            if let Some(target_specific_emulation) =
-              target_specific_emulations.get(&target)
-            {
-              compiled_string += &target_specific_emulation;
-              compiled_string += "\n\n";
-            }
-          }
           FunctionImplementationKind::Composite(implementation) => {
             {
               let implementation = implementation.read().unwrap();
@@ -3673,6 +3673,62 @@ impl Program {
       }
     }
   }
+  pub fn track_emulated_builtins(&mut self, target: CompilerTarget) {
+    let mut names = self.names.write().unwrap();
+    let mut emulated_functions = HashMap::new();
+    for signature in self.abstract_functions_iter() {
+      let signature = signature.read().unwrap();
+      if let FunctionImplementationKind::Composite(f) =
+        &signature.implementation
+      {
+        f.write()
+          .unwrap()
+          .expression
+          .walk_mut(&mut |exp| {
+            if let ExpKind::Application(f, args) = &mut exp.kind
+              && let ExpKind::Name(f_name) = &mut f.kind
+              && let Type::Function(f) = f.data.unwrap_known()
+              && let Some(abstract_f) = f.abstract_ancestor
+              && let FunctionImplementationKind::Builtin {
+                target_specific_emulations,
+                ..
+              } = &abstract_f.read().unwrap().implementation
+              && target_specific_emulations.contains(&target)
+            {
+              let arg_types = args
+                .iter()
+                .map(|a| {
+                  a.data.unwrap_known().monomorphized_name(&mut names, target)
+                })
+                .collect();
+              let return_type =
+                f.return_type.monomorphized_name(&mut names, target);
+              let emulated_signature = EmulatedFunctionSignature {
+                name: f_name.to_string(),
+                arg_types,
+                return_type,
+              };
+              if !emulated_functions.contains_key(&emulated_signature) {
+                emulated_functions.insert(
+                  emulated_signature.clone(),
+                  generate_emulated_builtin(
+                    emulated_signature.clone(),
+                    target,
+                    &mut names,
+                  ),
+                );
+              }
+              let emulation_result =
+                emulated_functions.get(&emulated_signature).unwrap();
+              *f_name = emulation_result.name.as_str().into();
+            }
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
+      }
+    }
+    self.emulated_functions = emulated_functions;
+  }
   pub fn catch_expressions_after_control_flow(
     &mut self,
     errors: &mut ErrorLog,
@@ -3862,6 +3918,7 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.track_emulated_builtins(target);
     errors
   }
   pub fn gather_type_annotations(&self) -> Vec<(SourceTrace, TypeState)> {

@@ -8,7 +8,7 @@ use fsexp::{document::DocumentPosition, syntax::EncloserOrOperator};
 
 use crate::compiler::effects::EffectType;
 use crate::compiler::entry::BuiltinIOAttribute;
-use crate::compiler::program::CompilerTarget;
+use crate::compiler::program::{CompilerTarget, NameContext};
 use crate::{
   compiler::{
     effects::Effect,
@@ -866,11 +866,7 @@ fn trigonometry_functions() -> Vec<AbstractFunctionSignature> {
         implementation: FunctionImplementationKind::Builtin {
           effect_type: EffectType::empty(),
           target_configuration: FunctionTargetConfiguration::Default,
-          target_specific_emulations: [(
-            CompilerTarget::C,
-            "#include <math.h>".to_string(),
-          )]
-          .into(),
+          target_specific_emulations: [CompilerTarget::C].into(),
         },
         ..Default::default()
       }]
@@ -1600,7 +1596,7 @@ fn texture_functions() -> Vec<AbstractFunctionSignature> {
         effect_type: Effect::FragmentExclusiveFunction("texture-sample".into())
           .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -1624,7 +1620,7 @@ fn texture_functions() -> Vec<AbstractFunctionSignature> {
         )
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -1792,7 +1788,7 @@ fn array_functions() -> Vec<AbstractFunctionSignature> {
         target_configuration: FunctionTargetConfiguration::SpecialCased(
           SpecialCasedBuiltinFunction::ZeroedArray,
         ),
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -1812,7 +1808,7 @@ fn array_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin {
         effect_type: Effect::CPUExclusiveFunction("zeroed-array".into()).into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -1839,7 +1835,7 @@ fn derivative_functions() -> Vec<AbstractFunctionSignature> {
         implementation: FunctionImplementationKind::Builtin {
           effect_type: Effect::FragmentExclusiveFunction(name.into()).into(),
           target_configuration: FunctionTargetConfiguration::Default,
-          target_specific_emulations: HashMap::new(),
+          target_specific_emulations: HashSet::new(),
         },
         ..Default::default()
       })
@@ -1862,7 +1858,7 @@ fn print_functions() -> Vec<AbstractFunctionSignature> {
       target_configuration: FunctionTargetConfiguration::SpecialCased(
         SpecialCasedBuiltinFunction::Print,
       ),
-      target_specific_emulations: HashMap::new(),
+      target_specific_emulations: HashSet::new(),
     },
     ..Default::default()
   }]
@@ -1897,7 +1893,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -1930,7 +1926,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -1958,7 +1954,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -1983,7 +1979,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -1996,7 +1992,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -2014,7 +2010,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -2028,7 +2024,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -2042,7 +2038,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -2056,7 +2052,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -2074,7 +2070,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -2088,7 +2084,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -2102,7 +2098,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -2116,7 +2112,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -2131,7 +2127,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -2146,7 +2142,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -2161,7 +2157,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin {
         effect_type: Effect::CPUExclusiveFunction("load-image".into()).into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -2180,7 +2176,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         effect_type: Effect::CPUExclusiveFunction("blank-texture".into())
           .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -2202,7 +2198,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -2217,7 +2213,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -2240,7 +2236,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         effect_type: Effect::CPUExclusiveFunction("blank-texture".into())
           .into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     },
@@ -2275,7 +2271,7 @@ fn dynamic_array_functions() -> Vec<AbstractFunctionSignature> {
       effect_type: Effect::CPUExclusiveFunction("into-dynamic-array".into())
         .into(),
       target_configuration: FunctionTargetConfiguration::Default,
-      target_specific_emulations: HashMap::new(),
+      target_specific_emulations: HashSet::new(),
     },
     ..Default::default()
   }]
@@ -2464,7 +2460,7 @@ fn builtin_attribute_lookup_functions() -> Vec<AbstractFunctionSignature> {
         effect_type: Effect::LookupBuiltinAttribute(attribute).into(),
         target_configuration:
           FunctionTargetConfiguration::BuiltinAttributeLookup(attribute),
-        target_specific_emulations: HashMap::new(),
+        target_specific_emulations: HashSet::new(),
       },
       ..Default::default()
     })
@@ -2907,4 +2903,33 @@ pub fn rename_builtin_fn(name: &str) -> Option<String> {
     _ => None,
   }
   .map(|name| name.to_string())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EmulatedFunctionSignature {
+  pub name: String,
+  pub arg_types: String,
+  pub return_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EmulatedFunctionResult {
+  pub name: String,
+  pub content: String,
+}
+
+pub fn generate_emulated_builtin(
+  signature: EmulatedFunctionSignature,
+  target: CompilerTarget,
+  names: &mut NameContext,
+) -> EmulatedFunctionResult {
+  match signature.name.as_str() {
+    "sin" => EmulatedFunctionResult {
+      name: "sin".to_string(),
+      content: "#include <math.h>".to_string(),
+    },
+    _ => panic!(
+      "couldn't generate an emulation\ntarget: {target:?}\nsignature: {signature:#?}"
+    ),
+  }
 }
