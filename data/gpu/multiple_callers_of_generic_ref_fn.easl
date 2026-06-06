@@ -1,0 +1,326 @@
+(def TAU: f32
+     6.283185)
+
+(defn cis [x: f32]: vec2f
+  (vec2f (cos x) (sin x)))
+
+(var rand-state: f32
+     0.)
+
+(defn set-rand-seed [x: f32]: ()
+  (= rand-state x))
+
+(defn hash [@var x: u32]: u32
+  (+= x (<< x 10))
+  (= x (^ x (>> x 6)))
+  (+= x (<< x 3))
+  (= x (^ x (>> x 11)))
+  (+= x (<< x 15))
+  x)
+
+(defn rand []: f32
+  ; based on https://amindforeverprogramming.blogspot.com/2013/07/random-floats-in-glsl-330.html
+
+  (= rand-state
+     (+ rand-state 0.025))
+  (let [mantissa-mask 8388607u
+        one 1065353216u]
+    (-> rand-state
+        (bitcast <>): u32
+        hash
+        (& mantissa-mask)
+        (| one)
+        (bitcast <>): f32
+        (- 1.))))
+
+(defn rand [maximum: f32]: f32
+  (* maximum (rand)))
+
+(defn rand [minimum: f32
+            maximum: f32]: f32
+  (+ minimum
+     (* (- maximum minimum) (rand))))
+
+(defn rand [maximum: u32]: u32
+  (u32 (* (f32 maximum) (rand))))
+
+(defn rand-dir []: vec2f
+  (cis (* (rand) TAU)))
+
+(defn rand-exp []: f32
+  (- (log (rand))))
+
+(defn rand-norm []: vec2f
+  (* (sqrt (* -2. (log (rand))))
+     (cis (* TAU (rand)))))
+
+(defn (last T
+            C: u32)
+      [a: [C: T]]: T
+      (a (- (array-length a) 1)))
+
+(defn slider [x: f32]: f32
+  x)
+
+(defn uni->bi [x: f32]: f32
+  (-> x (* 2.) (- 1.)))
+
+(defn bi->uni [x: f32]: f32
+  (-> x (+ 1.) (* 0.5)))
+
+(var filter: f32)
+
+(defn osc [x: f32]: f32
+  (sin (* TAU x)))
+
+(defn square [x: f32]: f32
+  (if (< (% x 1.) 0.5)
+    1.
+    -1.))
+
+(defn saw [x: f32]: f32
+  (-> x
+      (+ (ceil x))
+      (+ 0.5)
+      (% 1.)
+      (* 2.)
+      (- 1.)))
+
+(defn sympow [x: f32
+              p: f32]: f32
+  (* (sign x) (pow (abs x) p)))
+
+(defn beat [t: f32
+            squish: f32
+            sympow-factor: f32]: f32
+  (-> t
+      osc
+      bi->uni
+      (pow squish)
+      uni->bi
+      (sympow sympow-factor)
+      bi->uni))
+
+(defn (fm-update C: u32)
+      [@var @ref state: [C: f32]
+       stages: [C: vec2f]
+       t: f32
+       dt: f32]: ()
+      (for [i (array-length state)]
+        (let [stage (stages i)]
+          (+= (state i)
+              (* dt
+                 (pow (sqrt stage.x)
+                      (osc (* stage.y
+                              (if (== i 0)
+                                t
+                                (state (- i 1)))))))))))
+
+(var main-fm-state: [2: f32])
+
+(var drum-fm-state: [3: f32])
+
+(defn audio [t: f32]: f32
+  (set-rand-seed t)
+  (let [melody [[1.5 (slider 0)]
+                [1.75 (slider 0)]
+                [1.5 (slider 0.6402101)]
+                [2. (slider 0)]
+                [2. (slider 0)]
+                [2.25 (slider 0.16231525)]
+                [2.75 (slider 0)]
+                [2.25 (slider 0.139337)]]
+        time-factor (/ (slider 0.3))
+        scaled-t (* t time-factor)
+        melody-value (-> scaled-t
+                         u32
+                         (% (array-length melody))
+                         melody)
+        fundamental (-> melody-value (<> 0u) (* 90.))
+        drum-fundamental 40.
+        swing (-> melody-value (<> 1u) (* 10.))
+        dt (/ 44100.)]
+    (fm-update main-fm-state
+               [(vec2f 2. (* fundamental 0.25))
+                (vec2f 1.33333 (* fundamental 0.5))]
+               t
+               dt)
+    (fm-update drum-fm-state
+               [(vec2f 1.5 (* drum-fundamental 0.5))
+                (vec2f 2. (* drum-fundamental 2.))
+                (vec2f 1.5 (* drum-fundamental 0.5))]
+               t
+               dt)
+    (let [unfiltered-sample (+ (* (slider 1.)
+                                  (beat (+ (/ scaled-t 2.) (/ 8))
+                                        20.
+                                        0.05)
+                                  (-> drum-fm-state
+                                      last
+                                      (* drum-fundamental)
+                                      osc
+                                      (sympow 0.2))
+                                  #_(sympow (osc (* t 50.))
+                                            (slider 0.23405948)))
+                               (* (slider 0.3)
+                                  (max (beat (+ (/ scaled-t 2.) (/ 3. 16.))
+                                             150.
+                                             60.)
+                                       (beat (+ scaled-t (/ 6. 16.))
+                                             70.
+                                             60.))
+                                  (rand))
+                               (* (slider 0.3)
+                                  (* (mix 0.2
+                                          1.
+                                          (beat scaled-t swing 0.025))
+                                     (-> main-fm-state
+                                         last
+                                         (* fundamental)
+                                         osc
+                                         (sympow 0.11)))))]
+      (= filter
+         (mix filter
+              unfiltered-sample
+              (slider 1.)))
+      (* (slider 0.25) filter))))
+
+#_(defn audio-2 [t: f32]: f32
+    (let [fundamental 80.
+          divisions 100u
+          range 7.
+          @var sum 0.]
+      (for [i
+            0u
+            (< i divisions)
+            (= i (+ i 1))]
+        (set-rand-seed (f32 i))
+        (+= sum
+            (let [f (-> i
+                        f32
+                        (/ (f32 (- divisions 1)))
+                        (* range))]
+              (* (spectrum-amplitude f t)
+                 (osc (+ (rand)
+                         (* t fundamental (pow 2 f))))))))
+      (= filter
+         (mix filter
+              #_sum
+              (tanh (* 10. sum))
+              (slider 0.4)))
+      (* 0.125 filter)))
+
+(defn bump [x: f32]: f32
+  (if (< (abs x) 1.)
+    (exp (/ (- (* x x))))
+    0.))
+
+(defn spectrum-amplitude [f: f32
+                          t: f32]: f32
+  (+ 0.
+     #_(let [kick-length 0.6
+             time-factor 4.
+             index (-> t (* time-factor) u32)
+             scaled-t (-> t
+                          (* time-factor)
+                          (% 1.)
+                          (/ kick-length))]
+         (if (< scaled-t 1)
+           (* (smoothstep 0. 0.01 scaled-t)
+              (bump (* 2.
+                       (+ f
+                          -4
+                          (* (pow scaled-t 0.35) 3.5))))
+              (- 1 (pow scaled-t 0.85))
+              (if (-> index
+                      (% 8)
+                      ([false
+                        false
+                        true
+                        true
+                        false
+                        true
+                        true
+                        false])
+                      <>
+                      #_(or (== <> 2)
+                            (== <> 3)
+                            (== <> 5)
+                            (== <> 6)))
+                1.
+                0.))
+           0.))
+     (* (-> (+ (osc (+ (* (mix 0.4
+                               0.8
+                               (bi->uni (sympow (osc (* 0.5 t))
+                                                (slider 0.86796844))))
+                          (sympow (osc (* 4. t))
+                                  (slider 0.0629507)))
+                       (* 4. f)))
+               #_(osc (+ (-> (sympow (osc (* 0.25 t))
+                                     (slider 0.0629507))
+                             bi->uni
+                             (* 0.5))
+                         (* 9. f))))
+            bi->uni
+            (pow 3.))
+        (-> t
+            (* 2.)
+            (% 1.)
+            (pow (smoothstep (slider 0) (slider 1) <>)
+                 (slider 0.2256808)))
+        (slider 0.01325729))))
+
+(var main-synth-fm-state: [3: f32])
+
+(defn audio-3 [t: f32]: f32
+  (let [fundamental 110
+        dt (/ 44100)]
+    (fm-update main-fm-state
+               [(vec2f 2. (* fundamental 0.25))
+                (vec2f 1.33333 (* fundamental 0.5))]
+               t
+               dt)
+    (last main-fm-state))
+  #_(osc (* t 110)))
+
+@cpu
+(defn main []: ()
+  (spawn-window (fn []
+                    (dispatch-render-shaders (fn []
+                                                 (vec4f (match (vertex-index)
+                                                          0u (vec2f -1.)
+                                                          1u (vec2f -1. 3.)
+                                                          _ (vec2f 3. -1.))
+                                                        0.
+                                                        1.))
+                                             (fn [] (vec4f 1. 0. 1. 1.))
+                                             3u))))
+
+; LLM-written code, be careful
+(defn bessel-i0 [z: f32]: f32
+  (let [q (* 0.25 (* z z))
+        @var term 1.
+        @var sum 1.]
+    (for [k 9u]
+      (let [k1 (f32 (+ k 1u))]
+        (*= term (/ q (* k1 k1)))
+        (+= sum term)))
+    sum))
+
+(defn (corrected-fm-update C: u32)
+      [@var @ref state: [C: f32]
+       stages: [C: vec2f]
+       t: f32
+       dt: f32]: ()
+      (for [i (array-length state)]
+        (let [stage (stages i)
+              correction (bessel-i0 (* 0.5 (log stage.x)))]
+          (+= (state i)
+              (* (/ dt correction)
+                 (pow (sqrt stage.x)
+                      (osc (* stage.y
+                              (if (== i 0)
+                                t
+                                (state (- i 1)))))))))))
+

@@ -3837,8 +3837,8 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    self.inline_static_array_length_calls();
     self.monomorphize_reference_address_spaces();
+    self.inline_static_array_length_calls();
     self
       .validate_shader_dispatch_function_types_and_mark_implicit_entry_points(
         &mut errors,
