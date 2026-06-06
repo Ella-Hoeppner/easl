@@ -2458,34 +2458,44 @@ impl Program {
           .unwrap()
           .expression
           .walk_mut::<()>(&mut |exp| {
-            take(&mut exp.kind, |exp_kind| {
-              if let ExpKind::Application(f, args) = exp_kind {
-                if let ExpKind::Name(_) = &f.kind
-                  && let Type::Function(x) = f.data.kind.unwrap_known()
-                  && let Some(abstract_ancestor) = &x.abstract_ancestor
-                  && abstract_ancestor.read().unwrap().associative
-                  && args.len() != 2
-                {
-                  let mut args_iter = args.into_iter();
-                  let mut new_exp = args_iter.next().unwrap();
-                  while let Some(next_arg) = args_iter.next() {
-                    new_exp = Exp {
-                      kind: ExpKind::Application(
-                        f.clone(),
-                        vec![new_exp, next_arg],
-                      ),
-                      data: exp.data.clone(),
-                      source_trace: exp.source_trace.clone(),
-                    };
+            loop {
+              let mut needs_another_loop = false;
+              take(&mut exp.kind, |exp_kind| {
+                if let ExpKind::Application(f, args) = exp_kind {
+                  if let ExpKind::Name(_) = &f.kind
+                    && let Type::Function(x) = f.data.kind.unwrap_known()
+                    && let Some(abstract_ancestor) = &x.abstract_ancestor
+                    && abstract_ancestor.read().unwrap().associative
+                    && args.len() != 2
+                  {
+                    let mut args_iter = args.into_iter();
+                    let mut new_exp = args_iter.next().unwrap();
+                    if args_iter.len() == 0 {
+                      needs_another_loop = true;
+                    } else {
+                      while let Some(next_arg) = args_iter.next() {
+                        new_exp = Exp {
+                          kind: ExpKind::Application(
+                            f.clone(),
+                            vec![new_exp, next_arg],
+                          ),
+                          data: exp.data.clone(),
+                          source_trace: exp.source_trace.clone(),
+                        };
+                      }
+                    }
+                    new_exp.kind
+                  } else {
+                    ExpKind::Application(f, args)
                   }
-                  new_exp.kind
                 } else {
-                  ExpKind::Application(f, args)
+                  exp_kind
                 }
-              } else {
-                exp_kind
+              });
+              if !needs_another_loop {
+                break;
               }
-            });
+            }
             Ok(true)
           })
           .unwrap();
