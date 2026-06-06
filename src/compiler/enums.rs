@@ -404,20 +404,25 @@ impl AbstractEnum {
                 variant.name.clone(),
                 generic_arg_names,
               ));
-              Some(format!(
-                "const {const_name}: {monomorphized_name} = \
-                {monomorphized_name}({i}{});",
-                if size == 0 {
-                  String::new()
-                } else {
-                  let mut zeroed_array_string = ", array(".to_string();
-                  for i in 0..self.inner_data_size_in_u32s()? {
-                    zeroed_array_string += if i == 0 { "0" } else { ", 0" }
+              Some(match target {
+                CompilerTarget::Interpreter | CompilerTarget::WGSL => format!(
+                  "const {const_name}: {monomorphized_name} = \
+                  {monomorphized_name}({i}{});",
+                  if size == 0 {
+                    String::new()
+                  } else {
+                    let mut zeroed_array_string = ", array(".to_string();
+                    for i in 0..self.inner_data_size_in_u32s()? {
+                      zeroed_array_string += if i == 0 { "0" } else { ", 0" }
+                    }
+                    zeroed_array_string += ")";
+                    zeroed_array_string
                   }
-                  zeroed_array_string += ")";
-                  zeroed_array_string
+                ),
+                CompilerTarget::C => {
+                  format!("const {monomorphized_name} {const_name} = {{{i}}};")
                 }
-              ))
+              })
             } else {
               None
             })
@@ -427,19 +432,31 @@ impl AbstractEnum {
           .filter_map(|x| x)
           .collect();
         Ok(unit_constructor_constants.into_iter().fold(
-          if size == 0 {
-            format!(
-              "struct {monomorphized_name} {{\n  \
-                discriminant: u32\n\
-              }}"
-            )
-          } else {
-            format!(
-              "struct {monomorphized_name} {{\n  \
-                discriminant: u32,\n  \
-                data: array<u32, {size}>\n\
-              }}"
-            )
+          {
+            let data_line = if size == 0 {
+              String::new()
+            } else {
+              match target {
+                CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+                  format!("  data: array<u32, {size}>\n")
+                }
+                CompilerTarget::C => format!("  uint32_t data[{size}];\n"),
+              }
+            };
+            match target {
+              CompilerTarget::WGSL | CompilerTarget::Interpreter => format!(
+                "struct {monomorphized_name} {{\n  \
+                  discriminant: u32,\n\
+                  {data_line}\
+                }}"
+              ),
+              CompilerTarget::C => format!(
+                "typedef struct {{\n  \
+                  uint32_t discriminant;\n\
+                  {data_line}\
+                }} {monomorphized_name};"
+              ),
+            }
           },
           |acc, constant_string| acc + "\n\n" + &constant_string,
         ))

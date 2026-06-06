@@ -1,0 +1,6 @@
+(struct Complex
+  r: f32
+  i: f32)
+
+(defn zero-complex []: Complex
+  (Complex 0. 0.))

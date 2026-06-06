@@ -1,0 +1,10 @@
+(enum Option
+  None
+  (Some f32))
+
+(defn returns-none []: Option
+  None)
+
+(defn returns-some-of-one []: Option
+  (Some 1.))
+

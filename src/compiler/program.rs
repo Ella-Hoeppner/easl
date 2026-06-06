@@ -2309,6 +2309,12 @@ impl Program {
   ) -> CompileResult<String> {
     let mut names = self.names.write().unwrap();
     let mut compiled_string = String::new();
+    match target {
+      CompilerTarget::C => {
+        compiled_string += "#include <stdint.h>\n#include <string.h>\n"
+      }
+      _ => {}
+    }
     for v in self.top_level_vars.iter() {
       compiled_string += &v.clone().compile(&mut names, target);
       compiled_string += ";\n";
@@ -2362,25 +2368,13 @@ impl Program {
             } else {
               let inner_type_name =
                 inner_type.monomorphized_name(&mut names, target);
-              format!("value: {inner_type_name}")
+              match target {
+                CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+                  format!("value: {inner_type_name}")
+                }
+                CompilerTarget::C => format!("{inner_type_name} value"),
+              }
             };
-            let bitcast_inner_values = inner_type
-              .bitcastable_chunk_accessors("value".into())
-              .into_iter()
-              .map(|exp| {
-                format!(
-                  "bitcast<u32>({})",
-                  exp.compile(
-                    ExpressionCompilationPosition::InnerExpression,
-                    &mut names,
-                    target
-                  )
-                )
-              })
-              .chain(std::iter::repeat("0u".into()))
-              .take(e.inner_data_size_in_u32s()?)
-              .collect::<Vec<String>>()
-              .join(", ");
             let enum_name = compile_word(
               e.original_ancestor().monomorphized_name(
                 &e.variants
@@ -2396,11 +2390,57 @@ impl Program {
                 target,
               ),
             );
-            compiled_string += &format!(
-              "fn {variant_name}({args_str}) -> {enum_name} {{\n  \
-              return {enum_name}({discriminant}u, array({bitcast_inner_values}));\n\
-              }}"
-            );
+            compiled_string += &match target {
+              CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+                let bitcast_inner_values = inner_type
+                  .bitcastable_chunk_accessors("value".into())
+                  .into_iter()
+                  .map(|exp| {
+                    format!(
+                      "bitcast<u32>({})",
+                      exp.compile(
+                        ExpressionCompilationPosition::InnerExpression,
+                        &mut names,
+                        target
+                      )
+                    )
+                  })
+                  .chain(std::iter::repeat("0u".into()))
+                  .take(e.inner_data_size_in_u32s()?)
+                  .collect::<Vec<String>>()
+                  .join(", ");
+                format!(
+                  "fn {variant_name}({args_str}) -> {enum_name} {{\n  \
+                    return {enum_name}({discriminant}u, array({bitcast_inner_values}));\n\
+                  }}"
+                )
+              }
+              CompilerTarget::C => {
+                let memcpy_lines = inner_type
+                  .bitcastable_chunk_accessors("value".into())
+                  .into_iter()
+                  .enumerate()
+                  .map(|(i, exp)| {
+                    format!(
+                      "memcpy(&result.data[{i}], &{}, sizeof(uint32_t));",
+                      exp.compile(
+                        ExpressionCompilationPosition::InnerExpression,
+                        &mut names,
+                        target
+                      )
+                    )
+                  })
+                  .collect::<Vec<String>>()
+                  .join("\n  ");
+                format!(
+                  "{enum_name} {variant_name}({args_str}) {{\n  \
+                  {enum_name} result = {{{discriminant}}};\n  \
+                  {memcpy_lines}\n  \
+                  return result;\n\
+                }}"
+                )
+              }
+            };
             compiled_string += "\n\n";
           }
           _ => {}

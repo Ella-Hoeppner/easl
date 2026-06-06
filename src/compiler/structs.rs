@@ -252,7 +252,12 @@ impl AbstractStructField {
       self
         .field_type
         .compile(typedefs, names, &self.source_trace, target)?;
-    Ok(format!("  {annotation}{name}: {field_type}"))
+    Ok(match target {
+      CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+        format!("  {annotation}{name}: {field_type}")
+      }
+      CompilerTarget::C => format!("  {field_type} {name}"),
+    })
   }
 }
 
@@ -326,13 +331,26 @@ impl AbstractStruct {
           .collect::<CompileResult<Vec<Type>>>()?;
         let monomorphized_name =
           compile_word(self.monomorphized_name(&field_types, names, target));
-        let fields = self
-          .fields
-          .into_iter()
-          .map(|field| field.compile(typedefs, names, target))
-          .collect::<CompileResult<Vec<String>>>()?
-          .join(",\n");
-        Ok(format!("struct {monomorphized_name} {{\n{fields}\n}}"))
+        Ok(match target {
+          CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+            let fields = self
+              .fields
+              .into_iter()
+              .map(|field| field.compile(typedefs, names, target))
+              .collect::<CompileResult<Vec<String>>>()?
+              .join(",\n");
+            format!("struct {monomorphized_name} {{\n{fields}\n}}")
+          }
+          CompilerTarget::C => {
+            let fields = self
+              .fields
+              .into_iter()
+              .map(|field| field.compile(typedefs, names, target))
+              .collect::<CompileResult<Vec<String>>>()?
+              .join(";\n");
+            format!("typedef struct {{\n{fields}\n}} {monomorphized_name};")
+          }
+        })
       })
       .map_or(Ok(None), |v| v.map(Some))
   }

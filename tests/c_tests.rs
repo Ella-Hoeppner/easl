@@ -162,6 +162,8 @@ c_success_test!(double);
 c_success_test!(global_var);
 c_success_test!(sin);
 c_success_test!(sin_twice);
+c_success_test!(user_struct);
+c_success_test!(user_enum);
 // c_success_test!(vec2f);
 
 // --- Error tests ---

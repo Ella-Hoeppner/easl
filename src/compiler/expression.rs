@@ -1935,13 +1935,13 @@ impl TypedExp {
       Function(_, _) => panic!("Attempting to compile internal function"),
       Application(f, mut args) => wrap(match f.data.unwrap_known() {
         Type::Function(signature) => {
+          let mut is_struct_constructor = false;
           if let Some(abstract_ancestor) = &signature.abstract_ancestor {
-            if let FunctionImplementationKind::Builtin {
-              target_configuration,
-              ..
-            } = abstract_ancestor.read().unwrap().implementation
-            {
-              match target_configuration {
+            match abstract_ancestor.read().unwrap().implementation {
+              FunctionImplementationKind::Builtin {
+                target_configuration,
+                ..
+              } => match target_configuration {
                 FunctionTargetConfiguration::SpecialCased(special_case) => {
                   match special_case {
                     SpecialCasedBuiltinFunction::Print => match target {
@@ -1958,7 +1958,11 @@ impl TypedExp {
                   builtin_ioattribute,
                 ) => return builtin_ioattribute.compiled_name().into(),
                 FunctionTargetConfiguration::Default => {}
+              },
+              FunctionImplementationKind::StructConstructor => {
+                is_struct_constructor = true
               }
+              _ => {}
             }
           }
           let ExpKind::Name(name) = f.kind else {
@@ -2090,7 +2094,11 @@ impl TypedExp {
             format!("{f_str}({args_str})")
           } else {
             let args_str = arg_strs.join(", ");
-            format!("{f_str}({args_str})")
+            if is_struct_constructor && target == CompilerTarget::C {
+              format!("({f_str}){{{args_str}}}")
+            } else {
+              format!("{f_str}({args_str})")
+            }
           }
         }
         Type::Array(_, _) => {
