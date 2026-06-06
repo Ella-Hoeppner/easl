@@ -1,0 +1,3 @@
+(defn eta-sin [x: f32]: f32
+  (sin x))
+

@@ -1,0 +1,3 @@
+(defn zeroed-vec2f []: vec2f
+  (vec2f 0. 0.))
+

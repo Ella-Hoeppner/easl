@@ -71,6 +71,7 @@ pub enum FunctionImplementationKind {
   Builtin {
     effect_type: EffectType,
     target_configuration: FunctionTargetConfiguration,
+    target_specific_emulations: HashMap<CompilerTarget, String>,
   },
   StructConstructor,
   EnumConstructor(Arc<str>),
@@ -83,12 +84,14 @@ impl PartialEq for FunctionImplementationKind {
         FunctionImplementationKind::Builtin {
           effect_type: a_et,
           target_configuration: a_tc,
+          target_specific_emulations: a_tse,
         },
         FunctionImplementationKind::Builtin {
           effect_type: b_et,
           target_configuration: b_tc,
+          target_specific_emulations: b_tse,
         },
-      ) => a_et == b_et && a_tc == b_tc,
+      ) => a_et == b_et && a_tc == b_tc && a_tse == b_tse,
       (
         FunctionImplementationKind::StructConstructor,
         FunctionImplementationKind::StructConstructor,
@@ -149,6 +152,7 @@ impl Default for AbstractFunctionSignature {
       implementation: FunctionImplementationKind::Builtin {
         effect_type: EffectType::empty(),
         target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashMap::new(),
       },
       associative: false,
       captured_scope: None,

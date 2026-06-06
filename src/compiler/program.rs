@@ -5,6 +5,7 @@ use std::sync::{Arc, RwLock};
 use fsexp::{Ast, document::Document, syntax::EncloserOrOperator};
 use take_mut::take;
 
+use crate::compiler::builtins::built_in_structs_for_target;
 use crate::compiler::types::ExpTypeInfo;
 use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
 use crate::parse::EaslMultiDocument;
@@ -57,7 +58,7 @@ use super::{
 
 pub type EaslDocument = Document<EaslSyntax>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompilerTarget {
   Interpreter,
   C,
@@ -2306,7 +2307,7 @@ impl Program {
       compiled_string += ";\n";
     }
     compiled_string += "\n";
-    let default_structs = built_in_structs();
+    let default_structs = built_in_structs_for_target(target);
     for s in self.typedefs.structs.iter() {
       if !s.opaque
         && !default_structs.contains(&s)
@@ -2404,6 +2405,17 @@ impl Program {
       if f.generic_args.is_empty() && !f.has_uninlined_higher_order_arguments()
       {
         match f.implementation {
+          FunctionImplementationKind::Builtin {
+            target_specific_emulations,
+            ..
+          } => {
+            if let Some(target_specific_emulation) =
+              target_specific_emulations.get(&target)
+            {
+              compiled_string += &target_specific_emulation;
+              compiled_string += "\n\n";
+            }
+          }
           FunctionImplementationKind::Composite(implementation) => {
             {
               let implementation = implementation.read().unwrap();
