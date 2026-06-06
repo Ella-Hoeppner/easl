@@ -68,6 +68,31 @@ pub enum CompilerTarget {
   WGSL,
 }
 
+impl CompilerTarget {
+  fn program_header(self) -> String {
+    match self {
+      CompilerTarget::C => {
+        let mut header =
+          "#include <stdint.h>\n#include <string.h>\n".to_string();
+        for size in [2, 3, 4] {
+          for (field_type, suffix) in
+            [("float", "f"), ("int32_t", "i"), ("uint32_t", "u")]
+          {
+            header += "typedef struct {\n";
+            for field in ["x", "y", "z", "w"].iter().take(size) {
+              header += &format!("  {field_type} {field};\n")
+            }
+            header += &format!("}} vec{size}{suffix};\n");
+          }
+        }
+        header
+      }
+      .to_string(),
+      _ => String::new(),
+    }
+  }
+}
+
 pub trait EaslDocumentMethods {
   fn override_def(&mut self, def_name: &str, new_def_value: &str) -> bool;
 }
@@ -304,7 +329,6 @@ impl Program {
     &mut self,
     signature: Arc<RwLock<AbstractFunctionSignature>>,
   ) {
-    // print!("add_abstract_function");
     let name = Arc::clone(&signature.read().unwrap().name);
     self.names.write().unwrap().track_user_name(&name);
     if let FunctionImplementationKind::Composite(f) =
@@ -2308,13 +2332,7 @@ impl Program {
     target: CompilerTarget,
   ) -> CompileResult<String> {
     let mut names = self.names.write().unwrap();
-    let mut compiled_string = String::new();
-    match target {
-      CompilerTarget::C => {
-        compiled_string += "#include <stdint.h>\n#include <string.h>\n"
-      }
-      _ => {}
-    }
+    let mut compiled_string = target.program_header();
     for v in self.top_level_vars.iter() {
       compiled_string += &v.clone().compile(&mut names, target);
       compiled_string += ";\n";

@@ -2073,9 +2073,18 @@ impl TypedExp {
               .zip(arg_types)
               .map(|(s, t)| {
                 if let Some(wrapper) = match t {
-                  Type::F32 | Type::I32 | Type::U32 => {
-                    Some(format!("{wrapper_type}32"))
-                  }
+                  Type::F32 | Type::I32 | Type::U32 => Some(match target {
+                    CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+                      format!("{wrapper_type}32")
+                    }
+                    CompilerTarget::C => match wrapper_type {
+                      "f" => "(float)",
+                      "i" => "(int32_t)",
+                      "u" => "(uint32_t)",
+                      _ => panic!(),
+                    }
+                    .to_string(),
+                  }),
                   Type::Struct(Struct { name, .. }) => match &*name {
                     "vec2" | "vec3" | "vec4" => {
                       Some(format!("{name}{wrapper_type}"))
@@ -2091,7 +2100,12 @@ impl TypedExp {
               })
               .collect::<Vec<_>>();
             let args_str = wrapped_arg_strs.join(", ");
-            format!("{f_str}({args_str})")
+            match target {
+              CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+                format!("{f_str}({args_str})")
+              }
+              CompilerTarget::C => format!("({f_str}){{{args_str}}}"),
+            }
           } else {
             let args_str = arg_strs.join(", ");
             if is_struct_constructor && target == CompilerTarget::C {
