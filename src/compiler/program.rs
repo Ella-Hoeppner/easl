@@ -6,8 +6,8 @@ use fsexp::{Ast, document::Document, syntax::EncloserOrOperator};
 use take_mut::take;
 
 use crate::compiler::builtins::{
-  EmulatedFunctionResult, EmulatedFunctionSignature,
-  built_in_structs_for_target, generate_emulated_builtin,
+  EmulatedFunctionRecord, EmulatedFunctionSignature,
+  built_in_structs_for_target,
 };
 use crate::compiler::types::ExpTypeInfo;
 use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
@@ -73,7 +73,10 @@ impl CompilerTarget {
     match self {
       CompilerTarget::C => {
         let mut header =
-          "#include <stdio.h>\n#include <stdint.h>\n#include <string.h>\n"
+          "#include <stdio.h>\n\
+           #include <stdint.h>\n\
+           #include <string.h>\n\
+           #include <math.h>\n"
             .to_string();
         header += r#"void print_f32(float v) {                                                                     
   char buf[32];                                                                           
@@ -291,8 +294,7 @@ pub struct Program {
   pub abstract_functions:
     HashMap<Arc<str>, Vec<Arc<RwLock<AbstractFunctionSignature>>>>,
   pub top_level_vars: Vec<TopLevelVar>,
-  pub emulated_functions:
-    HashMap<EmulatedFunctionSignature, EmulatedFunctionResult>,
+  pub emulated_functions: EmulatedFunctionRecord,
 }
 impl Clone for Program {
   fn clone(&self) -> Self {
@@ -319,7 +321,7 @@ impl Program {
       typedefs: TypeDefs::empty(),
       abstract_functions: HashMap::new(),
       top_level_vars: vec![],
-      emulated_functions: HashMap::new(),
+      emulated_functions: EmulatedFunctionRecord::empty(),
     }
   }
   pub fn add_top_level_var(&mut self, var: TopLevelVar, errors: &mut ErrorLog) {
@@ -2479,13 +2481,7 @@ impl Program {
         }
       }
     }
-    let mut emulated_helper_chunks: HashSet<String> = HashSet::new();
-    for (_, result) in self.emulated_functions.iter() {
-      for chunk in result.helper_chunks.iter() {
-        emulated_helper_chunks.insert(chunk.clone());
-      }
-    }
-    for chunk in emulated_helper_chunks {
+    for chunk in self.emulated_functions.helper_chunks.iter() {
       compiled_string += &chunk;
       compiled_string += "\n\n";
     }
@@ -3753,7 +3749,7 @@ impl Program {
   }
   pub fn track_emulated_builtins(&mut self, target: CompilerTarget) {
     let mut names = self.names.write().unwrap();
-    let mut emulated_functions = HashMap::new();
+    let mut emulated_functions = EmulatedFunctionRecord::empty();
     for signature in self.abstract_functions_iter() {
       let signature = signature.read().unwrap();
       if let FunctionImplementationKind::Composite(f) =
@@ -3786,19 +3782,14 @@ impl Program {
                 arg_types,
                 return_type,
               };
-              if !emulated_functions.contains_key(&emulated_signature) {
-                emulated_functions.insert(
+
+              *f_name = emulated_functions
+                .track_emulated_builtin(
                   emulated_signature.clone(),
-                  generate_emulated_builtin(
-                    emulated_signature.clone(),
-                    target,
-                    &mut names,
-                  ),
-                );
-              }
-              let emulation_result =
-                emulated_functions.get(&emulated_signature).unwrap();
-              *f_name = emulation_result.name.as_str().into();
+                  target,
+                  &mut names,
+                )
+                .into();
             }
             Ok::<bool, Never>(true)
           })

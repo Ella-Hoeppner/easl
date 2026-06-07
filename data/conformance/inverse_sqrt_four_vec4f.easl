@@ -1,0 +1,4 @@
+(defn f []: f32
+  (let [y (inverse-sqrt (vec4f 4.))]
+    y.x))
+

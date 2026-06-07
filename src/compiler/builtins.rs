@@ -8,6 +8,7 @@ use fsexp::{document::DocumentPosition, syntax::EncloserOrOperator};
 
 use crate::compiler::effects::EffectType;
 use crate::compiler::entry::BuiltinIOAttribute;
+use crate::compiler::functions::extract_vec_size;
 use crate::compiler::program::{CompilerTarget, NameContext};
 use crate::{
   compiler::{
@@ -3003,134 +3004,222 @@ pub struct EmulatedFunctionResult {
   pub helper_chunks: Vec<String>,
 }
 
-pub fn generate_emulated_builtin(
-  signature: EmulatedFunctionSignature,
-  target: CompilerTarget,
-  names: &mut NameContext,
-) -> EmulatedFunctionResult {
-  let name = signature.name.as_str();
-  match name {
-    "acos" | "cos" | "sin" | "tan" | "atan" | "asin" | "floor" | "ceil"
-    | "round" | "trunc" | "exp" | "exp2" | "log" | "log2" | "pow" | "atan2"
-    | "sinh" | "cosh" | "tanh" | "asinh" | "atanh" | "acosh" | "fma"
-    | "ldexp" => EmulatedFunctionResult {
-      name: name.to_string(),
-      helper_chunks: vec!["#include <math.h>".to_string()],
-    },
-    "inverse-sqrt" => {
-      let new_name = names.gensym("inverse_sqrt");
-      EmulatedFunctionResult {
-        name: new_name.to_string(),
-        helper_chunks: vec![
-          "#include <math.h>".to_string(),
-          format!(
-            "float {new_name} (float x) {{\n
-              return 1. / sqrt(x);\n
-            }}"
-          ),
-        ],
-      }
+#[derive(Debug, Clone)]
+pub struct EmulatedFunctionRecord {
+  pub emulated_signatures: HashMap<EmulatedFunctionSignature, String>,
+  pub helper_chunks: Vec<String>,
+}
+
+impl EmulatedFunctionRecord {
+  pub fn empty() -> Self {
+    Self {
+      emulated_signatures: HashMap::new(),
+      helper_chunks: vec![],
     }
-    "abs" => {
-      let new_name = names.gensym("abs");
-      EmulatedFunctionResult {
-        name: new_name.to_string(),
-        helper_chunks: vec![
-          "#include <math.h>".to_string(),
-          format!(
-            "float {new_name}(float x) {{\n  \
+  }
+  pub fn track_emulated_builtin(
+    &mut self,
+    signature: EmulatedFunctionSignature,
+    target: CompilerTarget,
+    names: &mut NameContext,
+  ) -> String {
+    if let Some(name) = self.emulated_signatures.get(&signature) {
+      return name.clone();
+    }
+    let name = signature.name.as_str();
+    match name {
+      "acos" | "cos" | "sin" | "tan" | "atan" | "asin" | "floor" | "ceil"
+      | "round" | "trunc" | "exp" | "exp2" | "log" | "log2" | "pow"
+      | "sinh" | "cosh" | "tanh" | "asinh" | "atanh" | "acosh" | "fma"
+      | "ldexp" | "sqrt" => {
+        if signature.return_type == "float" {
+          name.to_string()
+        } else {
+          let vec_type_name = signature.return_type;
+          let size = extract_vec_size(&vec_type_name).unwrap();
+          let new_name = names.gensym(&format!("sin_{size}"));
+          let mut body = format!(
+            "{vec_type_name} {new_name} ({vec_type_name} x) {{\n  \
+              {vec_type_name} y = {{0.}};\n  \
+              "
+          );
+          for field in ["x", "y", "z", "w"].iter().take(size) {
+            body += &format!("y.{field} = {name}(x.{field});\n  ");
+          }
+          body += "return y;\n}";
+          self.helper_chunks.push(body);
+          new_name.to_string()
+        }
+      }
+      "inverse-sqrt" => {
+        if signature.return_type == "float" {
+          let new_name = names.gensym("inverse_sqrt");
+          self.helper_chunks.push(format!(
+            "float {new_name} (float x) {{\n  \
+              return 1. / sqrt(x);\n\
+            }}"
+          ));
+          new_name.to_string()
+        } else {
+          let float_fn_name = self.track_emulated_builtin(
+            EmulatedFunctionSignature {
+              name: name.to_string(),
+              arg_types: "float".to_string(),
+              return_type: "float".to_string(),
+            },
+            target,
+            names,
+          );
+          let vec_type_name = signature.return_type;
+          let size = extract_vec_size(&vec_type_name).unwrap();
+          let new_name = names.gensym(&format!("inverse_sqrt_{size}"));
+          let mut body = format!(
+            "{vec_type_name} {new_name} ({vec_type_name} x) {{\n  \
+              {vec_type_name} y = {{0.}};\n  \
+              "
+          );
+          for field in ["x", "y", "z", "w"].iter().take(size) {
+            body += &format!("y.{field} = {float_fn_name}(x.{field});\n  ");
+          }
+          body += "return y;\n}";
+          self.helper_chunks.push(body);
+          new_name.to_string()
+        }
+      }
+      "abs" => {
+        let new_name = names.gensym("abs");
+        self.helper_chunks.push(format!(
+          "float {new_name}(float x) {{\n  \
               return fabs(x);\n\
             }}"
-          ),
-        ],
+        ));
+        new_name.to_string()
       }
-    }
-    "sign" => {
-      let new_name = names.gensym("sign");
-      EmulatedFunctionResult {
-        name: new_name.to_string(),
-        helper_chunks: vec![format!(
+      "sign" => {
+        let new_name = names.gensym("sign");
+        self.helper_chunks.push(format!(
           "float {new_name}(float x) {{\n  \
              return (x > 0.) ? 1. : (x < 0.) ? -1. : 0.;\n\
            }}"
-        )],
+        ));
+        new_name.to_string()
       }
-    }
-    "fract" => {
-      let new_name = names.gensym("fract");
-      EmulatedFunctionResult {
-        name: new_name.to_string(),
-        helper_chunks: vec![
-          "#include <math.h>".to_string(),
-          format!(
-            "float {new_name}(float x) {{\n  \
+      "fract" => {
+        let new_name = names.gensym("fract");
+        self.helper_chunks.push(format!(
+          "float {new_name}(float x) {{\n  \
               return x - floor(x);\n\
             }}"
-          ),
-        ],
+        ));
+        new_name.to_string()
       }
-    }
-    "saturate" => {
-      let new_name = names.gensym("saturate");
-      EmulatedFunctionResult {
-        name: new_name.to_string(),
-        helper_chunks: vec![format!(
+      "saturate" => {
+        let new_name = names.gensym("saturate");
+        self.helper_chunks.push(format!(
           "float {new_name}(float x) {{\n  \
              return x < 0. ? 0. : x > 1. ? 1. : x;\n\
            }}"
-        )],
+        ));
+        new_name.to_string()
       }
-    }
-    "degrees" => {
-      let new_name = names.gensym("degrees");
-      EmulatedFunctionResult {
-        name: new_name.to_string(),
-        helper_chunks: vec![format!(
+      "degrees" => {
+        let new_name = names.gensym("degrees");
+        self.helper_chunks.push(format!(
           "float {new_name}(float x) {{\n  \
              return x * (180. / 3.14159265358979323846);\n\
            }}"
-        )],
+        ));
+        new_name.to_string()
       }
-    }
-    "radians" => {
-      let new_name = names.gensym("radians");
-      EmulatedFunctionResult {
-        name: new_name.to_string(),
-        helper_chunks: vec![format!(
+      "radians" => {
+        let new_name = names.gensym("radians");
+        self.helper_chunks.push(format!(
           "float {new_name}(float x) {{\n  \
              return x * (3.14159265358979323846 / 180.);\n\
            }}"
-        )],
+        ));
+        new_name.to_string()
       }
+      "step" => {
+        let new_name = names.gensym("step");
+        self.helper_chunks.push(format!(
+          "float {new_name}(float edge, float x) {{\n  \
+             return x >= edge ? 1. : 0.;\n\
+           }}"
+        ));
+        new_name.to_string()
+      }
+      "mix" => {
+        let new_name = names.gensym("mix");
+        self.helper_chunks.push(format!(
+          "float {new_name}(float x, float y, float a) {{\n  \
+             return x * (1. - a) + y * a;\n\
+           }}"
+        ));
+        new_name.to_string()
+      }
+      "smoothstep" => {
+        let new_name = names.gensym("smoothstep");
+        self.helper_chunks.push(format!(
+          "float {new_name}(float edge0, float edge1, float x) {{\n  \
+             float t = (x - edge0) / (edge1 - edge0);\n  \
+             t = t < 0. ? 0. : t > 1. ? 1. : t;\n  \
+             return t * t * (3. - 2. * t);\n\
+           }}"
+        ));
+        new_name.to_string()
+      }
+      "clamp" => {
+        let new_name = names.gensym("clamp");
+        self.helper_chunks.push(format!(
+          "float {new_name}(float x, float lo, float hi) {{\n  \
+             return x < lo ? lo : x > hi ? hi : x;\n\
+           }}"
+        ));
+        new_name.to_string()
+      }
+      "min" => {
+        let new_name = names.gensym("min");
+        self.helper_chunks.push(format!(
+          "float {new_name}(float x, float y) {{\n  \
+             return x < y ? x : y;\n\
+           }}"
+        ));
+        new_name.to_string()
+      }
+      "max" => {
+        let new_name = names.gensym("max");
+        self.helper_chunks.push(format!(
+          "float {new_name}(float x, float y) {{\n  \
+             return x > y ? x : y;\n\
+           }}"
+        ));
+        new_name.to_string()
+      }
+      "dot"
+      | "cross"
+      | "length"
+      | "normalize"
+      | "distance"
+      | "face-forward"
+      | "reflect"
+      | "refract"
+      | "determinant"
+      | "transpose"
+      | "bitcast"
+      | "count-one-bits"
+      | "count-leading-zeros"
+      | "count-trailing-zeros"
+      | "reverse-bits"
+      | "first-leading-bit"
+      | "first-trailing-bit"
+      | "extract-bits"
+      | "atan2" => {
+        todo!("C emulation for `{name}` not yet implemented")
+      }
+      _ => panic!(
+        "couldn't generate an emulation\ntarget: {target:?}\nsignature: {signature:#?}"
+      ),
     }
-    "step"
-    | "mix"
-    | "smoothstep"
-    | "clamp"
-    | "min"
-    | "max"
-    | "dot"
-    | "cross"
-    | "length"
-    | "normalize"
-    | "distance"
-    | "face-forward"
-    | "reflect"
-    | "refract"
-    | "determinant"
-    | "transpose"
-    | "bitcast"
-    | "count-one-bits"
-    | "count-leading-zeros"
-    | "count-trailing-zeros"
-    | "reverse-bits"
-    | "first-leading-bit"
-    | "first-trailing-bit"
-    | "extract-bits" => {
-      todo!("C emulation for `{name}` not yet implemented")
-    }
-    _ => panic!(
-      "couldn't generate an emulation\ntarget: {target:?}\nsignature: {signature:#?}"
-    ),
   }
 }

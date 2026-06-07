@@ -425,26 +425,26 @@ fn apply_builtin_fn<IO: IOManager>(
       Ok(Value::Prim(Primitive::F32(y.atan2(x))))
     }
     "sin" | "cos" | "tan" | "sinh" | "cosh" | "tanh" | "asin" | "acos"
-    | "atan" | "asinh" | "acosh" | "atanh" => {
-      let Value::Prim(Primitive::F32(x)) = args[0].0 else {
-        panic!()
-      };
-      Ok(Value::Prim(Primitive::F32(match &*f_name {
-        "sin" => x.sin(),
-        "cos" => x.cos(),
-        "tan" => x.tan(),
-        "sinh" => x.sinh(),
-        "cosh" => x.cosh(),
-        "tanh" => x.tanh(),
-        "asin" => x.asin(),
-        "acos" => x.acos(),
-        "atan" => x.atan(),
-        "asinh" => x.asinh(),
-        "acosh" => x.acosh(),
-        "atanh" => x.atanh(),
-        _ => unreachable!(),
-      })))
-    }
+    | "atan" | "asinh" | "acosh" | "atanh" => Ok(
+      Value::map_primitive_or_vec_components(&args[0].0, |value| {
+        let Primitive::F32(x) = value else { panic!() };
+        Primitive::F32(match &*f_name {
+          "sin" => x.sin(),
+          "cos" => x.cos(),
+          "tan" => x.tan(),
+          "sinh" => x.sinh(),
+          "cosh" => x.cosh(),
+          "tanh" => x.tanh(),
+          "asin" => x.asin(),
+          "acos" => x.acos(),
+          "atan" => x.atan(),
+          "asinh" => x.asinh(),
+          "acosh" => x.acosh(),
+          "atanh" => x.atanh(),
+          _ => unreachable!(),
+        })
+      }),
+    ),
     "-" if args.len() == 1 => Ok(
       args
         .remove(0)

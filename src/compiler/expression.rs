@@ -4640,6 +4640,7 @@ impl TypedExp {
                       // the arguments aren't simple scalars, restructure them
                       // to be so
                       if args.len() < vec_size && target == CompilerTarget::C {
+                        let old_len = args.len();
                         take(args, |args| {
                           let mut new_args = vec![];
                           for arg in args {
@@ -4686,7 +4687,9 @@ impl TypedExp {
                           }
                           new_args
                         });
-                        changed = true;
+                        if args.len() != old_len {
+                          changed = true;
+                        }
                       }
                     } else if &**name == "print" {
                       // if argument to print isn't a name, extract it to a let

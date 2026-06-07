@@ -1,0 +1,4 @@
+(defn f []: f32
+  (let [s (sin (vec4f 0. 1. 2. 3.))]
+    (+ s.x s.y s.z s.w)))
+

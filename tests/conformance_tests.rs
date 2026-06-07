@@ -264,6 +264,7 @@ conformance_test!(tan_pi_over_4, 0.001);
 conformance_test!(asin_one, 0.001);
 conformance_test!(acos_zero, 0.001);
 conformance_test!(atan_one, 0.001);
+conformance_test!(sin_vec4f, 0.001);
 
 // min / max / mix
 conformance_test!(min_f32);
@@ -372,6 +373,7 @@ conformance_test!(radians_180, 0.001);
 
 // inverse sqrt
 conformance_test!(inverse_sqrt_four, 0.001);
+conformance_test!(inverse_sqrt_four_vec4f, 0.001);
 conformance_test!(inverse_sqrt_one);
 
 // step
