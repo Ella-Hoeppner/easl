@@ -2029,42 +2029,22 @@ impl TypedExp {
                     SpecialCasedBuiltinFunction::Print => match target {
                       CompilerTarget::WGSL => return "".into(),
                       CompilerTarget::C => {
-                        let arg_str = &arg_strs[0];
-                        return match &arg_types[0] {
-                          Type::Unit => format!("\nprintf(\"()\");"),
-                          Type::F32 => {
-                            format!("\nprintf(\"%f\", {arg_str});")
-                          }
-                          Type::I32 => {
-                            format!("\nprintf(\"%di\", {arg_str});")
-                          }
-                          Type::U32 => {
-                            format!("\nprintf(\"%uu\", {arg_str});")
-                          }
-                          Type::Bool => {
-                            format!("\nprintf(\"%s\", {arg_str});")
-                          }
-                          Type::String => {
-                            format!("\nprintf(\"\"%s\"\", {arg_str});")
-                          }
-                          Type::Struct(s) => {
-                            let mut output = "\nprintf(\"(".to_string();
-                            output += &s.name;
-                            // todo! need to recursively walk the struct fields
-                            // and add an individual output specifier for each
-                            // primitive type on a leaf
-                            output += ")\");";
-                            output
-                          }
-                          Type::Enum(_) => todo!(),
-                          Type::Function(_) => {
-                            format!("\nprintf(\"<fn>\");")
-                          }
-                          Type::Array(concrete_array_size, exp_type_info) => {
-                            todo!()
-                          }
-                          Type::Skolem(_, type_constraints) => panic!(),
-                        };
+                        return arg_types[0].c_printf_statements(
+                          &arg_strs[0],
+                          names,
+                          target,
+                        );
+                        // let arg_str = &arg_strs[0];
+                        // let (format_str, format_arguments) = arg_types[0]
+                        //   .format_for_c_printf(arg_str, names, target);
+                        // return format_arguments.into_iter().fold(
+                        //   format!("\nprintf(\"{format_str}\""),
+                        //   |mut acc: String, format_arg: String| {
+                        //     acc += ", ";
+                        //     acc += &format_arg;
+                        //     acc
+                        //   },
+                        // ) + ");";
                       }
                       _ => {}
                     },
@@ -4664,58 +4644,85 @@ impl TypedExp {
                   }
                 }
                 if let Name(name) = &f.kind {
-                  if let Some(vec_size) = extract_vec_size(name) {
-                    // If this is an application of a vector constructor and the
-                    // arguments aren't simple scalars, restructure them to be
-                    // so on backends that need them to be so (e.g. C)
-                    if args.len() < vec_size && target == CompilerTarget::C {
-                      let mut inserted_bindings = vec![];
-                      take(args, |args| {
-                        let mut new_args = vec![];
-                        for arg in args {
-                          let arg_type = arg.data.unwrap_known();
-                          let arg_type_name =
-                            arg_type.monomorphized_name(&mut names, target);
-                          if let Some(inner_vec_size) =
-                            extract_vec_size(&arg_type_name)
-                          {
-                            let Type::Struct(ref arg_struct_type) = arg_type
-                            else {
-                              panic!()
-                            };
-                            let binding_name = names.gensym("extracted_subvec");
-                            for field in
-                              ["x", "y", "z", "w"].iter().take(inner_vec_size)
+                  if target == CompilerTarget::C {
+                    let mut inserted_bindings = vec![];
+                    if let Some(vec_size) = extract_vec_size(name) {
+                      // If this is an application of a vector constructor and
+                      // the arguments aren't simple scalars, restructure them
+                      // to be so
+                      if args.len() < vec_size && target == CompilerTarget::C {
+                        take(args, |args| {
+                          let mut new_args = vec![];
+                          for arg in args {
+                            let arg_type = arg.data.unwrap_known();
+                            let arg_type_name =
+                              arg_type.monomorphized_name(&mut names, target);
+                            if let Some(inner_vec_size) =
+                              extract_vec_size(&arg_type_name)
                             {
-                              new_args.push(TypedExp {
-                                kind: ExpKind::Access(
-                                  Accessor::Field((*field).into()),
-                                  TypedExp {
-                                    data: arg_type.clone().known().into(),
-                                    kind: ExpKind::Name(binding_name.clone()),
-                                    source_trace: arg.source_trace.clone(),
-                                  }
-                                  .into(),
-                                ),
-                                data: arg_struct_type.fields[0]
-                                  .field_type
-                                  .clone(),
-                                source_trace: arg.source_trace.clone(),
-                              });
+                              let Type::Struct(ref arg_struct_type) = arg_type
+                              else {
+                                panic!()
+                              };
+                              let binding_name =
+                                names.gensym("extracted_subvec");
+                              for field in
+                                ["x", "y", "z", "w"].iter().take(inner_vec_size)
+                              {
+                                new_args.push(TypedExp {
+                                  kind: ExpKind::Access(
+                                    Accessor::Field((*field).into()),
+                                    TypedExp {
+                                      data: arg_type.clone().known().into(),
+                                      kind: ExpKind::Name(binding_name.clone()),
+                                      source_trace: arg.source_trace.clone(),
+                                    }
+                                    .into(),
+                                  ),
+                                  data: arg_struct_type.fields[0]
+                                    .field_type
+                                    .clone(),
+                                  source_trace: arg.source_trace.clone(),
+                                });
+                              }
+                              inserted_bindings.push((
+                                binding_name,
+                                arg.source_trace.clone(),
+                                VariableKind::Let,
+                                arg,
+                              ));
+                            } else {
+                              new_args.push(arg);
                             }
-                            inserted_bindings.push((
-                              binding_name,
-                              arg.source_trace.clone(),
-                              VariableKind::Let,
-                              arg,
-                            ));
-                          } else {
-                            new_args.push(arg);
                           }
-                        }
-                        new_args
-                      });
-                      changed = true;
+                          new_args
+                        });
+                        changed = true;
+                      }
+                    } else if &**name == "print" {
+                      // if argument to print isn't a name, extract it to a let
+                      // binding (necessary because the compiler will reference
+                      // individual fields from the value during formatting if
+                      // it's a struct/enum)
+                      if !matches!(args[0].kind, ExpKind::Name(_)) {
+                        take(&mut args[0], |arg| {
+                          let name = names.gensym("print_arg");
+                          let new_arg = TypedExp {
+                            data: arg.data.clone(),
+                            kind: ExpKind::Name(name.clone()),
+                            source_trace: arg.source_trace.clone(),
+                          };
+                          inserted_bindings.push((
+                            name,
+                            arg.source_trace.clone(),
+                            VariableKind::Let,
+                            arg,
+                          ));
+                          new_arg
+                        });
+                      }
+                    }
+                    if !inserted_bindings.is_empty() {
                       take(exp, |exp| TypedExp {
                         data: exp.data.clone(),
                         source_trace: exp.source_trace.clone(),

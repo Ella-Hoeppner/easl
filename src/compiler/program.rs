@@ -75,6 +75,19 @@ impl CompilerTarget {
         let mut header =
           "#include <stdio.h>\n#include <stdint.h>\n#include <string.h>\n"
             .to_string();
+        header += r#"void print_f32(float v) {                                                                     
+  char buf[32];                                                                           
+  snprintf(buf, sizeof(buf), "%f", v);                                                      
+  char *dot = strchr(buf, '.');                                                             
+  if (dot) {                                                                                
+    char *end = buf + strlen(buf) - 1;                                                    
+    while (end > dot && *end == '0') {                      
+      *end-- = '\0';                                                                    
+    }                                                                                   
+  }
+  printf("%s", buf);
+}
+"#;
         for size in [2, 3, 4] {
           for (field_type, suffix) in
             [("float", "f"), ("int32_t", "i"), ("uint32_t", "u")]

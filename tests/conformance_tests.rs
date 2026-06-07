@@ -3,6 +3,7 @@ use easl::compiler::program::CompilerTarget;
 use easl::interpreter::run_program_with_capture;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 const BOILERPLATE: &str = "
 @[storage-write 0 0]
@@ -21,13 +22,16 @@ fn run_conformance_test(name: &str, tolerance: f64) {
 
   let user_source = fs::read_to_string(source_path)
     .unwrap_or_else(|e| panic!("IO error, couldn't read file {name}: {e:?}"));
-  let combined_source = user_source + BOILERPLATE;
+  let combined_source = user_source.clone() + BOILERPLATE;
 
   fs::create_dir_all("./out/conformance/")
     .expect("Unable to create out directory");
-  match load_easl_program_from_file_with_lookup_function(source_path, |_| {
-    Ok(combined_source.clone())
-  }) {
+
+  // --- Interpreter + WGSL conformance ---
+  let cpu_result = match load_easl_program_from_file_with_lookup_function(
+    source_path,
+    |_| Ok(combined_source.clone()),
+  ) {
     Ok(Ok((_, Ok(mut program)))) => {
       let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
@@ -58,6 +62,7 @@ fn run_conformance_test(name: &str, tolerance: f64) {
           "{name}: CPU result {cpu} and GPU result {gpu} differ by more than tolerance {tolerance}"
         );
       }
+      prints[0].clone()
     }
     Ok(Ok((document, Err(errors)))) => {
       let description = errors.describe(&document);
@@ -89,6 +94,108 @@ fn run_conformance_test(name: &str, tolerance: f64) {
       panic!("Unexpected parse error in {name}:\n{description}");
     }
     Err(e) => panic!("IO error, couldn't load file {name}: \n{e:?}"),
+  };
+
+  // --- C backend conformance ---
+  // Compile the function to C, append a main() that calls f() and prints it,
+  // compile with clang, run, and compare the output to the interpreter result.
+  let c_code = match load_easl_program_from_file_with_lookup_function(
+    source_path,
+    |_| Ok(user_source.clone()),
+  ) {
+    Ok(Ok((_, Ok(mut program)))) => {
+      let errors = program.validate_raw_program(CompilerTarget::C);
+      assert!(
+        errors.is_empty(),
+        "{name}: C backend compile errors: {errors:#?}"
+      );
+      program
+        .compile_to_target(CompilerTarget::C)
+        .unwrap_or_else(|e| panic!("{name}: C codegen error: {e:#?}"))
+    }
+    Ok(Ok((doc, Err(errors)))) => {
+      panic!(
+        "{name}: C backend compile errors:\n{}",
+        errors.describe(&doc)
+      );
+    }
+    Ok(Err(mut failed_documents)) => {
+      let mut errors = vec![];
+      std::mem::swap(
+        &mut errors,
+        &mut failed_documents
+          .sources
+          .last_mut()
+          .unwrap()
+          .0
+          .parsing_failures,
+      );
+      let description = errors
+        .into_iter()
+        .map(|err| failed_documents.describe_parse_error(err))
+        .collect::<Vec<String>>()
+        .join("\n\n");
+      panic!("Parse error in {name}:\n{description}");
+    }
+    Err(e) => panic!("IO error, couldn't load file {name}: \n{e:?}"),
+  };
+
+  let c_code_with_main = format!(
+    "{c_code}\nint main() {{\n    printf(\"%.9g\\n\", f());\n    return 0;\n}}\n"
+  );
+
+  fs::create_dir_all("./out/conformance/c/")
+    .expect("Unable to create out directory");
+  let c_path = format!("./out/conformance/c/{name}.c");
+  let exe_path = format!("./out/conformance/c/{name}");
+  fs::write(&c_path, &c_code_with_main).expect("Unable to write C file");
+
+  let compile_output = Command::new("clang")
+    .args(["-std=c11", "-lm", "-o", &exe_path, &c_path])
+    .output()
+    .unwrap_or_else(|e| {
+      panic!(
+        "Failed to run clang (is it installed?): {e}\n\
+         Install with: xcode-select --install (macOS) or \
+         apt install clang (Linux)"
+      )
+    });
+  assert!(
+    compile_output.status.success(),
+    "{name}: clang compilation failed:\n{}\nSee {c_path}",
+    String::from_utf8_lossy(&compile_output.stderr)
+  );
+
+  let run_output = Command::new(&exe_path)
+    .output()
+    .unwrap_or_else(|e| panic!("Failed to run {exe_path}: {e}"));
+  assert!(
+    run_output.status.success(),
+    "{name}: C executable returned non-zero exit code"
+  );
+  let c_result = String::from_utf8(run_output.stdout)
+    .unwrap()
+    .trim()
+    .to_string();
+
+  let cpu_f64: f64 = cpu_result.parse().unwrap_or_else(|_| {
+    panic!("{name}: interpreter output {cpu_result:?} is not a valid float")
+  });
+  let c_f64: f64 = c_result.parse().unwrap_or_else(|_| {
+    panic!("{name}: C output {c_result:?} is not a valid float")
+  });
+
+  if tolerance == 0.0 {
+    assert!(
+      cpu_f64 == c_f64,
+      "{name}: interpreter result {cpu_result} != C result {c_result}"
+    );
+  } else {
+    assert!(
+      (cpu_f64 - c_f64).abs() <= tolerance,
+      "{name}: interpreter result {cpu_f64} and C result {c_f64} \
+       differ by more than tolerance {tolerance}"
+    );
   }
 }
 

@@ -256,7 +256,7 @@ impl AbstractStructField {
       CompilerTarget::Interpreter | CompilerTarget::WGSL => {
         format!("  {annotation}{name}: {field_type}")
       }
-      CompilerTarget::C => format!("  {field_type} {name}"),
+      CompilerTarget::C => format!("  {field_type} {name};"),
     })
   }
 }
@@ -347,7 +347,7 @@ impl AbstractStruct {
               .into_iter()
               .map(|field| field.compile(typedefs, names, target))
               .collect::<CompileResult<Vec<String>>>()?
-              .join(";\n");
+              .join("\n");
             format!("typedef struct {{\n{fields}\n}} {monomorphized_name};")
           }
         })

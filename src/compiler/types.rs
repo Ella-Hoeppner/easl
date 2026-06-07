@@ -1148,6 +1148,54 @@ pub enum Type {
   Array(Option<ConcreteArraySize>, Box<ExpTypeInfo>),
 }
 impl Type {
+  pub fn c_printf_statements(
+    &self,
+    arg_str: &str,
+    names: &mut NameContext,
+    target: CompilerTarget,
+  ) -> String {
+    match self {
+      Type::Unit => format!("\nprintf(\"()\");"),
+      Type::F32 => format!("\nprint_f32({arg_str});"),
+      Type::I32 => format!("\nprintf(\"%di\", {arg_str});"),
+      Type::U32 => format!("\nprintf(\"%uu\", {arg_str});"),
+      Type::Bool => format!("\nprintf(\"%s\", {arg_str});"),
+      Type::String => format!("\nprintf(\"\\\"%s\\\"\", {arg_str});"),
+      Type::Struct(s) => {
+        let mut output = format!("\nprintf(\"({}\");", s.name);
+        for f in s.fields.iter() {
+          output += "\nprintf(\" \");";
+          let sub_arg_str = arg_str.to_string() + "." + &f.name;
+          output += &f.field_type.unwrap_known().c_printf_statements(
+            &sub_arg_str,
+            names,
+            target,
+          );
+        }
+        output += "\nprintf(\")\");";
+        output
+        // let mut output = "(".to_string();
+        // let mut format_args = vec![];
+        // output += &s.monomorphized_name(names, target);
+        // for f in s.fields.iter() {
+        //   let sub_arg_str = arg_str.to_string() + "." + &f.name;
+        //   let (sub_str, mut sub_args) = f
+        //     .field_type
+        //     .unwrap_known()
+        //     .format_for_c_printf(&sub_arg_str, names, target);
+        //   output += " ";
+        //   output += &sub_str;
+        //   format_args.append(&mut sub_args);
+        // }
+        // output += ")";
+        // (output, format_args)
+      }
+      Type::Enum(_) => todo!(),
+      Type::Function(_) => format!("<fn>"),
+      Type::Array(_, _) => todo!(),
+      Type::Skolem(_, _) => panic!(),
+    }
+  }
   pub fn is_constructible(&self) -> bool {
     match self {
       Type::F32 | Type::I32 | Type::U32 | Type::Bool => true,

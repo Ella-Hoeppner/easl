@@ -1,0 +1,4 @@
+(defn main []: i32
+  (print (vec2f 5. 1.))
+  0)
+

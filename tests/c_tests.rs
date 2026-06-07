@@ -166,6 +166,9 @@ c_success_test!(user_struct);
 c_success_test!(user_enum);
 c_success_test!(vec2f);
 c_success_test!(variadic_vec_constructor);
+c_success_test!(print_u32);
 c_success_test!(print_float);
+c_success_test!(print_vec2f);
+c_success_test!(print_user_struct);
 
 // --- Error tests ---
