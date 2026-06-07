@@ -73,7 +73,8 @@ impl CompilerTarget {
     match self {
       CompilerTarget::C => {
         let mut header =
-          "#include <stdint.h>\n#include <string.h>\n".to_string();
+          "#include <stdio.h>\n#include <stdint.h>\n#include <string.h>\n"
+            .to_string();
         for size in [2, 3, 4] {
           for (field_type, suffix) in
             [("float", "f"), ("int32_t", "i"), ("uint32_t", "u")]

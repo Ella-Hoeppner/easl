@@ -1937,35 +1937,6 @@ impl TypedExp {
       Application(f, mut args) => wrap(match f.data.unwrap_known() {
         Type::Function(signature) => {
           let mut is_struct_constructor = false;
-          if let Some(abstract_ancestor) = &signature.abstract_ancestor {
-            match abstract_ancestor.read().unwrap().implementation {
-              FunctionImplementationKind::Builtin {
-                target_configuration,
-                ..
-              } => match target_configuration {
-                FunctionTargetConfiguration::SpecialCased(special_case) => {
-                  match special_case {
-                    SpecialCasedBuiltinFunction::Print => match target {
-                      CompilerTarget::WGSL => return "".into(),
-                      _ => {}
-                    },
-                    SpecialCasedBuiltinFunction::ZeroedArray => {
-                      return self.data.kind.monomorphized_name(names, target)
-                        + "()";
-                    }
-                  }
-                }
-                FunctionTargetConfiguration::BuiltinAttributeLookup(
-                  builtin_ioattribute,
-                ) => return builtin_ioattribute.compiled_name().into(),
-                FunctionTargetConfiguration::Default => {}
-              },
-              FunctionImplementationKind::StructConstructor => {
-                is_struct_constructor = true
-              }
-              _ => {}
-            }
-          }
           let ExpKind::Name(name) = f.kind else {
             panic!("tried to compile application of non-name fn");
           };
@@ -1983,7 +1954,7 @@ impl TypedExp {
             .collect::<Vec<_>>();
           let arg_strs: Vec<String> = args
             .into_iter()
-            .zip(if let Some(ancestor) = signature.abstract_ancestor {
+            .zip(if let Some(ancestor) = &signature.abstract_ancestor {
               ancestor
                 .read()
                 .unwrap()
@@ -2047,6 +2018,73 @@ impl TypedExp {
               }
             })
             .collect();
+          if let Some(abstract_ancestor) = &signature.abstract_ancestor {
+            match abstract_ancestor.read().unwrap().implementation {
+              FunctionImplementationKind::Builtin {
+                target_configuration,
+                ..
+              } => match target_configuration {
+                FunctionTargetConfiguration::SpecialCased(special_case) => {
+                  match special_case {
+                    SpecialCasedBuiltinFunction::Print => match target {
+                      CompilerTarget::WGSL => return "".into(),
+                      CompilerTarget::C => {
+                        let arg_str = &arg_strs[0];
+                        return match &arg_types[0] {
+                          Type::Unit => format!("\nprintf(\"()\");"),
+                          Type::F32 => {
+                            format!("\nprintf(\"%f\", {arg_str});")
+                          }
+                          Type::I32 => {
+                            format!("\nprintf(\"%di\", {arg_str});")
+                          }
+                          Type::U32 => {
+                            format!("\nprintf(\"%uu\", {arg_str});")
+                          }
+                          Type::Bool => {
+                            format!("\nprintf(\"%s\", {arg_str});")
+                          }
+                          Type::String => {
+                            format!("\nprintf(\"\"%s\"\", {arg_str});")
+                          }
+                          Type::Struct(s) => {
+                            let mut output = "\nprintf(\"(".to_string();
+                            output += &s.name;
+                            // todo! need to recursively walk the struct fields
+                            // and add an individual output specifier for each
+                            // primitive type on a leaf
+                            output += ")\");";
+                            output
+                          }
+                          Type::Enum(_) => todo!(),
+                          Type::Function(_) => {
+                            format!("\nprintf(\"<fn>\");")
+                          }
+                          Type::Array(concrete_array_size, exp_type_info) => {
+                            todo!()
+                          }
+                          Type::Skolem(_, type_constraints) => panic!(),
+                        };
+                      }
+                      _ => {}
+                    },
+                    SpecialCasedBuiltinFunction::ZeroedArray => {
+                      return self.data.kind.monomorphized_name(names, target)
+                        + "()";
+                    }
+                  }
+                }
+                FunctionTargetConfiguration::BuiltinAttributeLookup(
+                  builtin_ioattribute,
+                ) => return builtin_ioattribute.compiled_name().into(),
+                FunctionTargetConfiguration::Default => {}
+              },
+              FunctionImplementationKind::StructConstructor => {
+                is_struct_constructor = true
+              }
+              _ => {}
+            }
+          }
           if ASSIGNMENT_OPS.contains(&f_str.as_str()) {
             if arg_strs.len() == 2 {
               format!("{} {} {}", arg_strs[0], f_str, arg_strs[1])
