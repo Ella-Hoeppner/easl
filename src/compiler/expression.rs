@@ -2034,17 +2034,6 @@ impl TypedExp {
                           names,
                           target,
                         );
-                        // let arg_str = &arg_strs[0];
-                        // let (format_str, format_arguments) = arg_types[0]
-                        //   .format_for_c_printf(arg_str, names, target);
-                        // return format_arguments.into_iter().fold(
-                        //   format!("\nprintf(\"{format_str}\""),
-                        //   |mut acc: String, format_arg: String| {
-                        //     acc += ", ";
-                        //     acc += &format_arg;
-                        //     acc
-                        //   },
-                        // ) + ");";
                       }
                       _ => {}
                     },

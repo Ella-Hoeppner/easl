@@ -2479,8 +2479,14 @@ impl Program {
         }
       }
     }
+    let mut emulated_helper_chunks: HashSet<String> = HashSet::new();
     for (_, result) in self.emulated_functions.iter() {
-      compiled_string += &result.content;
+      for chunk in result.helper_chunks.iter() {
+        emulated_helper_chunks.insert(chunk.clone());
+      }
+    }
+    for chunk in emulated_helper_chunks {
+      compiled_string += &chunk;
       compiled_string += "\n\n";
     }
     for f in self.abstract_functions_iter() {

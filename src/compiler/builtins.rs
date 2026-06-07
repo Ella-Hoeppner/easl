@@ -883,6 +883,11 @@ fn exp_functions() -> Vec<AbstractFunctionSignature> {
         name: name.into(),
         arg_types: vec![t.clone().owned()],
         return_type: t.clone(),
+        implementation: FunctionImplementationKind::Builtin {
+          effect_type: EffectType::empty(),
+          target_configuration: FunctionTargetConfiguration::Default,
+          target_specific_emulations: [CompilerTarget::C].into(),
+        },
         ..Default::default()
       })
       .collect()
@@ -904,6 +909,11 @@ fn exp_functions() -> Vec<AbstractFunctionSignature> {
       name: "ldexp".into(),
       arg_types: vec![f.clone().owned(), i.owned()],
       return_type: f,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: [CompilerTarget::C].into(),
+      },
       ..Default::default()
     }]
   }))
@@ -1113,6 +1123,11 @@ fn bit_manipulation_functions() -> Vec<AbstractFunctionSignature> {
     )
     .collect(),
     return_type: AbstractType::Type(return_type),
+    implementation: FunctionImplementationKind::Builtin {
+      effect_type: EffectType::empty(),
+      target_configuration: FunctionTargetConfiguration::Default,
+      target_specific_emulations: [CompilerTarget::C].into(),
+    },
     ..Default::default()
   })
   .chain(
@@ -1138,6 +1153,11 @@ fn bit_manipulation_functions() -> Vec<AbstractFunctionSignature> {
             name: name.into(),
             arg_types: vec![v.clone().owned()],
             return_type: v,
+            implementation: FunctionImplementationKind::Builtin {
+              effect_type: EffectType::empty(),
+              target_configuration: FunctionTargetConfiguration::Default,
+              target_specific_emulations: [CompilerTarget::C].into(),
+            },
             ..Default::default()
           }
         })
@@ -1160,6 +1180,11 @@ fn bit_manipulation_functions() -> Vec<AbstractFunctionSignature> {
           AbstractType::Type(Type::U32).owned(),
         ],
         return_type: v,
+        implementation: FunctionImplementationKind::Builtin {
+          effect_type: EffectType::empty(),
+          target_configuration: FunctionTargetConfiguration::Default,
+          target_specific_emulations: [CompilerTarget::C].into(),
+        },
         ..Default::default()
       }
     })
@@ -1268,6 +1293,11 @@ fn vector_functions() -> Vec<AbstractFunctionSignature> {
       name: name.into(),
       arg_types: arg_types.into_iter().map(|t| t.owned()).collect(),
       return_type,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: [CompilerTarget::C].into(),
+      },
       ..Default::default()
     })
     .collect()
@@ -1307,6 +1337,11 @@ pub fn scalar_bitcast() -> AbstractFunctionSignature {
     ],
     arg_types: vec![AbstractType::Generic("T".into()).owned()],
     return_type: AbstractType::Generic("S".into()),
+    implementation: FunctionImplementationKind::Builtin {
+      effect_type: EffectType::empty(),
+      target_configuration: FunctionTargetConfiguration::Default,
+      target_specific_emulations: [CompilerTarget::C].into(),
+    },
     ..Default::default()
   }
 }
@@ -1330,6 +1365,11 @@ pub fn bitcast_functions() -> Vec<AbstractFunctionSignature> {
       ],
       arg_types: vec![t.clone().owned()],
       return_type: t.rename_generic("T", "S"),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: [CompilerTarget::C].into(),
+      },
       ..Default::default()
     }]
   })
@@ -1389,12 +1429,22 @@ fn any_and_all() -> Vec<AbstractFunctionSignature> {
         name: "any".into(),
         arg_types: vec![t.clone().owned()],
         return_type: AbstractType::Type(Type::Bool),
+        implementation: FunctionImplementationKind::Builtin {
+          effect_type: EffectType::empty(),
+          target_configuration: FunctionTargetConfiguration::Default,
+          target_specific_emulations: [CompilerTarget::C].into(),
+        },
         ..Default::default()
       },
       AbstractFunctionSignature {
         name: "all".into(),
         arg_types: vec![t.owned()],
         return_type: AbstractType::Type(Type::Bool),
+        implementation: FunctionImplementationKind::Builtin {
+          effect_type: EffectType::empty(),
+          target_configuration: FunctionTargetConfiguration::Default,
+          target_specific_emulations: [CompilerTarget::C].into(),
+        },
         ..Default::default()
       },
     ]
@@ -1425,6 +1475,11 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
           .collect(),
         return_type: t.clone(),
         associative,
+        implementation: FunctionImplementationKind::Builtin {
+          effect_type: EffectType::empty(),
+          target_configuration: FunctionTargetConfiguration::Default,
+          target_specific_emulations: [CompilerTarget::C].into(),
+        },
         ..Default::default()
       })
       .collect::<Vec<_>>()
@@ -1454,6 +1509,11 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
           .take(arg_count)
           .collect(),
         return_type: t.clone(),
+        implementation: FunctionImplementationKind::Builtin {
+          effect_type: EffectType::empty(),
+          target_configuration: FunctionTargetConfiguration::Default,
+          target_specific_emulations: [CompilerTarget::C].into(),
+        },
         ..Default::default()
       })
       .collect::<Vec<_>>()
@@ -1468,6 +1528,11 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
             AbstractType::Type(Type::F32).owned(),
           ],
           return_type: t.clone(),
+          implementation: FunctionImplementationKind::Builtin {
+            effect_type: EffectType::empty(),
+            target_configuration: FunctionTargetConfiguration::Default,
+            target_specific_emulations: [CompilerTarget::C].into(),
+          },
           ..Default::default()
         },
         AbstractFunctionSignature {
@@ -1478,6 +1543,11 @@ fn misc_math_functions() -> Vec<AbstractFunctionSignature> {
             t.clone().owned(),
           ],
           return_type: t.clone(),
+          implementation: FunctionImplementationKind::Builtin {
+            effect_type: EffectType::empty(),
+            target_configuration: FunctionTargetConfiguration::Default,
+            target_specific_emulations: [CompilerTarget::C].into(),
+          },
           ..Default::default()
         },
       ]
@@ -1717,6 +1787,11 @@ fn data_packing_functions() -> Vec<AbstractFunctionSignature> {
         .owned(),
       ],
       return_type: AbstractType::Type(Type::U32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: [CompilerTarget::C].into(),
+      },
       ..Default::default()
     }];
     if unpack {
@@ -1726,6 +1801,11 @@ fn data_packing_functions() -> Vec<AbstractFunctionSignature> {
         return_type: AbstractType::AbstractStruct(
           v.fill_abstract_generics(vec![AbstractType::Type(t)]).into(),
         ),
+        implementation: FunctionImplementationKind::Builtin {
+          effect_type: EffectType::empty(),
+          target_configuration: FunctionTargetConfiguration::Default,
+          target_specific_emulations: [CompilerTarget::C].into(),
+        },
         ..Default::default()
       });
     }
@@ -1772,6 +1852,11 @@ fn array_functions() -> Vec<AbstractFunctionSignature> {
         Ownership::Reference,
       )],
       return_type: AbstractType::Type(Type::U32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: [CompilerTarget::C].into(),
+      },
       ..Default::default()
     },
     AbstractFunctionSignature {
@@ -1788,7 +1873,7 @@ fn array_functions() -> Vec<AbstractFunctionSignature> {
         target_configuration: FunctionTargetConfiguration::SpecialCased(
           SpecialCasedBuiltinFunction::ZeroedArray,
         ),
-        target_specific_emulations: HashSet::new(),
+        target_specific_emulations: [CompilerTarget::C].into(),
       },
       ..Default::default()
     },
@@ -1808,7 +1893,7 @@ fn array_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin {
         effect_type: Effect::CPUExclusiveFunction("zeroed-array".into()).into(),
         target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: HashSet::new(),
+        target_specific_emulations: [CompilerTarget::C].into(),
       },
       ..Default::default()
     },
@@ -2271,7 +2356,7 @@ fn dynamic_array_functions() -> Vec<AbstractFunctionSignature> {
       effect_type: Effect::CPUExclusiveFunction("into-dynamic-array".into())
         .into(),
       target_configuration: FunctionTargetConfiguration::Default,
-      target_specific_emulations: HashSet::new(),
+      target_specific_emulations: [CompilerTarget::C].into(),
     },
     ..Default::default()
   }]
@@ -2915,7 +3000,7 @@ pub struct EmulatedFunctionSignature {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EmulatedFunctionResult {
   pub name: String,
-  pub content: String,
+  pub helper_chunks: Vec<String>,
 }
 
 pub fn generate_emulated_builtin(
@@ -2923,11 +3008,127 @@ pub fn generate_emulated_builtin(
   target: CompilerTarget,
   names: &mut NameContext,
 ) -> EmulatedFunctionResult {
-  match signature.name.as_str() {
-    "sin" => EmulatedFunctionResult {
-      name: "sin".to_string(),
-      content: "#include <math.h>".to_string(),
+  let name = signature.name.as_str();
+  match name {
+    "acos" | "cos" | "sin" | "tan" | "atan" | "asin" | "floor" | "ceil"
+    | "round" | "trunc" | "exp" | "exp2" | "log" | "log2" | "pow" | "atan2"
+    | "sinh" | "cosh" | "tanh" | "asinh" | "atanh" | "acosh" | "fma"
+    | "ldexp" => EmulatedFunctionResult {
+      name: name.to_string(),
+      helper_chunks: vec!["#include <math.h>".to_string()],
     },
+    "inverse-sqrt" => {
+      let new_name = names.gensym("inverse_sqrt");
+      EmulatedFunctionResult {
+        name: new_name.to_string(),
+        helper_chunks: vec![
+          "#include <math.h>".to_string(),
+          format!(
+            "float {new_name} (float x) {{\n
+              return 1. / sqrt(x);\n
+            }}"
+          ),
+        ],
+      }
+    }
+    "abs" => {
+      let new_name = names.gensym("abs");
+      EmulatedFunctionResult {
+        name: new_name.to_string(),
+        helper_chunks: vec![
+          "#include <math.h>".to_string(),
+          format!(
+            "float {new_name}(float x) {{\n  \
+              return fabs(x);\n\
+            }}"
+          ),
+        ],
+      }
+    }
+    "sign" => {
+      let new_name = names.gensym("sign");
+      EmulatedFunctionResult {
+        name: new_name.to_string(),
+        helper_chunks: vec![format!(
+          "float {new_name}(float x) {{\n  \
+             return (x > 0.) ? 1. : (x < 0.) ? -1. : 0.;\n\
+           }}"
+        )],
+      }
+    }
+    "fract" => {
+      let new_name = names.gensym("fract");
+      EmulatedFunctionResult {
+        name: new_name.to_string(),
+        helper_chunks: vec![
+          "#include <math.h>".to_string(),
+          format!(
+            "float {new_name}(float x) {{\n  \
+              return x - floor(x);\n\
+            }}"
+          ),
+        ],
+      }
+    }
+    "saturate" => {
+      let new_name = names.gensym("saturate");
+      EmulatedFunctionResult {
+        name: new_name.to_string(),
+        helper_chunks: vec![format!(
+          "float {new_name}(float x) {{\n  \
+             return x < 0. ? 0. : x > 1. ? 1. : x;\n\
+           }}"
+        )],
+      }
+    }
+    "degrees" => {
+      let new_name = names.gensym("degrees");
+      EmulatedFunctionResult {
+        name: new_name.to_string(),
+        helper_chunks: vec![format!(
+          "float {new_name}(float x) {{\n  \
+             return x * (180. / 3.14159265358979323846);\n\
+           }}"
+        )],
+      }
+    }
+    "radians" => {
+      let new_name = names.gensym("radians");
+      EmulatedFunctionResult {
+        name: new_name.to_string(),
+        helper_chunks: vec![format!(
+          "float {new_name}(float x) {{\n  \
+             return x * (3.14159265358979323846 / 180.);\n\
+           }}"
+        )],
+      }
+    }
+    "step"
+    | "mix"
+    | "smoothstep"
+    | "clamp"
+    | "min"
+    | "max"
+    | "dot"
+    | "cross"
+    | "length"
+    | "normalize"
+    | "distance"
+    | "face-forward"
+    | "reflect"
+    | "refract"
+    | "determinant"
+    | "transpose"
+    | "bitcast"
+    | "count-one-bits"
+    | "count-leading-zeros"
+    | "count-trailing-zeros"
+    | "reverse-bits"
+    | "first-leading-bit"
+    | "first-trailing-bit"
+    | "extract-bits" => {
+      todo!("C emulation for `{name}` not yet implemented")
+    }
     _ => panic!(
       "couldn't generate an emulation\ntarget: {target:?}\nsignature: {signature:#?}"
     ),

@@ -99,46 +99,46 @@ fn run_conformance_test(name: &str, tolerance: f64) {
   // --- C backend conformance ---
   // Compile the function to C, append a main() that calls f() and prints it,
   // compile with clang, run, and compare the output to the interpreter result.
-  let c_code = match load_easl_program_from_file_with_lookup_function(
-    source_path,
-    |_| Ok(user_source.clone()),
-  ) {
-    Ok(Ok((_, Ok(mut program)))) => {
-      let errors = program.validate_raw_program(CompilerTarget::C);
-      assert!(
-        errors.is_empty(),
-        "{name}: C backend compile errors: {errors:#?}"
-      );
-      program
-        .compile_to_target(CompilerTarget::C)
-        .unwrap_or_else(|e| panic!("{name}: C codegen error: {e:#?}"))
-    }
-    Ok(Ok((doc, Err(errors)))) => {
-      panic!(
-        "{name}: C backend compile errors:\n{}",
-        errors.describe(&doc)
-      );
-    }
-    Ok(Err(mut failed_documents)) => {
-      let mut errors = vec![];
-      std::mem::swap(
-        &mut errors,
-        &mut failed_documents
-          .sources
-          .last_mut()
-          .unwrap()
-          .0
-          .parsing_failures,
-      );
-      let description = errors
-        .into_iter()
-        .map(|err| failed_documents.describe_parse_error(err))
-        .collect::<Vec<String>>()
-        .join("\n\n");
-      panic!("Parse error in {name}:\n{description}");
-    }
-    Err(e) => panic!("IO error, couldn't load file {name}: \n{e:?}"),
-  };
+  let c_code =
+    match load_easl_program_from_file_with_lookup_function(source_path, |_| {
+      Ok(user_source.clone())
+    }) {
+      Ok(Ok((_, Ok(mut program)))) => {
+        let errors = program.validate_raw_program(CompilerTarget::C);
+        assert!(
+          errors.is_empty(),
+          "{name}: C backend compile errors: {errors:#?}"
+        );
+        program
+          .compile_to_target(CompilerTarget::C)
+          .unwrap_or_else(|e| panic!("{name}: C codegen error: {e:#?}"))
+      }
+      Ok(Ok((doc, Err(errors)))) => {
+        panic!(
+          "{name}: C backend compile errors:\n{}",
+          errors.describe(&doc)
+        );
+      }
+      Ok(Err(mut failed_documents)) => {
+        let mut errors = vec![];
+        std::mem::swap(
+          &mut errors,
+          &mut failed_documents
+            .sources
+            .last_mut()
+            .unwrap()
+            .0
+            .parsing_failures,
+        );
+        let description = errors
+          .into_iter()
+          .map(|err| failed_documents.describe_parse_error(err))
+          .collect::<Vec<String>>()
+          .join("\n\n");
+        panic!("Parse error in {name}:\n{description}");
+      }
+      Err(e) => panic!("IO error, couldn't load file {name}: \n{e:?}"),
+    };
 
   let c_code_with_main = format!(
     "{c_code}\nint main() {{\n    printf(\"%.9g\\n\", f());\n    return 0;\n}}\n"

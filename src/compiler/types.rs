@@ -1174,21 +1174,6 @@ impl Type {
         }
         output += "\nprintf(\")\");";
         output
-        // let mut output = "(".to_string();
-        // let mut format_args = vec![];
-        // output += &s.monomorphized_name(names, target);
-        // for f in s.fields.iter() {
-        //   let sub_arg_str = arg_str.to_string() + "." + &f.name;
-        //   let (sub_str, mut sub_args) = f
-        //     .field_type
-        //     .unwrap_known()
-        //     .format_for_c_printf(&sub_arg_str, names, target);
-        //   output += " ";
-        //   output += &sub_str;
-        //   format_args.append(&mut sub_args);
-        // }
-        // output += ")";
-        // (output, format_args)
       }
       Type::Enum(_) => todo!(),
       Type::Function(_) => format!("<fn>"),
