@@ -2944,7 +2944,7 @@ impl Program {
       }
     }
   }
-  pub fn deexpressionify(&mut self) {
+  pub fn deexpressionify(&mut self, target: CompilerTarget) {
     for signature in self.abstract_functions_iter() {
       let signature = signature.read().unwrap();
       if let FunctionImplementationKind::Composite(f) =
@@ -2952,7 +2952,7 @@ impl Program {
       {
         let mut f = f.write().unwrap();
         f.expression.throw_away_inner_values_in_blocks(self);
-        f.expression.deexpressionify(self);
+        f.expression.deexpressionify(self, target);
       }
     }
   }
@@ -3903,7 +3903,7 @@ impl Program {
       return errors;
     }
     self.desugar_swizzle_assignments();
-    self.deexpressionify();
+    self.deexpressionify(target);
     self.normalize_array_accesses();
     self.deshadow(&mut errors);
     if !errors.is_empty() {

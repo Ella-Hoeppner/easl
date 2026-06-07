@@ -182,6 +182,15 @@ pub fn is_vec_name(name: &str) -> bool {
   )
 }
 
+pub fn extract_vec_size(name: &str) -> Option<usize> {
+  match name {
+    "vec2" | "vec2f" | "vec2i" | "vec2b" | "vec2u" => Some(2usize),
+    "vec3" | "vec3f" | "vec3i" | "vec3u" | "vec3b" => Some(3usize),
+    "vec4i" | "vec4f" | "vec4" | "vec4u" | "vec4b" => Some(4usize),
+    _ => None,
+  }
+}
+
 impl AbstractFunctionSignature {
   pub fn is_builtin_vector_constructor(&self) -> bool {
     matches!(

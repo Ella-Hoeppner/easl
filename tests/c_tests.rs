@@ -165,5 +165,6 @@ c_success_test!(sin_twice);
 c_success_test!(user_struct);
 c_success_test!(user_enum);
 c_success_test!(vec2f);
+c_success_test!(variadic_vec_constructor);
 
 // --- Error tests ---

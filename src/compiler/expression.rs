@@ -6,6 +6,7 @@ use std::sync::{Arc, RwLock};
 use take_mut::take;
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::compiler::functions::extract_vec_size;
 use crate::{
   Never,
   compiler::{
@@ -2140,12 +2141,19 @@ impl TypedExp {
           .into_iter()
           .map(|(name, _, variable_kind, value_exp)| {
             if value_exp.kind == ExpKind::Uninitialized {
-              format!(
-                "{} {}: {};",
-                variable_kind.compile(),
-                compile_word(name),
-                value_exp.data.monomorphized_name(names, target),
-              )
+              match target {
+                CompilerTarget::Interpreter | CompilerTarget::WGSL => format!(
+                  "{} {}: {};",
+                  variable_kind.compile(),
+                  compile_word(name),
+                  value_exp.data.monomorphized_name(names, target),
+                ),
+                CompilerTarget::C => format!(
+                  "{} {};",
+                  value_exp.data.monomorphized_name(names, target),
+                  compile_word(name)
+                ),
+              }
             } else {
               let type_name = value_exp.data.monomorphized_name(names, target);
               let compiled_value =
@@ -2154,13 +2162,16 @@ impl TypedExp {
                 } else {
                   value_exp.compile(InnerExpression, names, target)
                 };
-              format!(
-                "{} {}: {} = {};",
-                variable_kind.compile(),
-                compile_word(name),
-                type_name,
-                compiled_value
-              )
+              let compiled_name = compile_word(name);
+              match target {
+                CompilerTarget::Interpreter | CompilerTarget::WGSL => format!(
+                  "{} {compiled_name}: {type_name} = {compiled_value};",
+                  variable_kind.compile(),
+                ),
+                CompilerTarget::C => {
+                  format!("{type_name} {compiled_name} = {compiled_value};")
+                }
+              }
             }
           })
           .collect();
@@ -4567,7 +4578,7 @@ impl TypedExp {
       )
       .unwrap()
   }
-  pub fn deexpressionify(&mut self, program: &Program) {
+  pub fn deexpressionify(&mut self, program: &Program, target: CompilerTarget) {
     let mut names = program.names.write().unwrap();
     loop {
       let mut changed = false;
@@ -4614,7 +4625,70 @@ impl TypedExp {
                     })
                   }
                 }
-                if !matches!(f.kind, Name(_)) {
+                if let Name(name) = &f.kind {
+                  if let Some(vec_size) = extract_vec_size(name) {
+                    // If this is an application of a vector constructor and the
+                    // arguments aren't simple scalars, restructure them to be
+                    // so on backends that need them to be so (e.g. C)
+                    if args.len() < vec_size && target == CompilerTarget::C {
+                      let mut inserted_bindings = vec![];
+                      take(args, |args| {
+                        let mut new_args = vec![];
+                        for arg in args {
+                          let arg_type = arg.data.unwrap_known();
+                          let arg_type_name =
+                            arg_type.monomorphized_name(&mut names, target);
+                          if let Some(inner_vec_size) =
+                            extract_vec_size(&arg_type_name)
+                          {
+                            let Type::Struct(ref arg_struct_type) = arg_type
+                            else {
+                              panic!()
+                            };
+                            let binding_name = names.gensym("extracted_subvec");
+                            for field in
+                              ["x", "y", "z", "w"].iter().take(inner_vec_size)
+                            {
+                              new_args.push(TypedExp {
+                                kind: ExpKind::Access(
+                                  Accessor::Field((*field).into()),
+                                  TypedExp {
+                                    data: arg_type.clone().known().into(),
+                                    kind: ExpKind::Name(binding_name.clone()),
+                                    source_trace: arg.source_trace.clone(),
+                                  }
+                                  .into(),
+                                ),
+                                data: arg_struct_type.fields[0]
+                                  .field_type
+                                  .clone(),
+                                source_trace: arg.source_trace.clone(),
+                              });
+                            }
+                            inserted_bindings.push((
+                              binding_name,
+                              arg.source_trace.clone(),
+                              VariableKind::Let,
+                              arg,
+                            ));
+                          } else {
+                            new_args.push(arg);
+                          }
+                        }
+                        new_args
+                      });
+                      changed = true;
+                      take(exp, |exp| TypedExp {
+                        data: exp.data.clone(),
+                        source_trace: exp.source_trace.clone(),
+                        kind: ExpKind::Let(inserted_bindings, exp.into()),
+                      });
+                    }
+                  }
+                } else {
+                  // All applications should ultimately have a simple name
+                  // expression in the place of the function, rather than any
+                  // kind of compound expression. The following ensures this.
                   let f_name = names.gensym("f_binding");
                   let mut name_exp = Exp {
                     kind: ExpKind::Name(f_name.clone()),
