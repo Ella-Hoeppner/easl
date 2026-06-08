@@ -1405,7 +1405,6 @@ impl Type {
     }
   }
   pub fn satisfies_constraint(&self, constraint: &TypeConstraint) -> bool {
-    println!("checking satisfies_constraint {constraint:?}\n{self:#?}\n\n");
     if let Type::Skolem(_, skolem_constraints) = self {
       skolem_constraints.contains(&constraint)
     } else {

@@ -1364,36 +1364,35 @@ pub fn scalar_bitcast() -> AbstractFunctionSignature {
 }
 
 pub fn bitcast_functions() -> Vec<AbstractFunctionSignature> {
-  // foreach_vec_type(|t| {
-  //   let t = AbstractType::AbstractStruct(t.into());
-  //   vec![AbstractFunctionSignature {
-  //     name: "bitcast".into(),
-  //     generic_args: vec![
-  //       (
-  //         "T".into(),
-  //         GenericArgument::Type(vec![TypeConstraint::scalar()]),
-  //         SourceTrace::empty(),
-  //       ),
-  //       (
-  //         "S".into(),
-  //         GenericArgument::Type(vec![TypeConstraint::scalar()]),
-  //         SourceTrace::empty(),
-  //       ),
-  //     ],
-  //     arg_types: vec![t.clone().owned()],
-  //     return_type: t.rename_generic("T", "S"),
-  //     implementation: FunctionImplementationKind::Builtin {
-  //       effect_type: EffectType::empty(),
-  //       target_configuration: FunctionTargetConfiguration::Default,
-  //       target_specific_emulations: [CompilerTarget::C].into(),
-  //     },
-  //     ..Default::default()
-  //   }]
-  // })
-  // .into_iter()
-  // .chain(std::iter::once(scalar_bitcast()))
-  // .collect()
-  vec![scalar_bitcast()]
+  foreach_vec_type(|t| {
+    let t = AbstractType::AbstractStruct(t.into());
+    vec![AbstractFunctionSignature {
+      name: "bitcast".into(),
+      generic_args: vec![
+        (
+          "T".into(),
+          GenericArgument::Type(vec![TypeConstraint::scalar()]),
+          SourceTrace::empty(),
+        ),
+        (
+          "S".into(),
+          GenericArgument::Type(vec![TypeConstraint::scalar()]),
+          SourceTrace::empty(),
+        ),
+      ],
+      arg_types: vec![t.clone().owned()],
+      return_type: t.rename_generic("T", "S"),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: [CompilerTarget::C].into(),
+      },
+      ..Default::default()
+    }]
+  })
+  .into_iter()
+  .chain(std::iter::once(scalar_bitcast()))
+  .collect()
 }
 
 fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {

@@ -661,4 +661,10 @@ error_test!(
   unresolved_const_generic_failure,
   CompileErrorKind::CouldntInferTypes
 );
-error_test!(bitcast_failure, CompileErrorKind::CouldntInferTypes);
+error_test!(
+  bitcast_failure,
+  CompileErrorKind::UnsatisfiedTypeConstraint(TypeConstraintDescription {
+    name: "Scalar".into(),
+    args: vec![],
+  })
+);

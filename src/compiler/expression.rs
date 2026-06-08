@@ -25,7 +25,7 @@ use crate::{
     program::{CompilerTarget, NameContext, Program, TypeDefs},
     structs::{AbstractStruct, Struct},
     types::{
-      ConcreteArraySize, ExpTypeInfo, GenericArgumentValue,
+      ConcreteArraySize, ExpTypeInfo, GenericArgument, GenericArgumentValue,
       NameDefinitionSource, Type,
       TypeState::{self, *},
       Variable, VariableKind, extract_type_annotation,
@@ -3609,6 +3609,36 @@ impl TypedExp {
                       unreachable!("")
                     }
                   } else if &**f_name == "bitcast" {
+                    let sig = abstract_signature.read().unwrap();
+                    let mut generic_type_bindings = HashMap::new();
+                    let mut generic_constant_bindings = HashMap::new();
+                    for i in 0..sig.arg_types.len() {
+                      sig.arg_types[i].0.extract_generic_bindings(
+                        &args[i].data.unwrap_known(),
+                        &mut generic_type_bindings,
+                        &mut generic_constant_bindings,
+                      );
+                    }
+                    sig.return_type.extract_generic_bindings(
+                      &exp.data.unwrap_known(),
+                      &mut generic_type_bindings,
+                      &mut generic_constant_bindings,
+                    );
+                    for (name, generic_arg, _) in &sig.generic_args {
+                      if let GenericArgument::Type(bounds) = generic_arg {
+                        if let Some(generic_type) = generic_type_bindings.get(name) {
+                          if let Some(unsatisfied) = bounds
+                            .iter()
+                            .find(|c| !generic_type.satisfies_constraint(c))
+                          {
+                            return err(
+                              UnsatisfiedTypeConstraint(unsatisfied.clone().into()),
+                              source_trace.clone(),
+                            );
+                          }
+                        }
+                      }
+                    }
                     let inner_type_name =
                       exp.data.kind.unwrap_known().monomorphized_name(
                         &mut new_program.names.write().unwrap(),
@@ -3618,8 +3648,6 @@ impl TypedExp {
                       f_name,
                       &mut format!("bitcast<{inner_type_name}>",).into(),
                     )
-                  } else {
-                    {}
                   }
                 }
                 FunctionImplementationKind::StructConstructor => {
