@@ -10,6 +10,7 @@ use crate::compiler::effects::EffectType;
 use crate::compiler::entry::BuiltinIOAttribute;
 use crate::compiler::functions::extract_vec_size;
 use crate::compiler::program::{CompilerTarget, NameContext};
+use crate::compiler::util::compile_word;
 use crate::{
   compiler::{
     effects::Effect,
@@ -152,6 +153,11 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
             })
             .collect(),
           return_type: specialized_vec_n_type(n, suffix),
+          implementation: FunctionImplementationKind::Builtin {
+            effect_type: EffectType::empty(),
+            target_configuration: FunctionTargetConfiguration::Default,
+            target_specific_emulations: [CompilerTarget::C].into(),
+          },
           ..Default::default()
         })
         .chain(std::iter::once(AbstractFunctionSignature {
@@ -176,6 +182,11 @@ fn multi_signature_vec_constructors(n: u8) -> Vec<AbstractFunctionSignature> {
             })
             .collect(),
           return_type: vec_n_type(n),
+          implementation: FunctionImplementationKind::Builtin {
+            effect_type: EffectType::empty(),
+            target_configuration: FunctionTargetConfiguration::Default,
+            target_specific_emulations: [CompilerTarget::C].into(),
+          },
           ..Default::default()
         }))
         .collect::<Vec<AbstractFunctionSignature>>()
@@ -3022,74 +3033,36 @@ impl EmulatedFunctionRecord {
       helper_chunks: vec![],
     }
   }
-  pub fn track_emulated_builtin(
+  fn track_emulated_elementwise_float_builtin(
     &mut self,
-    signature: EmulatedFunctionSignature,
-    target: CompilerTarget,
+    name: &str,
+    arg_count: usize,
+    _target: CompilerTarget,
     names: &mut NameContext,
   ) -> String {
-    if let Some(name) = self.emulated_signatures.get(&signature) {
-      return name.clone();
+    let signature = EmulatedFunctionSignature {
+      name: name.to_string(),
+      arg_types: std::iter::repeat("float".to_string())
+        .take(arg_count)
+        .collect(),
+      return_type: "float".to_string(),
+    };
+    if let Some(existing_name) = self.emulated_signatures.get(&signature) {
+      return existing_name.clone();
     }
-    let name = signature.name.as_str();
-    match name {
+    let new_name = match name {
       "acos" | "cos" | "sin" | "tan" | "atan" | "asin" | "floor" | "ceil"
       | "round" | "trunc" | "exp" | "exp2" | "log" | "log2" | "pow"
       | "sinh" | "cosh" | "tanh" | "asinh" | "atanh" | "acosh" | "fma"
-      | "ldexp" | "sqrt" => {
-        if signature.return_type == "float" {
-          name.to_string()
-        } else {
-          let vec_type_name = signature.return_type;
-          let size = extract_vec_size(&vec_type_name).unwrap();
-          let new_name = names.gensym(&format!("sin_{size}"));
-          let mut body = format!(
-            "{vec_type_name} {new_name} ({vec_type_name} x) {{\n  \
-              {vec_type_name} y = {{0.}};\n  \
-              "
-          );
-          for field in ["x", "y", "z", "w"].iter().take(size) {
-            body += &format!("y.{field} = {name}(x.{field});\n  ");
-          }
-          body += "return y;\n}";
-          self.helper_chunks.push(body);
-          new_name.to_string()
-        }
-      }
+      | "ldexp" | "sqrt" | "atan2" => name.to_string(),
       "inverse-sqrt" => {
-        if signature.return_type == "float" {
-          let new_name = names.gensym("inverse_sqrt");
-          self.helper_chunks.push(format!(
-            "float {new_name} (float x) {{\n  \
-              return 1. / sqrt(x);\n\
-            }}"
-          ));
-          new_name.to_string()
-        } else {
-          let float_fn_name = self.track_emulated_builtin(
-            EmulatedFunctionSignature {
-              name: name.to_string(),
-              arg_types: vec!["float".to_string()],
-              return_type: "float".to_string(),
-            },
-            target,
-            names,
-          );
-          let vec_type_name = signature.return_type;
-          let size = extract_vec_size(&vec_type_name).unwrap();
-          let new_name = names.gensym(&format!("inverse_sqrt_{size}"));
-          let mut body = format!(
-            "{vec_type_name} {new_name} ({vec_type_name} x) {{\n  \
-              {vec_type_name} y = {{0.}};\n  \
-              "
-          );
-          for field in ["x", "y", "z", "w"].iter().take(size) {
-            body += &format!("y.{field} = {float_fn_name}(x.{field});\n  ");
-          }
-          body += "return y;\n}";
-          self.helper_chunks.push(body);
-          new_name.to_string()
-        }
+        let new_name = names.gensym("inverse_sqrt");
+        self.helper_chunks.push(format!(
+          "float {new_name} (float x) {{\n  \
+                return 1. / sqrt(x);\n\
+              }}"
+        ));
+        new_name.to_string()
       }
       "abs" => {
         let new_name = names.gensym("abs");
@@ -3157,8 +3130,8 @@ impl EmulatedFunctionRecord {
       "mix" => {
         let new_name = names.gensym("mix");
         self.helper_chunks.push(format!(
-          "float {new_name}(float x, float y, float a) {{\n  \
-             return x * (1. - a) + y * a;\n\
+          "float {new_name}(float x, float y, float p) {{\n  \
+             return x * (1. - p) + y * p;\n\
            }}"
         ));
         new_name.to_string()
@@ -3201,213 +3174,361 @@ impl EmulatedFunctionRecord {
         ));
         new_name.to_string()
       }
-      "dot" => {
-        let new_name = names.gensym("dot");
-        let vec_type_name = &signature.arg_types[0];
-        let mut function_body = format!(
-          "float {new_name}({vec_type_name} a, {vec_type_name} b) \
+      _ => panic!(),
+    };
+    self.emulated_signatures.insert(signature, new_name.clone());
+    new_name
+  }
+  pub fn track_emulated_builtin(
+    &mut self,
+    signature: EmulatedFunctionSignature,
+    target: CompilerTarget,
+    names: &mut NameContext,
+  ) -> String {
+    if let Some(existing_name) = self.emulated_signatures.get(&signature) {
+      return existing_name.clone();
+    }
+    let name = signature.name.as_str();
+    let new_name = if let Some(size) = extract_vec_size(name) {
+      let inner_scalar_name = match name.char_indices().last().unwrap().1 {
+        'f' => "float",
+        'i' => "int32_t",
+        'u' => "uint32_t",
+        'b' => "bool",
+        _ => panic!(),
+      };
+      let is_scalar_type = |type_name: &str| -> bool {
+        matches!(type_name, "float" | "int32_t" | "uint32_t" | "bool")
+      };
+      let new_name = names.gensym(
+        &std::iter::once(format!("{name}_from"))
+          .chain(signature.arg_types.iter().cloned())
+          .collect::<Vec<String>>()
+          .join("_"),
+      );
+      if signature.arg_types.len() == 1
+        && let scalar_type_name = &signature.arg_types[0]
+        && is_scalar_type(&scalar_type_name)
+      {
+        let args = std::iter::repeat(format!("({inner_scalar_name})x"))
+          .take(size)
+          .collect::<Vec<String>>()
+          .join(", ");
+        self.helper_chunks.push(format!(
+          "{name} {new_name}({scalar_type_name} x) {{\n  \
+             return ({name}){{{args}}};\n\
+           }}"
+        ));
+      } else {
+        let arg_names = ["a", "b", "c", "d"]
+          .iter()
+          .take(signature.arg_types.len())
+          .copied()
+          .collect::<Vec<_>>();
+        let arg_string = signature
+          .arg_types
+          .iter()
+          .zip(arg_names.iter())
+          .map(|(type_name, arg_name)| format!("{type_name} {arg_name}"))
+          .collect::<Vec<String>>()
+          .join(", ");
+        let mut function = format!(
+          "{name} {new_name}({arg_string}) {{\n  \
+             {name} v;\n  "
+        );
+        let mut dimension_index = 0;
+        let dimensions = ["x", "y", "z", "w"];
+        for (arg_type_name, arg_name) in
+          signature.arg_types.iter().zip(arg_names.iter())
+        {
+          if is_scalar_type(arg_type_name) {
+            let dim = dimensions[dimension_index];
+            function +=
+              &format!("v.{dim} = ({inner_scalar_name}){arg_name};\n  ");
+            dimension_index += 1;
+          } else {
+            let inner_size = extract_vec_size(arg_type_name).unwrap();
+            for i in 0..inner_size {
+              let dim = dimensions[dimension_index];
+              let arg_dim = dimensions[i];
+              function += &format!(
+                "v.{dim} = ({inner_scalar_name}){arg_name}.{arg_dim};\n  "
+              );
+              dimension_index += 1;
+            }
+          }
+        }
+        function += "return v;\n}";
+        self.helper_chunks.push(function);
+      }
+      new_name.to_string()
+    } else {
+      match name {
+        "acos" | "cos" | "sin" | "tan" | "atan" | "asin" | "floor" | "ceil"
+        | "round" | "trunc" | "exp" | "exp2" | "log" | "log2" | "pow"
+        | "sinh" | "cosh" | "tanh" | "asinh" | "atanh" | "acosh" | "fma"
+        | "ldexp" | "sqrt" | "atan2" | "inverse-sqrt" | "abs" | "sign"
+        | "fract" | "saturate" | "degrees" | "radians" | "step" | "mix"
+        | "smoothstep" | "clamp" | "min" | "max" => {
+          // All of these functions are implemented for individual floats, as well
+          // as element-wise for each of the vec2-vec4 types. The vector
+          // implementations can just be represented as an application of the
+          // float implementation n times, so this block first generates the float
+          // implementation and then, if necessary, implements the requested vec
+          // version in terms of the float version.
+          let float_fn_name = self.track_emulated_elementwise_float_builtin(
+            &signature.name,
+            signature.arg_types.len(),
+            target,
+            names,
+          );
+          if signature.return_type == "float" {
+            return float_fn_name;
+          }
+          let vec_type_name = signature.return_type.clone();
+          let size = extract_vec_size(&vec_type_name).unwrap();
+          let compiled_name = compile_word(name.into());
+          let new_name = names.gensym(&format!("{compiled_name}_{size}"));
+          let arg_names: Vec<&str> = ["a", "b", "c", "d"]
+            .iter()
+            .take(signature.arg_types.len())
+            .copied()
+            .collect();
+          let arg_and_type_signature = arg_names
+            .iter()
+            .map(|arg_name| format!("{vec_type_name} {arg_name}"))
+            .collect::<Vec<String>>()
+            .join(", ");
+          let mut body = format!(
+            "{vec_type_name} {new_name} ({arg_and_type_signature}) {{\n  \
+              {vec_type_name} y;\n  \
+              "
+          );
+          for field in ["x", "y", "z", "w"].iter().take(size) {
+            let arg_accessors = arg_names
+              .iter()
+              .map(|arg_name| format!("{arg_name}.{field}"))
+              .collect::<Vec<String>>()
+              .join(", ");
+            body +=
+              &format!("y.{field} = {float_fn_name}({arg_accessors});\n  ");
+          }
+          body += "return y;\n}";
+          self.helper_chunks.push(body);
+          new_name.to_string()
+        }
+        "dot" => {
+          let new_name = names.gensym("dot");
+          let vec_type_name = &signature.arg_types[0];
+          let mut function_body = format!(
+            "float {new_name}({vec_type_name} a, {vec_type_name} b) \
           {{\n  \
             float sum = 0.;\n  \
           "
-        );
-        for field in ["x", "y", "z", "w"]
-          .iter()
-          .take(extract_vec_size(&vec_type_name).unwrap())
-        {
-          function_body += &format!("sum += a.{field} * b.{field};\n  ");
+          );
+          for field in ["x", "y", "z", "w"]
+            .iter()
+            .take(extract_vec_size(&vec_type_name).unwrap())
+          {
+            function_body += &format!("sum += a.{field} * b.{field};\n  ");
+          }
+          function_body += "return sum;\n}";
+          self.helper_chunks.push(function_body);
+          new_name.to_string()
         }
-        function_body += "return sum;\n}";
-        self.helper_chunks.push(function_body);
-        new_name.to_string()
-      }
-      "cross" => {
-        let new_name = names.gensym("cross");
-        self.helper_chunks.push(format!(
-          "vec3f {new_name}(vec3f a, vec3f b) {{\n  \
+        "cross" => {
+          let new_name = names.gensym("cross");
+          self.helper_chunks.push(format!(
+            "vec3f {new_name}(vec3f a, vec3f b) {{\n  \
              vec3f result;\n  \
              result.x = a.y * b.z - a.z * b.y;\n  \
              result.y = a.z * b.x - a.x * b.z;\n  \
              result.z = a.x * b.y - a.y * b.x;\n  \
              return result;\n\
            }}"
-        ));
-        new_name.to_string()
-      }
-      "length" => {
-        let arg_type = signature.arg_types[0].clone();
-        if arg_type == "float" {
-          let new_name = names.gensym("length");
-          self.helper_chunks.push(format!(
-            "float {new_name}(float x) {{\n  \
-               return fabs(x);\n\
-             }}"
           ));
           new_name.to_string()
-        } else {
-          let size = extract_vec_size(&arg_type).unwrap();
-          let dot_fn = self.track_emulated_builtin(
+        }
+        "length" => {
+          let arg_type = signature.arg_types[0].clone();
+          if arg_type == "float" {
+            let new_name = names.gensym("length");
+            self.helper_chunks.push(format!(
+              "float {new_name}(float x) {{\n  \
+               return fabs(x);\n\
+             }}"
+            ));
+            new_name.to_string()
+          } else {
+            let size = extract_vec_size(&arg_type).unwrap();
+            let dot_fn = self.track_emulated_builtin(
+              EmulatedFunctionSignature {
+                name: "dot".to_string(),
+                arg_types: vec![arg_type.clone(), arg_type.clone()],
+                return_type: "float".to_string(),
+              },
+              target,
+              names,
+            );
+            let new_name = names.gensym(&format!("length_{size}"));
+            self.helper_chunks.push(format!(
+              "float {new_name}({arg_type} v) {{\n  \
+               return sqrt({dot_fn}(v, v));\n\
+             }}"
+            ));
+            new_name.to_string()
+          }
+        }
+        "normalize" => {
+          let vec_type_name = signature.arg_types[0].clone();
+          let size = extract_vec_size(&vec_type_name).unwrap();
+          let length_fn = self.track_emulated_builtin(
             EmulatedFunctionSignature {
-              name: "dot".to_string(),
-              arg_types: vec![arg_type.clone(), arg_type.clone()],
+              name: "length".to_string(),
+              arg_types: vec![vec_type_name.clone()],
               return_type: "float".to_string(),
             },
             target,
             names,
           );
-          let new_name = names.gensym(&format!("length_{size}"));
-          self.helper_chunks.push(format!(
-            "float {new_name}({arg_type} v) {{\n  \
-               return sqrt({dot_fn}(v, v));\n\
-             }}"
-          ));
-          new_name.to_string()
-        }
-      }
-      "normalize" => {
-        let vec_type_name = signature.arg_types[0].clone();
-        let size = extract_vec_size(&vec_type_name).unwrap();
-        let length_fn = self.track_emulated_builtin(
-          EmulatedFunctionSignature {
-            name: "length".to_string(),
-            arg_types: vec![vec_type_name.clone()],
-            return_type: "float".to_string(),
-          },
-          target,
-          names,
-        );
-        let new_name = names.gensym(&format!("normalize_{size}"));
-        let mut body = format!(
-          "{vec_type_name} {new_name}({vec_type_name} v) {{\n  \
+          let new_name = names.gensym(&format!("normalize_{size}"));
+          let mut body = format!(
+            "{vec_type_name} {new_name}({vec_type_name} v) {{\n  \
              float len = {length_fn}(v);\n  \
              {vec_type_name} result;\n  "
-        );
-        for field in ["x", "y", "z", "w"].iter().take(size) {
-          body += &format!("result.{field} = v.{field} / len;\n  ");
-        }
-        body += "return result;\n}";
-        self.helper_chunks.push(body);
-        new_name.to_string()
-      }
-      "distance" => {
-        let arg_type = signature.arg_types[0].clone();
-        if arg_type == "float" {
-          let new_name = names.gensym("distance");
-          self.helper_chunks.push(format!(
-            "float {new_name}(float a, float b) {{\n  \
-               return fabs(a - b);\n\
-             }}"
-          ));
-          new_name.to_string()
-        } else {
-          let size = extract_vec_size(&arg_type).unwrap();
-          let new_name = names.gensym(&format!("distance_{size}"));
-          let mut body = format!(
-            "float {new_name}({arg_type} a, {arg_type} b) {{\n  "
           );
-          let terms: Vec<String> = ["x", "y", "z", "w"]
-            .iter()
-            .take(size)
-            .map(|f| format!("(a.{f} - b.{f}) * (a.{f} - b.{f})"))
-            .collect();
-          body += &format!("return sqrt({});\n}}", terms.join(" + "));
+          for field in ["x", "y", "z", "w"].iter().take(size) {
+            body += &format!("result.{field} = v.{field} / len;\n  ");
+          }
+          body += "return result;\n}";
           self.helper_chunks.push(body);
           new_name.to_string()
         }
-      }
-      "face-forward" => {
-        let vec_type_name = signature.arg_types[0].clone();
-        let size = extract_vec_size(&vec_type_name).unwrap();
-        let dot_fn = self.track_emulated_builtin(
-          EmulatedFunctionSignature {
-            name: "dot".to_string(),
-            arg_types: vec![vec_type_name.clone(), vec_type_name.clone()],
-            return_type: "float".to_string(),
-          },
-          target,
-          names,
-        );
-        let new_name = names.gensym(&format!("face_forward_{size}"));
-        let mut body = format!(
-          "{vec_type_name} {new_name}({vec_type_name} e1, {vec_type_name} e2, {vec_type_name} e3) {{\n  \
+        "distance" => {
+          let arg_type = signature.arg_types[0].clone();
+          if arg_type == "float" {
+            let new_name = names.gensym("distance");
+            self.helper_chunks.push(format!(
+              "float {new_name}(float a, float b) {{\n  \
+               return fabs(a - b);\n\
+             }}"
+            ));
+            new_name.to_string()
+          } else {
+            let size = extract_vec_size(&arg_type).unwrap();
+            let new_name = names.gensym(&format!("distance_{size}"));
+            let mut body =
+              format!("float {new_name}({arg_type} a, {arg_type} b) {{\n  ");
+            let terms: Vec<String> = ["x", "y", "z", "w"]
+              .iter()
+              .take(size)
+              .map(|f| format!("(a.{f} - b.{f}) * (a.{f} - b.{f})"))
+              .collect();
+            body += &format!("return sqrt({});\n}}", terms.join(" + "));
+            self.helper_chunks.push(body);
+            new_name.to_string()
+          }
+        }
+        "face-forward" => {
+          let vec_type_name = signature.arg_types[0].clone();
+          let size = extract_vec_size(&vec_type_name).unwrap();
+          let dot_fn = self.track_emulated_builtin(
+            EmulatedFunctionSignature {
+              name: "dot".to_string(),
+              arg_types: vec![vec_type_name.clone(), vec_type_name.clone()],
+              return_type: "float".to_string(),
+            },
+            target,
+            names,
+          );
+          let new_name = names.gensym(&format!("face_forward_{size}"));
+          let mut body = format!(
+            "{vec_type_name} {new_name}({vec_type_name} e1, {vec_type_name} e2, {vec_type_name} e3) {{\n  \
              float s = {dot_fn}(e3, e2) < 0. ? 1. : -1.;\n  \
              {vec_type_name} result;\n  "
-        );
-        for field in ["x", "y", "z", "w"].iter().take(size) {
-          body += &format!("result.{field} = s * e1.{field};\n  ");
+          );
+          for field in ["x", "y", "z", "w"].iter().take(size) {
+            body += &format!("result.{field} = s * e1.{field};\n  ");
+          }
+          body += "return result;\n}";
+          self.helper_chunks.push(body);
+          new_name.to_string()
         }
-        body += "return result;\n}";
-        self.helper_chunks.push(body);
-        new_name.to_string()
-      }
-      "reflect" => {
-        let vec_type_name = signature.arg_types[0].clone();
-        let size = extract_vec_size(&vec_type_name).unwrap();
-        let dot_fn = self.track_emulated_builtin(
-          EmulatedFunctionSignature {
-            name: "dot".to_string(),
-            arg_types: vec![vec_type_name.clone(), vec_type_name.clone()],
-            return_type: "float".to_string(),
-          },
-          target,
-          names,
-        );
-        let new_name = names.gensym(&format!("reflect_{size}"));
-        let mut body = format!(
-          "{vec_type_name} {new_name}({vec_type_name} e1, {vec_type_name} e2) {{\n  \
+        "reflect" => {
+          let vec_type_name = signature.arg_types[0].clone();
+          let size = extract_vec_size(&vec_type_name).unwrap();
+          let dot_fn = self.track_emulated_builtin(
+            EmulatedFunctionSignature {
+              name: "dot".to_string(),
+              arg_types: vec![vec_type_name.clone(), vec_type_name.clone()],
+              return_type: "float".to_string(),
+            },
+            target,
+            names,
+          );
+          let new_name = names.gensym(&format!("reflect_{size}"));
+          let mut body = format!(
+            "{vec_type_name} {new_name}({vec_type_name} e1, {vec_type_name} e2) {{\n  \
              float d = {dot_fn}(e2, e1);\n  \
              {vec_type_name} result;\n  "
-        );
-        for field in ["x", "y", "z", "w"].iter().take(size) {
-          body += &format!("result.{field} = e1.{field} - 2. * d * e2.{field};\n  ");
+          );
+          for field in ["x", "y", "z", "w"].iter().take(size) {
+            body += &format!(
+              "result.{field} = e1.{field} - 2. * d * e2.{field};\n  "
+            );
+          }
+          body += "return result;\n}";
+          self.helper_chunks.push(body);
+          new_name.to_string()
         }
-        body += "return result;\n}";
-        self.helper_chunks.push(body);
-        new_name.to_string()
-      }
-      "refract" => {
-        let vec_type_name = signature.arg_types[0].clone();
-        let size = extract_vec_size(&vec_type_name).unwrap();
-        let dot_fn = self.track_emulated_builtin(
-          EmulatedFunctionSignature {
-            name: "dot".to_string(),
-            arg_types: vec![vec_type_name.clone(), vec_type_name.clone()],
-            return_type: "float".to_string(),
-          },
-          target,
-          names,
-        );
-        let new_name = names.gensym(&format!("refract_{size}"));
-        let mut body = format!(
-          "{vec_type_name} {new_name}({vec_type_name} e1, {vec_type_name} e2, float eta) {{\n  \
+        "refract" => {
+          let vec_type_name = signature.arg_types[0].clone();
+          let size = extract_vec_size(&vec_type_name).unwrap();
+          let dot_fn = self.track_emulated_builtin(
+            EmulatedFunctionSignature {
+              name: "dot".to_string(),
+              arg_types: vec![vec_type_name.clone(), vec_type_name.clone()],
+              return_type: "float".to_string(),
+            },
+            target,
+            names,
+          );
+          let new_name = names.gensym(&format!("refract_{size}"));
+          let mut body = format!(
+            "{vec_type_name} {new_name}({vec_type_name} e1, {vec_type_name} e2, float eta) {{\n  \
              float d = {dot_fn}(e2, e1);\n  \
              float k = 1. - eta * eta * (1. - d * d);\n  \
              {vec_type_name} result = {{0.}};\n  \
              if (k >= 0.) {{\n    \
                float t = eta * d + sqrt(k);\n    "
-        );
-        for field in ["x", "y", "z", "w"].iter().take(size) {
-          body += &format!("result.{field} = eta * e1.{field} - t * e2.{field};\n    ");
+          );
+          for field in ["x", "y", "z", "w"].iter().take(size) {
+            body += &format!(
+              "result.{field} = eta * e1.{field} - t * e2.{field};\n    "
+            );
+          }
+          body += "}\n  return result;\n}";
+          self.helper_chunks.push(body);
+          new_name.to_string()
         }
-        body += "}\n  return result;\n}";
-        self.helper_chunks.push(body);
-        new_name.to_string()
+        "determinant"
+        | "transpose"
+        | "bitcast"
+        | "count-one-bits"
+        | "count-leading-zeros"
+        | "count-trailing-zeros"
+        | "reverse-bits"
+        | "first-leading-bit"
+        | "first-trailing-bit"
+        | "extract-bits" => {
+          todo!("C emulation for `{name}` not yet implemented")
+        }
+        _ => panic!(
+          "couldn't generate an emulation\ntarget: {target:?}\nsignature: {signature:#?}"
+        ),
       }
-      "determinant"
-      | "transpose"
-      | "bitcast"
-      | "count-one-bits"
-      | "count-leading-zeros"
-      | "count-trailing-zeros"
-      | "reverse-bits"
-      | "first-leading-bit"
-      | "first-trailing-bit"
-      | "extract-bits"
-      | "atan2" => {
-        todo!("C emulation for `{name}` not yet implemented")
-      }
-      _ => panic!(
-        "couldn't generate an emulation\ntarget: {target:?}\nsignature: {signature:#?}"
-      ),
-    }
+    };
+    self.emulated_signatures.insert(signature, new_name.clone());
+    new_name
   }
 }

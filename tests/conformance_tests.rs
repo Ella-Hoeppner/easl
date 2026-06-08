@@ -270,6 +270,7 @@ conformance_test!(sin_vec4f, 0.001);
 conformance_test!(min_f32);
 conformance_test!(max_f32);
 conformance_test!(mix_half);
+conformance_test!(mix_half_vec4f);
 
 // interpolation
 conformance_test!(smoothstep_zero);

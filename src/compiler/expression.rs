@@ -6,7 +6,6 @@ use std::sync::{Arc, RwLock};
 use take_mut::take;
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::compiler::functions::extract_vec_size;
 use crate::{
   Never,
   compiler::{
@@ -4635,63 +4634,7 @@ impl TypedExp {
                 if let Name(name) = &f.kind {
                   if target == CompilerTarget::C {
                     let mut inserted_bindings = vec![];
-                    if let Some(vec_size) = extract_vec_size(name) {
-                      // If this is an application of a vector constructor and
-                      // the arguments aren't simple scalars, restructure them
-                      // to be so
-                      if args.len() < vec_size && target == CompilerTarget::C {
-                        let old_len = args.len();
-                        take(args, |args| {
-                          let mut new_args = vec![];
-                          for arg in args {
-                            let arg_type = arg.data.unwrap_known();
-                            let arg_type_name =
-                              arg_type.monomorphized_name(&mut names, target);
-                            if let Some(inner_vec_size) =
-                              extract_vec_size(&arg_type_name)
-                            {
-                              let Type::Struct(ref arg_struct_type) = arg_type
-                              else {
-                                panic!()
-                              };
-                              let binding_name =
-                                names.gensym("extracted_subvec");
-                              for field in
-                                ["x", "y", "z", "w"].iter().take(inner_vec_size)
-                              {
-                                new_args.push(TypedExp {
-                                  kind: ExpKind::Access(
-                                    Accessor::Field((*field).into()),
-                                    TypedExp {
-                                      data: arg_type.clone().known().into(),
-                                      kind: ExpKind::Name(binding_name.clone()),
-                                      source_trace: arg.source_trace.clone(),
-                                    }
-                                    .into(),
-                                  ),
-                                  data: arg_struct_type.fields[0]
-                                    .field_type
-                                    .clone(),
-                                  source_trace: arg.source_trace.clone(),
-                                });
-                              }
-                              inserted_bindings.push((
-                                binding_name,
-                                arg.source_trace.clone(),
-                                VariableKind::Let,
-                                arg,
-                              ));
-                            } else {
-                              new_args.push(arg);
-                            }
-                          }
-                          new_args
-                        });
-                        if args.len() != old_len {
-                          changed = true;
-                        }
-                      }
-                    } else if &**name == "print" {
+                    if &**name == "print" {
                       // if argument to print isn't a name, extract it to a let
                       // binding (necessary because the compiler will reference
                       // individual fields from the value during formatting if

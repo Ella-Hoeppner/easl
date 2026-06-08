@@ -1,0 +1,6 @@
+(defn f []: f32
+  (let [v (mix (vec4f 0.)
+               (vec4f 10.)
+               (vec4f 0.5))]
+    (+ v.x v.y v.z v.w)))
+
