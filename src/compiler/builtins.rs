@@ -1364,35 +1364,36 @@ pub fn scalar_bitcast() -> AbstractFunctionSignature {
 }
 
 pub fn bitcast_functions() -> Vec<AbstractFunctionSignature> {
-  foreach_vec_type(|t| {
-    let t = AbstractType::AbstractStruct(t.into());
-    vec![AbstractFunctionSignature {
-      name: "bitcast".into(),
-      generic_args: vec![
-        (
-          "T".into(),
-          GenericArgument::Type(vec![TypeConstraint::scalar()]),
-          SourceTrace::empty(),
-        ),
-        (
-          "S".into(),
-          GenericArgument::Type(vec![TypeConstraint::scalar()]),
-          SourceTrace::empty(),
-        ),
-      ],
-      arg_types: vec![t.clone().owned()],
-      return_type: t.rename_generic("T", "S"),
-      implementation: FunctionImplementationKind::Builtin {
-        effect_type: EffectType::empty(),
-        target_configuration: FunctionTargetConfiguration::Default,
-        target_specific_emulations: [CompilerTarget::C].into(),
-      },
-      ..Default::default()
-    }]
-  })
-  .into_iter()
-  .chain(std::iter::once(scalar_bitcast()))
-  .collect()
+  // foreach_vec_type(|t| {
+  //   let t = AbstractType::AbstractStruct(t.into());
+  //   vec![AbstractFunctionSignature {
+  //     name: "bitcast".into(),
+  //     generic_args: vec![
+  //       (
+  //         "T".into(),
+  //         GenericArgument::Type(vec![TypeConstraint::scalar()]),
+  //         SourceTrace::empty(),
+  //       ),
+  //       (
+  //         "S".into(),
+  //         GenericArgument::Type(vec![TypeConstraint::scalar()]),
+  //         SourceTrace::empty(),
+  //       ),
+  //     ],
+  //     arg_types: vec![t.clone().owned()],
+  //     return_type: t.rename_generic("T", "S"),
+  //     implementation: FunctionImplementationKind::Builtin {
+  //       effect_type: EffectType::empty(),
+  //       target_configuration: FunctionTargetConfiguration::Default,
+  //       target_specific_emulations: [CompilerTarget::C].into(),
+  //     },
+  //     ..Default::default()
+  //   }]
+  // })
+  // .into_iter()
+  // .chain(std::iter::once(scalar_bitcast()))
+  // .collect()
+  vec![scalar_bitcast()]
 }
 
 fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
@@ -1407,6 +1408,11 @@ fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
       generic_args: scalar_generic.clone(),
       arg_types: vec![AbstractType::Generic("T".into()).owned()],
       return_type: AbstractType::Type(Type::I32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: [CompilerTarget::C].into(),
+      },
       ..Default::default()
     },
     AbstractFunctionSignature {
@@ -1414,6 +1420,11 @@ fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
       generic_args: scalar_generic.clone(),
       arg_types: vec![AbstractType::Generic("T".into()).owned()],
       return_type: AbstractType::Type(Type::F32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: [CompilerTarget::C].into(),
+      },
       ..Default::default()
     },
     AbstractFunctionSignature {
@@ -1421,6 +1432,11 @@ fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
       generic_args: scalar_generic.clone(),
       arg_types: vec![AbstractType::Generic("T".into()).owned()],
       return_type: AbstractType::Type(Type::U32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: [CompilerTarget::C].into(),
+      },
       ..Default::default()
     },
     AbstractFunctionSignature {
@@ -1428,6 +1444,11 @@ fn scalar_conversion_functions() -> Vec<AbstractFunctionSignature> {
       generic_args: scalar_generic,
       arg_types: vec![AbstractType::Generic("T".into()).owned()],
       return_type: AbstractType::Type(Type::Bool),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: [CompilerTarget::C].into(),
+      },
       ..Default::default()
     },
   ]
@@ -3033,19 +3054,20 @@ impl EmulatedFunctionRecord {
       helper_chunks: vec![],
     }
   }
-  fn track_emulated_elementwise_float_builtin(
+  fn track_emulated_elementwise_scalar_builtin(
     &mut self,
     name: &str,
+    scalar_type: &str,
     arg_count: usize,
     _target: CompilerTarget,
     names: &mut NameContext,
   ) -> String {
     let signature = EmulatedFunctionSignature {
       name: name.to_string(),
-      arg_types: std::iter::repeat("float".to_string())
+      arg_types: std::iter::repeat(scalar_type.to_string())
         .take(arg_count)
         .collect(),
-      return_type: "float".to_string(),
+      return_type: scalar_type.to_string(),
     };
     if let Some(existing_name) = self.emulated_signatures.get(&signature) {
       return existing_name.clone();
@@ -3058,7 +3080,7 @@ impl EmulatedFunctionRecord {
       "inverse-sqrt" => {
         let new_name = names.gensym("inverse_sqrt");
         self.helper_chunks.push(format!(
-          "float {new_name} (float x) {{\n  \
+          "{scalar_type} {new_name} ({scalar_type} x) {{\n  \
                 return 1. / sqrt(x);\n\
               }}"
         ));
@@ -3066,20 +3088,36 @@ impl EmulatedFunctionRecord {
       }
       "abs" => {
         let new_name = names.gensym("abs");
-        self.helper_chunks.push(format!(
-          "float {new_name}(float x) {{\n  \
+        self.helper_chunks.push(match scalar_type {
+          "float" => format!(
+            "float {new_name}(float x) {{\n  \
               return fabs(x);\n\
             }}"
-        ));
+          ),
+          "int32_t" => format!(
+            "int32_t {new_name}(int32_t x) {{\n  \
+              return abs(x);\n\
+            }}"
+          ),
+          _ => panic!(),
+        });
         new_name.to_string()
       }
       "sign" => {
         let new_name = names.gensym("sign");
-        self.helper_chunks.push(format!(
-          "float {new_name}(float x) {{\n  \
+        self.helper_chunks.push(match scalar_type {
+          "float" => format!(
+            "float {new_name}(float x) {{\n  \
              return (x > 0.) ? 1. : (x < 0.) ? -1. : 0.;\n\
            }}"
-        ));
+          ),
+          "int32_t" => format!(
+            "int32_t {new_name}(int32_t x) {{\n  \
+             return (x > 0) ? 1 : (x < 0) ? -1 : 0;\n\
+           }}"
+          ),
+          _ => panic!(),
+        });
         new_name.to_string()
       }
       "fract" => {
@@ -3150,7 +3188,7 @@ impl EmulatedFunctionRecord {
       "clamp" => {
         let new_name = names.gensym("clamp");
         self.helper_chunks.push(format!(
-          "float {new_name}(float x, float lo, float hi) {{\n  \
+          "{scalar_type} {new_name}({scalar_type} x, {scalar_type} lo, {scalar_type} hi) {{\n  \
              return x < lo ? lo : x > hi ? hi : x;\n\
            }}"
         ));
@@ -3159,7 +3197,7 @@ impl EmulatedFunctionRecord {
       "min" => {
         let new_name = names.gensym("min");
         self.helper_chunks.push(format!(
-          "float {new_name}(float x, float y) {{\n  \
+          "{scalar_type} {new_name}({scalar_type} x, {scalar_type} y) {{\n  \
              return x < y ? x : y;\n\
            }}"
         ));
@@ -3168,7 +3206,7 @@ impl EmulatedFunctionRecord {
       "max" => {
         let new_name = names.gensym("max");
         self.helper_chunks.push(format!(
-          "float {new_name}(float x, float y) {{\n  \
+          "{scalar_type} {new_name}({scalar_type} x, {scalar_type} y) {{\n  \
              return x > y ? x : y;\n\
            }}"
         ));
@@ -3189,17 +3227,19 @@ impl EmulatedFunctionRecord {
       return existing_name.clone();
     }
     let name = signature.name.as_str();
-    let new_name = if let Some(size) = extract_vec_size(name) {
-      let inner_scalar_name = match name.char_indices().last().unwrap().1 {
+    let get_vec_inner_scalar_name =
+      |vec_name: &str| match vec_name.char_indices().last().unwrap().1 {
         'f' => "float",
         'i' => "int32_t",
         'u' => "uint32_t",
         'b' => "bool",
         _ => panic!(),
       };
-      let is_scalar_type = |type_name: &str| -> bool {
-        matches!(type_name, "float" | "int32_t" | "uint32_t" | "bool")
-      };
+    let is_scalar_type = |type_name: &str| -> bool {
+      matches!(type_name, "float" | "int32_t" | "uint32_t" | "bool")
+    };
+    let new_name = if let Some(size) = extract_vec_size(name) {
+      let inner_scalar_name = get_vec_inner_scalar_name(name);
       let new_name = names.gensym(
         &std::iter::once(format!("{name}_from"))
           .chain(signature.arg_types.iter().cloned())
@@ -3276,14 +3316,19 @@ impl EmulatedFunctionRecord {
           // float implementation n times, so this block first generates the float
           // implementation and then, if necessary, implements the requested vec
           // version in terms of the float version.
-          let float_fn_name = self.track_emulated_elementwise_float_builtin(
+          let scalar_fn_name = self.track_emulated_elementwise_scalar_builtin(
             &signature.name,
+            if is_scalar_type(&signature.return_type) {
+              &signature.return_type
+            } else {
+              get_vec_inner_scalar_name(&signature.return_type)
+            },
             signature.arg_types.len(),
             target,
             names,
           );
-          if signature.return_type == "float" {
-            return float_fn_name;
+          if is_scalar_type(signature.return_type.as_str()) {
+            return scalar_fn_name;
           }
           let vec_type_name = signature.return_type.clone();
           let size = extract_vec_size(&vec_type_name).unwrap();
@@ -3311,12 +3356,16 @@ impl EmulatedFunctionRecord {
               .collect::<Vec<String>>()
               .join(", ");
             body +=
-              &format!("y.{field} = {float_fn_name}({arg_accessors});\n  ");
+              &format!("y.{field} = {scalar_fn_name}({arg_accessors});\n  ");
           }
           body += "return y;\n}";
           self.helper_chunks.push(body);
           new_name.to_string()
         }
+        "f32" => "(float)".to_string(),
+        "u32" => "(uint32_t)".to_string(),
+        "i32" => "(int32_t)".to_string(),
+        "bool" => "(bool)".to_string(),
         "dot" => {
           let new_name = names.gensym("dot");
           let vec_type_name = &signature.arg_types[0];
@@ -3373,8 +3422,8 @@ impl EmulatedFunctionRecord {
             let new_name = names.gensym(&format!("length_{size}"));
             self.helper_chunks.push(format!(
               "float {new_name}({arg_type} v) {{\n  \
-               return sqrt({dot_fn}(v, v));\n\
-             }}"
+                 return sqrt({dot_fn}(v, v));\n\
+               }}"
             ));
             new_name.to_string()
           }
@@ -3511,9 +3560,27 @@ impl EmulatedFunctionRecord {
           self.helper_chunks.push(body);
           new_name.to_string()
         }
+        "bitcast<float>" | "bitcast<int32_t>" | "bitcast<uint32_t>" => {
+          let from_type = signature.arg_types[0].as_str();
+          let to_type = match name {
+            "bitcast<float>" => "float",
+            "bitcast<int32_t>" => "int32_t",
+            "bitcast<uint32_t>" => "uint32_t",
+            _ => panic!(),
+          };
+          let new_name =
+            names.gensym(&format!("bitcast_{from_type}_to_{to_type}"));
+          self.helper_chunks.push(format!(
+            "{to_type} {new_name}({from_type} x) {{\n  \
+               {to_type} result;\n  \
+               memcpy(&result, &x, sizeof(result));\n  \
+               return result;\n\
+             }}"
+          ));
+          new_name.to_string()
+        }
         "determinant"
         | "transpose"
-        | "bitcast"
         | "count-one-bits"
         | "count-leading-zeros"
         | "count-trailing-zeros"

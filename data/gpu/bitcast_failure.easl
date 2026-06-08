@@ -1,0 +1,3 @@
+(defn bitcast-float-to-vec4u [x: f32]: vec4u
+  (bitcast x))
+

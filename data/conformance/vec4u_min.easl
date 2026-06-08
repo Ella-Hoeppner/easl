@@ -1,0 +1,4 @@
+(defn f []: f32
+  (let [v (min (vec4u 3u) (vec4u 7u))]
+    (f32 (+ v.x v.y v.z v.w))))
+

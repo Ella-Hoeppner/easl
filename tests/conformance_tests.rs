@@ -346,6 +346,7 @@ conformance_test!(i32_min);
 conformance_test!(i32_max);
 conformance_test!(i32_clamp);
 conformance_test!(u32_min);
+conformance_test!(vec4u_min);
 conformance_test!(u32_max);
 conformance_test!(u32_clamp);
 
@@ -356,6 +357,7 @@ conformance_test!(f32_truncate);
 
 // bitcast
 conformance_test!(bitcast_roundtrip);
+conformance_test!(vec_bitcast_roundtrip);
 
 // bit manipulation
 conformance_test!(count_one_bits);
