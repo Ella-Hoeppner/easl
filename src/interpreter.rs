@@ -990,6 +990,21 @@ fn apply_builtin_fn<IO: IOManager>(
         let (a02, a12, a22) = (get(2, "x"), get(2, "y"), get(2, "z"));
         a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20)
           + a02 * (a10 * a21 - a11 * a20)
+      } else if n == 4 {
+        let g = |c: usize, r: &str| get(c, r);
+        let s0 = g(0, "x") * g(1, "y") - g(1, "x") * g(0, "y");
+        let s1 = g(0, "x") * g(2, "y") - g(2, "x") * g(0, "y");
+        let s2 = g(0, "x") * g(3, "y") - g(3, "x") * g(0, "y");
+        let s3 = g(1, "x") * g(2, "y") - g(2, "x") * g(1, "y");
+        let s4 = g(1, "x") * g(3, "y") - g(3, "x") * g(1, "y");
+        let s5 = g(2, "x") * g(3, "y") - g(3, "x") * g(2, "y");
+        let c5 = g(2, "z") * g(3, "w") - g(3, "z") * g(2, "w");
+        let c4 = g(1, "z") * g(3, "w") - g(3, "z") * g(1, "w");
+        let c3 = g(1, "z") * g(2, "w") - g(2, "z") * g(1, "w");
+        let c2 = g(0, "z") * g(3, "w") - g(3, "z") * g(0, "w");
+        let c1 = g(0, "z") * g(2, "w") - g(2, "z") * g(0, "w");
+        let c0 = g(0, "z") * g(1, "w") - g(1, "z") * g(0, "w");
+        s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0
       } else {
         panic!("determinant: unsupported matrix size {n}")
       };

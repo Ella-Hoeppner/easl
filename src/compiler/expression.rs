@@ -12,7 +12,8 @@ use crate::{
     annotation::{Annotation, AnnotationKind, extract_annotation},
     builtins::{
       ASSIGNMENT_OPS, INFIX_OPS, assignment_function,
-      builtin_vec_constructor_type, get_builtin_struct, rename_builtin_fn,
+      builtin_vec_constructor_type, get_builtin_struct, is_builtin_mat_constructor_type,
+      rename_builtin_fn,
     },
     effects::EffectType,
     entry::IOAttributes,
@@ -2115,7 +2116,9 @@ impl TypedExp {
             }
           } else {
             let args_str = arg_strs.join(", ");
-            if is_struct_constructor && target == CompilerTarget::C {
+            if (is_struct_constructor || is_builtin_mat_constructor_type(&f_str))
+              && target == CompilerTarget::C
+            {
               format!("({f_str}){{{args_str}}}")
             } else {
               format!("{f_str}({args_str})")

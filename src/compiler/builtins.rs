@@ -105,6 +105,16 @@ fn specialized_vec_n_type(n: u8, suffix: &str) -> AbstractType {
   }
 }
 
+pub(crate) fn is_builtin_mat_constructor_type(name: &str) -> bool {
+  // Matches matNxMs where N,M are digits 2-4 and s is f/i/u
+  name.len() == 7
+    && &name[0..3] == "mat"
+    && name.as_bytes()[3].is_ascii_digit()
+    && name.as_bytes()[4] == b'x'
+    && name.as_bytes()[5].is_ascii_digit()
+    && matches!(name.as_bytes()[6], b'f' | b'i' | b'u')
+}
+
 pub(crate) fn builtin_vec_constructor_type(name: &str) -> Option<&'static str> {
   if name.len() != 5 {
     return None;
@@ -743,7 +753,7 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
 }
 
 pub fn misc_matrix_functions() -> Vec<AbstractFunctionSignature> {
-  (2..4)
+  (2..=4)
     .map(|i| {
       let m = specialized_matrix_type(i, i, "f");
       AbstractFunctionSignature {
@@ -758,8 +768,8 @@ pub fn misc_matrix_functions() -> Vec<AbstractFunctionSignature> {
         ..Default::default()
       }
     })
-    .chain((2..4).flat_map(|x| {
-      (2..4).map(move |y| AbstractFunctionSignature {
+    .chain((2..=4).flat_map(|x| {
+      (2..=4).map(move |y| AbstractFunctionSignature {
         name: "transpose".into(),
         arg_types: vec![specialized_matrix_type(x, y, "f").owned()],
         return_type: specialized_matrix_type(y, x, "f"),
@@ -3741,8 +3751,67 @@ impl EmulatedFunctionRecord {
           ));
           new_name.to_string()
         }
-        "determinant" | "transpose" => {
-          todo!("C emulation for matrices isn't working yet!!")
+        "determinant" => {
+          let mat_type = &signature.arg_types[0];
+          let new_name = names.gensym("determinant");
+          // matNxN: N is at index 3, always square for determinant
+          let n: usize = mat_type[3..4].parse().unwrap();
+          self.helper_chunks.push(match n {
+            2 => format!(
+              "float {new_name}({mat_type} m) {{\n  \
+                 return m.c0.x * m.c1.y - m.c1.x * m.c0.y;\n\
+               }}"
+            ),
+            3 => format!(
+              "float {new_name}({mat_type} m) {{\n  \
+                 return m.c0.x * (m.c1.y * m.c2.z - m.c2.y * m.c1.z)\n       \
+                      - m.c1.x * (m.c0.y * m.c2.z - m.c2.y * m.c0.z)\n       \
+                      + m.c2.x * (m.c0.y * m.c1.z - m.c1.y * m.c0.z);\n\
+               }}"
+            ),
+            4 => format!(
+              "float {new_name}({mat_type} m) {{\n  \
+                 float s0 = m.c0.x * m.c1.y - m.c1.x * m.c0.y;\n  \
+                 float s1 = m.c0.x * m.c2.y - m.c2.x * m.c0.y;\n  \
+                 float s2 = m.c0.x * m.c3.y - m.c3.x * m.c0.y;\n  \
+                 float s3 = m.c1.x * m.c2.y - m.c2.x * m.c1.y;\n  \
+                 float s4 = m.c1.x * m.c3.y - m.c3.x * m.c1.y;\n  \
+                 float s5 = m.c2.x * m.c3.y - m.c3.x * m.c2.y;\n  \
+                 float c5 = m.c2.z * m.c3.w - m.c3.z * m.c2.w;\n  \
+                 float c4 = m.c1.z * m.c3.w - m.c3.z * m.c1.w;\n  \
+                 float c3 = m.c1.z * m.c2.w - m.c2.z * m.c1.w;\n  \
+                 float c2 = m.c0.z * m.c3.w - m.c3.z * m.c0.w;\n  \
+                 float c1 = m.c0.z * m.c2.w - m.c2.z * m.c0.w;\n  \
+                 float c0 = m.c0.z * m.c1.w - m.c1.z * m.c0.w;\n  \
+                 return s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0;\n\
+               }}"
+            ),
+            _ => panic!("determinant not defined for {n}x{n} matrices"),
+          });
+          new_name.to_string()
+        }
+        "transpose" => {
+          let mat_type = &signature.arg_types[0];
+          let ret_type = &signature.return_type;
+          let new_name = names.gensym("transpose");
+          // matNxM: N (cols) at index 3, M (rows) at index 5
+          let n: usize = mat_type[3..4].parse().unwrap();
+          let m: usize = mat_type[5..6].parse().unwrap();
+          let fields = ["x", "y", "z", "w"];
+          // Transpose matNxM → matMxN:
+          // output column j (0..M) has elements from row j of each input column
+          let elements: Vec<String> = (0..m)
+            .flat_map(|j| {
+              (0..n).map(move |i| format!("m.c{i}.{}", fields[j]))
+            })
+            .collect();
+          self.helper_chunks.push(format!(
+            "{ret_type} {new_name}({mat_type} m) {{\n  \
+               return ({ret_type}){{{elements}}};\n\
+             }}",
+            elements = elements.join(", "),
+          ));
+          new_name.to_string()
         }
         _ => panic!(
           "couldn't generate an emulation\ntarget: {target:?}\nsignature: {signature:#?}"

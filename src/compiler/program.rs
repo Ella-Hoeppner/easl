@@ -103,6 +103,18 @@ impl CompilerTarget {
             header += &format!("}} vec{size}{suffix};\n");
           }
         }
+        // Matrix types: matNxM has N columns, each a vecM
+        for n in 2..=4 {
+          for m in 2..=4 {
+            for suffix in ["f", "i", "u"] {
+              header += "typedef struct {\n";
+              for i in 0..n {
+                header += &format!("  vec{m}{suffix} c{i};\n");
+              }
+              header += &format!("}} mat{n}x{m}{suffix};\n");
+            }
+          }
+        }
         header
       }
       .to_string(),
