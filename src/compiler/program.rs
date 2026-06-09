@@ -73,7 +73,8 @@ impl CompilerTarget {
     match self {
       CompilerTarget::C => {
         let mut header =
-          "#include <stdio.h>\n\
+          "#include <stdlib.h>\n\
+           #include <stdio.h>\n\
            #include <stdint.h>\n\
            #include <string.h>\n\
            #include <math.h>\n"

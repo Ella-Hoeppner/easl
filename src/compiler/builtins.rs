@@ -750,6 +750,11 @@ pub fn misc_matrix_functions() -> Vec<AbstractFunctionSignature> {
         name: "determinant".into(),
         arg_types: vec![m.owned()],
         return_type: AbstractType::Type(Type::F32),
+        implementation: FunctionImplementationKind::Builtin {
+          effect_type: EffectType::empty(),
+          target_configuration: FunctionTargetConfiguration::Default,
+          target_specific_emulations: [CompilerTarget::C].into(),
+        },
         ..Default::default()
       }
     })
@@ -758,6 +763,11 @@ pub fn misc_matrix_functions() -> Vec<AbstractFunctionSignature> {
         name: "transpose".into(),
         arg_types: vec![specialized_matrix_type(x, y, "f").owned()],
         return_type: specialized_matrix_type(y, x, "f"),
+        implementation: FunctionImplementationKind::Builtin {
+          effect_type: EffectType::empty(),
+          target_configuration: FunctionTargetConfiguration::Default,
+          target_specific_emulations: [CompilerTarget::C].into(),
+        },
         ..Default::default()
       })
     }))
@@ -3057,15 +3067,13 @@ impl EmulatedFunctionRecord {
     &mut self,
     name: &str,
     scalar_type: &str,
-    arg_count: usize,
+    arg_types: Vec<String>,
     _target: CompilerTarget,
     names: &mut NameContext,
   ) -> String {
     let signature = EmulatedFunctionSignature {
       name: name.to_string(),
-      arg_types: std::iter::repeat(scalar_type.to_string())
-        .take(arg_count)
-        .collect(),
+      arg_types: arg_types,
       return_type: scalar_type.to_string(),
     };
     if let Some(existing_name) = self.emulated_signatures.get(&signature) {
@@ -3187,7 +3195,8 @@ impl EmulatedFunctionRecord {
       "clamp" => {
         let new_name = names.gensym("clamp");
         self.helper_chunks.push(format!(
-          "{scalar_type} {new_name}({scalar_type} x, {scalar_type} lo, {scalar_type} hi) {{\n  \
+          "{scalar_type} {new_name}({scalar_type} x, \
+           {scalar_type} lo, {scalar_type} hi) {{\n  \
              return x < lo ? lo : x > hi ? hi : x;\n\
            }}"
         ));
@@ -3209,6 +3218,107 @@ impl EmulatedFunctionRecord {
              return x > y ? x : y;\n\
            }}"
         ));
+        new_name.to_string()
+      }
+      "count-one-bits" => {
+        let new_name = names.gensym("count_one_bits");
+        self.helper_chunks.push(format!(
+          "{scalar_type} {new_name}({scalar_type} x) {{\n  \
+             return ({scalar_type})__builtin_popcount((uint32_t)x);\n\
+           }}"
+        ));
+        new_name.to_string()
+      }
+      "count-leading-zeros" => {
+        let new_name = names.gensym("count_leading_zeros");
+        self.helper_chunks.push(format!(
+          "{scalar_type} {new_name}({scalar_type} x) {{\n  \
+             return ({scalar_type})(x == 0 ? 32 : __builtin_clz((uint32_t)x));\
+             \n}}"
+        ));
+        new_name.to_string()
+      }
+      "count-trailing-zeros" => {
+        let new_name = names.gensym("count_trailing_zeros");
+        self.helper_chunks.push(format!(
+          "{scalar_type} {new_name}({scalar_type} x) {{\n  \
+             return ({scalar_type})(x == 0 ? 32 : __builtin_ctz((uint32_t)x));\
+             \n}}"
+        ));
+        new_name.to_string()
+      }
+      "reverse-bits" => {
+        let new_name = names.gensym("reverse_bits");
+        self.helper_chunks.push(format!(
+          "{scalar_type} {new_name}({scalar_type} x) {{\n  \
+             uint32_t v = (uint32_t)x;\n  \
+             v = ((v >> 1) & 0x55555555u) | ((v & 0x55555555u) << 1);\n  \
+             v = ((v >> 2) & 0x33333333u) | ((v & 0x33333333u) << 2);\n  \
+             v = ((v >> 4) & 0x0F0F0F0Fu) | ((v & 0x0F0F0F0Fu) << 4);\n  \
+             v = ((v >> 8) & 0x00FF00FFu) | ((v & 0x00FF00FFu) << 8);\n  \
+             v = (v >> 16) | (v << 16);\n  \
+             return ({scalar_type})v;\n\
+           }}"
+        ));
+        new_name.to_string()
+      }
+      "first-leading-bit" => {
+        let new_name = names.gensym("first_leading_bit");
+        self.helper_chunks.push(match scalar_type {
+          "uint32_t" => format!(
+            "uint32_t {new_name}(uint32_t x) {{\n  \
+               return x == 0u ? 0xFFFFFFFFu : (uint32_t)(31 - __builtin_clz(x))\
+               ;\n\
+             }}"
+          ),
+          "int32_t" => format!(
+            "int32_t {new_name}(int32_t x) {{\n  \
+               if (x == 0 || x == -1) return -1;\n  \
+               uint32_t v = x < 0 ? (uint32_t)~x : (uint32_t)x;\n  \
+               return (int32_t)(31 - __builtin_clz(v));\n\
+             }}"
+          ),
+          _ => panic!(),
+        });
+        new_name.to_string()
+      }
+      "first-trailing-bit" => {
+        let new_name = names.gensym("first_trailing_bit");
+        self.helper_chunks.push(format!(
+          "{scalar_type} {new_name}({scalar_type} x) {{\n  \
+             return x == 0 ? ({scalar_type})(-1) : ({scalar_type})__builtin_ctz\
+             ((uint32_t)x);\n\
+           }}"
+        ));
+        new_name.to_string()
+      }
+      "extract-bits" => {
+        let new_name = names.gensym("extract_bits");
+        self.helper_chunks.push(match scalar_type {
+          "uint32_t" => format!(
+            "uint32_t {new_name}(uint32_t e, uint32_t offset, uint32_t count) \
+             {{\n  \
+               uint32_t s = offset < 32u ? offset : 32u;\n  \
+               uint32_t c = (count + s) < 32u ? count : (32u - s);\n  \
+               if (c == 0u) return 0u;\n  \
+               if (c == 32u) return e;\n  \
+               return (e >> s) & ((1u << c) - 1u);\n\
+             }}"
+          ),
+          "int32_t" => format!(
+            "int32_t {new_name}(int32_t e, uint32_t offset, uint32_t count) \
+             {{\n  \
+               uint32_t s = offset < 32u ? offset : 32u;\n  \
+               uint32_t c = (count + s) < 32u ? count : (32u - s);\n  \
+               if (c == 0u) return 0;\n  \
+               if (c == 32u) return e;\n  \
+               uint32_t bits = ((uint32_t)e >> s) & ((1u << c) - 1u);\n  \
+               uint32_t sign_bit = 1u << (c - 1u);\n  \
+               return (int32_t)((bits ^ sign_bit) - sign_bit);\n\
+             }}"
+          ),
+          _ => panic!(),
+        });
         new_name.to_string()
       }
       _ => panic!(),
@@ -3303,26 +3413,72 @@ impl EmulatedFunctionRecord {
       new_name.to_string()
     } else {
       match name {
-        "acos" | "cos" | "sin" | "tan" | "atan" | "asin" | "floor" | "ceil"
-        | "round" | "trunc" | "exp" | "exp2" | "log" | "log2" | "pow"
-        | "sinh" | "cosh" | "tanh" | "asinh" | "atanh" | "acosh" | "fma"
-        | "ldexp" | "sqrt" | "atan2" | "inverse-sqrt" | "abs" | "sign"
-        | "fract" | "saturate" | "degrees" | "radians" | "step" | "mix"
-        | "smoothstep" | "clamp" | "min" | "max" => {
+        "acos"
+        | "cos"
+        | "sin"
+        | "tan"
+        | "atan"
+        | "asin"
+        | "floor"
+        | "ceil"
+        | "round"
+        | "trunc"
+        | "exp"
+        | "exp2"
+        | "log"
+        | "log2"
+        | "pow"
+        | "sinh"
+        | "cosh"
+        | "tanh"
+        | "asinh"
+        | "atanh"
+        | "acosh"
+        | "fma"
+        | "ldexp"
+        | "sqrt"
+        | "atan2"
+        | "inverse-sqrt"
+        | "abs"
+        | "sign"
+        | "fract"
+        | "saturate"
+        | "degrees"
+        | "radians"
+        | "step"
+        | "mix"
+        | "smoothstep"
+        | "clamp"
+        | "min"
+        | "max"
+        | "count-one-bits"
+        | "count-leading-zeros"
+        | "count-trailing-zeros"
+        | "reverse-bits"
+        | "first-leading-bit"
+        | "first-trailing-bit"
+        | "extract-bits" => {
           // All of these functions are implemented for individual floats, as well
           // as element-wise for each of the vec2-vec4 types. The vector
           // implementations can just be represented as an application of the
           // float implementation n times, so this block first generates the float
           // implementation and then, if necessary, implements the requested vec
           // version in terms of the float version.
+          let to_scalar = |t: &str| match t {
+            "float" => "float",
+            "int32_t" => "int32_t",
+            "uint32_t" => "uint32_t",
+            "bool" => "bool",
+            _ => get_vec_inner_scalar_name(t),
+          };
           let scalar_fn_name = self.track_emulated_elementwise_scalar_builtin(
             &signature.name,
-            if is_scalar_type(&signature.return_type) {
-              &signature.return_type
-            } else {
-              get_vec_inner_scalar_name(&signature.return_type)
-            },
-            signature.arg_types.len(),
+            to_scalar(&signature.return_type),
+            signature
+              .arg_types
+              .iter()
+              .map(|t| to_scalar(t).to_string())
+              .collect(),
             target,
             names,
           );
@@ -3340,7 +3496,8 @@ impl EmulatedFunctionRecord {
             .collect();
           let arg_and_type_signature = arg_names
             .iter()
-            .map(|arg_name| format!("{vec_type_name} {arg_name}"))
+            .zip(signature.arg_types.iter())
+            .map(|(arg_name, arg_type)| format!("{arg_type} {arg_name}"))
             .collect::<Vec<String>>()
             .join(", ");
           let mut body = format!(
@@ -3351,7 +3508,14 @@ impl EmulatedFunctionRecord {
           for field in ["x", "y", "z", "w"].iter().take(size) {
             let arg_accessors = arg_names
               .iter()
-              .map(|arg_name| format!("{arg_name}.{field}"))
+              .zip(signature.arg_types.iter())
+              .map(|(arg_name, arg_type)| {
+                if is_scalar_type(arg_type) {
+                  arg_name.to_string()
+                } else {
+                  format!("{arg_name}.{field}")
+                }
+              })
               .collect::<Vec<String>>()
               .join(", ");
             body +=
@@ -3559,14 +3723,13 @@ impl EmulatedFunctionRecord {
           self.helper_chunks.push(body);
           new_name.to_string()
         }
-        "bitcast<float>" | "bitcast<int32_t>" | "bitcast<uint32_t>" => {
+        "bitcast<float>" | "bitcast<int32_t>" | "bitcast<uint32_t>"
+        | "bitcast<vec2u>" | "bitcast<vec3u>" | "bitcast<vec4u>"
+        | "bitcast<vec2i>" | "bitcast<vec3i>" | "bitcast<vec4i>"
+        | "bitcast<vec2f>" | "bitcast<vec3f>" | "bitcast<vec4f>" => {
           let from_type = signature.arg_types[0].as_str();
-          let to_type = match name {
-            "bitcast<float>" => "float",
-            "bitcast<int32_t>" => "int32_t",
-            "bitcast<uint32_t>" => "uint32_t",
-            _ => panic!(),
-          };
+          let to_type =
+            &name[name.find('<').unwrap() + 1..name.find('>').unwrap()];
           let new_name =
             names.gensym(&format!("bitcast_{from_type}_to_{to_type}"));
           self.helper_chunks.push(format!(
@@ -3578,16 +3741,8 @@ impl EmulatedFunctionRecord {
           ));
           new_name.to_string()
         }
-        "determinant"
-        | "transpose"
-        | "count-one-bits"
-        | "count-leading-zeros"
-        | "count-trailing-zeros"
-        | "reverse-bits"
-        | "first-leading-bit"
-        | "first-trailing-bit"
-        | "extract-bits" => {
-          todo!("C emulation for `{name}` not yet implemented")
+        "determinant" | "transpose" => {
+          todo!("C emulation for matrices isn't working yet!!")
         }
         _ => panic!(
           "couldn't generate an emulation\ntarget: {target:?}\nsignature: {signature:#?}"
