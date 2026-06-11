@@ -171,5 +171,5 @@ c_success_test!(print_u32);
 c_success_test!(print_float);
 c_success_test!(print_vec2f);
 c_success_test!(print_user_struct);
-
-// --- Error tests ---
+c_success_test!(vec_arithmetic);
+c_success_test!(modulo);

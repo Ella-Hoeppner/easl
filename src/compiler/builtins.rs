@@ -658,6 +658,11 @@ fn arithmetic_functions(
             && !assignment_fn
             && arg_vecs_or_scalars[0]
             && arg_vecs_or_scalars[1],
+          implementation: FunctionImplementationKind::Builtin {
+            effect_type: EffectType::empty(),
+            target_configuration: FunctionTargetConfiguration::Default,
+            target_specific_emulations: [CompilerTarget::C].into(),
+          },
           ..Default::default()
         })
         .collect::<Vec<_>>()
@@ -3790,6 +3795,47 @@ impl EmulatedFunctionRecord {
           });
           new_name.to_string()
         }
+        "+" | "-" | "*" | "/" => {
+          let return_type = &signature.return_type;
+          let non_symbol_name = match name {
+            "+" => "add",
+            "-" => "subtract",
+            "*" => "multiply",
+            "/" => "divide",
+            _ => panic!(),
+          };
+          let a_type = &signature.arg_types[0];
+          let b_type = &signature.arg_types[1];
+          let new_name =
+            names.gensym(&format!("{non_symbol_name}_{a_type}_{b_type}"));
+          if let Some(vec_size) = extract_vec_size(return_type) {
+            let mut function = format!(
+              "{return_type} {new_name}({a_type} a, {b_type} b) {{\n  \
+               {return_type} y;\n  \
+            "
+            );
+            for field in ["x", "y", "z", "w"].iter().take(vec_size) {
+              function += &format!(
+                "y.{field} = {} {name} {};\n  ",
+                if extract_vec_size(a_type).is_some() {
+                  format!("a.{field}")
+                } else {
+                  "a".to_string()
+                },
+                if extract_vec_size(b_type).is_some() {
+                  format!("b.{field}")
+                } else {
+                  "b".to_string()
+                }
+              );
+            }
+            function += "return y;\n}";
+            self.helper_chunks.push(function);
+            new_name.to_string()
+          } else {
+            panic!("unrecognized arithmetic signature")
+          }
+        }
         "transpose" => {
           let mat_type = &signature.arg_types[0];
           let ret_type = &signature.return_type;
@@ -3801,9 +3847,7 @@ impl EmulatedFunctionRecord {
           // Transpose matNxM → matMxN:
           // output column j (0..M) has elements from row j of each input column
           let elements: Vec<String> = (0..m)
-            .flat_map(|j| {
-              (0..n).map(move |i| format!("m.c{i}.{}", fields[j]))
-            })
+            .flat_map(|j| (0..n).map(move |i| format!("m.c{i}.{}", fields[j])))
             .collect();
           self.helper_chunks.push(format!(
             "{ret_type} {new_name}({mat_type} m) {{\n  \

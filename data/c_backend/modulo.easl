@@ -1,0 +1,12 @@
+(defn float-mod [a: f32
+                 b: f32]: f32
+  (% a b))
+
+(defn uint-mod [a: u32
+                b: u32]: u32
+  (% a b))
+
+(defn int-mod [a: i32
+               b: i32]: i32
+  (% a b))
+

@@ -397,3 +397,4 @@ conformance_test!(determinant_2x2);
 conformance_test!(determinant_3x3);
 conformance_test!(determinant_4x4);
 conformance_test!(transpose_2x2);
+conformance_test!(vec2f_arithmetic);

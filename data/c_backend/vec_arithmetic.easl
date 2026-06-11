@@ -1,0 +1,20 @@
+(defn vec2f-sum []: vec2f
+  (let [a (vec2f 1. 2.)
+        b (vec2f 3. 4.)]
+    (+ a b)))
+
+(defn vec2f-float-sum []: vec2f
+  (let [a (vec2f 1. 2.)
+        b 3.]
+    (+ a b)))
+
+(defn vec2f-difference []: vec2f
+  (let [a (vec2f 1. 2.)
+        b (vec2f 3. 4.)]
+    (- a b)))
+
+(defn vec2f-float-difference []: vec2f
+  (let [a (vec2f 1. 2.)
+        b 3.]
+    (- a b)))
+
