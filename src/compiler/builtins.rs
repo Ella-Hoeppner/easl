@@ -589,6 +589,15 @@ fn arithmetic_functions(
       ],
       return_type: AbstractType::Generic("T".into()),
       associative,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: if name == "%" {
+          [CompilerTarget::C].into()
+        } else {
+          HashSet::new()
+        },
+      },
       ..Default::default()
     },
     AbstractFunctionSignature {
@@ -3795,46 +3804,63 @@ impl EmulatedFunctionRecord {
           });
           new_name.to_string()
         }
-        "+" | "-" | "*" | "/" => {
+        "+" | "-" | "*" | "/" | "%" => {
           let return_type = &signature.return_type;
           let non_symbol_name = match name {
             "+" => "add",
             "-" => "subtract",
             "*" => "multiply",
             "/" => "divide",
+            "%" => "modulo",
             _ => panic!(),
           };
           let a_type = &signature.arg_types[0];
+          let a_vec_size = extract_vec_size(a_type);
           let b_type = &signature.arg_types[1];
+          let b_vec_size = extract_vec_size(b_type);
           let new_name =
             names.gensym(&format!("{non_symbol_name}_{a_type}_{b_type}"));
-          if let Some(vec_size) = extract_vec_size(return_type) {
-            let mut function = format!(
-              "{return_type} {new_name}({a_type} a, {b_type} b) {{\n  \
+          let mut function = format!(
+            "{return_type} {new_name}({a_type} a, {b_type} b) {{\n  \
                {return_type} y;\n  \
             "
-            );
-            for field in ["x", "y", "z", "w"].iter().take(vec_size) {
-              function += &format!(
-                "y.{field} = {} {name} {};\n  ",
-                if extract_vec_size(a_type).is_some() {
-                  format!("a.{field}")
-                } else {
-                  "a".to_string()
-                },
-                if extract_vec_size(b_type).is_some() {
-                  format!("b.{field}")
-                } else {
-                  "b".to_string()
-                }
-              );
+          );
+          let combiner = |a_component: &str, b_component: &str| -> String {
+            if name == "%"
+              && (return_type == "float"
+                || return_type.char_indices().last().unwrap().1 == 'f')
+            {
+              format!("fmod({a_component}, {b_component})")
+            } else {
+              format!("{a_component} {name} {b_component}")
             }
-            function += "return y;\n}";
-            self.helper_chunks.push(function);
-            new_name.to_string()
+          };
+          if let Some(return_vec_size) = extract_vec_size(return_type) {
+            for field in ["x", "y", "z", "w"].iter().take(return_vec_size) {
+              let a_component = if a_vec_size.is_some() {
+                format!("a.{field}")
+              } else {
+                "a".to_string()
+              };
+              let b_component = if b_vec_size.is_some() {
+                format!("b.{field}")
+              } else {
+                "b".to_string()
+              };
+              function += &format!("y.{field} = ");
+              function += &combiner(&a_component, &b_component);
+              function += ";\n  ";
+            }
+          } else if name == "%" {
+            function += "y = ";
+            function += &combiner("a", "b");
+            function += ";\n  ";
           } else {
             panic!("unrecognized arithmetic signature")
-          }
+          };
+          function += "return y;\n}";
+          self.helper_chunks.push(function);
+          new_name.to_string()
         }
         "transpose" => {
           let mat_type = &signature.arg_types[0];

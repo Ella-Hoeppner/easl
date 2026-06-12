@@ -2,6 +2,10 @@
                  b: f32]: f32
   (% a b))
 
+(defn float-mod-vec [a: vec3f
+                     b: f32]: vec3f
+  (% a b))
+
 (defn uint-mod [a: u32
                 b: u32]: u32
   (% a b))
