@@ -8,7 +8,7 @@ use fsexp::{document::DocumentPosition, syntax::EncloserOrOperator};
 
 use crate::compiler::effects::EffectType;
 use crate::compiler::entry::BuiltinIOAttribute;
-use crate::compiler::functions::extract_vec_size;
+use crate::compiler::functions::{extract_mat_size, extract_vec_size};
 use crate::compiler::program::{CompilerTarget, NameContext};
 use crate::compiler::util::compile_word;
 use crate::{
@@ -698,6 +698,11 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
           GenericArgument::Type(vec![TypeConstraint::scalar()]),
           SourceTrace::empty(),
         )];
+        let c_emulated_builtin = || FunctionImplementationKind::Builtin {
+          effect_type: EffectType::empty(),
+          target_configuration: FunctionTargetConfiguration::Default,
+          target_specific_emulations: [CompilerTarget::C].into(),
+        };
         [
           AbstractFunctionSignature {
             name: "+".into(),
@@ -705,6 +710,7 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             arg_types: vec![mat.clone().owned(), mat.clone().owned()],
             return_type: mat.clone(),
             associative: true,
+            implementation: c_emulated_builtin(),
             ..Default::default()
           },
           AbstractFunctionSignature {
@@ -712,6 +718,7 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             generic_args: scalar_generic.clone(),
             arg_types: vec![mat.clone().owned(), mat.clone().owned()],
             return_type: mat.clone(),
+            implementation: c_emulated_builtin(),
             ..Default::default()
           },
           AbstractFunctionSignature {
@@ -722,6 +729,7 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
               mat.clone().owned(),
             ],
             return_type: mat.clone(),
+            implementation: c_emulated_builtin(),
             ..Default::default()
           },
           AbstractFunctionSignature {
@@ -732,6 +740,7 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
               AbstractType::Generic("T".into()).owned(),
             ],
             return_type: mat.clone(),
+            implementation: c_emulated_builtin(),
             ..Default::default()
           },
           AbstractFunctionSignature {
@@ -739,6 +748,7 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             generic_args: scalar_generic.clone(),
             arg_types: vec![mat.clone().owned(), vecn(n).owned()],
             return_type: vecn(m),
+            implementation: c_emulated_builtin(),
             ..Default::default()
           },
           AbstractFunctionSignature {
@@ -746,6 +756,7 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             generic_args: scalar_generic.clone(),
             arg_types: vec![vecn(m).owned(), mat.clone().owned()],
             return_type: vecn(n),
+            implementation: c_emulated_builtin(),
             ..Default::default()
           },
         ]
@@ -759,6 +770,7 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
           ],
           return_type: AbstractType::AbstractStruct(matrix(n, m).into()),
           associative: true,
+          implementation: c_emulated_builtin(),
           ..Default::default()
         }))
       })
@@ -3815,50 +3827,178 @@ impl EmulatedFunctionRecord {
             _ => panic!(),
           };
           let a_type = &signature.arg_types[0];
-          let a_vec_size = extract_vec_size(a_type);
           let b_type = &signature.arg_types[1];
-          let b_vec_size = extract_vec_size(b_type);
+          let a_mat_size = extract_mat_size(a_type);
+          let b_mat_size = extract_mat_size(b_type);
+          let return_mat_size = extract_mat_size(return_type);
           let new_name =
             names.gensym(&format!("{non_symbol_name}_{a_type}_{b_type}"));
-          let mut function = format!(
-            "{return_type} {new_name}({a_type} a, {b_type} b) {{\n  \
-               {return_type} y;\n  \
-            "
-          );
-          let combiner = |a_component: &str, b_component: &str| -> String {
-            if name == "%"
-              && (return_type == "float"
-                || return_type.char_indices().last().unwrap().1 == 'f')
-            {
-              format!("fmod({a_component}, {b_component})")
-            } else {
-              format!("{a_component} {name} {b_component}")
+          let fields = ["x", "y", "z", "w"];
+          let function = if a_mat_size.is_some()
+            || b_mat_size.is_some()
+            || return_mat_size.is_some()
+          {
+            let mut body = format!(
+              "{return_type} {new_name}({a_type} a, {b_type} b) {{\n  \
+                 {return_type} y;\n  "
+            );
+            match (a_mat_size, b_mat_size, return_mat_size) {
+              (Some((ac, ar)), Some((bc, br)), Some((rc, rr))) => {
+                if name == "*" {
+                  // matrix multiplication: A is matACxAR, B is matBCxBR,
+                  // result is matBCxAR with shared dimension AC == BR
+                  assert_eq!(ac, br);
+                  assert_eq!(rc, bc);
+                  assert_eq!(rr, ar);
+                  for j in 0..rc {
+                    for i in 0..rr {
+                      let terms: Vec<String> = (0..ac)
+                        .map(|k| {
+                          format!(
+                            "a.c{k}.{} * b.c{j}.{}",
+                            fields[i], fields[k]
+                          )
+                        })
+                        .collect();
+                      body += &format!(
+                        "y.c{j}.{} = {};\n  ",
+                        fields[i],
+                        terms.join(" + ")
+                      );
+                    }
+                  }
+                } else {
+                  // element-wise + or -
+                  assert_eq!(ac, bc);
+                  assert_eq!(ar, br);
+                  assert_eq!(rc, ac);
+                  assert_eq!(rr, ar);
+                  for j in 0..rc {
+                    for i in 0..rr {
+                      body += &format!(
+                        "y.c{j}.{} = a.c{j}.{} {name} b.c{j}.{};\n  ",
+                        fields[i], fields[i], fields[i]
+                      );
+                    }
+                  }
+                }
+              }
+              (Some((ac, ar)), None, Some((rc, rr))) => {
+                // matrix * scalar (element-wise)
+                assert_eq!(rc, ac);
+                assert_eq!(rr, ar);
+                for j in 0..rc {
+                  for i in 0..rr {
+                    body += &format!(
+                      "y.c{j}.{} = a.c{j}.{} {name} b;\n  ",
+                      fields[i], fields[i]
+                    );
+                  }
+                }
+              }
+              (None, Some((bc, br)), Some((rc, rr))) => {
+                // scalar * matrix (element-wise)
+                assert_eq!(rc, bc);
+                assert_eq!(rr, br);
+                for j in 0..rc {
+                  for i in 0..rr {
+                    body += &format!(
+                      "y.c{j}.{} = a {name} b.c{j}.{};\n  ",
+                      fields[i], fields[i]
+                    );
+                  }
+                }
+              }
+              (Some((ac, ar)), None, None) => {
+                // matrix * vector → vector
+                // A is matACxAR, v is vecAC (column vec), result is vecAR
+                let ret_size = extract_vec_size(return_type).unwrap();
+                let b_size = extract_vec_size(b_type).unwrap();
+                assert_eq!(ret_size, ar);
+                assert_eq!(b_size, ac);
+                for i in 0..ar {
+                  let terms: Vec<String> = (0..ac)
+                    .map(|k| {
+                      format!("a.c{k}.{} * b.{}", fields[i], fields[k])
+                    })
+                    .collect();
+                  body += &format!(
+                    "y.{} = {};\n  ",
+                    fields[i],
+                    terms.join(" + ")
+                  );
+                }
+              }
+              (None, Some((bc, br)), None) => {
+                // vector * matrix → vector
+                // v is vecBR (row vec), B is matBCxBR, result is vecBC
+                let ret_size = extract_vec_size(return_type).unwrap();
+                let a_size = extract_vec_size(a_type).unwrap();
+                assert_eq!(ret_size, bc);
+                assert_eq!(a_size, br);
+                for j in 0..bc {
+                  let terms: Vec<String> = (0..br)
+                    .map(|k| {
+                      format!("a.{} * b.c{j}.{}", fields[k], fields[k])
+                    })
+                    .collect();
+                  body += &format!(
+                    "y.{} = {};\n  ",
+                    fields[j],
+                    terms.join(" + ")
+                  );
+                }
+              }
+              _ => panic!(
+                "unrecognized matrix arithmetic signature: \
+                 {a_type} {name} {b_type} -> {return_type}"
+              ),
             }
-          };
-          if let Some(return_vec_size) = extract_vec_size(return_type) {
-            for field in ["x", "y", "z", "w"].iter().take(return_vec_size) {
-              let a_component = if a_vec_size.is_some() {
-                format!("a.{field}")
-              } else {
-                "a".to_string()
-              };
-              let b_component = if b_vec_size.is_some() {
-                format!("b.{field}")
-              } else {
-                "b".to_string()
-              };
-              function += &format!("y.{field} = ");
-              function += &combiner(&a_component, &b_component);
-              function += ";\n  ";
-            }
-          } else if name == "%" {
-            function += "y = ";
-            function += &combiner("a", "b");
-            function += ";\n  ";
+            body += "return y;\n}";
+            body
           } else {
-            panic!("unrecognized arithmetic signature")
+            let a_vec_size = extract_vec_size(a_type);
+            let b_vec_size = extract_vec_size(b_type);
+            let mut function = format!(
+              "{return_type} {new_name}({a_type} a, {b_type} b) {{\n  \
+                 {return_type} y;\n  "
+            );
+            let combiner = |a_component: &str, b_component: &str| -> String {
+              if name == "%"
+                && (return_type == "float"
+                  || return_type.char_indices().last().unwrap().1 == 'f')
+              {
+                format!("fmod({a_component}, {b_component})")
+              } else {
+                format!("{a_component} {name} {b_component}")
+              }
+            };
+            if let Some(return_vec_size) = extract_vec_size(return_type) {
+              for field in fields.iter().take(return_vec_size) {
+                let a_component = if a_vec_size.is_some() {
+                  format!("a.{field}")
+                } else {
+                  "a".to_string()
+                };
+                let b_component = if b_vec_size.is_some() {
+                  format!("b.{field}")
+                } else {
+                  "b".to_string()
+                };
+                function += &format!("y.{field} = ");
+                function += &combiner(&a_component, &b_component);
+                function += ";\n  ";
+              }
+            } else if name == "%" {
+              function += "y = ";
+              function += &combiner("a", "b");
+              function += ";\n  ";
+            } else {
+              panic!("unrecognized arithmetic signature")
+            };
+            function += "return y;\n}";
+            function
           };
-          function += "return y;\n}";
           self.helper_chunks.push(function);
           new_name.to_string()
         }

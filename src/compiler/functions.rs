@@ -191,6 +191,31 @@ pub fn extract_vec_size(name: &str) -> Option<usize> {
   }
 }
 
+pub fn extract_mat_size(name: &str) -> Option<(usize, usize)> {
+  if name.len() < 6 || !name.starts_with("mat") {
+    return None;
+  }
+  let bytes = name.as_bytes();
+  if bytes[4] != b'x' {
+    return None;
+  }
+  let cols = (bytes[3] as char).to_digit(10)? as usize;
+  let rows = (bytes[5] as char).to_digit(10)? as usize;
+  if !(2..=4).contains(&cols) || !(2..=4).contains(&rows) {
+    return None;
+  }
+  if name.len() > 6 {
+    if name.len() > 7 {
+      return None;
+    }
+    match bytes[6] {
+      b'f' | b'i' | b'u' => {}
+      _ => return None,
+    }
+  }
+  Some((cols, rows))
+}
+
 impl AbstractFunctionSignature {
   pub fn is_builtin_vector_constructor(&self) -> bool {
     matches!(

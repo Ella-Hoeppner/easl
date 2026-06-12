@@ -398,3 +398,12 @@ conformance_test!(determinant_3x3);
 conformance_test!(determinant_4x4);
 conformance_test!(transpose_2x2);
 conformance_test!(vec2f_arithmetic);
+
+// matrix arithmetic
+conformance_test!(mat_mat_add);
+conformance_test!(mat_mat_sub);
+conformance_test!(mat_scalar_mul);
+conformance_test!(scalar_mat_mul);
+conformance_test!(vec_mat_mul);
+conformance_test!(mat3x2_vec_mul);
+conformance_test!(mat_mat_mul_nonsquare);
