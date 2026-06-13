@@ -15,34 +15,38 @@ use crate::{
 
 use super::{builtins::built_in_macros, error::ErrorLog, program::Program};
 
-pub fn compile_easl_documents_to_wgsl(
+pub fn compile_easl_documents_to_target(
   documents: EaslMultiDocument,
+  target: CompilerTarget,
 ) -> Result<String, (EaslMultiDocument, ErrorLog)> {
   let (mut program, errors) =
     Program::from_easl_documents(&documents, built_in_macros());
   if !errors.is_empty() {
     return Err((documents, errors));
   }
-  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  let errors = program.validate_raw_program(target);
   if !errors.is_empty() {
     return Err((documents, errors));
   }
 
   program
-    .compile_to_target(CompilerTarget::WGSL)
+    .compile_to_target(target)
     .map_err(|e| (documents, ErrorLog::from(e)))
 }
 
-pub fn compile_easl_document_to_wgsl(
+pub fn compile_easl_document_to_target(
   document: EaslDocument,
+  target: CompilerTarget,
 ) -> Result<String, (EaslMultiDocument, ErrorLog)> {
-  compile_easl_documents_to_wgsl(
+  compile_easl_documents_to_target(
     EaslMultiDocument::from_singular_document_sourceless(document),
+    target,
   )
 }
 
-pub fn compile_easl_source_to_wgsl(
+pub fn compile_easl_source_to_target(
   easl_source: &str,
+  target: CompilerTarget,
 ) -> Result<Result<String, (EaslMultiDocument, ErrorLog)>, EaslMultiDocument> {
   let document = parse_easl_without_comments(easl_source);
   if !document.parsing_failures.is_empty() {
@@ -52,29 +56,31 @@ pub fn compile_easl_source_to_wgsl(
       easl_source.to_string(),
     ));
   }
-  Ok(compile_easl_documents_to_wgsl(
+  Ok(compile_easl_documents_to_target(
     EaslMultiDocument::from_singular_document(
       document,
       String::new(),
       easl_source.to_string(),
     ),
+    target,
   ))
 }
 
-pub fn compile_easl_file_to_wgsl(
+pub fn compile_easl_file_to_target(
   primary_easl_file_path: &Path,
+  target: CompilerTarget,
 ) -> std::io::Result<
   Result<Result<String, (EaslMultiDocument, ErrorLog)>, EaslMultiDocument>,
 > {
   match load_easl_program_from_file(primary_easl_file_path)? {
     Ok((documents, Ok(mut program))) => {
-      let errors = program.validate_raw_program(CompilerTarget::WGSL);
+      let errors = program.validate_raw_program(target);
       if !errors.is_empty() {
         return Ok(Ok(Err((documents, errors))));
       }
       Ok(Ok(
         program
-          .compile_to_target(CompilerTarget::WGSL)
+          .compile_to_target(target)
           .map_err(|e| (documents, ErrorLog::from(e))),
       ))
     }
@@ -143,4 +149,34 @@ pub fn get_easl_program_info(
   } else {
     Err(errors)
   })
+}
+
+// WGSL-specific helpers
+
+pub fn compile_easl_documents_to_wgsl(
+  documents: EaslMultiDocument,
+) -> Result<String, (EaslMultiDocument, ErrorLog)> {
+  compile_easl_documents_to_target(documents, CompilerTarget::WGSL)
+}
+
+pub fn compile_easl_document_to_wgsl(
+  document: EaslDocument,
+) -> Result<String, (EaslMultiDocument, ErrorLog)> {
+  compile_easl_documents_to_wgsl(
+    EaslMultiDocument::from_singular_document_sourceless(document),
+  )
+}
+
+pub fn compile_easl_source_to_wgsl(
+  easl_source: &str,
+) -> Result<Result<String, (EaslMultiDocument, ErrorLog)>, EaslMultiDocument> {
+  compile_easl_source_to_target(easl_source, CompilerTarget::WGSL)
+}
+
+pub fn compile_easl_file_to_wgsl(
+  primary_easl_file_path: &Path,
+) -> std::io::Result<
+  Result<Result<String, (EaslMultiDocument, ErrorLog)>, EaslMultiDocument>,
+> {
+  compile_easl_file_to_target(primary_easl_file_path, CompilerTarget::WGSL)
 }
