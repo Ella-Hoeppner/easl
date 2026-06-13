@@ -1,0 +1,5 @@
+@cpu
+(defn main []
+  (let [@var v (vec3f 0. 0. 0.)]
+    (= (v 1i) 9.)
+    (print v)))

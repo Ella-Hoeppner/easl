@@ -2319,6 +2319,50 @@ impl Type {
       false
     }
   }
+  pub fn is_matrix(&self) -> bool {
+    if let Type::Struct(s) = self {
+      crate::compiler::functions::extract_mat_size(&s.name).is_some()
+    } else {
+      false
+    }
+  }
+  pub fn matrix_dimensions(&self) -> Option<(usize, usize)> {
+    if let Type::Struct(s) = self {
+      crate::compiler::functions::extract_mat_size(&s.name)
+    } else {
+      None
+    }
+  }
+  pub fn vector_element_type(&self) -> Option<Type> {
+    if let Type::Struct(s) = self
+      && crate::compiler::functions::extract_vec_size(&s.name).is_some()
+    {
+      s.fields
+        .first()?
+        .field_type
+        .with_dereferenced(|ts| match ts {
+          TypeState::Known(t) => Some(t.clone()),
+          _ => None,
+        })
+    } else {
+      None
+    }
+  }
+  pub fn matrix_scalar_type(&self) -> Option<Type> {
+    if let Type::Struct(s) = self
+      && crate::compiler::functions::extract_mat_size(&s.name).is_some()
+    {
+      s.fields
+        .first()?
+        .field_type
+        .with_dereferenced(|ts| match ts {
+          TypeState::Known(t) => Some(t.clone()),
+          _ => None,
+        })
+    } else {
+      None
+    }
+  }
   pub fn is_vec3u(&self) -> bool {
     if let Type::Struct(s) = self
       && &*s.name == "vec3"
@@ -2783,6 +2827,20 @@ impl TypeState {
                 anything_changed = true;
               }
             }
+            Type::Struct(_)
+              if possibility.is_vector() || possibility.is_matrix() =>
+            {
+              if arg_types.len() == 1
+                && TypeState::are_compatible(
+                  &arg_types[0],
+                  &TypeState::OneOf(vec![Type::U32, Type::I32]),
+                )
+              {
+                new_possibilities.push(possibility.clone())
+              } else {
+                anything_changed = true;
+              }
+            }
             _ => errors.log(CompileError::new(
               ExpectedFunctionFoundNonFunction,
               source_trace.clone(),
@@ -2828,6 +2886,21 @@ impl TypeState {
           }
         }
         Type::Array(_, _) => {
+          if arg_types.len() == 1 {
+            arg_types[0].constrain(
+              &TypeState::OneOf(vec![Type::I32, Type::U32]),
+              source_trace,
+              errors,
+            )
+          } else {
+            errors.log(CompileError::new(
+              ArrayLookupInvalidArity(arg_types.len()),
+              source_trace.clone(),
+            ));
+            false
+          }
+        }
+        Type::Struct(_) if t.is_vector() || t.is_matrix() => {
           if arg_types.len() == 1 {
             arg_types[0].constrain(
               &TypeState::OneOf(vec![Type::I32, Type::U32]),

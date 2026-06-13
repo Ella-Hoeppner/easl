@@ -6,14 +6,17 @@ use std::sync::{Arc, RwLock};
 use take_mut::take;
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::compiler::structs::{
+  indexable_vec_and_mat_types, make_concrete_vec_type,
+};
 use crate::{
   Never,
   compiler::{
     annotation::{Annotation, AnnotationKind, extract_annotation},
     builtins::{
       ASSIGNMENT_OPS, INFIX_OPS, assignment_function,
-      builtin_vec_constructor_type, get_builtin_struct, is_builtin_mat_constructor_type,
-      rename_builtin_fn,
+      builtin_vec_constructor_type, get_builtin_struct,
+      is_builtin_mat_constructor_type, rename_builtin_fn,
     },
     effects::EffectType,
     entry::IOAttributes,
@@ -1989,19 +1992,19 @@ impl TypedExp {
                 }
               }
 
-              let mut arg_inner_value = arg;
-              let mut surrounding_accessors = vec![];
-              while let ExpKind::Access(accessor, inner_value) =
-                arg_inner_value.kind
-              {
-                surrounding_accessors.push(accessor);
-                arg_inner_value = *inner_value;
-              }
-              let mut compiled_inner_value =
-                arg_inner_value.compile(InnerExpression, names, target);
-              if needs_ref == needs_deref && surrounding_accessors.is_empty() {
-                compiled_inner_value
+              if !needs_ref && !needs_deref {
+                arg.compile(InnerExpression, names, target)
               } else {
+                let mut arg_inner_value = arg;
+                let mut surrounding_accessors = vec![];
+                while let ExpKind::Access(accessor, inner_value) =
+                  arg_inner_value.kind
+                {
+                  surrounding_accessors.push(accessor);
+                  arg_inner_value = *inner_value;
+                }
+                let mut compiled_inner_value =
+                  arg_inner_value.compile(InnerExpression, names, target);
                 if needs_deref {
                   compiled_inner_value = format!("(*{compiled_inner_value})");
                 }
@@ -2116,7 +2119,8 @@ impl TypedExp {
             }
           } else {
             let args_str = arg_strs.join(", ");
-            if (is_struct_constructor || is_builtin_mat_constructor_type(&f_str))
+            if (is_struct_constructor
+              || is_builtin_mat_constructor_type(&f_str))
               && target == CompilerTarget::C
             {
               format!("({f_str}){{{args_str}}}")
@@ -2140,11 +2144,30 @@ impl TypedExp {
         }
         _ => panic!("tried to compile application of non-fn, non-array"),
       }),
-      Access(accessor, subexp) => wrap(format!(
-        "{}{}",
-        subexp.compile(InnerExpression, names, target),
-        accessor.compile(names, target)
-      )),
+      Access(accessor, subexp) => {
+        let subexp_type = subexp.data.unwrap_known();
+        let needs_c_index_helper = target == CompilerTarget::C
+          && matches!(&accessor, Accessor::ArrayIndex(_))
+          && (subexp_type.is_vector() || subexp_type.is_matrix());
+        if needs_c_index_helper {
+          let subexp_type_name =
+            subexp.data.monomorphized_name(names, target).to_string();
+          let Accessor::ArrayIndex(index) = accessor else {
+            unreachable!()
+          };
+          let subexp_str = subexp.compile(InnerExpression, names, target);
+          let index_str = index.compile(InnerExpression, names, target);
+          wrap(format!(
+            "index_{subexp_type_name}({subexp_str}, {index_str})"
+          ))
+        } else {
+          wrap(format!(
+            "{}{}",
+            subexp.compile(InnerExpression, names, target),
+            accessor.compile(names, target)
+          ))
+        }
+      }
       Let(bindings, body) => {
         let binding_lines: Vec<String> = bindings
           .into_iter()
@@ -2917,20 +2940,23 @@ impl TypedExp {
           anything_changed |= arg.propagate_types_inner(ctx, errors);
         }
         anything_changed |= f.propagate_types_inner(ctx, errors);
-        if let Name(_) = &f.kind {
-        } else {
+        if !matches!(&f.kind, Name(_)) {
+          let mut options = vec![
+            Type::Function(Box::new(FunctionSignature {
+              abstract_ancestor: None,
+              args: args
+                .iter()
+                .map(|arg| (Variable::immutable(arg.data.clone()), vec![]))
+                .collect(),
+              return_type: self.data.clone(),
+            })),
+            Type::Array(None, Box::new(TypeState::Unknown.into())),
+          ];
+          if args.len() == 1 {
+            options.extend(indexable_vec_and_mat_types(&ctx.program.typedefs));
+          }
           anything_changed |= f.data.constrain(
-            &TypeState::OneOf(vec![
-              Type::Function(Box::new(FunctionSignature {
-                abstract_ancestor: None,
-                args: args
-                  .iter()
-                  .map(|arg| (Variable::immutable(arg.data.clone()), vec![]))
-                  .collect(),
-                return_type: self.data.clone(),
-              })),
-              Type::Array(None, Box::new(TypeState::Unknown.into())),
-            ]),
+            &TypeState::OneOf(options),
             &self.source_trace,
             errors,
           );
@@ -2985,6 +3011,42 @@ impl TypedExp {
                   anything_changed = true;
                 }
 
+                self.data.is_globally_bound = f.data.is_globally_bound;
+              } else {
+                errors.log(CompileError::new(
+                  ArrayLookupInvalidArity(args.len()),
+                  self.source_trace.clone(),
+                ));
+              }
+            }
+            Type::Struct(_) if f_type.is_vector() || f_type.is_matrix() => {
+              if args.len() == 1 {
+                let result_type = if f_type.is_vector() {
+                  f_type.vector_element_type()
+                } else if let (Some((_, rows)), Some(scalar)) =
+                  (f_type.matrix_dimensions(), f_type.matrix_scalar_type())
+                {
+                  make_concrete_vec_type(rows, scalar, &ctx.program.typedefs)
+                } else {
+                  None
+                };
+                if let Some(result_type) = result_type {
+                  anything_changed |= self.data.constrain(
+                    &TypeState::Known(result_type),
+                    &self.source_trace,
+                    errors,
+                  );
+                }
+                let first_arg = &mut args[0];
+                first_arg.data.constrain(
+                  &TypeState::OneOf(vec![Type::I32, Type::U32]),
+                  &first_arg.source_trace,
+                  errors,
+                );
+                if f.data.ownership != self.data.ownership {
+                  self.data.ownership = f.data.ownership;
+                  anything_changed = true;
+                }
                 self.data.is_globally_bound = f.data.is_globally_bound;
               } else {
                 errors.log(CompileError::new(
@@ -3388,6 +3450,7 @@ impl TypedExp {
         ExpKind::Access(_, inner_exp) => exp = inner_exp,
         ExpKind::Application(f, _) => match f.data.kind.unwrap_known() {
           Type::Array(_, _) => exp = f,
+          t @ Type::Struct(_) if t.is_vector() || t.is_matrix() => exp = f,
           _ => break,
         },
         ExpKind::Let(_, body) => exp = body,
@@ -3629,13 +3692,17 @@ impl TypedExp {
                     );
                     for (name, generic_arg, _) in &sig.generic_args {
                       if let GenericArgument::Type(bounds) = generic_arg {
-                        if let Some(generic_type) = generic_type_bindings.get(name) {
+                        if let Some(generic_type) =
+                          generic_type_bindings.get(name)
+                        {
                           if let Some(unsatisfied) = bounds
                             .iter()
                             .find(|c| !generic_type.satisfies_constraint(c))
                           {
                             return err(
-                              UnsatisfiedTypeConstraint(unsatisfied.clone().into()),
+                              UnsatisfiedTypeConstraint(
+                                unsatisfied.clone().into(),
+                              ),
                               source_trace.clone(),
                             );
                           }
@@ -4417,6 +4484,11 @@ impl TypedExp {
           effects
         }
         Type::Array(_, _) => {
+          let mut effects = f.effects();
+          effects.merge(args[0].effects());
+          effects
+        }
+        t @ Type::Struct(_) if t.is_vector() || t.is_matrix() => {
           let mut effects = f.effects();
           effects.merge(args[0].effects());
           effects

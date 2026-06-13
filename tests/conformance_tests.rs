@@ -407,3 +407,13 @@ conformance_test!(scalar_mat_mul);
 conformance_test!(vec_mat_mul);
 conformance_test!(mat3x2_vec_mul);
 conformance_test!(mat_mat_mul_nonsquare);
+
+// vec / mat indexing via call-style syntax
+conformance_test!(vec_index);
+conformance_test!(vec_index_u32);
+conformance_test!(mat_column_index);
+conformance_test!(mat_nested_index);
+conformance_test!(mat_inline_index);
+conformance_test!(mat_double_index);
+conformance_test!(mat_index_var);
+conformance_test!(mat_diagonal_sum);

@@ -1,0 +1,9 @@
+@[storage-write 0 0]
+(var result: vec2f)
+
+@{workgroup-size 1}
+@compute
+(defn compute []
+  (let [@var m (mat2x2f 1. 2. 3. 4.)]
+    (= (m 1i) (vec2f 99. 100.))
+    (= result (m 1i))))

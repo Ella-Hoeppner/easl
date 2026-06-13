@@ -1,0 +1,7 @@
+@cpu
+(defn main []
+  (let [v (vec4f 10. 20. 30. 40.)]
+    (print (v 0i))
+    (print (v 1i))
+    (print (v 2i))
+    (print (v 3i))))

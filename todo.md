@@ -1,8 +1,6 @@
 # todo
 ## Highest priority
 ### necessary for wgsl feature parity + stuff I wanna get done before calling the language "production ready"
-* let closures captures mutable variables, and just throw an error if more than one closure tries to capture the same one
-
 * enable a syntax like `<>.x`
 
 * trying to do an early return in a function that returns unit crashes the compile rn. You have to do `(return ())`, but then you get an error about compiling unit in an inner position
@@ -78,10 +76,6 @@
   * rn if a function is overloaded and it's arguments don't resolve to a valid signature, then the application expression using that function also won't resolve, even if the function always returns the same type
     * for instance, in the expression `(vec4f (vec3f 1. 1.) 1.)`, then inner application of `vec3f` is invalid since recieves 2 scalar args. However, if you try to compile this epxression, you'll also get an error on the `vec4f` saying "Couldn't infer types". But that shouldn't happen - regardless of what the input types to `vec3f` are, the return type will be `vec3f`, so it doesn't make sense for `vec4f` to not be able to converge
   * When there are multiple "couldn't infer types" errors, such that one is a subtree of another, only display the innermost one, I think? The outermost one usually won't be helpful.
-
-* allow indexing vectors and matrices with integers
-  * It's already possible to use the `(f a)` syntax where `f` is something other than a function, but for now it only works when `f` is an array. So I guess I can just extend that logic to check if `f` is a vector or matrix as well?
-    * Or maybe have some constraint like `Indexable` for this and make arrays, vecs, and mats implement it, so there's less special casing. And in the long run even maybe let the user implement `Indexable` on their own types.
 
 * special casing around `Texture2D` and `Sampler`
   * right now I've made it so it has a field `_: T`, because monomorphization needs there to be at least one field, but this is kinda weird

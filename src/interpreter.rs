@@ -4077,14 +4077,19 @@ pub fn eval(
           let mut active_swizzle_fields: Option<Vec<usize>> = None;
           for access in accesses.into_iter().rev() {
             match access {
-              AccessKind::Index(i) => {
-                let Value::Array(a) = accessed_value else {
-                  panic!()
-                };
-                let length = a.len() as i64;
-                accessed_value =
-                  &mut a[(((i % length) + length) % length) as usize];
-              }
+              AccessKind::Index(i) => match accessed_value {
+                Value::Array(a) => {
+                  let length = a.len() as i64;
+                  accessed_value =
+                    &mut a[(((i % length) + length) % length) as usize];
+                }
+                Value::Struct(s) => {
+                  // Vector stored as Struct with x/y/z/w fields.
+                  let field_name = ["x", "y", "z", "w"][i as usize];
+                  accessed_value = s.get_mut(field_name).unwrap();
+                }
+                _ => panic!(),
+              },
               AccessKind::Field(name) => {
                 if let Some(previous_swizzle_fields) = active_swizzle_fields {
                   active_swizzle_fields = Some(vec![
@@ -4322,18 +4327,30 @@ pub fn eval(
         }
         Accessor::ArrayIndex(exp) => {
           let index = eval(*exp, env)?;
+          let u_index = |len: usize| match index.unwrap_primitive() {
+            Primitive::U32(u) => u as usize % len,
+            Primitive::I32(i) => i.rem_euclid(len as i32) as usize,
+            _ => panic!(),
+          };
           match value {
-            Value::Array(values) => values[match index.unwrap_primitive() {
-              Primitive::U32(u) => u as usize % values.len(),
-              Primitive::I32(i) => i.rem_euclid(values.len() as i32) as usize,
-              _ => panic!(),
-            }]
-            .clone(),
+            Value::Array(values) => {
+              let i = u_index(values.len());
+              values[i].clone()
+            }
             Value::ZeroedArray { .. } => {
               let Type::Array(_, inner_type) = exp_type else {
                 panic!()
               };
               Value::zeroed(inner_type.unwrap_known(), env)?
+            }
+            // Vector indexing: stored as a Struct with x/y/z/w fields.
+            Value::Struct(fields) if exp_type.is_vector() => {
+              let len = fields.len();
+              let i = u_index(len);
+              fields
+                .get(["x", "y", "z", "w"][i])
+                .expect("vector index out of bounds")
+                .clone()
             }
             _ => panic!(),
           }

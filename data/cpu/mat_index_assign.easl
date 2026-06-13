@@ -1,0 +1,5 @@
+@cpu
+(defn main []
+  (let [@var m (mat2x2f 0. 0. 0. 0.)]
+    (= (m 0i) (vec2f 5. 6.))
+    (print m)))

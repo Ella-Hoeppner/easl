@@ -1,0 +1,5 @@
+(defn f []: f32
+  (let [m (mat2x2f 1. 2. 3. 4.)
+        i 1i
+        c (m i)]
+    (.y c)))

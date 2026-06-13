@@ -1,0 +1,4 @@
+@fragment
+(defn fragment []: @{location 0} vec4f
+  (let [v (vec4f 1. 2. 3. 4.)]
+    (vec4f (v 0i) (v 1i) (v 2i) (v 3i))))

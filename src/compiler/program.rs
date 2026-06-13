@@ -115,6 +115,28 @@ impl CompilerTarget {
             }
           }
         }
+        for size in [2usize, 3, 4] {
+          for (field_type, suffix) in
+            [("float", "f"), ("int32_t", "i"), ("uint32_t", "u")]
+          {
+            header += &format!(
+              "static inline {field_type} index_vec{size}{suffix}(vec{size}{suffix} v, int32_t i) {{ \
+                 return (&v.x)[i]; \
+               }}\n"
+            );
+          }
+        }
+        for n in 2..=4 {
+          for m in 2..=4 {
+            for suffix in ["f", "i", "u"] {
+              header += &format!(
+                "static inline vec{m}{suffix} index_mat{n}x{m}{suffix}(mat{n}x{m}{suffix} m, int32_t i) {{ \
+                   return (&m.c0)[i]; \
+                 }}\n"
+              );
+            }
+          }
+        }
         header
       }
       .to_string(),
@@ -937,7 +959,14 @@ impl Program {
       }
     }
   }
-  pub fn normalize_array_accesses(&mut self) {
+  /// Rewrites pseudo-applications used for indexing data — `(arr i)`, `(v i)`,
+  /// `(m i)` — into a uniform `Access(ArrayIndex(i), subexp)` form. Easl
+  /// reuses the function-application syntax for indexing since the parser
+  /// can't distinguish; this pass is run after type inference, when we know
+  /// which Applications are *actually* indexing arrays/vectors/matrices, and
+  /// converts them so later passes can treat them uniformly as `Access`
+  /// expressions instead of overloading `Application`.
+  pub fn normalize_pseudoapplication_data_accesses(&mut self) {
     for abstract_f in self.abstract_functions_iter() {
       let abstract_f = abstract_f.read().unwrap();
       if let FunctionImplementationKind::Composite(implementation) =
@@ -948,18 +977,22 @@ impl Program {
           .unwrap()
           .expression
           .walk_mut(&mut |exp| {
-            if let ExpKind::Application(f, _) = &exp.kind
-              && let Type::Array(_, _) = f.data.unwrap_known()
-            {
-              take(&mut exp.kind, |kind| {
-                let ExpKind::Application(f, mut args) = kind else {
-                  panic!()
-                };
-                ExpKind::Access(
-                  Accessor::ArrayIndex(args.remove(0).into()),
-                  f.into(),
-                )
-              });
+            if let ExpKind::Application(f, _) = &exp.kind {
+              let f_type = f.data.unwrap_known();
+              let is_data_access = matches!(f_type, Type::Array(_, _))
+                || f_type.is_vector()
+                || f_type.is_matrix();
+              if is_data_access {
+                take(&mut exp.kind, |kind| {
+                  let ExpKind::Application(f, mut args) = kind else {
+                    panic!()
+                  };
+                  ExpKind::Access(
+                    Accessor::ArrayIndex(args.remove(0).into()),
+                    f.into(),
+                  )
+                });
+              }
             }
             Ok::<bool, Never>(true)
           })
@@ -3928,7 +3961,7 @@ impl Program {
     }
     self.desugar_swizzle_assignments();
     self.deexpressionify(target);
-    self.normalize_array_accesses();
+    self.normalize_pseudoapplication_data_accesses();
     self.deshadow(&mut errors);
     if !errors.is_empty() {
       return errors;

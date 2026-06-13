@@ -186,6 +186,50 @@ pub fn compiled_vec_or_mat_name(
   .map(|suffix| format!("{base_struct_name}{suffix}").into())
 }
 
+pub fn make_concrete_vec_type(
+  rows: usize,
+  scalar: Type,
+  typedefs: &TypeDefs,
+) -> Option<Type> {
+  let vec_name: Arc<str> = format!("vec{rows}").into();
+  let abs = typedefs
+    .structs
+    .iter()
+    .find(|s| s.name.0 == vec_name)?
+    .clone();
+  AbstractStruct::fill_generics_ordered(
+    Arc::new(abs),
+    vec![GenericArgumentValue::Type(TypeState::Known(scalar).into())],
+    typedefs,
+    SourceTrace::empty(),
+  )
+  .ok()
+  .map(Type::Struct)
+}
+
+pub fn indexable_vec_and_mat_types(typedefs: &TypeDefs) -> Vec<Type> {
+  let mut results = vec![];
+  let shape_names: Vec<Arc<str>> = (2..=4)
+    .map(|n| format!("vec{n}").into())
+    .chain(
+      (2..=4).flat_map(|n| (2..=4).map(move |m| format!("mat{n}x{m}").into())),
+    )
+    .collect();
+  for name in shape_names {
+    if let Some(abs) = typedefs.structs.iter().find(|s| s.name.0 == name)
+      && let Ok(filled) =
+        AbstractStruct::fill_generics_with_unification_variables(
+          Arc::new(abs.clone()),
+          typedefs,
+          SourceTrace::empty(),
+        )
+    {
+      results.push(Type::Struct(filled));
+    }
+  }
+  results
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AbstractStructField {
   pub attributes: IOAttributes,
