@@ -99,7 +99,7 @@ The main pipeline lives in `Program::validate_raw_program` (program.rs). The maj
 ### Entry point annotations
 
 Easl programs can have multiple annotated sections compiled/run separately:
-- `@cpu` — marks the CPU entry point, compiled with `CompilerTarget::CPU` and run by the interpreter
+- `@cpu` — marks the CPU entry point, compiled with `CompilerTarget::WGSL` and run by the interpreter
 - `@vertex`, `@fragment`, `@compute` — mark GPU shader entry points
 - `@{workgroup-size N}` — optional on `@compute` functions; sets threads per workgroup (defaults to 1 if omitted; can also be `@{workgroup-size X Y Z}`)
 - `@{builtin vertex-index}`, `@{builtin global-invocation-id}`, `@{builtin position}`, etc. — bind WGSL builtins to function arguments or return values. Note: some builtins (e.g. `global-invocation-id`) are also available as zero-argument helper functions that can be called anywhere in a shader without needing an annotated parameter.
@@ -237,7 +237,7 @@ error_test!(test_name, CompileErrorKind::SomeError);  // expects specific compil
 ```rust
 cpu_test!(test_name);  // runs data/cpu/test_name.easl, compares stdout to data/cpu/test_name.txt
 ```
-- Compiles with `CompilerTarget::CPU`, runs via `run_program_capturing_output`
+- Compiles with `CompilerTarget::WGSL`, runs via `run_program_capturing_output`
 - Asserts that captured `(print ...)` output matches the `.txt` file exactly
 
 ### Window/interpreter tests (`tests/window_tests.rs`, sources in `data/window/`)

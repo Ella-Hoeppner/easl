@@ -405,7 +405,7 @@ impl AbstractEnum {
                 generic_arg_names,
               ));
               Some(match target {
-                CompilerTarget::Interpreter | CompilerTarget::WGSL => format!(
+                CompilerTarget::WGSL => format!(
                   "const {const_name}: {monomorphized_name} = \
                   {monomorphized_name}({i}{});",
                   if size == 0 {
@@ -437,14 +437,14 @@ impl AbstractEnum {
               String::new()
             } else {
               match target {
-                CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+                CompilerTarget::WGSL => {
                   format!("  data: array<u32, {size}>\n")
                 }
                 CompilerTarget::C => format!("  uint32_t data[{size}];\n"),
               }
             };
             match target {
-              CompilerTarget::WGSL | CompilerTarget::Interpreter => format!(
+              CompilerTarget::WGSL => format!(
                 "struct {monomorphized_name} {{\n  \
                   discriminant: u32,\n\
                   {data_line}\

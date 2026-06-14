@@ -509,7 +509,7 @@ pub fn built_in_structs_for_target(
   target: CompilerTarget,
 ) -> Vec<AbstractStruct> {
   match target {
-    CompilerTarget::Interpreter | CompilerTarget::WGSL => built_in_structs(),
+    CompilerTarget::WGSL => built_in_structs(),
     CompilerTarget::C => vec![],
   }
 }

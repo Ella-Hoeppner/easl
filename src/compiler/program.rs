@@ -63,7 +63,6 @@ pub type EaslDocument = Document<EaslSyntax>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompilerTarget {
-  Interpreter,
   C,
   WGSL,
 }
@@ -2450,7 +2449,7 @@ impl Program {
               let inner_type_name =
                 inner_type.monomorphized_name(&mut names, target);
               match target {
-                CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+                CompilerTarget::WGSL => {
                   format!("value: {inner_type_name}")
                 }
                 CompilerTarget::C => format!("{inner_type_name} value"),
@@ -2472,7 +2471,7 @@ impl Program {
               ),
             );
             compiled_string += &match target {
-              CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+              CompilerTarget::WGSL => {
                 let bitcast_inner_values = inner_type
                   .bitcastable_chunk_accessors("value".into())
                   .into_iter()

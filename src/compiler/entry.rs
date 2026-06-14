@@ -49,7 +49,7 @@ impl EntryPoint {
   pub fn should_compile_to_target(&self, target: CompilerTarget) -> bool {
     use EntryPoint::*;
     match target {
-      CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+      CompilerTarget::WGSL => {
         matches!(self, Vertex | Fragment | Compute(_))
       }
       CompilerTarget::C => {

@@ -297,7 +297,7 @@ impl AbstractStructField {
         .field_type
         .compile(typedefs, names, &self.source_trace, target)?;
     Ok(match target {
-      CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+      CompilerTarget::WGSL => {
         format!("  {annotation}{name}: {field_type}")
       }
       CompilerTarget::C => format!("  {field_type} {name};"),
@@ -376,7 +376,7 @@ impl AbstractStruct {
         let monomorphized_name =
           compile_word(self.monomorphized_name(&field_types, names, target));
         Ok(match target {
-          CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+          CompilerTarget::WGSL => {
             let fields = self
               .fields
               .into_iter()

@@ -1254,7 +1254,7 @@ impl TopLevelFunction {
         .zip(args.into_iter())
         .zip(self.arg_annotations.into_iter())
         .map(|(((name, _), (arg, _)), annotation)| match target {
-          CompilerTarget::Interpreter | CompilerTarget::WGSL => format!(
+          CompilerTarget::WGSL => format!(
             "{}{}: {}",
             annotation.attributes.compile(),
             compile_word(name),
@@ -1311,7 +1311,7 @@ impl TopLevelFunction {
         CompilerTarget::C => {
           format!("{return_type_name} {fn_name}({args}) {{{body}\n}}")
         }
-        CompilerTarget::WGSL | CompilerTarget::Interpreter => format!(
+        CompilerTarget::WGSL => format!(
           "{}fn {fn_name}({args}){} {{{body}\n}}",
           self
             .entry_point

@@ -342,7 +342,7 @@ impl TopLevelVar {
     target: CompilerTarget,
   ) -> String {
     match target {
-      CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+      CompilerTarget::WGSL => {
         let (bind_group_decoration, address_space) =
           if let TopLevelVariableKind::Var {
             group_and_binding,

@@ -1927,7 +1927,7 @@ impl TypedExp {
           )
         }
         Number::Float(f) => match target {
-          CompilerTarget::WGSL | CompilerTarget::Interpreter => format!("{f}f"),
+          CompilerTarget::WGSL => format!("{f}f"),
           CompilerTarget::C => {
             let s = f.to_string();
             if s.contains('.') { s } else { format!("{s}.") }
@@ -2038,7 +2038,6 @@ impl TypedExp {
                           target,
                         );
                       }
-                      _ => {}
                     },
                     SpecialCasedBuiltinFunction::ZeroedArray => {
                       return self.data.kind.monomorphized_name(names, target)
@@ -2085,7 +2084,7 @@ impl TypedExp {
               .map(|(s, t)| {
                 if let Some(wrapper) = match t {
                   Type::F32 | Type::I32 | Type::U32 => Some(match target {
-                    CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+                    CompilerTarget::WGSL => {
                       format!("{wrapper_type}32")
                     }
                     CompilerTarget::C => match wrapper_type {
@@ -2112,7 +2111,7 @@ impl TypedExp {
               .collect::<Vec<_>>();
             let args_str = wrapped_arg_strs.join(", ");
             match target {
-              CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+              CompilerTarget::WGSL => {
                 format!("{f_str}({args_str})")
               }
               CompilerTarget::C => format!("({f_str}){{{args_str}}}"),
@@ -2174,7 +2173,7 @@ impl TypedExp {
           .map(|(name, _, variable_kind, value_exp)| {
             if value_exp.kind == ExpKind::Uninitialized {
               match target {
-                CompilerTarget::Interpreter | CompilerTarget::WGSL => format!(
+                CompilerTarget::WGSL => format!(
                   "{} {}: {};",
                   variable_kind.compile(),
                   compile_word(name),
@@ -2196,7 +2195,7 @@ impl TypedExp {
                 };
               let compiled_name = compile_word(name);
               match target {
-                CompilerTarget::Interpreter | CompilerTarget::WGSL => format!(
+                CompilerTarget::WGSL => format!(
                   "{} {compiled_name}: {type_name} = {compiled_value};",
                   variable_kind.compile(),
                 ),
@@ -2385,7 +2384,7 @@ impl TypedExp {
                              sizeof({compiled_inner_name}));"
                           )
                         }
-                        CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+                         CompilerTarget::WGSL => {
                           let bitcasted_value = inner_type
                             .bitcasted_from_enum_data(
                               scrutinee

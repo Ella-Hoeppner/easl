@@ -1624,7 +1624,7 @@ impl Type {
     target: CompilerTarget,
   ) -> String {
     match target {
-      CompilerTarget::Interpreter | CompilerTarget::WGSL => match self {
+      CompilerTarget::WGSL => match self {
         Type::Unit => "()".to_string(),
         Type::F32 => "f32".to_string(),
         Type::I32 => "i32".to_string(),
