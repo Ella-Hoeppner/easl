@@ -2362,28 +2362,52 @@ impl TypedExp {
                       else {
                         panic!("invalid pattern type in enum match block")
                       };
-                      let bitcasted_value = variant
-                        .inner_type
-                        .unwrap_known()
-                        .bitcasted_from_enum_data(
-                          scrutinee.clone().compile(InnerExpression, names, target).into(),
-                          &e,
-                          names,
-                          target
-                        );
+                      let case_label = if i == arm_count - 1 {
+                        "default".to_string()
+                      } else {
+                        format!("case {discriminant}u")
+                      };
+                      let compiled_inner_name = compile_word(inner_value_name);
+                      let inner_type = variant.inner_type.unwrap_known();
+                      let binding_line = match target {
+                        CompilerTarget::C => {
+                          let type_name =
+                            inner_type.monomorphized_name(names, target);
+                          let compiled_scrutinee = scrutinee.clone().compile(
+                            InnerExpression,
+                            names,
+                            target,
+                          );
+                          format!(
+                            "{type_name} {compiled_inner_name};\n  \
+                             memcpy(&{compiled_inner_name}, \
+                             &({compiled_scrutinee}).data[0], \
+                             sizeof({compiled_inner_name}));"
+                          )
+                        }
+                        CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+                          let bitcasted_value = inner_type
+                            .bitcasted_from_enum_data(
+                              scrutinee
+                                .clone()
+                                .compile(InnerExpression, names, target)
+                                .into(),
+                              &e,
+                              names,
+                              target,
+                            );
+                          format!(
+                            "let {compiled_inner_name} = {};",
+                            bitcasted_value.compile(
+                              ExpressionCompilationPosition::InnerExpression,
+                              names,
+                              target,
+                            )
+                          )
+                        }
+                      };
                       format!(
-                        "{}: {{\n  let {} = {};{}\n{finisher}}}",
-                        if i == arm_count - 1 {
-                          "default".to_string()
-                        } else {
-                          format!("case {discriminant}u")
-                        },
-                        compile_word(inner_value_name),
-                        bitcasted_value.compile(
-                          ExpressionCompilationPosition::InnerExpression,
-                          names,
-                          target
-                        ),
+                        "{case_label}: {{\n  {binding_line}{}\n{finisher}}}",
                         indent(value.compile(position, names, target))
                       )
                     }

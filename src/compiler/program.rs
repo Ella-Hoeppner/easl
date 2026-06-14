@@ -75,6 +75,7 @@ impl CompilerTarget {
         let mut header =
           "#include <stdlib.h>\n\
            #include <stdio.h>\n\
+           #include <stdbool.h>\n\
            #include <stdint.h>\n\
            #include <string.h>\n\
            #include <math.h>\n"
@@ -2530,6 +2531,36 @@ impl Program {
     for chunk in self.emulated_functions.helper_chunks.iter() {
       compiled_string += &chunk;
       compiled_string += "\n\n";
+    }
+    if let CompilerTarget::C = target {
+      for f in self.abstract_functions_iter() {
+        let f = f.read().unwrap().clone();
+        if f.generic_args.is_empty()
+          && !f.has_uninlined_higher_order_arguments()
+          && let FunctionImplementationKind::Composite(implementation) =
+            f.implementation
+        {
+          let implementation = implementation.read().unwrap();
+          let Type::Function(signature) =
+            implementation.expression.data.unwrap_known()
+          else {
+            panic!()
+          };
+          let return_type = signature.return_type.unwrap_known();
+          if matches!(return_type, Type::Function(_))
+            && return_type.is_unitlike(&mut names)
+          {
+            continue;
+          }
+          if let Some(decl) = implementation
+            .compile_c_forward_declaration(&f.name, &mut names, &self)
+          {
+            compiled_string += &decl;
+            compiled_string += "\n";
+          }
+        }
+      }
+      compiled_string += "\n";
     }
     for f in self.abstract_functions_iter() {
       let f = f.read().unwrap().clone();

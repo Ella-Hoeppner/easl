@@ -7,13 +7,13 @@ use std::process::Command;
 
 const BOILERPLATE: &str = "
 @[storage-write 0 0]
-(var x: f32)
+(var internal-return-value: f32)
 
 @cpu
 (defn main []
   (print (f))
-  (dispatch-compute-shader (fn [] (= x (f))) (vec3u 1u))
-  (print x))
+  (dispatch-compute-shader (fn [] (= internal-return-value (f))) (vec3u 1u))
+  (print internal-return-value))
 ";
 
 fn run_conformance_test(name: &str, tolerance: f64) {
@@ -407,6 +407,19 @@ conformance_test!(scalar_mat_mul);
 conformance_test!(vec_mat_mul);
 conformance_test!(mat3x2_vec_mul);
 conformance_test!(mat_mat_mul_nonsquare);
+
+// conditionals and pattern matching
+conformance_test!(if_true_branch, 0.001);
+conformance_test!(if_false_branch, 0.001);
+conformance_test!(if_nested);
+conformance_test!(if_statement);
+conformance_test!(match_int);
+conformance_test!(match_int_default);
+conformance_test!(match_bool);
+conformance_test!(match_enum_unit);
+conformance_test!(match_enum_data);
+conformance_test!(match_in_expression);
+conformance_test!(match_statement);
 
 // vec / mat indexing via call-style syntax
 conformance_test!(vec_index);

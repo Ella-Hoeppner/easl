@@ -4374,9 +4374,43 @@ pub fn eval(
     ExpKind::Match(scrutinee, arms) => {
       let scrutinee = eval(*scrutinee, env)?;
       for (match_exp, body_exp) in arms {
-        if match_exp.kind == ExpKind::Wildcard
-          || eval(match_exp, env)? == scrutinee
-        {
+        if match_exp.kind == ExpKind::Wildcard {
+          return eval(body_exp, env);
+        }
+        let enum_pattern_variant: Option<Arc<str>> = match &match_exp.kind {
+          ExpKind::Application(f, _) => {
+            if let Type::Function(f_sig) = f.data.unwrap_known()
+              && let Some(abstract_f) = f_sig.abstract_ancestor
+              && let FunctionImplementationKind::EnumConstructor(v) =
+                &abstract_f.read().unwrap().implementation
+            {
+              Some(v.clone())
+            } else {
+              None
+            }
+          }
+          _ => None,
+        };
+        if let Some(pattern_variant) = enum_pattern_variant {
+          let ExpKind::Application(_, args) = match_exp.kind else {
+            unreachable!()
+          };
+          if let Value::Enum(scrutinee_variant, inner_value) = &scrutinee
+            && pattern_variant == *scrutinee_variant
+          {
+            let inner_pattern = args.into_iter().next().unwrap();
+            let inner_ty = inner_pattern.data.kind.unwrap_known();
+            let ExpKind::Name(inner_name) = inner_pattern.kind else {
+              unreachable!()
+            };
+            env.bind(inner_name.clone(), (**inner_value).clone(), inner_ty);
+            let result = eval(body_exp, env);
+            env.unbind(&inner_name);
+            return result;
+          }
+          continue;
+        }
+        if eval(match_exp, env)? == scrutinee {
           return eval(body_exp, env);
         }
       }

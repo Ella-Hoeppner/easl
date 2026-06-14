@@ -1176,6 +1176,49 @@ pub struct BuiltInFunction {
 }
 
 impl TopLevelFunction {
+  pub fn compile_c_forward_declaration(
+    &self,
+    name: &str,
+    names: &mut NameContext,
+    program: &Program,
+  ) -> Option<String> {
+    let Type::Function(signature) = self.expression.data.unwrap_known() else {
+      panic!("attempted to compile function with invalid type data")
+    };
+    let FunctionSignature {
+      args, return_type, ..
+    } = *signature;
+    let ExpKind::Function(arg_names, body) = &self.expression.kind else {
+      panic!("attempted to compile function with invalid ExpKind")
+    };
+    let effects = body.effects();
+    let allowed_on_gpu = effects.cpu_exclusive_functions().is_empty()
+      && effects.cpu_exclusive_types().is_empty()
+      && effects.gpu_illegal_address_space_writes(program).is_empty();
+    if Some(EntryPoint::Cpu) == self.entry_point || !allowed_on_gpu {
+      return None;
+    }
+    let target = CompilerTarget::C;
+    let args_str = arg_names
+      .iter()
+      .zip(args.into_iter())
+      .map(|((name, _), (arg, _))| {
+        let base_type = arg.var_type.monomorphized_name(names, target);
+        let type_str = match arg.var_type.ownership {
+          Ownership::Owned => base_type,
+          Ownership::Pointer(_) => format!("&{base_type}"),
+          Ownership::Reference | Ownership::MutableReference => {
+            panic!("encountered raw reference in argument ownership")
+          }
+        };
+        format!("{type_str} {}", compile_word(name.clone()))
+      })
+      .collect::<Vec<String>>()
+      .join(", ");
+    let return_type_name = return_type.monomorphized_name(names, target);
+    let fn_name = compile_word(name.into());
+    Some(format!("{return_type_name} {fn_name}({args_str});"))
+  }
   pub fn compile(
     self,
     name: &str,

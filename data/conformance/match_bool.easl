@@ -1,0 +1,4 @@
+(defn f []: f32
+  (match (< 1. 2.)
+    true 7.5
+    false 0.5))
