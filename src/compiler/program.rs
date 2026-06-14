@@ -1222,7 +1222,7 @@ impl Program {
       }
     }
   }
-  pub fn validate_shader_dispatch_function_types_and_mark_implicit_entry_points(
+  pub fn validate_dispatch_function_types_and_mark_implicit_entry_points(
     &mut self,
     errors: &mut ErrorLog,
   ) {
@@ -1410,6 +1410,45 @@ impl Program {
                           ),
                           exp.source_trace.clone(),
                         ));
+                      }
+                    }
+                  }
+                  "start-audio" => {
+                    if let Type::Function(audio_fn) =
+                      args[0].data.unwrap_known()
+                      && let Some(abstract_audio_fn) =
+                        audio_fn.abstract_ancestor
+                    {
+                      let mut abstract_audio_fn =
+                        abstract_audio_fn.write().unwrap();
+                      if let Some(entry_point) = abstract_audio_fn.entry_point {
+                        if entry_point != EntryPoint::Audio {
+                          errors.log(CompileError::new(
+                            WrongEntryPointTypeForStartAudio(
+                              entry_point.name().into(),
+                            ),
+                            exp.source_trace.clone(),
+                          ))
+                        }
+                      } else {
+                        abstract_audio_fn.entry_point =
+                          Some(EntryPoint::Audio);
+                      }
+                      for other_abstract_f in self.abstract_functions_iter() {
+                        if let Ok(mut other_abstract_f) =
+                          other_abstract_f.try_write()
+                        {
+                          if other_abstract_f.name == abstract_audio_fn.name
+                            && let FunctionImplementationKind::Composite(
+                              other_f,
+                            ) = &other_abstract_f.implementation
+                          {
+                            other_f.write().unwrap().entry_point =
+                              abstract_audio_fn.entry_point;
+                            other_abstract_f.entry_point =
+                              abstract_audio_fn.entry_point;
+                          }
+                        }
                       }
                     }
                   }
@@ -4063,10 +4102,9 @@ impl Program {
     }
     self.monomorphize_reference_address_spaces();
     self.inline_static_array_length_calls();
-    self
-      .validate_shader_dispatch_function_types_and_mark_implicit_entry_points(
-        &mut errors,
-      );
+    self.validate_dispatch_function_types_and_mark_implicit_entry_points(
+      &mut errors,
+    );
     if !errors.is_empty() {
       return errors;
     }

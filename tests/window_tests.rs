@@ -50,6 +50,10 @@ fn parse_events(txt: &str, name: &str) -> Vec<IOEvent> {
         }
       } else if line == "close-window" {
         IOEvent::CloseWindow
+      } else if let Some(rest) = line.strip_prefix("start-audio ") {
+        IOEvent::StartAudio {
+          entry: rest.to_string(),
+        }
       } else {
         panic!("{name}: unknown event format: {line:?}");
       }
@@ -131,3 +135,4 @@ window_test!(closure_render_entry_points);
 window_test!(print_after_close_window);
 window_test!(spawn_window_captured_scope);
 window_test!(print_string);
+window_test!(start_audio);

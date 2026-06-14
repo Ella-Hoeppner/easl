@@ -1,0 +1,9 @@
+@audio
+(defn my-audio [t: f32 rate: f32]: f32
+  (sin (* 440. t)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (start-audio my-audio)
+                    (close-window))))

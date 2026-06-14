@@ -1915,17 +1915,15 @@ impl TypedExp {
       Uninitialized => panic!("compiling Uninitialized"),
       Name(name) => wrap(compile_word(name)),
       NumberLiteral(num) => wrap(match num {
-        Number::Int(i) => {
-          format!(
-            "{i}{}",
-            match self.data.kind {
-              Known(Type::I32) => "",
-              Known(Type::U32) => "u",
-              Known(Type::F32) => "f",
-              _ => panic!("{:?}", self.data.kind),
-            }
-          )
-        }
+        Number::Int(i) => match self.data.kind.unwrap_known() {
+          Type::I32 => format!("{i}"),
+          Type::U32 => format!("{i}u"),
+          Type::F32 => match target {
+            CompilerTarget::WGSL => format!("{i}f"),
+            CompilerTarget::C => format!("{i}.0f"),
+          },
+          _ => panic!("{:?}", self.data.kind),
+        },
         Number::Float(f) => match target {
           CompilerTarget::WGSL => format!("{f}f"),
           CompilerTarget::C => {

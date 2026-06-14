@@ -1,7 +1,10 @@
 use easl::{
   compile_easl_source_to_wgsl,
   compiler::{core::load_easl_program_from_file, program::CompilerTarget},
-  interpreter::run_program_entry,
+  interpreter::{
+    StdoutIO, run_program_entry,
+    run_program_entry_with_io_and_audio_c_source_from_path,
+  },
 };
 use std::fs;
 
@@ -33,17 +36,49 @@ fn benchmark_wgsl_compilation() {
 #[allow(unused)]
 fn run_window_demo(file_name: &str, entry: Option<&str>) {
   let path_str = format!("./data/window/{file_name}.easl");
-  let (_, program_or_errors) =
-    load_easl_program_from_file(std::path::Path::new(&path_str))
-      .unwrap_or_else(|e| panic!("IO error: {e}"))
-      .unwrap_or_else(|_| panic!("Parse error in {file_name}"));
-  let mut program =
-    program_or_errors.unwrap_or_else(|errors| panic!("{errors:?}"));
-  let errors = program.validate_raw_program(CompilerTarget::WGSL);
-  if !errors.is_empty() {
-    panic!("{errors:?}");
+  let path = std::path::Path::new(&path_str);
+  let (_, program_or_errors) = load_easl_program_from_file(path)
+    .unwrap_or_else(|e| panic!("IO error: {e}"))
+    .unwrap_or_else(|_| panic!("Parse error in {file_name}"));
+  let program = program_or_errors.unwrap_or_else(|errors| panic!("{errors:?}"));
+  // Compile two copies: one for the interpreter (WGSL), one for the audio
+  // thread (C). Both starts run on a fresh clone so per-target validation
+  // mutations don't conflict.
+  let mut wgsl_program = program.clone();
+  let wgsl_errors = wgsl_program.validate_raw_program(CompilerTarget::WGSL);
+  if !wgsl_errors.is_empty() {
+    panic!("{wgsl_errors:?}");
   }
-  run_program_entry(program, entry).unwrap();
+  let audio_c_source = compile_to_c_if_audio(program.clone());
+  run_program_entry_with_io_and_audio_c_source_from_path(
+    wgsl_program,
+    entry,
+    StdoutIO::new(),
+    path,
+    audio_c_source,
+  )
+  .unwrap();
+}
+
+#[allow(unused)]
+fn compile_to_c_if_audio(
+  mut program: easl::compiler::program::Program,
+) -> Option<String> {
+  let errors = program.validate_raw_program(CompilerTarget::C);
+  if !errors.is_empty() {
+    // If the C-target validation fails, we still want the WGSL run to
+    // succeed; the C source just isn't available and any start-audio call
+    // will surface an error.
+    eprintln!("C-target validation failed (audio will be unavailable):");
+    return None;
+  }
+  match program.compile_to_target(CompilerTarget::C) {
+    Ok(c_source) => Some(c_source),
+    Err(e) => {
+      eprintln!("C-target compilation failed: {e}");
+      None
+    }
+  }
 }
 
 #[allow(unused)]

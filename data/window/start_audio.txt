@@ -1,0 +1,3 @@
+spawn-window
+start-audio my-audio
+close-window

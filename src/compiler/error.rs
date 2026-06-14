@@ -453,6 +453,8 @@ pub enum CompileErrorKind {
     "dispatch-compute-shaders expects a `@fragment` function for second argument, got `@{0}`"
   )]
   WrongEntryPointTypeForDispatchFragmentShader(String),
+  #[error("start-audio expects an `@audio` function, got `@{0}`")]
+  WrongEntryPointTypeForStartAudio(String),
   #[error("Function `{0}` is not a valid shader entry point")]
   InvalidShaderEntry(String),
   #[error("Vertex function `{0}` and Fragment function {1} are incompatible")]

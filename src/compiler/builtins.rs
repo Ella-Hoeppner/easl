@@ -2166,6 +2166,13 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
     },
     AbstractFunctionSignature {
       name: "start-audio".into(),
+      generic_args: vec![(
+        "F".into(),
+        GenericArgument::Type(vec![TypeConstraint::function()]),
+        SourceTrace::empty(),
+      )],
+      arg_types: vec![AbstractType::Generic("F".into()).owned()],
+      return_type: AbstractType::Unit,
       implementation: FunctionImplementationKind::Builtin {
         effect_type: vec![
           Effect::Window,
