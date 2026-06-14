@@ -1,0 +1,3 @@
+@audio
+(defn audio [t: f32 sample-rate: f32]: f32
+  (sin (* t 440.)))

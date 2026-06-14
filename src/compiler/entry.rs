@@ -2,16 +2,19 @@ use std::fmt::Display;
 
 use std::sync::Arc;
 
-use crate::compiler::{
-  annotation::Annotation,
-  builtins::{vec3, vec4},
-  error::{
-    CompileError, CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace,
-    err,
+use crate::{
+  CompilerTarget,
+  compiler::{
+    annotation::Annotation,
+    builtins::{vec3, vec4},
+    error::{
+      CompileError, CompileErrorKind::*, CompileResult, ErrorLog, SourceTrace,
+      err,
+    },
+    program::TypeDefs,
+    structs::AbstractStruct,
+    types::{AbstractType, Type},
   },
-  program::TypeDefs,
-  structs::AbstractStruct,
-  types::{AbstractType, Type},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +23,7 @@ pub enum EntryPoint {
   Fragment,
   Compute(usize),
   Cpu,
+  Audio,
 }
 impl EntryPoint {
   pub fn compile(&self) -> String {
@@ -30,6 +34,7 @@ impl EntryPoint {
         format!("@compute\n@workgroup_size({size})\n")
       }
       EntryPoint::Cpu => "@cpu\n".to_string(),
+      EntryPoint::Audio => "@audio\n".to_string(),
     }
   }
   pub fn name(&self) -> &'static str {
@@ -38,6 +43,18 @@ impl EntryPoint {
       EntryPoint::Fragment => "fragment",
       EntryPoint::Compute(_) => "compute",
       EntryPoint::Cpu => "cpu",
+      EntryPoint::Audio => "audio",
+    }
+  }
+  pub fn should_compile_to_target(&self, target: CompilerTarget) -> bool {
+    use EntryPoint::*;
+    match target {
+      CompilerTarget::Interpreter | CompilerTarget::WGSL => {
+        matches!(self, Vertex | Fragment | Compute(_))
+      }
+      CompilerTarget::C => {
+        matches!(self, Vertex | Fragment | Compute(_) | Audio)
+      }
     }
   }
 }

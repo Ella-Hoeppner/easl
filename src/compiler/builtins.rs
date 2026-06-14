@@ -2165,6 +2165,19 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       ..Default::default()
     },
     AbstractFunctionSignature {
+      name: "start-audio".into(),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("start-audio".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
       name: "window-resolution".into(),
       return_type: AbstractType::AbstractStruct(
         vec2()
@@ -3854,10 +3867,7 @@ impl EmulatedFunctionRecord {
                     for i in 0..rr {
                       let terms: Vec<String> = (0..ac)
                         .map(|k| {
-                          format!(
-                            "a.c{k}.{} * b.c{j}.{}",
-                            fields[i], fields[k]
-                          )
+                          format!("a.c{k}.{} * b.c{j}.{}", fields[i], fields[k])
                         })
                         .collect();
                       body += &format!(
@@ -3918,15 +3928,10 @@ impl EmulatedFunctionRecord {
                 assert_eq!(b_size, ac);
                 for i in 0..ar {
                   let terms: Vec<String> = (0..ac)
-                    .map(|k| {
-                      format!("a.c{k}.{} * b.{}", fields[i], fields[k])
-                    })
+                    .map(|k| format!("a.c{k}.{} * b.{}", fields[i], fields[k]))
                     .collect();
-                  body += &format!(
-                    "y.{} = {};\n  ",
-                    fields[i],
-                    terms.join(" + ")
-                  );
+                  body +=
+                    &format!("y.{} = {};\n  ", fields[i], terms.join(" + "));
                 }
               }
               (None, Some((bc, br)), None) => {
@@ -3938,15 +3943,10 @@ impl EmulatedFunctionRecord {
                 assert_eq!(a_size, br);
                 for j in 0..bc {
                   let terms: Vec<String> = (0..br)
-                    .map(|k| {
-                      format!("a.{} * b.c{j}.{}", fields[k], fields[k])
-                    })
+                    .map(|k| format!("a.{} * b.c{j}.{}", fields[k], fields[k]))
                     .collect();
-                  body += &format!(
-                    "y.{} = {};\n  ",
-                    fields[j],
-                    terms.join(" + ")
-                  );
+                  body +=
+                    &format!("y.{} = {};\n  ", fields[j], terms.join(" + "));
                 }
               }
               _ => panic!(

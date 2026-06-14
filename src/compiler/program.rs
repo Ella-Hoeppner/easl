@@ -3403,6 +3403,29 @@ impl Program {
                 continue;
               }
             }
+            EntryPoint::Audio => {
+              let mut errored = false;
+              if Type::F32 != signature.return_type.unwrap_known() {
+                errors.log(CompileError::new(
+                  AudioEntryHasWrongReturnType,
+                  f.expression.source_trace.clone(),
+                ));
+                errored = true;
+              }
+              if signature.args.len() != 2
+                || signature.args[0].0.var_type.unwrap_known() != Type::F32
+                || signature.args[1].0.var_type.unwrap_known() != Type::F32
+              {
+                errors.log(CompileError::new(
+                  AudioEntryHasWrongArgumentTypes,
+                  f.expression.source_trace.clone(),
+                ));
+                errored = true;
+              }
+              if errored {
+                continue;
+              }
+            }
           }
 
           let check_for_duplicate_builtins =

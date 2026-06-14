@@ -359,6 +359,10 @@ pub enum CompileErrorKind {
   ComputeEntryReturnType,
   #[error("Compute entry-points may not be assigned attributes")]
   ComputeEntryReturnAttributes,
+  #[error("Audio entry point must return an f32")]
+  AudioEntryHasWrongReturnType,
+  #[error("Audio entry accept two f32 arguments (time and sample rate)")]
+  AudioEntryHasWrongArgumentTypes,
   #[error("CPU entry point must return unit")]
   CpuEntryHasReturnType,
   #[error("CPU entry point may not have arguments")]

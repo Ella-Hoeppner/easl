@@ -1195,7 +1195,12 @@ impl TopLevelFunction {
     let allowed_on_gpu = effects.cpu_exclusive_functions().is_empty()
       && effects.cpu_exclusive_types().is_empty()
       && effects.gpu_illegal_address_space_writes(program).is_empty();
-    if Some(EntryPoint::Cpu) == self.entry_point || !allowed_on_gpu {
+    if self
+      .entry_point
+      .map(|entry| !entry.should_compile_to_target(CompilerTarget::C))
+      .unwrap_or(false)
+      || !allowed_on_gpu
+    {
       return None;
     }
     let target = CompilerTarget::C;
@@ -1325,7 +1330,12 @@ impl TopLevelFunction {
       }
     };
     Ok(
-      if Some(EntryPoint::Cpu) != self.entry_point && allowed_on_gpu {
+      if self
+        .entry_point
+        .map(|entry| entry.should_compile_to_target(target))
+        .unwrap_or(true)
+        && allowed_on_gpu
+      {
         fn_string()
       } else {
         String::new()
