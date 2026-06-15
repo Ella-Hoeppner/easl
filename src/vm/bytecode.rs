@@ -41,10 +41,10 @@ struct Instruction {
 }
 
 impl Instruction {
-  fn f32_unary(&self, frame: &mut [u32], f: impl Fn(f32) -> f32) {
+  fn f32_unary(&self, stack: &mut [u32], f: impl Fn(f32) -> f32) {
     unsafe {
-      *frame.get_unchecked_mut(self.return_position as usize) = f(
-        f32::from_bits(*frame.get_unchecked(self.arg_positions[0] as usize)),
+      *stack.get_unchecked_mut(self.return_position as usize) = f(
+        f32::from_bits(*stack.get_unchecked(self.arg_positions[0] as usize)),
       )
       .to_bits();
     }
@@ -83,56 +83,67 @@ impl Code {
       [function.instructions.start as usize..function.instructions.end as usize]
   }
 }
-struct Program {
+struct BytecodeProgram {
   code: Code,
   stack: Vec<u32>,
-  call_stack: Vec<(Range<u32>, usize)>,
+  call_stack: Vec<Range<u32>>,
 }
 
-impl Program {
+impl BytecodeProgram {
+  fn from_code(code: Code) -> Self {
+    let max_stack_size = code
+      .function_instructions
+      .iter()
+      .map(Instruction::max_touched_index)
+      .max()
+      .map_or(0, |i| i as usize + 1);
+    Self {
+      stack: vec![0u32; max_stack_size],
+      call_stack: Vec::with_capacity(code.functions.len()),
+      code,
+    }
+  }
   fn prepare_to_run_function(&mut self, function_index: usize) {
     self.call_stack.clear();
     self
       .call_stack
-      .push((self.code.functions[function_index].instructions.clone(), 0));
+      .push(self.code.functions[function_index].instructions.clone());
   }
   fn execute(&mut self) {
-    let Some((mut ip, mut frame_base)) = self.call_stack.pop() else {
+    let Self {
+      code,
+      stack,
+      call_stack,
+    } = self;
+    let Some(mut ip) = call_stack.pop() else {
       return;
     };
-    'outer: loop {
-      let frame = &mut self.stack[frame_base..];
-      loop {
-        let Some(instruction_index) = ip.next() else {
-          let Some((return_ip, return_base)) = self.call_stack.pop() else {
-            return;
-          };
-          ip = return_ip;
-          frame_base = return_base;
-          continue 'outer;
+    loop {
+      let Some(instruction_index) = ip.next() else {
+        let Some(return_ip) = call_stack.pop() else {
+          return;
         };
-        let instruction = unsafe {
-          self
-            .code
-            .function_instructions
-            .get_unchecked(instruction_index as usize)
-        };
-        match instruction.op {
-          Op::InvokeFunction => {
-            self.call_stack.push((ip.clone(), frame_base));
-            frame_base += instruction.arg_positions[0] as usize;
-            ip = self.code.functions[instruction.arg_positions[1] as usize]
-              .instructions
-              .clone();
-            continue 'outer;
-          }
-          Op::Move => unsafe {
-            *frame.get_unchecked_mut(instruction.return_position as usize) =
-              *frame.get_unchecked(instruction.arg_positions[0] as usize)
-          },
-          Op::Cos => instruction.f32_unary(frame, f32::cos),
-          _ => todo!(),
+        ip = return_ip;
+        continue;
+      };
+      let instruction = unsafe {
+        code
+          .function_instructions
+          .get_unchecked(instruction_index as usize)
+      };
+      match instruction.op {
+        Op::InvokeFunction => {
+          call_stack.push(ip.clone());
+          ip = code.functions[instruction.arg_positions[0] as usize]
+            .instructions
+            .clone();
         }
+        Op::Move => unsafe {
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            *stack.get_unchecked(instruction.arg_positions[0] as usize)
+        },
+        Op::Cos => instruction.f32_unary(stack, f32::cos),
+        _ => todo!(),
       }
     }
   }

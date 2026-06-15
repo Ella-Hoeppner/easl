@@ -65,6 +65,7 @@ pub type EaslDocument = Document<EaslSyntax>;
 pub enum CompilerTarget {
   C,
   WGSL,
+  VM,
 }
 
 impl CompilerTarget {
@@ -1431,8 +1432,7 @@ impl Program {
                           ))
                         }
                       } else {
-                        abstract_audio_fn.entry_point =
-                          Some(EntryPoint::Audio);
+                        abstract_audio_fn.entry_point = Some(EntryPoint::Audio);
                       }
                       for other_abstract_f in self.abstract_functions_iter() {
                         if let Ok(mut other_abstract_f) =
@@ -2492,6 +2492,7 @@ impl Program {
                   format!("value: {inner_type_name}")
                 }
                 CompilerTarget::C => format!("{inner_type_name} value"),
+                CompilerTarget::VM => panic!(),
               }
             };
             let enum_name = compile_word(
@@ -2559,6 +2560,7 @@ impl Program {
                 }}"
                 )
               }
+              CompilerTarget::VM => panic!(),
             };
             compiled_string += "\n\n";
           }

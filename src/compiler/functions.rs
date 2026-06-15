@@ -1293,6 +1293,7 @@ impl TopLevelFunction {
             },
             compile_word(name),
           ),
+          CompilerTarget::VM => panic!(),
         })
         .collect::<Vec<String>>()
         .join(", ");
@@ -1327,6 +1328,7 @@ impl TopLevelFunction {
             )
           },
         ),
+        CompilerTarget::VM => panic!(),
       }
     };
     Ok(

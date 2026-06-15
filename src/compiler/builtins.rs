@@ -511,6 +511,7 @@ pub fn built_in_structs_for_target(
   match target {
     CompilerTarget::WGSL => built_in_structs(),
     CompilerTarget::C => vec![],
+    CompilerTarget::VM => panic!(),
   }
 }
 

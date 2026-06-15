@@ -1921,6 +1921,7 @@ impl TypedExp {
           Type::F32 => match target {
             CompilerTarget::WGSL => format!("{i}f"),
             CompilerTarget::C => format!("{i}.0f"),
+            CompilerTarget::VM => panic!(),
           },
           _ => panic!("{:?}", self.data.kind),
         },
@@ -1930,6 +1931,7 @@ impl TypedExp {
             let s = f.to_string();
             if s.contains('.') { s } else { format!("{s}.") }
           }
+          CompilerTarget::VM => panic!(),
         },
       }),
       BooleanLiteral(b) => wrap(format!("{b}")),
@@ -2036,6 +2038,7 @@ impl TypedExp {
                           target,
                         );
                       }
+                      CompilerTarget::VM => panic!(),
                     },
                     SpecialCasedBuiltinFunction::ZeroedArray => {
                       return self.data.kind.monomorphized_name(names, target)
@@ -2092,6 +2095,7 @@ impl TypedExp {
                       _ => panic!(),
                     }
                     .to_string(),
+                    CompilerTarget::VM => panic!(),
                   }),
                   Type::Struct(Struct { name, .. }) => match &*name {
                     "vec2" | "vec3" | "vec4" => {
@@ -2113,6 +2117,7 @@ impl TypedExp {
                 format!("{f_str}({args_str})")
               }
               CompilerTarget::C => format!("({f_str}){{{args_str}}}"),
+              CompilerTarget::VM => panic!(),
             }
           } else {
             let args_str = arg_strs.join(", ");
@@ -2182,6 +2187,7 @@ impl TypedExp {
                   value_exp.data.monomorphized_name(names, target),
                   compile_word(name)
                 ),
+                CompilerTarget::VM => panic!(),
               }
             } else {
               let type_name = value_exp.data.monomorphized_name(names, target);
@@ -2200,6 +2206,7 @@ impl TypedExp {
                 CompilerTarget::C => {
                   format!("{type_name} {compiled_name} = {compiled_value};")
                 }
+                CompilerTarget::VM => panic!(),
               }
             }
           })
@@ -2307,22 +2314,23 @@ impl TypedExp {
                             .iter()
                             .map(|variant| variant.inner_type.unwrap_known())
                             .collect(),
-                          names, target
+                          names,
+                          target,
                         );
-                      let Some(discriminant) = e
-                        .variants
-                        .iter()
-                        .enumerate()
-                        .find_map(|(i, variant)| {
-                          (names.get_monomorphized_name(
-                            variant.name.clone(),
-                            generic_arg_names.clone(),
-                          ) == name)
-                            .then(|| i)
-                        })
+                      let Some(discriminant) =
+                        e.variants.iter().enumerate().find_map(
+                          |(i, variant)| {
+                            (names.get_monomorphized_name(
+                              variant.name.clone(),
+                              generic_arg_names.clone(),
+                            ) == name)
+                              .then(|| i)
+                          },
+                        )
                       else {
                         panic!(
-                          "invalid enum unit-variant name in match pattern \"{name}\""
+                          "invalid enum unit-variant name in match pattern \
+                          \"{name}\""
                         )
                       };
                       format!(
@@ -2337,11 +2345,14 @@ impl TypedExp {
                     }
                     ExpKind::Application(mut f, mut args) => {
                       let Some((f, _, inner_value_name)) =
-                        Self::try_deconstruct_enum_pattern_mut(&mut f, &mut args)
+                        Self::try_deconstruct_enum_pattern_mut(
+                          &mut f, &mut args,
+                        )
                       else {
                         panic!("invalid pattern type in enum match block")
                       };
-                      let f_abstract_ancestor = f.abstract_ancestor.clone().unwrap();
+                      let f_abstract_ancestor =
+                        f.abstract_ancestor.clone().unwrap();
                       let FunctionImplementationKind::EnumConstructor(
                         variant_name,
                       ) = &f_abstract_ancestor.read().unwrap().implementation
@@ -2382,7 +2393,7 @@ impl TypedExp {
                              sizeof({compiled_inner_name}));"
                           )
                         }
-                         CompilerTarget::WGSL => {
+                        CompilerTarget::WGSL => {
                           let bitcasted_value = inner_type
                             .bitcasted_from_enum_data(
                               scrutinee
@@ -2402,6 +2413,7 @@ impl TypedExp {
                             )
                           )
                         }
+                        CompilerTarget::VM => panic!(),
                       };
                       format!(
                         "{case_label}: {{\n  {binding_line}{}\n{finisher}}}",

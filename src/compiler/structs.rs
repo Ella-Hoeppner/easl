@@ -301,6 +301,7 @@ impl AbstractStructField {
         format!("  {annotation}{name}: {field_type}")
       }
       CompilerTarget::C => format!("  {field_type} {name};"),
+      CompilerTarget::VM => panic!(),
     })
   }
 }
@@ -394,6 +395,7 @@ impl AbstractStruct {
               .join("\n");
             format!("typedef struct {{\n{fields}\n}} {monomorphized_name};")
           }
+          CompilerTarget::VM => panic!(),
         })
       })
       .map_or(Ok(None), |v| v.map(Some))

@@ -407,6 +407,7 @@ impl TopLevelVar {
         };
         format!("{var_type} {name}{assignment}")
       }
+      CompilerTarget::VM => panic!(),
     }
   }
 }

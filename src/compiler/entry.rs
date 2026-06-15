@@ -55,6 +55,7 @@ impl EntryPoint {
       CompilerTarget::C => {
         matches!(self, Vertex | Fragment | Compute(_) | Audio)
       }
+      CompilerTarget::VM => panic!(),
     }
   }
 }

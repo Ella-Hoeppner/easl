@@ -422,6 +422,7 @@ impl AbstractEnum {
                 CompilerTarget::C => {
                   format!("const {monomorphized_name} {const_name} = {{{i}}};")
                 }
+                CompilerTarget::VM => panic!(),
               })
             } else {
               None
@@ -441,6 +442,7 @@ impl AbstractEnum {
                   format!("  data: array<u32, {size}>\n")
                 }
                 CompilerTarget::C => format!("  uint32_t data[{size}];\n"),
+                CompilerTarget::VM => panic!(),
               }
             };
             match target {
@@ -456,6 +458,7 @@ impl AbstractEnum {
                   {data_line}\
                 }} {monomorphized_name};"
               ),
+              CompilerTarget::VM => panic!(),
             }
           },
           |acc, constant_string| acc + "\n\n" + &constant_string,
