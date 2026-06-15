@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use std::hash::Hash;
+use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
 use fsexp::{Ast, document::Document, syntax::EncloserOrOperator};
@@ -12,6 +14,7 @@ use crate::compiler::builtins::{
 use crate::compiler::types::ExpTypeInfo;
 use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
 use crate::parse::EaslMultiDocument;
+use crate::vm::bytecode::{BytecodeProgram, Code, Function, Instruction};
 use crate::{
   Never,
   compiler::{
@@ -4389,5 +4392,108 @@ impl Program {
       }
     }
     None
+  }
+  pub fn compile_to_bytecode_program(self) -> (BytecodeProgram, Vec<Arc<str>>) {
+    let mut state = BytecodeCompilationState::new();
+    for v in self.top_level_vars.iter() {
+      state
+        .globals
+        .insert(v.name.clone(), state.consumed_stack_space as usize);
+      state.consumed_stack_space +=
+        v.var_type.data_size_in_u32s(&v.source_trace).unwrap() as u16;
+    }
+    for f in self.abstract_functions_iter() {
+      let f = f.read().unwrap().clone();
+      if f.generic_args.is_empty()
+        && !f.has_uninlined_higher_order_arguments()
+        && let FunctionImplementationKind::Composite(implementation) =
+          f.implementation
+      {
+        println!(
+          "starting compilation for {}: {}",
+          f.name, state.consumed_stack_space
+        );
+        state.open_function(f.name.clone());
+        let implementation = implementation.read().unwrap();
+        implementation.expression.compile_to_bytecode(&mut state);
+        state.close_function();
+        println!(
+          "finished compilation for {}: {}",
+          f.name, state.consumed_stack_space
+        );
+      }
+    }
+    state.finalize()
+  }
+}
+
+pub struct BytecodeCompilationState {
+  pub consumed_stack_space: u16,
+  pub globals: HashMap<Arc<str>, usize>,
+  pub locals: HashMap<Arc<str>, usize>,
+  pub instructions: Vec<Instruction>,
+  pub finished_functions: Vec<(Arc<str>, Range<u32>, u16)>,
+  pub current_function_name: Option<Arc<str>>,
+  pub current_function_instruction_start: Option<u32>,
+  pub current_function_stack_start: Option<u16>,
+}
+impl BytecodeCompilationState {
+  pub fn new() -> Self {
+    Self {
+      consumed_stack_space: 0,
+      globals: HashMap::new(),
+      locals: HashMap::new(),
+      instructions: vec![],
+      finished_functions: vec![],
+      current_function_name: None,
+      current_function_instruction_start: None,
+      current_function_stack_start: None,
+    }
+  }
+  pub fn take_stack_slot(&mut self) -> u16 {
+    let i = self.consumed_stack_space;
+    self.consumed_stack_space += 1;
+    i as u16
+  }
+  pub fn open_function(&mut self, name: Arc<str>) {
+    self.current_function_name = Some(name);
+    self.current_function_instruction_start =
+      Some(self.instructions.len() as u32);
+    self.current_function_stack_start = Some(self.consumed_stack_space);
+  }
+  pub fn close_function(&mut self) {
+    let name = self.current_function_name.take().unwrap();
+    let instruction_start =
+      self.current_function_instruction_start.take().unwrap();
+    let stack_start = self.current_function_stack_start.take().unwrap();
+    self.finished_functions.push((
+      name,
+      instruction_start..(self.instructions.len() as u32),
+      stack_start,
+    ));
+  }
+  pub fn push_instruction(&mut self, instruction: Instruction) {
+    self.instructions.push(instruction);
+  }
+  pub fn finalize(self) -> (BytecodeProgram, Vec<Arc<str>>) {
+    let code: Code = Code {
+      function_instructions: self.instructions,
+      functions: self
+        .finished_functions
+        .iter()
+        .map(|(_, range, return_position)| Function {
+          instructions: range.clone(),
+          return_position: *return_position,
+        })
+        .collect(),
+    };
+    (
+      BytecodeProgram::from_code(code),
+      self
+        .finished_functions
+        .iter()
+        .map(|(name, _, _)| name.clone())
+        .collect(),
+    )
   }
 }

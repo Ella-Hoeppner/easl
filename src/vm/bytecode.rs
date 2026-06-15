@@ -1,9 +1,10 @@
 use std::ops::Range;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Op {
+pub enum Op {
   Move,
   InvokeFunction,
+  Constant,
   Acos,
   Cos,
   Sin,
@@ -34,10 +35,10 @@ enum Op {
   Smoothstep,
 }
 
-struct Instruction {
-  op: Op,
-  arg_positions: [u16; 3],
-  return_position: u16,
+pub struct Instruction {
+  pub op: Op,
+  pub arg_positions: [u16; 3],
+  pub return_position: u16,
 }
 
 impl Instruction {
@@ -52,6 +53,7 @@ impl Instruction {
   fn max_touched_index(&self) -> u16 {
     match self.op {
       Op::InvokeFunction => 0,
+      Op::Constant => self.return_position,
       _ => self
         .return_position
         .max(self.arg_positions.iter().copied().max().unwrap()),
@@ -59,38 +61,24 @@ impl Instruction {
   }
 }
 
-struct Function {
-  instructions: Range<u32>,
+pub struct Function {
+  pub instructions: Range<u32>,
+  pub return_position: u16,
 }
 
-impl Function {
-  fn required_stack_frame_size(&self, instructions: &[Instruction]) -> u16 {
-    instructions
-      .iter()
-      .map(|i| i.max_touched_index())
-      .max()
-      .map_or(0, |x| x + 1)
-  }
-}
-struct Code {
-  function_instructions: Vec<Instruction>,
-  functions: Vec<Function>,
+pub struct Code {
+  pub function_instructions: Vec<Instruction>,
+  pub functions: Vec<Function>,
 }
 
-impl Code {
-  fn instructions(&self, function: &Function) -> &[Instruction] {
-    &self.function_instructions
-      [function.instructions.start as usize..function.instructions.end as usize]
-  }
-}
-struct BytecodeProgram {
-  code: Code,
-  stack: Vec<u32>,
-  call_stack: Vec<Range<u32>>,
+pub struct BytecodeProgram {
+  pub code: Code,
+  pub stack: Vec<u32>,
+  pub call_stack: Vec<Range<u32>>,
 }
 
 impl BytecodeProgram {
-  fn from_code(code: Code) -> Self {
+  pub fn from_code(code: Code) -> Self {
     let max_stack_size = code
       .function_instructions
       .iter()
@@ -103,13 +91,16 @@ impl BytecodeProgram {
       code,
     }
   }
-  fn prepare_to_run_function(&mut self, function_index: usize) {
+  pub fn prepare_to_run_function(&mut self, function_index: usize) {
     self.call_stack.clear();
     self
       .call_stack
       .push(self.code.functions[function_index].instructions.clone());
   }
-  fn execute(&mut self) {
+  pub fn get_function_return_position(&self, function_index: usize) -> u16 {
+    self.code.functions[function_index].return_position
+  }
+  pub fn execute(&mut self) {
     let Self {
       code,
       stack,
@@ -141,6 +132,11 @@ impl BytecodeProgram {
         Op::Move => unsafe {
           *stack.get_unchecked_mut(instruction.return_position as usize) =
             *stack.get_unchecked(instruction.arg_positions[0] as usize)
+        },
+        Op::Constant => unsafe {
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            ((instruction.arg_positions[0] as u32) << 16u32)
+              | instruction.arg_positions[1] as u32;
         },
         Op::Cos => instruction.f32_unary(stack, f32::cos),
         _ => todo!(),

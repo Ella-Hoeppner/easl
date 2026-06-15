@@ -6,9 +6,11 @@ use std::sync::{Arc, RwLock};
 use take_mut::take;
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::compiler::program::BytecodeCompilationState;
 use crate::compiler::structs::{
   indexable_vec_and_mat_types, make_concrete_vec_type,
 };
+use crate::vm::bytecode::{Instruction, Op};
 use crate::{
   Never,
   compiler::{
@@ -5765,6 +5767,114 @@ impl TypedExp {
         _ => false,
       },
       _ => false,
+    }
+  }
+  pub fn compile_to_bytecode(
+    &self,
+    state: &mut BytecodeCompilationState,
+  ) -> Option<u16> {
+    match &self.kind {
+      NumberLiteral(number) => {
+        let u = match number {
+          Number::Int(i) => match self.data.unwrap_known() {
+            Type::U32 => *i as u32,
+            Type::I32 => (*i as i32) as u32,
+            _ => panic!(),
+          },
+          Number::Float(f) => (*f as f32).to_bits(),
+        };
+        let result_position = state.take_stack_slot();
+        state.push_instruction(Instruction {
+          op: Op::Constant,
+          arg_positions: [(u >> 16) as u16, u as u16, 0],
+          return_position: result_position,
+        });
+        Some(result_position)
+      }
+      BooleanLiteral(b) => {
+        let result_position = state.take_stack_slot();
+        state.push_instruction(Instruction {
+          op: Op::Constant,
+          arg_positions: [0, *b as u16, 0],
+          return_position: result_position,
+        });
+        Some(result_position)
+      }
+      Block(exps) => exps
+        .iter()
+        .map(|exp| exp.compile_to_bytecode(state))
+        .last()
+        .unwrap_or(None),
+      Application(f, args) => {
+        let ExpKind::Name(f_name) = &f.kind else {
+          panic!()
+        };
+        let f_name = f_name.clone();
+        let Type::Function(f) = f.data.unwrap_known() else {
+          panic!()
+        };
+        let abstract_f = f.abstract_ancestor.unwrap();
+        let abstract_f = abstract_f.read().unwrap();
+        match &abstract_f.implementation {
+          FunctionImplementationKind::Builtin { .. } => {
+            let arg_positions: Vec<u16> = args
+              .iter()
+              .map(|arg| arg.compile_to_bytecode(state).unwrap())
+              .collect();
+            match &*f_name {
+              "cos" => {
+                let result_position = state.take_stack_slot();
+                state.push_instruction(Instruction {
+                  op: Op::Cos,
+                  arg_positions: [arg_positions[0], 0, 0],
+                  return_position: result_position,
+                });
+                Some(result_position)
+              }
+              _ => todo!("haven't implemented this builtin fn for the VM yet"),
+            }
+          }
+          FunctionImplementationKind::StructConstructor => {
+            todo!()
+          }
+          FunctionImplementationKind::EnumConstructor(_) => todo!(),
+          FunctionImplementationKind::Composite(rw_lock) => todo!(),
+        }
+      }
+      Name(name) => todo!(),
+      Function(args, exp) => {
+        // todo! bind args to locals or smth
+        if let Some(result_position) = exp.compile_to_bytecode(state) {
+          state.push_instruction(Instruction {
+            op: Op::Move,
+            arg_positions: [result_position, 0, 0],
+            return_position: state.current_function_stack_start.unwrap(),
+          });
+        }
+        None
+      }
+      Access(accessor, exp) => todo!(),
+      Let(items, exp) => todo!(),
+      Match(exp, items) => todo!(),
+      ForLoop {
+        increment_variable_name,
+        increment_variable_type,
+        increment_variable_initial_value_expression,
+        continue_condition_expression,
+        update_expression,
+        body_expression,
+      } => todo!(),
+      WhileLoop {
+        condition_expression,
+        body_expression,
+      } => todo!(),
+      Break => todo!(),
+      Continue => todo!(),
+      Discard => todo!(),
+      Return(exp) => todo!(),
+      ArrayLiteral(exps) => todo!(),
+      StringLiteral(_) => panic!("bytecode vm can't handle strings yet!"),
+      Uninitialized | Wildcard | Unit => None,
     }
   }
 }
