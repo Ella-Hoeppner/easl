@@ -2575,66 +2575,27 @@ impl Program {
       compiled_string += &chunk;
       compiled_string += "\n\n";
     }
-    if let CompilerTarget::C = target {
-      for f in self.abstract_functions_iter() {
-        let f = f.read().unwrap().clone();
-        if f.generic_args.is_empty()
-          && !f.has_uninlined_higher_order_arguments()
-          && let FunctionImplementationKind::Composite(implementation) =
-            f.implementation
-        {
-          let implementation = implementation.read().unwrap();
-          let Type::Function(signature) =
-            implementation.expression.data.unwrap_known()
-          else {
-            panic!()
-          };
-          let return_type = signature.return_type.unwrap_known();
-          if matches!(return_type, Type::Function(_))
-            && return_type.is_unitlike(&mut names)
-          {
-            continue;
-          }
-          if let Some(decl) = implementation
-            .compile_c_forward_declaration(&f.name, &mut names, &self)
-          {
-            compiled_string += &decl;
-            compiled_string += "\n";
-          }
-        }
-      }
-      compiled_string += "\n";
-    }
-    for f in self.abstract_functions_iter() {
-      let f = f.read().unwrap().clone();
-      if f.generic_args.is_empty() && !f.has_uninlined_higher_order_arguments()
+    for (f_name, implementation) in self.composite_functions_in_usage_order() {
       {
-        match f.implementation {
-          FunctionImplementationKind::Composite(implementation) => {
-            {
-              let implementation = implementation.read().unwrap();
-              let Type::Function(signature) =
-                implementation.expression.data.unwrap_known()
-              else {
-                panic!()
-              };
-              let return_type = signature.return_type.unwrap_known();
-              if matches!(return_type, Type::Function(_))
-                && return_type.is_unitlike(&mut names)
-              {
-                continue;
-              }
-            }
-            compiled_string += &implementation
-              .read()
-              .unwrap()
-              .clone()
-              .compile(&f.name, &mut names, &self, target)?;
-            compiled_string += "\n\n";
-          }
-          _ => {}
+        let implementation = implementation.read().unwrap();
+        let Type::Function(signature) =
+          implementation.expression.data.unwrap_known()
+        else {
+          panic!()
+        };
+        let return_type = signature.return_type.unwrap_known();
+        if matches!(return_type, Type::Function(_))
+          && return_type.is_unitlike(&mut names)
+        {
+          continue;
         }
       }
+      compiled_string += &implementation
+        .read()
+        .unwrap()
+        .clone()
+        .compile(&f_name, &mut names, &self, target)?;
+      compiled_string += "\n\n";
     }
     Ok(compiled_string)
   }
@@ -4393,6 +4354,63 @@ impl Program {
     }
     None
   }
+  pub fn composite_functions_in_usage_order(
+    &self,
+  ) -> Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> {
+    let mut dependencies: HashMap<Arc<str>, HashSet<Arc<str>>> = HashMap::new();
+    let mut fns: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> = vec![];
+    for f in self.abstract_functions_iter() {
+      let f = f.read().unwrap().clone();
+      if f.generic_args.is_empty()
+        && !f.has_uninlined_higher_order_arguments()
+        && let FunctionImplementationKind::Composite(implementation) =
+          f.implementation
+      {
+        fns.push((f.name.clone(), implementation.clone()));
+        dependencies.insert(f.name.clone(), HashSet::new());
+      }
+    }
+    for (f_name, f) in fns.iter() {
+      f.read()
+        .unwrap()
+        .expression
+        .walk(&mut |exp| {
+          if let ExpKind::Name(other_f_name) = &exp.kind {
+            if dependencies.contains_key(other_f_name) {
+              dependencies
+                .get_mut(f_name)
+                .unwrap()
+                .insert(other_f_name.clone());
+            }
+          }
+          Ok::<bool, Never>(true)
+        })
+        .unwrap();
+    }
+    let mut final_fns: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> = vec![];
+    while !fns.is_empty() {
+      let mut broke = false;
+      for i in 0..fns.len() {
+        if dependencies.get(&fns[i].0).unwrap().is_empty() {
+          let (name, implementation) = fns.remove(i);
+          for remaining_dependencies in dependencies.values_mut() {
+            remaining_dependencies.remove(&name);
+          }
+          final_fns.push((name, implementation));
+          broke = true;
+          break;
+        }
+      }
+      if !broke {
+        panic!(
+          "Couldn't find topological sort of user functions.\n\
+           If you're seeing this, there's a compiler bug; an earlier compiler \
+           stage should have caught the dependency loop "
+        )
+      }
+    }
+    final_fns
+  }
   pub fn compile_to_bytecode_program(self) -> (BytecodeProgram, Vec<Arc<str>>) {
     let mut state = BytecodeCompilationState::new();
     for v in self.top_level_vars.iter() {
@@ -4402,26 +4420,11 @@ impl Program {
       state.consumed_stack_space +=
         v.var_type.data_size_in_u32s(&v.source_trace).unwrap() as u16;
     }
-    for f in self.abstract_functions_iter() {
-      let f = f.read().unwrap().clone();
-      if f.generic_args.is_empty()
-        && !f.has_uninlined_higher_order_arguments()
-        && let FunctionImplementationKind::Composite(implementation) =
-          f.implementation
-      {
-        println!(
-          "starting compilation for {}: {}",
-          f.name, state.consumed_stack_space
-        );
-        state.open_function(f.name.clone());
-        let implementation = implementation.read().unwrap();
-        implementation.expression.compile_to_bytecode(&mut state);
-        state.close_function();
-        println!(
-          "finished compilation for {}: {}",
-          f.name, state.consumed_stack_space
-        );
-      }
+    for (f_name, implementation) in self.composite_functions_in_usage_order() {
+      state.open_function(f_name.clone());
+      let implementation = implementation.read().unwrap();
+      implementation.expression.compile_to_bytecode(&mut state);
+      state.close_function();
     }
     state.finalize()
   }
