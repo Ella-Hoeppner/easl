@@ -5,7 +5,12 @@ pub enum Op {
   Move,
   InvokeFunction,
   Constant,
+  JumpWhen,
+  Jump,
   PlusF32,
+  IsEqualU32,
+  IsEqualBool,
+  IsEqualF32,
   Acos,
   Cos,
   Sin,
@@ -36,6 +41,7 @@ pub enum Op {
   Smoothstep,
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct Instruction {
   pub op: Op,
   pub arg_positions: [u16; 3],
@@ -62,7 +68,7 @@ impl Instruction {
   }
   fn max_touched_index(&self) -> u16 {
     match self.op {
-      Op::InvokeFunction => 0,
+      Op::InvokeFunction | Op::Jump => 0,
       Op::Constant => self.return_position,
       Op::Move => {
         if self.arg_positions[1] == 0 {
@@ -73,6 +79,7 @@ impl Instruction {
             - 1
         }
       }
+      Op::JumpWhen => self.arg_positions[0],
       _ => self
         .return_position
         .max(self.arg_positions.iter().copied().max().unwrap()),
@@ -137,17 +144,19 @@ impl BytecodeProgram {
         continue;
       };
       let instruction = unsafe {
-        code
+        *code
           .function_instructions
           .get_unchecked(instruction_index as usize)
       };
       match instruction.op {
-        Op::InvokeFunction => {
+        Op::InvokeFunction => unsafe {
           call_stack.push(ip.clone());
-          ip = code.functions[instruction.arg_positions[0] as usize]
+          ip = code
+            .functions
+            .get_unchecked(instruction.arg_positions[0] as usize)
             .instructions
             .clone();
-        }
+        },
         Op::Move => unsafe {
           let base = stack.as_mut_ptr();
           std::ptr::copy(
@@ -160,6 +169,40 @@ impl BytecodeProgram {
           *stack.get_unchecked_mut(instruction.return_position as usize) =
             ((instruction.arg_positions[0] as u32) << 16u32)
               | instruction.arg_positions[1] as u32;
+        },
+        Op::JumpWhen => unsafe {
+          let condition =
+            *stack.get_unchecked(instruction.arg_positions[0] as usize);
+          if condition != 0 {
+            let new_pos = (instruction.arg_positions[1] as u32) << 16u32
+              | (instruction.arg_positions[2] as u32);
+            ip.start = new_pos;
+          }
+        },
+        Op::Jump => {
+          let new_pos = (instruction.arg_positions[0] as u32) << 16u32
+            | (instruction.arg_positions[1] as u32);
+          ip.start = new_pos;
+        }
+        Op::IsEqualU32 => unsafe {
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            (stack.get_unchecked(instruction.arg_positions[0] as usize)
+              == stack.get_unchecked(instruction.arg_positions[1] as usize))
+              as u32;
+        },
+        Op::IsEqualBool => unsafe {
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            ((*stack.get_unchecked(instruction.arg_positions[0] as usize) == 0)
+              == (*stack.get_unchecked(instruction.arg_positions[1] as usize)
+                == 0)) as u32;
+        },
+        Op::IsEqualF32 => unsafe {
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            (f32::from_bits(
+              *stack.get_unchecked(instruction.arg_positions[0] as usize),
+            ) == f32::from_bits(
+              *stack.get_unchecked(instruction.arg_positions[1] as usize),
+            )) as u32;
         },
         Op::Cos => instruction.f32_unary(stack, f32::cos),
         Op::PlusF32 => instruction.f32_binary(stack, |a, b| a + b),

@@ -1,0 +1,9 @@
+(defn if-zero-five-else-three [x: f32]: f32
+  (if (== x 0.)
+    5.
+    3.))
+
+(defn f []: f32
+  (+ (if-zero-five-else-three 0.)
+     (if-zero-five-else-three 1.)))
+

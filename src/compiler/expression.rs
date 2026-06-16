@@ -5821,6 +5821,11 @@ impl TypedExp {
           .map(|arg| arg.compile_to_bytecode(state).unwrap())
           .collect();
         let return_type = f.return_type.unwrap_known();
+        let arg_types: Vec<Type> = f
+          .args
+          .iter()
+          .map(|(arg, _)| arg.var_type.unwrap_known())
+          .collect();
         match &abstract_f.implementation {
           FunctionImplementationKind::Builtin { .. } => match &*f_name {
             "cos" => {
@@ -5837,6 +5842,36 @@ impl TypedExp {
                 let result_position = state.take_stack_slot(1);
                 state.push_instruction(Instruction {
                   op: Op::PlusF32,
+                  arg_positions: [arg_positions[0], arg_positions[1], 0],
+                  return_position: result_position,
+                });
+                Some(result_position)
+              }
+              _ => todo!(),
+            },
+            "==" => match arg_types[0] {
+              Type::F32 => {
+                let result_position = state.take_stack_slot(1);
+                state.push_instruction(Instruction {
+                  op: Op::IsEqualF32,
+                  arg_positions: [arg_positions[0], arg_positions[1], 0],
+                  return_position: result_position,
+                });
+                Some(result_position)
+              }
+              Type::I32 | Type::U32 => {
+                let result_position = state.take_stack_slot(1);
+                state.push_instruction(Instruction {
+                  op: Op::IsEqualU32,
+                  arg_positions: [arg_positions[0], arg_positions[1], 0],
+                  return_position: result_position,
+                });
+                Some(result_position)
+              }
+              Type::Bool => {
+                let result_position = state.take_stack_slot(1);
+                state.push_instruction(Instruction {
+                  op: Op::IsEqualBool,
                   arg_positions: [arg_positions[0], arg_positions[1], 0],
                   return_position: result_position,
                 });
@@ -5942,7 +5977,63 @@ impl TypedExp {
         body.compile_to_bytecode(state)
       }
       Access(accessor, exp) => todo!(),
-      Match(exp, items) => todo!(),
+      Match(scrutinee, arms) => {
+        let result_type = self.data.unwrap_known();
+        let result_type_size =
+          result_type.data_size_in_u32s(&self.source_trace).unwrap() as u16;
+        let scrutinee_pos = scrutinee.compile_to_bytecode(state).unwrap();
+        if scrutinee.data.unwrap_known() == Type::Bool {
+          let result_pos = if result_type_size > 0 {
+            Some(state.take_stack_slot(result_type_size))
+          } else {
+            None
+          };
+          let true_branch_jump_instruction_pos = state.instructions.len();
+          state.push_instruction(Instruction {
+            op: Op::JumpWhen,
+            arg_positions: [scrutinee_pos, 0, 0],
+            return_position: 0,
+          });
+          if let Some(false_branch_result_pos) =
+            arms[1].1.compile_to_bytecode(state)
+          {
+            state.push_instruction(Instruction {
+              op: Op::Move,
+              arg_positions: [false_branch_result_pos, result_type_size, 0],
+              return_position: result_pos.unwrap(),
+            });
+          }
+          let false_branch_end_jump_instruction_pos = state.instructions.len();
+          state.push_instruction(Instruction {
+            op: Op::Jump,
+            arg_positions: [0, 0, 0],
+            return_position: 0,
+          });
+          let true_branch_start_instruction_pos =
+            state.instructions.len() as u32;
+          state.instructions[true_branch_jump_instruction_pos].arg_positions
+            [1] = (true_branch_start_instruction_pos >> 16) as u16;
+          state.instructions[true_branch_jump_instruction_pos].arg_positions
+            [2] = true_branch_start_instruction_pos as u16;
+          if let Some(true_branch_result_pos) =
+            arms[0].1.compile_to_bytecode(state)
+          {
+            state.push_instruction(Instruction {
+              op: Op::Move,
+              arg_positions: [true_branch_result_pos, result_type_size, 0],
+              return_position: result_pos.unwrap(),
+            });
+          }
+          let true_branch_end_pos = state.instructions.len() as u32;
+          state.instructions[false_branch_end_jump_instruction_pos]
+            .arg_positions[0] = (true_branch_end_pos >> 16) as u16;
+          state.instructions[false_branch_end_jump_instruction_pos]
+            .arg_positions[1] = true_branch_end_pos as u16;
+          result_pos
+        } else {
+          todo!()
+        }
+      }
       ForLoop {
         increment_variable_name,
         increment_variable_type,

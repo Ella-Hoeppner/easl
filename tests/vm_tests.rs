@@ -80,3 +80,6 @@ vm_test!(fn_call);
 vm_test!(fn_call_with_arg);
 vm_test!(fn_call_with_two_args);
 vm_test!(let_binding);
+vm_test!(if_true);
+vm_test!(if_false);
+vm_test!(if_equality_check);
