@@ -38,6 +38,8 @@ cargo run                                           # runs benchmark (compiles a
   - `macros.rs` — macro expansion
   - `info.rs` — program info extraction
   - `util.rs` — utilities
+- `src/vm/` — **WIP** bytecode VM, a faster alternative interpreter (see "Bytecode VM" below):
+  - `bytecode.rs` — `Op` enum, `Instruction`, `Code`, `Function`, `BytecodeProgram` (the VM itself: stack + dispatch loop)
 
 ## Compilation Pipeline
 
@@ -220,9 +222,17 @@ let name = f.abstract_ancestor.as_ref().unwrap().borrow().name.clone();
 - `create_headless_gpu_core(wgsl, binding_infos) -> Arc<RwLock<GpuCore>>` — creates a `GpuCore` with a freshly-created device and no surface; useful for pure compute / offscreen rendering
 - `GpuCore::execute_render_batch_to_view(calls, view: &wgpu::TextureView, format: wgpu::TextureFormat)` — runs a batch of screen-targeted render calls against an external `TextureView` instead of acquiring one from an internal surface; used by easl_studio to render into its own offscreen RT
 
+## Bytecode VM (WIP)
+
+A second, faster interpreter built around a register-style bytecode, intended for performance-critical use (e.g. DSP) where the tree-walking `interpreter.rs` is too slow. **This is in-progress and being actively fleshed out** — many expression kinds and builtins are still `todo!()`. For a detailed snapshot of what's done/left, see `vm_wip_notes.md`.
+
+- **VM (`src/vm/bytecode.rs`)**: `BytecodeProgram { code, stack: Vec<u32>, call_stack: Vec<Range<u32>> }`. The `stack` is a flat array of `u32`s; values are raw bits reinterpreted per-op (`f32::from_bits`, etc.). Instructions are `{ op, arg_positions: [u16; 3], return_position: u16 }`, where positions are **absolute** indices into the shared `stack` (static addressing — no per-call frame base). Execution is a single dispatch loop; `InvokeFunction` pushes the caller's remaining instruction range onto `call_stack` and jumps to the callee; running off the end of a function's instructions pops `call_stack` to return. `call_stack` holds the whole continuation (designed to later support pause/resume for algebraic effects). Heavy use of `unsafe` (`get_unchecked`, `ptr::copy`) — correctness relies on the compiler emitting in-bounds indices.
+- **Compiler (`Program::compile_to_bytecode_program` in `program.rs`, `TypedExp::compile_to_bytecode` in `expression.rs`)**: walks the fully-lowered `TypedExp` (after `validate_raw_program`) into instructions. Functions are emitted in `composite_functions_in_usage_order()` (topological, callees first — no recursion in easl, so the call graph is a DAG). Each function gets a fixed disjoint region of the stack; slots are bump-allocated (`take_stack_slot`) with no reuse yet (register allocation / stack coloring are deferred to future bytecode passes).
+- **Run a function**: `prepare_to_run_function(index)` → `execute()` → read the result via `get_function_return_position(index)` (a raw `u32`, reinterpret as needed). Function index = position in the `Vec<Arc<str>>` of names returned alongside the `BytecodeProgram`.
+
 ## Test Structure
 
-There are four test suites:
+There are five test suites:
 
 ### GPU/compiler tests (`tests/shader_tests.rs`, sources in `data/gpu/`)
 ```rust
@@ -263,9 +273,15 @@ conformance_test!(test_name, 0.001);   // match within tolerance (for irrational
 - Tests cover arithmetic, rounding, trigonometry (including hyperbolic), exponentials/logarithms, sqrt/pow, min/max/clamp, mix/smoothstep/fma/ldexp, vector ops (dot, cross, length, normalize, distance), integer arithmetic, type conversions, bitcast, and bit manipulation.
 - The test runner uses `load_easl_program_from_file_with_lookup_function` to inject the boilerplate into the source string rather than requiring it in each file, so test files can stay minimal.
 
+### Bytecode VM tests (`tests/vm_tests.rs`, sources in `data/vm/`)
+```rust
+vm_test!(test_name);  // compiles+runs data/vm/test_name.easl through the bytecode VM
+```
+- Each `.easl` file must define a zero-arg function `f` returning `f32`. The harness validates the program, compiles it with `compile_to_bytecode_program`, runs `f` via `prepare_to_run_function`/`execute`, reads the return slot, reinterprets it as `f32`, and compares against the single float in `data/vm/test_name.txt` within a `0.0001` tolerance.
+
 ### Shared notes
 - `#_` reader macro in `.easl` files comments out the next form — useful for disabling parts of test files
-- Target a specific suite: `cargo test --test shader_tests`, `--test cpu_tests`, `--test window_tests`, `--test conformance_tests`
+- Target a specific suite: `cargo test --test shader_tests`, `--test cpu_tests`, `--test window_tests`, `--test conformance_tests`, `--test vm_tests`
 
 ## Style Notes
 
