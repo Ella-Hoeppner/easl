@@ -5934,8 +5934,14 @@ impl TypedExp {
         }
         None
       }
+      Let(bindings, body) => {
+        for (name, _, _, value) in bindings.iter() {
+          let value_pos = value.compile_to_bytecode(state).unwrap();
+          state.locals.insert(name.clone(), value_pos);
+        }
+        body.compile_to_bytecode(state)
+      }
       Access(accessor, exp) => todo!(),
-      Let(items, exp) => todo!(),
       Match(exp, items) => todo!(),
       ForLoop {
         increment_variable_name,
