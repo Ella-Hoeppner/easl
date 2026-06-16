@@ -5783,7 +5783,7 @@ impl TypedExp {
           },
           Number::Float(f) => (*f as f32).to_bits(),
         };
-        let result_position = state.take_stack_slot();
+        let result_position = state.take_stack_slot(1);
         state.push_instruction(Instruction {
           op: Op::Constant,
           arg_positions: [(u >> 16) as u16, u as u16, 0],
@@ -5792,7 +5792,7 @@ impl TypedExp {
         Some(result_position)
       }
       BooleanLiteral(b) => {
-        let result_position = state.take_stack_slot();
+        let result_position = state.take_stack_slot(1);
         state.push_instruction(Instruction {
           op: Op::Constant,
           arg_positions: [0, *b as u16, 0],
@@ -5805,53 +5805,93 @@ impl TypedExp {
         .map(|exp| exp.compile_to_bytecode(state))
         .last()
         .unwrap_or(None),
-      Application(f, args) => {
-        let ExpKind::Name(f_name) = &f.kind else {
+      Application(f_exp, args) => {
+        let ExpKind::Name(f_name) = &f_exp.kind else {
           panic!()
         };
         let f_name = f_name.clone();
-        let Type::Function(f) = f.data.unwrap_known() else {
+        let Type::Function(f) = f_exp.data.unwrap_known() else {
           panic!()
         };
         let abstract_f = f.abstract_ancestor.unwrap();
         let abstract_f = abstract_f.read().unwrap();
+        let arg_positions: Vec<u16> = args
+          .iter()
+          .map(|arg| arg.compile_to_bytecode(state).unwrap())
+          .collect();
+        let return_type = f.return_type.unwrap_known();
+        let arg_types: Vec<Type> = f
+          .args
+          .iter()
+          .map(|(arg, _)| arg.var_type.unwrap_known())
+          .collect();
         match &abstract_f.implementation {
-          FunctionImplementationKind::Builtin { .. } => {
-            let arg_positions: Vec<u16> = args
-              .iter()
-              .map(|arg| arg.compile_to_bytecode(state).unwrap())
-              .collect();
-            let return_type = f.return_type.unwrap_known();
-            match &*f_name {
-              "cos" => {
-                let result_position = state.take_stack_slot();
+          FunctionImplementationKind::Builtin { .. } => match &*f_name {
+            "cos" => {
+              let result_position = state.take_stack_slot(1);
+              state.push_instruction(Instruction {
+                op: Op::Cos,
+                arg_positions: [arg_positions[0], 0, 0],
+                return_position: result_position,
+              });
+              Some(result_position)
+            }
+            "+" => match return_type {
+              Type::F32 => {
+                let result_position = state.take_stack_slot(1);
                 state.push_instruction(Instruction {
-                  op: Op::Cos,
-                  arg_positions: [arg_positions[0], 0, 0],
+                  op: Op::PlusF32,
+                  arg_positions: [arg_positions[0], arg_positions[1], 0],
                   return_position: result_position,
                 });
                 Some(result_position)
               }
-              "+" => match return_type {
-                Type::F32 => {
-                  let result_position = state.take_stack_slot();
-                  state.push_instruction(Instruction {
-                    op: Op::PlusF32,
-                    arg_positions: [arg_positions[0], arg_positions[1], 0],
-                    return_position: result_position,
-                  });
-                  Some(result_position)
-                }
-                _ => todo!(),
-              },
-              _ => todo!("haven't implemented this builtin fn for the VM yet"),
-            }
-          }
+              _ => todo!(),
+            },
+            _ => todo!("haven't implemented this builtin fn for the VM yet"),
+          },
           FunctionImplementationKind::StructConstructor => {
             todo!()
           }
           FunctionImplementationKind::EnumConstructor(_) => todo!(),
-          FunctionImplementationKind::Composite(rw_lock) => todo!(),
+          FunctionImplementationKind::Composite(_) => {
+            let return_size = return_type
+              .data_size_in_u32s(&f_exp.source_trace)
+              .unwrap() as u16;
+            let result_position = state.take_stack_slot(return_size);
+            let (fn_index, fn_stack_frame_start) = state
+              .finished_functions
+              .iter()
+              .enumerate()
+              .find_map(|(i, (name, _, fn_stack_frame_start))| {
+                (*name == f_name).then(|| (i as u16, *fn_stack_frame_start))
+              })
+              .unwrap();
+            let mut stack_offset = 0;
+            for (arg_type, arg_pos) in
+              arg_types.into_iter().zip(arg_positions.iter().copied())
+            {
+              let arg_size =
+                arg_type.data_size_in_u32s(&f_exp.source_trace).unwrap() as u16;
+              state.push_instruction(Instruction {
+                op: Op::Move,
+                arg_positions: [arg_pos, arg_size, 0],
+                return_position: fn_stack_frame_start + stack_offset,
+              });
+              stack_offset += arg_size;
+            }
+            state.push_instruction(Instruction {
+              op: Op::InvokeFunction,
+              arg_positions: [fn_index, 0, 0],
+              return_position: 0,
+            });
+            state.push_instruction(Instruction {
+              op: Op::Move,
+              arg_positions: [fn_stack_frame_start, return_size, 0],
+              return_position: result_position,
+            });
+            Some(result_position)
+          }
         }
       }
       Name(name) => todo!(),

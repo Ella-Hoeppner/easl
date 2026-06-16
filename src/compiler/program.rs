@@ -4453,9 +4453,9 @@ impl BytecodeCompilationState {
       current_function_stack_start: None,
     }
   }
-  pub fn take_stack_slot(&mut self) -> u16 {
+  pub fn take_stack_slot(&mut self, size: u16) -> u16 {
     let i = self.consumed_stack_space;
-    self.consumed_stack_space += 1;
+    self.consumed_stack_space += size;
     i as u16
   }
   pub fn open_function(&mut self, name: Arc<str>) {
