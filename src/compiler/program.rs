@@ -4416,13 +4416,30 @@ impl Program {
     for v in self.top_level_vars.iter() {
       state
         .globals
-        .insert(v.name.clone(), state.consumed_stack_space as usize);
+        .insert(v.name.clone(), state.consumed_stack_space as u16);
       state.consumed_stack_space +=
         v.var_type.data_size_in_u32s(&v.source_trace).unwrap() as u16;
     }
     for (f_name, implementation) in self.composite_functions_in_usage_order() {
       state.open_function(f_name.clone());
       let implementation = implementation.read().unwrap();
+      let Type::Function(f) = implementation.expression.data.unwrap_known()
+      else {
+        panic!()
+      };
+      for (arg, _) in f.args.iter() {
+        let arg_size = arg
+          .var_type
+          .unwrap_known()
+          .data_size_in_u32s(&implementation.name_source_trace)
+          .unwrap() as u16;
+        let current_function = state.current_function.as_mut().unwrap();
+        current_function
+          .arg_positions
+          .push(state.consumed_stack_space);
+        current_function.arg_sizes.push(arg_size);
+        state.take_stack_slot(arg_size);
+      }
       implementation.expression.compile_to_bytecode(&mut state);
       state.close_function();
     }
@@ -4430,15 +4447,22 @@ impl Program {
   }
 }
 
+#[derive(Debug, Clone)]
+pub struct IntermediateBytecodeFunction {
+  pub name: Arc<str>,
+  pub instructions: Range<u32>,
+  pub stack_frame_start: u16,
+  pub arg_positions: Vec<u16>,
+  pub arg_sizes: Vec<u16>,
+}
+
 pub struct BytecodeCompilationState {
   pub consumed_stack_space: u16,
-  pub globals: HashMap<Arc<str>, usize>,
-  pub locals: HashMap<Arc<str>, usize>,
+  pub globals: HashMap<Arc<str>, u16>,
+  pub locals: HashMap<Arc<str>, u16>,
   pub instructions: Vec<Instruction>,
-  pub finished_functions: Vec<(Arc<str>, Range<u32>, u16)>,
-  pub current_function_name: Option<Arc<str>>,
-  pub current_function_instruction_start: Option<u32>,
-  pub current_function_stack_start: Option<u16>,
+  pub finished_functions: Vec<IntermediateBytecodeFunction>,
+  pub current_function: Option<IntermediateBytecodeFunction>,
 }
 impl BytecodeCompilationState {
   pub fn new() -> Self {
@@ -4448,9 +4472,7 @@ impl BytecodeCompilationState {
       locals: HashMap::new(),
       instructions: vec![],
       finished_functions: vec![],
-      current_function_name: None,
-      current_function_instruction_start: None,
-      current_function_stack_start: None,
+      current_function: None,
     }
   }
   pub fn take_stack_slot(&mut self, size: u16) -> u16 {
@@ -4459,21 +4481,19 @@ impl BytecodeCompilationState {
     i as u16
   }
   pub fn open_function(&mut self, name: Arc<str>) {
-    self.current_function_name = Some(name);
-    self.current_function_instruction_start =
-      Some(self.instructions.len() as u32);
-    self.current_function_stack_start = Some(self.consumed_stack_space);
+    let instruction_start = self.instructions.len() as u32;
+    self.current_function = Some(IntermediateBytecodeFunction {
+      name,
+      instructions: instruction_start..instruction_start,
+      stack_frame_start: self.consumed_stack_space,
+      arg_positions: vec![],
+      arg_sizes: vec![],
+    });
   }
   pub fn close_function(&mut self) {
-    let name = self.current_function_name.take().unwrap();
-    let instruction_start =
-      self.current_function_instruction_start.take().unwrap();
-    let stack_start = self.current_function_stack_start.take().unwrap();
-    self.finished_functions.push((
-      name,
-      instruction_start..(self.instructions.len() as u32),
-      stack_start,
-    ));
+    let mut f = self.current_function.take().unwrap();
+    f.instructions.end = self.instructions.len() as u32;
+    self.finished_functions.push(f);
   }
   pub fn push_instruction(&mut self, instruction: Instruction) {
     self.instructions.push(instruction);
@@ -4484,9 +4504,9 @@ impl BytecodeCompilationState {
       functions: self
         .finished_functions
         .iter()
-        .map(|(_, range, return_position)| Function {
-          instructions: range.clone(),
-          return_position: *return_position,
+        .map(|f| Function {
+          instructions: f.instructions.clone(),
+          return_position: f.stack_frame_start,
         })
         .collect(),
     };
@@ -4495,7 +4515,7 @@ impl BytecodeCompilationState {
       self
         .finished_functions
         .iter()
-        .map(|(name, _, _)| name.clone())
+        .map(|f| f.name.clone())
         .collect(),
     )
   }

@@ -5779,6 +5779,7 @@ impl TypedExp {
           Number::Int(i) => match self.data.unwrap_known() {
             Type::U32 => *i as u32,
             Type::I32 => (*i as i32) as u32,
+            Type::F32 => (*i as f32).to_bits(),
             _ => panic!(),
           },
           Number::Float(f) => (*f as f32).to_bits(),
@@ -5820,11 +5821,6 @@ impl TypedExp {
           .map(|arg| arg.compile_to_bytecode(state).unwrap())
           .collect();
         let return_type = f.return_type.unwrap_known();
-        let arg_types: Vec<Type> = f
-          .args
-          .iter()
-          .map(|(arg, _)| arg.var_type.unwrap_known())
-          .collect();
         match &abstract_f.implementation {
           FunctionImplementationKind::Builtin { .. } => match &*f_name {
             "cos" => {
@@ -5859,26 +5855,28 @@ impl TypedExp {
               .data_size_in_u32s(&f_exp.source_trace)
               .unwrap() as u16;
             let result_position = state.take_stack_slot(return_size);
-            let (fn_index, fn_stack_frame_start) = state
+            let (fn_index, bytecode_fn) = state
               .finished_functions
               .iter()
               .enumerate()
-              .find_map(|(i, (name, _, fn_stack_frame_start))| {
-                (*name == f_name).then(|| (i as u16, *fn_stack_frame_start))
+              .find_map(|(i, f)| {
+                (f.name == f_name).then(|| (i as u16, f.clone()))
               })
               .unwrap();
-            let mut stack_offset = 0;
-            for (arg_type, arg_pos) in
-              arg_types.into_iter().zip(arg_positions.iter().copied())
+            for (arg_pos, (fn_arg_pos, arg_size)) in
+              arg_positions.iter().copied().zip(
+                bytecode_fn
+                  .arg_positions
+                  .iter()
+                  .copied()
+                  .zip(bytecode_fn.arg_sizes.iter().copied()),
+              )
             {
-              let arg_size =
-                arg_type.data_size_in_u32s(&f_exp.source_trace).unwrap() as u16;
               state.push_instruction(Instruction {
                 op: Op::Move,
                 arg_positions: [arg_pos, arg_size, 0],
-                return_position: fn_stack_frame_start + stack_offset,
+                return_position: fn_arg_pos,
               });
-              stack_offset += arg_size;
             }
             state.push_instruction(Instruction {
               op: Op::InvokeFunction,
@@ -5887,29 +5885,51 @@ impl TypedExp {
             });
             state.push_instruction(Instruction {
               op: Op::Move,
-              arg_positions: [fn_stack_frame_start, return_size, 0],
+              arg_positions: [bytecode_fn.stack_frame_start, return_size, 0],
               return_position: result_position,
             });
             Some(result_position)
           }
         }
       }
-      Name(name) => todo!(),
+      Name(name) => Some(
+        state
+          .globals
+          .get(name)
+          .copied()
+          .or_else(|| state.locals.get(name).copied())
+          .unwrap(),
+      ),
       Function(args, exp) => {
-        // todo! bind args to locals or smth
+        let Type::Function(f) = self.data.unwrap_known() else {
+          panic!()
+        };
+        for ((arg_name, _), arg_position) in args.iter().zip(
+          state
+            .current_function
+            .as_ref()
+            .unwrap()
+            .arg_positions
+            .iter(),
+        ) {
+          state.locals.insert(arg_name.clone(), *arg_position);
+        }
         if let Some(result_position) = exp.compile_to_bytecode(state) {
           state.push_instruction(Instruction {
             op: Op::Move,
             arg_positions: [
               result_position,
-              exp
-                .data
+              f.return_type
                 .unwrap_known()
                 .data_size_in_u32s(&exp.source_trace)
                 .unwrap() as u16,
               0,
             ],
-            return_position: state.current_function_stack_start.unwrap(),
+            return_position: state
+              .current_function
+              .as_ref()
+              .unwrap()
+              .stack_frame_start,
           });
         }
         None
