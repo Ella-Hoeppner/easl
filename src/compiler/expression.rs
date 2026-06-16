@@ -5847,7 +5847,15 @@ impl TypedExp {
         if let Some(result_position) = exp.compile_to_bytecode(state) {
           state.push_instruction(Instruction {
             op: Op::Move,
-            arg_positions: [result_position, 0, 0],
+            arg_positions: [
+              result_position,
+              exp
+                .data
+                .unwrap_known()
+                .data_size_in_u32s(&exp.source_trace)
+                .unwrap() as u16,
+              0,
+            ],
             return_position: state.current_function_stack_start.unwrap(),
           });
         }

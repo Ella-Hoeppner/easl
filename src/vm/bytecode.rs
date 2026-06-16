@@ -54,6 +54,15 @@ impl Instruction {
     match self.op {
       Op::InvokeFunction => 0,
       Op::Constant => self.return_position,
+      Op::Move => {
+        if self.arg_positions[1] == 0 {
+          0
+        } else {
+          self.return_position.max(self.arg_positions[0])
+            + self.arg_positions[1]
+            - 1
+        }
+      }
       _ => self
         .return_position
         .max(self.arg_positions.iter().copied().max().unwrap()),
@@ -130,8 +139,12 @@ impl BytecodeProgram {
             .clone();
         }
         Op::Move => unsafe {
-          *stack.get_unchecked_mut(instruction.return_position as usize) =
-            *stack.get_unchecked(instruction.arg_positions[0] as usize)
+          let base = stack.as_mut_ptr();
+          std::ptr::copy(
+            base.add(instruction.arg_positions[0] as usize),
+            base.add(instruction.return_position as usize),
+            instruction.arg_positions[1] as usize,
+          );
         },
         Op::Constant => unsafe {
           *stack.get_unchecked_mut(instruction.return_position as usize) =
