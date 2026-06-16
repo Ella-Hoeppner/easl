@@ -74,3 +74,5 @@ macro_rules! vm_test {
 }
 
 vm_test!(cos);
+vm_test!(plus);
+vm_test!(nested_plus);

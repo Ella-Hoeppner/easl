@@ -5,6 +5,7 @@ pub enum Op {
   Move,
   InvokeFunction,
   Constant,
+  PlusF32,
   Acos,
   Cos,
   Sin,
@@ -46,6 +47,15 @@ impl Instruction {
     unsafe {
       *stack.get_unchecked_mut(self.return_position as usize) = f(
         f32::from_bits(*stack.get_unchecked(self.arg_positions[0] as usize)),
+      )
+      .to_bits();
+    }
+  }
+  fn f32_binary(&self, stack: &mut [u32], f: impl Fn(f32, f32) -> f32) {
+    unsafe {
+      *stack.get_unchecked_mut(self.return_position as usize) = f(
+        f32::from_bits(*stack.get_unchecked(self.arg_positions[0] as usize)),
+        f32::from_bits(*stack.get_unchecked(self.arg_positions[1] as usize)),
       )
       .to_bits();
     }
@@ -152,6 +162,7 @@ impl BytecodeProgram {
               | instruction.arg_positions[1] as u32;
         },
         Op::Cos => instruction.f32_unary(stack, f32::cos),
+        Op::PlusF32 => instruction.f32_binary(stack, |a, b| a + b),
         _ => todo!(),
       }
     }

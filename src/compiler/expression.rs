@@ -5821,6 +5821,7 @@ impl TypedExp {
               .iter()
               .map(|arg| arg.compile_to_bytecode(state).unwrap())
               .collect();
+            let return_type = f.return_type.unwrap_known();
             match &*f_name {
               "cos" => {
                 let result_position = state.take_stack_slot();
@@ -5831,6 +5832,18 @@ impl TypedExp {
                 });
                 Some(result_position)
               }
+              "+" => match return_type {
+                Type::F32 => {
+                  let result_position = state.take_stack_slot();
+                  state.push_instruction(Instruction {
+                    op: Op::PlusF32,
+                    arg_positions: [arg_positions[0], arg_positions[1], 0],
+                    return_position: result_position,
+                  });
+                  Some(result_position)
+                }
+                _ => todo!(),
+              },
               _ => todo!("haven't implemented this builtin fn for the VM yet"),
             }
           }
