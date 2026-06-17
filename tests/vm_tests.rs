@@ -84,3 +84,5 @@ vm_test!(if_true);
 vm_test!(if_false);
 vm_test!(if_equality_check);
 vm_test!(match_int);
+vm_test!(global_var_assignment);
+vm_test!(local_var_assignment);

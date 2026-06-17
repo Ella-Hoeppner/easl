@@ -5919,6 +5919,19 @@ impl TypedExp {
               }
               _ => todo!(),
             },
+            "=" => {
+              let arg_size = arg_types[0]
+                .data_size_in_u32s(&args[0].source_trace)
+                .unwrap() as u16;
+              let assignment_pos = args[0].compile_to_bytecode(state).unwrap();
+              let value_pos = args[1].compile_to_bytecode(state).unwrap();
+              state.push_instruction(Instruction {
+                op: Op::Move,
+                arg_positions: [value_pos, arg_size, 0],
+                return_position: assignment_pos,
+              });
+              None
+            }
             _ => todo!("haven't implemented this builtin fn for the VM yet"),
           },
           FunctionImplementationKind::StructConstructor => {
