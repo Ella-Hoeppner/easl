@@ -6,13 +6,20 @@ pub enum Op {
   InvokeFunction,
   Constant,
   JumpWhen,
+  JumpWhenNot,
   Jump,
   PlusF32,
   PlusI32,
   PlusU32,
+  MinusF32,
+  MinusI32,
+  MinusU32,
   IsEqualU32,
   IsEqualBool,
   IsEqualF32,
+  GreaterThanU32,
+  GreaterThanI32,
+  GreaterThanF32,
   Acos,
   Cos,
   Sin,
@@ -81,8 +88,8 @@ impl Instruction {
   fn u32_binary(&self, stack: &mut [u32], f: impl Fn(u32, u32) -> u32) {
     unsafe {
       *stack.get_unchecked_mut(self.return_position as usize) = f(
-        (*stack.get_unchecked(self.arg_positions[0] as usize)),
-        (*stack.get_unchecked(self.arg_positions[1] as usize)),
+        *stack.get_unchecked(self.arg_positions[0] as usize),
+        *stack.get_unchecked(self.arg_positions[1] as usize),
       );
     }
   }
@@ -99,7 +106,7 @@ impl Instruction {
             - 1
         }
       }
-      Op::JumpWhen => self.arg_positions[0],
+      Op::JumpWhen | Op::JumpWhenNot => self.arg_positions[0],
       _ => self
         .return_position
         .max(self.arg_positions.iter().copied().max().unwrap()),
@@ -199,6 +206,15 @@ impl BytecodeProgram {
             ip.start = new_pos;
           }
         },
+        Op::JumpWhenNot => unsafe {
+          let condition =
+            *stack.get_unchecked(instruction.arg_positions[0] as usize);
+          if condition == 0 {
+            let new_pos = (instruction.arg_positions[1] as u32) << 16u32
+              | (instruction.arg_positions[2] as u32);
+            ip.start = new_pos;
+          }
+        },
         Op::Jump => {
           let new_pos = (instruction.arg_positions[0] as u32) << 16u32
             | (instruction.arg_positions[1] as u32);
@@ -228,6 +244,15 @@ impl BytecodeProgram {
         Op::PlusF32 => instruction.f32_binary(stack, |a, b| a + b),
         Op::PlusU32 => instruction.u32_binary(stack, |a, b| a + b),
         Op::PlusI32 => instruction.i32_binary(stack, |a, b| a + b),
+        Op::MinusF32 => instruction.f32_binary(stack, |a, b| a - b),
+        Op::MinusU32 => instruction.u32_binary(stack, |a, b| a - b),
+        Op::MinusI32 => instruction.i32_binary(stack, |a, b| a - b),
+        Op::GreaterThanU32 => unsafe {
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            (*stack.get_unchecked(instruction.arg_positions[0] as usize)
+              > *stack.get_unchecked(instruction.arg_positions[1] as usize))
+              as u32;
+        },
         Op::U32ToF32 => unsafe {
           *stack.get_unchecked_mut(instruction.return_position as usize) =
             (*stack.get_unchecked(instruction.arg_positions[0] as usize)
