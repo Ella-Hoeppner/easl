@@ -1,7 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
 use std::hash::Hash;
-use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
 use fsexp::{Ast, document::Document, syntax::EncloserOrOperator};
@@ -14,7 +13,8 @@ use crate::compiler::builtins::{
 use crate::compiler::types::ExpTypeInfo;
 use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
 use crate::parse::EaslMultiDocument;
-use crate::vm::bytecode::{BytecodeProgram, Code, Function, Instruction};
+use crate::vm::bytecode::BytecodeProgram;
+use crate::vm::compile::BytecodeCompilationState;
 use crate::{
   Never,
   compiler::{
@@ -4447,82 +4447,3 @@ impl Program {
   }
 }
 
-#[derive(Debug, Clone)]
-pub struct IntermediateBytecodeFunction {
-  pub name: Arc<str>,
-  pub instructions: Range<u32>,
-  pub stack_frame_start: u16,
-  pub arg_positions: Vec<u16>,
-  pub arg_sizes: Vec<u16>,
-}
-
-pub struct BytecodeCompilationState {
-  pub consumed_stack_space: u16,
-  pub globals: HashMap<Arc<str>, u16>,
-  pub locals: HashMap<Arc<str>, u16>,
-  pub instructions: Vec<Instruction>,
-  pub finished_functions: Vec<IntermediateBytecodeFunction>,
-  pub current_function: Option<IntermediateBytecodeFunction>,
-  pub loop_start_instructions: Vec<u32>,
-  pub break_jump_instruction_positions: Vec<Vec<u32>>,
-  pub continue_jump_instruction_positions: Vec<Vec<u32>>,
-}
-impl BytecodeCompilationState {
-  pub fn new() -> Self {
-    Self {
-      consumed_stack_space: 0,
-      globals: HashMap::new(),
-      locals: HashMap::new(),
-      instructions: vec![],
-      finished_functions: vec![],
-      current_function: None,
-      loop_start_instructions: vec![],
-      break_jump_instruction_positions: vec![],
-      continue_jump_instruction_positions: vec![],
-    }
-  }
-  pub fn take_stack_slot(&mut self, size: u16) -> u16 {
-    let i = self.consumed_stack_space;
-    self.consumed_stack_space += size;
-    i as u16
-  }
-  pub fn open_function(&mut self, name: Arc<str>) {
-    let instruction_start = self.instructions.len() as u32;
-    self.current_function = Some(IntermediateBytecodeFunction {
-      name,
-      instructions: instruction_start..instruction_start,
-      stack_frame_start: self.consumed_stack_space,
-      arg_positions: vec![],
-      arg_sizes: vec![],
-    });
-  }
-  pub fn close_function(&mut self) {
-    let mut f = self.current_function.take().unwrap();
-    f.instructions.end = self.instructions.len() as u32;
-    self.finished_functions.push(f);
-  }
-  pub fn push_instruction(&mut self, instruction: Instruction) {
-    self.instructions.push(instruction);
-  }
-  pub fn finalize(self) -> (BytecodeProgram, Vec<Arc<str>>) {
-    let code: Code = Code {
-      function_instructions: self.instructions,
-      functions: self
-        .finished_functions
-        .iter()
-        .map(|f| Function {
-          instructions: f.instructions.clone(),
-          return_position: f.stack_frame_start,
-        })
-        .collect(),
-    };
-    (
-      BytecodeProgram::from_code(code),
-      self
-        .finished_functions
-        .iter()
-        .map(|f| f.name.clone())
-        .collect(),
-    )
-  }
-}

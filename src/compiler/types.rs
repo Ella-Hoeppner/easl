@@ -16,7 +16,7 @@ use crate::{
     enums::{AbstractEnum, Enum, UntypedEnum},
     error::{CompileError, CompileErrorKind},
     expression::{Accessor, ExpKind, Number, TypedExp},
-    functions::Ownership,
+    functions::{Ownership, extract_mat_size as extract_mat_size_from_name},
     program::{CompilerTarget, NameContext, TypeDefs},
     structs::UntypedStruct,
     vars::VariableAddressSpace,
@@ -1308,13 +1308,26 @@ impl Type {
     Ok(match self {
       Type::Unit => 0,
       Type::F32 | Type::I32 | Type::U32 | Type::Bool => 1,
-      Type::Struct(s) => s
-        .fields
-        .iter()
-        .map(|f| f.field_type.unwrap_known().data_size_in_u32s(source_trace))
-        .collect::<CompileResult<Vec<usize>>>()?
-        .into_iter()
-        .sum::<usize>(),
+      Type::Struct(s) => {
+        // Matrices are nominally one-field-of-T opaque structs, but their
+        // VM and GPU storage is N*M elements. Special-case so size queries
+        // see the true storage.
+        if let Some((cols, rows)) = extract_mat_size_from_name(&s.name)
+          && let Some(elem) =
+            s.fields.first().map(|f| f.field_type.unwrap_known())
+        {
+          cols * rows * elem.data_size_in_u32s(source_trace)?
+        } else {
+          s.fields
+            .iter()
+            .map(|f| {
+              f.field_type.unwrap_known().data_size_in_u32s(source_trace)
+            })
+            .collect::<CompileResult<Vec<usize>>>()?
+            .into_iter()
+            .sum::<usize>()
+        }
+      }
       Type::Enum(e) => e.inner_data_size_in_u32s()? + 1,
       Type::Function(_) => {
         return err(UninlinableHigherOrderFunction, source_trace.clone());
@@ -1358,7 +1371,8 @@ impl Type {
   }
   /// Returns the WGSL SizeOf for this type, in u32s (bytes / 4).
   /// For vec3, this is 3 (12 bytes), NOT rounded up to its AlignOf of 16.
-  /// For user-defined structs and arrays, inter-field / stride padding IS included.
+  /// For user-defined structs and arrays, inter-field / stride padding IS
+  /// included.
   /// See https://www.w3.org/TR/WGSL/#alignment-and-size
   pub fn wgsl_data_size_in_u32s(&self) -> usize {
     fn round_up(align: usize, size: usize) -> usize {
