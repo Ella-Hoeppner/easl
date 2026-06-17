@@ -88,3 +88,8 @@ vm_test!(global_var_assignment);
 vm_test!(local_var_assignment);
 vm_test!(while_loop);
 vm_test!(for_loop);
+vm_test!(when);
+vm_test!(while_loop_break);
+vm_test!(for_loop_break);
+vm_test!(while_loop_continue);
+vm_test!(for_loop_continue);

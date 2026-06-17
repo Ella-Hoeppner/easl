@@ -6271,6 +6271,8 @@ impl TypedExp {
       } => {
         let loop_start_pos = state.instructions.len() as u32;
         state.loop_start_instructions.push(loop_start_pos);
+        state.break_jump_instruction_positions.push(vec![]);
+        state.continue_jump_instruction_positions.push(vec![]);
         let cond_pos = condition_expression.compile_to_bytecode(state).unwrap();
         let jump_out_instruction_pos = state.instructions.len();
         state.push_instruction(Instruction {
@@ -6294,6 +6296,22 @@ impl TypedExp {
         state.instructions[jump_out_instruction_pos].arg_positions[2] =
           loop_end_pos as u16;
         state.loop_start_instructions.pop();
+        for break_jump_pos in
+          state.break_jump_instruction_positions.pop().unwrap()
+        {
+          state.instructions[break_jump_pos as usize].arg_positions[0] =
+            (loop_end_pos >> 16) as u16;
+          state.instructions[break_jump_pos as usize].arg_positions[1] =
+            loop_end_pos as u16;
+        }
+        for continue_jump_pos in
+          state.continue_jump_instruction_positions.pop().unwrap()
+        {
+          state.instructions[continue_jump_pos as usize].arg_positions[0] =
+            (loop_start_pos >> 16) as u16;
+          state.instructions[continue_jump_pos as usize].arg_positions[1] =
+            loop_start_pos as u16;
+        }
         None
       }
       ForLoop {
@@ -6324,6 +6342,8 @@ impl TypedExp {
           .insert(increment_variable_name.0.clone(), increment_var_pos);
         let loop_start_pos = state.instructions.len() as u32;
         state.loop_start_instructions.push(loop_start_pos);
+        state.break_jump_instruction_positions.push(vec![]);
+        state.continue_jump_instruction_positions.push(vec![]);
         let cond_pos = continue_condition_expression
           .compile_to_bytecode(state)
           .unwrap();
@@ -6353,10 +6373,52 @@ impl TypedExp {
         state.instructions[jump_out_instruction_pos].arg_positions[2] =
           loop_end_pos as u16;
         state.loop_start_instructions.pop();
+        for break_jump_pos in
+          state.break_jump_instruction_positions.pop().unwrap()
+        {
+          state.instructions[break_jump_pos as usize].arg_positions[0] =
+            (loop_end_pos >> 16) as u16;
+          state.instructions[break_jump_pos as usize].arg_positions[1] =
+            loop_end_pos as u16;
+        }
+        for continue_jump_pos in
+          state.continue_jump_instruction_positions.pop().unwrap()
+        {
+          state.instructions[continue_jump_pos as usize].arg_positions[0] =
+            (pre_update_pos >> 16) as u16;
+          state.instructions[continue_jump_pos as usize].arg_positions[1] =
+            pre_update_pos as u16;
+        }
         None
       }
-      Break => todo!(),
-      Continue => todo!(),
+      Break => {
+        let jump_pos = state.instructions.len() as u32;
+        state.push_instruction(Instruction {
+          op: Op::Jump,
+          arg_positions: [0, 0, 0],
+          return_position: 0,
+        });
+        state
+          .break_jump_instruction_positions
+          .last_mut()
+          .unwrap()
+          .push(jump_pos);
+        None
+      }
+      Continue => {
+        let jump_pos = state.instructions.len() as u32;
+        state.push_instruction(Instruction {
+          op: Op::Jump,
+          arg_positions: [0, 0, 0],
+          return_position: 0,
+        });
+        state
+          .continue_jump_instruction_positions
+          .last_mut()
+          .unwrap()
+          .push(jump_pos);
+        None
+      }
       Return(exp) => todo!(),
       ArrayLiteral(exps) => todo!(),
       Access(accessor, exp) => todo!(),

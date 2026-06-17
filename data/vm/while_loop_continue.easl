@@ -1,0 +1,9 @@
+(defn f []: f32
+  (let [@var x 0u
+        @var y 5u]
+    (while (> y 0)
+      (= y (- y 1))
+      (when (< y 2) (continue))
+      (= x (+ y x)))
+    (f32 x)))
+

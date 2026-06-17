@@ -4464,6 +4464,8 @@ pub struct BytecodeCompilationState {
   pub finished_functions: Vec<IntermediateBytecodeFunction>,
   pub current_function: Option<IntermediateBytecodeFunction>,
   pub loop_start_instructions: Vec<u32>,
+  pub break_jump_instruction_positions: Vec<Vec<u32>>,
+  pub continue_jump_instruction_positions: Vec<Vec<u32>>,
 }
 impl BytecodeCompilationState {
   pub fn new() -> Self {
@@ -4475,6 +4477,8 @@ impl BytecodeCompilationState {
       finished_functions: vec![],
       current_function: None,
       loop_start_instructions: vec![],
+      break_jump_instruction_positions: vec![],
+      continue_jump_instruction_positions: vec![],
     }
   }
   pub fn take_stack_slot(&mut self, size: u16) -> u16 {

@@ -1,0 +1,8 @@
+(defn f []: f32
+  (let [@var x 0u]
+    (for [i 0u (< i 6) (+= i 1)]
+      (when (== i 5)
+        (break))
+      (= x (+ x i)))
+    (f32 x)))
+

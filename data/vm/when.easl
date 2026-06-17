@@ -1,0 +1,8 @@
+(defn f []: f32
+  (let [@var x 0.]
+    (when true
+      (+= x 3.))
+    (when false
+      (+= x 4.))
+    x))
+
