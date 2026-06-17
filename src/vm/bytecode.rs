@@ -21,6 +21,7 @@ pub enum Op {
   GreaterThanU32,
   GreaterThanI32,
   GreaterThanF32,
+  ArrayLookup,
   LessThanU32,
   LessThanI32,
   LessThanF32,
@@ -110,6 +111,10 @@ impl Instruction {
             - 1
         }
       }
+      Op::ArrayLookup => self
+        .return_position
+        .max(self.arg_positions[0])
+        .max(self.arg_positions[1]),
       Op::JumpWhen | Op::JumpWhenNot => self.arg_positions[0],
       _ => self
         .return_position
@@ -281,6 +286,18 @@ impl BytecodeProgram {
             (*stack.get_unchecked(instruction.arg_positions[0] as usize)
               as f32)
               .to_bits();
+        },
+        Op::ArrayLookup => unsafe {
+          let [arr_pos, index_pos, inner_data_size] = instruction.arg_positions;
+          let idx = *stack.get_unchecked(index_pos as usize);
+          let src = (arr_pos as usize)
+            + (idx as usize) * (inner_data_size as usize);
+          let base = stack.as_mut_ptr();
+          std::ptr::copy(
+            base.add(src),
+            base.add(instruction.return_position as usize),
+            inner_data_size as usize,
+          );
         },
         other => todo!("haven't implemented VM op \"{other:?}\" yet"),
       }

@@ -1,0 +1,6 @@
+(defn f []: f32
+  (let [arr [2. 3. 4.]]
+    (+ (arr 0u)
+       (arr 1u)
+       (arr 2u))))
+

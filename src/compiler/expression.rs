@@ -6446,8 +6446,46 @@ impl TypedExp {
         });
         None
       }
-      ArrayLiteral(exps) => todo!(),
-      Access(accessor, exp) => todo!(),
+      ArrayLiteral(inner_expressions) => {
+        let inner_data_size = inner_expressions[0]
+          .data
+          .unwrap_known()
+          .data_size_in_u32s(&self.source_trace)
+          .unwrap() as u16;
+        let array_pos = state
+          .take_stack_slot(inner_data_size * (inner_expressions.len() as u16));
+        for (i, inner_exp) in inner_expressions.iter().enumerate() {
+          let inner_exp_pos = inner_exp.compile_to_bytecode(state).unwrap();
+          state.push_instruction(Instruction {
+            op: Op::Move,
+            arg_positions: [inner_exp_pos, inner_data_size, 0],
+            return_position: array_pos + (i as u16 * inner_data_size),
+          });
+        }
+        Some(array_pos)
+      }
+      Access(accessor, exp) => {
+        let inner_exp_pos = exp.compile_to_bytecode(state).unwrap();
+        let inner_data_size = self
+          .data
+          .unwrap_known()
+          .data_size_in_u32s(&self.source_trace)
+          .unwrap() as u16;
+        let result_position = state.take_stack_slot(inner_data_size);
+        match accessor {
+          Accessor::ArrayIndex(index_exp) => {
+            let index_pos = index_exp.compile_to_bytecode(state).unwrap();
+            state.push_instruction(Instruction {
+              op: Op::ArrayLookup,
+              arg_positions: [inner_exp_pos, index_pos, inner_data_size],
+              return_position: result_position,
+            });
+          }
+          Accessor::Field(_) => todo!(),
+          Accessor::Swizzle(swizzle_fields) => todo!(),
+        }
+        Some(result_position)
+      }
       StringLiteral(_) => panic!("bytecode vm can't handle strings yet!"),
       Discard => panic!("bytecode vm can't handle discard statements"),
       Uninitialized | Wildcard | Unit => None,
