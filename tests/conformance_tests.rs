@@ -197,6 +197,75 @@ fn run_conformance_test(name: &str, tolerance: f64) {
        differ by more than tolerance {tolerance}"
     );
   }
+
+  // --- Bytecode VM conformance ---
+  // Compile to bytecode, run f() through the VM, and compare with the
+  // interpreter result.
+  let vm_f64: f64 = match load_easl_program_from_file_with_lookup_function(
+    source_path,
+    |_| Ok(user_source.clone()),
+  ) {
+    Ok(Ok((_, Ok(mut program)))) => {
+      let errors = program.validate_raw_program(CompilerTarget::WGSL);
+      assert!(
+        errors.is_empty(),
+        "{name}: bytecode VM compile errors: {errors:#?}"
+      );
+      let (mut bytecode_program, function_names) =
+        program.compile_to_bytecode_program();
+      let function_index = function_names
+        .iter()
+        .position(|n| &**n == "f")
+        .unwrap_or_else(|| {
+          panic!("{name}: no function named `f` in bytecode program")
+        });
+      bytecode_program.prepare_to_run_function(function_index);
+      bytecode_program.execute();
+      let return_position =
+        bytecode_program.get_function_return_position(function_index);
+      let result =
+        f32::from_bits(bytecode_program.stack[return_position as usize]);
+      result as f64
+    }
+    Ok(Ok((doc, Err(errors)))) => {
+      panic!(
+        "{name}: bytecode VM compile errors:\n{}",
+        errors.describe(&doc)
+      );
+    }
+    Ok(Err(mut failed_documents)) => {
+      let mut errors = vec![];
+      std::mem::swap(
+        &mut errors,
+        &mut failed_documents
+          .sources
+          .last_mut()
+          .unwrap()
+          .0
+          .parsing_failures,
+      );
+      let description = errors
+        .into_iter()
+        .map(|err| failed_documents.describe_parse_error(err))
+        .collect::<Vec<String>>()
+        .join("\n\n");
+      panic!("Parse error in {name}:\n{description}");
+    }
+    Err(e) => panic!("IO error, couldn't load file {name}: \n{e:?}"),
+  };
+
+  if tolerance == 0.0 {
+    assert!(
+      cpu_f64 == vm_f64,
+      "{name}: interpreter result {cpu_f64} != VM result {vm_f64}"
+    );
+  } else {
+    assert!(
+      (cpu_f64 - vm_f64).abs() <= tolerance,
+      "{name}: interpreter result {cpu_f64} and VM result {vm_f64} \
+       differ by more than tolerance {tolerance}"
+    );
+  }
 }
 
 macro_rules! conformance_test {
