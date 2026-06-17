@@ -20,6 +20,9 @@ pub enum Op {
   GreaterThanU32,
   GreaterThanI32,
   GreaterThanF32,
+  LessThanU32,
+  LessThanI32,
+  LessThanF32,
   Acos,
   Cos,
   Sin,
@@ -253,13 +256,26 @@ impl BytecodeProgram {
               > *stack.get_unchecked(instruction.arg_positions[1] as usize))
               as u32;
         },
+        Op::LessThanU32 => unsafe {
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            ((*stack.get_unchecked(instruction.arg_positions[0] as usize))
+              < (*stack.get_unchecked(instruction.arg_positions[1] as usize)))
+              as u32;
+        },
+        Op::LessThanI32 => unsafe {
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            ((*stack.get_unchecked(instruction.arg_positions[0] as usize)
+              as i32)
+              < (*stack.get_unchecked(instruction.arg_positions[1] as usize)
+                as i32)) as u32;
+        },
         Op::U32ToF32 => unsafe {
           *stack.get_unchecked_mut(instruction.return_position as usize) =
             (*stack.get_unchecked(instruction.arg_positions[0] as usize)
               as f32)
               .to_bits();
         },
-        _ => todo!(),
+        other => todo!("haven't implemented VM op \"{other:?}\" yet"),
       }
     }
   }

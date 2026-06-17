@@ -5889,6 +5889,36 @@ impl TypedExp {
               }
               _ => unreachable!(),
             },
+            "+=" => match arg_types[0] {
+              Type::F32 => {
+                let result_position = state.take_stack_slot(1);
+                state.push_instruction(Instruction {
+                  op: Op::PlusF32,
+                  arg_positions: [arg_positions[0], arg_positions[1], 0],
+                  return_position: arg_positions[0],
+                });
+                Some(result_position)
+              }
+              Type::I32 => {
+                let result_position = state.take_stack_slot(1);
+                state.push_instruction(Instruction {
+                  op: Op::PlusI32,
+                  arg_positions: [arg_positions[0], arg_positions[1], 0],
+                  return_position: arg_positions[0],
+                });
+                Some(result_position)
+              }
+              Type::U32 => {
+                let result_position = state.take_stack_slot(1);
+                state.push_instruction(Instruction {
+                  op: Op::PlusU32,
+                  arg_positions: [arg_positions[0], arg_positions[1], 0],
+                  return_position: arg_positions[0],
+                });
+                Some(result_position)
+              }
+              _ => unreachable!(),
+            },
             "-" => match return_type {
               Type::F32 => {
                 let result_position = state.take_stack_slot(1);
@@ -5971,6 +6001,22 @@ impl TypedExp {
                   Type::F32 => Op::GreaterThanF32,
                   Type::U32 => Op::GreaterThanU32,
                   Type::I32 => Op::GreaterThanI32,
+                  _ => unreachable!(),
+                },
+                arg_positions: [arg_pos_0, arg_pos_1, 0],
+                return_position: result_position,
+              });
+              Some(result_position)
+            }
+            "<" => {
+              let result_position = state.take_stack_slot(1);
+              let arg_pos_0 = args[0].compile_to_bytecode(state).unwrap();
+              let arg_pos_1 = args[1].compile_to_bytecode(state).unwrap();
+              state.push_instruction(Instruction {
+                op: match arg_types[0] {
+                  Type::F32 => Op::LessThanF32,
+                  Type::U32 => Op::LessThanU32,
+                  Type::I32 => Op::LessThanI32,
                   _ => unreachable!(),
                 },
                 arg_positions: [arg_pos_0, arg_pos_1, 0],
@@ -6252,19 +6298,70 @@ impl TypedExp {
       }
       ForLoop {
         increment_variable_name,
-        increment_variable_type,
         increment_variable_initial_value_expression,
         continue_condition_expression,
         update_expression,
         body_expression,
-      } => todo!(),
+        increment_variable_type,
+      } => {
+        let increment_var_initial_value_pos =
+          increment_variable_initial_value_expression
+            .compile_to_bytecode(state)
+            .unwrap();
+        let increment_var_pos = state.take_stack_slot(
+          increment_variable_type
+            .unwrap_known()
+            .data_size_in_u32s(&self.source_trace)
+            .unwrap() as u16,
+        );
+        state.push_instruction(Instruction {
+          op: Op::Move,
+          arg_positions: [increment_var_initial_value_pos, 0, 0],
+          return_position: increment_var_pos,
+        });
+        state
+          .locals
+          .insert(increment_variable_name.0.clone(), increment_var_pos);
+        let loop_start_pos = state.instructions.len() as u32;
+        state.loop_start_instructions.push(loop_start_pos);
+        let cond_pos = continue_condition_expression
+          .compile_to_bytecode(state)
+          .unwrap();
+        let jump_out_instruction_pos = state.instructions.len();
+        state.push_instruction(Instruction {
+          op: Op::JumpWhenNot,
+          arg_positions: [cond_pos, 0, 0],
+          return_position: 0,
+        });
+        body_expression.compile_to_bytecode(state);
+        let pre_update_pos = state.instructions.len();
+        if let Some(update_expression) = update_expression {
+          update_expression.compile_to_bytecode(state);
+        }
+        state.push_instruction(Instruction {
+          op: Op::Jump,
+          arg_positions: [
+            (loop_start_pos >> 16) as u16,
+            loop_start_pos as u16,
+            0,
+          ],
+          return_position: 0,
+        });
+        let loop_end_pos = state.instructions.len();
+        state.instructions[jump_out_instruction_pos].arg_positions[1] =
+          (loop_end_pos >> 16) as u16;
+        state.instructions[jump_out_instruction_pos].arg_positions[2] =
+          loop_end_pos as u16;
+        state.loop_start_instructions.pop();
+        None
+      }
       Break => todo!(),
       Continue => todo!(),
-      Discard => todo!(),
-      Access(accessor, exp) => todo!(),
       Return(exp) => todo!(),
       ArrayLiteral(exps) => todo!(),
+      Access(accessor, exp) => todo!(),
       StringLiteral(_) => panic!("bytecode vm can't handle strings yet!"),
+      Discard => panic!("bytecode vm can't handle discard statements"),
       Uninitialized | Wildcard | Unit => None,
     }
   }
