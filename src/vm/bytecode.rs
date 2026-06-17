@@ -290,8 +290,8 @@ impl BytecodeProgram {
         Op::ArrayLookup => unsafe {
           let [arr_pos, index_pos, inner_data_size] = instruction.arg_positions;
           let idx = *stack.get_unchecked(index_pos as usize);
-          let src = (arr_pos as usize)
-            + (idx as usize) * (inner_data_size as usize);
+          let src =
+            (arr_pos as usize) + (idx as usize) * (inner_data_size as usize);
           let base = stack.as_mut_ptr();
           std::ptr::copy(
             base.add(src),

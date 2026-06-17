@@ -95,3 +95,4 @@ vm_test!(while_loop_continue);
 vm_test!(for_loop_continue);
 vm_test!(early_return);
 vm_test!(array_access);
+vm_test!(struct_access);

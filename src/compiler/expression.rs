@@ -6029,7 +6029,29 @@ impl TypedExp {
             ),
           },
           FunctionImplementationKind::StructConstructor => {
-            todo!()
+            let struct_slot_pos = state.take_stack_slot(
+              self
+                .data
+                .unwrap_known()
+                .data_size_in_u32s(&self.source_trace)
+                .unwrap() as u16,
+            );
+            let mut offset = 0u16;
+            for arg in args {
+              let arg_pos = arg.compile_to_bytecode(state).unwrap();
+              let arg_size = arg
+                .data
+                .unwrap_known()
+                .data_size_in_u32s(&arg.source_trace)
+                .unwrap() as u16;
+              state.push_instruction(Instruction {
+                op: Op::Move,
+                arg_positions: [arg_pos, arg_size, 0],
+                return_position: struct_slot_pos + offset,
+              });
+              offset += arg_size;
+            }
+            Some(struct_slot_pos)
           }
           FunctionImplementationKind::EnumConstructor(_) => todo!(),
           FunctionImplementationKind::Composite(_) => {
@@ -6481,7 +6503,31 @@ impl TypedExp {
               return_position: result_position,
             });
           }
-          Accessor::Field(_) => todo!(),
+          Accessor::Field(field_name) => {
+            let Type::Struct(s) = exp.data.unwrap_known() else {
+              panic!()
+            };
+            let mut offset = 0;
+            for field in s.fields.iter() {
+              if field.name == *field_name {
+                break;
+              }
+              offset += field
+                .field_type
+                .unwrap_known()
+                .data_size_in_u32s(&exp.source_trace)
+                .unwrap();
+            }
+            state.push_instruction(Instruction {
+              op: Op::Move,
+              arg_positions: [
+                inner_exp_pos + (offset as u16),
+                inner_data_size,
+                0,
+              ],
+              return_position: result_position,
+            });
+          }
           Accessor::Swizzle(swizzle_fields) => todo!(),
         }
         Some(result_position)
