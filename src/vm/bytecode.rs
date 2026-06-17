@@ -4,6 +4,7 @@ use std::ops::Range;
 pub enum Op {
   Move,
   InvokeFunction,
+  Return,
   Constant,
   JumpWhen,
   JumpWhenNot,
@@ -187,6 +188,12 @@ impl BytecodeProgram {
             .instructions
             .clone();
         },
+        Op::Return => {
+          let Some(return_ip) = call_stack.pop() else {
+            return;
+          };
+          ip = return_ip;
+        }
         Op::Move => unsafe {
           let base = stack.as_mut_ptr();
           std::ptr::copy(

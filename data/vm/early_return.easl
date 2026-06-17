@@ -1,0 +1,4 @@
+(defn f []: f32
+  (when true (return 2.))
+  5.)
+

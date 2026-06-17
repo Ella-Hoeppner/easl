@@ -6419,7 +6419,33 @@ impl TypedExp {
           .push(jump_pos);
         None
       }
-      Return(exp) => todo!(),
+      Return(exp) => {
+        if let Some(return_value_pos) = exp.compile_to_bytecode(state) {
+          state.push_instruction(Instruction {
+            op: Op::Move,
+            arg_positions: [
+              return_value_pos,
+              exp
+                .data
+                .unwrap_known()
+                .data_size_in_u32s(&exp.source_trace)
+                .unwrap() as u16,
+              0,
+            ],
+            return_position: state
+              .current_function
+              .as_ref()
+              .unwrap()
+              .stack_frame_start,
+          });
+        }
+        state.push_instruction(Instruction {
+          op: Op::Return,
+          arg_positions: [0, 0, 0],
+          return_position: 0,
+        });
+        None
+      }
       ArrayLiteral(exps) => todo!(),
       Access(accessor, exp) => todo!(),
       StringLiteral(_) => panic!("bytecode vm can't handle strings yet!"),
