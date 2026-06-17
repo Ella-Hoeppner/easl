@@ -8,6 +8,8 @@ pub enum Op {
   JumpWhen,
   Jump,
   PlusF32,
+  PlusI32,
+  PlusU32,
   IsEqualU32,
   IsEqualBool,
   IsEqualF32,
@@ -39,6 +41,8 @@ pub enum Op {
   InvSqrt,
   Step,
   Smoothstep,
+  U32ToF32,
+  I32ToF32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -64,6 +68,22 @@ impl Instruction {
         f32::from_bits(*stack.get_unchecked(self.arg_positions[1] as usize)),
       )
       .to_bits();
+    }
+  }
+  fn i32_binary(&self, stack: &mut [u32], f: impl Fn(i32, i32) -> i32) {
+    unsafe {
+      *stack.get_unchecked_mut(self.return_position as usize) = f(
+        (*stack.get_unchecked(self.arg_positions[0] as usize)) as i32,
+        (*stack.get_unchecked(self.arg_positions[1] as usize)) as i32,
+      ) as u32;
+    }
+  }
+  fn u32_binary(&self, stack: &mut [u32], f: impl Fn(u32, u32) -> u32) {
+    unsafe {
+      *stack.get_unchecked_mut(self.return_position as usize) = f(
+        (*stack.get_unchecked(self.arg_positions[0] as usize)),
+        (*stack.get_unchecked(self.arg_positions[1] as usize)),
+      );
     }
   }
   fn max_touched_index(&self) -> u16 {
@@ -206,6 +226,14 @@ impl BytecodeProgram {
         },
         Op::Cos => instruction.f32_unary(stack, f32::cos),
         Op::PlusF32 => instruction.f32_binary(stack, |a, b| a + b),
+        Op::PlusU32 => instruction.u32_binary(stack, |a, b| a + b),
+        Op::PlusI32 => instruction.i32_binary(stack, |a, b| a + b),
+        Op::U32ToF32 => unsafe {
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            (*stack.get_unchecked(instruction.arg_positions[0] as usize)
+              as f32)
+              .to_bits();
+        },
         _ => todo!(),
       }
     }

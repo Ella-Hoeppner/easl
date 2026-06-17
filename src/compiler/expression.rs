@@ -5837,6 +5837,28 @@ impl TypedExp {
               });
               Some(result_position)
             }
+            "f32" => {
+              let result_position = state.take_stack_slot(1);
+              state.push_instruction(match arg_types[0] {
+                Type::F32 => Instruction {
+                  op: Op::Move,
+                  arg_positions: [arg_positions[0], 1, 0],
+                  return_position: result_position,
+                },
+                Type::I32 => Instruction {
+                  op: Op::I32ToF32,
+                  arg_positions: [arg_positions[0], 0, 0],
+                  return_position: result_position,
+                },
+                Type::U32 => Instruction {
+                  op: Op::U32ToF32,
+                  arg_positions: [arg_positions[0], 0, 0],
+                  return_position: result_position,
+                },
+                _ => panic!(),
+              });
+              Some(result_position)
+            }
             "+" => match return_type {
               Type::F32 => {
                 let result_position = state.take_stack_slot(1);
@@ -5847,7 +5869,25 @@ impl TypedExp {
                 });
                 Some(result_position)
               }
-              _ => todo!(),
+              Type::I32 => {
+                let result_position = state.take_stack_slot(1);
+                state.push_instruction(Instruction {
+                  op: Op::PlusI32,
+                  arg_positions: [arg_positions[0], arg_positions[1], 0],
+                  return_position: result_position,
+                });
+                Some(result_position)
+              }
+              Type::U32 => {
+                let result_position = state.take_stack_slot(1);
+                state.push_instruction(Instruction {
+                  op: Op::PlusU32,
+                  arg_positions: [arg_positions[0], arg_positions[1], 0],
+                  return_position: result_position,
+                });
+                Some(result_position)
+              }
+              _ => unreachable!(),
             },
             "==" => match arg_types[0] {
               Type::F32 => {
@@ -5976,13 +6016,15 @@ impl TypedExp {
         }
         body.compile_to_bytecode(state)
       }
-      Access(accessor, exp) => todo!(),
       Match(scrutinee, arms) => {
         let result_type = self.data.unwrap_known();
         let result_type_size =
           result_type.data_size_in_u32s(&self.source_trace).unwrap() as u16;
         let scrutinee_pos = scrutinee.compile_to_bytecode(state).unwrap();
-        if scrutinee.data.unwrap_known() == Type::Bool {
+        let scrutinee_type = scrutinee.data.unwrap_known();
+        if scrutinee_type == Type::Bool
+          && arms[0].0.kind == ExpKind::BooleanLiteral(true)
+        {
           let result_pos = if result_type_size > 0 {
             Some(state.take_stack_slot(result_type_size))
           } else {
@@ -6031,7 +6073,89 @@ impl TypedExp {
             .arg_positions[1] = true_branch_end_pos as u16;
           result_pos
         } else {
-          todo!()
+          match scrutinee_type {
+            Type::F32 | Type::I32 | Type::U32 | Type::Bool => {
+              let result_pos = if result_type_size > 0 {
+                Some(state.take_stack_slot(result_type_size))
+              } else {
+                None
+              };
+              let mut arms = arms.clone();
+              let last_arm_body = arms.pop().unwrap().1;
+              let mut jump_into_block_instruction_positions = vec![];
+              for (pattern, _) in arms.iter() {
+                let pattern_pos = pattern.compile_to_bytecode(state).unwrap();
+                let equality_check_pos = state.take_stack_slot(1);
+                state.push_instruction(Instruction {
+                  op: match scrutinee_type {
+                    Type::F32 => Op::IsEqualF32,
+                    Type::I32 | Type::U32 => Op::IsEqualU32,
+                    Type::Bool => Op::IsEqualBool,
+                    _ => unreachable!(),
+                  },
+                  arg_positions: [scrutinee_pos, pattern_pos, 0],
+                  return_position: equality_check_pos,
+                });
+                jump_into_block_instruction_positions
+                  .push(state.instructions.len());
+                state.push_instruction(Instruction {
+                  op: Op::JumpWhen,
+                  arg_positions: [equality_check_pos, 0, 0],
+                  return_position: 0,
+                });
+              }
+              if let Some(last_arm_result_pos) =
+                last_arm_body.compile_to_bytecode(state)
+              {
+                state.push_instruction(Instruction {
+                  op: Op::Move,
+                  arg_positions: [last_arm_result_pos, result_type_size, 0],
+                  return_position: result_pos.unwrap(),
+                });
+              }
+              let mut arm_end_instruction_positions =
+                vec![state.instructions.len()];
+              state.push_instruction(Instruction {
+                op: Op::Jump,
+                arg_positions: [0, 0, 0],
+                return_position: 0,
+              });
+              for (i, (_, body)) in arms.into_iter().enumerate() {
+                let start_pos = state.instructions.len();
+                state.instructions[jump_into_block_instruction_positions[i]]
+                  .arg_positions[1] = (start_pos >> 16) as u16;
+                state.instructions[jump_into_block_instruction_positions[i]]
+                  .arg_positions[2] = start_pos as u16;
+                if let Some(arm_result_pos) = body.compile_to_bytecode(state) {
+                  state.push_instruction(Instruction {
+                    op: Op::Move,
+                    arg_positions: [arm_result_pos, result_type_size, 0],
+                    return_position: result_pos.unwrap(),
+                  });
+                }
+                arm_end_instruction_positions.push(state.instructions.len());
+                state.push_instruction(Instruction {
+                  op: Op::Jump,
+                  arg_positions: [0, 0, 0],
+                  return_position: 0,
+                });
+              }
+              let match_block_end_pos = state.instructions.len();
+              for arm_end_pos in arm_end_instruction_positions {
+                state.instructions[arm_end_pos].arg_positions[0] =
+                  (match_block_end_pos >> 16) as u16;
+                state.instructions[arm_end_pos].arg_positions[1] =
+                  match_block_end_pos as u16;
+              }
+              result_pos
+            }
+            Type::String => todo!(),
+            Type::Struct(_) => todo!(),
+            Type::Enum(_) => todo!(),
+            Type::Function(_) => todo!(),
+            Type::Array(_, _) => todo!(),
+            Type::Skolem(_, _) | Type::Unit => panic!(),
+          }
         }
       }
       ForLoop {
@@ -6049,6 +6173,7 @@ impl TypedExp {
       Break => todo!(),
       Continue => todo!(),
       Discard => todo!(),
+      Access(accessor, exp) => todo!(),
       Return(exp) => todo!(),
       ArrayLiteral(exps) => todo!(),
       StringLiteral(_) => panic!("bytecode vm can't handle strings yet!"),

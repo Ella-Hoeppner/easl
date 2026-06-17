@@ -83,3 +83,4 @@ vm_test!(let_binding);
 vm_test!(if_true);
 vm_test!(if_false);
 vm_test!(if_equality_check);
+vm_test!(match_int);
