@@ -1853,9 +1853,17 @@ fn apply_builtin_fn<IO: IOManager>(
         .clone();
       #[cfg(feature = "window")]
       {
+        // A typical program puts `(start-audio ...)` inside a
+        // `spawn-window` callback that fires every frame, so this builtin
+        // gets called repeatedly. We only have one `AudioSource` to spend
+        // (the bytecode program / C source) — we move it to the IO manager
+        // on the first call, then pass `None` on subsequent calls. The IO
+        // manager decides what to do with each (StdoutIO noops on the
+        // already-running case; StringIO records every event).
+        let source = env.audio_source.take();
         env
           .io
-          .start_audio(&entry_name, env.audio_source.take())
+          .start_audio(&entry_name, source)
           .map_err(EvalException::Error)?;
         Ok(Value::Unit)
       }
@@ -3111,7 +3119,17 @@ impl IOManager for StdoutIO {
     entry_name: &str,
     source: Option<crate::audio::AudioSource>,
   ) -> Result<(), EvalError> {
-    let source = source.ok_or(UserspaceEvalError::AudioSourceMissing)?;
+    let Some(source) = source else {
+      // Repeated call: the audio source was already consumed on the first
+      // call. If a stream is actually running we treat this as a no-op (a
+      // typical program puts `start-audio` inside a frame callback); if
+      // not, the run was started without audio support in the first place.
+      return if crate::audio::is_audio_thread_started() {
+        Ok(())
+      } else {
+        Err(UserspaceEvalError::AudioSourceMissing.into())
+      };
+    };
     match source {
       crate::audio::AudioSource::Bytecode {
         program,
@@ -3462,7 +3480,8 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   /// Pre-compiled audio source for `start-audio`. Required for the
   /// `start-audio` builtin to actually start a stream; `None` means the run
   /// was started without audio support. Consumed (via `take`) on first
-  /// `start-audio` invocation.
+  /// `start-audio` invocation; later calls pass `None` and the IO manager
+  /// decides what to do (noop if a stream is already running, error if not).
   #[cfg(feature = "window")]
   audio_source: Option<crate::audio::AudioSource>,
 }
@@ -4821,22 +4840,20 @@ fn try_compile_audio_source(
   }
 }
 
-/// Clone `program` and re-validate + compile it to a `BytecodeProgram` so the
-/// `start-audio` builtin can run the audio entry function on the VM. Returns
-/// `None` on any failure (logged to stderr).
+/// Clone `program` and compile it to a `BytecodeProgram` so the
+/// `start-audio` builtin can run the audio entry function on the VM. The
+/// program is assumed to have already been validated by the caller — every
+/// public `run_program_entry_*` entry point hands us a Program that the
+/// interpreter is already prepared to walk, which is the same precondition
+/// `compile_to_bytecode_program` needs. (`validate_raw_program` is not
+/// idempotent — its later passes lower `Ownership::Reference` to
+/// `Ownership::Pointer(_)`, and an earlier pass on a re-run would panic on
+/// the resulting Pointer.)
 #[cfg(feature = "window")]
 fn try_compile_audio_bytecode(
   program: &Program,
 ) -> Option<crate::audio::AudioSource> {
-  let mut p = program.clone();
-  let errors = p.validate_raw_program(CompilerTarget::WGSL);
-  if !errors.is_empty() {
-    eprintln!(
-      "Note: failed to validate program for audio bytecode compilation: \
-       {errors:?}"
-    );
-    return None;
-  }
+  let p = program.clone();
   let (bytecode_program, function_names) = p.compile_to_bytecode_program();
   Some(crate::audio::AudioSource::Bytecode {
     program: bytecode_program,

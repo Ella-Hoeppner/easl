@@ -67,6 +67,16 @@ unsafe impl Send for AudioState {}
 
 static AUDIO_STATE: Mutex<Option<AudioState>> = Mutex::new(None);
 
+/// True iff a `start_audio_thread_*` call has previously succeeded in this
+/// process. Used by IO managers to decide what to do when the
+/// `start-audio` builtin fires for a second time without a fresh source —
+/// if the stream is already running this is a benign repeat (typical
+/// "called inside the frame callback" pattern); if not, the run was
+/// started without audio support.
+pub fn is_audio_thread_started() -> bool {
+  AUDIO_STATE.lock().unwrap().is_some()
+}
+
 /// Find the index of the audio entry function in `function_names`.
 fn find_audio_fn_index(
   entry_name: &str,
