@@ -6,8 +6,6 @@ use std::sync::Arc;
 
 use crate::compiler::{
   builtins::{ASSIGNMENT_OPS, ATOMIC_MUTATION_OPS},
-  core::compile_easl_file_to_target,
-  entry::EntryPoint,
   error::CompileError,
   expression::{Accessor, Exp, ExpKind, Number, SwizzleField},
   functions::{AbstractFunctionSignature, FunctionImplementationKind},
@@ -18,6 +16,10 @@ use crate::compiler::{
   },
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
+#[cfg(feature = "window")]
+use crate::compiler::entry::EntryPoint;
+#[cfg(all(feature = "window", feature = "c_audio"))]
+use crate::compiler::core::compile_easl_file_to_target;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Primitive {
@@ -107,10 +109,10 @@ pub enum UserspaceEvalError {
   #[error("`window` feature not enabled")]
   WindowFeatureNotEnabled,
   #[error(
-    "`start-audio` was called but no C source was compiled for the program; \
-     this run was started without audio support"
+    "`start-audio` was called but no audio source was compiled for the \
+     program; this run was started without audio support"
   )]
-  AudioCSourceMissing,
+  AudioSourceMissing,
   #[error("Audio runtime error: {0}")]
   AudioRuntimeError(String),
   #[error("No `@cpu` entry point found")]
@@ -1849,11 +1851,19 @@ fn apply_builtin_fn<IO: IOManager>(
         .unwrap()
         .name
         .clone();
-      env
-        .io
-        .start_audio(&entry_name, env.audio_c_source.as_deref())
-        .map_err(EvalException::Error)?;
-      Ok(Value::Unit)
+      #[cfg(feature = "window")]
+      {
+        env
+          .io
+          .start_audio(&entry_name, env.audio_source.take())
+          .map_err(EvalException::Error)?;
+        Ok(Value::Unit)
+      }
+      #[cfg(not(feature = "window"))]
+      {
+        let _ = entry_name;
+        Err(EvalException::Error(WindowFeatureNotEnabled.into()))
+      }
     }
     "spawn-window" => {
       let (callback, _) = args.remove(0);
@@ -2696,23 +2706,30 @@ pub trait IOManager: Sized {
     env: &mut EvaluationEnvironment<Self>,
   ) -> Result<bool, EvalError>;
   /// Start a background audio playback thread that calls the function named
-  /// `entry_name` from the previously-compiled `c_source` at the audio sample
-  /// rate. The function must have signature `f32 entry(f32 t, f32 rate)`.
-  /// `c_source` is `None` when the run was started without audio support;
-  /// IO managers that do real audio playback should return
-  /// `AudioCSourceMissing` in that case, while testing managers (e.g.
+  /// `entry_name` at the audio sample rate. The function must have signature
+  /// `(t: f32, rate: f32) -> f32`. `source` carries the compiled artifact —
+  /// either a bytecode program (default) or C source (with the `c_audio`
+  /// feature) — and is consumed by the IO manager (typically moved onto the
+  /// audio thread). `source` is `None` when the run was started without
+  /// audio support; IO managers that do real audio playback should return
+  /// `AudioSourceMissing` in that case, while testing managers (e.g.
   /// `StringIO`) may simply record the event.
   /// Default: not supported (returns an error). Overridden by IO managers
   /// that actually link to an audio backend.
+  #[cfg(feature = "window")]
   fn start_audio(
     &mut self,
     _entry_name: &str,
-    _c_source: Option<&str>,
+    _source: Option<crate::audio::AudioSource>,
   ) -> Result<(), EvalError> {
     Err(UserspaceEvalError::AudioRuntimeError(
       "start-audio not supported by this IO manager".to_string(),
     )
     .into())
+  }
+  #[cfg(not(feature = "window"))]
+  fn start_audio(&mut self, _entry_name: &str) -> Result<(), EvalError> {
+    Err(WindowFeatureNotEnabled.into())
   }
 }
 
@@ -3088,23 +3105,32 @@ impl IOManager for StdoutIO {
     }
   }
 
+  #[cfg(feature = "window")]
   fn start_audio(
     &mut self,
     entry_name: &str,
-    c_source: Option<&str>,
+    source: Option<crate::audio::AudioSource>,
   ) -> Result<(), EvalError> {
-    #[cfg(feature = "window")]
-    {
-      let c_source = c_source.ok_or(UserspaceEvalError::AudioCSourceMissing)?;
-      crate::audio::start_audio_thread(entry_name, c_source).map_err(|e| {
-        UserspaceEvalError::AudioRuntimeError(e).into()
-      })
+    let source = source.ok_or(UserspaceEvalError::AudioSourceMissing)?;
+    match source {
+      crate::audio::AudioSource::Bytecode {
+        program,
+        function_names,
+      } => crate::audio::start_audio_thread_vm(
+        entry_name,
+        program,
+        function_names,
+      )
+      .map_err(|e| UserspaceEvalError::AudioRuntimeError(e).into()),
+      crate::audio::AudioSource::C(c_source) => {
+        crate::audio::start_audio_thread_c(entry_name, &c_source)
+          .map_err(|e| UserspaceEvalError::AudioRuntimeError(e).into())
+      }
     }
-    #[cfg(not(feature = "window"))]
-    {
-      let _ = (entry_name, c_source);
-      Err(WindowFeatureNotEnabled.into())
-    }
+  }
+  #[cfg(not(feature = "window"))]
+  fn start_audio(&mut self, _entry_name: &str) -> Result<(), EvalError> {
+    Err(WindowFeatureNotEnabled.into())
   }
 }
 
@@ -3223,11 +3249,19 @@ impl IOManager for StringIO {
     Ok(false)
   }
 
+  #[cfg(feature = "window")]
   fn start_audio(
     &mut self,
     entry_name: &str,
-    _c_source: Option<&str>,
+    _source: Option<crate::audio::AudioSource>,
   ) -> Result<(), EvalError> {
+    self.events.push(IOEvent::StartAudio {
+      entry: entry_name.to_string(),
+    });
+    Ok(())
+  }
+  #[cfg(not(feature = "window"))]
+  fn start_audio(&mut self, entry_name: &str) -> Result<(), EvalError> {
     self.events.push(IOEvent::StartAudio {
       entry: entry_name.to_string(),
     });
@@ -3396,12 +3430,17 @@ impl IOManager for CaptureIO {
     Ok(false)
   }
 
+  #[cfg(feature = "window")]
   fn start_audio(
     &mut self,
     entry_name: &str,
-    c_source: Option<&str>,
+    source: Option<crate::audio::AudioSource>,
   ) -> Result<(), EvalError> {
-    self.inner.start_audio(entry_name, c_source)
+    self.inner.start_audio(entry_name, source)
+  }
+  #[cfg(not(feature = "window"))]
+  fn start_audio(&mut self, entry_name: &str) -> Result<(), EvalError> {
+    self.inner.start_audio(entry_name)
   }
 }
 
@@ -3420,9 +3459,12 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   /// render to the screen. Set by `set-render-target`, cleared by
   /// `clear-render-target`.
   current_render_target: Option<GroupAndBinding>,
-  /// Pre-compiled C source for the program. Required for `start-audio` to
-  /// work; `None` means the run was started without audio support.
-  audio_c_source: Option<String>,
+  /// Pre-compiled audio source for `start-audio`. Required for the
+  /// `start-audio` builtin to actually start a stream; `None` means the run
+  /// was started without audio support. Consumed (via `take`) on first
+  /// `start-audio` invocation.
+  #[cfg(feature = "window")]
+  audio_source: Option<crate::audio::AudioSource>,
 }
 
 impl<IO: IOManager> EvaluationEnvironment<IO> {
@@ -3431,13 +3473,35 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     io: IO,
     source_dir: Option<PathBuf>,
   ) -> Result<Self, EvalError> {
-    Self::from_program_with_audio_c_source(program, io, source_dir, None)
+    #[cfg(feature = "window")]
+    return Self::from_program_with_audio_source(program, io, source_dir, None);
+    #[cfg(not(feature = "window"))]
+    return Self::build(program, io, source_dir);
   }
-  pub fn from_program_with_audio_c_source(
+  #[cfg(feature = "window")]
+  pub fn from_program_with_audio_source(
     program: Program,
     io: IO,
     source_dir: Option<PathBuf>,
-    audio_c_source: Option<String>,
+    audio_source: Option<crate::audio::AudioSource>,
+  ) -> Result<Self, EvalError> {
+    Self::build_inner(program, io, source_dir, audio_source)
+  }
+  #[cfg(not(feature = "window"))]
+  fn build(
+    program: Program,
+    io: IO,
+    source_dir: Option<PathBuf>,
+  ) -> Result<Self, EvalError> {
+    Self::build_inner(program, io, source_dir)
+  }
+  fn build_inner(
+    program: Program,
+    io: IO,
+    source_dir: Option<PathBuf>,
+    #[cfg(feature = "window")] audio_source: Option<
+      crate::audio::AudioSource,
+    >,
   ) -> Result<Self, EvalError> {
     let binding_vars: Vec<(
       GroupAndBinding,
@@ -3484,7 +3548,8 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       buffer_states,
       source_dir,
       current_render_target: None,
-      audio_c_source,
+      #[cfg(feature = "window")]
+      audio_source,
     };
     for var in program.top_level_vars.iter() {
       let value = match &var.value {
@@ -4618,22 +4683,43 @@ fn run_program_with<IO: IOManager>(
   io: IO,
   source_dir: Option<PathBuf>,
 ) -> Result<(IO, bool), EvalError> {
-  run_program_with_audio_c_source(
-    program,
-    entry_point_name,
-    io,
-    source_dir,
-    None,
-  )
+  let body = pick_entry_point_body(&program, entry_point_name)?;
+  let mut env = EvaluationEnvironment::from_program(program, io, source_dir)?;
+  match eval(body, &mut env) {
+    Ok(_) => Ok((env.io, false)),
+    Err(EvalException::ReloadRequested) => Ok((env.io, true)),
+    Err(e) => Err(e.into()),
+  }
 }
 
-fn run_program_with_audio_c_source<IO: IOManager>(
+#[cfg(feature = "window")]
+fn run_program_with_audio_source<IO: IOManager>(
   program: Program,
   entry_point_name: Option<&str>,
   io: IO,
   source_dir: Option<PathBuf>,
-  audio_c_source: Option<String>,
+  audio_source: Option<crate::audio::AudioSource>,
 ) -> Result<(IO, bool), EvalError> {
+  let body = pick_entry_point_body(&program, entry_point_name)?;
+  let mut env = EvaluationEnvironment::from_program_with_audio_source(
+    program,
+    io,
+    source_dir,
+    audio_source,
+  )?;
+  match eval(body, &mut env) {
+    Ok(_) => Ok((env.io, false)),
+    Err(EvalException::ReloadRequested) => Ok((env.io, true)),
+    Err(e) => Err(e.into()),
+  }
+}
+
+/// Pick the right `@cpu` entry point function body to evaluate. Shared by
+/// the audio-aware and non-audio runners.
+fn pick_entry_point_body(
+  program: &Program,
+  entry_point_name: Option<&str>,
+) -> Result<Exp<ExpTypeInfo>, EvalError> {
   let mut cpu_fns = program.cpu_entry_points();
   let entry_fn = match entry_point_name {
     Some(name) => {
@@ -4658,19 +4744,7 @@ fn run_program_with_audio_c_source<IO: IOManager>(
   let ExpKind::Function(_, body) = &f.expression.kind else {
     panic!()
   };
-  let body = *body.clone();
-  drop(f);
-  let mut env = EvaluationEnvironment::from_program_with_audio_c_source(
-    program,
-    io,
-    source_dir,
-    audio_c_source,
-  )?;
-  match eval(body, &mut env) {
-    Ok(_) => Ok((env.io, false)),
-    Err(EvalException::ReloadRequested) => Ok((env.io, true)),
-    Err(e) => Err(e.into()),
-  }
+  Ok(*body.clone())
 }
 
 pub fn run_program(program: Program) -> Result<(), EvalError> {
@@ -4692,31 +4766,88 @@ pub fn run_program_entry_from_path(
   source_path: &std::path::Path,
 ) -> Result<(), EvalError> {
   let source_dir = source_path.parent().map(|p| p.to_path_buf());
-  let audio_c_source = try_compile_audio_c_source(&program, source_path);
-  run_program_with_audio_c_source(
-    program,
-    entry,
-    StdoutIO::new(),
-    source_dir,
-    audio_c_source,
-  )?;
+  #[cfg(feature = "window")]
+  {
+    let audio_source = try_compile_audio_source(
+      &program,
+      source_path,
+      crate::audio::AudioBackend::default(),
+    );
+    run_program_with_audio_source(
+      program,
+      entry,
+      StdoutIO::new(),
+      source_dir,
+      audio_source,
+    )?;
+  }
+  #[cfg(not(feature = "window"))]
+  {
+    let _ = source_path;
+    run_program_with(program, entry, StdoutIO::new(), source_dir)?;
+  }
   Ok(())
 }
 
 /// If the validated `program` contains at least one `@audio` entry point,
-/// re-load the source from `source_path`, validate it for the C target, and
-/// compile it. Returns `None` if there are no audio entry points or if any
-/// step fails — failures are logged to stderr so the WGSL run can proceed.
-fn try_compile_audio_c_source(
+/// compile it for `audio_backend`. Returns `None` if there are no audio
+/// entry points, or if compilation fails — failures are logged to stderr so
+/// the rest of the run can proceed.
+#[cfg(feature = "window")]
+fn try_compile_audio_source(
   program: &Program,
+  #[cfg_attr(not(feature = "c_audio"), allow(unused_variables))]
   source_path: &std::path::Path,
-) -> Option<String> {
+  audio_backend: crate::audio::AudioBackend,
+) -> Option<crate::audio::AudioSource> {
   let has_audio_entry = !program
     .find_fn_names_by_entry_point(|e| e == EntryPoint::Audio)
     .is_empty();
   if !has_audio_entry {
     return None;
   }
+  match audio_backend {
+    crate::audio::AudioBackend::VM => try_compile_audio_bytecode(program),
+    crate::audio::AudioBackend::C => {
+      #[cfg(not(feature = "c_audio"))]
+      panic!(
+        "AudioBackend::C was selected, but the `c_audio` cargo feature is \
+         not enabled. Either enable `c_audio` or use AudioBackend::VM (the \
+         default)."
+      );
+      #[cfg(feature = "c_audio")]
+      try_compile_audio_c_source(source_path).map(crate::audio::AudioSource::C)
+    }
+  }
+}
+
+/// Clone `program` and re-validate + compile it to a `BytecodeProgram` so the
+/// `start-audio` builtin can run the audio entry function on the VM. Returns
+/// `None` on any failure (logged to stderr).
+#[cfg(feature = "window")]
+fn try_compile_audio_bytecode(
+  program: &Program,
+) -> Option<crate::audio::AudioSource> {
+  let mut p = program.clone();
+  let errors = p.validate_raw_program(CompilerTarget::WGSL);
+  if !errors.is_empty() {
+    eprintln!(
+      "Note: failed to validate program for audio bytecode compilation: \
+       {errors:?}"
+    );
+    return None;
+  }
+  let (bytecode_program, function_names) = p.compile_to_bytecode_program();
+  Some(crate::audio::AudioSource::Bytecode {
+    program: bytecode_program,
+    function_names,
+  })
+}
+
+#[cfg(all(feature = "window", feature = "c_audio"))]
+fn try_compile_audio_c_source(
+  source_path: &std::path::Path,
+) -> Option<String> {
   match compile_easl_file_to_target(source_path, CompilerTarget::C) {
     Ok(Ok(Ok(c_source))) => Some(c_source),
     Ok(Ok(Err((documents, errors)))) => {
@@ -4759,34 +4890,40 @@ pub fn run_program_entry_with_io_from_path<IO: IOManager>(
   source_path: &std::path::Path,
 ) -> Result<(IO, bool), EvalError> {
   let source_dir = source_path.parent().map(|p| p.to_path_buf());
-  let audio_c_source = try_compile_audio_c_source(&program, source_path);
-  run_program_with_audio_c_source(
-    program,
-    entry,
-    io,
-    source_dir,
-    audio_c_source,
-  )
+  #[cfg(feature = "window")]
+  {
+    let audio_source = try_compile_audio_source(
+      &program,
+      source_path,
+      crate::audio::AudioBackend::default(),
+    );
+    run_program_with_audio_source(program, entry, io, source_dir, audio_source)
+  }
+  #[cfg(not(feature = "window"))]
+  {
+    let _ = source_path;
+    run_program_with(program, entry, io, source_dir)
+  }
 }
 
-/// Like `run_program_entry_with_io_from_path`, but also accepts a
-/// pre-compiled C source string for the same program. The C source is
-/// invoked by `start-audio` at runtime to JIT-build the audio thread.
-pub fn run_program_entry_with_io_and_audio_c_source_from_path<IO: IOManager>(
+/// Like `run_program_entry_with_io_from_path`, but also accepts an explicit
+/// [`AudioBackend`] choice (defaults to `VM`). Use this when the caller wants
+/// to opt into the C audio backend (requires `c_audio` feature) instead of
+/// the default bytecode VM.
+#[cfg(feature = "window")]
+pub fn run_program_entry_with_io_and_audio_backend_from_path<
+  IO: IOManager,
+>(
   program: Program,
   entry: Option<&str>,
   io: IO,
   source_path: &std::path::Path,
-  audio_c_source: Option<String>,
+  audio_backend: crate::audio::AudioBackend,
 ) -> Result<(IO, bool), EvalError> {
   let source_dir = source_path.parent().map(|p| p.to_path_buf());
-  run_program_with_audio_c_source(
-    program,
-    entry,
-    io,
-    source_dir,
-    audio_c_source,
-  )
+  let audio_source =
+    try_compile_audio_source(&program, source_path, audio_backend);
+  run_program_with_audio_source(program, entry, io, source_dir, audio_source)
 }
 
 pub fn run_program_capturing_output(

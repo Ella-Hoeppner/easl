@@ -761,32 +761,54 @@ impl BytecodeCompilationState {
         }
       }
       "/" => {
-        let a_vec = vec_kind(&arg_types[0]);
-        let b_vec = vec_kind(&arg_types[1]);
-        match (a_vec, b_vec) {
-          (Some((n, e)), Some((_, _))) => Some(self.emit_fanout_binary(
-            arithmetic_op_for(&e, "/"),
-            arg_positions[0],
-            arg_positions[1],
-            n,
-          )),
-          (Some((n, e)), None) => Some(self.emit_fanout_binary_scalar_rhs(
-            arithmetic_op_for(&e, "/"),
-            arg_positions[0],
-            arg_positions[1],
-            n,
-          )),
-          (None, Some((n, e))) => Some(self.emit_fanout_binary_scalar_lhs(
-            arithmetic_op_for(&e, "/"),
-            arg_positions[0],
-            arg_positions[1],
-            n,
-          )),
-          (None, None) => Some(self.emit_binary(
-            arithmetic_op_for(&arg_types[0], "/"),
-            arg_positions[0],
-            arg_positions[1],
-          )),
+        if args.len() == 1 {
+          // Unary `/` is reciprocal: `(/ x)` ≡ `(/ 1 x)`.
+          let (count, elem) = vec_kind(&arg_types[0])
+            .unwrap_or_else(|| (1, arg_types[0].clone()));
+          let one = match elem {
+            Type::F32 => self.emit_f32_constant(1.0),
+            Type::I32 | Type::U32 => self.emit_u32_constant(1),
+            _ => unreachable!(),
+          };
+          let div_op = arithmetic_op_for(&elem, "/");
+          if vec_kind(&arg_types[0]).is_some() {
+            Some(self.emit_fanout_binary_scalar_lhs(
+              div_op,
+              one,
+              arg_positions[0],
+              count,
+            ))
+          } else {
+            Some(self.emit_binary(div_op, one, arg_positions[0]))
+          }
+        } else {
+          let a_vec = vec_kind(&arg_types[0]);
+          let b_vec = vec_kind(&arg_types[1]);
+          match (a_vec, b_vec) {
+            (Some((n, e)), Some((_, _))) => Some(self.emit_fanout_binary(
+              arithmetic_op_for(&e, "/"),
+              arg_positions[0],
+              arg_positions[1],
+              n,
+            )),
+            (Some((n, e)), None) => Some(self.emit_fanout_binary_scalar_rhs(
+              arithmetic_op_for(&e, "/"),
+              arg_positions[0],
+              arg_positions[1],
+              n,
+            )),
+            (None, Some((n, e))) => Some(self.emit_fanout_binary_scalar_lhs(
+              arithmetic_op_for(&e, "/"),
+              arg_positions[0],
+              arg_positions[1],
+              n,
+            )),
+            (None, None) => Some(self.emit_binary(
+              arithmetic_op_for(&arg_types[0], "/"),
+              arg_positions[0],
+              arg_positions[1],
+            )),
+          }
         }
       }
       "%" => Some(self.emit_elementwise_binary(
@@ -1228,7 +1250,10 @@ impl BytecodeCompilationState {
     self.emit_binary(Op::PlusF32, am1_minus_bm2, cm3)
   }
 
-  pub fn finalize(self) -> (BytecodeProgram, Vec<Arc<str>>) {
+  pub fn finalize(
+    self,
+    init_function_index: Option<usize>,
+  ) -> (BytecodeProgram, Vec<Arc<str>>) {
     let code: Code = Code {
       function_instructions: self.instructions,
       functions: self
@@ -1239,6 +1264,7 @@ impl BytecodeCompilationState {
           return_position: f.stack_frame_start,
         })
         .collect(),
+      init_function_index,
     };
     (
       BytecodeProgram::from_code(code),

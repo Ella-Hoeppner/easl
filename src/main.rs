@@ -1,10 +1,11 @@
+#[cfg(feature = "window")]
+use easl::interpreter::{
+  StdoutIO, run_program_entry_with_io_and_audio_backend_from_path,
+};
 use easl::{
   compile_easl_source_to_wgsl,
   compiler::{core::load_easl_program_from_file, program::CompilerTarget},
-  interpreter::{
-    StdoutIO, run_program_entry,
-    run_program_entry_with_io_and_audio_c_source_from_path,
-  },
+  interpreter::run_program_entry,
 };
 use std::fs;
 
@@ -33,6 +34,7 @@ fn benchmark_wgsl_compilation() {
   println!("\n{} files, total: {total_time:.1}ms", entries.len());
 }
 
+#[cfg(feature = "window")]
 #[allow(unused)]
 fn run_window_demo(file_name: &str, entry: Option<&str>) {
   let path_str = format!("./data/window/{file_name}.easl");
@@ -49,36 +51,18 @@ fn run_window_demo(file_name: &str, entry: Option<&str>) {
   if !wgsl_errors.is_empty() {
     panic!("{wgsl_errors:?}");
   }
-  let audio_c_source = compile_to_c_if_audio(program.clone());
-  run_program_entry_with_io_and_audio_c_source_from_path(
+  // Audio (if used) is driven by the bytecode VM by default — no external
+  // toolchain needed. To use the C backend instead, build with
+  // `--features c_audio` and pass `AudioBackend::C` below.
+  let audio_backend = easl::audio::AudioBackend::default();
+  run_program_entry_with_io_and_audio_backend_from_path(
     wgsl_program,
     entry,
     StdoutIO::new(),
     path,
-    audio_c_source,
+    audio_backend,
   )
   .unwrap();
-}
-
-#[allow(unused)]
-fn compile_to_c_if_audio(
-  mut program: easl::compiler::program::Program,
-) -> Option<String> {
-  let errors = program.validate_raw_program(CompilerTarget::C);
-  if !errors.is_empty() {
-    // If the C-target validation fails, we still want the WGSL run to
-    // succeed; the C source just isn't available and any start-audio call
-    // will surface an error.
-    eprintln!("C-target validation failed (audio will be unavailable):");
-    return None;
-  }
-  match program.compile_to_target(CompilerTarget::C) {
-    Ok(c_source) => Some(c_source),
-    Err(e) => {
-      eprintln!("C-target compilation failed: {e}");
-      None
-    }
-  }
 }
 
 #[allow(unused)]

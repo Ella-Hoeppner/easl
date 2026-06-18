@@ -17,7 +17,11 @@ libloading = { version = "0.8", optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [features]
-window = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:cpal", "dep:libloading"]
+window = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:cpal"]
+# `c_audio` swaps the audio thread's per-sample function from the bytecode VM
+# (the default, portable, no-external-deps path) to a JIT-compiled C dylib
+# loaded via `libloading`. Faster but requires `clang` on the host.
+c_audio = ["window", "dep:libloading"]
 
 [dev-dependencies]
 naga = { version = "29.0.3", features = ["wgsl-in"] }

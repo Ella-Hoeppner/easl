@@ -13,7 +13,7 @@ use crate::compiler::builtins::{
 use crate::compiler::types::ExpTypeInfo;
 use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
 use crate::parse::EaslMultiDocument;
-use crate::vm::bytecode::BytecodeProgram;
+use crate::vm::bytecode::{BytecodeProgram, Instruction, Op};
 use crate::vm::compile::BytecodeCompilationState;
 use crate::{
   Never,
@@ -3955,6 +3955,7 @@ impl Program {
     }
   }
   pub fn validate_raw_program(&mut self, target: CompilerTarget) -> ErrorLog {
+    println!("validating for target: {target:?}");
     let mut errors = ErrorLog::new();
     self.validate_names(&mut errors);
     if !errors.is_empty() {
@@ -4420,7 +4421,52 @@ impl Program {
       state.consumed_stack_space +=
         v.var_type.data_size_in_u32s(&v.source_trace).unwrap() as u16;
     }
+    // If any top-level var has an initializer expression, compile a
+    // synthetic "$init_globals" function that computes each one and Moves it
+    // into the corresponding global slot. `BytecodeProgram::from_code` runs
+    // it once at construction so globals are live before any user code.
+    let init_function_index =
+      if self.top_level_vars.iter().any(|v| v.value.is_some()) {
+        state.open_function("$init_globals".into());
+        for v in self.top_level_vars.iter() {
+          if let Some(value_exp) = &v.value {
+            let value_slot = value_exp.compile_to_bytecode(&mut state).unwrap();
+            let var_size =
+              v.var_type.data_size_in_u32s(&v.source_trace).unwrap() as u16;
+            let global_slot = *state.globals.get(&v.name).unwrap();
+            state.push_instruction(Instruction {
+              op: Op::Move,
+              arg_positions: [value_slot, var_size, 0],
+              return_position: global_slot,
+            });
+          }
+        }
+        state.close_function();
+        Some(state.finished_functions.len() - 1)
+      } else {
+        None
+      };
     for (f_name, implementation) in self.composite_functions_in_usage_order() {
+      // Filter the same way the C backend does in
+      // `TopLevelFunction::compile`: skip entry points whose kind doesn't
+      // compile to VM (right now that's everything except `@audio`), and
+      // skip any function whose effects include a CPU-exclusive call or
+      // type. The second filter catches helper functions that are only
+      // reachable through the `@cpu` entry — without it, `compile_to_
+      // bytecode` would hit `todo!()` on `spawn-window` / `window-frame-
+      // index` / etc.
+      let implementation_read = implementation.read().unwrap();
+      let skip_for_entry_point = implementation_read
+        .entry_point
+        .map(|e| !e.should_compile_to_target(CompilerTarget::VM))
+        .unwrap_or(false);
+      let effects = implementation_read.effects();
+      let has_cpu_exclusive = !effects.cpu_exclusive_functions().is_empty()
+        || !effects.cpu_exclusive_types().is_empty();
+      if skip_for_entry_point || has_cpu_exclusive {
+        continue;
+      }
+      drop(implementation_read);
       state.open_function(f_name.clone());
       let implementation = implementation.read().unwrap();
       let Type::Function(f) = implementation.expression.data.unwrap_known()
@@ -4443,7 +4489,6 @@ impl Program {
       implementation.expression.compile_to_bytecode(&mut state);
       state.close_function();
     }
-    state.finalize()
+    state.finalize(init_function_index)
   }
 }
-

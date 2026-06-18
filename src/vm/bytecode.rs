@@ -287,6 +287,12 @@ pub struct Function {
 pub struct Code {
   pub function_instructions: Vec<Instruction>,
   pub functions: Vec<Function>,
+  /// Index of a synthetic function that populates global var slots with
+  /// their initial values. `Some` when the program has at least one
+  /// initialized global; `from_code` runs it once on construction so the
+  /// globals are live before any user function executes. `None` when there
+  /// are no initializers (no setup work needed).
+  pub init_function_index: Option<usize>,
 }
 
 pub struct BytecodeProgram {
@@ -303,11 +309,16 @@ impl BytecodeProgram {
       .map(Instruction::max_touched_index)
       .max()
       .map_or(0, |i| i as usize + 1);
-    Self {
+    let mut program = Self {
       stack: vec![0u32; max_stack_size],
       call_stack: Vec::with_capacity(code.functions.len()),
       code,
+    };
+    if let Some(init_idx) = program.code.init_function_index {
+      program.prepare_to_run_function(init_idx);
+      program.execute();
     }
+    program
   }
   pub fn prepare_to_run_function(&mut self, function_index: usize) {
     self.call_stack.clear();
