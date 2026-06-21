@@ -14,23 +14,24 @@ cargo run                                           # runs benchmark (compiles a
 
 ## Project Structure
 
-- `src/lib.rs` — public API: `compile_easl_source_to_wgsl`, `get_easl_program_info`, `format_easl_source`; also re-exports `pub mod window` when the `window` feature is enabled
+- `src/lib.rs` — public API: `compile_easl_source_to_wgsl`, `get_easl_program_info`, `format_easl_source`; also re-exports `pub mod window` and `pub mod audio` when the `window` feature is enabled
 - `src/parse.rs` — S-expression parser (uses the `fsexp` crate)
 - `src/format.rs` — source formatter
-- `src/interpreter.rs` — CPU-side interpreter; also defines the `IOManager` trait, `WindowEvent`/`IOEvent` enums, `GpuBufferKind`, `EvaluationEnvironment`, and `Value::to_uniform_bytes`
+- `src/interpreter.rs` — CPU-side tree-walking interpreter; also defines the `IOManager` trait, `WindowEvent`/`IOEvent` enums, `GpuBufferKind`, `EvaluationEnvironment`, and `Value::to_uniform_bytes`
 - `src/window.rs` — wgpu-based GPU renderer; `GpuCore` struct (public) manages device/surface/pipelines/buffers and is the central GPU resource type; `StdoutIO` opens a real winit window; also exports `create_headless_gpu_core` for surfaceless GPU use
-- `src/main.rs` — CLI entry point, currently just runs a compilation benchmark
+- `src/audio.rs` — audio runtime invoked by the `start-audio` builtin (see "Audio runtime" below). `AudioBackend { VM, C }` enum + `AudioSource` for what gets handed to the audio thread; `start_audio_thread_vm` drives the cpal callback through `BytecodeProgram::execute`; the C path lives behind the `c_audio` feature
+- `src/main.rs` — CLI entry point, currently just runs a compilation benchmark. The full CLI lives in the separate `easl_cli` crate (e.g. `../easl_cli` if cloned alongside)
 - `src/compiler/` — the compiler:
   - `core.rs` — top-level compilation entry point
-  - `program.rs` — `Program` struct and the main compilation pipeline (`validate_raw_program`). This is the largest and most important file
+  - `program.rs` — `Program` struct and the main compilation pipeline (`validate_raw_program`). This is the largest and most important file. Also home to `compile_to_bytecode_program`
   - `expression.rs` — `TypedExp` (typed expression tree) and all expression-level transformations (monomorphization, inlining, type inference, etc.)
   - `functions.rs` — `AbstractFunctionSignature`, `FunctionSignature`, monomorphization and higher-order argument inlining for functions
-  - `types.rs` — type system: `Type`, `AbstractType`, `TypeState`, `ExpTypeInfo`, type inference, unification, constraints
+  - `types.rs` — type system: `Type`, `AbstractType`, `TypeState`, `ExpTypeInfo`, type inference, unification, constraints. Note: `Type::data_size_in_u32s` special-cases matNxM struct names to return `cols*rows*element_size` (see "Bytecode VM" below)
   - `structs.rs` — `AbstractStruct`, struct monomorphization
   - `enums.rs` — `AbstractEnum`, enum monomorphization
   - `builtins.rs` — all built-in function/struct/macro definitions
-  - `effects.rs` — effect types (fragment-exclusive functions, print, window/spawn-window, etc.)
-  - `entry.rs` — shader entry point validation (vertex/fragment/compute)
+  - `effects.rs` — effect types (fragment-exclusive functions, print, window/spawn-window, etc.). `CPUExclusiveFunction(_)` and `CPUExclusiveType(_)` are used to filter what gets compiled for non-CPU targets (WGSL, C, and now also VM)
+  - `entry.rs` — entry point kinds (`Cpu`, `Vertex`, `Fragment`, `Compute`, `Audio`) and per-target filtering via `should_compile_to_target(target)`
   - `error.rs` — `CompileErrorKind` enum and error reporting
   - `vars.rs` — top-level variables and address spaces
   - `wgsl.rs` — WGSL code generation (final output)
@@ -38,8 +39,9 @@ cargo run                                           # runs benchmark (compiles a
   - `macros.rs` — macro expansion
   - `info.rs` — program info extraction
   - `util.rs` — utilities
-- `src/vm/` — **WIP** bytecode VM, a faster alternative interpreter (see "Bytecode VM" below):
-  - `bytecode.rs` — `Op` enum, `Instruction`, `Code`, `Function`, `BytecodeProgram` (the VM itself: stack + dispatch loop)
+- `src/vm/` — bytecode VM, a faster alternative interpreter (see "Bytecode VM" below):
+  - `bytecode.rs` — VM only: `Op` enum, `Instruction`, `Function`, `Code`, `BytecodeProgram`, and the `execute()` dispatch loop
+  - `compile.rs` — bytecode *compiler*: `IntermediateBytecodeFunction`, `BytecodeCompilationState` (struct + impl with all `emit_*` helpers, `compile_builtin`, etc.), free utility functions, and `impl TypedExp { compile_to_bytecode }`. Keep new bytecode-compile logic here, not in `expression.rs`
 
 ## Compilation Pipeline
 
@@ -222,13 +224,99 @@ let name = f.abstract_ancestor.as_ref().unwrap().borrow().name.clone();
 - `create_headless_gpu_core(wgsl, binding_infos) -> Arc<RwLock<GpuCore>>` — creates a `GpuCore` with a freshly-created device and no surface; useful for pure compute / offscreen rendering
 - `GpuCore::execute_render_batch_to_view(calls, view: &wgpu::TextureView, format: wgpu::TextureFormat)` — runs a batch of screen-targeted render calls against an external `TextureView` instead of acquiring one from an internal surface; used by easl_studio to render into its own offscreen RT
 
-## Bytecode VM (WIP)
+## Bytecode VM
 
-A second, faster interpreter built around a register-style bytecode, intended for performance-critical use (e.g. DSP) where the tree-walking `interpreter.rs` is too slow. **This is in-progress and being actively fleshed out** — many expression kinds and builtins are still `todo!()`. For a detailed snapshot of what's done/left, see `vm_wip_notes.md`.
+A second, faster interpreter built around a register-style bytecode, intended for performance-critical use (e.g. DSP) where the tree-walking `interpreter.rs` is way too slow. Currently the primary user is the audio runtime — `start-audio` compiles the program to bytecode and the cpal callback runs `execute()` once per sample.
+
+The conformance test suite runs the VM as a target alongside the interpreter and the C backend; passing rate is currently 158/158.
+
+### Layout
+
+The two halves only meet through `Code` / `BytecodeProgram`:
 
 - **VM (`src/vm/bytecode.rs`)**: `BytecodeProgram { code, stack: Vec<u32>, call_stack: Vec<Range<u32>> }`. The `stack` is a flat array of `u32`s; values are raw bits reinterpreted per-op (`f32::from_bits`, etc.). Instructions are `{ op, arg_positions: [u16; 3], return_position: u16 }`, where positions are **absolute** indices into the shared `stack` (static addressing — no per-call frame base). Execution is a single dispatch loop; `InvokeFunction` pushes the caller's remaining instruction range onto `call_stack` and jumps to the callee; running off the end of a function's instructions pops `call_stack` to return. `call_stack` holds the whole continuation (designed to later support pause/resume for algebraic effects). Heavy use of `unsafe` (`get_unchecked`, `ptr::copy`) — correctness relies on the compiler emitting in-bounds indices.
-- **Compiler (`Program::compile_to_bytecode_program` in `program.rs`, `TypedExp::compile_to_bytecode` in `expression.rs`)**: walks the fully-lowered `TypedExp` (after `validate_raw_program`) into instructions. Functions are emitted in `composite_functions_in_usage_order()` (topological, callees first — no recursion in easl, so the call graph is a DAG). Each function gets a fixed disjoint region of the stack; slots are bump-allocated (`take_stack_slot`) with no reuse yet (register allocation / stack coloring are deferred to future bytecode passes).
-- **Run a function**: `prepare_to_run_function(index)` → `execute()` → read the result via `get_function_return_position(index)` (a raw `u32`, reinterpret as needed). Function index = position in the `Vec<Arc<str>>` of names returned alongside the `BytecodeProgram`.
+- **Compiler (`src/vm/compile.rs`)**: holds `BytecodeCompilationState` (struct + impl with all `emit_*` methods, `compile_builtin`, etc.), free utility helpers (`vec_kind`, `mat_kind`, `arithmetic_op_for`, etc.), and the `impl TypedExp { compile_to_bytecode }` block. The top-level entry point `Program::compile_to_bytecode_program` lives in `program.rs` for symmetry with `compile_to_target`.
+  - Walks the fully-lowered `TypedExp` (after `validate_raw_program`) into instructions.
+  - Functions are emitted in `composite_functions_in_usage_order()` (topological, callees first — no recursion in easl, so the call graph is a DAG).
+  - Each function gets a fixed disjoint region of the stack; slots are bump-allocated (`take_stack_slot`) with no reuse yet (register allocation / stack coloring are deferred to future bytecode passes).
+
+### Running a compiled function
+
+```rust
+let (mut program, names) = compiled_program.compile_to_bytecode_program();
+let f_index = names.iter().position(|n| &**n == "f").unwrap();
+// For functions with args: write args directly into the function's arg
+// slots (start at `program.get_function_return_position(f_index)`),
+// then run.
+program.prepare_to_run_function(f_index);
+program.execute();
+let slot = program.get_function_return_position(f_index);
+let result = f32::from_bits(program.stack[slot as usize]); // reinterpret per return type
+```
+
+### Key design decisions / invariants
+
+- **Static absolute addressing.** No per-call frame base. Every function is assigned a fixed, disjoint region of the single shared `stack` at compile time, and instruction operands are absolute slot indices. Globals and locals are one uniform address space (a global is just a low slot). Valid because easl has **no recursion** (the call graph is a DAG). Trade-off: rules out multi-shot continuations, but single-shot suspend/resume (the efficiently-implementable subset of algebraic effects we care about) still works.
+- **Top-level vars with initializers run via a synthetic `$init_globals` function.** Globals get slots at the bottom of the stack. If any have initializer expressions, `compile_to_bytecode_program` emits a synthetic function (name `"$init_globals"`, the `$` makes it unspeakable in easl) that compiles each initializer and `Move`s the result into the global slot. `Code::init_function_index: Option<usize>` records its index; `BytecodeProgram::from_code` runs it once on construction so globals are live before any user code executes. Don't break this contract — it's how `(def TAU: f32 6.283185)` and friends actually have their values at runtime.
+- **Matrix storage is flat N\*M scalars.** WGSL `matNxM` is nominally a one-field opaque struct in `builtins.rs`, but `Type::data_size_in_u32s` in `types.rs` special-cases the `matNxM` name and returns `cols*rows*element_size`. This is the only place outside the VM that touches matrix sizing differently than other structs — keep it.
+- **`compile_to_bytecode_program` filters functions like the C backend does in `TopLevelFunction::compile`:**
+  - Skip entry points whose `entry_point.should_compile_to_target(CompilerTarget::VM)` returns false (currently only `EntryPoint::Audio` returns true; `Cpu`/`Vertex`/`Fragment`/`Compute` are all skipped).
+  - Skip any function whose effects include a `CPUExclusiveFunction(_)` or `CPUExclusiveType(_)` — these are helpers transitively called only from `@cpu` code; without this filter the compiler would hit `todo!()` on `spawn-window` / `window-frame-index` / `start-audio` / etc.
+  - Effects are transitive and `composite_functions_in_usage_order` is callees-first, so if a function gets skipped, anything that depends on it also gets skipped — no dangling references to worry about.
+- **Vector / matrix ops are fan-out, not new opcodes.** `vec3f + vec3f` compiles to three `PlusF32`s over three consecutive slots; `dot`, `length`, `cross`, etc. are written in terms of scalar primitives. Matrix multiplication uses `emit_mat_mul` (naive triple loop, all scalar). No SIMD or vec-width-generic opcodes yet — explicit non-goal for the MVP.
+- **The `compile_to_bytecode_program` precondition is "program is already validated".** `validate_raw_program` is **not idempotent** — a late pass converts `Ownership::Reference` → `Ownership::Pointer(_)`, and an earlier pass on a re-run panics on the resulting Pointer. Callers must validate exactly once before calling `compile_to_bytecode_program`, then pass the validated `Program` in. Do not re-validate a clone inside the VM-compile path — that was a real bug we hit once already.
+
+### `BytecodeCompilationState` emit helpers
+
+When emitting bytecode, prefer the methods on `BytecodeCompilationState` over raw `push_instruction` calls. They handle slot allocation and keep the patterns consistent:
+- `emit_unary` / `emit_binary` / `emit_ternary` — single-slot scalar ops.
+- `emit_fanout_unary` / `_binary` / `_ternary` — N-slot fan-out for vec/mat element-wise ops.
+- `emit_fanout_binary_scalar_lhs` / `_rhs` — broadcast a single scalar across one side of a fan-out (e.g. `vec * scalar`).
+- `emit_elementwise_unary` / `_binary` / `_ternary` / `_binary_inplace` — scalar-or-vec dispatch wrapped on top of the above, takes a "what op for this element type" closure. This is what most builtin arms use.
+- `emit_dot` / `emit_mat_mul` / `emit_determinant` / `emit_det3` — bigger primitives used by specific builtins.
+- `emit_u32_constant(value)` / `emit_f32_constant(value)` — allocate a fresh slot and write a `Constant`. Use these instead of inline `take_stack_slot + push_instruction(Constant)`.
+
+When you need to identify a vec or matrix type, use the free helpers `vec_kind(t)` / `mat_kind(t)` in `compile.rs`. `vec_kind` returns `Some((count, element_type))` for `vec2`/`vec3`/`vec4` **and** matrices (flat count = `cols*rows`); `mat_kind` returns `Some((cols, rows, element_type))` only for matrices.
+
+### Adding a new scalar builtin (recipe)
+
+1. Add the variant to `Op` in `src/vm/bytecode.rs` (in the right section — there's a comment grouping).
+2. Add its `execute` arm. For simple per-element math, use `f32_unary` / `f32_binary` / `i32_binary` / `u32_binary` / `f32_cmp` / etc. helpers.
+3. If its operands aren't all slot indices (`Constant`'s halves, `Jump`'s target), add a custom `max_touched_index` arm — otherwise the `_` arm will overcount and inflate the stack.
+4. In `compile_builtin` (in `compile.rs`), add a dispatch arm keyed on the builtin name. For overloaded ops, dispatch on **operand type** via the `arg_types[i]` slice, not on the return type (that breaks for e.g. comparisons that always return bool regardless of operand type).
+
+### Known issues / things future work will need to fix
+
+These came up during the build-out and are deferred but real:
+
+- **Mutable reference args don't work.** Functions with `@var @ref state: T` arguments compile, but the bytecode `Composite`-call path just `Move`-copies the arg into the callee's slot, so mutations inside the function never propagate back to the caller. The audio2 example silently produces zero because its `hooke-attract` spring takes a `@var @ref state: vec2f` and the state never actually updates. **Suggested fix:** detect reference-typed args at the call site, write the *slot index* into the callee's arg slot instead of the value bytes, and add two new opcodes — `LoadIndirect { dest, addr_slot, size }` and `StoreIndirect { addr_slot, src, size }` — for reads and writes through that slot inside the function. The frontend already lowers `@var @ref` to `Ownership::Pointer(address_space)` after `monomorphize_reference_address_spaces` (program.rs:4070); the bytecode compile path can key off that.
+- **Assignment into struct fields and array elements doesn't work.** `(= arr[i] x)` and `(= obj.field x)` go through the `=` builtin which currently just emits a fixed-destination `Move`. The array-store case needs a runtime-destination store op (mirror of the existing `ArrayLookup`); the field-store case needs a known-offset partial store (could be a Move with the computed offset, similar in shape to the Field-read path). This and the mutable-references item largely overlap and are likely best tackled together.
+- **No optimization passes.** Slot allocation is bump-only with no reuse, so the stack ends up bigger than necessary; the `Function`-arm closing `Move` is emitted even when the body wrote the return slot directly; matrix ops allocate a lot of fresh temp slots. The WIP-notes plan was to add a redundant-`Move` elimination pass and a liveness-based slot allocator over the emitted bytecode — both untouched. Bytecode correctness is the oracle for these (the conformance tests, vm_tests, audio examples).
+- **No construction-time bounds check.** `from_code` does `get_unchecked` everywhere; safety is "the compiler emits in-bounds indices." A `debug_assert` pass over `Code` validating every `arg_positions`/`return_position` against the inferred stack size would be a cheap safety net for catching emitter bugs.
+- **VM-backed audio doesn't hot-swap.** `start_audio_thread_vm` only does the cpal setup on the first call; subsequent `start-audio` calls during the spawn-window frame loop are no-ops. The C audio path does hot-swap by atomically replacing a function pointer; the VM equivalent would be putting the `BytecodeProgram` behind an `Arc<Mutex<...>>` (or a single-writer / multiple-reader scheme that doesn't add per-sample lock overhead) and swapping it in subsequent calls. Audio2.easl-style live-coding will want this once mutable references are working.
+- **Many builtins still `todo!()`.** Texture-sample / texture-load / `dxdy` (no sensible CPU semantics) — these will probably never be implemented for the VM; they're shader-only. `atomic-*` is also out of scope. But anything that has scalar math semantics (e.g. `pack-*`/`unpack-*`, more comparison vec lifts) is fair game.
+
+## Audio runtime (`src/audio.rs`)
+
+When an easl program calls `(start-audio audio-fn)`, the runtime starts a cpal output stream that calls `audio-fn(t: f32, rate: f32) -> f32` once per sample. There are two backends, selected via `AudioBackend`:
+
+- `AudioBackend::VM` (default, always available): compile the program to bytecode and have the cpal callback run `BytecodeProgram::execute` once per sample. Portable, no external dependencies.
+- `AudioBackend::C` (gated on the `c_audio` feature): JIT-compile the program's C-backend output to a dylib via `clang`, dlopen it via `libloading`, and have the cpal callback call the loaded function pointer. Faster but requires `clang` on the host. Selecting `AudioBackend::C` without `c_audio` enabled panics at audio-compile time.
+
+The runner functions in `interpreter.rs` (`run_program_entry_from_path`, `run_program_entry_with_io_from_path`) use `AudioBackend::default()` (= `VM`). To opt into the C backend explicitly, use `run_program_entry_with_io_and_audio_backend_from_path` (gated on `feature = "window"`).
+
+### Public surface
+- `AudioBackend { VM, C }` — caller-selected backend choice (`Default = VM`).
+- `AudioSource` — what the interpreter hands to the IO manager: `Bytecode { program, function_names }` or `C(String)`.
+- `start_audio_thread_vm(entry_name, program, function_names)` — VM-backed driver.
+- `start_audio_thread_c(entry_name, c_source)` — C-backed driver; `panic!`s without `c_audio` feature.
+- `is_audio_thread_started() -> bool` — used by IO managers to distinguish "repeated start-audio call after first one already set things up" (no-op) from "run was started without audio support" (error).
+
+### Things the `start-audio` builtin handles, that you shouldn't break
+
+- **`(start-audio ...)` is typically called every frame** from inside a `spawn-window` callback, so the builtin gets dispatched repeatedly. The first call moves the `AudioSource` out of the env and into the IO manager; subsequent calls pass `None` and the IO manager treats that as a no-op if a stream is running. `StringIO` (the test manager) records *every* start-audio event regardless.
+- **The audio source is compiled from a clone of the (already-validated) `Program`.** Do **not** re-validate the clone — see the "compile_to_bytecode_program precondition" note in the Bytecode VM section.
+- **VM audio hot-swap is not implemented** — second-and-later calls just log a note and return. C audio does hot-swap via an `AtomicPtr` of the loaded function.
 
 ## Test Structure
 
@@ -264,20 +352,24 @@ window_test!(test_name);  // runs data/window/test_name.easl, compares IOEvent l
 
 ### Conformance tests (`tests/conformance_tests.rs`, sources in `data/conformance/`)
 ```rust
-conformance_test!(test_name);          // exact CPU/GPU match
+conformance_test!(test_name);          // exact match across all backends
 conformance_test!(test_name, 0.001);   // match within tolerance (for irrational results)
 ```
-- Each file in `data/conformance/` defines a single function `f` that returns `f32`. The test harness appends boilerplate that calls `f` on the CPU (printing the result), dispatches a compute shader that writes `f()` into a storage variable, then reads it back and prints it again.
-- Asserts the two printed values agree — proving the interpreter and GPU produce identical output for the given expression.
-- With no tolerance argument the comparison is exact string equality; with a tolerance the two values are parsed as `f64` and the test passes if `|cpu - gpu| <= tolerance`.
-- Tests cover arithmetic, rounding, trigonometry (including hyperbolic), exponentials/logarithms, sqrt/pow, min/max/clamp, mix/smoothstep/fma/ldexp, vector ops (dot, cross, length, normalize, distance), integer arithmetic, type conversions, bitcast, and bit manipulation.
+- Each file in `data/conformance/` defines a single function `f` that returns `f32`. The test harness runs `f` through **three** backends and checks they all agree (mod tolerance):
+  1. **Interpreter + WGSL**: harness appends boilerplate that calls `f` on the CPU (printing the result), dispatches a compute shader that writes `f()` into a storage variable, then reads it back and prints it again. Asserts the two prints agree.
+  2. **C backend**: compiles to C via `compile_to_target(CompilerTarget::C)`, appends a `main()` that prints `f()`, runs through `clang`, compares to the interpreter result. Slow (the clang invocation dominates wall time).
+  3. **Bytecode VM**: compiles to bytecode via `compile_to_bytecode_program`, runs `f` via `prepare_to_run_function` + `execute`, compares to the interpreter result.
+- With no tolerance argument the comparison is exact (string for interpreter/GPU, `f64` equality for C and VM); with a tolerance the values are parsed as `f64` and the test passes if all pairs are within tolerance of each other.
+- Tests cover arithmetic, rounding, trigonometry (including hyperbolic), exponentials/logarithms, sqrt/pow, min/max/clamp, mix/smoothstep/fma/ldexp, vector ops (dot, cross, length, normalize, distance), integer arithmetic, type conversions, bitcast, bit manipulation, matrices (constructors, mul, transpose, determinant), enums, swizzles, control flow, and reads of `(def …)` and `(var … expr)` globals.
 - The test runner uses `load_easl_program_from_file_with_lookup_function` to inject the boilerplate into the source string rather than requiring it in each file, so test files can stay minimal.
+- **Dev tip**: the C stage is the slow part (~0.5-1s per test for the clang invocation). When iterating on the VM backend, temporarily wrap the C section in `if false { … }` and re-parse `cpu_result` immediately before the VM section to skip it — but restore before committing. (The C stage is a regression test on the *interpreter*/*WGSL*/*C* triple; new VM bugs almost never manifest there.)
 
 ### Bytecode VM tests (`tests/vm_tests.rs`, sources in `data/vm/`)
 ```rust
 vm_test!(test_name);  // compiles+runs data/vm/test_name.easl through the bytecode VM
 ```
 - Each `.easl` file must define a zero-arg function `f` returning `f32`. The harness validates the program, compiles it with `compile_to_bytecode_program`, runs `f` via `prepare_to_run_function`/`execute`, reads the return slot, reinterprets it as `f32`, and compares against the single float in `data/vm/test_name.txt` within a `0.0001` tolerance.
+- Use this suite for things that are awkward to express as a single `f` returning a meaningful float — e.g. tests of `let`, control flow, mutation, struct/array access, etc. The conformance suite is broader but each test has to be expressible as "produce one f32 that equals f's interpreter/WGSL value".
 
 ### Shared notes
 - `#_` reader macro in `.easl` files comments out the next form — useful for disabling parts of test files

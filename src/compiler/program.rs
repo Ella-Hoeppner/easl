@@ -3955,7 +3955,6 @@ impl Program {
     }
   }
   pub fn validate_raw_program(&mut self, target: CompilerTarget) -> ErrorLog {
-    println!("validating for target: {target:?}");
     let mut errors = ErrorLog::new();
     self.validate_names(&mut errors);
     if !errors.is_empty() {
