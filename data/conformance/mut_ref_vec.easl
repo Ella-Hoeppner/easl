@@ -1,0 +1,7 @@
+(defn add-one [@var @ref v: vec2f]
+  (+= v (vec2f 1. 1.)))
+
+(defn f []: f32
+  (let [@var v (vec2f 3. 4.)]
+    (add-one v)
+    (+ v.x v.y)))

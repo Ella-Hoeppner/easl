@@ -1,0 +1,13 @@
+(struct Pair
+  a: f32
+  b: f32)
+
+(defn increment [@var @ref x: f32]
+  (+= x 1.))
+
+(defn f []: f32
+  (let [@var p (Pair 7. 3.)]
+    (increment p.a)
+    (increment p.b)
+    (increment p.b)
+    (+ p.a p.b)))

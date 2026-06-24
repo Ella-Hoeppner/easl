@@ -27,42 +27,123 @@ fn run_conformance_test(name: &str, tolerance: f64) {
   fs::create_dir_all("./out/conformance/")
     .expect("Unable to create out directory");
 
-  // --- Interpreter + WGSL conformance ---
-  let cpu_result = match load_easl_program_from_file_with_lookup_function(
-    source_path,
-    |_| Ok(combined_source.clone()),
-  ) {
+  // Run every backend independently, collecting `Result<f64, String>` for
+  // each. Each backend keeps going on its own — none of them can panic the
+  // test before the others have run. We compare them only at the end so
+  // failure messages show all four results side-by-side, making it
+  // obvious whether (e.g.) the interpreter is the odd one out vs the
+  // VM/C/GPU.
+  let interpreter_result = run_interpreter(name, source_path, &combined_source);
+  let gpu_result = match &interpreter_result {
+    // The interpreter run *also* produces the GPU result (the boilerplate
+    // dispatches a compute shader as part of the same evaluation), so we
+    // can't run GPU independently — they share the same evaluation.
+    BackendResult::Both { gpu, .. } => Ok(*gpu),
+    BackendResult::Failed { .. } => {
+      Err("(skipped — interpreter evaluation failed)".to_string())
+    }
+  };
+  let interpreter_result = match interpreter_result {
+    BackendResult::Both { cpu, .. } => Ok(cpu),
+    BackendResult::Failed { reason } => Err(reason),
+  };
+  let c_result = run_c_backend(name, source_path, &user_source);
+  let vm_result = run_vm_backend(name, source_path, &user_source);
+
+  let labels_and_results: [(&str, &Result<f64, String>); 4] = [
+    ("interpreter", &interpreter_result),
+    ("WGSL (GPU)", &gpu_result),
+    ("C", &c_result),
+    ("VM", &vm_result),
+  ];
+
+  let format_results = || -> String {
+    labels_and_results
+      .iter()
+      .map(|(label, r)| match r {
+        Ok(v) => format!("  {label:12} = {v}"),
+        Err(e) => format!("  {label:12} = ERROR: {e}"),
+      })
+      .collect::<Vec<_>>()
+      .join("\n")
+  };
+
+  // Any backend that errored out is a hard failure.
+  let any_errored = labels_and_results.iter().any(|(_, r)| r.is_err());
+  // Otherwise, check that all four agree within tolerance.
+  let all_agree = !any_errored && {
+    let values: Vec<f64> = labels_and_results
+      .iter()
+      .map(|(_, r)| *r.as_ref().unwrap())
+      .collect();
+    let lo = values.iter().cloned().fold(f64::INFINITY, f64::min);
+    let hi = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    if tolerance == 0.0 {
+      lo == hi
+    } else {
+      (hi - lo).abs() <= tolerance
+    }
+  };
+
+  if !all_agree {
+    panic!(
+      "{name}: backends disagree (tolerance = {tolerance}):\n{}",
+      format_results()
+    );
+  }
+}
+
+/// Result of running the interpreter+WGSL stage. Both run together —
+/// the boilerplate evaluates `f` on the CPU and dispatches it as a
+/// compute shader in the same program.
+enum BackendResult {
+  Both { cpu: f64, gpu: f64 },
+  Failed { reason: String },
+}
+
+fn parse_f64(label: &str, s: &str) -> Result<f64, String> {
+  s.parse()
+    .map_err(|_| format!("{label} output {s:?} is not a valid float"))
+}
+
+fn run_interpreter(
+  name: &str,
+  source_path: &Path,
+  combined_source: &str,
+) -> BackendResult {
+  let owned_source = combined_source.to_string();
+  match load_easl_program_from_file_with_lookup_function(source_path, |_| {
+    Ok(owned_source.clone())
+  }) {
     Ok(Ok((_, Ok(mut program)))) => {
       let errors = program.validate_raw_program(CompilerTarget::WGSL);
-      assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
-
-      let prints = run_program_with_capture(program).unwrap_or_else(|e| {
-        panic!("{name}: evaluation error: {e:#?}");
-      });
-      assert_eq!(
-        prints.len(),
-        2,
-        "{name}: expected exactly 2 print lines, got: {prints:?}"
-      );
-      if tolerance == 0.0 {
-        assert_eq!(
-          prints[0], prints[1],
-          "{name}: CPU result {:?} != GPU result {:?}",
-          prints[0], prints[1]
-        );
-      } else {
-        let cpu: f64 = prints[0].parse().unwrap_or_else(|_| {
-          panic!("{name}: CPU output {:?} is not a valid float", prints[0])
-        });
-        let gpu: f64 = prints[1].parse().unwrap_or_else(|_| {
-          panic!("{name}: GPU output {:?} is not a valid float", prints[1])
-        });
-        assert!(
-          (cpu - gpu).abs() <= tolerance,
-          "{name}: CPU result {cpu} and GPU result {gpu} differ by more than tolerance {tolerance}"
-        );
+      if !errors.is_empty() {
+        return BackendResult::Failed {
+          reason: format!("compile errors: {errors:#?}"),
+        };
       }
-      prints[0].clone()
+      let prints = match run_program_with_capture(program) {
+        Ok(p) => p,
+        Err(e) => {
+          return BackendResult::Failed {
+            reason: format!("evaluation error: {e:#?}"),
+          };
+        }
+      };
+      if prints.len() != 2 {
+        return BackendResult::Failed {
+          reason: format!("expected exactly 2 print lines, got: {prints:?}"),
+        };
+      }
+      let cpu = match parse_f64("CPU", &prints[0]) {
+        Ok(v) => v,
+        Err(e) => return BackendResult::Failed { reason: e },
+      };
+      let gpu = match parse_f64("GPU", &prints[1]) {
+        Ok(v) => v,
+        Err(e) => return BackendResult::Failed { reason: e },
+      };
+      BackendResult::Both { cpu, gpu }
     }
     Ok(Ok((document, Err(errors)))) => {
       let description = errors.describe(&document);
@@ -70,13 +151,15 @@ fn run_conformance_test(name: &str, tolerance: f64) {
         format!("./out/conformance/{name}.wgsl"),
         description.clone(),
       )
-      .expect("Unable to write output file");
-      panic!("{description}");
+      .ok();
+      BackendResult::Failed {
+        reason: description,
+      }
     }
     Ok(Err(mut failed_documents)) => {
-      let mut errors = vec![];
+      let mut errs = vec![];
       std::mem::swap(
-        &mut errors,
+        &mut errs,
         &mut failed_documents
           .sources
           .last_mut()
@@ -84,45 +167,51 @@ fn run_conformance_test(name: &str, tolerance: f64) {
           .0
           .parsing_failures,
       );
-      let description = errors
+      let description = errs
         .into_iter()
         .map(|err| failed_documents.describe_parse_error(err))
         .collect::<Vec<String>>()
         .join("\n\n");
-      fs::write(format!("./out/conformance/{name}.wgsl"), &description)
-        .expect("Unable to write output file");
-      panic!("Unexpected parse error in {name}:\n{description}");
+      fs::write(format!("./out/conformance/{name}.wgsl"), &description).ok();
+      BackendResult::Failed {
+        reason: format!("parse error: {description}"),
+      }
     }
-    Err(e) => panic!("IO error, couldn't load file {name}: \n{e:?}"),
-  };
+    Err(e) => BackendResult::Failed {
+      reason: format!("IO error: {e:?}"),
+    },
+  }
+}
 
-  // --- C backend conformance ---
-  // Compile the function to C, append a main() that calls f() and prints it,
-  // compile with clang, run, and compare the output to the interpreter result.
+fn run_c_backend(
+  name: &str,
+  source_path: &Path,
+  user_source: &str,
+) -> Result<f64, String> {
+  let owned_source = user_source.to_string();
   let c_code =
     match load_easl_program_from_file_with_lookup_function(source_path, |_| {
-      Ok(user_source.clone())
+      Ok(owned_source.clone())
     }) {
       Ok(Ok((_, Ok(mut program)))) => {
         let errors = program.validate_raw_program(CompilerTarget::C);
-        assert!(
-          errors.is_empty(),
-          "{name}: C backend compile errors: {errors:#?}"
-        );
+        if !errors.is_empty() {
+          return Err(format!("C backend compile errors: {errors:#?}"));
+        }
         program
           .compile_to_target(CompilerTarget::C)
-          .unwrap_or_else(|e| panic!("{name}: C codegen error: {e:#?}"))
+          .map_err(|e| format!("C codegen error: {e:#?}"))?
       }
       Ok(Ok((doc, Err(errors)))) => {
-        panic!(
-          "{name}: C backend compile errors:\n{}",
+        return Err(format!(
+          "C backend compile errors:\n{}",
           errors.describe(&doc)
-        );
+        ));
       }
       Ok(Err(mut failed_documents)) => {
-        let mut errors = vec![];
+        let mut errs = vec![];
         std::mem::swap(
-          &mut errors,
+          &mut errs,
           &mut failed_documents
             .sources
             .last_mut()
@@ -130,14 +219,14 @@ fn run_conformance_test(name: &str, tolerance: f64) {
             .0
             .parsing_failures,
         );
-        let description = errors
+        let description = errs
           .into_iter()
           .map(|err| failed_documents.describe_parse_error(err))
           .collect::<Vec<String>>()
           .join("\n\n");
-        panic!("Parse error in {name}:\n{description}");
+        return Err(format!("parse error: {description}"));
       }
-      Err(e) => panic!("IO error, couldn't load file {name}: \n{e:?}"),
+      Err(e) => return Err(format!("IO error: {e:?}")),
     };
 
   let c_code_with_main = format!(
@@ -145,126 +234,92 @@ fn run_conformance_test(name: &str, tolerance: f64) {
   );
 
   fs::create_dir_all("./out/conformance/c/")
-    .expect("Unable to create out directory");
+    .map_err(|e| format!("create out dir: {e}"))?;
   let c_path = format!("./out/conformance/c/{name}.c");
   let exe_path = format!("./out/conformance/c/{name}");
-  fs::write(&c_path, &c_code_with_main).expect("Unable to write C file");
+  fs::write(&c_path, &c_code_with_main)
+    .map_err(|e| format!("write C file: {e}"))?;
 
   let compile_output = Command::new("clang")
     .args(["-std=c11", "-lm", "-o", &exe_path, &c_path])
     .output()
-    .unwrap_or_else(|e| {
-      panic!(
+    .map_err(|e| {
+      format!(
         "Failed to run clang (is it installed?): {e}\n\
-         Install with: xcode-select --install (macOS) or \
-         apt install clang (Linux)"
+         Install with: xcode-select --install (macOS) or apt install clang"
       )
-    });
-  assert!(
-    compile_output.status.success(),
-    "{name}: clang compilation failed:\n{}\nSee {c_path}",
-    String::from_utf8_lossy(&compile_output.stderr)
-  );
-
+    })?;
+  if !compile_output.status.success() {
+    return Err(format!(
+      "clang compilation failed:\n{}\nSee {c_path}",
+      String::from_utf8_lossy(&compile_output.stderr)
+    ));
+  }
   let run_output = Command::new(&exe_path)
     .output()
-    .unwrap_or_else(|e| panic!("Failed to run {exe_path}: {e}"));
-  assert!(
-    run_output.status.success(),
-    "{name}: C executable returned non-zero exit code"
-  );
-  let c_result = String::from_utf8(run_output.stdout)
-    .unwrap()
+    .map_err(|e| format!("run: {e}"))?;
+  if !run_output.status.success() {
+    return Err("C executable returned non-zero exit code".to_string());
+  }
+  let raw = String::from_utf8(run_output.stdout)
+    .map_err(|e| format!("stdout not utf-8: {e}"))?
     .trim()
     .to_string();
+  parse_f64("C", &raw)
+}
 
-  let cpu_f64: f64 = cpu_result.parse().unwrap_or_else(|_| {
-    panic!("{name}: interpreter output {cpu_result:?} is not a valid float")
-  });
-  let c_f64: f64 = c_result.parse().unwrap_or_else(|_| {
-    panic!("{name}: C output {c_result:?} is not a valid float")
-  });
-
-  if tolerance == 0.0 {
-    assert!(
-      cpu_f64 == c_f64,
-      "{name}: interpreter result {cpu_result} != C result {c_result}"
-    );
-  } else {
-    assert!(
-      (cpu_f64 - c_f64).abs() <= tolerance,
-      "{name}: interpreter result {cpu_f64} and C result {c_f64} \
-       differ by more than tolerance {tolerance}"
-    );
-  }
-
-  // --- Bytecode VM conformance ---
-  // Compile to bytecode, run f() through the VM, and compare with the
-  // interpreter result.
-  let vm_f64: f64 =
-    match load_easl_program_from_file_with_lookup_function(source_path, |_| {
-      Ok(user_source.clone())
-    }) {
-      Ok(Ok((_, Ok(mut program)))) => {
-        let errors = program.validate_raw_program(CompilerTarget::WGSL);
-        assert!(
-          errors.is_empty(),
-          "{name}: bytecode VM compile errors: {errors:#?}"
-        );
-        let (mut bytecode_program, function_names) =
-          program.compile_to_bytecode_program();
-        let function_index = function_names
-          .iter()
-          .position(|n| &**n == "f")
-          .unwrap_or_else(|| {
-            panic!("{name}: no function named `f` in bytecode program")
-          });
-        bytecode_program.prepare_to_run_function(function_index);
-        bytecode_program.execute();
-        let return_position =
-          bytecode_program.get_function_return_position(function_index);
-        let result =
-          f32::from_bits(bytecode_program.stack[return_position as usize]);
-        result as f64
+fn run_vm_backend(
+  _name: &str,
+  source_path: &Path,
+  user_source: &str,
+) -> Result<f64, String> {
+  let owned_source = user_source.to_string();
+  match load_easl_program_from_file_with_lookup_function(source_path, |_| {
+    Ok(owned_source.clone())
+  }) {
+    Ok(Ok((_, Ok(mut program)))) => {
+      let errors = program.validate_raw_program(CompilerTarget::WGSL);
+      if !errors.is_empty() {
+        return Err(format!("VM compile errors: {errors:#?}"));
       }
-      Ok(Ok((doc, Err(errors)))) => {
-        panic!(
-          "{name}: bytecode VM compile errors:\n{}",
-          errors.describe(&doc)
-        );
-      }
-      Ok(Err(mut failed_documents)) => {
-        let mut errors = vec![];
-        std::mem::swap(
-          &mut errors,
-          &mut failed_documents
-            .sources
-            .last_mut()
-            .unwrap()
-            .0
-            .parsing_failures,
-        );
-        let description = errors
-          .into_iter()
-          .map(|err| failed_documents.describe_parse_error(err))
-          .collect::<Vec<String>>()
-          .join("\n\n");
-        panic!("Parse error in {name}:\n{description}");
-      }
-      Err(e) => panic!("IO error, couldn't load file {name}: \n{e:?}"),
-    };
-
-  if tolerance == 0.0 {
-    assert!(
-      cpu_f64 == vm_f64,
-      "{name}: interpreter result {cpu_f64} != VM result {vm_f64}"
-    );
-  } else {
-    assert!(
-      (cpu_f64 - vm_f64).abs() <= tolerance,
-      "{name}: interpreter result {cpu_f64} and VM result {vm_f64} \
-       differ by more than tolerance {tolerance}"
-    );
+      let (mut bytecode_program, function_names) =
+        program.compile_to_bytecode_program();
+      let function_index = function_names
+        .iter()
+        .position(|n| &**n == "f")
+        .ok_or_else(|| {
+          "no function named `f` in bytecode program".to_string()
+        })?;
+      bytecode_program.prepare_to_run_function(function_index);
+      bytecode_program.execute();
+      let return_position =
+        bytecode_program.get_function_return_position(function_index);
+      let result =
+        f32::from_bits(bytecode_program.stack[return_position as usize]);
+      Ok(result as f64)
+    }
+    Ok(Ok((doc, Err(errors)))) => {
+      Err(format!("VM compile errors:\n{}", errors.describe(&doc)))
+    }
+    Ok(Err(mut failed_documents)) => {
+      let mut errs = vec![];
+      std::mem::swap(
+        &mut errs,
+        &mut failed_documents
+          .sources
+          .last_mut()
+          .unwrap()
+          .0
+          .parsing_failures,
+      );
+      let description = errs
+        .into_iter()
+        .map(|err| failed_documents.describe_parse_error(err))
+        .collect::<Vec<String>>()
+        .join("\n\n");
+      Err(format!("parse error: {description}"))
+    }
+    Err(e) => Err(format!("IO error: {e:?}")),
   }
 }
 
@@ -493,6 +548,17 @@ conformance_test!(match_enum_unit);
 conformance_test!(match_enum_data);
 conformance_test!(match_in_expression);
 conformance_test!(match_statement);
+
+// mutable references
+conformance_test!(mut_ref_scalar);
+conformance_test!(mut_ref_scalar_multiple_calls);
+conformance_test!(mut_ref_indirect);
+conformance_test!(mut_ref_vec);
+conformance_test!(mut_ref_struct);
+conformance_test!(mut_ref_struct_field);
+conformance_test!(mut_ref_indirect_struct_field);
+conformance_test!(mut_ref_swizzle);
+conformance_test!(mut_ref_struct_multiple_calls);
 
 // vec / mat indexing via call-style syntax
 conformance_test!(vec_index);

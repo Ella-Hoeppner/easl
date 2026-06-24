@@ -1,0 +1,11 @@
+(defn inner [@var @ref x: f32]
+  (+= x 1.))
+
+(defn outer [@var @ref x: f32]
+  (inner x)
+  (inner x))
+
+(defn f []: f32
+  (let [@var x: f32 10.]
+    (outer x)
+    x))

@@ -1,0 +1,9 @@
+(defn add [@var @ref x: f32 amount: f32]
+  (+= x amount))
+
+(defn f []: f32
+  (let [@var x: f32 1.]
+    (add x 2.)
+    (add x 5.)
+    (add x 10.)
+    x))
