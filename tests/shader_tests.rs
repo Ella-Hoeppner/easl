@@ -320,6 +320,9 @@ success_test!(const_generic_struct);
 success_test!(const_generic_struct_indirect);
 success_test!(multiple_callers_of_generic_ref_fn);
 success_test!(audio_entry_ignored);
+success_test!(mut_ref_struct_multiple_calls);
+success_test!(mut_ref_swizzle);
+success_test!(ref_swizzle);
 // todo!() we don't have a way of handling the case where the user passes a
 // swizzle of a variable to a function expecting a mutable argument. Need to
 // deexpressionify this into extracting the swizzle as it's own value, then

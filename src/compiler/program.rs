@@ -2350,6 +2350,12 @@ impl Program {
         implementation
           .expression
           .walk_mut(&mut |exp| match &mut exp.kind {
+            ExpKind::Name(name) => {
+              if exp.data.unwrap_known() == Type::Unit {
+                exp.kind = ExpKind::Unit;
+              }
+              Ok(true)
+            }
             ExpKind::Application(applied_f, args) => {
               applied_f.data.with_dereferenced_mut(|t| match t {
                 TypeState::Known(t) => match t {
@@ -2417,8 +2423,9 @@ impl Program {
               take(bindings, |bindings| {
                 bindings
                   .into_iter()
-                  .filter(|(_, _, _, t)| {
-                    !t.data.unwrap_known().is_unitlike(&mut names)
+                  .filter(|(_, _, _, value_exp)| {
+                    !(value_exp.data.unwrap_known().is_unitlike(&mut names)
+                      && value_exp.effects().is_side_effect_free())
                   })
                   .collect()
               });

@@ -8,7 +8,9 @@ use crate::compiler::{
   builtins::{ASSIGNMENT_OPS, ATOMIC_MUTATION_OPS},
   error::CompileError,
   expression::{Accessor, Exp, ExpKind, Number, SwizzleField},
-  functions::{AbstractFunctionSignature, FunctionImplementationKind},
+  functions::{
+    AbstractFunctionSignature, FunctionImplementationKind, Ownership,
+  },
   program::{CompilerTarget, Program},
   structs::AbstractStruct,
   types::{
@@ -1909,7 +1911,7 @@ fn apply_builtin_fn<IO: IOManager>(
       }
       let reload = IO::run_spawn_window(body, env)?;
       if let Some((scope_arg, _)) = scope_binding {
-        env.unbind(&scope_arg);
+        let _ = env.unbind(&scope_arg);
       }
       if reload {
         return Err(EvalException::ReloadRequested);
@@ -3930,13 +3932,16 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       self.bindings.insert(name, vec![(value, ty)]);
     }
   }
-  fn unbind(&mut self, name: &Arc<str>) {
+  /// Pop the topmost binding for `name`, returning the popped `(value, type)`
+  /// so the caller can inspect or move it back into the surrounding env
+  /// (used for mutable-reference write-back after a function call).
+  fn unbind(&mut self, name: &Arc<str>) -> (Value, Type) {
     let bindings = self.bindings.get_mut(name).unwrap();
-    if bindings.len() == 1 {
+    let popped = bindings.pop().unwrap();
+    if bindings.is_empty() {
       self.bindings.remove(name);
-    } else {
-      bindings.pop();
     }
+    popped
   }
   fn lookup(&self, name: &Arc<str>) -> Result<&Value, EvalError> {
     self
@@ -3987,6 +3992,111 @@ impl From<EvalException> for EvalError {
   }
 }
 
+/// Write `new_value` back into the env at the location described by `lhs`.
+/// Used to propagate mutations through a function's mutable-reference args
+/// after the call returns: the callee mutates a *copy* of the value during
+/// evaluation, and this walks the callsite expression backward (Name, Field,
+/// ArrayIndex via Access or call-style) to find where the original lived and
+/// overwrites it.
+///
+/// Bails out (returns `Ok(())` without writing) on swizzle accesses for now
+/// — handling those needs the same component-shuffle logic the assignment
+/// path has, and the assignment path will need to be reused/refactored to
+/// avoid duplication. Until then, a `(helper v.zy)` callsite will see its
+/// post-call mutations dropped silently. That's intentional: those tests
+/// will continue to fail the same way they did before this change, which
+/// is the deferral the user asked for.
+fn write_back_through_lhs<IO: IOManager>(
+  env: &mut EvaluationEnvironment<IO>,
+  lhs: Exp<ExpTypeInfo>,
+  new_value: Value,
+) -> Result<(), EvalException> {
+  enum AccessKind {
+    Index(i64),
+    Field(Arc<str>),
+  }
+  let mut accesses: Vec<AccessKind> = vec![];
+  let mut cur = lhs;
+  let accessed_name = loop {
+    match cur.kind {
+      ExpKind::Name(name) => break name,
+      ExpKind::Application(callee, mut index_args) => {
+        // `(v 0u)` call-style indexing (used for vec/mat element access).
+        let Value::Prim(index) = eval(index_args.remove(0), env)? else {
+          panic!("expected scalar index in call-style access");
+        };
+        let index = match index {
+          Primitive::U32(u) => u as i64,
+          Primitive::I32(i) => i as i64,
+          _ => panic!("non-integer index"),
+        };
+        accesses.push(AccessKind::Index(index));
+        cur = *callee;
+      }
+      ExpKind::Access(accessor, inner) => {
+        match accessor {
+          Accessor::Field(field_name) => {
+            accesses.push(AccessKind::Field(field_name))
+          }
+          Accessor::ArrayIndex(index_exp) => {
+            let Value::Prim(index) = eval(*index_exp, env)? else {
+              panic!("expected scalar array index");
+            };
+            let index = match index {
+              Primitive::U32(u) => u as i64,
+              Primitive::I32(i) => i as i64,
+              _ => panic!("non-integer array index"),
+            };
+            accesses.push(AccessKind::Index(index));
+          }
+          Accessor::Swizzle(_) => {
+            // Deferred — see fn doc comment.
+            return Ok(());
+          }
+        }
+        cur = *inner;
+      }
+      _ => {
+        // Any other LHS shape (literal, block, etc.) wasn't a real
+        // reference target to begin with; nothing to write back to.
+        return Ok(());
+      }
+    }
+  };
+  // Descend through the env's binding with &mut and overwrite at the end.
+  let mut slot = &mut env
+    .bindings
+    .get_mut(&*accessed_name)
+    .unwrap()
+    .last_mut()
+    .unwrap()
+    .0;
+  for access in accesses.into_iter().rev() {
+    match access {
+      AccessKind::Index(i) => match slot {
+        Value::Array(a) => {
+          let length = a.len() as i64;
+          slot = &mut a[(((i % length) + length) % length) as usize];
+        }
+        Value::Struct(s) => {
+          // Vector stored as Struct with x/y/z/w fields.
+          let field_name = ["x", "y", "z", "w"][i as usize];
+          slot = s.get_mut(field_name).unwrap();
+        }
+        _ => panic!("indexed access into non-array, non-struct value"),
+      },
+      AccessKind::Field(name) => {
+        let Value::Struct(s) = slot else {
+          panic!("field access on non-struct value");
+        };
+        slot = s.get_mut(&name).unwrap();
+      }
+    }
+  }
+  *slot = new_value;
+  Ok(())
+}
+
 pub fn eval(
   exp: Exp<ExpTypeInfo>,
   env: &mut EvaluationEnvironment<impl IOManager>,
@@ -4025,6 +4135,14 @@ pub fn eval(
     }
     ExpKind::Application(f, mut args) => match f.data.unwrap_known() {
       Type::Function(f_signature) => {
+        // Capture per-parameter ownership before f_signature gets partially
+        // moved by the abstract_ancestor pattern below. Needed at the end of
+        // the Composite call path to decide which args want write-back.
+        let param_ownerships: Vec<Ownership> = f_signature
+          .args
+          .iter()
+          .map(|(v, _)| v.var_type.ownership)
+          .collect();
         let name = match f.kind {
           ExpKind::Name(name) => name,
           _ => return Err(AppliedNonName.into()),
@@ -4080,6 +4198,20 @@ pub fn eval(
         let (read_global_variable_names, written_global_variable_names) =
           exp_effects.read_and_written_globals();
         env.check_cpu_readable(&read_global_variable_names);
+        // For args bound to a reference-typed parameter, save a clone of the
+        // callsite expression so we can write the (possibly mutated) post-
+        // call value back into its source location once the call returns.
+        // Owned args get `None` and skip write-back.
+        let ref_arg_lhs_exprs: Vec<Option<Exp<ExpTypeInfo>>> = args
+          .iter()
+          .zip(param_ownerships.iter())
+          .map(|(arg, ownership)| match ownership {
+            Ownership::Reference
+            | Ownership::MutableReference
+            | Ownership::Pointer(_) => Some(arg.clone()),
+            Ownership::Owned => None,
+          })
+          .collect();
         let arg_values: Vec<Value> = args
           .into_iter()
           .map(|arg| {
@@ -4137,8 +4269,21 @@ pub fn eval(
                 other => Err(other),
               },
             };
-            for name in arg_names.iter() {
-              env.unbind(name);
+            // Mutable-reference write-back. For each arg bound to a
+            // reference-typed parameter, pop its (possibly mutated) value
+            // off the env and copy it back to wherever it came from in
+            // the caller's environment, using the callsite LHS expression
+            // we saved before the call. Owned args just get unbound and
+            // the value dropped, same as before.
+            for (name, lhs) in arg_names
+              .iter()
+              .zip(ref_arg_lhs_exprs.into_iter())
+              .rev()
+            {
+              let (binding_value, _) = env.unbind(name);
+              if let Some(lhs_exp) = lhs {
+                write_back_through_lhs(env, lhs_exp, binding_value)?;
+              }
             }
             value?
           }
@@ -4177,7 +4322,7 @@ pub fn eval(
               },
             };
             for name in arg_names.iter() {
-              env.unbind(name);
+              let _ = env.unbind(name);
             }
             value?
           }
@@ -4550,7 +4695,7 @@ pub fn eval(
       }
       let value = eval(*exp, env)?;
       for name in names {
-        env.unbind(&name);
+        let _ = env.unbind(&name);
       }
       value
     }
@@ -4588,7 +4733,7 @@ pub fn eval(
             };
             env.bind(inner_name.clone(), (**inner_value).clone(), inner_ty);
             let result = eval(body_exp, env);
-            env.unbind(&inner_name);
+            let _ = env.unbind(&inner_name);
             return result;
           }
           continue;
@@ -4653,7 +4798,7 @@ pub fn eval(
           break;
         }
       }
-      env.unbind(&increment_variable_name.0);
+      let _ = env.unbind(&increment_variable_name.0);
       Value::Unit
     }
     ExpKind::WhileLoop {

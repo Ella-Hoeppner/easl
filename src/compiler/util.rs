@@ -63,6 +63,7 @@ pub fn compile_word(word: Arc<str>) -> String {
     | "bitcast<vec2<bool>>"
     | "bitcast<vec3<bool>>"
     | "bitcast<vec4<bool>>" => word.to_string(),
+    "Unit" => "Unit_".to_string(),
     _ => word
       .replace("-", "_")
       .replace("+", "PLUS")

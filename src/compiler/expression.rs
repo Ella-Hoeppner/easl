@@ -2190,6 +2190,7 @@ impl TypedExp {
                 CompilerTarget::VM => panic!(),
               }
             } else {
+              let is_unit = value_exp.data.unwrap_known() == Type::Unit;
               let type_name = value_exp.data.monomorphized_name(names, target);
               let compiled_value =
                 if value_exp.data.ownership != Ownership::Owned {
@@ -2197,16 +2198,20 @@ impl TypedExp {
                 } else {
                   value_exp.compile(InnerExpression, names, target)
                 };
-              let compiled_name = compile_word(name);
-              match target {
-                CompilerTarget::WGSL => format!(
-                  "{} {compiled_name}: {type_name} = {compiled_value};",
-                  variable_kind.compile(),
-                ),
-                CompilerTarget::C => {
-                  format!("{type_name} {compiled_name} = {compiled_value};")
+              if is_unit {
+                format!("{compiled_value};")
+              } else {
+                let compiled_name = compile_word(name);
+                match target {
+                  CompilerTarget::WGSL => format!(
+                    "{} {compiled_name}: {type_name} = {compiled_value};",
+                    variable_kind.compile(),
+                  ),
+                  CompilerTarget::C => {
+                    format!("{type_name} {compiled_name} = {compiled_value};")
+                  }
+                  CompilerTarget::VM => panic!(),
                 }
-                CompilerTarget::VM => panic!(),
               }
             }
           })
@@ -4735,9 +4740,114 @@ impl TypedExp {
           &mut |exp, ctx| {
             if let Application(f, args) = &mut exp.kind {
               if let Type::Function(f_type) = f.data.unwrap_known() {
-                for ((f_param, _), arg) in
-                  f_type.args.iter().zip(args.iter_mut())
+                for (i, ((f_param, _), arg)) in
+                  f_type.args.iter().zip(args.iter_mut()).enumerate()
                 {
+                  if matches!(
+                    f_param.var_type.ownership,
+                    Ownership::Reference | Ownership::MutableReference
+                  ) && let ExpKind::Access(
+                    Accessor::Swizzle(swizzle_fields),
+                    arg_accessed_value,
+                  ) = &arg.kind
+                  {
+                    let swizzle_vec_name =
+                      names.gensym("extracted_swizzle_vec");
+                    let result_name =
+                      names.gensym("extracted_swizzle_ref_result");
+                    let arg = arg.clone();
+                    let mut let_body_expressions = vec![TypedExp {
+                      data: exp.data.clone(),
+                      kind: ExpKind::Name(result_name.clone()),
+                      source_trace: exp.source_trace.clone(),
+                    }];
+                    if Ownership::MutableReference == f_param.var_type.ownership
+                    {
+                      let Type::Struct(arg_accessed_struct) =
+                        arg_accessed_value.data.unwrap_known()
+                      else {
+                        panic!()
+                      };
+                      let inner_scalar_type =
+                        arg_accessed_struct.fields[0].field_type.unwrap_known();
+                      let_body_expressions = swizzle_fields
+                        .iter()
+                        .enumerate()
+                        .map(|(i, swizzle_field)| TypedExp {
+                          data: Type::Unit.known().into(),
+                          source_trace: arg.source_trace.clone(),
+                          kind: ExpKind::Application(
+                            Self::assignment_function(
+                              Type::Bool.known().into(),
+                            )
+                            .into(),
+                            vec![
+                              TypedExp {
+                                data: inner_scalar_type.clone().known().into(),
+                                source_trace: arg.source_trace.clone(),
+                                kind: ExpKind::Access(
+                                  Accessor::Field(swizzle_field.name().into()),
+                                  arg_accessed_value.clone(),
+                                ),
+                              },
+                              TypedExp {
+                                data: inner_scalar_type.clone().known().into(),
+                                source_trace: arg.source_trace.clone(),
+                                kind: ExpKind::Access(
+                                  Accessor::Field(
+                                    ["x", "y", "z", "w"][i].into(),
+                                  ),
+                                  TypedExp {
+                                    data: arg_accessed_value.data.clone(),
+                                    kind: ExpKind::Name(
+                                      swizzle_vec_name.clone(),
+                                    ),
+                                    source_trace: arg.source_trace.clone(),
+                                  }
+                                  .into(),
+                                ),
+                              },
+                            ],
+                          ),
+                        })
+                        .chain(let_body_expressions)
+                        .collect();
+                    }
+                    exp.kind = ExpKind::Let(
+                      vec![
+                        (
+                          swizzle_vec_name.clone(),
+                          arg.source_trace.clone(),
+                          VariableKind::Var,
+                          arg.clone(),
+                        ),
+                        (
+                          result_name.clone(),
+                          exp.source_trace.clone(),
+                          VariableKind::Let,
+                          TypedExp {
+                            data: exp.data.clone(),
+                            source_trace: exp.source_trace.clone(),
+                            kind: ExpKind::Application(f.clone(), {
+                              let mut new_args = args.clone();
+                              new_args[i].kind =
+                                ExpKind::Name(swizzle_vec_name);
+                              new_args
+                            })
+                            .into(),
+                          },
+                        ),
+                      ],
+                      TypedExp {
+                        data: exp.data.clone(),
+                        kind: ExpKind::Block(let_body_expressions),
+                        source_trace: exp.source_trace.clone(),
+                      }
+                      .into(),
+                    );
+                    changed = true;
+                    return Ok(true);
+                  }
                   if Ownership::Reference == f_param.var_type.ownership
                     && Ownership::Owned == arg.data.ownership
                     && let ExpKind::Name(original_name) = &arg.kind

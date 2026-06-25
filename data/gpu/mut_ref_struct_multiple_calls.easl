@@ -1,0 +1,12 @@
+(defn step [@var @ref state: vec2f]
+  (+= state.y 1.)
+  (+= state.x state.y))
+
+(defn f []: f32
+  (let [@var s (vec2f 0. 0.)]
+    (step s)
+    (step s)
+    (step s)
+    (step s)
+    ; After 4 steps: y = 4, x = 1+2+3+4 = 10
+    (+ s.x s.y)))
