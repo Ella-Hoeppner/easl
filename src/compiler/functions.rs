@@ -1233,7 +1233,7 @@ impl TopLevelFunction {
               match arg.var_type.ownership {
                 Ownership::Owned => base_type,
                 Ownership::Pointer(_) => {
-                  format!("&{base_type}")
+                  format!("{base_type}*")
                 }
                 Ownership::Reference | Ownership::MutableReference => {
                   panic!(

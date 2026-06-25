@@ -2151,6 +2151,8 @@ impl TypedExp {
         let needs_c_index_helper = target == CompilerTarget::C
           && matches!(&accessor, Accessor::ArrayIndex(_))
           && (subexp_type.is_vector() || subexp_type.is_matrix());
+        let needs_c_swizzle_constructor = target == CompilerTarget::C
+          && matches!(&accessor, Accessor::Swizzle(fields) if fields.len() > 1);
         if needs_c_index_helper {
           let subexp_type_name =
             subexp.data.monomorphized_name(names, target).to_string();
@@ -2162,6 +2164,21 @@ impl TypedExp {
           wrap(format!(
             "index_{subexp_type_name}({subexp_str}, {index_str})"
           ))
+        } else if needs_c_swizzle_constructor {
+          let result_type_name =
+            self.data.monomorphized_name(names, target).to_string();
+          let Accessor::Swizzle(fields) = accessor else {
+            unreachable!()
+          };
+          let subexp_str = subexp.compile(InnerExpression, names, target);
+          let components = fields
+            .into_iter()
+            .map(|index| {
+              format!("{subexp_str}.{}", ["x", "y", "z", "w"][index as usize])
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+          wrap(format!("({result_type_name}){{{components}}}"))
         } else {
           wrap(format!(
             "{}{}",

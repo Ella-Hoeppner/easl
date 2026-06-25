@@ -4031,6 +4031,51 @@ impl EmulatedFunctionRecord {
           ));
           new_name.to_string()
         }
+        "+=" | "-=" | "*=" | "/=" | "%=" => {
+          // Whole-vector compound assignment. C has no `vec += vec`, so emit a
+          // void helper that takes a pointer to the lhs vector and applies the
+          // operation element-wise. The lhs is always a vector here (scalar
+          // compound assignment compiles directly via the infix path and never
+          // gets flagged for emulation); the rhs may be a vector or a scalar
+          // (broadcast).
+          let base_op = &name[..name.len() - 1];
+          let a_type = &signature.arg_types[0];
+          let b_type = &signature.arg_types[1];
+          let size = extract_vec_size(a_type).expect(
+            "compound assignment emulation expects a vector left-hand side",
+          );
+          let inner_scalar_name = get_vec_inner_scalar_name(a_type);
+          let non_symbol_name = match base_op {
+            "+" => "add",
+            "-" => "subtract",
+            "*" => "multiply",
+            "/" => "divide",
+            "%" => "modulo",
+            _ => unreachable!(),
+          };
+          let new_name =
+            names.gensym(&format!("{non_symbol_name}_assign_{a_type}_{b_type}"));
+          let b_is_vec = extract_vec_size(b_type).is_some();
+          let fields = ["x", "y", "z", "w"];
+          let mut body = format!("void {new_name}({a_type}* a, {b_type} b) {{\n  ");
+          for field in fields.iter().take(size) {
+            let b_component = if b_is_vec {
+              format!("b.{field}")
+            } else {
+              "b".to_string()
+            };
+            if base_op == "%" && inner_scalar_name == "float" {
+              body += &format!(
+                "a->{field} = fmod(a->{field}, {b_component});\n  "
+              );
+            } else {
+              body += &format!("a->{field} {base_op}= {b_component};\n  ");
+            }
+          }
+          body += "}";
+          self.helper_chunks.push(body);
+          new_name.to_string()
+        }
         _ => panic!(
           "couldn't generate an emulation\ntarget: {target:?}\nsignature: {signature:#?}"
         ),
