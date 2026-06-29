@@ -5,7 +5,9 @@ use std::sync::{Arc, RwLock};
 use take_mut::take;
 
 use crate::compiler::entry::BuiltinIOAttribute;
+use crate::compiler::expression::compile_typed_name;
 use crate::compiler::types::AbstractArraySize;
+use crate::vm::compile::BytecodeCompilationState;
 use crate::{
   Never,
   compiler::{
@@ -1206,44 +1208,25 @@ impl TopLevelFunction {
         .zip(args.into_iter())
         .zip(self.arg_annotations.into_iter())
         .map(|(((name, _), (arg, _)), annotation)| match target {
-          CompilerTarget::WGSL => format!(
-            "{}{}: {}",
-            annotation.attributes.compile(),
-            compile_word(name),
-            {
-              let base_type = arg.var_type.monomorphized_name(names, target);
-              match arg.var_type.ownership {
-                Ownership::Owned => base_type,
-                Ownership::Pointer(address_space) => {
-                  format!("ptr<{}, {base_type}>", address_space.name())
-                }
-                Ownership::Reference | Ownership::MutableReference => {
-                  panic!(
-                    "encountered raw reference in argument ownership, this \
-                  should have been monomorphized into a pointer"
-                  )
-                }
-              }
-            }
-          ),
-          CompilerTarget::C => format!(
-            "{} {}",
-            {
-              let base_type = arg.var_type.monomorphized_name(names, target);
-              match arg.var_type.ownership {
-                Ownership::Owned => base_type,
-                Ownership::Pointer(_) => {
-                  format!("{base_type}*")
-                }
-                Ownership::Reference | Ownership::MutableReference => {
-                  panic!(
-                    "encountered raw reference in argument ownership, this \
-                    should have been monomorphized into a pointer"
-                  )
-                }
-              }
-            },
-            compile_word(name),
+          CompilerTarget::WGSL => {
+            format!(
+              "{}{}",
+              annotation.attributes.compile(),
+              compile_typed_name(
+                name,
+                arg.var_type.ownership,
+                arg.var_type,
+                target,
+                names
+              )
+            )
+          }
+          CompilerTarget::C => compile_typed_name(
+            name,
+            arg.var_type.ownership,
+            arg.var_type,
+            target,
+            names,
           ),
           CompilerTarget::VM => panic!(),
         })
@@ -1311,5 +1294,36 @@ impl TopLevelFunction {
     } else {
       EffectType::empty()
     }
+  }
+  pub fn compile_to_bytecode(
+    &self,
+    f_name: &Arc<str>,
+    state: &mut BytecodeCompilationState,
+    ref_arg_positions: &[(usize, u16)],
+  ) {
+    state.open_function(f_name.clone());
+    let Type::Function(f) = self.expression.data.unwrap_known() else {
+      panic!()
+    };
+    for (i, (arg, _)) in f.args.iter().enumerate() {
+      let arg_size = arg
+        .var_type
+        .unwrap_known()
+        .data_size_in_u32s(&self.name_source_trace)
+        .unwrap() as u16;
+      let arg_slot = if let Some((_, caller_slot)) = ref_arg_positions
+        .iter()
+        .find(|(arg_index, _)| *arg_index == i)
+      {
+        *caller_slot
+      } else {
+        state.take_stack_slot(arg_size)
+      };
+      let current_function = state.current_function.as_mut().unwrap();
+      current_function.arg_positions.push(arg_slot);
+      current_function.arg_sizes.push(arg_size);
+    }
+    self.expression.compile_to_bytecode(false, state);
+    state.close_function();
   }
 }

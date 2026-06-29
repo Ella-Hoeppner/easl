@@ -444,11 +444,13 @@ impl AbstractType {
       AbstractType::AbstractArray {
         size, inner_type, ..
       } => {
-        format!(
-          "array<{}{}>",
-          inner_type.compile(typedefs, names, source_trace, target)?,
-          format!("{}", size.compile_type())
-        )
+        let size_str = size.compile_type();
+        let inner = inner_type.compile(typedefs, names, source_trace, target)?;
+        if size_str.is_empty() {
+          format!("array<{inner}>")
+        } else {
+          format!("array<{inner}, {size_str}>")
+        }
       }
     })
   }
@@ -796,9 +798,9 @@ pub enum ConcreteArraySize {
 impl AbstractArraySize {
   pub fn compile_type(&self) -> String {
     match self {
-      AbstractArraySize::Literal(size) => format!(", {size}"),
+      AbstractArraySize::Literal(size) => format!("{size}"),
       AbstractArraySize::Constant(name) => {
-        format!(", {}", compile_word(format!("{name}").into()))
+        compile_word(format!("{name}").into())
       }
       AbstractArraySize::Unsized => String::new(),
       AbstractArraySize::Generic(_) => {
@@ -864,15 +866,15 @@ impl ConcreteArraySize {
   }
   pub fn compile_type(&self) -> String {
     match self {
-      ConcreteArraySize::Literal(size) => format!(", {size}"),
+      ConcreteArraySize::Literal(size) => format!("{size}"),
       ConcreteArraySize::Constant(name) => {
-        format!(", {}", compile_word(format!("{name}").into()))
+        compile_word(format!("{name}").into())
       }
       ConcreteArraySize::Unsized => String::new(),
       ConcreteArraySize::UnificationVariable(value) => {
         let guard = value.value.read().unwrap();
         match &*guard {
-          Some(ConstGenericResolution::Literal(n)) => format!(", {n}"),
+          Some(ConstGenericResolution::Literal(n)) => format!("{n}"),
           Some(ConstGenericResolution::Skolem(_)) => {
             panic!(
               "compiling UnificationVariable resolved to skolem, \
@@ -1664,14 +1666,16 @@ impl Type {
         },
         Type::Enum(e) => compile_word(e.monomorphized_name(names, target)),
         Type::Array(size, inner_type) => {
-          format!(
-            "array<{}{}>",
-            inner_type.monomorphized_name(names, target),
-            size
-              .clone()
-              .map(|size| format!("{}", size.compile_type()))
-              .unwrap_or(String::new())
-          )
+          let inner = inner_type.monomorphized_name(names, target);
+          let size_str = size
+            .clone()
+            .map(|size| size.compile_type())
+            .unwrap_or_default();
+          if size_str.is_empty() {
+            format!("array<{inner}>")
+          } else {
+            format!("array<{inner}, {size_str}>")
+          }
         }
         Type::Function(f) => {
           let Some(f) = &f.abstract_ancestor else {

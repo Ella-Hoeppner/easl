@@ -4,17 +4,16 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::compiler::enums::Enum;
 use crate::compiler::expression::{Accessor, ExpKind, Number, TypedExp};
 use crate::compiler::functions::{
-  FunctionImplementationKind, extract_mat_size as parse_mat_size,
+  FunctionImplementationKind, Ownership, TopLevelFunction,
+  extract_mat_size as parse_mat_size,
 };
 use crate::compiler::types::{Type, TypeState};
-use crate::vm::bytecode::{
-  BytecodeProgram, Code, Function, Instruction, Op,
-};
+use crate::vm::bytecode::{BytecodeProgram, Code, Function, Instruction, Op};
 
 // =============================================================================
 // Bytecode compilation
@@ -33,16 +32,27 @@ pub struct IntermediateBytecodeFunction {
   pub arg_sizes: Vec<u16>,
 }
 
+pub struct PendingRefFnUsage {
+  pub name: Arc<str>,
+  pub fn_dispatch_position: u32,
+  pub arg_move_positions: Vec<u32>,
+  pub return_move_position: u32,
+  pub arg_positions: Vec<u16>,
+}
+
 pub struct BytecodeCompilationState {
   pub consumed_stack_space: u16,
   pub globals: HashMap<Arc<str>, u16>,
   pub locals: HashMap<Arc<str>, u16>,
   pub instructions: Vec<Instruction>,
   pub finished_functions: Vec<IntermediateBytecodeFunction>,
-  pub current_function: Option<IntermediateBytecodeFunction>,
   pub loop_start_instructions: Vec<u32>,
   pub break_jump_instruction_positions: Vec<Vec<u32>>,
   pub continue_jump_instruction_positions: Vec<Vec<u32>>,
+  pub ref_arg_functions: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)>,
+  pub current_function: Option<IntermediateBytecodeFunction>,
+  pub pending_ref_arg_function_usages: Vec<PendingRefFnUsage>,
+  pub array_mut_ref_store_instructions: Vec<Vec<Instruction>>,
 }
 
 impl BytecodeCompilationState {
@@ -57,6 +67,9 @@ impl BytecodeCompilationState {
       loop_start_instructions: vec![],
       break_jump_instruction_positions: vec![],
       continue_jump_instruction_positions: vec![],
+      ref_arg_functions: vec![],
+      pending_ref_arg_function_usages: vec![],
+      array_mut_ref_store_instructions: vec![],
     }
   }
   pub fn take_stack_slot(&mut self, size: u16) -> u16 {
@@ -484,11 +497,7 @@ impl BytecodeCompilationState {
         let (_, src_elem) = vec_kind(&arg_types[0]).unwrap();
         let conv_op = conversion_op(&src_elem, &target_elem);
         for i in 0..target_count {
-          self.push_conv_or_move(
-            conv_op,
-            arg_positions[0] + i,
-            result_pos + i,
-          );
+          self.push_conv_or_move(conv_op, arg_positions[0] + i, result_pos + i);
         }
       } else if total_arg_slots == target_count {
         // Concatenation of scalars and shorter vecs.
@@ -555,7 +564,11 @@ impl BytecodeCompilationState {
           "radians" => Op::Radians,
           _ => unreachable!(),
         };
-        Some(self.emit_elementwise_unary(&arg_types[0], arg_positions[0], |_| op))
+        Some(self.emit_elementwise_unary(
+          &arg_types[0],
+          arg_positions[0],
+          |_| op,
+        ))
       }
 
       // --- Abs / Sign (signed, type-aware) ---
@@ -700,14 +713,31 @@ impl BytecodeCompilationState {
         let a_vec_only = vec_kind(&arg_types[0]).filter(|_| a_mat.is_none());
         let b_vec_only = vec_kind(&arg_types[1]).filter(|_| b_mat.is_none());
         match (a_mat, b_mat, a_vec_only, b_vec_only) {
-          (Some((ac, ar, e)), Some((bc, _, _)), _, _) => Some(
-            self.emit_mat_mul(ac, ar, bc, arg_positions[0], arg_positions[1], &e),
-          ),
+          (Some((ac, ar, e)), Some((bc, _, _)), _, _) => {
+            Some(self.emit_mat_mul(
+              ac,
+              ar,
+              bc,
+              arg_positions[0],
+              arg_positions[1],
+              &e,
+            ))
+          }
           (Some((ac, ar, e)), None, _, Some(_)) => Some(self.emit_mat_mul(
-            ac, ar, 1, arg_positions[0], arg_positions[1], &e,
+            ac,
+            ar,
+            1,
+            arg_positions[0],
+            arg_positions[1],
+            &e,
           )),
           (None, Some((bc, br, e)), Some(_), _) => Some(self.emit_mat_mul(
-            br, 1, bc, arg_positions[0], arg_positions[1], &e,
+            br,
+            1,
+            bc,
+            arg_positions[0],
+            arg_positions[1],
+            &e,
           )),
           (Some((_, _, e)), None, _, None) => {
             let size = arg_types[0]
@@ -843,12 +873,14 @@ impl BytecodeCompilationState {
       }
 
       // --- Comparisons ---
-      "==" | "!=" | "<" | ">" | "<=" | ">=" => Some(self.emit_elementwise_binary(
-        &arg_types[0],
-        arg_positions[0],
-        arg_positions[1],
-        |e| compare_op_for(e, f_name),
-      )),
+      "==" | "!=" | "<" | ">" | "<=" | ">=" => {
+        Some(self.emit_elementwise_binary(
+          &arg_types[0],
+          arg_positions[0],
+          arg_positions[1],
+          |e| compare_op_for(e, f_name),
+        ))
+      }
 
       // --- Boolean ---
       "&&" => Some(self.emit_binary(
@@ -856,9 +888,11 @@ impl BytecodeCompilationState {
         arg_positions[0],
         arg_positions[1],
       )),
-      "||" => {
-        Some(self.emit_binary(Op::LogicalOr, arg_positions[0], arg_positions[1]))
-      }
+      "||" => Some(self.emit_binary(
+        Op::LogicalOr,
+        arg_positions[0],
+        arg_positions[1],
+      )),
       "!" => Some(self.emit_unary(Op::LogicalNot, arg_positions[0])),
 
       // --- Bitwise ---
@@ -1174,15 +1208,20 @@ impl BytecodeCompilationState {
         Some(self.emit_binary(Op::MinusF32, ad, bc))
       }
       3 => {
-        let a = s(0, 0); let b = s(0, 1); let c = s(0, 2);
-        let d = s(1, 0); let e = s(1, 1); let f = s(1, 2);
-        let g = s(2, 0); let h = s(2, 1); let i = s(2, 2);
+        let a = s(0, 0);
+        let b = s(0, 1);
+        let c = s(0, 2);
+        let d = s(1, 0);
+        let e = s(1, 1);
+        let f = s(1, 2);
+        let g = s(2, 0);
+        let h = s(2, 1);
+        let i = s(2, 2);
         Some(self.emit_det3(a, b, c, d, e, f, g, h, i))
       }
       4 => {
-        let elem: Vec<Vec<u16>> = (0..4)
-          .map(|r| (0..4).map(|c| s(r, c)).collect())
-          .collect();
+        let elem: Vec<Vec<u16>> =
+          (0..4).map(|r| (0..4).map(|c| s(r, c)).collect()).collect();
         let mut signed_terms: Vec<(bool, u16)> = vec![];
         for j in 0..4 {
           let cols_kept: Vec<u16> = (0..4).filter(|c| *c != j).collect();
@@ -1230,9 +1269,15 @@ impl BytecodeCompilationState {
   /// 3x3 determinant via standard cofactor expansion: a(ei-fh) - b(di-fg) + c(dh-eg).
   fn emit_det3(
     &mut self,
-    a: u16, b: u16, c: u16,
-    d: u16, e: u16, f: u16,
-    g: u16, h: u16, i: u16,
+    a: u16,
+    b: u16,
+    c: u16,
+    d: u16,
+    e: u16,
+    f: u16,
+    g: u16,
+    h: u16,
+    i: u16,
   ) -> u16 {
     let ei = self.emit_binary(Op::MultiplyF32, e, i);
     let fh = self.emit_binary(Op::MultiplyF32, f, h);
@@ -1464,6 +1509,7 @@ fn enum_pattern_variant_index(pattern: &TypedExp, enum_type: &Enum) -> u32 {
 impl TypedExp {
   pub fn compile_to_bytecode(
     &self,
+    is_ref_arg_position: bool,
     state: &mut BytecodeCompilationState,
   ) -> Option<u16> {
     use ExpKind::*;
@@ -1483,10 +1529,11 @@ impl TypedExp {
       BooleanLiteral(b) => Some(state.emit_u32_constant(*b as u32)),
       Block(exps) => exps
         .iter()
-        .map(|exp| exp.compile_to_bytecode(state))
+        .map(|exp| exp.compile_to_bytecode(false, state))
         .last()
         .unwrap_or(None),
       Application(f_exp, args) => {
+        state.array_mut_ref_store_instructions.push(vec![]);
         let ExpKind::Name(f_name) = &f_exp.kind else {
           panic!()
         };
@@ -1498,7 +1545,12 @@ impl TypedExp {
         let abstract_f = abstract_f.read().unwrap();
         let arg_positions: Vec<u16> = args
           .iter()
-          .map(|arg| arg.compile_to_bytecode(state).unwrap())
+          .zip(abstract_f.arg_types.iter())
+          .map(|(arg, (_, ownership))| {
+            arg
+              .compile_to_bytecode(*ownership != Ownership::Owned, state)
+              .unwrap()
+          })
           .collect();
         let return_type = f.return_type.unwrap_known();
         let arg_types: Vec<Type> = f
@@ -1506,7 +1558,7 @@ impl TypedExp {
           .iter()
           .map(|(arg, _)| arg.var_type.unwrap_known())
           .collect();
-        match &abstract_f.implementation {
+        let result_pos = match &abstract_f.implementation {
           FunctionImplementationKind::Builtin { .. } => state.compile_builtin(
             &f_name,
             args,
@@ -1524,7 +1576,7 @@ impl TypedExp {
             );
             let mut offset = 0u16;
             for arg in args {
-              let arg_pos = arg.compile_to_bytecode(state).unwrap();
+              let arg_pos = arg.compile_to_bytecode(false, state).unwrap();
               let arg_size = arg
                 .data
                 .unwrap_known()
@@ -1549,10 +1601,10 @@ impl TypedExp {
               .variants
               .iter()
               .position(|v| v.name == *variant_name)
-              .expect("EnumConstructor variant not found in enum") as u32;
-            let total_size = return_type
-              .data_size_in_u32s(&self.source_trace)
-              .unwrap() as u16;
+              .expect("EnumConstructor variant not found in enum")
+              as u32;
+            let total_size =
+              return_type.data_size_in_u32s(&self.source_trace).unwrap() as u16;
             let result = state.take_stack_slot(total_size);
             // Discriminant at result[0] — first slot of the freshly allocated
             // region. We write it directly rather than using emit_u32_constant
@@ -1588,42 +1640,88 @@ impl TypedExp {
               .data_size_in_u32s(&f_exp.source_trace)
               .unwrap() as u16;
             let result_position = state.take_stack_slot(return_size);
-            let (fn_index, bytecode_fn) = state
-              .finished_functions
+            if state
+              .ref_arg_functions
               .iter()
-              .enumerate()
-              .find_map(|(i, f)| {
-                (f.name == f_name).then(|| (i as u16, f.clone()))
-              })
-              .unwrap();
-            for (arg_pos, (fn_arg_pos, arg_size)) in
-              arg_positions.iter().copied().zip(
-                bytecode_fn
-                  .arg_positions
-                  .iter()
-                  .copied()
-                  .zip(bytecode_fn.arg_sizes.iter().copied()),
-              )
+              .find(|(ref_fn_name, _)| *ref_fn_name == f_name)
+              .is_some()
             {
+              let mut arg_move_positions = vec![];
+              for _ in 0..arg_positions.len() {
+                arg_move_positions.push(state.instructions.len() as u32);
+                state.push_instruction(Instruction {
+                  op: Op::Move,
+                  arg_positions: [0, 0, 0],
+                  return_position: 0,
+                });
+              }
+              let fn_dispatch_position = state.instructions.len() as u32;
+              state.push_instruction(Instruction {
+                op: Op::InvokeFunction,
+                arg_positions: [0, 0, 0],
+                return_position: 0,
+              });
+              let return_move_position = state.instructions.len() as u32;
               state.push_instruction(Instruction {
                 op: Op::Move,
-                arg_positions: [arg_pos, arg_size, 0],
-                return_position: fn_arg_pos,
+                arg_positions: [0, return_size, 0],
+                return_position: result_position,
               });
+              state
+                .pending_ref_arg_function_usages
+                .push(PendingRefFnUsage {
+                  name: f_name,
+                  arg_move_positions,
+                  fn_dispatch_position,
+                  return_move_position,
+                  arg_positions,
+                });
+              Some(result_position)
+            } else {
+              let (fn_index, bytecode_fn) = state
+                .finished_functions
+                .iter()
+                .enumerate()
+                .find_map(|(i, f)| {
+                  (f.name == f_name).then(|| (i as u16, f.clone()))
+                })
+                .unwrap();
+
+              for (arg_pos, (fn_arg_pos, arg_size)) in
+                arg_positions.iter().copied().zip(
+                  bytecode_fn
+                    .arg_positions
+                    .iter()
+                    .copied()
+                    .zip(bytecode_fn.arg_sizes.iter().copied()),
+                )
+              {
+                state.push_instruction(Instruction {
+                  op: Op::Move,
+                  arg_positions: [arg_pos, arg_size, 0],
+                  return_position: fn_arg_pos,
+                });
+              }
+              state.push_instruction(Instruction {
+                op: Op::InvokeFunction,
+                arg_positions: [fn_index, 0, 0],
+                return_position: 0,
+              });
+              state.push_instruction(Instruction {
+                op: Op::Move,
+                arg_positions: [bytecode_fn.stack_frame_start, return_size, 0],
+                return_position: result_position,
+              });
+              Some(result_position)
             }
-            state.push_instruction(Instruction {
-              op: Op::InvokeFunction,
-              arg_positions: [fn_index, 0, 0],
-              return_position: 0,
-            });
-            state.push_instruction(Instruction {
-              op: Op::Move,
-              arg_positions: [bytecode_fn.stack_frame_start, return_size, 0],
-              return_position: result_position,
-            });
-            Some(result_position)
           }
+        };
+        let array_mut_ref_store_instructions =
+          state.array_mut_ref_store_instructions.pop().unwrap();
+        for instruction in array_mut_ref_store_instructions {
+          state.push_instruction(instruction);
         }
+        result_pos
       }
       Name(name) => {
         if let Some(slot) = state
@@ -1670,7 +1768,7 @@ impl TypedExp {
         ) {
           state.locals.insert(arg_name.clone(), *arg_position);
         }
-        if let Some(result_position) = exp.compile_to_bytecode(state) {
+        if let Some(result_position) = exp.compile_to_bytecode(false, state) {
           state.push_instruction(Instruction {
             op: Op::Move,
             arg_positions: [
@@ -1705,17 +1803,18 @@ impl TypedExp {
             let slot = state.take_stack_slot(size);
             state.locals.insert(name.clone(), slot);
           } else {
-            let value_pos = value.compile_to_bytecode(state).unwrap();
+            let value_pos = value.compile_to_bytecode(false, state).unwrap();
             state.locals.insert(name.clone(), value_pos);
           }
         }
-        body.compile_to_bytecode(state)
+        body.compile_to_bytecode(false, state)
       }
       Match(scrutinee, arms) => {
         let result_type = self.data.unwrap_known();
         let result_type_size =
           result_type.data_size_in_u32s(&self.source_trace).unwrap() as u16;
-        let scrutinee_pos = scrutinee.compile_to_bytecode(state).unwrap();
+        let scrutinee_pos =
+          scrutinee.compile_to_bytecode(false, state).unwrap();
         let scrutinee_type = scrutinee.data.unwrap_known();
         if scrutinee_type == Type::Bool
           && arms[0].0.kind == ExpKind::BooleanLiteral(true)
@@ -1732,7 +1831,7 @@ impl TypedExp {
             return_position: 0,
           });
           if let Some(false_branch_result_pos) =
-            arms[1].1.compile_to_bytecode(state)
+            arms[1].1.compile_to_bytecode(false, state)
           {
             state.push_instruction(Instruction {
               op: Op::Move,
@@ -1753,7 +1852,7 @@ impl TypedExp {
           state.instructions[true_branch_jump_instruction_pos].arg_positions
             [2] = true_branch_start_instruction_pos as u16;
           if let Some(true_branch_result_pos) =
-            arms[0].1.compile_to_bytecode(state)
+            arms[0].1.compile_to_bytecode(false, state)
           {
             state.push_instruction(Instruction {
               op: Op::Move,
@@ -1779,7 +1878,8 @@ impl TypedExp {
               let last_arm_body = arms.pop().unwrap().1;
               let mut jump_into_block_instruction_positions = vec![];
               for (pattern, _) in arms.iter() {
-                let pattern_pos = pattern.compile_to_bytecode(state).unwrap();
+                let pattern_pos =
+                  pattern.compile_to_bytecode(false, state).unwrap();
                 let equality_check_pos = state.take_stack_slot(1);
                 state.push_instruction(Instruction {
                   op: match scrutinee_type {
@@ -1800,7 +1900,7 @@ impl TypedExp {
                 });
               }
               if let Some(last_arm_result_pos) =
-                last_arm_body.compile_to_bytecode(state)
+                last_arm_body.compile_to_bytecode(false, state)
               {
                 state.push_instruction(Instruction {
                   op: Op::Move,
@@ -1821,7 +1921,9 @@ impl TypedExp {
                   .arg_positions[1] = (start_pos >> 16) as u16;
                 state.instructions[jump_into_block_instruction_positions[i]]
                   .arg_positions[2] = start_pos as u16;
-                if let Some(arm_result_pos) = body.compile_to_bytecode(state) {
+                if let Some(arm_result_pos) =
+                  body.compile_to_bytecode(false, state)
+                {
                   state.push_instruction(Instruction {
                     op: Op::Move,
                     arg_positions: [arm_result_pos, result_type_size, 0],
@@ -1866,9 +1968,7 @@ impl TypedExp {
                   if let Some((_, _, inner_name)) =
                     TypedExp::try_deconstruct_enum_pattern(f_box, pattern_args)
                   {
-                    state
-                      .locals
-                      .insert(inner_name.clone(), scrutinee_pos + 1);
+                    state.locals.insert(inner_name.clone(), scrutinee_pos + 1);
                   }
                 }
               }
@@ -1877,11 +1977,8 @@ impl TypedExp {
                 let variant_index =
                   enum_pattern_variant_index(pattern, enum_type);
                 let const_slot = state.emit_u32_constant(variant_index);
-                let eq_pos = state.emit_binary(
-                  Op::IsEqualU32,
-                  scrutinee_pos,
-                  const_slot,
-                );
+                let eq_pos =
+                  state.emit_binary(Op::IsEqualU32, scrutinee_pos, const_slot);
                 jump_into_block_instruction_positions
                   .push(state.instructions.len());
                 state.push_instruction(Instruction {
@@ -1891,7 +1988,7 @@ impl TypedExp {
                 });
               }
               if let Some(last_arm_result_pos) =
-                last_arm_body.compile_to_bytecode(state)
+                last_arm_body.compile_to_bytecode(false, state)
               {
                 state.push_instruction(Instruction {
                   op: Op::Move,
@@ -1908,19 +2005,17 @@ impl TypedExp {
               });
               for (i, (pattern, body)) in arms.into_iter().enumerate() {
                 let start_pos = state.instructions.len();
-                state.instructions
-                  [jump_into_block_instruction_positions[i]]
+                state.instructions[jump_into_block_instruction_positions[i]]
                   .arg_positions[1] = (start_pos >> 16) as u16;
-                state.instructions
-                  [jump_into_block_instruction_positions[i]]
+                state.instructions[jump_into_block_instruction_positions[i]]
                   .arg_positions[2] = start_pos as u16;
-                if let ExpKind::Application(f_box, pattern_args) =
-                  &pattern.kind
+                if let ExpKind::Application(f_box, pattern_args) = &pattern.kind
                 {
                   if let TypeState::Known(Type::Function(_)) = &*f_box.data {
                     if let Some((_, _, inner_name)) =
                       TypedExp::try_deconstruct_enum_pattern(
-                        f_box, pattern_args,
+                        f_box,
+                        pattern_args,
                       )
                     {
                       state
@@ -1929,7 +2024,8 @@ impl TypedExp {
                     }
                   }
                 }
-                if let Some(arm_result_pos) = body.compile_to_bytecode(state)
+                if let Some(arm_result_pos) =
+                  body.compile_to_bytecode(false, state)
                 {
                   state.push_instruction(Instruction {
                     op: Op::Move,
@@ -1937,8 +2033,7 @@ impl TypedExp {
                     return_position: result_pos.unwrap(),
                   });
                 }
-                arm_end_instruction_positions
-                  .push(state.instructions.len());
+                arm_end_instruction_positions.push(state.instructions.len());
                 state.push_instruction(Instruction {
                   op: Op::Jump,
                   arg_positions: [0, 0, 0],
@@ -1970,14 +2065,16 @@ impl TypedExp {
         state.loop_start_instructions.push(loop_start_pos);
         state.break_jump_instruction_positions.push(vec![]);
         state.continue_jump_instruction_positions.push(vec![]);
-        let cond_pos = condition_expression.compile_to_bytecode(state).unwrap();
+        let cond_pos = condition_expression
+          .compile_to_bytecode(false, state)
+          .unwrap();
         let jump_out_instruction_pos = state.instructions.len();
         state.push_instruction(Instruction {
           op: Op::JumpWhenNot,
           arg_positions: [cond_pos, 0, 0],
           return_position: 0,
         });
-        body_expression.compile_to_bytecode(state);
+        body_expression.compile_to_bytecode(false, state);
         state.push_instruction(Instruction {
           op: Op::Jump,
           arg_positions: [
@@ -2021,7 +2118,7 @@ impl TypedExp {
       } => {
         let increment_var_initial_value_pos =
           increment_variable_initial_value_expression
-            .compile_to_bytecode(state)
+            .compile_to_bytecode(false, state)
             .unwrap();
         let increment_var_pos = state.take_stack_slot(
           increment_variable_type
@@ -2042,7 +2139,7 @@ impl TypedExp {
         state.break_jump_instruction_positions.push(vec![]);
         state.continue_jump_instruction_positions.push(vec![]);
         let cond_pos = continue_condition_expression
-          .compile_to_bytecode(state)
+          .compile_to_bytecode(false, state)
           .unwrap();
         let jump_out_instruction_pos = state.instructions.len();
         state.push_instruction(Instruction {
@@ -2050,10 +2147,10 @@ impl TypedExp {
           arg_positions: [cond_pos, 0, 0],
           return_position: 0,
         });
-        body_expression.compile_to_bytecode(state);
+        body_expression.compile_to_bytecode(false, state);
         let pre_update_pos = state.instructions.len();
         if let Some(update_expression) = update_expression {
-          update_expression.compile_to_bytecode(state);
+          update_expression.compile_to_bytecode(false, state);
         }
         state.push_instruction(Instruction {
           op: Op::Jump,
@@ -2117,7 +2214,7 @@ impl TypedExp {
         None
       }
       Return(exp) => {
-        if let Some(return_value_pos) = exp.compile_to_bytecode(state) {
+        if let Some(return_value_pos) = exp.compile_to_bytecode(false, state) {
           state.push_instruction(Instruction {
             op: Op::Move,
             arg_positions: [
@@ -2152,7 +2249,8 @@ impl TypedExp {
         let array_pos = state
           .take_stack_slot(inner_data_size * (inner_expressions.len() as u16));
         for (i, inner_exp) in inner_expressions.iter().enumerate() {
-          let inner_exp_pos = inner_exp.compile_to_bytecode(state).unwrap();
+          let inner_exp_pos =
+            inner_exp.compile_to_bytecode(false, state).unwrap();
           state.push_instruction(Instruction {
             op: Op::Move,
             arg_positions: [inner_exp_pos, inner_data_size, 0],
@@ -2162,23 +2260,37 @@ impl TypedExp {
         Some(array_pos)
       }
       Access(accessor, exp) => {
-        let inner_exp_pos = exp.compile_to_bytecode(state).unwrap();
-        let inner_data_size = self
-          .data
-          .unwrap_known()
-          .data_size_in_u32s(&self.source_trace)
-          .unwrap() as u16;
-        let result_position = state.take_stack_slot(inner_data_size);
         match accessor {
           Accessor::ArrayIndex(index_exp) => {
-            let index_pos = index_exp.compile_to_bytecode(state).unwrap();
+            let inner_exp_pos = exp.compile_to_bytecode(false, state).unwrap();
+            let inner_data_size = self
+              .data
+              .unwrap_known()
+              .data_size_in_u32s(&self.source_trace)
+              .unwrap() as u16;
+            let result_position = state.take_stack_slot(inner_data_size);
+            let index_pos =
+              index_exp.compile_to_bytecode(false, state).unwrap();
             state.push_instruction(Instruction {
               op: Op::ArrayLookup,
               arg_positions: [inner_exp_pos, index_pos, inner_data_size],
               return_position: result_position,
             });
+            if is_ref_arg_position {
+              state
+                .array_mut_ref_store_instructions
+                .last_mut()
+                .unwrap()
+                .push(Instruction {
+                  op: Op::ArrayStore,
+                  arg_positions: [result_position, index_pos, inner_data_size],
+                  return_position: inner_exp_pos,
+                });
+            }
+            Some(result_position)
           }
           Accessor::Field(field_name) => {
+            let inner_exp_pos = exp.compile_to_bytecode(false, state).unwrap();
             let Type::Struct(s) = exp.data.unwrap_known() else {
               panic!()
             };
@@ -2193,22 +2305,21 @@ impl TypedExp {
                 .data_size_in_u32s(&exp.source_trace)
                 .unwrap();
             }
-            state.push_instruction(Instruction {
-              op: Op::Move,
-              arg_positions: [
-                inner_exp_pos + (offset as u16),
-                inner_data_size,
-                0,
-              ],
-              return_position: result_position,
-            });
+            Some(inner_exp_pos + (offset as u16))
           }
           Accessor::Swizzle(swizzle_fields) => {
-            // Each swizzle field picks a single u32-wide element out of the
-            // source vector and writes it to a consecutive slot in the
-            // result. Works uniformly for single-field (.x → scalar) and
-            // multi-field (.xyz → vec3) swizzles since both end up as N
-            // single-u32 Moves.
+            // For swizzles we just copy the values to a new location so that
+            // we have the resulting vector as a contiguous chunk of memory.
+            // This would cause problems if there was any kind of assignment
+            // into a swizzle, but that should have always been desugared away
+            // by an earlier stage of the compiler
+            let inner_exp_pos = exp.compile_to_bytecode(false, state).unwrap();
+            let inner_data_size = self
+              .data
+              .unwrap_known()
+              .data_size_in_u32s(&self.source_trace)
+              .unwrap() as u16;
+            let result_position = state.take_stack_slot(inner_data_size);
             for (i, field) in swizzle_fields.iter().enumerate() {
               state.push_instruction(Instruction {
                 op: Op::Move,
@@ -2216,9 +2327,9 @@ impl TypedExp {
                 return_position: result_position + i as u16,
               });
             }
+            Some(result_position)
           }
         }
-        Some(result_position)
       }
       StringLiteral(_) => panic!("bytecode vm can't handle strings yet!"),
       Discard => panic!("bytecode vm can't handle discard statements"),

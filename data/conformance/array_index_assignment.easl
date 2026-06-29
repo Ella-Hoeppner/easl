@@ -1,0 +1,4 @@
+(defn f []: f32
+  (let [@var arr [0. 1.]]
+    (= (arr 0u) 2.)
+    (arr 0u)))

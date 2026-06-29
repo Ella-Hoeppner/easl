@@ -1,0 +1,6 @@
+(defn sum-of-values [a: [2: f32]]: f32
+  (+ (a 0u) (a 1u)))
+
+(defn f []: f32
+  (let [arr [0. 1.]]
+    (sum-of-values arr)))

@@ -569,3 +569,6 @@ conformance_test!(mat_inline_index);
 conformance_test!(mat_double_index);
 conformance_test!(mat_index_var);
 conformance_test!(mat_diagonal_sum);
+conformance_test!(struct_field_assignment);
+conformance_test!(array_index_assignment);
+conformance_test!(array_argument);

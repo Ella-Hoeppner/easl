@@ -1,0 +1,8 @@
+(struct Pair
+  a: f32
+  b: f32)
+
+(defn f []: f32
+  (let [@var p (Pair 0. 1.)]
+    (= p.a 2.)
+    p.a))

@@ -14,7 +14,7 @@ use crate::compiler::types::ExpTypeInfo;
 use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
 use crate::parse::EaslMultiDocument;
 use crate::vm::bytecode::{BytecodeProgram, Instruction, Op};
-use crate::vm::compile::BytecodeCompilationState;
+use crate::vm::compile::{BytecodeCompilationState, PendingRefFnUsage};
 use crate::{
   Never,
   compiler::{
@@ -4436,7 +4436,8 @@ impl Program {
         state.open_function("$init_globals".into());
         for v in self.top_level_vars.iter() {
           if let Some(value_exp) = &v.value {
-            let value_slot = value_exp.compile_to_bytecode(&mut state).unwrap();
+            let value_slot =
+              value_exp.compile_to_bytecode(false, &mut state).unwrap();
             let var_size =
               v.var_type.data_size_in_u32s(&v.source_trace).unwrap() as u16;
             let global_slot = *state.globals.get(&v.name).unwrap();
@@ -4461,39 +4462,87 @@ impl Program {
       // reachable through the `@cpu` entry — without it, `compile_to_
       // bytecode` would hit `todo!()` on `spawn-window` / `window-frame-
       // index` / etc.
-      let implementation_read = implementation.read().unwrap();
-      let skip_for_entry_point = implementation_read
-        .entry_point
-        .map(|e| !e.should_compile_to_target(CompilerTarget::VM))
-        .unwrap_or(false);
-      let effects = implementation_read.effects();
-      let has_cpu_exclusive = !effects.cpu_exclusive_functions().is_empty()
-        || !effects.cpu_exclusive_types().is_empty();
-      if skip_for_entry_point || has_cpu_exclusive {
-        continue;
+      {
+        let implementation_read = implementation.read().unwrap();
+        let arg_ref_positions: Vec<usize> = implementation_read
+          .arg_annotations
+          .iter()
+          .enumerate()
+          .filter_map(|(i, arg)| {
+            if arg.ownership != Ownership::Owned {
+              Some(i)
+            } else {
+              None
+            }
+          })
+          .collect();
+        if !arg_ref_positions.is_empty() {
+          state
+            .ref_arg_functions
+            .push((f_name, implementation.clone()));
+          continue;
+        }
+        let skip_for_entry_point = implementation_read
+          .entry_point
+          .map(|e| !e.should_compile_to_target(CompilerTarget::VM))
+          .unwrap_or(false);
+        let effects = implementation_read.effects();
+        let has_cpu_exclusive = !effects.cpu_exclusive_functions().is_empty()
+          || !effects.cpu_exclusive_types().is_empty();
+        if skip_for_entry_point || has_cpu_exclusive {
+          continue;
+        }
       }
-      drop(implementation_read);
-      state.open_function(f_name.clone());
-      let implementation = implementation.read().unwrap();
-      let Type::Function(f) = implementation.expression.data.unwrap_known()
-      else {
-        panic!()
-      };
-      for (arg, _) in f.args.iter() {
-        let arg_size = arg
-          .var_type
-          .unwrap_known()
-          .data_size_in_u32s(&implementation.name_source_trace)
-          .unwrap() as u16;
-        let current_function = state.current_function.as_mut().unwrap();
-        current_function
-          .arg_positions
-          .push(state.consumed_stack_space);
-        current_function.arg_sizes.push(arg_size);
-        state.take_stack_slot(arg_size);
+      implementation.read().unwrap().compile_to_bytecode(
+        &f_name,
+        &mut state,
+        &[],
+      );
+      while !state.pending_ref_arg_function_usages.is_empty() {
+        for PendingRefFnUsage {
+          name,
+          fn_dispatch_position,
+          arg_move_positions,
+          return_move_position,
+          arg_positions,
+        } in state
+          .pending_ref_arg_function_usages
+          .drain(..)
+          .collect::<Vec<_>>()
+        {
+          state.instructions[fn_dispatch_position as usize].arg_positions[0] =
+            state.finished_functions.len() as u16;
+          let f = state
+            .ref_arg_functions
+            .iter()
+            .find_map(|(f_name, f)| (name == *f_name).then(|| f))
+            .unwrap()
+            .clone();
+          let f = f.read().unwrap();
+          let mut owned_arg_indeces = vec![];
+          let mut ref_arg_positions = vec![];
+          for (i, annotation) in f.arg_annotations.iter().enumerate() {
+            if annotation.ownership == Ownership::Owned {
+              owned_arg_indeces.push(i);
+            } else {
+              ref_arg_positions.push((i, arg_positions[i]));
+            }
+          }
+          f.compile_to_bytecode(&name, &mut state, &ref_arg_positions);
+          let bytecode_fn = state.finished_functions.last().unwrap();
+          for owned_arg_index in owned_arg_indeces {
+            let move_instruction = &mut state.instructions
+              [arg_move_positions[owned_arg_index] as usize];
+            move_instruction.arg_positions[0] = arg_positions[owned_arg_index];
+            move_instruction.arg_positions[1] =
+              bytecode_fn.arg_sizes[owned_arg_index];
+            move_instruction.return_position =
+              bytecode_fn.arg_positions[owned_arg_index];
+          }
+          state.instructions[return_move_position as usize].arg_positions[0] =
+            bytecode_fn.stack_frame_start;
+        }
       }
-      implementation.expression.compile_to_bytecode(&mut state);
-      state.close_function();
     }
     state.finalize(init_function_index)
   }

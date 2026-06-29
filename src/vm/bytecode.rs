@@ -146,6 +146,7 @@ pub enum Op {
 
   // Array access
   ArrayLookup,
+  ArrayStore,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -185,9 +186,8 @@ impl Instruction {
   }
   fn i32_unary(&self, stack: &mut [u32], f: impl Fn(i32) -> i32) {
     unsafe {
-      *stack.get_unchecked_mut(self.return_position as usize) = f(
-        (*stack.get_unchecked(self.arg_positions[0] as usize)) as i32,
-      ) as u32;
+      *stack.get_unchecked_mut(self.return_position as usize) =
+        f((*stack.get_unchecked(self.arg_positions[0] as usize)) as i32) as u32;
     }
   }
   fn i32_binary(&self, stack: &mut [u32], f: impl Fn(i32, i32) -> i32) {
@@ -267,7 +267,7 @@ impl Instruction {
             - 1
         }
       }
-      Op::ArrayLookup => self
+      Op::ArrayLookup | Op::ArrayStore => self
         .return_position
         .max(self.arg_positions[0])
         .max(self.arg_positions[1]),
@@ -455,12 +455,8 @@ impl BytecodeProgram {
         Op::LessEqualF32 => instruction.f32_cmp(stack, |a, b| a <= b),
 
         // --- Logical ---
-        Op::LogicalAnd => {
-          instruction.u32_cmp(stack, |a, b| a != 0 && b != 0)
-        }
-        Op::LogicalOr => {
-          instruction.u32_cmp(stack, |a, b| a != 0 || b != 0)
-        }
+        Op::LogicalAnd => instruction.u32_cmp(stack, |a, b| a != 0 && b != 0),
+        Op::LogicalOr => instruction.u32_cmp(stack, |a, b| a != 0 || b != 0),
         Op::LogicalNot => instruction.u32_unary(stack, |a| (a == 0) as u32),
 
         // --- Bit ops ---
@@ -472,8 +468,9 @@ impl BytecodeProgram {
         Op::ShiftRightU32 => {
           instruction.u32_binary(stack, |a, b| a >> (b & 31))
         }
-        Op::ShiftRightI32 => instruction
-          .i32_binary(stack, |a, b| a >> ((b as u32 & 31) as i32)),
+        Op::ShiftRightI32 => {
+          instruction.i32_binary(stack, |a, b| a >> ((b as u32 & 31) as i32))
+        }
         Op::CountOneBits => instruction.u32_unary(stack, |a| a.count_ones()),
         Op::CountLeadingZeros => {
           instruction.u32_unary(stack, |a| a.leading_zeros())
@@ -483,7 +480,11 @@ impl BytecodeProgram {
         }
         Op::ReverseBits => instruction.u32_unary(stack, |a| a.reverse_bits()),
         Op::FirstLeadingBitU32 => instruction.u32_unary(stack, |a| {
-          if a == 0 { u32::MAX } else { 31 - a.leading_zeros() }
+          if a == 0 {
+            u32::MAX
+          } else {
+            31 - a.leading_zeros()
+          }
         }),
         Op::FirstLeadingBitI32 => instruction.i32_unary(stack, |a| {
           // WGSL: highest bit that differs from the sign bit, or -1 if none.
@@ -498,42 +499,48 @@ impl BytecodeProgram {
         Op::FirstTrailingBit => instruction.u32_unary(stack, |a| {
           if a == 0 { u32::MAX } else { a.trailing_zeros() }
         }),
-        Op::ExtractBitsU32 => instruction.u32_ternary(stack, |e, offset, count| {
-          let offset = offset & 31;
-          let count = count & 31;
-          let total = offset + count;
-          if count == 0 {
-            0
-          } else if total > 32 {
-            // matching WGSL semantics: if offset+count > 32, behavior is
-            // a shift that effectively gives 0 high bits.
-            (e >> offset) & ((1u64.checked_shl(count).unwrap_or(0).wrapping_sub(1)) as u32)
-          } else if count == 32 {
-            e >> offset
-          } else {
-            (e >> offset) & ((1u32 << count) - 1)
-          }
-        }),
-        Op::ExtractBitsI32 => instruction.i32_ternary(stack, |e, offset, count| {
-          let offset = (offset as u32) & 31;
-          let count = (count as u32) & 31;
-          if count == 0 {
-            0
-          } else if count == 32 {
-            e >> offset
-          } else {
-            let shifted = (e as u32) >> offset;
-            let mask = (1u32 << count) - 1;
-            let bits = shifted & mask;
-            // sign-extend from `count` bits
-            let sign_bit = 1u32 << (count - 1);
-            if bits & sign_bit != 0 {
-              (bits | !mask) as i32
+        Op::ExtractBitsU32 => {
+          instruction.u32_ternary(stack, |e, offset, count| {
+            let offset = offset & 31;
+            let count = count & 31;
+            let total = offset + count;
+            if count == 0 {
+              0
+            } else if total > 32 {
+              // matching WGSL semantics: if offset+count > 32, behavior is
+              // a shift that effectively gives 0 high bits.
+              (e >> offset)
+                & ((1u64.checked_shl(count).unwrap_or(0).wrapping_sub(1))
+                  as u32)
+            } else if count == 32 {
+              e >> offset
             } else {
-              bits as i32
+              (e >> offset) & ((1u32 << count) - 1)
             }
-          }
-        }),
+          })
+        }
+        Op::ExtractBitsI32 => {
+          instruction.i32_ternary(stack, |e, offset, count| {
+            let offset = (offset as u32) & 31;
+            let count = (count as u32) & 31;
+            if count == 0 {
+              0
+            } else if count == 32 {
+              e >> offset
+            } else {
+              let shifted = (e as u32) >> offset;
+              let mask = (1u32 << count) - 1;
+              let bits = shifted & mask;
+              // sign-extend from `count` bits
+              let sign_bit = 1u32 << (count - 1);
+              if bits & sign_bit != 0 {
+                (bits | !mask) as i32
+              } else {
+                bits as i32
+              }
+            }
+          })
+        }
         Op::InsertBits => instruction.u32_ternary(stack, |_, _, _| {
           // InsertBits is 4-arg (e, newbits, offset, count); we only have 3
           // slots so this op is unused in current emission. Placeholder.
@@ -581,20 +588,19 @@ impl BytecodeProgram {
           }
         }),
         Op::SignI32 => instruction.i32_unary(stack, |a| a.signum()),
-        Op::Saturate => {
-          instruction.f32_unary(stack, |a| a.clamp(0.0, 1.0))
+        Op::Saturate => instruction.f32_unary(stack, |a| a.clamp(0.0, 1.0)),
+        Op::Degrees => {
+          instruction.f32_unary(stack, |a| a * (180.0 / std::f32::consts::PI))
         }
-        Op::Degrees => instruction
-          .f32_unary(stack, |a| a * (180.0 / std::f32::consts::PI)),
-        Op::Radians => instruction
-          .f32_unary(stack, |a| a * (std::f32::consts::PI / 180.0)),
+        Op::Radians => {
+          instruction.f32_unary(stack, |a| a * (std::f32::consts::PI / 180.0))
+        }
 
         // --- f32 binary math ---
         Op::Pow => instruction.f32_binary(stack, f32::powf),
         Op::Atan2 => instruction.f32_binary(stack, f32::atan2),
-        Op::Step => instruction.f32_binary(stack, |edge, x| {
-          if x < edge { 0.0 } else { 1.0 }
-        }),
+        Op::Step => instruction
+          .f32_binary(stack, |edge, x| if x < edge { 0.0 } else { 1.0 }),
         Op::MinF32 => instruction.f32_binary(stack, f32::min),
         Op::MinI32 => instruction.i32_binary(stack, i32::min),
         Op::MinU32 => instruction.u32_binary(stack, u32::min),
@@ -605,8 +611,8 @@ impl BytecodeProgram {
           let x = f32::from_bits(
             *stack.get_unchecked(instruction.arg_positions[0] as usize),
           );
-          let e =
-            (*stack.get_unchecked(instruction.arg_positions[1] as usize)) as i32;
+          let e = (*stack.get_unchecked(instruction.arg_positions[1] as usize))
+            as i32;
           *stack.get_unchecked_mut(instruction.return_position as usize) =
             (x * (2.0f32).powi(e)).to_bits();
         },
@@ -655,19 +661,24 @@ impl BytecodeProgram {
         Op::I32ToBool => {
           instruction.u32_unary(stack, |a| ((a as i32) != 0) as u32)
         }
-        Op::F32ToBool => instruction
-          .u32_unary(stack, |a| (f32::from_bits(a) != 0.0) as u32),
+        Op::F32ToBool => {
+          instruction.u32_unary(stack, |a| (f32::from_bits(a) != 0.0) as u32)
+        }
         Op::BoolToU32 => instruction.u32_unary(stack, |a| (a != 0) as u32),
         Op::BoolToI32 => instruction.u32_unary(stack, |a| (a != 0) as u32),
         Op::BoolToF32 => instruction.u32_unary(stack, |a| {
-          if a != 0 { 1.0f32.to_bits() } else { 0.0f32.to_bits() }
+          if a != 0 {
+            1.0f32.to_bits()
+          } else {
+            0.0f32.to_bits()
+          }
         }),
 
         Op::ArrayLookup => unsafe {
           let [arr_pos, index_pos, inner_data_size] = instruction.arg_positions;
           let idx = *stack.get_unchecked(index_pos as usize);
-          let src = (arr_pos as usize)
-            + (idx as usize) * (inner_data_size as usize);
+          let src =
+            (arr_pos as usize) + (idx as usize) * (inner_data_size as usize);
           let base = stack.as_mut_ptr();
           std::ptr::copy(
             base.add(src),
@@ -675,8 +686,20 @@ impl BytecodeProgram {
             inner_data_size as usize,
           );
         },
+
+        Op::ArrayStore => unsafe {
+          let [src_pos, index_pos, inner_data_size] = instruction.arg_positions;
+          let idx = *stack.get_unchecked(index_pos as usize);
+          let dst = (instruction.return_position as usize)
+            + (idx as usize) * (inner_data_size as usize);
+          let base = stack.as_mut_ptr();
+          std::ptr::copy(
+            base.add(src_pos as usize),
+            base.add(dst),
+            inner_data_size as usize,
+          );
+        },
       }
     }
   }
 }
-

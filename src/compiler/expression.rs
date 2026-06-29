@@ -547,6 +547,61 @@ pub enum SyntaxTreeContext {
   MatchPattern,
 }
 
+pub fn compile_typed_name(
+  name: Arc<str>,
+  ownership: Ownership,
+  ty: ExpTypeInfo,
+  target: CompilerTarget,
+  names: &mut NameContext,
+) -> String {
+  let mut type_name = ty.monomorphized_name(names, target);
+  let value_name_follower = if target == CompilerTarget::C
+    && let Some(index) = type_name.chars().position(|i| i == '[')
+  {
+    type_name.split_off(index)
+  } else {
+    String::new()
+  };
+  match target {
+    CompilerTarget::WGSL => {
+      format!(
+        "{}: {}",
+        compile_word(name),
+        match ownership {
+          Ownership::Owned => type_name,
+          Ownership::Pointer(address_space) => {
+            format!("ptr<{}, {type_name}>", address_space.name())
+          }
+          Ownership::Reference | Ownership::MutableReference => {
+            panic!(
+              "encountered raw reference in argument ownership, this \
+               should have been monomorphized into a pointer"
+            )
+          }
+        }
+      )
+    }
+    CompilerTarget::C => {
+      format!(
+        "{}{} {}{value_name_follower}",
+        type_name,
+        match ownership {
+          Ownership::Owned => "",
+          Ownership::Pointer(_) => "*",
+          Ownership::Reference | Ownership::MutableReference => {
+            panic!(
+              "encountered raw reference in argument ownership, this \
+               should have been monomorphized into a pointer"
+            )
+          }
+        },
+        compile_word(name)
+      )
+    }
+    CompilerTarget::VM => panic!(),
+  }
+}
+
 impl TypedExp {
   pub fn extract_non_bound_mutable_references(
     &mut self,
@@ -2191,41 +2246,39 @@ impl TypedExp {
         let binding_lines: Vec<String> = bindings
           .into_iter()
           .map(|(name, _, variable_kind, value_exp)| {
+            let typed_name = compile_typed_name(
+              name,
+              Ownership::Owned,
+              value_exp.data.clone(),
+              target,
+              names,
+            );
             if value_exp.kind == ExpKind::Uninitialized {
               match target {
-                CompilerTarget::WGSL => format!(
-                  "{} {}: {};",
-                  variable_kind.compile(),
-                  compile_word(name),
-                  value_exp.data.monomorphized_name(names, target),
-                ),
-                CompilerTarget::C => format!(
-                  "{} {};",
-                  value_exp.data.monomorphized_name(names, target),
-                  compile_word(name)
-                ),
+                CompilerTarget::WGSL => {
+                  format!("{} {typed_name};", variable_kind.compile(),)
+                }
+                CompilerTarget::C => typed_name + ";",
                 CompilerTarget::VM => panic!(),
               }
             } else {
               let is_unit = value_exp.data.unwrap_known() == Type::Unit;
-              let type_name = value_exp.data.monomorphized_name(names, target);
               let compiled_value =
                 if value_exp.data.ownership != Ownership::Owned {
-                  value_exp.compile_with_deref(names, target)
+                  value_exp.clone().compile_with_deref(names, target)
                 } else {
-                  value_exp.compile(InnerExpression, names, target)
+                  value_exp.clone().compile(InnerExpression, names, target)
                 };
               if is_unit {
                 format!("{compiled_value};")
               } else {
-                let compiled_name = compile_word(name);
                 match target {
                   CompilerTarget::WGSL => format!(
-                    "{} {compiled_name}: {type_name} = {compiled_value};",
+                    "{} {typed_name} = {compiled_value};",
                     variable_kind.compile(),
                   ),
                   CompilerTarget::C => {
-                    format!("{type_name} {compiled_name} = {compiled_value};")
+                    format!("{typed_name} = {compiled_value};")
                   }
                   CompilerTarget::VM => panic!(),
                 }
@@ -2605,19 +2658,35 @@ impl TypedExp {
           target
         )
       ),
-      ArrayLiteral(children) => wrap(format!(
-        "{}({})",
-        self.data.monomorphized_name(names, target),
-        children
-          .into_iter()
-          .map(|child| child.compile(
-            ExpressionCompilationPosition::InnerExpression,
-            names,
-            target
-          ))
-          .collect::<Vec<String>>()
-          .join(", ")
-      )),
+      ArrayLiteral(children) => wrap(match target {
+        CompilerTarget::C => {
+          format!(
+            "{{{}}}",
+            children
+              .into_iter()
+              .map(|child| child.compile(
+                ExpressionCompilationPosition::InnerExpression,
+                names,
+                target
+              ))
+              .collect::<Vec<String>>()
+              .join(", ")
+          )
+        }
+        _ => format!(
+          "{}({})",
+          self.data.monomorphized_name(names, target),
+          children
+            .into_iter()
+            .map(|child| child.compile(
+              ExpressionCompilationPosition::InnerExpression,
+              names,
+              target
+            ))
+            .collect::<Vec<String>>()
+            .join(", ")
+        ),
+      }),
     }
   }
 
