@@ -334,6 +334,7 @@ pub struct Program {
     HashMap<Arc<str>, Vec<Arc<RwLock<AbstractFunctionSignature>>>>,
   pub top_level_vars: Vec<TopLevelVar>,
   pub emulated_functions: EmulatedFunctionRecord,
+  pub has_been_validated: bool,
 }
 impl Clone for Program {
   fn clone(&self) -> Self {
@@ -343,6 +344,7 @@ impl Clone for Program {
       abstract_functions: self.abstract_functions.clone(),
       top_level_vars: self.top_level_vars.clone(),
       emulated_functions: self.emulated_functions.clone(),
+      has_been_validated: self.has_been_validated,
     }
   }
 }
@@ -361,6 +363,7 @@ impl Program {
       abstract_functions: HashMap::new(),
       top_level_vars: vec![],
       emulated_functions: EmulatedFunctionRecord::empty(),
+      has_been_validated: false,
     }
   }
   pub fn add_top_level_var(&mut self, var: TopLevelVar, errors: &mut ErrorLog) {
@@ -3962,6 +3965,9 @@ impl Program {
     }
   }
   pub fn validate_raw_program(&mut self, target: CompilerTarget) -> ErrorLog {
+    if self.has_been_validated {
+      return ErrorLog::new();
+    }
     let mut errors = ErrorLog::new();
     self.validate_names(&mut errors);
     if !errors.is_empty() {
@@ -4098,6 +4104,7 @@ impl Program {
       return errors;
     }
     self.track_emulated_builtins(target);
+    self.has_been_validated = true;
     errors
   }
   pub fn gather_type_annotations(&self) -> Vec<(SourceTrace, TypeState)> {
