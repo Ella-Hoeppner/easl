@@ -2125,7 +2125,7 @@ impl TypedExp {
             if arg_strs.len() == 2 {
               format!("({} {} {})", arg_strs[0], f_str, arg_strs[1])
             } else if arg_strs.len() == 1 && &f_str == "-" {
-              format!("(-{})", arg_strs[0])
+              format!("(-({}))", arg_strs[0])
             } else if arg_strs.len() == 1 && &f_str == "/" {
               format!("(1. / {})", arg_strs[0])
             } else {
