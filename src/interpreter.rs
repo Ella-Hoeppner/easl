@@ -3890,6 +3890,38 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     }
   }
 
+  /// Overwrites the CPU-side value of the GPU-bound variable at
+  /// `(group, binding)` with a value decoded from `bytes` (using the same
+  /// byte layout as the variable's GPU buffer), and marks it `Synced`.
+  /// Intended for host applications that write a binding's GPU buffer
+  /// externally and need the interpreter's CPU-side copy to match without a
+  /// GPU readback.  Returns false if no variable is bound at
+  /// `(group, binding)`.
+  pub fn overwrite_binding_from_gpu_bytes(
+    &mut self,
+    group: u8,
+    binding: u8,
+    bytes: &[u8],
+  ) -> bool {
+    let Some((_, name, ty, _)) = self
+      .binding_vars
+      .iter()
+      .find(|(gb, _, _, _)| gb.group == group && gb.binding == binding)
+    else {
+      return false;
+    };
+    let name = name.clone();
+    let ty = ty.clone();
+    let value = Value::from_gpu_bytes(bytes, &ty);
+    if let Some(stack) = self.bindings.get_mut(&name) {
+      if let Some(slot) = stack.last_mut() {
+        slot.0 = value;
+      }
+    }
+    self.buffer_states.insert(name, SharedBufferState::Synced);
+    true
+  }
+
   /// Ensures a GPU context is available for compute dispatches. If the IO
   /// manager supports real GPU but none has been set yet (i.e. no window was
   /// opened), this lazily creates a headless GPU core.
