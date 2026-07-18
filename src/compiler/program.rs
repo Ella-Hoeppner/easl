@@ -4428,11 +4428,12 @@ impl Program {
   pub fn compile_to_bytecode_program(self) -> (BytecodeProgram, Vec<Arc<str>>) {
     let mut state = BytecodeCompilationState::new();
     for v in self.top_level_vars.iter() {
-      state
-        .globals
-        .insert(v.name.clone(), state.consumed_stack_space as u16);
-      state.consumed_stack_space +=
+      let position = state.consumed_stack_space as u16;
+      let size =
         v.var_type.data_size_in_u32s(&v.source_trace).unwrap() as u16;
+      state.globals.insert(v.name.clone(), position);
+      state.global_slots.push((v.name.clone(), position, size));
+      state.consumed_stack_space += size;
     }
     // If any top-level var has an initializer expression, compile a
     // synthetic "$init_globals" function that computes each one and Moves it

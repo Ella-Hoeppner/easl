@@ -3,6 +3,7 @@
 //! produces these instructions lives in `crate::vm::compile`.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
@@ -293,6 +294,12 @@ pub struct Code {
   /// globals are live before any user function executes. `None` when there
   /// are no initializers (no setup work needed).
   pub init_function_index: Option<usize>,
+  /// Name, base stack slot, and size (in u32 stack slots) of each top-level
+  /// var. Globals live at the bottom of the stack, below all function
+  /// frames, and persist across `execute` calls; external integrations can
+  /// use these to read or write globals in a running program (e.g.
+  /// mirroring live uniform values into an audio VM).
+  pub globals: Vec<(Arc<str>, u16, u16)>,
 }
 
 pub struct BytecodeProgram {
@@ -328,6 +335,25 @@ impl BytecodeProgram {
   }
   pub fn get_function_return_position(&self, function_index: usize) -> u16 {
     self.code.functions[function_index].return_position
+  }
+  /// Base stack slot and size (in u32 slots) of the global named `name`.
+  pub fn get_global_slot(&self, name: &str) -> Option<(u16, u16)> {
+    self
+      .code
+      .globals
+      .iter()
+      .find(|(n, _, _)| &**n == name)
+      .map(|&(_, position, size)| (position, size))
+  }
+  /// Overwrite the global named `name` with raw u32 data (e.g. f32 bits),
+  /// writing at most the global's size. Returns the number of stack slots
+  /// written, or `None` if no such global exists.
+  pub fn write_global(&mut self, name: &str, data: &[u32]) -> Option<usize> {
+    let (position, size) = self.get_global_slot(name)?;
+    let n = data.len().min(size as usize);
+    self.stack[position as usize..position as usize + n]
+      .copy_from_slice(&data[..n]);
+    Some(n)
   }
   pub fn execute(&mut self) {
     let Self {

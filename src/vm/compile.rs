@@ -43,6 +43,10 @@ pub struct PendingRefFnUsage {
 pub struct BytecodeCompilationState {
   pub consumed_stack_space: u16,
   pub globals: HashMap<Arc<str>, u16>,
+  /// Name, base stack slot, and size in u32 slots of each global, in
+  /// declaration order. Carried into `Code::globals` by `finalize` so
+  /// external integrations can locate globals in the running program.
+  pub global_slots: Vec<(Arc<str>, u16, u16)>,
   pub locals: HashMap<Arc<str>, u16>,
   pub instructions: Vec<Instruction>,
   pub finished_functions: Vec<IntermediateBytecodeFunction>,
@@ -60,6 +64,7 @@ impl BytecodeCompilationState {
     Self {
       consumed_stack_space: 0,
       globals: HashMap::new(),
+      global_slots: vec![],
       locals: HashMap::new(),
       instructions: vec![],
       finished_functions: vec![],
@@ -1310,6 +1315,7 @@ impl BytecodeCompilationState {
         })
         .collect(),
       init_function_index,
+      globals: self.global_slots,
     };
     (
       BytecodeProgram::from_code(code),
