@@ -12,9 +12,11 @@ use winit::{
   event::{ElementState, MouseButton, WindowEvent as WinitWindowEvent},
   event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
   keyboard::Key,
-  platform::run_on_demand::EventLoopExtRunOnDemand,
   window::{Window, WindowId},
 };
+// winit only supports run-on-demand event loops on desktop platforms
+#[cfg(not(target_os = "ios"))]
+use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 
 use crate::{
   compiler::{expression::Exp, types::ExpTypeInfo},
@@ -127,6 +129,21 @@ fn create_texture_and_view(
   (texture, view)
 }
 
+/// iOS has no run-on-demand event loop (the OS owns the main loop), so the
+/// built-in window loop is unavailable there; embedding applications must
+/// drive rendering through their own `IOManager::run_spawn_window`.
+#[cfg(target_os = "ios")]
+pub fn run_window_loop<IO: IOManager>(
+  _body: Exp<ExpTypeInfo>,
+  _env: &mut EvaluationEnvironment<IO>,
+) -> Result<bool, EvalError> {
+  unimplemented!(
+    "easl's built-in window loop isn't supported on iOS; the embedding \
+     application must provide its own IOManager::run_spawn_window"
+  )
+}
+
+#[cfg(not(target_os = "ios"))]
 pub fn run_window_loop<IO: IOManager>(
   body: Exp<ExpTypeInfo>,
   env: &mut EvaluationEnvironment<IO>,
