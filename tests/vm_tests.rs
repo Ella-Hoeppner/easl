@@ -96,3 +96,38 @@ vm_test!(for_loop_continue);
 vm_test!(early_return);
 vm_test!(array_access);
 vm_test!(struct_access);
+
+/// Loops must behave identically on repeated `execute` calls. The stack
+/// persists between calls (as in the per-sample audio path), so a loop
+/// variable that isn't reinitialized at loop entry poisons every run after
+/// the first.
+#[test]
+fn for_loop_repeated_execute() {
+  let source_path_str = "./data/vm/for_loop.easl".to_string();
+  let source_path = Path::new(&source_path_str);
+  let Ok(Ok((_, Ok(mut program)))) =
+    load_easl_program_from_file(source_path)
+  else {
+    panic!("couldn't load data/vm/for_loop.easl");
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  let (mut bytecode_program, function_names) =
+    program.compile_to_bytecode_program();
+  let function_index = function_names
+    .iter()
+    .position(|n| &**n == "f")
+    .expect("no function named `f`");
+  let return_position =
+    bytecode_program.get_function_return_position(function_index);
+  for run in 0..3 {
+    bytecode_program.prepare_to_run_function(function_index);
+    bytecode_program.execute();
+    let result =
+      f32::from_bits(bytecode_program.stack[return_position as usize]);
+    assert!(
+      (result - 15.).abs() <= 0.0001,
+      "run {run}: expected 15, got {result}"
+    );
+  }
+}

@@ -2603,9 +2603,20 @@ impl TypedExp {
         update_expression,
         body_expression,
       } => format!(
-        "\nfor (var {}: {} = {}; {}; {}) {{{}\n}}",
-        compile_word(increment_variable_name.0),
-        increment_variable_type.monomorphized_name(names, target),
+        "\nfor ({} = {}; {}; {}) {{{}\n}}",
+        match target {
+          CompilerTarget::WGSL => format!(
+            "var {}: {}",
+            compile_word(increment_variable_name.0),
+            increment_variable_type.monomorphized_name(names, target)
+          ),
+          CompilerTarget::C => format!(
+            "{} {}",
+            increment_variable_type.monomorphized_name(names, target),
+            compile_word(increment_variable_name.0)
+          ),
+          CompilerTarget::VM => panic!(),
+        },
         increment_variable_initial_value_expression.compile(
           ExpressionCompilationPosition::InnerExpression,
           names,

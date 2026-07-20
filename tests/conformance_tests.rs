@@ -572,3 +572,5 @@ conformance_test!(mat_diagonal_sum);
 conformance_test!(struct_field_assignment);
 conformance_test!(array_index_assignment);
 conformance_test!(array_argument);
+conformance_test!(for_loop);
+conformance_test!(for_loop_init);

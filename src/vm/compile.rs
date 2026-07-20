@@ -2126,15 +2126,18 @@ impl TypedExp {
           increment_variable_initial_value_expression
             .compile_to_bytecode(false, state)
             .unwrap();
-        let increment_var_pos = state.take_stack_slot(
-          increment_variable_type
-            .unwrap_known()
-            .data_size_in_u32s(&self.source_trace)
-            .unwrap() as u16,
-        );
+        let increment_var_size = increment_variable_type
+          .unwrap_known()
+          .data_size_in_u32s(&self.source_trace)
+          .unwrap() as u16;
+        let increment_var_pos = state.take_stack_slot(increment_var_size);
         state.push_instruction(Instruction {
           op: Op::Move,
-          arg_positions: [increment_var_initial_value_pos, 0, 0],
+          arg_positions: [
+            increment_var_initial_value_pos,
+            increment_var_size,
+            0,
+          ],
           return_position: increment_var_pos,
         });
         state

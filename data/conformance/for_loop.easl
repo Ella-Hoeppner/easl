@@ -1,0 +1,6 @@
+(defn f []: f32
+  (let [@var sum 0.]
+    (for [i 2u]
+      (+= sum 1.))
+    sum))
+
