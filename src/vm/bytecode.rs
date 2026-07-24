@@ -151,6 +151,23 @@ pub enum Op {
   ArrayLookup,
   ArrayStore,
 
+  // Data packing (multi-slot operands start at arg_positions[0]; the slots
+  // they span are covered by Code::min_stack_size)
+  PackSnorm4x8,
+  UnpackSnorm4x8,
+  PackUnorm4x8,
+  UnpackUnorm4x8,
+  PackSnorm2x16,
+  UnpackSnorm2x16,
+  PackUnorm2x16,
+  UnpackUnorm2x16,
+  Pack4xU8,
+  Unpack4xU8,
+  Pack4xI8,
+  Unpack4xI8,
+  Dot4U8Packed,
+  Dot4I8Packed,
+
   // Host interface (CPU-runtime mode only; never emitted for audio).
   // `arg_positions[0]` indexes `Code::host_ops`. Everything the CPU
   // orchestration layer needs (print, GPU dispatch, sync checks, dynamic
@@ -306,17 +323,19 @@ pub enum HostBindingStorage {
   Dynamic,
 }
 
-/// Compile-time record of one GPU-bound top-level var. The name is kept only
-/// for logging and sync-trace parity with the tree-walking interpreter — the
-/// runtime addresses bindings exclusively by table index.
+/// Compile-time record of a top-level var the host tracks: every GPU-bound
+/// global (for sync bookkeeping) and every runtime-sized global (unsized
+/// arrays / textures live host-side even without a GPU binding). The name is
+/// kept only for logging and sync-trace parity with the tree-walking
+/// interpreter — the runtime addresses entries exclusively by table index.
 #[derive(Debug, Clone)]
 pub struct HostBinding {
   pub name: Arc<str>,
-  pub group: u8,
-  pub binding: u8,
   pub ty: Type,
-  pub address_space: VariableAddressSpace,
   pub storage: HostBindingStorage,
+  /// `(group, binding, address_space)` when GPU-bound; `None` for plain
+  /// (e.g. private) runtime-sized globals.
+  pub gpu: Option<(u8, u8, VariableAddressSpace)>,
 }
 
 /// Read/write binding-index sets for one GPU dispatch site, resolved from
@@ -353,6 +372,9 @@ pub enum HostOp {
   /// Print the value starting at `slot`, of type `host_types[ty]`, with the
   /// same formatting as the tree-walking interpreter.
   Print { slot: u16, ty: u16 },
+  /// Print a lazily-zeroed unsized array (`(print (zeroed-array n): [T])`)
+  /// without materializing it; `ty` is the array type.
+  PrintZeroed { len_slot: u16, ty: u16 },
   /// Print the host-side value of a dynamic binding.
   PrintBinding { binding: u16 },
   /// If the binding is CPUOutOfDate (GPU wrote it), flush queued compute and
@@ -569,6 +591,140 @@ impl BytecodeProgram {
           };
           ip = return_ip;
         }
+        Op::PackSnorm4x8 => unsafe {
+          let a = instruction.arg_positions[0] as usize;
+          let mut result: u32 = 0;
+          for i in 0..4 {
+            let v = f32::from_bits(*stack.get_unchecked(a + i));
+            let packed = (0.5 + 127.0 * v.clamp(-1.0, 1.0)).floor() as i8 as u8;
+            result |= (packed as u32) << (i * 8);
+          }
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            result;
+        },
+        Op::UnpackSnorm4x8 => unsafe {
+          let e = *stack.get_unchecked(instruction.arg_positions[0] as usize);
+          let r = instruction.return_position as usize;
+          for i in 0..4 {
+            let byte = ((e >> (i * 8)) & 0xFF) as u8 as i8;
+            *stack.get_unchecked_mut(r + i) =
+              (byte as f32 / 127.0).max(-1.0).to_bits();
+          }
+        },
+        Op::PackUnorm4x8 => unsafe {
+          let a = instruction.arg_positions[0] as usize;
+          let mut result: u32 = 0;
+          for i in 0..4 {
+            let v = f32::from_bits(*stack.get_unchecked(a + i));
+            let packed = (0.5 + 255.0 * v.clamp(0.0, 1.0)).floor() as u8;
+            result |= (packed as u32) << (i * 8);
+          }
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            result;
+        },
+        Op::UnpackUnorm4x8 => unsafe {
+          let e = *stack.get_unchecked(instruction.arg_positions[0] as usize);
+          let r = instruction.return_position as usize;
+          for i in 0..4 {
+            *stack.get_unchecked_mut(r + i) =
+              (((e >> (i * 8)) & 0xFF) as f32 / 255.0).to_bits();
+          }
+        },
+        Op::PackSnorm2x16 => unsafe {
+          let a = instruction.arg_positions[0] as usize;
+          let mut result: u32 = 0;
+          for i in 0..2 {
+            let v = f32::from_bits(*stack.get_unchecked(a + i));
+            let packed =
+              (0.5 + 32767.0 * v.clamp(-1.0, 1.0)).floor() as i16 as u16;
+            result |= (packed as u32) << (i * 16);
+          }
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            result;
+        },
+        Op::UnpackSnorm2x16 => unsafe {
+          let e = *stack.get_unchecked(instruction.arg_positions[0] as usize);
+          let r = instruction.return_position as usize;
+          for i in 0..2 {
+            let half = ((e >> (i * 16)) & 0xFFFF) as u16 as i16;
+            *stack.get_unchecked_mut(r + i) =
+              (half as f32 / 32767.0).max(-1.0).to_bits();
+          }
+        },
+        Op::PackUnorm2x16 => unsafe {
+          let a = instruction.arg_positions[0] as usize;
+          let mut result: u32 = 0;
+          for i in 0..2 {
+            let v = f32::from_bits(*stack.get_unchecked(a + i));
+            let packed = (0.5 + 65535.0 * v.clamp(0.0, 1.0)).floor() as u16;
+            result |= (packed as u32) << (i * 16);
+          }
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            result;
+        },
+        Op::UnpackUnorm2x16 => unsafe {
+          let e = *stack.get_unchecked(instruction.arg_positions[0] as usize);
+          let r = instruction.return_position as usize;
+          for i in 0..2 {
+            *stack.get_unchecked_mut(r + i) =
+              (((e >> (i * 16)) & 0xFFFF) as f32 / 65535.0).to_bits();
+          }
+        },
+        Op::Pack4xU8 => unsafe {
+          let a = instruction.arg_positions[0] as usize;
+          let mut result: u32 = 0;
+          for i in 0..4 {
+            result |= (*stack.get_unchecked(a + i) & 0xFF) << (i * 8);
+          }
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            result;
+        },
+        Op::Unpack4xU8 => unsafe {
+          let e = *stack.get_unchecked(instruction.arg_positions[0] as usize);
+          let r = instruction.return_position as usize;
+          for i in 0..4 {
+            *stack.get_unchecked_mut(r + i) = (e >> (i * 8)) & 0xFF;
+          }
+        },
+        Op::Pack4xI8 => unsafe {
+          let a = instruction.arg_positions[0] as usize;
+          let mut result: u32 = 0;
+          for i in 0..4 {
+            result |= (*stack.get_unchecked(a + i) & 0xFF) << (i * 8);
+          }
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            result;
+        },
+        Op::Unpack4xI8 => unsafe {
+          let e = *stack.get_unchecked(instruction.arg_positions[0] as usize);
+          let r = instruction.return_position as usize;
+          for i in 0..4 {
+            *stack.get_unchecked_mut(r + i) =
+              (((e >> (i * 8)) & 0xFF) as u8 as i8 as i32) as u32;
+          }
+        },
+        Op::Dot4U8Packed => unsafe {
+          let e1 = *stack.get_unchecked(instruction.arg_positions[0] as usize);
+          let e2 = *stack.get_unchecked(instruction.arg_positions[1] as usize);
+          let mut acc: u32 = 0;
+          for i in 0..4 {
+            acc = acc
+              .wrapping_add(((e1 >> (i * 8)) & 0xFF) * ((e2 >> (i * 8)) & 0xFF));
+          }
+          *stack.get_unchecked_mut(instruction.return_position as usize) = acc;
+        },
+        Op::Dot4I8Packed => unsafe {
+          let e1 = *stack.get_unchecked(instruction.arg_positions[0] as usize);
+          let e2 = *stack.get_unchecked(instruction.arg_positions[1] as usize);
+          let mut acc: i32 = 0;
+          for i in 0..4u32 {
+            let a = (((e1 >> (i * 8)) & 0xFF) as i32) << 24 >> 24;
+            let b = (((e2 >> (i * 8)) & 0xFF) as i32) << 24 >> 24;
+            acc += a * b;
+          }
+          *stack.get_unchecked_mut(instruction.return_position as usize) =
+            acc as u32;
+        },
         Op::HostCall => {
           let op =
             &code.host_ops[instruction.arg_positions[0] as usize];

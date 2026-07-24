@@ -4990,17 +4990,15 @@ impl Program {
       };
       if cpu_mode && is_dynamic {
         // Runtime-sized values (unsized arrays, textures) live host-side;
-        // VM code accesses them through host ops, so they get no slots.
-        let (gb, address_space) = binding_info
-          .expect("dynamic global without a group/binding annotation");
+        // VM code accesses them through host ops, so they get no slots. They
+        // may or may not be GPU-bound (a plain `(var x: [f32])` is legal).
         let index = state.host_bindings.len() as u16;
         state.host_bindings.push(HostBinding {
           name: v.name.clone(),
-          group: gb.group,
-          binding: gb.binding,
           ty: v.var_type.clone(),
-          address_space,
           storage: HostBindingStorage::Dynamic,
+          gpu: binding_info
+            .map(|(gb, address_space)| (gb.group, gb.binding, address_space)),
         });
         state.binding_indices.insert(v.name.clone(), index);
         state.dynamic_globals.insert(v.name.clone(), index);
@@ -5016,11 +5014,9 @@ impl Program {
         let index = state.host_bindings.len() as u16;
         state.host_bindings.push(HostBinding {
           name: v.name.clone(),
-          group: gb.group,
-          binding: gb.binding,
           ty: v.var_type.clone(),
-          address_space,
           storage: HostBindingStorage::Slots { position, size },
+          gpu: Some((gb.group, gb.binding, address_space)),
         });
         state.binding_indices.insert(v.name.clone(), index);
       }

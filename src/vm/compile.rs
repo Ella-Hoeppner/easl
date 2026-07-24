@@ -229,6 +229,41 @@ impl BytecodeCompilationState {
     result
   }
   /// Fan-out binary op where the left-hand side is a single scalar broadcast.
+  /// Binary op whose operands may independently be vec/mat or scalar,
+  /// matching WGSL's broadcast semantics: (vec,vec) elementwise,
+  /// (vec,scalar)/(scalar,vec) broadcast, (scalar,scalar) plain.
+  pub fn emit_mixed_shape_binary(
+    &mut self,
+    arg_types: &[Type],
+    arg_positions: &[u16],
+    op_for: impl Fn(&Type) -> Op,
+  ) -> u16 {
+    match (vec_kind(&arg_types[0]), vec_kind(&arg_types[1])) {
+      (Some((n, e)), Some(_)) => self.emit_fanout_binary(
+        op_for(&e),
+        arg_positions[0],
+        arg_positions[1],
+        n,
+      ),
+      (Some((n, e)), None) => self.emit_fanout_binary_scalar_rhs(
+        op_for(&e),
+        arg_positions[0],
+        arg_positions[1],
+        n,
+      ),
+      (None, Some((n, e))) => self.emit_fanout_binary_scalar_lhs(
+        op_for(&e),
+        arg_positions[0],
+        arg_positions[1],
+        n,
+      ),
+      (None, None) => self.emit_binary(
+        op_for(&arg_types[0]),
+        arg_positions[0],
+        arg_positions[1],
+      ),
+    }
+  }
   pub fn emit_fanout_binary_scalar_lhs(
     &mut self,
     op: Op,
@@ -704,10 +739,9 @@ impl BytecodeCompilationState {
       )),
 
       // --- Arithmetic ---
-      "+" => Some(self.emit_elementwise_binary(
-        &arg_types[0],
-        arg_positions[0],
-        arg_positions[1],
+      "+" => Some(self.emit_mixed_shape_binary(
+        arg_types,
+        arg_positions,
         |e| arithmetic_op_for(e, "+"),
       )),
       "-" => {
@@ -723,10 +757,9 @@ impl BytecodeCompilationState {
             neg_op,
           ))
         } else {
-          Some(self.emit_elementwise_binary(
-            &arg_types[0],
-            arg_positions[0],
-            arg_positions[1],
+          Some(self.emit_mixed_shape_binary(
+            arg_types,
+            arg_positions,
             |e| arithmetic_op_for(e, "-"),
           ))
         }
@@ -872,22 +905,37 @@ impl BytecodeCompilationState {
           }
         }
       }
-      "%" => Some(self.emit_elementwise_binary(
-        &arg_types[0],
-        arg_positions[0],
-        arg_positions[1],
+      "%" => Some(self.emit_mixed_shape_binary(
+        arg_types,
+        arg_positions,
         |e| arithmetic_op_for(e, "%"),
       )),
 
       // --- Compound assignment ---
       "+=" | "-=" | "*=" | "/=" | "%=" => {
         let base = &f_name[..f_name.len() - 1];
-        Some(self.emit_elementwise_binary_inplace(
-          &arg_types[0],
-          arg_positions[0],
-          arg_positions[1],
-          |e| arithmetic_op_for(e, base),
-        ))
+        // `(op= vec scalar)` broadcasts the scalar across the target's
+        // components; same-shape operands go elementwise.
+        if let Some((n, e)) = vec_kind(&arg_types[0])
+          && vec_kind(&arg_types[1]).is_none()
+        {
+          let op = arithmetic_op_for(&e, base);
+          for i in 0..n {
+            self.push_instruction(Instruction {
+              op,
+              arg_positions: [arg_positions[0] + i, arg_positions[1], 0],
+              return_position: arg_positions[0] + i,
+            });
+          }
+          Some(arg_positions[0])
+        } else {
+          Some(self.emit_elementwise_binary_inplace(
+            &arg_types[0],
+            arg_positions[0],
+            arg_positions[1],
+            |e| arithmetic_op_for(e, base),
+          ))
+        }
       }
 
       // --- Plain assignment ---
@@ -1222,6 +1270,94 @@ impl BytecodeCompilationState {
         }
         Some(result)
       }
+      "zeroed-array" => {
+        // Statically-sized zeroed array: allocate and zero-fill. (The
+        // runtime-sized form only appears in positions the CPU-mode
+        // interceptions handle.)
+        let total = return_type
+          .data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+          .expect("zeroed-array of runtime-sized type outside an intercepted position")
+          as u16;
+        let result = self.take_stack_slot(total);
+        for i in 0..total {
+          self.push_instruction(Instruction {
+            op: Op::Constant,
+            arg_positions: [0, 0, 0],
+            return_position: result + i,
+          });
+        }
+        Some(result)
+      }
+      "pack-4x8-snorm" => Some(self.emit_unary(Op::PackSnorm4x8, arg_positions[0])),
+      "unpack-4x8-snorm" => {
+        let result = self.take_stack_slot(4);
+        self.push_instruction(Instruction {
+          op: Op::UnpackSnorm4x8,
+          arg_positions: [arg_positions[0], 0, 0],
+          return_position: result,
+        });
+        Some(result)
+      }
+      "pack-4x8-unorm" => Some(self.emit_unary(Op::PackUnorm4x8, arg_positions[0])),
+      "unpack-4x8-unorm" => {
+        let result = self.take_stack_slot(4);
+        self.push_instruction(Instruction {
+          op: Op::UnpackUnorm4x8,
+          arg_positions: [arg_positions[0], 0, 0],
+          return_position: result,
+        });
+        Some(result)
+      }
+      "pack-2x16-snorm" => Some(self.emit_unary(Op::PackSnorm2x16, arg_positions[0])),
+      "unpack-2x16-snorm" => {
+        let result = self.take_stack_slot(2);
+        self.push_instruction(Instruction {
+          op: Op::UnpackSnorm2x16,
+          arg_positions: [arg_positions[0], 0, 0],
+          return_position: result,
+        });
+        Some(result)
+      }
+      "pack-2x16-unorm" => Some(self.emit_unary(Op::PackUnorm2x16, arg_positions[0])),
+      "unpack-2x16-unorm" => {
+        let result = self.take_stack_slot(2);
+        self.push_instruction(Instruction {
+          op: Op::UnpackUnorm2x16,
+          arg_positions: [arg_positions[0], 0, 0],
+          return_position: result,
+        });
+        Some(result)
+      }
+      "pack-4x8-u8" => Some(self.emit_unary(Op::Pack4xU8, arg_positions[0])),
+      "unpack-4x8-u8" => {
+        let result = self.take_stack_slot(4);
+        self.push_instruction(Instruction {
+          op: Op::Unpack4xU8,
+          arg_positions: [arg_positions[0], 0, 0],
+          return_position: result,
+        });
+        Some(result)
+      }
+      "pack-4x8-i8" => Some(self.emit_unary(Op::Pack4xI8, arg_positions[0])),
+      "unpack-4x8-i8" => {
+        let result = self.take_stack_slot(4);
+        self.push_instruction(Instruction {
+          op: Op::Unpack4xI8,
+          arg_positions: [arg_positions[0], 0, 0],
+          return_position: result,
+        });
+        Some(result)
+      }
+      "dot-4-u8-packed" => Some(self.emit_binary(
+        Op::Dot4U8Packed,
+        arg_positions[0],
+        arg_positions[1],
+      )),
+      "dot-4-i8-packed" => Some(self.emit_binary(
+        Op::Dot4I8Packed,
+        arg_positions[0],
+        arg_positions[1],
+      )),
       _ => todo!("haven't implemented builtin fn \"{f_name}\" for the VM yet"),
     }
   }
@@ -1687,6 +1823,17 @@ impl TypedExp {
           && let Some(binding) = state.dynamic_globals.get(name).copied()
         {
           state.emit_host_op(HostOp::PrintBinding { binding });
+        } else if let Type::Array(Some(ConcreteArraySize::Unsized), _) =
+          arg.data.unwrap_known()
+          && let ExpKind::Application(inner_f, inner_args) = &arg.kind
+          && let ExpKind::Name(inner_name) = &inner_f.kind
+          && &**inner_name == "zeroed-array"
+        {
+          // Print a runtime-sized zeroed array without materializing it.
+          let len_slot =
+            inner_args[0].compile_to_bytecode(false, state).unwrap();
+          let ty = state.host_type_index(&arg.data.unwrap_known());
+          state.emit_host_op(HostOp::PrintZeroed { len_slot, ty });
         } else {
           let slot = arg.compile_to_bytecode(false, state).unwrap();
           let ty = state.host_type_index(&arg.data.unwrap_known());
@@ -2021,7 +2168,11 @@ impl TypedExp {
               .unwrap()
           })
           .collect();
-        let return_type = f.return_type.unwrap_known();
+        // Use the application expression's own type rather than the
+        // signature's return type: it's always at least as resolved (e.g. a
+        // const-generic `[N: T]` return annotated concrete at the call
+        // site).
+        let return_type = self.data.unwrap_known();
         let arg_types: Vec<Type> = f
           .args
           .iter()

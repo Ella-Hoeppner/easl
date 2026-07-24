@@ -1,6 +1,8 @@
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
-use easl::interpreter::run_program_capturing_output;
+use easl::interpreter::{
+  CpuRuntime, run_program_capturing_output_with_runtime,
+};
 use std::fs;
 use std::path::Path;
 
@@ -14,11 +16,25 @@ fn run_cpu_test(name: &str) {
       let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
 
-      let output = run_program_capturing_output(program).unwrap_or_else(|e| {
-        panic!("{name}: evaluation error: {e:#?}");
+      // Every test runs on both CPU runtimes and must produce identical
+      // output on each.
+      let output = run_program_capturing_output_with_runtime(
+        program.clone(),
+        CpuRuntime::TreeWalking,
+      )
+      .unwrap_or_else(|e| {
+        panic!("{name}: evaluation error (tree-walking): {e:#?}");
       });
+      assert_eq!(output, expected, "{name}: output mismatch (tree-walking)");
 
-      assert_eq!(output, expected, "{name}: output mismatch");
+      let vm_output = run_program_capturing_output_with_runtime(
+        program,
+        CpuRuntime::BytecodeVm,
+      )
+      .unwrap_or_else(|e| {
+        panic!("{name}: evaluation error (bytecode VM): {e:#?}");
+      });
+      assert_eq!(vm_output, expected, "{name}: output mismatch (bytecode VM)");
     }
     Ok(Ok((document, Err(errors)))) => {
       let description = errors.describe(&document);
