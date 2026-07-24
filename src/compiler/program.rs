@@ -4941,15 +4941,89 @@ impl Program {
     }
     final_fns
   }
+  /// Audio-mode bytecode compilation: pure math only, CPU-exclusive
+  /// functions skipped, no host calls emitted.
   pub fn compile_to_bytecode_program(self) -> (BytecodeProgram, Vec<Arc<str>>) {
+    self.compile_to_bytecode_program_impl(false)
+  }
+  /// CPU-runtime-mode bytecode compilation: compiles the `@cpu` entry and
+  /// its transitive callees, lowering CPU-exclusive builtins to host ops and
+  /// emitting explicit GPU↔CPU sync instructions from effect analysis.
+  pub fn compile_to_bytecode_program_cpu(
+    self,
+  ) -> (BytecodeProgram, Vec<Arc<str>>) {
+    self.compile_to_bytecode_program_impl(true)
+  }
+  fn compile_to_bytecode_program_impl(
+    self,
+    cpu_mode: bool,
+  ) -> (BytecodeProgram, Vec<Arc<str>>) {
+    use crate::vm::bytecode::{HostBinding, HostBindingStorage};
     let mut state = BytecodeCompilationState::new();
+    state.cpu_mode = cpu_mode;
     for v in self.top_level_vars.iter() {
+      let is_dynamic = matches!(
+        &v.var_type,
+        Type::Array(Some(crate::compiler::types::ConcreteArraySize::Unsized), _)
+      ) || matches!(
+        v.kind,
+        TopLevelVariableKind::Var {
+          address_space: VariableAddressSpace::Handle,
+          ..
+        }
+      );
+      let binding_info = if cpu_mode
+        && let TopLevelVariableKind::Var {
+          address_space,
+          group_and_binding: Some(gb),
+        } = v.kind
+        && matches!(
+          address_space,
+          VariableAddressSpace::Uniform
+            | VariableAddressSpace::StorageRead
+            | VariableAddressSpace::StorageReadWrite
+            | VariableAddressSpace::Handle
+        ) {
+        Some((gb, address_space))
+      } else {
+        None
+      };
+      if cpu_mode && is_dynamic {
+        // Runtime-sized values (unsized arrays, textures) live host-side;
+        // VM code accesses them through host ops, so they get no slots.
+        let (gb, address_space) = binding_info
+          .expect("dynamic global without a group/binding annotation");
+        let index = state.host_bindings.len() as u16;
+        state.host_bindings.push(HostBinding {
+          name: v.name.clone(),
+          group: gb.group,
+          binding: gb.binding,
+          ty: v.var_type.clone(),
+          address_space,
+          storage: HostBindingStorage::Dynamic,
+        });
+        state.binding_indices.insert(v.name.clone(), index);
+        state.dynamic_globals.insert(v.name.clone(), index);
+        continue;
+      }
       let position = state.consumed_stack_space as u16;
       let size =
         v.var_type.data_size_in_u32s(&v.source_trace).unwrap() as u16;
       state.globals.insert(v.name.clone(), position);
       state.global_slots.push((v.name.clone(), position, size));
       state.consumed_stack_space += size;
+      if let Some((gb, address_space)) = binding_info {
+        let index = state.host_bindings.len() as u16;
+        state.host_bindings.push(HostBinding {
+          name: v.name.clone(),
+          group: gb.group,
+          binding: gb.binding,
+          ty: v.var_type.clone(),
+          address_space,
+          storage: HostBindingStorage::Slots { position, size },
+        });
+        state.binding_indices.insert(v.name.clone(), index);
+      }
     }
     // If any top-level var has an initializer expression, compile a
     // synthetic "$init_globals" function that computes each one and Moves it
@@ -5006,14 +5080,36 @@ impl Program {
             .push((f_name, implementation.clone()));
           continue;
         }
-        let skip_for_entry_point = implementation_read
-          .entry_point
-          .map(|e| !e.should_compile_to_target(CompilerTarget::VM))
-          .unwrap_or(false);
-        let effects = implementation_read.effects();
-        let has_cpu_exclusive = !effects.cpu_exclusive_functions().is_empty()
-          || !effects.cpu_exclusive_types().is_empty();
-        if skip_for_entry_point || has_cpu_exclusive {
+        let skip = if cpu_mode {
+          // CPU mode: compile `@cpu` entries and plain functions; skip GPU
+          // and audio entry points, plus any helper that's only meaningful
+          // inside a shader (fragment-exclusive calls, GPU builtin-attribute
+          // lookups like `global-invocation-id`) — those are reachable only
+          // from GPU entries, and compiling them would hit shader-only
+          // builtins.
+          let is_non_cpu_entry = implementation_read
+            .entry_point
+            .map(|e| !matches!(e, EntryPoint::Cpu))
+            .unwrap_or(false);
+          let gpu_only = implementation_read.effects().0.iter().any(|e| {
+            matches!(
+              e,
+              Effect::FragmentExclusiveFunction(_)
+                | Effect::LookupBuiltinAttribute(_)
+            )
+          });
+          is_non_cpu_entry || gpu_only
+        } else {
+          let skip_for_entry_point = implementation_read
+            .entry_point
+            .map(|e| !e.should_compile_to_target(CompilerTarget::VM))
+            .unwrap_or(false);
+          let effects = implementation_read.effects();
+          let has_cpu_exclusive = !effects.cpu_exclusive_functions().is_empty()
+            || !effects.cpu_exclusive_types().is_empty();
+          skip_for_entry_point || has_cpu_exclusive
+        };
+        if skip {
           continue;
         }
       }

@@ -12,7 +12,7 @@ use crate::compiler::functions::{
   FunctionImplementationKind, Ownership, TopLevelFunction,
   extract_mat_size as parse_mat_size,
 };
-use crate::compiler::types::{Type, TypeState};
+use crate::compiler::types::{ConcreteArraySize, Type, TypeState};
 use crate::vm::bytecode::{
   BytecodeProgram, Code, Function, HostBinding, HostBindingStorage,
   HostDispatch, HostOp, Instruction, Op, WindowQueryKind,
@@ -1358,6 +1358,129 @@ impl BytecodeCompilationState {
         .collect(),
     )
   }
+
+  // --- CPU-runtime-mode helpers ---
+
+  /// Append `op` to the host-op table and emit a `HostCall` instruction
+  /// referencing it.
+  pub fn emit_host_op(&mut self, op: HostOp) {
+    let index = self.host_ops.len() as u16;
+    self.host_ops.push(op);
+    self.push_instruction(Instruction {
+      op: Op::HostCall,
+      arg_positions: [index, 0, 0],
+      return_position: 0,
+    });
+  }
+  pub fn host_type_index(&mut self, ty: &Type) -> u16 {
+    if let Some(i) = self.host_types.iter().position(|t| t == ty) {
+      i as u16
+    } else {
+      self.host_types.push(ty.clone());
+      (self.host_types.len() - 1) as u16
+    }
+  }
+  pub fn host_string_index(&mut self, s: &str) -> u16 {
+    if let Some(i) = self.host_strings.iter().position(|t| &**t == s) {
+      i as u16
+    } else {
+      self.host_strings.push(s.into());
+      (self.host_strings.len() - 1) as u16
+    }
+  }
+  /// Emits `CheckGpuToCpu` for each GPU-bound global in `names` — the VM
+  /// equivalent of the tree-walker's `check_cpu_readable` before an
+  /// application evaluates.
+  pub fn emit_sync_checks(&mut self, names: &[Arc<str>]) {
+    for name in names {
+      if let Some(binding) = self.binding_indices.get(name).copied() {
+        self.emit_host_op(HostOp::CheckGpuToCpu { binding });
+      }
+    }
+  }
+  /// Emits `MarkCpuWritten` for each GPU-bound global in `names` — the VM
+  /// equivalent of the tree-walker's `mark_cpu_written` after an
+  /// application evaluates.
+  pub fn emit_write_marks(&mut self, names: &[Arc<str>]) {
+    for name in names {
+      if let Some(binding) = self.binding_indices.get(name).copied() {
+        self.emit_host_op(HostOp::MarkCpuWritten { binding });
+      }
+    }
+  }
+  /// Resolves a function-reference argument of a dispatch builtin: returns
+  /// the entry point's name and its GPU read/write sets as binding indices.
+  /// If the reference is a scope construction (a dispatched closure with
+  /// captured locals), also compiles the captured values into the closure's
+  /// implicit scope binding global and marks it CPU-written — the VM
+  /// equivalent of `upload_dispatched_closure_scope`.
+  fn resolve_dispatched_fn(
+    &mut self,
+    arg: &TypedExp,
+  ) -> (Arc<str>, Vec<u16>, Vec<u16>) {
+    let Type::Function(signature) = arg.data.unwrap_known() else {
+      panic!("dispatched function argument had a non-function type")
+    };
+    let ancestor = signature
+      .abstract_ancestor
+      .clone()
+      .expect("dispatched function had no abstract ancestor");
+    let ancestor = ancestor.read().unwrap();
+    let entry_name = ancestor.name.clone();
+    let FunctionImplementationKind::Composite(implementation) =
+      &ancestor.implementation
+    else {
+      panic!("dispatched function {entry_name} wasn't composite")
+    };
+    let effects = implementation.read().unwrap().effects();
+    let (reads, writes) = effects.gpu_read_and_written_globals();
+    let read_indices: Vec<u16> = reads
+      .iter()
+      .filter_map(|n| self.binding_indices.get(n).copied())
+      .collect();
+    let write_indices: Vec<u16> = writes
+      .iter()
+      .filter_map(|n| self.binding_indices.get(n).copied())
+      .collect();
+    // Scope construction: write the captured values into the closure's
+    // implicit scope binding (created by extract_dispatched_closure_scopes)
+    // so the dispatch's pre-upload ships them to the GPU.
+    if let ExpKind::Application(_, captured) = &arg.kind {
+      let scope_struct = ancestor
+        .captured_scope
+        .as_ref()
+        .expect("dispatched closure construction without captured scope");
+      let scope_global_name = format!("{}_data", scope_struct.name.0);
+      let scope_binding = *self
+        .binding_indices
+        .get(&Arc::<str>::from(scope_global_name.as_str()))
+        .expect("dispatched closure scope binding not found");
+      let HostBindingStorage::Slots { position, .. } =
+        self.host_bindings[scope_binding as usize].storage
+      else {
+        panic!("dispatched closure scope binding wasn't slot-backed")
+      };
+      let mut offset = 0u16;
+      for captured_value in captured {
+        let value_pos = captured_value.compile_to_bytecode(false, self).unwrap();
+        let value_size = captured_value
+          .data
+          .unwrap_known()
+          .data_size_in_u32s(&captured_value.source_trace)
+          .unwrap() as u16;
+        self.push_instruction(Instruction {
+          op: Op::Move,
+          arg_positions: [value_pos, value_size, 0],
+          return_position: position + offset,
+        });
+        offset += value_size;
+      }
+      self.emit_host_op(HostOp::MarkCpuWritten {
+        binding: scope_binding,
+      });
+    }
+    (entry_name, read_indices, write_indices)
+  }
 }
 
 // =============================================================================
@@ -1545,6 +1668,293 @@ fn enum_pattern_variant_index(pattern: &TypedExp, enum_type: &Enum) -> u32 {
 // =============================================================================
 
 impl TypedExp {
+  /// CPU-runtime-mode lowering for builtins the pure VM can't express: GPU
+  /// orchestration, printing, windowing, and dynamic-array access. Returns
+  /// `None` when `f_name` isn't such a builtin, letting the generic path
+  /// handle it. Must run before generic argument compilation, since several
+  /// of these take arguments (function references, dynamic globals, string
+  /// literals) that can't be compiled as ordinary values.
+  fn try_compile_cpu_builtin(
+    &self,
+    f_name: &str,
+    args: &[TypedExp],
+    state: &mut BytecodeCompilationState,
+  ) -> Option<Option<u16>> {
+    match f_name {
+      "print" => {
+        let arg = &args[0];
+        if let ExpKind::Name(name) = &arg.kind
+          && let Some(binding) = state.dynamic_globals.get(name).copied()
+        {
+          state.emit_host_op(HostOp::PrintBinding { binding });
+        } else {
+          let slot = arg.compile_to_bytecode(false, state).unwrap();
+          let ty = state.host_type_index(&arg.data.unwrap_known());
+          state.emit_host_op(HostOp::Print { slot, ty });
+        }
+        Some(None)
+      }
+      "dispatch-compute-shader" => {
+        let (entry_name, reads, writes) =
+          state.resolve_dispatched_fn(&args[0]);
+        let entry = state.host_string_index(&entry_name);
+        let sets = state.host_dispatches.len() as u16;
+        state.host_dispatches.push(HostDispatch { reads, writes });
+        let workgroup_slot = args[1].compile_to_bytecode(false, state).unwrap();
+        state.emit_host_op(HostOp::DispatchCompute {
+          entry,
+          sets,
+          workgroup_slot,
+        });
+        Some(None)
+      }
+      "dispatch-render-shaders" => {
+        let (vert_name, mut reads, mut writes) =
+          state.resolve_dispatched_fn(&args[0]);
+        let (frag_name, frag_reads, frag_writes) =
+          state.resolve_dispatched_fn(&args[1]);
+        for r in frag_reads {
+          if !reads.contains(&r) {
+            reads.push(r);
+          }
+        }
+        for w in frag_writes {
+          if !writes.contains(&w) {
+            writes.push(w);
+          }
+        }
+        let vert = state.host_string_index(&vert_name);
+        let frag = state.host_string_index(&frag_name);
+        let sets = state.host_dispatches.len() as u16;
+        state.host_dispatches.push(HostDispatch { reads, writes });
+        let vert_count_slot =
+          args[2].compile_to_bytecode(false, state).unwrap();
+        let additive_slot = args
+          .get(3)
+          .map(|a| a.compile_to_bytecode(false, state).unwrap());
+        state.emit_host_op(HostOp::DispatchRender {
+          vert,
+          frag,
+          sets,
+          vert_count_slot,
+          additive_slot,
+        });
+        Some(None)
+      }
+      "spawn-window" => {
+        let Type::Function(signature) = args[0].data.unwrap_known() else {
+          panic!("spawn-window argument had a non-function type")
+        };
+        let frame_name = signature
+          .abstract_ancestor
+          .as_ref()
+          .expect("spawn-window callback had no abstract ancestor")
+          .read()
+          .unwrap()
+          .name
+          .clone();
+        let frame_fn = state
+          .finished_functions
+          .iter()
+          .position(|f| f.name == frame_name)
+          .unwrap_or_else(|| {
+            panic!("spawn-window frame fn {frame_name} not compiled")
+          }) as u16;
+        // Scope construction: write the captured values into the frame
+        // function's trailing scope-argument slots. VM slots persist, so
+        // mutations to captured state persist across frames exactly like
+        // the tree-walker's Function::Scoped semantics.
+        if let ExpKind::Application(_, captured) = &args[0].kind {
+          let target = state.finished_functions[frame_fn as usize].clone();
+          let scope_position = *target
+            .arg_positions
+            .last()
+            .expect("scoped frame fn has no scope argument");
+          let mut offset = 0u16;
+          for captured_value in captured {
+            let value_pos =
+              captured_value.compile_to_bytecode(false, state).unwrap();
+            let value_size = captured_value
+              .data
+              .unwrap_known()
+              .data_size_in_u32s(&captured_value.source_trace)
+              .unwrap() as u16;
+            state.push_instruction(Instruction {
+              op: Op::Move,
+              arg_positions: [value_pos, value_size, 0],
+              return_position: scope_position + offset,
+            });
+            offset += value_size;
+          }
+        }
+        state.emit_host_op(HostOp::SpawnWindow { frame_fn });
+        Some(None)
+      }
+      "close-window" => {
+        state.emit_host_op(HostOp::CloseWindow);
+        Some(None)
+      }
+      "start-audio" => {
+        let Type::Function(signature) = args[0].data.unwrap_known() else {
+          panic!("start-audio argument had a non-function type")
+        };
+        let entry_name = signature
+          .abstract_ancestor
+          .as_ref()
+          .expect("start-audio argument had no abstract ancestor")
+          .read()
+          .unwrap()
+          .name
+          .clone();
+        let entry = state.host_string_index(&entry_name);
+        state.emit_host_op(HostOp::StartAudio { entry });
+        Some(None)
+      }
+      "window-resolution" | "mouse-coords" => {
+        let dest = state.take_stack_slot(2);
+        state.emit_host_op(HostOp::WindowQuery {
+          kind: if f_name == "window-resolution" {
+            WindowQueryKind::Resolution
+          } else {
+            WindowQueryKind::MouseCoords
+          },
+          dest,
+        });
+        Some(Some(dest))
+      }
+      "window-time" | "window-delta-time" | "window-frame-index"
+      | "mouse-present?" | "mouse-down?" | "mouse-just-down?" => {
+        let dest = state.take_stack_slot(1);
+        state.emit_host_op(HostOp::WindowQuery {
+          kind: match f_name {
+            "window-time" => WindowQueryKind::Time,
+            "window-delta-time" => WindowQueryKind::DeltaTime,
+            "window-frame-index" => WindowQueryKind::FrameIndex,
+            "mouse-present?" => WindowQueryKind::MousePresent,
+            "mouse-down?" => WindowQueryKind::MouseDown,
+            _ => WindowQueryKind::MouseJustDown,
+          },
+          dest,
+        });
+        Some(Some(dest))
+      }
+      "key-down?" | "key-just-down?" => {
+        let ExpKind::StringLiteral(key) = &args[0].kind else {
+          panic!("key query argument must be a string literal")
+        };
+        let key = state.host_string_index(&key.to_string());
+        let dest = state.take_stack_slot(1);
+        state.emit_host_op(HostOp::KeyQuery {
+          just: f_name == "key-just-down?",
+          key,
+          dest,
+        });
+        Some(Some(dest))
+      }
+      "array-length" => {
+        if let ExpKind::Name(name) = &args[0].kind
+          && let Some(binding) = state.dynamic_globals.get(name).copied()
+        {
+          let dest = state.take_stack_slot(1);
+          state.emit_host_op(HostOp::DynLen { binding, dest });
+          Some(Some(dest))
+        } else if let Type::Array(Some(ConcreteArraySize::Literal(n)), _) =
+          args[0].data.unwrap_known()
+        {
+          Some(Some(state.emit_u32_constant(n as u32)))
+        } else {
+          panic!("array-length of unsupported array kind in VM CPU runtime")
+        }
+      }
+      "set-render-target" => {
+        let ExpKind::Name(name) = &args[0].kind else {
+          panic!("set-render-target argument must be a texture global")
+        };
+        let binding = *state
+          .dynamic_globals
+          .get(name)
+          .expect("set-render-target argument isn't a texture binding");
+        state.emit_host_op(HostOp::SetRenderTarget { binding });
+        Some(None)
+      }
+      "clear-render-target" => {
+        state.emit_host_op(HostOp::ClearRenderTarget);
+        Some(None)
+      }
+      "=" => {
+        // Only intercepted when a dynamic (host-side) global is involved;
+        // slot-backed assignment uses the generic path.
+        let lhs = &args[0];
+        let rhs = &args[1];
+        if let ExpKind::Name(name) = &lhs.kind
+          && let Some(binding) = state.dynamic_globals.get(name).copied()
+        {
+          let ExpKind::Application(rhs_f, rhs_args) = &rhs.kind else {
+            panic!(
+              "unsupported assignment to dynamic global in VM CPU runtime"
+            )
+          };
+          let ExpKind::Name(rhs_f_name) = &rhs_f.kind else {
+            panic!()
+          };
+          match &**rhs_f_name {
+            "zeroed-array" => {
+              let len_slot =
+                rhs_args[0].compile_to_bytecode(false, state).unwrap();
+              state.emit_host_op(HostOp::AssignDynZeroed { binding, len_slot });
+            }
+            "into-dynamic-array" => {
+              let source = &rhs_args[0];
+              let Type::Array(Some(ConcreteArraySize::Literal(count)), _) =
+                source.data.unwrap_known()
+              else {
+                panic!("into-dynamic-array argument wasn't a sized array")
+              };
+              let src_slot = source.compile_to_bytecode(false, state).unwrap();
+              state.emit_host_op(HostOp::AssignDynFromSlots {
+                binding,
+                src_slot,
+                count: count as u16,
+              });
+            }
+            "load-image" => {
+              let ExpKind::StringLiteral(path) = &rhs_args[0].kind else {
+                panic!("load-image argument must be a string literal")
+              };
+              let path = state.host_string_index(&path.to_string());
+              state.emit_host_op(HostOp::AssignTextureFromImage {
+                binding,
+                path,
+              });
+            }
+            other => panic!(
+              "unsupported assignment of `{other}` result to dynamic global \
+               in VM CPU runtime"
+            ),
+          }
+          Some(None)
+        } else if let ExpKind::Access(Accessor::ArrayIndex(index_exp), inner) =
+          &lhs.kind
+          && let ExpKind::Name(name) = &inner.kind
+          && let Some(binding) = state.dynamic_globals.get(name).copied()
+        {
+          let index_slot =
+            index_exp.compile_to_bytecode(false, state).unwrap();
+          let src_slot = rhs.compile_to_bytecode(false, state).unwrap();
+          state.emit_host_op(HostOp::DynStore {
+            binding,
+            index_slot,
+            src_slot,
+          });
+          Some(None)
+        } else {
+          None
+        }
+      }
+      _ => None,
+    }
+  }
+
   pub fn compile_to_bytecode(
     &self,
     is_ref_arg_position: bool,
@@ -1571,11 +1981,32 @@ impl TypedExp {
         .last()
         .unwrap_or(None),
       Application(f_exp, args) => {
-        state.array_mut_ref_store_instructions.push(vec![]);
         let ExpKind::Name(f_name) = &f_exp.kind else {
           panic!()
         };
         let f_name = f_name.clone();
+        // CPU-runtime mode: mirror the tree-walker's sync behavior at the
+        // same granularity — `check_cpu_readable` for the application's
+        // read set before it evaluates, `mark_cpu_written` for its write
+        // set after. All name resolution happens here at compile time.
+        let cpu_write_marks: Option<Vec<Arc<str>>> = if state.cpu_mode {
+          let effects = self.effects();
+          let (reads, writes) = effects.read_and_written_globals();
+          state.emit_sync_checks(&reads);
+          Some(writes)
+        } else {
+          None
+        };
+        if state.cpu_mode
+          && let Some(result) =
+            self.try_compile_cpu_builtin(&f_name, args, state)
+        {
+          if let Some(writes) = &cpu_write_marks {
+            state.emit_write_marks(writes);
+          }
+          return result;
+        }
+        state.array_mut_ref_store_instructions.push(vec![]);
         let Type::Function(f) = f_exp.data.unwrap_known() else {
           panic!()
         };
@@ -1759,9 +2190,19 @@ impl TypedExp {
         for instruction in array_mut_ref_store_instructions {
           state.push_instruction(instruction);
         }
+        if let Some(writes) = &cpu_write_marks {
+          state.emit_write_marks(writes);
+        }
         result_pos
       }
       Name(name) => {
+        if state.dynamic_globals.contains_key(name) {
+          panic!(
+            "dynamic global {name:?} used in a position the VM CPU runtime \
+             doesn't support (only element access, array-length, \
+             assignment, and print)"
+          );
+        }
         if let Some(slot) = state
           .globals
           .get(name)
@@ -2303,6 +2744,32 @@ impl TypedExp {
       Access(accessor, exp) => {
         match accessor {
           Accessor::ArrayIndex(index_exp) => {
+            // Element read of a dynamic (host-side) global array.
+            if state.cpu_mode
+              && let ExpKind::Name(name) = &exp.kind
+              && let Some(binding) = state.dynamic_globals.get(name).copied()
+            {
+              if is_ref_arg_position {
+                panic!(
+                  "passing dynamic array elements by reference is not \
+                   supported in the VM CPU runtime"
+                );
+              }
+              let element_size = self
+                .data
+                .unwrap_known()
+                .data_size_in_u32s(&self.source_trace)
+                .unwrap() as u16;
+              let dest = state.take_stack_slot(element_size);
+              let index_slot =
+                index_exp.compile_to_bytecode(false, state).unwrap();
+              state.emit_host_op(HostOp::DynLoad {
+                binding,
+                index_slot,
+                dest,
+              });
+              return Some(dest);
+            }
             let inner_exp_pos = exp.compile_to_bytecode(false, state).unwrap();
             let inner_data_size = self
               .data
