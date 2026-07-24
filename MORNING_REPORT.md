@@ -1,120 +1,181 @@
-# Overnight report: CPU runtime on the bytecode VM
+# Overnight report: `@cpu` code now runs on the bytecode VM
 
-Status: IN PROGRESS — this header will be replaced with a final summary.
+## TL;DR
 
-## Architecture (decided up front, before any code)
+It works, and it's done to the standard you asked for: **every test in every
+interpreter-driven suite (cpu, buffer, sync, window) now runs on both the
+tree-walking interpreter and the bytecode VM, asserting identical output,
+identical window-event logs, and identical GPU transfer traces — and all of it
+is green**, alongside the untouched shader/conformance/vm/audio suites. The
+default runtime for `@cpu` code is now the VM; `CpuRuntime::TreeWalking`
+remains selectable on every entry point. The audio hot loop is byte-for-byte
+unaffected. Branch `fable_runtime_overhaul`, 8 commits, nothing pushed or
+merged.
 
-Goal: run `@cpu` entry points on the bytecode VM with byte-identical observable
-behavior to the tree-walking interpreter, selectable via a runtime flag
-(default VM), with every interpreter-touching test suite exercising both.
+One thing I could not do overnight: open a real window. The winit path runs
+the exact same `FrameDriver`/host code the headless tests exercise, but you
+should run a sketch (`easl run`, after reinstalling the CLI against this
+branch) as the final acceptance test.
 
-### 1. Host interface: one `HostCall` opcode + a cold metadata table
+## Architecture
 
-The VM stays a pure math engine. All CPU-orchestration (print, dispatch,
-sync, window queries, dynamic arrays) goes through **one new opcode**,
-`Op::HostCall`, whose `arg_positions[0]` indexes a `Vec<HostOp>` table on
-`Code`. `execute` becomes generic: `execute_with_host<H: VmHost>` — the audio
-path calls it with a no-op host, so after monomorphization the audio hot loop
-is unchanged (the `HostCall` arm is dead code there; audio-mode compilation
-never emits it). No per-instruction overhead is added anywhere.
+### The host interface
 
-Rationale for one opcode + table over many opcodes: keeps the `Op` enum and
-dispatch loop small; host ops are cold by design so an extra indirection into
-a side table costs nothing that matters; adding new host functionality never
-touches the dispatch loop again.
+The VM stays a pure math engine. One new opcode, `Op::HostCall`, whose
+`arg_positions[0]` indexes a cold `Vec<HostOp>` table on `Code` — print,
+dispatch, sync checks, dynamic arrays, window queries, textures, audio all go
+through it. `execute_with_host<H: VmHost>` is generic; the audio path is
+`execute()` = `execute_with_host(&mut NoopHost)`, so after monomorphization
+its dispatch loop is identical to before (the host arm is dead code there —
+audio-mode compilation never emits it). Nothing was added to the
+per-instruction path. `Code` also gained `min_stack_size` (from the
+compiler's bump allocator) so slots that only host ops touch are always
+allocated — this also fixed a latent stack-sizing fragility.
 
-### 2. Suspension for `spawn-window` / `close-window`
+### Sync tracking — your `CheckSync` design, as specified
 
-`execute_with_host` returns `RunResult::{Finished, Suspended(HostSuspend)}`.
-`spawn-window` cannot be an ordinary host call because the host must *re-enter
-the VM* (running the frame function once per frame) while `main` is paused —
-a host call holds `&mut stack`, so reentry would double-borrow. Instead the
-instruction suspends: the continuation stays in `call_stack` (the
-architecture's documented design intent), the driver stashes it aside, runs
-the window loop (each frame = `prepare_to_run_function(frame_fn)` + execute),
-then restores the continuation and resumes `main`. `close-window` suspends the
-frame execution the same way (mirroring the tree-walker's `CloseWindow`
-exception).
+Exactly the shape you sketched: the compiler's effect analysis emits explicit
+instructions, and all name resolution happens at compile time — the runtime
+addresses globals purely by table index.
 
-Frame-closure captured scope: written once into the frame function's trailing
-scope-argument slots at spawn time. Because VM slots are static and persist,
-mutations to captured state persist across frames exactly like the
-tree-walker's `Function::Scoped` semantics — no per-frame copying.
+- `CheckGpuToCpu { binding }` is emitted **before** any application whose
+  effect read-set touches a GPU-bound global — the same placement where the
+  tree-walker calls `check_cpu_readable` (before argument evaluation). It
+  early-returns unless the binding is actually `CPUOutOfDate`.
+- `MarkCpuWritten { binding }` is emitted **after** any application whose
+  write-set touches one — mirroring `mark_cpu_written`.
+- Dispatch sites get a compile-time table entry holding the entry name and
+  the dispatched shader's read/write sets as binding indices (from
+  `gpu_read_and_written_globals`, so `array-length`-only reads count for
+  uploads but never trigger readbacks — last week's work carried straight
+  over).
 
-### 3. Sync tracking: compile-time indices, explicit instructions
+The proof this reproduces the tree-walker's semantics exactly: the **sync
+test suite's golden transfer traces (uploads, readbacks, prints, in order)
+are byte-identical on both runtimes**, including the closure-scope upload
+cases and the `array-length` no-readback case.
 
-Mirrors the tree-walker's semantics at the same granularity, with all name
-resolution moved to compile time:
+### The runtime driver: composition, not reimplementation
 
-- `Code` gains a **binding table**: one entry per GPU-bound global (name kept
-  only for logging/sync-trace parity; group/binding; `Type`; address space;
-  storage = fixed slots or host-side dynamic).
-- At every application site whose effect read-set (`read_and_written_globals`
-  — the readback set, which already excludes `array-length`-only reads)
-  touches binding globals, the compiler emits `HostOp::CheckGpuToCpu{binding}`
-  **before** the application's code — the exact placement where the
-  tree-walker calls `check_cpu_readable` (before argument evaluation).
-- After each application whose write-set touches binding globals, it emits
-  `HostOp::MarkCpuWritten{binding}` — mirroring `mark_cpu_written` after
-  application evaluation (interpreter.rs ~4692).
-- Nested applications produce redundant checks (outer + inner) just as the
-  tree-walker re-checks at every application eval; a check on a `Synced`
-  binding is an early-return, so this matches both semantics and rough cost.
-- Dispatch sites get a **dispatch table** entry: entry-point name plus the
-  entry's read/write sets (`gpu_read_and_written_globals` — includes
-  length-only reads, since `arrayLength()` needs the buffer uploaded) resolved
-  to binding indices at compile time. The runtime handler replicates
-  `collect_dirty_uploads` + `mark_gpu_written` from those index sets.
+`VmCpuRuntime` **wraps a real `EvaluationEnvironment`**. All sync-state,
+upload/readback serialization, print formatting, render-target, and audio
+machinery is the tree-walker's own code, reused unchanged — the env's `eval`
+just never runs. This was the single highest-leverage decision of the night:
+it eliminated an entire class of drift bugs, and it's why the transfer traces
+match exactly. Division of labor:
 
-### 4. `Value` as the universal interchange for host-side data
+- Fixed-size GPU-bound globals live **authoritatively in VM stack slots**
+  (fast math, zero overhead). They're mirrored into the env's `Value`s
+  *lazily*: `MarkCpuWritten` just sets a `slots_dirty` flag; conversion
+  happens only when an upload actually needs serialization. (A naive
+  convert-on-every-write would have been O(n²) for CPU loops writing large
+  arrays.)
+- Runtime-sized globals — unsized arrays, textures — can't live in a
+  statically-addressed stack at all, so they stay host-side **as `Value`s**,
+  exactly the tree-walker's representation, accessed from VM code through
+  `DynLoad`/`DynStore`/`DynLen`/assignment host ops. This preserves
+  `Value::ZeroedArray`'s no-allocation `BufferUpload::Clear` optimization
+  verbatim, and element access on the CPU side is rare by nature.
+- `Value::from_vm_words`/`to_vm_words` convert between the VM's flat layout
+  and `Value`s (matrices are arrays of column vectors to match the
+  tree-walker's shape), so `(print ...)` output is identical by
+  construction.
 
-Two new conversions: `Value::from_vm_words(ty, &[u32])` and
-`Value::to_vm_words()` (flat VM layout: no vec3 padding, flat matrices).
-Everything else **reuses the tree-walker's existing machinery**:
+### spawn-window: suspension + shared frame loops
 
-- Upload serialization: slots → `Value` → `to_uniform_bytes` (same bytes).
-- Readback: `from_gpu_bytes` → `Value` → `to_vm_words` → slots (same decode).
-- Print: slot(s) → `Value` → the same `Display` formatting (identical stdout).
-- Dynamic (unsized) arrays and textures don't fit static slots at all, so
-  those binding globals live host-side **as `Value`s** — including
-  `Value::ZeroedArray`, preserving the `BufferUpload::Clear` no-alloc
-  optimization verbatim. Element access from VM code goes through host ops
-  (`DynLoad`/`DynStore`/`DynLen`); rare on the CPU side by nature.
+`spawn-window` can't be an ordinary host call (the host would need to
+re-enter the VM while it holds the stack), so it **suspends**:
+`execute_with_host` returns `RunResult::Suspended`, `main`'s continuation
+stays in `call_stack` (stashed aside), the window loop runs the frame
+function once per frame, and `main` resumes afterward — the first real use of
+the call-stack-as-continuation design you built into the VM.
+`close-window` suspends the frame execution the same way (mirroring the
+tree-walker's `CloseWindow` exception, including skipping the rest of the
+frame body).
 
-This trades a little conversion cost at cold host boundaries for guaranteed
-behavioral parity and zero duplicated layout logic.
+The frame loops themselves were unified behind a small `FrameDriver` trait
+(`run_frame` / `io_mut` / `wgsl` / `binding_infos`): the winit loop,
+StringIO's simulated frames, and CaptureIO's headless frames are each written
+once and driven by either backend. Frame-closure captured scope is written
+once into the frame function's argument slots; since VM slots persist,
+mutation of captured state across frames matches `Function::Scoped` semantics
+with no per-frame copying.
 
-### 5. Frame-loop unification: `FrameDriver`
+### Closures as data
 
-`run_window_loop`, `StringIO`'s simulated frames, and `CaptureIO`'s headless
-frames all currently hardcode `eval(body, env)`. They're refactored around a
-small trait (`FrameDriver`: `io_mut`, `wgsl`, `binding_infos`, `run_frame`),
-with one implementation backed by the tree-walker (body + env) and one by the
-VM runtime. `IOManager::run_spawn_window` is generalized to take a driver, so
-each IO manager's frame-loop strategy is written once and works for both
-backends.
+A function-typed *value* in the VM is represented by its captured scope's
+data — nothing at all for scope-less closures (`vm_type_size`). Scope
+constructions compile like struct constructions; dispatched-closure scopes
+compile into the implicit scope binding's slots + `MarkCpuWritten` (the
+compile-time equivalent of `upload_dispatched_closure_scope`).
 
-### 6. Compilation modes
+## Judgment calls worth your review
 
-`compile_to_bytecode_program` keeps its exact current behavior for audio.
-A new CPU mode compiles the `@cpu` entry and its transitive callees, does NOT
-skip CPU-exclusive functions (that's the point), still skips GPU-only entry
-points, lowers CPU-exclusive builtins to host ops, and excludes
-unsized-array/texture globals from slot allocation (they're host-side).
-`Code` also gains `min_stack_size` (from the compiler's bump allocator) so
-host-op result slots are always inside the allocated stack.
+1. **Default flipped to `BytecodeVm`** on all no-flag entry points including
+   the CLI path, per your instruction. Every suite passes under the flipped
+   default. If you want a CLI escape hatch (`--runtime tree`), the
+   `*_with_runtime` variants are ready for easl_cli to expose.
+2. **Composition over reimplementation** (env-wrapping, above). Cost: a
+   `Program::clone()` + WGSL compile at startup that the pure-audio path
+   doesn't have; negligible one-time work, and identical to what the
+   tree-walker runner already did.
+3. **Redundant sync checks at nested application sites** — the tree-walker
+   re-checks its read-set at *every* application eval; I mirror that
+   placement, so an outer call and the sites inside it may both emit checks.
+   Each is an early-return host call when synced. Correctness-first; a
+   dominator-style dedup pass is easy later if profiling ever cares.
+4. **Two latent pre-existing VM bugs found by the new coverage and fixed**
+   (they affected the audio path too): `vec + scalar` (and `-`, `%`, and
+   compound assignments like `*=`) compiled as if both operands were
+   vectors, reading out-of-bounds slots — your sketch's `(*= particle.zw
+   drag-factor)` would have hit this; and `compile_builtin` receiving the
+   signature's (sometimes less-resolved) return type instead of the
+   expression's. Conformance/vm suites stayed green throughout.
+5. **Scope-closure discovery**: closures referenced only through scope
+   constructions aren't in the abstract-function registry (the
+   reference-address-space rebuild drops them — same root cause as the
+   dispatched-closure bug we fixed last week; the tree-walker survives via
+   type-embedded ancestor Arcs). The VM compile discovers them transitively
+   (`composite_functions_in_usage_order_with_discovery(true)`); WGSL/C/audio
+   emission deliberately does not (it would emit shader closures that naga
+   rejects). That registry-dropping behavior is now implicated in two
+   separate bugs — a future cleanup should probably make the registry stop
+   lying instead of both consumers compensating.
+6. **New VM capability filled in along the way**: the full data-packing op
+   set (`pack/unpack-4x8-*`, `pack/unpack-2x16-*`, `dot-4-{u8,i8}-packed`)
+   with the tree-walker's exact formulas, and statically-sized
+   `zeroed-array`. These were on the VM's known-missing list.
+7. **Known gaps, all loud (panic with clear messages), none test-covered
+   because no test or sketch exercises them**:
+   - Mutating captured scope through a *directly-called* closure doesn't
+     write back to the closure's storage (frame closures and dispatch scopes
+     work; a stateful counter-closure invoked in a CPU loop would diverge
+     from the tree-walker — silently, this is the one gap that wouldn't
+     panic; it's noted in CLAUDE.md).
+   - Dynamic-array elements can't be passed by reference or
+     compound-assigned (`(+= (arr i) x)` on an unsized global).
+   - Strings exist only as `print`/key-query literals.
+   - Nested `spawn-window` is rejected.
+8. **`u16` slot space** (65,536 stack slots) is now a real ceiling for CPU
+   code with large *sized* global arrays. Unsized arrays (the idiomatic
+   form) are host-side and unaffected. `take_stack_slot` isn't
+   overflow-checked; worth a guard eventually.
 
-### 7. Public API + tests
+## Test status
 
-`CpuRuntime::{TreeWalking, BytecodeVm}` on the runner entry points; existing
-no-flag entry points default to **BytecodeVm** per the plan. Every
-interpreter-driven suite (cpu, buffer, sync, window) runs each test on both
-backends against the same expected output/golden.
+Full `cargo test --features window`: **all 13 binaries green** —
+shader 276, conformance 172, cpu 42 (×2 runtimes), buffer 20 (×2), sync 6
+(×2, golden traces identical), window 17 (×2), vm 24, import 7, plus the
+rest. `cargo build` without features also clean.
 
-## Judgment calls to review (running list)
+## Commits (this branch, oldest first)
 
-- (filled in as the night progresses)
-
-## Final status
-
-- (filled in at the end)
+- design notes for VM CPU runtime
+- VM core: HostCall opcode, host metadata tables, VmHost trait, suspension
+- CPU-mode bytecode compilation: host-op lowering, sync-check emission, dynamic globals
+- FrameDriver abstraction: frame loops generic over executing backend
+- VM CPU runtime: host-call implementation, dual-runtime cpu tests green
+- buffer tests green on both runtimes: closures as scope data, textures
+- all interpreter suites (cpu/buffer/sync/window) green on both runtimes
+- default CPU runtime is now the bytecode VM
+- (this report + CLAUDE.md documentation)

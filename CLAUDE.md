@@ -226,7 +226,7 @@ let name = f.abstract_ancestor.as_ref().unwrap().borrow().name.clone();
 
 ## Bytecode VM
 
-A second, faster interpreter built around a register-style bytecode, intended for performance-critical use (e.g. DSP) where the tree-walking `interpreter.rs` is way too slow. Currently the primary user is the audio runtime — `start-audio` compiles the program to bytecode and the cpal callback runs `execute()` once per sample.
+A second, faster interpreter built around a register-style bytecode. Originally built for performance-critical DSP (the audio runtime: `start-audio` compiles the program to bytecode and the cpal callback runs `execute()` once per sample), it is now also the **default runtime for `@cpu` code** (see "VM CPU runtime" below). The tree-walking interpreter remains fully supported as a reference implementation and debugging tool, selectable via `CpuRuntime::TreeWalking`.
 
 The conformance test suite runs the VM as a target alongside the interpreter and the C backend; passing rate is currently 158/158.
 
@@ -297,6 +297,18 @@ These came up during the build-out and are deferred but real:
 - **VM-backed audio doesn't hot-swap.** `start_audio_thread_vm` only does the cpal setup on the first call; subsequent `start-audio` calls during the spawn-window frame loop are no-ops. The C audio path does hot-swap by atomically replacing a function pointer; the VM equivalent would be putting the `BytecodeProgram` behind an `Arc<Mutex<...>>` (or a single-writer / multiple-reader scheme that doesn't add per-sample lock overhead) and swapping it in subsequent calls. Audio2.easl-style live-coding will want this once mutable references are working.
 - **Many builtins still `todo!()`.** Texture-sample / texture-load / `dxdy` (no sensible CPU semantics) — these will probably never be implemented for the VM; they're shader-only. `atomic-*` is also out of scope. But anything that has scalar math semantics (e.g. `pack-*`/`unpack-*`, more comparison vec lifts) is fair game.
 
+### VM CPU runtime
+
+`@cpu` entry points run on the VM by default (`CpuRuntime::{TreeWalking, BytecodeVm}`, default `BytecodeVm`; every `run_program_*` entry point has a `*_with_runtime` variant). Architecture:
+
+- **One `Op::HostCall` opcode + cold metadata tables on `Code`** (`host_ops`, `host_types`, `host_strings`, `host_bindings`, `host_dispatches`). All CPU orchestration (print, GPU dispatch, sync checks, dynamic arrays, window queries) goes through it; the dispatch loop is otherwise untouched and the audio path (`execute()` = `execute_with_host(NoopHost)`, monomorphized) pays nothing.
+- **`compile_to_bytecode_program_cpu`** (cpu_mode in `vm/compile.rs`): compiles `@cpu` entries + transitive callees, lowers CPU-exclusive builtins to host ops via `try_compile_cpu_builtin`, and emits explicit sync instructions from effect analysis — `CheckGpuToCpu` before an application whose read-set touches GPU-bound globals, `MarkCpuWritten` after one whose write-set does, exactly mirroring the tree-walker's `check_cpu_readable`/`mark_cpu_written` placement. All names resolve to table indices at compile time; nothing does runtime name lookups.
+- **`VmCpuRuntime` (interpreter.rs) wraps a real `EvaluationEnvironment`**, reusing its sync-state, upload/readback, `format_for_print`, audio, and render-target machinery unchanged. Fixed-size GPU-bound globals live authoritatively in VM stack slots and are mirrored into the env's `Value`s lazily (`slots_dirty`, refreshed only when an upload needs serialization). Runtime-sized globals (unsized arrays, textures — `HostBindingStorage::Dynamic`) live in the env as `Value`s (`ZeroedArray`'s no-alloc `BufferUpload::Clear` optimization included) and are accessed via `DynLoad`/`DynStore`/`DynLen`/assignment host ops.
+- **`Value::from_vm_words`/`to_vm_words`** convert between the VM's flat layout and tree-walker `Value`s (matrices are arrays of column vectors, matching the tree-walker), so printing and GPU serialization are byte-identical across runtimes.
+- **`spawn-window`/`close-window` suspend the VM** (`RunResult::Suspended`; the continuation stays in `call_stack`, is stashed while the frame loop runs, and resumes after). Frame closures' captured scope is written once into the frame function's trailing argument slots — slots persist, so mutation across frames matches `Function::Scoped` semantics. The frame loops themselves are shared with the tree-walker via the `FrameDriver` trait (one implementation per IO manager, driven by either backend).
+- **Closures are represented as their captured scope data** (`vm_type_size`: function-typed values occupy their scope struct's slots; scope-less closures are zero-size). Scope constructions compile like struct constructions. Closures reachable only through scope constructions are discovered via `composite_functions_in_usage_order_with_discovery(true)` (the reference-address-space rebuild drops them from the registry; only the VM CPU compile uses discovery — WGSL/C/audio emission must not see them).
+- **Known gaps** (panic with clear messages): mutating a captured scope through a *directly-called* closure doesn't write back (frame closures and GPU dispatch scopes work; a stateful closure called in a CPU loop diverges from the tree-walker), dynamic-array elements can't be passed by reference or compound-assigned, strings exist only as print/key-query literals, and nested `spawn-window` is rejected.
+
 ## Audio runtime (`src/audio.rs`)
 
 When an easl program calls `(start-audio audio-fn)`, the runtime starts a cpal output stream that calls `audio-fn(t: f32, rate: f32) -> f32` once per sample. There are two backends, selected via `AudioBackend`:
@@ -336,8 +348,9 @@ error_test!(test_name, CompileErrorKind::SomeError);  // expects specific compil
 ```rust
 cpu_test!(test_name);  // runs data/cpu/test_name.easl, compares stdout to data/cpu/test_name.txt
 ```
-- Compiles with `CompilerTarget::WGSL`, runs via `run_program_capturing_output`
+- Compiles with `CompilerTarget::WGSL`, runs via `run_program_capturing_output_with_runtime`
 - Asserts that captured `(print ...)` output matches the `.txt` file exactly
+- **Runs every test on both CPU runtimes** (tree-walking and bytecode VM) and asserts identical output for each — as do the buffer, sync, and window suites
 
 ### Window/interpreter tests (`tests/window_tests.rs`, sources in `data/window/`)
 ```rust
