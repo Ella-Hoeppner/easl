@@ -117,3 +117,4 @@ cpu_test!(static_zeroed_array);
 cpu_test!(hof_avoids_skipping_calls);
 cpu_test!(hof_calls_not_skipped);
 cpu_test!(nested_associatives);
+cpu_test!(any_all);

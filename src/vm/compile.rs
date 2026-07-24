@@ -1288,6 +1288,33 @@ impl BytecodeCompilationState {
         }
         Some(result)
       }
+      "any" | "all" => {
+        // OR (any) / AND (all) reduction over a boolean vector's
+        // components; the scalar-bool overload is the identity.
+        let op = if f_name == "any" {
+          Op::LogicalOr
+        } else {
+          Op::LogicalAnd
+        };
+        if let Some((n, _)) = vec_kind(&arg_types[0]) {
+          let result = self.take_stack_slot(1);
+          self.push_instruction(Instruction {
+            op: Op::Move,
+            arg_positions: [arg_positions[0], 1, 0],
+            return_position: result,
+          });
+          for i in 1..n {
+            self.push_instruction(Instruction {
+              op,
+              arg_positions: [result, arg_positions[0] + i, 0],
+              return_position: result,
+            });
+          }
+          Some(result)
+        } else {
+          Some(arg_positions[0])
+        }
+      }
       "pack-4x8-snorm" => Some(self.emit_unary(Op::PackSnorm4x8, arg_positions[0])),
       "unpack-4x8-snorm" => {
         let result = self.take_stack_slot(4);
