@@ -5381,6 +5381,10 @@ fn vm_host_call<IO: IOManager>(
       let formatted = value.format_for_print(&b.ty, env)?;
       env.io.println(&formatted);
     }
+    HostOp::PrintString { string } => {
+      let text = code.host_strings[*string as usize].clone();
+      env.io.println(&text);
+    }
     HostOp::PrintZeroed { len_slot, ty } => {
       let t = &code.host_types[*ty as usize];
       let value = Value::ZeroedArray {

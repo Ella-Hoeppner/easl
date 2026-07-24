@@ -1,6 +1,6 @@
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
-use easl::interpreter::{IOEvent, run_program_test_io};
+use easl::interpreter::{CpuRuntime, IOEvent, run_program_test_io_with_runtime};
 use std::fs;
 use std::path::Path;
 
@@ -73,12 +73,23 @@ fn run_window_test(name: &str) {
       let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
 
-      let io = run_program_test_io(program).unwrap_or_else(|e| {
-        panic!("{name}: evaluation error: {e:#?}");
-      });
-
       let expected = parse_events(&expected_txt, name);
-      assert_eq!(io.events, expected, "{name}: event mismatch");
+      // Every test runs on both CPU runtimes and must produce an identical
+      // event log on each.
+      let io = run_program_test_io_with_runtime(
+        program.clone(),
+        CpuRuntime::TreeWalking,
+      )
+      .unwrap_or_else(|e| {
+        panic!("{name}: evaluation error (tree-walking): {e:#?}");
+      });
+      assert_eq!(io.events, expected, "{name}: event mismatch (tree-walking)");
+      let vm_io =
+        run_program_test_io_with_runtime(program, CpuRuntime::BytecodeVm)
+          .unwrap_or_else(|e| {
+            panic!("{name}: evaluation error (bytecode VM): {e:#?}");
+          });
+      assert_eq!(vm_io.events, expected, "{name}: event mismatch (bytecode VM)");
     }
     Ok(Ok((document, Err(errors)))) => {
       let description = errors.describe(&document);

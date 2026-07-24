@@ -1847,7 +1847,10 @@ impl TypedExp {
     match f_name {
       "print" => {
         let arg = &args[0];
-        if let ExpKind::Name(name) = &arg.kind
+        if let ExpKind::StringLiteral(text) = &arg.kind {
+          let string = state.host_string_index(&text.to_string());
+          state.emit_host_op(HostOp::PrintString { string });
+        } else if let ExpKind::Name(name) = &arg.kind
           && let Some(binding) = state.dynamic_globals.get(name).copied()
         {
           state.emit_host_op(HostOp::PrintBinding { binding });

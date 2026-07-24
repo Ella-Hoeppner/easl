@@ -372,6 +372,8 @@ pub enum HostOp {
   /// Print the value starting at `slot`, of type `host_types[ty]`, with the
   /// same formatting as the tree-walking interpreter.
   Print { slot: u16, ty: u16 },
+  /// Print a string literal.
+  PrintString { string: u16 },
   /// Print a lazily-zeroed unsized array (`(print (zeroed-array n): [T])`)
   /// without materializing it; `ty` is the array type.
   PrintZeroed { len_slot: u16, ty: u16 },

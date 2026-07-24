@@ -4887,6 +4887,17 @@ impl Program {
   pub fn composite_functions_in_usage_order(
     &self,
   ) -> Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> {
+    self.composite_functions_in_usage_order_with_discovery(false)
+  }
+  /// With `discover_scope_closures`, also includes composite functions
+  /// reachable only through type-level ancestor references (closures used
+  /// exclusively via scope constructions, which the reference-address-space
+  /// rebuild drops from the registry). The VM CPU runtime needs those
+  /// compiled; WGSL/C/audio emission must not see them.
+  pub fn composite_functions_in_usage_order_with_discovery(
+    &self,
+    discover_scope_closures: bool,
+  ) -> Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> {
     let mut dependencies: HashMap<Arc<str>, HashSet<Arc<str>>> = HashMap::new();
     let mut fns: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> = vec![];
     for f in self.abstract_functions_iter() {
@@ -4900,6 +4911,45 @@ impl Program {
         dependencies.insert(f.name.clone(), HashSet::new());
       }
     }
+    // Closures referenced only through scope constructions aren't in the
+    // abstract-function registry (reference-address-space monomorphization
+    // rebuilds the program from name-called functions only); they're
+    // reachable exclusively through type-level ancestor Arcs, like the
+    // interpreter reaches them. Discover those transitively.
+    if discover_scope_closures {
+      let mut queue: Vec<Arc<RwLock<TopLevelFunction>>> =
+        fns.iter().map(|(_, f)| f.clone()).collect();
+      while let Some(f) = queue.pop() {
+        let mut discovered: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> =
+          vec![];
+        f.read()
+          .unwrap()
+          .expression
+          .walk(&mut |exp| {
+            if let ExpKind::Application(_, _) = &exp.kind
+              && let TypeState::Known(Type::Function(signature)) =
+                &exp.data.kind
+              && let Some(ancestor) = &signature.abstract_ancestor
+            {
+              let ancestor = ancestor.read().unwrap();
+              if let FunctionImplementationKind::Composite(implementation) =
+                &ancestor.implementation
+                && !dependencies.contains_key(&ancestor.name)
+              {
+                discovered
+                  .push((ancestor.name.clone(), implementation.clone()));
+              }
+            }
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
+        for (name, implementation) in discovered {
+          dependencies.insert(name.clone(), HashSet::new());
+          queue.push(implementation.clone());
+          fns.push((name, implementation));
+        }
+      }
+    }
     for (f_name, f) in fns.iter() {
       f.read()
         .unwrap()
@@ -4911,6 +4961,22 @@ impl Program {
                 .get_mut(f_name)
                 .unwrap()
                 .insert(other_f_name.clone());
+            }
+          }
+          // A closure's scope construction references the closure only
+          // through its expression *type* (the applied name is the scope
+          // struct's constructor), so also count type-level function
+          // ancestors as usages.
+          if let ExpKind::Application(_, _) = &exp.kind
+            && let TypeState::Known(Type::Function(signature)) = &exp.data.kind
+            && let Some(ancestor) = &signature.abstract_ancestor
+          {
+            let ancestor_name = ancestor.read().unwrap().name.clone();
+            if dependencies.contains_key(&ancestor_name) {
+              dependencies
+                .get_mut(f_name)
+                .unwrap()
+                .insert(ancestor_name);
             }
           }
           Ok::<bool, Never>(true)
@@ -5047,7 +5113,9 @@ impl Program {
       } else {
         None
       };
-    for (f_name, implementation) in self.composite_functions_in_usage_order() {
+    for (f_name, implementation) in
+      self.composite_functions_in_usage_order_with_discovery(cpu_mode)
+    {
       // Filter the same way the C backend does in
       // `TopLevelFunction::compile`: skip entry points whose kind doesn't
       // compile to VM (right now that's everything except `@audio`), and

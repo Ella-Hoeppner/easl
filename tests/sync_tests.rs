@@ -1,6 +1,8 @@
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
-use easl::interpreter::run_program_capturing_io_from_path;
+use easl::interpreter::{
+  CpuRuntime, run_program_capturing_io_with_runtime_from_path,
+};
 use std::fs;
 use std::path::Path;
 
@@ -24,8 +26,34 @@ fn run_sync_test(name: &str) {
     Ok(Ok((_, Ok(mut program)))) => {
       let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
-      let io = run_program_capturing_io_from_path(program, source_path)
-        .unwrap_or_else(|e| panic!("{name}: evaluation error: {e:#?}"));
+      // Both CPU runtimes must produce the identical transfer trace.
+      run_sync_test_on(name, program.clone(), source_path, &expected, CpuRuntime::TreeWalking);
+      run_sync_test_on(name, program, source_path, &expected, CpuRuntime::BytecodeVm);
+    }
+    Ok(Ok((document, Err(errors)))) => {
+      panic!("{name}: {}", errors.describe(&document));
+    }
+    _ => panic!("{name}: couldn't load program"),
+  }
+}
+
+fn run_sync_test_on(
+  name: &str,
+  program: easl::compiler::program::Program,
+  source_path: &Path,
+  expected: &str,
+  runtime: CpuRuntime,
+) {
+  {
+    {
+      let io = run_program_capturing_io_with_runtime_from_path(
+        program,
+        source_path,
+        runtime,
+      )
+      .unwrap_or_else(|e| {
+        panic!("{name}: evaluation error ({runtime:?}): {e:#?}")
+      });
       // The scope bindings that `extract_dispatched_closure_scopes` creates
       // for dispatched closures have gensym'd names whose numbering isn't
       // stable across runs — normalize them so traces stay deterministic.
@@ -42,12 +70,12 @@ fn run_sync_test(name: &str) {
           }
         })
         .collect();
-      assert_eq!(actual, expected, "{name}: sync trace mismatch");
+      assert_eq!(
+        actual,
+        *expected,
+        "{name}: sync trace mismatch ({runtime:?})"
+      );
     }
-    Ok(Ok((document, Err(errors)))) => {
-      panic!("{name}: {}", errors.describe(&document));
-    }
-    _ => panic!("{name}: couldn't load program"),
   }
 }
 
