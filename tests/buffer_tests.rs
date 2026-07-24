@@ -82,3 +82,5 @@ buffer_test!(buffer_size_consistency);
 buffer_test!(iterative_compute_uniform);
 buffer_test!(zero_length_zeroed_array);
 buffer_test!(raymarching_sdf);
+buffer_test!(abstracted_compute_dispatch);
+buffer_test!(nested_closure_compute_dispatch);

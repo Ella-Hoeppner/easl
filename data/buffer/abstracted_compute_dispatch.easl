@@ -1,0 +1,37 @@
+(def TAU: f32
+     6.28318530718)
+
+(defn cis [angle: f32]: vec2f
+  (vec2f (cos angle) (sin angle)))
+
+@[storage-write 0 0]
+(var values: [u32])
+
+(defn compute-foreach [count: u32
+                       f: (Fn [u32] ())]
+  (let [max-grid-size (- (u32 (pow 2 16)) 1u)]
+    (dispatch-compute-shader (fn []
+                                 (let [id (global-invocation-id)
+                                       index (+ id.x
+                                                (* id.y max-grid-size)
+                                                (* id.z
+                                                   max-grid-size
+                                                   max-grid-size))]
+                                   (when (< index count)
+                                     (f index))))
+                             (vec3u (max 1 (min max-grid-size count))
+                                    (max 1
+                                         (min max-grid-size
+                                              (/ count max-grid-size)))
+                                    (max 1
+                                         (min max-grid-size
+                                              (/ count
+                                                 (* max-grid-size max-grid-size))))))))
+
+@cpu
+(defn main []: ()
+  (= values (zeroed-array 4))
+  (compute-foreach (array-length values)
+                   (fn [i] (= (values i) i)))
+  (print values))
+

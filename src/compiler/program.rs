@@ -1468,6 +1468,506 @@ impl Program {
       }
     }
   }
+  /// Emits an error for any closure dispatched to the GPU (via
+  /// `dispatch-compute-shader` / `dispatch-render-shaders`) that mutates a
+  /// variable captured in its scope, whether directly or inside a nested
+  /// closure the scope is forwarded to. A dispatched closure's captured
+  /// scope lives in a read-only storage binding (see
+  /// `extract_dispatched_closure_scopes`) and its body runs once per GPU
+  /// thread, so there's no meaningful semantics for such writes — and
+  /// without this check they'd surface as naga validation failures at
+  /// pipeline-creation time rather than as a compile error.
+  pub fn catch_dispatched_closure_scope_mutations(
+    &self,
+    errors: &mut ErrorLog,
+  ) {
+    let mut checked_closures: HashSet<Arc<str>> = HashSet::new();
+    for f in self.abstract_functions_iter() {
+      let FunctionImplementationKind::Composite(implementation) =
+        f.read().unwrap().implementation.clone()
+      else {
+        continue;
+      };
+      implementation
+        .read()
+        .unwrap()
+        .expression
+        .walk(&mut |exp| {
+          if let ExpKind::Application(applied_f, args) = &exp.kind
+            && let ExpKind::Name(applied_f_name) = &applied_f.kind
+          {
+            let dispatched_fn_count = match &**applied_f_name {
+              "dispatch-compute-shader" => 1,
+              "dispatch-render-shaders" => 2,
+              _ => 0,
+            };
+            for arg in args.iter().take(dispatched_fn_count) {
+              if let Type::Function(signature) = arg.data.unwrap_known()
+                && let Some(ancestor) = signature.abstract_ancestor
+              {
+                self.check_dispatched_closure_scope_mutations(
+                  ancestor,
+                  errors,
+                  &mut checked_closures,
+                );
+              }
+            }
+          }
+          Ok::<bool, Never>(true)
+        })
+        .unwrap();
+    }
+  }
+  /// Checks one dispatched closure's body for mutations of its captured
+  /// scope: any argument rooted at the scope parameter that's passed to a
+  /// mutable-reference parameter counts as a mutation, except the trailing
+  /// scope-forwarding argument of a call to a nested closure, which is
+  /// checked recursively against that closure's own scope instead.
+  fn check_dispatched_closure_scope_mutations(
+    &self,
+    closure: Arc<RwLock<AbstractFunctionSignature>>,
+    errors: &mut ErrorLog,
+    checked_closures: &mut HashSet<Arc<str>>,
+  ) {
+    let (scope_param_name, implementation) = {
+      let closure = closure.read().unwrap();
+      if closure.captured_scope.is_none()
+        || !checked_closures.insert(closure.name.clone())
+      {
+        return;
+      }
+      let FunctionImplementationKind::Composite(implementation) =
+        closure.implementation.clone()
+      else {
+        return;
+      };
+      let Some((scope_param_name, _)) =
+        implementation.read().unwrap().arg_names.last().cloned()
+      else {
+        return;
+      };
+      (scope_param_name, implementation)
+    };
+    // For an access chain rooted at the scope parameter, returns the name of
+    // the captured variable being accessed (the field directly on the scope).
+    let scope_rooted_capture_name =
+      |exp: &TypedExp| -> Option<Arc<str>> {
+        let mut field: Option<Arc<str>> = None;
+        let mut current = exp;
+        loop {
+          match &current.kind {
+            ExpKind::Access(accessor, inner) => {
+              if let Accessor::Field(name) = accessor {
+                field = Some(name.clone());
+              }
+              current = inner;
+            }
+            ExpKind::Name(name) => {
+              return (*name == scope_param_name)
+                .then(|| field.unwrap_or_else(|| name.clone()));
+            }
+            _ => return None,
+          }
+        }
+      };
+    let implementation = implementation.read().unwrap();
+    let ExpKind::Function(_, body) = &implementation.expression.kind else {
+      return;
+    };
+    body
+      .walk(&mut |exp| {
+        if let ExpKind::Application(applied_f, args) = &exp.kind
+          && let TypeState::Known(Type::Function(applied_signature)) =
+            &applied_f.data.kind
+        {
+          let param_ownerships: Vec<Ownership> = if let Some(applied_ancestor) =
+            &applied_signature.abstract_ancestor
+          {
+            applied_ancestor
+              .read()
+              .unwrap()
+              .arg_types
+              .iter()
+              .map(|(_, ownership)| *ownership)
+              .collect()
+          } else {
+            applied_signature
+              .args
+              .iter()
+              .map(|(arg, _)| arg.var_type.ownership)
+              .collect()
+          };
+          for (i, arg) in args.iter().enumerate() {
+            if !matches!(
+              param_ownerships.get(i),
+              Some(Ownership::MutableReference)
+            ) {
+              continue;
+            }
+            let Some(captured_name) = scope_rooted_capture_name(arg) else {
+              continue;
+            };
+            if i + 1 == args.len()
+              && let Some(applied_ancestor) =
+                &applied_signature.abstract_ancestor
+              && applied_ancestor.read().unwrap().captured_scope.is_some()
+            {
+              self.check_dispatched_closure_scope_mutations(
+                applied_ancestor.clone(),
+                errors,
+                checked_closures,
+              );
+              continue;
+            }
+            errors.log(CompileError::new(
+              CantMutateDispatchedClosureCapture(captured_name.to_string()),
+              exp.source_trace.clone(),
+            ));
+          }
+        }
+        Ok::<bool, Never>(true)
+      })
+      .unwrap();
+  }
+  /// Rewrites references to a dispatched closure's captured scope within
+  /// `body` so the scope is accessed as plain data rather than through a
+  /// reference: `Name` nodes referring to `scope_name` are renamed to
+  /// `global_rename` (when the entry's scope has been lifted to a global)
+  /// and become owned, and reference-ownership access chains rooted at the
+  /// scope become owned. Calls that forward the scope (or part of it) to a
+  /// nested closure are converted to pass it by value via
+  /// `valueify_dispatched_callee_scope` — naga doesn't allow storage-space
+  /// pointers as function arguments, and scopes are read-only on the GPU.
+  fn rewrite_dispatched_scope_body(
+    &self,
+    body: &mut TypedExp,
+    scope_name: &Arc<str>,
+    global_rename: Option<&Arc<str>>,
+    valueified_callees: &mut HashSet<Arc<str>>,
+  ) {
+    body
+      .walk_mut(&mut |e| {
+        let scope_rooted = |exp: &TypedExp| {
+          let mut root = exp;
+          loop {
+            match &root.kind {
+              ExpKind::Access(_, inner) => root = inner,
+              ExpKind::Name(name) => {
+                break name == scope_name
+                  || global_rename.map(|g| name == g).unwrap_or(false);
+              }
+              _ => break false,
+            }
+          }
+        };
+        match &mut e.kind {
+          ExpKind::Name(name) if name == scope_name => {
+            if let Some(global_name) = global_rename {
+              *name = global_name.clone();
+              e.data.is_globally_bound = true;
+            }
+            e.data.ownership = Ownership::Owned;
+          }
+          ExpKind::Access(_, _) => {
+            if scope_rooted(e)
+              && matches!(
+                e.data.ownership,
+                Ownership::Reference | Ownership::MutableReference
+              )
+            {
+              e.data.ownership = Ownership::Owned;
+            }
+          }
+          ExpKind::Application(applied_f, args) => {
+            if let TypeState::Known(Type::Function(signature)) =
+              &applied_f.data.kind
+              && let Some(ancestor) = signature.abstract_ancestor.clone()
+              && args.last().map(|arg| scope_rooted(arg)).unwrap_or(false)
+            {
+              self
+                .valueify_dispatched_callee_scope(ancestor, valueified_callees);
+            }
+          }
+          _ => {}
+        }
+        Ok::<bool, Never>(true)
+      })
+      .unwrap();
+  }
+  /// Converts a scoped closure called from within a dispatched GPU entry to
+  /// take its captured scope by value instead of by mutable reference: the
+  /// trailing scope argument's ownership is flipped to owned on the call
+  /// site's signature, every registry copy of the signature, and the
+  /// function's own expression signature, and the body is rewritten (via
+  /// `rewrite_dispatched_scope_body`, recursing into further nested
+  /// closures).
+  fn valueify_dispatched_callee_scope(
+    &self,
+    callsite_ancestor: Arc<RwLock<AbstractFunctionSignature>>,
+    valueified_callees: &mut HashSet<Arc<str>>,
+  ) {
+    let (callee_name, scope_struct_name, callee_implementation) = {
+      let ancestor = callsite_ancestor.read().unwrap();
+      let Some(scope_struct) = &ancestor.captured_scope else {
+        return;
+      };
+      let FunctionImplementationKind::Composite(implementation) =
+        ancestor.implementation.clone()
+      else {
+        return;
+      };
+      (
+        ancestor.name.clone(),
+        scope_struct.name.0.clone(),
+        implementation,
+      )
+    };
+    let mut signatures_to_patch = vec![callsite_ancestor];
+    if let Some(registry_signatures) = self.abstract_functions.get(&callee_name)
+    {
+      signatures_to_patch.extend(registry_signatures.iter().cloned());
+    }
+    for signature in signatures_to_patch {
+      let mut signature = signature.write().unwrap();
+      if let Some((AbstractType::AbstractStruct(s), ownership)) =
+        signature.arg_types.last_mut()
+        && s.name.0 == scope_struct_name
+      {
+        *ownership = Ownership::Owned;
+      }
+    }
+    if !valueified_callees.insert(callee_name) {
+      return;
+    }
+    let mut implementation = callee_implementation.write().unwrap();
+    implementation.expression.data.as_known_mut(|t| {
+      let Type::Function(signature) = t else {
+        panic!("scoped closure had a non-function type")
+      };
+      if let Some((v, _)) = signature.args.last_mut()
+        && let Type::Struct(s) = v.var_type.unwrap_known()
+        && s.name == scope_struct_name
+      {
+        v.var_type.ownership = Ownership::Owned;
+      }
+    });
+    let scope_param_name = implementation.arg_names.last().unwrap().0.clone();
+    let ExpKind::Function(_, body) = &mut implementation.expression.kind else {
+      panic!("scoped closure implementation wasn't a Function")
+    };
+    self.rewrite_dispatched_scope_body(
+      body,
+      &scope_param_name,
+      None,
+      valueified_callees,
+    );
+  }
+  /// Replaces function-typed fields inside a dispatched closure's scope type
+  /// with their representative scope-struct types, recursively. A captured
+  /// closure is stored in the scope binding as its own captured scope's
+  /// data — which is what the emitted WGSL struct declares (see the
+  /// `Type::Function` arm of `monomorphized_name`) and what
+  /// `Value::to_uniform_bytes` uploads.
+  fn substitute_scope_representative_types(&self, t: Type) -> Type {
+    match t {
+      Type::Function(signature) => {
+        let representative = if let Some(ancestor) =
+          &signature.abstract_ancestor
+          && let Some(scope_struct) =
+            &ancestor.read().unwrap().captured_scope
+        {
+          Some(
+            AbstractType::AbstractStruct(Arc::new(scope_struct.clone()))
+              .concretize(&vec![], &self.typedefs, SourceTrace::empty())
+              .unwrap(),
+          )
+        } else {
+          None
+        };
+        match representative {
+          Some(representative) => {
+            self.substitute_scope_representative_types(representative)
+          }
+          None => Type::Function(signature),
+        }
+      }
+      Type::Struct(mut s) => {
+        for field in s.fields.iter_mut() {
+          field.field_type = self
+            .substitute_scope_representative_types(field.field_type.unwrap_known())
+            .known()
+            .into();
+        }
+        Type::Struct(s)
+      }
+      other => other,
+    }
+  }
+  /// Dispatched GPU closures (e.g. a lambda passed to
+  /// `dispatch-compute-shader` that captured local variables) can't receive
+  /// their captured scope as a function argument — WGSL entry points only
+  /// accept builtin-annotated arguments. This pass converts each dispatched
+  /// closure's scope argument into an implicit binding: the scope struct
+  /// becomes a top-level read-only storage var named
+  /// `<scope-struct-name>_data`, the entry function's trailing scope
+  /// argument is removed from its
+  /// signatures, and its body reads the global instead. At dispatch time the
+  /// interpreter writes the closure's captured scope value into that global
+  /// (see the `dispatch-compute-shader` handler in interpreter.rs) so the
+  /// ordinary dirty-binding upload machinery ships the captured values to the
+  /// GPU before the dispatch executes.
+  pub fn extract_dispatched_closure_scopes(&mut self) {
+    let mut used_bindings: HashSet<(u8, u8)> = self
+      .top_level_vars
+      .iter()
+      .filter_map(|v| {
+        if let TopLevelVariableKind::Var {
+          group_and_binding: Some(gb),
+          ..
+        } = v.kind
+        {
+          Some((gb.group, gb.binding))
+        } else {
+          None
+        }
+      })
+      .collect();
+    let mut new_vars: Vec<TopLevelVar> = vec![];
+    let mut processed_entries: HashSet<Arc<str>> = HashSet::new();
+    let mut valueified_callees: HashSet<Arc<str>> = HashSet::new();
+    for f in self.abstract_functions_iter() {
+      let FunctionImplementationKind::Composite(implementation) =
+        f.read().unwrap().implementation.clone()
+      else {
+        continue;
+      };
+      implementation
+        .read()
+        .unwrap()
+        .expression
+        .walk(&mut |exp| {
+          if let ExpKind::Application(applied_f, args) = &exp.kind
+            && let ExpKind::Name(applied_f_name) = &applied_f.kind
+          {
+            let dispatched_fn_count = match &**applied_f_name {
+              "dispatch-compute-shader" => 1,
+              "dispatch-render-shaders" => 2,
+              _ => 0,
+            };
+            for arg in args.iter().take(dispatched_fn_count) {
+              let Type::Function(signature) = arg.data.unwrap_known() else {
+                continue;
+              };
+              let Some(ancestor) = signature.abstract_ancestor else {
+                continue;
+              };
+              let (entry_name, scope_struct, entry_implementation) = {
+                let ancestor = ancestor.read().unwrap();
+                let Some(scope_struct) = ancestor.captured_scope.clone()
+                else {
+                  continue;
+                };
+                let FunctionImplementationKind::Composite(implementation) =
+                  ancestor.implementation.clone()
+                else {
+                  continue;
+                };
+                (ancestor.name.clone(), scope_struct, implementation)
+              };
+              let scope_struct_name = scope_struct.name.0.clone();
+              let global_name: Arc<str> =
+                format!("{scope_struct_name}_data").into();
+              // Drop the trailing scope arg from this call site's ancestor
+              // signature and from every registry copy of the entry's
+              // signature. The name-match guard makes this idempotent when
+              // the same signature Arc is reachable through multiple paths.
+              let mut signatures_to_patch = vec![ancestor.clone()];
+              if let Some(registry_signatures) =
+                self.abstract_functions.get(&entry_name)
+              {
+                signatures_to_patch.extend(registry_signatures.iter().cloned());
+              }
+              for signature in signatures_to_patch {
+                let mut signature = signature.write().unwrap();
+                if let Some((AbstractType::AbstractStruct(s), _)) =
+                  signature.arg_types.last()
+                  && s.name.0 == scope_struct_name
+                {
+                  signature.arg_types.pop();
+                }
+              }
+              if !processed_entries.insert(entry_name.clone()) {
+                continue;
+              }
+              let mut entry_implementation =
+                entry_implementation.write().unwrap();
+              let concrete_scope_type = {
+                let mut popped_type = None;
+                entry_implementation.expression.data.as_known_mut(|t| {
+                  let Type::Function(signature) = t else {
+                    panic!("dispatched closure had a non-function type")
+                  };
+                  if let Some((v, _)) = signature.args.last()
+                    && let Type::Struct(s) = v.var_type.unwrap_known()
+                    && s.name == scope_struct_name
+                  {
+                    popped_type = signature
+                      .args
+                      .pop()
+                      .map(|(v, _)| v.var_type.unwrap_known());
+                  }
+                });
+                popped_type
+              };
+              let Some(concrete_scope_type) = concrete_scope_type else {
+                continue;
+              };
+              let concrete_scope_type =
+                self.substitute_scope_representative_types(concrete_scope_type);
+              let scope_arg_name =
+                entry_implementation.arg_names.pop().unwrap().0;
+              entry_implementation.arg_annotations.pop();
+              let ExpKind::Function(fn_arg_names, body) =
+                &mut entry_implementation.expression.kind
+              else {
+                panic!("dispatched closure implementation wasn't a Function")
+              };
+              fn_arg_names.pop();
+              self.rewrite_dispatched_scope_body(
+                body,
+                &scope_arg_name,
+                Some(&global_name),
+                &mut valueified_callees,
+              );
+              let binding = (0u8..=u8::MAX)
+                .find(|b| !used_bindings.contains(&(0, *b)))
+                .expect("no free binding for dispatched closure scope");
+              used_bindings.insert((0, binding));
+              new_vars.push(TopLevelVar {
+                name: global_name,
+                kind: TopLevelVariableKind::Var {
+                  // Read-only storage rather than uniform: storage has
+                  // relaxed layout rules, so nested scope structs (e.g. a
+                  // captured closure's scope embedded as a field) keep the
+                  // packed layout that `Value::to_uniform_bytes` produces.
+                  // Uniform would demand 16-byte alignment for struct
+                  // members, which neither the emitted structs nor the CPU
+                  // serializer satisfy.
+                  address_space: VariableAddressSpace::StorageRead,
+                  group_and_binding: Some(GroupAndBinding { group: 0, binding }),
+                },
+                var_type: concrete_scope_type,
+                value: None,
+                source_trace: exp.source_trace.clone(),
+              });
+            }
+          }
+          Ok::<bool, Never>(true)
+        })
+        .unwrap();
+    }
+    self.top_level_vars.extend(new_vars);
+  }
   pub fn monomorphize_reference_address_spaces(&mut self) {
     loop {
       let mut monomorphized_ctx = Program::default();
@@ -4079,6 +4579,11 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.catch_dispatched_closure_scope_mutations(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.extract_dispatched_closure_scopes();
     self.monomorphize_reference_address_spaces();
     self.inline_static_array_length_calls();
     self.validate_dispatch_function_types_and_mark_implicit_entry_points(

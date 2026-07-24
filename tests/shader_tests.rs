@@ -676,3 +676,12 @@ error_test!(
     args: vec![],
   })
 );
+
+error_test!(
+  dispatched_closure_scope_mutation,
+  CompileErrorKind::CantMutateDispatchedClosureCapture("acc".to_string())
+);
+error_test!(
+  dispatched_closure_nested_scope_mutation,
+  CompileErrorKind::CantMutateDispatchedClosureCapture("acc".to_string())
+);

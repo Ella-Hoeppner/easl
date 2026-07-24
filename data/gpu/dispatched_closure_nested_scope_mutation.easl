@@ -1,0 +1,8 @@
+(defn run-compute [f: (Fn [u32] ())]
+  (dispatch-compute-shader (fn [] (f 0u))
+                           (vec3u 1u)))
+
+@cpu
+(defn main []: ()
+  (let [@var acc 0.]
+    (run-compute (fn [i] (+= acc 1.)))))

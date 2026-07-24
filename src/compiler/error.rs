@@ -443,6 +443,10 @@ pub enum CompileErrorKind {
     "GPU entry point wrote to variable \"{0}\" in illegal address space \"{1}\""
   )]
   IllegalAddressSpaceGpuWrite(String, VariableAddressSpace),
+  #[error(
+    "closures dispatched to the GPU cannot mutate captured variable \"{0}\""
+  )]
+  CantMutateDispatchedClosureCapture(String),
   #[error("dispatch-compute-shader expects a `@compute` function, got `@{0}`")]
   WrongEntryPointTypeForDispatchComputeShader(String),
   #[error(

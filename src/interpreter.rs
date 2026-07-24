@@ -9,7 +9,8 @@ use crate::compiler::{
   error::CompileError,
   expression::{Accessor, Exp, ExpKind, Number, SwizzleField},
   functions::{
-    AbstractFunctionSignature, FunctionImplementationKind, Ownership,
+    AbstractFunctionSignature, FunctionImplementationKind, FunctionSignature,
+    Ownership,
   },
   program::{CompilerTarget, Program},
   structs::AbstractStruct,
@@ -1706,9 +1707,10 @@ fn apply_builtin_fn<IO: IOManager>(
       Ok(Value::Unit)
     }
     "dispatch-render-shaders" => {
-      let (_, Type::Function(vert_f)) = &args[0] else {
+      let (vert_value, Type::Function(vert_f)) = &args[0] else {
         panic!()
       };
+      env.upload_dispatched_closure_scope(vert_value, vert_f);
       let vert_effects = vert_f.effects();
       let (vert_read_global_variable_names, vert_written_global_variable_names) =
         vert_effects.read_and_written_globals();
@@ -1720,9 +1722,10 @@ fn apply_builtin_fn<IO: IOManager>(
         .unwrap()
         .name
         .clone();
-      let (_, Type::Function(frag_f)) = &args[1] else {
+      let (frag_value, Type::Function(frag_f)) = &args[1] else {
         panic!()
       };
+      env.upload_dispatched_closure_scope(frag_value, frag_f);
       let frag_effects = frag_f.effects();
       let (frag_read_global_variable_names, frag_written_global_variable_names) =
         frag_effects.read_and_written_globals();
@@ -1805,7 +1808,7 @@ fn apply_builtin_fn<IO: IOManager>(
       Ok(Value::Unit)
     }
     "dispatch-compute-shader" => {
-      let (_, Type::Function(compute_f)) = &args[0] else {
+      let (compute_value, Type::Function(compute_f)) = &args[0] else {
         panic!()
       };
       let entry_name = compute_f
@@ -1816,6 +1819,7 @@ fn apply_builtin_fn<IO: IOManager>(
         .unwrap()
         .name
         .clone();
+      env.upload_dispatched_closure_scope(compute_value, compute_f);
       let effects = compute_f.effects();
       let (read_global_variable_names, written_global_variable_names) =
         effects.read_and_written_globals();
@@ -2381,6 +2385,11 @@ impl Value {
         }
         bytes
       }
+      // A captured closure inside a dispatched-closure scope: the function
+      // part is static, so only its captured scope is data. `ty` is the
+      // representative scope-struct type (see
+      // `Program::substitute_scope_representative_types`).
+      Value::Fun(Function::Scoped { scope, .. }) => scope.to_uniform_bytes(ty),
       _ => vec![],
     }
   }
@@ -3708,6 +3717,42 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     self.binding_vars.iter().any(|(_, n, _, _)| n == name)
   }
 
+  /// If a dispatched shader entry is a closure with a captured scope, write
+  /// the scope struct into the implicit storage binding created by
+  /// `Program::extract_dispatched_closure_scopes` (named
+  /// `<scope-struct-name>_data`) and mark it CPU-written, so the dirty-upload
+  /// machinery ships the captured values to the GPU with the dispatch.
+  fn upload_dispatched_closure_scope(
+    &mut self,
+    dispatched_value: &Value,
+    dispatched_f: &FunctionSignature,
+  ) {
+    let Value::Fun(Function::Scoped { scope, .. }) = dispatched_value else {
+      return;
+    };
+    let Some(ancestor) = &dispatched_f.abstract_ancestor else {
+      return;
+    };
+    let Some(global_name) = ancestor
+      .read()
+      .unwrap()
+      .captured_scope
+      .as_ref()
+      .map(|s| Arc::<str>::from(format!("{}_data", s.name.0)))
+    else {
+      return;
+    };
+    if !self.is_binding_var(&global_name) {
+      return;
+    }
+    if let Some(bindings) = self.bindings.get_mut(&global_name)
+      && let Some((value, _)) = bindings.last_mut()
+    {
+      *value = (**scope).clone();
+    }
+    self.mark_cpu_written(&[global_name]);
+  }
+
   /// Serializes the current CPU value of each GPUOutOfDate binding var whose
   /// name appears in `names`, marks those buffers Synced, and returns the data
   /// ready for upload.
@@ -4251,11 +4296,19 @@ pub fn eval(
               && let Some(f) = f.abstract_ancestor
               && let ExpKind::Name(f_name) = arg.kind
             {
-              Ok(Value::Fun(Function::from_abstract_signature(
-                &f.read().unwrap(),
-                &f_name,
-                env,
-              )?))
+              // A local binding may hold a closure value carrying captured
+              // scope (Function::Scoped) — use it if present. Only rebuild
+              // from the signature when the name isn't bound in the env,
+              // i.e. it refers to a top-level function.
+              if let Ok(value) = env.lookup(&f_name) {
+                Ok(value.clone())
+              } else {
+                Ok(Value::Fun(Function::from_abstract_signature(
+                  &f.read().unwrap(),
+                  &f_name,
+                  env,
+                )?))
+              }
             } else {
               eval(arg, env)
             }
