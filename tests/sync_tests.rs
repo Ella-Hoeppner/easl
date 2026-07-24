@@ -73,3 +73,13 @@ sync_test!(cpu_read_after_dispatch_syncs);
 // Positive control: the CPU read happening inside a called function (rather
 // than directly in the entry body) still triggers the sync.
 sync_test!(cpu_fn_read_after_dispatch_syncs);
+// `(array-length data)` in dispatch-count position must not read the array
+// back from the GPU: the GPU can never resize a buffer, so lengths are
+// CPU-authoritative even when the elements are GPU-dirty. Only the final
+// element read at the end should sync.
+sync_test!(array_length_no_readback);
+// Two dispatches of the same entry queued within one frame, each carrying a
+// different captured-scope value, must run with their own values: the
+// windowed frame path may not collapse per-dispatch uploads of the same
+// binding into one before running the passes.
+sync_test!(windowed_scope_upload_ordering);

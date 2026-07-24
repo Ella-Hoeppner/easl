@@ -2451,7 +2451,8 @@ impl Program {
                         .0
                         .iter()
                         .map(|e| match e {
-                          Effect::ReadsVar(var_name) => {
+                          Effect::ReadsVar(var_name)
+                          | Effect::ReadsArrayLength(var_name) => {
                             Ok(match ctx.variables.get(var_name) {
                               Some((var, _)) => {
                                 let var_type = var.var_type.unwrap_known();
@@ -2506,6 +2507,16 @@ impl Program {
                         })
                         .into_iter()
                         .filter_map(|x| x)
+                        .collect();
+                    // A variable read both by element access and by
+                    // `array-length` contributes two effects — capture it
+                    // only once.
+                    let mut seen_captured_names: HashSet<&Arc<str>> =
+                      HashSet::new();
+                    let captured_vars: Vec<(&Arc<str>, Type, Ownership)> =
+                      captured_vars
+                        .into_iter()
+                        .filter(|(name, _, _)| seen_captured_names.insert(name))
                         .collect();
                     let captured_scope = if captured_vars.is_empty() {
                       None
@@ -2853,7 +2864,7 @@ impl Program {
         implementation
           .expression
           .walk_mut(&mut |exp| match &mut exp.kind {
-            ExpKind::Name(name) => {
+            ExpKind::Name(_) => {
               if exp.data.unwrap_known() == Type::Unit {
                 exp.kind = ExpKind::Unit;
               }

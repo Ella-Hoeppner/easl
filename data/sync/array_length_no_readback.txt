@@ -1,0 +1,3 @@
+upload: data
+readback: data
+print: 6.

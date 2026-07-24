@@ -1713,7 +1713,7 @@ fn apply_builtin_fn<IO: IOManager>(
       env.upload_dispatched_closure_scope(vert_value, vert_f);
       let vert_effects = vert_f.effects();
       let (vert_read_global_variable_names, vert_written_global_variable_names) =
-        vert_effects.read_and_written_globals();
+        vert_effects.gpu_read_and_written_globals();
       let vert_f_name = vert_f
         .abstract_ancestor
         .as_ref()
@@ -1728,7 +1728,7 @@ fn apply_builtin_fn<IO: IOManager>(
       env.upload_dispatched_closure_scope(frag_value, frag_f);
       let frag_effects = frag_f.effects();
       let (frag_read_global_variable_names, frag_written_global_variable_names) =
-        frag_effects.read_and_written_globals();
+        frag_effects.gpu_read_and_written_globals();
       let frag_f_name = frag_f
         .abstract_ancestor
         .as_ref()
@@ -1822,7 +1822,7 @@ fn apply_builtin_fn<IO: IOManager>(
       env.upload_dispatched_closure_scope(compute_value, compute_f);
       let effects = compute_f.effects();
       let (read_global_variable_names, written_global_variable_names) =
-        effects.read_and_written_globals();
+        effects.gpu_read_and_written_globals();
       let (Value::Struct(wg), _) = &args[1] else {
         panic!()
       };

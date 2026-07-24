@@ -30,7 +30,7 @@ cargo run                                           # runs benchmark (compiles a
   - `structs.rs` — `AbstractStruct`, struct monomorphization
   - `enums.rs` — `AbstractEnum`, enum monomorphization
   - `builtins.rs` — all built-in function/struct/macro definitions
-  - `effects.rs` — effect types (fragment-exclusive functions, print, window/spawn-window, etc.). `CPUExclusiveFunction(_)` and `CPUExclusiveType(_)` are used to filter what gets compiled for non-CPU targets (WGSL, C, and now also VM)
+  - `effects.rs` — effect types (fragment-exclusive functions, print, window/spawn-window, etc.). `CPUExclusiveFunction(_)` and `CPUExclusiveType(_)` are used to filter what gets compiled for non-CPU targets (WGSL, C, and now also VM). `ReadsArrayLength(_)` is a length-only read of an array variable (emitted for direct `Name` arguments of `array-length`): it's excluded from `read_and_written_globals()` (the GPU→CPU readback set) but included in `gpu_read_and_written_globals()` (the dispatch pre-upload set) — the GPU can never resize a buffer, so lengths never need a readback, but WGSL's `arrayLength()` derives from buffer size so uploads still count it
   - `entry.rs` — entry point kinds (`Cpu`, `Vertex`, `Fragment`, `Compute`, `Audio`) and per-target filtering via `should_compile_to_target(target)`
   - `error.rs` — `CompileErrorKind` enum and error reporting
   - `vars.rs` — top-level variables and address spaces
@@ -200,7 +200,7 @@ let name = f.abstract_ancestor.as_ref().unwrap().borrow().name.clone();
 
 **This is a hard language design requirement.** Easl programs must be able to write to a variable from the GPU (via `dispatch-compute-shader`) and then immediately read it back from the CPU (e.g. `print`) in the same frame body, without any explicit sync call, and get the updated value. Similarly, CPU writes must be visible to subsequent GPU dispatches. This is an intentional, load-bearing design constraint of the language — not an implementation detail to be optimised away.
 
-**How it works:** `check_cpu_readable` (called before any function reads a global variable) calls `io.flush_queued_compute()` if any of the variables it needs are `CPUOutOfDate`. This flushes all pending compute dispatches as a single batched encoder + submit + poll (`GpuCore::execute_compute_batch`) before the readback. Render shader events stay deferred to end-of-frame (they target the framebuffer, not CPU-readable storage).
+**How it works:** `check_cpu_readable` (called before any function reads a global variable) calls `io.flush_queued_compute()` if any of the variables it needs are `CPUOutOfDate`. This flushes all pending compute dispatches as a single batched encoder + submit + poll (`GpuCore::execute_compute_batch`) before the readback. Render shader events stay deferred to end-of-frame (they target the framebuffer, not CPU-readable storage). One deliberate exception: `(array-length arr)` on a GPU-dirty array does **not** sync — lengths are CPU-authoritative (the GPU can never resize a buffer), so it reads the possibly-stale CPU value's length directly (see `Effect::ReadsArrayLength`; the `array_length_no_readback` sync test pins this).
 
 **What must NOT change:**
 - `StdoutIO::flush_queued_compute` must execute queued compute synchronously (one batched submit + blocking poll), not defer it

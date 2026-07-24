@@ -11,6 +11,15 @@ use crate::compiler::{
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Effect {
   ReadsVar(Arc<str>),
+  /// A read of only an array variable's *length* (via `array-length`), not
+  /// its elements. Tracked separately from `ReadsVar` because the GPU can
+  /// never resize a buffer — lengths are CPU-authoritative — so a
+  /// length-only read of a GPU-dirty array must not trigger a blocking
+  /// GPU→CPU readback. It still counts as a read for the CPU→GPU direction:
+  /// a dispatched shader calling `arrayLength()` needs the (possibly
+  /// resized) buffer uploaded first, since WGSL derives the length from the
+  /// buffer's size.
+  ReadsArrayLength(Arc<str>),
   ModifiesLocalVar(Arc<str>),
   ModifiesGlobalVar(Arc<str>),
   Break,
@@ -49,6 +58,7 @@ impl EffectType {
     for e in self.0.iter() {
       match e {
         Effect::ReadsVar(_)
+        | Effect::ReadsArrayLength(_)
         | Effect::FragmentExclusiveFunction(_)
         | Effect::CPUExclusiveFunction(_)
         | Effect::CPUExclusiveType(_) => {}
@@ -105,6 +115,9 @@ impl EffectType {
       })
       .collect()
   }
+  /// The globals whose *values* are read and written. Length-only reads
+  /// (`ReadsArrayLength`) are excluded from the read set: this is the set
+  /// used to decide GPU→CPU readbacks, and array lengths never need one.
   pub fn read_and_written_globals(&self) -> (Vec<Arc<str>>, Vec<Arc<str>>) {
     (
       self
@@ -124,6 +137,19 @@ impl EffectType {
         })
         .collect(),
     )
+  }
+  /// Like `read_and_written_globals`, but the read set also includes
+  /// length-only reads. This is the set used when dispatching GPU work to
+  /// decide which CPU-dirty buffers to upload first: a shader calling
+  /// `arrayLength()` needs the buffer uploaded even if it never reads the
+  /// elements, since WGSL derives the length from the buffer's size.
+  pub fn gpu_read_and_written_globals(&self) -> (Vec<Arc<str>>, Vec<Arc<str>>) {
+    let (mut reads, writes) = self.read_and_written_globals();
+    reads.extend(self.0.iter().filter_map(|effect| match effect {
+      Effect::ReadsArrayLength(name) => Some(name.clone()),
+      _ => None,
+    }));
+    (reads, writes)
   }
   pub fn looked_up_builtin_attributes(&self) -> Vec<BuiltinIOAttribute> {
     self

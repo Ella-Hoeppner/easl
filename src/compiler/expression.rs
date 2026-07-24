@@ -4578,7 +4578,9 @@ impl TypedExp {
           .0
           .into_iter()
           .filter_map(|e| match &e {
-            Effect::ModifiesLocalVar(name) | Effect::ReadsVar(name) => {
+            Effect::ModifiesLocalVar(name)
+            | Effect::ReadsVar(name)
+            | Effect::ReadsArrayLength(name) => {
               (!bound_names.contains(name)).then(|| e)
             }
             _ => Some(e),
@@ -4590,6 +4592,14 @@ impl TypedExp {
         Type::Function(function_signature) => {
           let mut effects = function_signature.effects();
           effects.merge(f.effects());
+          // `array-length` only inspects its argument's length, which the
+          // GPU can never change — so an array variable passed to it
+          // directly is a length-only read, not an element read.
+          let is_array_length = function_signature
+            .abstract_ancestor
+            .as_ref()
+            .map(|ancestor| &*ancestor.read().unwrap().name == "array-length")
+            .unwrap_or(false);
           for (arg_var, arg) in function_signature
             .args
             .iter()
@@ -4597,6 +4607,12 @@ impl TypedExp {
             .chain(std::iter::repeat(None))
             .zip(args.iter())
           {
+            if is_array_length
+              && let ExpKind::Name(name) = &arg.kind
+            {
+              effects.merge(Effect::ReadsArrayLength(name.clone()));
+              continue;
+            }
             effects.merge(arg.effects());
             if let Some(arg_var) = arg_var
               && arg_var.var_type.ownership == Ownership::MutableReference
@@ -4661,6 +4677,8 @@ impl TypedExp {
         effects
           .remove(&Effect::ModifiesLocalVar(increment_variable_name.0.clone()));
         effects.remove(&Effect::ReadsVar(increment_variable_name.0.clone()));
+        effects
+          .remove(&Effect::ReadsArrayLength(increment_variable_name.0.clone()));
         effects.remove(&Effect::Break);
         effects.remove(&Effect::Continue);
         effects
@@ -4685,6 +4703,7 @@ impl TypedExp {
         let mut effects = body.effects();
         for (arg, _) in arg_names {
           effects.remove(&Effect::ReadsVar(arg.clone()));
+          effects.remove(&Effect::ReadsArrayLength(arg.clone()));
         }
         effects
       }
@@ -4748,7 +4767,7 @@ impl TypedExp {
               let mut written_vars = HashSet::new();
               for e in e.0.iter() {
                 match e {
-                  Effect::ReadsVar(var) => {
+                  Effect::ReadsVar(var) | Effect::ReadsArrayLength(var) => {
                     read_vars.insert(var);
                   }
                   Effect::ModifiesLocalVar(var) => {

@@ -1,0 +1,37 @@
+; Regression test: the same entry dispatched multiple times within one
+; frame, each dispatch carrying a different captured-scope value, must
+; execute with its own values — the frame render path may not collapse
+; per-dispatch uploads of the same binding into one.
+
+@[storage-write 0 0]
+(var out: [f32])
+
+@[uniform 0 1]
+(var frame: u32)
+
+(defn run-compute [count: u32
+                   f: (Fn [u32] ())]
+  (dispatch-compute-shader (fn []
+                               (let [i (.x (global-invocation-id))]
+                                 (when (< i count)
+                                   (f i))))
+                           (vec3u count 1u 1u)))
+
+@cpu
+(defn main []: ()
+  (= out (zeroed-array 4u))
+  (= frame 0u)
+  (spawn-window (fn []
+                    (+= frame 1u)
+                    (when (== frame 1u)
+                      (let [@var offset 0u]
+                        (for [c 2u]
+                          (let [base offset
+                                value (+ 10. (f32 c))]
+                            (run-compute 2u
+                                         (fn [i]
+                                             (= (out (+ i base)) value)))
+                            (+= offset 2u)))))
+                    (when (== frame 2u)
+                      (print out)
+                      (close-window)))))

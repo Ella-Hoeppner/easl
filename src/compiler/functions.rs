@@ -1287,6 +1287,7 @@ impl TopLevelFunction {
       let mut effects = body.effects();
       for (name, _) in arg_names {
         effects.remove(&Effect::ReadsVar(name.clone()));
+        effects.remove(&Effect::ReadsArrayLength(name.clone()));
         effects.remove(&Effect::ModifiesLocalVar(name.clone()))
       }
       effects.remove(&Effect::Return);
