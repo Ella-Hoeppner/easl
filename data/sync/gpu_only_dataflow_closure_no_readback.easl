@@ -1,0 +1,17 @@
+@[storage-write 0 0]
+(var data: [f32])
+
+(defn run-compute [count: u32
+                   f: (Fn [u32] ())]
+  (dispatch-compute-shader (fn []
+                               (let [i (.x (global-invocation-id))]
+                                 (when (< i count)
+                                   (f i))))
+                           (vec3u count 1u 1u)))
+
+@cpu
+(defn main []: ()
+  (let [x 2.]
+    (= data (zeroed-array 64u))
+    (run-compute 64u (fn [i] (= (data i) (* x (f32 i)))))
+    (run-compute 64u (fn [i] (= (data i) (* 2. (data i)))))))

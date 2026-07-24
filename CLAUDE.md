@@ -321,7 +321,7 @@ The runner functions in `interpreter.rs` (`run_program_entry_from_path`, `run_pr
 
 ## Test Structure
 
-There are five test suites:
+There are six test suites:
 
 ### GPU/compiler tests (`tests/shader_tests.rs`, sources in `data/gpu/`)
 ```rust
@@ -372,9 +372,18 @@ vm_test!(test_name);  // compiles+runs data/vm/test_name.easl through the byteco
 - Each `.easl` file must define a zero-arg function `f` returning `f32`. The harness validates the program, compiles it with `compile_to_bytecode_program`, runs `f` via `prepare_to_run_function`/`execute`, reads the return slot, reinterprets it as `f32`, and compares against the single float in `data/vm/test_name.txt` within a `0.0001` tolerance.
 - Use this suite for things that are awkward to express as a single `f` returning a meaningful float — e.g. tests of `let`, control flow, mutation, struct/array access, etc. The conformance suite is broader but each test has to be expressible as "produce one f32 that equals f's interpreter/WGSL value".
 
+### Sync tests (`tests/sync_tests.rs`, sources in `data/sync/`)
+```rust
+sync_test!(test_name);  // runs data/sync/test_name.easl, golden-matches the GPU↔CPU transfer trace
+```
+- Runs the program on the real GPU via `run_program_capturing_io_from_path` and compares `CaptureIO::sync_trace` — the ordered log of implicit CPU→GPU uploads, GPU→CPU readbacks, and prints — against `data/sync/test_name.txt` (`upload: <var>` / `readback: <var>` / `print: <text>`, one per line).
+- The trace is recorded through the `record_cpu_to_gpu_sync` / `record_gpu_to_cpu_sync` `IOManager` hooks (default no-ops in production IO managers; `CaptureIO` overrides them).
+- Use this suite to assert exactly *when* implicit syncs happen: both that spurious syncs don't occur (e.g. GPU-only dataflow must never read back) and that genuine ones still do (CPU reads of GPU-written data must sync exactly once per dirty→read transition). Blocking readbacks are the most expensive implicit operation in the runtime, so regressions here are performance bugs even when output is correct.
+- Implicit dispatched-closure scope bindings have gensym'd names whose numbering isn't stable across runs; the harness normalizes any `*_scope_data` name to `<closure-scope>` in the trace.
+
 ### Shared notes
 - `#_` reader macro in `.easl` files comments out the next form — useful for disabling parts of test files
-- Target a specific suite: `cargo test --test shader_tests`, `--test cpu_tests`, `--test window_tests`, `--test conformance_tests`, `--test vm_tests`
+- Target a specific suite: `cargo test --test shader_tests`, `--test cpu_tests`, `--test window_tests`, `--test conformance_tests`, `--test vm_tests`, `--test sync_tests`
 
 ## Style Notes
 

@@ -2615,6 +2615,18 @@ pub trait IOManager: Sized {
     binding: u8,
     size: u64,
   ) -> Option<Vec<u8>>;
+  /// Called after each implicit GPU→CPU readback with the synced variable's
+  /// name. These blocking syncs are the most expensive implicit operation in
+  /// the runtime, so test IO managers override this to record a log that
+  /// tests can assert on — catching both spurious syncs and missing ones.
+  /// Production implementations keep this default no-op.
+  fn record_gpu_to_cpu_sync(&mut self, _name: &Arc<str>) {}
+  /// Called for each implicit CPU→GPU upload of a dirty binding var with the
+  /// uploaded variable's name (at collection time — the bytes reach the GPU
+  /// when the dispatch/draw they're attached to executes). Like
+  /// `record_gpu_to_cpu_sync`, test IO managers override this to assert on
+  /// upload behavior; production implementations keep this default no-op.
+  fn record_cpu_to_gpu_sync(&mut self, _name: &Arc<str>) {}
   /// Returns the current window dimensions in pixels, or (1, 1) if no window
   /// is open.
   fn window_size(&self) -> (u32, u32) {
@@ -3303,6 +3315,12 @@ impl IOManager for StringIO {
 /// `Vec<String>`. All behavior is delegated to the inner `StdoutIO`.
 pub struct CaptureIO {
   pub prints: Vec<String>,
+  /// Ordered trace of implicit GPU↔CPU transfers interleaved with prints:
+  /// `upload: <name>` (CPU→GPU, via `record_cpu_to_gpu_sync`),
+  /// `readback: <name>` (GPU→CPU, via `record_gpu_to_cpu_sync`), and
+  /// `print: <text>` lines. Sync-behavior tests golden-match this against a
+  /// `.sync.txt` file to assert exactly when transfers happen.
+  pub sync_trace: Vec<String>,
   pub inner: StdoutIO,
 }
 
@@ -3310,6 +3328,7 @@ impl CaptureIO {
   pub fn new() -> Self {
     Self {
       prints: vec![],
+      sync_trace: vec![],
       inner: StdoutIO::new(),
     }
   }
@@ -3318,7 +3337,16 @@ impl CaptureIO {
 impl IOManager for CaptureIO {
   fn println(&mut self, s: &str) {
     self.prints.push(s.to_string());
+    self.sync_trace.push(format!("print: {s}"));
     self.inner.println(s);
+  }
+
+  fn record_gpu_to_cpu_sync(&mut self, name: &Arc<str>) {
+    self.sync_trace.push(format!("readback: {name}"));
+  }
+
+  fn record_cpu_to_gpu_sync(&mut self, name: &Arc<str>) {
+    self.sync_trace.push(format!("upload: {name}"));
   }
 
   fn record_draw(
@@ -3814,6 +3842,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         }
       };
       result.push(((gb.group, gb.binding), upload));
+      self.io.record_cpu_to_gpu_sync(name);
       self
         .buffer_states
         .insert(name.clone(), SharedBufferState::Synced);
@@ -3928,6 +3957,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             slot.0 = value;
           }
         }
+        self.io.record_gpu_to_cpu_sync(&name);
         self
           .buffer_states
           .insert(name.clone(), SharedBufferState::Synced);
@@ -5205,6 +5235,19 @@ pub fn run_program_with_capture_from_path(
   let source_dir = source_path.parent().map(|p| p.to_path_buf());
   let (io, _) = run_program_with(program, None, CaptureIO::new(), source_dir)?;
   Ok(io.prints)
+}
+
+/// Like `run_program_with_capture_from_path`, but returns the whole
+/// `CaptureIO`, giving access to the captured prints alongside the ordered
+/// logs of implicit GPU→CPU readbacks and CPU→GPU uploads the run performed.
+/// Used by tests that assert exactly when the interpreter syncs — both that
+/// spurious syncs don't happen and that genuine ones still do.
+pub fn run_program_capturing_io_from_path(
+  program: Program,
+  source_path: &std::path::Path,
+) -> Result<CaptureIO, EvalError> {
+  let source_dir = source_path.parent().map(|p| p.to_path_buf());
+  Ok(run_program_with(program, None, CaptureIO::new(), source_dir)?.0)
 }
 
 /// Re-export so downstream crates (e.g. `easl_cli`) can call this without

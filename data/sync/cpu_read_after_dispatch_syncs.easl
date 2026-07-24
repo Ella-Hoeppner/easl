@@ -1,0 +1,14 @@
+@[storage-write 0 0]
+(var data: [f32])
+
+@cpu
+(defn main []: ()
+  (= data (zeroed-array 4u))
+  (dispatch-compute-shader
+   (fn []
+       (let [id (global-invocation-id)]
+         (when (< id.x (array-length data))
+           (= (data id.x) (f32 id.x)))))
+   (vec3u 4u 1u 1u))
+  (print (data 1u))
+  (print (data 2u)))
