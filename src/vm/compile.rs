@@ -105,7 +105,10 @@ impl BytecodeCompilationState {
   }
   pub fn take_stack_slot(&mut self, size: u16) -> u16 {
     let i = self.consumed_stack_space;
-    self.consumed_stack_space += size;
+    self.consumed_stack_space = self
+      .consumed_stack_space
+      .checked_add(size)
+      .expect("VM stack exceeded 65536 slots (u16 addressing limit)");
     i as u16
   }
   pub fn open_function(&mut self, name: Arc<str>) {
