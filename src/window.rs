@@ -19,10 +19,9 @@ use winit::{
 use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 
 use crate::{
-  compiler::{expression::Exp, types::ExpTypeInfo},
   interpreter::{
-    BufferUpload, EvalError, EvalException, EvaluationEnvironment,
-    GpuBufferKind, IOManager, WindowEvent, eval,
+    BufferUpload, EvalError, EvalException, FrameDriver, GpuBufferKind,
+    IOManager, WindowEvent,
   },
 };
 
@@ -133,9 +132,8 @@ fn create_texture_and_view(
 /// built-in window loop is unavailable there; embedding applications must
 /// drive rendering through their own `IOManager::run_spawn_window`.
 #[cfg(target_os = "ios")]
-pub fn run_window_loop<IO: IOManager>(
-  _body: Exp<ExpTypeInfo>,
-  _env: &mut EvaluationEnvironment<IO>,
+pub fn run_window_loop<D: FrameDriver>(
+  _driver: &mut D,
 ) -> Result<bool, EvalError> {
   unimplemented!(
     "easl's built-in window loop isn't supported on iOS; the embedding \
@@ -144,17 +142,15 @@ pub fn run_window_loop<IO: IOManager>(
 }
 
 #[cfg(not(target_os = "ios"))]
-pub fn run_window_loop<IO: IOManager>(
-  body: Exp<ExpTypeInfo>,
-  env: &mut EvaluationEnvironment<IO>,
+pub fn run_window_loop<D: FrameDriver>(
+  driver: &mut D,
 ) -> Result<bool, EvalError> {
   EVENT_LOOP.with(|cell| {
     let mut opt = cell.write().unwrap();
     let event_loop = opt.get_or_insert_with(|| EventLoop::new().unwrap());
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App {
-      body,
-      env,
+      driver,
       state: None,
       error: None,
       closed: false,
@@ -181,9 +177,8 @@ pub fn run_window_loop<IO: IOManager>(
   })
 }
 
-struct App<'a, IO: IOManager> {
-  body: Exp<ExpTypeInfo>,
-  env: &'a mut EvaluationEnvironment<IO>,
+struct App<'a, D: FrameDriver> {
+  driver: &'a mut D,
   state: Option<RenderState>,
   error: Option<EvalError>,
   closed: bool,
@@ -1660,7 +1655,7 @@ struct RenderState {
   pub gpu: Arc<RwLock<GpuCore>>,
 }
 
-impl<'a, IO: IOManager> App<'a, IO> {
+impl<'a, D: FrameDriver> App<'a, D> {
   /// Creates or reuses a window and builds the initial `RenderState`.
   ///
   /// On first run this always creates a fresh window. On hot-reload, the same
@@ -1678,9 +1673,9 @@ impl<'a, IO: IOManager> App<'a, IO> {
       // spawn-window). Calling update_for_reload a second time would recreate
       // unsized-array buffers (type_size=0 → alloc_size=16) regardless of their
       // actual size, wiping any data the pre-spawn-window compute just wrote.
-      if self.env.io.get_gpu().is_none() {
-        let wgsl = self.env.wgsl().to_string();
-        let binding_infos = self.env.binding_infos();
+      if self.driver.io_mut().get_gpu().is_none() {
+        let wgsl = self.driver.wgsl().to_string();
+        let binding_infos = self.driver.binding_infos();
         state
           .gpu
           .write()
@@ -1716,7 +1711,7 @@ impl<'a, IO: IOManager> App<'a, IO> {
       // resign-active → become-active lifecycle that happens while the main
       // thread was busy recompiling between run_app_on_demand calls.
       state.window.set_visible(true);
-      self.env.io.set_gpu(Arc::clone(&state.gpu));
+      self.driver.io_mut().set_gpu(Arc::clone(&state.gpu));
       self.state = Some(state);
       return;
     }
@@ -1735,8 +1730,8 @@ impl<'a, IO: IOManager> App<'a, IO> {
       })
       .or_else(|| {
         self
-          .env
-          .io
+          .driver
+          .io_mut()
           .preferred_window_hints()
           .map(|((w, h), activate)| {
             Window::default_attributes()
@@ -1752,23 +1747,23 @@ impl<'a, IO: IOManager> App<'a, IO> {
     // reuse it by adding a render surface on top. This avoids the expensive
     // GPU→CPU→GPU round-trip that would otherwise be needed to preserve
     // GPU-written buffer contents (e.g. large compute output arrays).
-    let state = if let Some(existing_gpu) = self.env.io.get_gpu() {
+    let state = if let Some(existing_gpu) = self.driver.io_mut().get_gpu() {
       pollster::block_on(RenderState::from_existing_gpu(window, existing_gpu))
         .unwrap()
     } else {
-      let wgsl = self.env.wgsl().to_string();
-      let binding_infos = self.env.binding_infos();
+      let wgsl = self.driver.wgsl().to_string();
+      let binding_infos = self.driver.binding_infos();
       pollster::block_on(RenderState::new(window, &wgsl, &binding_infos))
         .unwrap()
     };
     // Give the interpreter's IO manager direct access to GPU resources so
     // compute dispatches can execute synchronously within eval().
-    self.env.io.set_gpu(Arc::clone(&state.gpu));
+    self.driver.io_mut().set_gpu(Arc::clone(&state.gpu));
     self.state = Some(state);
   }
 }
 
-impl<'a, IO: IOManager> ApplicationHandler for App<'a, IO> {
+impl<'a, D: FrameDriver> ApplicationHandler for App<'a, D> {
   fn resumed(&mut self, event_loop: &ActiveEventLoop) {
     // Only run setup if we haven't already (about_to_wait may have beaten us
     // to it on platforms where resumed fires late or not at all after reload).
@@ -1824,7 +1819,7 @@ impl<'a, IO: IOManager> ApplicationHandler for App<'a, IO> {
           // window_frame_index is already the correct value for this frame
           // (0 on first frame); it is incremented after eval below.
         }
-        match eval(self.body.clone(), self.env) {
+        match self.driver.run_frame() {
           Ok(_) => {}
           Err(EvalException::CloseWindow) => {
             self.closed = true;
@@ -1846,13 +1841,13 @@ impl<'a, IO: IOManager> ApplicationHandler for App<'a, IO> {
           gpu.keys_just_down.clear();
           gpu.mouse_just_down = false;
         }
-        let draw_calls = self.env.io.take_frame_draw_calls();
+        let draw_calls = self.driver.io_mut().take_frame_draw_calls();
         if let Some(state) = &mut self.state {
           state.render(&draw_calls);
           state.window.request_redraw();
         }
         // Check for hot-reload after every successful frame.
-        if self.env.io.reload_requested() {
+        if self.driver.io_mut().reload_requested() {
           // Save current window geometry as a fallback for the fresh-start path.
           if let Some(state) = &self.state {
             let pos = state

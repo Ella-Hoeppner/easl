@@ -1913,7 +1913,10 @@ fn apply_builtin_fn<IO: IOManager>(
       if let Some((ref scope_arg, ref scope_val)) = scope_binding {
         env.bind(scope_arg.clone(), scope_val.clone(), Type::Unit);
       }
-      let reload = IO::run_spawn_window(body, env)?;
+      let reload = {
+        let mut driver = AstFrameDriver { body, env };
+        IO::run_spawn_window_driver(&mut driver)?
+      };
       if let Some((scope_arg, _)) = scope_binding {
         let _ = env.unbind(&scope_arg);
       }
@@ -2394,6 +2397,169 @@ impl Value {
     }
   }
 
+  /// Deserializes a `Value` from the bytecode VM's flat stack layout (no
+  /// alignment padding, matrices as cols*rows column-major scalars). The
+  /// value shapes produced match the tree-walking interpreter's exactly
+  /// (e.g. matrices as arrays of column vectors), so printing and GPU
+  /// serialization behave identically across both runtimes.
+  pub fn from_vm_words(t: &Type, words: &[u32]) -> Value {
+    fn words_of(t: &Type) -> usize {
+      t.data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+        .unwrap() as usize
+    }
+    match t {
+      Type::F32 => Primitive::F32(f32::from_bits(words[0])).into(),
+      Type::U32 => Primitive::U32(words[0]).into(),
+      Type::I32 => Primitive::I32(words[0] as i32).into(),
+      Type::Bool => Primitive::Bool(words[0] != 0).into(),
+      Type::Unit => Value::Unit,
+      Type::Struct(s)
+        if s.name.starts_with("mat") && s.name.as_bytes().len() >= 6 =>
+      {
+        let cols = (s.name.as_bytes()[3] - b'0') as usize;
+        let rows = (s.name.as_bytes()[5] - b'0') as usize;
+        let elem = s.fields[0].field_type.kind.unwrap_known();
+        let field_names = ["x", "y", "z", "w"];
+        Value::Array(
+          (0..cols)
+            .map(|c| {
+              Value::Struct(
+                (0..rows)
+                  .map(|r| {
+                    (
+                      Arc::<str>::from(field_names[r]),
+                      Value::from_vm_words(
+                        &elem,
+                        &words[c * rows + r..c * rows + r + 1],
+                      ),
+                    )
+                  })
+                  .collect(),
+              )
+            })
+            .collect(),
+        )
+      }
+      Type::Struct(s) => {
+        let mut map = HashMap::new();
+        let mut offset = 0usize;
+        for field in &s.fields {
+          let field_type = field.field_type.kind.unwrap_known();
+          let n = words_of(&field_type);
+          map.insert(
+            field.name.clone(),
+            Value::from_vm_words(&field_type, &words[offset..offset + n]),
+          );
+          offset += n;
+        }
+        Value::Struct(map)
+      }
+      Type::Enum(e) => {
+        let discriminant = words[0] as usize;
+        let variant = &e.variants[discriminant];
+        let inner_type = variant.inner_type.kind.unwrap_known();
+        let inner = if inner_type == Type::Unit {
+          Value::Unit
+        } else {
+          let n = words_of(&inner_type);
+          Value::from_vm_words(&inner_type, &words[1..1 + n])
+        };
+        Value::Enum(variant.name.clone(), Box::new(inner))
+      }
+      Type::Array(Some(ConcreteArraySize::Literal(count)), inner_type) => {
+        let inner = inner_type.kind.unwrap_known();
+        let stride = words_of(&inner);
+        Value::Array(
+          (0..*count as usize)
+            .map(|i| {
+              Value::from_vm_words(
+                &inner,
+                &words[i * stride..(i + 1) * stride],
+              )
+            })
+            .collect(),
+        )
+      }
+      _ => panic!("from_vm_words: unsupported type {t:?}"),
+    }
+  }
+
+  /// Serializes a `Value` into the bytecode VM's flat stack layout — the
+  /// inverse of `from_vm_words`.
+  pub fn to_vm_words(&self, t: &Type) -> Vec<u32> {
+    fn words_of(t: &Type) -> usize {
+      t.data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+        .unwrap() as usize
+    }
+    match (self, t) {
+      (Value::Prim(Primitive::F32(f)), _) => vec![f.to_bits()],
+      (Value::Prim(Primitive::U32(u)), _) => vec![*u],
+      (Value::Prim(Primitive::I32(i)), _) => vec![*i as u32],
+      (Value::Prim(Primitive::Bool(b)), _) => vec![*b as u32],
+      (Value::Unit, _) => vec![],
+      (Value::Array(cols), Type::Struct(s))
+        if s.name.starts_with("mat") && s.name.as_bytes().len() >= 6 =>
+      {
+        let elem = s.fields[0].field_type.kind.unwrap_known();
+        let field_names = ["x", "y", "z", "w"];
+        let mut words = vec![];
+        for col in cols {
+          let Value::Struct(fields) = col else {
+            panic!("matrix column wasn't a struct")
+          };
+          for name in field_names {
+            if let Some(v) = fields.get(name) {
+              words.extend(v.to_vm_words(&elem));
+            }
+          }
+        }
+        words
+      }
+      (Value::Struct(fields), Type::Struct(s)) => {
+        let mut words = vec![];
+        for field in &s.fields {
+          let field_type = field.field_type.kind.unwrap_known();
+          words.extend(fields[&field.name].to_vm_words(&field_type));
+        }
+        words
+      }
+      (Value::Enum(variant, inner), Type::Enum(e)) => {
+        let discriminant = e
+          .variants
+          .iter()
+          .position(|v| v.name == *variant)
+          .expect("enum variant not found") as u32;
+        let mut words = vec![discriminant];
+        let inner_type = e
+          .variants
+          .iter()
+          .find(|v| v.name == *variant)
+          .unwrap()
+          .inner_type
+          .kind
+          .unwrap_known();
+        if inner_type != Type::Unit {
+          words.extend(inner.to_vm_words(&inner_type));
+        }
+        words.resize(words_of(t), 0);
+        words
+      }
+      (Value::Array(items), Type::Array(_, inner_type)) => {
+        let inner = inner_type.kind.unwrap_known();
+        let mut words = vec![];
+        for item in items {
+          words.extend(item.to_vm_words(&inner));
+        }
+        words
+      }
+      (Value::ZeroedArray { length }, Type::Array(_, inner_type)) => {
+        let inner = inner_type.kind.unwrap_known();
+        vec![0u32; length * words_of(&inner)]
+      }
+      _ => panic!("to_vm_words: unsupported value/type pair"),
+    }
+  }
+
   /// Deserializes a `Value` from raw GPU bytes, given the expected `Type`.
   pub fn from_gpu_bytes(bytes: &[u8], ty: &Type) -> Value {
     use crate::compiler::types::ConcreteArraySize;
@@ -2588,6 +2754,44 @@ pub enum SharedBufferState {
   GPUOutOfDate,
 }
 
+/// One frame of a `spawn-window` loop, abstracted over the executing
+/// backend. The tree-walking interpreter and the bytecode-VM CPU runtime
+/// each implement this; the per-IO-manager frame loops (real winit window,
+/// StringIO's simulated frames, CaptureIO's headless frames) are written
+/// once against this trait and work for both.
+pub trait FrameDriver {
+  type IO: IOManager;
+  fn io_mut(&mut self) -> &mut Self::IO;
+  fn wgsl(&self) -> &str;
+  fn binding_infos(&self) -> Vec<((u8, u8), GpuBufferKind, u64)>;
+  /// Runs the frame body once. `Err(EvalException::CloseWindow)` stops the
+  /// frame loop.
+  fn run_frame(&mut self) -> Result<(), EvalException>;
+}
+
+/// Tree-walking-interpreter frame driver: evaluates the callback body once
+/// per frame.
+pub struct AstFrameDriver<'a, IO: IOManager> {
+  pub body: Exp<ExpTypeInfo>,
+  pub env: &'a mut EvaluationEnvironment<IO>,
+}
+
+impl<IO: IOManager> FrameDriver for AstFrameDriver<'_, IO> {
+  type IO = IO;
+  fn io_mut(&mut self) -> &mut IO {
+    &mut self.env.io
+  }
+  fn wgsl(&self) -> &str {
+    self.env.wgsl()
+  }
+  fn binding_infos(&self) -> Vec<((u8, u8), GpuBufferKind, u64)> {
+    self.env.binding_infos()
+  }
+  fn run_frame(&mut self) -> Result<(), EvalException> {
+    eval(self.body.clone(), self.env).map(|_| ())
+  }
+}
+
 pub trait IOManager: Sized {
   fn println(&mut self, s: &str);
   fn record_draw(
@@ -2730,11 +2934,11 @@ pub trait IOManager: Sized {
   fn preferred_window_hints(&self) -> Option<((u32, u32), bool)> {
     None
   }
-  /// Runs the spawn-window event loop. Returns `true` if the loop exited
-  /// because a hot-reload was requested, `false` for a normal exit.
-  fn run_spawn_window(
-    body: Exp<ExpTypeInfo>,
-    env: &mut EvaluationEnvironment<Self>,
+  /// Runs the spawn-window event loop, invoking `driver.run_frame()` once
+  /// per frame. Returns `true` if the loop exited because a hot-reload was
+  /// requested, `false` for a normal exit.
+  fn run_spawn_window_driver<D: FrameDriver<IO = Self>>(
+    driver: &mut D,
   ) -> Result<bool, EvalError>;
   /// Start a background audio playback thread that calls the function named
   /// `entry_name` at the audio sample rate. The function must have signature
@@ -3123,15 +3327,14 @@ impl IOManager for StdoutIO {
     }
   }
 
-  fn run_spawn_window(
-    body: Exp<ExpTypeInfo>,
-    env: &mut EvaluationEnvironment<Self>,
+  fn run_spawn_window_driver<D: FrameDriver<IO = Self>>(
+    driver: &mut D,
   ) -> Result<bool, EvalError> {
     #[cfg(feature = "window")]
-    return crate::window::run_window_loop(body, env);
+    return crate::window::run_window_loop(driver);
     #[cfg(not(feature = "window"))]
     {
-      let _ = (body, env);
+      let _ = driver;
       Err(WindowFeatureNotEnabled.into())
     }
   }
@@ -3273,15 +3476,14 @@ impl IOManager for StringIO {
     self.frame_index as u32
   }
 
-  fn run_spawn_window(
-    body: Exp<ExpTypeInfo>,
-    env: &mut EvaluationEnvironment<Self>,
+  fn run_spawn_window_driver<D: FrameDriver<IO = Self>>(
+    driver: &mut D,
   ) -> Result<bool, EvalError> {
-    env.io.events.push(IOEvent::SpawnWindow);
-    let frame_count = env.io.frame_count;
+    driver.io_mut().events.push(IOEvent::SpawnWindow);
+    let frame_count = driver.io_mut().frame_count;
     for i in 0..frame_count {
-      env.io.frame_index = i;
-      match eval(body.clone(), env) {
+      driver.io_mut().frame_index = i;
+      match driver.run_frame() {
         Ok(_) => {}
         Err(EvalException::CloseWindow) => break,
         Err(e) => return Err(e.into()),
@@ -3469,12 +3671,11 @@ impl IOManager for CaptureIO {
     self.inner.flush_queued_compute();
   }
 
-  fn run_spawn_window(
-    body: Exp<ExpTypeInfo>,
-    env: &mut EvaluationEnvironment<Self>,
+  fn run_spawn_window_driver<D: FrameDriver<IO = Self>>(
+    driver: &mut D,
   ) -> Result<bool, EvalError> {
     loop {
-      match eval(body.clone(), env) {
+      match driver.run_frame() {
         Ok(_) => {}
         Err(EvalException::CloseWindow) => break,
         Err(e) => return Err(e.into()),
@@ -3486,9 +3687,9 @@ impl IOManager for CaptureIO {
       // in headless mode.
       #[cfg(feature = "window")]
       {
-        let events = env.io.take_frame_draw_calls();
+        let events = driver.io_mut().take_frame_draw_calls();
         if !events.is_empty()
-          && let Some(gpu) = env.io.get_gpu()
+          && let Some(gpu) = driver.io_mut().get_gpu()
         {
           let mut gpu = gpu.write().unwrap();
           gpu.execute_frame_compute(&events);
@@ -3497,8 +3698,8 @@ impl IOManager for CaptureIO {
       }
       #[cfg(not(feature = "window"))]
       {
-        env.io.flush_queued_compute();
-        let _ = env.io.take_frame_draw_calls();
+        driver.io_mut().flush_queued_compute();
+        let _ = driver.io_mut().take_frame_draw_calls();
       }
     }
     Ok(false)
