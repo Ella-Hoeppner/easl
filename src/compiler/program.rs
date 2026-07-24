@@ -5113,9 +5113,79 @@ impl Program {
       } else {
         None
       };
-    for (f_name, implementation) in
-      self.composite_functions_in_usage_order_with_discovery(cpu_mode)
-    {
+    let ordered_functions =
+      self.composite_functions_in_usage_order_with_discovery(cpu_mode);
+    // CPU mode compiles only functions actually reachable from `@cpu`
+    // entries. Anything referenced solely from GPU entry points (e.g. the
+    // callbacks a compute shader invokes) must not be compiled for the CPU —
+    // it may legally do GPU-only things like passing storage-array elements
+    // by reference to atomics.
+    let cpu_reachable: Option<HashSet<Arc<str>>> = if cpu_mode {
+      let by_name: HashMap<Arc<str>, Arc<RwLock<TopLevelFunction>>> =
+        ordered_functions
+          .iter()
+          .map(|(n, f)| (n.clone(), f.clone()))
+          .collect();
+      let is_cpu_compilable = |f: &Arc<RwLock<TopLevelFunction>>| {
+        f.read()
+          .unwrap()
+          .entry_point
+          .map(|e| matches!(e, EntryPoint::Cpu))
+          .unwrap_or(true)
+      };
+      let mut reachable: HashSet<Arc<str>> = HashSet::new();
+      let mut queue: Vec<Arc<RwLock<TopLevelFunction>>> = vec![];
+      for (name, f) in &ordered_functions {
+        let is_cpu_entry = f
+          .read()
+          .unwrap()
+          .entry_point
+          .map(|e| matches!(e, EntryPoint::Cpu))
+          .unwrap_or(false);
+        if is_cpu_entry && reachable.insert(name.clone()) {
+          queue.push(f.clone());
+        }
+      }
+      while let Some(f) = queue.pop() {
+        let mut found: Vec<Arc<str>> = vec![];
+        f.read()
+          .unwrap()
+          .expression
+          .walk(&mut |exp| {
+            if let ExpKind::Name(name) = &exp.kind
+              && by_name.contains_key(name)
+            {
+              found.push(name.clone());
+            }
+            if let ExpKind::Application(_, _) = &exp.kind
+              && let TypeState::Known(Type::Function(signature)) =
+                &exp.data.kind
+              && let Some(ancestor) = &signature.abstract_ancestor
+            {
+              found.push(ancestor.read().unwrap().name.clone());
+            }
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
+        for name in found {
+          if let Some(target) = by_name.get(&name)
+            && is_cpu_compilable(target)
+            && reachable.insert(name)
+          {
+            queue.push(target.clone());
+          }
+        }
+      }
+      Some(reachable)
+    } else {
+      None
+    };
+    for (f_name, implementation) in ordered_functions {
+      if let Some(reachable) = &cpu_reachable
+        && !reachable.contains(&f_name)
+      {
+        continue;
+      }
       // Filter the same way the C backend does in
       // `TopLevelFunction::compile`: skip entry points whose kind doesn't
       // compile to VM (right now that's everything except `@audio`), and
