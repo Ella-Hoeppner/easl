@@ -5894,6 +5894,34 @@ pub fn run_program_with_runtime<IO: IOManager>(
   }
 }
 
+/// Runs on the default runtime with a pre-compiled audio source (the path
+/// the CLI-facing entry points take).
+#[cfg(feature = "window")]
+fn run_program_default_runtime_with_audio<IO: IOManager>(
+  program: Program,
+  entry_point_name: Option<&str>,
+  io: IO,
+  source_dir: Option<PathBuf>,
+  audio_source: Option<crate::audio::AudioSource>,
+) -> Result<(IO, bool), EvalError> {
+  match CpuRuntime::default() {
+    CpuRuntime::TreeWalking => run_program_with_audio_source(
+      program,
+      entry_point_name,
+      io,
+      source_dir,
+      audio_source,
+    ),
+    CpuRuntime::BytecodeVm => run_program_vm_with(
+      program,
+      entry_point_name,
+      io,
+      source_dir,
+      audio_source,
+    ),
+  }
+}
+
 /// `run_program_with_capture_from_path` with an explicit runtime choice.
 pub fn run_program_with_capture_and_runtime_from_path(
   program: Program,
@@ -5941,7 +5969,13 @@ pub fn run_program_test_io_with_runtime(
 }
 
 pub fn run_program(program: Program) -> Result<(), EvalError> {
-  run_program_with(program, None, StdoutIO::new(), None)?;
+  run_program_with_runtime(
+    program,
+    None,
+    StdoutIO::new(),
+    None,
+    CpuRuntime::default(),
+  )?;
   Ok(())
 }
 
@@ -5949,7 +5983,13 @@ pub fn run_program_entry(
   program: Program,
   entry: Option<&str>,
 ) -> Result<(), EvalError> {
-  run_program_with(program, entry, StdoutIO::new(), None)?;
+  run_program_with_runtime(
+    program,
+    entry,
+    StdoutIO::new(),
+    None,
+    CpuRuntime::default(),
+  )?;
   Ok(())
 }
 
@@ -5966,7 +6006,7 @@ pub fn run_program_entry_from_path(
       source_path,
       crate::audio::AudioBackend::default(),
     );
-    run_program_with_audio_source(
+    run_program_default_runtime_with_audio(
       program,
       entry,
       StdoutIO::new(),
@@ -5977,7 +6017,13 @@ pub fn run_program_entry_from_path(
   #[cfg(not(feature = "window"))]
   {
     let _ = source_path;
-    run_program_with(program, entry, StdoutIO::new(), source_dir)?;
+    run_program_with_runtime(
+      program,
+      entry,
+      StdoutIO::new(),
+      source_dir,
+      CpuRuntime::default(),
+    )?;
   }
   Ok(())
 }
@@ -6088,12 +6134,24 @@ pub fn run_program_entry_with_io_from_path<IO: IOManager>(
       source_path,
       crate::audio::AudioBackend::default(),
     );
-    run_program_with_audio_source(program, entry, io, source_dir, audio_source)
+    run_program_default_runtime_with_audio(
+      program,
+      entry,
+      io,
+      source_dir,
+      audio_source,
+    )
   }
   #[cfg(not(feature = "window"))]
   {
     let _ = source_path;
-    run_program_with(program, entry, io, source_dir)
+    run_program_with_runtime(
+      program,
+      entry,
+      io,
+      source_dir,
+      CpuRuntime::default(),
+    )
   }
 }
 
@@ -6114,13 +6172,19 @@ pub fn run_program_entry_with_io_and_audio_backend_from_path<
   let source_dir = source_path.parent().map(|p| p.to_path_buf());
   let audio_source =
     try_compile_audio_source(&program, source_path, audio_backend);
-  run_program_with_audio_source(program, entry, io, source_dir, audio_source)
+  run_program_default_runtime_with_audio(
+    program,
+    entry,
+    io,
+    source_dir,
+    audio_source,
+  )
 }
 
 pub fn run_program_capturing_output(
   program: Program,
 ) -> Result<String, EvalError> {
-  run_program_capturing_output_with_runtime(program, CpuRuntime::TreeWalking)
+  run_program_capturing_output_with_runtime(program, CpuRuntime::default())
 }
 
 pub fn run_program_capturing_output_with_runtime(
@@ -6140,13 +6204,19 @@ pub fn run_program_capturing_output_with_runtime(
 }
 
 pub fn run_program_test_io(program: Program) -> Result<StringIO, EvalError> {
-  Ok(run_program_with(program, None, StringIO::new(), None)?.0)
+  run_program_test_io_with_runtime(program, CpuRuntime::default())
 }
 
 pub fn run_program_with_capture(
   program: Program,
 ) -> Result<Vec<String>, EvalError> {
-  let (io, _) = run_program_with(program, None, CaptureIO::new(), None)?;
+  let (io, _) = run_program_with_runtime(
+    program,
+    None,
+    CaptureIO::new(),
+    None,
+    CpuRuntime::default(),
+  )?;
   Ok(io.prints)
 }
 
@@ -6154,9 +6224,11 @@ pub fn run_program_with_capture_from_path(
   program: Program,
   source_path: &std::path::Path,
 ) -> Result<Vec<String>, EvalError> {
-  let source_dir = source_path.parent().map(|p| p.to_path_buf());
-  let (io, _) = run_program_with(program, None, CaptureIO::new(), source_dir)?;
-  Ok(io.prints)
+  run_program_with_capture_and_runtime_from_path(
+    program,
+    source_path,
+    CpuRuntime::default(),
+  )
 }
 
 /// Like `run_program_with_capture_from_path`, but returns the whole
@@ -6168,8 +6240,11 @@ pub fn run_program_capturing_io_from_path(
   program: Program,
   source_path: &std::path::Path,
 ) -> Result<CaptureIO, EvalError> {
-  let source_dir = source_path.parent().map(|p| p.to_path_buf());
-  Ok(run_program_with(program, None, CaptureIO::new(), source_dir)?.0)
+  run_program_capturing_io_with_runtime_from_path(
+    program,
+    source_path,
+    CpuRuntime::default(),
+  )
 }
 
 /// Re-export so downstream crates (e.g. `easl_cli`) can call this without
