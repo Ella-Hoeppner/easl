@@ -3479,10 +3479,27 @@ impl IOManager for CaptureIO {
         Err(EvalException::CloseWindow) => break,
         Err(e) => return Err(e.into()),
       }
-      // Flush any compute not already flushed mid-frame, then discard
-      // render events (no surface in headless mode).
-      env.io.flush_queued_compute();
-      let _ = env.io.take_frame_draw_calls();
+      // Execute the frame's remaining queued events through the same frame
+      // path the real winit loop uses (`GpuCore::execute_frame_compute` +
+      // `execute_frame_renders`), so that tests exercise production
+      // behavior. Screen-targeted renders are skipped — there's no surface
+      // in headless mode.
+      #[cfg(feature = "window")]
+      {
+        let events = env.io.take_frame_draw_calls();
+        if !events.is_empty()
+          && let Some(gpu) = env.io.get_gpu()
+        {
+          let mut gpu = gpu.write().unwrap();
+          gpu.execute_frame_compute(&events);
+          gpu.execute_frame_renders(&events, None);
+        }
+      }
+      #[cfg(not(feature = "window"))]
+      {
+        env.io.flush_queued_compute();
+        let _ = env.io.take_frame_draw_calls();
+      }
     }
     Ok(false)
   }

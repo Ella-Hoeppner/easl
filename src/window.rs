@@ -770,6 +770,254 @@ impl GpuCore {
       .unwrap();
   }
 
+  /// Executes the compute portion of one frame's queued events: ensures all
+  /// pipeline objects exist, applies render events' pre_uploads upfront,
+  /// then runs each compute dispatch with its own pre_uploads applied in
+  /// order (splitting the submit when uploads conflict). Shared by the winit
+  /// frame loop (`render`) and the headless test frame loop
+  /// (`CaptureIO::run_spawn_window`) so that tests exercise the production
+  /// frame path rather than a parallel one.
+  pub fn execute_frame_compute(&mut self, draw_calls: &[WindowEvent]) {
+    let screen_format = self
+      .surface_config
+      .as_ref()
+      .map(|c| c.format)
+      .unwrap_or(GpuCore::OFFSCREEN_FORMAT);
+
+    // Pre-pass: ensure all pipeline objects exist. No buffer uploads here —
+    // uploads are applied below.
+    for draw_call in draw_calls {
+      match draw_call {
+        WindowEvent::RenderShaders {
+          vert,
+          frag,
+          additive,
+          render_target,
+          ..
+        } => {
+          let format = if render_target.is_none() {
+            screen_format
+          } else {
+            GpuCore::OFFSCREEN_FORMAT
+          };
+          let vert = vert.replace('-', "_");
+          let frag = frag.replace('-', "_");
+          self.get_or_create_render_pipeline(&vert, &frag, *additive, format);
+        }
+        WindowEvent::ComputeShader { entry, .. } => {
+          let entry = entry.replace('-', "_");
+          self.get_or_create_compute_pipeline(&entry);
+        }
+      }
+    }
+
+    // Apply render events' pre_uploads upfront: they may contain buffer
+    // initialisation (e.g. sizing an unsized storage buffer) that compute
+    // needs, and they are NOT re-applied before the render passes to avoid
+    // overwriting compute's GPU output.
+    {
+      let render_pre_uploads: Vec<_> = draw_calls
+        .iter()
+        .flat_map(|c| match c {
+          WindowEvent::RenderShaders { pre_upload, .. } => {
+            pre_upload.iter().cloned().collect::<Vec<_>>()
+          }
+          WindowEvent::ComputeShader { .. } => vec![],
+        })
+        .collect();
+      self.upload_bindings(&render_pre_uploads);
+    }
+
+    // --- Compute passes ---
+    // Each dispatch's pre_uploads are applied just before it is encoded.
+    // When an upload would overwrite a binding that already-encoded (but not
+    // yet submitted) dispatches depend on — e.g. the same entry dispatched
+    // twice in one frame with different captured-scope values — the current
+    // encoder is submitted first so those dispatches see their own values:
+    // the same strategy as `execute_compute_batch`. In the common case of no
+    // conflicting uploads this still encodes every dispatch into a single
+    // submit.
+    let mut pending_bindings: std::collections::HashSet<(u8, u8)> =
+      std::collections::HashSet::new();
+    let mut current_encoder: Option<wgpu::CommandEncoder> = None;
+    for call in draw_calls {
+      let WindowEvent::ComputeShader {
+        entry,
+        workgroup_count: (x, y, z),
+        pre_upload,
+      } = call
+      else {
+        continue;
+      };
+      let entry = entry.replace('-', "_");
+
+      let has_conflict = pre_upload
+        .iter()
+        .any(|(gb, _)| pending_bindings.contains(gb));
+      if has_conflict {
+        if let Some(enc) = current_encoder.take() {
+          self.queue.submit(std::iter::once(enc.finish()));
+        }
+        pending_bindings.clear();
+      }
+
+      self.upload_bindings(pre_upload);
+      for (gb, _) in pre_upload {
+        pending_bindings.insert(*gb);
+      }
+
+      let encoder = current_encoder.get_or_insert_with(|| {
+        self
+          .device
+          .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("compute encoder"),
+          })
+      });
+      {
+        let mut compute_pass =
+          encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("compute pass"),
+            timestamp_writes: None,
+          });
+        for (group_idx, bind_group) in self.bind_groups.iter().enumerate() {
+          compute_pass.set_bind_group(group_idx as u32, bind_group, &[]);
+        }
+        compute_pass.set_pipeline(&self.compute_pipelines[&entry]);
+        compute_pass.dispatch_workgroups(*x, *y, *z);
+      }
+    }
+    if let Some(enc) = current_encoder.take() {
+      self.queue.submit(std::iter::once(enc.finish()));
+    }
+  }
+
+  /// Executes the render portion of one frame's queued events: one render
+  /// pass per consecutive render-target group, all in one encoder/submit.
+  /// Screen-targeted draws render into `screen_view`, or are skipped when it
+  /// is `None` (surface occluded, or headless test mode). Shared by the
+  /// winit frame loop (`render`) and the headless test frame loop.
+  pub fn execute_frame_renders(
+    &mut self,
+    draw_calls: &[WindowEvent],
+    screen_view: Option<&wgpu::TextureView>,
+  ) {
+    let screen_format = self
+      .surface_config
+      .as_ref()
+      .map(|c| c.format)
+      .unwrap_or(GpuCore::OFFSCREEN_FORMAT);
+
+    let render_calls: Vec<_> = draw_calls
+      .iter()
+      .filter_map(|c| {
+        if let WindowEvent::RenderShaders {
+          vert,
+          frag,
+          vert_count,
+          pre_upload,
+          additive,
+          render_target,
+        } = c
+        {
+          Some((vert, frag, vert_count, pre_upload, additive, render_target))
+        } else {
+          None
+        }
+      })
+      .collect();
+
+    if render_calls.is_empty() {
+      return;
+    }
+    // pre_uploads already applied before compute in execute_frame_compute;
+    // not re-applied here to avoid overwriting GPU data written by compute
+    // shaders.
+
+    let mut encoder =
+      self
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+          label: Some("render encoder"),
+        });
+
+    // Group consecutive calls by render target, one render pass per group.
+    let mut i = 0;
+    while i < render_calls.len() {
+      let current_rt = render_calls[i].5;
+      let end = render_calls[i..]
+        .iter()
+        .position(|c| c.5 != current_rt)
+        .map_or(render_calls.len(), |j| i + j);
+      let group = &render_calls[i..end];
+
+      // Create a fresh view for texture render targets. Borrow of
+      // `self.textures` is released before the render pass scope.
+      let texture_target_view: Option<wgpu::TextureView> =
+        current_rt.map(|rt| {
+          self.textures[&rt]
+            .create_view(&wgpu::TextureViewDescriptor::default())
+        });
+      // For render target passes, replace the target slot in the bind group
+      // with a placeholder to avoid COLOR_TARGET + RESOURCE conflict.
+      let modified_bind_groups: Option<Vec<wgpu::BindGroup>> =
+        current_rt.map(|rt| self.bind_groups_with_placeholder_for(rt));
+      let bind_groups_ref: &[wgpu::BindGroup] =
+        modified_bind_groups.as_deref().unwrap_or(&self.bind_groups);
+
+      let view = match &texture_target_view {
+        Some(v) => v,
+        None => {
+          let Some(sv) = screen_view else {
+            // Surface unavailable this frame (e.g. Occluded, or headless
+            // test mode): skip screen renders.
+            i = end;
+            continue;
+          };
+          sv
+        }
+      };
+      let format = if current_rt.is_none() {
+        screen_format
+      } else {
+        GpuCore::OFFSCREEN_FORMAT
+      };
+
+      {
+        let mut render_pass =
+          encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("render pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+              view,
+              resolve_target: None,
+              depth_slice: None,
+              ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+              },
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+          });
+        for (vert, frag, vert_count, _, additive, _) in group {
+          let vert = vert.replace('-', "_");
+          let frag = frag.replace('-', "_");
+          let key = (vert, frag, **additive, format);
+          for (group_idx, bind_group) in bind_groups_ref.iter().enumerate() {
+            render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
+          }
+          render_pass.set_pipeline(&self.render_pipelines[&key]);
+          render_pass.draw(0..**vert_count, 0..1);
+        }
+      }
+
+      i = end;
+    }
+
+    self.queue.submit(std::iter::once(encoder.finish()));
+  }
+
   /// Texture format used for the offscreen render target and render-to-texture.
   const OFFSCREEN_FORMAT: wgpu::TextureFormat = BINDING_TEXTURE_FORMAT;
 
@@ -2069,39 +2317,7 @@ impl RenderState {
     }
 
     let mut gpu = self.gpu.write().unwrap();
-
-    let screen_format = gpu
-      .surface_config
-      .as_ref()
-      .map(|c| c.format)
-      .unwrap_or(GpuCore::OFFSCREEN_FORMAT);
-
-    // Pre-pass: ensure all pipeline objects exist. No buffer uploads here —
-    // uploads are done per-draw-call below so each draw sees its own values.
-    for draw_call in draw_calls {
-      match draw_call {
-        WindowEvent::RenderShaders {
-          vert,
-          frag,
-          additive,
-          render_target,
-          ..
-        } => {
-          let format = if render_target.is_none() {
-            screen_format
-          } else {
-            GpuCore::OFFSCREEN_FORMAT
-          };
-          let vert = vert.replace('-', "_");
-          let frag = frag.replace('-', "_");
-          gpu.get_or_create_render_pipeline(&vert, &frag, *additive, format);
-        }
-        WindowEvent::ComputeShader { entry, .. } => {
-          let entry = entry.replace('-', "_");
-          gpu.get_or_create_compute_pipeline(&entry);
-        }
-      }
-    }
+    gpu.execute_frame_compute(draw_calls);
 
     let has_screen_render = draw_calls.iter().any(|c| {
       matches!(
@@ -2112,72 +2328,6 @@ impl RenderState {
         }
       )
     });
-
-    // Batch all compute dispatches into one encoder (multiple passes) and all
-    // render draws into one encoder (one render pass per render-target group).
-    // This reduces queue.submit() calls from N to at most 2 per frame.
-
-    // Apply ALL pre_uploads (compute + render) upfront before any dispatch.
-    // Compute runs before render by design, but render pre_uploads may
-    // contain buffer initialisation (e.g. sizing an unsized storage buffer)
-    // that compute needs.  Pre_uploads are NOT re-applied before the render
-    // dispatch below to avoid overwriting compute's GPU output.
-    {
-      let all_pre_uploads: Vec<_> = draw_calls
-        .iter()
-        .flat_map(|c| match c {
-          WindowEvent::ComputeShader { pre_upload, .. } => {
-            pre_upload.iter().cloned().collect::<Vec<_>>()
-          }
-          WindowEvent::RenderShaders { pre_upload, .. } => {
-            pre_upload.iter().cloned().collect::<Vec<_>>()
-          }
-        })
-        .collect();
-      gpu.upload_bindings(&all_pre_uploads);
-    }
-
-    // --- Compute pass (one encoder, one submit) ---
-    let compute_calls: Vec<_> = draw_calls
-      .iter()
-      .filter_map(|c| {
-        if let WindowEvent::ComputeShader {
-          entry,
-          workgroup_count,
-          pre_upload,
-        } = c
-        {
-          Some((entry, workgroup_count, pre_upload))
-        } else {
-          None
-        }
-      })
-      .collect();
-
-    if !compute_calls.is_empty() {
-      // pre_uploads already applied above; no per-batch upload needed.
-
-      let mut encoder =
-        gpu
-          .device
-          .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("compute encoder"),
-          });
-      for (entry, (x, y, z), _) in &compute_calls {
-        let entry = entry.replace('-', "_");
-        let mut compute_pass =
-          encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("compute pass"),
-            timestamp_writes: None,
-          });
-        for (group_idx, bind_group) in gpu.bind_groups.iter().enumerate() {
-          compute_pass.set_bind_group(group_idx as u32, bind_group, &[]);
-        }
-        compute_pass.set_pipeline(&gpu.compute_pipelines[&entry]);
-        compute_pass.dispatch_workgroups(*x, *y, *z);
-      }
-      gpu.queue.submit(std::iter::once(encoder.finish()));
-    }
 
     // Acquire the surface texture for screen renders.  This is done after
     // uploads and compute so that Occluded (window minimised / covered on
@@ -2210,113 +2360,7 @@ impl RenderState {
         .create_view(&wgpu::TextureViewDescriptor::default())
     });
 
-    // --- Render passes (one encoder, one submit; one pass per target group) ---
-    let render_calls: Vec<_> = draw_calls
-      .iter()
-      .filter_map(|c| {
-        if let WindowEvent::RenderShaders {
-          vert,
-          frag,
-          vert_count,
-          pre_upload,
-          additive,
-          render_target,
-        } = c
-        {
-          Some((vert, frag, vert_count, pre_upload, additive, render_target))
-        } else {
-          None
-        }
-      })
-      .collect();
-
-    if !render_calls.is_empty() {
-      // pre_uploads already applied before compute above; not re-applied here
-      // to avoid overwriting GPU data written by compute shaders.
-
-      let mut encoder =
-        gpu
-          .device
-          .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("render encoder"),
-          });
-
-      // Group consecutive calls by render target, one render pass per group.
-      let mut i = 0;
-      while i < render_calls.len() {
-        let current_rt = render_calls[i].5;
-        let end = render_calls[i..]
-          .iter()
-          .position(|c| c.5 != current_rt)
-          .map_or(render_calls.len(), |j| i + j);
-        let group = &render_calls[i..end];
-
-        // Create a fresh view for texture render targets. Borrow of
-        // `gpu.textures` is released before the render pass scope.
-        let texture_target_view: Option<wgpu::TextureView> =
-          current_rt.map(|rt| {
-            gpu.textures[&rt]
-              .create_view(&wgpu::TextureViewDescriptor::default())
-          });
-        // For render target passes, replace the target slot in the bind group
-        // with a placeholder to avoid COLOR_TARGET + RESOURCE conflict.
-        let modified_bind_groups: Option<Vec<wgpu::BindGroup>> =
-          current_rt.map(|rt| gpu.bind_groups_with_placeholder_for(rt));
-        let bind_groups_ref: &[wgpu::BindGroup] =
-          modified_bind_groups.as_deref().unwrap_or(&gpu.bind_groups);
-
-        let view = match &texture_target_view {
-          Some(v) => v,
-          None => {
-            let Some(sv) = screen_view.as_ref() else {
-              // Surface unavailable this frame (e.g. Occluded): skip screen renders.
-              i = end;
-              continue;
-            };
-            sv
-          }
-        };
-        let format = if current_rt.is_none() {
-          screen_format
-        } else {
-          GpuCore::OFFSCREEN_FORMAT
-        };
-
-        {
-          let mut render_pass =
-            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-              label: Some("render pass"),
-              color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                  load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                  store: wgpu::StoreOp::Store,
-                },
-              })],
-              depth_stencil_attachment: None,
-              occlusion_query_set: None,
-              timestamp_writes: None,
-              multiview_mask: None,
-            });
-          for (vert, frag, vert_count, _, additive, _) in group {
-            let vert = vert.replace('-', "_");
-            let frag = frag.replace('-', "_");
-            let key = (vert, frag, **additive, format);
-            for (group_idx, bind_group) in bind_groups_ref.iter().enumerate() {
-              render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
-            }
-            render_pass.set_pipeline(&gpu.render_pipelines[&key]);
-            render_pass.draw(0..**vert_count, 0..1);
-          }
-        }
-
-        i = end;
-      }
-
-      gpu.queue.submit(std::iter::once(encoder.finish()));
-    }
+    gpu.execute_frame_renders(draw_calls, screen_view.as_ref());
 
     if let Some(output) = output {
       output.present();

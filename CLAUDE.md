@@ -204,7 +204,7 @@ let name = f.abstract_ancestor.as_ref().unwrap().borrow().name.clone();
 
 **What must NOT change:**
 - `StdoutIO::flush_queued_compute` must execute queued compute synchronously (one batched submit + blocking poll), not defer it
-- `CaptureIO::run_spawn_window` must set `windowed = true` before running frames, so that `record_compute` queues work (same as the real winit loop) rather than executing inline — this keeps test behaviour identical to production
+- `CaptureIO::run_spawn_window` must execute each frame's queued events through the shared `GpuCore::execute_frame_compute` / `execute_frame_renders` methods — the same code the real winit loop's `render` uses — skipping only screen-targeted draws (no surface in headless mode). Do NOT give the test harness its own parallel frame-execution path: that divergence once hid a real upload-ordering bug in `render` for months (see the `windowed_scope_upload_ordering` sync test)
 - `check_cpu_readable` must call `flush_queued_compute` before attempting GPU→CPU readback
 - Do NOT collapse all frame work into a single deferred submit; compute must be flushable mid-frame on demand
 
@@ -214,7 +214,7 @@ let name = f.abstract_ancestor.as_ref().unwrap().borrow().name.clone();
 - One `wgpu::ShaderModule` and one `wgpu::PipelineLayout` shared by all render and compute pipelines
 - `bind_group_layouts` stored as a field on `RenderState` (not dropped after creation) so `rebuild_bind_groups` can recreate bind groups without invalidating the pipeline layout
 - `upload_bindings`: detects when a buffer's byte size changes → recreates the buffer → calls `rebuild_bind_groups`; handles `BufferUpload::Clear` via `encoder.clear_buffer` (efficient GPU-side zero-fill, no CPU→GPU data copy)
-- `render`: pre-creates all pipelines, dispatches all `ComputeShader` calls first (each in its own compute pass), then does one render pass for all `RenderShaders` calls
+- The frame path is split into two shared `GpuCore` methods so the winit loop and the headless test loop run identical code: `execute_frame_compute` (pipeline pre-pass, render-event pre_uploads upfront, then each compute dispatch with its own pre_uploads applied in order — the submit is split when an upload would overwrite a binding an already-encoded dispatch depends on, e.g. the same entry dispatched twice in one frame with different captured-scope values) and `execute_frame_renders` (one render pass per consecutive render-target group). The winit `render` wraps them with surface acquisition/present
 - winit `EventLoop` is stored in a thread-local and reused across multiple `spawn-window` calls via `run_app_on_demand`
 - **Known limitation**: `binding_buffer_data` / `collect_dirty_uploads` serialize and upload *all* dirty bindings every frame, including large GPU-written storage buffers the CPU never touches. A dirty-flag system is planned. `ZeroedArray` bindings are exempt — they become `BufferUpload::Clear` with no CPU allocation.
 
