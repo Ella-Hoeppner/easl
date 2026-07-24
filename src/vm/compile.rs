@@ -1599,16 +1599,14 @@ impl BytecodeCompilationState {
       let mut offset = 0u16;
       for captured_value in captured {
         let value_pos = captured_value.compile_to_bytecode(false, self).unwrap();
-        let value_size = captured_value
-          .data
-          .unwrap_known()
-          .data_size_in_u32s(&captured_value.source_trace)
-          .unwrap() as u16;
-        self.push_instruction(Instruction {
-          op: Op::Move,
-          arg_positions: [value_pos, value_size, 0],
-          return_position: position + offset,
-        });
+        let value_size = vm_type_size(&captured_value.data.unwrap_known());
+        if value_size > 0 {
+          self.push_instruction(Instruction {
+            op: Op::Move,
+            arg_positions: [value_pos, value_size, 0],
+            return_position: position + offset,
+          });
+        }
         offset += value_size;
       }
       self.emit_host_op(HostOp::MarkCpuWritten {
@@ -1622,6 +1620,36 @@ impl BytecodeCompilationState {
 // =============================================================================
 // Free utility functions (don't take state)
 // =============================================================================
+
+/// Slot count of `t` in the VM's flat layout. Function-typed values are
+/// represented by their captured scope's data (zero slots for scope-less
+/// closures) — the code part of a closure is static, so only its captured
+/// state occupies memory.
+pub fn vm_type_size(t: &Type) -> u16 {
+  if let Type::Function(f) = t {
+    if let Some(ancestor) = &f.abstract_ancestor
+      && let Some(scope) = &ancestor.read().unwrap().captured_scope
+    {
+      scope
+        .fields
+        .iter()
+        .map(|field| {
+          let crate::compiler::types::AbstractType::Type(field_type) =
+            &field.field_type
+          else {
+            panic!("captured scope field with non-concrete type")
+          };
+          vm_type_size(field_type)
+        })
+        .sum()
+    } else {
+      0
+    }
+  } else {
+    t.data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+      .unwrap() as u16
+  }
+}
 
 /// Returns Some((element_count, element_type)) if `t` is a vec2/vec3/vec4 or
 /// matNxM, or None otherwise. For matrices the count is N*M flat scalars.
@@ -1921,16 +1949,14 @@ impl TypedExp {
           for captured_value in captured {
             let value_pos =
               captured_value.compile_to_bytecode(false, state).unwrap();
-            let value_size = captured_value
-              .data
-              .unwrap_known()
-              .data_size_in_u32s(&captured_value.source_trace)
-              .unwrap() as u16;
-            state.push_instruction(Instruction {
-              op: Op::Move,
-              arg_positions: [value_pos, value_size, 0],
-              return_position: scope_position + offset,
-            });
+            let value_size = vm_type_size(&captured_value.data.unwrap_known());
+            if value_size > 0 {
+              state.push_instruction(Instruction {
+                op: Op::Move,
+                arg_positions: [value_pos, value_size, 0],
+                return_position: scope_position + offset,
+              });
+            }
             offset += value_size;
           }
         }
@@ -2013,6 +2039,18 @@ impl TypedExp {
           panic!("array-length of unsupported array kind in VM CPU runtime")
         }
       }
+      "texture-dimensions" => {
+        let ExpKind::Name(name) = &args[0].kind else {
+          panic!("texture-dimensions argument must be a texture global")
+        };
+        let binding = *state
+          .dynamic_globals
+          .get(name)
+          .expect("texture-dimensions argument isn't a texture binding");
+        let dest = state.take_stack_slot(2);
+        state.emit_host_op(HostOp::TextureDims { binding, dest });
+        Some(Some(dest))
+      }
       "set-render-target" => {
         let ExpKind::Name(name) = &args[0].kind else {
           panic!("set-render-target argument must be a texture global")
@@ -2072,6 +2110,23 @@ impl TypedExp {
               state.emit_host_op(HostOp::AssignTextureFromImage {
                 binding,
                 path,
+              });
+            }
+            "blank-texture" => {
+              // Both arg shapes compile to two consecutive u32 slots: (w h)
+              // scalars are contiguous when compiled in sequence; a vec2u is
+              // contiguous by construction.
+              let size_slot = if rhs_args.len() == 2 {
+                let w = rhs_args[0].compile_to_bytecode(false, state).unwrap();
+                let h = rhs_args[1].compile_to_bytecode(false, state).unwrap();
+                debug_assert_eq!(h, w + 1);
+                w
+              } else {
+                rhs_args[0].compile_to_bytecode(false, state).unwrap()
+              };
+              state.emit_host_op(HostOp::AssignTextureBlank {
+                binding,
+                size_slot,
               });
             }
             other => panic!(
@@ -2152,6 +2207,36 @@ impl TypedExp {
             state.emit_write_marks(writes);
           }
           return result;
+        }
+        let Type::Function(f_signature) = f_exp.data.unwrap_known() else {
+          panic!()
+        };
+        if f_signature.abstract_ancestor.is_none() {
+          // Scope construction for a closure value (produced by
+          // extract_inner_functions): a closure's VM representation is just
+          // its captured scope data, laid out like the scope struct.
+          let total: u16 = args
+            .iter()
+            .map(|a| vm_type_size(&a.data.unwrap_known()))
+            .sum();
+          let result = state.take_stack_slot(total);
+          let mut offset = 0u16;
+          for arg in args {
+            let arg_pos = arg.compile_to_bytecode(false, state).unwrap();
+            let size = vm_type_size(&arg.data.unwrap_known());
+            if size > 0 {
+              state.push_instruction(Instruction {
+                op: Op::Move,
+                arg_positions: [arg_pos, size, 0],
+                return_position: result + offset,
+              });
+            }
+            offset += size;
+          }
+          if let Some(writes) = &cpu_write_marks {
+            state.emit_write_marks(writes);
+          }
+          return Some(result);
         }
         state.array_mut_ref_store_instructions.push(vec![]);
         let Type::Function(f) = f_exp.data.unwrap_known() else {

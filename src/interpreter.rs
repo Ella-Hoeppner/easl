@@ -5681,6 +5681,30 @@ fn vm_host_call<IO: IOManager>(
         slot.0 = value;
       }
     }
+    HostOp::AssignTextureBlank { binding, size_slot } => {
+      let b = &code.host_bindings[*binding as usize];
+      let width = stack[*size_slot as usize];
+      let height = stack[*size_slot as usize + 1];
+      let name = b.name.clone();
+      if let Some(stack_entry) = env.bindings.get_mut(&name)
+        && let Some(slot) = stack_entry.last_mut()
+      {
+        slot.0 = Value::Texture {
+          width,
+          height,
+          data: vec![0u8; (width * height * 4) as usize],
+          binding: None,
+        };
+      }
+    }
+    HostOp::TextureDims { binding, dest } => {
+      let b = &code.host_bindings[*binding as usize];
+      let Value::Texture { width, height, .. } = env.lookup(&b.name)? else {
+        panic!("texture-dimensions: expected Texture value")
+      };
+      stack[*dest as usize] = *width;
+      stack[*dest as usize + 1] = *height;
+    }
     HostOp::SetRenderTarget { binding } => {
       let b = &code.host_bindings[*binding as usize];
       let (group, binding, _) =

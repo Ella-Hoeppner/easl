@@ -416,6 +416,10 @@ pub enum HostOp {
   StartAudio { entry: u16 },
   /// `(= texture-global (load-image "path"))`
   AssignTextureFromImage { binding: u16, path: u16 },
+  /// `(= texture-global (blank-texture w h))` — 2 u32 slots at `size_slot`.
+  AssignTextureBlank { binding: u16, size_slot: u16 },
+  /// `(texture-dimensions tex)` → vec2u (2 slots) at `dest`.
+  TextureDims { binding: u16, dest: u16 },
   SetRenderTarget { binding: u16 },
   ClearRenderTarget,
 }
