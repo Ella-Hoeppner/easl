@@ -13,7 +13,10 @@ use crate::compiler::functions::{
   extract_mat_size as parse_mat_size,
 };
 use crate::compiler::types::{Type, TypeState};
-use crate::vm::bytecode::{BytecodeProgram, Code, Function, Instruction, Op};
+use crate::vm::bytecode::{
+  BytecodeProgram, Code, Function, HostBinding, HostBindingStorage,
+  HostDispatch, HostOp, Instruction, Op, WindowQueryKind,
+};
 
 // =============================================================================
 // Bytecode compilation
@@ -42,6 +45,21 @@ pub struct PendingRefFnUsage {
 
 pub struct BytecodeCompilationState {
   pub consumed_stack_space: u16,
+  /// CPU-runtime mode: compile the `@cpu` entry and its callees, lowering
+  /// CPU-exclusive builtins to host ops and emitting sync-check
+  /// instructions. False for audio-mode compilation (the current default),
+  /// which never emits `Op::HostCall`.
+  pub cpu_mode: bool,
+  pub host_ops: Vec<HostOp>,
+  pub host_types: Vec<Type>,
+  pub host_strings: Vec<Arc<str>>,
+  pub host_bindings: Vec<HostBinding>,
+  pub host_dispatches: Vec<HostDispatch>,
+  /// Name → index into `host_bindings` for GPU-bound globals.
+  pub binding_indices: HashMap<Arc<str>, u16>,
+  /// Globals whose values live host-side (unsized arrays, textures) rather
+  /// than in VM stack slots.
+  pub dynamic_globals: HashMap<Arc<str>, u16>,
   pub globals: HashMap<Arc<str>, u16>,
   /// Name, base stack slot, and size in u32 slots of each global, in
   /// declaration order. Carried into `Code::globals` by `finalize` so
@@ -63,6 +81,14 @@ impl BytecodeCompilationState {
   pub fn new() -> Self {
     Self {
       consumed_stack_space: 0,
+      cpu_mode: false,
+      host_ops: vec![],
+      host_types: vec![],
+      host_strings: vec![],
+      host_bindings: vec![],
+      host_dispatches: vec![],
+      binding_indices: HashMap::new(),
+      dynamic_globals: HashMap::new(),
       globals: HashMap::new(),
       global_slots: vec![],
       locals: HashMap::new(),
@@ -1316,6 +1342,12 @@ impl BytecodeCompilationState {
         .collect(),
       init_function_index,
       globals: self.global_slots,
+      min_stack_size: self.consumed_stack_space as usize,
+      host_ops: self.host_ops,
+      host_types: self.host_types,
+      host_strings: self.host_strings,
+      host_bindings: self.host_bindings,
+      host_dispatches: self.host_dispatches,
     };
     (
       BytecodeProgram::from_code(code),

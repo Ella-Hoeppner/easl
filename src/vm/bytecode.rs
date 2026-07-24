@@ -5,6 +5,8 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+use crate::compiler::{types::Type, vars::VariableAddressSpace};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
   // Control & memory
@@ -148,6 +150,13 @@ pub enum Op {
   // Array access
   ArrayLookup,
   ArrayStore,
+
+  // Host interface (CPU-runtime mode only; never emitted for audio).
+  // `arg_positions[0]` indexes `Code::host_ops`. Everything the CPU
+  // orchestration layer needs (print, GPU dispatch, sync checks, dynamic
+  // arrays, window queries) goes through this single opcode so the dispatch
+  // loop stays small and the audio hot path is untouched.
+  HostCall,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -257,7 +266,9 @@ impl Instruction {
   }
   fn max_touched_index(&self) -> u16 {
     match self.op {
-      Op::InvokeFunction | Op::Return | Op::Jump => 0,
+      // HostCall operands are metadata-table indices, not slots; the slots
+      // host ops touch are covered by `Code::min_stack_size`.
+      Op::InvokeFunction | Op::Return | Op::Jump | Op::HostCall => 0,
       Op::Constant => self.return_position,
       Op::Move => {
         if self.arg_positions[1] == 0 {
@@ -285,6 +296,150 @@ pub struct Function {
   pub return_position: u16,
 }
 
+/// How the CPU-side value of a GPU-bound global is stored in the VM runtime.
+#[derive(Debug, Clone, Copy)]
+pub enum HostBindingStorage {
+  /// Fixed-size value living directly in VM stack slots.
+  Slots { position: u16, size: u16 },
+  /// Runtime-sized value (unsized array, texture) held host-side as a
+  /// `Value`; VM code accesses it through host ops.
+  Dynamic,
+}
+
+/// Compile-time record of one GPU-bound top-level var. The name is kept only
+/// for logging and sync-trace parity with the tree-walking interpreter — the
+/// runtime addresses bindings exclusively by table index.
+#[derive(Debug, Clone)]
+pub struct HostBinding {
+  pub name: Arc<str>,
+  pub group: u8,
+  pub binding: u8,
+  pub ty: Type,
+  pub address_space: VariableAddressSpace,
+  pub storage: HostBindingStorage,
+}
+
+/// Read/write binding-index sets for one GPU dispatch site, resolved from
+/// the dispatched entry point's effects at compile time.
+#[derive(Debug, Clone)]
+pub struct HostDispatch {
+  /// Bindings the dispatched shader(s) read (including length-only reads —
+  /// `arrayLength()` derives from buffer size, so uploads must count them).
+  pub reads: Vec<u16>,
+  /// Bindings the dispatched shader(s) write.
+  pub writes: Vec<u16>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowQueryKind {
+  /// vec2f, 2 slots.
+  Resolution,
+  Time,
+  DeltaTime,
+  FrameIndex,
+  /// vec2u, 2 slots.
+  MouseCoords,
+  MousePresent,
+  MouseDown,
+  MouseJustDown,
+}
+
+/// One entry in `Code::host_ops`. All `u16` fields are either VM stack slots
+/// (`*_slot`, `dest`) or indices into the `Code` metadata tables (`ty` →
+/// `host_types`, string-ish fields → `host_strings`, `binding` →
+/// `host_bindings`, `sets` → `host_dispatches`).
+#[derive(Debug, Clone)]
+pub enum HostOp {
+  /// Print the value starting at `slot`, of type `host_types[ty]`, with the
+  /// same formatting as the tree-walking interpreter.
+  Print { slot: u16, ty: u16 },
+  /// Print the host-side value of a dynamic binding.
+  PrintBinding { binding: u16 },
+  /// If the binding is CPUOutOfDate (GPU wrote it), flush queued compute and
+  /// read it back before CPU code reads the value. Early-returns when synced.
+  CheckGpuToCpu { binding: u16 },
+  /// CPU code just wrote this binding; its GPU copy is now stale.
+  MarkCpuWritten { binding: u16 },
+  DispatchCompute {
+    entry: u16,
+    sets: u16,
+    /// vec3u, 3 slots.
+    workgroup_slot: u16,
+  },
+  DispatchRender {
+    vert: u16,
+    frag: u16,
+    sets: u16,
+    vert_count_slot: u16,
+    additive_slot: Option<u16>,
+  },
+  /// `(= dyn-global (zeroed-array n))`
+  AssignDynZeroed { binding: u16, len_slot: u16 },
+  /// `(= dyn-global (into-dynamic-array fixed))`: copy `count` elements
+  /// starting at `src_slot` into the host-side array.
+  AssignDynFromSlots { binding: u16, src_slot: u16, count: u16 },
+  /// `(array-length dyn-global)` → u32 at `dest`.
+  DynLen { binding: u16, dest: u16 },
+  /// `(dyn-global i)` → element value at `dest`.
+  DynLoad { binding: u16, index_slot: u16, dest: u16 },
+  /// `(= (dyn-global i) v)` ← element value from `src_slot`.
+  DynStore { binding: u16, index_slot: u16, src_slot: u16 },
+  WindowQuery { kind: WindowQueryKind, dest: u16 },
+  KeyQuery { just: bool, key: u16, dest: u16 },
+  /// Suspends execution; the driver runs the window frame loop, invoking
+  /// function `frame_fn` once per frame, then resumes.
+  SpawnWindow { frame_fn: u16 },
+  /// Suspends the current (frame) execution; the frame loop stops.
+  CloseWindow,
+  StartAudio { entry: u16 },
+  /// `(= texture-global (load-image "path"))`
+  AssignTextureFromImage { binding: u16, path: u16 },
+  SetRenderTarget { binding: u16 },
+  ClearRenderTarget,
+}
+
+/// Why `execute_with_host` returned before running to completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostSuspendReason {
+  SpawnWindow { frame_fn: u16 },
+  CloseWindow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunResult {
+  Finished,
+  Suspended(HostSuspendReason),
+}
+
+/// The CPU-orchestration side of the VM. `execute_with_host` calls
+/// `host_call` for each `Op::HostCall` instruction; everything else in the
+/// dispatch loop is untouched. The audio path uses `NoopHost` (audio-mode
+/// compilation never emits `HostCall`), so after monomorphization it pays
+/// nothing for this interface.
+pub trait VmHost {
+  type Error;
+  fn host_call(
+    &mut self,
+    op: &HostOp,
+    stack: &mut [u32],
+    code: &Code,
+  ) -> Result<Option<HostSuspendReason>, Self::Error>;
+}
+
+/// Host for pure-math execution (audio, tests): host calls never occur.
+pub struct NoopHost;
+impl VmHost for NoopHost {
+  type Error = std::convert::Infallible;
+  fn host_call(
+    &mut self,
+    _op: &HostOp,
+    _stack: &mut [u32],
+    _code: &Code,
+  ) -> Result<Option<HostSuspendReason>, Self::Error> {
+    unreachable!("host call encountered in hostless VM execution")
+  }
+}
+
 pub struct Code {
   pub function_instructions: Vec<Instruction>,
   pub functions: Vec<Function>,
@@ -300,6 +455,18 @@ pub struct Code {
   /// use these to read or write globals in a running program (e.g.
   /// mirroring live uniform values into an audio VM).
   pub globals: Vec<(Arc<str>, u16, u16)>,
+  /// Total stack slots the compiler's bump allocator consumed. Some slots
+  /// are only ever written by host ops (whose operands aren't visible to
+  /// `max_touched_index`), so stack sizing takes the max of this and the
+  /// instruction-derived bound.
+  pub min_stack_size: usize,
+  /// Cold metadata for `Op::HostCall` (CPU-runtime mode; all empty for
+  /// audio-mode programs).
+  pub host_ops: Vec<HostOp>,
+  pub host_types: Vec<Type>,
+  pub host_strings: Vec<Arc<str>>,
+  pub host_bindings: Vec<HostBinding>,
+  pub host_dispatches: Vec<HostDispatch>,
 }
 
 pub struct BytecodeProgram {
@@ -315,7 +482,8 @@ impl BytecodeProgram {
       .iter()
       .map(Instruction::max_touched_index)
       .max()
-      .map_or(0, |i| i as usize + 1);
+      .map_or(0, |i| i as usize + 1)
+      .max(code.min_stack_size);
     let mut program = Self {
       stack: vec![0u32; max_stack_size],
       call_stack: Vec::with_capacity(code.functions.len()),
@@ -356,18 +524,27 @@ impl BytecodeProgram {
     Some(n)
   }
   pub fn execute(&mut self) {
+    match self.execute_with_host(&mut NoopHost) {
+      Ok(_) => {}
+      Err(never) => match never {},
+    }
+  }
+  pub fn execute_with_host<H: VmHost>(
+    &mut self,
+    host: &mut H,
+  ) -> Result<RunResult, H::Error> {
     let Self {
       code,
       stack,
       call_stack,
     } = self;
     let Some(mut ip) = call_stack.pop() else {
-      return;
+      return Ok(RunResult::Finished);
     };
     loop {
       let Some(instruction_index) = ip.next() else {
         let Some(return_ip) = call_stack.pop() else {
-          return;
+          return Ok(RunResult::Finished);
         };
         ip = return_ip;
         continue;
@@ -388,9 +565,20 @@ impl BytecodeProgram {
         },
         Op::Return => {
           let Some(return_ip) = call_stack.pop() else {
-            return;
+            return Ok(RunResult::Finished);
           };
           ip = return_ip;
+        }
+        Op::HostCall => {
+          let op =
+            &code.host_ops[instruction.arg_positions[0] as usize];
+          if let Some(reason) = host.host_call(op, stack, code)? {
+            // Resume point: `ip` has already advanced past this
+            // instruction, so pushing it back means resuming continues with
+            // the next instruction.
+            call_stack.push(ip);
+            return Ok(RunResult::Suspended(reason));
+          }
         }
         Op::Move => unsafe {
           let base = stack.as_mut_ptr();
