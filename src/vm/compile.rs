@@ -43,6 +43,19 @@ pub struct PendingRefFnUsage {
   pub arg_positions: Vec<u16>,
 }
 
+/// A `spawn-window` whose frame closure has a captured scope. The frame fn
+/// is a ref-arg function (its scope param is a mutable reference), so like
+/// any other ref-arg usage it gets a per-usage specialized compile — but
+/// it's invoked by the host through a function index rather than an
+/// `InvokeFunction` instruction, so what gets patched after the deferred
+/// compile is the `HostOp::SpawnWindow` payload instead of a call
+/// instruction.
+pub struct PendingFrameFnUsage {
+  pub name: Arc<str>,
+  pub host_op_index: usize,
+  pub scope_slot: u16,
+}
+
 pub struct BytecodeCompilationState {
   pub consumed_stack_space: u16,
   /// CPU-runtime mode: compile the `@cpu` entry and its callees, lowering
@@ -74,6 +87,7 @@ pub struct BytecodeCompilationState {
   pub ref_arg_functions: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)>,
   pub current_function: Option<IntermediateBytecodeFunction>,
   pub pending_ref_arg_function_usages: Vec<PendingRefFnUsage>,
+  pub pending_frame_fn_usages: Vec<PendingFrameFnUsage>,
   pub array_mut_ref_store_instructions: Vec<Vec<Instruction>>,
 }
 
@@ -100,6 +114,7 @@ impl BytecodeCompilationState {
       continue_jump_instruction_positions: vec![],
       ref_arg_functions: vec![],
       pending_ref_arg_function_usages: vec![],
+      pending_frame_fn_usages: vec![],
       array_mut_ref_store_instructions: vec![],
     }
   }
@@ -1961,6 +1976,62 @@ impl TypedExp {
           .unwrap()
           .name
           .clone();
+        let stashed_frame_fn = state
+          .ref_arg_functions
+          .iter()
+          .find_map(|(name, f)| (*name == frame_name).then(|| f.clone()));
+        if let Some(stashed_frame_fn) = stashed_frame_fn {
+          // Scoped frame fn: it's a ref-arg function (the scope param is a
+          // mutable reference), so it hasn't been compiled standalone.
+          // Materialize the scope here, then defer compiling the per-usage
+          // specialization — scope param bound directly to these slots —
+          // until the current function closes; the HostOp's frame_fn index
+          // is patched then. VM slots persist, so mutations to captured
+          // state persist across frames exactly like the tree-walker's
+          // Function::Scoped semantics.
+          let scope_slot = if let ExpKind::Application(_, captured) =
+            &args[0].kind
+          {
+            let scope_size = {
+              let f = stashed_frame_fn.read().unwrap();
+              let Type::Function(signature) = f.expression.data.unwrap_known()
+              else {
+                panic!()
+              };
+              vm_type_size(
+                &signature.args.last().unwrap().0.var_type.unwrap_known(),
+              )
+            };
+            let scope_slot = state.take_stack_slot(scope_size);
+            let mut offset = 0u16;
+            for captured_value in captured {
+              let value_pos =
+                captured_value.compile_to_bytecode(false, state).unwrap();
+              let value_size =
+                vm_type_size(&captured_value.data.unwrap_known());
+              if value_size > 0 {
+                state.push_instruction(Instruction {
+                  op: Op::Move,
+                  arg_positions: [value_pos, value_size, 0],
+                  return_position: scope_slot + offset,
+                });
+              }
+              offset += value_size;
+            }
+            scope_slot
+          } else {
+            // Closure referenced by name: its value slots are its scope.
+            args[0].compile_to_bytecode(true, state).unwrap()
+          };
+          let host_op_index = state.host_ops.len();
+          state.emit_host_op(HostOp::SpawnWindow { frame_fn: 0 });
+          state.pending_frame_fn_usages.push(PendingFrameFnUsage {
+            name: frame_name,
+            host_op_index,
+            scope_slot,
+          });
+          return Some(None);
+        }
         let frame_fn = state
           .finished_functions
           .iter()
@@ -1968,31 +2039,6 @@ impl TypedExp {
           .unwrap_or_else(|| {
             panic!("spawn-window frame fn {frame_name} not compiled")
           }) as u16;
-        // Scope construction: write the captured values into the frame
-        // function's trailing scope-argument slots. VM slots persist, so
-        // mutations to captured state persist across frames exactly like
-        // the tree-walker's Function::Scoped semantics.
-        if let ExpKind::Application(_, captured) = &args[0].kind {
-          let target = state.finished_functions[frame_fn as usize].clone();
-          let scope_position = *target
-            .arg_positions
-            .last()
-            .expect("scoped frame fn has no scope argument");
-          let mut offset = 0u16;
-          for captured_value in captured {
-            let value_pos =
-              captured_value.compile_to_bytecode(false, state).unwrap();
-            let value_size = vm_type_size(&captured_value.data.unwrap_known());
-            if value_size > 0 {
-              state.push_instruction(Instruction {
-                op: Op::Move,
-                arg_positions: [value_pos, value_size, 0],
-                return_position: scope_position + offset,
-              });
-            }
-            offset += value_size;
-          }
-        }
         state.emit_host_op(HostOp::SpawnWindow { frame_fn });
         Some(None)
       }

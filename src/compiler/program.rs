@@ -14,7 +14,9 @@ use crate::compiler::types::ExpTypeInfo;
 use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
 use crate::parse::EaslMultiDocument;
 use crate::vm::bytecode::{BytecodeProgram, Instruction, Op};
-use crate::vm::compile::{BytecodeCompilationState, PendingRefFnUsage};
+use crate::vm::compile::{
+  BytecodeCompilationState, PendingFrameFnUsage, PendingRefFnUsage,
+};
 use crate::{
   Never,
   compiler::{
@@ -5196,19 +5198,21 @@ impl Program {
       // index` / etc.
       {
         let implementation_read = implementation.read().unwrap();
-        let arg_ref_positions: Vec<usize> = implementation_read
-          .arg_annotations
+        // Ref-arg detection keys off signature-level ownership, not
+        // arg_annotations: annotations only reflect user-written `@ref`
+        // args, while params created by lowering (closure scope args from
+        // extract_inner_functions) are reference-typed only in the
+        // signature.
+        let Type::Function(f_signature) =
+          implementation_read.expression.data.unwrap_known()
+        else {
+          panic!()
+        };
+        let has_ref_args = f_signature
+          .args
           .iter()
-          .enumerate()
-          .filter_map(|(i, arg)| {
-            if arg.ownership != Ownership::Owned {
-              Some(i)
-            } else {
-              None
-            }
-          })
-          .collect();
-        if !arg_ref_positions.is_empty() {
+          .any(|(v, _)| v.var_type.ownership != Ownership::Owned);
+        if has_ref_args {
           state
             .ref_arg_functions
             .push((f_name, implementation.clone()));
@@ -5252,7 +5256,9 @@ impl Program {
         &mut state,
         &[],
       );
-      while !state.pending_ref_arg_function_usages.is_empty() {
+      while !state.pending_ref_arg_function_usages.is_empty()
+        || !state.pending_frame_fn_usages.is_empty()
+      {
         for PendingRefFnUsage {
           name,
           fn_dispatch_position,
@@ -5273,10 +5279,14 @@ impl Program {
             .unwrap()
             .clone();
           let f = f.read().unwrap();
+          let Type::Function(f_signature) = f.expression.data.unwrap_known()
+          else {
+            panic!()
+          };
           let mut owned_arg_indeces = vec![];
           let mut ref_arg_positions = vec![];
-          for (i, annotation) in f.arg_annotations.iter().enumerate() {
-            if annotation.ownership == Ownership::Owned {
+          for (i, (v, _)) in f_signature.args.iter().enumerate() {
+            if v.var_type.ownership == Ownership::Owned {
               owned_arg_indeces.push(i);
             } else {
               ref_arg_positions.push((i, arg_positions[i]));
@@ -5295,6 +5305,39 @@ impl Program {
           }
           state.instructions[return_move_position as usize].arg_positions[0] =
             bytecode_fn.stack_frame_start;
+        }
+        for PendingFrameFnUsage {
+          name,
+          host_op_index,
+          scope_slot,
+        } in state
+          .pending_frame_fn_usages
+          .drain(..)
+          .collect::<Vec<_>>()
+        {
+          let f = state
+            .ref_arg_functions
+            .iter()
+            .find_map(|(f_name, f)| (name == *f_name).then(|| f))
+            .unwrap()
+            .clone();
+          let f = f.read().unwrap();
+          let Type::Function(f_signature) = f.expression.data.unwrap_known()
+          else {
+            panic!()
+          };
+          // The scope param is by construction the frame fn's trailing arg;
+          // bind it directly to the slots materialized at the spawn-window
+          // site, then point the HostOp at the specialized copy.
+          let scope_arg_index = f_signature.args.len() - 1;
+          f.compile_to_bytecode(
+            &name,
+            &mut state,
+            &[(scope_arg_index, scope_slot)],
+          );
+          let frame_fn = (state.finished_functions.len() - 1) as u16;
+          state.host_ops[host_op_index] =
+            crate::vm::bytecode::HostOp::SpawnWindow { frame_fn };
         }
       }
     }
