@@ -4326,6 +4326,13 @@ fn write_back_through_lhs<IO: IOManager>(
     match cur.kind {
       ExpKind::Name(name) => break name,
       ExpKind::Application(callee, mut index_args) => {
+        // A function-typed callee is a closure's scope construction
+        // inlined at the call site: the scope struct is a temporary with
+        // no named source, so there's nothing to write back to (matching
+        // C/WGSL, where it's materialized as a caller-frame temporary).
+        if matches!(callee.data.unwrap_known(), Type::Function(_)) {
+          return Ok(());
+        }
         // `(v 0u)` call-style indexing (used for vec/mat element access).
         let Value::Prim(index) = eval(index_args.remove(0), env)? else {
           panic!("expected scalar index in call-style access");
@@ -4398,7 +4405,16 @@ fn write_back_through_lhs<IO: IOManager>(
       }
     }
   }
-  *slot = new_value;
+  // If the source binding holds a closure (Function::Scoped) and the
+  // incoming value is its bare mutated scope struct, update the wrapper's
+  // captured scope in place rather than replacing the closure with data.
+  if let Value::Fun(Function::Scoped { scope, .. }) = slot
+    && !matches!(new_value, Value::Fun(_))
+  {
+    **scope = new_value;
+  } else {
+    *slot = new_value;
+  }
   Ok(())
 }
 
@@ -4573,6 +4589,19 @@ pub fn eval(
               .iter()
               .zip(arg_values.into_iter().zip(arg_types.into_iter()))
             {
+              // A closure value (Function::Scoped) arriving at a parameter
+              // that statically expects the scope struct itself — the
+              // trailing scope arg added by higher-order inlining — binds
+              // the bare scope struct; write_back_through_lhs re-wraps the
+              // mutated struct into the closure at the source binding.
+              let value = match value {
+                Value::Fun(Function::Scoped { scope, .. })
+                  if !matches!(ty, Type::Function(_)) =>
+                {
+                  *scope
+                }
+                other => other,
+              };
               env.bind(name.clone(), value, ty);
             }
             let value = match eval(*body, env) {
