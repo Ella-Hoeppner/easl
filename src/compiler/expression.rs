@@ -2111,6 +2111,12 @@ impl TypedExp {
               }
               _ => {}
             }
+          } else {
+            // An application with no abstract ancestor is a closure's scope
+            // construction (produced by extract_inner_functions), which
+            // compiles like a struct construction — C needs the compound-
+            // literal form.
+            is_struct_constructor = true;
           }
           if ASSIGNMENT_OPS.contains(&f_str.as_str()) {
             if arg_strs.len() == 2 {
@@ -2203,6 +2209,24 @@ impl TypedExp {
       }),
       Access(accessor, subexp) => {
         let subexp_type = subexp.data.unwrap_known();
+        // Accessing through a reference/pointer variable (e.g. a closure's
+        // scope argument, or a `@ref` parameter used outside argument
+        // position) requires an explicit dereference at the root. Only the
+        // root `Name` derefs — projections above it already go through it.
+        // Emitting `(*x).field` explicitly (rather than `x.field`) is
+        // required by C and avoids relying on naga's pointer-access sugar
+        // in WGSL.
+        let deref_root = matches!(subexp.kind, ExpKind::Name(_))
+          && subexp.data.ownership != Ownership::Owned;
+        let compile_subexp =
+          |subexp: TypedExp, names: &mut NameContext| -> String {
+            let compiled = subexp.compile(InnerExpression, names, target);
+            if deref_root {
+              format!("(*{compiled})")
+            } else {
+              compiled
+            }
+          };
         let needs_c_index_helper = target == CompilerTarget::C
           && matches!(&accessor, Accessor::ArrayIndex(_))
           && (subexp_type.is_vector() || subexp_type.is_matrix());
@@ -2214,7 +2238,7 @@ impl TypedExp {
           let Accessor::ArrayIndex(index) = accessor else {
             unreachable!()
           };
-          let subexp_str = subexp.compile(InnerExpression, names, target);
+          let subexp_str = compile_subexp(*subexp, names);
           let index_str = index.compile(InnerExpression, names, target);
           wrap(format!(
             "index_{subexp_type_name}({subexp_str}, {index_str})"
@@ -2225,7 +2249,7 @@ impl TypedExp {
           let Accessor::Swizzle(fields) = accessor else {
             unreachable!()
           };
-          let subexp_str = subexp.compile(InnerExpression, names, target);
+          let subexp_str = compile_subexp(*subexp, names);
           let components = fields
             .into_iter()
             .map(|index| {
@@ -2237,7 +2261,7 @@ impl TypedExp {
         } else {
           wrap(format!(
             "{}{}",
-            subexp.compile(InnerExpression, names, target),
+            compile_subexp(*subexp, names),
             accessor.compile(names, target)
           ))
         }

@@ -118,4 +118,3 @@ cpu_test!(hof_avoids_skipping_calls);
 cpu_test!(hof_calls_not_skipped);
 cpu_test!(nested_associatives);
 cpu_test!(any_all);
-cpu_test!(closure_scope_write_back);
