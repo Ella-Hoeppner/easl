@@ -1,0 +1,8 @@
+@cpu
+(defn main []
+  (let [@var count 0.
+        f (fn []
+            (+= count 1.)
+            (print count)
+            (when (>= count 3.) (close-window)))]
+    (spawn-window f)))

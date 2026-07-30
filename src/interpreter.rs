@@ -1913,7 +1913,10 @@ fn apply_builtin_fn<IO: IOManager>(
       if let Some((ref scope_arg, ref scope_val)) = scope_binding {
         env.bind(scope_arg.clone(), scope_val.clone(), Type::Unit);
       }
-      let reload = IO::run_spawn_window(body, env)?;
+      let reload = {
+        let mut driver = AstFrameDriver { body, env };
+        IO::run_spawn_window_driver(&mut driver)?
+      };
       if let Some((scope_arg, _)) = scope_binding {
         let _ = env.unbind(&scope_arg);
       }
@@ -1927,27 +1930,7 @@ fn apply_builtin_fn<IO: IOManager>(
       let Value::String(path) = args.remove(0).0 else {
         panic!("load-image: expected string path argument")
       };
-      let resolved = if std::path::Path::new(&*path).is_absolute() {
-        std::path::PathBuf::from(&*path)
-      } else if let Some(dir) = &env.source_dir {
-        dir.join(&*path)
-      } else {
-        std::path::PathBuf::from(&*path)
-      };
-      let img = image::open(&resolved)
-        .map_err(|e| {
-          UserspaceEvalError::RuntimeError(format!(
-            "load-image: failed to open \"{path}\": {e}"
-          ))
-        })?
-        .into_rgba8();
-      let (width, height) = img.dimensions();
-      Ok(Value::Texture {
-        width,
-        height,
-        data: img.into_raw(),
-        binding: None,
-      })
+      Ok(load_image_value(&path, &env.source_dir)?)
     }
     "blank-texture" => {
       let (width, height) = if args.len() == 2 {
@@ -2394,6 +2377,169 @@ impl Value {
     }
   }
 
+  /// Deserializes a `Value` from the bytecode VM's flat stack layout (no
+  /// alignment padding, matrices as cols*rows column-major scalars). The
+  /// value shapes produced match the tree-walking interpreter's exactly
+  /// (e.g. matrices as arrays of column vectors), so printing and GPU
+  /// serialization behave identically across both runtimes.
+  pub fn from_vm_words(t: &Type, words: &[u32]) -> Value {
+    fn words_of(t: &Type) -> usize {
+      t.data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+        .unwrap() as usize
+    }
+    match t {
+      Type::F32 => Primitive::F32(f32::from_bits(words[0])).into(),
+      Type::U32 => Primitive::U32(words[0]).into(),
+      Type::I32 => Primitive::I32(words[0] as i32).into(),
+      Type::Bool => Primitive::Bool(words[0] != 0).into(),
+      Type::Unit => Value::Unit,
+      Type::Struct(s)
+        if s.name.starts_with("mat") && s.name.as_bytes().len() >= 6 =>
+      {
+        let cols = (s.name.as_bytes()[3] - b'0') as usize;
+        let rows = (s.name.as_bytes()[5] - b'0') as usize;
+        let elem = s.fields[0].field_type.kind.unwrap_known();
+        let field_names = ["x", "y", "z", "w"];
+        Value::Array(
+          (0..cols)
+            .map(|c| {
+              Value::Struct(
+                (0..rows)
+                  .map(|r| {
+                    (
+                      Arc::<str>::from(field_names[r]),
+                      Value::from_vm_words(
+                        &elem,
+                        &words[c * rows + r..c * rows + r + 1],
+                      ),
+                    )
+                  })
+                  .collect(),
+              )
+            })
+            .collect(),
+        )
+      }
+      Type::Struct(s) => {
+        let mut map = HashMap::new();
+        let mut offset = 0usize;
+        for field in &s.fields {
+          let field_type = field.field_type.kind.unwrap_known();
+          let n = words_of(&field_type);
+          map.insert(
+            field.name.clone(),
+            Value::from_vm_words(&field_type, &words[offset..offset + n]),
+          );
+          offset += n;
+        }
+        Value::Struct(map)
+      }
+      Type::Enum(e) => {
+        let discriminant = words[0] as usize;
+        let variant = &e.variants[discriminant];
+        let inner_type = variant.inner_type.kind.unwrap_known();
+        let inner = if inner_type == Type::Unit {
+          Value::Unit
+        } else {
+          let n = words_of(&inner_type);
+          Value::from_vm_words(&inner_type, &words[1..1 + n])
+        };
+        Value::Enum(variant.name.clone(), Box::new(inner))
+      }
+      Type::Array(Some(ConcreteArraySize::Literal(count)), inner_type) => {
+        let inner = inner_type.kind.unwrap_known();
+        let stride = words_of(&inner);
+        Value::Array(
+          (0..*count as usize)
+            .map(|i| {
+              Value::from_vm_words(
+                &inner,
+                &words[i * stride..(i + 1) * stride],
+              )
+            })
+            .collect(),
+        )
+      }
+      _ => panic!("from_vm_words: unsupported type {t:?}"),
+    }
+  }
+
+  /// Serializes a `Value` into the bytecode VM's flat stack layout — the
+  /// inverse of `from_vm_words`.
+  pub fn to_vm_words(&self, t: &Type) -> Vec<u32> {
+    fn words_of(t: &Type) -> usize {
+      t.data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+        .unwrap() as usize
+    }
+    match (self, t) {
+      (Value::Prim(Primitive::F32(f)), _) => vec![f.to_bits()],
+      (Value::Prim(Primitive::U32(u)), _) => vec![*u],
+      (Value::Prim(Primitive::I32(i)), _) => vec![*i as u32],
+      (Value::Prim(Primitive::Bool(b)), _) => vec![*b as u32],
+      (Value::Unit, _) => vec![],
+      (Value::Array(cols), Type::Struct(s))
+        if s.name.starts_with("mat") && s.name.as_bytes().len() >= 6 =>
+      {
+        let elem = s.fields[0].field_type.kind.unwrap_known();
+        let field_names = ["x", "y", "z", "w"];
+        let mut words = vec![];
+        for col in cols {
+          let Value::Struct(fields) = col else {
+            panic!("matrix column wasn't a struct")
+          };
+          for name in field_names {
+            if let Some(v) = fields.get(name) {
+              words.extend(v.to_vm_words(&elem));
+            }
+          }
+        }
+        words
+      }
+      (Value::Struct(fields), Type::Struct(s)) => {
+        let mut words = vec![];
+        for field in &s.fields {
+          let field_type = field.field_type.kind.unwrap_known();
+          words.extend(fields[&field.name].to_vm_words(&field_type));
+        }
+        words
+      }
+      (Value::Enum(variant, inner), Type::Enum(e)) => {
+        let discriminant = e
+          .variants
+          .iter()
+          .position(|v| v.name == *variant)
+          .expect("enum variant not found") as u32;
+        let mut words = vec![discriminant];
+        let inner_type = e
+          .variants
+          .iter()
+          .find(|v| v.name == *variant)
+          .unwrap()
+          .inner_type
+          .kind
+          .unwrap_known();
+        if inner_type != Type::Unit {
+          words.extend(inner.to_vm_words(&inner_type));
+        }
+        words.resize(words_of(t), 0);
+        words
+      }
+      (Value::Array(items), Type::Array(_, inner_type)) => {
+        let inner = inner_type.kind.unwrap_known();
+        let mut words = vec![];
+        for item in items {
+          words.extend(item.to_vm_words(&inner));
+        }
+        words
+      }
+      (Value::ZeroedArray { length }, Type::Array(_, inner_type)) => {
+        let inner = inner_type.kind.unwrap_known();
+        vec![0u32; length * words_of(&inner)]
+      }
+      _ => panic!("to_vm_words: unsupported value/type pair"),
+    }
+  }
+
   /// Deserializes a `Value` from raw GPU bytes, given the expected `Type`.
   pub fn from_gpu_bytes(bytes: &[u8], ty: &Type) -> Value {
     use crate::compiler::types::ConcreteArraySize;
@@ -2588,6 +2734,44 @@ pub enum SharedBufferState {
   GPUOutOfDate,
 }
 
+/// One frame of a `spawn-window` loop, abstracted over the executing
+/// backend. The tree-walking interpreter and the bytecode-VM CPU runtime
+/// each implement this; the per-IO-manager frame loops (real winit window,
+/// StringIO's simulated frames, CaptureIO's headless frames) are written
+/// once against this trait and work for both.
+pub trait FrameDriver {
+  type IO: IOManager;
+  fn io_mut(&mut self) -> &mut Self::IO;
+  fn wgsl(&self) -> &str;
+  fn binding_infos(&self) -> Vec<((u8, u8), GpuBufferKind, u64)>;
+  /// Runs the frame body once. `Err(EvalException::CloseWindow)` stops the
+  /// frame loop.
+  fn run_frame(&mut self) -> Result<(), EvalException>;
+}
+
+/// Tree-walking-interpreter frame driver: evaluates the callback body once
+/// per frame.
+pub struct AstFrameDriver<'a, IO: IOManager> {
+  pub body: Exp<ExpTypeInfo>,
+  pub env: &'a mut EvaluationEnvironment<IO>,
+}
+
+impl<IO: IOManager> FrameDriver for AstFrameDriver<'_, IO> {
+  type IO = IO;
+  fn io_mut(&mut self) -> &mut IO {
+    &mut self.env.io
+  }
+  fn wgsl(&self) -> &str {
+    self.env.wgsl()
+  }
+  fn binding_infos(&self) -> Vec<((u8, u8), GpuBufferKind, u64)> {
+    self.env.binding_infos()
+  }
+  fn run_frame(&mut self) -> Result<(), EvalException> {
+    eval(self.body.clone(), self.env).map(|_| ())
+  }
+}
+
 pub trait IOManager: Sized {
   fn println(&mut self, s: &str);
   fn record_draw(
@@ -2730,11 +2914,11 @@ pub trait IOManager: Sized {
   fn preferred_window_hints(&self) -> Option<((u32, u32), bool)> {
     None
   }
-  /// Runs the spawn-window event loop. Returns `true` if the loop exited
-  /// because a hot-reload was requested, `false` for a normal exit.
-  fn run_spawn_window(
-    body: Exp<ExpTypeInfo>,
-    env: &mut EvaluationEnvironment<Self>,
+  /// Runs the spawn-window event loop, invoking `driver.run_frame()` once
+  /// per frame. Returns `true` if the loop exited because a hot-reload was
+  /// requested, `false` for a normal exit.
+  fn run_spawn_window_driver<D: FrameDriver<IO = Self>>(
+    driver: &mut D,
   ) -> Result<bool, EvalError>;
   /// Start a background audio playback thread that calls the function named
   /// `entry_name` at the audio sample rate. The function must have signature
@@ -3123,15 +3307,14 @@ impl IOManager for StdoutIO {
     }
   }
 
-  fn run_spawn_window(
-    body: Exp<ExpTypeInfo>,
-    env: &mut EvaluationEnvironment<Self>,
+  fn run_spawn_window_driver<D: FrameDriver<IO = Self>>(
+    driver: &mut D,
   ) -> Result<bool, EvalError> {
     #[cfg(feature = "window")]
-    return crate::window::run_window_loop(body, env);
+    return crate::window::run_window_loop(driver);
     #[cfg(not(feature = "window"))]
     {
-      let _ = (body, env);
+      let _ = driver;
       Err(WindowFeatureNotEnabled.into())
     }
   }
@@ -3273,15 +3456,14 @@ impl IOManager for StringIO {
     self.frame_index as u32
   }
 
-  fn run_spawn_window(
-    body: Exp<ExpTypeInfo>,
-    env: &mut EvaluationEnvironment<Self>,
+  fn run_spawn_window_driver<D: FrameDriver<IO = Self>>(
+    driver: &mut D,
   ) -> Result<bool, EvalError> {
-    env.io.events.push(IOEvent::SpawnWindow);
-    let frame_count = env.io.frame_count;
+    driver.io_mut().events.push(IOEvent::SpawnWindow);
+    let frame_count = driver.io_mut().frame_count;
     for i in 0..frame_count {
-      env.io.frame_index = i;
-      match eval(body.clone(), env) {
+      driver.io_mut().frame_index = i;
+      match driver.run_frame() {
         Ok(_) => {}
         Err(EvalException::CloseWindow) => break,
         Err(e) => return Err(e.into()),
@@ -3469,12 +3651,11 @@ impl IOManager for CaptureIO {
     self.inner.flush_queued_compute();
   }
 
-  fn run_spawn_window(
-    body: Exp<ExpTypeInfo>,
-    env: &mut EvaluationEnvironment<Self>,
+  fn run_spawn_window_driver<D: FrameDriver<IO = Self>>(
+    driver: &mut D,
   ) -> Result<bool, EvalError> {
     loop {
-      match eval(body.clone(), env) {
+      match driver.run_frame() {
         Ok(_) => {}
         Err(EvalException::CloseWindow) => break,
         Err(e) => return Err(e.into()),
@@ -3486,9 +3667,9 @@ impl IOManager for CaptureIO {
       // in headless mode.
       #[cfg(feature = "window")]
       {
-        let events = env.io.take_frame_draw_calls();
+        let events = driver.io_mut().take_frame_draw_calls();
         if !events.is_empty()
-          && let Some(gpu) = env.io.get_gpu()
+          && let Some(gpu) = driver.io_mut().get_gpu()
         {
           let mut gpu = gpu.write().unwrap();
           gpu.execute_frame_compute(&events);
@@ -3497,8 +3678,8 @@ impl IOManager for CaptureIO {
       }
       #[cfg(not(feature = "window"))]
       {
-        env.io.flush_queued_compute();
-        let _ = env.io.take_frame_draw_calls();
+        driver.io_mut().flush_queued_compute();
+        let _ = driver.io_mut().take_frame_draw_calls();
       }
     }
     Ok(false)
@@ -4145,6 +4326,13 @@ fn write_back_through_lhs<IO: IOManager>(
     match cur.kind {
       ExpKind::Name(name) => break name,
       ExpKind::Application(callee, mut index_args) => {
+        // A function-typed callee is a closure's scope construction
+        // inlined at the call site: the scope struct is a temporary with
+        // no named source, so there's nothing to write back to (matching
+        // C/WGSL, where it's materialized as a caller-frame temporary).
+        if matches!(callee.data.unwrap_known(), Type::Function(_)) {
+          return Ok(());
+        }
         // `(v 0u)` call-style indexing (used for vec/mat element access).
         let Value::Prim(index) = eval(index_args.remove(0), env)? else {
           panic!("expected scalar index in call-style access");
@@ -4217,7 +4405,16 @@ fn write_back_through_lhs<IO: IOManager>(
       }
     }
   }
-  *slot = new_value;
+  // If the source binding holds a closure (Function::Scoped) and the
+  // incoming value is its bare mutated scope struct, update the wrapper's
+  // captured scope in place rather than replacing the closure with data.
+  if let Value::Fun(Function::Scoped { scope, .. }) = slot
+    && !matches!(new_value, Value::Fun(_))
+  {
+    **scope = new_value;
+  } else {
+    *slot = new_value;
+  }
   Ok(())
 }
 
@@ -4392,6 +4589,19 @@ pub fn eval(
               .iter()
               .zip(arg_values.into_iter().zip(arg_types.into_iter()))
             {
+              // A closure value (Function::Scoped) arriving at a parameter
+              // that statically expects the scope struct itself — the
+              // trailing scope arg added by higher-order inlining — binds
+              // the bare scope struct; write_back_through_lhs re-wraps the
+              // mutated struct into the closure at the source binding.
+              let value = match value {
+                Value::Fun(Function::Scoped { scope, .. })
+                  if !matches!(ty, Type::Function(_)) =>
+                {
+                  *scope
+                }
+                other => other,
+              };
               env.bind(name.clone(), value, ty);
             }
             let value = match eval(*body, env) {
@@ -5043,8 +5253,758 @@ fn pick_entry_point_body(
   Ok(*body.clone())
 }
 
+/// Which engine executes `@cpu` code. GPU orchestration (dispatch, sync
+/// tracking, windowing) behaves identically in both; the bytecode VM is much
+/// faster at the actual computation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CpuRuntime {
+  TreeWalking,
+  #[default]
+  BytecodeVm,
+}
+
+/// Resolve the `@cpu` entry point's *name* with the same selection rules as
+/// `pick_entry_point_body`.
+fn pick_entry_point_name(
+  program: &Program,
+  entry_point_name: Option<&str>,
+) -> Result<Arc<str>, EvalError> {
+  let cpu_fns = program.cpu_entry_points();
+  let entry_fn = match entry_point_name {
+    Some(name) => cpu_fns
+      .iter()
+      .find(|f| &*f.read().unwrap().name == name)
+      .ok_or_else(|| CpuEntryPointNotFound(name.into()))?,
+    None => match cpu_fns.len() {
+      0 => return Err(NoCpuEntryPoint.into()),
+      1 => &cpu_fns[0],
+      _ => return Err(MultipleCpuEntryPoints.into()),
+    },
+  };
+  let name = entry_fn.read().unwrap().name.clone();
+  Ok(name)
+}
+
+/// The bytecode-VM CPU runtime. Wraps a real `EvaluationEnvironment` — which
+/// supplies all GPU-sync, upload/readback, printing, and audio machinery
+/// unchanged — around a `BytecodeProgram` that executes the actual `@cpu`
+/// code. Fixed-size GPU-bound globals live authoritatively in VM stack
+/// slots (mirrored lazily into the env's `Value`s only when an upload needs
+/// serialization); runtime-sized globals (unsized arrays, textures) live in
+/// the env as `Value`s and are accessed from VM code through host ops.
+pub struct VmCpuRuntime<IO: IOManager> {
+  pub program: crate::vm::bytecode::BytecodeProgram,
+  pub env: EvaluationEnvironment<IO>,
+  /// Per-binding flag: VM slots have been written since the env's `Value`
+  /// copy was last refreshed. Kept out of the hot path — set only by
+  /// compiler-inserted `MarkCpuWritten` host ops.
+  slots_dirty: Vec<bool>,
+  function_names: Vec<Arc<str>>,
+}
+
+struct VmHostView<'a, IO: IOManager> {
+  env: &'a mut EvaluationEnvironment<IO>,
+  slots_dirty: &'a mut Vec<bool>,
+}
+
+impl<IO: IOManager> crate::vm::bytecode::VmHost for VmHostView<'_, IO> {
+  type Error = EvalError;
+  fn host_call(
+    &mut self,
+    op: &crate::vm::bytecode::HostOp,
+    stack: &mut [u32],
+    code: &crate::vm::bytecode::Code,
+  ) -> Result<Option<crate::vm::bytecode::HostSuspendReason>, EvalError> {
+    vm_host_call(self.env, self.slots_dirty, op, stack, code)
+  }
+}
+
+/// Loads an image file into a `Value::Texture`, resolving relative paths
+/// against `source_dir`. Shared by the `load-image` builtin and the VM
+/// runtime's `AssignTextureFromImage` host op.
+fn load_image_value(
+  path: &str,
+  source_dir: &Option<PathBuf>,
+) -> Result<Value, EvalError> {
+  let resolved = if std::path::Path::new(path).is_absolute() {
+    std::path::PathBuf::from(path)
+  } else if let Some(dir) = source_dir {
+    dir.join(path)
+  } else {
+    std::path::PathBuf::from(path)
+  };
+  let img = image::open(&resolved)
+    .map_err(|e| {
+      UserspaceEvalError::RuntimeError(format!(
+        "load-image: failed to open \"{path}\": {e}"
+      ))
+    })?
+    .into_rgba8();
+  let (width, height) = img.dimensions();
+  Ok(Value::Texture {
+    width,
+    height,
+    data: img.into_raw(),
+    binding: None,
+  })
+}
+
+/// Number of u32 words a type occupies in the VM's flat layout.
+fn vm_words_of(t: &Type) -> usize {
+  t.data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+    .unwrap() as usize
+}
+
+/// Refresh the env's `Value` copies of slot-backed bindings from VM stack
+/// slots, for any binding in `bindings` whose slots are dirty. Called before
+/// upload serialization so `collect_dirty_uploads` sees current data.
+fn refresh_dirty_slots<IO: IOManager>(
+  env: &mut EvaluationEnvironment<IO>,
+  slots_dirty: &mut [bool],
+  bindings: &[u16],
+  stack: &[u32],
+  code: &crate::vm::bytecode::Code,
+) {
+  use crate::vm::bytecode::HostBindingStorage;
+  for &index in bindings {
+    if !slots_dirty[index as usize] {
+      continue;
+    }
+    let binding = &code.host_bindings[index as usize];
+    let HostBindingStorage::Slots { position, size } = binding.storage else {
+      continue;
+    };
+    let value = Value::from_vm_words(
+      &binding.ty,
+      &stack[position as usize..(position + size) as usize],
+    );
+    if let Some(stack_entry) = env.bindings.get_mut(&binding.name)
+      && let Some(slot) = stack_entry.last_mut()
+    {
+      slot.0 = value;
+    }
+    slots_dirty[index as usize] = false;
+  }
+}
+
+fn vm_host_call<IO: IOManager>(
+  env: &mut EvaluationEnvironment<IO>,
+  slots_dirty: &mut Vec<bool>,
+  op: &crate::vm::bytecode::HostOp,
+  stack: &mut [u32],
+  code: &crate::vm::bytecode::Code,
+) -> Result<Option<crate::vm::bytecode::HostSuspendReason>, EvalError> {
+  use crate::vm::bytecode::{HostBindingStorage, HostOp, HostSuspendReason};
+  match op {
+    HostOp::Print { slot, ty } => {
+      let t = &code.host_types[*ty as usize];
+      let n = vm_words_of(t);
+      let value =
+        Value::from_vm_words(t, &stack[*slot as usize..*slot as usize + n]);
+      let formatted = value.format_for_print(t, env)?;
+      env.io.println(&formatted);
+    }
+    HostOp::PrintBinding { binding } => {
+      let b = &code.host_bindings[*binding as usize];
+      let value = env.lookup(&b.name)?.clone();
+      let formatted = value.format_for_print(&b.ty, env)?;
+      env.io.println(&formatted);
+    }
+    HostOp::PrintString { string } => {
+      let text = code.host_strings[*string as usize].clone();
+      env.io.println(&text);
+    }
+    HostOp::PrintZeroed { len_slot, ty } => {
+      let t = &code.host_types[*ty as usize];
+      let value = Value::ZeroedArray {
+        length: stack[*len_slot as usize] as usize,
+      };
+      let formatted = value.format_for_print(t, env)?;
+      env.io.println(&formatted);
+    }
+    HostOp::CheckGpuToCpu { binding } => {
+      let b = &code.host_bindings[*binding as usize];
+      if env.buffer_states.get(&b.name)
+        == Some(&SharedBufferState::CPUOutOfDate)
+      {
+        env.check_cpu_readable(&[b.name.clone()]);
+        // Readback landed in the env's Value; mirror it into the VM slots
+        // where CPU code actually reads it.
+        if env.buffer_states.get(&b.name) == Some(&SharedBufferState::Synced)
+          && let HostBindingStorage::Slots { position, size } = b.storage
+        {
+          let words = env.lookup(&b.name)?.to_vm_words(&b.ty);
+          stack[position as usize..(position + size) as usize]
+            .copy_from_slice(&words[..size as usize]);
+          slots_dirty[*binding as usize] = false;
+        }
+      }
+    }
+    HostOp::MarkCpuWritten { binding } => {
+      let b = &code.host_bindings[*binding as usize];
+      if matches!(b.storage, HostBindingStorage::Slots { .. }) {
+        slots_dirty[*binding as usize] = true;
+      }
+      let name = b.name.clone();
+      env.mark_cpu_written(&[name]);
+    }
+    HostOp::DispatchCompute {
+      entry,
+      sets,
+      workgroup_slot,
+    } => {
+      let dispatch = &code.host_dispatches[*sets as usize];
+      refresh_dirty_slots(env, slots_dirty, &dispatch.reads, stack, code);
+      let read_names: Vec<Arc<str>> = dispatch
+        .reads
+        .iter()
+        .map(|&i| code.host_bindings[i as usize].name.clone())
+        .collect();
+      let written_names: Vec<Arc<str>> = dispatch
+        .writes
+        .iter()
+        .map(|&i| code.host_bindings[i as usize].name.clone())
+        .collect();
+      let ws = *workgroup_slot as usize;
+      let workgroup_count = (stack[ws], stack[ws + 1], stack[ws + 2]);
+      env.setup_gpu_if_needed();
+      let pre_upload = env.collect_dirty_uploads(&read_names);
+      env.io.record_compute(
+        &code.host_strings[*entry as usize],
+        workgroup_count,
+        pre_upload,
+      )?;
+      env.mark_gpu_written(&written_names);
+    }
+    HostOp::DispatchRender {
+      vert,
+      frag,
+      sets,
+      vert_count_slot,
+      additive_slot,
+    } => {
+      let dispatch = &code.host_dispatches[*sets as usize];
+      refresh_dirty_slots(env, slots_dirty, &dispatch.reads, stack, code);
+      let read_names: Vec<Arc<str>> = dispatch
+        .reads
+        .iter()
+        .map(|&i| code.host_bindings[i as usize].name.clone())
+        .collect();
+      let written_names: Vec<Arc<str>> = dispatch
+        .writes
+        .iter()
+        .map(|&i| code.host_bindings[i as usize].name.clone())
+        .collect();
+      let vert_count = stack[*vert_count_slot as usize];
+      let additive = additive_slot
+        .map(|slot| stack[slot as usize] != 0)
+        .unwrap_or(false);
+      env.setup_gpu_if_needed();
+      let mut pre_upload = env.collect_dirty_uploads(&read_names);
+      let render_target =
+        env.current_render_target.map(|gb| (gb.group, gb.binding));
+      // If rendering to an offscreen texture, also upload it now so the GPU
+      // has the correctly-sized texture to render into (mirrors the
+      // tree-walking handler).
+      if let Some((rt_group, rt_binding)) = render_target {
+        if let Some((_, name, _, _)) =
+          env.binding_vars.iter().find(|(gb, _, _, addr)| {
+            gb.group == rt_group
+              && gb.binding == rt_binding
+              && *addr == VariableAddressSpace::Handle
+          })
+        {
+          let name = name.clone();
+          if env.buffer_states.get(&name)
+            == Some(&SharedBufferState::GPUOutOfDate)
+          {
+            let extra = env.collect_dirty_uploads(&[name.clone()]);
+            pre_upload.extend(extra);
+          }
+        }
+      }
+      env.io.record_draw(
+        &code.host_strings[*vert as usize],
+        &code.host_strings[*frag as usize],
+        vert_count,
+        pre_upload,
+        additive,
+        render_target,
+      )?;
+      env.mark_gpu_written(&written_names);
+      if let Some((rt_group, rt_binding)) = render_target {
+        if let Some((_, name, _, _)) =
+          env.binding_vars.iter().find(|(gb, _, _, _)| {
+            gb.group == rt_group && gb.binding == rt_binding
+          })
+        {
+          let name = name.clone();
+          env.mark_gpu_written(&[name]);
+        }
+      }
+    }
+    HostOp::AssignDynZeroed { binding, len_slot } => {
+      let b = &code.host_bindings[*binding as usize];
+      let length = stack[*len_slot as usize] as usize;
+      let name = b.name.clone();
+      if let Some(stack_entry) = env.bindings.get_mut(&name)
+        && let Some(slot) = stack_entry.last_mut()
+      {
+        slot.0 = Value::ZeroedArray { length };
+      }
+    }
+    HostOp::AssignDynFromSlots {
+      binding,
+      src_slot,
+      count,
+    } => {
+      let b = &code.host_bindings[*binding as usize];
+      let Type::Array(_, inner_type) = &b.ty else {
+        panic!("AssignDynFromSlots target isn't an array")
+      };
+      let elem = inner_type.kind.unwrap_known();
+      let stride = vm_words_of(&elem);
+      let base = *src_slot as usize;
+      let items: Vec<Value> = (0..*count as usize)
+        .map(|i| {
+          Value::from_vm_words(
+            &elem,
+            &stack[base + i * stride..base + (i + 1) * stride],
+          )
+        })
+        .collect();
+      let name = b.name.clone();
+      if let Some(stack_entry) = env.bindings.get_mut(&name)
+        && let Some(slot) = stack_entry.last_mut()
+      {
+        slot.0 = Value::Array(items);
+      }
+    }
+    HostOp::DynLen { binding, dest } => {
+      let b = &code.host_bindings[*binding as usize];
+      let length = match env.lookup(&b.name)? {
+        Value::Array(items) => items.len(),
+        Value::ZeroedArray { length } => *length,
+        other => panic!("array-length of non-array value {other:?}"),
+      };
+      stack[*dest as usize] = length as u32;
+    }
+    HostOp::DynLoad {
+      binding,
+      index_slot,
+      dest,
+    } => {
+      let b = &code.host_bindings[*binding as usize];
+      let Type::Array(_, inner_type) = &b.ty else {
+        panic!("DynLoad target isn't an array")
+      };
+      let elem = inner_type.kind.unwrap_known();
+      let stride = vm_words_of(&elem);
+      let index = stack[*index_slot as usize] as usize;
+      match env.lookup(&b.name)? {
+        Value::Array(items) => {
+          let words = items[index].to_vm_words(&elem);
+          stack[*dest as usize..*dest as usize + stride]
+            .copy_from_slice(&words);
+        }
+        Value::ZeroedArray { .. } => {
+          stack[*dest as usize..*dest as usize + stride].fill(0);
+        }
+        other => panic!("element read of non-array value {other:?}"),
+      }
+    }
+    HostOp::DynStore {
+      binding,
+      index_slot,
+      src_slot,
+    } => {
+      let b = &code.host_bindings[*binding as usize];
+      let Type::Array(_, inner_type) = &b.ty else {
+        panic!("DynStore target isn't an array")
+      };
+      let elem = inner_type.kind.unwrap_known();
+      let stride = vm_words_of(&elem);
+      let index = stack[*index_slot as usize] as usize;
+      let value = Value::from_vm_words(
+        &elem,
+        &stack[*src_slot as usize..*src_slot as usize + stride],
+      );
+      // Promote a lazily-zeroed array to a real one on first element write,
+      // mirroring the tree-walker.
+      let zero = Value::zeroed(elem.clone(), env)?;
+      let name = b.name.clone();
+      if let Some(stack_entry) = env.bindings.get_mut(&name)
+        && let Some(slot) = stack_entry.last_mut()
+      {
+        if let Value::ZeroedArray { length } = slot.0 {
+          slot.0 = Value::Array(vec![zero; length]);
+        }
+        let Value::Array(items) = &mut slot.0 else {
+          panic!("element write to non-array value")
+        };
+        items[index] = value;
+      }
+    }
+    HostOp::WindowQuery { kind, dest } => {
+      use crate::vm::bytecode::WindowQueryKind;
+      let d = *dest as usize;
+      match kind {
+        WindowQueryKind::Resolution => {
+          let (w, h) = env.io.window_size();
+          stack[d] = w;
+          stack[d + 1] = h;
+        }
+        WindowQueryKind::Time => stack[d] = env.io.window_time().to_bits(),
+        WindowQueryKind::DeltaTime => {
+          stack[d] = env.io.window_delta_time().to_bits()
+        }
+        WindowQueryKind::FrameIndex => stack[d] = env.io.window_frame_index(),
+        WindowQueryKind::MouseCoords => {
+          let (x, y) = env.io.mouse_coords();
+          stack[d] = x;
+          stack[d + 1] = y;
+        }
+        WindowQueryKind::MousePresent => {
+          stack[d] = env.io.mouse_present() as u32
+        }
+        WindowQueryKind::MouseDown => stack[d] = env.io.mouse_down() as u32,
+        WindowQueryKind::MouseJustDown => {
+          stack[d] = env.io.mouse_just_down() as u32
+        }
+      }
+    }
+    HostOp::KeyQuery { just, key, dest } => {
+      let key = &code.host_strings[*key as usize];
+      stack[*dest as usize] = if *just {
+        env.io.key_just_down(key)
+      } else {
+        env.io.key_down(key)
+      } as u32;
+    }
+    HostOp::SpawnWindow { frame_fn } => {
+      return Ok(Some(HostSuspendReason::SpawnWindow {
+        frame_fn: *frame_fn,
+      }));
+    }
+    HostOp::CloseWindow => {
+      env.io.record_close_window();
+      return Ok(Some(HostSuspendReason::CloseWindow));
+    }
+    HostOp::StartAudio { entry } => {
+      let entry_name = code.host_strings[*entry as usize].clone();
+      #[cfg(feature = "window")]
+      {
+        let source = env.audio_source.take();
+        env.io.start_audio(&entry_name, source)?;
+      }
+      #[cfg(not(feature = "window"))]
+      {
+        let _ = entry_name;
+        return Err(WindowFeatureNotEnabled.into());
+      }
+    }
+    HostOp::AssignTextureFromImage { binding, path } => {
+      let b = &code.host_bindings[*binding as usize];
+      let path = code.host_strings[*path as usize].clone();
+      let value = load_image_value(&path, &env.source_dir)?;
+      let name = b.name.clone();
+      if let Some(stack_entry) = env.bindings.get_mut(&name)
+        && let Some(slot) = stack_entry.last_mut()
+      {
+        slot.0 = value;
+      }
+    }
+    HostOp::AssignTextureBlank { binding, size_slot } => {
+      let b = &code.host_bindings[*binding as usize];
+      let width = stack[*size_slot as usize];
+      let height = stack[*size_slot as usize + 1];
+      let name = b.name.clone();
+      if let Some(stack_entry) = env.bindings.get_mut(&name)
+        && let Some(slot) = stack_entry.last_mut()
+      {
+        slot.0 = Value::Texture {
+          width,
+          height,
+          data: vec![0u8; (width * height * 4) as usize],
+          binding: None,
+        };
+      }
+    }
+    HostOp::TextureDims { binding, dest } => {
+      let b = &code.host_bindings[*binding as usize];
+      let Value::Texture { width, height, .. } = env.lookup(&b.name)? else {
+        panic!("texture-dimensions: expected Texture value")
+      };
+      stack[*dest as usize] = *width;
+      stack[*dest as usize + 1] = *height;
+    }
+    HostOp::SetRenderTarget { binding } => {
+      let b = &code.host_bindings[*binding as usize];
+      let (group, binding, _) =
+        b.gpu.expect("set-render-target on an unbound texture");
+      env.current_render_target = Some(GroupAndBinding { group, binding });
+    }
+    HostOp::ClearRenderTarget => {
+      env.current_render_target = None;
+    }
+  }
+  Ok(None)
+}
+
+/// Bytecode-VM frame driver: runs the compiled frame function once per
+/// frame. The frame closure's captured scope lives in the function's
+/// argument slots, which persist across frames.
+struct VmFrameDriver<'a, IO: IOManager> {
+  program: &'a mut crate::vm::bytecode::BytecodeProgram,
+  env: &'a mut EvaluationEnvironment<IO>,
+  slots_dirty: &'a mut Vec<bool>,
+  frame_fn: usize,
+}
+
+impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
+  type IO = IO;
+  fn io_mut(&mut self) -> &mut IO {
+    &mut self.env.io
+  }
+  fn wgsl(&self) -> &str {
+    self.env.wgsl()
+  }
+  fn binding_infos(&self) -> Vec<((u8, u8), GpuBufferKind, u64)> {
+    self.env.binding_infos()
+  }
+  fn run_frame(&mut self) -> Result<(), EvalException> {
+    use crate::vm::bytecode::{HostSuspendReason, RunResult};
+    self.program.prepare_to_run_function(self.frame_fn);
+    let mut host = VmHostView {
+      env: self.env,
+      slots_dirty: self.slots_dirty,
+    };
+    match self.program.execute_with_host(&mut host) {
+      Ok(RunResult::Finished) => Ok(()),
+      Ok(RunResult::Suspended(HostSuspendReason::CloseWindow)) => {
+        Err(EvalException::CloseWindow)
+      }
+      Ok(RunResult::Suspended(HostSuspendReason::SpawnWindow { .. })) => {
+        Err(EvalException::Error(
+          UserspaceEvalError::RuntimeError(
+            "nested spawn-window is not supported".to_string(),
+          )
+          .into(),
+        ))
+      }
+      Err(e) => Err(EvalException::Error(e)),
+    }
+  }
+}
+
+impl<IO: IOManager> VmCpuRuntime<IO> {
+  /// Builds the VM CPU runtime from an already-validated `Program`. The
+  /// program is compiled twice from the same validated form: once to WGSL +
+  /// an `EvaluationEnvironment` (for all GPU/host machinery) and once to
+  /// CPU-mode bytecode (for execution).
+  pub fn new(
+    program: Program,
+    io: IO,
+    source_dir: Option<PathBuf>,
+    #[cfg(feature = "window")] audio_source: Option<
+      crate::audio::AudioSource,
+    >,
+  ) -> Result<Self, EvalError> {
+    let env_program = program.clone();
+    #[cfg(feature = "window")]
+    let env = EvaluationEnvironment::from_program_with_audio_source(
+      env_program,
+      io,
+      source_dir,
+      audio_source,
+    )?;
+    #[cfg(not(feature = "window"))]
+    let env = EvaluationEnvironment::from_program(env_program, io, source_dir)?;
+    let (vm_program, function_names) = program.compile_to_bytecode_program_cpu();
+    let slots_dirty = vec![false; vm_program.code.host_bindings.len()];
+    Ok(Self {
+      program: vm_program,
+      env,
+      slots_dirty,
+      function_names,
+    })
+  }
+
+  /// Runs the `@cpu` entry point named `entry_name` to completion,
+  /// including any `spawn-window` frame loops. Returns `true` if a
+  /// hot-reload was requested.
+  pub fn run(&mut self, entry_name: &str) -> Result<bool, EvalError> {
+    use crate::vm::bytecode::{HostSuspendReason, RunResult};
+    let entry_index = self
+      .function_names
+      .iter()
+      .position(|n| &**n == entry_name)
+      .ok_or_else(|| CpuEntryPointNotFound(entry_name.into()))?;
+    self.program.prepare_to_run_function(entry_index);
+    loop {
+      let result = {
+        let mut host = VmHostView {
+          env: &mut self.env,
+          slots_dirty: &mut self.slots_dirty,
+        };
+        self.program.execute_with_host(&mut host)?
+      };
+      match result {
+        RunResult::Finished => return Ok(false),
+        RunResult::Suspended(HostSuspendReason::CloseWindow) => {
+          // close-window outside a window: nothing left to do.
+          return Ok(false);
+        }
+        RunResult::Suspended(HostSuspendReason::SpawnWindow { frame_fn }) => {
+          // Stash the suspended continuation of the entry function, run the
+          // window loop (each frame re-executes the frame function), then
+          // restore and resume.
+          let saved_continuation = std::mem::take(&mut self.program.call_stack);
+          let reload = {
+            let mut driver = VmFrameDriver {
+              program: &mut self.program,
+              env: &mut self.env,
+              slots_dirty: &mut self.slots_dirty,
+              frame_fn: frame_fn as usize,
+            };
+            IO::run_spawn_window_driver(&mut driver)?
+          };
+          self.program.call_stack = saved_continuation;
+          if reload {
+            return Ok(true);
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Runs a validated program's `@cpu` entry on the bytecode VM. The
+/// counterpart of `run_program_with` for `CpuRuntime::BytecodeVm`.
+fn run_program_vm_with<IO: IOManager>(
+  program: Program,
+  entry_point_name: Option<&str>,
+  io: IO,
+  source_dir: Option<PathBuf>,
+  #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
+) -> Result<(IO, bool), EvalError> {
+  let entry_name = pick_entry_point_name(&program, entry_point_name)?;
+  let mut runtime = VmCpuRuntime::new(
+    program,
+    io,
+    source_dir,
+    #[cfg(feature = "window")]
+    audio_source,
+  )?;
+  let reload = runtime.run(&entry_name)?;
+  Ok((runtime.env.io, reload))
+}
+
+/// Runs a validated program's `@cpu` entry on the chosen runtime.
+pub fn run_program_with_runtime<IO: IOManager>(
+  program: Program,
+  entry_point_name: Option<&str>,
+  io: IO,
+  source_dir: Option<PathBuf>,
+  runtime: CpuRuntime,
+) -> Result<(IO, bool), EvalError> {
+  match runtime {
+    CpuRuntime::TreeWalking => {
+      run_program_with(program, entry_point_name, io, source_dir)
+    }
+    CpuRuntime::BytecodeVm => run_program_vm_with(
+      program,
+      entry_point_name,
+      io,
+      source_dir,
+      #[cfg(feature = "window")]
+      None,
+    ),
+  }
+}
+
+/// Runs on the default runtime with a pre-compiled audio source (the path
+/// the CLI-facing entry points take).
+#[cfg(feature = "window")]
+fn run_program_default_runtime_with_audio<IO: IOManager>(
+  program: Program,
+  entry_point_name: Option<&str>,
+  io: IO,
+  source_dir: Option<PathBuf>,
+  audio_source: Option<crate::audio::AudioSource>,
+) -> Result<(IO, bool), EvalError> {
+  match CpuRuntime::default() {
+    CpuRuntime::TreeWalking => run_program_with_audio_source(
+      program,
+      entry_point_name,
+      io,
+      source_dir,
+      audio_source,
+    ),
+    CpuRuntime::BytecodeVm => run_program_vm_with(
+      program,
+      entry_point_name,
+      io,
+      source_dir,
+      audio_source,
+    ),
+  }
+}
+
+/// `run_program_with_capture_from_path` with an explicit runtime choice.
+pub fn run_program_with_capture_and_runtime_from_path(
+  program: Program,
+  source_path: &std::path::Path,
+  runtime: CpuRuntime,
+) -> Result<Vec<String>, EvalError> {
+  let source_dir = source_path.parent().map(|p| p.to_path_buf());
+  let (io, _) = run_program_with_runtime(
+    program,
+    None,
+    CaptureIO::new(),
+    source_dir,
+    runtime,
+  )?;
+  Ok(io.prints)
+}
+
+/// `run_program_capturing_io_from_path` with an explicit runtime choice.
+pub fn run_program_capturing_io_with_runtime_from_path(
+  program: Program,
+  source_path: &std::path::Path,
+  runtime: CpuRuntime,
+) -> Result<CaptureIO, EvalError> {
+  let source_dir = source_path.parent().map(|p| p.to_path_buf());
+  Ok(
+    run_program_with_runtime(
+      program,
+      None,
+      CaptureIO::new(),
+      source_dir,
+      runtime,
+    )?
+    .0,
+  )
+}
+
+/// `run_program_test_io` with an explicit runtime choice.
+pub fn run_program_test_io_with_runtime(
+  program: Program,
+  runtime: CpuRuntime,
+) -> Result<StringIO, EvalError> {
+  Ok(
+    run_program_with_runtime(program, None, StringIO::new(), None, runtime)?.0,
+  )
+}
+
 pub fn run_program(program: Program) -> Result<(), EvalError> {
-  run_program_with(program, None, StdoutIO::new(), None)?;
+  run_program_with_runtime(
+    program,
+    None,
+    StdoutIO::new(),
+    None,
+    CpuRuntime::default(),
+  )?;
   Ok(())
 }
 
@@ -5052,7 +6012,13 @@ pub fn run_program_entry(
   program: Program,
   entry: Option<&str>,
 ) -> Result<(), EvalError> {
-  run_program_with(program, entry, StdoutIO::new(), None)?;
+  run_program_with_runtime(
+    program,
+    entry,
+    StdoutIO::new(),
+    None,
+    CpuRuntime::default(),
+  )?;
   Ok(())
 }
 
@@ -5069,7 +6035,7 @@ pub fn run_program_entry_from_path(
       source_path,
       crate::audio::AudioBackend::default(),
     );
-    run_program_with_audio_source(
+    run_program_default_runtime_with_audio(
       program,
       entry,
       StdoutIO::new(),
@@ -5080,7 +6046,13 @@ pub fn run_program_entry_from_path(
   #[cfg(not(feature = "window"))]
   {
     let _ = source_path;
-    run_program_with(program, entry, StdoutIO::new(), source_dir)?;
+    run_program_with_runtime(
+      program,
+      entry,
+      StdoutIO::new(),
+      source_dir,
+      CpuRuntime::default(),
+    )?;
   }
   Ok(())
 }
@@ -5191,12 +6163,24 @@ pub fn run_program_entry_with_io_from_path<IO: IOManager>(
       source_path,
       crate::audio::AudioBackend::default(),
     );
-    run_program_with_audio_source(program, entry, io, source_dir, audio_source)
+    run_program_default_runtime_with_audio(
+      program,
+      entry,
+      io,
+      source_dir,
+      audio_source,
+    )
   }
   #[cfg(not(feature = "window"))]
   {
     let _ = source_path;
-    run_program_with(program, entry, io, source_dir)
+    run_program_with_runtime(
+      program,
+      entry,
+      io,
+      source_dir,
+      CpuRuntime::default(),
+    )
   }
 }
 
@@ -5217,13 +6201,27 @@ pub fn run_program_entry_with_io_and_audio_backend_from_path<
   let source_dir = source_path.parent().map(|p| p.to_path_buf());
   let audio_source =
     try_compile_audio_source(&program, source_path, audio_backend);
-  run_program_with_audio_source(program, entry, io, source_dir, audio_source)
+  run_program_default_runtime_with_audio(
+    program,
+    entry,
+    io,
+    source_dir,
+    audio_source,
+  )
 }
 
 pub fn run_program_capturing_output(
   program: Program,
 ) -> Result<String, EvalError> {
-  let (io, _) = run_program_with(program, None, StringIO::new(), None)?;
+  run_program_capturing_output_with_runtime(program, CpuRuntime::default())
+}
+
+pub fn run_program_capturing_output_with_runtime(
+  program: Program,
+  runtime: CpuRuntime,
+) -> Result<String, EvalError> {
+  let (io, _) =
+    run_program_with_runtime(program, None, StringIO::new(), None, runtime)?;
   let mut output = String::new();
   for event in &io.events {
     if let IOEvent::Print(s) = event {
@@ -5235,13 +6233,19 @@ pub fn run_program_capturing_output(
 }
 
 pub fn run_program_test_io(program: Program) -> Result<StringIO, EvalError> {
-  Ok(run_program_with(program, None, StringIO::new(), None)?.0)
+  run_program_test_io_with_runtime(program, CpuRuntime::default())
 }
 
 pub fn run_program_with_capture(
   program: Program,
 ) -> Result<Vec<String>, EvalError> {
-  let (io, _) = run_program_with(program, None, CaptureIO::new(), None)?;
+  let (io, _) = run_program_with_runtime(
+    program,
+    None,
+    CaptureIO::new(),
+    None,
+    CpuRuntime::default(),
+  )?;
   Ok(io.prints)
 }
 
@@ -5249,9 +6253,11 @@ pub fn run_program_with_capture_from_path(
   program: Program,
   source_path: &std::path::Path,
 ) -> Result<Vec<String>, EvalError> {
-  let source_dir = source_path.parent().map(|p| p.to_path_buf());
-  let (io, _) = run_program_with(program, None, CaptureIO::new(), source_dir)?;
-  Ok(io.prints)
+  run_program_with_capture_and_runtime_from_path(
+    program,
+    source_path,
+    CpuRuntime::default(),
+  )
 }
 
 /// Like `run_program_with_capture_from_path`, but returns the whole
@@ -5263,8 +6269,11 @@ pub fn run_program_capturing_io_from_path(
   program: Program,
   source_path: &std::path::Path,
 ) -> Result<CaptureIO, EvalError> {
-  let source_dir = source_path.parent().map(|p| p.to_path_buf());
-  Ok(run_program_with(program, None, CaptureIO::new(), source_dir)?.0)
+  run_program_capturing_io_with_runtime_from_path(
+    program,
+    source_path,
+    CpuRuntime::default(),
+  )
 }
 
 /// Re-export so downstream crates (e.g. `easl_cli`) can call this without

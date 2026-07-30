@@ -14,7 +14,9 @@ use crate::compiler::types::ExpTypeInfo;
 use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
 use crate::parse::EaslMultiDocument;
 use crate::vm::bytecode::{BytecodeProgram, Instruction, Op};
-use crate::vm::compile::{BytecodeCompilationState, PendingRefFnUsage};
+use crate::vm::compile::{
+  BytecodeCompilationState, PendingFrameFnUsage, PendingRefFnUsage,
+};
 use crate::{
   Never,
   compiler::{
@@ -4887,6 +4889,17 @@ impl Program {
   pub fn composite_functions_in_usage_order(
     &self,
   ) -> Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> {
+    self.composite_functions_in_usage_order_with_discovery(false)
+  }
+  /// With `discover_scope_closures`, also includes composite functions
+  /// reachable only through type-level ancestor references (closures used
+  /// exclusively via scope constructions, which the reference-address-space
+  /// rebuild drops from the registry). The VM CPU runtime needs those
+  /// compiled; WGSL/C/audio emission must not see them.
+  pub fn composite_functions_in_usage_order_with_discovery(
+    &self,
+    discover_scope_closures: bool,
+  ) -> Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> {
     let mut dependencies: HashMap<Arc<str>, HashSet<Arc<str>>> = HashMap::new();
     let mut fns: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> = vec![];
     for f in self.abstract_functions_iter() {
@@ -4900,6 +4913,45 @@ impl Program {
         dependencies.insert(f.name.clone(), HashSet::new());
       }
     }
+    // Closures referenced only through scope constructions aren't in the
+    // abstract-function registry (reference-address-space monomorphization
+    // rebuilds the program from name-called functions only); they're
+    // reachable exclusively through type-level ancestor Arcs, like the
+    // interpreter reaches them. Discover those transitively.
+    if discover_scope_closures {
+      let mut queue: Vec<Arc<RwLock<TopLevelFunction>>> =
+        fns.iter().map(|(_, f)| f.clone()).collect();
+      while let Some(f) = queue.pop() {
+        let mut discovered: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> =
+          vec![];
+        f.read()
+          .unwrap()
+          .expression
+          .walk(&mut |exp| {
+            if let ExpKind::Application(_, _) = &exp.kind
+              && let TypeState::Known(Type::Function(signature)) =
+                &exp.data.kind
+              && let Some(ancestor) = &signature.abstract_ancestor
+            {
+              let ancestor = ancestor.read().unwrap();
+              if let FunctionImplementationKind::Composite(implementation) =
+                &ancestor.implementation
+                && !dependencies.contains_key(&ancestor.name)
+              {
+                discovered
+                  .push((ancestor.name.clone(), implementation.clone()));
+              }
+            }
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
+        for (name, implementation) in discovered {
+          dependencies.insert(name.clone(), HashSet::new());
+          queue.push(implementation.clone());
+          fns.push((name, implementation));
+        }
+      }
+    }
     for (f_name, f) in fns.iter() {
       f.read()
         .unwrap()
@@ -4911,6 +4963,22 @@ impl Program {
                 .get_mut(f_name)
                 .unwrap()
                 .insert(other_f_name.clone());
+            }
+          }
+          // A closure's scope construction references the closure only
+          // through its expression *type* (the applied name is the scope
+          // struct's constructor), so also count type-level function
+          // ancestors as usages.
+          if let ExpKind::Application(_, _) = &exp.kind
+            && let TypeState::Known(Type::Function(signature)) = &exp.data.kind
+            && let Some(ancestor) = &signature.abstract_ancestor
+          {
+            let ancestor_name = ancestor.read().unwrap().name.clone();
+            if dependencies.contains_key(&ancestor_name) {
+              dependencies
+                .get_mut(f_name)
+                .unwrap()
+                .insert(ancestor_name);
             }
           }
           Ok::<bool, Never>(true)
@@ -4941,15 +5009,85 @@ impl Program {
     }
     final_fns
   }
+  /// Audio-mode bytecode compilation: pure math only, CPU-exclusive
+  /// functions skipped, no host calls emitted.
   pub fn compile_to_bytecode_program(self) -> (BytecodeProgram, Vec<Arc<str>>) {
+    self.compile_to_bytecode_program_impl(false)
+  }
+  /// CPU-runtime-mode bytecode compilation: compiles the `@cpu` entry and
+  /// its transitive callees, lowering CPU-exclusive builtins to host ops and
+  /// emitting explicit GPU↔CPU sync instructions from effect analysis.
+  pub fn compile_to_bytecode_program_cpu(
+    self,
+  ) -> (BytecodeProgram, Vec<Arc<str>>) {
+    self.compile_to_bytecode_program_impl(true)
+  }
+  fn compile_to_bytecode_program_impl(
+    self,
+    cpu_mode: bool,
+  ) -> (BytecodeProgram, Vec<Arc<str>>) {
+    use crate::vm::bytecode::{HostBinding, HostBindingStorage};
     let mut state = BytecodeCompilationState::new();
+    state.cpu_mode = cpu_mode;
     for v in self.top_level_vars.iter() {
+      let is_dynamic = matches!(
+        &v.var_type,
+        Type::Array(Some(crate::compiler::types::ConcreteArraySize::Unsized), _)
+      ) || matches!(
+        v.kind,
+        TopLevelVariableKind::Var {
+          address_space: VariableAddressSpace::Handle,
+          ..
+        }
+      );
+      let binding_info = if cpu_mode
+        && let TopLevelVariableKind::Var {
+          address_space,
+          group_and_binding: Some(gb),
+        } = v.kind
+        && matches!(
+          address_space,
+          VariableAddressSpace::Uniform
+            | VariableAddressSpace::StorageRead
+            | VariableAddressSpace::StorageReadWrite
+            | VariableAddressSpace::Handle
+        ) {
+        Some((gb, address_space))
+      } else {
+        None
+      };
+      if cpu_mode && is_dynamic {
+        // Runtime-sized values (unsized arrays, textures) live host-side;
+        // VM code accesses them through host ops, so they get no slots. They
+        // may or may not be GPU-bound (a plain `(var x: [f32])` is legal).
+        let index = state.host_bindings.len() as u16;
+        state.host_bindings.push(HostBinding {
+          name: v.name.clone(),
+          ty: v.var_type.clone(),
+          storage: HostBindingStorage::Dynamic,
+          gpu: binding_info
+            .map(|(gb, address_space)| (gb.group, gb.binding, address_space)),
+        });
+        state.binding_indices.insert(v.name.clone(), index);
+        state.dynamic_globals.insert(v.name.clone(), index);
+        continue;
+      }
       let position = state.consumed_stack_space as u16;
       let size =
         v.var_type.data_size_in_u32s(&v.source_trace).unwrap() as u16;
       state.globals.insert(v.name.clone(), position);
       state.global_slots.push((v.name.clone(), position, size));
       state.consumed_stack_space += size;
+      if let Some((gb, address_space)) = binding_info {
+        let index = state.host_bindings.len() as u16;
+        state.host_bindings.push(HostBinding {
+          name: v.name.clone(),
+          ty: v.var_type.clone(),
+          storage: HostBindingStorage::Slots { position, size },
+          gpu: Some((gb.group, gb.binding, address_space)),
+        });
+        state.binding_indices.insert(v.name.clone(), index);
+      }
     }
     // If any top-level var has an initializer expression, compile a
     // synthetic "$init_globals" function that computes each one and Moves it
@@ -4977,7 +5115,79 @@ impl Program {
       } else {
         None
       };
-    for (f_name, implementation) in self.composite_functions_in_usage_order() {
+    let ordered_functions =
+      self.composite_functions_in_usage_order_with_discovery(cpu_mode);
+    // CPU mode compiles only functions actually reachable from `@cpu`
+    // entries. Anything referenced solely from GPU entry points (e.g. the
+    // callbacks a compute shader invokes) must not be compiled for the CPU —
+    // it may legally do GPU-only things like passing storage-array elements
+    // by reference to atomics.
+    let cpu_reachable: Option<HashSet<Arc<str>>> = if cpu_mode {
+      let by_name: HashMap<Arc<str>, Arc<RwLock<TopLevelFunction>>> =
+        ordered_functions
+          .iter()
+          .map(|(n, f)| (n.clone(), f.clone()))
+          .collect();
+      let is_cpu_compilable = |f: &Arc<RwLock<TopLevelFunction>>| {
+        f.read()
+          .unwrap()
+          .entry_point
+          .map(|e| matches!(e, EntryPoint::Cpu))
+          .unwrap_or(true)
+      };
+      let mut reachable: HashSet<Arc<str>> = HashSet::new();
+      let mut queue: Vec<Arc<RwLock<TopLevelFunction>>> = vec![];
+      for (name, f) in &ordered_functions {
+        let is_cpu_entry = f
+          .read()
+          .unwrap()
+          .entry_point
+          .map(|e| matches!(e, EntryPoint::Cpu))
+          .unwrap_or(false);
+        if is_cpu_entry && reachable.insert(name.clone()) {
+          queue.push(f.clone());
+        }
+      }
+      while let Some(f) = queue.pop() {
+        let mut found: Vec<Arc<str>> = vec![];
+        f.read()
+          .unwrap()
+          .expression
+          .walk(&mut |exp| {
+            if let ExpKind::Name(name) = &exp.kind
+              && by_name.contains_key(name)
+            {
+              found.push(name.clone());
+            }
+            if let ExpKind::Application(_, _) = &exp.kind
+              && let TypeState::Known(Type::Function(signature)) =
+                &exp.data.kind
+              && let Some(ancestor) = &signature.abstract_ancestor
+            {
+              found.push(ancestor.read().unwrap().name.clone());
+            }
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
+        for name in found {
+          if let Some(target) = by_name.get(&name)
+            && is_cpu_compilable(target)
+            && reachable.insert(name)
+          {
+            queue.push(target.clone());
+          }
+        }
+      }
+      Some(reachable)
+    } else {
+      None
+    };
+    for (f_name, implementation) in ordered_functions {
+      if let Some(reachable) = &cpu_reachable
+        && !reachable.contains(&f_name)
+      {
+        continue;
+      }
       // Filter the same way the C backend does in
       // `TopLevelFunction::compile`: skip entry points whose kind doesn't
       // compile to VM (right now that's everything except `@audio`), and
@@ -4988,32 +5198,56 @@ impl Program {
       // index` / etc.
       {
         let implementation_read = implementation.read().unwrap();
-        let arg_ref_positions: Vec<usize> = implementation_read
-          .arg_annotations
+        // Ref-arg detection keys off signature-level ownership, not
+        // arg_annotations: annotations only reflect user-written `@ref`
+        // args, while params created by lowering (closure scope args from
+        // extract_inner_functions) are reference-typed only in the
+        // signature.
+        let Type::Function(f_signature) =
+          implementation_read.expression.data.unwrap_known()
+        else {
+          panic!()
+        };
+        let has_ref_args = f_signature
+          .args
           .iter()
-          .enumerate()
-          .filter_map(|(i, arg)| {
-            if arg.ownership != Ownership::Owned {
-              Some(i)
-            } else {
-              None
-            }
-          })
-          .collect();
-        if !arg_ref_positions.is_empty() {
+          .any(|(v, _)| v.var_type.ownership != Ownership::Owned);
+        if has_ref_args {
           state
             .ref_arg_functions
             .push((f_name, implementation.clone()));
           continue;
         }
-        let skip_for_entry_point = implementation_read
-          .entry_point
-          .map(|e| !e.should_compile_to_target(CompilerTarget::VM))
-          .unwrap_or(false);
-        let effects = implementation_read.effects();
-        let has_cpu_exclusive = !effects.cpu_exclusive_functions().is_empty()
-          || !effects.cpu_exclusive_types().is_empty();
-        if skip_for_entry_point || has_cpu_exclusive {
+        let skip = if cpu_mode {
+          // CPU mode: compile `@cpu` entries and plain functions; skip GPU
+          // and audio entry points, plus any helper that's only meaningful
+          // inside a shader (fragment-exclusive calls, GPU builtin-attribute
+          // lookups like `global-invocation-id`) — those are reachable only
+          // from GPU entries, and compiling them would hit shader-only
+          // builtins.
+          let is_non_cpu_entry = implementation_read
+            .entry_point
+            .map(|e| !matches!(e, EntryPoint::Cpu))
+            .unwrap_or(false);
+          let gpu_only = implementation_read.effects().0.iter().any(|e| {
+            matches!(
+              e,
+              Effect::FragmentExclusiveFunction(_)
+                | Effect::LookupBuiltinAttribute(_)
+            )
+          });
+          is_non_cpu_entry || gpu_only
+        } else {
+          let skip_for_entry_point = implementation_read
+            .entry_point
+            .map(|e| !e.should_compile_to_target(CompilerTarget::VM))
+            .unwrap_or(false);
+          let effects = implementation_read.effects();
+          let has_cpu_exclusive = !effects.cpu_exclusive_functions().is_empty()
+            || !effects.cpu_exclusive_types().is_empty();
+          skip_for_entry_point || has_cpu_exclusive
+        };
+        if skip {
           continue;
         }
       }
@@ -5022,7 +5256,9 @@ impl Program {
         &mut state,
         &[],
       );
-      while !state.pending_ref_arg_function_usages.is_empty() {
+      while !state.pending_ref_arg_function_usages.is_empty()
+        || !state.pending_frame_fn_usages.is_empty()
+      {
         for PendingRefFnUsage {
           name,
           fn_dispatch_position,
@@ -5043,10 +5279,14 @@ impl Program {
             .unwrap()
             .clone();
           let f = f.read().unwrap();
+          let Type::Function(f_signature) = f.expression.data.unwrap_known()
+          else {
+            panic!()
+          };
           let mut owned_arg_indeces = vec![];
           let mut ref_arg_positions = vec![];
-          for (i, annotation) in f.arg_annotations.iter().enumerate() {
-            if annotation.ownership == Ownership::Owned {
+          for (i, (v, _)) in f_signature.args.iter().enumerate() {
+            if v.var_type.ownership == Ownership::Owned {
               owned_arg_indeces.push(i);
             } else {
               ref_arg_positions.push((i, arg_positions[i]));
@@ -5065,6 +5305,39 @@ impl Program {
           }
           state.instructions[return_move_position as usize].arg_positions[0] =
             bytecode_fn.stack_frame_start;
+        }
+        for PendingFrameFnUsage {
+          name,
+          host_op_index,
+          scope_slot,
+        } in state
+          .pending_frame_fn_usages
+          .drain(..)
+          .collect::<Vec<_>>()
+        {
+          let f = state
+            .ref_arg_functions
+            .iter()
+            .find_map(|(f_name, f)| (name == *f_name).then(|| f))
+            .unwrap()
+            .clone();
+          let f = f.read().unwrap();
+          let Type::Function(f_signature) = f.expression.data.unwrap_known()
+          else {
+            panic!()
+          };
+          // The scope param is by construction the frame fn's trailing arg;
+          // bind it directly to the slots materialized at the spawn-window
+          // site, then point the HostOp at the specialized copy.
+          let scope_arg_index = f_signature.args.len() - 1;
+          f.compile_to_bytecode(
+            &name,
+            &mut state,
+            &[(scope_arg_index, scope_slot)],
+          );
+          let frame_fn = (state.finished_functions.len() - 1) as u16;
+          state.host_ops[host_op_index] =
+            crate::vm::bytecode::HostOp::SpawnWindow { frame_fn };
         }
       }
     }

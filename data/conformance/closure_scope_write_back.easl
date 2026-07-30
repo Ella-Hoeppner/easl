@@ -1,0 +1,9 @@
+(defn call-twice [g: (Fn [] f32)]: f32
+  (g)
+  (g))
+
+(defn f []: f32
+  (let [@var counter 0.]
+    (call-twice (fn []
+                    (+= counter 1.)
+                    counter))))

@@ -1307,11 +1307,8 @@ impl TopLevelFunction {
       panic!()
     };
     for (i, (arg, _)) in f.args.iter().enumerate() {
-      let arg_size = arg
-        .var_type
-        .unwrap_known()
-        .data_size_in_u32s(&self.name_source_trace)
-        .unwrap() as u16;
+      let arg_size =
+        crate::vm::compile::vm_type_size(&arg.var_type.unwrap_known());
       let arg_slot = if let Some((_, caller_slot)) = ref_arg_positions
         .iter()
         .find(|(arg_index, _)| *arg_index == i)

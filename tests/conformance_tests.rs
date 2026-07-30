@@ -1,6 +1,6 @@
 use easl::compiler::core::load_easl_program_from_file_with_lookup_function;
 use easl::compiler::program::CompilerTarget;
-use easl::interpreter::run_program_with_capture;
+use easl::interpreter::{CaptureIO, CpuRuntime, run_program_with_runtime};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -122,7 +122,17 @@ fn run_interpreter(
           reason: format!("compile errors: {errors:#?}"),
         };
       }
-      let prints = match run_program_with_capture(program) {
+      // The interpreter stage pins the tree-walking runtime explicitly:
+      // it's the reference implementation the other backends are compared
+      // against (the VM has its own dedicated stage below).
+      let prints = match run_program_with_runtime(
+        program,
+        None,
+        CaptureIO::new(),
+        None,
+        CpuRuntime::TreeWalking,
+      )
+      .map(|(io, _)| io.prints) {
         Ok(p) => p,
         Err(e) => {
           return BackendResult::Failed {
@@ -574,3 +584,4 @@ conformance_test!(array_index_assignment);
 conformance_test!(array_argument);
 conformance_test!(for_loop);
 conformance_test!(for_loop_init);
+conformance_test!(closure_scope_write_back);

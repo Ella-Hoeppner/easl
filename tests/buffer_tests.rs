@@ -1,6 +1,8 @@
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
-use easl::interpreter::run_program_with_capture_from_path;
+use easl::interpreter::{
+  CpuRuntime, run_program_with_capture_and_runtime_from_path,
+};
 use std::fs;
 use std::path::Path;
 
@@ -17,13 +19,30 @@ fn run_buffer_test(name: &str) {
       let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
 
-      let prints = run_program_with_capture_from_path(program, source_path)
-        .unwrap_or_else(|e| {
-          panic!("{name}: evaluation error: {e:#?}");
-        });
+      // Every test runs on both CPU runtimes and must produce identical
+      // output on each.
+      let prints = run_program_with_capture_and_runtime_from_path(
+        program.clone(),
+        source_path,
+        CpuRuntime::TreeWalking,
+      )
+      .unwrap_or_else(|e| {
+        panic!("{name}: evaluation error (tree-walking): {e:#?}");
+      });
       let output: String =
         prints.into_iter().map(|s| format!("{s}\n")).collect();
-      assert_eq!(output, expected, "{name}: output mismatch");
+      assert_eq!(output, expected, "{name}: output mismatch (tree-walking)");
+      let vm_prints = run_program_with_capture_and_runtime_from_path(
+        program,
+        source_path,
+        CpuRuntime::BytecodeVm,
+      )
+      .unwrap_or_else(|e| {
+        panic!("{name}: evaluation error (bytecode VM): {e:#?}");
+      });
+      let vm_output: String =
+        vm_prints.into_iter().map(|s| format!("{s}\n")).collect();
+      assert_eq!(vm_output, expected, "{name}: output mismatch (bytecode VM)");
     }
     Ok(Ok((document, Err(errors)))) => {
       let description = errors.describe(&document);
