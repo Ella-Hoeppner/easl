@@ -1,0 +1,11 @@
+(enum MaybeVec
+  NoVec
+  (SomeVec vec2f))
+
+(defn extract [o: MaybeVec]: f32
+  (match o
+    (SomeVec v) (+ v.x (* 2. v.y))
+    NoVec -1.))
+
+(defn f []: f32
+  (extract (SomeVec (vec2f 3. 4.))))

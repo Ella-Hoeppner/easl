@@ -16,7 +16,10 @@ use crate::{
     enums::{AbstractEnum, Enum, UntypedEnum},
     error::{CompileError, CompileErrorKind},
     expression::{Accessor, ExpKind, Number, TypedExp},
-    functions::{Ownership, extract_mat_size as extract_mat_size_from_name},
+    functions::{
+      AbstractFunctionSignature, FunctionImplementationKind, Ownership,
+      extract_mat_size as extract_mat_size_from_name,
+    },
     program::{CompilerTarget, NameContext, TypeDefs},
     structs::UntypedStruct,
     vars::VariableAddressSpace,
@@ -2105,7 +2108,30 @@ impl Type {
             TypedExp {
               data: Type::Function(
                 FunctionSignature {
-                  abstract_ancestor: None,
+                  // A nested enum value is reconstructed by calling its
+                  // WGSL backing struct's constructor (discriminant +
+                  // data array).
+                  abstract_ancestor: Some(Arc::new(RwLock::new(
+                    AbstractFunctionSignature {
+                      name: name.clone().into(),
+                      generic_args: vec![],
+                      arg_types: vec![
+                        (AbstractType::Type(Type::U32), Ownership::Owned),
+                        (
+                          AbstractType::Type(
+                            inner_data_array_type.unwrap_known(),
+                          ),
+                          Ownership::Owned,
+                        ),
+                      ],
+                      return_type: AbstractType::Type(Type::Enum(e.clone())),
+                      implementation:
+                        FunctionImplementationKind::StructConstructor,
+                      associative: false,
+                      captured_scope: None,
+                      entry_point: None,
+                    },
+                  ))),
                   args: vec![
                     (Variable::immutable(Type::U32.known().into()), vec![]),
                     (
@@ -2161,7 +2187,28 @@ impl Type {
           ExpKind::Application(
             TypedExp {
               data: Type::Function(Box::new(FunctionSignature {
-                abstract_ancestor: None,
+                abstract_ancestor: Some(Arc::new(RwLock::new(
+                  AbstractFunctionSignature {
+                    name: s.name.clone(),
+                    generic_args: vec![],
+                    arg_types: s
+                      .fields
+                      .iter()
+                      .map(|field| {
+                        (
+                          AbstractType::Type(field.field_type.unwrap_known()),
+                          Ownership::Owned,
+                        )
+                      })
+                      .collect(),
+                    return_type: AbstractType::Type(Type::Struct(s.clone())),
+                    implementation:
+                      FunctionImplementationKind::StructConstructor,
+                    associative: false,
+                    captured_scope: None,
+                    entry_point: None,
+                  },
+                ))),
                 args: s
                   .fields
                   .iter()

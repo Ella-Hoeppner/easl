@@ -2290,10 +2290,26 @@ impl TypedExp {
         let Type::Function(f_signature) = f_exp.data.unwrap_known() else {
           panic!()
         };
-        if f_signature.abstract_ancestor.is_none() {
-          // Scope construction for a closure value (produced by
+        let f_ancestor = f_signature.abstract_ancestor.unwrap_or_else(|| {
+          panic!(
+            "application of \"{f_name}\" reached bytecode compilation with \
+             no abstract ancestor; every fully-lowered application callee \
+             must carry one (closure scope constructions get the scope \
+             struct's constructor attached in extract_inner_functions)"
+          )
+        });
+        if matches!(
+          f_ancestor.read().unwrap().implementation,
+          FunctionImplementationKind::StructConstructor
+        ) && matches!(self.data.unwrap_known(), Type::Function(_))
+        {
+          // A struct-constructor application whose own type is a function is
+          // a closure's scope construction (produced by
           // extract_inner_functions): a closure's VM representation is just
-          // its captured scope data, laid out like the scope struct.
+          // its captured scope data, laid out like the scope struct. Kept
+          // separate from the generic StructConstructor arm below because
+          // scope layout uses vm_type_size — captured fields can themselves
+          // be closures.
           let total: u16 = args
             .iter()
             .map(|a| vm_type_size(&a.data.unwrap_known()))

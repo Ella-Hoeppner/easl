@@ -16,6 +16,7 @@ use crate::compiler::{
   structs::AbstractStruct,
   types::{
     AbstractType, ConcreteArraySize, ConstGenericResolution, ExpTypeInfo, Type,
+    TypeState,
   },
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
@@ -4470,38 +4471,50 @@ pub fn eval(
         };
         let f_arc = match f_signature.abstract_ancestor {
           Some(arc) => arc,
-          None => {
-            // Struct constructor for a captured scope, produced by
-            // extract_inner_functions. Evaluate it directly and wrap the
-            // resulting scope struct as Function::Scoped.
-            let field_names: Vec<Arc<str>> = {
-              let s = env
-                .structs
-                .get(&name)
-                .unwrap_or_else(|| panic!("unknown struct: {name}"));
-              s.fields.iter().map(|f| f.name.clone()).collect()
-            };
-            let arg_values: Vec<Value> = args
-              .into_iter()
-              .map(|arg| eval(arg, env))
-              .collect::<Result<_, _>>()?;
-            let scope_struct =
-              Value::Struct(field_names.into_iter().zip(arg_values).collect());
-            if let Type::Function(outer_sig) = exp.data.unwrap_known()
-              && let Some(inner_fn_arc) = outer_sig.abstract_ancestor
-            {
-              let inner_fn = {
-                let sig = inner_fn_arc.read().unwrap();
-                Function::from_abstract_signature(&sig, &sig.name.clone(), env)?
-              };
-              return Ok(Value::Fun(Function::Scoped {
-                inner: Box::new(inner_fn),
-                scope: Box::new(scope_struct),
-              }));
-            }
-            return Ok(scope_struct);
-          }
+          None => panic!(
+            "application of \"{name}\" reached the interpreter with no \
+             abstract ancestor; every fully-lowered application callee must \
+             carry one (closure scope constructions get the scope struct's \
+             constructor attached in extract_inner_functions)"
+          ),
         };
+        // A struct-constructor application whose own type is a function is a
+        // closure's scope construction (extract_inner_functions attaches the
+        // scope struct's constructor as the callee's ancestor, and the
+        // extracted inner fn as the expression type's ancestor). Evaluate the
+        // struct directly and wrap it as Function::Scoped.
+        if matches!(
+          f_arc.read().unwrap().implementation,
+          FunctionImplementationKind::StructConstructor
+        ) && matches!(exp.data.kind, TypeState::Known(Type::Function(_)))
+        {
+          let field_names: Vec<Arc<str>> = {
+            let s = env
+              .structs
+              .get(&name)
+              .unwrap_or_else(|| panic!("unknown struct: {name}"));
+            s.fields.iter().map(|f| f.name.clone()).collect()
+          };
+          let arg_values: Vec<Value> = args
+            .into_iter()
+            .map(|arg| eval(arg, env))
+            .collect::<Result<_, _>>()?;
+          let scope_struct =
+            Value::Struct(field_names.into_iter().zip(arg_values).collect());
+          if let Type::Function(outer_sig) = exp.data.unwrap_known()
+            && let Some(inner_fn_arc) = outer_sig.abstract_ancestor
+          {
+            let inner_fn = {
+              let sig = inner_fn_arc.read().unwrap();
+              Function::from_abstract_signature(&sig, &sig.name.clone(), env)?
+            };
+            return Ok(Value::Fun(Function::Scoped {
+              inner: Box::new(inner_fn),
+              scope: Box::new(scope_struct),
+            }));
+          }
+          return Ok(scope_struct);
+        }
         let f = Function::from_abstract_signature(
           &*f_arc.read().unwrap(),
           &name,

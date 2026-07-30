@@ -2112,11 +2112,12 @@ impl TypedExp {
               _ => {}
             }
           } else {
-            // An application with no abstract ancestor is a closure's scope
-            // construction (produced by extract_inner_functions), which
-            // compiles like a struct construction — C needs the compound-
-            // literal form.
-            is_struct_constructor = true;
+            panic!(
+              "application of \"{f_str}\" reached compilation with no \
+               abstract ancestor; every fully-lowered application callee \
+               must carry one (closure scope constructions get the scope \
+               struct's constructor attached in extract_inner_functions)"
+            );
           }
           if ASSIGNMENT_OPS.contains(&f_str.as_str()) {
             if arg_strs.len() == 2 {

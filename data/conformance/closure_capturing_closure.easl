@@ -1,0 +1,8 @@
+(defn call-it [g: (Fn [] f32)]: f32
+  (g))
+
+(defn f []: f32
+  (let [base 10.
+        inner (fn [] (+ base 1.))
+        outer (fn [] (+ (inner) 2.))]
+    (call-it outer)))

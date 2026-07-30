@@ -2723,12 +2723,46 @@ impl Program {
                       }))
                       .known()
                       .into(),
-                      kind: if let Some((captured_scope, _, _)) = captured_scope
+                      kind: if let Some((
+                        captured_scope,
+                        concrete_captured_scope_type,
+                        _,
+                      )) = captured_scope
                       {
                         ExpKind::Application(
                           Box::new(Exp {
                             data: Type::Function(Box::new(FunctionSignature {
-                              abstract_ancestor: None,
+                              // The scope construction is, at the value
+                              // level, a construction of the scope struct —
+                              // its callee gets the struct's constructor as
+                              // an explicit ancestor, exactly like any other
+                              // struct-constructor application. (The
+                              // closure-ness of the node lives in the
+                              // expression's own type: a function type whose
+                              // ancestor is the extracted inner fn.)
+                              abstract_ancestor: Some(Arc::new(RwLock::new(
+                                AbstractFunctionSignature {
+                                  name: captured_scope.name.0.clone(),
+                                  generic_args: vec![],
+                                  arg_types: captured_vars
+                                    .iter()
+                                    .map(|(_, t, _)| {
+                                      (
+                                        AbstractType::Type(t.clone()),
+                                        Ownership::Owned,
+                                      )
+                                    })
+                                    .collect(),
+                                  return_type: AbstractType::Type(
+                                    concrete_captured_scope_type.clone(),
+                                  ),
+                                  implementation:
+                                    FunctionImplementationKind::StructConstructor,
+                                  associative: false,
+                                  captured_scope: None,
+                                  entry_point: None,
+                                },
+                              ))),
                               args: captured_vars
                                 .iter()
                                 .map(|(_, t, _)| {
