@@ -24,7 +24,6 @@ use crate::compiler::{
   },
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
-#[cfg(feature = "window")]
 use crate::compiler::entry::EntryPoint;
 #[cfg(all(feature = "window", feature = "c_audio"))]
 use crate::compiler::core::compile_easl_file_to_target;
@@ -2716,6 +2715,33 @@ pub enum IOEvent {
   CloseWindow,
 }
 
+/// Which shader stages actually reference a binding, derived from the
+/// transitive effects of each GPU entry point. `window.rs` maps this to
+/// `wgpu::ShaderStages` when building bind group layouts — declaring only
+/// genuinely-used stages matters because per-stage binding budgets are
+/// limited (Metal caps the vertex stage at 16 buffer slots total, counting
+/// every vertex-visible layout binding whether or not the shader uses it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BindingStages {
+  pub vertex: bool,
+  pub fragment: bool,
+  pub compute: bool,
+}
+
+/// Everything `window.rs` needs to create and validate the wgpu binding for
+/// one GPU-bound top-level variable.
+#[derive(Debug, Clone)]
+pub struct GpuBindingInfo {
+  pub group: u8,
+  pub binding: u8,
+  /// Source-level variable name, for human-readable diagnostics.
+  pub name: Arc<str>,
+  pub kind: GpuBufferKind,
+  /// Static size in bytes; 0 for dynamically-sized (unsized array) bindings.
+  pub byte_size: u64,
+  pub stages: BindingStages,
+}
+
 /// Describes the GPU buffer type for a top-level variable binding.
 /// Used by `window.rs` to create the correct wgpu binding.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2748,7 +2774,7 @@ pub trait FrameDriver {
   type IO: IOManager;
   fn io_mut(&mut self) -> &mut Self::IO;
   fn wgsl(&self) -> &str;
-  fn binding_infos(&self) -> Vec<((u8, u8), GpuBufferKind, u64)>;
+  fn binding_infos(&self) -> Vec<GpuBindingInfo>;
   /// Runs the frame body once. `Err(EvalException::CloseWindow)` stops the
   /// frame loop.
   fn run_frame(&mut self) -> Result<(), EvalException>;
@@ -2769,7 +2795,7 @@ impl<IO: IOManager> FrameDriver for AstFrameDriver<'_, IO> {
   fn wgsl(&self) -> &str {
     self.env.wgsl()
   }
-  fn binding_infos(&self) -> Vec<((u8, u8), GpuBufferKind, u64)> {
+  fn binding_infos(&self) -> Vec<GpuBindingInfo> {
     self.env.binding_infos()
   }
   fn run_frame(&mut self) -> Result<(), EvalException> {
@@ -2890,7 +2916,7 @@ pub trait IOManager: Sized {
   fn ensure_gpu_ready(
     &mut self,
     _wgsl: &str,
-    _binding_infos: &[((u8, u8), GpuBufferKind, u64)],
+    _binding_infos: &[GpuBindingInfo],
   ) {
   }
   /// Returns the current allocated byte size of the GPU buffer for the given
@@ -3074,7 +3100,7 @@ impl IOManager for StdoutIO {
   fn ensure_gpu_ready(
     &mut self,
     wgsl: &str,
-    binding_infos: &[((u8, u8), GpuBufferKind, u64)],
+    binding_infos: &[GpuBindingInfo],
   ) {
     if self.gpu.is_none() {
       // On hot-reload, reuse the GPU that's already in PERSISTENT_RELOAD_STATE
@@ -3602,7 +3628,7 @@ impl IOManager for CaptureIO {
   fn ensure_gpu_ready(
     &mut self,
     wgsl: &str,
-    binding_infos: &[((u8, u8), GpuBufferKind, u64)],
+    binding_infos: &[GpuBindingInfo],
   ) {
     self.inner.ensure_gpu_ready(wgsl, binding_infos)
   }
@@ -3711,6 +3737,9 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   pub io: IO,
   /// GPU-bound top-level vars (uniform + storage), in declaration order.
   binding_vars: Vec<(GroupAndBinding, Arc<str>, Type, VariableAddressSpace)>,
+  /// Which shader stages reference each GPU-bound var, derived from entry
+  /// point effects at construction.
+  binding_stages: HashMap<Arc<str>, BindingStages>,
   /// Sync state for each GPU-bound variable, keyed by name.
   buffer_states: HashMap<Arc<str>, SharedBufferState>,
   /// Directory of the source .easl file, used to resolve relative paths.
@@ -3795,6 +3824,36 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       .iter()
       .map(|(_, name, _, _)| (name.clone(), SharedBufferState::GPUOutOfDate))
       .collect();
+    // Which shader stages actually touch each GPU-bound global: union the
+    // transitive effect read/write sets of every GPU entry point (this
+    // covers implicit dispatched-closure scope bindings too — the scope
+    // rewrite marks their reads as global). `gpu_read_and_written_globals`
+    // rather than `read_and_written_globals`: length-only reads still
+    // require the binding to be visible, since WGSL's arrayLength derives
+    // from buffer size.
+    let mut binding_stages: HashMap<Arc<str>, BindingStages> = HashMap::new();
+    for f in program.abstract_functions_iter() {
+      let f = f.read().unwrap();
+      let Some(entry) = f.entry_point else {
+        continue;
+      };
+      let FunctionImplementationKind::Composite(implementation) =
+        &f.implementation
+      else {
+        continue;
+      };
+      let effects = implementation.read().unwrap().effects();
+      let (reads, writes) = effects.gpu_read_and_written_globals();
+      for name in reads.into_iter().chain(writes.into_iter()) {
+        let stages = binding_stages.entry(name).or_default();
+        match entry {
+          EntryPoint::Vertex => stages.vertex = true,
+          EntryPoint::Fragment => stages.fragment = true,
+          EntryPoint::Compute(_) => stages.compute = true,
+          EntryPoint::Cpu | EntryPoint::Audio => {}
+        }
+      }
+    }
     let mut env = Self {
       wgsl: String::new(),
       bindings: HashMap::new(),
@@ -3806,6 +3865,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         .collect(),
       io,
       binding_vars,
+      binding_stages,
       buffer_states,
       source_dir,
       current_render_target: None,
@@ -3875,13 +3935,13 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     &self.wgsl
   }
 
-  /// Returns `(group, binding, kind, static_size_bytes)` for each GPU-bound
-  /// variable.  `size` is 0 for dynamically-sized (unsized array) bindings.
-  pub fn binding_infos(&self) -> Vec<((u8, u8), GpuBufferKind, u64)> {
+  /// Returns a `GpuBindingInfo` for each GPU-bound variable. `byte_size` is
+  /// 0 for dynamically-sized (unsized array) bindings.
+  pub fn binding_infos(&self) -> Vec<GpuBindingInfo> {
     self
       .binding_vars
       .iter()
-      .map(|(gb, _, ty, addr)| {
+      .map(|(gb, name, ty, addr)| {
         let kind = match addr {
           VariableAddressSpace::Uniform => GpuBufferKind::Uniform,
           VariableAddressSpace::StorageRead => GpuBufferKind::StorageReadOnly,
@@ -3903,7 +3963,18 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             ((u32s as u64 * 4).max(4) + 15) & !15
           }
         };
-        ((gb.group, gb.binding), kind, size)
+        GpuBindingInfo {
+          group: gb.group,
+          binding: gb.binding,
+          name: name.clone(),
+          kind,
+          byte_size: size,
+          stages: self
+            .binding_stages
+            .get(name)
+            .copied()
+            .unwrap_or_default(),
+        }
       })
       .collect()
   }
@@ -5805,7 +5876,7 @@ impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
   fn wgsl(&self) -> &str {
     self.env.wgsl()
   }
-  fn binding_infos(&self) -> Vec<((u8, u8), GpuBufferKind, u64)> {
+  fn binding_infos(&self) -> Vec<GpuBindingInfo> {
     self.env.binding_infos()
   }
   fn run_frame(&mut self) -> Result<(), EvalException> {

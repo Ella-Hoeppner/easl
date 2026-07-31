@@ -20,8 +20,8 @@ use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 
 use crate::{
   interpreter::{
-    BufferUpload, EvalError, EvalException, FrameDriver, GpuBufferKind,
-    IOManager, WindowEvent,
+    BindingStages, BufferUpload, EvalError, EvalException, FrameDriver,
+    GpuBindingInfo, GpuBufferKind, IOManager, WindowEvent,
   },
 };
 
@@ -384,7 +384,7 @@ impl GpuCore {
   pub fn update_for_reload(
     &mut self,
     wgsl: &str,
-    binding_infos: &[((u8, u8), GpuBufferKind, u64)],
+    binding_infos: &[GpuBindingInfo],
   ) {
     // 1. New shader module.
     self.shader =
@@ -402,10 +402,10 @@ impl GpuCore {
     // 3. Update binding slots.
     self.binding_slots = binding_infos
       .iter()
-      .map(|&((group, binding), kind, _)| BindingSlot {
-        group,
-        binding,
-        kind,
+      .map(|info| BindingSlot {
+        group: info.group,
+        binding: info.binding,
+        kind: info.kind,
       })
       .collect();
 
@@ -414,7 +414,9 @@ impl GpuCore {
     // For Texture2D slots, keep existing textures/views (no buffer).
     let mut new_buffers: HashMap<(u8, u8), wgpu::Buffer> = HashMap::new();
     let mut new_sizes: HashMap<(u8, u8), u64> = HashMap::new();
-    for &((group, binding), kind, size) in binding_infos {
+    for info in binding_infos {
+      let (group, binding, kind, size) =
+        (info.group, info.binding, info.kind, info.byte_size);
       let key = (group, binding);
       if kind == GpuBufferKind::Texture2D {
         // Keep existing texture if one exists; create a placeholder if not.
@@ -460,7 +462,7 @@ impl GpuCore {
     // 5. Rebuild bind group layouts.
     let max_group = binding_infos
       .iter()
-      .map(|((g, _), _, _)| *g as usize)
+      .map(|info| info.group as usize)
       .max()
       .map(|g| g + 1)
       .unwrap_or(0);
@@ -468,11 +470,11 @@ impl GpuCore {
       .map(|group_idx| {
         let entries: Vec<wgpu::BindGroupLayoutEntry> = binding_infos
           .iter()
-          .filter(|((g, _), _, _)| *g as usize == group_idx)
-          .map(|((_, b), kind, _)| wgpu::BindGroupLayoutEntry {
-            binding: *b as u32,
-            visibility: gpu_binding_visibility(*kind),
-            ty: if *kind == GpuBufferKind::Texture2D {
+          .filter(|info| info.group as usize == group_idx)
+          .map(|info| wgpu::BindGroupLayoutEntry {
+            binding: info.binding as u32,
+            visibility: gpu_binding_visibility(info),
+            ty: if info.kind == GpuBufferKind::Texture2D {
               wgpu::BindingType::Texture {
                 multisampled: false,
                 view_dimension: wgpu::TextureViewDimension::D2,
@@ -482,7 +484,7 @@ impl GpuCore {
               }
             } else {
               wgpu::BindingType::Buffer {
-                ty: gpu_binding_type(*kind),
+                ty: gpu_binding_type(info.kind),
                 has_dynamic_offset: false,
                 min_binding_size: None,
               }
@@ -1279,8 +1281,17 @@ impl GpuCore {
     device: wgpu::Device,
     queue: wgpu::Queue,
     wgsl: &str,
-    binding_infos: &[((u8, u8), GpuBufferKind, u64)],
+    binding_infos: &[GpuBindingInfo],
   ) -> Arc<RwLock<Self>> {
+    // Backend unknown here (the embedder owns the device), so the
+    // Metal-specific vertex-stage check is skipped; the general limit
+    // checks still apply. No error handler is installed either — the
+    // embedder owns error handling on its own device.
+    if let Err(message) =
+      validate_binding_limits(&device.limits(), None, binding_infos)
+    {
+      panic!("easl: {message}");
+    }
     // Dummy instance — the field is only used for hot-reload surface creation.
     let instance = wgpu::Instance::new(
       wgpu::InstanceDescriptor::new_without_display_handle(),
@@ -1293,16 +1304,16 @@ impl GpuCore {
 
     let binding_slots: Vec<BindingSlot> = binding_infos
       .iter()
-      .map(|&((group, binding), kind, _)| BindingSlot {
-        group,
-        binding,
-        kind,
+      .map(|info| BindingSlot {
+        group: info.group,
+        binding: info.binding,
+        kind: info.kind,
       })
       .collect();
 
     let max_group = binding_infos
       .iter()
-      .map(|((g, _), _, _)| *g as usize)
+      .map(|info| info.group as usize)
       .max()
       .map(|g| g + 1)
       .unwrap_or(0);
@@ -1312,7 +1323,9 @@ impl GpuCore {
     let mut textures: HashMap<(u8, u8), wgpu::Texture> = HashMap::new();
     let mut texture_views: HashMap<(u8, u8), wgpu::TextureView> =
       HashMap::new();
-    for &((group, binding), kind, size) in binding_infos {
+    for info in binding_infos {
+      let (group, binding, kind, size) =
+        (info.group, info.binding, info.kind, info.byte_size);
       let key = (group, binding);
       if kind == GpuBufferKind::Texture2D {
         let (texture, view) = create_texture_and_view(
@@ -1344,11 +1357,11 @@ impl GpuCore {
       .map(|group_idx| {
         let entries: Vec<wgpu::BindGroupLayoutEntry> = binding_infos
           .iter()
-          .filter(|((g, _), _, _)| *g as usize == group_idx)
-          .map(|((_, b), kind, _)| wgpu::BindGroupLayoutEntry {
-            binding: *b as u32,
-            visibility: gpu_binding_visibility(*kind),
-            ty: if *kind == GpuBufferKind::Texture2D {
+          .filter(|info| info.group as usize == group_idx)
+          .map(|info| wgpu::BindGroupLayoutEntry {
+            binding: info.binding as u32,
+            visibility: gpu_binding_visibility(info),
+            ty: if info.kind == GpuBufferKind::Texture2D {
               wgpu::BindingType::Texture {
                 multisampled: false,
                 view_dimension: wgpu::TextureViewDimension::D2,
@@ -1358,7 +1371,7 @@ impl GpuCore {
               }
             } else {
               wgpu::BindingType::Buffer {
-                ty: gpu_binding_type(*kind),
+                ty: gpu_binding_type(info.kind),
                 has_dynamic_offset: false,
                 min_binding_size: None,
               }
@@ -1616,7 +1629,7 @@ impl GpuCore {
 /// running compute shaders outside of a windowed context (e.g. in tests).
 pub fn create_headless_gpu_core(
   wgsl: &str,
-  binding_infos: &[((u8, u8), GpuBufferKind, u64)],
+  binding_infos: &[GpuBindingInfo],
 ) -> Arc<RwLock<GpuCore>> {
   pollster::block_on(async {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -1643,6 +1656,14 @@ pub fn create_headless_gpu_core(
       })
       .await
       .expect("Failed to create headless wgpu device");
+    if let Err(message) = validate_binding_limits(
+      &device.limits(),
+      Some(adapter.get_info().backend),
+      binding_infos,
+    ) {
+      panic!("easl: {message}");
+    }
+    install_gpu_error_handler(&device);
 
     let gpu = GpuCore::new_from_parts(device, queue, wgsl, binding_infos);
     gpu.write().unwrap().instance = instance;
@@ -1956,34 +1977,165 @@ fn gpu_binding_type(kind: GpuBufferKind) -> wgpu::BufferBindingType {
   }
 }
 
-fn gpu_binding_visibility(kind: GpuBufferKind) -> wgpu::ShaderStages {
-  match kind {
-    // Read-only storage and uniforms are accessible from vertex, fragment, and compute shaders.
-    GpuBufferKind::Uniform | GpuBufferKind::StorageReadOnly => {
-      wgpu::ShaderStages::VERTEX
-        | wgpu::ShaderStages::FRAGMENT
-        | wgpu::ShaderStages::COMPUTE
+/// wgpu-hal clamps Metal's vertex stage to this many buffer-argument slots
+/// (`wgpu_hal::MAX_VERTEX_BUFFERS`), counting every vertex-visible layout
+/// buffer — whether or not the shader uses it — plus one slot it always
+/// reserves for the buffer-sizes table. This isn't exposed through
+/// `wgpu::Limits`, so we encode it here; exceeding it fails at render
+/// pipeline creation with an opaque internal error.
+const METAL_MAX_VERTEX_STAGE_BUFFERS: u32 = 16;
+const METAL_RESERVED_VERTEX_BUFFER_SLOTS: u32 = 1;
+
+/// Validates the program's binding table against the device's limits before
+/// any wgpu objects are created, so that limit violations surface as a
+/// clear easl-level error naming the offending variables rather than a wgpu
+/// validation panic from deep inside pipeline creation.
+fn validate_binding_limits(
+  limits: &wgpu::Limits,
+  backend: Option<wgpu::Backend>,
+  binding_infos: &[GpuBindingInfo],
+) -> Result<(), String> {
+  let describe = |bindings: &[&GpuBindingInfo]| -> String {
+    bindings
+      .iter()
+      .map(|info| {
+        format!(
+          "{} (group {}, binding {})",
+          info.name, info.group, info.binding
+        )
+      })
+      .collect::<Vec<_>>()
+      .join(", ")
+  };
+  let stage_bits: [(&str, fn(BindingStages) -> bool); 3] = [
+    ("vertex", |s| s.vertex),
+    ("fragment", |s| s.fragment),
+    ("compute", |s| s.compute),
+  ];
+  for (stage_name, stage_bit) in stage_bits {
+    let visible: Vec<&GpuBindingInfo> = binding_infos
+      .iter()
+      .filter(|info| {
+        info.kind != GpuBufferKind::Texture2D && stage_bit(info.stages)
+      })
+      .collect();
+    let storage: Vec<&GpuBindingInfo> = visible
+      .iter()
+      .copied()
+      .filter(|info| {
+        matches!(
+          info.kind,
+          GpuBufferKind::StorageReadOnly | GpuBufferKind::StorageReadWrite
+        )
+      })
+      .collect();
+    let uniforms: Vec<&GpuBindingInfo> = visible
+      .iter()
+      .copied()
+      .filter(|info| info.kind == GpuBufferKind::Uniform)
+      .collect();
+    if storage.len() as u32 > limits.max_storage_buffers_per_shader_stage {
+      return Err(format!(
+        "this program's GPU bindings exceed a device limit: the \
+         {stage_name} stage references {} storage buffers, but this device \
+         supports at most {} per stage. Storage bindings visible to the \
+         {stage_name} stage: {}",
+        storage.len(),
+        limits.max_storage_buffers_per_shader_stage,
+        describe(&storage),
+      ));
     }
-    // Read-write storage is not permitted in vertex shaders, but is in compute.
-    GpuBufferKind::StorageReadWrite => {
-      wgpu::ShaderStages::FRAGMENT
-        | wgpu::ShaderStages::COMPUTE
-        | wgpu::ShaderStages::VERTEX
+    if uniforms.len() as u32 > limits.max_uniform_buffers_per_shader_stage {
+      return Err(format!(
+        "this program's GPU bindings exceed a device limit: the \
+         {stage_name} stage references {} uniform buffers, but this device \
+         supports at most {} per stage. Uniform bindings visible to the \
+         {stage_name} stage: {}",
+        uniforms.len(),
+        limits.max_uniform_buffers_per_shader_stage,
+        describe(&uniforms),
+      ));
     }
-    // Textures are readable from vertex, fragment, and compute shaders.
-    GpuBufferKind::Texture2D => {
-      wgpu::ShaderStages::VERTEX
-        | wgpu::ShaderStages::FRAGMENT
-        | wgpu::ShaderStages::COMPUTE
+    if stage_name == "vertex"
+      && backend == Some(wgpu::Backend::Metal)
+      && visible.len() as u32 + METAL_RESERVED_VERTEX_BUFFER_SLOTS
+        > METAL_MAX_VERTEX_STAGE_BUFFERS
+    {
+      return Err(format!(
+        "this program needs too many GPU buffer bindings in the vertex \
+         stage: {} bindings are referenced from vertex shaders, plus {} \
+         slot wgpu reserves internally, but Metal supports at most {} \
+         vertex-stage buffers. Reduce the number of GPU-bound variables \
+         (including implicit closure-scope bindings) reachable from vertex \
+         entry points. Vertex-visible bindings: {}",
+        visible.len(),
+        METAL_RESERVED_VERTEX_BUFFER_SLOTS,
+        METAL_MAX_VERTEX_STAGE_BUFFERS,
+        describe(&visible),
+      ));
     }
   }
+  let group_count = binding_infos
+    .iter()
+    .map(|info| info.group as u32 + 1)
+    .max()
+    .unwrap_or(0);
+  if group_count > limits.max_bind_groups {
+    return Err(format!(
+      "this program's GPU bindings exceed a device limit: bind groups \
+       0..{} are used, but this device supports at most {} bind groups",
+      group_count - 1,
+      limits.max_bind_groups,
+    ));
+  }
+  Ok(())
+}
+
+/// Installs a panic-with-context handler for GPU errors easl failed to
+/// pre-validate, so that nothing ever surfaces as a raw wgpu panic.
+fn install_gpu_error_handler(device: &wgpu::Device) {
+  device.on_uncaptured_error(std::sync::Arc::new(|error: wgpu::Error| {
+    panic!(
+      "easl: the GPU rejected an operation that easl did not pre-validate. \
+       This is an easl bug — please report it, including the details below \
+       and the program that triggered it.\n\n{error}"
+    );
+  }));
+}
+
+fn gpu_binding_visibility(info: &GpuBindingInfo) -> wgpu::ShaderStages {
+  // Texture usage isn't tracked through the effect system yet — keep
+  // textures visible to all stages.
+  if info.kind == GpuBufferKind::Texture2D {
+    return wgpu::ShaderStages::VERTEX
+      | wgpu::ShaderStages::FRAGMENT
+      | wgpu::ShaderStages::COMPUTE;
+  }
+  // Buffer visibility is usage-derived: only the stages whose entry points
+  // actually reference the binding (per the compiler's effect analysis).
+  // Declaring more than that wastes per-stage binding budget — Metal counts
+  // every vertex-visible layout buffer against a 16-slot vertex-stage cap,
+  // used or not. (Read-write storage visible to the vertex stage relies on
+  // `Features::VERTEX_WRITABLE_STORAGE`, which we request — see the device
+  // descriptors.)
+  let mut stages = wgpu::ShaderStages::NONE;
+  if info.stages.vertex {
+    stages |= wgpu::ShaderStages::VERTEX;
+  }
+  if info.stages.fragment {
+    stages |= wgpu::ShaderStages::FRAGMENT;
+  }
+  if info.stages.compute {
+    stages |= wgpu::ShaderStages::COMPUTE;
+  }
+  stages
 }
 
 impl RenderState {
   async fn new(
     window: Arc<Window>,
     wgsl: &str,
-    binding_infos: &[((u8, u8), GpuBufferKind, u64)],
+    binding_infos: &[GpuBindingInfo],
   ) -> Result<Self, String> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
       backends: wgpu::Backends::all(),
@@ -2018,6 +2170,13 @@ impl RenderState {
       })
       .await
       .map_err(|e| e.to_string())?;
+    validate_binding_limits(
+      &device.limits(),
+      Some(adapter.get_info().backend),
+      binding_infos,
+    )
+    .map_err(|message| format!("easl: {message}"))?;
+    install_gpu_error_handler(&device);
 
     let size = window.inner_size();
     let surface_caps = surface.get_capabilities(&adapter);
@@ -2048,16 +2207,16 @@ impl RenderState {
     // Collect binding metadata.
     let binding_slots: Vec<BindingSlot> = binding_infos
       .iter()
-      .map(|&((group, binding), kind, _)| BindingSlot {
-        group,
-        binding,
-        kind,
+      .map(|info| BindingSlot {
+        group: info.group,
+        binding: info.binding,
+        kind: info.kind,
       })
       .collect();
 
     let max_group = binding_infos
       .iter()
-      .map(|((g, _), _, _)| *g as usize)
+      .map(|info| info.group as usize)
       .max()
       .map(|g| g + 1)
       .unwrap_or(0);
@@ -2070,7 +2229,9 @@ impl RenderState {
     let mut textures: HashMap<(u8, u8), wgpu::Texture> = HashMap::new();
     let mut texture_views: HashMap<(u8, u8), wgpu::TextureView> =
       HashMap::new();
-    for &((group, binding), kind, size) in binding_infos {
+    for info in binding_infos {
+      let (group, binding, kind, size) =
+        (info.group, info.binding, info.kind, info.byte_size);
       let key = (group, binding);
       if kind == GpuBufferKind::Texture2D {
         let (texture, view) = create_texture_and_view(
@@ -2103,11 +2264,11 @@ impl RenderState {
       .map(|group_idx| {
         let entries: Vec<wgpu::BindGroupLayoutEntry> = binding_infos
           .iter()
-          .filter(|((g, _), _, _)| *g as usize == group_idx)
-          .map(|((_, b), kind, _)| wgpu::BindGroupLayoutEntry {
-            binding: *b as u32,
-            visibility: gpu_binding_visibility(*kind),
-            ty: if *kind == GpuBufferKind::Texture2D {
+          .filter(|info| info.group as usize == group_idx)
+          .map(|info| wgpu::BindGroupLayoutEntry {
+            binding: info.binding as u32,
+            visibility: gpu_binding_visibility(info),
+            ty: if info.kind == GpuBufferKind::Texture2D {
               wgpu::BindingType::Texture {
                 multisampled: false,
                 view_dimension: wgpu::TextureViewDimension::D2,
@@ -2117,7 +2278,7 @@ impl RenderState {
               }
             } else {
               wgpu::BindingType::Buffer {
-                ty: gpu_binding_type(*kind),
+                ty: gpu_binding_type(info.kind),
                 has_dynamic_offset: false,
                 min_binding_size: None,
               }

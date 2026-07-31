@@ -165,7 +165,7 @@ Key methods:
   - `Print(String)`, `SpawnWindow`, `DispatchShaders { vert, frag, vert_count }`, `DispatchComputeShader { entry, workgroup_count }`
 - **`GpuBufferKind`** — `Uniform | StorageReadOnly | StorageReadWrite`; exposed from `interpreter.rs` so `window.rs` doesn't need to reach into the compiler
 - **`EvaluationEnvironment`** — holds `binding_vars: Vec<(GroupAndBinding, Arc<str>, Type, VariableAddressSpace)>` for all GPU-bound top-level variables (Uniform + StorageRead + StorageReadWrite)
-  - `binding_infos() -> Vec<((u8,u8), GpuBufferKind, u64)>` — size is 0 for unsized/dynamic arrays
+  - `binding_infos() -> Vec<GpuBindingInfo>` — per binding: group/binding, source-level name, kind, byte size (0 for unsized/dynamic arrays), and `BindingStages` (which shader stages actually reference it, derived from entry-point effects at env construction). `window.rs` uses the stages for usage-derived bind-group-layout visibility — critical because Metal caps the vertex stage at 16 buffer slots (`MAX_VERTEX_BUFFERS` in wgpu-hal, one of which wgpu reserves), counting every vertex-visible layout binding whether used or not. `validate_binding_limits` pre-flights the binding table against device limits + the Metal vertex rule before any wgpu object creation (clear error naming the offending variables), and `install_gpu_error_handler` converts any remaining uncaptured wgpu error into an easl-framed panic instead of a raw wgpu one
   - `binding_buffer_data() -> Vec<((u8,u8), BufferUpload)>` — returns current interpreter values as upload payloads, padded to 16 bytes
 - **`Value::ZeroedArray { length: usize, zero_element: Box<Value> }`** — lazily-materialized zeroed array created by `zeroed-array`. Avoids allocating a huge `Vec`. Converted to `BufferUpload::Clear` on upload; expanded to `Value::Array` only if a CPU write to an individual element is needed.
 - **`Value::to_uniform_bytes(&self, ty: &Type) -> Vec<u8>`** — serializes a value to GPU bytes; uses `ty` for struct field ordering (walks `s.fields` in declaration order)
@@ -220,8 +220,8 @@ let name = f.abstract_ancestor.as_ref().unwrap().borrow().name.clone();
 
 **Public API (accessible via `easl::window` with the `window` feature):**
 - `GpuCore` — the central GPU resource type; holds device, queue, shader module, pipeline layout, bind groups, and per-binding buffers
-- `GpuCore::new_from_parts(device, queue, wgsl, binding_infos) -> Arc<RwLock<GpuCore>>` — creates a headless `GpuCore` from an existing `wgpu::Device` and `wgpu::Queue`; intended for embedders (e.g. easl_studio) that want to share a device with their own renderer instead of creating a second one
-- `create_headless_gpu_core(wgsl, binding_infos) -> Arc<RwLock<GpuCore>>` — creates a `GpuCore` with a freshly-created device and no surface; useful for pure compute / offscreen rendering
+- `GpuCore::new_from_parts(device, queue, wgsl, binding_infos: &[GpuBindingInfo]) -> Arc<RwLock<GpuCore>>` — creates a headless `GpuCore` from an existing `wgpu::Device` and `wgpu::Queue`; intended for embedders (e.g. easl_studio) that want to share a device with their own renderer instead of creating a second one. Runs the general binding-limit pre-flight (not the Metal vertex rule — backend unknown) and does not install an error handler; the embedder owns its device
+- `create_headless_gpu_core(wgsl, binding_infos: &[GpuBindingInfo]) -> Arc<RwLock<GpuCore>>` — creates a `GpuCore` with a freshly-created device and no surface; useful for pure compute / offscreen rendering
 - `GpuCore::execute_render_batch_to_view(calls, view: &wgpu::TextureView, format: wgpu::TextureFormat)` — runs a batch of screen-targeted render calls against an external `TextureView` instead of acquiring one from an internal surface; used by easl_studio to render into its own offscreen RT
 
 ## Bytecode VM

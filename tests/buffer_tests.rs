@@ -103,3 +103,29 @@ buffer_test!(zero_length_zeroed_array);
 buffer_test!(raymarching_sdf);
 buffer_test!(abstracted_compute_dispatch);
 buffer_test!(nested_closure_compute_dispatch);
+buffer_test!(many_bindings_render);
+
+/// A program whose vertex stage genuinely references more buffers than
+/// Metal supports must fail with easl's pre-flight validation error (which
+/// names the offending bindings), not an opaque wgpu-internal panic from
+/// pipeline creation. Metal-specific budget, so macOS-only.
+#[cfg(target_os = "macos")]
+#[test]
+#[should_panic(expected = "too many GPU buffer bindings in the vertex stage")]
+fn too_many_vertex_bindings() {
+  let source_path_str = "./data/buffer/too_many_vertex_bindings.easl";
+  let source_path = Path::new(&source_path_str);
+  let Ok(Ok((_, Ok(mut program)))) =
+    load_easl_program_from_file(source_path)
+  else {
+    panic!("failed to load program")
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  let _ = run_program_with_capture_and_runtime_from_path(
+    program,
+    source_path,
+    CpuRuntime::TreeWalking,
+  )
+  .unwrap();
+}

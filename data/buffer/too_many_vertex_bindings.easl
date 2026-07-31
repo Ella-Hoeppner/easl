@@ -1,0 +1,78 @@
+; A vertex shader that genuinely references 16 uniform buffers — plus the
+; slot wgpu reserves internally — exceeds Metal's 16-buffer vertex-stage
+; budget. easl's pre-flight validation must reject this with a clear error
+; naming the bindings, before any wgpu object creation.
+
+@[uniform 0 0]
+(var u-0: vec4f)
+
+@[uniform 0 1]
+(var u-1: vec4f)
+
+@[uniform 0 2]
+(var u-2: vec4f)
+
+@[uniform 0 3]
+(var u-3: vec4f)
+
+@[uniform 0 4]
+(var u-4: vec4f)
+
+@[uniform 0 5]
+(var u-5: vec4f)
+
+@[uniform 0 6]
+(var u-6: vec4f)
+
+@[uniform 0 7]
+(var u-7: vec4f)
+
+@[uniform 0 8]
+(var u-8: vec4f)
+
+@[uniform 0 9]
+(var u-9: vec4f)
+
+@[uniform 0 10]
+(var u-10: vec4f)
+
+@[uniform 0 11]
+(var u-11: vec4f)
+
+@[uniform 0 12]
+(var u-12: vec4f)
+
+@[uniform 0 13]
+(var u-13: vec4f)
+
+@[uniform 0 14]
+(var u-14: vec4f)
+
+@[uniform 0 15]
+(var u-15: vec4f)
+
+@[storage-write 1 0]
+(var out-buf: [4: f32])
+
+@vertex
+(defn vert [@{builtin vertex-index} i: u32]: @{builtin position} vec4f
+  (vec4f (+ (.x u-0) (.x u-1) (.x u-2) (.x u-3) (.x u-4) (.x u-5) (.x u-6) (.x u-7) (.x u-8) (.x u-9) (.x u-10) (.x u-11) (.x u-12) (.x u-13) (.x u-14) (.x u-15))
+         0.
+         0.
+         1.))
+
+@fragment
+(defn frag [@{builtin position} pos: vec4f]: @{location 0} vec4f
+  (vec4f 1.))
+
+@compute
+(defn bump []
+  (= (out-buf 0u) (+ (out-buf 0u) 1.)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-compute-shader bump (vec3u 1u 1u 1u))
+                    (dispatch-render-shaders vert frag 3)
+                    (print (out-buf 0u))
+                    (close-window))))

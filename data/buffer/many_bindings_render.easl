@@ -1,0 +1,82 @@
+; Regression test: a program with many storage-write bindings plus a render
+; pass. Metal caps the vertex stage at 16 buffer slots (15 usable — wgpu-hal
+; reserves one for the buffer-sizes table); storage-write bindings that no
+; vertex shader uses must not count against that budget, since read-write
+; storage isn't vertex-accessible in the first place.
+
+@[uniform 0 0]
+(var frame: u32)
+
+@[storage-write 0 1]
+(var buf-1: [4: f32])
+
+@[storage-write 0 2]
+(var buf-2: [4: f32])
+
+@[storage-write 0 3]
+(var buf-3: [4: f32])
+
+@[storage-write 0 4]
+(var buf-4: [4: f32])
+
+@[storage-write 0 5]
+(var buf-5: [4: f32])
+
+@[storage-write 0 6]
+(var buf-6: [4: f32])
+
+@[storage-write 0 7]
+(var buf-7: [4: f32])
+
+@[storage-write 0 8]
+(var buf-8: [4: f32])
+
+@[storage-write 0 9]
+(var buf-9: [4: f32])
+
+@[storage-write 0 10]
+(var buf-10: [4: f32])
+
+@[storage-write 0 11]
+(var buf-11: [4: f32])
+
+@[storage-write 0 12]
+(var buf-12: [4: f32])
+
+@[storage-write 0 13]
+(var buf-13: [4: f32])
+
+@[storage-write 0 14]
+(var buf-14: [4: f32])
+
+@[storage-write 0 15]
+(var buf-15: [4: f32])
+
+
+@vertex
+(defn vert [@{builtin vertex-index} i: u32]: @{builtin position} vec4f
+  (vec4f (match i
+           0 (vec2f -1.)
+           1 (vec2f -1. 3.)
+           _ (vec2f 3. -1.))
+         0.
+         1.))
+
+@fragment
+(defn frag [@{builtin position} pos: vec4f]: @{location 0} vec4f
+  (vec4f 1.))
+
+@compute
+(defn bump []
+  (= (buf-1 0u) (+ (buf-1 0u) 1.)))
+
+@cpu
+(defn main []
+  (= frame 0u)
+  (spawn-window (fn []
+                    (+= frame 1u)
+                    (dispatch-compute-shader bump (vec3u 1u 1u 1u))
+                    (dispatch-render-shaders vert frag 3)
+                    (when (== frame 2u)
+                      (print (buf-1 0u))
+                      (close-window)))))
