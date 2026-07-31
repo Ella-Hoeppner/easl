@@ -1,0 +1,16 @@
+(defn print-if-small [x: f32]
+  (when (> x 10.)
+    (return ()))
+  (print x))
+
+(defn print-if-big [x: f32]
+  (when (< x 10.)
+    (return))
+  (print x))
+
+@cpu
+(defn main []
+  (print-if-small 5.)
+  (print-if-small 50.)
+  (print-if-big 5.)
+  (print-if-big 50.))

@@ -1,0 +1,20 @@
+; Early return from a unit-typed function via `(return ())`.
+
+@[storage-write 0 0]
+(var out: [4: f32])
+
+(defn write-unless-negative [x: f32]
+  (when (< x 0.)
+    (return ()))
+  (= (out 0u) x))
+
+; Bare `(return)` is sugar for `(return ())`.
+(defn write-unless-positive [x: f32]
+  (when (> x 0.)
+    (return))
+  (= (out 2u) x))
+
+@compute
+(defn main []
+  (write-unless-negative (out 1u))
+  (write-unless-positive (out 3u)))

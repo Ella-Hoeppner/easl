@@ -686,3 +686,4 @@ error_test!(
   CompileErrorKind::CantMutateDispatchedClosureCapture("acc".to_string())
 );
 success_test!(gpu_window_info);
+success_test!(early_return_unit);

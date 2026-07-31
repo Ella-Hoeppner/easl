@@ -1384,6 +1384,17 @@ impl TypedExp {
                             data: TypeState::Unknown.into(),
                             source_trace,
                           })
+                        } else if children_iter.len() == 0 {
+                          // Bare `(return)` is sugar for `(return ())`.
+                          Some(Exp {
+                            kind: ExpKind::Return(Box::new(Exp {
+                              kind: ExpKind::Unit,
+                              data: Known(Type::Unit).into(),
+                              source_trace: source_trace.clone(),
+                            })),
+                            data: TypeState::Unknown.into(),
+                            source_trace,
+                          })
                         } else {
                           return Err(CompileError::new(
                             InvalidReturn,
@@ -2686,14 +2697,26 @@ impl TypedExp {
       Break => "\nbreak;".to_string(),
       Continue => "\ncontinue;".to_string(),
       Discard => "\ndiscard;".to_string(),
-      ExpKind::Return(exp) => format!(
-        "\nreturn {};",
-        exp.compile(
-          ExpressionCompilationPosition::InnerExpression,
-          names,
-          target
-        )
-      ),
+      ExpKind::Return(exp) => {
+        if exp.data.kind == TypeState::Known(Type::Unit) {
+          // A unit-valued return has no value to emit: run the returned
+          // expression for its side effects (a bare `()` compiles to
+          // nothing), then return without a value.
+          format!(
+            "{}\nreturn;",
+            exp.compile(ExpressionCompilationPosition::InnerLine, names, target)
+          )
+        } else {
+          format!(
+            "\nreturn {};",
+            exp.compile(
+              ExpressionCompilationPosition::InnerExpression,
+              names,
+              target
+            )
+          )
+        }
+      }
       ArrayLiteral(children) => wrap(match target {
         CompilerTarget::C => {
           format!(

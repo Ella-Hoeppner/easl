@@ -3,17 +3,11 @@
 ### necessary for wgsl feature parity + stuff I wanna get done before calling the language "production ready"
 * enable a syntax like `<>.x`
 
-* trying to do an early return in a function that returns unit crashes the compile rn. You have to do `(return ())`, but then you get an error about compiling unit in an inner position
-
 * nested unsized array types seem to break the interpreter
 
 * when a match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
 
 * `*=` doesn't work when multiplying a vec by a matrix
-
-* allow importing from other files
-  * for now just a simple string-concatenation approach will be fine I think, eventually probably want a proper module system but for now this will be enough
-    * I guess file origin will need to be tracked as part of a `SourceTrace`? might be tricky to get that right
 
 * barrier functions
 * `workgroupUniformLoad`
@@ -113,8 +107,6 @@
 
 ## Secondary priority
 ### nice features to have once the language is at wgsl-parity
-* when you use a higher-order fn to generate vertex shader or fragment shader, such that it like returns a closure, that closure gets treated as an input of the inlined function. But having extra inputs on vert/frag entry points like that isn't really valid, the shaders won't run. So in the case of an entry-point closure that has a captured scope, I think we'll need to like turn the captured scope into a global uniform or something, rather than a function argument
-
 * should make it possible to have the infix `.` syntax for accessing fields on the `<>` in thread expressions
   * just feels a lot cleaner to do e.g. `<>.x` than `(.x <>)`, and I think it's fine to special-case any token starting with `<>` tbh
 
@@ -138,11 +130,6 @@
   * `cond->=`
     * just a combination of the above two
   
-
-* consider making an effect type for each builtin, so that rather than specifying a builtin as part of the input to a shader stage, you can just call a function with the name of the builtin value, e.g. `(vertex-index)`. That acts as an effect, and at compile time this effect gets handled on each entry point by just inlining the argument into the entry that uses it (and to the helper functions that invoke it)
-  * Maybe also have effects for setting these as output, e.g. `(set-frag-depth! 0.)` or `(set-position! 0.)`
-  * just seems like it might be a more ergonomic alternative to having to add a bunch of extra fields to the struct
-  * hmm, this would kinda cause a problem if you tried to explicitly use a builtin name as an input, since now those input names would have a name-collision with a top-level fn
 
 * support vecs over arbitrary types
   * wgsl doesn't do this, it's just restricted to scalars and bool
@@ -197,17 +184,6 @@
 
 * make `Option` a built-in type, and have a few helper functions for it
   * maybe `Result` too?
-
-* const generics, for making functions/types generic over array sizes
-  * I think its probably fine to just support `u32` exclusively for this, that's the main usecase anyways
-  * can just use the generic type syntax for this, but with a `: u32` after the generic name. So like a function generic over array size would look like
-    ```
-    (defn (sum N: u32) [arr [N: f32]]: f32
-      (let [@var sum 0.]
-        (for [i 0 (< i N) (= i (+ i 1))]
-          (+= sum (arr i)))
-        sum))
-    ```
 
 * flesh out the effect system
   * have a way to annotate the effects that a function has
@@ -371,10 +347,6 @@
   * hmm as I think about this more, there might be a more general inference rule that could solve this, one that works on `(Into T)` rather than on vectors
     * once `(Into T)` exists, the signature for a vector constructor will change from looking like `(fn (vec4f T A: Scalar) [a: A]: (vec4f T))` to `(fn (vec4f T A: (Into T)) [a: A]: (vec4f T))`. All scalars will implement `into` for one another, so this will feel exactly like the current approach. But it will also get stuck in the same place, because all the scalars satisfy `(Into ...)` for whatever the type of the vector is. But this could be resolved by a special inference rule: If type inference stalls with the type of a function argument being narrowed down to one `OneOf` several possibilities including some particular type `T`, and that function argument is constrained by `(Into T)`, collapse the `OneOf` into `Known(T)`
       * a practical benefit of this is that it'll work on custom vector types, like if someone defined `vecc` as a vector of complex numbers, and implemented `(Into Complex)` for floats, then `(vecc 1.)` work automatically. It'll also work on any custom types that expect `(Into ...)` that could run into ambiguity
-
-* write a bunch of tests
-  * the current shaders can be converted into tests, but there should also be test cases for invalid programs that ensure the right kinds of errors are returned
-  * maybe the tests should like actually feed the output into a wgsl compiler? Could even use hollow to like open a window that shows all the different things so that it can be visually checked whether everything is working
 
 * Optimize
   * split `propagate_types` into two functions, one which happens only once, and one which gets called repeatedly. Much of the logic in `propagate_types` needs to happen once but is wasteful if done repeatedly
