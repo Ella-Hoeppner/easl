@@ -1,0 +1,65 @@
+; Ping-pong render-to-texture: pass 1 renders red into tex-a; pass 2 renders
+; into tex-b while sampling tex-a (moving red into the green channel); pass 3
+; renders back into tex-a while sampling tex-b (green into blue). A compute
+; shader then reads the final pixel back. Exercises the placeholder
+; bind-group path — every pipeline binds both textures, so each offscreen
+; pass must substitute a placeholder for its own render target — and
+; ordering of consecutive offscreen render passes relative to compute.
+
+@{group 0
+  binding 0}
+(var tex-a: (Texture2D f32))
+
+@{group 0
+  binding 1}
+(var tex-b: (Texture2D f32))
+
+@{address storage-write
+  group 0
+  binding 2}
+(var value: vec4f)
+
+(defn fullscreen-triangle []: vec4f
+  (vec4f (match (vertex-index)
+           0 (vec2f -1.)
+           1 (vec2f -1. 3.)
+           _ (vec2f 3. -1.))
+         0.
+         1.))
+
+(defn own-pixel []: vec2u
+  (vec2u (u32 (.x (position)))
+         (u32 (.y (position)))))
+
+@cpu
+(defn main []
+  (= tex-a
+     (blank-texture (vec2u 2u)))
+  (= tex-b
+     (blank-texture (vec2u 2u)))
+  (set-render-target tex-a)
+  (dispatch-render-shaders fullscreen-triangle
+                           (fn [] (vec4f 1. 0. 0. 1.))
+                           3)
+  (set-render-target tex-b)
+  (dispatch-render-shaders fullscreen-triangle
+                           (fn []
+                               (let [sampled (texture-load tex-a
+                                                           (own-pixel)
+                                                           0u)]
+                                 (vec4f 0. (.x sampled) 0. 1.)))
+                           3)
+  (set-render-target tex-a)
+  (dispatch-render-shaders fullscreen-triangle
+                           (fn []
+                               (let [sampled (texture-load tex-b
+                                                           (own-pixel)
+                                                           0u)]
+                                 (vec4f 0. 0. (.y sampled) 1.)))
+                           3)
+  (clear-render-target)
+  (dispatch-compute-shader (fn []
+                               (= value
+                                  (texture-load tex-a (vec2u 1u) 0u)))
+                           (vec3u 1u))
+  (print value))

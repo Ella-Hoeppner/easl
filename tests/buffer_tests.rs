@@ -129,3 +129,4 @@ fn too_many_vertex_bindings() {
   )
   .unwrap();
 }
+buffer_test!(render_target_pingpong);

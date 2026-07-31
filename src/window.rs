@@ -20,8 +20,8 @@ use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 
 use crate::{
   interpreter::{
-    BindingStages, BufferUpload, EvalError, EvalException, FrameDriver,
-    GpuBindingInfo, GpuBufferKind, IOManager, WindowEvent,
+    BufferUpload, EvalError, EvalException, FrameDriver, GpuBindingInfo,
+    GpuBufferKind, GpuEntryInfo, IOManager, WindowEvent,
   },
 };
 
@@ -194,11 +194,39 @@ struct App<'a, D: FrameDriver> {
 pub struct BindingSlot {
   pub group: u8,
   pub binding: u8,
+  /// Source-level variable name, for diagnostics.
+  pub name: std::sync::Arc<str>,
   pub kind: GpuBufferKind,
 }
 
 /// All GPU resources needed for compute dispatch and buffer management.
 /// Shared between `RenderState` and `StdoutIO` via `Arc<RwLock<GpuCore>>`.
+/// Identity of a cached render pipeline: (vert entry id, frag entry id,
+/// additive blending, target format).
+type RenderPipelineKey = (u16, u16, bool, wgpu::TextureFormat);
+
+/// Descriptor objects owned by one cached pipeline. Buffers stay global and
+/// shared across all pipelines; these are only the layout/bind-group
+/// objects covering the subset of bindings the pipeline's entry points use.
+struct PipelineBindings {
+  /// (group, binding) -> the visibility its layout entry declares. Only
+  /// bindings used by this pipeline's entries (plus all textures) appear.
+  used: HashMap<(u8, u8), wgpu::ShaderStages>,
+  /// One layout per group index (empty layouts for unused group indices).
+  layouts: Vec<wgpu::BindGroupLayout>,
+  bind_groups: Vec<wgpu::BindGroup>,
+}
+
+struct CachedComputePipeline {
+  pipeline: wgpu::ComputePipeline,
+  bindings: PipelineBindings,
+}
+
+struct CachedRenderPipeline {
+  pipeline: wgpu::RenderPipeline,
+  bindings: PipelineBindings,
+}
+
 pub struct GpuCore {
   /// The wgpu instance this device was created from. Kept alive so that
   /// a window surface can be created on the same instance later (e.g. when
@@ -207,12 +235,21 @@ pub struct GpuCore {
   pub device: wgpu::Device,
   pub queue: wgpu::Queue,
   shader: wgpu::ShaderModule,
-  pipeline_layout: wgpu::PipelineLayout,
-  pub compute_pipelines: HashMap<String, wgpu::ComputePipeline>,
-  /// Cached render pipelines. Keyed by (vert_entry, frag_entry, additive, format)
-  /// so the same cache covers both surface-format and offscreen-format pipelines.
-  render_pipelines:
-    HashMap<(String, String, bool, wgpu::TextureFormat), wgpu::RenderPipeline>,
+  /// Dense GPU entry table (indexed by the entry ids `WindowEvent` carries):
+  /// compiled entry name + the buffer bindings the entry's code references.
+  /// Each pipeline's bind group layouts cover exactly its entries' bindings
+  /// (plus all textures), so per-stage binding budgets only pay for genuine
+  /// usage.
+  gpu_entries: Vec<GpuEntryInfo>,
+  /// Backend of the device, when known (None for embedder-owned devices).
+  /// Used for backend-specific binding-budget validation.
+  backend: Option<wgpu::Backend>,
+  /// Cached compute pipelines, indexed by dense entry id.
+  compute_pipelines: Vec<Option<CachedComputePipeline>>,
+  /// Cached render pipelines with their per-pipeline binding objects.
+  /// Linear scan keyed by (vert_id, frag_id, additive, format) — pipeline
+  /// counts are small and integer-compare scans beat hashing here.
+  render_pipelines: Vec<(RenderPipelineKey, CachedRenderPipeline)>,
   pub binding_slots: Vec<BindingSlot>,
   pub binding_buffers: HashMap<(u8, u8), wgpu::Buffer>,
   /// Tracks the byte-length of each buffer (or width*height*4 for textures)
@@ -222,10 +259,6 @@ pub struct GpuCore {
   pub textures: HashMap<(u8, u8), wgpu::Texture>,
   /// Texture views for `Texture2D` bindings, used in bind groups.
   pub texture_views: HashMap<(u8, u8), wgpu::TextureView>,
-  /// Kept alive so `rebuild_bind_groups` can recreate bind groups without
-  /// recreating the layouts (which would invalidate the pipeline layout).
-  pub bind_group_layouts: Vec<wgpu::BindGroupLayout>,
-  pub bind_groups: Vec<wgpu::BindGroup>,
   /// Current window dimensions in pixels.
   pub window_size: (u32, u32),
   /// Time in seconds since the window was opened, updated at the start of each frame.
@@ -265,117 +298,299 @@ pub struct GpuCore {
 }
 
 impl GpuCore {
-  /// Recreates all bind groups to pick up any buffers that were just replaced.
-  fn rebuild_bind_groups(&mut self) {
-    // Collect binding resources ahead of time to satisfy the borrow checker:
-    // we need &wgpu::TextureView and &wgpu::Buffer simultaneously.
-    let entries_per_group: Vec<Vec<(u32, bool, (u8, u8))>> = self
-      .bind_group_layouts
+  /// Bind group entries for one group index of a pipeline's used-binding
+  /// set. `placeholder_for` swaps that texture slot for the 1x1 placeholder
+  /// (used when a texture is simultaneously the render target).
+  fn bind_group_entries_for(
+    &self,
+    used: &HashMap<(u8, u8), wgpu::ShaderStages>,
+    group_idx: usize,
+    placeholder_for: Option<(u8, u8)>,
+  ) -> Vec<wgpu::BindGroupEntry<'_>> {
+    let mut slots: Vec<&BindingSlot> = self
+      .binding_slots
       .iter()
-      .enumerate()
-      .map(|(group_idx, _)| {
-        self
-          .binding_slots
-          .iter()
-          .filter(|s| s.group as usize == group_idx)
-          .map(|s| {
-            (
-              s.binding as u32,
-              s.kind == GpuBufferKind::Texture2D,
-              (s.group, s.binding),
-            )
-          })
-          .collect()
+      .filter(|slot| {
+        slot.group as usize == group_idx
+          && used.contains_key(&(slot.group, slot.binding))
       })
       .collect();
-    self.bind_groups = self
-      .bind_group_layouts
+    slots.sort_by_key(|slot| slot.binding);
+    slots
+      .into_iter()
+      .map(|slot| {
+        let key = (slot.group, slot.binding);
+        wgpu::BindGroupEntry {
+          binding: slot.binding as u32,
+          resource: if slot.kind == GpuBufferKind::Texture2D {
+            wgpu::BindingResource::TextureView(
+              if placeholder_for == Some(key) {
+                &self.placeholder_texture_view
+              } else {
+                self.texture_views.get(&key).expect("texture view missing")
+              },
+            )
+          } else {
+            self.binding_buffers[&key].as_entire_binding()
+          },
+        }
+      })
+      .collect()
+  }
+
+  /// Creates the bind groups for a pipeline's layouts. With
+  /// `placeholder_for` set, the given texture slot is replaced by the
+  /// placeholder view (avoids wgpu's COLOR_TARGET + RESOURCE conflict when
+  /// rendering to a bound texture).
+  fn create_bind_groups(
+    &self,
+    used: &HashMap<(u8, u8), wgpu::ShaderStages>,
+    layouts: &[wgpu::BindGroupLayout],
+    placeholder_for: Option<(u8, u8)>,
+  ) -> Vec<wgpu::BindGroup> {
+    layouts
       .iter()
       .enumerate()
       .map(|(group_idx, layout)| {
-        let entries: Vec<wgpu::BindGroupEntry> = entries_per_group[group_idx]
-          .iter()
-          .map(|(binding, is_texture, key)| wgpu::BindGroupEntry {
-            binding: *binding,
-            resource: if *is_texture {
-              wgpu::BindingResource::TextureView(
-                self
-                  .texture_views
-                  .get(key)
-                  .expect("texture view missing for bind group rebuild"),
-              )
-            } else {
-              self.binding_buffers[key].as_entire_binding()
-            },
-          })
-          .collect();
+        let entries =
+          self.bind_group_entries_for(used, group_idx, placeholder_for);
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
           label: Some(&format!("bind group {group_idx}")),
           layout,
           entries: &entries,
         })
       })
-      .collect();
+      .collect()
   }
 
-  /// Build bind groups identical to `self.bind_groups` except that the slot
-  /// for `render_target` is replaced with `self.placeholder_texture_view`.
-  /// This avoids the wgpu validation error that fires when a texture is
-  /// simultaneously a color attachment (COLOR_TARGET) and a shader resource
-  /// (RESOURCE) within the same render pass.
-  fn bind_groups_with_placeholder_for(
+  /// Builds the layout and bind-group objects for a pipeline whose stages
+  /// are the given (entry id, stage) pairs. The used-binding set is exactly
+  /// the union of the entries' effect-derived binding sets, plus every
+  /// texture binding (texture usage isn't effect-tracked yet). Validates
+  /// the set against the device's per-stage binding budgets first, so limit
+  /// violations surface as a clear easl error naming the bindings rather
+  /// than an opaque wgpu failure.
+  fn build_pipeline_bindings(
     &self,
-    render_target: (u8, u8),
-  ) -> Vec<wgpu::BindGroup> {
-    let entries_per_group: Vec<Vec<(u32, bool, (u8, u8))>> = self
-      .bind_group_layouts
-      .iter()
-      .enumerate()
-      .map(|(group_idx, _)| {
-        self
+    label: &str,
+    stage_entries: &[(u16, wgpu::ShaderStages)],
+  ) -> PipelineBindings {
+    let mut used: HashMap<(u8, u8), wgpu::ShaderStages> = HashMap::new();
+    let mut all_stages = wgpu::ShaderStages::NONE;
+    for (entry_id, stage) in stage_entries {
+      all_stages |= *stage;
+      let entry = self.gpu_entries.get(*entry_id as usize).unwrap_or_else(|| {
+        panic!(
+          "easl internal error: entry id {entry_id} out of range for the \
+           GPU entry table ({label})"
+        )
+      });
+      for key in &entry.used_bindings {
+        *used.entry(*key).or_insert(wgpu::ShaderStages::NONE) |= *stage;
+      }
+    }
+    for slot in &self.binding_slots {
+      if slot.kind == GpuBufferKind::Texture2D {
+        *used
+          .entry((slot.group, slot.binding))
+          .or_insert(wgpu::ShaderStages::NONE) |= all_stages;
+      }
+    }
+    if let Err(message) = self.validate_pipeline_bindings(label, &used) {
+      panic!("easl: {message}");
+    }
+    let group_count = used
+      .keys()
+      .map(|(group, _)| *group as usize + 1)
+      .max()
+      .unwrap_or(0);
+    let layouts: Vec<wgpu::BindGroupLayout> = (0..group_count)
+      .map(|group_idx| {
+        let mut slots: Vec<&BindingSlot> = self
           .binding_slots
           .iter()
-          .filter(|s| s.group as usize == group_idx)
-          .map(|s| {
-            (
-              s.binding as u32,
-              s.kind == GpuBufferKind::Texture2D,
-              (s.group, s.binding),
-            )
-          })
-          .collect()
-      })
-      .collect();
-    self
-      .bind_group_layouts
-      .iter()
-      .enumerate()
-      .map(|(group_idx, layout)| {
-        let entries: Vec<wgpu::BindGroupEntry> = entries_per_group[group_idx]
-          .iter()
-          .map(|(binding, is_texture, key)| wgpu::BindGroupEntry {
-            binding: *binding,
-            resource: if *is_texture {
-              wgpu::BindingResource::TextureView(if *key == render_target {
-                &self.placeholder_texture_view
-              } else {
-                self.texture_views.get(key).expect("texture view missing")
-              })
-            } else {
-              self.binding_buffers[key].as_entire_binding()
-            },
+          .filter(|slot| {
+            slot.group as usize == group_idx
+              && used.contains_key(&(slot.group, slot.binding))
           })
           .collect();
-        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-          label: Some(&format!(
-            "bind group {group_idx} (rt g{}b{} excluded)",
-            render_target.0, render_target.1
-          )),
-          layout,
-          entries: &entries,
-        })
+        slots.sort_by_key(|slot| slot.binding);
+        let entries: Vec<wgpu::BindGroupLayoutEntry> = slots
+          .into_iter()
+          .map(|slot| wgpu::BindGroupLayoutEntry {
+            binding: slot.binding as u32,
+            visibility: used[&(slot.group, slot.binding)],
+            ty: if slot.kind == GpuBufferKind::Texture2D {
+              wgpu::BindingType::Texture {
+                multisampled: false,
+                view_dimension: wgpu::TextureViewDimension::D2,
+                sample_type: wgpu::TextureSampleType::Float {
+                  filterable: true,
+                },
+              }
+            } else {
+              wgpu::BindingType::Buffer {
+                ty: gpu_binding_type(slot.kind),
+                has_dynamic_offset: false,
+                min_binding_size: None,
+              }
+            },
+            count: None,
+          })
+          .collect();
+        self
+          .device
+          .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some(&format!("{label} bind group layout {group_idx}")),
+            entries: &entries,
+          })
       })
-      .collect()
+      .collect();
+    let bind_groups = self.create_bind_groups(&used, &layouts, None);
+    PipelineBindings {
+      used,
+      layouts,
+      bind_groups,
+    }
+  }
+
+  /// Validates one pipeline's binding set against the device's per-stage
+  /// limits and Metal's vertex-stage buffer budget.
+  fn validate_pipeline_bindings(
+    &self,
+    label: &str,
+    used: &HashMap<(u8, u8), wgpu::ShaderStages>,
+  ) -> Result<(), String> {
+    let limits = self.device.limits();
+    let name_of = |key: &(u8, u8)| -> String {
+      self
+        .binding_slots
+        .iter()
+        .find(|slot| (slot.group, slot.binding) == *key)
+        .map(|slot| {
+          format!("{} (group {}, binding {})", slot.name, key.0, key.1)
+        })
+        .unwrap_or_else(|| format!("group {}, binding {}", key.0, key.1))
+    };
+    let buffer_kind_of = |key: &(u8, u8)| -> Option<GpuBufferKind> {
+      self
+        .binding_slots
+        .iter()
+        .find(|slot| (slot.group, slot.binding) == *key)
+        .map(|slot| slot.kind)
+        .filter(|kind| *kind != GpuBufferKind::Texture2D)
+    };
+    for (stage_name, stage) in [
+      ("vertex", wgpu::ShaderStages::VERTEX),
+      ("fragment", wgpu::ShaderStages::FRAGMENT),
+      ("compute", wgpu::ShaderStages::COMPUTE),
+    ] {
+      let mut storage: Vec<(u8, u8)> = vec![];
+      let mut uniforms: Vec<(u8, u8)> = vec![];
+      for (key, visibility) in used {
+        if !visibility.contains(stage) {
+          continue;
+        }
+        match buffer_kind_of(key) {
+          Some(GpuBufferKind::Uniform) => uniforms.push(*key),
+          Some(_) => storage.push(*key),
+          None => {}
+        }
+      }
+      storage.sort();
+      uniforms.sort();
+      let describe = |keys: &[(u8, u8)]| -> String {
+        keys.iter().map(name_of).collect::<Vec<_>>().join(", ")
+      };
+      if storage.len() as u32 > limits.max_storage_buffers_per_shader_stage {
+        return Err(format!(
+          "the {stage_name} stage of {label} references {} storage \
+           buffers, but this device supports at most {} per stage. Storage \
+           bindings used: {}",
+          storage.len(),
+          limits.max_storage_buffers_per_shader_stage,
+          describe(&storage),
+        ));
+      }
+      if uniforms.len() as u32 > limits.max_uniform_buffers_per_shader_stage {
+        return Err(format!(
+          "the {stage_name} stage of {label} references {} uniform \
+           buffers, but this device supports at most {} per stage. Uniform \
+           bindings used: {}",
+          uniforms.len(),
+          limits.max_uniform_buffers_per_shader_stage,
+          describe(&uniforms),
+        ));
+      }
+      if stage == wgpu::ShaderStages::VERTEX
+        && self.backend == Some(wgpu::Backend::Metal)
+        && storage.len() as u32
+          + uniforms.len() as u32
+          + METAL_RESERVED_VERTEX_BUFFER_SLOTS
+          > METAL_MAX_VERTEX_STAGE_BUFFERS
+      {
+        let mut all: Vec<(u8, u8)> = storage;
+        all.extend(uniforms);
+        all.sort();
+        return Err(format!(
+          "{label} needs too many GPU buffer bindings in the vertex stage: \
+           {} bindings are referenced from its vertex shader, plus {} slot \
+           wgpu reserves internally, but Metal supports at most {} \
+           vertex-stage buffers. Vertex-visible bindings: {}",
+          all.len(),
+          METAL_RESERVED_VERTEX_BUFFER_SLOTS,
+          METAL_MAX_VERTEX_STAGE_BUFFERS,
+          describe(&all),
+        ));
+      }
+    }
+    Ok(())
+  }
+
+  /// Recreates the bind groups of every cached pipeline that references any
+  /// of the changed bindings (buffers/textures are recreated on resize, and
+  /// bind groups are immutable snapshots of buffer references).
+  fn rebuild_bind_groups_for(&mut self, changed: &[(u8, u8)]) {
+    let mut rebuilt_compute: Vec<(usize, Vec<wgpu::BindGroup>)> = vec![];
+    for (id, cached) in self.compute_pipelines.iter().enumerate() {
+      if let Some(cached) = cached
+        && changed
+          .iter()
+          .any(|key| cached.bindings.used.contains_key(key))
+      {
+        rebuilt_compute.push((
+          id,
+          self.create_bind_groups(
+            &cached.bindings.used,
+            &cached.bindings.layouts,
+            None,
+          ),
+        ));
+      }
+    }
+    for (id, groups) in rebuilt_compute {
+      self.compute_pipelines[id].as_mut().unwrap().bindings.bind_groups =
+        groups;
+    }
+    let mut rebuilt_render: Vec<(usize, Vec<wgpu::BindGroup>)> = vec![];
+    for (i, (_, cached)) in self.render_pipelines.iter().enumerate() {
+      if changed
+        .iter()
+        .any(|key| cached.bindings.used.contains_key(key))
+      {
+        rebuilt_render.push((
+          i,
+          self.create_bind_groups(
+            &cached.bindings.used,
+            &cached.bindings.layouts,
+            None,
+          ),
+        ));
+      }
+    }
+    for (i, groups) in rebuilt_render {
+      self.render_pipelines[i].1.bindings.bind_groups = groups;
+    }
   }
 
   /// Hot-reload: swap the shader module and rebuild everything that depends on
@@ -385,7 +600,9 @@ impl GpuCore {
     &mut self,
     wgsl: &str,
     binding_infos: &[GpuBindingInfo],
+    gpu_entries: &[GpuEntryInfo],
   ) {
+    self.gpu_entries = gpu_entries.to_vec();
     // 1. New shader module.
     self.shader =
       self
@@ -405,6 +622,7 @@ impl GpuCore {
       .map(|info| BindingSlot {
         group: info.group,
         binding: info.binding,
+        name: info.name.clone(),
         kind: info.kind,
       })
       .collect();
@@ -459,80 +677,45 @@ impl GpuCore {
     self.binding_buffers = new_buffers;
     self.binding_buffer_sizes = new_sizes;
 
-    // 5. Rebuild bind group layouts.
-    let max_group = binding_infos
-      .iter()
-      .map(|info| info.group as usize)
-      .max()
-      .map(|g| g + 1)
-      .unwrap_or(0);
-    self.bind_group_layouts = (0..max_group)
-      .map(|group_idx| {
-        let entries: Vec<wgpu::BindGroupLayoutEntry> = binding_infos
-          .iter()
-          .filter(|info| info.group as usize == group_idx)
-          .map(|info| wgpu::BindGroupLayoutEntry {
-            binding: info.binding as u32,
-            visibility: gpu_binding_visibility(info),
-            ty: if info.kind == GpuBufferKind::Texture2D {
-              wgpu::BindingType::Texture {
-                multisampled: false,
-                view_dimension: wgpu::TextureViewDimension::D2,
-                sample_type: wgpu::TextureSampleType::Float {
-                  filterable: true,
-                },
-              }
-            } else {
-              wgpu::BindingType::Buffer {
-                ty: gpu_binding_type(info.kind),
-                has_dynamic_offset: false,
-                min_binding_size: None,
-              }
-            },
-            count: None,
-          })
-          .collect();
-        self
-          .device
-          .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some(&format!("bind group layout {group_idx}")),
-            entries: &entries,
-          })
-      })
-      .collect();
+    // Per-pipeline layouts and bind groups are rebuilt lazily: the pipeline
+    // caches were cleared above, so the next get_or_create_* recreates them
+    // against the new shader module, buffers, and entry table.
+  }
 
-    // 6. Rebuild bind groups.
-    self.rebuild_bind_groups();
-
-    // 7. Rebuild pipeline layout (references the new bind group layouts).
-    let refs: Vec<Option<&wgpu::BindGroupLayout>> =
-      self.bind_group_layouts.iter().map(Some).collect();
-    self.pipeline_layout =
+  pub fn get_or_create_compute_pipeline(&mut self, entry: u16) {
+    if self.compute_pipelines.len() <= entry as usize {
+      self.compute_pipelines.resize_with(entry as usize + 1, || None);
+    }
+    if self.compute_pipelines[entry as usize].is_some() {
+      return;
+    }
+    let entry_name = self.gpu_entries[entry as usize].name.clone();
+    let label = format!("compute pipeline {entry_name}");
+    let bindings = self
+      .build_pipeline_bindings(&label, &[(entry, wgpu::ShaderStages::COMPUTE)]);
+    let layout_refs: Vec<Option<&wgpu::BindGroupLayout>> =
+      bindings.layouts.iter().map(Some).collect();
+    let pipeline_layout =
       self
         .device
         .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-          label: None,
-          bind_group_layouts: &refs,
+          label: Some(&label),
+          bind_group_layouts: &layout_refs,
           immediate_size: 0,
         });
-  }
-
-  pub fn get_or_create_compute_pipeline(&mut self, entry: &str) {
-    if self.compute_pipelines.contains_key(entry) {
-      return;
-    }
     let pipeline =
       self
         .device
         .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-          label: Some(&format!("easl compute pipeline {entry}")),
-          layout: Some(&self.pipeline_layout),
+          label: Some(&format!("easl {label}")),
+          layout: Some(&pipeline_layout),
           module: &self.shader,
-          entry_point: Some(entry),
+          entry_point: Some(&entry_name),
           compilation_options: Default::default(),
           cache: None,
         });
-    self.compute_pipelines.insert(entry.to_string(), pipeline);
+    self.compute_pipelines[entry as usize] =
+      Some(CachedComputePipeline { pipeline, bindings });
   }
 
   /// Uploads binding data to the GPU. If a buffer's size has changed (e.g.
@@ -543,7 +726,7 @@ impl GpuCore {
   /// fast GPU-side zero-fill with no CPU allocation) rather than copying a
   /// zeroed slice from the CPU.
   pub fn upload_bindings(&mut self, data: &[((u8, u8), BufferUpload)]) {
-    let mut needs_rebuild = false;
+    let mut changed_keys: Vec<(u8, u8)> = vec![];
 
     // First pass: recreate any buffers/textures whose size changed.
     for ((group, binding), upload) in data {
@@ -567,7 +750,7 @@ impl GpuCore {
             self.textures.insert(key, texture);
             self.texture_views.insert(key, view);
             self.binding_buffer_sizes.insert(key, incoming_size);
-            needs_rebuild = true;
+            changed_keys.push(key);
           }
         }
         _ => {
@@ -592,14 +775,14 @@ impl GpuCore {
             });
             self.binding_buffers.insert(key, buffer);
             self.binding_buffer_sizes.insert(key, incoming_size);
-            needs_rebuild = true;
+            changed_keys.push(key);
           }
         }
       }
     }
 
-    if needs_rebuild {
-      self.rebuild_bind_groups();
+    if !changed_keys.is_empty() {
+      self.rebuild_bind_groups_for(&changed_keys);
     }
 
     // Second pass: write data, issue GPU clears, or upload texture pixels.
@@ -663,13 +846,12 @@ impl GpuCore {
   /// Uploads `pre_upload` buffers first, then dispatches and polls.
   pub fn execute_compute(
     &mut self,
-    entry: &str,
+    entry: u16,
     workgroup_count: (u32, u32, u32),
     pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) {
-    let entry = entry.replace('-', "_");
     self.upload_bindings(&pre_upload);
-    self.get_or_create_compute_pipeline(&entry);
+    self.get_or_create_compute_pipeline(entry);
 
     let mut encoder =
       self
@@ -683,10 +865,13 @@ impl GpuCore {
           label: Some("compute pass"),
           timestamp_writes: None,
         });
-      for (group_idx, bind_group) in self.bind_groups.iter().enumerate() {
+      let cached = self.compute_pipelines[entry as usize].as_ref().unwrap();
+      for (group_idx, bind_group) in
+        cached.bindings.bind_groups.iter().enumerate()
+      {
         compute_pass.set_bind_group(group_idx as u32, bind_group, &[]);
       }
-      compute_pass.set_pipeline(&self.compute_pipelines[&entry]);
+      compute_pass.set_pipeline(&cached.pipeline);
       let (x, y, z) = workgroup_count;
       compute_pass.dispatch_workgroups(x, y, z);
     }
@@ -705,7 +890,7 @@ impl GpuCore {
   /// calling `execute_compute` N times.
   pub fn execute_compute_batch(
     &mut self,
-    calls: Vec<(String, (u32, u32, u32), Vec<((u8, u8), BufferUpload)>)>,
+    calls: Vec<(u16, (u32, u32, u32), Vec<((u8, u8), BufferUpload)>)>,
   ) {
     if calls.is_empty() {
       return;
@@ -717,7 +902,6 @@ impl GpuCore {
     let mut current_encoder: Option<wgpu::CommandEncoder> = None;
 
     for (entry, (x, y, z), pre_upload) in calls {
-      let entry = entry.replace('-', "_");
 
       // If this call would overwrite a binding already uploaded for the
       // current encoder's dispatches, submit that encoder first so those
@@ -736,7 +920,7 @@ impl GpuCore {
       for (gb, _) in &pre_upload {
         pending_bindings.insert(*gb);
       }
-      self.get_or_create_compute_pipeline(&entry);
+      self.get_or_create_compute_pipeline(entry);
 
       let encoder = current_encoder.get_or_insert_with(|| {
         self
@@ -751,10 +935,14 @@ impl GpuCore {
             label: Some("compute pass"),
             timestamp_writes: None,
           });
-        for (group_idx, bind_group) in self.bind_groups.iter().enumerate() {
+        let cached =
+          self.compute_pipelines[entry as usize].as_ref().unwrap();
+        for (group_idx, bind_group) in
+          cached.bindings.bind_groups.iter().enumerate()
+        {
           compute_pass.set_bind_group(group_idx as u32, bind_group, &[]);
         }
-        compute_pass.set_pipeline(&self.compute_pipelines[&entry]);
+        compute_pass.set_pipeline(&cached.pipeline);
         compute_pass.dispatch_workgroups(x, y, z);
       }
     }
@@ -797,13 +985,10 @@ impl GpuCore {
           } else {
             GpuCore::OFFSCREEN_FORMAT
           };
-          let vert = vert.replace('-', "_");
-          let frag = frag.replace('-', "_");
-          self.get_or_create_render_pipeline(&vert, &frag, *additive, format);
+          self.get_or_create_render_pipeline(*vert, *frag, *additive, format);
         }
         WindowEvent::ComputeShader { entry, .. } => {
-          let entry = entry.replace('-', "_");
-          self.get_or_create_compute_pipeline(&entry);
+          self.get_or_create_compute_pipeline(*entry);
         }
       }
     }
@@ -846,7 +1031,6 @@ impl GpuCore {
       else {
         continue;
       };
-      let entry = entry.replace('-', "_");
 
       let has_conflict = pre_upload
         .iter()
@@ -876,10 +1060,14 @@ impl GpuCore {
             label: Some("compute pass"),
             timestamp_writes: None,
           });
-        for (group_idx, bind_group) in self.bind_groups.iter().enumerate() {
+        let cached =
+          self.compute_pipelines[*entry as usize].as_ref().unwrap();
+        for (group_idx, bind_group) in
+          cached.bindings.bind_groups.iter().enumerate()
+        {
           compute_pass.set_bind_group(group_idx as u32, bind_group, &[]);
         }
-        compute_pass.set_pipeline(&self.compute_pipelines[&entry]);
+        compute_pass.set_pipeline(&cached.pipeline);
         compute_pass.dispatch_workgroups(*x, *y, *z);
       }
     }
@@ -954,13 +1142,6 @@ impl GpuCore {
           self.textures[&rt]
             .create_view(&wgpu::TextureViewDescriptor::default())
         });
-      // For render target passes, replace the target slot in the bind group
-      // with a placeholder to avoid COLOR_TARGET + RESOURCE conflict.
-      let modified_bind_groups: Option<Vec<wgpu::BindGroup>> =
-        current_rt.map(|rt| self.bind_groups_with_placeholder_for(rt));
-      let bind_groups_ref: &[wgpu::BindGroup] =
-        modified_bind_groups.as_deref().unwrap_or(&self.bind_groups);
-
       let view = match &texture_target_view {
         Some(v) => v,
         None => {
@@ -978,6 +1159,32 @@ impl GpuCore {
       } else {
         GpuCore::OFFSCREEN_FORMAT
       };
+      // Resolve each draw's pipeline before the pass borrow begins. For
+      // pipelines that bind the pass's render target as a texture, build a
+      // variant bind-group set with a placeholder in that slot (avoids
+      // wgpu's COLOR_TARGET + RESOURCE conflict).
+      let prepared: Vec<(usize, Option<Vec<wgpu::BindGroup>>)> = group
+        .iter()
+        .map(|(vert, frag, _, _, additive, _)| {
+          let key = (**vert, **frag, **additive, format);
+          let index = self
+            .render_pipelines
+            .iter()
+            .position(|(k, _)| *k == key)
+            .expect("render pipeline missing from cache");
+          let bindings = &self.render_pipelines[index].1.bindings;
+          let placeholder = current_rt
+            .filter(|rt| bindings.used.contains_key(rt))
+            .map(|rt| {
+              self.create_bind_groups(
+                &bindings.used,
+                &bindings.layouts,
+                Some(rt),
+              )
+            });
+          (index, placeholder)
+        })
+        .collect();
 
       {
         let mut render_pass =
@@ -997,14 +1204,17 @@ impl GpuCore {
             timestamp_writes: None,
             multiview_mask: None,
           });
-        for (vert, frag, vert_count, _, additive, _) in group {
-          let vert = vert.replace('-', "_");
-          let frag = frag.replace('-', "_");
-          let key = (vert, frag, **additive, format);
-          for (group_idx, bind_group) in bind_groups_ref.iter().enumerate() {
+        for ((_, _, vert_count, _, _, _), (pipeline_index, placeholder)) in
+          group.iter().zip(prepared.iter())
+        {
+          let cached = &self.render_pipelines[*pipeline_index].1;
+          let bind_groups = placeholder
+            .as_deref()
+            .unwrap_or(&cached.bindings.bind_groups);
+          for (group_idx, bind_group) in bind_groups.iter().enumerate() {
             render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
           }
-          render_pass.set_pipeline(&self.render_pipelines[&key]);
+          render_pass.set_pipeline(&cached.pipeline);
           render_pass.draw(0..**vert_count, 0..1);
         }
       }
@@ -1021,20 +1231,35 @@ impl GpuCore {
   /// Creates and caches a render pipeline for the given format (if not already cached).
   pub fn get_or_create_render_pipeline(
     &mut self,
-    vert_entry: &str,
-    frag_entry: &str,
+    vert_entry: u16,
+    frag_entry: u16,
     additive: bool,
     format: wgpu::TextureFormat,
   ) {
-    let key = (
-      vert_entry.to_string(),
-      frag_entry.to_string(),
-      additive,
-      format,
-    );
-    if self.render_pipelines.contains_key(&key) {
+    let key = (vert_entry, frag_entry, additive, format);
+    if self.render_pipelines.iter().any(|(k, _)| *k == key) {
       return;
     }
+    let vert_name = self.gpu_entries[vert_entry as usize].name.clone();
+    let frag_name = self.gpu_entries[frag_entry as usize].name.clone();
+    let label = format!("render pipeline {vert_name}+{frag_name}");
+    let bindings = self.build_pipeline_bindings(
+      &label,
+      &[
+        (vert_entry, wgpu::ShaderStages::VERTEX),
+        (frag_entry, wgpu::ShaderStages::FRAGMENT),
+      ],
+    );
+    let layout_refs: Vec<Option<&wgpu::BindGroupLayout>> =
+      bindings.layouts.iter().map(Some).collect();
+    let pipeline_layout =
+      self
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+          label: Some(&label),
+          bind_group_layouts: &layout_refs,
+          immediate_size: 0,
+        });
     let blend = if additive {
       wgpu::BlendState {
         color: wgpu::BlendComponent {
@@ -1055,17 +1280,17 @@ impl GpuCore {
       self
         .device
         .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-          label: Some("easl render pipeline"),
-          layout: Some(&self.pipeline_layout),
+          label: Some(&format!("easl {label}")),
+          layout: Some(&pipeline_layout),
           vertex: wgpu::VertexState {
             module: &self.shader,
-            entry_point: Some(vert_entry),
+            entry_point: Some(&vert_name),
             buffers: &[],
             compilation_options: Default::default(),
           },
           fragment: Some(wgpu::FragmentState {
             module: &self.shader,
-            entry_point: Some(frag_entry),
+            entry_point: Some(&frag_name),
             targets: &[Some(wgpu::ColorTargetState {
               format,
               blend: Some(blend),
@@ -1091,7 +1316,9 @@ impl GpuCore {
           multiview_mask: None,
           cache: None,
         });
-    self.render_pipelines.insert(key, pipeline);
+    self
+      .render_pipelines
+      .push((key, CachedRenderPipeline { pipeline, bindings }));
   }
 
   /// Executes a batch of render shader calls, blocking until the GPU finishes.
@@ -1106,8 +1333,8 @@ impl GpuCore {
   pub fn execute_render_batch(
     &mut self,
     calls: Vec<(
-      String,
-      String,
+      u16,
+      u16,
       u32,
       Vec<((u8, u8), BufferUpload)>,
       bool,
@@ -1156,9 +1383,7 @@ impl GpuCore {
       } else {
         Self::OFFSCREEN_FORMAT
       };
-      let vert = vert.replace('-', "_");
-      let frag = frag.replace('-', "_");
-      self.get_or_create_render_pipeline(&vert, &frag, *additive, format);
+      self.get_or_create_render_pipeline(*vert, *frag, *additive, format);
     }
 
     // Create the screen view: real surface or a throwaway 1×1 offscreen.
@@ -1211,10 +1436,6 @@ impl GpuCore {
         });
       // For render target passes, replace the target slot in the bind group
       // with a placeholder to avoid COLOR_TARGET + RESOURCE conflict.
-      let modified_bind_groups: Option<Vec<wgpu::BindGroup>> =
-        current_rt.map(|rt| self.bind_groups_with_placeholder_for(rt));
-      let bind_groups_ref: &[wgpu::BindGroup] =
-        modified_bind_groups.as_deref().unwrap_or(&self.bind_groups);
 
       let view = match &texture_target_view {
         Some(v) => v,
@@ -1225,6 +1446,31 @@ impl GpuCore {
       } else {
         Self::OFFSCREEN_FORMAT
       };
+      // Resolve each draw's pipeline before the pass borrow begins; build
+      // placeholder bind-group variants for pipelines that bind the pass's
+      // render target as a texture.
+      let prepared: Vec<(usize, Option<Vec<wgpu::BindGroup>>)> = group
+        .iter()
+        .map(|(vert, frag, _, _, additive, _)| {
+          let key = (*vert, *frag, *additive, format);
+          let index = self
+            .render_pipelines
+            .iter()
+            .position(|(k, _)| *k == key)
+            .expect("render pipeline missing from cache");
+          let bindings = &self.render_pipelines[index].1.bindings;
+          let placeholder = current_rt
+            .filter(|rt| bindings.used.contains_key(rt))
+            .map(|rt| {
+              self.create_bind_groups(
+                &bindings.used,
+                &bindings.layouts,
+                Some(rt),
+              )
+            });
+          (index, placeholder)
+        })
+        .collect();
 
       {
         let mut render_pass =
@@ -1244,14 +1490,17 @@ impl GpuCore {
             timestamp_writes: None,
             multiview_mask: None,
           });
-        for (vert, frag, vert_count, _, additive, _) in group {
-          let vert = vert.replace('-', "_");
-          let frag = frag.replace('-', "_");
-          let key = (vert, frag, *additive, format);
-          for (group_idx, bind_group) in bind_groups_ref.iter().enumerate() {
+        for ((_, _, vert_count, _, _, _), (pipeline_index, placeholder)) in
+          group.iter().zip(prepared.iter())
+        {
+          let cached = &self.render_pipelines[*pipeline_index].1;
+          let bind_groups = placeholder
+            .as_deref()
+            .unwrap_or(&cached.bindings.bind_groups);
+          for (group_idx, bind_group) in bind_groups.iter().enumerate() {
             render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
           }
-          render_pass.set_pipeline(&self.render_pipelines[&key]);
+          render_pass.set_pipeline(&cached.pipeline);
           render_pass.draw(0..*vert_count, 0..1);
         }
       }
@@ -1282,13 +1531,31 @@ impl GpuCore {
     queue: wgpu::Queue,
     wgsl: &str,
     binding_infos: &[GpuBindingInfo],
+    gpu_entries: &[GpuEntryInfo],
   ) -> Arc<RwLock<Self>> {
-    // Backend unknown here (the embedder owns the device), so the
-    // Metal-specific vertex-stage check is skipped; the general limit
-    // checks still apply. No error handler is installed either — the
-    // embedder owns error handling on its own device.
+    Self::new_from_parts_with_backend(
+      device,
+      queue,
+      wgsl,
+      binding_infos,
+      gpu_entries,
+      // Backend unknown here (the embedder owns the device), so the
+      // Metal-specific vertex-stage budget check is skipped; the general
+      // per-pipeline limit checks still apply.
+      None,
+    )
+  }
+
+  fn new_from_parts_with_backend(
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    wgsl: &str,
+    binding_infos: &[GpuBindingInfo],
+    gpu_entries: &[GpuEntryInfo],
+    backend: Option<wgpu::Backend>,
+  ) -> Arc<RwLock<Self>> {
     if let Err(message) =
-      validate_binding_limits(&device.limits(), None, binding_infos)
+      validate_binding_limits(&device.limits(), binding_infos)
     {
       panic!("easl: {message}");
     }
@@ -1307,16 +1574,10 @@ impl GpuCore {
       .map(|info| BindingSlot {
         group: info.group,
         binding: info.binding,
+        name: info.name.clone(),
         kind: info.kind,
       })
       .collect();
-
-    let max_group = binding_infos
-      .iter()
-      .map(|info| info.group as usize)
-      .max()
-      .map(|g| g + 1)
-      .unwrap_or(0);
 
     let mut binding_buffers: HashMap<(u8, u8), wgpu::Buffer> = HashMap::new();
     let mut binding_buffer_sizes: HashMap<(u8, u8), u64> = HashMap::new();
@@ -1353,75 +1614,6 @@ impl GpuCore {
       }
     }
 
-    let bind_group_layouts: Vec<wgpu::BindGroupLayout> = (0..max_group)
-      .map(|group_idx| {
-        let entries: Vec<wgpu::BindGroupLayoutEntry> = binding_infos
-          .iter()
-          .filter(|info| info.group as usize == group_idx)
-          .map(|info| wgpu::BindGroupLayoutEntry {
-            binding: info.binding as u32,
-            visibility: gpu_binding_visibility(info),
-            ty: if info.kind == GpuBufferKind::Texture2D {
-              wgpu::BindingType::Texture {
-                multisampled: false,
-                view_dimension: wgpu::TextureViewDimension::D2,
-                sample_type: wgpu::TextureSampleType::Float {
-                  filterable: true,
-                },
-              }
-            } else {
-              wgpu::BindingType::Buffer {
-                ty: gpu_binding_type(info.kind),
-                has_dynamic_offset: false,
-                min_binding_size: None,
-              }
-            },
-            count: None,
-          })
-          .collect();
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-          label: Some(&format!("bind group layout {group_idx}")),
-          entries: &entries,
-        })
-      })
-      .collect();
-
-    let bind_groups: Vec<wgpu::BindGroup> = bind_group_layouts
-      .iter()
-      .enumerate()
-      .map(|(group_idx, layout)| {
-        let entries: Vec<wgpu::BindGroupEntry> = binding_slots
-          .iter()
-          .filter(|s| s.group as usize == group_idx)
-          .map(|s| {
-            let key = (s.group, s.binding);
-            wgpu::BindGroupEntry {
-              binding: s.binding as u32,
-              resource: if s.kind == GpuBufferKind::Texture2D {
-                wgpu::BindingResource::TextureView(&texture_views[&key])
-              } else {
-                binding_buffers[&key].as_entire_binding()
-              },
-            }
-          })
-          .collect();
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-          label: Some(&format!("bind group {group_idx}")),
-          layout,
-          entries: &entries,
-        })
-      })
-      .collect();
-
-    let bind_group_layout_refs: Vec<Option<&wgpu::BindGroupLayout>> =
-      bind_group_layouts.iter().map(Some).collect();
-    let pipeline_layout =
-      device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: None,
-        bind_group_layouts: &bind_group_layout_refs,
-        immediate_size: 0,
-      });
-
     let placeholder_texture_view = {
       let (_, view) = create_texture_and_view(
         &device,
@@ -1439,16 +1631,15 @@ impl GpuCore {
       device,
       queue,
       shader,
-      pipeline_layout,
-      compute_pipelines: HashMap::new(),
-      render_pipelines: HashMap::new(),
+      gpu_entries: gpu_entries.to_vec(),
+      backend,
+      compute_pipelines: vec![],
+      render_pipelines: vec![],
       binding_slots,
       binding_buffers,
       binding_buffer_sizes,
       textures,
       texture_views,
-      bind_group_layouts,
-      bind_groups,
       window_size: (1, 1),
       window_time: 0.0,
       window_delta_time: 0.0,
@@ -1474,8 +1665,8 @@ impl GpuCore {
   pub fn execute_render_batch_to_view(
     &mut self,
     calls: Vec<(
-      String,
-      String,
+      u16,
+      u16,
       u32,
       Vec<((u8, u8), BufferUpload)>,
       bool,
@@ -1500,9 +1691,7 @@ impl GpuCore {
       } else {
         Self::OFFSCREEN_FORMAT
       };
-      let vert = vert.replace('-', "_");
-      let frag = frag.replace('-', "_");
-      self.get_or_create_render_pipeline(&vert, &frag, *additive, format);
+      self.get_or_create_render_pipeline(*vert, *frag, *additive, format);
     }
 
     let mut encoder =
@@ -1527,10 +1716,6 @@ impl GpuCore {
           self.textures[&rt]
             .create_view(&wgpu::TextureViewDescriptor::default())
         });
-      let modified_bind_groups: Option<Vec<wgpu::BindGroup>> =
-        current_rt.map(|rt| self.bind_groups_with_placeholder_for(rt));
-      let bind_groups_ref: &[wgpu::BindGroup] =
-        modified_bind_groups.as_deref().unwrap_or(&self.bind_groups);
 
       let view = match &texture_target_view {
         Some(v) => v,
@@ -1541,6 +1726,31 @@ impl GpuCore {
       } else {
         Self::OFFSCREEN_FORMAT
       };
+      // Resolve each draw's pipeline before the pass borrow begins; build
+      // placeholder bind-group variants for pipelines that bind the pass's
+      // render target as a texture.
+      let prepared: Vec<(usize, Option<Vec<wgpu::BindGroup>>)> = group
+        .iter()
+        .map(|(vert, frag, _, _, additive, _)| {
+          let key = (*vert, *frag, *additive, format);
+          let index = self
+            .render_pipelines
+            .iter()
+            .position(|(k, _)| *k == key)
+            .expect("render pipeline missing from cache");
+          let bindings = &self.render_pipelines[index].1.bindings;
+          let placeholder = current_rt
+            .filter(|rt| bindings.used.contains_key(rt))
+            .map(|rt| {
+              self.create_bind_groups(
+                &bindings.used,
+                &bindings.layouts,
+                Some(rt),
+              )
+            });
+          (index, placeholder)
+        })
+        .collect();
 
       {
         let mut render_pass =
@@ -1560,14 +1770,17 @@ impl GpuCore {
             timestamp_writes: None,
             multiview_mask: None,
           });
-        for (vert, frag, vert_count, _, additive, _) in group {
-          let vert = vert.replace('-', "_");
-          let frag = frag.replace('-', "_");
-          let key = (vert, frag, *additive, format);
-          for (group_idx, bind_group) in bind_groups_ref.iter().enumerate() {
+        for ((_, _, vert_count, _, _, _), (pipeline_index, placeholder)) in
+          group.iter().zip(prepared.iter())
+        {
+          let cached = &self.render_pipelines[*pipeline_index].1;
+          let bind_groups = placeholder
+            .as_deref()
+            .unwrap_or(&cached.bindings.bind_groups);
+          for (group_idx, bind_group) in bind_groups.iter().enumerate() {
             render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
           }
-          render_pass.set_pipeline(&self.render_pipelines[&key]);
+          render_pass.set_pipeline(&cached.pipeline);
           render_pass.draw(0..*vert_count, 0..1);
         }
       }
@@ -1630,6 +1843,7 @@ impl GpuCore {
 pub fn create_headless_gpu_core(
   wgsl: &str,
   binding_infos: &[GpuBindingInfo],
+  gpu_entries: &[GpuEntryInfo],
 ) -> Arc<RwLock<GpuCore>> {
   pollster::block_on(async {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -1656,16 +1870,17 @@ pub fn create_headless_gpu_core(
       })
       .await
       .expect("Failed to create headless wgpu device");
-    if let Err(message) = validate_binding_limits(
-      &device.limits(),
-      Some(adapter.get_info().backend),
-      binding_infos,
-    ) {
-      panic!("easl: {message}");
-    }
     install_gpu_error_handler(&device);
 
-    let gpu = GpuCore::new_from_parts(device, queue, wgsl, binding_infos);
+    let backend = Some(adapter.get_info().backend);
+    let gpu = GpuCore::new_from_parts_with_backend(
+      device,
+      queue,
+      wgsl,
+      binding_infos,
+      gpu_entries,
+      backend,
+    );
     gpu.write().unwrap().instance = instance;
     gpu
   })
@@ -1697,11 +1912,12 @@ impl<'a, D: FrameDriver> App<'a, D> {
       if self.driver.io_mut().get_gpu().is_none() {
         let wgsl = self.driver.wgsl().to_string();
         let binding_infos = self.driver.binding_infos();
-        state
-          .gpu
-          .write()
-          .unwrap()
-          .update_for_reload(&wgsl, &binding_infos);
+        let gpu_entries = self.driver.gpu_entries();
+        state.gpu.write().unwrap().update_for_reload(
+          &wgsl,
+          &binding_infos,
+          &gpu_entries,
+        );
       }
       // Reconfigure the surface in case it became outdated during the gap
       // between event loop runs (e.g. the window was resized or the display
@@ -1774,8 +1990,14 @@ impl<'a, D: FrameDriver> App<'a, D> {
     } else {
       let wgsl = self.driver.wgsl().to_string();
       let binding_infos = self.driver.binding_infos();
-      pollster::block_on(RenderState::new(window, &wgsl, &binding_infos))
-        .unwrap()
+      let gpu_entries = self.driver.gpu_entries();
+      pollster::block_on(RenderState::new(
+        window,
+        &wgsl,
+        &binding_infos,
+        &gpu_entries,
+      ))
+      .unwrap()
     };
     // Give the interpreter's IO manager direct access to GPU resources so
     // compute dispatches can execute synchronously within eval().
@@ -1986,95 +2208,15 @@ fn gpu_binding_type(kind: GpuBufferKind) -> wgpu::BufferBindingType {
 const METAL_MAX_VERTEX_STAGE_BUFFERS: u32 = 16;
 const METAL_RESERVED_VERTEX_BUFFER_SLOTS: u32 = 1;
 
-/// Validates the program's binding table against the device's limits before
-/// any wgpu objects are created, so that limit violations surface as a
-/// clear easl-level error naming the offending variables rather than a wgpu
-/// validation panic from deep inside pipeline creation.
+/// Validates program-wide binding-table properties against the device's
+/// limits before any wgpu objects are created. Per-stage budgets are
+/// per-pipeline concerns, checked in `validate_pipeline_bindings` when each
+/// pipeline's (much smaller) used-binding set is known; only globally-fixed
+/// properties are checked here.
 fn validate_binding_limits(
   limits: &wgpu::Limits,
-  backend: Option<wgpu::Backend>,
   binding_infos: &[GpuBindingInfo],
 ) -> Result<(), String> {
-  let describe = |bindings: &[&GpuBindingInfo]| -> String {
-    bindings
-      .iter()
-      .map(|info| {
-        format!(
-          "{} (group {}, binding {})",
-          info.name, info.group, info.binding
-        )
-      })
-      .collect::<Vec<_>>()
-      .join(", ")
-  };
-  let stage_bits: [(&str, fn(BindingStages) -> bool); 3] = [
-    ("vertex", |s| s.vertex),
-    ("fragment", |s| s.fragment),
-    ("compute", |s| s.compute),
-  ];
-  for (stage_name, stage_bit) in stage_bits {
-    let visible: Vec<&GpuBindingInfo> = binding_infos
-      .iter()
-      .filter(|info| {
-        info.kind != GpuBufferKind::Texture2D && stage_bit(info.stages)
-      })
-      .collect();
-    let storage: Vec<&GpuBindingInfo> = visible
-      .iter()
-      .copied()
-      .filter(|info| {
-        matches!(
-          info.kind,
-          GpuBufferKind::StorageReadOnly | GpuBufferKind::StorageReadWrite
-        )
-      })
-      .collect();
-    let uniforms: Vec<&GpuBindingInfo> = visible
-      .iter()
-      .copied()
-      .filter(|info| info.kind == GpuBufferKind::Uniform)
-      .collect();
-    if storage.len() as u32 > limits.max_storage_buffers_per_shader_stage {
-      return Err(format!(
-        "this program's GPU bindings exceed a device limit: the \
-         {stage_name} stage references {} storage buffers, but this device \
-         supports at most {} per stage. Storage bindings visible to the \
-         {stage_name} stage: {}",
-        storage.len(),
-        limits.max_storage_buffers_per_shader_stage,
-        describe(&storage),
-      ));
-    }
-    if uniforms.len() as u32 > limits.max_uniform_buffers_per_shader_stage {
-      return Err(format!(
-        "this program's GPU bindings exceed a device limit: the \
-         {stage_name} stage references {} uniform buffers, but this device \
-         supports at most {} per stage. Uniform bindings visible to the \
-         {stage_name} stage: {}",
-        uniforms.len(),
-        limits.max_uniform_buffers_per_shader_stage,
-        describe(&uniforms),
-      ));
-    }
-    if stage_name == "vertex"
-      && backend == Some(wgpu::Backend::Metal)
-      && visible.len() as u32 + METAL_RESERVED_VERTEX_BUFFER_SLOTS
-        > METAL_MAX_VERTEX_STAGE_BUFFERS
-    {
-      return Err(format!(
-        "this program needs too many GPU buffer bindings in the vertex \
-         stage: {} bindings are referenced from vertex shaders, plus {} \
-         slot wgpu reserves internally, but Metal supports at most {} \
-         vertex-stage buffers. Reduce the number of GPU-bound variables \
-         (including implicit closure-scope bindings) reachable from vertex \
-         entry points. Vertex-visible bindings: {}",
-        visible.len(),
-        METAL_RESERVED_VERTEX_BUFFER_SLOTS,
-        METAL_MAX_VERTEX_STAGE_BUFFERS,
-        describe(&visible),
-      ));
-    }
-  }
   let group_count = binding_infos
     .iter()
     .map(|info| info.group as u32 + 1)
@@ -2103,39 +2245,12 @@ fn install_gpu_error_handler(device: &wgpu::Device) {
   }));
 }
 
-fn gpu_binding_visibility(info: &GpuBindingInfo) -> wgpu::ShaderStages {
-  // Texture usage isn't tracked through the effect system yet — keep
-  // textures visible to all stages.
-  if info.kind == GpuBufferKind::Texture2D {
-    return wgpu::ShaderStages::VERTEX
-      | wgpu::ShaderStages::FRAGMENT
-      | wgpu::ShaderStages::COMPUTE;
-  }
-  // Buffer visibility is usage-derived: only the stages whose entry points
-  // actually reference the binding (per the compiler's effect analysis).
-  // Declaring more than that wastes per-stage binding budget — Metal counts
-  // every vertex-visible layout buffer against a 16-slot vertex-stage cap,
-  // used or not. (Read-write storage visible to the vertex stage relies on
-  // `Features::VERTEX_WRITABLE_STORAGE`, which we request — see the device
-  // descriptors.)
-  let mut stages = wgpu::ShaderStages::NONE;
-  if info.stages.vertex {
-    stages |= wgpu::ShaderStages::VERTEX;
-  }
-  if info.stages.fragment {
-    stages |= wgpu::ShaderStages::FRAGMENT;
-  }
-  if info.stages.compute {
-    stages |= wgpu::ShaderStages::COMPUTE;
-  }
-  stages
-}
-
 impl RenderState {
   async fn new(
     window: Arc<Window>,
     wgsl: &str,
     binding_infos: &[GpuBindingInfo],
+    gpu_entries: &[GpuEntryInfo],
   ) -> Result<Self, String> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
       backends: wgpu::Backends::all(),
@@ -2170,12 +2285,6 @@ impl RenderState {
       })
       .await
       .map_err(|e| e.to_string())?;
-    validate_binding_limits(
-      &device.limits(),
-      Some(adapter.get_info().backend),
-      binding_infos,
-    )
-    .map_err(|message| format!("easl: {message}"))?;
     install_gpu_error_handler(&device);
 
     let size = window.inner_size();
@@ -2199,178 +2308,21 @@ impl RenderState {
     };
     surface.configure(&device, &surface_config);
 
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-      label: Some("easl shader"),
-      source: wgpu::ShaderSource::Wgsl(wgsl.into()),
-    });
-
-    // Collect binding metadata.
-    let binding_slots: Vec<BindingSlot> = binding_infos
-      .iter()
-      .map(|info| BindingSlot {
-        group: info.group,
-        binding: info.binding,
-        kind: info.kind,
-      })
-      .collect();
-
-    let max_group = binding_infos
-      .iter()
-      .map(|info| info.group as usize)
-      .max()
-      .map(|g| g + 1)
-      .unwrap_or(0);
-
-    // Create one buffer per non-texture binding.  Dynamic bindings (size == 0)
-    // get a 16-byte placeholder; they will be resized on the first upload.
-    // Texture bindings get a placeholder 1×1 RGBA texture instead of a buffer.
-    let mut binding_buffers: HashMap<(u8, u8), wgpu::Buffer> = HashMap::new();
-    let mut binding_buffer_sizes: HashMap<(u8, u8), u64> = HashMap::new();
-    let mut textures: HashMap<(u8, u8), wgpu::Texture> = HashMap::new();
-    let mut texture_views: HashMap<(u8, u8), wgpu::TextureView> =
-      HashMap::new();
-    for info in binding_infos {
-      let (group, binding, kind, size) =
-        (info.group, info.binding, info.kind, info.byte_size);
-      let key = (group, binding);
-      if kind == GpuBufferKind::Texture2D {
-        let (texture, view) = create_texture_and_view(
-          &device,
-          &format!("texture g{group}b{binding}"),
-          1,
-          1,
-          BINDING_TEXTURE_FORMAT,
-          wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_DST
-            | wgpu::TextureUsages::RENDER_ATTACHMENT,
-        );
-        textures.insert(key, texture);
-        texture_views.insert(key, view);
-      } else {
-        let alloc_size = size.max(16);
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-          label: Some(&format!("binding g{group}b{binding}")),
-          size: alloc_size,
-          usage: gpu_buffer_usage(kind),
-          mapped_at_creation: false,
-        });
-        binding_buffers.insert(key, buffer);
-        binding_buffer_sizes.insert(key, alloc_size);
-      }
-    }
-
-    // Create bind group layouts (one per group number, 0-indexed).
-    let bind_group_layouts: Vec<wgpu::BindGroupLayout> = (0..max_group)
-      .map(|group_idx| {
-        let entries: Vec<wgpu::BindGroupLayoutEntry> = binding_infos
-          .iter()
-          .filter(|info| info.group as usize == group_idx)
-          .map(|info| wgpu::BindGroupLayoutEntry {
-            binding: info.binding as u32,
-            visibility: gpu_binding_visibility(info),
-            ty: if info.kind == GpuBufferKind::Texture2D {
-              wgpu::BindingType::Texture {
-                multisampled: false,
-                view_dimension: wgpu::TextureViewDimension::D2,
-                sample_type: wgpu::TextureSampleType::Float {
-                  filterable: true,
-                },
-              }
-            } else {
-              wgpu::BindingType::Buffer {
-                ty: gpu_binding_type(info.kind),
-                has_dynamic_offset: false,
-                min_binding_size: None,
-              }
-            },
-            count: None,
-          })
-          .collect();
-        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-          label: Some(&format!("bind group layout {group_idx}")),
-          entries: &entries,
-        })
-      })
-      .collect();
-
-    // Create initial bind groups.
-    let bind_groups: Vec<wgpu::BindGroup> = bind_group_layouts
-      .iter()
-      .enumerate()
-      .map(|(group_idx, layout)| {
-        let entries: Vec<wgpu::BindGroupEntry> = binding_slots
-          .iter()
-          .filter(|s| s.group as usize == group_idx)
-          .map(|s| {
-            let key = (s.group, s.binding);
-            wgpu::BindGroupEntry {
-              binding: s.binding as u32,
-              resource: if s.kind == GpuBufferKind::Texture2D {
-                wgpu::BindingResource::TextureView(&texture_views[&key])
-              } else {
-                binding_buffers[&key].as_entire_binding()
-              },
-            }
-          })
-          .collect();
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-          label: Some(&format!("bind group {group_idx}")),
-          layout,
-          entries: &entries,
-        })
-      })
-      .collect();
-
-    let bind_group_layout_refs: Vec<Option<&wgpu::BindGroupLayout>> =
-      bind_group_layouts.iter().map(Some).collect();
-    let pipeline_layout =
-      device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: None,
-        bind_group_layouts: &bind_group_layout_refs,
-        immediate_size: 0,
-      });
-
-    let placeholder_texture_view = {
-      let (_, view) = create_texture_and_view(
-        &device,
-        "placeholder texture",
-        1,
-        1,
-        wgpu::TextureFormat::Rgba8Unorm,
-        wgpu::TextureUsages::TEXTURE_BINDING,
-      );
-      view
-    };
-    let gpu = Arc::new(RwLock::new(GpuCore {
-      instance,
+    let gpu = GpuCore::new_from_parts_with_backend(
       device,
       queue,
-      shader,
-      pipeline_layout,
-      compute_pipelines: HashMap::new(),
-      render_pipelines: HashMap::new(),
-      binding_slots,
-      binding_buffers,
-      binding_buffer_sizes,
-      textures,
-      texture_views,
-      bind_group_layouts,
-      bind_groups,
-      window_size: (surface_config.width, surface_config.height),
-      window_time: 0.0,
-      window_delta_time: 0.0,
-      window_frame_index: 0,
-      keys_down: HashSet::new(),
-      keys_just_down: HashSet::new(),
-      mouse_coords: (0, 0),
-      mouse_present: false,
-      mouse_down: false,
-      mouse_just_down: false,
-      surface: Some(surface),
-      surface_config: Some(surface_config),
-      pending_present: None,
-      placeholder_texture_view,
-    }));
+      wgsl,
+      binding_infos,
+      gpu_entries,
+      Some(adapter.get_info().backend),
+    );
+    {
+      let mut gpu = gpu.write().unwrap();
+      gpu.instance = instance;
+      gpu.window_size = (surface_config.width, surface_config.height);
+      gpu.surface = Some(surface);
+      gpu.surface_config = Some(surface_config);
+    }
 
     Ok(Self { window, gpu })
   }

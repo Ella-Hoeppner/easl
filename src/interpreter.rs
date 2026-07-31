@@ -24,6 +24,7 @@ use crate::compiler::{
   },
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
+use crate::compiler::effects::EffectType;
 use crate::compiler::entry::EntryPoint;
 #[cfg(all(feature = "window", feature = "c_audio"))]
 use crate::compiler::core::compile_easl_file_to_target;
@@ -1788,6 +1789,8 @@ fn apply_builtin_fn<IO: IOManager>(
         }
       }
       env.io.record_draw(
+        env.gpu_entry_id(&vert_f_name),
+        env.gpu_entry_id(&frag_f_name),
         &vert_f_name,
         &frag_f_name,
         *vert_count,
@@ -1839,9 +1842,12 @@ fn apply_builtin_fn<IO: IOManager>(
       let workgroup_count = (get_u32("x"), get_u32("y"), get_u32("z"));
       env.setup_gpu_if_needed();
       let pre_upload = env.collect_dirty_uploads(&read_global_variable_names);
-      env
-        .io
-        .record_compute(&entry_name, workgroup_count, pre_upload)?;
+      env.io.record_compute(
+        env.gpu_entry_id(&entry_name),
+        &entry_name,
+        workgroup_count,
+        pre_upload,
+      )?;
       env.mark_gpu_written(&written_global_variable_names);
       Ok(Value::Unit)
     }
@@ -2675,12 +2681,14 @@ pub enum BufferUpload {
 }
 
 /// Internal frame-level GPU command, used by StdoutIO to pass commands to
-/// the wgpu renderer in window.rs.
+/// the wgpu renderer in window.rs. Entry points are referenced by dense id
+/// (index into the env's GPU entry table, resolved once at dispatch-record
+/// time) so the GPU frame loop never does string work.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WindowEvent {
   RenderShaders {
-    vert: String,
-    frag: String,
+    vert: u16,
+    frag: u16,
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     additive: bool,
@@ -2688,10 +2696,22 @@ pub enum WindowEvent {
     render_target: Option<(u8, u8)>,
   },
   ComputeShader {
-    entry: String,
+    entry: u16,
     workgroup_count: (u32, u32, u32),
     pre_upload: Vec<((u8, u8), BufferUpload)>,
   },
+}
+
+/// One GPU entry point, as `window.rs` needs it: the WGSL-compiled entry
+/// name and the (group, binding) keys of every buffer binding the entry's
+/// code (transitively) references. Indexed by dense entry id — the ids
+/// `WindowEvent` carries. Each pipeline's bind group layouts are built from
+/// exactly these sets, so a pipeline's per-stage binding budget only pays
+/// for what its own entry points use.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GpuEntryInfo {
+  pub name: String,
+  pub used_bindings: Vec<(u8, u8)>,
 }
 
 /// A single observable event emitted by the interpreter, recorded by StringIO
@@ -2775,6 +2795,7 @@ pub trait FrameDriver {
   fn io_mut(&mut self) -> &mut Self::IO;
   fn wgsl(&self) -> &str;
   fn binding_infos(&self) -> Vec<GpuBindingInfo>;
+  fn gpu_entries(&self) -> Vec<GpuEntryInfo>;
   /// Runs the frame body once. `Err(EvalException::CloseWindow)` stops the
   /// frame loop.
   fn run_frame(&mut self) -> Result<(), EvalException>;
@@ -2798,6 +2819,9 @@ impl<IO: IOManager> FrameDriver for AstFrameDriver<'_, IO> {
   fn binding_infos(&self) -> Vec<GpuBindingInfo> {
     self.env.binding_infos()
   }
+  fn gpu_entries(&self) -> Vec<GpuEntryInfo> {
+    self.env.gpu_entries.clone()
+  }
   fn run_frame(&mut self) -> Result<(), EvalException> {
     eval(self.body.clone(), self.env).map(|_| ())
   }
@@ -2805,10 +2829,14 @@ impl<IO: IOManager> FrameDriver for AstFrameDriver<'_, IO> {
 
 pub trait IOManager: Sized {
   fn println(&mut self, s: &str);
+  /// `vert`/`frag` are dense GPU entry ids (see `GpuEntryInfo`); the name
+  /// parameters carry the source-level names for event-log IO managers.
   fn record_draw(
     &mut self,
-    vert: &str,
-    frag: &str,
+    vert: u16,
+    frag: u16,
+    vert_name: &str,
+    frag_name: &str,
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     additive: bool,
@@ -2816,7 +2844,8 @@ pub trait IOManager: Sized {
   ) -> Result<(), EvalError>;
   fn record_compute(
     &mut self,
-    entry: &str,
+    entry: u16,
+    entry_name: &str,
     workgroup_count: (u32, u32, u32),
     pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) -> Result<(), EvalError>;
@@ -2917,6 +2946,7 @@ pub trait IOManager: Sized {
     &mut self,
     _wgsl: &str,
     _binding_infos: &[GpuBindingInfo],
+    _gpu_entries: &[GpuEntryInfo],
   ) {
   }
   /// Returns the current allocated byte size of the GPU buffer for the given
@@ -3030,16 +3060,18 @@ impl IOManager for StdoutIO {
 
   fn record_draw(
     &mut self,
-    vert: &str,
-    frag: &str,
+    vert: u16,
+    frag: u16,
+    _vert_name: &str,
+    _frag_name: &str,
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     additive: bool,
     render_target: Option<(u8, u8)>,
   ) -> Result<(), EvalError> {
     self.frame_draw_calls.push(WindowEvent::RenderShaders {
-      vert: vert.to_string(),
-      frag: frag.to_string(),
+      vert,
+      frag,
       vert_count,
       pre_upload,
       additive,
@@ -3050,12 +3082,13 @@ impl IOManager for StdoutIO {
 
   fn record_compute(
     &mut self,
-    entry: &str,
+    entry: u16,
+    _entry_name: &str,
     workgroup_count: (u32, u32, u32),
     pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) -> Result<(), EvalError> {
     self.frame_draw_calls.push(WindowEvent::ComputeShader {
-      entry: entry.to_string(),
+      entry,
       workgroup_count,
       pre_upload,
     });
@@ -3101,6 +3134,7 @@ impl IOManager for StdoutIO {
     &mut self,
     wgsl: &str,
     binding_infos: &[GpuBindingInfo],
+    gpu_entries: &[GpuEntryInfo],
   ) {
     if self.gpu.is_none() {
       // On hot-reload, reuse the GPU that's already in PERSISTENT_RELOAD_STATE
@@ -3109,11 +3143,17 @@ impl IOManager for StdoutIO {
       // on a throwaway GPU and its results would be lost when setup_window()
       // replaces self.gpu with the persistent one.
       if let Some(gpu) = crate::window::persistent_gpu() {
-        gpu.write().unwrap().update_for_reload(wgsl, binding_infos);
+        gpu
+          .write()
+          .unwrap()
+          .update_for_reload(wgsl, binding_infos, gpu_entries);
         self.gpu = Some(gpu);
       } else {
-        self.gpu =
-          Some(crate::window::create_headless_gpu_core(wgsl, binding_infos));
+        self.gpu = Some(crate::window::create_headless_gpu_core(
+          wgsl,
+          binding_infos,
+          gpu_entries,
+        ));
       }
     }
   }
@@ -3236,10 +3276,10 @@ impl IOManager for StdoutIO {
     #[cfg(feature = "window")]
     {
       type ComputeCall =
-        (String, (u32, u32, u32), Vec<((u8, u8), BufferUpload)>);
+        (u16, (u32, u32, u32), Vec<((u8, u8), BufferUpload)>);
       type RenderCall = (
-        String,
-        String,
+        u16,
+        u16,
         u32,
         Vec<((u8, u8), BufferUpload)>,
         bool,
@@ -3422,16 +3462,18 @@ impl IOManager for StringIO {
 
   fn record_draw(
     &mut self,
-    vert: &str,
-    frag: &str,
+    _vert: u16,
+    _frag: u16,
+    vert_name: &str,
+    frag_name: &str,
     vert_count: u32,
     _pre_upload: Vec<((u8, u8), BufferUpload)>,
     _additive: bool,
     _render_target: Option<(u8, u8)>,
   ) -> Result<(), EvalError> {
     self.events.push(IOEvent::DispatchShaders {
-      vert: vert.to_string(),
-      frag: frag.to_string(),
+      vert: vert_name.to_string(),
+      frag: frag_name.to_string(),
       vert_count,
     });
     Ok(())
@@ -3439,12 +3481,13 @@ impl IOManager for StringIO {
 
   fn record_compute(
     &mut self,
-    entry: &str,
+    _entry: u16,
+    entry_name: &str,
     workgroup_count: (u32, u32, u32),
     _pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) -> Result<(), EvalError> {
     self.events.push(IOEvent::DispatchComputeShader {
-      entry: entry.to_string(),
+      entry: entry_name.to_string(),
       workgroup_count,
     });
     Ok(())
@@ -3564,8 +3607,10 @@ impl IOManager for CaptureIO {
 
   fn record_draw(
     &mut self,
-    vert: &str,
-    frag: &str,
+    vert: u16,
+    frag: u16,
+    vert_name: &str,
+    frag_name: &str,
     vert_count: u32,
     pre_upload: Vec<((u8, u8), BufferUpload)>,
     additive: bool,
@@ -3574,6 +3619,8 @@ impl IOManager for CaptureIO {
     self.inner.record_draw(
       vert,
       frag,
+      vert_name,
+      frag_name,
       vert_count,
       pre_upload,
       additive,
@@ -3583,13 +3630,14 @@ impl IOManager for CaptureIO {
 
   fn record_compute(
     &mut self,
-    entry: &str,
+    entry: u16,
+    entry_name: &str,
     workgroup_count: (u32, u32, u32),
     pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) -> Result<(), EvalError> {
     self
       .inner
-      .record_compute(entry, workgroup_count, pre_upload)
+      .record_compute(entry, entry_name, workgroup_count, pre_upload)
   }
 
   fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent> {
@@ -3629,8 +3677,9 @@ impl IOManager for CaptureIO {
     &mut self,
     wgsl: &str,
     binding_infos: &[GpuBindingInfo],
+    gpu_entries: &[GpuEntryInfo],
   ) {
-    self.inner.ensure_gpu_ready(wgsl, binding_infos)
+    self.inner.ensure_gpu_ready(wgsl, binding_infos, gpu_entries)
   }
 
   #[cfg(feature = "window")]
@@ -3740,6 +3789,10 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   /// Which shader stages reference each GPU-bound var, derived from entry
   /// point effects at construction.
   binding_stages: HashMap<Arc<str>, BindingStages>,
+  /// Dense GPU entry table (see `GpuEntryInfo`); ids index this vec.
+  gpu_entries: Vec<GpuEntryInfo>,
+  /// Source-level entry name -> dense id into `gpu_entries`.
+  gpu_entry_ids: HashMap<Arc<str>, u16>,
   /// Sync state for each GPU-bound variable, keyed by name.
   buffer_states: HashMap<Arc<str>, SharedBufferState>,
   /// Directory of the source .easl file, used to resolve relative paths.
@@ -3832,6 +3885,18 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     // require the binding to be visible, since WGSL's arrayLength derives
     // from buffer size.
     let mut binding_stages: HashMap<Arc<str>, BindingStages> = HashMap::new();
+    // Dense GPU entry table: every vertex/fragment/compute entry point gets
+    // an id (its index), its WGSL-compiled name, and the (group, binding)
+    // keys of the buffer bindings its code transitively references — the
+    // basis for per-pipeline bind group layouts in window.rs. Sorted by
+    // name so ids are deterministic across runs.
+    let group_and_binding_by_name: HashMap<&Arc<str>, (u8, u8)> = binding_vars
+      .iter()
+      .map(|(gb, name, _, _)| (name, (gb.group, gb.binding)))
+      .collect();
+    let mut gpu_entries: Vec<GpuEntryInfo> = vec![];
+    let mut gpu_entry_ids: HashMap<Arc<str>, u16> = HashMap::new();
+    let mut entry_fns: Vec<(Arc<str>, EntryPoint, EffectType)> = vec![];
     for f in program.abstract_functions_iter() {
       let f = f.read().unwrap();
       let Some(entry) = f.entry_point else {
@@ -3843,6 +3908,9 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         continue;
       };
       let effects = implementation.read().unwrap().effects();
+      if !matches!(entry, EntryPoint::Cpu | EntryPoint::Audio) {
+        entry_fns.push((f.name.clone(), entry, effects.clone()));
+      }
       let (reads, writes) = effects.gpu_read_and_written_globals();
       for name in reads.into_iter().chain(writes.into_iter()) {
         let stages = binding_stages.entry(name).or_default();
@@ -3853,6 +3921,23 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           EntryPoint::Cpu | EntryPoint::Audio => {}
         }
       }
+    }
+    entry_fns.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
+    for (name, _, effects) in entry_fns {
+      let (reads, writes) = effects.gpu_read_and_written_globals();
+      let mut used_bindings: Vec<(u8, u8)> = vec![];
+      for global in reads.into_iter().chain(writes.into_iter()) {
+        if let Some(key) = group_and_binding_by_name.get(&global) {
+          if !used_bindings.contains(key) {
+            used_bindings.push(*key);
+          }
+        }
+      }
+      gpu_entry_ids.insert(name.clone(), gpu_entries.len() as u16);
+      gpu_entries.push(GpuEntryInfo {
+        name: name.replace('-', "_"),
+        used_bindings,
+      });
     }
     let mut env = Self {
       wgsl: String::new(),
@@ -3866,6 +3951,8 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       io,
       binding_vars,
       binding_stages,
+      gpu_entries,
+      gpu_entry_ids,
       buffer_states,
       source_dir,
       current_render_target: None,
@@ -3933,6 +4020,15 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   }
   pub fn wgsl(&self) -> &str {
     &self.wgsl
+  }
+  /// Resolves a source-level GPU entry point name to its dense entry id.
+  fn gpu_entry_id(&self, name: &str) -> u16 {
+    *self.gpu_entry_ids.get(name).unwrap_or_else(|| {
+      panic!(
+        "easl internal error: dispatched entry point \"{name}\" is missing \
+         from the GPU entry table"
+      )
+    })
   }
 
   /// Returns a `GpuBindingInfo` for each GPU-bound variable. `byte_size` is
@@ -4298,7 +4394,8 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     {
       let wgsl = self.wgsl.clone();
       let binding_infos = self.binding_infos();
-      self.io.ensure_gpu_ready(&wgsl, &binding_infos);
+      let gpu_entries = self.gpu_entries.clone();
+      self.io.ensure_gpu_ready(&wgsl, &binding_infos, &gpu_entries);
     }
   }
 
@@ -5576,8 +5673,10 @@ fn vm_host_call<IO: IOManager>(
       let workgroup_count = (stack[ws], stack[ws + 1], stack[ws + 2]);
       env.setup_gpu_if_needed();
       let pre_upload = env.collect_dirty_uploads(&read_names);
+      let entry_name = &code.host_strings[*entry as usize];
       env.io.record_compute(
-        &code.host_strings[*entry as usize],
+        env.gpu_entry_id(entry_name),
+        entry_name,
         workgroup_count,
         pre_upload,
       )?;
@@ -5630,9 +5729,13 @@ fn vm_host_call<IO: IOManager>(
           }
         }
       }
+      let vert_name = &code.host_strings[*vert as usize];
+      let frag_name = &code.host_strings[*frag as usize];
       env.io.record_draw(
-        &code.host_strings[*vert as usize],
-        &code.host_strings[*frag as usize],
+        env.gpu_entry_id(vert_name),
+        env.gpu_entry_id(frag_name),
+        vert_name,
+        frag_name,
         vert_count,
         pre_upload,
         additive,
@@ -5878,6 +5981,9 @@ impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
   }
   fn binding_infos(&self) -> Vec<GpuBindingInfo> {
     self.env.binding_infos()
+  }
+  fn gpu_entries(&self) -> Vec<GpuEntryInfo> {
+    self.env.gpu_entries.clone()
   }
   fn run_frame(&mut self) -> Result<(), EvalException> {
     use crate::vm::bytecode::{HostSuspendReason, RunResult};
