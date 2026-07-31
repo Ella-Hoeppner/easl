@@ -8,6 +8,100 @@ use crate::compiler::{
   vars::{TopLevelVariableKind, VariableAddressSpace},
 };
 
+/// A piece of ambient window/input state that the runtime tracks and that
+/// easl code can query (e.g. `window-time`, `mouse-coords`). On the CPU
+/// these are direct queries against the IO manager; in GPU code the
+/// `extract_gpu_window_info` pass rewrites each use into a read of an
+/// implicit uniform binding that the runtime refreshes at the start of
+/// every frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindowInfoKind {
+  Resolution,
+  Time,
+  DeltaTime,
+  FrameIndex,
+  MouseCoords,
+  MousePresent,
+  MouseDown,
+  MouseJustDown,
+  /// `key-down?` — takes a compile-time string literal; each distinct key
+  /// gets its own binding (see `WindowInfoBindingSource::KeyDown`).
+  KeyDown,
+  /// `key-just-down?` — as `KeyDown`.
+  KeyJustDown,
+}
+
+/// What an implicit window-info binding is populated from: either one of
+/// the zero-arg queries, or a key query for one specific compile-time key
+/// string.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum WindowInfoBindingSource {
+  Simple(WindowInfoKind),
+  KeyDown(Arc<str>),
+  KeyJustDown(Arc<str>),
+}
+
+impl WindowInfoKind {
+  pub const ALL: [WindowInfoKind; 10] = [
+    WindowInfoKind::Resolution,
+    WindowInfoKind::Time,
+    WindowInfoKind::DeltaTime,
+    WindowInfoKind::FrameIndex,
+    WindowInfoKind::MouseCoords,
+    WindowInfoKind::MousePresent,
+    WindowInfoKind::MouseDown,
+    WindowInfoKind::MouseJustDown,
+    WindowInfoKind::KeyDown,
+    WindowInfoKind::KeyJustDown,
+  ];
+  /// The easl builtin function name that queries this info.
+  pub fn fn_name(&self) -> &'static str {
+    match self {
+      WindowInfoKind::Resolution => "window-resolution",
+      WindowInfoKind::Time => "window-time",
+      WindowInfoKind::DeltaTime => "window-delta-time",
+      WindowInfoKind::FrameIndex => "window-frame-index",
+      WindowInfoKind::MouseCoords => "mouse-coords",
+      WindowInfoKind::MousePresent => "mouse-present?",
+      WindowInfoKind::MouseDown => "mouse-down?",
+      WindowInfoKind::MouseJustDown => "mouse-just-down?",
+      WindowInfoKind::KeyDown => "key-down?",
+      WindowInfoKind::KeyJustDown => "key-just-down?",
+    }
+  }
+  pub fn from_fn_name(name: &str) -> Option<Self> {
+    Self::ALL.iter().copied().find(|kind| kind.fn_name() == name)
+  }
+  /// The base name for the implicit uniform binding generated for GPU uses.
+  pub fn binding_base_name(&self) -> &'static str {
+    match self {
+      WindowInfoKind::Resolution => "window_resolution_info",
+      WindowInfoKind::Time => "window_time_info",
+      WindowInfoKind::DeltaTime => "window_delta_time_info",
+      WindowInfoKind::FrameIndex => "window_frame_index_info",
+      WindowInfoKind::MouseCoords => "mouse_coords_info",
+      WindowInfoKind::MousePresent => "mouse_present_info",
+      WindowInfoKind::MouseDown => "mouse_down_info",
+      WindowInfoKind::MouseJustDown => "mouse_just_down_info",
+      WindowInfoKind::KeyDown => "key_down_info",
+      WindowInfoKind::KeyJustDown => "key_just_down_info",
+    }
+  }
+  /// Whether the easl-level query returns a bool. Bools aren't
+  /// host-shareable in WGSL uniforms, so these bindings are stored as `u32`
+  /// and GPU-side uses are rewritten to `(!= binding 0u)`.
+  pub fn is_boolean(&self) -> bool {
+    matches!(
+      self,
+      WindowInfoKind::MousePresent
+        | WindowInfoKind::MouseDown
+        | WindowInfoKind::MouseJustDown
+        | WindowInfoKind::KeyDown
+        | WindowInfoKind::KeyJustDown
+    )
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Effect {
   ReadsVar(Arc<str>),
@@ -29,6 +123,12 @@ pub enum Effect {
   FragmentExclusiveFunction(Arc<str>),
   CPUExclusiveFunction(Arc<str>),
   CPUExclusiveType(Arc<str>),
+  /// A query of ambient window/input state (see `WindowInfoKind`). Legal in
+  /// both CPU and GPU code; GPU uses are rewritten into implicit uniform
+  /// binding reads by `extract_gpu_window_info`, so by WGSL emission time no
+  /// GPU-emitted function carries this effect. Excluded from the C and
+  /// audio targets like CPU-exclusive functions.
+  WindowInfo(WindowInfoKind),
   Print,
   Window,
   LookupBuiltinAttribute(BuiltinIOAttribute),
@@ -61,11 +161,25 @@ impl EffectType {
         | Effect::ReadsArrayLength(_)
         | Effect::FragmentExclusiveFunction(_)
         | Effect::CPUExclusiveFunction(_)
-        | Effect::CPUExclusiveType(_) => {}
+        | Effect::CPUExclusiveType(_)
+        | Effect::WindowInfo(_) => {}
         _ => return false,
       }
     }
     true
+  }
+  pub fn window_info_kinds(&self) -> Vec<WindowInfoKind> {
+    self
+      .0
+      .iter()
+      .filter_map(|e| {
+        if let Effect::WindowInfo(kind) = e {
+          Some(*kind)
+        } else {
+          None
+        }
+      })
+      .collect()
   }
   pub fn cpu_exclusive_functions(&self) -> Vec<Arc<str>> {
     self

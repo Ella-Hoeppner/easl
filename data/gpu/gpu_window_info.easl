@@ -1,0 +1,30 @@
+; Window-info queries used directly in GPU code: each distinct query kind
+; becomes an implicit uniform binding (bools as u32 with a != rewrite),
+; refreshed by the runtime each frame.
+
+@vertex
+(defn vert [@{builtin vertex-index} i: u32]: @{builtin position} vec4f
+  (vec4f (match i
+           0 (vec2f -1.)
+           1 (vec2f -1. 3.)
+           _ (vec2f 3. -1.))
+         0.
+         (+ 1. (* 0. (window-time)))))
+
+@fragment
+(defn frag [@{builtin position} pos: vec4f]: @{location 0} vec4f
+  (let [res (vec2f (window-resolution))
+        uv (/ (.xy pos) res)
+        wave (* 0.5 (+ 1. (sin (+ (window-time) (.x uv)))))
+        mouse-boost (if (mouse-down?) 0.5 0.)
+        key-boost (if (key-down? "w") 0.25 0.)
+        key-blink (if (key-just-down? "space") 0.25 0.)
+        blink (if (mouse-just-down?) 1. 0.)
+        presence (if (mouse-present?) 0.25 0.)
+        pulse (* (window-delta-time)
+                 (f32 (window-frame-index)))
+        m (vec2f (mouse-coords))]
+    (vec4f wave
+           (+ mouse-boost presence key-boost key-blink)
+           (+ blink (* 0.001 (+ (.x m) pulse)))
+           1.)))

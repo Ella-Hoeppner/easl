@@ -591,3 +591,4 @@ conformance_test!(closure_scope_write_back);
 conformance_test!(closure_scope_multi_capture);
 conformance_test!(closure_capturing_closure);
 conformance_test!(closure_capturing_closure_mutation);
+conformance_test!(and_or_aliases);

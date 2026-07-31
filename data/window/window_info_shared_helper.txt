@@ -1,0 +1,8 @@
+spawn-window
+dispatch-compute-shader write-frame (vec3u 1u 1u 1u)
+print: 0u
+dispatch-compute-shader write-frame (vec3u 1u 1u 1u)
+print: 1u
+dispatch-compute-shader write-frame (vec3u 1u 1u 1u)
+print: 2u
+close-window

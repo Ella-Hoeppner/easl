@@ -1,0 +1,31 @@
+; Window-info queries inside a compute shader: the implicit uniform
+; bindings must carry the runtime's (here: spoofed) values through the
+; per-frame refresh and dispatch upload, readable back via storage.
+; Run by the hand-written `gpu_window_info_spoofed` test in
+; buffer_tests.rs, which spoofs the IO manager's window-info values.
+
+@[storage-write 1 0]
+(var out: [13: f32])
+
+@compute
+(defn probe []
+  (= (out 0u) (window-time))
+  (= (out 1u) (window-delta-time))
+  (= (out 2u) (f32 (window-frame-index)))
+  (= (out 3u) (f32 (.x (window-resolution))))
+  (= (out 4u) (f32 (.y (window-resolution))))
+  (= (out 5u) (f32 (.x (mouse-coords))))
+  (= (out 6u) (f32 (.y (mouse-coords))))
+  (= (out 7u) (if (mouse-present?) 1. 0.))
+  (= (out 8u) (if (mouse-down?) 1. 0.))
+  (= (out 9u) (if (mouse-just-down?) 1. 0.))
+  (= (out 10u) (if (key-down? "a") 1. 0.))
+  (= (out 11u) (if (key-down? "z") 1. 0.))
+  (= (out 12u) (if (key-just-down? "b") 1. 0.)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-compute-shader probe (vec3u 1u))
+                    (print out)
+                    (close-window))))

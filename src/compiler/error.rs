@@ -264,6 +264,15 @@ pub enum CompileErrorKind {
   FragmentExclusiveFunctionOutsideFragment(String),
   #[error("function `{0}` can only occur in @fragment functions")]
   CPUExclusiveFunctionInGPUEntryPoint(String),
+  /// `key-down?`/`key-just-down?` reached GPU code with a non-literal key
+  /// argument. GPU key queries compile into one implicit binding per
+  /// distinct key, which requires the key to be a compile-time string
+  /// literal.
+  #[error(
+    "`{0}` used in GPU code requires its key argument to be a string \
+     literal, since each distinct key compiles into its own binding"
+  )]
+  GpuKeyQueryRequiresLiteralString(String),
   #[error("Type `{0}` cannot be used on the GPU")]
   CPUExclusiveTypeInGPUEntryPoint(String),
   #[error("`continue` can only occur inside a loop")]

@@ -24,7 +24,9 @@ use crate::compiler::{
   },
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
-use crate::compiler::effects::EffectType;
+use crate::compiler::effects::{
+  EffectType, WindowInfoBindingSource, WindowInfoKind,
+};
 use crate::compiler::entry::EntryPoint;
 #[cfg(all(feature = "window", feature = "c_audio"))]
 use crate::compiler::core::compile_easl_file_to_target;
@@ -2735,6 +2737,65 @@ pub enum IOEvent {
   CloseWindow,
 }
 
+/// Spoofed ambient window/input values for tests: when set on an IO
+/// manager, its window-info accessors report these instead of real state,
+/// so tests can assert that values plumb through the runtime (including
+/// into GPU-side window-info bindings) deterministically.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpoofedWindowInfo {
+  pub size: (u32, u32),
+  pub time: f32,
+  pub delta_time: f32,
+  pub frame_index: u32,
+  pub mouse_coords: (u32, u32),
+  pub mouse_present: bool,
+  pub mouse_down: bool,
+  pub mouse_just_down: bool,
+  /// Keys reported as currently held down.
+  pub keys_down: Vec<String>,
+  /// Keys reported as pressed this frame.
+  pub keys_just_down: Vec<String>,
+}
+
+/// The current value of one window-info binding source, as flat u32 words
+/// in the VM/GPU layout (shared by both CPU runtimes so their refreshes
+/// agree).
+pub fn window_info_words<IO: IOManager>(
+  source: &WindowInfoBindingSource,
+  io: &IO,
+) -> Vec<u32> {
+  match source {
+    WindowInfoBindingSource::Simple(kind) => match kind {
+      WindowInfoKind::Resolution => {
+        let (w, h) = io.window_size();
+        vec![w, h]
+      }
+      WindowInfoKind::Time => vec![io.window_time().to_bits()],
+      WindowInfoKind::DeltaTime => vec![io.window_delta_time().to_bits()],
+      WindowInfoKind::FrameIndex => vec![io.window_frame_index()],
+      WindowInfoKind::MouseCoords => {
+        let (x, y) = io.mouse_coords();
+        vec![x, y]
+      }
+      WindowInfoKind::MousePresent => vec![io.mouse_present() as u32],
+      WindowInfoKind::MouseDown => vec![io.mouse_down() as u32],
+      WindowInfoKind::MouseJustDown => vec![io.mouse_just_down() as u32],
+      WindowInfoKind::KeyDown | WindowInfoKind::KeyJustDown => {
+        unreachable!(
+          "key queries are recorded as KeyDown/KeyJustDown sources, never \
+           Simple"
+        )
+      }
+    },
+    WindowInfoBindingSource::KeyDown(key) => {
+      vec![io.key_down(key) as u32]
+    }
+    WindowInfoBindingSource::KeyJustDown(key) => {
+      vec![io.key_just_down(key) as u32]
+    }
+  }
+}
+
 /// Which shader stages actually reference a binding, derived from the
 /// transitive effects of each GPU entry point. `window.rs` maps this to
 /// `wgpu::ShaderStages` when building bind group layouts — declaring only
@@ -2823,6 +2884,7 @@ impl<IO: IOManager> FrameDriver for AstFrameDriver<'_, IO> {
     self.env.gpu_entries.clone()
   }
   fn run_frame(&mut self) -> Result<(), EvalException> {
+    self.env.refresh_window_info_bindings();
     eval(self.body.clone(), self.env).map(|_| ())
   }
 }
@@ -3578,6 +3640,11 @@ pub struct CaptureIO {
   /// `.sync.txt` file to assert exactly when transfers happen.
   pub sync_trace: Vec<String>,
   pub inner: StdoutIO,
+  /// Test hook: when set, the window-info accessors report these values
+  /// instead of deferring to the real window state. Lives here rather than
+  /// on `StdoutIO` so production accessors stay branch-free — CaptureIO is
+  /// the test/capture wrapper.
+  pub spoofed_window_info: Option<SpoofedWindowInfo>,
 }
 
 impl CaptureIO {
@@ -3586,6 +3653,7 @@ impl CaptureIO {
       prints: vec![],
       sync_trace: vec![],
       inner: StdoutIO::new(),
+      spoofed_window_info: None,
     }
   }
 }
@@ -3688,42 +3756,72 @@ impl IOManager for CaptureIO {
   }
 
   fn window_size(&self) -> (u32, u32) {
+    if let Some(spoof) = &self.spoofed_window_info {
+      return spoof.size;
+    }
     self.inner.window_size()
   }
 
   fn window_time(&self) -> f32 {
+    if let Some(spoof) = &self.spoofed_window_info {
+      return spoof.time;
+    }
     self.inner.window_time()
   }
 
   fn window_delta_time(&self) -> f32 {
+    if let Some(spoof) = &self.spoofed_window_info {
+      return spoof.delta_time;
+    }
     self.inner.window_delta_time()
   }
 
   fn window_frame_index(&self) -> u32 {
+    if let Some(spoof) = &self.spoofed_window_info {
+      return spoof.frame_index;
+    }
     self.inner.window_frame_index()
   }
 
   fn key_down(&self, key: &str) -> bool {
+    if let Some(spoof) = &self.spoofed_window_info {
+      return spoof.keys_down.iter().any(|k| k == key);
+    }
     self.inner.key_down(key)
   }
 
   fn key_just_down(&self, key: &str) -> bool {
+    if let Some(spoof) = &self.spoofed_window_info {
+      return spoof.keys_just_down.iter().any(|k| k == key);
+    }
     self.inner.key_just_down(key)
   }
 
   fn mouse_coords(&self) -> (u32, u32) {
+    if let Some(spoof) = &self.spoofed_window_info {
+      return spoof.mouse_coords;
+    }
     self.inner.mouse_coords()
   }
 
   fn mouse_present(&self) -> bool {
+    if let Some(spoof) = &self.spoofed_window_info {
+      return spoof.mouse_present;
+    }
     self.inner.mouse_present()
   }
 
   fn mouse_down(&self) -> bool {
+    if let Some(spoof) = &self.spoofed_window_info {
+      return spoof.mouse_down;
+    }
     self.inner.mouse_down()
   }
 
   fn mouse_just_down(&self) -> bool {
+    if let Some(spoof) = &self.spoofed_window_info {
+      return spoof.mouse_just_down;
+    }
     self.inner.mouse_just_down()
   }
 
@@ -3793,6 +3891,9 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   gpu_entries: Vec<GpuEntryInfo>,
   /// Source-level entry name -> dense id into `gpu_entries`.
   gpu_entry_ids: HashMap<Arc<str>, u16>,
+  /// Implicit uniform bindings for window-info queries, refreshed from the
+  /// IO manager at the start of each frame.
+  window_info_bindings: Vec<(WindowInfoBindingSource, Arc<str>)>,
   /// Sync state for each GPU-bound variable, keyed by name.
   buffer_states: HashMap<Arc<str>, SharedBufferState>,
   /// Directory of the source .easl file, used to resolve relative paths.
@@ -3953,6 +4054,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       binding_stages,
       gpu_entries,
       gpu_entry_ids,
+      window_info_bindings: program.window_info_bindings.clone(),
       buffer_states,
       source_dir,
       current_render_target: None,
@@ -4014,12 +4116,44 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         );
       }
     }
+    // Initial window-info values: dispatches that happen outside a frame
+    // loop should see the IO manager's defaults rather than zeros.
+    env.refresh_window_info_bindings();
     let wgsl = program.compile_to_target(CompilerTarget::WGSL)?;
     env.wgsl = wgsl;
     Ok(env)
   }
   pub fn wgsl(&self) -> &str {
     &self.wgsl
+  }
+  /// Refreshes the implicit window-info uniform bindings from the IO
+  /// manager and marks them CPU-written, so the next GPU dispatch uploads
+  /// the fresh values. Called at the start of every frame (and once at
+  /// environment setup, so dispatches outside a frame loop see the IO
+  /// manager's defaults rather than zeros).
+  pub fn refresh_window_info_bindings(&mut self) {
+    if self.window_info_bindings.is_empty() {
+      return;
+    }
+    let infos = self.window_info_bindings.clone();
+    for (source, name) in infos {
+      let Some(ty) = self
+        .binding_vars
+        .iter()
+        .find(|(_, n, _, _)| *n == name)
+        .map(|(_, _, ty, _)| ty.clone())
+      else {
+        continue;
+      };
+      let words = window_info_words(&source, &self.io);
+      let value = Value::from_vm_words(&ty, &words);
+      if let Some(binding) =
+        self.bindings.get_mut(&name).and_then(|v| v.last_mut())
+      {
+        binding.0 = value;
+      }
+      self.mark_cpu_written(&[name]);
+    }
   }
   /// Resolves a source-level GPU entry point name to its dense entry id.
   fn gpu_entry_id(&self, name: &str) -> u16 {
@@ -5964,6 +6098,36 @@ fn vm_host_call<IO: IOManager>(
 /// Bytecode-VM frame driver: runs the compiled frame function once per
 /// frame. The frame closure's captured scope lives in the function's
 /// argument slots, which persist across frames.
+/// VM-runtime counterpart of `refresh_window_info_bindings`: window-info
+/// bindings are fixed-size GPU-bound globals, so their authoritative values
+/// live in VM stack slots. Writes the fresh words into the slots, marks the
+/// binding's env mirror stale, and marks it CPU-written so the next
+/// dispatch uploads it.
+fn refresh_vm_window_info<IO: IOManager>(
+  program: &mut crate::vm::bytecode::BytecodeProgram,
+  env: &mut EvaluationEnvironment<IO>,
+  slots_dirty: &mut Vec<bool>,
+) {
+  if env.window_info_bindings.is_empty() {
+    return;
+  }
+  let infos = env.window_info_bindings.clone();
+  for (source, name) in infos {
+    let words = window_info_words(&source, &env.io);
+    program.write_global(&name, &words);
+    if let Some(index) = program
+      .code
+      .host_bindings
+      .iter()
+      .position(|binding| *binding.name == *name)
+      && let Some(flag) = slots_dirty.get_mut(index)
+    {
+      *flag = true;
+    }
+    env.mark_cpu_written(&[name]);
+  }
+}
+
 struct VmFrameDriver<'a, IO: IOManager> {
   program: &'a mut crate::vm::bytecode::BytecodeProgram,
   env: &'a mut EvaluationEnvironment<IO>,
@@ -5987,6 +6151,7 @@ impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
   }
   fn run_frame(&mut self) -> Result<(), EvalException> {
     use crate::vm::bytecode::{HostSuspendReason, RunResult};
+    refresh_vm_window_info(self.program, self.env, self.slots_dirty);
     self.program.prepare_to_run_function(self.frame_fn);
     let mut host = VmHostView {
       env: self.env,
@@ -6053,6 +6218,11 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
       .iter()
       .position(|n| &**n == entry_name)
       .ok_or_else(|| CpuEntryPointNotFound(entry_name.into()))?;
+    refresh_vm_window_info(
+      &mut self.program,
+      &mut self.env,
+      &mut self.slots_dirty,
+    );
     self.program.prepare_to_run_function(entry_index);
     loop {
       let result = {

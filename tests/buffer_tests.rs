@@ -130,3 +130,50 @@ fn too_many_vertex_bindings() {
   .unwrap();
 }
 buffer_test!(render_target_pingpong);
+
+/// Window-info queries used inside GPU code compile into implicit uniform
+/// bindings that the runtime refreshes from the IO manager each frame.
+/// Spoofed IO values must round-trip through the binding upload, the
+/// shader, and the storage readback — identically on both CPU runtimes.
+#[test]
+fn gpu_window_info_spoofed() {
+  use easl::interpreter::{
+    CaptureIO, SpoofedWindowInfo, run_program_with_runtime,
+  };
+  let source_path_str = "./data/buffer/gpu_window_info.easl";
+  let source_path = Path::new(&source_path_str);
+  let spoof = SpoofedWindowInfo {
+    size: (320, 240),
+    time: 42.5,
+    delta_time: 0.25,
+    frame_index: 7,
+    mouse_coords: (12, 34),
+    mouse_present: true,
+    mouse_down: false,
+    mouse_just_down: true,
+    keys_down: vec!["a".to_string()],
+    keys_just_down: vec!["b".to_string()],
+  };
+  let expected =
+    "[42.5 0.25 7. 320. 240. 12. 34. 1. 0. 1. 1. 0. 1.]".to_string();
+  for runtime in [CpuRuntime::TreeWalking, CpuRuntime::BytecodeVm] {
+    let Ok(Ok((_, Ok(mut program)))) =
+      load_easl_program_from_file(source_path)
+    else {
+      panic!("failed to load program")
+    };
+    let errors = program.validate_raw_program(CompilerTarget::WGSL);
+    assert!(errors.is_empty(), "compile errors: {errors:#?}");
+    let mut io = CaptureIO::new();
+    io.spoofed_window_info = Some(spoof.clone());
+    let (io, _) = run_program_with_runtime(
+      program,
+      None,
+      io,
+      source_path.parent().map(|p| p.to_path_buf()),
+      runtime,
+    )
+    .unwrap();
+    assert_eq!(io.prints, vec![expected.clone()], "runtime {runtime:?}");
+  }
+}

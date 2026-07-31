@@ -685,3 +685,4 @@ error_test!(
   dispatched_closure_nested_scope_mutation,
   CompileErrorKind::CantMutateDispatchedClosureCapture("acc".to_string())
 );
+success_test!(gpu_window_info);

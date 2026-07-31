@@ -1,0 +1,6 @@
+(defn f []: f32
+  (if (and (or false true)
+           (or true false)
+           (and true (not false)))
+    3.5
+    -1.))

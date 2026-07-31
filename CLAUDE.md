@@ -137,6 +137,12 @@ There is also a shorthand `@[address group binding]` array annotation that speci
 
 Compute dispatches are always submitted before the render pass within a frame.
 
+### Window-info queries
+
+The window/input query builtins — `window-resolution`, `window-time`, `window-delta-time`, `window-frame-index`, `mouse-coords`, `mouse-present?`, `mouse-down?`, `mouse-just-down?`, `key-down?`, `key-just-down?` — are callable from both CPU and GPU code, and **always read a per-frame snapshot**: the `extract_gpu_window_info` pass (which runs before effect validation) unconditionally rewrites every query into a read of an implicit `@[uniform 0 <next-free>]` binding, one per distinct query (key queries get one binding per distinct compile-time key string; bools become `u32` bindings read as `(!= b 0u)`, since bools aren't host-shareable in WGSL uniforms). The runtime refreshes these bindings from the IO manager at the start of every frame (`refresh_window_info_bindings` / `refresh_vm_window_info`, driven by `Program::window_info_bindings` — which must be carried through the registry-rebuilding passes' `take()` calls, like `top_level_vars`) and marks them CPU-written, so the normal dirty-upload machinery ships them before dispatches. Rewriting *unconditionally* — CPU uses too, not just GPU-reachable ones — is a deliberate semantic choice: every query in a frame sees the same value, and whether some other call site dispatches a helper to the GPU never non-locally changes what the helper's CPU calls observe. (On the real winit path this freezing is behaviorally a no-op anyway: `gpu.window_time` etc. are only updated once per frame.)
+
+The builtins carry `Effect::WindowInfo(WindowInfoKind)` (not `CPUExclusiveFunction`; still excluded from the C and audio targets via the same filter sites). Key queries require compile-time string literals; a non-literal key can't currently be written in easl source (`String` isn't a nameable type), but `validate_gpu_window_info` defensively rejects one reaching GPU code. `SpoofedWindowInfo` on `CaptureIO` (the test/capture wrapper — kept off `StdoutIO` so production accessors stay branch-free) lets tests inject deterministic values end-to-end (see `gpu_window_info_spoofed` in buffer_tests).
+
 ## Interpreter & Window System
 
 The interpreter evaluates `@cpu`-annotated easl code on the CPU, driving GPU work through the `IOManager` trait.

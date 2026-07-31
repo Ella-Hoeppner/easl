@@ -986,17 +986,17 @@ impl BytecodeCompilationState {
       }
 
       // --- Boolean ---
-      "&&" => Some(self.emit_binary(
+      "&&" | "and" => Some(self.emit_binary(
         Op::LogicalAnd,
         arg_positions[0],
         arg_positions[1],
       )),
-      "||" => Some(self.emit_binary(
+      "||" | "or" => Some(self.emit_binary(
         Op::LogicalOr,
         arg_positions[0],
         arg_positions[1],
       )),
-      "!" => Some(self.emit_unary(Op::LogicalNot, arg_positions[0])),
+      "!" | "not" => Some(self.emit_unary(Op::LogicalNot, arg_positions[0])),
 
       // --- Bitwise ---
       "bit-and" | "&" => {

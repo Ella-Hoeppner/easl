@@ -1,0 +1,23 @@
+; A helper that queries window info, called from BOTH the CPU frame loop
+; and a compute shader. GPU reachability rewrites the helper's query into
+; an implicit binding read; the CPU calls then read the same binding, which
+; the runtime refreshes at each frame start — so both sides see the same
+; per-frame snapshot.
+
+@[storage-write 1 0]
+(var buf: [4: f32])
+
+(defn current-frame []: u32
+  (window-frame-index))
+
+@compute
+(defn write-frame []
+  (= (buf 0u) (f32 (current-frame))))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-compute-shader write-frame (vec3u 1u))
+                    (print (current-frame))
+                    (when (== (current-frame) 2u)
+                      (close-window)))))

@@ -6,7 +6,7 @@ use lazy_static::lazy_static;
 
 use fsexp::{document::DocumentPosition, syntax::EncloserOrOperator};
 
-use crate::compiler::effects::EffectType;
+use crate::compiler::effects::{EffectType, WindowInfoKind};
 use crate::compiler::entry::BuiltinIOAttribute;
 use crate::compiler::functions::{extract_mat_size, extract_vec_size};
 use crate::compiler::program::{CompilerTarget, NameContext};
@@ -2195,7 +2195,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin {
         effect_type: vec![
           Effect::Window,
-          Effect::CPUExclusiveFunction("window-resolution".into()),
+          Effect::WindowInfo(WindowInfoKind::Resolution),
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
@@ -2209,7 +2209,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin {
         effect_type: vec![
           Effect::Window,
-          Effect::CPUExclusiveFunction("window-time".into()),
+          Effect::WindowInfo(WindowInfoKind::Time),
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
@@ -2223,7 +2223,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin {
         effect_type: vec![
           Effect::Window,
-          Effect::CPUExclusiveFunction("window-delta-time".into()),
+          Effect::WindowInfo(WindowInfoKind::DeltaTime),
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
@@ -2237,7 +2237,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin {
         effect_type: vec![
           Effect::Window,
-          Effect::CPUExclusiveFunction("window-frame-index".into()),
+          Effect::WindowInfo(WindowInfoKind::FrameIndex),
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
@@ -2255,7 +2255,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin {
         effect_type: vec![
           Effect::Window,
-          Effect::CPUExclusiveFunction("mouse-coords".into()),
+          Effect::WindowInfo(WindowInfoKind::MouseCoords),
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
@@ -2269,7 +2269,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin {
         effect_type: vec![
           Effect::Window,
-          Effect::CPUExclusiveFunction("mouse-present?".into()),
+          Effect::WindowInfo(WindowInfoKind::MousePresent),
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
@@ -2283,7 +2283,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin {
         effect_type: vec![
           Effect::Window,
-          Effect::CPUExclusiveFunction("mouse-down?".into()),
+          Effect::WindowInfo(WindowInfoKind::MouseDown),
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
@@ -2297,7 +2297,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin {
         effect_type: vec![
           Effect::Window,
-          Effect::CPUExclusiveFunction("mouse-just-down?".into()),
+          Effect::WindowInfo(WindowInfoKind::MouseJustDown),
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
@@ -2312,7 +2312,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin {
         effect_type: vec![
           Effect::Window,
-          Effect::CPUExclusiveFunction("key-down?".into()),
+          Effect::WindowInfo(WindowInfoKind::KeyDown),
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,
@@ -2327,7 +2327,7 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       implementation: FunctionImplementationKind::Builtin {
         effect_type: vec![
           Effect::Window,
-          Effect::CPUExclusiveFunction("key-just-down?".into()),
+          Effect::WindowInfo(WindowInfoKind::KeyJustDown),
         ]
         .into(),
         target_configuration: FunctionTargetConfiguration::Default,

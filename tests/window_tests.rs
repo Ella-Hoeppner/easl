@@ -148,3 +148,4 @@ window_test!(spawn_window_captured_scope);
 window_test!(spawn_window_named_closure);
 window_test!(print_string);
 window_test!(start_audio);
+window_test!(window_info_shared_helper);
