@@ -423,22 +423,7 @@ impl Program {
     if let Some(bucket) = self.abstract_functions.get_mut(&name) {
       let mut novel = true;
       for existing_signature in bucket.iter() {
-        let existing = existing_signature.read().unwrap();
-        let new = signature.read().unwrap();
-        // Monomorphized enum-constructor signatures for the same
-        // instantiation can arrive from different monomorphization paths
-        // with structurally different (but semantically equal) types —
-        // strict equality would register the constructor twice and emit
-        // duplicate definitions. Their monomorphized names are unique per
-        // instantiation, so name + variant + compatible return type
-        // identifies them; constructors of *different* enums sharing a
-        // variant name have incompatible return types and stay separate.
-        let same_enum_constructor = matches!(
-          existing.implementation,
-          FunctionImplementationKind::EnumConstructor(_)
-        ) && existing.implementation == new.implementation
-          && existing.return_type.compatible(&new.return_type);
-        if *existing == *new || same_enum_constructor {
+        if *existing_signature.read().unwrap() == *signature.read().unwrap() {
           novel = false;
           break;
         }
@@ -522,27 +507,25 @@ impl Program {
     self
   }
   pub fn add_monomorphized_struct(&mut self, s: AbstractStruct) {
+    // See add_monomorphized_enum for why name.0 rather than the full
+    // name tuple.
     if !self.typedefs.structs.iter().any(|existing_struct| {
-      existing_struct.name == s.name
+      existing_struct.name.0 == s.name.0
         && existing_struct.filled_generics == s.filled_generics
     }) {
       self.typedefs.structs.push(s);
     }
   }
   pub fn add_monomorphized_enum(&mut self, e: AbstractEnum) {
-    // Dedup compares filled generics semantically (via `compatible`, which
-    // dereferences unification variables and ignores abstract ancestors),
-    // not structurally: the same instantiation can arrive from different
-    // monomorphization paths with a `Known` type in one and a resolved
-    // `UnificationVariable` in the other (e.g. `(Option (Option f32))` from
-    // a constructor site vs a match site), and structural equality would
-    // register it twice — emitting duplicate definitions downstream.
+    // `name.0`, not `name`: the name tuple's SourceTrace is not identity.
+    // The filled-generics comparison is safe against representational
+    // divergence (the same instantiation arriving from different
+    // monomorphization paths) because the type family's `PartialEq` is
+    // semantic — it dereferences resolved unification variables and
+    // ignores abstract ancestors.
     if !self.typedefs.enums.iter().any(|existing_enum| {
       existing_enum.name.0 == e.name.0
-        && crate::compiler::types::filled_generics_compatible(
-          &existing_enum.filled_generics,
-          &e.filled_generics,
-        )
+        && existing_enum.filled_generics == e.filled_generics
     }) {
       self.typedefs.enums.push(e);
     }

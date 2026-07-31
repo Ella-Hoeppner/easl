@@ -648,11 +648,22 @@ pub struct EnumVariant {
   pub inner_type: ExpTypeInfo,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Enum {
   pub name: Arc<str>,
   pub variants: Vec<EnumVariant>,
   pub abstract_ancestor: Arc<AbstractEnum>,
+}
+
+impl PartialEq for Enum {
+  /// The abstract ancestor is lineage metadata, not identity: the same
+  /// concrete enum can arrive from different monomorphization paths
+  /// carrying either the original generic ancestor or a monomorphized
+  /// wrapper around it. (Mirrors `FunctionSignature`'s `PartialEq`, which
+  /// likewise ignores `abstract_ancestor`.)
+  fn eq(&self, other: &Self) -> bool {
+    self.name == other.name && self.variants == other.variants
+  }
 }
 
 impl Enum {

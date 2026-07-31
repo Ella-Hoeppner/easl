@@ -196,39 +196,7 @@ pub enum AbstractType {
   },
 }
 
-/// Semantic equality of two filled-generics maps: values are compared via
-/// `AbstractType::compatible` rather than structural `==`, so a `Known` type
-/// and a resolved `UnificationVariable` wrapping the same type (or the same
-/// instantiation carrying different abstract ancestors) count as equal.
-pub(crate) fn filled_generics_compatible(
-  a: &HashMap<Arc<str>, AbstractType>,
-  b: &HashMap<Arc<str>, AbstractType>,
-) -> bool {
-  a.len() == b.len()
-    && a.iter().all(|(name, a_type)| {
-      b.get(name)
-        .map_or(false, |b_type| a_type.compatible(b_type))
-    })
-}
-
 impl AbstractType {
-  /// Semantic type equality: like `Type::compatible`, sees through resolved
-  /// unification variables and ignores abstract ancestors / source traces.
-  /// Distinct instantiations still compare unequal.
-  pub fn compatible(&self, other: &Self) -> bool {
-    match (self, other) {
-      (AbstractType::Type(a), AbstractType::Type(b)) => a.compatible(b),
-      (AbstractType::AbstractStruct(a), AbstractType::AbstractStruct(b)) => {
-        a.name.0 == b.name.0
-          && filled_generics_compatible(&a.filled_generics, &b.filled_generics)
-      }
-      (AbstractType::AbstractEnum(a), AbstractType::AbstractEnum(b)) => {
-        a.name.0 == b.name.0
-          && filled_generics_compatible(&a.filled_generics, &b.filled_generics)
-      }
-      (a, b) => a == b,
-    }
-  }
   pub(crate) fn track_generic_names(&self, names: &mut Vec<Arc<str>>) {
     match self {
       AbstractType::Generic(name) => names.push(name.clone()),
@@ -2542,7 +2510,7 @@ pub fn extract_type_annotation(
   ))
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct ExpTypeInfo {
   pub kind: TypeState,
   pub ownership: Ownership,
@@ -2552,6 +2520,17 @@ pub struct ExpTypeInfo {
   pub fully_known_cached: bool,
   pub already_constrained_against_signatures: bool,
   pub already_match_breaks_extracted: bool,
+}
+
+impl PartialEq for ExpTypeInfo {
+  /// Only the type itself, its ownership, and global-boundedness are
+  /// identity; the remaining fields are traversal memoization state and two
+  /// values differing only there denote the same type.
+  fn eq(&self, other: &Self) -> bool {
+    self.kind == other.kind
+      && self.ownership == other.ownership
+      && self.is_globally_bound == other.is_globally_bound
+  }
 }
 
 impl Deref for ExpTypeInfo {
@@ -2603,17 +2582,24 @@ pub enum TypeState {
   UnificationVariable(Arc<RwLock<TypeState>>),
 }
 impl PartialEq for TypeState {
+  /// Equality is semantic, not structural: both sides are fully
+  /// dereferenced first, so a resolved `UnificationVariable` compares equal
+  /// to the bare state it resolves to. Representation details of how a type
+  /// arrived (through unification or directly) are not part of its
+  /// identity.
   fn eq(&self, other: &Self) -> bool {
-    match (self, other) {
-      (TypeState::Unknown, TypeState::Unknown) => true,
-      (TypeState::OneOf(a), TypeState::OneOf(b)) => a == b,
-      (TypeState::Known(a), TypeState::Known(b)) => a == b,
-      (
-        TypeState::UnificationVariable(a),
-        TypeState::UnificationVariable(b),
-      ) => *a.read().unwrap() == *b.read().unwrap(),
-      _ => false,
-    }
+    self.with_dereferenced(|a| {
+      other.with_dereferenced(|b| match (a, b) {
+        (TypeState::Unknown, TypeState::Unknown) => true,
+        (TypeState::OneOf(a), TypeState::OneOf(b)) => a == b,
+        (TypeState::Known(a), TypeState::Known(b)) => a == b,
+        (TypeState::UnificationVariable(_), _)
+        | (_, TypeState::UnificationVariable(_)) => {
+          unreachable!("with_dereferenced yielded a unification variable")
+        }
+        _ => false,
+      })
+    })
   }
 }
 

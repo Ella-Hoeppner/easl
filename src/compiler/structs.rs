@@ -724,11 +724,22 @@ pub struct StructField {
   pub field_type: ExpTypeInfo,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Struct {
   pub name: Arc<str>,
   pub fields: Vec<StructField>,
   pub abstract_ancestor: Arc<AbstractStruct>,
+}
+
+impl PartialEq for Struct {
+  /// The abstract ancestor is lineage metadata, not identity: the same
+  /// concrete struct can arrive from different monomorphization paths
+  /// carrying either the original generic ancestor or a monomorphized
+  /// wrapper around it. (Mirrors `FunctionSignature`'s `PartialEq`, which
+  /// likewise ignores `abstract_ancestor`.)
+  fn eq(&self, other: &Self) -> bool {
+    self.name == other.name && self.fields == other.fields
+  }
 }
 
 impl Struct {
