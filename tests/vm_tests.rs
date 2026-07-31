@@ -96,6 +96,7 @@ vm_test!(for_loop_continue);
 vm_test!(early_return);
 vm_test!(array_access);
 vm_test!(struct_access);
+vm_test!(generic_enum_match);
 
 /// Loops must behave identically on repeated `execute` calls. The stack
 /// persists between calls (as in the per-sample audio path), so a loop

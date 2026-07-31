@@ -196,7 +196,39 @@ pub enum AbstractType {
   },
 }
 
+/// Semantic equality of two filled-generics maps: values are compared via
+/// `AbstractType::compatible` rather than structural `==`, so a `Known` type
+/// and a resolved `UnificationVariable` wrapping the same type (or the same
+/// instantiation carrying different abstract ancestors) count as equal.
+pub(crate) fn filled_generics_compatible(
+  a: &HashMap<Arc<str>, AbstractType>,
+  b: &HashMap<Arc<str>, AbstractType>,
+) -> bool {
+  a.len() == b.len()
+    && a.iter().all(|(name, a_type)| {
+      b.get(name)
+        .map_or(false, |b_type| a_type.compatible(b_type))
+    })
+}
+
 impl AbstractType {
+  /// Semantic type equality: like `Type::compatible`, sees through resolved
+  /// unification variables and ignores abstract ancestors / source traces.
+  /// Distinct instantiations still compare unequal.
+  pub fn compatible(&self, other: &Self) -> bool {
+    match (self, other) {
+      (AbstractType::Type(a), AbstractType::Type(b)) => a.compatible(b),
+      (AbstractType::AbstractStruct(a), AbstractType::AbstractStruct(b)) => {
+        a.name.0 == b.name.0
+          && filled_generics_compatible(&a.filled_generics, &b.filled_generics)
+      }
+      (AbstractType::AbstractEnum(a), AbstractType::AbstractEnum(b)) => {
+        a.name.0 == b.name.0
+          && filled_generics_compatible(&a.filled_generics, &b.filled_generics)
+      }
+      (a, b) => a == b,
+    }
+  }
   pub(crate) fn track_generic_names(&self, names: &mut Vec<Arc<str>>) {
     match self {
       AbstractType::Generic(name) => names.push(name.clone()),

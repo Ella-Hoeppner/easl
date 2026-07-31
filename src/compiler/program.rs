@@ -239,6 +239,19 @@ impl NameContext {
       base_name.into()
     }
   }
+  /// Reverse of `get_monomorphized_name`: maps each generated monomorphized
+  /// name back to the base name it was derived from. Names are gensym'd on
+  /// collision at generation time, so this cache-derived mapping is the only
+  /// exact way to recover a base name — recomputing the mangle can diverge.
+  pub(crate) fn monomorphized_to_base_names(
+    &self,
+  ) -> HashMap<Arc<str>, Arc<str>> {
+    self
+      .monomorphized_names
+      .iter()
+      .map(|((base, _), monomorphized)| (monomorphized.clone(), base.clone()))
+      .collect()
+  }
   pub(crate) fn get_monomorphized_name(
     &mut self,
     base_type_name: Arc<str>,
@@ -410,7 +423,22 @@ impl Program {
     if let Some(bucket) = self.abstract_functions.get_mut(&name) {
       let mut novel = true;
       for existing_signature in bucket.iter() {
-        if *existing_signature.read().unwrap() == *signature.read().unwrap() {
+        let existing = existing_signature.read().unwrap();
+        let new = signature.read().unwrap();
+        // Monomorphized enum-constructor signatures for the same
+        // instantiation can arrive from different monomorphization paths
+        // with structurally different (but semantically equal) types —
+        // strict equality would register the constructor twice and emit
+        // duplicate definitions. Their monomorphized names are unique per
+        // instantiation, so name + variant + compatible return type
+        // identifies them; constructors of *different* enums sharing a
+        // variant name have incompatible return types and stay separate.
+        let same_enum_constructor = matches!(
+          existing.implementation,
+          FunctionImplementationKind::EnumConstructor(_)
+        ) && existing.implementation == new.implementation
+          && existing.return_type.compatible(&new.return_type);
+        if *existing == *new || same_enum_constructor {
           novel = false;
           break;
         }
@@ -502,9 +530,19 @@ impl Program {
     }
   }
   pub fn add_monomorphized_enum(&mut self, e: AbstractEnum) {
+    // Dedup compares filled generics semantically (via `compatible`, which
+    // dereferences unification variables and ignores abstract ancestors),
+    // not structurally: the same instantiation can arrive from different
+    // monomorphization paths with a `Known` type in one and a resolved
+    // `UnificationVariable` in the other (e.g. `(Option (Option f32))` from
+    // a constructor site vs a match site), and structural equality would
+    // register it twice — emitting duplicate definitions downstream.
     if !self.typedefs.enums.iter().any(|existing_enum| {
-      existing_enum.name == e.name
-        && existing_enum.filled_generics == e.filled_generics
+      existing_enum.name.0 == e.name.0
+        && crate::compiler::types::filled_generics_compatible(
+          &existing_enum.filled_generics,
+          &e.filled_generics,
+        )
     }) {
       self.typedefs.enums.push(e);
     }
@@ -2317,8 +2355,104 @@ impl Program {
             &mut |exp, ctx| match &mut exp.kind {
               ExpKind::Application(f, args) => {
                 if let Type::Function(_) = f.data.unwrap_known() {
+                  // Applying a closure held in a captured-scope field — the
+                  // form a nested closure's inner call takes after
+                  // extract_inner_functions rewrites capture references:
+                  // `((. scope inner) args...)`. Same rewrite as the
+                  // local-binding case below, with the Access expression
+                  // itself appended as the trailing scope argument:
+                  // `(inner_fn args... (. scope inner))`.
+                  if let ExpKind::Access(Accessor::Field(_), _) = &f.kind {
+                    // The Access expression's own function type never gets
+                    // an abstract ancestor (the signature-propagation pass
+                    // only fills Name and Application expressions) — the
+                    // ancestor lives on the scope struct's field type.
+                    let ancestor = {
+                      let ExpKind::Access(
+                        Accessor::Field(field_name),
+                        accessed,
+                      ) = &f.kind
+                      else {
+                        unreachable!()
+                      };
+                      if let Type::Struct(s) = accessed.data.unwrap_known() {
+                        s.fields
+                          .iter()
+                          .find(|field| field.name == *field_name)
+                          .and_then(|field| {
+                            match field.field_type.unwrap_known() {
+                              Type::Function(sig) => {
+                                sig.abstract_ancestor.clone()
+                              }
+                              _ => None,
+                            }
+                          })
+                      } else {
+                        None
+                      }
+                    };
+                    if let Some(ancestor) = ancestor {
+                      let abstract_fn = ancestor.read().unwrap();
+                      let new_name = abstract_fn.name.clone();
+                      if let Some(captured_scope) =
+                        abstract_fn.captured_scope.as_ref()
+                      {
+                        let scope_type = Type::Struct(
+                          AbstractStruct::concretize(
+                            Arc::new(captured_scope.clone()),
+                            &self.typedefs,
+                            &vec![],
+                            f.source_trace.clone(),
+                          )
+                          .unwrap(),
+                        );
+                        let mut scope_arg = (**f).clone();
+                        scope_arg.data = scope_type.clone().known().into();
+                        // The scope argument is a reference-rooted place
+                        // (its root is the enclosing closure's scope
+                        // param) — the backends' argument emission keys
+                        // explicit derefs off this ownership.
+                        scope_arg.data.ownership = Ownership::MutableReference;
+                        args.push(scope_arg);
+                        // Keep the callee's static signature in sync with
+                        // the appended argument, so per-arg ownership zips
+                        // downstream (interpreter write-back, reference
+                        // address-space monomorphization) see the scope
+                        // param.
+                        let mut var_type: ExpTypeInfo =
+                          scope_type.known().into();
+                        var_type.ownership = Ownership::MutableReference;
+                        if let TypeState::Known(Type::Function(sig)) =
+                          &mut f.data.kind
+                        {
+                          sig.args.push((
+                            Variable {
+                              kind: VariableKind::Var,
+                              var_type,
+                            },
+                            vec![],
+                          ));
+                        }
+                        representative_structs.push(captured_scope.clone());
+                      }
+                      drop(abstract_fn);
+                      // Stamp the ancestor onto the rewritten callee — the
+                      // HoF inliner, effects computation, and the backends
+                      // all read it.
+                      if let TypeState::Known(Type::Function(sig)) =
+                        &mut f.data.kind
+                      {
+                        sig.abstract_ancestor = Some(ancestor);
+                      }
+                      f.kind = ExpKind::Name(new_name);
+                    }
+                    return Ok(true);
+                  }
                   let ExpKind::Name(original_name) = &mut f.kind else {
-                    panic!("non-name fn being applied")
+                    panic!(
+                      "non-name fn being applied: callee kind = {:?}",
+                      f.kind
+                    )
                   };
                   match ctx.get_name_definition_source(&original_name) {
                     Some(source) => match source {
@@ -5063,6 +5197,8 @@ impl Program {
     use crate::vm::bytecode::{HostBinding, HostBindingStorage};
     let mut state = BytecodeCompilationState::new();
     state.cpu_mode = cpu_mode;
+    state.monomorphized_to_base_names =
+      self.names.read().unwrap().monomorphized_to_base_names();
     for v in self.top_level_vars.iter() {
       let is_dynamic = matches!(
         &v.var_type,

@@ -1,0 +1,9 @@
+(defn call-twice [g: (Fn [] f32)]: f32
+  (g)
+  (g))
+
+(defn f []: f32
+  (let [@var total 0.
+        bump (fn [] (+= total 2.) total)
+        wrapped (fn [] (+ (bump) 100.))]
+    (call-twice wrapped)))

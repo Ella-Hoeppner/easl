@@ -1,4 +1,8 @@
-use std::{collections::HashMap, path::PathBuf, vec};
+use std::{
+  collections::{HashMap, HashSet},
+  path::PathBuf,
+  vec,
+};
 use take_mut::take;
 use thiserror::Error;
 
@@ -3833,15 +3837,34 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       };
       env.bind(var.name.clone(), value, var.var_type.clone());
     }
+    let mut unit_variant_names: HashSet<Arc<str>> = HashSet::new();
     for e in program.typedefs.enums.iter() {
       for v in e.variants.iter() {
         if v.inner_type == AbstractType::Type(Type::Unit) {
+          unit_variant_names.insert(v.name.clone());
           env.bind(
             v.name.clone(),
             Value::Enum(v.name.clone(), Value::Unit.into()),
             Type::Unit, // enum unit constructors are never ZeroedArray
           );
         }
+      }
+    }
+    // Generic enums' unit variants are referenced by monomorphized constant
+    // names (e.g. `None_Option_f32`) — bind each such alias to the same
+    // base-named value, so both value uses and match-pattern comparisons
+    // (which evaluate the pattern name) resolve. The value keeps the base
+    // variant name, matching how data-variant patterns compare via their
+    // `EnumConstructor` ancestors' base names.
+    for (monomorphized, base) in
+      program.names.read().unwrap().monomorphized_to_base_names()
+    {
+      if unit_variant_names.contains(&base) {
+        env.bind(
+          monomorphized,
+          Value::Enum(base, Value::Unit.into()),
+          Type::Unit,
+        );
       }
     }
     let wgsl = program.compile_to_target(CompilerTarget::WGSL)?;

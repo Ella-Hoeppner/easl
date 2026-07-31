@@ -79,6 +79,11 @@ pub struct BytecodeCompilationState {
   /// external integrations can locate globals in the running program.
   pub global_slots: Vec<(Arc<str>, u16, u16)>,
   pub locals: HashMap<Arc<str>, u16>,
+  /// Monomorphized name → base name, from the program's `NameContext`. Used
+  /// to resolve monomorphized unit-variant constant names (e.g.
+  /// `None_Option_f32`) back to the base variant names (`None`) that enum
+  /// types' variant lists hold.
+  pub monomorphized_to_base_names: HashMap<Arc<str>, Arc<str>>,
   pub instructions: Vec<Instruction>,
   pub finished_functions: Vec<IntermediateBytecodeFunction>,
   pub loop_start_instructions: Vec<u32>,
@@ -106,6 +111,7 @@ impl BytecodeCompilationState {
       globals: HashMap::new(),
       global_slots: vec![],
       locals: HashMap::new(),
+      monomorphized_to_base_names: HashMap::new(),
       instructions: vec![],
       finished_functions: vec![],
       current_function: None,
@@ -1671,28 +1677,47 @@ impl BytecodeCompilationState {
 /// closures) — the code part of a closure is static, so only its captured
 /// state occupies memory.
 pub fn vm_type_size(t: &Type) -> u16 {
-  if let Type::Function(f) = t {
-    if let Some(ancestor) = &f.abstract_ancestor
-      && let Some(scope) = &ancestor.read().unwrap().captured_scope
-    {
-      scope
-        .fields
-        .iter()
-        .map(|field| {
-          let crate::compiler::types::AbstractType::Type(field_type) =
-            &field.field_type
-          else {
-            panic!("captured scope field with non-concrete type")
-          };
-          vm_type_size(field_type)
-        })
-        .sum()
-    } else {
-      0
+  match t {
+    Type::Function(f) => {
+      if let Some(ancestor) = &f.abstract_ancestor
+        && let Some(scope) = &ancestor.read().unwrap().captured_scope
+      {
+        scope
+          .fields
+          .iter()
+          .map(|field| {
+            let crate::compiler::types::AbstractType::Type(field_type) =
+              &field.field_type
+            else {
+              panic!("captured scope field with non-concrete type")
+            };
+            vm_type_size(field_type)
+          })
+          .sum()
+      } else {
+        0
+      }
     }
-  } else {
-    t.data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
-      .unwrap() as u16
+    _ => {
+      match t.data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+      {
+        Ok(size) => size as u16,
+        // data_size_in_u32s errors on nested function types — a scope
+        // struct capturing a closure. Recurse per-field so function-typed
+        // fields size as their own captured scope's data. (Not the default
+        // path: data_size_in_u32s special-cases matNxM sizing.)
+        Err(e) => {
+          if let Type::Struct(s) = t {
+            s.fields
+              .iter()
+              .map(|field| vm_type_size(&field.field_type.unwrap_known()))
+              .sum()
+          } else {
+            panic!("vm_type_size: unsizable type {t:?}: {e:?}")
+          }
+        }
+      }
+    }
   }
 }
 
@@ -1835,9 +1860,20 @@ fn conversion_op(src: &Type, dest: &Type) -> Op {
 /// that the pattern matches against. Patterns can be:
 ///   - `Name(variant_name)` — unit variant by name.
 ///   - `Application(constructor_fn, [bind_name])` — data variant.
-fn enum_pattern_variant_index(pattern: &TypedExp, enum_type: &Enum) -> u32 {
+///
+/// Unit-variant pattern names arrive monomorphized for generic enums (e.g.
+/// `None_Option_f32`) while `enum_type.variants` holds base names — resolve
+/// through `monomorphized_to_base_names` before comparing.
+fn enum_pattern_variant_index(
+  pattern: &TypedExp,
+  enum_type: &Enum,
+  monomorphized_to_base_names: &HashMap<Arc<str>, Arc<str>>,
+) -> u32 {
   let variant_name: Arc<str> = match &pattern.kind {
-    ExpKind::Name(name) => name.clone(),
+    ExpKind::Name(name) => monomorphized_to_base_names
+      .get(name)
+      .unwrap_or(name)
+      .clone(),
     ExpKind::Application(f_box, _) => {
       if let TypeState::Known(Type::Function(f)) = &*f_box.data
         && let Some(abstract_ancestor) = &f.abstract_ancestor
@@ -2544,10 +2580,16 @@ impl TypedExp {
         }
         // Unit enum variant referenced by name: emit discriminant constant
         // into the first slot of a `total_size`-sized region (rest is unused
-        // padding for the data portion).
+        // padding for the data portion). The name arrives monomorphized for
+        // generic enums (e.g. `None_Option_f32`) while the enum's variant
+        // list holds base names — resolve through the demangling map.
         if let Type::Enum(enum_type) = self.data.unwrap_known()
+          && let base_name = state
+            .monomorphized_to_base_names
+            .get(name)
+            .unwrap_or(name)
           && let Some(idx) =
-            enum_type.variants.iter().position(|v| v.name == *name)
+            enum_type.variants.iter().position(|v| v.name == *base_name)
         {
           let total_size = self
             .data
@@ -2784,8 +2826,11 @@ impl TypedExp {
               }
               let mut jump_into_block_instruction_positions = vec![];
               for (pattern, _) in arms.iter() {
-                let variant_index =
-                  enum_pattern_variant_index(pattern, enum_type);
+                let variant_index = enum_pattern_variant_index(
+                  pattern,
+                  enum_type,
+                  &state.monomorphized_to_base_names,
+                );
                 let const_slot = state.emit_u32_constant(variant_index);
                 let eq_pos =
                   state.emit_binary(Op::IsEqualU32, scrutinee_pos, const_slot);

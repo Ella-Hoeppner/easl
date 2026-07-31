@@ -1,0 +1,14 @@
+(enum (Option T)
+  None
+  (Some T))
+
+(defn double-unwrap [o: (Option (Option f32))]: f32
+  (match o
+    None -1.
+    (Some inner-o) (match inner-o
+                     None -2.
+                     (Some value) value)))
+
+(defn f []: f32
+  (+ (double-unwrap (Some (Some 42.5)))
+     (double-unwrap (Some None))))

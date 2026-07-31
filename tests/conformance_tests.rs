@@ -558,6 +558,7 @@ conformance_test!(match_enum_unit);
 conformance_test!(match_enum_data);
 conformance_test!(match_enum_struct_data);
 conformance_test!(match_enum_nested_data);
+conformance_test!(generic_enum_unit_variant_value);
 conformance_test!(match_in_expression);
 conformance_test!(match_statement);
 
@@ -589,3 +590,4 @@ conformance_test!(for_loop_init);
 conformance_test!(closure_scope_write_back);
 conformance_test!(closure_scope_multi_capture);
 conformance_test!(closure_capturing_closure);
+conformance_test!(closure_capturing_closure_mutation);

@@ -1,0 +1,12 @@
+(enum (Option T)
+  None
+  (Some T))
+
+(defn unwrap-or [o: (Option f32)
+                 default-value: f32]: f32
+  (match o
+    (Some x) x
+    None default-value))
+
+(defn f []: f32
+  (unwrap-or None 7.5))
