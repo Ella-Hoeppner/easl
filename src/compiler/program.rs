@@ -1581,26 +1581,25 @@ impl Program {
     };
     // For an access chain rooted at the scope parameter, returns the name of
     // the captured variable being accessed (the field directly on the scope).
-    let scope_rooted_capture_name =
-      |exp: &TypedExp| -> Option<Arc<str>> {
-        let mut field: Option<Arc<str>> = None;
-        let mut current = exp;
-        loop {
-          match &current.kind {
-            ExpKind::Access(accessor, inner) => {
-              if let Accessor::Field(name) = accessor {
-                field = Some(name.clone());
-              }
-              current = inner;
+    let scope_rooted_capture_name = |exp: &TypedExp| -> Option<Arc<str>> {
+      let mut field: Option<Arc<str>> = None;
+      let mut current = exp;
+      loop {
+        match &current.kind {
+          ExpKind::Access(accessor, inner) => {
+            if let Accessor::Field(name) = accessor {
+              field = Some(name.clone());
             }
-            ExpKind::Name(name) => {
-              return (*name == scope_param_name)
-                .then(|| field.unwrap_or_else(|| name.clone()));
-            }
-            _ => return None,
+            current = inner;
           }
+          ExpKind::Name(name) => {
+            return (*name == scope_param_name)
+              .then(|| field.unwrap_or_else(|| name.clone()));
+          }
+          _ => return None,
         }
-      };
+      }
+    };
     let implementation = implementation.read().unwrap();
     let ExpKind::Function(_, body) = &implementation.expression.kind else {
       return;
@@ -1804,8 +1803,7 @@ impl Program {
       Type::Function(signature) => {
         let representative = if let Some(ancestor) =
           &signature.abstract_ancestor
-          && let Some(scope_struct) =
-            &ancestor.read().unwrap().captured_scope
+          && let Some(scope_struct) = &ancestor.read().unwrap().captured_scope
         {
           Some(
             AbstractType::AbstractStruct(Arc::new(scope_struct.clone()))
@@ -1825,7 +1823,9 @@ impl Program {
       Type::Struct(mut s) => {
         for field in s.fields.iter_mut() {
           field.field_type = self
-            .substitute_scope_representative_types(field.field_type.unwrap_known())
+            .substitute_scope_representative_types(
+              field.field_type.unwrap_known(),
+            )
             .known()
             .into();
         }
@@ -1930,15 +1930,9 @@ impl Program {
                 | WindowInfoBindingSource::KeyJustDown(key) => {
                   let sanitized_key: String = key
                     .chars()
-                    .map(|c| {
-                      if c.is_ascii_alphanumeric() { c } else { '_' }
-                    })
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
                     .collect();
-                  format!(
-                    "{}_{}",
-                    kind.binding_base_name(),
-                    sanitized_key
-                  )
+                  format!("{}_{}", kind.binding_base_name(), sanitized_key)
                 }
               };
               let binding_name: Arc<str> =
@@ -2165,8 +2159,7 @@ impl Program {
               };
               let (entry_name, scope_struct, entry_implementation) = {
                 let ancestor = ancestor.read().unwrap();
-                let Some(scope_struct) = ancestor.captured_scope.clone()
-                else {
+                let Some(scope_struct) = ancestor.captured_scope.clone() else {
                   continue;
                 };
                 let FunctionImplementationKind::Composite(implementation) =
@@ -2256,7 +2249,10 @@ impl Program {
                   // members, which neither the emitted structs nor the CPU
                   // serializer satisfy.
                   address_space: VariableAddressSpace::StorageRead,
-                  group_and_binding: Some(GroupAndBinding { group: 0, binding }),
+                  group_and_binding: Some(GroupAndBinding {
+                    group: 0,
+                    binding,
+                  }),
                 },
                 var_type: concrete_scope_type,
                 value: None,
@@ -5423,10 +5419,7 @@ impl Program {
           {
             let ancestor_name = ancestor.read().unwrap().name.clone();
             if dependencies.contains_key(&ancestor_name) {
-              dependencies
-                .get_mut(f_name)
-                .unwrap()
-                .insert(ancestor_name);
+              dependencies.get_mut(f_name).unwrap().insert(ancestor_name);
             }
           }
           Ok::<bool, Never>(true)
@@ -5479,11 +5472,13 @@ impl Program {
     state.cpu_mode = cpu_mode;
     state.monomorphized_to_base_names =
       self.names.read().unwrap().monomorphized_to_base_names();
+    let mut dyn_memory_count: u16 = 0;
     for v in self.top_level_vars.iter() {
-      let is_dynamic = matches!(
+      let is_dynamic_array = matches!(
         &v.var_type,
-        Type::Array(Some(crate::compiler::types::ConcreteArraySize::Unsized), _)
-      ) || matches!(
+        Type::Array(Some(ConcreteArraySize::Unsized), _)
+      );
+      let is_texture = matches!(
         v.kind,
         TopLevelVariableKind::Var {
           address_space: VariableAddressSpace::Handle,
@@ -5506,25 +5501,63 @@ impl Program {
       } else {
         None
       };
-      if cpu_mode && is_dynamic {
-        // Runtime-sized values (unsized arrays, textures) live host-side;
-        // VM code accesses them through host ops, so they get no slots. They
-        // may or may not be GPU-bound (a plain `(var x: [f32])` is legal).
-        let index = state.host_bindings.len() as u16;
-        state.host_bindings.push(HostBinding {
-          name: v.name.clone(),
-          ty: v.var_type.clone(),
-          storage: HostBindingStorage::Dynamic,
-          gpu: binding_info
-            .map(|(gb, address_space)| (gb.group, gb.binding, address_space)),
-        });
-        state.binding_indices.insert(v.name.clone(), index);
-        state.dynamic_globals.insert(v.name.clone(), index);
+      if is_dynamic_array {
+        // Runtime-sized arrays live in the VM's flat dynamic memory
+        // (`BytecodeProgram::dyn_memory`), outside the u16-addressed stack;
+        // element and length accesses compile to the direct `Dyn*` opcodes.
+        // This applies in audio mode too: a program with an `@audio` entry
+        // may declare runtime-sized globals its audio code never touches,
+        // and they must not break the (eager) audio compile. They may or
+        // may not be GPU-bound (a plain `(var x: [f32])` is legal).
+        let Type::Array(_, element_type) = &v.var_type else {
+          unreachable!()
+        };
+        let element_stride = element_type
+          .unwrap_known()
+          .data_size_in_u32s(&v.source_trace)
+          .unwrap() as u16;
+        let memory = dyn_memory_count;
+        dyn_memory_count += 1;
+        state
+          .dynamic_array_memory
+          .insert(v.name.clone(), (memory, element_stride));
+        if cpu_mode {
+          // host-binding entry for GPU sync bookkeeping and whole-array
+          // printing
+          let index = state.host_bindings.len() as u16;
+          state.host_bindings.push(HostBinding {
+            name: v.name.clone(),
+            ty: v.var_type.clone(),
+            storage: HostBindingStorage::DynamicMemory { memory },
+            gpu: binding_info
+              .map(|(gb, address_space)| (gb.group, gb.binding, address_space)),
+          });
+          state.binding_indices.insert(v.name.clone(), index);
+          state.dynamic_globals.insert(v.name.clone(), index);
+        }
+        continue;
+      }
+      if is_texture {
+        if cpu_mode {
+          // Textures live host-side as `Value`s; VM code accesses them
+          // through host ops, so they get no slots.
+          let index = state.host_bindings.len() as u16;
+          state.host_bindings.push(HostBinding {
+            name: v.name.clone(),
+            ty: v.var_type.clone(),
+            storage: HostBindingStorage::Dynamic,
+            gpu: binding_info
+              .map(|(gb, address_space)| (gb.group, gb.binding, address_space)),
+          });
+          state.binding_indices.insert(v.name.clone(), index);
+          state.dynamic_globals.insert(v.name.clone(), index);
+        }
+        // audio mode: texture accesses are CPU-exclusive, so audio-reachable
+        // code can never touch this global — skip it entirely
         continue;
       }
       let position = state.consumed_stack_space as u16;
-      let size =
-        v.var_type.data_size_in_u32s(&v.source_trace).unwrap() as u16;
+      let size = v.var_type.data_size_in_u32s(&v.source_trace).unwrap() as u16;
       state.globals.insert(v.name.clone(), position);
       state.global_slots.push((v.name.clone(), position, size));
       state.consumed_stack_space += size;
@@ -5761,10 +5794,7 @@ impl Program {
           name,
           host_op_index,
           scope_slot,
-        } in state
-          .pending_frame_fn_usages
-          .drain(..)
-          .collect::<Vec<_>>()
+        } in state.pending_frame_fn_usages.drain(..).collect::<Vec<_>>()
         {
           let f = state
             .ref_arg_functions

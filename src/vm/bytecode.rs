@@ -151,6 +151,26 @@ pub enum Op {
   ArrayLookup,
   ArrayStore,
 
+  // Dynamic (runtime-sized) global array access. These operate on
+  // `BytecodeProgram::dyn_memory` — flat per-global word buffers living
+  // outside the u16-addressed stack — with the memory region resolved at
+  // compile time (`arg_positions[0]`) and the element index at runtime.
+  // Element indices are bounds-checked (unlike stack ops, whose indices the
+  // compiler guarantees).
+  /// args: [memory, stride, _] → return_position: element count as u32
+  DynLen,
+  /// args: [memory, index_slot, stride] → return_position: element dest
+  DynLoad,
+  /// args: [memory, index_slot, src_slot]; return_position holds the stride
+  DynStore,
+  /// `(= arr (zeroed-array n))`: args [memory, len_slot, _]. Keeps the
+  /// region in the lazily-zeroed state — no allocation until an element is
+  /// written, and GPU uploads of the zeroed state stay `BufferUpload::Clear`
+  DynResize,
+  /// `(= arr (into-dynamic-array fixed))`: args [memory, src_slot, count];
+  /// return_position holds the stride
+  DynAssignFromSlots,
+
   // Data packing (multi-slot operands start at arg_positions[0]; the slots
   // they span are covered by Code::min_stack_size)
   PackSnorm4x8,
@@ -300,6 +320,25 @@ impl Instruction {
         .return_position
         .max(self.arg_positions[0])
         .max(self.arg_positions[1]),
+      // arg_positions[0] is a dyn-memory region index, not a slot; stride
+      // and count operands aren't slots either.
+      Op::DynLen => self.return_position,
+      Op::DynLoad => {
+        // dest spans stride slots
+        (self.return_position + self.arg_positions[2].saturating_sub(1))
+          .max(self.arg_positions[1])
+      }
+      Op::DynStore => {
+        // src spans stride (held in return_position) slots
+        (self.arg_positions[2] + self.return_position.saturating_sub(1))
+          .max(self.arg_positions[1])
+      }
+      Op::DynResize => self.arg_positions[1],
+      Op::DynAssignFromSlots => {
+        // src spans count (arg 2) * stride (return_position) slots
+        self.arg_positions[1]
+          + (self.arg_positions[2] * self.return_position).saturating_sub(1)
+      }
       Op::JumpWhen | Op::JumpWhenNot => self.arg_positions[0],
       _ => self
         .return_position
@@ -318,9 +357,42 @@ pub struct Function {
 pub enum HostBindingStorage {
   /// Fixed-size value living directly in VM stack slots.
   Slots { position: u16, size: u16 },
-  /// Runtime-sized value (unsized array, texture) held host-side as a
-  /// `Value`; VM code accesses it through host ops.
+  /// Texture held host-side as a `Value`; VM code accesses it through host
+  /// ops (textures aren't word-addressable, and only CPU-orchestration code
+  /// touches them).
   Dynamic,
+  /// Runtime-sized array living in `BytecodeProgram::dyn_memory[memory]` as
+  /// flat words; VM code accesses it directly through the `Dyn*` opcodes.
+  DynamicMemory { memory: u16 },
+}
+
+/// Backing store for one runtime-sized (dynamic) array global: flat words
+/// in the VM's element layout, or a lazily-zeroed state that defers
+/// allocation until the first element write — so huge GPU-only buffers
+/// never materialize CPU-side, and upload as `BufferUpload::Clear`.
+#[derive(Debug, Clone)]
+pub enum DynMemory {
+  Zeroed { elements: u32 },
+  Words(Vec<u32>),
+}
+
+impl DynMemory {
+  pub fn len_elements(&self, stride: usize) -> u32 {
+    match self {
+      DynMemory::Zeroed { elements } => *elements,
+      DynMemory::Words(words) => (words.len() / stride.max(1)) as u32,
+    }
+  }
+  /// The flat words, materializing the lazily-zeroed state first.
+  pub fn words_mut(&mut self, stride: usize) -> &mut Vec<u32> {
+    if let DynMemory::Zeroed { elements } = self {
+      *self = DynMemory::Words(vec![0u32; *elements as usize * stride]);
+    }
+    let DynMemory::Words(words) = self else {
+      unreachable!()
+    };
+    words
+  }
 }
 
 /// Compile-time record of a top-level var the host tracks: every GPU-bound
@@ -397,17 +469,6 @@ pub enum HostOp {
     vert_count_slot: u16,
     additive_slot: Option<u16>,
   },
-  /// `(= dyn-global (zeroed-array n))`
-  AssignDynZeroed { binding: u16, len_slot: u16 },
-  /// `(= dyn-global (into-dynamic-array fixed))`: copy `count` elements
-  /// starting at `src_slot` into the host-side array.
-  AssignDynFromSlots { binding: u16, src_slot: u16, count: u16 },
-  /// `(array-length dyn-global)` → u32 at `dest`.
-  DynLen { binding: u16, dest: u16 },
-  /// `(dyn-global i)` → element value at `dest`.
-  DynLoad { binding: u16, index_slot: u16, dest: u16 },
-  /// `(= (dyn-global i) v)` ← element value from `src_slot`.
-  DynStore { binding: u16, index_slot: u16, src_slot: u16 },
   WindowQuery { kind: WindowQueryKind, dest: u16 },
   KeyQuery { just: bool, key: u16, dest: u16 },
   /// Suspends execution; the driver runs the window frame loop, invoking
@@ -450,6 +511,7 @@ pub trait VmHost {
     &mut self,
     op: &HostOp,
     stack: &mut [u32],
+    dyn_memory: &mut [DynMemory],
     code: &Code,
   ) -> Result<Option<HostSuspendReason>, Self::Error>;
 }
@@ -462,6 +524,7 @@ impl VmHost for NoopHost {
     &mut self,
     _op: &HostOp,
     _stack: &mut [u32],
+    _dyn_memory: &mut [DynMemory],
     _code: &Code,
   ) -> Result<Option<HostSuspendReason>, Self::Error> {
     unreachable!("host call encountered in hostless VM execution")
@@ -495,12 +558,20 @@ pub struct Code {
   pub host_strings: Vec<Arc<str>>,
   pub host_bindings: Vec<HostBinding>,
   pub host_dispatches: Vec<HostDispatch>,
+  /// Number of runtime-sized array globals; sizes
+  /// `BytecodeProgram::dyn_memory`.
+  pub dyn_memory_count: u16,
 }
 
 pub struct BytecodeProgram {
   pub code: Code,
   pub stack: Vec<u32>,
   pub call_stack: Vec<Range<u32>>,
+  /// Backing store for runtime-sized array globals, indexed by the
+  /// compile-time region ids baked into the `Dyn*` opcodes. Lives outside
+  /// the u16-addressed stack, so these arrays aren't subject to its 2^16
+  /// word limit.
+  pub dyn_memory: Vec<DynMemory>,
 }
 
 impl BytecodeProgram {
@@ -515,6 +586,10 @@ impl BytecodeProgram {
     let mut program = Self {
       stack: vec![0u32; max_stack_size],
       call_stack: Vec::with_capacity(code.functions.len()),
+      dyn_memory: vec![
+        DynMemory::Zeroed { elements: 0 };
+        code.dyn_memory_count as usize
+      ],
       code,
     };
     if let Some(init_idx) = program.code.init_function_index {
@@ -565,6 +640,7 @@ impl BytecodeProgram {
       code,
       stack,
       call_stack,
+      dyn_memory,
     } = self;
     let Some(mut ip) = call_stack.pop() else {
       return Ok(RunResult::Finished);
@@ -734,7 +810,7 @@ impl BytecodeProgram {
         Op::HostCall => {
           let op =
             &code.host_ops[instruction.arg_positions[0] as usize];
-          if let Some(reason) = host.host_call(op, stack, code)? {
+          if let Some(reason) = host.host_call(op, stack, dyn_memory, code)? {
             // Resume point: `ip` has already advanced past this
             // instruction, so pushing it back means resuming continues with
             // the next instruction.
@@ -1075,6 +1151,59 @@ impl BytecodeProgram {
             inner_data_size as usize,
           );
         },
+
+        Op::DynLen => {
+          let [memory, stride, _] = instruction.arg_positions;
+          stack[instruction.return_position as usize] =
+            dyn_memory[memory as usize].len_elements(stride as usize);
+        }
+        Op::DynLoad => {
+          let [memory, index_slot, stride] = instruction.arg_positions;
+          let stride = stride as usize;
+          let index = stack[index_slot as usize] as usize;
+          let region = &dyn_memory[memory as usize];
+          let elements = region.len_elements(stride) as usize;
+          if index >= elements {
+            panic!(
+              "dynamic array index out of bounds: index {index}, length                {elements}"
+            );
+          }
+          let dest = instruction.return_position as usize;
+          match region {
+            DynMemory::Zeroed { .. } => stack[dest..dest + stride].fill(0),
+            DynMemory::Words(words) => stack[dest..dest + stride]
+              .copy_from_slice(&words[index * stride..(index + 1) * stride]),
+          }
+        }
+        Op::DynStore => {
+          let [memory, index_slot, src_slot] = instruction.arg_positions;
+          let stride = instruction.return_position as usize;
+          let index = stack[index_slot as usize] as usize;
+          let region = &mut dyn_memory[memory as usize];
+          let elements = region.len_elements(stride) as usize;
+          if index >= elements {
+            panic!(
+              "dynamic array index out of bounds: index {index}, length                {elements}"
+            );
+          }
+          let src = src_slot as usize;
+          region.words_mut(stride)[index * stride..(index + 1) * stride]
+            .copy_from_slice(&stack[src..src + stride]);
+        }
+        Op::DynResize => {
+          let [memory, len_slot, _] = instruction.arg_positions;
+          dyn_memory[memory as usize] = DynMemory::Zeroed {
+            elements: stack[len_slot as usize],
+          };
+        }
+        Op::DynAssignFromSlots => {
+          let [memory, src_slot, count] = instruction.arg_positions;
+          let stride = instruction.return_position as usize;
+          let src = src_slot as usize;
+          dyn_memory[memory as usize] = DynMemory::Words(
+            stack[src..src + count as usize * stride].to_vec(),
+          );
+        }
       }
     }
   }

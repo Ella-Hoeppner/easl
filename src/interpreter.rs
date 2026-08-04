@@ -5588,9 +5588,10 @@ impl<IO: IOManager> crate::vm::bytecode::VmHost for VmHostView<'_, IO> {
     &mut self,
     op: &crate::vm::bytecode::HostOp,
     stack: &mut [u32],
+    dyn_memory: &mut [crate::vm::bytecode::DynMemory],
     code: &crate::vm::bytecode::Code,
   ) -> Result<Option<crate::vm::bytecode::HostSuspendReason>, EvalError> {
-    vm_host_call(self.env, self.slots_dirty, op, stack, code)
+    vm_host_call(self.env, self.slots_dirty, op, stack, dyn_memory, code)
   }
 }
 
@@ -5630,6 +5631,60 @@ fn vm_words_of(t: &Type) -> usize {
     .unwrap() as usize
 }
 
+/// Builds a `Value` view of a dynamic-memory array region. Only used at the
+/// boundaries that genuinely need `Value`s — printing, and mirroring into
+/// the env for GPU upload serialization; element accesses never build one.
+fn dyn_memory_value(
+  memory: &crate::vm::bytecode::DynMemory,
+  ty: &Type,
+) -> Value {
+  use crate::vm::bytecode::DynMemory;
+  let Type::Array(_, element_type) = ty else {
+    panic!("dynamic-memory binding isn't an array")
+  };
+  let element_type = element_type.kind.unwrap_known();
+  match memory {
+    DynMemory::Zeroed { elements } => Value::ZeroedArray {
+      length: *elements as usize,
+    },
+    DynMemory::Words(words) => {
+      let stride = vm_words_of(&element_type).max(1);
+      Value::Array(
+        words
+          .chunks(stride)
+          .map(|chunk| Value::from_vm_words(&element_type, chunk))
+          .collect(),
+      )
+    }
+  }
+}
+
+/// The reverse of `dyn_memory_value`: flattens an env-side array `Value`
+/// (e.g. a fresh GPU readback) into dynamic-memory words.
+fn value_into_dyn_memory(
+  value: &Value,
+  ty: &Type,
+) -> crate::vm::bytecode::DynMemory {
+  use crate::vm::bytecode::DynMemory;
+  let Type::Array(_, element_type) = ty else {
+    panic!("dynamic-memory binding isn't an array")
+  };
+  let element_type = element_type.kind.unwrap_known();
+  match value {
+    Value::ZeroedArray { length } => DynMemory::Zeroed {
+      elements: *length as u32,
+    },
+    Value::Uninitialized => DynMemory::Zeroed { elements: 0 },
+    Value::Array(items) => DynMemory::Words(
+      items
+        .iter()
+        .flat_map(|item| item.to_vm_words(&element_type))
+        .collect(),
+    ),
+    other => panic!("can't store {other:?} in dynamic array memory"),
+  }
+}
+
 /// Refresh the env's `Value` copies of slot-backed bindings from VM stack
 /// slots, for any binding in `bindings` whose slots are dirty. Called before
 /// upload serialization so `collect_dirty_uploads` sees current data.
@@ -5638,6 +5693,7 @@ fn refresh_dirty_slots<IO: IOManager>(
   slots_dirty: &mut [bool],
   bindings: &[u16],
   stack: &[u32],
+  dyn_memory: &[crate::vm::bytecode::DynMemory],
   code: &crate::vm::bytecode::Code,
 ) {
   use crate::vm::bytecode::HostBindingStorage;
@@ -5646,13 +5702,16 @@ fn refresh_dirty_slots<IO: IOManager>(
       continue;
     }
     let binding = &code.host_bindings[index as usize];
-    let HostBindingStorage::Slots { position, size } = binding.storage else {
-      continue;
+    let value = match binding.storage {
+      HostBindingStorage::Slots { position, size } => Value::from_vm_words(
+        &binding.ty,
+        &stack[position as usize..(position + size) as usize],
+      ),
+      HostBindingStorage::DynamicMemory { memory } => {
+        dyn_memory_value(&dyn_memory[memory as usize], &binding.ty)
+      }
+      HostBindingStorage::Dynamic => continue,
     };
-    let value = Value::from_vm_words(
-      &binding.ty,
-      &stack[position as usize..(position + size) as usize],
-    );
     if let Some(stack_entry) = env.bindings.get_mut(&binding.name)
       && let Some(slot) = stack_entry.last_mut()
     {
@@ -5667,6 +5726,7 @@ fn vm_host_call<IO: IOManager>(
   slots_dirty: &mut Vec<bool>,
   op: &crate::vm::bytecode::HostOp,
   stack: &mut [u32],
+  dyn_memory: &mut [crate::vm::bytecode::DynMemory],
   code: &crate::vm::bytecode::Code,
 ) -> Result<Option<crate::vm::bytecode::HostSuspendReason>, EvalError> {
   use crate::vm::bytecode::{HostBindingStorage, HostOp, HostSuspendReason};
@@ -5681,7 +5741,12 @@ fn vm_host_call<IO: IOManager>(
     }
     HostOp::PrintBinding { binding } => {
       let b = &code.host_bindings[*binding as usize];
-      let value = env.lookup(&b.name)?.clone();
+      let value = match b.storage {
+        HostBindingStorage::DynamicMemory { memory } => {
+          dyn_memory_value(&dyn_memory[memory as usize], &b.ty)
+        }
+        _ => env.lookup(&b.name)?.clone(),
+      };
       let formatted = value.format_for_print(&b.ty, env)?;
       env.io.println(&formatted);
     }
@@ -5706,18 +5771,31 @@ fn vm_host_call<IO: IOManager>(
         // Readback landed in the env's Value; mirror it into the VM slots
         // where CPU code actually reads it.
         if env.buffer_states.get(&b.name) == Some(&SharedBufferState::Synced)
-          && let HostBindingStorage::Slots { position, size } = b.storage
         {
-          let words = env.lookup(&b.name)?.to_vm_words(&b.ty);
-          stack[position as usize..(position + size) as usize]
-            .copy_from_slice(&words[..size as usize]);
-          slots_dirty[*binding as usize] = false;
+          match b.storage {
+            HostBindingStorage::Slots { position, size } => {
+              let words = env.lookup(&b.name)?.to_vm_words(&b.ty);
+              stack[position as usize..(position + size) as usize]
+                .copy_from_slice(&words[..size as usize]);
+              slots_dirty[*binding as usize] = false;
+            }
+            HostBindingStorage::DynamicMemory { memory } => {
+              dyn_memory[memory as usize] =
+                value_into_dyn_memory(env.lookup(&b.name)?, &b.ty);
+              slots_dirty[*binding as usize] = false;
+            }
+            HostBindingStorage::Dynamic => {}
+          }
         }
       }
     }
     HostOp::MarkCpuWritten { binding } => {
       let b = &code.host_bindings[*binding as usize];
-      if matches!(b.storage, HostBindingStorage::Slots { .. }) {
+      if matches!(
+        b.storage,
+        HostBindingStorage::Slots { .. }
+          | HostBindingStorage::DynamicMemory { .. }
+      ) {
         slots_dirty[*binding as usize] = true;
       }
       let name = b.name.clone();
@@ -5729,7 +5807,14 @@ fn vm_host_call<IO: IOManager>(
       workgroup_slot,
     } => {
       let dispatch = &code.host_dispatches[*sets as usize];
-      refresh_dirty_slots(env, slots_dirty, &dispatch.reads, stack, code);
+      refresh_dirty_slots(
+        env,
+        slots_dirty,
+        &dispatch.reads,
+        stack,
+        dyn_memory,
+        code,
+      );
       let read_names: Vec<Arc<str>> = dispatch
         .reads
         .iter()
@@ -5761,7 +5846,14 @@ fn vm_host_call<IO: IOManager>(
       additive_slot,
     } => {
       let dispatch = &code.host_dispatches[*sets as usize];
-      refresh_dirty_slots(env, slots_dirty, &dispatch.reads, stack, code);
+      refresh_dirty_slots(
+        env,
+        slots_dirty,
+        &dispatch.reads,
+        stack,
+        dyn_memory,
+        code,
+      );
       let read_names: Vec<Arc<str>> = dispatch
         .reads
         .iter()
@@ -5822,108 +5914,6 @@ fn vm_host_call<IO: IOManager>(
           let name = name.clone();
           env.mark_gpu_written(&[name]);
         }
-      }
-    }
-    HostOp::AssignDynZeroed { binding, len_slot } => {
-      let b = &code.host_bindings[*binding as usize];
-      let length = stack[*len_slot as usize] as usize;
-      let name = b.name.clone();
-      if let Some(stack_entry) = env.bindings.get_mut(&name)
-        && let Some(slot) = stack_entry.last_mut()
-      {
-        slot.0 = Value::ZeroedArray { length };
-      }
-    }
-    HostOp::AssignDynFromSlots {
-      binding,
-      src_slot,
-      count,
-    } => {
-      let b = &code.host_bindings[*binding as usize];
-      let Type::Array(_, inner_type) = &b.ty else {
-        panic!("AssignDynFromSlots target isn't an array")
-      };
-      let elem = inner_type.kind.unwrap_known();
-      let stride = vm_words_of(&elem);
-      let base = *src_slot as usize;
-      let items: Vec<Value> = (0..*count as usize)
-        .map(|i| {
-          Value::from_vm_words(
-            &elem,
-            &stack[base + i * stride..base + (i + 1) * stride],
-          )
-        })
-        .collect();
-      let name = b.name.clone();
-      if let Some(stack_entry) = env.bindings.get_mut(&name)
-        && let Some(slot) = stack_entry.last_mut()
-      {
-        slot.0 = Value::Array(items);
-      }
-    }
-    HostOp::DynLen { binding, dest } => {
-      let b = &code.host_bindings[*binding as usize];
-      let length = match env.lookup(&b.name)? {
-        Value::Array(items) => items.len(),
-        Value::ZeroedArray { length } => *length,
-        other => panic!("array-length of non-array value {other:?}"),
-      };
-      stack[*dest as usize] = length as u32;
-    }
-    HostOp::DynLoad {
-      binding,
-      index_slot,
-      dest,
-    } => {
-      let b = &code.host_bindings[*binding as usize];
-      let Type::Array(_, inner_type) = &b.ty else {
-        panic!("DynLoad target isn't an array")
-      };
-      let elem = inner_type.kind.unwrap_known();
-      let stride = vm_words_of(&elem);
-      let index = stack[*index_slot as usize] as usize;
-      match env.lookup(&b.name)? {
-        Value::Array(items) => {
-          let words = items[index].to_vm_words(&elem);
-          stack[*dest as usize..*dest as usize + stride]
-            .copy_from_slice(&words);
-        }
-        Value::ZeroedArray { .. } => {
-          stack[*dest as usize..*dest as usize + stride].fill(0);
-        }
-        other => panic!("element read of non-array value {other:?}"),
-      }
-    }
-    HostOp::DynStore {
-      binding,
-      index_slot,
-      src_slot,
-    } => {
-      let b = &code.host_bindings[*binding as usize];
-      let Type::Array(_, inner_type) = &b.ty else {
-        panic!("DynStore target isn't an array")
-      };
-      let elem = inner_type.kind.unwrap_known();
-      let stride = vm_words_of(&elem);
-      let index = stack[*index_slot as usize] as usize;
-      let value = Value::from_vm_words(
-        &elem,
-        &stack[*src_slot as usize..*src_slot as usize + stride],
-      );
-      // Promote a lazily-zeroed array to a real one on first element write,
-      // mirroring the tree-walker.
-      let zero = Value::zeroed(elem.clone(), env)?;
-      let name = b.name.clone();
-      if let Some(stack_entry) = env.bindings.get_mut(&name)
-        && let Some(slot) = stack_entry.last_mut()
-      {
-        if let Value::ZeroedArray { length } = slot.0 {
-          slot.0 = Value::Array(vec![zero; length]);
-        }
-        let Value::Array(items) = &mut slot.0 else {
-          panic!("element write to non-array value")
-        };
-        items[index] = value;
       }
     }
     HostOp::WindowQuery { kind, dest } => {

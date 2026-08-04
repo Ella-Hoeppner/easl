@@ -70,9 +70,14 @@ pub struct BytecodeCompilationState {
   pub host_dispatches: Vec<HostDispatch>,
   /// Name → index into `host_bindings` for GPU-bound globals.
   pub binding_indices: HashMap<Arc<str>, u16>,
-  /// Globals whose values live host-side (unsized arrays, textures) rather
-  /// than in VM stack slots.
+  /// Globals whose values live host-side (textures) rather than in VM
+  /// stack slots or dynamic memory; also includes runtime-sized arrays (for
+  /// binding-indexed host ops like `PrintBinding` and the sync checks).
   pub dynamic_globals: HashMap<Arc<str>, u16>,
+  /// Runtime-sized array globals: name → (region index into
+  /// `BytecodeProgram::dyn_memory`, element stride in words). Element and
+  /// length accesses compile to the direct `Dyn*` opcodes.
+  pub dynamic_array_memory: HashMap<Arc<str>, (u16, u16)>,
   pub globals: HashMap<Arc<str>, u16>,
   /// Name, base stack slot, and size in u32 slots of each global, in
   /// declaration order. Carried into `Code::globals` by `finalize` so
@@ -108,6 +113,7 @@ impl BytecodeCompilationState {
       host_dispatches: vec![],
       binding_indices: HashMap::new(),
       dynamic_globals: HashMap::new(),
+      dynamic_array_memory: HashMap::new(),
       globals: HashMap::new(),
       global_slots: vec![],
       locals: HashMap::new(),
@@ -1575,6 +1581,7 @@ impl BytecodeCompilationState {
       host_strings: self.host_strings,
       host_bindings: self.host_bindings,
       host_dispatches: self.host_dispatches,
+      dyn_memory_count: self.dynamic_array_memory.len() as u16,
     };
     (
       BytecodeProgram::from_code(code),
@@ -2181,10 +2188,15 @@ impl TypedExp {
       }
       "array-length" => {
         if let ExpKind::Name(name) = &args[0].kind
-          && let Some(binding) = state.dynamic_globals.get(name).copied()
+          && let Some((memory, stride)) =
+            state.dynamic_array_memory.get(name).copied()
         {
           let dest = state.take_stack_slot(1);
-          state.emit_host_op(HostOp::DynLen { binding, dest });
+          state.push_instruction(Instruction {
+            op: Op::DynLen,
+            arg_positions: [memory, stride, 0],
+            return_position: dest,
+          });
           Some(Some(dest))
         } else if let Type::Array(Some(ConcreteArraySize::Literal(n)), _) =
           args[0].data.unwrap_known()
@@ -2222,13 +2234,15 @@ impl TypedExp {
         Some(None)
       }
       "=" => {
-        // Only intercepted when a dynamic (host-side) global is involved;
-        // slot-backed assignment uses the generic path.
+        // Only intercepted when a dynamic (host-side or dynamic-memory)
+        // global is involved; slot-backed assignment uses the generic path.
         let lhs = &args[0];
         let rhs = &args[1];
         if let ExpKind::Name(name) = &lhs.kind
-          && let Some(binding) = state.dynamic_globals.get(name).copied()
+          && let Some((memory, stride)) =
+            state.dynamic_array_memory.get(name).copied()
         {
+          // whole-array assignment to a dynamic-memory array
           let ExpKind::Application(rhs_f, rhs_args) = &rhs.kind else {
             panic!(
               "unsupported assignment to dynamic global in VM CPU runtime"
@@ -2241,7 +2255,11 @@ impl TypedExp {
             "zeroed-array" => {
               let len_slot =
                 rhs_args[0].compile_to_bytecode(false, state).unwrap();
-              state.emit_host_op(HostOp::AssignDynZeroed { binding, len_slot });
+              state.push_instruction(Instruction {
+                op: Op::DynResize,
+                arg_positions: [memory, len_slot, 0],
+                return_position: 0,
+              });
             }
             "into-dynamic-array" => {
               let source = &rhs_args[0];
@@ -2251,12 +2269,30 @@ impl TypedExp {
                 panic!("into-dynamic-array argument wasn't a sized array")
               };
               let src_slot = source.compile_to_bytecode(false, state).unwrap();
-              state.emit_host_op(HostOp::AssignDynFromSlots {
-                binding,
-                src_slot,
-                count: count as u16,
+              state.push_instruction(Instruction {
+                op: Op::DynAssignFromSlots,
+                arg_positions: [memory, src_slot, count as u16],
+                return_position: stride,
               });
             }
+            other => panic!(
+              "unsupported assignment of `{other}` result to dynamic array \
+               in VM CPU runtime"
+            ),
+          }
+          Some(None)
+        } else if let ExpKind::Name(name) = &lhs.kind
+          && let Some(binding) = state.dynamic_globals.get(name).copied()
+        {
+          let ExpKind::Application(rhs_f, rhs_args) = &rhs.kind else {
+            panic!(
+              "unsupported assignment to dynamic global in VM CPU runtime"
+            )
+          };
+          let ExpKind::Name(rhs_f_name) = &rhs_f.kind else {
+            panic!()
+          };
+          match &**rhs_f_name {
             "load-image" => {
               let ExpKind::StringLiteral(path) = &rhs_args[0].kind else {
                 panic!("load-image argument must be a string literal")
@@ -2293,15 +2329,16 @@ impl TypedExp {
         } else if let ExpKind::Access(Accessor::ArrayIndex(index_exp), inner) =
           &lhs.kind
           && let ExpKind::Name(name) = &inner.kind
-          && let Some(binding) = state.dynamic_globals.get(name).copied()
+          && let Some((memory, stride)) =
+            state.dynamic_array_memory.get(name).copied()
         {
           let index_slot =
             index_exp.compile_to_bytecode(false, state).unwrap();
           let src_slot = rhs.compile_to_bytecode(false, state).unwrap();
-          state.emit_host_op(HostOp::DynStore {
-            binding,
-            index_slot,
-            src_slot,
+          state.push_instruction(Instruction {
+            op: Op::DynStore,
+            arg_positions: [memory, index_slot, src_slot],
+            return_position: stride,
           });
           Some(None)
         } else {
@@ -3160,30 +3197,35 @@ impl TypedExp {
       Access(accessor, exp) => {
         match accessor {
           Accessor::ArrayIndex(index_exp) => {
-            // Element read of a dynamic (host-side) global array.
-            if state.cpu_mode
-              && let ExpKind::Name(name) = &exp.kind
-              && let Some(binding) = state.dynamic_globals.get(name).copied()
+            // Element read of a dynamic (dynamic-memory) global array. In a
+            // mutable-reference position (assignment-op lhs, `@ref` args),
+            // the same write-back pattern as slot-backed arrays applies: the
+            // element is loaded into a temp, and a pending `DynStore`
+            // records the write of the (possibly mutated) temp back into
+            // the array once the enclosing call completes.
+            if let ExpKind::Name(name) = &exp.kind
+              && let Some((memory, stride)) =
+                state.dynamic_array_memory.get(name).copied()
             {
-              if is_ref_arg_position {
-                panic!(
-                  "passing dynamic array elements by reference is not \
-                   supported in the VM CPU runtime"
-                );
-              }
-              let element_size = self
-                .data
-                .unwrap_known()
-                .data_size_in_u32s(&self.source_trace)
-                .unwrap() as u16;
-              let dest = state.take_stack_slot(element_size);
+              let dest = state.take_stack_slot(stride);
               let index_slot =
                 index_exp.compile_to_bytecode(false, state).unwrap();
-              state.emit_host_op(HostOp::DynLoad {
-                binding,
-                index_slot,
-                dest,
+              state.push_instruction(Instruction {
+                op: Op::DynLoad,
+                arg_positions: [memory, index_slot, stride],
+                return_position: dest,
               });
+              if is_ref_arg_position {
+                state
+                  .array_mut_ref_store_instructions
+                  .last_mut()
+                  .unwrap()
+                  .push(Instruction {
+                    op: Op::DynStore,
+                    arg_positions: [memory, index_slot, dest],
+                    return_position: stride,
+                  });
+              }
               return Some(dest);
             }
             let inner_exp_pos = exp.compile_to_bytecode(false, state).unwrap();
