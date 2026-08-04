@@ -895,6 +895,25 @@ impl GpuCore {
     if calls.is_empty() {
       return;
     }
+    self.encode_compute_batch(calls);
+    self
+      .device
+      .poll(wgpu::PollType::wait_indefinitely())
+      .unwrap();
+  }
+
+  /// Encodes and submits a batch of compute dispatches without waiting for
+  /// completion. Each dispatch's pre_uploads are applied just before it is
+  /// encoded; when an upload would overwrite a binding that already-encoded
+  /// (but not yet submitted) dispatches depend on — e.g. the same entry
+  /// dispatched twice in one frame with different captured-scope values —
+  /// the current encoder is submitted first so those dispatches see their
+  /// own values. In the common case of no conflicting uploads every
+  /// dispatch is encoded into a single submit.
+  fn encode_compute_batch(
+    &mut self,
+    calls: Vec<(u16, (u32, u32, u32), Vec<((u8, u8), BufferUpload)>)>,
+  ) {
     // Tracks bindings uploaded for dispatches already encoded into the current
     // encoder but not yet submitted.
     let mut pending_bindings: std::collections::HashSet<(u8, u8)> =
@@ -902,7 +921,6 @@ impl GpuCore {
     let mut current_encoder: Option<wgpu::CommandEncoder> = None;
 
     for (entry, (x, y, z), pre_upload) in calls {
-
       // If this call would overwrite a binding already uploaded for the
       // current encoder's dispatches, submit that encoder first so those
       // dispatches see the old values, then start a fresh encoder.
@@ -949,174 +967,27 @@ impl GpuCore {
     if let Some(enc) = current_encoder.take() {
       self.queue.submit(std::iter::once(enc.finish()));
     }
-    self
-      .device
-      .poll(wgpu::PollType::wait_indefinitely())
-      .unwrap();
   }
 
-  /// Executes the compute portion of one frame's queued events: ensures all
-  /// pipeline objects exist, applies render events' pre_uploads upfront,
-  /// then runs each compute dispatch with its own pre_uploads applied in
-  /// order (splitting the submit when uploads conflict). Shared by the winit
-  /// frame loop (`render`) and the headless test frame loop
-  /// (`CaptureIO::run_spawn_window`) so that tests exercise the production
-  /// frame path rather than a parallel one.
-  pub fn execute_frame_compute(&mut self, draw_calls: &[WindowEvent]) {
-    let screen_format = self
-      .surface_config
-      .as_ref()
-      .map(|c| c.format)
-      .unwrap_or(GpuCore::OFFSCREEN_FORMAT);
-
-    // Pre-pass: ensure all pipeline objects exist. No buffer uploads here —
-    // uploads are applied below.
-    for draw_call in draw_calls {
-      match draw_call {
-        WindowEvent::RenderShaders {
-          vert,
-          frag,
-          additive,
-          render_target,
-          ..
-        } => {
-          let format = if render_target.is_none() {
-            screen_format
-          } else {
-            GpuCore::OFFSCREEN_FORMAT
-          };
-          self.get_or_create_render_pipeline(*vert, *frag, *additive, format);
-        }
-        WindowEvent::ComputeShader { entry, .. } => {
-          self.get_or_create_compute_pipeline(*entry);
-        }
-      }
-    }
-
-    // Apply render events' pre_uploads upfront: they may contain buffer
-    // initialisation (e.g. sizing an unsized storage buffer) that compute
-    // needs, and they are NOT re-applied before the render passes to avoid
-    // overwriting compute's GPU output.
-    {
-      let render_pre_uploads: Vec<_> = draw_calls
-        .iter()
-        .flat_map(|c| match c {
-          WindowEvent::RenderShaders { pre_upload, .. } => {
-            pre_upload.iter().cloned().collect::<Vec<_>>()
-          }
-          WindowEvent::ComputeShader { .. } => vec![],
-        })
-        .collect();
-      self.upload_bindings(&render_pre_uploads);
-    }
-
-    // --- Compute passes ---
-    // Each dispatch's pre_uploads are applied just before it is encoded.
-    // When an upload would overwrite a binding that already-encoded (but not
-    // yet submitted) dispatches depend on — e.g. the same entry dispatched
-    // twice in one frame with different captured-scope values — the current
-    // encoder is submitted first so those dispatches see their own values:
-    // the same strategy as `execute_compute_batch`. In the common case of no
-    // conflicting uploads this still encodes every dispatch into a single
-    // submit.
-    let mut pending_bindings: std::collections::HashSet<(u8, u8)> =
-      std::collections::HashSet::new();
-    let mut current_encoder: Option<wgpu::CommandEncoder> = None;
-    for call in draw_calls {
-      let WindowEvent::ComputeShader {
-        entry,
-        workgroup_count: (x, y, z),
-        pre_upload,
-      } = call
-      else {
-        continue;
-      };
-
-      let has_conflict = pre_upload
-        .iter()
-        .any(|(gb, _)| pending_bindings.contains(gb));
-      if has_conflict {
-        if let Some(enc) = current_encoder.take() {
-          self.queue.submit(std::iter::once(enc.finish()));
-        }
-        pending_bindings.clear();
-      }
-
-      self.upload_bindings(pre_upload);
-      for (gb, _) in pre_upload {
-        pending_bindings.insert(*gb);
-      }
-
-      let encoder = current_encoder.get_or_insert_with(|| {
-        self
-          .device
-          .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("compute encoder"),
-          })
-      });
-      {
-        let mut compute_pass =
-          encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("compute pass"),
-            timestamp_writes: None,
-          });
-        let cached =
-          self.compute_pipelines[*entry as usize].as_ref().unwrap();
-        for (group_idx, bind_group) in
-          cached.bindings.bind_groups.iter().enumerate()
-        {
-          compute_pass.set_bind_group(group_idx as u32, bind_group, &[]);
-        }
-        compute_pass.set_pipeline(&cached.pipeline);
-        compute_pass.dispatch_workgroups(*x, *y, *z);
-      }
-    }
-    if let Some(enc) = current_encoder.take() {
-      self.queue.submit(std::iter::once(enc.finish()));
-    }
-  }
-
-  /// Executes the render portion of one frame's queued events: one render
-  /// pass per consecutive render-target group, all in one encoder/submit.
-  /// Screen-targeted draws render into `screen_view`, or are skipped when it
-  /// is `None` (surface occluded, or headless test mode). Shared by the
-  /// winit frame loop (`render`) and the headless test frame loop.
-  pub fn execute_frame_renders(
+  /// Encodes and submits a sequence of render calls: one render pass per
+  /// consecutive same-render-target group, all in one encoder/submit.
+  /// Screen-targeted calls draw into `screen_view`, or are skipped when it
+  /// is `None` (surface occluded, or headless test mode). Does NOT apply
+  /// pre_uploads or wait for completion — callers own upload ordering and
+  /// synchronization. Pipelines must already exist in the cache.
+  fn encode_render_groups(
     &mut self,
-    draw_calls: &[WindowEvent],
+    calls: &[(u16, u16, u32, bool, Option<(u8, u8)>)],
     screen_view: Option<&wgpu::TextureView>,
   ) {
+    if calls.is_empty() {
+      return;
+    }
     let screen_format = self
       .surface_config
       .as_ref()
       .map(|c| c.format)
       .unwrap_or(GpuCore::OFFSCREEN_FORMAT);
-
-    let render_calls: Vec<_> = draw_calls
-      .iter()
-      .filter_map(|c| {
-        if let WindowEvent::RenderShaders {
-          vert,
-          frag,
-          vert_count,
-          pre_upload,
-          additive,
-          render_target,
-        } = c
-        {
-          Some((vert, frag, vert_count, pre_upload, additive, render_target))
-        } else {
-          None
-        }
-      })
-      .collect();
-
-    if render_calls.is_empty() {
-      return;
-    }
-    // pre_uploads already applied before compute in execute_frame_compute;
-    // not re-applied here to avoid overwriting GPU data written by compute
-    // shaders.
 
     let mut encoder =
       self
@@ -1124,18 +995,19 @@ impl GpuCore {
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
           label: Some("render encoder"),
         });
+    let mut any_pass = false;
 
     // Group consecutive calls by render target, one render pass per group.
     let mut i = 0;
-    while i < render_calls.len() {
-      let current_rt = render_calls[i].5;
-      let end = render_calls[i..]
+    while i < calls.len() {
+      let current_rt = calls[i].4;
+      let end = calls[i..]
         .iter()
-        .position(|c| c.5 != current_rt)
-        .map_or(render_calls.len(), |j| i + j);
-      let group = &render_calls[i..end];
+        .position(|c| c.4 != current_rt)
+        .map_or(calls.len(), |j| i + j);
+      let group = &calls[i..end];
 
-      // Create a fresh view for texture render targets. Borrow of
+      // Create a fresh view for texture render targets. The borrow of
       // `self.textures` is released before the render pass scope.
       let texture_target_view: Option<wgpu::TextureView> =
         current_rt.map(|rt| {
@@ -1165,8 +1037,8 @@ impl GpuCore {
       // wgpu's COLOR_TARGET + RESOURCE conflict).
       let prepared: Vec<(usize, Option<Vec<wgpu::BindGroup>>)> = group
         .iter()
-        .map(|(vert, frag, _, _, additive, _)| {
-          let key = (**vert, **frag, **additive, format);
+        .map(|(vert, frag, _, additive, _)| {
+          let key = (*vert, *frag, *additive, format);
           let index = self
             .render_pipelines
             .iter()
@@ -1204,7 +1076,7 @@ impl GpuCore {
             timestamp_writes: None,
             multiview_mask: None,
           });
-        for ((_, _, vert_count, _, _, _), (pipeline_index, placeholder)) in
+        for ((_, _, vert_count, _, _), (pipeline_index, placeholder)) in
           group.iter().zip(prepared.iter())
         {
           let cached = &self.render_pipelines[*pipeline_index].1;
@@ -1215,14 +1087,285 @@ impl GpuCore {
             render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
           }
           render_pass.set_pipeline(&cached.pipeline);
-          render_pass.draw(0..**vert_count, 0..1);
+          render_pass.draw(0..*vert_count, 0..1);
         }
       }
+      any_pass = true;
 
       i = end;
     }
 
-    self.queue.submit(std::iter::once(encoder.finish()));
+    if any_pass {
+      self.queue.submit(std::iter::once(encoder.finish()));
+    }
+  }
+
+  /// Executes one frame's texture-targeted GPU work — compute dispatches
+  /// and texture-targeted render passes — strictly in program order, so
+  /// GPU write→read dependencies hold regardless of the kinds involved: a
+  /// compute dispatched after a render-to-texture sees the rendered
+  /// texels, and vice versa. This is a hard language requirement, and the
+  /// same ordering the mid-frame `flush_queued_compute` path observes.
+  ///
+  /// Screen-targeted renders are NOT executed here: nothing on the GPU can
+  /// read the surface, so deferring them to `execute_frame_screen_renders`
+  /// (after surface acquisition) is unobservable. Their pre_uploads ARE
+  /// applied, up front, since they may contain buffer initialisation
+  /// (e.g. sizing an unsized storage buffer) that earlier GPU work needs —
+  /// and they are not re-applied later, which would overwrite GPU output.
+  ///
+  /// Shared by the winit frame loop (`render`), the headless test frame
+  /// loop (`CaptureIO::run_spawn_window`), and the mid-frame flush path
+  /// (`StdoutIO::flush_queued_compute`), so all three exercise one ordering
+  /// implementation rather than parallel ones.
+  pub fn execute_frame_gpu_work(&mut self, draw_calls: &[WindowEvent]) {
+    let screen_format = self
+      .surface_config
+      .as_ref()
+      .map(|c| c.format)
+      .unwrap_or(GpuCore::OFFSCREEN_FORMAT);
+
+    // Pre-pass: ensure all pipeline objects exist. No buffer uploads here —
+    // uploads are applied below.
+    for draw_call in draw_calls {
+      match draw_call {
+        WindowEvent::RenderShaders {
+          vert,
+          frag,
+          additive,
+          render_target,
+          ..
+        } => {
+          let format = if render_target.is_none() {
+            screen_format
+          } else {
+            GpuCore::OFFSCREEN_FORMAT
+          };
+          self.get_or_create_render_pipeline(*vert, *frag, *additive, format);
+        }
+        WindowEvent::ComputeShader { entry, .. } => {
+          self.get_or_create_compute_pipeline(*entry);
+        }
+      }
+    }
+
+    // Screen renders' pre_uploads, applied before any GPU work (see above).
+    {
+      let screen_render_uploads: Vec<_> = draw_calls
+        .iter()
+        .flat_map(|c| match c {
+          WindowEvent::RenderShaders {
+            pre_upload,
+            render_target: None,
+            ..
+          } => pre_upload.iter().cloned().collect::<Vec<_>>(),
+          _ => vec![],
+        })
+        .collect();
+      self.upload_bindings(&screen_render_uploads);
+    }
+
+    // Walk the events in program order, batching consecutive runs of the
+    // same kind: compute runs go through the conflict-splitting compute
+    // encoder, texture-render runs through the render-pass grouper (which
+    // merges consecutive same-target draws into one pass). Each run's
+    // pre_uploads are applied at the run's position in the order.
+    let mut pending_compute: Vec<(
+      u16,
+      (u32, u32, u32),
+      Vec<((u8, u8), BufferUpload)>,
+    )> = vec![];
+    let mut pending_renders: Vec<(u16, u16, u32, bool, Option<(u8, u8)>)> =
+      vec![];
+    let mut pending_render_uploads: Vec<((u8, u8), BufferUpload)> = vec![];
+
+    macro_rules! flush_runs {
+      ($self:ident) => {
+        if !pending_compute.is_empty() {
+          $self.encode_compute_batch(std::mem::take(&mut pending_compute));
+        }
+        if !pending_renders.is_empty() {
+          $self
+            .upload_bindings(&std::mem::take(&mut pending_render_uploads));
+          $self
+            .encode_render_groups(&std::mem::take(&mut pending_renders), None);
+        }
+      };
+    }
+
+    for call in draw_calls {
+      match call {
+        WindowEvent::ComputeShader {
+          entry,
+          workgroup_count,
+          pre_upload,
+        } => {
+          if !pending_renders.is_empty() {
+            flush_runs!(self);
+          }
+          pending_compute.push((*entry, *workgroup_count, pre_upload.clone()));
+        }
+        WindowEvent::RenderShaders {
+          vert,
+          frag,
+          vert_count,
+          pre_upload,
+          additive,
+          render_target: Some(rt),
+        } => {
+          if !pending_compute.is_empty() {
+            flush_runs!(self);
+          }
+          pending_render_uploads.extend(pre_upload.iter().cloned());
+          pending_renders.push((*vert, *frag, *vert_count, *additive, Some(*rt)));
+        }
+        WindowEvent::RenderShaders {
+          render_target: None,
+          ..
+        } => {
+          // Deferred to execute_frame_screen_renders; still delimits runs so
+          // pass grouping matches the event order.
+          flush_runs!(self);
+        }
+      }
+    }
+    flush_runs!(self);
+  }
+
+  /// Executes the screen-targeted draws of one frame's queued events, in
+  /// order, as one render pass into `screen_view` (skipped entirely when it
+  /// is `None`: surface occluded, or headless test mode). Must run after
+  /// `execute_frame_gpu_work`, which has already applied these draws'
+  /// pre_uploads.
+  pub fn execute_frame_screen_renders(
+    &mut self,
+    draw_calls: &[WindowEvent],
+    screen_view: Option<&wgpu::TextureView>,
+  ) {
+    if screen_view.is_none() {
+      return;
+    }
+    let screen_calls: Vec<(u16, u16, u32, bool, Option<(u8, u8)>)> =
+      draw_calls
+        .iter()
+        .filter_map(|c| match c {
+          WindowEvent::RenderShaders {
+            vert,
+            frag,
+            vert_count,
+            additive,
+            render_target: None,
+            ..
+          } => Some((*vert, *frag, *vert_count, *additive, None)),
+          _ => None,
+        })
+        .collect();
+    self.encode_render_groups(&screen_calls, screen_view);
+  }
+
+  pub fn execute_render_batch(
+    &mut self,
+    calls: Vec<(
+      u16,
+      u16,
+      u32,
+      Vec<((u8, u8), BufferUpload)>,
+      bool,
+      Option<(u8, u8)>,
+    )>,
+  ) {
+    if calls.is_empty() {
+      return;
+    }
+    let all_uploads: Vec<_> = calls
+      .iter()
+      .flat_map(|(_, _, _, u, _, _)| u.iter().cloned())
+      .collect();
+    self.upload_bindings(&all_uploads);
+
+    // Drop any stale pending texture before acquiring a new one — wgpu allows
+    // at most one live SurfaceTexture at a time.
+    self.pending_present = None;
+
+    // Acquire the real surface texture if any call renders to screen
+    // (render_target == None).
+    let needs_screen = calls.iter().any(|(_, _, _, _, _, rt)| rt.is_none());
+    let surface_texture: Option<wgpu::SurfaceTexture> = if needs_screen {
+      self
+        .surface
+        .as_ref()
+        .and_then(|s| match s.get_current_texture() {
+          wgpu::CurrentSurfaceTexture::Success(t)
+          | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
+          _ => None,
+        })
+    } else {
+      None
+    };
+
+    let screen_format = if surface_texture.is_some() {
+      self.surface_config.as_ref().unwrap().format
+    } else {
+      Self::OFFSCREEN_FORMAT
+    };
+
+    // Pre-create all pipelines before the render pass borrows begin.
+    for (vert, frag, _, _, additive, rt) in &calls {
+      let format = if rt.is_none() {
+        screen_format
+      } else {
+        Self::OFFSCREEN_FORMAT
+      };
+      self.get_or_create_render_pipeline(*vert, *frag, *additive, format);
+    }
+
+    // Create the screen view: real surface or a throwaway 1×1 offscreen
+    // (screen draws can have storage side effects, so they still run even
+    // with no visible surface).
+    let _offscreen_texture;
+    let screen_view: Option<wgpu::TextureView> = if needs_screen {
+      Some(if let Some(st) = &surface_texture {
+        st.texture
+          .create_view(&wgpu::TextureViewDescriptor::default())
+      } else {
+        let (tex, view) = create_texture_and_view(
+          &self.device,
+          "offscreen render target",
+          1,
+          1,
+          Self::OFFSCREEN_FORMAT,
+          wgpu::TextureUsages::RENDER_ATTACHMENT,
+        );
+        _offscreen_texture = tex;
+        view
+      })
+    } else {
+      None
+    };
+
+    let stripped_calls: Vec<(u16, u16, u32, bool, Option<(u8, u8)>)> = calls
+      .into_iter()
+      .map(|(vert, frag, vert_count, _, additive, rt)| {
+        (vert, frag, vert_count, additive, rt)
+      })
+      .collect();
+    self.encode_render_groups(&stripped_calls, screen_view.as_ref());
+    self
+      .device
+      .poll(wgpu::PollType::wait_indefinitely())
+      .unwrap();
+
+    // If we rendered to the real surface, save the texture so end-of-frame
+    // can just call present() rather than re-rendering.
+    self.pending_present = surface_texture;
+  }
+
+  /// Blocks until all submitted GPU work has completed.
+  pub fn wait_idle(&self) {
+    self
+      .device
+      .poll(wgpu::PollType::wait_indefinitely())
+      .unwrap();
   }
 
   /// Texture format used for the offscreen render target and render-to-texture.
@@ -1330,194 +1473,6 @@ impl GpuCore {
   /// `RenderState::render` can just call `present()` at end-of-frame without
   /// re-running the shaders. Falls back to a 1×1 offscreen texture otherwise
   /// (headless / test mode).
-  pub fn execute_render_batch(
-    &mut self,
-    calls: Vec<(
-      u16,
-      u16,
-      u32,
-      Vec<((u8, u8), BufferUpload)>,
-      bool,
-      Option<(u8, u8)>,
-    )>,
-  ) {
-    if calls.is_empty() {
-      return;
-    }
-    let all_uploads: Vec<_> = calls
-      .iter()
-      .flat_map(|(_, _, _, u, _, _)| u.iter().cloned())
-      .collect();
-    self.upload_bindings(&all_uploads);
-
-    // Drop any stale pending texture before acquiring a new one — wgpu allows
-    // at most one live SurfaceTexture at a time.
-    self.pending_present = None;
-
-    // Acquire the real surface texture if any call renders to screen
-    // (render_target == None).
-    let needs_screen = calls.iter().any(|(_, _, _, _, _, rt)| rt.is_none());
-    let surface_texture: Option<wgpu::SurfaceTexture> = if needs_screen {
-      self
-        .surface
-        .as_ref()
-        .and_then(|s| match s.get_current_texture() {
-          wgpu::CurrentSurfaceTexture::Success(t)
-          | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
-          _ => None,
-        })
-    } else {
-      None
-    };
-
-    let screen_format = if surface_texture.is_some() {
-      self.surface_config.as_ref().unwrap().format
-    } else {
-      Self::OFFSCREEN_FORMAT
-    };
-
-    // Pre-create all pipelines before the render pass borrows begin.
-    for (vert, frag, _, _, additive, rt) in &calls {
-      let format = if rt.is_none() {
-        screen_format
-      } else {
-        Self::OFFSCREEN_FORMAT
-      };
-      self.get_or_create_render_pipeline(*vert, *frag, *additive, format);
-    }
-
-    // Create the screen view: real surface or a throwaway 1×1 offscreen.
-    // Declared in outer scope so it outlives all render passes.
-    let _offscreen_texture;
-    let screen_view: Option<wgpu::TextureView> = if needs_screen {
-      Some(if let Some(st) = &surface_texture {
-        st.texture
-          .create_view(&wgpu::TextureViewDescriptor::default())
-      } else {
-        let (tex, view) = create_texture_and_view(
-          &self.device,
-          "offscreen render target",
-          1,
-          1,
-          Self::OFFSCREEN_FORMAT,
-          wgpu::TextureUsages::RENDER_ATTACHMENT,
-        );
-        _offscreen_texture = tex;
-        view
-      })
-    } else {
-      None
-    };
-
-    let mut encoder =
-      self
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-          label: Some("render encoder"),
-        });
-
-    // Process calls grouped by consecutive render target, one render pass
-    // per group.
-    let mut i = 0;
-    while i < calls.len() {
-      let current_rt = calls[i].5;
-      let end = calls[i..]
-        .iter()
-        .position(|c| c.5 != current_rt)
-        .map_or(calls.len(), |j| i + j);
-      let group = &calls[i..end];
-
-      // Create a fresh view for texture render targets. The borrow of
-      // `self.textures` is released before the render pass scope.
-      let texture_target_view: Option<wgpu::TextureView> =
-        current_rt.map(|rt| {
-          self.textures[&rt]
-            .create_view(&wgpu::TextureViewDescriptor::default())
-        });
-      // For render target passes, replace the target slot in the bind group
-      // with a placeholder to avoid COLOR_TARGET + RESOURCE conflict.
-
-      let view = match &texture_target_view {
-        Some(v) => v,
-        None => screen_view.as_ref().unwrap(),
-      };
-      let format = if current_rt.is_none() {
-        screen_format
-      } else {
-        Self::OFFSCREEN_FORMAT
-      };
-      // Resolve each draw's pipeline before the pass borrow begins; build
-      // placeholder bind-group variants for pipelines that bind the pass's
-      // render target as a texture.
-      let prepared: Vec<(usize, Option<Vec<wgpu::BindGroup>>)> = group
-        .iter()
-        .map(|(vert, frag, _, _, additive, _)| {
-          let key = (*vert, *frag, *additive, format);
-          let index = self
-            .render_pipelines
-            .iter()
-            .position(|(k, _)| *k == key)
-            .expect("render pipeline missing from cache");
-          let bindings = &self.render_pipelines[index].1.bindings;
-          let placeholder = current_rt
-            .filter(|rt| bindings.used.contains_key(rt))
-            .map(|rt| {
-              self.create_bind_groups(
-                &bindings.used,
-                &bindings.layouts,
-                Some(rt),
-              )
-            });
-          (index, placeholder)
-        })
-        .collect();
-
-      {
-        let mut render_pass =
-          encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("flush render pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-              view,
-              resolve_target: None,
-              depth_slice: None,
-              ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                store: wgpu::StoreOp::Store,
-              },
-            })],
-            depth_stencil_attachment: None,
-            occlusion_query_set: None,
-            timestamp_writes: None,
-            multiview_mask: None,
-          });
-        for ((_, _, vert_count, _, _, _), (pipeline_index, placeholder)) in
-          group.iter().zip(prepared.iter())
-        {
-          let cached = &self.render_pipelines[*pipeline_index].1;
-          let bind_groups = placeholder
-            .as_deref()
-            .unwrap_or(&cached.bindings.bind_groups);
-          for (group_idx, bind_group) in bind_groups.iter().enumerate() {
-            render_pass.set_bind_group(group_idx as u32, bind_group, &[]);
-          }
-          render_pass.set_pipeline(&cached.pipeline);
-          render_pass.draw(0..*vert_count, 0..1);
-        }
-      }
-
-      i = end;
-    }
-
-    self.queue.submit(std::iter::once(encoder.finish()));
-    self
-      .device
-      .poll(wgpu::PollType::wait_indefinitely())
-      .unwrap();
-
-    // If we rendered to the real surface, save the texture so end-of-frame
-    // can just call present() rather than re-rendering.
-    self.pending_present = surface_texture;
-  }
 
   /// Creates a new `GpuCore` from an existing wgpu device and queue.
   ///
@@ -2425,7 +2380,7 @@ impl RenderState {
     }
 
     let mut gpu = self.gpu.write().unwrap();
-    gpu.execute_frame_compute(draw_calls);
+    gpu.execute_frame_gpu_work(draw_calls);
 
     let has_screen_render = draw_calls.iter().any(|c| {
       matches!(
@@ -2468,7 +2423,7 @@ impl RenderState {
         .create_view(&wgpu::TextureViewDescriptor::default())
     });
 
-    gpu.execute_frame_renders(draw_calls, screen_view.as_ref());
+    gpu.execute_frame_screen_renders(draw_calls, screen_view.as_ref());
 
     if let Some(output) = output {
       output.present();

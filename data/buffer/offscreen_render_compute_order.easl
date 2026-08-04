@@ -1,0 +1,46 @@
+; Program-order semantics for texture-targeted work at the end of a frame:
+; each frame renders red into tex and *then* dispatches a compute shader
+; that reads the rendered pixel back into a storage var. Nothing on the CPU
+; reads that var during the same frame, so no mid-frame flush occurs — the
+; queued events are only executed by the end-of-frame path. The next frame
+; prints the value. If the end-of-frame path respects program order, the
+; compute sees the freshly-rendered red pixel; if it runs compute before
+; renders, the compute reads the still-blank texture and this prints zeros.
+
+@{group 0
+  binding 0}
+(var tex: (Texture2D f32))
+
+@[storage-write 0 1]
+(var value: vec4f)
+
+@[uniform 0 2]
+(var frame: u32)
+
+(defn fullscreen-triangle []: vec4f
+  (vec4f (match (vertex-index)
+           0 (vec2f -1.)
+           1 (vec2f -1. 3.)
+           _ (vec2f 3. -1.))
+         0.
+         1.))
+
+@cpu
+(defn main []
+  (= tex (blank-texture (vec2u 2u)))
+  (= frame 0u)
+  (spawn-window
+    (fn []
+      (+= frame 1u)
+      (when (== frame 2u)
+        (print value)
+        (close-window))
+      (set-render-target tex)
+      (dispatch-render-shaders fullscreen-triangle
+                               (fn [] (vec4f 1. 0. 0. 1.))
+                               3)
+      (clear-render-target)
+      (dispatch-compute-shader (fn []
+                                   (= value
+                                      (texture-load tex (vec2u 1u) 0u)))
+                               (vec3u 1u)))))

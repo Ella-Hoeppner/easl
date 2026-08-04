@@ -7,8 +7,6 @@
 
 * when a match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
 
-* `*=` doesn't work when multiplying a vec by a matrix
-
 * barrier functions
 * `workgroupUniformLoad`
 * subgroup functions

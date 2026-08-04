@@ -5034,14 +5034,21 @@ impl Program {
       return errors;
     }
     self.extract_dispatched_closure_scopes();
-    self.monomorphize_reference_address_spaces();
-    self.inline_static_array_length_calls();
+    // Entry-point marking must happen before the reference-address-space
+    // rebuild: that rebuild drops functions with reference args from the
+    // registry — including a spawn-window frame closure with captured scope
+    // (its trailing scope param) — and dispatch calls inside such a closure
+    // are the only place implicitly-dispatched entry points are named. The
+    // rebuild clones the signatures it keeps, so markings set here survive
+    // it.
     self.validate_dispatch_function_types_and_mark_implicit_entry_points(
       &mut errors,
     );
     if !errors.is_empty() {
       return errors;
     }
+    self.monomorphize_reference_address_spaces();
+    self.inline_static_array_length_calls();
     self.validate_gpu_window_info(&mut errors);
     if !errors.is_empty() {
       return errors;

@@ -3337,106 +3337,43 @@ impl IOManager for StdoutIO {
   fn flush_queued_compute(&mut self) {
     #[cfg(feature = "window")]
     {
-      type ComputeCall =
-        (u16, (u32, u32, u32), Vec<((u8, u8), BufferUpload)>);
-      type RenderCall = (
-        u16,
-        u16,
-        u32,
-        Vec<((u8, u8), BufferUpload)>,
-        bool,
-        Option<(u8, u8)>,
-      );
-      enum WorkItem {
-        ComputeBatch(Vec<ComputeCall>),
-        RenderBatch(Vec<RenderCall>),
-      }
-
       let gpu = match self.gpu.as_ref().map(std::sync::Arc::clone) {
         Some(gpu) => gpu,
         None => return,
       };
-      // Process events in original order to preserve GPU write→read dependencies.
-      // Offscreen renders (render_target.is_some()) are executed in-order
-      // relative to compute shaders.  Screen renders (render_target.is_none())
-      // are deferred to end-of-frame so present() can be called once.
       let all = std::mem::take(&mut self.frame_draw_calls);
-      let mut work: Vec<WorkItem> = vec![];
-      let mut pending_compute: Vec<ComputeCall> = vec![];
-      let mut deferred_screen_renders: Vec<RenderCall> = vec![];
-
-      for event in all {
-        match event {
-          WindowEvent::ComputeShader {
-            entry,
-            workgroup_count,
-            pre_upload,
-          } => pending_compute.push((entry, workgroup_count, pre_upload)),
+      if all.is_empty() {
+        return;
+      }
+      // Execute all queued texture-targeted work — compute dispatches and
+      // render-to-texture passes — in program order, through the same
+      // implementation the end-of-frame path uses, then block until it
+      // completes so the caller can read results back. Screen renders
+      // execute afterwards (nothing on the GPU can read the surface, so
+      // their placement is unobservable): on the real window path they
+      // render into the acquired surface texture, saved as
+      // `pending_present` so end-of-frame can just present it. Their
+      // pre_uploads were already applied by `execute_frame_gpu_work`, so
+      // they are passed along without uploads (re-applying would overwrite
+      // GPU output).
+      let mut g = gpu.write().unwrap();
+      g.execute_frame_gpu_work(&all);
+      g.wait_idle();
+      let screen_renders: Vec<_> = all
+        .into_iter()
+        .filter_map(|event| match event {
           WindowEvent::RenderShaders {
             vert,
             frag,
             vert_count,
-            pre_upload,
-            additive,
-            render_target: Some(rt),
-          } => {
-            // Offscreen render: flush any preceding compute first (so compute
-            // results are visible to this render), then execute the render
-            // before any subsequent compute (so compute can read its output).
-            if !pending_compute.is_empty() {
-              work.push(WorkItem::ComputeBatch(std::mem::take(
-                &mut pending_compute,
-              )));
-            }
-            work.push(WorkItem::RenderBatch(vec![(
-              vert,
-              frag,
-              vert_count,
-              pre_upload,
-              additive,
-              Some(rt),
-            )]));
-          }
-          WindowEvent::RenderShaders {
-            vert,
-            frag,
-            vert_count,
-            pre_upload,
+            pre_upload: _,
             additive,
             render_target: None,
-          } => {
-            deferred_screen_renders
-              .push((vert, frag, vert_count, pre_upload, additive, None));
-          }
-        }
-      }
-      // Flush any remaining pending compute.
-      if !pending_compute.is_empty() {
-        work.push(WorkItem::ComputeBatch(pending_compute));
-      }
-
-      let mut g = gpu.write().unwrap();
-
-      // Before dispatching any work, drain and apply all pre_uploads from
-      // deferred screen renders.  Compute always runs before screen renders
-      // by design, but the render pre_uploads may contain buffer
-      // initialisation (e.g. sizing an unsized storage buffer) that compute
-      // needs.  Draining them here prevents execute_render_batch from
-      // re-applying them later, which would overwrite compute's GPU output.
-      let screen_render_uploads: Vec<_> = deferred_screen_renders
-        .iter_mut()
-        .flat_map(|(_, _, _, u, _, _)| std::mem::take(u))
+          } => Some((vert, frag, vert_count, vec![], additive, None)),
+          _ => None,
+        })
         .collect();
-      g.upload_bindings(&screen_render_uploads);
-
-      for item in work {
-        match item {
-          WorkItem::ComputeBatch(b) => g.execute_compute_batch(b),
-          WorkItem::RenderBatch(b) => g.execute_render_batch(b),
-        }
-      }
-      // Execute deferred screen renders last (pre_uploads already applied above).
-      g.execute_render_batch(deferred_screen_renders);
+      g.execute_render_batch(screen_renders);
     }
   }
 
@@ -3839,8 +3776,8 @@ impl IOManager for CaptureIO {
         Err(e) => return Err(e.into()),
       }
       // Execute the frame's remaining queued events through the same frame
-      // path the real winit loop uses (`GpuCore::execute_frame_compute` +
-      // `execute_frame_renders`), so that tests exercise production
+      // path the real winit loop uses (`GpuCore::execute_frame_gpu_work` +
+      // `execute_frame_screen_renders`), so that tests exercise production
       // behavior. Screen-targeted renders are skipped — there's no surface
       // in headless mode.
       #[cfg(feature = "window")]
@@ -3850,8 +3787,8 @@ impl IOManager for CaptureIO {
           && let Some(gpu) = driver.io_mut().get_gpu()
         {
           let mut gpu = gpu.write().unwrap();
-          gpu.execute_frame_compute(&events);
-          gpu.execute_frame_renders(&events, None);
+          gpu.execute_frame_gpu_work(&events);
+          gpu.execute_frame_screen_renders(&events, None);
         }
       }
       #[cfg(not(feature = "window"))]
