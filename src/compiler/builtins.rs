@@ -450,49 +450,40 @@ pub fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
           },
         ]
         .into_iter()
-        .chain(
-          [("f", Type::F32), ("i", Type::I32), ("u", Type::U32)]
-            .into_iter()
-            .flat_map(move |(suffix, t)| {
-              [
-                AbstractFunctionSignature {
-                  name: format!("mat{n}x{m}{suffix}").into(),
-                  arg_types: std::iter::repeat(
-                    AbstractType::Type(t.clone()).owned(),
-                  )
-                  .take(n * m)
+        .chain([
+          AbstractFunctionSignature {
+            name: format!("mat{n}x{m}f").into(),
+            arg_types: std::iter::repeat(AbstractType::Type(Type::F32).owned())
+              .take(n * m)
+              .collect(),
+            return_type: specialized_matrix_type(n, m, "f"),
+            ..Default::default()
+          },
+          AbstractFunctionSignature {
+            name: format!("mat{n}x{m}f").into(),
+            arg_types: std::iter::repeat(
+              AbstractType::AbstractStruct(
+                match m {
+                  2 => vec2(),
+                  3 => vec3(),
+                  4 => vec4(),
+                  _ => unreachable!(),
+                }
+                .into(),
+              )
+              .fill_abstract_generics(
+                &[("T".into(), AbstractType::Type(Type::F32))]
+                  .into_iter()
                   .collect(),
-                  return_type: specialized_matrix_type(n, m, suffix),
-                  ..Default::default()
-                },
-                AbstractFunctionSignature {
-                  name: format!("mat{n}x{m}{suffix}").into(),
-                  arg_types: std::iter::repeat(
-                    AbstractType::AbstractStruct(
-                      match m {
-                        2 => vec2(),
-                        3 => vec3(),
-                        4 => vec4(),
-                        _ => unreachable!(),
-                      }
-                      .into(),
-                    )
-                    .fill_abstract_generics(
-                      &[("T".into(), AbstractType::Type(t))]
-                        .into_iter()
-                        .collect(),
-                    )
-                    .owned(),
-                  )
-                  .take(n)
-                  .collect(),
-                  return_type: specialized_matrix_type(n, m, suffix),
-                  ..Default::default()
-                },
-              ]
-              .into_iter()
-            }),
-        )
+              )
+              .owned(),
+            )
+            .take(n)
+            .collect(),
+            return_type: specialized_matrix_type(n, m, "f"),
+            ..Default::default()
+          },
+        ])
       })
     })
     .collect()
@@ -548,19 +539,18 @@ pub fn built_in_type_aliases() -> Vec<(Arc<str>, Arc<AbstractStruct>)> {
       ),
     ]
     .into_iter()
-    .chain((2..=4).flat_map(move |n| {
-      let t = t.clone();
-      (2..=4).map(move |m| {
-        (
-          format!("mat{n}x{m}{suffix}").into(),
-          matrix(n, m)
-            .generate_monomorphized(vec![t.clone()])
-            .unwrap()
-            .into(),
-        )
-      })
-    }))
   })
+  .chain((2..=4).flat_map(move |n| {
+    (2..=4).map(move |m| {
+      (
+        format!("mat{n}x{m}f").into(),
+        matrix(n, m)
+          .generate_monomorphized(vec![Type::F32])
+          .unwrap()
+          .into(),
+      )
+    })
+  }))
   .collect()
 }
 
@@ -1250,7 +1240,6 @@ fn bit_manipulation_functions() -> Vec<AbstractFunctionSignature> {
   [
     ("dot-4-u8-packed", 2, Type::U32),
     ("dot-4-i8-packed", 2, Type::I32),
-    ("extract-bits", 2, Type::I32),
   ]
   .into_iter()
   .map(|(name, arity, return_type)| AbstractFunctionSignature {
