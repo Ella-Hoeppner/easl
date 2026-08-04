@@ -215,6 +215,9 @@ impl EaslMultiDocument {
     &self,
     mut pos: DocumentPosition,
   ) -> String {
+    if pos.path.is_empty() {
+      return "[INTERNAL CODE]".to_string();
+    }
     let (source_document, source_path, source_text) =
       &self.sources[pos.path.remove(0)];
     let inner_pos_string =

@@ -782,3 +782,50 @@ error_test!(
   },
   CompileErrorKind::CouldntInferTypes,
 );
+
+#[test]
+fn thread_macro_error_describes_with_source_position() {
+  // Errors attributed to thread-macro scaffolding (the `let` the `->` macro
+  // synthesizes) must describe with the position of the `->` form. The
+  // scaffolding once carried positions with no document path, which made
+  // `describe_document_position` panic inside error reporting whenever a
+  // type conflict was attributed to a threaded expression.
+  let (documents, program_result) = easl::compiler::core::load_easl_program_from_file(
+    Path::new("./data/gpu/thread_macro_scaffolding_error.easl"),
+  )
+  .expect("io error")
+  .expect("parse error");
+  let mut program = program_result.expect("program construction failed");
+  let errors = program
+    .validate_raw_program(easl::compiler::program::CompilerTarget::WGSL);
+  assert!(!errors.is_empty(), "expected a type error");
+  let described = errors.describe(&documents);
+  assert!(
+    described.contains("thread_macro_scaffolding_error.easl"),
+    "description should name the source file:\n{described}"
+  );
+  assert!(
+    described.contains("(-> dims"),
+    "description should point at the `->` form:\n{described}"
+  );
+  assert!(
+    !described.contains("[INTERNAL CODE]"),
+    "description should not need the generated-code fallback:\n{described}"
+  );
+}
+
+#[test]
+fn describing_pathless_position_doesnt_panic() {
+  // Compiler-synthesized AST nodes can carry positions with no document
+  // path; describing one must degrade to a marker string, never panic — a
+  // panic there happens *inside error reporting*, replacing a real compile
+  // error with a crash.
+  let documents =
+    easl::parse::EaslMultiDocument::from_singular_document_sourceless(
+      easl::parse::parse_easl(""),
+    );
+  let description = documents.describe_document_position(
+    fsexp::document::DocumentPosition::new(0..0, vec![]),
+  );
+  assert!(description.contains("[INTERNAL CODE]"));
+}

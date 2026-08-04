@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use lazy_static::lazy_static;
 
-use fsexp::{document::DocumentPosition, syntax::EncloserOrOperator};
+use fsexp::syntax::EncloserOrOperator;
 
 use crate::compiler::effects::{EffectType, WindowInfoKind};
 use crate::compiler::entry::BuiltinIOAttribute;
@@ -2981,7 +2981,6 @@ pub fn built_in_macros() -> Vec<Macro> {
                 std::iter::repeat_with(|| names.gensym("thread_gensym"))
                   .take(children.len() - 1)
                   .collect();
-              let null_position = DocumentPosition::new(0..0, vec![]);
               let bindings: Result<
                 Vec<(Arc<str>, EaslTree)>,
                 (SourceTrace, Arc<str>),
@@ -3005,7 +3004,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                         );
                       if source_traces.is_empty() {
                         let binding_leaf = EaslTree::Leaf(
-                          null_position.clone(),
+                          position.clone(),
                           format!("{prior_binding_name}"),
                         );
                         new_child_expression = match new_child_expression {
@@ -3071,14 +3070,14 @@ pub fn built_in_macros() -> Vec<Macro> {
                 {
                   EaslTree::Inner(
                     (
-                      null_position.clone(),
+                      position.clone(),
                       EncloserOrOperator::Encloser(Encloser::Parens),
                     ),
                     vec![
-                      EaslTree::Leaf(null_position.clone(), "let".into()),
+                      EaslTree::Leaf(position.clone(), "let".into()),
                       EaslTree::Inner(
                         (
-                          null_position.clone(),
+                          position.clone(),
                           EncloserOrOperator::Encloser(Encloser::Square),
                         ),
                         bindings
@@ -3086,7 +3085,7 @@ pub fn built_in_macros() -> Vec<Macro> {
                           .flat_map(|(name, value)| {
                             vec![
                               EaslTree::Leaf(
-                                null_position.clone(),
+                                position.clone(),
                                 format!("{name}"),
                               ),
                               value,
@@ -4196,9 +4195,8 @@ impl EmulatedFunctionRecord {
                 "b".to_string()
               };
               if base_op == "%" && inner_scalar_name == "float" {
-                body += &format!(
-                  "a->{field} = fmod(a->{field}, {b_component});\n  "
-                );
+                body +=
+                  &format!("a->{field} = fmod(a->{field}, {b_component});\n  ");
               } else {
                 body += &format!("a->{field} {base_op}= {b_component};\n  ");
               }

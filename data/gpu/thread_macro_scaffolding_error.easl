@@ -1,0 +1,16 @@
+; `(< s 1.)` compares a vec2f against a scalar — no such overload exists, so
+; inference pushes f32 into `s` before the threaded binding value (whose
+; type arrives late, through the global) resolves to vec2f. The resulting
+; conflict is attributed to the binding value: the `let` scaffolding
+; synthesized by the `->` macro. Errors on macro-generated nodes must still
+; describe with a real source position (the `->` form's) instead of
+; crashing error reporting; the
+; `thread_macro_error_describes_with_source_position` test pins this.
+
+@[uniform 0 0]
+(var dims: vec2f)
+
+(defn f []: bool
+  (let [s (-> dims
+              (/ <> (min (.x <>) (.y <>))))]
+    (< s 1.)))
