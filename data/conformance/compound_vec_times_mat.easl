@@ -1,0 +1,4 @@
+(defn f []: f32
+  (let [@var v (vec2f 1. 2.)]
+    (*= v (mat2x2f (vec2f 3. 4.) (vec2f 5. 6.)))
+    (+ (.x v) (.y v))))

@@ -1,0 +1,9 @@
+; WGSL defines no matrix division, so `m /= s` has no valid form under the
+; compound-assignment rule (`a op= b` valid iff `a op b` has a's type) and
+; must be rejected.
+
+@fragment
+(defn frag [@{builtin position} pos: vec4f]: @{location 0} vec4f
+  (let [@var m (mat2x2f (vec2f 1. 2.) (vec2f 3. 4.))]
+    (/= m 2.)
+    (vec4f (determinant m))))

@@ -1,0 +1,5 @@
+@fragment
+(defn f []: vec4f
+  (let [@var v (vec4f 1. 2. 3. 4.)]
+    (+= v.xy (vec2f 1. 2.))
+    v))

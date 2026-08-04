@@ -938,11 +938,49 @@ impl BytecodeCompilationState {
       // --- Compound assignment ---
       "+=" | "-=" | "*=" | "/=" | "%=" => {
         let base = &f_name[..f_name.len() - 1];
-        // `(op= vec scalar)` broadcasts the scalar across the target's
-        // components; same-shape operands go elementwise.
-        if let Some((n, e)) = vec_kind(&arg_types[0])
+        let b_mat = mat_kind(&arg_types[1]);
+        if base == "*" && let Some((b_cols, b_rows, e)) = b_mat {
+          // The matrix-multiplying compound forms, `mat *= mat` and
+          // `vec *= mat`: the product isn't elementwise in the lhs, so
+          // compute it into fresh slots exactly like the binary `*` does,
+          // then move it over the lhs. (All reads happen before the move,
+          // so `(*= m m)` aliasing is fine.)
+          let product = if let Some((a_cols, a_rows, _)) =
+            mat_kind(&arg_types[0])
+          {
+            self.emit_mat_mul(
+              a_cols,
+              a_rows,
+              b_cols,
+              arg_positions[0],
+              arg_positions[1],
+              &e,
+            )
+          } else {
+            // row-vector times matrix
+            self.emit_mat_mul(
+              b_rows,
+              1,
+              b_cols,
+              arg_positions[0],
+              arg_positions[1],
+              &e,
+            )
+          };
+          let size = arg_types[0]
+            .data_size_in_u32s(&args[0].source_trace)
+            .unwrap() as u16;
+          self.push_instruction(Instruction {
+            op: Op::Move,
+            arg_positions: [product, size, 0],
+            return_position: arg_positions[0],
+          });
+          Some(arg_positions[0])
+        } else if let Some((n, e)) = vec_kind(&arg_types[0])
           && vec_kind(&arg_types[1]).is_none()
         {
+          // `(op= vec scalar)` (and `mat *= scalar`) broadcasts the scalar
+          // across the target's components
           let op = arithmetic_op_for(&e, base);
           for i in 0..n {
             self.push_instruction(Instruction {
@@ -953,6 +991,8 @@ impl BytecodeCompilationState {
           }
           Some(arg_positions[0])
         } else {
+          // same-shape operands (including `mat += mat` / `mat -= mat`,
+          // which flat-count through vec_kind) go elementwise
           Some(self.emit_elementwise_binary_inplace(
             &arg_types[0],
             arg_positions[0],

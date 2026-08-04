@@ -196,6 +196,8 @@ success_test!(match_enum);
 success_test!(match_enum_generic);
 success_test!(option_map);
 success_test!(swizzle_assignment);
+success_test!(swizzle_compound);
+success_test!(matrix_compound_native);
 success_test!(either_match);
 success_test!(nested_option);
 success_test!(enum_of_struct);
@@ -687,3 +689,96 @@ error_test!(
 );
 success_test!(gpu_window_info);
 success_test!(early_return_unit);
+error_test!(
+  compound_mat_divide_invalid,
+  CompileErrorKind::FunctionArgumentTypesIncompatible {
+    f: TypeStateDescription::OneOf(vec![
+      TypeDescription::Function {
+        arg_types: vec![
+          (
+            TypeStateDescription::Unknown,
+            vec![TypeConstraintDescription {
+              name: "Scalar".into(),
+              args: vec![]
+            }]
+          ),
+          (
+            TypeStateDescription::Unknown,
+            vec![TypeConstraintDescription {
+              name: "Scalar".into(),
+              args: vec![]
+            }]
+          ),
+        ],
+        return_type: Box::new(TypeStateDescription::Known(
+          TypeDescription::Unit
+        )),
+      },
+      TypeDescription::Function {
+        arg_types: vec![
+          (
+            TypeStateDescription::Known(TypeDescription::Struct(
+              "vec2".into()
+            )),
+            vec![]
+          ),
+          (
+            TypeStateDescription::Unknown,
+            vec![TypeConstraintDescription {
+              name: "Scalar".into(),
+              args: vec![]
+            }]
+          ),
+        ],
+        return_type: Box::new(TypeStateDescription::Known(
+          TypeDescription::Unit
+        )),
+      },
+      TypeDescription::Function {
+        arg_types: vec![
+          (
+            TypeStateDescription::Known(TypeDescription::Struct(
+              "vec3".into()
+            )),
+            vec![]
+          ),
+          (
+            TypeStateDescription::Unknown,
+            vec![TypeConstraintDescription {
+              name: "Scalar".into(),
+              args: vec![]
+            }]
+          ),
+        ],
+        return_type: Box::new(TypeStateDescription::Known(
+          TypeDescription::Unit
+        )),
+      },
+      TypeDescription::Function {
+        arg_types: vec![
+          (
+            TypeStateDescription::Known(TypeDescription::Struct(
+              "vec4".into()
+            )),
+            vec![]
+          ),
+          (
+            TypeStateDescription::Unknown,
+            vec![TypeConstraintDescription {
+              name: "Scalar".into(),
+              args: vec![]
+            }]
+          ),
+        ],
+        return_type: Box::new(TypeStateDescription::Known(
+          TypeDescription::Unit
+        )),
+      },
+    ]),
+    args: vec![
+      TypeStateDescription::Known(TypeDescription::Struct("mat2x2".into())),
+      TypeStateDescription::Known(TypeDescription::F32),
+    ],
+  },
+  CompileErrorKind::CouldntInferTypes,
+);

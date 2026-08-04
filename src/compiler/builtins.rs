@@ -760,8 +760,87 @@ fn matrix_arithmetic_functions() -> Vec<AbstractFunctionSignature> {
             implementation: c_emulated_builtin(),
             ..Default::default()
           },
+          // Compound assignments, valid whenever WGSL's `a op= b` is (i.e.
+          // `a op b` has a's type). Each backend handles them in its own
+          // lowering layer: WGSL emits them natively (they're preserved as
+          // written, rather than assuming downstream per-platform WGSL
+          // compilers optimize `a = a op b` identically); C generates
+          // emulation helpers (see the compound-assignment arm of
+          // `track_emulated_builtin`, which delegates the
+          // matrix-multiplying forms to the binary helpers); the bytecode
+          // VM compiles them directly (the compound-assignment arm of
+          // `compile_builtin`, which routes the matrix-multiplying forms
+          // through `emit_mat_mul`); and the tree-walking interpreter
+          // evaluates them through its shape-dispatched arithmetic.
+          AbstractFunctionSignature {
+            name: "+=".into(),
+            generic_args: scalar_generic.clone(),
+            arg_types: vec![
+              (mat.clone(), Ownership::MutableReference),
+              mat.clone().owned(),
+            ],
+            return_type: AbstractType::Type(Type::Unit),
+            implementation: c_emulated_builtin(),
+            ..Default::default()
+          },
+          AbstractFunctionSignature {
+            name: "-=".into(),
+            generic_args: scalar_generic.clone(),
+            arg_types: vec![
+              (mat.clone(), Ownership::MutableReference),
+              mat.clone().owned(),
+            ],
+            return_type: AbstractType::Type(Type::Unit),
+            implementation: c_emulated_builtin(),
+            ..Default::default()
+          },
+          AbstractFunctionSignature {
+            name: "*=".into(),
+            generic_args: scalar_generic.clone(),
+            arg_types: vec![
+              (mat.clone(), Ownership::MutableReference),
+              AbstractType::Generic("T".into()).owned(),
+            ],
+            return_type: AbstractType::Type(Type::Unit),
+            implementation: c_emulated_builtin(),
+            ..Default::default()
+          },
         ]
         .into_iter()
+        .chain(
+          // `a *= b` requires `a * b` to preserve a's type, so the
+          // matrix-multiplying compound forms only exist for square
+          // matrices.
+          (n == m)
+            .then(|| {
+              [
+                AbstractFunctionSignature {
+                  name: "*=".into(),
+                  generic_args: scalar_generic.clone(),
+                  arg_types: vec![
+                    (vecn(n), Ownership::MutableReference),
+                    mat.clone().owned(),
+                  ],
+                  return_type: AbstractType::Type(Type::Unit),
+                  implementation: c_emulated_builtin(),
+                  ..Default::default()
+                },
+                AbstractFunctionSignature {
+                  name: "*=".into(),
+                  generic_args: scalar_generic.clone(),
+                  arg_types: vec![
+                    (mat.clone(), Ownership::MutableReference),
+                    mat.clone().owned(),
+                  ],
+                  return_type: AbstractType::Type(Type::Unit),
+                  implementation: c_emulated_builtin(),
+                  ..Default::default()
+                },
+              ]
+            })
+            .into_iter()
+            .flatten(),
+        )
         .chain((2..=4).map(move |inner| AbstractFunctionSignature {
           name: "*".into(),
           generic_args: scalar_generic.clone(),
@@ -4032,19 +4111,14 @@ impl EmulatedFunctionRecord {
           new_name.to_string()
         }
         "+=" | "-=" | "*=" | "/=" | "%=" => {
-          // Whole-vector compound assignment. C has no `vec += vec`, so emit a
-          // void helper that takes a pointer to the lhs vector and applies the
-          // operation element-wise. The lhs is always a vector here (scalar
-          // compound assignment compiles directly via the infix path and never
-          // gets flagged for emulation); the rhs may be a vector or a scalar
-          // (broadcast).
+          // Compound assignment. C has no vector or matrix operators, so
+          // emit a void helper that takes a pointer to the lhs and updates
+          // it in place. A scalar lhs never gets here (scalar compound
+          // assignment compiles directly via the infix path and never gets
+          // flagged for emulation).
           let base_op = &name[..name.len() - 1];
-          let a_type = &signature.arg_types[0];
-          let b_type = &signature.arg_types[1];
-          let size = extract_vec_size(a_type).expect(
-            "compound assignment emulation expects a vector left-hand side",
-          );
-          let inner_scalar_name = get_vec_inner_scalar_name(a_type);
+          let a_type = signature.arg_types[0].clone();
+          let b_type = signature.arg_types[1].clone();
           let non_symbol_name = match base_op {
             "+" => "add",
             "-" => "subtract",
@@ -4053,28 +4127,86 @@ impl EmulatedFunctionRecord {
             "%" => "modulo",
             _ => unreachable!(),
           };
-          let new_name =
-            names.gensym(&format!("{non_symbol_name}_assign_{a_type}_{b_type}"));
-          let b_is_vec = extract_vec_size(b_type).is_some();
           let fields = ["x", "y", "z", "w"];
-          let mut body = format!("void {new_name}({a_type}* a, {b_type} b) {{\n  ");
-          for field in fields.iter().take(size) {
-            let b_component = if b_is_vec {
-              format!("b.{field}")
-            } else {
-              "b".to_string()
-            };
-            if base_op == "%" && inner_scalar_name == "float" {
-              body += &format!(
-                "a->{field} = fmod(a->{field}, {b_component});\n  "
-              );
-            } else {
-              body += &format!("a->{field} {base_op}= {b_component};\n  ");
+          let a_mat_size = extract_mat_size(&a_type);
+          let b_mat_size = extract_mat_size(&b_type);
+          if let Some((cols, rows)) = a_mat_size
+            && (base_op == "+" || base_op == "-" || b_mat_size.is_none())
+          {
+            // element-wise on a matrix lhs: mat += mat, mat -= mat, and
+            // mat *= scalar (broadcast)
+            let new_name = names
+              .gensym(&format!("{non_symbol_name}_assign_{a_type}_{b_type}"));
+            let mut body =
+              format!("void {new_name}({a_type}* a, {b_type} b) {{\n  ");
+            for j in 0..cols {
+              for i in 0..rows {
+                let b_component = if b_mat_size.is_some() {
+                  format!("b.c{j}.{}", fields[i])
+                } else {
+                  "b".to_string()
+                };
+                body += &format!(
+                  "a->c{j}.{} {base_op}= {b_component};\n  ",
+                  fields[i]
+                );
+              }
             }
+            body += "}";
+            self.helper_chunks.push(body);
+            new_name.to_string()
+          } else if a_mat_size.is_some() || b_mat_size.is_some() {
+            // the matrix-multiplying forms (mat *= mat, vec *= mat): the
+            // result isn't element-wise in the lhs, so delegate to the
+            // binary multiplication helper and assign through the pointer
+            let multiply = self.track_emulated_builtin(
+              EmulatedFunctionSignature {
+                name: base_op.to_string(),
+                arg_types: vec![a_type.clone(), b_type.clone()],
+                return_type: a_type.clone(),
+              },
+              target,
+              names,
+            );
+            let new_name = names
+              .gensym(&format!("{non_symbol_name}_assign_{a_type}_{b_type}"));
+            self.helper_chunks.push(format!(
+              "void {new_name}({a_type}* a, {b_type} b) {{\n  \
+                 *a = {multiply}(*a, b);\n\
+               }}"
+            ));
+            new_name.to_string()
+          } else {
+            // whole-vector compound assignment, element-wise; the rhs may
+            // be a vector or a scalar (broadcast)
+            let size = extract_vec_size(&a_type).expect(
+              "compound assignment emulation expects a vector or matrix \
+               left-hand side",
+            );
+            let inner_scalar_name = get_vec_inner_scalar_name(&a_type);
+            let new_name = names
+              .gensym(&format!("{non_symbol_name}_assign_{a_type}_{b_type}"));
+            let b_is_vec = extract_vec_size(&b_type).is_some();
+            let mut body =
+              format!("void {new_name}({a_type}* a, {b_type} b) {{\n  ");
+            for field in fields.iter().take(size) {
+              let b_component = if b_is_vec {
+                format!("b.{field}")
+              } else {
+                "b".to_string()
+              };
+              if base_op == "%" && inner_scalar_name == "float" {
+                body += &format!(
+                  "a->{field} = fmod(a->{field}, {b_component});\n  "
+                );
+              } else {
+                body += &format!("a->{field} {base_op}= {b_component};\n  ");
+              }
+            }
+            body += "}";
+            self.helper_chunks.push(body);
+            new_name.to_string()
           }
-          body += "}";
-          self.helper_chunks.push(body);
-          new_name.to_string()
         }
         _ => panic!(
           "couldn't generate an emulation\ntarget: {target:?}\nsignature: {signature:#?}"

@@ -1834,19 +1834,6 @@ impl Program {
       other => other,
     }
   }
-  /// Dispatched GPU closures (e.g. a lambda passed to
-  /// `dispatch-compute-shader` that captured local variables) can't receive
-  /// their captured scope as a function argument — WGSL entry points only
-  /// accept builtin-annotated arguments. This pass converts each dispatched
-  /// closure's scope argument into an implicit binding: the scope struct
-  /// becomes a top-level read-only storage var named
-  /// `<scope-struct-name>_data`, the entry function's trailing scope
-  /// argument is removed from its
-  /// signatures, and its body reads the global instead. At dispatch time the
-  /// interpreter writes the closure's captured scope value into that global
-  /// (see the `dispatch-compute-shader` handler in interpreter.rs) so the
-  /// ordinary dirty-binding upload machinery ships the captured values to the
-  /// GPU before the dispatch executes.
   /// Rewrites every window-info query (`window-time`, `mouse-coords`,
   /// `key-down?`, etc.) into a read of an implicit uniform binding, creating
   /// one binding per distinct query (zero-arg kinds get one binding each;
@@ -2118,6 +2105,19 @@ impl Program {
       }
     }
   }
+  /// Dispatched GPU closures (e.g. a lambda passed to
+  /// `dispatch-compute-shader` that captured local variables) can't receive
+  /// their captured scope as a function argument — WGSL entry points only
+  /// accept builtin-annotated arguments. This pass converts each dispatched
+  /// closure's scope argument into an implicit binding: the scope struct
+  /// becomes a top-level read-only storage var named
+  /// `<scope-struct-name>_data`, the entry function's trailing scope
+  /// argument is removed from its
+  /// signatures, and its body reads the global instead. At dispatch time the
+  /// interpreter writes the closure's captured scope value into that global
+  /// (see the `dispatch-compute-shader` handler in interpreter.rs) so the
+  /// ordinary dirty-binding upload machinery ships the captured values to the
+  /// GPU before the dispatch executes.
   pub fn extract_dispatched_closure_scopes(&mut self) {
     let mut used_bindings: HashSet<(u8, u8)> = self
       .top_level_vars

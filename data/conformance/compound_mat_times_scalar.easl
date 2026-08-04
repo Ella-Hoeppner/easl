@@ -1,0 +1,4 @@
+(defn f []: f32
+  (let [@var m (mat2x2f (vec2f 1. 2.) (vec2f 3. 4.))]
+    (*= m 2.)
+    (determinant m)))
