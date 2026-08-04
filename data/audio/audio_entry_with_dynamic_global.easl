@@ -1,0 +1,17 @@
+; A program with an @audio entry point and an unrelated runtime-sized
+; global. The audio source is compiled eagerly because the @audio entry
+; exists — before start-audio is ever called (it isn't, here) — and that
+; compile must tolerate runtime-sized globals rather than panicking on
+; their unknowable slot size, even though the audio code never touches
+; them.
+
+(var buf: [f32])
+
+@audio
+(defn tone [t: f32 rate: f32]: f32
+  (sin (* 440. t)))
+
+@cpu
+(defn main []
+  (= buf (zeroed-array 4u))
+  (print (array-length buf)))

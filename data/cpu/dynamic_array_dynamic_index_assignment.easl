@@ -1,0 +1,15 @@
+; Compound assignment to an element of a runtime-sized (dynamic) global
+; array. Dynamic globals live host-side in the VM CPU runtime, accessed
+; through DynLoad/DynStore host ops — a compound assignment needs the
+; load + op + store decomposition.
+(var arr: [f32])
+
+@cpu
+(defn main []
+  (= arr (zeroed-array 3u))
+  (let [@var i 0u]
+    (= i 2u)
+    (= (arr i) 1.)
+    (+= (arr i) 2.5)
+    (print (arr i))))
+

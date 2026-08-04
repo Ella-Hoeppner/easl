@@ -1,0 +1,11 @@
+; Compound assignment to fixed-size array elements.
+
+@cpu
+(defn main []
+  (let [@var arr [1. 2. 3.]]
+    (+= (arr 0u) 2.5)
+    (-= (arr 1u) 0.5)
+    (*= (arr 2u) 2.)
+    (print (arr 0u))
+    (print (arr 1u))
+    (print (arr 2u))))

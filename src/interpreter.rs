@@ -6504,6 +6504,44 @@ pub fn run_program_entry_with_io_from_path<IO: IOManager>(
   }
 }
 
+/// `run_program_entry_with_io_from_path` with an explicit runtime choice.
+/// Like it — and unlike the source-string-based runners — this compiles the
+/// audio source eagerly when the program has an `@audio` entry point.
+pub fn run_program_entry_with_io_and_runtime_from_path<IO: IOManager>(
+  program: Program,
+  entry: Option<&str>,
+  io: IO,
+  source_path: &std::path::Path,
+  runtime: CpuRuntime,
+) -> Result<(IO, bool), EvalError> {
+  let source_dir = source_path.parent().map(|p| p.to_path_buf());
+  #[cfg(feature = "window")]
+  {
+    let audio_source = try_compile_audio_source(
+      &program,
+      source_path,
+      crate::audio::AudioBackend::default(),
+    );
+    match runtime {
+      CpuRuntime::TreeWalking => run_program_with_audio_source(
+        program,
+        entry,
+        io,
+        source_dir,
+        audio_source,
+      ),
+      CpuRuntime::BytecodeVm => {
+        run_program_vm_with(program, entry, io, source_dir, audio_source)
+      }
+    }
+  }
+  #[cfg(not(feature = "window"))]
+  {
+    let _ = source_path;
+    run_program_with_runtime(program, entry, io, source_dir, runtime)
+  }
+}
+
 /// Like `run_program_entry_with_io_from_path`, but also accepts an explicit
 /// [`AudioBackend`] choice (defaults to `VM`). Use this when the caller wants
 /// to opt into the C audio backend (requires `c_audio` feature) instead of

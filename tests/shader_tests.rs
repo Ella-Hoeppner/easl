@@ -717,9 +717,7 @@ error_test!(
       TypeDescription::Function {
         arg_types: vec![
           (
-            TypeStateDescription::Known(TypeDescription::Struct(
-              "vec2".into()
-            )),
+            TypeStateDescription::Known(TypeDescription::Struct("vec2".into())),
             vec![]
           ),
           (
@@ -737,9 +735,7 @@ error_test!(
       TypeDescription::Function {
         arg_types: vec![
           (
-            TypeStateDescription::Known(TypeDescription::Struct(
-              "vec3".into()
-            )),
+            TypeStateDescription::Known(TypeDescription::Struct("vec3".into())),
             vec![]
           ),
           (
@@ -757,9 +753,7 @@ error_test!(
       TypeDescription::Function {
         arg_types: vec![
           (
-            TypeStateDescription::Known(TypeDescription::Struct(
-              "vec4".into()
-            )),
+            TypeStateDescription::Known(TypeDescription::Struct("vec4".into())),
             vec![]
           ),
           (
@@ -790,14 +784,15 @@ fn thread_macro_error_describes_with_source_position() {
   // scaffolding once carried positions with no document path, which made
   // `describe_document_position` panic inside error reporting whenever a
   // type conflict was attributed to a threaded expression.
-  let (documents, program_result) = easl::compiler::core::load_easl_program_from_file(
-    Path::new("./data/gpu/thread_macro_scaffolding_error.easl"),
-  )
-  .expect("io error")
-  .expect("parse error");
+  let (documents, program_result) =
+    easl::compiler::core::load_easl_program_from_file(Path::new(
+      "./data/gpu/thread_macro_scaffolding_error.easl",
+    ))
+    .expect("io error")
+    .expect("parse error");
   let mut program = program_result.expect("program construction failed");
-  let errors = program
-    .validate_raw_program(easl::compiler::program::CompilerTarget::WGSL);
+  let errors =
+    program.validate_raw_program(easl::compiler::program::CompilerTarget::WGSL);
   assert!(!errors.is_empty(), "expected a type error");
   let described = errors.describe(&documents);
   assert!(

@@ -338,7 +338,7 @@ The runner functions in `interpreter.rs` (`run_program_entry_from_path`, `run_pr
 
 ## Test Structure
 
-There are six test suites:
+The test suites:
 
 ### GPU/compiler tests (`tests/shader_tests.rs`, sources in `data/gpu/`)
 ```rust
@@ -399,9 +399,16 @@ sync_test!(test_name);  // runs data/sync/test_name.easl, golden-matches the GPU
 - Use this suite to assert exactly *when* implicit syncs happen: both that spurious syncs don't occur (e.g. GPU-only dataflow must never read back) and that genuine ones still do (CPU reads of GPU-written data must sync exactly once per dirty→read transition). Blocking readbacks are the most expensive implicit operation in the runtime, so regressions here are performance bugs even when output is correct.
 - Implicit dispatched-closure scope bindings have gensym'd names whose numbering isn't stable across runs; the harness normalizes any `*_scope_data` name to `<closure-scope>` in the trace.
 
+### Audio tests (`tests/audio_tests.rs`, sources in `data/audio/`)
+```rust
+audio_test!(test_name);  // runs data/audio/test_name.easl via the real from-path entry point, compares prints
+```
+- The only suite that exercises eager audio-source compilation (`try_compile_audio_source`, which runs whenever the program has an `@audio` entry point — before `start-audio` is ever called): the runners behind the cpu/buffer/window suites take a source path but use it only for the source *dir*, so they never compile the audio source at all. Anything about the audio runtime worth pinning belongs here.
+- Runs each test on both CPU runtimes via `run_program_entry_with_io_and_runtime_from_path` with `CaptureIO`, comparing captured `(print ...)` output to the `.txt` file.
+
 ### Shared notes
 - `#_` reader macro in `.easl` files comments out the next form — useful for disabling parts of test files
-- Target a specific suite: `cargo test --test shader_tests`, `--test cpu_tests`, `--test window_tests`, `--test conformance_tests`, `--test vm_tests`, `--test sync_tests`
+- Target a specific suite: `cargo test --test shader_tests`, `--test cpu_tests`, `--test window_tests`, `--test conformance_tests`, `--test vm_tests`, `--test sync_tests`, `--test audio_tests`
 
 ## Style Notes
 
