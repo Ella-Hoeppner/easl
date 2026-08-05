@@ -1,7 +1,8 @@
-; Used by the hand-written `start_audio_copies_current_globals` test: an
-; audio entry reading both a slot-backed global and a runtime-sized array,
-; whose values are populated on the main side and snapshotted into the
-; audio program.
+; Used by the hand-written `start_audio_bootstrap_publishes_current_globals`
+; test: an audio entry reading both a slot-backed global and a runtime-sized
+; array, both also written by the main entry — which is what makes them
+; thread-shared, so the `start-audio` bootstrap publish carries the main
+; side's current values into the audio replica.
 
 (var sample: [f32])
 
@@ -12,4 +13,6 @@
   (* gain (sample 2u)))
 
 @cpu
-(defn main [] ())
+(defn main []
+  (= sample (into-dynamic-array [1. 2. 3. 4.]))
+  (= gain 0.75))

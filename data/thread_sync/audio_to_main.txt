@@ -1,0 +1,18 @@
+spawn-window
+frame 0
+main-publish: count
+start-audio: f
+print: 0u
+audio-batch 0 x3
+audio-adopt: count
+samples: 0 0 0
+audio-publish: count
+frame 1
+main-adopt: count
+print: 3u
+audio-batch 1 x3
+samples: 0 0 0
+audio-publish: count
+frame 2
+main-adopt: count
+print: 6u

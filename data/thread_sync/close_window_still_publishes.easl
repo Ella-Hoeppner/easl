@@ -1,0 +1,20 @@
+; A frame that ends via close-window still publishes its writes — the
+; frame ran, so its writes are real. Main bumps `gain` and closes the
+; window on frame 1; the publish of the final value must appear before
+; the loop stops (the remaining scheduled steps never run).
+(var gain: f32
+     0.25)
+
+@audio
+(defn f [t: f32
+         rate: f32]: f32
+  gain)
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (start-audio f)
+                    (= gain (+ gain 0.25))
+                    (when (== (window-frame-index) 1u)
+                      (close-window)))))
+

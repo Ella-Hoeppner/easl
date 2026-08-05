@@ -1,0 +1,25 @@
+spawn-window
+frame 0
+main-publish: height
+start-audio: f
+upload: height
+dispatch-compute-shader rise (1, 1, 1)
+readback: height
+main-publish: height
+audio-batch 0 x2
+audio-adopt: height
+samples: 0.25 0.25
+frame 1
+dispatch-compute-shader rise (1, 1, 1)
+readback: height
+main-publish: height
+audio-batch 1 x2
+audio-adopt: height
+samples: 0.5 0.5
+frame 2
+dispatch-compute-shader rise (1, 1, 1)
+readback: height
+main-publish: height
+audio-batch 2 x2
+audio-adopt: height
+samples: 0.75 0.75

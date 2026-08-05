@@ -79,13 +79,15 @@ audio_test!(audio_entry_with_dynamic_global);
 audio_test!(load_wav);
 
 #[test]
-fn start_audio_copies_current_globals() {
-  // `start-audio` gives the starting audio program a one-time snapshot of
-  // every global's current value — slot-backed globals by word copy,
-  // runtime-sized arrays by dynamic-memory region clone. This drives the
-  // copy directly (compiling the same program in cpu mode and audio mode)
-  // rather than through `start-audio`, which would open a real audio
-  // stream.
+fn start_audio_bootstrap_publishes_current_globals() {
+  // `start-audio` activates the shared-variable table and force-publishes
+  // every thread-shared global from the main replica, so the audio
+  // replica's first batch-boundary adopt sees the main side's current
+  // values — slot-backed globals and runtime-sized arrays alike. This
+  // drives the publish/adopt pair directly (compiling the same program in
+  // cpu mode and audio mode) rather than through `start-audio`, which
+  // would open a real audio stream.
+  use easl::thread_sync::ThreadSharedTable;
   use easl::vm::bytecode::DynMemory;
   let source_path = Path::new("./data/audio/copy_globals.easl");
   let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
@@ -98,6 +100,19 @@ fn start_audio_copies_current_globals() {
     program.clone().compile_to_bytecode_program();
   let (mut main_program, _) = program.compile_to_bytecode_program_cpu();
 
+  // both globals are read by the audio entry and written by main, so the
+  // static analysis must classify both as shared, in sorted order, in both
+  // artifacts
+  let shared_names = |code: &easl::vm::bytecode::Code| {
+    code
+      .shared_vars
+      .iter()
+      .map(|info| info.name.to_string())
+      .collect::<Vec<_>>()
+  };
+  assert_eq!(shared_names(&main_program.code), vec!["gain", "sample"]);
+  assert_eq!(shared_names(&audio_program.code), vec!["gain", "sample"]);
+
   // simulate what the cpu program would have computed by start-audio time
   main_program.write_global("gain", &[0.75f32.to_bits()]);
   let (region, _) = main_program.get_dyn_memory_region("sample").unwrap();
@@ -105,12 +120,16 @@ fn start_audio_copies_current_globals() {
     [1.0f32, 2.0, 3.0, 4.0].iter().map(|s| s.to_bits()).collect(),
   );
 
-  easl::interpreter::copy_globals_into_audio_program_from_vm(
-    &main_program.stack,
-    &main_program.dyn_memory,
-    &main_program.code,
-    &mut audio_program,
-  );
+  // the start-audio bootstrap: activate + force-publish from main, then
+  // the audio replica's first boundary adopts everything
+  let table = ThreadSharedTable::new(main_program.code.shared_vars.len());
+  table.activate();
+  let mut published = Vec::new();
+  main_program.publish_shared(&table, true, |i| published.push(i));
+  assert_eq!(published, vec![0, 1]);
+  let mut adopted = Vec::new();
+  audio_program.adopt_shared(&table, |i| adopted.push(i));
+  assert_eq!(adopted, vec![0, 1]);
 
   let f_index = audio_names.iter().position(|n| &**n == "f").unwrap();
   audio_program.prepare_to_run_function(f_index);

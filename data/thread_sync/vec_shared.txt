@@ -1,0 +1,13 @@
+spawn-window
+frame 0
+main-publish: offset
+start-audio: f
+main-publish: offset
+audio-batch 0 x2
+audio-adopt: offset
+samples: 0 0
+frame 1
+main-publish: offset
+audio-batch 1 x2
+audio-adopt: offset
+samples: -0.25 -0.25

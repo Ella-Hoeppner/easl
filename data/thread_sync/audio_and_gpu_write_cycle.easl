@@ -1,0 +1,26 @@
+; The full three-way cycle on one variable: the audio thread accumulates
+; into `v` per sample, the compute shader accumulates per frame, and the
+; boundaries chain — main adopts audio's publish (marking the GPU copy
+; stale), uploads before the dispatch, the GPU bumps the adopted value,
+; and the frame-end readback publishes the result back to audio. Each
+; boundary hands the newest value onward; nothing ping-pongs stale state.
+@[storage-write 0 0]
+(var v: [1: f32])
+
+@audio
+(defn f [t: f32
+         rate: f32]: f32
+  (= (v 0u) (+ (v 0u) 0.0625))
+  (v 0u))
+
+@{workgroup-size 1}
+@compute
+(defn bump []
+  (= (v 0u) (+ (v 0u) 0.25)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (start-audio f)
+                    (dispatch-compute-shader bump (vec3u 1u)))))
+

@@ -1,0 +1,19 @@
+; Main-thread writes propagate to the audio thread: `gain` is written by
+; main every frame and read by the audio function, so it's thread-shared.
+; Each frame's write is published at the frame boundary and adopted at the
+; next audio batch boundary — the samples step through the values one batch
+; behind the frame that wrote them.
+(var gain: f32
+     0.25)
+
+@audio
+(defn f [t: f32
+         rate: f32]: f32
+  gain)
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (start-audio f)
+                    (= gain (+ gain 0.25)))))
+

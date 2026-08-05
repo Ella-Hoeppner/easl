@@ -1,0 +1,21 @@
+spawn-window
+frame 0
+main-publish: x
+start-audio: f
+print: 10.
+main-publish: x
+frame 1
+print: 20.
+main-publish: x
+audio-batch 0 x2
+audio-adopt: x
+samples: 0.21 0.22
+audio-publish: x
+frame 2
+main-adopt: x
+print: 32.
+main-publish: x
+audio-batch 1 x2
+audio-adopt: x
+samples: 0.33 0.34
+audio-publish: x

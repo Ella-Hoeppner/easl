@@ -1,0 +1,28 @@
+spawn-window
+frame 0
+main-publish: v
+start-audio: f
+upload: v
+dispatch-compute-shader bump (1, 1, 1)
+readback: v
+main-publish: v
+audio-batch 0 x2
+audio-adopt: v
+samples: 0.3125 0.375
+audio-publish: v
+frame 1
+main-adopt: v
+upload: v
+dispatch-compute-shader bump (1, 1, 1)
+readback: v
+main-publish: v
+audio-batch 1 x2
+audio-adopt: v
+samples: 0.6875 0.75
+audio-publish: v
+frame 2
+main-adopt: v
+upload: v
+dispatch-compute-shader bump (1, 1, 1)
+readback: v
+main-publish: v

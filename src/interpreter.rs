@@ -1879,13 +1879,18 @@ fn apply_builtin_fn<IO: IOManager>(
         // manager decides what to do with each (StdoutIO noops on the
         // already-running case; StringIO records every event).
         let mut source = env.audio_source.take();
-        // One-time snapshot: the starting audio program gets the current
-        // values of all globals (e.g. `load-wav`ed sample buffers). Later
-        // main-thread mutations are not propagated.
-        if let Some(crate::audio::AudioSource::Bytecode { program, .. }) =
-          &mut source
+        // First call (we hold the source): activate the shared table and
+        // bootstrap-publish every shared global, so the new replica's first
+        // adopt sees the current state of everything (e.g. `load-wav`ed
+        // sample buffers). From here on both threads publish/adopt at their
+        // iteration boundaries — later writes on either side propagate.
+        if let Some(crate::audio::AudioSource::Bytecode {
+          shared_table, ..
+        }) = &mut source
         {
-          copy_globals_into_audio_program_from_env(env, program);
+          env.shared_table.activate();
+          env.publish_shared_globals(true);
+          *shared_table = Some(env.shared_table.clone());
         }
         env
           .io
@@ -3075,8 +3080,15 @@ impl<IO: IOManager> FrameDriver for AstFrameDriver<'_, IO> {
     self.env.gpu_entries.clone()
   }
   fn run_frame(&mut self) -> Result<(), EvalException> {
+    self.env.adopt_shared_globals();
     self.env.refresh_window_info_bindings();
-    eval(self.body.clone(), self.env).map(|_| ())
+    let result = eval(self.body.clone(), self.env).map(|_| ());
+    // Publish on success and on close-window (the frame's writes are still
+    // real); genuine errors abort the run, so skip the publish.
+    if matches!(result, Ok(()) | Err(EvalException::CloseWindow)) {
+      self.env.publish_shared_globals(false);
+    }
+    result
   }
   fn overwrite_binding_bytes(&mut self, group: u8, binding: u8, bytes: &[u8]) {
     self.env.overwrite_binding_from_gpu_bytes(group, binding, bytes);
@@ -3127,6 +3139,15 @@ pub trait IOManager: Sized {
   /// `record_gpu_to_cpu_sync`, test IO managers override this to assert on
   /// upload behavior; production implementations keep this default no-op.
   fn record_cpu_to_gpu_sync(&mut self, _name: &Arc<str>) {}
+  /// Called when this thread publishes a thread-shared variable's snapshot
+  /// at an iteration boundary. Test IO managers override this to pin
+  /// exactly when cross-thread syncs happen (spurious publications are
+  /// silent performance bugs); production implementations keep the no-op.
+  fn record_shared_publish(&mut self, _name: &Arc<str>) {}
+  /// Called when this thread adopts a newer published snapshot of a
+  /// thread-shared variable at an iteration boundary. See
+  /// `record_shared_publish`.
+  fn record_shared_adopt(&mut self, _name: &Arc<str>) {}
   /// Returns the current window dimensions in pixels, or (1, 1) if no window
   /// is open.
   fn window_size(&self) -> (u32, u32) {
@@ -3604,10 +3625,12 @@ impl IOManager for StdoutIO {
       crate::audio::AudioSource::Bytecode {
         program,
         function_names,
+        shared_table,
       } => crate::audio::start_audio_thread_vm(
         entry_name,
         program,
         function_names,
+        shared_table,
       )
       .map_err(|e| UserspaceEvalError::AudioRuntimeError(e).into()),
       crate::audio::AudioSource::C(c_source) => {
@@ -4040,6 +4063,21 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   /// decides what to do (noop if a stream is already running, error if not).
   #[cfg(feature = "window")]
   audio_source: Option<crate::audio::AudioSource>,
+  /// Thread-shared globals (see `Program::thread_shared_globals`), sorted
+  /// by name; index-aligned with `shared_table` slots and every compiled
+  /// artifact's `Code::shared_vars`.
+  shared_globals: Vec<(Arc<str>, Type)>,
+  /// The cross-thread coordination table for this run. Handed to the audio
+  /// thread at `start-audio`.
+  shared_table: Arc<crate::thread_sync::ThreadSharedTable>,
+  /// Per-shared-variable "written since my last publish" flags for the
+  /// tree-walker's replica (the env `Value`s). The VM runtime's replica
+  /// tracks its own flags on the `BytecodeProgram`.
+  shared_dirty: Vec<bool>,
+  /// Per-shared-variable version last adopted, for the tree-walker replica.
+  shared_adopted: Vec<u64>,
+  /// Name → shared index, for the write-marking hook.
+  shared_indices: HashMap<Arc<str>, usize>,
 }
 
 impl<IO: IOManager> EvaluationEnvironment<IO> {
@@ -4084,6 +4122,31 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       gpu_entries,
       gpu_entry_ids,
     } = derive_gpu_interface(&program);
+    let shared_names = program.thread_shared_globals();
+    let shared_globals: Vec<(Arc<str>, Type)> = shared_names
+      .iter()
+      .map(|name| {
+        (
+          name.clone(),
+          program
+            .top_level_vars
+            .iter()
+            .find(|v| &v.name == name)
+            .expect("thread-shared global missing from top-level vars")
+            .var_type
+            .clone(),
+        )
+      })
+      .collect();
+    let shared_indices: HashMap<Arc<str>, usize> = shared_names
+      .iter()
+      .enumerate()
+      .map(|(index, name)| (name.clone(), index))
+      .collect();
+    let shared_table =
+      Arc::new(crate::thread_sync::ThreadSharedTable::new(
+        shared_globals.len(),
+      ));
     let buffer_states = binding_vars
       .iter()
       .map(|(_, name, _, _)| (name.clone(), SharedBufferState::GPUOutOfDate))
@@ -4108,6 +4171,11 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       current_render_target: None,
       #[cfg(feature = "window")]
       audio_source,
+      shared_dirty: vec![false; shared_globals.len()],
+      shared_adopted: vec![0; shared_globals.len()],
+      shared_globals,
+      shared_table,
+      shared_indices,
     };
     for var in program.top_level_vars.iter() {
       let value = match &var.value {
@@ -4399,6 +4467,9 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   /// `set-render-target` can later identify the GPU slot.
   fn mark_cpu_written(&mut self, names: &[Arc<str>]) {
     for name in names {
+      if let Some(shared_index) = self.shared_indices.get(name).copied() {
+        self.shared_dirty[shared_index] = true;
+      }
       if self.is_binding_var(name) {
         self
           .buffer_states
@@ -4422,6 +4493,102 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           }
         }
       }
+    }
+  }
+
+  /// Publishes snapshots of dirty thread-shared globals to the shared table
+  /// (all of them when `force_all` — used for the bootstrap publish at
+  /// `start-audio`). Called at the end of every frame. No-op until the
+  /// table is activated by `start-audio`, so windowed programs without
+  /// audio pay nothing here.
+  ///
+  /// The GPU participates in the sharing system through this boundary: it
+  /// has no publish loop of its own, so when the newest value of a shared
+  /// binding lives on the GPU (buffer state CPUOutOfDate), main acts as
+  /// its proxy — reading the buffer back here (which flushes this frame's
+  /// queued GPU work first) and publishing the fresh value. This is what
+  /// makes GPU writes visible to the audio thread. The readback is a real
+  /// cost, paid only for genuinely-shared GPU-written variables and only
+  /// while another thread is live; the `gpu_write_audio_read` /
+  /// `gpu_write_no_audio_no_readback` goldens pin both sides.
+  pub fn publish_shared_globals(&mut self, force_all: bool) {
+    if !self.shared_table.is_active() {
+      return;
+    }
+    for index in 0..self.shared_globals.len() {
+      let gpu_fresh = {
+        let name = &self.shared_globals[index].0;
+        self.buffer_states.get(name)
+          == Some(&SharedBufferState::CPUOutOfDate)
+      };
+      if gpu_fresh {
+        let name = self.shared_globals[index].0.clone();
+        self.check_cpu_readable(&[name]);
+      }
+      if !(force_all || gpu_fresh || self.shared_dirty[index]) {
+        continue;
+      }
+      let (name, ty) = self.shared_globals[index].clone();
+      let Some((value, _)) =
+        self.bindings.get(&name).and_then(|stack| stack.last())
+      else {
+        continue;
+      };
+      let words = if matches!(value, Value::Uninitialized) {
+        if matches!(ty, Type::Array(_, _)) {
+          // An unsized array before its first assignment is empty — publish
+          // it as such, matching what the VM runtime (whose dynamic-memory
+          // regions have no uninitialized state) publishes.
+          Vec::new()
+        } else {
+          // Non-array Uninitialized (a texture that was never loaded);
+          // textures can't be audio-reachable, so this is defensive.
+          self.shared_dirty[index] = false;
+          continue;
+        }
+      } else {
+        value_to_shared_words(value, &ty)
+      };
+      let (version, _reusable_buffer) =
+        self.shared_table.slots[index].publish(words);
+      // Adopting our own publish would be a wasted copy; record its version
+      // as already adopted.
+      self.shared_adopted[index] = version;
+      self.shared_dirty[index] = false;
+      self.io.record_shared_publish(&name);
+    }
+  }
+
+  /// Adopts any shared-global snapshots published by other threads since we
+  /// last looked. Called at the start of every frame. For GPU-bound
+  /// globals the adopted value marks the buffer GPUOutOfDate directly (not
+  /// via `mark_cpu_written`, which would re-dirty the shared flag and
+  /// ping-pong the value back at the next boundary).
+  pub fn adopt_shared_globals(&mut self) {
+    if !self.shared_table.is_active() {
+      return;
+    }
+    for index in 0..self.shared_globals.len() {
+      let Some(snapshot) = self.shared_table.slots[index]
+        .adopt_if_newer(self.shared_adopted[index])
+      else {
+        continue;
+      };
+      let (name, ty) = self.shared_globals[index].clone();
+      let value = shared_words_to_value(&snapshot.words, &ty);
+      self.shared_adopted[index] = snapshot.version;
+      drop(snapshot);
+      if let Some(slot) =
+        self.bindings.get_mut(&name).and_then(|stack| stack.last_mut())
+      {
+        slot.0 = value;
+      }
+      if self.is_binding_var(&name) {
+        self
+          .buffer_states
+          .insert(name.clone(), SharedBufferState::GPUOutOfDate);
+      }
+      self.io.record_shared_adopt(&name);
     }
   }
 
@@ -5662,9 +5829,18 @@ impl<IO: IOManager> crate::vm::bytecode::VmHost for VmHostView<'_, IO> {
     op: &crate::vm::bytecode::HostOp,
     stack: &mut [u32],
     dyn_memory: &mut [crate::vm::bytecode::DynMemory],
+    shared: crate::vm::bytecode::SharedStateParts<'_>,
     code: &crate::vm::bytecode::Code,
   ) -> Result<Option<crate::vm::bytecode::HostSuspendReason>, EvalError> {
-    vm_host_call(self.env, self.slots_dirty, op, stack, dyn_memory, code)
+    vm_host_call(
+      self.env,
+      self.slots_dirty,
+      op,
+      stack,
+      dyn_memory,
+      shared,
+      code,
+    )
   }
 }
 
@@ -5749,67 +5925,39 @@ fn vm_words_of(t: &Type) -> usize {
     .unwrap() as usize
 }
 
-/// One-time copy of the current values of all global vars into a
-/// just-starting audio program, matched by name — from a main runtime whose
-/// state lives in VM form (stack slots + dynamic memory). The audio thread
-/// gets a snapshot of what the CPU program had computed by the time
-/// `start-audio` ran (e.g. `load-wav`ed sample buffers); later main-thread
-/// mutations are NOT propagated (cross-thread sharing semantics are still
-/// an open design question).
-#[cfg(feature = "window")]
-pub fn copy_globals_into_audio_program_from_vm(
-  main_stack: &[u32],
-  main_dyn_memory: &[crate::vm::bytecode::DynMemory],
-  main_code: &crate::vm::bytecode::Code,
-  audio: &mut crate::vm::bytecode::BytecodeProgram,
-) {
-  for (name, position, size) in main_code.globals.iter() {
-    if let Some((audio_position, audio_size)) = audio.get_global_slot(name) {
-      let n = (*size).min(audio_size) as usize;
-      let src = *position as usize;
-      audio.stack[audio_position as usize..audio_position as usize + n]
-        .copy_from_slice(&main_stack[src..src + n]);
+/// Flattens a global's `Value` into the VM word layout used by shared
+/// snapshots — arrays element-by-element (a `ZeroedArray` materializes as
+/// zero words), everything else via `to_vm_words`.
+fn value_to_shared_words(value: &Value, ty: &Type) -> Vec<u32> {
+  if let Type::Array(_, element_type) = ty {
+    let element_type = element_type.kind.unwrap_known();
+    let stride = vm_words_of(&element_type).max(1);
+    match value {
+      Value::ZeroedArray { length } => vec![0u32; length * stride],
+      Value::Array(items) => items
+        .iter()
+        .flat_map(|item| item.to_vm_words(&element_type))
+        .collect(),
+      other => panic!("can't publish {other:?} as a shared array"),
     }
-  }
-  for (name, region, _) in main_code.dyn_memory_regions.iter() {
-    if let Some((audio_region, _)) = audio.get_dyn_memory_region(name) {
-      audio.dyn_memory[audio_region as usize] =
-        main_dyn_memory[*region as usize].clone();
-    }
+  } else {
+    value.to_vm_words(ty)
   }
 }
 
-/// `copy_globals_into_audio_program_from_vm`, but for a main runtime whose
-/// state lives as tree-walker `Value`s in the evaluation environment.
-#[cfg(feature = "window")]
-fn copy_globals_into_audio_program_from_env<IO: IOManager>(
-  env: &EvaluationEnvironment<IO>,
-  audio: &mut crate::vm::bytecode::BytecodeProgram,
-) {
-  for i in 0..audio.code.globals.len() {
-    let (name, position, size) = audio.code.globals[i].clone();
-    let ty = audio.code.global_types[i].clone();
-    let Ok(value) = env.lookup(&name) else {
-      continue;
-    };
-    if matches!(value, Value::Uninitialized) {
-      continue;
-    }
-    let words = value.to_vm_words(&ty);
-    let n = (size as usize).min(words.len());
-    audio.stack[position as usize..position as usize + n]
-      .copy_from_slice(&words[..n]);
-  }
-  for i in 0..audio.code.dyn_memory_regions.len() {
-    let (name, region, _) = audio.code.dyn_memory_regions[i].clone();
-    let ty = audio.code.dyn_memory_types[i].clone();
-    let Ok(value) = env.lookup(&name) else {
-      continue;
-    };
-    if matches!(value, Value::Uninitialized) {
-      continue;
-    }
-    audio.dyn_memory[region as usize] = value_into_dyn_memory(value, &ty);
+/// The reverse of `value_to_shared_words`.
+fn shared_words_to_value(words: &[u32], ty: &Type) -> Value {
+  if let Type::Array(_, element_type) = ty {
+    let element_type = element_type.kind.unwrap_known();
+    let stride = vm_words_of(&element_type).max(1);
+    Value::Array(
+      words
+        .chunks(stride)
+        .map(|chunk| Value::from_vm_words(&element_type, chunk))
+        .collect(),
+    )
+  } else {
+    Value::from_vm_words(ty, words)
   }
 }
 
@@ -5903,14 +6051,58 @@ fn refresh_dirty_slots<IO: IOManager>(
   }
 }
 
+/// If the GPU holds the newest value of the given binding (buffer state
+/// CPUOutOfDate), reads it back into the env (via `check_cpu_readable`,
+/// which flushes queued GPU work first) and mirrors the fresh value into
+/// the VM's authoritative storage. Shared by the `CheckGpuToCpu` host op
+/// (CPU code about to read the variable) and the frame-boundary shared
+/// publish (main proxying GPU writes to other threads).
+fn readback_binding_into_vm<IO: IOManager>(
+  env: &mut EvaluationEnvironment<IO>,
+  slots_dirty: &mut [bool],
+  binding: u16,
+  stack: &mut [u32],
+  dyn_memory: &mut [crate::vm::bytecode::DynMemory],
+  code: &crate::vm::bytecode::Code,
+) -> Result<(), EvalError> {
+  use crate::vm::bytecode::HostBindingStorage;
+  let b = &code.host_bindings[binding as usize];
+  if env.buffer_states.get(&b.name)
+    == Some(&SharedBufferState::CPUOutOfDate)
+  {
+    env.check_cpu_readable(&[b.name.clone()]);
+    // Readback landed in the env's Value; mirror it into the VM slots
+    // where CPU code actually reads it.
+    if env.buffer_states.get(&b.name) == Some(&SharedBufferState::Synced) {
+      match b.storage {
+        HostBindingStorage::Slots { position, size } => {
+          let words = env.lookup(&b.name)?.to_vm_words(&b.ty);
+          stack[position as usize..(position + size) as usize]
+            .copy_from_slice(&words[..size as usize]);
+          slots_dirty[binding as usize] = false;
+        }
+        HostBindingStorage::DynamicMemory { memory } => {
+          dyn_memory[memory as usize] =
+            value_into_dyn_memory(env.lookup(&b.name)?, &b.ty);
+          slots_dirty[binding as usize] = false;
+        }
+        HostBindingStorage::Dynamic => {}
+      }
+    }
+  }
+  Ok(())
+}
+
 fn vm_host_call<IO: IOManager>(
   env: &mut EvaluationEnvironment<IO>,
   slots_dirty: &mut Vec<bool>,
   op: &crate::vm::bytecode::HostOp,
   stack: &mut [u32],
   dyn_memory: &mut [crate::vm::bytecode::DynMemory],
+  mut shared: crate::vm::bytecode::SharedStateParts<'_>,
   code: &crate::vm::bytecode::Code,
 ) -> Result<Option<crate::vm::bytecode::HostSuspendReason>, EvalError> {
+  let _ = &mut shared;
   use crate::vm::bytecode::{HostBindingStorage, HostOp, HostSuspendReason};
   match op {
     HostOp::Print { slot, ty } => {
@@ -5945,31 +6137,14 @@ fn vm_host_call<IO: IOManager>(
       env.io.println(&formatted);
     }
     HostOp::CheckGpuToCpu { binding } => {
-      let b = &code.host_bindings[*binding as usize];
-      if env.buffer_states.get(&b.name)
-        == Some(&SharedBufferState::CPUOutOfDate)
-      {
-        env.check_cpu_readable(&[b.name.clone()]);
-        // Readback landed in the env's Value; mirror it into the VM slots
-        // where CPU code actually reads it.
-        if env.buffer_states.get(&b.name) == Some(&SharedBufferState::Synced)
-        {
-          match b.storage {
-            HostBindingStorage::Slots { position, size } => {
-              let words = env.lookup(&b.name)?.to_vm_words(&b.ty);
-              stack[position as usize..(position + size) as usize]
-                .copy_from_slice(&words[..size as usize]);
-              slots_dirty[*binding as usize] = false;
-            }
-            HostBindingStorage::DynamicMemory { memory } => {
-              dyn_memory[memory as usize] =
-                value_into_dyn_memory(env.lookup(&b.name)?, &b.ty);
-              slots_dirty[*binding as usize] = false;
-            }
-            HostBindingStorage::Dynamic => {}
-          }
-        }
-      }
+      readback_binding_into_vm(
+        env,
+        slots_dirty,
+        *binding,
+        stack,
+        dyn_memory,
+        code,
+      )?;
     }
     HostOp::MarkCpuWritten { binding } => {
       let b = &code.host_bindings[*binding as usize];
@@ -6148,15 +6323,57 @@ fn vm_host_call<IO: IOManager>(
       #[cfg(feature = "window")]
       {
         let mut source = env.audio_source.take();
-        // One-time snapshot: the starting audio program gets the current
-        // values of all globals (e.g. `load-wav`ed sample buffers). Later
-        // main-thread mutations are not propagated.
-        if let Some(crate::audio::AudioSource::Bytecode { program, .. }) =
-          &mut source
+        // First call (we hold the source): activate the shared table and
+        // bootstrap-publish every shared global from the VM replica, so the
+        // new replica's first adopt sees the current state of everything
+        // (e.g. `load-wav`ed sample buffers). From here on both threads
+        // publish/adopt at their iteration boundaries — later writes on
+        // either side propagate.
+        if let Some(crate::audio::AudioSource::Bytecode {
+          shared_table, ..
+        }) = &mut source
         {
-          copy_globals_into_audio_program_from_vm(
-            stack, dyn_memory, code, program,
+          let table = env.shared_table.clone();
+          table.activate();
+          // GPU-proxy pass: a shared binding whose newest value lives on
+          // the GPU must be read back before the bootstrap publish, so the
+          // audio replica's first adopt sees the true current state (the
+          // tree-walker bootstrap gets this from `publish_shared_globals`).
+          for info in code.shared_vars.iter() {
+            if env.buffer_states.get(&info.name)
+              != Some(&SharedBufferState::CPUOutOfDate)
+            {
+              continue;
+            }
+            if let Some(binding) = code
+              .host_bindings
+              .iter()
+              .position(|b| b.name == info.name)
+            {
+              readback_binding_into_vm(
+                env,
+                slots_dirty,
+                binding as u16,
+                stack,
+                dyn_memory,
+                code,
+              )?;
+            }
+          }
+          crate::vm::shared_sync::publish_shared(
+            stack,
+            dyn_memory,
+            &mut shared,
+            &code.shared_vars,
+            &table,
+            true,
+            |index| {
+              env
+                .io
+                .record_shared_publish(&code.shared_vars[index as usize].name)
+            },
           );
+          *shared_table = Some(table);
         }
         env.io.start_audio(&entry_name, source)?;
       }
@@ -6261,6 +6478,110 @@ struct VmFrameDriver<'a, IO: IOManager> {
   frame_fn: usize,
 }
 
+impl<IO: IOManager> VmFrameDriver<'_, IO> {
+  /// Adopts newer cross-thread snapshots into the VM replica at the frame
+  /// boundary, keeping the env's GPU sync state coherent: an adopted
+  /// GPU-bound global means the GPU's copy is now stale (GPUOutOfDate —
+  /// set directly, not via `mark_cpu_written`, which would re-dirty the
+  /// shared flag and ping-pong the value back at the next boundary) and
+  /// the env's mirror `Value` is stale relative to the VM's authoritative
+  /// storage (`slots_dirty`).
+  fn adopt_shared(&mut self) {
+    let table = self.env.shared_table.clone();
+    if !table.is_active() {
+      return;
+    }
+    // shared index -> (name, host-binding index, GPU-bound?), resolved
+    // before the adopt call so the hook can touch env state while the
+    // program is mutably borrowed. Only runs once another thread exists.
+    let coherence: Vec<(Arc<str>, Option<(usize, bool)>)> = self
+      .program
+      .code
+      .shared_vars
+      .iter()
+      .map(|info| {
+        (
+          info.name.clone(),
+          self
+            .program
+            .code
+            .host_bindings
+            .iter()
+            .position(|b| b.name == info.name)
+            .map(|j| {
+              (j, self.program.code.host_bindings[j].gpu.is_some())
+            }),
+        )
+      })
+      .collect();
+    let env = &mut *self.env;
+    let slots_dirty = &mut *self.slots_dirty;
+    self.program.adopt_shared(&table, |index| {
+      let (name, host_binding) = &coherence[index as usize];
+      if let Some((j, gpu_bound)) = host_binding {
+        slots_dirty[*j] = true;
+        if *gpu_bound {
+          env
+            .buffer_states
+            .insert(name.clone(), SharedBufferState::GPUOutOfDate);
+        }
+      }
+      env.io.record_shared_adopt(name);
+    });
+  }
+  /// Publishes the VM replica's dirty shared globals at the frame boundary.
+  /// First runs the GPU-proxy pass: any shared binding whose newest value
+  /// lives on the GPU (CPUOutOfDate) is read back into the VM replica and
+  /// force-published — the GPU has no boundary of its own, so this is what
+  /// makes GPU writes visible to the audio thread (see
+  /// `publish_shared_globals` for the tree-walker equivalent).
+  fn publish_shared(&mut self) -> Result<(), EvalError> {
+    let table = self.env.shared_table.clone();
+    if !table.is_active() {
+      return Ok(());
+    }
+    for index in 0..self.program.code.shared_vars.len() {
+      let name = &self.program.code.shared_vars[index].name;
+      if self.env.buffer_states.get(name)
+        != Some(&SharedBufferState::CPUOutOfDate)
+      {
+        continue;
+      }
+      let Some(binding) = self
+        .program
+        .code
+        .host_bindings
+        .iter()
+        .position(|b| &b.name == name)
+      else {
+        continue;
+      };
+      let program = &mut *self.program;
+      readback_binding_into_vm(
+        self.env,
+        self.slots_dirty,
+        binding as u16,
+        &mut program.stack,
+        &mut program.dyn_memory,
+        &program.code,
+      )?;
+      program.shared_dirty[index] = true;
+    }
+    let env = &mut *self.env;
+    let shared_names: Vec<Arc<str>> = self
+      .program
+      .code
+      .shared_vars
+      .iter()
+      .map(|info| info.name.clone())
+      .collect();
+    self.program.publish_shared(&table, false, |index| {
+      env.io.record_shared_publish(&shared_names[index as usize]);
+    });
+    Ok(())
+  }
+}
+
 impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
   type IO = IO;
   fn io_mut(&mut self) -> &mut IO {
@@ -6277,13 +6598,14 @@ impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
   }
   fn run_frame(&mut self) -> Result<(), EvalException> {
     use crate::vm::bytecode::{HostSuspendReason, RunResult};
+    self.adopt_shared();
     refresh_vm_window_info(self.program, self.env, self.slots_dirty);
     self.program.prepare_to_run_function(self.frame_fn);
     let mut host = VmHostView {
       env: self.env,
       slots_dirty: self.slots_dirty,
     };
-    match self.program.execute_with_host(&mut host) {
+    let result = match self.program.execute_with_host(&mut host) {
       Ok(RunResult::Finished) => Ok(()),
       Ok(RunResult::Suspended(HostSuspendReason::CloseWindow)) => {
         Err(EvalException::CloseWindow)
@@ -6297,7 +6619,15 @@ impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
         ))
       }
       Err(e) => Err(EvalException::Error(e)),
+    };
+    // Publish on success and on close-window (the frame's writes are still
+    // real); genuine errors abort the run, so skip the publish.
+    if matches!(result, Ok(()) | Err(EvalException::CloseWindow))
+      && let Err(e) = self.publish_shared()
+    {
+      return Err(EvalException::Error(e));
     }
+    result
   }
   fn overwrite_binding_bytes(&mut self, group: u8, binding: u8, bytes: &[u8]) {
     use crate::vm::bytecode::HostBindingStorage;
@@ -6652,6 +6982,9 @@ fn try_compile_audio_bytecode(
   Some(crate::audio::AudioSource::Bytecode {
     program: bytecode_program,
     function_names,
+    // Attached by the `start-audio` builtin, which owns the activation +
+    // bootstrap-publish sequence.
+    shared_table: None,
   })
 }
 

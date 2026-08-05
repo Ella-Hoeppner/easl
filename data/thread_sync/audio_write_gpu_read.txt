@@ -1,0 +1,28 @@
+spawn-window
+frame 0
+main-publish: level
+start-audio: f
+upload: level
+upload: out
+dispatch-compute-shader copy-level (1, 1, 1)
+readback: out
+print: 0.
+audio-batch 0 x2
+audio-adopt: level
+samples: 0 0
+audio-publish: level
+frame 1
+main-adopt: level
+upload: level
+dispatch-compute-shader copy-level (1, 1, 1)
+readback: out
+print: 0.125
+audio-batch 1 x2
+samples: 0 0
+audio-publish: level
+frame 2
+main-adopt: level
+upload: level
+dispatch-compute-shader copy-level (1, 1, 1)
+readback: out
+print: 0.375

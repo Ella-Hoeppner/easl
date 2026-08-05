@@ -1,0 +1,27 @@
+; The start-audio bootstrap must proxy the GPU too: the compute shader
+; writes `height` on frame 0, before audio exists, so at start-audio time
+; the newest value lives only on the GPU. The bootstrap publish reads it
+; back first — the audio replica's first adopt must see the GPU's value,
+; not the stale CPU zeros.
+@[storage-write 0 0]
+(var height: [1: f32])
+
+@audio
+(defn f [t: f32
+         rate: f32]: f32
+  (height 0u))
+
+@{workgroup-size 1}
+@compute
+(defn rise []
+  (= (height 0u)
+     (+ (height 0u) 0.25)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (when (== (window-frame-index) 0u)
+                      (dispatch-compute-shader rise (vec3u 1u)))
+                    (when (== (window-frame-index) 1u)
+                      (start-audio f)))))
+

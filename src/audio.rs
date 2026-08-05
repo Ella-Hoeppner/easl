@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 use cpal::SampleRate;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
+use crate::thread_sync::ThreadSharedTable;
 use crate::vm::bytecode::BytecodeProgram;
 
 /// The backend used to drive the audio thread's per-sample function. Picked
@@ -46,9 +47,17 @@ pub enum AudioSource {
   Bytecode {
     program: BytecodeProgram,
     function_names: Vec<Arc<str>>,
+    /// The main thread's shared-variable table, attached by the
+    /// `start-audio` builtin (after activating it and bootstrap-publishing
+    /// every shared global) so the audio thread's replica stays live: it
+    /// adopts/publishes at each callback-batch boundary. `None` when the
+    /// program has no thread-shared globals.
+    shared_table: Option<Arc<ThreadSharedTable>>,
   },
   /// Pre-compiled C source string. Only constructible (and the audio path
-  /// only wired up) when `c_audio` is enabled.
+  /// only wired up) when `c_audio` is enabled. The C path predates the
+  /// shared-variable system: it bakes global values into the compiled
+  /// source and never sees later main-thread writes.
   C(String),
 }
 
@@ -90,11 +99,14 @@ fn find_audio_fn_index(
     })
 }
 
-/// Set up a cpal output stream with a callback driven by `sample_fn`.
-/// Returns the `Stream` for storage in `AUDIO_STATE` (must be kept alive).
-fn build_audio_stream<F>(sample_fn: F) -> Result<cpal::Stream, String>
+/// Set up a cpal output stream whose callback hands the whole interleaved
+/// output buffer to `batch_fn` as `(output, channels, rate)`. Returns the
+/// `Stream` for storage in `AUDIO_STATE` (must be kept alive).
+fn build_audio_stream_batched<F>(
+  mut batch_fn: F,
+) -> Result<cpal::Stream, String>
 where
-  F: FnMut(f32, f32) -> f32 + Send + 'static,
+  F: FnMut(&mut [f32], usize, f32) + Send + 'static,
 {
   let host = cpal::default_host();
   let device = host
@@ -113,28 +125,113 @@ where
     .with_sample_rate(SampleRate(sample_rate));
   let channels = config.channels() as usize;
 
-  let mut sample_fn = sample_fn;
-  let mut sample_index: u64 = 0;
   let rate = sample_rate as f32;
   let stream = device
     .build_output_stream(
       &config.into(),
       move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
-        for frame in output.chunks_mut(channels) {
-          let t = sample_index as f32 / rate;
-          sample_index = sample_index.wrapping_add(1);
-          let sample = sample_fn(t, rate).clamp(-1.0, 1.0);
-          for s in frame.iter_mut() {
-            *s = sample;
-          }
-        }
+        batch_fn(output, channels, rate);
       },
       |err| eprintln!("audio stream error: {err}"),
       None,
     )
     .map_err(|e| format!("build audio stream: {e}"))?;
-  stream.play().map_err(|e| format!("start audio playback: {e}"))?;
+  stream
+    .play()
+    .map_err(|e| format!("start audio playback: {e}"))?;
   Ok(stream)
+}
+
+/// Per-sample wrapper over [`build_audio_stream_batched`], used by the C
+/// audio path (whose unit of execution is a single function-pointer call).
+#[cfg(feature = "c_audio")]
+fn build_audio_stream<F>(sample_fn: F) -> Result<cpal::Stream, String>
+where
+  F: FnMut(f32, f32) -> f32 + Send + 'static,
+{
+  let mut sample_fn = sample_fn;
+  let mut sample_index: u64 = 0;
+  build_audio_stream_batched(move |output, channels, rate| {
+    for frame in output.chunks_mut(channels) {
+      let t = sample_index as f32 / rate;
+      sample_index = sample_index.wrapping_add(1);
+      let sample = sample_fn(t, rate).clamp(-1.0, 1.0);
+      for s in frame.iter_mut() {
+        *s = sample;
+      }
+    }
+  })
+}
+
+/// One audio thread's iteration engine: the compiled bytecode replica plus
+/// the shared-table plumbing for its batch boundaries. A batch (one cpal
+/// callback, or one scripted step in the thread-sync test harness) adopts
+/// newer cross-thread snapshots, runs the audio function once per sample,
+/// and publishes whatever shared globals the samples wrote. The trace hooks
+/// monomorphize away when passed `|_| {}` (the production path).
+pub struct VmAudioDriver {
+  program: BytecodeProgram,
+  fn_index: usize,
+  return_position: usize,
+  shared_table: Option<Arc<ThreadSharedTable>>,
+  sample_index: u64,
+}
+
+impl VmAudioDriver {
+  pub fn new(
+    entry_name: &str,
+    program: BytecodeProgram,
+    function_names: &[Arc<str>],
+    shared_table: Option<Arc<ThreadSharedTable>>,
+  ) -> Result<Self, String> {
+    let fn_index = find_audio_fn_index(entry_name, function_names)?;
+    let return_position =
+      program.get_function_return_position(fn_index) as usize;
+    Ok(Self {
+      program,
+      fn_index,
+      return_position,
+      shared_table,
+      sample_index: 0,
+    })
+  }
+
+  /// Runs one batch of `frames` samples, calling `emit` with each computed
+  /// (already clamped) sample. Adopts before the first sample and publishes
+  /// after the last, so within a batch every read of a shared global is
+  /// stable and the batch's writes become visible to other threads as one
+  /// unit.
+  pub fn run_batch(
+    &mut self,
+    frames: usize,
+    rate: f32,
+    mut emit: impl FnMut(f32),
+    on_adopt: impl FnMut(u16),
+    on_publish: impl FnMut(u16),
+  ) {
+    if let Some(table) = &self.shared_table {
+      self.program.adopt_shared(table, on_adopt);
+    }
+    for _ in 0..frames {
+      // The audio entry has signature `(f32 t, f32 rate) -> f32`. Args live
+      // at the function's stack frame start (== return_position) in slot
+      // order; execute() overwrites slot[0] with the return value on the
+      // way out.
+      let t = self.sample_index as f32 / rate;
+      self.sample_index = self.sample_index.wrapping_add(1);
+      self.program.stack[self.return_position] = t.to_bits();
+      self.program.stack[self.return_position + 1] = rate.to_bits();
+      self.program.prepare_to_run_function(self.fn_index);
+      self.program.execute();
+      emit(
+        f32::from_bits(self.program.stack[self.return_position])
+          .clamp(-1.0, 1.0),
+      );
+    }
+    if let Some(table) = &self.shared_table {
+      self.program.publish_shared(table, false, on_publish);
+    }
+  }
 }
 
 /// Boot the audio thread with the bytecode VM driver. The bytecode program
@@ -145,8 +242,10 @@ pub fn start_audio_thread_vm(
   entry_name: &str,
   program: BytecodeProgram,
   function_names: Vec<Arc<str>>,
+  shared_table: Option<Arc<ThreadSharedTable>>,
 ) -> Result<(), String> {
-  let fn_index = find_audio_fn_index(entry_name, &function_names)?;
+  let mut driver =
+    VmAudioDriver::new(entry_name, program, &function_names, shared_table)?;
   let mut state_lock = AUDIO_STATE.lock().unwrap();
   if state_lock.is_some() {
     eprintln!(
@@ -155,20 +254,21 @@ pub fn start_audio_thread_vm(
     );
     return Ok(());
   }
-  let mut program = program;
-  let return_position =
-    program.get_function_return_position(fn_index) as usize;
-  let sample_fn = move |t: f32, rate: f32| {
-    // The audio entry has signature `(f32 t, f32 rate) -> f32`. Args live at
-    // the function's stack frame start (== return_position) in slot order;
-    // execute() overwrites slot[0] with the return value on the way out.
-    program.stack[return_position] = t.to_bits();
-    program.stack[return_position + 1] = rate.to_bits();
-    program.prepare_to_run_function(fn_index);
-    program.execute();
-    f32::from_bits(program.stack[return_position])
-  };
-  let stream = build_audio_stream(sample_fn)?;
+  let stream = build_audio_stream_batched(move |output, channels, rate| {
+    let frame_count = output.len() / channels;
+    let mut frames = output.chunks_mut(channels);
+    driver.run_batch(
+      frame_count,
+      rate,
+      |sample| {
+        for s in frames.next().expect("emit called past batch end") {
+          *s = sample;
+        }
+      },
+      |_| {},
+      |_| {},
+    );
+  })?;
   *state_lock = Some(AudioState {
     _stream: stream,
     #[cfg(feature = "c_audio")]
@@ -208,8 +308,8 @@ mod c_audio {
   use std::io::Write;
   use std::path::{Path, PathBuf};
   use std::process::Command;
-  use std::sync::{Arc, Mutex};
   use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+  use std::sync::{Arc, Mutex};
 
   use super::{AudioState, build_audio_stream};
 
@@ -262,8 +362,8 @@ mod c_audio {
     };
     let dylib_path = tmp_dir.join(dylib_name);
     {
-      let mut f = std::fs::File::create(&c_path)
-        .map_err(|e| format!("write C: {e}"))?;
+      let mut f =
+        std::fs::File::create(&c_path).map_err(|e| format!("write C: {e}"))?;
       f.write_all(c_code.as_bytes())
         .map_err(|e| format!("write C: {e}"))?;
     }
@@ -329,9 +429,7 @@ mod c_audio {
       let dylib_path =
         compile_c_to_dylib(&c_with_decls, &tmp_dir, generation + 1)?;
       let (lib, new_fn) = load_audio_fn(&dylib_path, &c_symbol)?;
-      c_state
-        ._fn_ptr
-        .store(new_fn as *mut (), Ordering::Release);
+      c_state._fn_ptr.store(new_fn as *mut (), Ordering::Release);
       c_state._counter.store(0, Ordering::Relaxed);
       // Leak the old library — code from it may be executing on the audio
       // thread; the stream's lifetime is the lifetime of the process.

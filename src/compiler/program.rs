@@ -5473,6 +5473,100 @@ impl Program {
     }
     final_fns
   }
+  /// Statically determines which top-level vars are shared across CPU
+  /// threads: touched (read or written) by code reachable from more than
+  /// one thread root. Thread roots today are the `@cpu` entry points (the
+  /// main thread — GPU work dispatched from main attributes to main, since
+  /// the GPU syncs against main's replica through its own machinery) and
+  /// the `@audio` entry points (the start-audio thread). Reachability
+  /// follows function references — names and type-level function ancestors,
+  /// so scoped closures count — EXCEPT the function argument of
+  /// `start-audio`: that reference is where the other thread *begins*, not
+  /// a main-thread use of the function.
+  ///
+  /// Returns the shared variable names sorted, so every compiled artifact
+  /// of the program carries the same index-aligned list (the runtime's
+  /// `ThreadSharedTable` slots are addressed by these indices).
+  pub fn thread_shared_globals(&self) -> Vec<Arc<str>> {
+    use crate::compiler::expression::ExpKind;
+    let var_names: HashSet<Arc<str>> = self
+      .top_level_vars
+      .iter()
+      .map(|v| v.name.clone())
+      .collect();
+    let globals_reachable_from = |root_entry: fn(&EntryPoint) -> bool| {
+      let mut visited: HashSet<Arc<str>> = HashSet::new();
+      let mut queue: Vec<Arc<RwLock<TopLevelFunction>>> = vec![];
+      for f in self.abstract_functions_iter() {
+        let f = f.read().unwrap();
+        if f.entry_point.map(|e| root_entry(&e)).unwrap_or(false)
+          && let FunctionImplementationKind::Composite(implementation) =
+            &f.implementation
+          && visited.insert(f.name.clone())
+        {
+          queue.push(implementation.clone());
+        }
+      }
+      let mut globals: HashSet<Arc<str>> = HashSet::new();
+      while let Some(f) = queue.pop() {
+        let f = f.read().unwrap();
+        let (reads, writes) = f.effects().read_and_written_globals();
+        globals.extend(
+          reads
+            .into_iter()
+            .chain(writes.into_iter())
+            .filter(|name| var_names.contains(name)),
+        );
+        let mut discovered: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> =
+          vec![];
+        f.expression
+          .walk(&mut |exp| {
+            // the function argument of `start-audio` belongs to the audio
+            // thread, not to whichever thread calls `start-audio`
+            if let ExpKind::Application(applied_f, _) = &exp.kind
+              && let ExpKind::Name(applied_name) = &applied_f.kind
+              && &**applied_name == "start-audio"
+            {
+              return Ok::<bool, Never>(false);
+            }
+            // any function-typed expression carrying a composite ancestor
+            // is a reference this thread could invoke (covers plain names,
+            // application callees, and scope constructions)
+            if let TypeState::Known(Type::Function(signature)) =
+              &exp.data.kind
+              && let Some(ancestor) = &signature.abstract_ancestor
+            {
+              let ancestor = ancestor.read().unwrap();
+              if let FunctionImplementationKind::Composite(implementation) =
+                &ancestor.implementation
+                && !visited.contains(&ancestor.name)
+              {
+                discovered
+                  .push((ancestor.name.clone(), implementation.clone()));
+              }
+            }
+            Ok(true)
+          })
+          .unwrap();
+        for (name, implementation) in discovered {
+          if visited.insert(name) {
+            queue.push(implementation);
+          }
+        }
+      }
+      globals
+    };
+    let main_globals =
+      globals_reachable_from(|e| matches!(e, EntryPoint::Cpu));
+    let audio_globals =
+      globals_reachable_from(|e| matches!(e, EntryPoint::Audio));
+    let mut shared: Vec<Arc<str>> = main_globals
+      .intersection(&audio_globals)
+      .cloned()
+      .collect();
+    shared.sort();
+    shared
+  }
   /// Audio-mode bytecode compilation: pure math only, CPU-exclusive
   /// functions skipped, no host calls emitted.
   pub fn compile_to_bytecode_program(self) -> (BytecodeProgram, Vec<Arc<str>>) {
@@ -5490,11 +5584,23 @@ impl Program {
     self,
     cpu_mode: bool,
   ) -> (BytecodeProgram, Vec<Arc<str>>) {
-    use crate::vm::bytecode::{HostBinding, HostBindingStorage};
+    use crate::vm::bytecode::{
+      HostBinding, HostBindingStorage, SharedVarInfo, SharedVarStorage,
+    };
     let mut state = BytecodeCompilationState::new();
     state.cpu_mode = cpu_mode;
     state.monomorphized_to_base_names =
       self.names.read().unwrap().monomorphized_to_base_names();
+    // Thread-shared globals: same sorted list in every compiled artifact,
+    // so `MarkSharedDirty` indices and `ThreadSharedTable` slots agree
+    // between the main program and the audio program.
+    let shared_names = self.thread_shared_globals();
+    state.shared_vars = vec![None; shared_names.len()];
+    state.shared_var_indices = shared_names
+      .iter()
+      .enumerate()
+      .map(|(index, name)| (name.clone(), index as u16))
+      .collect();
     let mut dyn_memory_count: u16 = 0;
     for v in self.top_level_vars.iter() {
       let is_dynamic_array = matches!(
@@ -5545,6 +5651,18 @@ impl Program {
           .dynamic_array_memory
           .insert(v.name.clone(), (memory, element_stride));
         state.dynamic_array_types.insert(memory, v.var_type.clone());
+        if let Some(shared_index) =
+          state.shared_var_indices.get(&v.name).copied()
+        {
+          state.shared_vars[shared_index as usize] = Some(SharedVarInfo {
+            name: v.name.clone(),
+            ty: v.var_type.clone(),
+            storage: SharedVarStorage::DynMemory {
+              region: memory,
+              stride: element_stride,
+            },
+          });
+        }
         if cpu_mode {
           // host-binding entry for GPU sync bookkeeping and whole-array
           // printing
@@ -5585,6 +5703,15 @@ impl Program {
       state.globals.insert(v.name.clone(), position);
       state.global_slots.push((v.name.clone(), position, size));
       state.global_types.push(v.var_type.clone());
+      if let Some(shared_index) =
+        state.shared_var_indices.get(&v.name).copied()
+      {
+        state.shared_vars[shared_index as usize] = Some(SharedVarInfo {
+          name: v.name.clone(),
+          ty: v.var_type.clone(),
+          storage: SharedVarStorage::Slots { position, size },
+        });
+      }
       state.consumed_stack_space += size;
       if let Some((gb, address_space)) = binding_info {
         let index = state.host_bindings.len() as u16;
@@ -5753,7 +5880,12 @@ impl Program {
           let effects = implementation_read.effects();
           let has_cpu_exclusive = !effects.cpu_exclusive_functions().is_empty()
             || !effects.cpu_exclusive_types().is_empty()
-            || !effects.window_info_kinds().is_empty();
+            || !effects.window_info_kinds().is_empty()
+            // `print` has no audio-target implementation; a printing
+            // function can only be meant for the CPU side. (A frame closure
+            // that never calls a CPU-exclusive builtin would otherwise slip
+            // through this filter and hit the `todo!()` on `print`.)
+            || effects.0.contains(&Effect::Print);
           skip_for_entry_point || has_cpu_exclusive
         };
         if skip {

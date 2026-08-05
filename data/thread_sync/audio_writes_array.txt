@@ -1,0 +1,18 @@
+spawn-window
+frame 0
+main-publish: buf
+start-audio: f
+print: [0. 0. 0.]
+audio-batch 0 x3
+audio-adopt: buf
+samples: 0 0 0
+audio-publish: buf
+frame 1
+main-adopt: buf
+print: [0. 0.125 0.25]
+audio-batch 1 x3
+samples: 0 0 0
+audio-publish: buf
+frame 2
+main-adopt: buf
+print: [0.375 0.5 0.625]

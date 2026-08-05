@@ -1,0 +1,26 @@
+; GPU writes must reach the audio thread: a compute shader accumulates
+; into `height` each frame, and the audio function plays `height` as its
+; sample value. The flow is GPU write (buffer CPUOutOfDate) → readback +
+; main-publish at the frame boundary → audio-adopt at the next batch. The
+; readback is the honest cost of the semantics and must happen exactly
+; once per writing frame — only while the audio thread is live.
+@[storage-write 0 0]
+(var height: [1: f32])
+
+@audio
+(defn f [t: f32
+         rate: f32]: f32
+  (height 0u))
+
+@{workgroup-size 1}
+@compute
+(defn rise []
+  (= (height 0u)
+     (+ (height 0u) 0.25)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (start-audio f)
+                    (dispatch-compute-shader rise (vec3u 1u)))))
+

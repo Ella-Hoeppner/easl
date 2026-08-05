@@ -1,0 +1,13 @@
+spawn-window
+frame 0
+main-publish: both
+start-audio: f
+main-publish: both
+audio-batch 0 x2
+audio-adopt: both
+samples: 0.4 0.4
+frame 1
+main-publish: both
+audio-batch 1 x2
+audio-adopt: both
+samples: 0.5 0.5

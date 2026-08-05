@@ -1,0 +1,23 @@
+; Runtime-sized arrays are shared like any other variable: main fills
+; `sample` before start-audio (so the bootstrap publish carries it — and
+; the frame-end publish must NOT repeat it, since the bootstrap consumed
+; the dirty flag), the audio function plays it in a loop, and a later
+; whole-array reassignment on main propagates at the usual boundaries.
+(var sample: [f32])
+
+@audio
+(defn f [t: f32
+         rate: f32]: f32
+  (sample (% (u32 (* t rate)) 3u)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (when (== (window-frame-index) 0u)
+                      (= sample
+                         (into-dynamic-array [0.1 0.2 0.3])))
+                    (start-audio f)
+                    (when (== (window-frame-index) 2u)
+                      (= sample
+                         (into-dynamic-array [0.4 0.5 0.6]))))))
+

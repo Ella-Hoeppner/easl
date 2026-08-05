@@ -1,0 +1,8 @@
+spawn-window
+frame 0
+main-publish: gain
+start-audio: f
+main-publish: gain
+frame 1
+close-window
+main-publish: gain

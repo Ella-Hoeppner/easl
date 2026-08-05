@@ -1,0 +1,8 @@
+spawn-window
+frame 0
+upload: height
+dispatch-compute-shader rise (1, 1, 1)
+frame 1
+dispatch-compute-shader rise (1, 1, 1)
+frame 2
+dispatch-compute-shader rise (1, 1, 1)

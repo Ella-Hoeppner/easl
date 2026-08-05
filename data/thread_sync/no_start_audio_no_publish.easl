@@ -1,0 +1,18 @@
+; The shared-variable machinery costs nothing until a second thread
+; exists: `gain` is statically thread-shared (main writes it, the audio
+; entry reads it), but since start-audio is never called the table stays
+; inactive and no publish may ever happen.
+(var gain: f32
+     0.25)
+
+@audio
+(defn f [t: f32
+         rate: f32]: f32
+  gain)
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (= gain (+ gain 0.25))
+                    (print gain))))
+

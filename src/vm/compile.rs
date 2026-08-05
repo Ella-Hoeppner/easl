@@ -15,7 +15,7 @@ use crate::compiler::functions::{
 use crate::compiler::types::{ConcreteArraySize, Type, TypeState};
 use crate::vm::bytecode::{
   BytecodeProgram, Code, Function, HostBinding, HostBindingStorage,
-  HostDispatch, HostOp, Instruction, Op, WindowQueryKind,
+  HostDispatch, HostOp, Instruction, Op, SharedVarInfo, WindowQueryKind,
 };
 
 // =============================================================================
@@ -81,6 +81,13 @@ pub struct BytecodeCompilationState {
   /// Array type of each runtime-sized global, keyed by region index;
   /// carried into `Code::dyn_memory_types`.
   pub dynamic_array_types: HashMap<u16, Type>,
+  /// Thread-shared globals: name → index into `shared_vars`. Populated for
+  /// both compilation modes; drives `MarkSharedDirty` emission.
+  pub shared_var_indices: HashMap<Arc<str>, u16>,
+  /// Storage records for the shared globals, index-aligned with the sorted
+  /// shared-name list; filled during global allocation, carried into
+  /// `Code::shared_vars`.
+  pub shared_vars: Vec<Option<SharedVarInfo>>,
   pub globals: HashMap<Arc<str>, u16>,
   /// Name, base stack slot, and size in u32 slots of each global, in
   /// declaration order. Carried into `Code::globals` by `finalize` so
@@ -121,6 +128,8 @@ impl BytecodeCompilationState {
       dynamic_globals: HashMap::new(),
       dynamic_array_memory: HashMap::new(),
       dynamic_array_types: HashMap::new(),
+      shared_var_indices: HashMap::new(),
+      shared_vars: vec![],
       globals: HashMap::new(),
       global_slots: vec![],
       global_types: vec![],
@@ -1606,6 +1615,16 @@ impl BytecodeCompilationState {
         types.sort_by_key(|(region, _)| *region);
         types.into_iter().map(|(_, t)| t).collect()
       },
+      shared_vars: self
+        .shared_vars
+        .into_iter()
+        .map(|info| {
+          info.expect(
+            "thread-shared global never had its storage recorded during \
+             global allocation",
+          )
+        })
+        .collect(),
     };
     (
       BytecodeProgram::from_code(code),
@@ -1656,13 +1675,25 @@ impl BytecodeCompilationState {
       }
     }
   }
-  /// Emits `MarkCpuWritten` for each GPU-bound global in `names` — the VM
+  /// Emits the post-write bookkeeping for each global in `names` — the VM
   /// equivalent of the tree-walker's `mark_cpu_written` after an
-  /// application evaluates.
+  /// application evaluates: `MarkCpuWritten` host ops for GPU-bound globals
+  /// (CPU-runtime mode only), and `MarkSharedDirty` for thread-shared
+  /// globals (both modes — the audio thread tracks its own writes the same
+  /// way).
   pub fn emit_write_marks(&mut self, names: &[Arc<str>]) {
     for name in names {
-      if let Some(binding) = self.binding_indices.get(name).copied() {
+      if self.cpu_mode
+        && let Some(binding) = self.binding_indices.get(name).copied()
+      {
         self.emit_host_op(HostOp::MarkCpuWritten { binding });
+      }
+      if let Some(index) = self.shared_var_indices.get(name).copied() {
+        self.push_instruction(Instruction {
+          op: Op::MarkSharedDirty,
+          arg_positions: [index, 0, 0],
+          return_position: 0,
+        });
       }
     }
   }
@@ -2440,10 +2471,14 @@ impl TypedExp {
         // same granularity — `check_cpu_readable` for the application's
         // read set before it evaluates, `mark_cpu_written` for its write
         // set after. All name resolution happens here at compile time.
-        let cpu_write_marks: Option<Vec<Arc<str>>> = if state.cpu_mode {
+        let cpu_write_marks: Option<Vec<Arc<str>>> = if state.cpu_mode
+          || !state.shared_var_indices.is_empty()
+        {
           let effects = self.effects();
           let (reads, writes) = effects.read_and_written_globals();
-          state.emit_sync_checks(&reads);
+          if state.cpu_mode {
+            state.emit_sync_checks(&reads);
+          }
           Some(writes)
         } else {
           None

@@ -1,0 +1,21 @@
+; The audio thread writes individual elements of a runtime-sized array;
+; the whole array is published once per batch (element writes just dirty
+; the variable) and the main thread adopts and prints it a frame later.
+(var buf: [f32])
+
+@audio
+(defn f [t: f32
+         rate: f32]: f32
+  (= (buf (% (u32 (* t rate)) 3u))
+     t)
+  0.)
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (when (== (window-frame-index) 0u)
+                      (= buf
+                         (into-dynamic-array [0. 0. 0.])))
+                    (start-audio f)
+                    (print buf))))
+

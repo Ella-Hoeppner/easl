@@ -1,0 +1,19 @@
+; Audio-thread writes propagate to the main thread: the audio function
+; counts every sample it produces into `count`, which main prints each
+; frame. The batch's writes are published once at the batch boundary
+; (not once per sample) and adopted at the next frame boundary.
+(var count: u32
+     0u)
+
+@audio
+(defn f [t: f32
+         rate: f32]: f32
+  (= count (+ count 1u))
+  0.)
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (start-audio f)
+                    (print count))))
+

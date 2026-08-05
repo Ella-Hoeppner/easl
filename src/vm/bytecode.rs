@@ -171,6 +171,13 @@ pub enum Op {
   /// return_position holds the stride
   DynAssignFromSlots,
 
+  /// Marks the thread-shared global `Code::shared_vars[arg_positions[0]]`
+  /// as written since this thread's last publish boundary. Emitted after
+  /// applications whose write set touches a shared global, in both
+  /// compilation modes; a single store, so cheap enough for the audio
+  /// hot path.
+  MarkSharedDirty,
+
   // Data packing (multi-slot operands start at arg_positions[0]; the slots
   // they span are covered by Code::min_stack_size)
   PackSnorm4x8,
@@ -334,6 +341,7 @@ impl Instruction {
           .max(self.arg_positions[1])
       }
       Op::DynResize => self.arg_positions[1],
+      Op::MarkSharedDirty => 0,
       Op::DynAssignFromSlots => {
         // src spans count (arg 2) * stride (return_position) slots
         self.arg_positions[1]
@@ -364,6 +372,25 @@ pub enum HostBindingStorage {
   /// Runtime-sized array living in `BytecodeProgram::dyn_memory[memory]` as
   /// flat words; VM code accesses it directly through the `Dyn*` opcodes.
   DynamicMemory { memory: u16 },
+}
+
+/// Where a thread-shared global lives inside one compiled program.
+#[derive(Debug, Clone, Copy)]
+pub enum SharedVarStorage {
+  Slots { position: u16, size: u16 },
+  DynMemory { region: u16, stride: u16 },
+}
+
+/// Compile-time record of one thread-shared global (see
+/// `Program::thread_shared_globals`): its name, type, and storage location
+/// in this program. Index-aligned with the runtime `ThreadSharedTable`'s
+/// slots — the list is derived from the program once and sorted by name, so
+/// indices agree across every compiled artifact.
+#[derive(Debug, Clone)]
+pub struct SharedVarInfo {
+  pub name: Arc<str>,
+  pub ty: Type,
+  pub storage: SharedVarStorage,
 }
 
 /// Backing store for one runtime-sized (dynamic) array global: flat words
@@ -503,6 +530,15 @@ pub enum RunResult {
   Suspended(HostSuspendReason),
 }
 
+/// Mutable view of the per-shared-variable runtime state a host call (or
+/// the thread-sync publish/adopt functions) may need alongside the stack
+/// and dynamic memory.
+pub struct SharedStateParts<'a> {
+  pub dirty: &'a mut [bool],
+  pub adopted: &'a mut [u64],
+  pub scratch: &'a mut [Option<Vec<u32>>],
+}
+
 /// The CPU-orchestration side of the VM. `execute_with_host` calls
 /// `host_call` for each `Op::HostCall` instruction; everything else in the
 /// dispatch loop is untouched. The audio path uses `NoopHost` (audio-mode
@@ -515,6 +551,7 @@ pub trait VmHost {
     op: &HostOp,
     stack: &mut [u32],
     dyn_memory: &mut [DynMemory],
+    shared: SharedStateParts<'_>,
     code: &Code,
   ) -> Result<Option<HostSuspendReason>, Self::Error>;
 }
@@ -528,6 +565,7 @@ impl VmHost for NoopHost {
     _op: &HostOp,
     _stack: &mut [u32],
     _dyn_memory: &mut [DynMemory],
+    _shared: SharedStateParts<'_>,
     _code: &Code,
   ) -> Result<Option<HostSuspendReason>, Self::Error> {
     unreachable!("host call encountered in hostless VM execution")
@@ -576,6 +614,10 @@ pub struct Code {
   /// Array type of each runtime-sized global, aligned with
   /// `dyn_memory_regions`.
   pub dyn_memory_types: Vec<Type>,
+  /// Thread-shared globals, sorted by name; empty when the program has no
+  /// cross-thread sharing. `Op::MarkSharedDirty` indices and the runtime
+  /// `ThreadSharedTable` slots address into this list.
+  pub shared_vars: Vec<SharedVarInfo>,
 }
 
 pub struct BytecodeProgram {
@@ -587,6 +629,17 @@ pub struct BytecodeProgram {
   /// the u16-addressed stack, so these arrays aren't subject to its 2^16
   /// word limit.
   pub dyn_memory: Vec<DynMemory>,
+  /// Per-shared-variable "written since my last publish" flags, aligned
+  /// with `Code::shared_vars`. Set by `Op::MarkSharedDirty`; cleared when
+  /// the owning thread publishes at an iteration boundary. Thread-local
+  /// state (each replica has its own program), so plain bools.
+  pub shared_dirty: Vec<bool>,
+  /// Per-shared-variable version last adopted from the `ThreadSharedTable`,
+  /// aligned with `Code::shared_vars`.
+  pub shared_adopted: Vec<u64>,
+  /// Per-shared-variable spare snapshot buffers, recycled between
+  /// publications so steady-state publishing allocates nothing.
+  pub shared_scratch: Vec<Option<Vec<u32>>>,
 }
 
 impl BytecodeProgram {
@@ -605,6 +658,9 @@ impl BytecodeProgram {
         DynMemory::Zeroed { elements: 0 };
         code.dyn_memory_count as usize
       ],
+      shared_dirty: vec![false; code.shared_vars.len()],
+      shared_adopted: vec![0; code.shared_vars.len()],
+      shared_scratch: (0..code.shared_vars.len()).map(|_| None).collect(),
       code,
     };
     if let Some(init_idx) = program.code.init_function_index {
@@ -666,6 +722,9 @@ impl BytecodeProgram {
       stack,
       call_stack,
       dyn_memory,
+      shared_dirty,
+      shared_adopted,
+      shared_scratch,
     } = self;
     let Some(mut ip) = call_stack.pop() else {
       return Ok(RunResult::Finished);
@@ -835,7 +894,17 @@ impl BytecodeProgram {
         Op::HostCall => {
           let op =
             &code.host_ops[instruction.arg_positions[0] as usize];
-          if let Some(reason) = host.host_call(op, stack, dyn_memory, code)? {
+          if let Some(reason) = host.host_call(
+            op,
+            stack,
+            dyn_memory,
+            SharedStateParts {
+              dirty: shared_dirty,
+              adopted: shared_adopted,
+              scratch: shared_scratch,
+            },
+            code,
+          )? {
             // Resume point: `ip` has already advanced past this
             // instruction, so pushing it back means resuming continues with
             // the next instruction.
@@ -1228,6 +1297,10 @@ impl BytecodeProgram {
           dyn_memory[memory as usize] = DynMemory::Words(
             stack[src..src + count as usize * stride].to_vec(),
           );
+        }
+
+        Op::MarkSharedDirty => {
+          shared_dirty[instruction.arg_positions[0] as usize] = true;
         }
       }
     }

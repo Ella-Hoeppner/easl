@@ -1,0 +1,18 @@
+spawn-window
+frame 0
+main-publish: gain
+start-audio: f
+main-publish: gain
+audio-batch 0 x2
+audio-adopt: gain
+samples: 0.5 0.5
+frame 1
+main-publish: gain
+audio-batch 1 x2
+audio-adopt: gain
+samples: 0.75 0.75
+frame 2
+main-publish: gain
+audio-batch 2 x2
+audio-adopt: gain
+samples: 1 1

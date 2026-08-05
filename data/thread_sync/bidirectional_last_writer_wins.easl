@@ -1,0 +1,22 @@
+; Both threads write the same variable. Resolution is whole-variable
+; last-writer-wins at boundary granularity: each thread's adopt takes the
+; newest published snapshot, so a version nobody adopted before the next
+; publish is simply skipped (frame 1 publishes over frame 0's snapshot
+; before the audio thread ever runs — the audio side only ever sees the
+; frame-1 value).
+(var x: f32
+     0.)
+
+@audio
+(defn f [t: f32
+         rate: f32]: f32
+  (= x (+ x 1.))
+  (/ x 100.))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (start-audio f)
+                    (= x (+ x 10.))
+                    (print x))))
+

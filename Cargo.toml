@@ -16,6 +16,7 @@ cpal = { version = "0.15", optional = true }
 libloading = { version = "0.8", optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 hound = "3.5"
+arc-swap = "1.7"
 
 [features]
 window = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:cpal"]
