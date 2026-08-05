@@ -2404,6 +2404,21 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       ..Default::default()
     },
     AbstractFunctionSignature {
+      name: "load-wav".into(),
+      arg_types: vec![AbstractType::Type(Type::String).owned()],
+      return_type: AbstractType::AbstractArray {
+        size: AbstractArraySize::Unsized,
+        inner_type: AbstractType::Type(Type::F32).into(),
+        source_trace: SourceTrace::empty(),
+      },
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("load-wav".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
       name: "load-image".into(),
       arg_types: vec![AbstractType::Type(Type::String).owned()],
       return_type: AbstractType::AbstractStruct(

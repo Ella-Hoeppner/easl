@@ -1878,7 +1878,15 @@ fn apply_builtin_fn<IO: IOManager>(
         // on the first call, then pass `None` on subsequent calls. The IO
         // manager decides what to do with each (StdoutIO noops on the
         // already-running case; StringIO records every event).
-        let source = env.audio_source.take();
+        let mut source = env.audio_source.take();
+        // One-time snapshot: the starting audio program gets the current
+        // values of all globals (e.g. `load-wav`ed sample buffers). Later
+        // main-thread mutations are not propagated.
+        if let Some(crate::audio::AudioSource::Bytecode { program, .. }) =
+          &mut source
+        {
+          copy_globals_into_audio_program_from_env(env, program);
+        }
         env
           .io
           .start_audio(&entry_name, source)
@@ -1938,6 +1946,17 @@ fn apply_builtin_fn<IO: IOManager>(
       Ok(Value::Unit)
     }
     "into-dynamic-array" => Ok(args.remove(0).0),
+    "load-wav" => {
+      let Value::String(path) = args.remove(0).0 else {
+        panic!("load-wav: expected string path argument")
+      };
+      Ok(Value::Array(
+        load_wav_samples(&path, &env.source_dir)?
+          .into_iter()
+          .map(|sample| Value::Prim(Primitive::F32(sample)))
+          .collect(),
+      ))
+    }
     "load-image" => {
       let Value::String(path) = args.remove(0).0 else {
         panic!("load-image: expected string path argument")
@@ -5625,10 +5644,119 @@ fn load_image_value(
   })
 }
 
+/// Loads a `.wav` file as mono f32 samples at the file's native sample
+/// rate, resolving relative paths against `source_dir` (multi-channel files
+/// are mixed down by averaging). Shared by the `load-wav` builtin's
+/// tree-walker arm and the VM runtime's `AssignDynFromWav` host op.
+fn load_wav_samples(
+  path: &str,
+  source_dir: &Option<PathBuf>,
+) -> Result<Vec<f32>, EvalError> {
+  let resolved = if std::path::Path::new(path).is_absolute() {
+    std::path::PathBuf::from(path)
+  } else if let Some(dir) = source_dir {
+    dir.join(path)
+  } else {
+    std::path::PathBuf::from(path)
+  };
+  let wav_error = |e: hound::Error| {
+    EvalError::from(UserspaceEvalError::RuntimeError(format!(
+      "load-wav: failed to read \"{path}\": {e}"
+    )))
+  };
+  let mut reader = hound::WavReader::open(&resolved).map_err(wav_error)?;
+  let spec = reader.spec();
+  let channels = (spec.channels as usize).max(1);
+  let interleaved: Vec<f32> = match spec.sample_format {
+    hound::SampleFormat::Float => reader
+      .samples::<f32>()
+      .collect::<Result<_, _>>()
+      .map_err(wav_error)?,
+    hound::SampleFormat::Int => {
+      let scale = (1i64 << (spec.bits_per_sample - 1)) as f32;
+      reader
+        .samples::<i32>()
+        .map(|s| s.map(|v| v as f32 / scale))
+        .collect::<Result<_, _>>()
+        .map_err(wav_error)?
+    }
+  };
+  Ok(
+    interleaved
+      .chunks(channels)
+      .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+      .collect(),
+  )
+}
+
 /// Number of u32 words a type occupies in the VM's flat layout.
 fn vm_words_of(t: &Type) -> usize {
   t.data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
     .unwrap() as usize
+}
+
+/// One-time copy of the current values of all global vars into a
+/// just-starting audio program, matched by name — from a main runtime whose
+/// state lives in VM form (stack slots + dynamic memory). The audio thread
+/// gets a snapshot of what the CPU program had computed by the time
+/// `start-audio` ran (e.g. `load-wav`ed sample buffers); later main-thread
+/// mutations are NOT propagated (cross-thread sharing semantics are still
+/// an open design question).
+#[cfg(feature = "window")]
+pub fn copy_globals_into_audio_program_from_vm(
+  main_stack: &[u32],
+  main_dyn_memory: &[crate::vm::bytecode::DynMemory],
+  main_code: &crate::vm::bytecode::Code,
+  audio: &mut crate::vm::bytecode::BytecodeProgram,
+) {
+  for (name, position, size) in main_code.globals.iter() {
+    if let Some((audio_position, audio_size)) = audio.get_global_slot(name) {
+      let n = (*size).min(audio_size) as usize;
+      let src = *position as usize;
+      audio.stack[audio_position as usize..audio_position as usize + n]
+        .copy_from_slice(&main_stack[src..src + n]);
+    }
+  }
+  for (name, region, _) in main_code.dyn_memory_regions.iter() {
+    if let Some((audio_region, _)) = audio.get_dyn_memory_region(name) {
+      audio.dyn_memory[audio_region as usize] =
+        main_dyn_memory[*region as usize].clone();
+    }
+  }
+}
+
+/// `copy_globals_into_audio_program_from_vm`, but for a main runtime whose
+/// state lives as tree-walker `Value`s in the evaluation environment.
+#[cfg(feature = "window")]
+fn copy_globals_into_audio_program_from_env<IO: IOManager>(
+  env: &EvaluationEnvironment<IO>,
+  audio: &mut crate::vm::bytecode::BytecodeProgram,
+) {
+  for i in 0..audio.code.globals.len() {
+    let (name, position, size) = audio.code.globals[i].clone();
+    let ty = audio.code.global_types[i].clone();
+    let Ok(value) = env.lookup(&name) else {
+      continue;
+    };
+    if matches!(value, Value::Uninitialized) {
+      continue;
+    }
+    let words = value.to_vm_words(&ty);
+    let n = (size as usize).min(words.len());
+    audio.stack[position as usize..position as usize + n]
+      .copy_from_slice(&words[..n]);
+  }
+  for i in 0..audio.code.dyn_memory_regions.len() {
+    let (name, region, _) = audio.code.dyn_memory_regions[i].clone();
+    let ty = audio.code.dyn_memory_types[i].clone();
+    let Ok(value) = env.lookup(&name) else {
+      continue;
+    };
+    if matches!(value, Value::Uninitialized) {
+      continue;
+    }
+    audio.dyn_memory[region as usize] = value_into_dyn_memory(value, &ty);
+  }
 }
 
 /// Builds a `Value` view of a dynamic-memory array region. Only used at the
@@ -5965,7 +6093,17 @@ fn vm_host_call<IO: IOManager>(
       let entry_name = code.host_strings[*entry as usize].clone();
       #[cfg(feature = "window")]
       {
-        let source = env.audio_source.take();
+        let mut source = env.audio_source.take();
+        // One-time snapshot: the starting audio program gets the current
+        // values of all globals (e.g. `load-wav`ed sample buffers). Later
+        // main-thread mutations are not propagated.
+        if let Some(crate::audio::AudioSource::Bytecode { program, .. }) =
+          &mut source
+        {
+          copy_globals_into_audio_program_from_vm(
+            stack, dyn_memory, code, program,
+          );
+        }
         env.io.start_audio(&entry_name, source)?;
       }
       #[cfg(not(feature = "window"))]
@@ -5973,6 +6111,13 @@ fn vm_host_call<IO: IOManager>(
         let _ = entry_name;
         return Err(WindowFeatureNotEnabled.into());
       }
+    }
+    HostOp::AssignDynFromWav { memory, path } => {
+      let path = code.host_strings[*path as usize].clone();
+      let samples = load_wav_samples(&path, &env.source_dir)?;
+      dyn_memory[*memory as usize] = crate::vm::bytecode::DynMemory::Words(
+        samples.into_iter().map(f32::to_bits).collect(),
+      );
     }
     HostOp::AssignTextureFromImage { binding, path } => {
       let b = &code.host_bindings[*binding as usize];

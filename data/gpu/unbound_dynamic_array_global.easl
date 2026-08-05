@@ -1,0 +1,10 @@
+; A runtime-sized global with no GPU binding is a CPU/audio-only value
+; (e.g. a load-wav'ed sample buffer). WGSL has no representation for an
+; unsized array outside a storage binding, so shader output must simply
+; omit it — emitting it produces a module the GPU rejects at runtime.
+
+(var samples: [f32])
+
+@fragment
+(defn f []: vec4f
+  (vec4f 1. 0. 0. 1.))

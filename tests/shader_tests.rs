@@ -198,6 +198,7 @@ success_test!(option_map);
 success_test!(swizzle_assignment);
 success_test!(swizzle_compound);
 success_test!(matrix_compound_native);
+success_test!(unbound_dynamic_array_global);
 success_test!(either_match);
 success_test!(nested_option);
 success_test!(enum_of_struct);

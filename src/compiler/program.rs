@@ -3390,6 +3390,29 @@ impl Program {
     let mut names = self.names.write().unwrap();
     let mut compiled_string = target.program_header();
     for v in self.top_level_vars.iter() {
+      // A runtime-sized array without a GPU binding is a CPU/audio-only
+      // value (e.g. a `load-wav`ed sample buffer): WGSL has no
+      // representation for an unsized array outside a storage binding, so
+      // it's omitted from shader output. (Shader code can't legally
+      // reference one anyway.)
+      if target == CompilerTarget::WGSL
+        && matches!(
+          &v.var_type,
+          Type::Array(
+            Some(crate::compiler::types::ConcreteArraySize::Unsized),
+            _
+          )
+        )
+        && !matches!(
+          v.kind,
+          TopLevelVariableKind::Var {
+            group_and_binding: Some(_),
+            ..
+          }
+        )
+      {
+        continue;
+      }
       compiled_string += &v.clone().compile(&mut names, target);
       compiled_string += ";\n";
     }
@@ -5521,6 +5544,7 @@ impl Program {
         state
           .dynamic_array_memory
           .insert(v.name.clone(), (memory, element_stride));
+        state.dynamic_array_types.insert(memory, v.var_type.clone());
         if cpu_mode {
           // host-binding entry for GPU sync bookkeeping and whole-array
           // printing
@@ -5560,6 +5584,7 @@ impl Program {
       let size = v.var_type.data_size_in_u32s(&v.source_trace).unwrap() as u16;
       state.globals.insert(v.name.clone(), position);
       state.global_slots.push((v.name.clone(), position, size));
+      state.global_types.push(v.var_type.clone());
       state.consumed_stack_space += size;
       if let Some((gb, address_space)) = binding_info {
         let index = state.host_bindings.len() as u16;

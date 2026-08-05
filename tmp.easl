@@ -1,0 +1,15 @@
+(var kick: [f32])
+
+@audio
+(defn play [t: f32
+            rate: f32]: f32
+  (let [i (u32 (* t 2. rate))]
+    (if (< i (array-length kick))
+      (kick i)
+      0.)))
+
+@cpu
+(defn main []
+  (= kick (load-wav "kick.wav"))
+  (spawn-window (fn [] (start-audio play))))
+

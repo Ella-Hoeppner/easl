@@ -1,0 +1,20 @@
+; `load-wav` reads a .wav file as mono f32 samples at its native sample
+; rate, into a runtime-sized global that audio code can index. The @audio
+; entry ensures the eager audio-mode compile also handles the program.
+
+(var sample: [f32])
+
+@audio
+(defn tone [t: f32 rate: f32]: f32
+  (let [i (u32 (* t rate))]
+    (if (< i (array-length sample))
+      (sample i)
+      0.)))
+
+@cpu
+(defn main []
+  (= sample (load-wav "test_sample.wav"))
+  (print (array-length sample))
+  (print (sample 1u))
+  (print (sample 2u))
+  (print (sample 3u)))

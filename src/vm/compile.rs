@@ -78,11 +78,17 @@ pub struct BytecodeCompilationState {
   /// `BytecodeProgram::dyn_memory`, element stride in words). Element and
   /// length accesses compile to the direct `Dyn*` opcodes.
   pub dynamic_array_memory: HashMap<Arc<str>, (u16, u16)>,
+  /// Array type of each runtime-sized global, keyed by region index;
+  /// carried into `Code::dyn_memory_types`.
+  pub dynamic_array_types: HashMap<u16, Type>,
   pub globals: HashMap<Arc<str>, u16>,
   /// Name, base stack slot, and size in u32 slots of each global, in
   /// declaration order. Carried into `Code::globals` by `finalize` so
   /// external integrations can locate globals in the running program.
   pub global_slots: Vec<(Arc<str>, u16, u16)>,
+  /// Type of each slot-backed global, aligned with `global_slots`; carried
+  /// into `Code::global_types`.
+  pub global_types: Vec<Type>,
   pub locals: HashMap<Arc<str>, u16>,
   /// Monomorphized name → base name, from the program's `NameContext`. Used
   /// to resolve monomorphized unit-variant constant names (e.g.
@@ -114,8 +120,10 @@ impl BytecodeCompilationState {
       binding_indices: HashMap::new(),
       dynamic_globals: HashMap::new(),
       dynamic_array_memory: HashMap::new(),
+      dynamic_array_types: HashMap::new(),
       globals: HashMap::new(),
       global_slots: vec![],
+      global_types: vec![],
       locals: HashMap::new(),
       monomorphized_to_base_names: HashMap::new(),
       instructions: vec![],
@@ -1582,6 +1590,22 @@ impl BytecodeCompilationState {
       host_bindings: self.host_bindings,
       host_dispatches: self.host_dispatches,
       dyn_memory_count: self.dynamic_array_memory.len() as u16,
+      dyn_memory_regions: {
+        let mut regions: Vec<(Arc<str>, u16, u16)> = self
+          .dynamic_array_memory
+          .iter()
+          .map(|(name, &(region, stride))| (name.clone(), region, stride))
+          .collect();
+        regions.sort_by_key(|(_, region, _)| *region);
+        regions
+      },
+      global_types: self.global_types,
+      dyn_memory_types: {
+        let mut types: Vec<(u16, Type)> =
+          self.dynamic_array_types.into_iter().collect();
+        types.sort_by_key(|(region, _)| *region);
+        types.into_iter().map(|(_, t)| t).collect()
+      },
     };
     (
       BytecodeProgram::from_code(code),
@@ -1966,6 +1990,67 @@ impl TypedExp {
   /// handle it. Must run before generic argument compilation, since several
   /// of these take arguments (function references, dynamic globals, string
   /// literals) that can't be compiled as ordinary values.
+  /// Special-cased builtins available in BOTH compilation modes (unlike
+  /// `try_compile_cpu_builtin`, which only the CPU runtime consults):
+  /// dynamic-array length reads and element stores are legitimate audio
+  /// code too (sample lookups, delay lines), and compile to the direct
+  /// `Dyn*` opcodes rather than host ops. Returns `None` when the
+  /// application isn't one of these shapes, letting the CPU interception
+  /// and the generic path proceed.
+  fn try_compile_dyn_array_builtin(
+    &self,
+    f_name: &str,
+    args: &[TypedExp],
+    state: &mut BytecodeCompilationState,
+  ) -> Option<Option<u16>> {
+    match f_name {
+      "array-length" => {
+        if let ExpKind::Name(name) = &args[0].kind
+          && let Some((memory, stride)) =
+            state.dynamic_array_memory.get(name).copied()
+        {
+          let dest = state.take_stack_slot(1);
+          state.push_instruction(Instruction {
+            op: Op::DynLen,
+            arg_positions: [memory, stride, 0],
+            return_position: dest,
+          });
+          Some(Some(dest))
+        } else if let Type::Array(Some(ConcreteArraySize::Literal(n)), _) =
+          args[0].data.unwrap_known()
+        {
+          Some(Some(state.emit_u32_constant(n as u32)))
+        } else {
+          panic!("array-length of unsupported array kind in VM runtime")
+        }
+      }
+      "=" => {
+        // element store into a dynamic-memory array; other assignment
+        // shapes fall through (whole-array and texture assignments are
+        // CPU-exclusive and handled by `try_compile_cpu_builtin`)
+        if let ExpKind::Access(Accessor::ArrayIndex(index_exp), inner) =
+          &args[0].kind
+          && let ExpKind::Name(name) = &inner.kind
+          && let Some((memory, stride)) =
+            state.dynamic_array_memory.get(name).copied()
+        {
+          let index_slot =
+            index_exp.compile_to_bytecode(false, state).unwrap();
+          let src_slot = args[1].compile_to_bytecode(false, state).unwrap();
+          state.push_instruction(Instruction {
+            op: Op::DynStore,
+            arg_positions: [memory, index_slot, src_slot],
+            return_position: stride,
+          });
+          Some(None)
+        } else {
+          None
+        }
+      }
+      _ => None,
+    }
+  }
+
   fn try_compile_cpu_builtin(
     &self,
     f_name: &str,
@@ -2186,26 +2271,6 @@ impl TypedExp {
         });
         Some(Some(dest))
       }
-      "array-length" => {
-        if let ExpKind::Name(name) = &args[0].kind
-          && let Some((memory, stride)) =
-            state.dynamic_array_memory.get(name).copied()
-        {
-          let dest = state.take_stack_slot(1);
-          state.push_instruction(Instruction {
-            op: Op::DynLen,
-            arg_positions: [memory, stride, 0],
-            return_position: dest,
-          });
-          Some(Some(dest))
-        } else if let Type::Array(Some(ConcreteArraySize::Literal(n)), _) =
-          args[0].data.unwrap_known()
-        {
-          Some(Some(state.emit_u32_constant(n as u32)))
-        } else {
-          panic!("array-length of unsupported array kind in VM CPU runtime")
-        }
-      }
       "texture-dimensions" => {
         let ExpKind::Name(name) = &args[0].kind else {
           panic!("texture-dimensions argument must be a texture global")
@@ -2275,6 +2340,13 @@ impl TypedExp {
                 return_position: stride,
               });
             }
+            "load-wav" => {
+              let ExpKind::StringLiteral(path) = &rhs_args[0].kind else {
+                panic!("load-wav argument must be a string literal")
+              };
+              let path = state.host_string_index(&path.to_string());
+              state.emit_host_op(HostOp::AssignDynFromWav { memory, path });
+            }
             other => panic!(
               "unsupported assignment of `{other}` result to dynamic array \
                in VM CPU runtime"
@@ -2326,21 +2398,6 @@ impl TypedExp {
             ),
           }
           Some(None)
-        } else if let ExpKind::Access(Accessor::ArrayIndex(index_exp), inner) =
-          &lhs.kind
-          && let ExpKind::Name(name) = &inner.kind
-          && let Some((memory, stride)) =
-            state.dynamic_array_memory.get(name).copied()
-        {
-          let index_slot =
-            index_exp.compile_to_bytecode(false, state).unwrap();
-          let src_slot = rhs.compile_to_bytecode(false, state).unwrap();
-          state.push_instruction(Instruction {
-            op: Op::DynStore,
-            arg_positions: [memory, index_slot, src_slot],
-            return_position: stride,
-          });
-          Some(None)
         } else {
           None
         }
@@ -2391,6 +2448,14 @@ impl TypedExp {
         } else {
           None
         };
+        if let Some(result) =
+          self.try_compile_dyn_array_builtin(&f_name, args, state)
+        {
+          if let Some(writes) = &cpu_write_marks {
+            state.emit_write_marks(writes);
+          }
+          return result;
+        }
         if state.cpu_mode
           && let Some(result) =
             self.try_compile_cpu_builtin(&f_name, args, state)

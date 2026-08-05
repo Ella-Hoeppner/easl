@@ -76,3 +76,47 @@ macro_rules! audio_test {
 }
 
 audio_test!(audio_entry_with_dynamic_global);
+audio_test!(load_wav);
+
+#[test]
+fn start_audio_copies_current_globals() {
+  // `start-audio` gives the starting audio program a one-time snapshot of
+  // every global's current value — slot-backed globals by word copy,
+  // runtime-sized arrays by dynamic-memory region clone. This drives the
+  // copy directly (compiling the same program in cpu mode and audio mode)
+  // rather than through `start-audio`, which would open a real audio
+  // stream.
+  use easl::vm::bytecode::DynMemory;
+  let source_path = Path::new("./data/audio/copy_globals.easl");
+  let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
+  else {
+    panic!("failed to load program");
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  let (mut audio_program, audio_names) =
+    program.clone().compile_to_bytecode_program();
+  let (mut main_program, _) = program.compile_to_bytecode_program_cpu();
+
+  // simulate what the cpu program would have computed by start-audio time
+  main_program.write_global("gain", &[0.75f32.to_bits()]);
+  let (region, _) = main_program.get_dyn_memory_region("sample").unwrap();
+  main_program.dyn_memory[region as usize] = DynMemory::Words(
+    [1.0f32, 2.0, 3.0, 4.0].iter().map(|s| s.to_bits()).collect(),
+  );
+
+  easl::interpreter::copy_globals_into_audio_program_from_vm(
+    &main_program.stack,
+    &main_program.dyn_memory,
+    &main_program.code,
+    &mut audio_program,
+  );
+
+  let f_index = audio_names.iter().position(|n| &**n == "f").unwrap();
+  audio_program.prepare_to_run_function(f_index);
+  audio_program.execute();
+  let slot = audio_program.get_function_return_position(f_index);
+  let result = f32::from_bits(audio_program.stack[slot as usize]);
+  // gain (0.75, overwritten from its 0.5 initializer) * sample[2] (3.0)
+  assert_eq!(result, 2.25);
+}

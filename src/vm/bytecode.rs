@@ -477,6 +477,9 @@ pub enum HostOp {
   /// Suspends the current (frame) execution; the frame loop stops.
   CloseWindow,
   StartAudio { entry: u16 },
+  /// `(= dyn-array-global (load-wav "path"))`: parse the WAV file and
+  /// store its samples as f32 words in the dynamic-memory region.
+  AssignDynFromWav { memory: u16, path: u16 },
   /// `(= texture-global (load-image "path"))`
   AssignTextureFromImage { binding: u16, path: u16 },
   /// `(= texture-global (blank-texture w h))` — 2 u32 slots at `size_slot`.
@@ -561,6 +564,18 @@ pub struct Code {
   /// Number of runtime-sized array globals; sizes
   /// `BytecodeProgram::dyn_memory`.
   pub dyn_memory_count: u16,
+  /// Name, region index, and element stride (in u32 words) of each
+  /// runtime-sized array global — the dynamic-memory analog of `globals`,
+  /// for locating regions by name (e.g. the one-time global copy into a
+  /// starting audio program, or external hosts streaming sample data).
+  pub dyn_memory_regions: Vec<(Arc<str>, u16, u16)>,
+  /// Type of each slot-backed global, aligned with `globals`. Used when
+  /// global values must cross between representations (e.g. serializing
+  /// tree-walker `Value`s into a starting audio program's slots).
+  pub global_types: Vec<Type>,
+  /// Array type of each runtime-sized global, aligned with
+  /// `dyn_memory_regions`.
+  pub dyn_memory_types: Vec<Type>,
 }
 
 pub struct BytecodeProgram {
@@ -606,6 +621,16 @@ impl BytecodeProgram {
   }
   pub fn get_function_return_position(&self, function_index: usize) -> u16 {
     self.code.functions[function_index].return_position
+  }
+  /// Dynamic-memory region index and element stride of the runtime-sized
+  /// array global named `name`.
+  pub fn get_dyn_memory_region(&self, name: &str) -> Option<(u16, u16)> {
+    self
+      .code
+      .dyn_memory_regions
+      .iter()
+      .find(|(n, _, _)| &**n == name)
+      .map(|&(_, region, stride)| (region, stride))
   }
   /// Base stack slot and size (in u32 slots) of the global named `name`.
   pub fn get_global_slot(&self, name: &str) -> Option<(u16, u16)> {
