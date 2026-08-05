@@ -2865,6 +2865,166 @@ pub enum SharedBufferState {
   GPUOutOfDate,
 }
 
+/// The GPU-facing interface of a validated program: everything `GpuCore`
+/// creation needs, derivable without constructing an evaluation
+/// environment. Environment construction goes through this too, so
+/// embedders that create the `GpuCore` themselves before spawning the
+/// runtime (e.g. easl_studio) can never diverge from the runtime's own
+/// derivation.
+pub struct DerivedGpuInterface {
+  pub binding_vars:
+    Vec<(GroupAndBinding, Arc<str>, Type, VariableAddressSpace)>,
+  pub binding_stages: HashMap<Arc<str>, BindingStages>,
+  pub gpu_entries: Vec<GpuEntryInfo>,
+  /// Source-level entry name -> dense id into `gpu_entries`.
+  pub gpu_entry_ids: HashMap<Arc<str>, u16>,
+}
+
+impl DerivedGpuInterface {
+  pub fn binding_infos(&self) -> Vec<GpuBindingInfo> {
+    gpu_binding_infos_from(&self.binding_vars, &self.binding_stages)
+  }
+}
+
+fn gpu_binding_infos_from(
+  binding_vars: &[(GroupAndBinding, Arc<str>, Type, VariableAddressSpace)],
+  binding_stages: &HashMap<Arc<str>, BindingStages>,
+) -> Vec<GpuBindingInfo> {
+  binding_vars
+    .iter()
+    .map(|(gb, name, ty, addr)| {
+      let kind = match addr {
+        VariableAddressSpace::Uniform => GpuBufferKind::Uniform,
+        VariableAddressSpace::StorageRead => GpuBufferKind::StorageReadOnly,
+        VariableAddressSpace::StorageReadWrite => {
+          GpuBufferKind::StorageReadWrite
+        }
+        VariableAddressSpace::Handle => GpuBufferKind::Texture2D,
+        _ => unreachable!(),
+      };
+      // Textures have no buffer size (handled separately in window.rs).
+      // 0 for unsized arrays → size handled dynamically in window.rs.
+      let size = if kind == GpuBufferKind::Texture2D {
+        0
+      } else {
+        let u32s = ty.wgsl_data_size_in_u32s();
+        if u32s == 0 {
+          0
+        } else {
+          ((u32s as u64 * 4).max(4) + 15) & !15
+        }
+      };
+      GpuBindingInfo {
+        group: gb.group,
+        binding: gb.binding,
+        name: name.clone(),
+        kind,
+        byte_size: size,
+        stages: binding_stages.get(name).copied().unwrap_or_default(),
+      }
+    })
+    .collect()
+}
+
+/// Derives the [`DerivedGpuInterface`] of a validated program.
+pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
+  let binding_vars: Vec<(
+    GroupAndBinding,
+    Arc<str>,
+    Type,
+    VariableAddressSpace,
+  )> = program
+    .top_level_vars
+    .iter()
+    .filter_map(|var| {
+      if let TopLevelVariableKind::Var {
+        address_space,
+        group_and_binding: Some(gb),
+      } = var.kind
+      {
+        matches!(
+          address_space,
+          VariableAddressSpace::Uniform
+            | VariableAddressSpace::StorageRead
+            | VariableAddressSpace::StorageReadWrite
+            | VariableAddressSpace::Handle
+        )
+        .then(|| (gb, var.name.clone(), var.var_type.clone(), address_space))
+      } else {
+        None
+      }
+    })
+    .collect();
+  // Which shader stages actually touch each GPU-bound global: union the
+  // transitive effect read/write sets of every GPU entry point (this
+  // covers implicit dispatched-closure scope bindings too — the scope
+  // rewrite marks their reads as global). `gpu_read_and_written_globals`
+  // rather than `read_and_written_globals`: length-only reads still
+  // require the binding to be visible, since WGSL's arrayLength derives
+  // from buffer size.
+  let mut binding_stages: HashMap<Arc<str>, BindingStages> = HashMap::new();
+  // Dense GPU entry table: every vertex/fragment/compute entry point gets
+  // an id (its index), its WGSL-compiled name, and the (group, binding)
+  // keys of the buffer bindings its code transitively references — the
+  // basis for per-pipeline bind group layouts in window.rs. Sorted by
+  // name so ids are deterministic across runs.
+  let group_and_binding_by_name: HashMap<&Arc<str>, (u8, u8)> = binding_vars
+    .iter()
+    .map(|(gb, name, _, _)| (name, (gb.group, gb.binding)))
+    .collect();
+  let mut gpu_entries: Vec<GpuEntryInfo> = vec![];
+  let mut gpu_entry_ids: HashMap<Arc<str>, u16> = HashMap::new();
+  let mut entry_fns: Vec<(Arc<str>, EntryPoint, EffectType)> = vec![];
+  for f in program.abstract_functions_iter() {
+    let f = f.read().unwrap();
+    let Some(entry) = f.entry_point else {
+      continue;
+    };
+    let FunctionImplementationKind::Composite(implementation) =
+      &f.implementation
+    else {
+      continue;
+    };
+    let effects = implementation.read().unwrap().effects();
+    if !matches!(entry, EntryPoint::Cpu | EntryPoint::Audio) {
+      entry_fns.push((f.name.clone(), entry, effects.clone()));
+    }
+    let (reads, writes) = effects.gpu_read_and_written_globals();
+    for name in reads.into_iter().chain(writes.into_iter()) {
+      let stages = binding_stages.entry(name).or_default();
+      match entry {
+        EntryPoint::Vertex => stages.vertex = true,
+        EntryPoint::Fragment => stages.fragment = true,
+        EntryPoint::Compute(_) => stages.compute = true,
+        EntryPoint::Cpu | EntryPoint::Audio => {}
+      }
+    }
+  }
+  entry_fns.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
+  for (name, _, effects) in entry_fns {
+    let (reads, writes) = effects.gpu_read_and_written_globals();
+    let mut used_bindings: Vec<(u8, u8)> = vec![];
+    for global in reads.into_iter().chain(writes.into_iter()) {
+      if let Some(key) = group_and_binding_by_name.get(&global) {
+        if !used_bindings.contains(key) {
+          used_bindings.push(*key);
+        }
+      }
+    }
+    gpu_entry_ids.insert(name.clone(), gpu_entries.len() as u16);
+    gpu_entries.push(GpuEntryInfo {
+      name: name.replace('-', "_"),
+      used_bindings,
+    });
+  }
+  DerivedGpuInterface {
+    binding_vars,
+    binding_stages,
+    gpu_entries,
+    gpu_entry_ids,
+  }
+}
+
 /// One frame of a `spawn-window` loop, abstracted over the executing
 /// backend. The tree-walking interpreter and the bytecode-VM CPU runtime
 /// each implement this; the per-IO-manager frame loops (real winit window,
@@ -2879,6 +3039,18 @@ pub trait FrameDriver {
   /// Runs the frame body once. `Err(EvalException::CloseWindow)` stops the
   /// frame loop.
   fn run_frame(&mut self) -> Result<(), EvalException>;
+  /// Overwrites the CPU-side value of the GPU-bound global at (`group`,
+  /// `binding`) from raw GPU-layout bytes, marking it synced. For embedders
+  /// whose IO manager owns a binding's GPU buffer and streams its live
+  /// value into the running program each frame (easl_studio's sliders).
+  /// Default: no-op.
+  fn overwrite_binding_bytes(
+    &mut self,
+    _group: u8,
+    _binding: u8,
+    _bytes: &[u8],
+  ) {
+  }
 }
 
 /// Tree-walking-interpreter frame driver: evaluates the callback body once
@@ -2905,6 +3077,9 @@ impl<IO: IOManager> FrameDriver for AstFrameDriver<'_, IO> {
   fn run_frame(&mut self) -> Result<(), EvalException> {
     self.env.refresh_window_info_bindings();
     eval(self.body.clone(), self.env).map(|_| ())
+  }
+  fn overwrite_binding_bytes(&mut self, group: u8, binding: u8, bytes: &[u8]) {
+    self.env.overwrite_binding_from_gpu_bytes(group, binding, bytes);
   }
 }
 
@@ -3903,99 +4078,16 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       crate::audio::AudioSource,
     >,
   ) -> Result<Self, EvalError> {
-    let binding_vars: Vec<(
-      GroupAndBinding,
-      Arc<str>,
-      Type,
-      VariableAddressSpace,
-    )> = program
-      .top_level_vars
-      .iter()
-      .filter_map(|var| {
-        if let TopLevelVariableKind::Var {
-          address_space,
-          group_and_binding: Some(gb),
-        } = var.kind
-        {
-          matches!(
-            address_space,
-            VariableAddressSpace::Uniform
-              | VariableAddressSpace::StorageRead
-              | VariableAddressSpace::StorageReadWrite
-              | VariableAddressSpace::Handle
-          )
-          .then(|| (gb, var.name.clone(), var.var_type.clone(), address_space))
-        } else {
-          None
-        }
-      })
-      .collect();
+    let DerivedGpuInterface {
+      binding_vars,
+      binding_stages,
+      gpu_entries,
+      gpu_entry_ids,
+    } = derive_gpu_interface(&program);
     let buffer_states = binding_vars
       .iter()
       .map(|(_, name, _, _)| (name.clone(), SharedBufferState::GPUOutOfDate))
       .collect();
-    // Which shader stages actually touch each GPU-bound global: union the
-    // transitive effect read/write sets of every GPU entry point (this
-    // covers implicit dispatched-closure scope bindings too — the scope
-    // rewrite marks their reads as global). `gpu_read_and_written_globals`
-    // rather than `read_and_written_globals`: length-only reads still
-    // require the binding to be visible, since WGSL's arrayLength derives
-    // from buffer size.
-    let mut binding_stages: HashMap<Arc<str>, BindingStages> = HashMap::new();
-    // Dense GPU entry table: every vertex/fragment/compute entry point gets
-    // an id (its index), its WGSL-compiled name, and the (group, binding)
-    // keys of the buffer bindings its code transitively references — the
-    // basis for per-pipeline bind group layouts in window.rs. Sorted by
-    // name so ids are deterministic across runs.
-    let group_and_binding_by_name: HashMap<&Arc<str>, (u8, u8)> = binding_vars
-      .iter()
-      .map(|(gb, name, _, _)| (name, (gb.group, gb.binding)))
-      .collect();
-    let mut gpu_entries: Vec<GpuEntryInfo> = vec![];
-    let mut gpu_entry_ids: HashMap<Arc<str>, u16> = HashMap::new();
-    let mut entry_fns: Vec<(Arc<str>, EntryPoint, EffectType)> = vec![];
-    for f in program.abstract_functions_iter() {
-      let f = f.read().unwrap();
-      let Some(entry) = f.entry_point else {
-        continue;
-      };
-      let FunctionImplementationKind::Composite(implementation) =
-        &f.implementation
-      else {
-        continue;
-      };
-      let effects = implementation.read().unwrap().effects();
-      if !matches!(entry, EntryPoint::Cpu | EntryPoint::Audio) {
-        entry_fns.push((f.name.clone(), entry, effects.clone()));
-      }
-      let (reads, writes) = effects.gpu_read_and_written_globals();
-      for name in reads.into_iter().chain(writes.into_iter()) {
-        let stages = binding_stages.entry(name).or_default();
-        match entry {
-          EntryPoint::Vertex => stages.vertex = true,
-          EntryPoint::Fragment => stages.fragment = true,
-          EntryPoint::Compute(_) => stages.compute = true,
-          EntryPoint::Cpu | EntryPoint::Audio => {}
-        }
-      }
-    }
-    entry_fns.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
-    for (name, _, effects) in entry_fns {
-      let (reads, writes) = effects.gpu_read_and_written_globals();
-      let mut used_bindings: Vec<(u8, u8)> = vec![];
-      for global in reads.into_iter().chain(writes.into_iter()) {
-        if let Some(key) = group_and_binding_by_name.get(&global) {
-          if !used_bindings.contains(key) {
-            used_bindings.push(*key);
-          }
-        }
-      }
-      gpu_entry_ids.insert(name.clone(), gpu_entries.len() as u16);
-      gpu_entries.push(GpuEntryInfo {
-        name: name.replace('-', "_"),
-        used_bindings,
-      });
-    }
     let mut env = Self {
       wgsl: String::new(),
       bindings: HashMap::new(),
@@ -4124,45 +4216,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   /// Returns a `GpuBindingInfo` for each GPU-bound variable. `byte_size` is
   /// 0 for dynamically-sized (unsized array) bindings.
   pub fn binding_infos(&self) -> Vec<GpuBindingInfo> {
-    self
-      .binding_vars
-      .iter()
-      .map(|(gb, name, ty, addr)| {
-        let kind = match addr {
-          VariableAddressSpace::Uniform => GpuBufferKind::Uniform,
-          VariableAddressSpace::StorageRead => GpuBufferKind::StorageReadOnly,
-          VariableAddressSpace::StorageReadWrite => {
-            GpuBufferKind::StorageReadWrite
-          }
-          VariableAddressSpace::Handle => GpuBufferKind::Texture2D,
-          _ => unreachable!(),
-        };
-        // Textures have no buffer size (handled separately in window.rs).
-        // 0 for unsized arrays → size handled dynamically in window.rs.
-        let size = if kind == GpuBufferKind::Texture2D {
-          0
-        } else {
-          let u32s = ty.wgsl_data_size_in_u32s();
-          if u32s == 0 {
-            0
-          } else {
-            ((u32s as u64 * 4).max(4) + 15) & !15
-          }
-        };
-        GpuBindingInfo {
-          group: gb.group,
-          binding: gb.binding,
-          name: name.clone(),
-          kind,
-          byte_size: size,
-          stages: self
-            .binding_stages
-            .get(name)
-            .copied()
-            .unwrap_or_default(),
-        }
-      })
-      .collect()
+    gpu_binding_infos_from(&self.binding_vars, &self.binding_stages)
   }
 
   /// Returns the current byte representation of each GPU-bound variable,
@@ -6243,6 +6297,42 @@ impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
         ))
       }
       Err(e) => Err(EvalException::Error(e)),
+    }
+  }
+  fn overwrite_binding_bytes(&mut self, group: u8, binding: u8, bytes: &[u8]) {
+    use crate::vm::bytecode::HostBindingStorage;
+    if !self.env.overwrite_binding_from_gpu_bytes(group, binding, bytes) {
+      return;
+    }
+    // The env's `Value` copy is a mirror; write through to the
+    // VM-authoritative storage too (the same direction as a GPU readback).
+    for (index, host_binding) in
+      self.program.code.host_bindings.iter().enumerate()
+    {
+      let Some((g, b, _)) = host_binding.gpu else {
+        continue;
+      };
+      if g != group || b != binding {
+        continue;
+      }
+      let Ok(value) = self.env.lookup(&host_binding.name) else {
+        continue;
+      };
+      match host_binding.storage {
+        HostBindingStorage::Slots { position, size } => {
+          let words = value.to_vm_words(&host_binding.ty);
+          let n = (size as usize).min(words.len());
+          self.program.stack[position as usize..position as usize + n]
+            .copy_from_slice(&words[..n]);
+          self.slots_dirty[index] = false;
+        }
+        HostBindingStorage::DynamicMemory { memory } => {
+          self.program.dyn_memory[memory as usize] =
+            value_into_dyn_memory(value, &host_binding.ty);
+          self.slots_dirty[index] = false;
+        }
+        HostBindingStorage::Dynamic => {}
+      }
     }
   }
 }
