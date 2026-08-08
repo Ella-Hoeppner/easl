@@ -1,0 +1,8 @@
+main-publish: level
+spawn-window
+frame 0
+main-publish: level
+external-read: level = 0.25
+frame 1
+main-publish: level
+external-read: level = 0.5

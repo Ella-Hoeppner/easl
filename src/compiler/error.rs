@@ -320,6 +320,12 @@ pub enum CompileErrorKind {
   DisallowedInitializationValue(VariableAddressSpace),
   #[error("Unsized arrays are not allowed in the `uniform` address space")]
   UnsizedArrayInUniform,
+  #[error(
+    "Texture variables may not be marked `@external`: textures have no \
+     word-level serialization, so they can't be shared with an external \
+     system"
+  )]
+  ExternalTextureVar,
   #[error("The name `{0}` is used for more than one top-level variable")]
   VariableNameCollision(String),
   #[error("The name `{0}` is used as both a variable name and a function name")]

@@ -114,6 +114,10 @@ pub struct TopLevelVar {
   pub var_type: Type,
   pub value: Option<TypedExp>,
   pub source_trace: SourceTrace,
+  /// Marked `@external`: an embedder may read/write this var through an
+  /// `ExternalVars` handle at any time, so it's unconditionally included in
+  /// the thread-shared set (the static analysis can't see external access).
+  pub external: bool,
 }
 
 impl TopLevelVar {
@@ -144,6 +148,7 @@ impl TopLevelVar {
               match Type::from_easl_tree(type_ast, &program.typedefs, &vec![]) {
                 Err(e) => errors.log(e),
                 Ok(t) => {
+                  let mut external = false;
                   let (group_and_binding, address_space) =
                     if let Some(annotation) = &annotation {
                       match annotation.validate_as_top_level_var_data() {
@@ -151,7 +156,8 @@ impl TopLevelVar {
                           errors.log(e);
                           None
                         }
-                        Ok((group_and_binding, address_space)) => {
+                        Ok((group_and_binding, address_space, is_external)) => {
+                          external = is_external;
                           if let Some(address_space) = address_space {
                             if let Some(required) = t.required_address_space() {
                               if address_space == required {
@@ -197,6 +203,13 @@ impl TopLevelVar {
                           } else {
                             if let Some(required) = t.required_address_space() {
                               Some((group_and_binding, required))
+                            } else if group_and_binding.is_none()
+                              && is_external
+                            {
+                              // The annotation was just `@external`; the
+                              // address space defaults the same way an
+                              // unannotated var's would.
+                              Some((None, VariableAddressSpace::default()))
                             } else {
                               errors.log(CompileError::new(
                                 NeedAddressAnnotation,
@@ -231,6 +244,14 @@ impl TopLevelVar {
                       parens_source_trace.clone(),
                     ));
                   }
+                  if external && address_space == Handle {
+                    // Textures have no word serialization, so they can't
+                    // travel through the shared-snapshot system.
+                    errors.log(CompileError::new(
+                      ExternalTextureVar,
+                      parens_source_trace.clone(),
+                    ));
+                  }
                   let value = value_ast
                     .map(|value_ast| {
                       match TypedExp::try_from_easl_tree(
@@ -262,6 +283,7 @@ impl TopLevelVar {
                     var_type: t,
                     value,
                     source_trace: parens_source_trace.clone(),
+                    external,
                     kind: TopLevelVariableKind::Var {
                       address_space,
                       group_and_binding,
@@ -303,6 +325,7 @@ impl TopLevelVar {
                         var_type: t,
                         value: Some(value_expression),
                         source_trace: parens_source_trace.clone(),
+                        external: false,
                         kind: if var_kind_name == "override" {
                           TopLevelVariableKind::Override
                         } else {

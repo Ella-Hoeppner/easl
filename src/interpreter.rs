@@ -28,6 +28,8 @@ use crate::compiler::effects::{
   EffectType, WindowInfoBindingSource, WindowInfoKind,
 };
 use crate::compiler::entry::EntryPoint;
+use crate::external::ExternalVars;
+use crate::thread_sync::participant;
 #[cfg(all(feature = "window", feature = "c_audio"))]
 use crate::compiler::core::compile_easl_file_to_target;
 
@@ -1888,8 +1890,10 @@ fn apply_builtin_fn<IO: IOManager>(
           shared_table, ..
         }) = &mut source
         {
-          env.shared_table.activate();
-          env.publish_shared_globals(true);
+          env
+            .shared_table
+            .join(participant::AUDIO);
+          env.publish_shared_globals(participant::AUDIO);
           *shared_table = Some(env.shared_table.clone());
         }
         env
@@ -3086,7 +3090,7 @@ impl<IO: IOManager> FrameDriver for AstFrameDriver<'_, IO> {
     // Publish on success and on close-window (the frame's writes are still
     // real); genuine errors abort the run, so skip the publish.
     if matches!(result, Ok(()) | Err(EvalException::CloseWindow)) {
-      self.env.publish_shared_globals(false);
+      self.env.publish_shared_globals(0);
     }
     result
   }
@@ -4063,10 +4067,11 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   /// decides what to do (noop if a stream is already running, error if not).
   #[cfg(feature = "window")]
   audio_source: Option<crate::audio::AudioSource>,
-  /// Thread-shared globals (see `Program::thread_shared_globals`), sorted
-  /// by name; index-aligned with `shared_table` slots and every compiled
-  /// artifact's `Code::shared_vars`.
-  shared_globals: Vec<(Arc<str>, Type)>,
+  /// Thread-shared globals (see `Program::thread_shared_globals`) with
+  /// their audience masks, sorted by name; index-aligned with
+  /// `shared_table` slots and every compiled artifact's
+  /// `Code::shared_vars`.
+  shared_globals: Vec<(Arc<str>, Type, u32)>,
   /// The cross-thread coordination table for this run. Handed to the audio
   /// thread at `start-audio`.
   shared_table: Arc<crate::thread_sync::ThreadSharedTable>,
@@ -4089,7 +4094,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     #[cfg(feature = "window")]
     return Self::from_program_with_audio_source(program, io, source_dir, None);
     #[cfg(not(feature = "window"))]
-    return Self::build(program, io, source_dir);
+    return Self::build_inner(program, io, source_dir, None);
   }
   #[cfg(feature = "window")]
   pub fn from_program_with_audio_source(
@@ -4098,15 +4103,17 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     source_dir: Option<PathBuf>,
     audio_source: Option<crate::audio::AudioSource>,
   ) -> Result<Self, EvalError> {
-    Self::build_inner(program, io, source_dir, audio_source)
+    Self::build_inner(program, io, source_dir, audio_source, None)
   }
-  #[cfg(not(feature = "window"))]
-  fn build(
+  #[cfg(feature = "window")]
+  pub fn from_program_with_audio_source_and_external(
     program: Program,
     io: IO,
     source_dir: Option<PathBuf>,
+    audio_source: Option<crate::audio::AudioSource>,
+    external_vars: Option<Arc<ExternalVars>>,
   ) -> Result<Self, EvalError> {
-    Self::build_inner(program, io, source_dir)
+    Self::build_inner(program, io, source_dir, audio_source, external_vars)
   }
   fn build_inner(
     program: Program,
@@ -4115,6 +4122,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     #[cfg(feature = "window")] audio_source: Option<
       crate::audio::AudioSource,
     >,
+    external_vars: Option<Arc<ExternalVars>>,
   ) -> Result<Self, EvalError> {
     let DerivedGpuInterface {
       binding_vars,
@@ -4122,31 +4130,33 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       gpu_entries,
       gpu_entry_ids,
     } = derive_gpu_interface(&program);
-    let shared_names = program.thread_shared_globals();
-    let shared_globals: Vec<(Arc<str>, Type)> = shared_names
-      .iter()
-      .map(|name| {
-        (
-          name.clone(),
-          program
-            .top_level_vars
-            .iter()
-            .find(|v| &v.name == name)
-            .expect("thread-shared global missing from top-level vars")
-            .var_type
-            .clone(),
-        )
+    let shared_globals: Vec<(Arc<str>, Type, u32)> = program
+      .thread_shared_globals()
+      .into_iter()
+      .map(|(name, audience)| {
+        let ty = program
+          .top_level_vars
+          .iter()
+          .find(|v| v.name == name)
+          .expect("thread-shared global missing from top-level vars")
+          .var_type
+          .clone();
+        (name, ty, audience)
       })
       .collect();
-    let shared_indices: HashMap<Arc<str>, usize> = shared_names
+    let shared_indices: HashMap<Arc<str>, usize> = shared_globals
       .iter()
       .enumerate()
-      .map(|(index, name)| (name.clone(), index))
+      .map(|(index, (name, _, _))| (name.clone(), index))
       .collect();
-    let shared_table =
-      Arc::new(crate::thread_sync::ThreadSharedTable::new(
-        shared_globals.len(),
-      ));
+    let shared_table = external_vars
+      .as_ref()
+      .map(|handle| handle.table_for_env(shared_globals.len()))
+      .unwrap_or_else(|| {
+        Arc::new(crate::thread_sync::ThreadSharedTable::new(
+          shared_globals.len(),
+        ))
+      });
     let buffer_states = binding_vars
       .iter()
       .map(|(_, name, _, _)| (name.clone(), SharedBufferState::GPUOutOfDate))
@@ -4496,11 +4506,15 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     }
   }
 
-  /// Publishes snapshots of dirty thread-shared globals to the shared table
-  /// (all of them when `force_all` — used for the bootstrap publish at
-  /// `start-audio`). Called at the end of every frame. No-op until the
-  /// table is activated by `start-audio`, so windowed programs without
-  /// audio pay nothing here.
+  /// Publishes snapshots of dirty thread-shared globals to the shared
+  /// table, acting as the main-thread participant — plus any var whose
+  /// audience intersects `force_mask` regardless of dirtiness (the
+  /// `start-audio` bootstrap passes `participant::AUDIO` so the new
+  /// replica can adopt the current state of everything it can see).
+  /// Called at the end of every frame. A var is published only when some
+  /// *other* live participant is in its audience, so programs with no
+  /// second participant pay one atomic load per boundary and nothing
+  /// else.
   ///
   /// The GPU participates in the sharing system through this boundary: it
   /// has no publish loop of its own, so when the newest value of a shared
@@ -4511,11 +4525,16 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   /// cost, paid only for genuinely-shared GPU-written variables and only
   /// while another thread is live; the `gpu_write_audio_read` /
   /// `gpu_write_no_audio_no_readback` goldens pin both sides.
-  pub fn publish_shared_globals(&mut self, force_all: bool) {
-    if !self.shared_table.is_active() {
+  pub fn publish_shared_globals(&mut self, force_mask: u32) {
+    let live_others = self.shared_table.live_others(participant::MAIN);
+    if live_others == 0 {
       return;
     }
     for index in 0..self.shared_globals.len() {
+      let audience = self.shared_globals[index].2;
+      if audience & live_others == 0 {
+        continue;
+      }
       let gpu_fresh = {
         let name = &self.shared_globals[index].0;
         self.buffer_states.get(name)
@@ -4525,10 +4544,17 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         let name = self.shared_globals[index].0.clone();
         self.check_cpu_readable(&[name]);
       }
-      if !(force_all || gpu_fresh || self.shared_dirty[index]) {
+      // Forced (bootstrap) publishes are gap-filling only: restricted to
+      // vars in main's own audience, and skipped when a snapshot already
+      // exists — overwriting one would clobber another participant's
+      // state (see the matching guard in `vm::shared_sync::publish_shared`).
+      let forced = audience & force_mask != 0
+        && audience & participant::MAIN != 0
+        && !self.shared_table.slots[index].has_published();
+      if !(forced || gpu_fresh || self.shared_dirty[index]) {
         continue;
       }
-      let (name, ty) = self.shared_globals[index].clone();
+      let (name, ty, _) = self.shared_globals[index].clone();
       let Some((value, _)) =
         self.bindings.get(&name).and_then(|stack| stack.last())
       else {
@@ -4559,22 +4585,51 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     }
   }
 
-  /// Adopts any shared-global snapshots published by other threads since we
-  /// last looked. Called at the start of every frame. For GPU-bound
-  /// globals the adopted value marks the buffer GPUOutOfDate directly (not
-  /// via `mark_cpu_written`, which would re-dirty the shared flag and
+  /// Entry-start bootstrap for embedder-facing (`@external`) vars: adopt
+  /// anything the handle pre-seeded (so even the first frame sees it),
+  /// then publish the program-computed initial value of any external var
+  /// the embedder hasn't seeded — this is how `read_external_var`
+  /// observes initializer values. No-op unless an external handle is
+  /// live.
+  pub fn bootstrap_external_globals(&mut self) {
+    if self.shared_table.live_others(participant::MAIN)
+      & participant::EXTERNAL
+      == 0
+    {
+      return;
+    }
+    self.adopt_shared_globals();
+    for index in 0..self.shared_globals.len() {
+      if self.shared_globals[index].2 & participant::EXTERNAL != 0
+        && !self.shared_table.slots[index].has_published()
+      {
+        self.shared_dirty[index] = true;
+      }
+    }
+    self.publish_shared_globals(0);
+  }
+
+  /// Adopts any shared-global snapshots published by other participants
+  /// since we last looked, skipping vars outside the main thread's own
+  /// audience (an audio↔embedder var flows between those two directly).
+  /// Called at the start of every frame. For GPU-bound globals the
+  /// adopted value marks the buffer GPUOutOfDate directly (not via
+  /// `mark_cpu_written`, which would re-dirty the shared flag and
   /// ping-pong the value back at the next boundary).
   pub fn adopt_shared_globals(&mut self) {
-    if !self.shared_table.is_active() {
+    if self.shared_table.live_others(participant::MAIN) == 0 {
       return;
     }
     for index in 0..self.shared_globals.len() {
+      if self.shared_globals[index].2 & participant::MAIN == 0 {
+        continue;
+      }
       let Some(snapshot) = self.shared_table.slots[index]
         .adopt_if_newer(self.shared_adopted[index])
       else {
         continue;
       };
-      let (name, ty) = self.shared_globals[index].clone();
+      let (name, ty, _) = self.shared_globals[index].clone();
       let value = shared_words_to_value(&snapshot.words, &ty);
       self.shared_adopted[index] = snapshot.version;
       drop(snapshot);
@@ -5706,6 +5761,7 @@ fn run_program_with<IO: IOManager>(
 ) -> Result<(IO, bool), EvalError> {
   let body = pick_entry_point_body(&program, entry_point_name)?;
   let mut env = EvaluationEnvironment::from_program(program, io, source_dir)?;
+  env.bootstrap_external_globals();
   match eval(body, &mut env) {
     Ok(_) => Ok((env.io, false)),
     Err(EvalException::ReloadRequested) => Ok((env.io, true)),
@@ -5720,14 +5776,18 @@ fn run_program_with_audio_source<IO: IOManager>(
   io: IO,
   source_dir: Option<PathBuf>,
   audio_source: Option<crate::audio::AudioSource>,
+  external_vars: Option<Arc<ExternalVars>>,
 ) -> Result<(IO, bool), EvalError> {
   let body = pick_entry_point_body(&program, entry_point_name)?;
-  let mut env = EvaluationEnvironment::from_program_with_audio_source(
-    program,
-    io,
-    source_dir,
-    audio_source,
-  )?;
+  let mut env =
+    EvaluationEnvironment::from_program_with_audio_source_and_external(
+      program,
+      io,
+      source_dir,
+      audio_source,
+      external_vars,
+    )?;
+  env.bootstrap_external_globals();
   match eval(body, &mut env) {
     Ok(_) => Ok((env.io, false)),
     Err(EvalException::ReloadRequested) => Ok((env.io, true)),
@@ -5920,7 +5980,7 @@ fn load_wav_samples(
 }
 
 /// Number of u32 words a type occupies in the VM's flat layout.
-fn vm_words_of(t: &Type) -> usize {
+pub(crate) fn vm_words_of(t: &Type) -> usize {
   t.data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
     .unwrap() as usize
 }
@@ -5928,7 +5988,7 @@ fn vm_words_of(t: &Type) -> usize {
 /// Flattens a global's `Value` into the VM word layout used by shared
 /// snapshots — arrays element-by-element (a `ZeroedArray` materializes as
 /// zero words), everything else via `to_vm_words`.
-fn value_to_shared_words(value: &Value, ty: &Type) -> Vec<u32> {
+pub(crate) fn value_to_shared_words(value: &Value, ty: &Type) -> Vec<u32> {
   if let Type::Array(_, element_type) = ty {
     let element_type = element_type.kind.unwrap_known();
     let stride = vm_words_of(&element_type).max(1);
@@ -5946,7 +6006,7 @@ fn value_to_shared_words(value: &Value, ty: &Type) -> Vec<u32> {
 }
 
 /// The reverse of `value_to_shared_words`.
-fn shared_words_to_value(words: &[u32], ty: &Type) -> Value {
+pub(crate) fn shared_words_to_value(words: &[u32], ty: &Type) -> Value {
   if let Type::Array(_, element_type) = ty {
     let element_type = element_type.kind.unwrap_known();
     let stride = vm_words_of(&element_type).max(1);
@@ -6334,7 +6394,7 @@ fn vm_host_call<IO: IOManager>(
         }) = &mut source
         {
           let table = env.shared_table.clone();
-          table.activate();
+          table.join(participant::AUDIO);
           // GPU-proxy pass: a shared binding whose newest value lives on
           // the GPU must be read back before the bootstrap publish, so the
           // audio replica's first adopt sees the true current state (the
@@ -6366,7 +6426,8 @@ fn vm_host_call<IO: IOManager>(
             &mut shared,
             &code.shared_vars,
             &table,
-            true,
+            participant::MAIN,
+            participant::AUDIO,
             |index| {
               env
                 .io
@@ -6478,108 +6539,139 @@ struct VmFrameDriver<'a, IO: IOManager> {
   frame_fn: usize,
 }
 
-impl<IO: IOManager> VmFrameDriver<'_, IO> {
-  /// Adopts newer cross-thread snapshots into the VM replica at the frame
-  /// boundary, keeping the env's GPU sync state coherent: an adopted
-  /// GPU-bound global means the GPU's copy is now stale (GPUOutOfDate —
-  /// set directly, not via `mark_cpu_written`, which would re-dirty the
-  /// shared flag and ping-pong the value back at the next boundary) and
-  /// the env's mirror `Value` is stale relative to the VM's authoritative
-  /// storage (`slots_dirty`).
-  fn adopt_shared(&mut self) {
-    let table = self.env.shared_table.clone();
-    if !table.is_active() {
-      return;
-    }
-    // shared index -> (name, host-binding index, GPU-bound?), resolved
-    // before the adopt call so the hook can touch env state while the
-    // program is mutably borrowed. Only runs once another thread exists.
-    let coherence: Vec<(Arc<str>, Option<(usize, bool)>)> = self
-      .program
-      .code
-      .shared_vars
-      .iter()
-      .map(|info| {
-        (
-          info.name.clone(),
-          self
-            .program
-            .code
-            .host_bindings
-            .iter()
-            .position(|b| b.name == info.name)
-            .map(|j| {
-              (j, self.program.code.host_bindings[j].gpu.is_some())
-            }),
-        )
-      })
-      .collect();
-    let env = &mut *self.env;
-    let slots_dirty = &mut *self.slots_dirty;
-    self.program.adopt_shared(&table, |index| {
-      let (name, host_binding) = &coherence[index as usize];
-      if let Some((j, gpu_bound)) = host_binding {
-        slots_dirty[*j] = true;
-        if *gpu_bound {
-          env
-            .buffer_states
-            .insert(name.clone(), SharedBufferState::GPUOutOfDate);
-        }
-      }
-      env.io.record_shared_adopt(name);
-    });
+/// Adopts newer cross-thread snapshots into the VM replica at a main-thread
+/// boundary, keeping the env's GPU sync state coherent: an adopted
+/// GPU-bound global means the GPU's copy is now stale (GPUOutOfDate — set
+/// directly, not via `mark_cpu_written`, which would re-dirty the shared
+/// flag and ping-pong the value back at the next boundary) and the env's
+/// mirror `Value` is stale relative to the VM's authoritative storage
+/// (`slots_dirty`). Shared by the frame driver and the entry-start
+/// bootstrap.
+fn vm_adopt_shared<IO: IOManager>(
+  program: &mut crate::vm::bytecode::BytecodeProgram,
+  env: &mut EvaluationEnvironment<IO>,
+  slots_dirty: &mut Vec<bool>,
+) {
+  let table = env.shared_table.clone();
+  if table.live_others(participant::MAIN) == 0 {
+    return;
   }
-  /// Publishes the VM replica's dirty shared globals at the frame boundary.
-  /// First runs the GPU-proxy pass: any shared binding whose newest value
-  /// lives on the GPU (CPUOutOfDate) is read back into the VM replica and
-  /// force-published — the GPU has no boundary of its own, so this is what
-  /// makes GPU writes visible to the audio thread (see
-  /// `publish_shared_globals` for the tree-walker equivalent).
-  fn publish_shared(&mut self) -> Result<(), EvalError> {
-    let table = self.env.shared_table.clone();
-    if !table.is_active() {
-      return Ok(());
-    }
-    for index in 0..self.program.code.shared_vars.len() {
-      let name = &self.program.code.shared_vars[index].name;
-      if self.env.buffer_states.get(name)
-        != Some(&SharedBufferState::CPUOutOfDate)
-      {
-        continue;
+  // shared index -> (name, host-binding index, GPU-bound?), resolved
+  // before the adopt call so the hook can touch env state while the
+  // program is mutably borrowed. Only runs once another participant
+  // exists.
+  let coherence: Vec<(Arc<str>, Option<(usize, bool)>)> = program
+    .code
+    .shared_vars
+    .iter()
+    .map(|info| {
+      (
+        info.name.clone(),
+        program
+          .code
+          .host_bindings
+          .iter()
+          .position(|b| b.name == info.name)
+          .map(|j| (j, program.code.host_bindings[j].gpu.is_some())),
+      )
+    })
+    .collect();
+  program.adopt_shared(&table, participant::MAIN, |index| {
+    let (name, host_binding) = &coherence[index as usize];
+    if let Some((j, gpu_bound)) = host_binding {
+      slots_dirty[*j] = true;
+      if *gpu_bound {
+        env
+          .buffer_states
+          .insert(name.clone(), SharedBufferState::GPUOutOfDate);
       }
-      let Some(binding) = self
-        .program
-        .code
-        .host_bindings
-        .iter()
-        .position(|b| &b.name == name)
-      else {
-        continue;
-      };
-      let program = &mut *self.program;
-      readback_binding_into_vm(
-        self.env,
-        self.slots_dirty,
-        binding as u16,
-        &mut program.stack,
-        &mut program.dyn_memory,
-        &program.code,
-      )?;
+    }
+    env.io.record_shared_adopt(name);
+  });
+}
+
+/// Publishes the VM replica's dirty shared globals at a main-thread
+/// boundary (plus any var whose audience intersects `force_mask`). First
+/// runs the GPU-proxy pass: any *audible* shared binding whose newest
+/// value lives on the GPU (CPUOutOfDate) is read back into the VM replica
+/// and force-published — the GPU has no boundary of its own, so this is
+/// what makes GPU writes visible to the audio thread (see
+/// `publish_shared_globals` for the tree-walker equivalent).
+fn vm_publish_shared<IO: IOManager>(
+  program: &mut crate::vm::bytecode::BytecodeProgram,
+  env: &mut EvaluationEnvironment<IO>,
+  slots_dirty: &mut Vec<bool>,
+  force_mask: u32,
+) -> Result<(), EvalError> {
+  let table = env.shared_table.clone();
+  let live_others = table.live_others(participant::MAIN);
+  if live_others == 0 {
+    return Ok(());
+  }
+  for index in 0..program.code.shared_vars.len() {
+    let info = &program.code.shared_vars[index];
+    if info.audience & live_others == 0 {
+      continue;
+    }
+    let name = &info.name;
+    if env.buffer_states.get(name)
+      != Some(&SharedBufferState::CPUOutOfDate)
+    {
+      continue;
+    }
+    let Some(binding) = program
+      .code
+      .host_bindings
+      .iter()
+      .position(|b| &b.name == name)
+    else {
+      continue;
+    };
+    readback_binding_into_vm(
+      env,
+      slots_dirty,
+      binding as u16,
+      &mut program.stack,
+      &mut program.dyn_memory,
+      &program.code,
+    )?;
+    program.shared_dirty[index] = true;
+  }
+  let shared_names: Vec<Arc<str>> = program
+    .code
+    .shared_vars
+    .iter()
+    .map(|info| info.name.clone())
+    .collect();
+  program.publish_shared(&table, participant::MAIN, force_mask, |index| {
+    env.io.record_shared_publish(&shared_names[index as usize]);
+  });
+  Ok(())
+}
+
+/// Entry-start bootstrap for embedder-facing (`@external`) vars, VM side:
+/// adopt anything the handle pre-seeded (so even the first frame sees it),
+/// then publish the program-computed initial value of any external var the
+/// embedder hasn't seeded — this is how `read_external_var` observes
+/// initializer values. No-op unless an external handle is live.
+fn vm_bootstrap_external<IO: IOManager>(
+  program: &mut crate::vm::bytecode::BytecodeProgram,
+  env: &mut EvaluationEnvironment<IO>,
+  slots_dirty: &mut Vec<bool>,
+) -> Result<(), EvalError> {
+  let table = env.shared_table.clone();
+  if table.live_others(participant::MAIN) & participant::EXTERNAL == 0 {
+    return Ok(());
+  }
+  vm_adopt_shared(program, env, slots_dirty);
+  for index in 0..program.code.shared_vars.len() {
+    if program.code.shared_vars[index].audience & participant::EXTERNAL != 0
+      && !table.slots[index].has_published()
+    {
       program.shared_dirty[index] = true;
     }
-    let env = &mut *self.env;
-    let shared_names: Vec<Arc<str>> = self
-      .program
-      .code
-      .shared_vars
-      .iter()
-      .map(|info| info.name.clone())
-      .collect();
-    self.program.publish_shared(&table, false, |index| {
-      env.io.record_shared_publish(&shared_names[index as usize]);
-    });
-    Ok(())
   }
+  vm_publish_shared(program, env, slots_dirty, 0)
 }
 
 impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
@@ -6598,7 +6690,7 @@ impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
   }
   fn run_frame(&mut self) -> Result<(), EvalException> {
     use crate::vm::bytecode::{HostSuspendReason, RunResult};
-    self.adopt_shared();
+    vm_adopt_shared(self.program, self.env, self.slots_dirty);
     refresh_vm_window_info(self.program, self.env, self.slots_dirty);
     self.program.prepare_to_run_function(self.frame_fn);
     let mut host = VmHostView {
@@ -6623,7 +6715,8 @@ impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
     // Publish on success and on close-window (the frame's writes are still
     // real); genuine errors abort the run, so skip the publish.
     if matches!(result, Ok(()) | Err(EvalException::CloseWindow))
-      && let Err(e) = self.publish_shared()
+      && let Err(e) =
+        vm_publish_shared(self.program, self.env, self.slots_dirty, 0)
     {
       return Err(EvalException::Error(e));
     }
@@ -6680,16 +6773,44 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
       crate::audio::AudioSource,
     >,
   ) -> Result<Self, EvalError> {
+    Self::new_with_external(
+      program,
+      io,
+      source_dir,
+      #[cfg(feature = "window")]
+      audio_source,
+      None,
+    )
+  }
+
+  /// [`Self::new`] with an [`ExternalVars`] handle whose
+  /// table the runtime will share with the embedder.
+  pub fn new_with_external(
+    program: Program,
+    io: IO,
+    source_dir: Option<PathBuf>,
+    #[cfg(feature = "window")] audio_source: Option<
+      crate::audio::AudioSource,
+    >,
+    external_vars: Option<Arc<ExternalVars>>,
+  ) -> Result<Self, EvalError> {
     let env_program = program.clone();
     #[cfg(feature = "window")]
-    let env = EvaluationEnvironment::from_program_with_audio_source(
+    let env =
+      EvaluationEnvironment::from_program_with_audio_source_and_external(
+        env_program,
+        io,
+        source_dir,
+        audio_source,
+        external_vars,
+      )?;
+    #[cfg(not(feature = "window"))]
+    let env = EvaluationEnvironment::build_inner(
       env_program,
       io,
       source_dir,
-      audio_source,
+      external_vars,
     )?;
-    #[cfg(not(feature = "window"))]
-    let env = EvaluationEnvironment::from_program(env_program, io, source_dir)?;
     let (vm_program, function_names) = program.compile_to_bytecode_program_cpu();
     let slots_dirty = vec![false; vm_program.code.host_bindings.len()];
     Ok(Self {
@@ -6710,6 +6831,11 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
       .iter()
       .position(|n| &**n == entry_name)
       .ok_or_else(|| CpuEntryPointNotFound(entry_name.into()))?;
+    vm_bootstrap_external(
+      &mut self.program,
+      &mut self.env,
+      &mut self.slots_dirty,
+    )?;
     refresh_vm_window_info(
       &mut self.program,
       &mut self.env,
@@ -6763,13 +6889,33 @@ fn run_program_vm_with<IO: IOManager>(
   source_dir: Option<PathBuf>,
   #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
 ) -> Result<(IO, bool), EvalError> {
+  run_program_vm_with_external(
+    program,
+    entry_point_name,
+    io,
+    source_dir,
+    #[cfg(feature = "window")]
+    audio_source,
+    None,
+  )
+}
+
+fn run_program_vm_with_external<IO: IOManager>(
+  program: Program,
+  entry_point_name: Option<&str>,
+  io: IO,
+  source_dir: Option<PathBuf>,
+  #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
+  external_vars: Option<Arc<ExternalVars>>,
+) -> Result<(IO, bool), EvalError> {
   let entry_name = pick_entry_point_name(&program, entry_point_name)?;
-  let mut runtime = VmCpuRuntime::new(
+  let mut runtime = VmCpuRuntime::new_with_external(
     program,
     io,
     source_dir,
     #[cfg(feature = "window")]
     audio_source,
+    external_vars,
   )?;
   let reload = runtime.run(&entry_name)?;
   Ok((runtime.env.io, reload))
@@ -6815,6 +6961,7 @@ fn run_program_default_runtime_with_audio<IO: IOManager>(
       io,
       source_dir,
       audio_source,
+      None,
     ),
     CpuRuntime::BytecodeVm => run_program_vm_with(
       program,
@@ -7072,6 +7219,31 @@ pub fn run_program_entry_with_io_and_runtime_from_path<IO: IOManager>(
   source_path: &std::path::Path,
   runtime: CpuRuntime,
 ) -> Result<(IO, bool), EvalError> {
+  run_program_entry_with_io_runtime_and_external_from_path(
+    program,
+    entry,
+    io,
+    source_path,
+    runtime,
+    None,
+  )
+}
+
+/// `run_program_entry_with_io_and_runtime_from_path` with an
+/// [`ExternalVars`] handle, letting an embedder read and
+/// write the program's `@external` globals while it runs. The handle must
+/// have been created (via `ExternalVars::new`) from the same validated
+/// `Program`.
+pub fn run_program_entry_with_io_runtime_and_external_from_path<
+  IO: IOManager,
+>(
+  program: Program,
+  entry: Option<&str>,
+  io: IO,
+  source_path: &std::path::Path,
+  runtime: CpuRuntime,
+  external_vars: Option<Arc<ExternalVars>>,
+) -> Result<(IO, bool), EvalError> {
   let source_dir = source_path.parent().map(|p| p.to_path_buf());
   #[cfg(feature = "window")]
   {
@@ -7087,15 +7259,22 @@ pub fn run_program_entry_with_io_and_runtime_from_path<IO: IOManager>(
         io,
         source_dir,
         audio_source,
+        external_vars,
       ),
-      CpuRuntime::BytecodeVm => {
-        run_program_vm_with(program, entry, io, source_dir, audio_source)
-      }
+      CpuRuntime::BytecodeVm => run_program_vm_with_external(
+        program,
+        entry,
+        io,
+        source_dir,
+        audio_source,
+        external_vars,
+      ),
     }
   }
   #[cfg(not(feature = "window"))]
   {
     let _ = source_path;
+    let _ = external_vars;
     run_program_with_runtime(program, entry, io, source_dir, runtime)
   }
 }

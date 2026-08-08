@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use cpal::SampleRate;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::thread_sync::ThreadSharedTable;
+use crate::thread_sync::{ThreadSharedTable, participant};
 use crate::vm::bytecode::BytecodeProgram;
 
 /// The backend used to drive the audio thread's per-sample function. Picked
@@ -210,7 +210,9 @@ impl VmAudioDriver {
     on_publish: impl FnMut(u16),
   ) {
     if let Some(table) = &self.shared_table {
-      self.program.adopt_shared(table, on_adopt);
+      self
+        .program
+        .adopt_shared(table, participant::AUDIO, on_adopt);
     }
     for _ in 0..frames {
       // The audio entry has signature `(f32 t, f32 rate) -> f32`. Args live
@@ -229,7 +231,9 @@ impl VmAudioDriver {
       );
     }
     if let Some(table) = &self.shared_table {
-      self.program.publish_shared(table, false, on_publish);
+      self
+        .program
+        .publish_shared(table, participant::AUDIO, 0, on_publish);
     }
   }
 }

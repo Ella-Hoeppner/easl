@@ -1,6 +1,7 @@
 #[cfg(feature = "window")]
 pub mod audio;
 pub mod compiler;
+pub mod external;
 pub mod format;
 pub mod interpreter;
 pub mod parse;

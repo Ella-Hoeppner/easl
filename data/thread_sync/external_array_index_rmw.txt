@@ -1,0 +1,9 @@
+external-write: params[1] = 0.5
+main-adopt: params
+spawn-window
+frame 0
+print: [0. 0.5 0.]
+external-write: params[2] = 0.25
+frame 1
+main-adopt: params
+print: [0. 0.5 0.25]

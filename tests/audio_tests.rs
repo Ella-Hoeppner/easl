@@ -3,6 +3,7 @@ use easl::compiler::program::CompilerTarget;
 use easl::interpreter::{
   CaptureIO, CpuRuntime, run_program_entry_with_io_and_runtime_from_path,
 };
+use easl::thread_sync::participant;
 use std::fs;
 use std::path::Path;
 
@@ -120,15 +121,23 @@ fn start_audio_bootstrap_publishes_current_globals() {
     [1.0f32, 2.0, 3.0, 4.0].iter().map(|s| s.to_bits()).collect(),
   );
 
-  // the start-audio bootstrap: activate + force-publish from main, then
-  // the audio replica's first boundary adopts everything
+  // the start-audio bootstrap: the audio participant joins and main
+  // force-publishes everything in its audience, then the audio replica's
+  // first boundary adopts everything
   let table = ThreadSharedTable::new(main_program.code.shared_vars.len());
-  table.activate();
+  table.join(participant::AUDIO);
   let mut published = Vec::new();
-  main_program.publish_shared(&table, true, |i| published.push(i));
+  main_program.publish_shared(
+    &table,
+    participant::MAIN,
+    participant::AUDIO,
+    |i| published.push(i),
+  );
   assert_eq!(published, vec![0, 1]);
   let mut adopted = Vec::new();
-  audio_program.adopt_shared(&table, |i| adopted.push(i));
+  audio_program.adopt_shared(&table, participant::AUDIO, |i| {
+    adopted.push(i)
+  });
   assert_eq!(adopted, vec![0, 1]);
 
   let f_index = audio_names.iter().position(|n| &**n == "f").unwrap();

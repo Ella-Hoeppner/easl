@@ -1,0 +1,5 @@
+spawn-window
+frame 0
+print: 0.25
+frame 1
+print: 0.5

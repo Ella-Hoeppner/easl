@@ -1,0 +1,23 @@
+; The embedder writes an @external uniform (the easl-studio slider
+; pattern): a pre-run write seeds the value before the program starts (the
+; entry bootstrap adopts it, so even frame 0's dispatch sees it), and a
+; mid-run write is adopted at the next frame boundary and uploaded before
+; that frame's dispatch. The GPU doubles the value into `out` to prove
+; what it saw; main prints it.
+@external
+@[uniform 0 0]
+(var sliders: [1: vec4f])
+
+@[storage-write 0 1]
+(var out: [1: f32])
+
+@{workgroup-size 1}
+@compute
+(defn scale []
+  (= (out 0u) (* 2. (.x (sliders 0u)))))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-compute-shader scale (vec3u 1u))
+                    (print (out 0u)))))

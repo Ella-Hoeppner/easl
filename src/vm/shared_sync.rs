@@ -14,27 +14,45 @@ use crate::vm::bytecode::{
   SharedVarStorage,
 };
 
-/// Publishes this replica's shared variables into the table: the dirty ones
-/// normally, or all of them when `force_all` (the `start-audio` bootstrap,
-/// so a brand-new replica can adopt the current state of everything).
-/// No-ops while the table is inactive — programs that never start another
-/// thread pay nothing at their boundaries. Calls `on_publish` with each
-/// published variable's index (test tracing; production passes `|_| {}`,
-/// which monomorphizes away).
+/// Publishes this replica's shared variables into the table, acting as the
+/// participant identified by `self_bit`: the dirty ones normally, plus any
+/// var whose audience intersects `force_mask` regardless of dirtiness (the
+/// `start-audio` bootstrap passes `participant::AUDIO`, so the brand-new
+/// replica can adopt the current state of everything it can see). A var is
+/// published only when some *other* live participant is in its audience —
+/// programs with no second participant pay one atomic load per boundary
+/// and nothing else. Calls `on_publish` with each published variable's
+/// index (test tracing; production passes `|_| {}`, which monomorphizes
+/// away).
 pub fn publish_shared(
   stack: &[u32],
   dyn_memory: &[DynMemory],
   shared: &mut SharedStateParts<'_>,
   shared_vars: &[SharedVarInfo],
   table: &ThreadSharedTable,
-  force_all: bool,
+  self_bit: u32,
+  force_mask: u32,
   mut on_publish: impl FnMut(u16),
 ) {
-  if !table.is_active() {
+  let live_others = table.live_others(self_bit);
+  if live_others == 0 {
     return;
   }
   for (index, info) in shared_vars.iter().enumerate() {
-    if !(force_all || shared.dirty[index]) {
+    if info.audience & live_others == 0 {
+      continue;
+    }
+    // A forced publish is bootstrap gap-filling for a newly-joined
+    // participant: it applies only to vars this participant's own code can
+    // touch (its replica of anything else is never authoritative) and only
+    // when no snapshot exists yet — the newcomer's first adopt takes an
+    // existing snapshot anyway, and overwriting one would clobber state
+    // published by others (an embedder's pre-run slider seed, say — pinned
+    // by the `external_seed_survives_start_audio` golden).
+    let forced = info.audience & force_mask != 0
+      && info.audience & self_bit != 0
+      && !table.slots[index].has_published();
+    if !(forced || shared.dirty[index]) {
       continue;
     }
     let mut buffer =
@@ -67,22 +85,27 @@ pub fn publish_shared(
 
 /// Adopts any shared variable whose published version is newer than this
 /// replica's last-adopted version, copying the snapshot into the local
-/// slots / dynamic memory. Calls `on_adopt` with each adopted variable's
-/// index.
+/// slots / dynamic memory. Only variables in this participant's own
+/// audience are considered — a var shared between the audio thread and an
+/// embedder handle flows between them directly, without the main thread
+/// ever copying it. Calls `on_adopt` with each adopted variable's index.
 pub fn adopt_shared(
   stack: &mut [u32],
   dyn_memory: &mut [DynMemory],
   shared: &mut SharedStateParts<'_>,
   shared_vars: &[SharedVarInfo],
   table: &ThreadSharedTable,
+  self_bit: u32,
   mut on_adopt: impl FnMut(u16),
 ) {
-  if !table.is_active() {
-    // Nothing can have been published yet: publication no-ops while
-    // inactive, and activation precedes the bootstrap publish.
+  if table.live_others(self_bit) == 0 {
+    // No other participant exists, so nothing can have been published.
     return;
   }
   for (index, info) in shared_vars.iter().enumerate() {
+    if info.audience & self_bit == 0 {
+      continue;
+    }
     let Some(snapshot) =
       table.slots[index].adopt_if_newer(shared.adopted[index])
     else {
@@ -111,7 +134,8 @@ impl BytecodeProgram {
   pub fn publish_shared(
     &mut self,
     table: &ThreadSharedTable,
-    force_all: bool,
+    self_bit: u32,
+    force_mask: u32,
     on_publish: impl FnMut(u16),
   ) {
     let Self {
@@ -133,7 +157,8 @@ impl BytecodeProgram {
       },
       &code.shared_vars,
       table,
-      force_all,
+      self_bit,
+      force_mask,
       on_publish,
     );
   }
@@ -141,6 +166,7 @@ impl BytecodeProgram {
   pub fn adopt_shared(
     &mut self,
     table: &ThreadSharedTable,
+    self_bit: u32,
     on_adopt: impl FnMut(u16),
   ) {
     let Self {
@@ -162,6 +188,7 @@ impl BytecodeProgram {
       },
       &code.shared_vars,
       table,
+      self_bit,
       on_adopt,
     );
   }

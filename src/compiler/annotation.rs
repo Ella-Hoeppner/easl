@@ -191,12 +191,30 @@ impl Annotation {
   }
   pub fn validate_as_top_level_var_data(
     &self,
-  ) -> CompileResult<(Option<GroupAndBinding>, Option<VariableAddressSpace>)>
-  {
+  ) -> CompileResult<(
+    Option<GroupAndBinding>,
+    Option<VariableAddressSpace>,
+    bool,
+  )> {
     let mut group = None;
     let mut binding = None;
     let mut address_space = None;
-    let properties = self.properties();
+    let mut external = false;
+    // `external` is a standalone marker annotation; strip it before the
+    // positional (array-form) matching below so `@external @[uniform 0 0]`
+    // works with the annotations stacked in either order.
+    let properties: Vec<_> = self
+      .properties()
+      .into_iter()
+      .filter(|(name, _, value)| {
+        if &**name == "external" && value.is_none() {
+          external = true;
+          false
+        } else {
+          true
+        }
+      })
+      .collect();
     let property_count = properties.len();
     for (i, (name, name_source, value)) in properties.into_iter().enumerate() {
       match (&*name, value) {
@@ -293,6 +311,7 @@ impl Annotation {
         }
       },
       address_space,
+      external,
     ))
   }
   pub(crate) fn validate_as_function_annotation(

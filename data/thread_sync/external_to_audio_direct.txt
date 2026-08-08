@@ -1,0 +1,14 @@
+main-publish: gain
+spawn-window
+frame 0
+start-audio: f
+audio-batch 0 x2
+audio-adopt: gain
+samples: 0.1 0.1
+external-write: gain = 0.3
+audio-batch 1 x2
+audio-adopt: gain
+samples: 0.3 0.3
+frame 1
+audio-batch 2 x2
+samples: 0.3 0.3

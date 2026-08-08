@@ -1,0 +1,7 @@
+external-write: gain = 0.5
+spawn-window
+frame 0
+start-audio: f
+audio-batch 0 x2
+audio-adopt: gain
+samples: 0.5 0.5

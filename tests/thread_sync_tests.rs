@@ -24,24 +24,81 @@ use std::sync::Arc;
 use easl::audio::{AudioSource, VmAudioDriver};
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
+use easl::external::ExternalVars;
 use easl::interpreter::{
   BufferUpload, CpuRuntime, EvalError, EvalException, FrameDriver,
   GpuBindingInfo, GpuEntryInfo, IOManager, StdoutIO, WindowEvent,
-  run_program_entry_with_io_and_runtime_from_path,
+  run_program_entry_with_io_runtime_and_external_from_path,
 };
 use std::fs;
 use std::path::Path;
 
 /// One step of the scripted cross-thread schedule.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Step {
   /// Run one main-thread frame (through the production frame-driver path).
   Frame,
   /// Run one audio callback batch of the given sample count (through the
   /// production `VmAudioDriver::run_batch`).
   AudioBatch(usize),
+  /// Overwrite a whole `@external` var through the embedder handle (f32
+  /// words). External steps appearing before the first `Frame`/`AudioBatch`
+  /// run *before* the program starts — the embedder-seeds-then-runs
+  /// pattern.
+  ExternalWrite(&'static str, &'static [f32]),
+  /// Overwrite one element of an `@external` array var (read-modify-write
+  /// on the whole variable, per the API contract).
+  ExternalWriteIndex(&'static str, u32, f32),
+  /// Read an `@external` var through the handle, tracing its value —
+  /// adopts the newest published snapshot first.
+  ExternalRead(&'static str),
 }
-use Step::{AudioBatch, Frame};
+use Step::{
+  AudioBatch, ExternalRead, ExternalWrite, ExternalWriteIndex, Frame,
+};
+
+impl Step {
+  fn is_external(&self) -> bool {
+    matches!(
+      self,
+      ExternalWrite(..) | ExternalWriteIndex(..) | ExternalRead(..)
+    )
+  }
+}
+
+fn format_f32_words(words: &[u32]) -> String {
+  words
+    .iter()
+    .map(|w| f32::from_bits(*w).to_string())
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+/// Executes one external step against the handle, returning its trace line.
+fn run_external_step(handle: &ExternalVars, step: &Step) -> String {
+  match step {
+    ExternalWrite(name, values) => {
+      let words: Vec<u32> = values.iter().map(|v| v.to_bits()).collect();
+      handle
+        .write_external_var_raw(name, &words)
+        .unwrap_or_else(|e| panic!("external write of `{name}` failed: {e}"));
+      format!("external-write: {name} = {}", format_f32_words(&words))
+    }
+    ExternalWriteIndex(name, index, value) => {
+      handle
+        .write_external_var_index_raw(name, *index, &[value.to_bits()])
+        .unwrap_or_else(|e| panic!("external write of `{name}` failed: {e}"));
+      format!("external-write: {name}[{index}] = {value}")
+    }
+    ExternalRead(name) => {
+      let words = handle
+        .read_external_var_raw(name)
+        .unwrap_or_else(|e| panic!("external read of `{name}` failed: {e}"));
+      format!("external-read: {name} = {}", format_f32_words(&words))
+    }
+    _ => unreachable!(),
+  }
+}
 
 /// A sample rate that makes `t = sample_index / rate` exactly representable
 /// (increments of 1/8), keeping sample goldens free of float noise.
@@ -63,18 +120,25 @@ struct ThreadSyncIO {
   /// Shared-variable names of the audio artifact, index-aligned with the
   /// `u16` indices the batch-boundary trace hooks report.
   audio_shared_names: Vec<Arc<str>>,
+  /// The embedder handle, present when the schedule has external steps.
+  external: Option<Arc<ExternalVars>>,
   frame_index: usize,
   audio_batch_index: usize,
 }
 
 impl ThreadSyncIO {
-  fn new(schedule: Vec<Step>) -> Self {
+  fn new(
+    schedule: Vec<Step>,
+    external: Option<Arc<ExternalVars>>,
+    initial_trace: Vec<String>,
+  ) -> Self {
     Self {
       schedule,
-      trace: Vec::new(),
+      trace: initial_trace,
       inner: StdoutIO::new(),
       audio: None,
       audio_shared_names: Vec::new(),
+      external,
       frame_index: 0,
       audio_batch_index: 0,
     }
@@ -277,6 +341,15 @@ impl IOManager for ThreadSyncIO {
         Step::AudioBatch(frames) => {
           driver.io_mut().run_audio_batch(frames);
         }
+        external_step => {
+          let io = driver.io_mut();
+          let handle = io
+            .external
+            .as_ref()
+            .expect("schedule has external steps but no handle");
+          let line = run_external_step(handle, &external_step);
+          io.trace.push(line);
+        }
       }
     }
     Ok(false)
@@ -340,18 +413,38 @@ fn run_thread_sync_test(name: &str, schedule: Vec<Step>) {
   let errors = program.validate_raw_program(CompilerTarget::WGSL);
   assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
 
+  // External steps before the first Frame/AudioBatch are the embedder's
+  // seed-then-run pattern: they execute against the handle before the
+  // program starts.
+  let boundary = schedule
+    .iter()
+    .position(|step| !step.is_external())
+    .unwrap_or(schedule.len());
+  let (pre_run_steps, loop_steps) = schedule.split_at(boundary);
+  let has_external_steps =
+    schedule.iter().any(|step| step.is_external());
+
   // Both main-thread runtimes must produce the identical trace: the frame
   // and batch boundaries are the semantics, not a runtime detail.
   for (runtime, label) in [
     (CpuRuntime::TreeWalking, "tree-walking"),
     (CpuRuntime::BytecodeVm, "bytecode VM"),
   ] {
-    let (io, _) = run_program_entry_with_io_and_runtime_from_path(
+    // A fresh handle per run — the table carries per-run version state.
+    let external = has_external_steps.then(|| ExternalVars::new(&program));
+    let initial_trace: Vec<String> = pre_run_steps
+      .iter()
+      .map(|step| {
+        run_external_step(external.as_ref().unwrap(), step)
+      })
+      .collect();
+    let (io, _) = run_program_entry_with_io_runtime_and_external_from_path(
       program.clone(),
       None,
-      ThreadSyncIO::new(schedule.clone()),
+      ThreadSyncIO::new(loop_steps.to_vec(), external.clone(), initial_trace),
       source_path,
       runtime,
+      external,
     )
     .unwrap_or_else(|e| panic!("{name}: evaluation error ({label}): {e:#?}"));
     let trace: String =
@@ -418,4 +511,43 @@ thread_sync_test!(
 thread_sync_test!(
   audio_and_gpu_write_cycle,
   [Frame, AudioBatch(2), Frame, AudioBatch(2), Frame]
+);
+thread_sync_test!(
+  external_to_main_and_gpu,
+  [
+    ExternalWrite("sliders", &[0.25, 0., 0., 0.]),
+    Frame,
+    ExternalWrite("sliders", &[0.5, 0., 0., 0.]),
+    Frame,
+    Frame
+  ]
+);
+thread_sync_test!(
+  main_to_external,
+  [Frame, ExternalRead("level"), Frame, ExternalRead("level")]
+);
+thread_sync_test!(
+  external_to_audio_direct,
+  [
+    Frame,
+    AudioBatch(2),
+    ExternalWrite("gain", &[0.3]),
+    AudioBatch(2),
+    Frame,
+    AudioBatch(2)
+  ]
+);
+thread_sync_test!(
+  external_array_index_rmw,
+  [
+    ExternalWriteIndex("params", 1, 0.5),
+    Frame,
+    ExternalWriteIndex("params", 2, 0.25),
+    Frame
+  ]
+);
+thread_sync_test!(no_handle_no_external_publish, [Frame, Frame]);
+thread_sync_test!(
+  external_seed_survives_start_audio,
+  [ExternalWrite("gain", &[0.5]), Frame, AudioBatch(2)]
 );

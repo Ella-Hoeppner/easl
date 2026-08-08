@@ -1,0 +1,12 @@
+; @external membership costs nothing until an embedder handle actually
+; exists: `level` is in the shared set (the annotation forces it), but no
+; handle was created for this run, so the external participant is never
+; live and no publish — bootstrap or frame-boundary — may ever happen.
+@external
+(var level: f32 0.)
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (= level (+ level 0.25))
+                    (print level))))

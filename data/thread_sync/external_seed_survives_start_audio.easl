@@ -1,0 +1,22 @@
+; An embedder seed written before the run must survive the start-audio
+; bootstrap. `gain` is read only by the audio thread (audience
+; audio+external, no main bit), so the main thread's replica of it is
+; never authoritative — the bootstrap's force-publish must not clobber the
+; embedder's pre-run seed with main's stale zeros. The audio replica's
+; first adopt must see the seeded value, and no main-publish of `gain`
+; may appear anywhere. (This is exactly easl-studio's startup sequence:
+; seed the sliders, run, start-audio — regression-pinned after it shipped
+; silent-until-slider-drag.)
+@external
+(var gain: f32
+     0.)
+
+@audio
+(defn f [t: f32
+         rate: f32]: f32
+  gain)
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (start-audio f))))

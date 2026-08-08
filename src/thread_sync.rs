@@ -23,9 +23,39 @@
 //! which is what makes adoption safe inside the real-time audio callback.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use arc_swap::ArcSwapOption;
+
+/// Participant identity bits for the sharing system. Every shared variable
+/// carries a static *audience* mask — which participants' code can touch
+/// it, computed at compile time — and the [`ThreadSharedTable`] tracks
+/// which participants are currently *live*. A participant publishes or
+/// adopts a variable only when someone **else** who cares about it is
+/// live.
+///
+/// These are participant *classes*, not instances, and classes are always
+/// derivable from program structure — which is why a static mask works.
+/// The planned multi-threaded `spawn-window` fits by giving each
+/// spawn-window *call site* its own class bit (call sites are statically
+/// known since closures are compile-time inlinable); u32 leaves 29 bits
+/// for them, and overflow sites can share a bit at worst (a coarser
+/// audience only ever syncs more conservatively, never less). What that
+/// future does require is instance-count-aware liveness — several windows
+/// can share one class, so `live_others` masking out the whole class must
+/// become "another live *instance* exists" (per-class counters on the
+/// table). That change is confined to this module plus the two gating
+/// expressions in the publish/adopt paths.
+pub mod participant {
+  /// The main `@cpu` thread. Always live; also acts as the GPU's proxy
+  /// (the GPU has no boundary loop of its own).
+  pub const MAIN: u32 = 1;
+  /// The `start-audio` thread. Goes live when `start-audio` first fires.
+  pub const AUDIO: u32 = 2;
+  /// An embedder holding an `ExternalVars` handle. Goes live when the
+  /// handle is created (which happens before the run starts).
+  pub const EXTERNAL: u32 = 4;
+}
 
 /// One published state of one shared variable: its value as flat words in
 /// the VM layout, stamped with a version. Immutable once published.
@@ -86,6 +116,13 @@ impl SharedVarSlot {
       _ => None,
     }
   }
+
+  /// Whether any snapshot has ever been published to this slot. Used by
+  /// the entry-start bootstrap to publish a variable's program-computed
+  /// initial value only when an embedder hasn't already seeded it.
+  pub fn has_published(&self) -> bool {
+    self.published.load().is_some()
+  }
 }
 
 /// The shared-variable coordination table for one running program: one slot
@@ -95,24 +132,31 @@ impl SharedVarSlot {
 /// program, and the tree-walking environment).
 pub struct ThreadSharedTable {
   pub slots: Vec<SharedVarSlot>,
-  /// False until a second replica exists (i.e. until `start-audio` fires).
-  /// Publishers skip all work while inactive, so programs that never start
-  /// another thread pay nothing at their boundaries.
-  active: AtomicBool,
+  /// Bitmask of [`participant`] classes that are currently live. Starts as
+  /// just `MAIN`; `start-audio` joins `AUDIO`, creating an `ExternalVars`
+  /// handle joins `EXTERNAL`. A participant publishes/adopts a variable
+  /// only when `audience & live_others(self) != 0` — someone *else* who
+  /// cares about it actually exists — so programs that never start another
+  /// participant pay one atomic load per boundary and nothing else.
+  live: AtomicU32,
 }
 
 impl ThreadSharedTable {
   pub fn new(var_count: usize) -> Self {
     Self {
       slots: (0..var_count).map(|_| SharedVarSlot::new()).collect(),
-      active: AtomicBool::new(false),
+      live: AtomicU32::new(participant::MAIN),
     }
   }
-  pub fn activate(&self) {
-    self.active.store(true, Ordering::Release);
+  /// Marks a participant class as live. Monotonic — participants never
+  /// leave (an audio stream or embedder handle lives for the run).
+  pub fn join(&self, participant: u32) {
+    self.live.fetch_or(participant, Ordering::Release);
   }
-  pub fn is_active(&self) -> bool {
-    self.active.load(Ordering::Acquire)
+  /// The live participants other than `self_bit`. Zero means no one else
+  /// exists and every publish/adopt can be skipped outright.
+  pub fn live_others(&self, self_bit: u32) -> u32 {
+    self.live.load(Ordering::Acquire) & !self_bit
   }
 }
 

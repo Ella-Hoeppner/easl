@@ -11,6 +11,7 @@ use crate::compiler::builtins::{
   built_in_structs_for_target,
 };
 use crate::compiler::types::ExpTypeInfo;
+use crate::thread_sync::participant;
 use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
 use crate::parse::EaslMultiDocument;
 use crate::vm::bytecode::{BytecodeProgram, Instruction, Op};
@@ -1959,6 +1960,7 @@ impl Program {
                 var_type,
                 value: None,
                 source_trace: exp.source_trace.clone(),
+                external: false,
               });
               binding_name
             })
@@ -2257,6 +2259,7 @@ impl Program {
                 var_type: concrete_scope_type,
                 value: None,
                 source_trace: exp.source_trace.clone(),
+                external: false,
               });
             }
           }
@@ -2470,6 +2473,7 @@ impl Program {
         var_type: attribute.value_type(),
         value: None,
         source_trace: SourceTrace::empty(),
+        external: false,
       })
     }
   }
@@ -5487,7 +5491,15 @@ impl Program {
   /// Returns the shared variable names sorted, so every compiled artifact
   /// of the program carries the same index-aligned list (the runtime's
   /// `ThreadSharedTable` slots are addressed by these indices).
-  pub fn thread_shared_globals(&self) -> Vec<Arc<str>> {
+  /// The thread-shared globals with their audience masks (see
+  /// `thread_sync::participant`), sorted by name. A var is shared when
+  /// it's reachable from both the `@cpu` and `@audio` entry roots, or when
+  /// it's marked `@external` (embedder access is invisible to static
+  /// analysis, so the annotation forces membership). The sorted order
+  /// index-aligns every artifact's `Code::shared_vars`, the env's
+  /// `shared_globals`, `ExternalVars` handles, and the
+  /// `ThreadSharedTable`'s slots.
+  pub fn thread_shared_globals(&self) -> Vec<(Arc<str>, u32)> {
     use crate::compiler::expression::ExpKind;
     let var_names: HashSet<Arc<str>> = self
       .top_level_vars
@@ -5560,9 +5572,34 @@ impl Program {
       globals_reachable_from(|e| matches!(e, EntryPoint::Cpu));
     let audio_globals =
       globals_reachable_from(|e| matches!(e, EntryPoint::Audio));
-    let mut shared: Vec<Arc<str>> = main_globals
-      .intersection(&audio_globals)
-      .cloned()
+    let external_globals: HashSet<Arc<str>> = self
+      .top_level_vars
+      .iter()
+      .filter(|v| v.external)
+      .map(|v| v.name.clone())
+      .collect();
+    let mut shared: Vec<(Arc<str>, u32)> = var_names
+      .iter()
+      .filter_map(|name| {
+        let audience = if main_globals.contains(name) {
+          participant::MAIN
+        } else {
+          0
+        } | if audio_globals.contains(name) {
+          participant::AUDIO
+        } else {
+          0
+        } | if external_globals.contains(name) {
+          participant::EXTERNAL
+        } else {
+          0
+        };
+        let statically_shared = audience
+          & (participant::MAIN | participant::AUDIO)
+          == participant::MAIN | participant::AUDIO;
+        (statically_shared || audience & participant::EXTERNAL != 0)
+          .then(|| (name.clone(), audience))
+      })
       .collect();
     shared.sort();
     shared
@@ -5594,13 +5631,15 @@ impl Program {
     // Thread-shared globals: same sorted list in every compiled artifact,
     // so `MarkSharedDirty` indices and `ThreadSharedTable` slots agree
     // between the main program and the audio program.
-    let shared_names = self.thread_shared_globals();
-    state.shared_vars = vec![None; shared_names.len()];
-    state.shared_var_indices = shared_names
+    let shared_globals = self.thread_shared_globals();
+    state.shared_vars = vec![None; shared_globals.len()];
+    state.shared_var_indices = shared_globals
       .iter()
       .enumerate()
-      .map(|(index, name)| (name.clone(), index as u16))
+      .map(|(index, (name, _))| (name.clone(), index as u16))
       .collect();
+    let shared_var_audiences: HashMap<Arc<str>, u32> =
+      shared_globals.into_iter().collect();
     let mut dyn_memory_count: u16 = 0;
     for v in self.top_level_vars.iter() {
       let is_dynamic_array = matches!(
@@ -5657,6 +5696,7 @@ impl Program {
           state.shared_vars[shared_index as usize] = Some(SharedVarInfo {
             name: v.name.clone(),
             ty: v.var_type.clone(),
+            audience: shared_var_audiences[&v.name],
             storage: SharedVarStorage::DynMemory {
               region: memory,
               stride: element_stride,
@@ -5709,6 +5749,7 @@ impl Program {
         state.shared_vars[shared_index as usize] = Some(SharedVarInfo {
           name: v.name.clone(),
           ty: v.var_type.clone(),
+          audience: shared_var_audiences[&v.name],
           storage: SharedVarStorage::Slots { position, size },
         });
       }

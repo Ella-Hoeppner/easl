@@ -390,6 +390,10 @@ pub enum SharedVarStorage {
 pub struct SharedVarInfo {
   pub name: Arc<str>,
   pub ty: Type,
+  /// Which participants' code can touch this var (see
+  /// `thread_sync::participant`); publish/adopt work is skipped for vars
+  /// whose live audience (beyond the acting participant) is empty.
+  pub audience: u32,
   pub storage: SharedVarStorage,
 }
 
