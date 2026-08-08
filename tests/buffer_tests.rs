@@ -132,6 +132,8 @@ fn too_many_vertex_bindings() {
 buffer_test!(render_target_pingpong);
 buffer_test!(offscreen_render_compute_order);
 buffer_test!(dispatch_from_scoped_frame_closure);
+buffer_test!(save_png_roundtrip);
+buffer_test!(save_png_render_target);
 
 /// Window-info queries used inside GPU code compile into implicit uniform
 /// bindings that the runtime refreshes from the IO manager each frame.

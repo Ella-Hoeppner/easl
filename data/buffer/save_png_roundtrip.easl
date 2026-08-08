@@ -1,0 +1,30 @@
+; save-png on a CPU-loaded texture writes its exact RGBA bytes: load the
+; red test pixel, save it out, load the saved file into a second texture,
+; and read the texel back through the GPU. No readback is involved — the
+; CPU copy is the newest, so the save uses it directly.
+
+@{group 0
+  binding 0}
+(var tex: (Texture2D f32))
+
+@{group 0
+  binding 1}
+(var tex2: (Texture2D f32))
+
+@{address storage-write
+  group 0
+  binding 2}
+(var value: vec4f)
+
+@cpu
+(defn main []
+  (= tex
+     (load-image "red_pixel.png"))
+  (save-png tex "../../out/buffer/save_png_roundtrip.png")
+  (= tex2
+     (load-image "../../out/buffer/save_png_roundtrip.png"))
+  (dispatch-compute-shader (fn []
+                               (= value
+                                  (texture-load tex2 (vec2u 0u) 0u)))
+                           (vec3u 1u))
+  (print value))

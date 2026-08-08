@@ -91,6 +91,47 @@ fn f32_to_f16(value: f32) -> u16 {
   }
 }
 
+/// Convert an IEEE 754 half-precision (f16) value to f32. Inverse of
+/// [`f32_to_f16`]; used when reading textures back for `save-png`.
+fn f16_to_f32(half: u16) -> f32 {
+  let sign = ((half as u32) & 0x8000) << 16;
+  let exp = ((half >> 10) & 0x1F) as u32;
+  let man = (half & 0x3FF) as u32;
+  let bits = if exp == 0 {
+    if man == 0 {
+      sign
+    } else {
+      // subnormal: normalize
+      let mut exp = 127 - 15 + 1;
+      let mut man = man;
+      while man & 0x400 == 0 {
+        man <<= 1;
+        exp -= 1;
+      }
+      sign | ((exp as u32) << 23) | ((man & 0x3FF) << 13)
+    }
+  } else if exp == 0x1F {
+    sign | 0x7F80_0000 | (man << 13)
+  } else {
+    sign | ((exp + 127 - 15) << 23) | (man << 13)
+  };
+  f32::from_bits(bits)
+}
+
+/// Convert RGBA16Float texel bytes (8 bytes/pixel) to RGBA8 (4
+/// bytes/pixel), clamping each channel to [0, 1]. Inverse of
+/// [`rgba8_to_rgba16float`] (exact for all u8 values, since every k/255 is
+/// within f16 rounding distance of its byte).
+fn rgba16float_to_rgba8(data: &[u8]) -> Vec<u8> {
+  let mut out = Vec::with_capacity(data.len() / 2);
+  for pair in data.chunks_exact(2) {
+    let half = u16::from_le_bytes([pair[0], pair[1]]);
+    let f = f16_to_f32(half).clamp(0., 1.);
+    out.push((f * 255.).round() as u8);
+  }
+  out
+}
+
 /// Convert RGBA8 (`&[u8]`, 4 bytes/pixel) to RGBA16Float (`Vec<u8>`, 8
 /// bytes/pixel).  Each u8 channel is normalised to [0, 1] and stored as f16.
 fn rgba8_to_rgba16float(data: &[u8]) -> Vec<u8> {
@@ -646,6 +687,7 @@ impl GpuCore {
             1,
             BINDING_TEXTURE_FORMAT,
             wgpu::TextureUsages::TEXTURE_BINDING
+              | wgpu::TextureUsages::COPY_SRC
               | wgpu::TextureUsages::COPY_DST
               | wgpu::TextureUsages::RENDER_ATTACHMENT,
           );
@@ -744,6 +786,7 @@ impl GpuCore {
               *height,
               BINDING_TEXTURE_FORMAT,
               wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
                 | wgpu::TextureUsages::COPY_DST
                 | wgpu::TextureUsages::RENDER_ATTACHMENT,
             );
@@ -1551,6 +1594,7 @@ impl GpuCore {
           1,
           BINDING_TEXTURE_FORMAT,
           wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
             | wgpu::TextureUsages::COPY_DST
             | wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
@@ -1751,6 +1795,83 @@ impl GpuCore {
   }
 
   /// Reads a GPU buffer back to CPU, blocking until done. Returns raw bytes.
+  /// Reads a binding texture back from the GPU as RGBA8 bytes, returning
+  /// `(width, height, pixels)`. Blocking, like `read_buffer`; used by the
+  /// `save-png` builtin for textures the GPU has rendered into. Returns
+  /// `None` when no texture exists at the binding.
+  pub fn read_texture(
+    &self,
+    group: u8,
+    binding: u8,
+  ) -> Option<(u32, u32, Vec<u8>)> {
+    let texture = self.textures.get(&(group, binding))?;
+    let width = texture.width();
+    let height = texture.height();
+    // wgpu requires bytes_per_row aligned to 256 for texture→buffer copies.
+    let unpadded_bytes_per_row = width * BINDING_TEXTURE_BPP;
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(align) * align;
+    let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+      label: Some("texture readback buffer"),
+      size: padded_bytes_per_row as u64 * height as u64,
+      usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+      mapped_at_creation: false,
+    });
+    let mut encoder =
+      self
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+          label: Some("texture readback encoder"),
+        });
+    encoder.copy_texture_to_buffer(
+      wgpu::TexelCopyTextureInfo {
+        texture,
+        mip_level: 0,
+        origin: wgpu::Origin3d::ZERO,
+        aspect: wgpu::TextureAspect::All,
+      },
+      wgpu::TexelCopyBufferInfo {
+        buffer: &staging,
+        layout: wgpu::TexelCopyBufferLayout {
+          offset: 0,
+          bytes_per_row: Some(padded_bytes_per_row),
+          rows_per_image: Some(height),
+        },
+      },
+      wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+      },
+    );
+    self.queue.submit(std::iter::once(encoder.finish()));
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    staging
+      .slice(..)
+      .map_async(wgpu::MapMode::Read, move |result| {
+        sender.send(result).unwrap();
+      });
+    self
+      .device
+      .poll(wgpu::PollType::wait_indefinitely())
+      .unwrap();
+    receiver.recv().unwrap().unwrap();
+
+    let data = staging.slice(..).get_mapped_range();
+    let mut texel_bytes =
+      Vec::with_capacity((unpadded_bytes_per_row * height) as usize);
+    for row in 0..height {
+      let start = (row * padded_bytes_per_row) as usize;
+      texel_bytes.extend_from_slice(
+        &data[start..start + unpadded_bytes_per_row as usize],
+      );
+    }
+    drop(data);
+    staging.unmap();
+    Some((width, height, rgba16float_to_rgba8(&texel_bytes)))
+  }
+
   pub fn read_buffer(&self, group: u8, binding: u8, size: u64) -> Vec<u8> {
     // eprintln!(
     //   "[GPU-XFER] GPU→CPU readback: g{}b{}, {} bytes (BLOCKING)",
@@ -2428,5 +2549,35 @@ impl RenderState {
     if let Some(output) = output {
       output.present();
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// Every u8 channel value must survive the upload/readback conversion
+  /// pair exactly — this is what makes `save-png` of a loaded-then-uploaded
+  /// image byte-identical to its source.
+  #[test]
+  fn rgba8_f16_roundtrip_is_exact() {
+    for byte in 0..=255u8 {
+      let half = f32_to_f16(byte as f32 / 255.);
+      let back = (f16_to_f32(half).clamp(0., 1.) * 255.).round() as u8;
+      assert_eq!(back, byte);
+    }
+  }
+
+  /// Spot-check the f16 decoder against known bit patterns.
+  #[test]
+  fn f16_to_f32_known_values() {
+    assert_eq!(f16_to_f32(0x0000), 0.);
+    assert_eq!(f16_to_f32(0x3C00), 1.);
+    assert_eq!(f16_to_f32(0x3800), 0.5);
+    assert_eq!(f16_to_f32(0x3400), 0.25);
+    assert_eq!(f16_to_f32(0xBC00), -1.);
+    // subnormal: smallest positive f16
+    assert_eq!(f16_to_f32(0x0001), 5.960464477539063e-8);
+    assert!(f16_to_f32(0x7C00).is_infinite());
   }
 }

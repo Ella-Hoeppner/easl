@@ -2419,6 +2419,29 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       ..Default::default()
     },
     AbstractFunctionSignature {
+      name: "save-png".into(),
+      arg_types: vec![
+        AbstractType::AbstractStruct(
+          texture_2d()
+            .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+            .into(),
+        )
+        .owned(),
+        AbstractType::Type(Type::String).owned(),
+      ],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::FileWrite,
+          Effect::CPUExclusiveFunction("save-png".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
       name: "load-image".into(),
       arg_types: vec![AbstractType::Type(Type::String).owned()],
       return_type: AbstractType::AbstractStruct(

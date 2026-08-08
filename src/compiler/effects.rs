@@ -130,6 +130,10 @@ pub enum Effect {
   /// audio targets like CPU-exclusive functions.
   WindowInfo(WindowInfoKind),
   Print,
+  /// Writes a file on the host filesystem (`save-png`). Externally
+  /// observable, so statements with this effect are never pruned as dead
+  /// code (see `is_side_effect_free`).
+  FileWrite,
   Window,
   LookupBuiltinAttribute(BuiltinIOAttribute),
   InvokesUnknownFunction,

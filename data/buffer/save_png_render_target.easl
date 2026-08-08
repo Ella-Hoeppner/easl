@@ -1,0 +1,44 @@
+; save-png on a GPU-rendered texture: render solid green into an offscreen
+; target, save it (which must flush the queued render and read the
+; Rgba16Float texture back as RGBA8), then load the saved file into a
+; second texture and read a texel back through the GPU. Green pins the
+; channel order end-to-end.
+
+@{group 0
+  binding 0}
+(var tex: (Texture2D f32))
+
+@{group 0
+  binding 1}
+(var tex2: (Texture2D f32))
+
+@{address storage-write
+  group 0
+  binding 2}
+(var value: vec4f)
+
+(defn fullscreen-triangle []: vec4f
+  (vec4f (match (vertex-index)
+           0 (vec2f -1.)
+           1 (vec2f -1. 3.)
+           _ (vec2f 3. -1.))
+         0.
+         1.))
+
+@cpu
+(defn main []
+  (= tex
+     (blank-texture (vec2u 2u)))
+  (set-render-target tex)
+  (dispatch-render-shaders fullscreen-triangle
+                           (fn [] (vec4f 0. 1. 0. 1.))
+                           3)
+  (clear-render-target)
+  (save-png tex "../../out/buffer/save_png_render_target.png")
+  (= tex2
+     (load-image "../../out/buffer/save_png_render_target.png"))
+  (dispatch-compute-shader (fn []
+                               (= value
+                                  (texture-load tex2 (vec2u 1u) 0u)))
+                           (vec3u 1u))
+  (print value))

@@ -2891,6 +2891,7 @@ impl Program {
                           | Effect::WindowInfo(_)
                           | Effect::FragmentExclusiveFunction(_)
                           | Effect::Print
+                          | Effect::FileWrite
                           | Effect::ModifiesGlobalVar(_)
                           | Effect::Window
                           | Effect::LookupBuiltinAttribute(_)

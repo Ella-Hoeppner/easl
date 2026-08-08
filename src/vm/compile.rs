@@ -2329,6 +2329,21 @@ impl TypedExp {
         state.emit_host_op(HostOp::ClearRenderTarget);
         Some(None)
       }
+      "save-png" => {
+        let ExpKind::Name(name) = &args[0].kind else {
+          panic!("save-png argument must be a texture global")
+        };
+        let binding = *state
+          .dynamic_globals
+          .get(name)
+          .expect("save-png argument isn't a texture binding");
+        let ExpKind::StringLiteral(path) = &args[1].kind else {
+          panic!("save-png path must be a string literal")
+        };
+        let path = state.host_string_index(&path.to_string());
+        state.emit_host_op(HostOp::SavePng { binding, path });
+        Some(None)
+      }
       "=" => {
         // Only intercepted when a dynamic (host-side or dynamic-memory)
         // global is involved; slot-backed assignment uses the generic path.

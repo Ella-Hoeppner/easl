@@ -518,6 +518,10 @@ pub enum HostOp {
   /// `(texture-dimensions tex)` → vec2u (2 slots) at `dest`.
   TextureDims { binding: u16, dest: u16 },
   SetRenderTarget { binding: u16 },
+  /// `save-png`: write the texture at `binding` to the path at
+  /// `host_strings[path]` as a PNG, reading it back from the GPU first if
+  /// it was rendered into.
+  SavePng { binding: u16, path: u16 },
   ClearRenderTarget,
 }
 

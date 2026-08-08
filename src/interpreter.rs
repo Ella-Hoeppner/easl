@@ -2033,6 +2033,23 @@ fn apply_builtin_fn<IO: IOManager>(
       env.current_render_target = None;
       Ok(Value::Unit)
     }
+    "save-png" => {
+      let texture = args.remove(0).0;
+      let Value::String(path) = args.remove(0).0 else {
+        panic!("save-png: expected string path argument")
+      };
+      let Value::Texture {
+        width,
+        height,
+        data,
+        ..
+      } = env.refresh_texture_from_gpu(texture)?
+      else {
+        panic!("save-png: expected Texture argument")
+      };
+      save_png_file(&path, width, height, &data, &env.source_dir)?;
+      Ok(Value::Unit)
+    }
     "window-resolution" => {
       let (w, h) = env.io.window_size();
       Ok(Value::Struct(
@@ -3131,6 +3148,17 @@ pub trait IOManager: Sized {
     binding: u8,
     size: u64,
   ) -> Option<Vec<u8>>;
+  /// Copy a GPU-written binding texture back to CPU as
+  /// `(width, height, rgba8_pixels)`. Returns None when GPU readback isn't
+  /// available or no texture exists at the binding. Used by `save-png` for
+  /// textures the GPU has rendered into.
+  fn sync_texture_to_cpu(
+    &mut self,
+    _group: u8,
+    _binding: u8,
+  ) -> Option<(u32, u32, Vec<u8>)> {
+    None
+  }
   /// Called after each implicit GPU→CPU readback with the synced variable's
   /// name. These blocking syncs are the most expensive implicit operation in
   /// the runtime, so test IO managers override this to record a log that
@@ -3391,6 +3419,18 @@ impl IOManager for StdoutIO {
     #[cfg(feature = "window")]
     if let Some(gpu) = &self.gpu {
       return Some(gpu.read().unwrap().read_buffer(group, binding, size));
+    }
+    None
+  }
+
+  fn sync_texture_to_cpu(
+    &mut self,
+    #[allow(unused_variables)] group: u8,
+    #[allow(unused_variables)] binding: u8,
+  ) -> Option<(u32, u32, Vec<u8>)> {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return gpu.read().unwrap().read_texture(group, binding);
     }
     None
   }
@@ -3881,6 +3921,14 @@ impl IOManager for CaptureIO {
     size: u64,
   ) -> Option<Vec<u8>> {
     self.inner.sync_gpu_to_cpu(group, binding, size)
+  }
+
+  fn sync_texture_to_cpu(
+    &mut self,
+    group: u8,
+    binding: u8,
+  ) -> Option<(u32, u32, Vec<u8>)> {
+    self.inner.sync_texture_to_cpu(group, binding)
   }
 
   #[cfg(feature = "window")]
@@ -4645,6 +4693,64 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       }
       self.io.record_shared_adopt(&name);
     }
+  }
+
+  /// If `texture` is bound to a GPU binding whose newest content lives on
+  /// the GPU (buffer state CPUOutOfDate — the texture was rendered into),
+  /// flushes queued GPU work, reads the texture back as RGBA8, updates the
+  /// CPU-side binding value, and returns the fresh texture. Otherwise
+  /// returns `texture` unchanged. The texture analog of
+  /// `check_cpu_readable`; used by `save-png`.
+  fn refresh_texture_from_gpu(
+    &mut self,
+    texture: Value,
+  ) -> Result<Value, EvalError> {
+    let Value::Texture {
+      binding: Some(gb), ..
+    } = &texture
+    else {
+      return Ok(texture);
+    };
+    let gb = *gb;
+    let Some(name) = self
+      .binding_vars
+      .iter()
+      .find(|(binding_gb, _, _, _)| *binding_gb == gb)
+      .map(|(_, name, _, _)| name.clone())
+    else {
+      return Ok(texture);
+    };
+    if self.buffer_states.get(&name)
+      != Some(&SharedBufferState::CPUOutOfDate)
+    {
+      return Ok(texture);
+    }
+    // Run the frame's queued GPU work (the render into this texture may
+    // still be pending) before reading back.
+    self.io.flush_queued_compute();
+    let Some((width, height, data)) =
+      self.io.sync_texture_to_cpu(gb.group, gb.binding)
+    else {
+      // No GPU available (e.g. StringIO): the stale CPU copy is the best
+      // we have.
+      return Ok(texture);
+    };
+    let fresh = Value::Texture {
+      width,
+      height,
+      data,
+      binding: Some(gb),
+    };
+    if let Some(slot) =
+      self.bindings.get_mut(&name).and_then(|stack| stack.last_mut())
+    {
+      slot.0 = fresh.clone();
+    }
+    self
+      .buffer_states
+      .insert(name.clone(), SharedBufferState::Synced);
+    self.io.record_gpu_to_cpu_sync(&name);
+    Ok(fresh)
   }
 
   /// For any GPU-bound var in `names` that is CPUOutOfDate, reads the buffer
@@ -5934,6 +6040,46 @@ fn load_image_value(
   })
 }
 
+/// Writes RGBA8 pixels to `path` as a PNG (always PNG, whatever the
+/// extension), resolving relative paths against `source_dir` like
+/// `load_image_value` and creating missing parent directories. Shared by
+/// the `save-png` builtin's tree-walker arm and the VM runtime's `SavePng`
+/// host op.
+fn save_png_file(
+  path: &str,
+  width: u32,
+  height: u32,
+  data: &[u8],
+  source_dir: &Option<PathBuf>,
+) -> Result<(), EvalError> {
+  let resolved = if std::path::Path::new(path).is_absolute() {
+    std::path::PathBuf::from(path)
+  } else if let Some(dir) = source_dir {
+    dir.join(path)
+  } else {
+    std::path::PathBuf::from(path)
+  };
+  if let Some(parent) = resolved.parent()
+    && !parent.as_os_str().is_empty()
+  {
+    std::fs::create_dir_all(parent).map_err(|e| {
+      UserspaceEvalError::RuntimeError(format!(
+        "save-png: failed to create directory for \"{path}\": {e}"
+      ))
+    })?;
+  }
+  let img = image::RgbaImage::from_raw(width, height, data.to_vec())
+    .expect("texture data length doesn't match its dimensions");
+  img
+    .save_with_format(&resolved, image::ImageFormat::Png)
+    .map_err(|e| {
+      UserspaceEvalError::RuntimeError(format!(
+        "save-png: failed to write \"{path}\": {e}"
+      ))
+    })?;
+  Ok(())
+}
+
 /// Loads a `.wav` file as mono f32 samples at the file's native sample
 /// rate, resolving relative paths against `source_dir` (multi-channel files
 /// are mixed down by averaging). Shared by the `load-wav` builtin's
@@ -6494,6 +6640,21 @@ fn vm_host_call<IO: IOManager>(
     }
     HostOp::ClearRenderTarget => {
       env.current_render_target = None;
+    }
+    HostOp::SavePng { binding, path } => {
+      let b = &code.host_bindings[*binding as usize];
+      let path = code.host_strings[*path as usize].clone();
+      let texture = env.lookup(&b.name)?.clone();
+      let Value::Texture {
+        width,
+        height,
+        data,
+        ..
+      } = env.refresh_texture_from_gpu(texture)?
+      else {
+        panic!("save-png: expected Texture value")
+      };
+      save_png_file(&path, width, height, &data, &env.source_dir)?;
     }
   }
   Ok(None)
