@@ -326,6 +326,29 @@ pub enum CompileErrorKind {
      system"
   )]
   ExternalTextureVar,
+  #[error(
+    "Functions reachable from GPU entry points may not return \
+     runtime-sized arrays"
+  )]
+  GpuFunctionReturnsRuntimeSizedArray,
+  #[error(
+    "Functions reachable from GPU entry points may not take runtime-sized \
+     arrays as arguments"
+  )]
+  GpuFunctionAcceptsRuntimeSizedArray,
+  #[error(
+    "Runtime-sized values may not be created or locally bound in GPU code"
+  )]
+  RuntimeSizedLocalInGpuCode,
+  #[error(
+    "Structs and enums containing runtime-sized arrays may not be used in \
+     GPU code"
+  )]
+  RuntimeSizedFieldOnGpu,
+  #[error(
+    "Nested runtime-sized arrays may not be bound to GPU buffers"
+  )]
+  NestedRuntimeSizedArrayBinding,
   #[error("The name `{0}` is used for more than one top-level variable")]
   VariableNameCollision(String),
   #[error("The name `{0}` is used as both a variable name and a function name")]

@@ -1,0 +1,12 @@
+; Functions reachable from GPU entry points may not return runtime-sized
+; arrays: there is no GPU representation for a dynamically-sized value.
+(defn build []: [f32]
+  (into-dynamic-array [1. 2.]))
+
+@[storage-write 0 0]
+(var out: [1: f32])
+
+@{workgroup-size 1}
+@compute
+(defn run []
+  (= (out 0u) ((build) 0u)))

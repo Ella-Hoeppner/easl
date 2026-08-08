@@ -1,0 +1,9 @@
+; Generic functions returning runtime-sized arrays monomorphize with
+; distinct storage per instantiation.
+(defn (pair T) [x: T]: [T]
+  (into-dynamic-array [x x]))
+
+@cpu
+(defn main []
+  (print ((pair 3.) 1u))
+  (print ((pair 7u) 0u)))

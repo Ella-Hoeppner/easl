@@ -1198,15 +1198,22 @@ impl TopLevelFunction {
       panic!("attempted to compile function with invalid ExpKind {kind:?}")
     };
     let effects = body.effects();
-    // WindowInfo counts as disallowed here: any GPU-emitted function has had
-    // its window-info queries rewritten into binding reads by
-    // `extract_gpu_window_info`, so a remaining WindowInfo effect means the
-    // function is only reachable from CPU code (where the queries stay
-    // direct IO calls) and must not be emitted to WGSL or C.
+    // A function is CPU-only either through its effects (CPU-exclusive
+    // calls/types, window queries, address-space writes the GPU can't
+    // perform) or through its types: runtime-sized values in the
+    // signature have no flat WGSL/C encoding. `fn_string` below is only
+    // evaluated when this passes, so skipped functions' bodies are never
+    // lowered at all.
+    let signature_involves_runtime_sized_types = args
+      .iter()
+      .map(|(arg, _)| arg.var_type.unwrap_known())
+      .chain(std::iter::once(return_type.unwrap_known()))
+      .any(|t| t.involves_runtime_sized_array());
     let allowed_on_gpu = effects.cpu_exclusive_functions().is_empty()
       && effects.cpu_exclusive_types().is_empty()
       && effects.window_info_kinds().is_empty()
-      && effects.gpu_illegal_address_space_writes(program).is_empty();
+      && effects.gpu_illegal_address_space_writes(program).is_empty()
+      && !signature_involves_runtime_sized_types;
 
     let fn_string = || {
       let args = arg_names

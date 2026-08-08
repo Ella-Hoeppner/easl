@@ -344,6 +344,26 @@ error_test!(
   CompileErrorKind::CantStoreFunctionInDataStructure
 );
 error_test!(
+  gpu_dyn_array_return_failure,
+  CompileErrorKind::GpuFunctionReturnsRuntimeSizedArray
+);
+error_test!(
+  gpu_dyn_array_param_failure,
+  CompileErrorKind::GpuFunctionAcceptsRuntimeSizedArray
+);
+error_test!(
+  gpu_dyn_array_local_failure,
+  CompileErrorKind::RuntimeSizedLocalInGpuCode
+);
+error_test!(
+  gpu_dyn_struct_field_failure,
+  CompileErrorKind::RuntimeSizedFieldOnGpu
+);
+error_test!(
+  gpu_nested_dyn_array_binding_failure,
+  CompileErrorKind::NestedRuntimeSizedArrayBinding
+);
+error_test!(
   generic_constraint_failure,
   CompileErrorKind::FunctionArgumentTypesIncompatible {
     f: TypeStateDescription::Known(TypeDescription::Function {

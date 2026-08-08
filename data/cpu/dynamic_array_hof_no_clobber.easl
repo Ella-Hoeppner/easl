@@ -1,0 +1,17 @@
+; Two HoF-specialized copies of `g` are simultaneously live — main calls
+; (g a), and a's body calls (g b) while the outer g's dynamic local is
+; still in use. The outer g must see its own scratch intact after the
+; inner call returns: 10 + (10 + 5 + 20) + 20.
+(defn g [f: (Fn [] f32)]: f32
+  (let [tmp (into-dynamic-array [10. 20.])]
+    (+ (tmp 0u) (f) (tmp 1u))))
+
+(defn b []: f32
+  5.)
+
+(defn a []: f32
+  (g b))
+
+@cpu
+(defn main []
+  (print (g a)))

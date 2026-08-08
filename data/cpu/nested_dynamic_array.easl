@@ -1,0 +1,13 @@
+; Nested runtime-sized arrays on the CPU: outer and inner lengths are
+; independent, elements index through both levels, and a whole inner
+; array can be replaced in place.
+@cpu
+(defn main []
+  (let [@var rows (into-dynamic-array [(into-dynamic-array [1. 2.])
+                                       (into-dynamic-array [3. 4. 5.])])]
+    (print (array-length rows))
+    (print (array-length (rows 1u)))
+    (print ((rows 0u) 1u))
+    (print ((rows 1u) 2u))
+    (= (rows 0u) (into-dynamic-array [7.]))
+    (print ((rows 0u) 0u))))

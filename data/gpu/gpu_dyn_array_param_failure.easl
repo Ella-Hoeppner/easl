@@ -1,0 +1,15 @@
+; Functions reachable from GPU entry points may not take runtime-sized
+; arrays as by-value arguments.
+@[storage 0 0]
+(var data: [f32])
+
+(defn first-of [a: [f32]]: f32
+  (a 0u))
+
+@[storage-write 0 1]
+(var out: [1: f32])
+
+@{workgroup-size 1}
+@compute
+(defn run []
+  (= (out 0u) (first-of data)))

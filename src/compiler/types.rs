@@ -1306,6 +1306,27 @@ impl Type {
       }
     });
   }
+  /// Whether this type contains a runtime-sized array anywhere in its
+  /// structure (directly, as an element/field, or inside an enum
+  /// variant). Such types have no fixed GPU layout: values of them are
+  /// CPU-only, and functions whose signatures involve them are skipped
+  /// during WGSL/C emission.
+  pub fn involves_runtime_sized_array(&self) -> bool {
+    match self {
+      Type::Array(Some(ConcreteArraySize::Unsized), _) => true,
+      Type::Array(_, inner) => {
+        inner.kind.unwrap_known().involves_runtime_sized_array()
+      }
+      Type::Struct(s) => s.fields.iter().any(|f| {
+        f.field_type.unwrap_known().involves_runtime_sized_array()
+      }),
+      Type::Enum(e) => e.variants.iter().any(|v| {
+        v.inner_type.unwrap_known().involves_runtime_sized_array()
+      }),
+      _ => false,
+    }
+  }
+
   pub fn data_size_in_u32s(
     &self,
     source_trace: &SourceTrace,

@@ -1,0 +1,13 @@
+; Structs may hold runtime-sized array fields on the CPU, including being
+; constructed inside and returned from functions.
+(struct Samples
+  data: [f32]
+  gain: f32)
+
+(defn build-samples []: Samples
+  (Samples (into-dynamic-array [1. 2. 3.]) 2.))
+
+@cpu
+(defn main []
+  (let [s (build-samples)]
+    (print (* s.gain (s.data 1u)))))

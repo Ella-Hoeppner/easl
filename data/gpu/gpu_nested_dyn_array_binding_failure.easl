@@ -1,0 +1,9 @@
+; Nested runtime-sized arrays can never be GPU buffer bindings — there is
+; no flat host-shareable layout for them.
+@[storage-write 0 0]
+(var grid: [[f32]])
+
+@{workgroup-size 1}
+@compute
+(defn run []
+  (= ((grid 0u) 0u) 1.))

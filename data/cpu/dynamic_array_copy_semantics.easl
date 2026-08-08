@@ -1,0 +1,19 @@
+; Runtime-sized arrays have value semantics everywhere: binding one to a
+; local copies it, and passing one to a @var argument gives the callee its
+; own mutable copy — mutations on either side are never visible through
+; the other.
+(var g: [f32])
+
+(defn zap [@var a: [f32]]: f32
+  (= (a 0u) 99.)
+  (a 0u))
+
+@cpu
+(defn main []
+  (= g (into-dynamic-array [1. 2.]))
+  (let [b g]
+    (= (g 0u) 5.)
+    (print (b 0u))
+    (print (zap b))
+    (print (b 0u))
+    (print (g 0u))))

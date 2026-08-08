@@ -1,0 +1,13 @@
+; A function can return a runtime-sized array: `into-dynamic-array` in a
+; function's tail position, with the result assigned to a dynamic global.
+; (Minimal repro of the main.easl `build-materials`/`build-scene` pattern.)
+(var arr: [f32])
+
+(defn build []: [f32]
+  (into-dynamic-array [1. 2. 3.]))
+
+@cpu
+(defn main []
+  (= arr (build))
+  (print (array-length arr))
+  (print (arr 1u)))

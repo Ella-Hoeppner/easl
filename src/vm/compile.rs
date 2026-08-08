@@ -1026,15 +1026,71 @@ impl BytecodeCompilationState {
       }
 
       // --- Plain assignment ---
-      "=" => {
-        let arg_size = arg_types[0]
-          .data_size_in_u32s(&args[0].source_trace)
-          .unwrap() as u16;
+      "into-dynamic-array"
+        if matches!(
+          return_type,
+          Type::Array(Some(ConcreteArraySize::Unsized), _)
+        ) =>
+      {
+        // use the argument expression's own type — it's concrete at the
+        // call site, while the signature's is const-generic
+        let Type::Array(Some(ConcreteArraySize::Literal(count)), _) =
+          args[0].data.unwrap_known()
+        else {
+          panic!("into-dynamic-array argument wasn't a sized array")
+        };
+        let count = &count;
+        let Type::Array(_, element_type) = return_type else {
+          panic!("into-dynamic-array return type wasn't an array")
+        };
+        let stride = vm_type_size(&element_type.unwrap_known());
+        let dest = self.take_stack_slot(1);
         self.push_instruction(Instruction {
-          op: Op::Move,
-          arg_positions: [arg_positions[1], arg_size, 0],
-          return_position: arg_positions[0],
+          op: Op::HeapFromSlots,
+          arg_positions: [arg_positions[0], *count as u16, stride],
+          return_position: dest,
         });
+        Some(dest)
+      }
+      "zeroed-array"
+        if matches!(
+          return_type,
+          Type::Array(Some(ConcreteArraySize::Unsized), _)
+        ) =>
+      {
+        let Type::Array(_, element_type) = return_type else {
+          panic!("zeroed-array return type wasn't an array")
+        };
+        let stride = vm_type_size(&element_type.unwrap_known());
+        let dest = self.take_stack_slot(1);
+        self.push_instruction(Instruction {
+          op: Op::HeapZeroed,
+          arg_positions: [arg_positions[0], stride, 0],
+          return_position: dest,
+        });
+        Some(dest)
+      }
+      "=" => {
+        if matches!(
+          arg_types[0],
+          Type::Array(Some(ConcreteArraySize::Unsized), _)
+        ) {
+          // Whole-value assignment of a runtime-sized array to a local:
+          // release the destination's old heap cell and take a fresh id
+          // sharing the source's payload (mutation later copies-on-write).
+          self.push_instruction(Instruction {
+            op: Op::HeapCopy,
+            arg_positions: [arg_positions[1], 0, 0],
+            return_position: arg_positions[0],
+          });
+        } else {
+          let arg_size = vm_type_size(&arg_types[0]);
+          self.push_instruction(Instruction {
+            op: Op::Move,
+            arg_positions: [arg_positions[1], arg_size, 0],
+            return_position: arg_positions[0],
+          });
+        }
         None
       }
 
@@ -1780,6 +1836,23 @@ impl BytecodeCompilationState {
 /// state occupies memory.
 pub fn vm_type_size(t: &Type) -> u16 {
   match t {
+    // A runtime-sized array *value* is a one-word heap id (see the
+    // `Heap*` opcodes); only dynamic globals get region storage.
+    Type::Array(Some(ConcreteArraySize::Unsized), _) => 1,
+    // Enums may carry runtime-sized payloads on the CPU (as heap-id words),
+    // which `data_size_in_u32s` can't size — compute the layout
+    // (discriminant + max variant payload) with heap-id-aware field sizes.
+    Type::Enum(e) => {
+      1 + e
+        .variants
+        .iter()
+        .map(|v| match v.inner_type.unwrap_known() {
+          Type::Unit => 0,
+          inner => vm_type_size(&inner),
+        })
+        .max()
+        .unwrap_or(0)
+    }
     Type::Function(f) => {
       if let Some(ancestor) = &f.abstract_ancestor
         && let Some(scope) = &ancestor.read().unwrap().captured_scope
@@ -1820,6 +1893,35 @@ pub fn vm_type_size(t: &Type) -> u16 {
         }
       }
     }
+  }
+}
+
+/// The op for copying a value of type `t` between slot regions: plain
+/// `Move` fan-out for flat data, `HeapCopy` for runtime-sized array
+/// values (which must take a fresh payload-sharing heap id so the copy has
+/// value semantics — mutating either side copies-on-writes away from the
+/// other).
+fn copy_op_for(t: &Type) -> Op {
+  if matches!(t, Type::Array(Some(ConcreteArraySize::Unsized), _)) {
+    Op::HeapCopy
+  } else {
+    Op::Move
+  }
+}
+
+/// True when an assignment right-hand side is one of the forms with a
+/// dedicated whole-global fast path in `try_compile_cpu_builtin`
+/// (`zeroed-array`, `into-dynamic-array`, `load-wav`).
+fn assigns_special_dyn_rhs(rhs: &TypedExp) -> bool {
+  if let ExpKind::Application(rhs_f, _) = &rhs.kind
+    && let ExpKind::Name(rhs_f_name) = &rhs_f.kind
+  {
+    matches!(
+      &**rhs_f_name,
+      "zeroed-array" | "into-dynamic-array" | "load-wav"
+    )
+  } else {
+    false
   }
 }
 
@@ -2051,14 +2153,25 @@ impl TypedExp {
           args[0].data.unwrap_known()
         {
           Some(Some(state.emit_u32_constant(n as u32)))
+        } else if matches!(
+          args[0].data.unwrap_known(),
+          Type::Array(Some(ConcreteArraySize::Unsized), _)
+        ) {
+          // runtime-sized array *value*: length via its heap id
+          let heap_id_slot = args[0].compile_to_bytecode(false, state).unwrap();
+          let dest = state.take_stack_slot(1);
+          state.push_instruction(Instruction {
+            op: Op::HeapLen,
+            arg_positions: [heap_id_slot, 0, 0],
+            return_position: dest,
+          });
+          Some(Some(dest))
         } else {
           panic!("array-length of unsupported array kind in VM runtime")
         }
       }
       "=" => {
-        // element store into a dynamic-memory array; other assignment
-        // shapes fall through (whole-array and texture assignments are
-        // CPU-exclusive and handled by `try_compile_cpu_builtin`)
+        // element store into a dynamic-memory (global) array
         if let ExpKind::Access(Accessor::ArrayIndex(index_exp), inner) =
           &args[0].kind
           && let ExpKind::Name(name) = &inner.kind
@@ -2072,6 +2185,52 @@ impl TypedExp {
             op: Op::DynStore,
             arg_positions: [memory, index_slot, src_slot],
             return_position: stride,
+          });
+          Some(None)
+        } else if let ExpKind::Access(Accessor::ArrayIndex(index_exp), inner) =
+          &args[0].kind
+          && let Type::Array(_, element_type) = inner.data.unwrap_known()
+          && matches!(
+            inner.data.unwrap_known(),
+            Type::Array(Some(ConcreteArraySize::Unsized), _)
+          )
+        {
+          // element store into a runtime-sized array *value* (a local, a
+          // field, or a nested element), through its heap id with
+          // copy-on-write
+          let heap_id_slot = inner.compile_to_bytecode(false, state).unwrap();
+          let index_slot =
+            index_exp.compile_to_bytecode(false, state).unwrap();
+          let src_slot = args[1].compile_to_bytecode(false, state).unwrap();
+          let stride = vm_type_size(&element_type.unwrap_known());
+          state.push_instruction(Instruction {
+            op: Op::HeapStore,
+            arg_positions: [heap_id_slot, index_slot, src_slot],
+            return_position: stride,
+          });
+          Some(None)
+        } else if let ExpKind::Name(name) = &args[0].kind
+          && let Some((memory, _)) =
+            state.dynamic_array_memory.get(name).copied()
+          && !(state.cpu_mode && assigns_special_dyn_rhs(&args[1]))
+        {
+          // whole-array assignment of a general runtime-sized value to a
+          // dynamic global: compile the value to a heap cell and copy its
+          // payload into the global's region. (In cpu mode the direct
+          // `zeroed-array`/`into-dynamic-array`/`load-wav` right-hand
+          // sides keep their dedicated host/region fast paths in
+          // `try_compile_cpu_builtin`.)
+          if let ExpKind::Application(rhs_f, _) = &args[1].kind
+            && let ExpKind::Name(rhs_f_name) = &rhs_f.kind
+            && &**rhs_f_name == "load-wav"
+          {
+            panic!("load-wav is only available in the CPU runtime");
+          }
+          let src_slot = args[1].compile_to_bytecode(false, state).unwrap();
+          state.push_instruction(Instruction {
+            op: Op::RegionFromHeap,
+            arg_positions: [memory, src_slot, 0],
+            return_position: 0,
           });
           Some(None)
         } else {
@@ -2110,6 +2269,13 @@ impl TypedExp {
           let ty = state.host_type_index(&arg.data.unwrap_known());
           state.emit_host_op(HostOp::PrintZeroed { len_slot, ty });
         } else {
+          if arg.data.unwrap_known().involves_runtime_sized_array() {
+            panic!(
+              "printing a runtime-sized array value isn't supported yet in \
+               the VM runtime — print an element, or assign it to a global \
+               and print that"
+            );
+          }
           let slot = arg.compile_to_bytecode(false, state).unwrap();
           let ty = state.host_type_index(&arg.data.unwrap_known());
           state.emit_host_op(HostOp::Print { slot, ty });
@@ -2595,21 +2761,12 @@ impl TypedExp {
             &return_type,
           ),
           FunctionImplementationKind::StructConstructor => {
-            let struct_slot_pos = state.take_stack_slot(
-              self
-                .data
-                .unwrap_known()
-                .data_size_in_u32s(&self.source_trace)
-                .unwrap() as u16,
-            );
+            let struct_slot_pos = state
+              .take_stack_slot(vm_type_size(&self.data.unwrap_known()));
             let mut offset = 0u16;
             for arg in args {
               let arg_pos = arg.compile_to_bytecode(false, state).unwrap();
-              let arg_size = arg
-                .data
-                .unwrap_known()
-                .data_size_in_u32s(&arg.source_trace)
-                .unwrap() as u16;
+              let arg_size = vm_type_size(&arg.data.unwrap_known());
               state.push_instruction(Instruction {
                 op: Op::Move,
                 arg_positions: [arg_pos, arg_size, 0],
@@ -2631,8 +2788,7 @@ impl TypedExp {
               .position(|v| v.name == *variant_name)
               .expect("EnumConstructor variant not found in enum")
               as u32;
-            let total_size =
-              return_type.data_size_in_u32s(&self.source_trace).unwrap() as u16;
+            let total_size = vm_type_size(&return_type);
             let result = state.take_stack_slot(total_size);
             // Discriminant at result[0] — first slot of the freshly allocated
             // region. We write it directly rather than using emit_u32_constant
@@ -2649,11 +2805,7 @@ impl TypedExp {
             });
             let mut offset = 1u16;
             for (arg_i, arg) in args.iter().enumerate() {
-              let arg_size = arg
-                .data
-                .unwrap_known()
-                .data_size_in_u32s(&arg.source_trace)
-                .unwrap() as u16;
+              let arg_size = vm_type_size(&arg.data.unwrap_known());
               state.push_instruction(Instruction {
                 op: Op::Move,
                 arg_positions: [arg_positions[arg_i], arg_size, 0],
@@ -2664,9 +2816,7 @@ impl TypedExp {
             Some(result)
           }
           FunctionImplementationKind::Composite(_) => {
-            let return_size = return_type
-              .data_size_in_u32s(&f_exp.source_trace)
-              .unwrap() as u16;
+            let return_size = vm_type_size(&return_type);
             let result_position = state.take_stack_slot(return_size);
             if state
               .ref_arg_functions
@@ -2675,10 +2825,10 @@ impl TypedExp {
               .is_some()
             {
               let mut arg_move_positions = vec![];
-              for _ in 0..arg_positions.len() {
+              for arg_type in arg_types.iter() {
                 arg_move_positions.push(state.instructions.len() as u32);
                 state.push_instruction(Instruction {
-                  op: Op::Move,
+                  op: copy_op_for(arg_type),
                   arg_positions: [0, 0, 0],
                   return_position: 0,
                 });
@@ -2691,7 +2841,7 @@ impl TypedExp {
               });
               let return_move_position = state.instructions.len() as u32;
               state.push_instruction(Instruction {
-                op: Op::Move,
+                op: copy_op_for(&return_type),
                 arg_positions: [0, return_size, 0],
                 return_position: result_position,
               });
@@ -2715,8 +2865,8 @@ impl TypedExp {
                 })
                 .unwrap();
 
-              for (arg_pos, (fn_arg_pos, arg_size)) in
-                arg_positions.iter().copied().zip(
+              for ((arg_pos, arg_type), (fn_arg_pos, arg_size)) in
+                arg_positions.iter().copied().zip(arg_types.iter()).zip(
                   bytecode_fn
                     .arg_positions
                     .iter()
@@ -2725,7 +2875,7 @@ impl TypedExp {
                 )
               {
                 state.push_instruction(Instruction {
-                  op: Op::Move,
+                  op: copy_op_for(arg_type),
                   arg_positions: [arg_pos, arg_size, 0],
                   return_position: fn_arg_pos,
                 });
@@ -2736,7 +2886,7 @@ impl TypedExp {
                 return_position: 0,
               });
               state.push_instruction(Instruction {
-                op: Op::Move,
+                op: copy_op_for(&return_type),
                 arg_positions: [bytecode_fn.stack_frame_start, return_size, 0],
                 return_position: result_position,
               });
@@ -2755,6 +2905,20 @@ impl TypedExp {
         result_pos
       }
       Name(name) => {
+        if let Some((memory, stride)) =
+          state.dynamic_array_memory.get(name).copied()
+        {
+          // A dynamic global read as a *value*: deep-copy the region into
+          // a fresh heap cell (value semantics — later writes to the
+          // global must not show through the copy).
+          let dest = state.take_stack_slot(1);
+          state.push_instruction(Instruction {
+            op: Op::HeapFromRegion,
+            arg_positions: [memory, stride, 0],
+            return_position: dest,
+          });
+          return Some(dest);
+        }
         if state.dynamic_globals.contains_key(name) {
           panic!(
             "dynamic global {name:?} used in a position the VM CPU runtime \
@@ -2783,11 +2947,7 @@ impl TypedExp {
           && let Some(idx) =
             enum_type.variants.iter().position(|v| v.name == *base_name)
         {
-          let total_size = self
-            .data
-            .unwrap_known()
-            .data_size_in_u32s(&self.source_trace)
-            .unwrap() as u16;
+          let total_size = vm_type_size(&self.data.unwrap_known());
           let result = state.take_stack_slot(total_size);
           state.push_instruction(Instruction {
             op: Op::Constant,
@@ -2817,10 +2977,7 @@ impl TypedExp {
             op: Op::Move,
             arg_positions: [
               result_position,
-              f.return_type
-                .unwrap_known()
-                .data_size_in_u32s(&exp.source_trace)
-                .unwrap() as u16,
+              vm_type_size(&f.return_type.unwrap_known()),
               0,
             ],
             return_position: state
@@ -2839,11 +2996,7 @@ impl TypedExp {
           // need to allocate a fresh slot of the binding's type so subsequent
           // assignments have a destination.
           if matches!(value.kind, ExpKind::Uninitialized) {
-            let size = value
-              .data
-              .unwrap_known()
-              .data_size_in_u32s(&value.source_trace)
-              .unwrap() as u16;
+            let size = vm_type_size(&value.data.unwrap_known());
             let slot = state.take_stack_slot(size);
             state.locals.insert(name.clone(), slot);
           } else {
@@ -2855,8 +3008,7 @@ impl TypedExp {
       }
       Match(scrutinee, arms) => {
         let result_type = self.data.unwrap_known();
-        let result_type_size =
-          result_type.data_size_in_u32s(&self.source_trace).unwrap() as u16;
+        let result_type_size = vm_type_size(&result_type);
         let scrutinee_pos =
           scrutinee.compile_to_bytecode(false, state).unwrap();
         let scrutinee_type = scrutinee.data.unwrap_known();
@@ -3291,11 +3443,8 @@ impl TypedExp {
         None
       }
       ArrayLiteral(inner_expressions) => {
-        let inner_data_size = inner_expressions[0]
-          .data
-          .unwrap_known()
-          .data_size_in_u32s(&self.source_trace)
-          .unwrap() as u16;
+        let inner_data_size =
+          vm_type_size(&inner_expressions[0].data.unwrap_known());
         let array_pos = state
           .take_stack_slot(inner_data_size * (inner_expressions.len() as u16));
         for (i, inner_exp) in inner_expressions.iter().enumerate() {
@@ -3343,12 +3492,38 @@ impl TypedExp {
               }
               return Some(dest);
             }
+            if matches!(
+              exp.data.unwrap_known(),
+              Type::Array(Some(ConcreteArraySize::Unsized), _)
+            ) {
+              // element read of a runtime-sized array *value* through its
+              // heap id
+              let heap_id_slot =
+                exp.compile_to_bytecode(false, state).unwrap();
+              let stride = vm_type_size(&self.data.unwrap_known());
+              let dest = state.take_stack_slot(stride);
+              let index_slot =
+                index_exp.compile_to_bytecode(false, state).unwrap();
+              state.push_instruction(Instruction {
+                op: Op::HeapLoad,
+                arg_positions: [heap_id_slot, index_slot, stride],
+                return_position: dest,
+              });
+              if is_ref_arg_position {
+                state
+                  .array_mut_ref_store_instructions
+                  .last_mut()
+                  .unwrap()
+                  .push(Instruction {
+                    op: Op::HeapStore,
+                    arg_positions: [heap_id_slot, index_slot, dest],
+                    return_position: stride,
+                  });
+              }
+              return Some(dest);
+            }
             let inner_exp_pos = exp.compile_to_bytecode(false, state).unwrap();
-            let inner_data_size = self
-              .data
-              .unwrap_known()
-              .data_size_in_u32s(&self.source_trace)
-              .unwrap() as u16;
+            let inner_data_size = vm_type_size(&self.data.unwrap_known());
             let result_position = state.take_stack_slot(inner_data_size);
             let index_pos =
               index_exp.compile_to_bytecode(false, state).unwrap();
@@ -3375,18 +3550,14 @@ impl TypedExp {
             let Type::Struct(s) = exp.data.unwrap_known() else {
               panic!()
             };
-            let mut offset = 0;
+            let mut offset = 0u16;
             for field in s.fields.iter() {
               if field.name == *field_name {
                 break;
               }
-              offset += field
-                .field_type
-                .unwrap_known()
-                .data_size_in_u32s(&exp.source_trace)
-                .unwrap();
+              offset += vm_type_size(&field.field_type.unwrap_known());
             }
-            Some(inner_exp_pos + (offset as u16))
+            Some(inner_exp_pos + offset)
           }
           Accessor::Swizzle(swizzle_fields) => {
             // For swizzles we just copy the values to a new location so that

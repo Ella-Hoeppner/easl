@@ -171,6 +171,44 @@ pub enum Op {
   /// return_position holds the stride
   DynAssignFromSlots,
 
+  // First-class dynamic-array *values*: one-word heap ids into
+  // `BytecodeProgram::heap` (Arc'd cells, value semantics via
+  // copy-on-write). Heap ids occupy exactly one stack slot everywhere —
+  // locals, args, returns, struct/enum/scope fields — while dynamic
+  // *globals* keep the region system above. Reclamation is
+  // drop-on-overwrite: each op that writes a heap id into its statically
+  // fixed destination slot releases the slot's previous cell first, so
+  // a creation site retains at most one live cell. Copies (`HeapCopy`)
+  // allocate a fresh id sharing the cell's payload via `Arc::clone`;
+  // mutation goes through `Arc::make_mut`, cloning only when shared —
+  // which is what makes value semantics hold: a bound copy keeps
+  // observing the payload it was bound to even if the source is later
+  // mutated. Heap-id words embedded in aggregates (struct/enum/scope
+  // data) and handed out by plain `Move`s are *borrows*: they share the
+  // owner's id without owning it, and stay valid until the owning
+  // site next re-executes.
+  /// args: [src_id_slot, _, _] → element count (0 for a null id)
+  HeapLen,
+  /// args: [id_slot, index_slot, stride] → element dest
+  HeapLoad,
+  /// args: [id_slot, index_slot, src_slot]; return_position = stride
+  HeapStore,
+  /// `(into-dynamic-array fixed)` as a value: args [src_slot, count,
+  /// stride] → dest id slot
+  HeapFromSlots,
+  /// `(zeroed-array n)` as a value: args [len_slot, stride, _] → dest
+  HeapZeroed,
+  /// Fresh id sharing `src`'s payload (value-semantics copy; O(1)):
+  /// args [src_id_slot, _, _] → dest id slot
+  HeapCopy,
+  /// Deep-copies a dynamic *global*'s region into a fresh cell: args
+  /// [region, stride, _] → dest id slot
+  HeapFromRegion,
+  /// Copies a heap cell's payload words into a dynamic global's region
+  /// (whole-array assignment to a global): args [region, src_id_slot,
+  /// _]
+  RegionFromHeap,
+
   /// Marks the thread-shared global `Code::shared_vars[arg_positions[0]]`
   /// as written since this thread's last publish boundary. Emitted after
   /// applications whose write set touches a shared global, in both
@@ -342,6 +380,35 @@ impl Instruction {
       }
       Op::DynResize => self.arg_positions[1],
       Op::MarkSharedDirty => 0,
+      Op::HeapLen | Op::HeapCopy => {
+        self.return_position.max(self.arg_positions[0])
+      }
+      Op::HeapLoad => {
+        // dest spans stride (arg 2) slots
+        (self.return_position + self.arg_positions[2].saturating_sub(1))
+          .max(self.arg_positions[0])
+          .max(self.arg_positions[1])
+      }
+      Op::HeapStore => {
+        // src spans stride (held in return_position) slots
+        (self.arg_positions[2] + self.return_position.saturating_sub(1))
+          .max(self.arg_positions[0])
+          .max(self.arg_positions[1])
+      }
+      Op::HeapFromSlots => {
+        // src spans count (arg 1) * stride (arg 2) slots
+        self
+          .return_position
+          .max(
+            self.arg_positions[0]
+              + (self.arg_positions[1] * self.arg_positions[2])
+                .saturating_sub(1),
+          )
+      }
+      Op::HeapZeroed => self.return_position.max(self.arg_positions[0]),
+      // arg 0 is a region id, not a slot
+      Op::HeapFromRegion => self.return_position,
+      Op::RegionFromHeap => self.arg_positions[1],
       Op::DynAssignFromSlots => {
         // src spans count (arg 2) * stride (return_position) slots
         self.arg_positions[1]
@@ -628,6 +695,22 @@ pub struct Code {
   pub shared_vars: Vec<SharedVarInfo>,
 }
 
+/// One heap-allocated dynamic-array value, referenced by heap-id words on
+/// the stack (see the `Heap*` opcodes). The payload is `Arc`-shared
+/// between value-semantics copies and cloned lazily on mutation.
+#[derive(Debug, Clone)]
+pub struct HeapCell {
+  pub memory: DynMemory,
+  /// Words per element (1 for nested arrays, whose elements are heap ids).
+  pub stride: u16,
+}
+
+/// A heap-id word: 0 is the null/empty id, any other value is
+/// `heap_index + 1`.
+fn heap_index(id: u32) -> Option<usize> {
+  (id != 0).then(|| id as usize - 1)
+}
+
 pub struct BytecodeProgram {
   pub code: Code,
   pub stack: Vec<u32>,
@@ -637,6 +720,12 @@ pub struct BytecodeProgram {
   /// the u16-addressed stack, so these arrays aren't subject to its 2^16
   /// word limit.
   pub dyn_memory: Vec<DynMemory>,
+  /// Backing store for first-class dynamic-array *values* (the `Heap*`
+  /// opcodes): Arc'd cells addressed by heap-id words. `None` entries are
+  /// free (their indices sit in `heap_free`).
+  pub heap: Vec<Option<std::sync::Arc<HeapCell>>>,
+  /// Free-list of released `heap` indices.
+  pub heap_free: Vec<u32>,
   /// Per-shared-variable "written since my last publish" flags, aligned
   /// with `Code::shared_vars`. Set by `Op::MarkSharedDirty`; cleared when
   /// the owning thread publishes at an iteration boundary. Thread-local
@@ -666,6 +755,8 @@ impl BytecodeProgram {
         DynMemory::Zeroed { elements: 0 };
         code.dyn_memory_count as usize
       ],
+      heap: Vec::new(),
+      heap_free: Vec::new(),
       shared_dirty: vec![false; code.shared_vars.len()],
       shared_adopted: vec![0; code.shared_vars.len()],
       shared_scratch: (0..code.shared_vars.len()).map(|_| None).collect(),
@@ -730,10 +821,46 @@ impl BytecodeProgram {
       stack,
       call_stack,
       dyn_memory,
+      heap,
+      heap_free,
       shared_dirty,
       shared_adopted,
       shared_scratch,
     } = self;
+    // Heap helpers for the `Heap*` ops. `release` implements
+    // drop-on-overwrite: the previous occupant of a heap-id destination
+    // slot is freed (its payload dropped if this was the last
+    // payload-sharing id) before the new id is written.
+    macro_rules! release_cell {
+      ($slot:expr) => {{
+        let old = stack[$slot as usize];
+        if let Some(i) = heap_index(old) {
+          heap[i] = None;
+          heap_free.push(i as u32);
+        }
+      }};
+    }
+    macro_rules! alloc_cell {
+      ($cell:expr) => {{
+        let cell: std::sync::Arc<HeapCell> = $cell;
+        match heap_free.pop() {
+          Some(i) => {
+            heap[i as usize] = Some(cell);
+            i + 1
+          }
+          None => {
+            heap.push(Some(cell));
+            heap.len() as u32
+          }
+        }
+      }};
+    }
+    macro_rules! deref_cell {
+      ($slot:expr) => {{
+        let id = stack[$slot as usize];
+        heap_index(id).and_then(|i| heap[i].as_ref())
+      }};
+    }
     let Some(mut ip) = call_stack.pop() else {
       return Ok(RunResult::Finished);
     };
@@ -1305,6 +1432,107 @@ impl BytecodeProgram {
           dyn_memory[memory as usize] = DynMemory::Words(
             stack[src..src + count as usize * stride].to_vec(),
           );
+        }
+
+        Op::HeapLen => {
+          let count = deref_cell!(instruction.arg_positions[0])
+            .map(|cell| cell.memory.len_elements(cell.stride as usize))
+            .unwrap_or(0);
+          stack[instruction.return_position as usize] = count;
+        }
+        Op::HeapLoad => {
+          let [id_slot, index_slot, stride] = instruction.arg_positions;
+          let index = stack[index_slot as usize] as usize;
+          let stride = stride as usize;
+          let dest = instruction.return_position as usize;
+          let Some(cell) = deref_cell!(id_slot) else {
+            panic!(
+              "dynamic array index out of bounds: index {index}, length 0"
+            );
+          };
+          let elements = cell.memory.len_elements(stride) as usize;
+          if index >= elements {
+            panic!(
+              "dynamic array index out of bounds: index {index}, length \
+               {elements}"
+            );
+          }
+          match &cell.memory {
+            DynMemory::Zeroed { .. } => stack[dest..dest + stride].fill(0),
+            DynMemory::Words(words) => stack[dest..dest + stride]
+              .copy_from_slice(&words[index * stride..(index + 1) * stride]),
+          }
+        }
+        Op::HeapStore => {
+          let [id_slot, index_slot, src_slot] = instruction.arg_positions;
+          let stride = instruction.return_position as usize;
+          let index = stack[index_slot as usize] as usize;
+          let Some(i) = heap_index(stack[id_slot as usize]) else {
+            panic!(
+              "dynamic array index out of bounds: index {index}, length 0"
+            );
+          };
+          let cell = std::sync::Arc::make_mut(
+            heap[i].as_mut().expect("heap id referencing a freed cell"),
+          );
+          let elements = cell.memory.len_elements(stride) as usize;
+          if index >= elements {
+            panic!(
+              "dynamic array index out of bounds: index {index}, length \
+               {elements}"
+            );
+          }
+          let src = src_slot as usize;
+          cell.memory.words_mut(stride)[index * stride..(index + 1) * stride]
+            .copy_from_slice(&stack[src..src + stride]);
+        }
+        Op::HeapFromSlots => {
+          let [src_slot, count, stride] = instruction.arg_positions;
+          let src = src_slot as usize;
+          let cell = std::sync::Arc::new(HeapCell {
+            memory: DynMemory::Words(
+              stack[src..src + count as usize * stride as usize].to_vec(),
+            ),
+            stride,
+          });
+          release_cell!(instruction.return_position);
+          stack[instruction.return_position as usize] = alloc_cell!(cell);
+        }
+        Op::HeapZeroed => {
+          let [len_slot, stride, _] = instruction.arg_positions;
+          let cell = std::sync::Arc::new(HeapCell {
+            memory: DynMemory::Zeroed {
+              elements: stack[len_slot as usize],
+            },
+            stride,
+          });
+          release_cell!(instruction.return_position);
+          stack[instruction.return_position as usize] = alloc_cell!(cell);
+        }
+        Op::HeapCopy => {
+          let src = deref_cell!(instruction.arg_positions[0])
+            .map(std::sync::Arc::clone);
+          release_cell!(instruction.return_position);
+          stack[instruction.return_position as usize] = match src {
+            Some(cell) => alloc_cell!(cell),
+            None => 0,
+          };
+        }
+        Op::HeapFromRegion => {
+          let [region, stride, _] = instruction.arg_positions;
+          let cell = std::sync::Arc::new(HeapCell {
+            memory: dyn_memory[region as usize].clone(),
+            stride,
+          });
+          release_cell!(instruction.return_position);
+          stack[instruction.return_position as usize] = alloc_cell!(cell);
+        }
+        Op::RegionFromHeap => {
+          let [region, src_id_slot, _] = instruction.arg_positions;
+          dyn_memory[region as usize] = match deref_cell!(src_id_slot) {
+            Some(cell) => cell.memory.clone(),
+            None => DynMemory::Zeroed { elements: 0 },
+          };
         }
 
         Op::MarkSharedDirty => {

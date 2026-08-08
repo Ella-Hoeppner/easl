@@ -149,3 +149,4 @@ window_test!(spawn_window_named_closure);
 window_test!(print_string);
 window_test!(start_audio);
 window_test!(window_info_shared_helper);
+window_test!(dynamic_array_closure_frames);

@@ -1,0 +1,13 @@
+; Structs containing runtime-sized array fields may not be used in GPU
+; code (they have no fixed GPU layout).
+(struct Holder
+  data: [f32])
+
+@[storage-write 0 0]
+(var out: [1: f32])
+
+@{workgroup-size 1}
+@compute
+(defn run []
+  (let [h (Holder (into-dynamic-array [3. 4.]))]
+    (= (out 0u) (h.data 0u))))

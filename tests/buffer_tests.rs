@@ -115,8 +115,7 @@ buffer_test!(many_bindings_render);
 fn too_many_vertex_bindings() {
   let source_path_str = "./data/buffer/too_many_vertex_bindings.easl";
   let source_path = Path::new(&source_path_str);
-  let Ok(Ok((_, Ok(mut program)))) =
-    load_easl_program_from_file(source_path)
+  let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
   else {
     panic!("failed to load program")
   };
@@ -134,6 +133,7 @@ buffer_test!(offscreen_render_compute_order);
 buffer_test!(dispatch_from_scoped_frame_closure);
 buffer_test!(save_png_roundtrip);
 buffer_test!(save_png_render_target);
+// buffer_test!(dispatch_closure_captures_dynamic_array);
 
 /// Window-info queries used inside GPU code compile into implicit uniform
 /// bindings that the runtime refreshes from the IO manager each frame.
@@ -161,8 +161,7 @@ fn gpu_window_info_spoofed() {
   let expected =
     "[42.5 0.25 7. 320. 240. 12. 34. 1. 0. 1. 1. 0. 1.]".to_string();
   for runtime in [CpuRuntime::TreeWalking, CpuRuntime::BytecodeVm] {
-    let Ok(Ok((_, Ok(mut program)))) =
-      load_easl_program_from_file(source_path)
+    let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
     else {
       panic!("failed to load program")
     };

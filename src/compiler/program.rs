@@ -11,9 +11,9 @@ use crate::compiler::builtins::{
   built_in_structs_for_target,
 };
 use crate::compiler::types::ExpTypeInfo;
-use crate::thread_sync::participant;
 use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
 use crate::parse::EaslMultiDocument;
+use crate::thread_sync::participant;
 use crate::vm::bytecode::{BytecodeProgram, Instruction, Op};
 use crate::vm::compile::{
   BytecodeCompilationState, PendingFrameFnUsage, PendingRefFnUsage,
@@ -3437,6 +3437,17 @@ impl Program {
       }
     }
     for e in self.typedefs.enums.iter().cloned() {
+      // Enums with runtime-sized payloads are CPU-only (their variants
+      // have no fixed GPU layout) — skip their WGSL emission entirely,
+      // like unbound unsized-array globals. GPU code referencing one is
+      // caught by validation, so nothing in the emitted WGSL can miss it.
+      if e
+        .variants
+        .iter()
+        .any(|v| v.inner_type.data_size_in_u32s(&e.source_trace).is_err())
+      {
+        continue;
+      }
       if let Some(compiled_enum) =
         e.compile_if_non_generic(&self.typedefs, &mut names, target)?
       {
@@ -3446,6 +3457,32 @@ impl Program {
     }
     for f in self.abstract_functions_iter() {
       let f = f.read().unwrap().clone();
+      // Functions whose signatures involve runtime-sized values (directly
+      // or inside enums/structs) are CPU-only — they have no valid WGSL/C
+      // representation. This gate covers the synthesized definitions this
+      // loop emits (enum constructors), which never pass through
+      // `TopLevelFunction::compile` and so can't be caught by its
+      // `allowed_on_gpu` check; composite functions get the equivalent
+      // signature check there. GPU code reaching a CPU-only function is a
+      // validation error; here it's simply not emitted.
+      let signature_is_cpu_only = f
+        .arg_types
+        .iter()
+        .map(|(t, _)| t)
+        .chain(std::iter::once(&f.return_type))
+        .any(|t| match t {
+          AbstractType::Type(t) => t.involves_runtime_sized_array(),
+          AbstractType::AbstractEnum(e) => e.variants.iter().any(|v| {
+            matches!(
+              &v.inner_type,
+              AbstractType::Type(t) if t.involves_runtime_sized_array()
+            )
+          }),
+          _ => false,
+        });
+      if signature_is_cpu_only {
+        continue;
+      }
       if f.generic_args.is_empty() && !f.has_uninlined_higher_order_arguments()
       {
         match f.implementation {
@@ -4239,6 +4276,138 @@ impl Program {
       }
     }
   }
+  /// Validates the GPU boundary for runtime-sized values: functions
+  /// reachable from GPU entry points may not return or accept
+  /// runtime-sized arrays, may not create or locally bind them, and may
+  /// not use struct/enum *values* containing them (storage-bound globals
+  /// are exempt — WGSL itself permits a trailing runtime-sized member in
+  /// a storage struct, which is what dispatched-closure scope bindings
+  /// rely on). Nested runtime-sized arrays can never be GPU buffer
+  /// bindings at all.
+  pub fn validate_gpu_runtime_sized_use(&mut self, errors: &mut ErrorLog) {
+    use crate::compiler::expression::ExpKind;
+    // nested runtime-sized arrays have no flat host-shareable layout
+    for v in self.top_level_vars.iter() {
+      if let TopLevelVariableKind::Var {
+        group_and_binding: Some(_),
+        ..
+      } = v.kind
+        && let Type::Array(Some(ConcreteArraySize::Unsized), inner) =
+          &v.var_type
+        && inner.kind.unwrap_known().involves_runtime_sized_array()
+      {
+        errors.log(CompileError {
+          kind: NestedRuntimeSizedArrayBinding,
+          source_trace: v.source_trace.clone(),
+        });
+      }
+    }
+    // reachability from GPU entry roots, callees-first through composite
+    // calls (the graph is a DAG — no recursion)
+    let mut visited: HashSet<Arc<str>> = HashSet::new();
+    let mut queue: Vec<Arc<RwLock<TopLevelFunction>>> = vec![];
+    for f in self.abstract_functions_iter() {
+      let f = f.read().unwrap();
+      if f
+        .entry_point
+        .map(|e| {
+          matches!(
+            e,
+            EntryPoint::Vertex | EntryPoint::Fragment | EntryPoint::Compute(_)
+          )
+        })
+        .unwrap_or(false)
+        && let FunctionImplementationKind::Composite(implementation) =
+          &f.implementation
+        && visited.insert(f.name.clone())
+      {
+        queue.push(implementation.clone());
+      }
+    }
+    while let Some(f) = queue.pop() {
+      let f = f.read().unwrap();
+      let Type::Function(signature) = f.expression.data.unwrap_known() else {
+        continue;
+      };
+      let source_trace = f.expression.source_trace.clone();
+      if matches!(
+        signature.return_type.unwrap_known(),
+        Type::Array(Some(ConcreteArraySize::Unsized), _)
+      ) {
+        errors.log(CompileError {
+          kind: GpuFunctionReturnsRuntimeSizedArray,
+          source_trace: source_trace.clone(),
+        });
+      }
+      if signature.args.iter().any(|(arg, _)| {
+        matches!(
+          arg.var_type.unwrap_known(),
+          Type::Array(Some(ConcreteArraySize::Unsized), _)
+        )
+      }) {
+        errors.log(CompileError {
+          kind: GpuFunctionAcceptsRuntimeSizedArray,
+          source_trace: source_trace.clone(),
+        });
+      }
+      let mut discovered: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> =
+        vec![];
+      f.expression
+        .walk(&mut |exp| {
+          match &exp.kind {
+            ExpKind::Let(bindings, _) => {
+              for (_, _, _, value) in bindings.iter() {
+                if matches!(
+                  value.data.unwrap_known(),
+                  Type::Array(Some(ConcreteArraySize::Unsized), _)
+                ) {
+                  errors.log(CompileError {
+                    kind: RuntimeSizedLocalInGpuCode,
+                    source_trace: value.source_trace.clone(),
+                  });
+                }
+              }
+            }
+            _ => {}
+          }
+          // struct/enum *values* with runtime-sized contents (reads of
+          // storage-bound globals are exempt)
+          if !exp.data.is_globally_bound
+            && matches!(
+              exp.data.unwrap_known(),
+              Type::Struct(_) | Type::Enum(_)
+            )
+            && exp.data.unwrap_known().involves_runtime_sized_array()
+          {
+            errors.log(CompileError {
+              kind: RuntimeSizedFieldOnGpu,
+              source_trace: exp.source_trace.clone(),
+            });
+          }
+          // follow composite callees
+          if let ExpKind::Application(applied_f, _) = &exp.kind
+            && let TypeState::Known(Type::Function(sig)) = &applied_f.data.kind
+            && let Some(ancestor) = &sig.abstract_ancestor
+          {
+            let ancestor = ancestor.read().unwrap();
+            if let FunctionImplementationKind::Composite(implementation) =
+              &ancestor.implementation
+              && !visited.contains(&ancestor.name)
+            {
+              discovered.push((ancestor.name.clone(), implementation.clone()));
+            }
+          }
+          Ok::<bool, Never>(true)
+        })
+        .unwrap();
+      for (name, implementation) in discovered {
+        if visited.insert(name) {
+          queue.push(implementation);
+        }
+      }
+    }
+  }
+
   pub fn validate_top_level_fn_effects(&mut self, errors: &mut ErrorLog) {
     for signature in self.abstract_functions_iter() {
       let signature = signature.read().unwrap();
@@ -4255,7 +4424,29 @@ impl Program {
           | EntryPoint::Compute(_)
           | EntryPoint::Fragment = entry_point
           {
+            // When the runtime-sized-use validation already produced a
+            // precise error, the generic "CPU-exclusive function in GPU
+            // entry" complaint for the array constructors is redundant
+            // noise (the exact same use sites triggered both). It still
+            // fires when that pass found nothing, so constructor misuse
+            // it doesn't model (e.g. an unbound inline construction)
+            // keeps an error.
+            let runtime_sized_error_present = errors.iter().any(|e| {
+              matches!(
+                e.kind,
+                GpuFunctionReturnsRuntimeSizedArray
+                  | GpuFunctionAcceptsRuntimeSizedArray
+                  | RuntimeSizedLocalInGpuCode
+                  | RuntimeSizedFieldOnGpu
+                  | NestedRuntimeSizedArrayBinding
+              )
+            });
             for f_name in effects.cpu_exclusive_functions() {
+              if runtime_sized_error_present
+                && matches!(&*f_name, "into-dynamic-array" | "zeroed-array")
+              {
+                continue;
+              }
               errors.log(CompileError {
                 kind: CPUExclusiveFunctionInGPUEntryPoint(f_name.to_string()),
                 source_trace: f.expression.source_trace.clone(),
@@ -5037,6 +5228,7 @@ impl Program {
     // validation, so GPU entries no longer contain the queries (or the
     // String key literals they take).
     self.extract_gpu_window_info();
+    self.validate_gpu_runtime_sized_use(&mut errors);
     self.validate_top_level_fn_effects(&mut errors);
     if !errors.is_empty() {
       return errors;
@@ -5502,11 +5694,8 @@ impl Program {
   /// `ThreadSharedTable`'s slots.
   pub fn thread_shared_globals(&self) -> Vec<(Arc<str>, u32)> {
     use crate::compiler::expression::ExpKind;
-    let var_names: HashSet<Arc<str>> = self
-      .top_level_vars
-      .iter()
-      .map(|v| v.name.clone())
-      .collect();
+    let var_names: HashSet<Arc<str>> =
+      self.top_level_vars.iter().map(|v| v.name.clone()).collect();
     let globals_reachable_from = |root_entry: fn(&EntryPoint) -> bool| {
       let mut visited: HashSet<Arc<str>> = HashSet::new();
       let mut queue: Vec<Arc<RwLock<TopLevelFunction>>> = vec![];
@@ -5545,8 +5734,7 @@ impl Program {
             // any function-typed expression carrying a composite ancestor
             // is a reference this thread could invoke (covers plain names,
             // application callees, and scope constructions)
-            if let TypeState::Known(Type::Function(signature)) =
-              &exp.data.kind
+            if let TypeState::Known(Type::Function(signature)) = &exp.data.kind
               && let Some(ancestor) = &signature.abstract_ancestor
             {
               let ancestor = ancestor.read().unwrap();
@@ -5569,8 +5757,7 @@ impl Program {
       }
       globals
     };
-    let main_globals =
-      globals_reachable_from(|e| matches!(e, EntryPoint::Cpu));
+    let main_globals = globals_reachable_from(|e| matches!(e, EntryPoint::Cpu));
     let audio_globals =
       globals_reachable_from(|e| matches!(e, EntryPoint::Audio));
     let external_globals: HashSet<Arc<str>> = self
@@ -5744,8 +5931,7 @@ impl Program {
       state.globals.insert(v.name.clone(), position);
       state.global_slots.push((v.name.clone(), position, size));
       state.global_types.push(v.var_type.clone());
-      if let Some(shared_index) =
-        state.shared_var_indices.get(&v.name).copied()
+      if let Some(shared_index) = state.shared_var_indices.get(&v.name).copied()
       {
         state.shared_vars[shared_index as usize] = Some(SharedVarInfo {
           name: v.name.clone(),

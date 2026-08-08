@@ -1,0 +1,11 @@
+; Two results of the same runtime-sized-array-returning function, held
+; live simultaneously, stay distinct — the second call must not clobber
+; the first call's still-in-use result.
+(defn build [x: f32]: [f32]
+  (into-dynamic-array [x (* 2. x)]))
+
+@cpu
+(defn main []
+  (let [a (build 1.)
+        b (build 10.)]
+    (print (+ (a 0u) (a 1u) (b 0u) (b 1u)))))

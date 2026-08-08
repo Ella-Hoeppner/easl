@@ -1,0 +1,11 @@
+spawn-window
+print: 0.
+print: 0.
+print: 0.
+print: 3.
+print: 3.
+print: 3.
+print: 6.
+print: 6.
+print: 6.
+print: 9.

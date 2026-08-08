@@ -1,0 +1,11 @@
+; A frame closure captures a runtime-sized buffer and mutates it across
+; frames — the delay-line-style pattern. The buffer must persist in the
+; closure's scope for the lifetime of the window loop.
+@cpu
+(defn main []
+  (let [@var buf (into-dynamic-array [0. 0. 0.])
+        @var i 0u]
+    (spawn-window (fn []
+                      (= (buf (% i 3u)) (f32 i))
+                      (print (buf 0u))
+                      (+= i 1u)))))

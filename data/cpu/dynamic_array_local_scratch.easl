@@ -1,0 +1,9 @@
+; A runtime-sized array as pure local scratch: created inside a function,
+; used for intermediate computation, discarded without escaping.
+(defn middle []: f32
+  (let [scratch (into-dynamic-array [1. 2. 3.])]
+    (scratch 1u)))
+
+@cpu
+(defn main []
+  (print (middle)))

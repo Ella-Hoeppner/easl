@@ -1,0 +1,22 @@
+; A GPU-dispatched closure captures a *local* runtime-sized array, and the
+; GPU reads it. The tree-walking runtime + real GPU already handle this:
+; the scope struct's dynamic capture lands as its final member, which WGSL
+; legally permits for storage-bound structs, so the scope binding
+; uploads/validates/executes fine. The VM runtime is the gap (it can't
+; slot-size a scope global with a runtime-sized field). Two follow-up
+; constraints this pins: the planned "no runtime-sized struct fields on
+; GPU" validation must not ban storage-bound scope structs with a single
+; *trailing* dynamic capture (that would regress this), and multiple
+; dynamic captures will need splitting into separate storage bindings,
+; since WGSL allows only one trailing runtime-sized member.
+@[storage-write 0 0]
+(var out: [1: f32])
+
+@cpu
+(defn main []
+  (let [weights (into-dynamic-array [1. 2. 3.])]
+    (dispatch-compute-shader (fn []
+                                 (= (out 0u)
+                                    (+ (weights 0u) (weights 2u))))
+                             (vec3u 1u))
+    (print (out 0u))))

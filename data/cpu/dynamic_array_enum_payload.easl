@@ -1,0 +1,14 @@
+; Enum variants may carry runtime-sized array payloads on the CPU.
+(enum MaybeSamples
+  Nothing
+  (Just [f32]))
+
+(defn extract [m: MaybeSamples]: f32
+  (match m
+    (Just data) (data 1u)
+    Nothing -1.))
+
+@cpu
+(defn main []
+  (print (extract (Just (into-dynamic-array [5. 6.]))))
+  (print (extract Nothing)))

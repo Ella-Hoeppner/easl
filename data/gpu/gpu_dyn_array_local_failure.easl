@@ -1,0 +1,10 @@
+; Runtime-sized values may not be created or locally bound in GPU code —
+; the GPU cannot allocate.
+@[storage-write 0 0]
+(var out: [1: f32])
+
+@{workgroup-size 1}
+@compute
+(defn run []
+  (let [tmp (into-dynamic-array [1. 2.])]
+    (= (out 0u) (tmp 0u))))
