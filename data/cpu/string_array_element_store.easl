@@ -1,0 +1,10 @@
+; [String] containers own their elements: storing freshly-built strings
+; into elements across loop iterations keeps every element intact.
+@cpu
+(defn main []
+  (let [@var xs (into-dynamic-array ["a" "b" "c"])]
+    (for [i 0u (< i 3u) (+= i 1u)]
+      (= (xs i) (concat "s" (string i))))
+    (print (xs 0u))
+    (print (xs 1u))
+    (print (xs 2u))))

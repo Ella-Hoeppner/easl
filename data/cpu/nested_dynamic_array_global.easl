@@ -1,0 +1,14 @@
+; Nested runtime-sized arrays work as globals: the region owns child
+; cells, loop element stores persist independently, and both element
+; reads and whole-global prints decode correctly.
+(var rows: [[f32]])
+
+@cpu
+(defn main []
+  (= rows (into-dynamic-array [(into-dynamic-array [0.])
+                               (into-dynamic-array [0.])]))
+  (for [i 0u (< i 2u) (+= i 1u)]
+    (= (rows i) (into-dynamic-array [(f32 i) (f32 i)])))
+  (print (rows 0u))
+  (print (rows 1u))
+  (print rows))

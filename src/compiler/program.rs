@@ -17,6 +17,7 @@ use crate::thread_sync::participant;
 use crate::vm::bytecode::{BytecodeProgram, Instruction, Op};
 use crate::vm::compile::{
   BytecodeCompilationState, PendingFrameFnUsage, PendingRefFnUsage,
+  vm_type_size,
 };
 use crate::{
   Never,
@@ -5868,10 +5869,11 @@ impl Program {
         let Type::Array(_, element_type) = &v.var_type else {
           unreachable!()
         };
-        let element_stride = element_type
-          .unwrap_known()
-          .data_size_in_u32s(&v.source_trace)
-          .unwrap() as u16;
+        // `vm_type_size`, not `data_size_in_u32s`: heap-backed element
+        // types (nested arrays, strings) size as one id word — their
+        // regions use `DynMemory::Cells` storage, where the stride is
+        // never consulted.
+        let element_stride = vm_type_size(&element_type.unwrap_known());
         let memory = dyn_memory_count;
         dyn_memory_count += 1;
         state

@@ -1,0 +1,10 @@
+; Copying a nested runtime-sized array shares payloads until a write:
+; replacing an element of one copy never shows through the other.
+@cpu
+(defn main []
+  (let [@var a (into-dynamic-array [(into-dynamic-array [1. 2.])])
+        @var b (into-dynamic-array [(into-dynamic-array [0.])])]
+    (= b a)
+    (= (a 0u) (into-dynamic-array [9.]))
+    (print (b 0u))
+    (print (a 0u))))

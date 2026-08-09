@@ -1043,13 +1043,24 @@ impl BytecodeCompilationState {
         let Type::Array(_, element_type) = return_type else {
           panic!("into-dynamic-array return type wasn't an array")
         };
-        let stride = vm_type_size(&element_type.unwrap_known());
+        let element_type = element_type.unwrap_known();
         let dest = self.take_stack_slot(1);
-        self.push_instruction(Instruction {
-          op: Op::HeapFromSlots,
-          arg_positions: [arg_positions[0], *count as u16, stride],
-          return_position: dest,
-        });
+        if is_heap_value_type(&element_type) {
+          // The source slots hold heap ids; the new cell owns Arc shares
+          // of their cells.
+          self.push_instruction(Instruction {
+            op: Op::HeapFromSlotsCells,
+            arg_positions: [arg_positions[0], *count as u16, 0],
+            return_position: dest,
+          });
+        } else {
+          let stride = vm_type_size(&element_type);
+          self.push_instruction(Instruction {
+            op: Op::HeapFromSlots,
+            arg_positions: [arg_positions[0], *count as u16, stride],
+            return_position: dest,
+          });
+        }
         Some(dest)
       }
       "zeroed-array"
@@ -1061,13 +1072,22 @@ impl BytecodeCompilationState {
         let Type::Array(_, element_type) = return_type else {
           panic!("zeroed-array return type wasn't an array")
         };
-        let stride = vm_type_size(&element_type.unwrap_known());
+        let element_type = element_type.unwrap_known();
         let dest = self.take_stack_slot(1);
-        self.push_instruction(Instruction {
-          op: Op::HeapZeroed,
-          arg_positions: [arg_positions[0], stride, 0],
-          return_position: dest,
-        });
+        if is_heap_value_type(&element_type) {
+          self.push_instruction(Instruction {
+            op: Op::HeapZeroedCells,
+            arg_positions: [arg_positions[0], 0, 0],
+            return_position: dest,
+          });
+        } else {
+          let stride = vm_type_size(&element_type);
+          self.push_instruction(Instruction {
+            op: Op::HeapZeroed,
+            arg_positions: [arg_positions[0], stride, 0],
+            return_position: dest,
+          });
+        }
         Some(dest)
       }
       "=" => {
@@ -1958,11 +1978,19 @@ fn aliases_variable_storage(e: &TypedExp) -> bool {
   }
 }
 
-fn copy_op_for(t: &Type) -> Op {
-  if matches!(
+/// True for types whose VM value representation is a single heap id —
+/// runtime-sized arrays and strings. Containers of such elements use
+/// `DynMemory::Cells` storage (owned `Arc` children) rather than flat
+/// words.
+fn is_heap_value_type(t: &Type) -> bool {
+  matches!(
     t,
     Type::Array(Some(ConcreteArraySize::Unsized), _) | Type::String
-  ) {
+  )
+}
+
+fn copy_op_for(t: &Type) -> Op {
+  if is_heap_value_type(t) {
     Op::HeapCopy
   } else {
     Op::Move
@@ -2272,14 +2300,20 @@ impl TypedExp {
         } else if let ExpKind::Name(name) = &args[0].kind
           && let Some((memory, _)) =
             state.dynamic_array_memory.get(name).copied()
-          && !(state.cpu_mode && assigns_special_dyn_rhs(&args[1]))
+          && let Type::Array(Some(ConcreteArraySize::Unsized), element_type) =
+            args[0].data.unwrap_known()
+          && !(state.cpu_mode
+            && assigns_special_dyn_rhs(&args[1])
+            && !is_heap_value_type(&element_type.unwrap_known()))
         {
           // whole-array assignment of a general runtime-sized value to a
           // dynamic global: compile the value to a heap cell and copy its
           // payload into the global's region. (In cpu mode the direct
           // `zeroed-array`/`into-dynamic-array`/`load-wav` right-hand
           // sides keep their dedicated host/region fast paths in
-          // `try_compile_cpu_builtin`.)
+          // `try_compile_cpu_builtin` — but only for flat element types;
+          // heap-backed elements need `Cells` storage, which the generic
+          // value-then-`RegionFromHeap` path produces.)
           if let ExpKind::Application(rhs_f, _) = &args[1].kind
             && let ExpKind::Name(rhs_f_name) = &rhs_f.kind
             && &**rhs_f_name == "load-wav"

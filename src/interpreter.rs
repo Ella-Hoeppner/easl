@@ -6211,6 +6211,48 @@ pub(crate) fn shared_words_to_value(words: &[u32], ty: &Type) -> Value {
   }
 }
 
+/// Decodes one heap cell (a runtime-sized array or String payload) into a
+/// `Value`. `Cells` children are self-contained `Arc`s, so no heap table
+/// is needed — this covers every embedded (container-element) shape.
+fn value_from_heap_cell(t: &Type, cell: Option<&Arc<HeapCell>>) -> Value {
+  match t {
+    Type::String => Value::String(match cell {
+      Some(c) => match &c.memory {
+        DynMemory::Words(words) => words_to_string(words),
+        _ => String::new(),
+      },
+      None => String::new(),
+    }),
+    Type::Array(Some(ConcreteArraySize::Unsized), element_type) => {
+      let element_type = element_type.kind.unwrap_known();
+      let Some(c) = cell else {
+        return Value::Array(vec![]);
+      };
+      match &c.memory {
+        DynMemory::Zeroed { elements } => Value::ZeroedArray {
+          length: *elements as usize,
+        },
+        DynMemory::Words(words) => {
+          let stride = (vm_type_size(&element_type) as usize).max(1);
+          Value::Array(
+            words
+              .chunks(stride)
+              .map(|chunk| Value::from_vm_words(&element_type, chunk))
+              .collect(),
+          )
+        }
+        DynMemory::Cells(children) => Value::Array(
+          children
+            .iter()
+            .map(|child| value_from_heap_cell(&element_type, child.as_ref()))
+            .collect(),
+        ),
+      }
+    }
+    other => panic!("value_from_heap_cell: unsupported cell type {other:?}"),
+  }
+}
+
 /// Builds a `Value` view of a dynamic-memory array region. Only used at the
 /// boundaries that genuinely need `Value`s — printing, and mirroring into
 /// the env for GPU upload serialization; element accesses never build one.
@@ -6236,6 +6278,12 @@ fn dyn_memory_value(
           .collect(),
       )
     }
+    DynMemory::Cells(children) => Value::Array(
+      children
+        .iter()
+        .map(|child| value_from_heap_cell(&element_type, child.as_ref()))
+        .collect(),
+    ),
   }
 }
 
@@ -6385,6 +6433,12 @@ fn value_from_vm_words_heap(
               .collect(),
           )
         }
+        DynMemory::Cells(children) => Value::Array(
+          children
+            .iter()
+            .map(|child| value_from_heap_cell(&element_type, child.as_ref()))
+            .collect(),
+        ),
       }
     }
     Type::Array(Some(ConcreteArraySize::Literal(count)), element_type) => {

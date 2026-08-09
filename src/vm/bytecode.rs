@@ -196,8 +196,16 @@ pub enum Op {
   /// `(into-dynamic-array fixed)` as a value: args [src_slot, count,
   /// stride] → dest id slot
   HeapFromSlots,
+  /// `(into-dynamic-array fixed)` when the element type is itself
+  /// heap-backed: the `count` slots starting at `src_slot` hold heap ids,
+  /// and the new cell owns `Arc` clones of their cells (`Cells` payload):
+  /// args [src_slot, count, _] → dest id slot
+  HeapFromSlotsCells,
   /// `(zeroed-array n)` as a value: args [len_slot, stride, _] → dest
   HeapZeroed,
+  /// `(zeroed-array n)` when the element type is heap-backed: a `Cells`
+  /// payload of `n` empty (`None`) children: args [len_slot, _, _] → dest
+  HeapZeroedCells,
   /// Fresh id sharing `src`'s payload (value-semantics copy; O(1)):
   /// args [src_id_slot, _, _] → dest id slot
   HeapCopy,
@@ -420,7 +428,12 @@ impl Instruction {
                 .saturating_sub(1),
           )
       }
-      Op::HeapZeroed => self.return_position.max(self.arg_positions[0]),
+      Op::HeapZeroed | Op::HeapZeroedCells => {
+        self.return_position.max(self.arg_positions[0])
+      }
+      Op::HeapFromSlotsCells => self.return_position.max(
+        self.arg_positions[0] + self.arg_positions[1].saturating_sub(1),
+      ),
       // arg 0 is a region id, not a slot
       Op::HeapFromRegion => self.return_position,
       // arg 0 is a host_strings index, not a slot
@@ -481,14 +494,22 @@ pub struct SharedVarInfo {
   pub storage: SharedVarStorage,
 }
 
-/// Backing store for one runtime-sized (dynamic) array global: flat words
-/// in the VM's element layout, or a lazily-zeroed state that defers
-/// allocation until the first element write — so huge GPU-only buffers
-/// never materialize CPU-side, and upload as `BufferUpload::Clear`.
+/// Backing store for one runtime-sized array: flat words in the VM's
+/// element layout, a lazily-zeroed state that defers allocation until the
+/// first element write (so huge GPU-only buffers never materialize
+/// CPU-side, and upload as `BufferUpload::Clear`), or — when the element
+/// type is itself heap-backed (a runtime-sized array or String) — owned
+/// child cells. `Cells` elements are `Arc`s, so element lifetimes are
+/// managed by Rust: storing bumps a refcount, dropping the container (or
+/// COW-cloning it via the derived `Clone`) releases/shares children
+/// automatically. `None` children are the empty array/string, matching
+/// the null heap id. Which variant a container uses is fixed by its
+/// element type at compile time; `Zeroed` occurs only for flat elements.
 #[derive(Debug, Clone)]
 pub enum DynMemory {
   Zeroed { elements: u32 },
   Words(Vec<u32>),
+  Cells(Vec<Option<Arc<HeapCell>>>),
 }
 
 impl DynMemory {
@@ -496,15 +517,17 @@ impl DynMemory {
     match self {
       DynMemory::Zeroed { elements } => *elements,
       DynMemory::Words(words) => (words.len() / stride.max(1)) as u32,
+      DynMemory::Cells(cells) => cells.len() as u32,
     }
   }
-  /// The flat words, materializing the lazily-zeroed state first.
+  /// The flat words, materializing the lazily-zeroed state first. Only
+  /// meaningful for flat-element storage.
   pub fn words_mut(&mut self, stride: usize) -> &mut Vec<u32> {
     if let DynMemory::Zeroed { elements } = self {
       *self = DynMemory::Words(vec![0u32; *elements as usize * stride]);
     }
     let DynMemory::Words(words) = self else {
-      unreachable!()
+      panic!("words_mut on cell-element dynamic memory")
     };
     words
   }
@@ -792,7 +815,9 @@ pub fn heap_string_words(
   match heap_index(id).and_then(|i| heap[i].as_ref()) {
     Some(cell) => match &cell.memory {
       DynMemory::Words(words) => words,
-      DynMemory::Zeroed { .. } => &[],
+      // Strings are always word cells; the other variants can't occur
+      // for a String-typed id.
+      DynMemory::Zeroed { .. } | DynMemory::Cells(_) => &[],
     },
     None => &[],
   }
@@ -1477,6 +1502,18 @@ impl BytecodeProgram {
             DynMemory::Zeroed { .. } => stack[dest..dest + stride].fill(0),
             DynMemory::Words(words) => stack[dest..dest + stride]
               .copy_from_slice(&words[index * stride..(index + 1) * stride]),
+            // Cell elements: the dest slot receives a heap id owning a
+            // share of the child (regions and the heap are separate
+            // fields, so allocating here doesn't conflict with the
+            // region borrow).
+            DynMemory::Cells(cells) => {
+              let child = cells[index].clone();
+              release_cell!(instruction.return_position);
+              stack[dest] = match child {
+                Some(c) => alloc_cell!(c),
+                None => 0,
+              };
+            }
           }
         }
         Op::DynStore => {
@@ -1490,9 +1527,16 @@ impl BytecodeProgram {
               "dynamic array index out of bounds: index {index}, length                {elements}"
             );
           }
-          let src = src_slot as usize;
-          region.words_mut(stride)[index * stride..(index + 1) * stride]
-            .copy_from_slice(&stack[src..src + stride]);
+          if let DynMemory::Cells(cells) = region {
+            // The source slot holds a heap id; the region takes an owned
+            // share of its cell.
+            cells[index] = heap_index(stack[src_slot as usize])
+              .and_then(|j| heap[j].clone());
+          } else {
+            let src = src_slot as usize;
+            region.words_mut(stride)[index * stride..(index + 1) * stride]
+              .copy_from_slice(&stack[src..src + stride]);
+          }
         }
         Op::DynResize => {
           let [memory, len_slot, _] = instruction.arg_positions;
@@ -1532,10 +1576,28 @@ impl BytecodeProgram {
                {elements}"
             );
           }
-          match &cell.memory {
-            DynMemory::Zeroed { .. } => stack[dest..dest + stride].fill(0),
-            DynMemory::Words(words) => stack[dest..dest + stride]
-              .copy_from_slice(&words[index * stride..(index + 1) * stride]),
+          // Extract a cell-element child while the parent borrow is live;
+          // the table mutation (release + alloc of the dest id) happens
+          // after the borrow ends.
+          let loaded_child = match &cell.memory {
+            DynMemory::Zeroed { .. } => {
+              stack[dest..dest + stride].fill(0);
+              None
+            }
+            DynMemory::Words(words) => {
+              stack[dest..dest + stride].copy_from_slice(
+                &words[index * stride..(index + 1) * stride],
+              );
+              None
+            }
+            DynMemory::Cells(cells) => Some(cells[index].clone()),
+          };
+          if let Some(child) = loaded_child {
+            release_cell!(instruction.return_position);
+            stack[dest] = match child {
+              Some(c) => alloc_cell!(c),
+              None => 0,
+            };
           }
         }
         Op::HeapStore => {
@@ -1547,6 +1609,22 @@ impl BytecodeProgram {
               "dynamic array index out of bounds: index {index}, length 0"
             );
           };
+          // For cell-element parents the source slot holds a heap id;
+          // clone its cell out before mutably borrowing the parent.
+          let src_child = if matches!(
+            heap[i]
+              .as_ref()
+              .expect("heap id referencing a freed cell")
+              .memory,
+            DynMemory::Cells(_)
+          ) {
+            Some(
+              heap_index(stack[src_slot as usize])
+                .and_then(|j| heap[j].clone()),
+            )
+          } else {
+            None
+          };
           let cell = std::sync::Arc::make_mut(
             heap[i].as_mut().expect("heap id referencing a freed cell"),
           );
@@ -1557,9 +1635,44 @@ impl BytecodeProgram {
                {elements}"
             );
           }
-          let src = src_slot as usize;
-          cell.memory.words_mut(stride)[index * stride..(index + 1) * stride]
-            .copy_from_slice(&stack[src..src + stride]);
+          if let Some(child) = src_child {
+            let DynMemory::Cells(cells) = &mut cell.memory else {
+              unreachable!()
+            };
+            cells[index] = child;
+          } else {
+            let src = src_slot as usize;
+            cell.memory.words_mut(stride)
+              [index * stride..(index + 1) * stride]
+              .copy_from_slice(&stack[src..src + stride]);
+          }
+        }
+        Op::HeapFromSlotsCells => {
+          let [src_slot, count, _] = instruction.arg_positions;
+          let children: Vec<Option<Arc<HeapCell>>> = (0..count as usize)
+            .map(|k| {
+              heap_index(stack[src_slot as usize + k])
+                .and_then(|j| heap[j].clone())
+            })
+            .collect();
+          let cell = Arc::new(HeapCell {
+            memory: DynMemory::Cells(children),
+            stride: 1,
+          });
+          release_cell!(instruction.return_position);
+          stack[instruction.return_position as usize] = alloc_cell!(cell);
+        }
+        Op::HeapZeroedCells => {
+          let [len_slot, _, _] = instruction.arg_positions;
+          let cell = Arc::new(HeapCell {
+            memory: DynMemory::Cells(vec![
+              None;
+              stack[len_slot as usize] as usize
+            ]),
+            stride: 1,
+          });
+          release_cell!(instruction.return_position);
+          stack[instruction.return_position as usize] = alloc_cell!(cell);
         }
         Op::HeapFromSlots => {
           let [src_slot, count, stride] = instruction.arg_positions;

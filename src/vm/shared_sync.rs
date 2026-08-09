@@ -70,6 +70,12 @@ pub fn publish_shared(
           DynMemory::Zeroed { elements } => {
             buffer.resize(*elements as usize * stride as usize, 0);
           }
+          DynMemory::Cells(_) => panic!(
+            "thread-shared variables with heap-backed element types \
+             (nested runtime-sized arrays) are not supported: their \
+             elements are references into one runtime's heap and can't \
+             cross to another"
+          ),
         }
       }
     }
