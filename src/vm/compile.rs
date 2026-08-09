@@ -2269,13 +2269,6 @@ impl TypedExp {
           let ty = state.host_type_index(&arg.data.unwrap_known());
           state.emit_host_op(HostOp::PrintZeroed { len_slot, ty });
         } else {
-          if arg.data.unwrap_known().involves_runtime_sized_array() {
-            panic!(
-              "printing a runtime-sized array value isn't supported yet in \
-               the VM runtime — print an element, or assign it to a global \
-               and print that"
-            );
-          }
           let slot = arg.compile_to_bytecode(false, state).unwrap();
           let ty = state.host_type_index(&arg.data.unwrap_known());
           state.emit_host_op(HostOp::Print { slot, ty });

@@ -1,0 +1,9 @@
+; `print` works on enum values carrying runtime-sized array payloads.
+(enum MaybeSamples
+  Nothing
+  (Just [f32]))
+
+@cpu
+(defn main []
+  (print (Just (into-dynamic-array [5. 6.])))
+  (print Nothing))

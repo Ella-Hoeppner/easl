@@ -1,0 +1,6 @@
+; `print` works on nested runtime-sized arrays, recursing through the
+; inner arrays.
+@cpu
+(defn main []
+  (print (into-dynamic-array [(into-dynamic-array [1. 2.])
+                              (into-dynamic-array [3. 4. 5.])])))

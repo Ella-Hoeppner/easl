@@ -1,0 +1,7 @@
+; `print` works on runtime-sized array values directly — locals and
+; function results, not just globals and elements.
+@cpu
+(defn main []
+  (let [x (into-dynamic-array [1. 2. 3.])]
+    (print x))
+  (print (into-dynamic-array [4u 5u])))

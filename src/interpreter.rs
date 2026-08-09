@@ -28,6 +28,8 @@ use crate::compiler::effects::{
   EffectType, WindowInfoBindingSource, WindowInfoKind,
 };
 use crate::compiler::entry::EntryPoint;
+use crate::vm::bytecode::{DynMemory, HeapCell};
+use crate::vm::compile::vm_type_size;
 use crate::external::ExternalVars;
 use crate::thread_sync::participant;
 #[cfg(all(feature = "window", feature = "c_audio"))]
@@ -5995,6 +5997,7 @@ impl<IO: IOManager> crate::vm::bytecode::VmHost for VmHostView<'_, IO> {
     op: &crate::vm::bytecode::HostOp,
     stack: &mut [u32],
     dyn_memory: &mut [crate::vm::bytecode::DynMemory],
+    heap: &[Option<Arc<HeapCell>>],
     shared: crate::vm::bytecode::SharedStateParts<'_>,
     code: &crate::vm::bytecode::Code,
   ) -> Result<Option<crate::vm::bytecode::HostSuspendReason>, EvalError> {
@@ -6004,6 +6007,7 @@ impl<IO: IOManager> crate::vm::bytecode::VmHost for VmHostView<'_, IO> {
       op,
       stack,
       dyn_memory,
+      heap,
       shared,
       code,
     )
@@ -6299,12 +6303,106 @@ fn readback_binding_into_vm<IO: IOManager>(
   Ok(())
 }
 
+/// Builds a `Value` from VM stack words, dereferencing heap ids where the
+/// type contains runtime-sized arrays — the heap-aware sibling of
+/// `Value::from_vm_words`, needed because a dynamic-array *value* occupies
+/// one stack word (a heap id) that only the heap can decode. Types with no
+/// runtime-sized content delegate to `from_vm_words`, so flat values print
+/// byte-identically to the tree-walking runtime.
+fn value_from_vm_words_heap(
+  t: &Type,
+  words: &[u32],
+  heap: &[Option<Arc<HeapCell>>],
+) -> Value {
+  if !t.involves_runtime_sized_array() {
+    return Value::from_vm_words(t, words);
+  }
+  match t {
+    Type::Array(Some(ConcreteArraySize::Unsized), element_type) => {
+      let element_type = element_type.kind.unwrap_known();
+      let id = words[0];
+      if id == 0 {
+        return Value::Array(vec![]);
+      }
+      let cell = heap[id as usize - 1]
+        .as_ref()
+        .expect("printed heap id references a freed cell");
+      match &cell.memory {
+        DynMemory::Zeroed { elements } => Value::ZeroedArray {
+          length: *elements as usize,
+        },
+        DynMemory::Words(cell_words) => {
+          let stride = (vm_type_size(&element_type) as usize).max(1);
+          Value::Array(
+            cell_words
+              .chunks(stride)
+              .map(|chunk| {
+                value_from_vm_words_heap(&element_type, chunk, heap)
+              })
+              .collect(),
+          )
+        }
+      }
+    }
+    Type::Array(Some(ConcreteArraySize::Literal(count)), element_type) => {
+      let element_type = element_type.kind.unwrap_known();
+      let stride = (vm_type_size(&element_type) as usize).max(1);
+      Value::Array(
+        (0..*count as usize)
+          .map(|i| {
+            value_from_vm_words_heap(
+              &element_type,
+              &words[i * stride..(i + 1) * stride],
+              heap,
+            )
+          })
+          .collect(),
+      )
+    }
+    Type::Struct(s) => {
+      let mut offset = 0usize;
+      Value::Struct(
+        s.fields
+          .iter()
+          .map(|field| {
+            let field_type = field.field_type.unwrap_known();
+            let size = vm_type_size(&field_type) as usize;
+            let value = value_from_vm_words_heap(
+              &field_type,
+              &words[offset..offset + size],
+              heap,
+            );
+            offset += size;
+            (field.name.clone(), value)
+          })
+          .collect(),
+      )
+    }
+    Type::Enum(e) => {
+      let discriminant = words[0] as usize;
+      let variant = &e.variants[discriminant];
+      let inner_type = variant.inner_type.kind.unwrap_known();
+      let inner = if inner_type == Type::Unit {
+        Value::Unit
+      } else {
+        let n = vm_type_size(&inner_type) as usize;
+        value_from_vm_words_heap(&inner_type, &words[1..1 + n], heap)
+      };
+      Value::Enum(variant.name.clone(), Box::new(inner))
+    }
+    other => panic!(
+      "value_from_vm_words_heap: unsupported runtime-sized type {other:?}"
+    ),
+  }
+}
+
 fn vm_host_call<IO: IOManager>(
   env: &mut EvaluationEnvironment<IO>,
   slots_dirty: &mut Vec<bool>,
   op: &crate::vm::bytecode::HostOp,
   stack: &mut [u32],
   dyn_memory: &mut [crate::vm::bytecode::DynMemory],
+  heap: &[Option<Arc<HeapCell>>],
   mut shared: crate::vm::bytecode::SharedStateParts<'_>,
   code: &crate::vm::bytecode::Code,
 ) -> Result<Option<crate::vm::bytecode::HostSuspendReason>, EvalError> {
@@ -6313,9 +6411,12 @@ fn vm_host_call<IO: IOManager>(
   match op {
     HostOp::Print { slot, ty } => {
       let t = &code.host_types[*ty as usize];
-      let n = vm_words_of(t);
-      let value =
-        Value::from_vm_words(t, &stack[*slot as usize..*slot as usize + n]);
+      let n = vm_type_size(t) as usize;
+      let value = value_from_vm_words_heap(
+        t,
+        &stack[*slot as usize..*slot as usize + n],
+        heap,
+      );
       let formatted = value.format_for_print(t, env)?;
       env.io.println(&formatted);
     }

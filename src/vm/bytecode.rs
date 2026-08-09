@@ -626,6 +626,7 @@ pub trait VmHost {
     op: &HostOp,
     stack: &mut [u32],
     dyn_memory: &mut [DynMemory],
+    heap: &[Option<Arc<HeapCell>>],
     shared: SharedStateParts<'_>,
     code: &Code,
   ) -> Result<Option<HostSuspendReason>, Self::Error>;
@@ -640,6 +641,7 @@ impl VmHost for NoopHost {
     _op: &HostOp,
     _stack: &mut [u32],
     _dyn_memory: &mut [DynMemory],
+    _heap: &[Option<Arc<HeapCell>>],
     _shared: SharedStateParts<'_>,
     _code: &Code,
   ) -> Result<Option<HostSuspendReason>, Self::Error> {
@@ -1033,6 +1035,7 @@ impl BytecodeProgram {
             op,
             stack,
             dyn_memory,
+            heap,
             SharedStateParts {
               dirty: shared_dirty,
               adopted: shared_adopted,

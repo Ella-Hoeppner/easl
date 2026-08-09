@@ -1,0 +1,10 @@
+; `print` works on struct values containing runtime-sized array fields —
+; including a dynamic field that isn't the final member, so field-offset
+; bookkeeping is exercised.
+(struct Samples
+  data: [f32]
+  gain: f32)
+
+@cpu
+(defn main []
+  (print (Samples (into-dynamic-array [1. 2.]) 0.5)))
