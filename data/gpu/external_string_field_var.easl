@@ -1,0 +1,9 @@
+(struct Labeled
+  label: String
+  gain: f32)
+
+@external (var w: Labeled (Labeled "hi" 1.))
+
+@cpu
+(defn main []
+  (print w.gain))

@@ -252,6 +252,17 @@ impl TopLevelVar {
                       parens_source_trace.clone(),
                     ));
                   }
+                  if external && t.involves_string() {
+                    // A string value's words are a heap id — a reference
+                    // into the owning runtime's heap. Publishing it through
+                    // the shared-snapshot system would hand other
+                    // participants a number with no meaning in their own
+                    // heaps.
+                    errors.log(CompileError::new(
+                      ExternalStringVar,
+                      parens_source_trace.clone(),
+                    ));
+                  }
                   let value = value_ast
                     .map(|value_ast| {
                       match TypedExp::try_from_easl_tree(

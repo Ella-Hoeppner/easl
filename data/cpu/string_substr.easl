@@ -1,0 +1,11 @@
+; `substr` takes (string, start, end) with an exclusive end, both in
+; characters. Out-of-range indices clamp rather than erroring: end
+; truncates to the string's length, and if start is at or past end (or
+; past the string) the result is the empty string.
+@cpu
+(defn main []
+  (print (substr "hello world" 0u 5u))
+  (print (substr "hello world" 6u 11u))
+  (print (substr "hello" 1u 100u))
+  (print (concat "<" (substr "hello" 10u 20u) ">"))
+  (print (concat "<" (substr "hello" 3u 2u) ">")))

@@ -1200,15 +1200,15 @@ impl TopLevelFunction {
     let effects = body.effects();
     // A function is CPU-only either through its effects (CPU-exclusive
     // calls/types, window queries, address-space writes the GPU can't
-    // perform) or through its types: runtime-sized values in the
-    // signature have no flat WGSL/C encoding. `fn_string` below is only
-    // evaluated when this passes, so skipped functions' bodies are never
-    // lowered at all.
+    // perform) or through its types: runtime-sized values and strings in
+    // the signature have no flat WGSL/C encoding. `fn_string` below is
+    // only evaluated when this passes, so skipped functions' bodies are
+    // never lowered at all.
     let signature_involves_runtime_sized_types = args
       .iter()
       .map(|(arg, _)| arg.var_type.unwrap_known())
       .chain(std::iter::once(return_type.unwrap_known()))
-      .any(|t| t.involves_runtime_sized_array());
+      .any(|t| t.involves_runtime_sized_array() || t.involves_string());
     let allowed_on_gpu = effects.cpu_exclusive_functions().is_empty()
       && effects.cpu_exclusive_types().is_empty()
       && effects.window_info_kinds().is_empty()

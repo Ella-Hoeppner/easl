@@ -28,7 +28,10 @@ use crate::compiler::effects::{
   EffectType, WindowInfoBindingSource, WindowInfoKind,
 };
 use crate::compiler::entry::EntryPoint;
-use crate::vm::bytecode::{DynMemory, HeapCell};
+use crate::vm::bytecode::{
+  DynMemory, HeapCell, alloc_heap_cell, heap_string_words, release_heap_id,
+  string_to_words, words_to_string,
+};
 use crate::vm::compile::vm_type_size;
 use crate::external::ExternalVars;
 use crate::thread_sync::participant;
@@ -408,6 +411,9 @@ fn apply_builtin_fn<IO: IOManager>(
       })))
     }
     "==" => {
+      if let (Value::String(a), Value::String(b)) = (&args[0].0, &args[1].0) {
+        return Ok(Value::Prim(Primitive::Bool(a == b)));
+      }
       let values = vec![args.remove(0).0, args.remove(0).0];
       Ok(Value::multi_map_primitive_or_vec_components(
         &values,
@@ -415,6 +421,9 @@ fn apply_builtin_fn<IO: IOManager>(
       ))
     }
     "!=" => {
+      if let (Value::String(a), Value::String(b)) = (&args[0].0, &args[1].0) {
+        return Ok(Value::Prim(Primitive::Bool(a != b)));
+      }
       let values = vec![args.remove(0).0, args.remove(0).0];
       Ok(Value::multi_map_primitive_or_vec_components(
         &values,
@@ -780,6 +789,9 @@ fn apply_builtin_fn<IO: IOManager>(
       }
     }
     "length" => {
+      if let Value::String(s) = &args[0].0 {
+        return Ok(Value::Prim(Primitive::U32(s.chars().count() as u32)));
+      }
       let Value::Struct(s) = &args[0].0 else {
         panic!()
       };
@@ -1716,6 +1728,32 @@ fn apply_builtin_fn<IO: IOManager>(
         env.io.println("()");
       }
       Ok(Value::Unit)
+    }
+    "string" => {
+      let s = args[0].0.format_for_print(&args[0].1, env)?;
+      Ok(Value::String(s))
+    }
+    "concat" => {
+      let (Value::String(a), Value::String(b)) = (&args[0].0, &args[1].0)
+      else {
+        panic!()
+      };
+      Ok(Value::String(format!("{a}{b}")))
+    }
+    "substr" => {
+      let Value::String(s) = &args[0].0 else {
+        panic!()
+      };
+      let start = args[1].0.clone().unwrap_primitive().as_num() as usize;
+      let end = args[2].0.clone().unwrap_primitive().as_num() as usize;
+      let chars: Vec<char> = s.chars().collect();
+      let start = start.min(chars.len());
+      let end = end.min(chars.len());
+      Ok(Value::String(if start >= end {
+        String::new()
+      } else {
+        chars[start..end].iter().collect()
+      }))
     }
     "dispatch-render-shaders" => {
       let (vert_value, Type::Function(vert_f)) = &args[0] else {
@@ -5997,7 +6035,8 @@ impl<IO: IOManager> crate::vm::bytecode::VmHost for VmHostView<'_, IO> {
     op: &crate::vm::bytecode::HostOp,
     stack: &mut [u32],
     dyn_memory: &mut [crate::vm::bytecode::DynMemory],
-    heap: &[Option<Arc<HeapCell>>],
+    heap: &mut Vec<Option<Arc<HeapCell>>>,
+    heap_free: &mut Vec<u32>,
     shared: crate::vm::bytecode::SharedStateParts<'_>,
     code: &crate::vm::bytecode::Code,
   ) -> Result<Option<crate::vm::bytecode::HostSuspendReason>, EvalError> {
@@ -6008,6 +6047,7 @@ impl<IO: IOManager> crate::vm::bytecode::VmHost for VmHostView<'_, IO> {
       stack,
       dyn_memory,
       heap,
+      heap_free,
       shared,
       code,
     )
@@ -6314,10 +6354,13 @@ fn value_from_vm_words_heap(
   words: &[u32],
   heap: &[Option<Arc<HeapCell>>],
 ) -> Value {
-  if !t.involves_runtime_sized_array() {
+  if !t.involves_runtime_sized_array() && !t.involves_string() {
     return Value::from_vm_words(t, words);
   }
   match t {
+    Type::String => {
+      Value::String(words_to_string(heap_string_words(heap, words[0])))
+    }
     Type::Array(Some(ConcreteArraySize::Unsized), element_type) => {
       let element_type = element_type.kind.unwrap_known();
       let id = words[0];
@@ -6402,7 +6445,8 @@ fn vm_host_call<IO: IOManager>(
   op: &crate::vm::bytecode::HostOp,
   stack: &mut [u32],
   dyn_memory: &mut [crate::vm::bytecode::DynMemory],
-  heap: &[Option<Arc<HeapCell>>],
+  heap: &mut Vec<Option<Arc<HeapCell>>>,
+  heap_free: &mut Vec<u32>,
   mut shared: crate::vm::bytecode::SharedStateParts<'_>,
   code: &crate::vm::bytecode::Code,
 ) -> Result<Option<crate::vm::bytecode::HostSuspendReason>, EvalError> {
@@ -6419,6 +6463,22 @@ fn vm_host_call<IO: IOManager>(
       );
       let formatted = value.format_for_print(t, env)?;
       env.io.println(&formatted);
+    }
+    HostOp::Stringify { slot, ty, dest } => {
+      let t = &code.host_types[*ty as usize];
+      let n = vm_type_size(t) as usize;
+      let value = value_from_vm_words_heap(
+        t,
+        &stack[*slot as usize..*slot as usize + n],
+        heap,
+      );
+      let formatted = value.format_for_print(t, env)?;
+      let cell = Arc::new(HeapCell {
+        memory: DynMemory::Words(string_to_words(&formatted)),
+        stride: 1,
+      });
+      release_heap_id(heap, heap_free, stack[*dest as usize]);
+      stack[*dest as usize] = alloc_heap_cell(heap, heap_free, cell);
     }
     HostOp::PrintBinding { binding } => {
       let b = &code.host_bindings[*binding as usize];

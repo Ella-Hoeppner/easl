@@ -1,0 +1,14 @@
+; String is a nameable type: user functions can accept and return
+; strings, and locals can bind them.
+(defn shout [s: String]: String
+  (concat s "!"))
+
+(defn describe [n: u32]: String
+  (concat "n is " (string n)))
+
+@cpu
+(defn main []
+  (let [greeting "hello"]
+    (print (shout greeting))
+    (print (shout (shout greeting))))
+  (print (describe 42u)))

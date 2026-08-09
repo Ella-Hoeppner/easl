@@ -1,0 +1,5 @@
+@external (var s: String "hi")
+
+@cpu
+(defn main []
+  (print s))

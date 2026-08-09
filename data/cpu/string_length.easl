@@ -1,0 +1,7 @@
+; `length` on a String counts characters (not bytes).
+@cpu
+(defn main []
+  (print (length "hello"))
+  (print (length ""))
+  (print (length "héllo"))
+  (print (length (concat "ab" "cde"))))

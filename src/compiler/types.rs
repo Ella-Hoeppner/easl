@@ -448,7 +448,8 @@ impl AbstractType {
         size, inner_type, ..
       } => {
         let size_str = size.compile_type();
-        let inner = inner_type.compile(typedefs, names, source_trace, target)?;
+        let inner =
+          inner_type.compile(typedefs, names, source_trace, target)?;
         if size_str.is_empty() {
           format!("array<{inner}>")
         } else {
@@ -1317,12 +1318,29 @@ impl Type {
       Type::Array(_, inner) => {
         inner.kind.unwrap_known().involves_runtime_sized_array()
       }
-      Type::Struct(s) => s.fields.iter().any(|f| {
-        f.field_type.unwrap_known().involves_runtime_sized_array()
-      }),
-      Type::Enum(e) => e.variants.iter().any(|v| {
-        v.inner_type.unwrap_known().involves_runtime_sized_array()
-      }),
+      Type::Struct(s) => s
+        .fields
+        .iter()
+        .any(|f| f.field_type.unwrap_known().involves_runtime_sized_array()),
+      Type::Enum(e) => e
+        .variants
+        .iter()
+        .any(|v| v.inner_type.unwrap_known().involves_runtime_sized_array()),
+      _ => false,
+    }
+  }
+  pub fn involves_string(&self) -> bool {
+    match self {
+      Type::String => true,
+      Type::Array(_, inner) => inner.kind.unwrap_known().involves_string(),
+      Type::Struct(s) => s
+        .fields
+        .iter()
+        .any(|f| f.field_type.unwrap_known().involves_string()),
+      Type::Enum(e) => e
+        .variants
+        .iter()
+        .any(|v| v.inner_type.unwrap_known().involves_string()),
       _ => false,
     }
   }
@@ -1620,6 +1638,7 @@ impl Type {
       "I32" | "i32" => I32,
       "U32" | "u32" => U32,
       "Bool" | "bool" => Bool,
+      "String" => String,
       _ => {
         if let Some(constraints) =
           skolems.iter().find_map(|(skolem_name, constraints)| {

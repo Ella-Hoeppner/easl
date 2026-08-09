@@ -447,6 +447,11 @@ error_test!(
   unsized_array_in_uniform,
   CompileErrorKind::UnsizedArrayInUniform
 );
+error_test!(external_string_var, CompileErrorKind::ExternalStringVar);
+error_test!(
+  external_string_field_var,
+  CompileErrorKind::ExternalStringVar
+);
 error_test!(
   var_initialization_failure_storage,
   CompileErrorKind::DisallowedInitializationValue(

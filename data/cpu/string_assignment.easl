@@ -1,0 +1,18 @@
+; Strings have value semantics under assignment: `(= dest src)` gives
+; dest its own copy, so later rebuilding of src never shows through
+; dest. Also pins the accumulate-in-a-loop builder pattern.
+@cpu
+(defn main []
+  (let [@var s ""
+        @var i 0u]
+    (while (< i 4u)
+      (= s (concat s (string i)))
+      (+= i 1u))
+    (print s))
+  (let [@var a "x"
+        @var b ""]
+    (= b a)
+    (= a (concat a "y"))
+    (= a (concat a "z"))
+    (print b)
+    (print a)))

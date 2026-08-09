@@ -1,0 +1,6 @@
+; `concat` joins strings; it's associative, so it accepts n args.
+@cpu
+(defn main []
+  (print (concat "foo" "bar"))
+  (print (concat "a" "b" "c" "d"))
+  (print (concat "x = " (string 7u))))

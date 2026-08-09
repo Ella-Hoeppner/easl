@@ -1,0 +1,30 @@
+; Let-binding one local from another binds a copy, never an alias:
+; reassigning either name must not show through the other. Covers flat
+; values, strings, and dynamic arrays (whose copies share payloads
+; until a write copies-on-write).
+@cpu
+(defn main []
+  (let [@var a 1.
+        b a]
+    (= a 5.)
+    (print b)
+    (print a))
+  (let [@var s "x"
+        t s]
+    (= s (concat s "z"))
+    (print t)
+    (print s))
+  (let [@var y 2u
+        @var x y]
+    (= x 7u)
+    (print y))
+  (let [@var arr (into-dynamic-array [1. 2.])
+        c arr]
+    (= (arr 0u) 9.)
+    (print (c 0u))
+    (print (arr 0u)))
+  (let [@var v (vec2f 1. 2.)
+        w v.x]
+    (= v.x 5.)
+    (print w)
+    (print v.x)))

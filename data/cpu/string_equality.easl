@@ -1,0 +1,12 @@
+; `==` and `!=` compare string contents, including strings built at
+; runtime.
+@cpu
+(defn main []
+  (print (== "abc" "abc"))
+  (print (== "abc" "abd"))
+  (print (== "" ""))
+  (print (== (concat "ab" "c") "abc"))
+  (print (== (substr "abcdef" 1u 3u) "bc"))
+  (print (!= "abc" "abd"))
+  (print (!= "abc" "abc"))
+  (print (!= (concat "ab" "c") "abc")))

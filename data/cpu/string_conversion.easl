@@ -1,0 +1,9 @@
+; `string` converts any value to its print representation as a String value.
+@cpu
+(defn main []
+  (print (string 5.))
+  (print (string 3u))
+  (print (string -2i))
+  (print (string true))
+  (print (string (vec2f 1. 2.)))
+  (print (string (into-dynamic-array [1. 2. 3.]))))

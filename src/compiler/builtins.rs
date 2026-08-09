@@ -2101,6 +2101,64 @@ fn print_functions() -> Vec<AbstractFunctionSignature> {
   }]
 }
 
+fn string_functions() -> Vec<AbstractFunctionSignature> {
+  let string = AbstractType::Type(Type::String);
+  let u32 = AbstractType::Type(Type::U32);
+  vec![
+    // `(string x)` — convert any value to its print representation.
+    AbstractFunctionSignature {
+      name: "string".into(),
+      generic_args: vec![(
+        "T".into(),
+        GenericArgument::Type(vec![]),
+        SourceTrace::empty(),
+      )],
+      arg_types: vec![AbstractType::Generic("T".into()).owned()],
+      return_type: string.clone(),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "concat".into(),
+      arg_types: vec![string.clone().owned(), string.clone().owned()],
+      return_type: string.clone(),
+      associative: true,
+      ..Default::default()
+    },
+    // Character count (not bytes).
+    AbstractFunctionSignature {
+      name: "length".into(),
+      arg_types: vec![string.clone().owned()],
+      return_type: u32.clone(),
+      ..Default::default()
+    },
+    // `(substr s start end)` — character indices, exclusive end. Out-of-range
+    // indices clamp to the string rather than erroring; start >= end yields
+    // the empty string.
+    AbstractFunctionSignature {
+      name: "substr".into(),
+      arg_types: vec![
+        string.clone().owned(),
+        u32.clone().owned(),
+        u32.owned(),
+      ],
+      return_type: string.clone(),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "==".into(),
+      arg_types: vec![string.clone().owned(), string.clone().owned()],
+      return_type: AbstractType::Type(Type::Bool),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "!=".into(),
+      arg_types: vec![string.clone().owned(), string.owned()],
+      return_type: AbstractType::Type(Type::Bool),
+      ..Default::default()
+    },
+  ]
+}
+
 fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
   vec![
     AbstractFunctionSignature {
@@ -2797,6 +2855,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut bit_manipulation_functions());
   signatures.append(&mut derivative_functions());
   signatures.append(&mut print_functions());
+  signatures.append(&mut string_functions());
   signatures.append(&mut shader_dispatch_functions());
   signatures.append(&mut dynamic_array_functions());
   signatures.append(&mut atomic_functions());

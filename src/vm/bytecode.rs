@@ -209,6 +209,21 @@ pub enum Op {
   /// _]
   RegionFromHeap,
 
+  // Runtime strings are heap cells too: one char codepoint per word
+  // (stride 1), so `HeapLen`/`HeapCopy` and the drop-on-overwrite
+  // discipline apply to them unchanged.
+  /// Materialize the string literal `host_strings[arg0]` as a fresh
+  /// cell: args [string_index, _, _] → dest id slot
+  StrConst,
+  /// args: [a_id_slot, b_id_slot, _] → dest id slot
+  StrConcat,
+  /// `(substr s start end)` — char indices, exclusive end; out-of-range
+  /// indices clamp to the string (start >= end yields the empty
+  /// string): args [s_id_slot, start_slot, end_slot] → dest id slot
+  StrSubstr,
+  /// Content equality: args [a_id_slot, b_id_slot, _] → dest (bool)
+  StrEq,
+
   /// Marks the thread-shared global `Code::shared_vars[arg_positions[0]]`
   /// as written since this thread's last publish boundary. Emitted after
   /// applications whose write set touches a shared global, in both
@@ -408,6 +423,8 @@ impl Instruction {
       Op::HeapZeroed => self.return_position.max(self.arg_positions[0]),
       // arg 0 is a region id, not a slot
       Op::HeapFromRegion => self.return_position,
+      // arg 0 is a host_strings index, not a slot
+      Op::StrConst => self.return_position,
       Op::RegionFromHeap => self.arg_positions[1],
       Op::DynAssignFromSlots => {
         // src spans count (arg 2) * stride (return_position) slots
@@ -590,6 +607,10 @@ pub enum HostOp {
   /// it was rendered into.
   SavePng { binding: u16, path: u16 },
   ClearRenderTarget,
+  /// `(string x)`: format the value at `slot` (of type `host_types[ty]`)
+  /// exactly as `print` would, and store the result as a fresh string
+  /// cell whose id is written to `dest`.
+  Stringify { slot: u16, ty: u16, dest: u16 },
 }
 
 /// Why `execute_with_host` returned before running to completion.
@@ -626,7 +647,8 @@ pub trait VmHost {
     op: &HostOp,
     stack: &mut [u32],
     dyn_memory: &mut [DynMemory],
-    heap: &[Option<Arc<HeapCell>>],
+    heap: &mut Vec<Option<Arc<HeapCell>>>,
+    heap_free: &mut Vec<u32>,
     shared: SharedStateParts<'_>,
     code: &Code,
   ) -> Result<Option<HostSuspendReason>, Self::Error>;
@@ -641,7 +663,8 @@ impl VmHost for NoopHost {
     _op: &HostOp,
     _stack: &mut [u32],
     _dyn_memory: &mut [DynMemory],
-    _heap: &[Option<Arc<HeapCell>>],
+    _heap: &mut Vec<Option<Arc<HeapCell>>>,
+    _heap_free: &mut Vec<u32>,
     _shared: SharedStateParts<'_>,
     _code: &Code,
   ) -> Result<Option<HostSuspendReason>, Self::Error> {
@@ -709,8 +732,70 @@ pub struct HeapCell {
 
 /// A heap-id word: 0 is the null/empty id, any other value is
 /// `heap_index + 1`.
-fn heap_index(id: u32) -> Option<usize> {
+pub fn heap_index(id: u32) -> Option<usize> {
   (id != 0).then(|| id as usize - 1)
+}
+
+/// Frees the cell owned by heap id `old_id`, if any — drop-on-overwrite
+/// for a heap-id destination that's about to be rewritten. Used by the
+/// dispatch loop's `release_cell!` and by host ops that write heap ids.
+pub fn release_heap_id(
+  heap: &mut Vec<Option<Arc<HeapCell>>>,
+  heap_free: &mut Vec<u32>,
+  old_id: u32,
+) {
+  if let Some(i) = heap_index(old_id) {
+    heap[i] = None;
+    heap_free.push(i as u32);
+  }
+}
+
+/// Stores `cell` in a free heap slot and returns its id. Used by the
+/// dispatch loop's `alloc_cell!` and by host ops that write heap ids.
+pub fn alloc_heap_cell(
+  heap: &mut Vec<Option<Arc<HeapCell>>>,
+  heap_free: &mut Vec<u32>,
+  cell: Arc<HeapCell>,
+) -> u32 {
+  match heap_free.pop() {
+    Some(i) => {
+      heap[i as usize] = Some(cell);
+      i + 1
+    }
+    None => {
+      heap.push(Some(cell));
+      heap.len() as u32
+    }
+  }
+}
+
+/// Encodes a Rust string into string-cell payload words: one char
+/// codepoint per word, stride 1.
+pub fn string_to_words(s: &str) -> Vec<u32> {
+  s.chars().map(|c| c as u32).collect()
+}
+
+/// Decodes string-cell payload words back into a Rust string.
+pub fn words_to_string(words: &[u32]) -> String {
+  words
+    .iter()
+    .map(|w| char::from_u32(*w).unwrap_or(char::REPLACEMENT_CHARACTER))
+    .collect()
+}
+
+/// Reads the payload words of the string cell referenced by the heap id
+/// `id` (a null id reads as the empty string).
+pub fn heap_string_words(
+  heap: &[Option<Arc<HeapCell>>],
+  id: u32,
+) -> &[u32] {
+  match heap_index(id).and_then(|i| heap[i].as_ref()) {
+    Some(cell) => match &cell.memory {
+      DynMemory::Words(words) => words,
+      DynMemory::Zeroed { .. } => &[],
+    },
+    None => &[],
+  }
 }
 
 pub struct BytecodeProgram {
@@ -834,28 +919,14 @@ impl BytecodeProgram {
     // slot is freed (its payload dropped if this was the last
     // payload-sharing id) before the new id is written.
     macro_rules! release_cell {
-      ($slot:expr) => {{
-        let old = stack[$slot as usize];
-        if let Some(i) = heap_index(old) {
-          heap[i] = None;
-          heap_free.push(i as u32);
-        }
-      }};
+      ($slot:expr) => {
+        release_heap_id(heap, heap_free, stack[$slot as usize])
+      };
     }
     macro_rules! alloc_cell {
-      ($cell:expr) => {{
-        let cell: std::sync::Arc<HeapCell> = $cell;
-        match heap_free.pop() {
-          Some(i) => {
-            heap[i as usize] = Some(cell);
-            i + 1
-          }
-          None => {
-            heap.push(Some(cell));
-            heap.len() as u32
-          }
-        }
-      }};
+      ($cell:expr) => {
+        alloc_heap_cell(heap, heap_free, $cell)
+      };
     }
     macro_rules! deref_cell {
       ($slot:expr) => {{
@@ -1036,6 +1107,7 @@ impl BytecodeProgram {
             stack,
             dyn_memory,
             heap,
+            heap_free,
             SharedStateParts {
               dirty: shared_dirty,
               adopted: shared_adopted,
@@ -1536,6 +1608,57 @@ impl BytecodeProgram {
             Some(cell) => cell.memory.clone(),
             None => DynMemory::Zeroed { elements: 0 },
           };
+        }
+
+        Op::StrConst => {
+          let words = string_to_words(
+            &code.host_strings[instruction.arg_positions[0] as usize],
+          );
+          let cell = Arc::new(HeapCell {
+            memory: DynMemory::Words(words),
+            stride: 1,
+          });
+          release_cell!(instruction.return_position);
+          stack[instruction.return_position as usize] = alloc_cell!(cell);
+        }
+        Op::StrConcat => {
+          let [a_slot, b_slot, _] = instruction.arg_positions;
+          let mut words =
+            heap_string_words(heap, stack[a_slot as usize]).to_vec();
+          words.extend_from_slice(heap_string_words(
+            heap,
+            stack[b_slot as usize],
+          ));
+          let cell = Arc::new(HeapCell {
+            memory: DynMemory::Words(words),
+            stride: 1,
+          });
+          release_cell!(instruction.return_position);
+          stack[instruction.return_position as usize] = alloc_cell!(cell);
+        }
+        Op::StrSubstr => {
+          let [s_slot, start_slot, end_slot] = instruction.arg_positions;
+          let words = heap_string_words(heap, stack[s_slot as usize]);
+          let start = (stack[start_slot as usize] as usize).min(words.len());
+          let end = (stack[end_slot as usize] as usize).min(words.len());
+          let words = if start >= end {
+            Vec::new()
+          } else {
+            words[start..end].to_vec()
+          };
+          let cell = Arc::new(HeapCell {
+            memory: DynMemory::Words(words),
+            stride: 1,
+          });
+          release_cell!(instruction.return_position);
+          stack[instruction.return_position as usize] = alloc_cell!(cell);
+        }
+        Op::StrEq => {
+          let [a_slot, b_slot, _] = instruction.arg_positions;
+          stack[instruction.return_position as usize] =
+            (heap_string_words(heap, stack[a_slot as usize])
+              == heap_string_words(heap, stack[b_slot as usize]))
+              as u32;
         }
 
         Op::MarkSharedDirty => {

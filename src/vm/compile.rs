@@ -1073,11 +1073,14 @@ impl BytecodeCompilationState {
       "=" => {
         if matches!(
           arg_types[0],
-          Type::Array(Some(ConcreteArraySize::Unsized), _)
+          Type::Array(Some(ConcreteArraySize::Unsized), _) | Type::String
         ) {
-          // Whole-value assignment of a runtime-sized array to a local:
-          // release the destination's old heap cell and take a fresh id
-          // sharing the source's payload (mutation later copies-on-write).
+          // Whole-value assignment of a heap-backed value (runtime-sized
+          // array or string) to a local: release the destination's old
+          // heap cell and take a fresh id sharing the source's payload
+          // (mutation later copies-on-write). A plain `Move` of the id
+          // word would leave the destination borrowing a cell the source
+          // site frees on its next execution.
           self.push_instruction(Instruction {
             op: Op::HeapCopy,
             arg_positions: [arg_positions[1], 0, 0],
@@ -1095,6 +1098,16 @@ impl BytecodeCompilationState {
       }
 
       // --- Comparisons ---
+      "==" if matches!(arg_types[0], Type::String) => Some(self.emit_binary(
+        Op::StrEq,
+        arg_positions[0],
+        arg_positions[1],
+      )),
+      "!=" if matches!(arg_types[0], Type::String) => {
+        let eq =
+          self.emit_binary(Op::StrEq, arg_positions[0], arg_positions[1]);
+        Some(self.emit_unary(Op::LogicalNot, eq))
+      }
       "==" | "!=" | "<" | ">" | "<=" | ">=" => {
         Some(self.emit_elementwise_binary(
           &arg_types[0],
@@ -1225,8 +1238,34 @@ impl BytecodeCompilationState {
         let (count, elem) = vec_kind(&arg_types[0]).unwrap();
         Some(self.emit_dot(&elem, count, arg_positions[0], arg_positions[1]))
       }
+      // --- Strings ---
+      "concat" => {
+        let result = self.take_stack_slot(1);
+        self.push_instruction(Instruction {
+          op: Op::StrConcat,
+          arg_positions: [arg_positions[0], arg_positions[1], 0],
+          return_position: result,
+        });
+        Some(result)
+      }
+      "substr" => {
+        let result = self.take_stack_slot(1);
+        self.push_instruction(Instruction {
+          op: Op::StrSubstr,
+          arg_positions: [
+            arg_positions[0],
+            arg_positions[1],
+            arg_positions[2],
+          ],
+          return_position: result,
+        });
+        Some(result)
+      }
+
       "length" => {
-        if let Some((count, elem)) = vec_kind(&arg_types[0]) {
+        if matches!(arg_types[0], Type::String) {
+          Some(self.emit_unary(Op::HeapLen, arg_positions[0]))
+        } else if let Some((count, elem)) = vec_kind(&arg_types[0]) {
           let dot_pos =
             self.emit_dot(&elem, count, arg_positions[0], arg_positions[0]);
           Some(self.emit_unary(Op::Sqrt, dot_pos))
@@ -1839,6 +1878,8 @@ pub fn vm_type_size(t: &Type) -> u16 {
     // A runtime-sized array *value* is a one-word heap id (see the
     // `Heap*` opcodes); only dynamic globals get region storage.
     Type::Array(Some(ConcreteArraySize::Unsized), _) => 1,
+    // Strings are heap-backed the same way (see the `Str*` opcodes).
+    Type::String => 1,
     // Enums may carry runtime-sized payloads on the CPU (as heap-id words),
     // which `data_size_in_u32s` can't size — compute the layout
     // (discriminant + max variant payload) with heap-id-aware field sizes.
@@ -1901,8 +1942,27 @@ pub fn vm_type_size(t: &Type) -> u16 {
 /// values (which must take a fresh payload-sharing heap id so the copy has
 /// value semantics — mutating either side copies-on-writes away from the
 /// other).
+/// True when an expression compiles to a slot owned by a *variable*
+/// rather than by the expression's own site: a bare `Name`, or a chain
+/// of field accesses rooted in one (`Accessor::Field` compiles to
+/// base-slot + offset, an alias into the variable's storage). Array
+/// indexing and swizzles always load into site-owned slots, so they
+/// terminate a chain.
+fn aliases_variable_storage(e: &TypedExp) -> bool {
+  match &e.kind {
+    ExpKind::Name(_) => true,
+    ExpKind::Access(Accessor::Field(_), inner) => {
+      aliases_variable_storage(inner)
+    }
+    _ => false,
+  }
+}
+
 fn copy_op_for(t: &Type) -> Op {
-  if matches!(t, Type::Array(Some(ConcreteArraySize::Unsized), _)) {
+  if matches!(
+    t,
+    Type::Array(Some(ConcreteArraySize::Unsized), _) | Type::String
+  ) {
     Op::HeapCopy
   } else {
     Op::Move
@@ -2274,6 +2334,14 @@ impl TypedExp {
           state.emit_host_op(HostOp::Print { slot, ty });
         }
         Some(None)
+      }
+      "string" => {
+        let arg = &args[0];
+        let slot = arg.compile_to_bytecode(false, state).unwrap();
+        let ty = state.host_type_index(&arg.data.unwrap_known());
+        let dest = state.take_stack_slot(1);
+        state.emit_host_op(HostOp::Stringify { slot, ty, dest });
+        Some(Some(dest))
       }
       "dispatch-compute-shader" => {
         let (entry_name, reads, writes) =
@@ -2994,7 +3062,31 @@ impl TypedExp {
             state.locals.insert(name.clone(), slot);
           } else {
             let value_pos = value.compile_to_bytecode(false, state).unwrap();
-            state.locals.insert(name.clone(), value_pos);
+            let t = value.data.unwrap_known();
+            let size = vm_type_size(&t);
+            if aliases_variable_storage(value) && size > 0 {
+              // An initializer that compiles to another variable's
+              // storage (a bare Name, or a field chain rooted in one)
+              // must be bound by copy: aliasing it would let
+              // reassignment of either side show through the other.
+              // Value semantics, matching the tree-walker's clone. (Any
+              // other initializer's result slot is owned by this
+              // binding alone, so aliasing it is safe.)
+              let slot = state.take_stack_slot(size);
+              let op = copy_op_for(&t);
+              state.push_instruction(Instruction {
+                op,
+                arg_positions: [
+                  value_pos,
+                  if op == Op::Move { size } else { 0 },
+                  0,
+                ],
+                return_position: slot,
+              });
+              state.locals.insert(name.clone(), slot);
+            } else {
+              state.locals.insert(name.clone(), value_pos);
+            }
           }
         }
         body.compile_to_bytecode(false, state)
@@ -3576,7 +3668,20 @@ impl TypedExp {
           }
         }
       }
-      StringLiteral(_) => panic!("bytecode vm can't handle strings yet!"),
+      StringLiteral(text) => {
+        // A string literal in value position materializes a fresh string
+        // cell each execution. Literals consumed as compile-time
+        // configuration (print fast paths, key queries, file paths) are
+        // intercepted by their builtins before reaching this arm.
+        let string = state.host_string_index(&text.to_string());
+        let result = state.take_stack_slot(1);
+        state.push_instruction(Instruction {
+          op: Op::StrConst,
+          arg_positions: [string, 0, 0],
+          return_position: result,
+        });
+        Some(result)
+      }
       Discard => panic!("bytecode vm can't handle discard statements"),
       Uninitialized | Wildcard | Unit => None,
     }

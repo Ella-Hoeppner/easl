@@ -327,6 +327,12 @@ pub enum CompileErrorKind {
   )]
   ExternalTextureVar,
   #[error(
+    "Variables whose type contains a String may not be marked `@external`: \
+     a string value is a reference into its own runtime's heap, which is \
+     meaningless to an external system"
+  )]
+  ExternalStringVar,
+  #[error(
     "Functions reachable from GPU entry points may not return \
      runtime-sized arrays"
   )]
