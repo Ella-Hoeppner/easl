@@ -4464,21 +4464,45 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     else {
       return;
     };
-    let Value::Struct(scope_fields) = &**scope else {
-      return;
-    };
-    // Each captured var has its own binding (see
+    // Each captured var has its own binding, and captured closures
+    // recurse into their own scope's bindings (see
     // `extract_dispatched_closure_scopes`).
     let mut written: Vec<Arc<str>> = vec![];
+    let scope_value = (**scope).clone();
+    self.write_scope_capture_bindings(&scope_struct, &scope_value, &mut written);
+    self.mark_cpu_written(&written);
+  }
+  fn write_scope_capture_bindings(
+    &mut self,
+    scope_struct: &AbstractStruct,
+    scope_value: &Value,
+    written: &mut Vec<Arc<str>>,
+  ) {
+    let Value::Struct(scope_fields) = scope_value else {
+      return;
+    };
     for field in scope_struct.fields.iter() {
+      let Some(field_value) = scope_fields.get(&field.name) else {
+        continue;
+      };
+      if let AbstractType::Type(Type::Function(signature)) = &field.field_type
+        && let Some(field_ancestor) = &signature.abstract_ancestor
+        && let Some(nested_struct) =
+          field_ancestor.read().unwrap().captured_scope.clone()
+      {
+        // A captured closure's value is its own scope data.
+        let inner = match field_value {
+          Value::Fun(Function::Scoped { scope, .. }) => (**scope).clone(),
+          other => other.clone(),
+        };
+        self.write_scope_capture_bindings(&nested_struct, &inner, written);
+        continue;
+      }
       let global_name: Arc<str> =
         format!("{}_data_{}", scope_struct.name.0, field.name).into();
       if !self.is_binding_var(&global_name) {
         continue;
       }
-      let Some(field_value) = scope_fields.get(&field.name) else {
-        continue;
-      };
       let field_value = field_value.clone();
       if let Some(bindings) = self.bindings.get_mut(&global_name)
         && let Some((value, _)) = bindings.last_mut()
@@ -4487,7 +4511,6 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       }
       written.push(global_name);
     }
-    self.mark_cpu_written(&written);
   }
 
   /// Serializes the current CPU value of each GPUOutOfDate binding var whose

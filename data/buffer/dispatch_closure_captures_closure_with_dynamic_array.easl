@@ -1,0 +1,18 @@
+; A GPU-dispatched closure captures another closure, which itself
+; captures a local runtime-sized array (plus a flat local). The nested
+; closure's captures are lifted to their own bindings and the GPU calls a
+; specialized clone of it, while the original stays callable from CPU
+; code — pinned by the direct call before the dispatch.
+@[storage-write 0 0]
+(var out: [1: f32])
+
+@cpu
+(defn main []
+  (let [weights (into-dynamic-array [1. 2. 3.])
+        scale 10.
+        f (fn [i: u32] (* scale (weights i)))]
+    (print (f 0u))
+    (dispatch-compute-shader (fn []
+                                 (= (out 0u) (+ (f 1u) (f 2u))))
+                             (vec3u 1u))
+    (print (out 0u))))

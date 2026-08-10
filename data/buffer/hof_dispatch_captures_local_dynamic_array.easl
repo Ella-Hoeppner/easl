@@ -1,0 +1,21 @@
+; The natural higher-order pattern: a dispatch wrapper takes a lambda
+; that captures a *local* runtime-sized array. The wrapper's dispatched
+; closure captures the lambda (as its scope), so the array reaches the
+; GPU through a nested capture.
+@[storage-write 0 0]
+(var out: [f32])
+
+(defn run-compute [count: u32
+                   f: (Fn [u32] ())]
+  (dispatch-compute-shader (fn []
+                               (let [i (.x (global-invocation-id))]
+                                 (when (< i count)
+                                   (f i))))
+                           (vec3u count 1u 1u)))
+
+@cpu
+(defn main []
+  (= out (zeroed-array 4u))
+  (let [weights (into-dynamic-array [1. 2. 3. 4.])]
+    (run-compute 4u (fn [i] (= (out i) (* 2. (weights i)))))
+    (print out)))

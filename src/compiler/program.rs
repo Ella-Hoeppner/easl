@@ -343,6 +343,30 @@ impl TypeDefs {
   }
 }
 
+/// How one field of a dispatched closure's captured scope is rewritten by
+/// `extract_dispatched_closure_scopes`: data captures become reads of
+/// their own lifted binding global, and captured closures are called
+/// through a GPU clone whose own captures are lifted recursively.
+enum CaptureRewrite {
+  Global(Arc<str>),
+  CalleeClone {
+    clone_name: Arc<str>,
+    clone_signature: Arc<RwLock<AbstractFunctionSignature>>,
+  },
+}
+
+/// Accumulator for `extract_dispatched_closure_scopes`: bindings and GPU
+/// clones are created while iterating the registry, so they're collected
+/// here and installed at the end of the pass.
+struct DispatchScopeLiftState {
+  used_bindings: HashSet<(u8, u8)>,
+  created_bindings: HashSet<Arc<str>>,
+  new_vars: Vec<TopLevelVar>,
+  /// Original captured-closure name → its (memoized) GPU clone.
+  callee_clones: HashMap<Arc<str>, (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>)>,
+  new_functions: Vec<Arc<RwLock<AbstractFunctionSignature>>>,
+}
+
 #[derive(Debug)]
 pub struct Program {
   pub names: RwLock<NameContext>,
@@ -1662,204 +1686,324 @@ impl Program {
       .unwrap();
   }
   /// Rewrites references to a dispatched closure's captured scope within
-  /// `body` so the scope is accessed as plain data rather than through a
-  /// reference. When `field_globals` is `Some` (the entry's captures have
-  /// been lifted to per-field globals), each `scope.field` access is
-  /// replaced with a read of that field's own global; when it's `None`
-  /// (nested closures, whose scope stays a by-value parameter), only
-  /// ownership is adjusted. Reference-ownership access chains rooted at
-  /// the scope become owned, and calls that forward the scope (or part of
-  /// it) to a nested closure are converted to pass it by value via
-  /// `valueify_dispatched_callee_scope` — naga doesn't allow storage-space
-  /// pointers as function arguments, and scopes are read-only on the GPU.
+  /// `body` so the scope is accessed as lifted per-capture data rather
+  /// than through the (removed) scope parameter: each `scope.field`
+  /// access to a data capture is replaced with a read of that capture's
+  /// own global, and each call forwarding a captured *closure* (its
+  /// trailing `scope.field` arg) is repointed to the callee's GPU clone
+  /// with the scope arg dropped — the clone reads its own lifted globals
+  /// instead (see `gpuify_captured_closure`). Reference-ownership access
+  /// chains rooted at the scope become owned — naga doesn't allow
+  /// storage-space pointers, and scopes are read-only on the GPU.
   fn rewrite_dispatched_scope_body(
     &self,
     body: &mut TypedExp,
     scope_name: &Arc<str>,
-    field_globals: Option<&HashMap<Arc<str>, Arc<str>>>,
-    valueified_callees: &mut HashSet<Arc<str>>,
+    rewrites: &HashMap<Arc<str>, CaptureRewrite>,
   ) {
+    let lifted_globals: HashSet<Arc<str>> = rewrites
+      .values()
+      .filter_map(|r| match r {
+        CaptureRewrite::Global(global_name) => Some(global_name.clone()),
+        CaptureRewrite::CalleeClone { .. } => None,
+      })
+      .collect();
     body
       .walk_mut(&mut |e| {
+        let scope_field_name = |exp: &TypedExp| -> Option<Arc<str>> {
+          if let ExpKind::Access(Accessor::Field(field_name), inner) =
+            &exp.kind
+            && matches!(&inner.kind, ExpKind::Name(name) if name == scope_name)
+          {
+            Some(field_name.clone())
+          } else {
+            None
+          }
+        };
         let scope_rooted = |exp: &TypedExp| {
           let mut root = exp;
           loop {
             match &root.kind {
               ExpKind::Access(_, inner) => root = inner,
               ExpKind::Name(name) => {
-                break name == scope_name
-                  || field_globals
-                    .map(|globals| globals.values().any(|g| g == name))
-                    .unwrap_or(false);
+                break name == scope_name || lifted_globals.contains(name);
               }
               _ => break false,
             }
           }
         };
-        match &mut e.kind {
-          ExpKind::Access(Accessor::Field(field_name), inner)
-            if field_globals.is_some()
-              && matches!(&inner.kind, ExpKind::Name(name) if name == scope_name) =>
-          {
-            let global_name = field_globals
-              .unwrap()
-              .get(field_name)
-              .unwrap_or_else(|| {
-                panic!(
-                  "dispatched closure scope field `{field_name}` has no \
-                   lifted global"
-                )
-              })
-              .clone();
-            e.kind = ExpKind::Name(global_name);
-            e.data.is_globally_bound = true;
-            e.data.ownership = Ownership::Owned;
-          }
-          ExpKind::Name(name) if name == scope_name => {
-            if field_globals.is_some() {
-              panic!(
-                "dispatched closure body uses its whole captured scope as a \
-                 value; captures are lifted to per-field globals, which only \
-                 supports field accesses"
-              );
-            }
-            e.data.ownership = Ownership::Owned;
-          }
-          ExpKind::Access(_, _) => {
-            if scope_rooted(e)
-              && matches!(
-                e.data.ownership,
-                Ownership::Reference | Ownership::MutableReference
-              )
-            {
+        if let ExpKind::Application(f_exp, args) = &mut e.kind
+          && let Some(field_name) = args.last().and_then(&scope_field_name)
+          && let Some(CaptureRewrite::CalleeClone {
+            clone_name,
+            clone_signature,
+          }) = rewrites.get(&field_name)
+        {
+          args.pop();
+          let ExpKind::Name(callee_name) = &mut f_exp.kind else {
+            panic!(
+              "dispatched closure calls a captured closure through a \
+               non-Name callee"
+            )
+          };
+          *callee_name = clone_name.clone();
+          f_exp.data.as_known_mut(|t| {
+            let Type::Function(signature) = t else {
+              panic!("captured closure call had a non-function callee type")
+            };
+            signature.args.pop();
+            signature.abstract_ancestor = Some(clone_signature.clone());
+          });
+        }
+        if let Some(field_name) = scope_field_name(e) {
+          match rewrites.get(&field_name) {
+            Some(CaptureRewrite::Global(global_name)) => {
+              e.kind = ExpKind::Name(global_name.clone());
+              e.data.is_globally_bound = true;
               e.data.ownership = Ownership::Owned;
             }
+            Some(CaptureRewrite::CalleeClone { .. }) => panic!(
+              "captured closure `{field_name}` is used as a value inside a \
+               dispatched closure; captured closures only support being \
+               called"
+            ),
+            None => panic!(
+              "dispatched closure scope field `{field_name}` has no lifted \
+               rewrite"
+            ),
           }
-          ExpKind::Application(applied_f, args) => {
-            if let TypeState::Known(Type::Function(signature)) =
-              &applied_f.data.kind
-              && let Some(ancestor) = signature.abstract_ancestor.clone()
-              && args.last().map(|arg| scope_rooted(arg)).unwrap_or(false)
-            {
-              self
-                .valueify_dispatched_callee_scope(ancestor, valueified_callees);
-            }
-          }
-          _ => {}
+        } else if matches!(&e.kind, ExpKind::Name(name) if name == scope_name)
+        {
+          panic!(
+            "dispatched closure body uses its whole captured scope as a \
+             value; captures are lifted to per-field globals, which only \
+             supports field accesses"
+          );
+        } else if matches!(&e.kind, ExpKind::Access(_, _))
+          && scope_rooted(e)
+          && matches!(
+            e.data.ownership,
+            Ownership::Reference | Ownership::MutableReference
+          )
+        {
+          e.data.ownership = Ownership::Owned;
         }
         Ok::<bool, Never>(true)
       })
       .unwrap();
   }
-  /// Converts a scoped closure called from within a dispatched GPU entry to
-  /// take its captured scope by value instead of by mutable reference: the
-  /// trailing scope argument's ownership is flipped to owned on the call
-  /// site's signature, every registry copy of the signature, and the
-  /// function's own expression signature, and the body is rewritten (via
-  /// `rewrite_dispatched_scope_body`, recursing into further nested
-  /// closures).
-  fn valueify_dispatched_callee_scope(
+  /// Whether a struct field of this type makes the struct's WGSL
+  /// declaration impossible: runtime-sized arrays and strings have no
+  /// (or no legal) shader representation, and function-typed fields
+  /// declare as their representative captured-scope structs, so the
+  /// check recurses through those scopes' own fields.
+  fn type_makes_struct_cpu_only(&self, t: &Type) -> bool {
+    match t {
+      Type::Function(signature) => {
+        let Some(ancestor) = &signature.abstract_ancestor else {
+          return true;
+        };
+        let Some(scope_struct) =
+          ancestor.read().unwrap().captured_scope.clone()
+        else {
+          return true;
+        };
+        scope_struct.fields.iter().any(|f| {
+          let Ok(field_type) = f.field_type.clone().concretize(
+            &vec![],
+            &self.typedefs,
+            f.source_trace.clone(),
+          ) else {
+            return false;
+          };
+          self.type_makes_struct_cpu_only(&field_type)
+        })
+      }
+      other => other.involves_string() || other.involves_runtime_sized_array(),
+    }
+  }
+  /// Lifts every capture of a dispatched closure's scope struct: data
+  /// captures each get their own implicit read-only storage binding
+  /// (`<scope-struct>_data_<capture>`), and captured *closures* recurse —
+  /// their own captures are lifted the same way and the closure gets a
+  /// GPU clone via `gpuify_captured_closure`. Returns the per-field
+  /// rewrite map `rewrite_dispatched_scope_body` applies to the body.
+  fn lift_scope_captures(
     &self,
-    callsite_ancestor: Arc<RwLock<AbstractFunctionSignature>>,
-    valueified_callees: &mut HashSet<Arc<str>>,
-  ) {
-    let (callee_name, scope_struct_name, callee_implementation) = {
-      let ancestor = callsite_ancestor.read().unwrap();
-      let Some(scope_struct) = &ancestor.captured_scope else {
-        return;
+    scope_struct: &AbstractStruct,
+    source_trace: &SourceTrace,
+    state: &mut DispatchScopeLiftState,
+    errors: &mut ErrorLog,
+  ) -> HashMap<Arc<str>, CaptureRewrite> {
+    let scope_struct_name = scope_struct.name.0.clone();
+    scope_struct
+      .fields
+      .iter()
+      .map(|field| {
+        let AbstractType::Type(field_type) = &field.field_type else {
+          panic!("captured scope field with non-concrete type")
+        };
+        if let Type::Function(signature) = field_type {
+          let Some(field_ancestor) = &signature.abstract_ancestor else {
+            panic!("captured closure without an abstract ancestor")
+          };
+          if field_ancestor.read().unwrap().captured_scope.is_none() {
+            panic!(
+              "captured scope-less closure; these are unit-like and \
+               shouldn't be captured"
+            )
+          }
+          let (clone_name, clone_signature) =
+            self.gpuify_captured_closure(field_ancestor.clone(), state, errors);
+          (
+            field.name.clone(),
+            CaptureRewrite::CalleeClone {
+              clone_name,
+              clone_signature,
+            },
+          )
+        } else {
+          // The implicit binding obeys the same rule as explicit ones: it
+          // may involve a runtime-sized array only by being one. This
+          // catches e.g. capturing a struct value with a runtime-sized
+          // field — `validate_gpu_runtime_sized_use` runs before this
+          // pass, so it can't see the bindings created here.
+          if field_type.involves_runtime_sized_array()
+            && !matches!(
+              field_type,
+              Type::Array(Some(ConcreteArraySize::Unsized), _)
+            )
+          {
+            errors.log(CompileError {
+              kind: RuntimeSizedFieldInBinding,
+              source_trace: source_trace.clone(),
+            });
+          }
+          let global_name: Arc<str> =
+            format!("{scope_struct_name}_data_{}", field.name).into();
+          // The same closure definition can be captured by several
+          // dispatched entries; its bindings are keyed by its own scope
+          // struct, so they're created once and shared (each dispatch's
+          // pre-upload carries the values written at its own record
+          // site).
+          if state.created_bindings.insert(global_name.clone()) {
+            let binding = (0u8..=u8::MAX)
+              .find(|b| !state.used_bindings.contains(&(0, *b)))
+              .expect("no free binding for dispatched closure capture");
+            state.used_bindings.insert((0, binding));
+            state.new_vars.push(TopLevelVar {
+              name: global_name.clone(),
+              kind: TopLevelVariableKind::Var {
+                // Read-only storage rather than uniform: storage has
+                // relaxed layout rules (uniform would demand 16-byte
+                // member alignment for struct-typed captures), and
+                // runtime-sized array captures are legal (uniform
+                // forbids them).
+                address_space: VariableAddressSpace::StorageRead,
+                group_and_binding: Some(GroupAndBinding {
+                  group: 0,
+                  binding,
+                }),
+              },
+              var_type: field_type.clone(),
+              value: None,
+              source_trace: source_trace.clone(),
+              external: false,
+            });
+          }
+          (field.name.clone(), CaptureRewrite::Global(global_name))
+        }
+      })
+      .collect()
+  }
+  /// Creates (and memoizes) the GPU clone of a closure captured —
+  /// directly or transitively — by a dispatched entry: the clone's
+  /// trailing scope parameter is dropped, its captures are lifted to
+  /// per-capture bindings (recursing into further captured closures),
+  /// and its body reads those globals instead of the scope. The original
+  /// definition is left untouched, so direct CPU calls of the closure
+  /// keep working.
+  fn gpuify_captured_closure(
+    &self,
+    ancestor: Arc<RwLock<AbstractFunctionSignature>>,
+    state: &mut DispatchScopeLiftState,
+    errors: &mut ErrorLog,
+  ) -> (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>) {
+    let (original_name, scope_struct, original_implementation) = {
+      let ancestor = ancestor.read().unwrap();
+      let Some(scope_struct) = ancestor.captured_scope.clone() else {
+        panic!("gpuify_captured_closure called on a scope-less closure")
       };
       let FunctionImplementationKind::Composite(implementation) =
         ancestor.implementation.clone()
       else {
-        return;
+        panic!("captured closure wasn't composite")
       };
-      (
-        ancestor.name.clone(),
-        scope_struct.name.0.clone(),
-        implementation,
-      )
+      (ancestor.name.clone(), scope_struct, implementation)
     };
-    let mut signatures_to_patch = vec![callsite_ancestor];
-    if let Some(registry_signatures) = self.abstract_functions.get(&callee_name)
-    {
-      signatures_to_patch.extend(registry_signatures.iter().cloned());
+    if let Some(existing) = state.callee_clones.get(&original_name) {
+      return existing.clone();
     }
-    for signature in signatures_to_patch {
-      let mut signature = signature.write().unwrap();
-      if let Some((AbstractType::AbstractStruct(s), ownership)) =
-        signature.arg_types.last_mut()
-        && s.name.0 == scope_struct_name
-      {
-        *ownership = Ownership::Owned;
-      }
-    }
-    if !valueified_callees.insert(callee_name) {
-      return;
-    }
-    let mut implementation = callee_implementation.write().unwrap();
+    let scope_struct_name = scope_struct.name.0.clone();
+    let rewrites = self.lift_scope_captures(
+      &scope_struct,
+      &scope_struct.source_trace,
+      state,
+      errors,
+    );
+    let mut implementation = original_implementation.read().unwrap().clone();
     implementation.expression.data.as_known_mut(|t| {
       let Type::Function(signature) = t else {
-        panic!("scoped closure had a non-function type")
+        panic!("captured closure had a non-function type")
       };
-      if let Some((v, _)) = signature.args.last_mut()
+      if let Some((v, _)) = signature.args.last()
         && let Type::Struct(s) = v.var_type.unwrap_known()
         && s.name == scope_struct_name
       {
-        v.var_type.ownership = Ownership::Owned;
+        signature.args.pop();
       }
     });
-    let scope_param_name = implementation.arg_names.last().unwrap().0.clone();
-    let ExpKind::Function(_, body) = &mut implementation.expression.kind else {
-      panic!("scoped closure implementation wasn't a Function")
+    let scope_param_name = implementation.arg_names.pop().unwrap().0;
+    implementation.arg_annotations.pop();
+    let ExpKind::Function(fn_arg_names, body) =
+      &mut implementation.expression.kind
+    else {
+      panic!("captured closure implementation wasn't a Function")
     };
-    self.rewrite_dispatched_scope_body(
-      body,
-      &scope_param_name,
-      None,
-      valueified_callees,
-    );
-  }
-  /// Replaces function-typed fields inside a dispatched closure's scope type
-  /// with their representative scope-struct types, recursively. A captured
-  /// closure is stored in the scope binding as its own captured scope's
-  /// data — which is what the emitted WGSL struct declares (see the
-  /// `Type::Function` arm of `monomorphized_name`) and what
-  /// `Value::to_uniform_bytes` uploads.
-  fn substitute_scope_representative_types(&self, t: Type) -> Type {
-    match t {
-      Type::Function(signature) => {
-        let representative = if let Some(ancestor) =
-          &signature.abstract_ancestor
-          && let Some(scope_struct) = &ancestor.read().unwrap().captured_scope
-        {
-          Some(
-            AbstractType::AbstractStruct(Arc::new(scope_struct.clone()))
-              .concretize(&vec![], &self.typedefs, SourceTrace::empty())
-              .unwrap(),
-          )
-        } else {
-          None
-        };
-        match representative {
-          Some(representative) => {
-            self.substitute_scope_representative_types(representative)
-          }
-          None => Type::Function(signature),
-        }
+    fn_arg_names.pop();
+    self.rewrite_dispatched_scope_body(body, &scope_param_name, &rewrites);
+    let clone_name: Arc<str> = self
+      .names
+      .write()
+      .unwrap()
+      .gensym(&format!("{original_name}_gpu"))
+      .into();
+    let clone_signature = {
+      let original = ancestor.read().unwrap();
+      let mut arg_types = original.arg_types.clone();
+      if let Some((AbstractType::AbstractStruct(s), _)) = arg_types.last()
+        && s.name.0 == scope_struct_name
+      {
+        arg_types.pop();
       }
-      Type::Struct(mut s) => {
-        for field in s.fields.iter_mut() {
-          field.field_type = self
-            .substitute_scope_representative_types(
-              field.field_type.unwrap_known(),
-            )
-            .known()
-            .into();
-        }
-        Type::Struct(s)
-      }
-      other => other,
-    }
+      Arc::new(RwLock::new(AbstractFunctionSignature {
+        name: clone_name.clone(),
+        generic_args: vec![],
+        arg_types,
+        return_type: original.return_type.clone(),
+        implementation: FunctionImplementationKind::Composite(Arc::new(
+          RwLock::new(implementation),
+        )),
+        associative: false,
+        captured_scope: None,
+        entry_point: None,
+      }))
+    };
+    state.new_functions.push(clone_signature.clone());
+    state
+      .callee_clones
+      .insert(original_name, (clone_name.clone(), clone_signature.clone()));
+    (clone_name, clone_signature)
   }
   /// Rewrites every window-info query (`window-time`, `mouse-coords`,
   /// `key-down?`, etc.) into a read of an implicit uniform binding, creating
@@ -2140,8 +2284,8 @@ impl Program {
   /// (see the `dispatch-compute-shader` handler in interpreter.rs) so the
   /// ordinary dirty-binding upload machinery ships the captured values to the
   /// GPU before the dispatch executes.
-  pub fn extract_dispatched_closure_scopes(&mut self) {
-    let mut used_bindings: HashSet<(u8, u8)> = self
+  pub fn extract_dispatched_closure_scopes(&mut self, errors: &mut ErrorLog) {
+    let used_bindings: HashSet<(u8, u8)> = self
       .top_level_vars
       .iter()
       .filter_map(|v| {
@@ -2156,9 +2300,14 @@ impl Program {
         }
       })
       .collect();
-    let mut new_vars: Vec<TopLevelVar> = vec![];
+    let mut state = DispatchScopeLiftState {
+      used_bindings,
+      created_bindings: HashSet::new(),
+      new_vars: vec![],
+      callee_clones: HashMap::new(),
+      new_functions: vec![],
+    };
     let mut processed_entries: HashSet<Arc<str>> = HashSet::new();
-    let mut valueified_callees: HashSet<Arc<str>> = HashSet::new();
     for f in self.abstract_functions_iter() {
       let FunctionImplementationKind::Composite(implementation) =
         f.read().unwrap().implementation.clone()
@@ -2222,8 +2371,8 @@ impl Program {
               }
               let mut entry_implementation =
                 entry_implementation.write().unwrap();
-              let concrete_scope_type = {
-                let mut popped_type = None;
+              let popped_scope_arg = {
+                let mut popped = false;
                 entry_implementation.expression.data.as_known_mut(|t| {
                   let Type::Function(signature) = t else {
                     panic!("dispatched closure had a non-function type")
@@ -2232,19 +2381,15 @@ impl Program {
                     && let Type::Struct(s) = v.var_type.unwrap_known()
                     && s.name == scope_struct_name
                   {
-                    popped_type = signature
-                      .args
-                      .pop()
-                      .map(|(v, _)| v.var_type.unwrap_known());
+                    signature.args.pop();
+                    popped = true;
                   }
                 });
-                popped_type
+                popped
               };
-              let Some(concrete_scope_type) = concrete_scope_type else {
+              if !popped_scope_arg {
                 continue;
-              };
-              let concrete_scope_type =
-                self.substitute_scope_representative_types(concrete_scope_type);
+              }
               let scope_arg_name =
                 entry_implementation.arg_names.pop().unwrap().0;
               entry_implementation.arg_annotations.pop();
@@ -2260,48 +2405,19 @@ impl Program {
               // storage-bound array — including several of them per
               // closure, which a single struct binding could never
               // express (WGSL allows at most one runtime-sized member,
-              // and only in last position).
-              let Type::Struct(concrete_scope_struct) = &concrete_scope_type
-              else {
-                panic!("dispatched closure scope type wasn't a struct")
-              };
-              let mut field_globals: HashMap<Arc<str>, Arc<str>> =
-                HashMap::new();
-              for field in concrete_scope_struct.fields.iter() {
-                let field_type = field.field_type.unwrap_known();
-                let global_name: Arc<str> =
-                  format!("{scope_struct_name}_data_{}", field.name).into();
-                field_globals.insert(field.name.clone(), global_name.clone());
-                let binding = (0u8..=u8::MAX)
-                  .find(|b| !used_bindings.contains(&(0, *b)))
-                  .expect("no free binding for dispatched closure capture");
-                used_bindings.insert((0, binding));
-                new_vars.push(TopLevelVar {
-                  name: global_name,
-                  kind: TopLevelVariableKind::Var {
-                    // Read-only storage rather than uniform: storage has
-                    // relaxed layout rules, so a captured closure's scope
-                    // struct keeps the packed layout that
-                    // `Value::to_uniform_bytes` produces (uniform would
-                    // demand 16-byte member alignment), and runtime-sized
-                    // array captures are legal (uniform forbids them).
-                    address_space: VariableAddressSpace::StorageRead,
-                    group_and_binding: Some(GroupAndBinding {
-                      group: 0,
-                      binding,
-                    }),
-                  },
-                  var_type: field_type,
-                  value: None,
-                  source_trace: exp.source_trace.clone(),
-                  external: false,
-                });
-              }
+              // and only in last position). Captured *closures* recurse:
+              // their captures are lifted the same way and the body calls
+              // a GPU clone (see `lift_scope_captures`).
+              let rewrites = self.lift_scope_captures(
+                &scope_struct,
+                &exp.source_trace,
+                &mut state,
+                errors,
+              );
               self.rewrite_dispatched_scope_body(
                 body,
                 &scope_arg_name,
-                Some(&field_globals),
-                &mut valueified_callees,
+                &rewrites,
               );
             }
           }
@@ -2309,7 +2425,15 @@ impl Program {
         })
         .unwrap();
     }
+    let DispatchScopeLiftState {
+      new_vars,
+      new_functions,
+      ..
+    } = state;
     self.top_level_vars.extend(new_vars);
+    for f in new_functions {
+      self.add_abstract_function(f);
+    }
   }
   pub fn monomorphize_reference_address_spaces(&mut self) {
     loop {
@@ -3470,6 +3594,9 @@ impl Program {
       // (e.g. a dispatched closure's scope struct with runtime-sized
       // captures, which lives on in the typedefs even though its captures
       // travel as per-field bindings) — skip their emission entirely.
+      // Function-typed fields emit as their representative scope-struct
+      // names, so the check recurses through captured scopes: a scope
+      // struct embedding a CPU-only closure is itself CPU-only.
       // Validation guarantees GPU code can't reference one: such types
       // are banned both as binding types (`RuntimeSizedFieldInBinding`)
       // and as values in GPU code (`RuntimeSizedFieldOnGpu` /
@@ -3483,7 +3610,7 @@ impl Program {
         ) else {
           return false;
         };
-        t.involves_string() || t.involves_runtime_sized_array()
+        self.type_makes_struct_cpu_only(&t)
       });
       if cpu_only {
         continue;
@@ -5325,7 +5452,10 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    self.extract_dispatched_closure_scopes();
+    self.extract_dispatched_closure_scopes(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     // Entry-point marking must happen before the reference-address-space
     // rebuild: that rebuild drops functions with reference args from the
     // registry — including a spawn-window frame closure with captured scope

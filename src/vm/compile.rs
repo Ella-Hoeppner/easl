@@ -12,7 +12,8 @@ use crate::compiler::functions::{
   FunctionImplementationKind, Ownership, TopLevelFunction,
   extract_mat_size as parse_mat_size,
 };
-use crate::compiler::types::{ConcreteArraySize, Type, TypeState};
+use crate::compiler::structs::AbstractStruct;
+use crate::compiler::types::{AbstractType, ConcreteArraySize, Type, TypeState};
 use crate::vm::bytecode::{
   BytecodeProgram, Code, Function, HostBinding, HostBindingStorage,
   HostDispatch, HostOp, Instruction, Op, SharedVarInfo, WindowQueryKind,
@@ -1849,7 +1850,9 @@ impl BytecodeCompilationState {
     // Scope construction: write each captured value into its own implicit
     // binding (created by extract_dispatched_closure_scopes) so the
     // dispatch's pre-upload ships them to the GPU. Construction args align
-    // with the scope struct's fields by order.
+    // with the scope struct's fields by order; captured closures recurse
+    // into their own scope's bindings, walking the closure value's flat
+    // slot layout by field offsets.
     if let ExpKind::Application(_, captured) = &arg.kind {
       let scope_struct = ancestor
         .captured_scope
@@ -1858,45 +1861,103 @@ impl BytecodeCompilationState {
       for (field, captured_value) in
         scope_struct.fields.iter().zip(captured.iter())
       {
-        let global_name: Arc<str> =
-          format!("{}_data_{}", scope_struct.name.0, field.name).into();
-        let binding = *self
-          .binding_indices
-          .get(&global_name)
-          .expect("dispatched closure capture binding not found");
         let value_pos =
           captured_value.compile_to_bytecode(false, self).unwrap();
-        match self.host_bindings[binding as usize].storage {
-          HostBindingStorage::Slots { position, .. } => {
-            let value_size =
-              vm_type_size(&captured_value.data.unwrap_known());
-            if value_size > 0 {
-              self.push_instruction(Instruction {
-                op: Op::Move,
-                arg_positions: [value_pos, value_size, 0],
-                return_position: position,
-              });
-            }
+        let AbstractType::Type(field_type) = &field.field_type else {
+          panic!("captured scope field with non-concrete type")
+        };
+        if let Type::Function(signature) = field_type {
+          if let Some(field_ancestor) = &signature.abstract_ancestor
+            && let Some(nested_struct) =
+              field_ancestor.read().unwrap().captured_scope.clone()
+          {
+            self.emit_scope_capture_writes(&nested_struct, value_pos);
           }
-          // A runtime-sized capture: the captured value is a heap id;
-          // copy its payload into the binding's region, exactly like a
-          // whole-array assignment to a dynamic global.
-          HostBindingStorage::DynamicMemory { memory } => {
-            self.push_instruction(Instruction {
-              op: Op::RegionFromHeap,
-              arg_positions: [memory, value_pos, 0],
-              return_position: 0,
-            });
-          }
-          _ => panic!(
-            "dispatched closure capture binding wasn't slot- or \
-             region-backed"
-          ),
+        } else {
+          self.emit_capture_field_write(
+            &scope_struct.name.0,
+            &field.name,
+            field_type,
+            value_pos,
+          );
         }
-        self.emit_host_op(HostOp::MarkCpuWritten { binding });
       }
     }
     (entry_name, read_indices, write_indices)
+  }
+  /// Writes every capture of `scope_struct` into its implicit binding,
+  /// reading from the scope value's flat slot layout starting at
+  /// `base_pos`. Captured closures recurse into their own scope's
+  /// bindings at the field's offset.
+  fn emit_scope_capture_writes(
+    &mut self,
+    scope_struct: &AbstractStruct,
+    base_pos: u16,
+  ) {
+    let mut offset = 0u16;
+    for field in scope_struct.fields.iter() {
+      let AbstractType::Type(field_type) = &field.field_type else {
+        panic!("captured scope field with non-concrete type")
+      };
+      if let Type::Function(signature) = field_type {
+        if let Some(field_ancestor) = &signature.abstract_ancestor
+          && let Some(nested_struct) =
+            field_ancestor.read().unwrap().captured_scope.clone()
+        {
+          self.emit_scope_capture_writes(&nested_struct, base_pos + offset);
+        }
+      } else {
+        self.emit_capture_field_write(
+          &scope_struct.name.0,
+          &field.name,
+          field_type,
+          base_pos + offset,
+        );
+      }
+      offset += vm_type_size(field_type);
+    }
+  }
+  /// Writes one data capture into its implicit binding: a `Move` for
+  /// slot-backed bindings, or a `RegionFromHeap` for runtime-sized
+  /// captures (the value slot holds a heap id; its payload is copied
+  /// into the binding's region, exactly like whole-array assignment to a
+  /// dynamic global).
+  fn emit_capture_field_write(
+    &mut self,
+    scope_struct_name: &Arc<str>,
+    field_name: &Arc<str>,
+    field_type: &Type,
+    value_pos: u16,
+  ) {
+    let global_name: Arc<str> =
+      format!("{scope_struct_name}_data_{field_name}").into();
+    let binding = *self
+      .binding_indices
+      .get(&global_name)
+      .expect("dispatched closure capture binding not found");
+    match self.host_bindings[binding as usize].storage {
+      HostBindingStorage::Slots { position, .. } => {
+        let value_size = vm_type_size(field_type);
+        if value_size > 0 {
+          self.push_instruction(Instruction {
+            op: Op::Move,
+            arg_positions: [value_pos, value_size, 0],
+            return_position: position,
+          });
+        }
+      }
+      HostBindingStorage::DynamicMemory { memory } => {
+        self.push_instruction(Instruction {
+          op: Op::RegionFromHeap,
+          arg_positions: [memory, value_pos, 0],
+          return_position: 0,
+        });
+      }
+      _ => panic!(
+        "dispatched closure capture binding wasn't slot- or region-backed"
+      ),
+    }
+    self.emit_host_op(HostOp::MarkCpuWritten { binding });
   }
 }
 

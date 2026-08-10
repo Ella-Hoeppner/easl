@@ -1,0 +1,17 @@
+; Capture lifting reaches arbitrary depth: the dispatched closure
+; captures a closure, which captures another closure, which captures a
+; local runtime-sized array. Every level's captures become bindings and
+; every nested closure gets a GPU clone.
+@[storage-write 0 0]
+(var out: [1: f32])
+
+@cpu
+(defn main []
+  (let [samples (into-dynamic-array [5. 6. 7.])
+        pick (fn [i: u32] (samples i))
+        gain 2.
+        amp (fn [i: u32] (* gain (pick i)))]
+    (dispatch-compute-shader (fn []
+                                 (= (out 0u) (+ (amp 0u) (amp 2u))))
+                             (vec3u 1u))
+    (print (out 0u))))
