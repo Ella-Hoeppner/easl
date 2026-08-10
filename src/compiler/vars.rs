@@ -72,7 +72,7 @@ impl VariableAddressSpace {
       "private" => Private,
       "workgroup" => Workgroup,
       "uniform" => Uniform,
-      "storage" => StorageRead,
+      "storage" | "storage-read" => StorageRead,
       "storage-write" => StorageReadWrite,
       "handle" => Handle,
       _ => return None,

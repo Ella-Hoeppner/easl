@@ -54,14 +54,15 @@ fn run_sync_test_on(
       .unwrap_or_else(|e| {
         panic!("{name}: evaluation error ({runtime:?}): {e:#?}")
       });
-      // The scope bindings that `extract_dispatched_closure_scopes` creates
-      // for dispatched closures have gensym'd names whose numbering isn't
-      // stable across runs — normalize them so traces stay deterministic.
+      // The per-capture bindings that `extract_dispatched_closure_scopes`
+      // creates for dispatched closures (`<scope>_data_<capture>`) have
+      // gensym'd scope names whose numbering isn't stable across runs —
+      // normalize them so traces stay deterministic.
       let actual: String = io
         .sync_trace
         .iter()
         .map(|line| {
-          if line.ends_with("_scope_data")
+          if line.contains("_scope_data")
             && let Some(direction) = line.split(": ").next()
           {
             format!("{direction}: <closure-scope>\n")

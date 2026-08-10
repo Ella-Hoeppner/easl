@@ -4460,24 +4460,34 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     let Some(ancestor) = &dispatched_f.abstract_ancestor else {
       return;
     };
-    let Some(global_name) = ancestor
-      .read()
-      .unwrap()
-      .captured_scope
-      .as_ref()
-      .map(|s| Arc::<str>::from(format!("{}_data", s.name.0)))
+    let Some(scope_struct) = ancestor.read().unwrap().captured_scope.clone()
     else {
       return;
     };
-    if !self.is_binding_var(&global_name) {
+    let Value::Struct(scope_fields) = &**scope else {
       return;
+    };
+    // Each captured var has its own binding (see
+    // `extract_dispatched_closure_scopes`).
+    let mut written: Vec<Arc<str>> = vec![];
+    for field in scope_struct.fields.iter() {
+      let global_name: Arc<str> =
+        format!("{}_data_{}", scope_struct.name.0, field.name).into();
+      if !self.is_binding_var(&global_name) {
+        continue;
+      }
+      let Some(field_value) = scope_fields.get(&field.name) else {
+        continue;
+      };
+      let field_value = field_value.clone();
+      if let Some(bindings) = self.bindings.get_mut(&global_name)
+        && let Some((value, _)) = bindings.last_mut()
+      {
+        *value = field_value;
+      }
+      written.push(global_name);
     }
-    if let Some(bindings) = self.bindings.get_mut(&global_name)
-      && let Some((value, _)) = bindings.last_mut()
-    {
-      *value = (**scope).clone();
-    }
-    self.mark_cpu_written(&[global_name]);
+    self.mark_cpu_written(&written);
   }
 
   /// Serializes the current CPU value of each GPUOutOfDate binding var whose

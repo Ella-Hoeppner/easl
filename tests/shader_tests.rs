@@ -447,6 +447,10 @@ error_test!(
   unsized_array_in_uniform,
   CompileErrorKind::UnsizedArrayInUniform
 );
+error_test!(
+  gpu_dyn_struct_binding_failure,
+  CompileErrorKind::RuntimeSizedFieldInBinding
+);
 error_test!(external_string_var, CompileErrorKind::ExternalStringVar);
 error_test!(
   external_string_field_var,

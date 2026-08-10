@@ -1663,18 +1663,20 @@ impl Program {
   }
   /// Rewrites references to a dispatched closure's captured scope within
   /// `body` so the scope is accessed as plain data rather than through a
-  /// reference: `Name` nodes referring to `scope_name` are renamed to
-  /// `global_rename` (when the entry's scope has been lifted to a global)
-  /// and become owned, and reference-ownership access chains rooted at the
-  /// scope become owned. Calls that forward the scope (or part of it) to a
-  /// nested closure are converted to pass it by value via
+  /// reference. When `field_globals` is `Some` (the entry's captures have
+  /// been lifted to per-field globals), each `scope.field` access is
+  /// replaced with a read of that field's own global; when it's `None`
+  /// (nested closures, whose scope stays a by-value parameter), only
+  /// ownership is adjusted. Reference-ownership access chains rooted at
+  /// the scope become owned, and calls that forward the scope (or part of
+  /// it) to a nested closure are converted to pass it by value via
   /// `valueify_dispatched_callee_scope` — naga doesn't allow storage-space
   /// pointers as function arguments, and scopes are read-only on the GPU.
   fn rewrite_dispatched_scope_body(
     &self,
     body: &mut TypedExp,
     scope_name: &Arc<str>,
-    global_rename: Option<&Arc<str>>,
+    field_globals: Option<&HashMap<Arc<str>, Arc<str>>>,
     valueified_callees: &mut HashSet<Arc<str>>,
   ) {
     body
@@ -1686,17 +1688,40 @@ impl Program {
               ExpKind::Access(_, inner) => root = inner,
               ExpKind::Name(name) => {
                 break name == scope_name
-                  || global_rename.map(|g| name == g).unwrap_or(false);
+                  || field_globals
+                    .map(|globals| globals.values().any(|g| g == name))
+                    .unwrap_or(false);
               }
               _ => break false,
             }
           }
         };
         match &mut e.kind {
+          ExpKind::Access(Accessor::Field(field_name), inner)
+            if field_globals.is_some()
+              && matches!(&inner.kind, ExpKind::Name(name) if name == scope_name) =>
+          {
+            let global_name = field_globals
+              .unwrap()
+              .get(field_name)
+              .unwrap_or_else(|| {
+                panic!(
+                  "dispatched closure scope field `{field_name}` has no \
+                   lifted global"
+                )
+              })
+              .clone();
+            e.kind = ExpKind::Name(global_name);
+            e.data.is_globally_bound = true;
+            e.data.ownership = Ownership::Owned;
+          }
           ExpKind::Name(name) if name == scope_name => {
-            if let Some(global_name) = global_rename {
-              *name = global_name.clone();
-              e.data.is_globally_bound = true;
+            if field_globals.is_some() {
+              panic!(
+                "dispatched closure body uses its whole captured scope as a \
+                 value; captures are lifted to per-field globals, which only \
+                 supports field accesses"
+              );
             }
             e.data.ownership = Ownership::Owned;
           }
@@ -2173,8 +2198,6 @@ impl Program {
                 (ancestor.name.clone(), scope_struct, implementation)
               };
               let scope_struct_name = scope_struct.name.0.clone();
-              let global_name: Arc<str> =
-                format!("{scope_struct_name}_data").into();
               // Drop the trailing scope arg from this call site's ancestor
               // signature and from every registry copy of the entry's
               // signature. The name-match guard makes this idempotent when
@@ -2231,37 +2254,55 @@ impl Program {
                 panic!("dispatched closure implementation wasn't a Function")
               };
               fn_arg_names.pop();
+              // Each captured var becomes its own binding rather than one
+              // scope-struct binding: a capture's type is then an ordinary
+              // global type, so runtime-sized captures work like any other
+              // storage-bound array — including several of them per
+              // closure, which a single struct binding could never
+              // express (WGSL allows at most one runtime-sized member,
+              // and only in last position).
+              let Type::Struct(concrete_scope_struct) = &concrete_scope_type
+              else {
+                panic!("dispatched closure scope type wasn't a struct")
+              };
+              let mut field_globals: HashMap<Arc<str>, Arc<str>> =
+                HashMap::new();
+              for field in concrete_scope_struct.fields.iter() {
+                let field_type = field.field_type.unwrap_known();
+                let global_name: Arc<str> =
+                  format!("{scope_struct_name}_data_{}", field.name).into();
+                field_globals.insert(field.name.clone(), global_name.clone());
+                let binding = (0u8..=u8::MAX)
+                  .find(|b| !used_bindings.contains(&(0, *b)))
+                  .expect("no free binding for dispatched closure capture");
+                used_bindings.insert((0, binding));
+                new_vars.push(TopLevelVar {
+                  name: global_name,
+                  kind: TopLevelVariableKind::Var {
+                    // Read-only storage rather than uniform: storage has
+                    // relaxed layout rules, so a captured closure's scope
+                    // struct keeps the packed layout that
+                    // `Value::to_uniform_bytes` produces (uniform would
+                    // demand 16-byte member alignment), and runtime-sized
+                    // array captures are legal (uniform forbids them).
+                    address_space: VariableAddressSpace::StorageRead,
+                    group_and_binding: Some(GroupAndBinding {
+                      group: 0,
+                      binding,
+                    }),
+                  },
+                  var_type: field_type,
+                  value: None,
+                  source_trace: exp.source_trace.clone(),
+                  external: false,
+                });
+              }
               self.rewrite_dispatched_scope_body(
                 body,
                 &scope_arg_name,
-                Some(&global_name),
+                Some(&field_globals),
                 &mut valueified_callees,
               );
-              let binding = (0u8..=u8::MAX)
-                .find(|b| !used_bindings.contains(&(0, *b)))
-                .expect("no free binding for dispatched closure scope");
-              used_bindings.insert((0, binding));
-              new_vars.push(TopLevelVar {
-                name: global_name,
-                kind: TopLevelVariableKind::Var {
-                  // Read-only storage rather than uniform: storage has
-                  // relaxed layout rules, so nested scope structs (e.g. a
-                  // captured closure's scope embedded as a field) keep the
-                  // packed layout that `Value::to_uniform_bytes` produces.
-                  // Uniform would demand 16-byte alignment for struct
-                  // members, which neither the emitted structs nor the CPU
-                  // serializer satisfy.
-                  address_space: VariableAddressSpace::StorageRead,
-                  group_and_binding: Some(GroupAndBinding {
-                    group: 0,
-                    binding,
-                  }),
-                },
-                var_type: concrete_scope_type,
-                value: None,
-                source_trace: exp.source_trace.clone(),
-                external: false,
-              });
             }
           }
           Ok::<bool, Never>(true)
@@ -3425,6 +3466,28 @@ impl Program {
     compiled_string += "\n";
     let default_structs = built_in_structs_for_target(target);
     for s in self.typedefs.structs.iter() {
+      // Structs with runtime-sized or String fields are CPU-only values
+      // (e.g. a dispatched closure's scope struct with runtime-sized
+      // captures, which lives on in the typedefs even though its captures
+      // travel as per-field bindings) — skip their emission entirely.
+      // Validation guarantees GPU code can't reference one: such types
+      // are banned both as binding types (`RuntimeSizedFieldInBinding`)
+      // and as values in GPU code (`RuntimeSizedFieldOnGpu` /
+      // `CPUExclusiveType`), so nothing in the emitted output can miss
+      // them.
+      let cpu_only = s.fields.iter().any(|f| {
+        let Ok(t) = f.field_type.clone().concretize(
+          &vec![],
+          &self.typedefs,
+          f.source_trace.clone(),
+        ) else {
+          return false;
+        };
+        t.involves_string() || t.involves_runtime_sized_array()
+      });
+      if cpu_only {
+        continue;
+      }
       if !s.opaque
         && !default_structs.contains(&s)
         && let Some(compiled_struct) = s.clone().compile_if_non_generic(
@@ -4287,20 +4350,35 @@ impl Program {
   /// bindings at all.
   pub fn validate_gpu_runtime_sized_use(&mut self, errors: &mut ErrorLog) {
     use crate::compiler::expression::ExpKind;
-    // nested runtime-sized arrays have no flat host-shareable layout
+    // A binding may involve a runtime-sized array only by *being* one:
+    // nested runtime-sized arrays have no flat host-shareable layout, and
+    // runtime-sized struct/enum fields are banned outright (stricter than
+    // WGSL, which permits one trailing runtime-sized member — binding the
+    // array separately expresses the same thing, and the blanket rule
+    // lets WGSL emission drop every runtime-sized-field struct
+    // declaration, like the scope structs of dispatched closures with
+    // runtime-sized captures).
     for v in self.top_level_vars.iter() {
       if let TopLevelVariableKind::Var {
         group_and_binding: Some(_),
         ..
       } = v.kind
-        && let Type::Array(Some(ConcreteArraySize::Unsized), inner) =
-          &v.var_type
-        && inner.kind.unwrap_known().involves_runtime_sized_array()
       {
-        errors.log(CompileError {
-          kind: NestedRuntimeSizedArrayBinding,
-          source_trace: v.source_trace.clone(),
-        });
+        if let Type::Array(Some(ConcreteArraySize::Unsized), inner) =
+          &v.var_type
+        {
+          if inner.kind.unwrap_known().involves_runtime_sized_array() {
+            errors.log(CompileError {
+              kind: NestedRuntimeSizedArrayBinding,
+              source_trace: v.source_trace.clone(),
+            });
+          }
+        } else if v.var_type.involves_runtime_sized_array() {
+          errors.log(CompileError {
+            kind: RuntimeSizedFieldInBinding,
+            source_trace: v.source_trace.clone(),
+          });
+        }
       }
     }
     // reachability from GPU entry roots, callees-first through composite
@@ -4371,14 +4449,11 @@ impl Program {
             }
             _ => {}
           }
-          // struct/enum *values* with runtime-sized contents (reads of
-          // storage-bound globals are exempt)
-          if !exp.data.is_globally_bound
-            && matches!(
-              exp.data.unwrap_known(),
-              Type::Struct(_) | Type::Enum(_)
-            )
-            && exp.data.unwrap_known().involves_runtime_sized_array()
+          // struct/enum *values* with runtime-sized contents
+          if matches!(
+            exp.data.unwrap_known(),
+            Type::Struct(_) | Type::Enum(_)
+          ) && exp.data.unwrap_known().involves_runtime_sized_array()
           {
             errors.log(CompileError {
               kind: RuntimeSizedFieldOnGpu,

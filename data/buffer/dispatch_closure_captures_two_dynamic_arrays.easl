@@ -1,0 +1,18 @@
+; A GPU-dispatched closure captures two local runtime-sized arrays plus a
+; flat value. Each capture travels as its own storage binding, so any
+; number of runtime-sized captures works — a single scope-struct binding
+; could only ever legally hold one, in last position.
+@[storage-write 0 0]
+(var out: [1: f32])
+
+@cpu
+(defn main []
+  (let [weights (into-dynamic-array [1. 2. 3.])
+        offsets (into-dynamic-array [10. 20.])
+        scale 2.]
+    (dispatch-compute-shader (fn []
+                                 (= (out 0u)
+                                    (* scale
+                                       (+ (weights 1u) (offsets 0u)))))
+                             (vec3u 1u))
+    (print (out 0u))))

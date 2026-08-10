@@ -333,6 +333,13 @@ pub enum CompileErrorKind {
   )]
   ExternalStringVar,
   #[error(
+    "A GPU binding's type may contain a runtime-sized array only when the \
+     binding itself is one; bind the runtime-sized array as its own \
+     variable instead of embedding it in a struct, enum, or fixed-size \
+     array"
+  )]
+  RuntimeSizedFieldInBinding,
+  #[error(
     "Functions reachable from GPU entry points may not return \
      runtime-sized arrays"
   )]

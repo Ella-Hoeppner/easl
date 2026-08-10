@@ -1846,40 +1846,55 @@ impl BytecodeCompilationState {
       .iter()
       .filter_map(|n| self.binding_indices.get(n).copied())
       .collect();
-    // Scope construction: write the captured values into the closure's
-    // implicit scope binding (created by extract_dispatched_closure_scopes)
-    // so the dispatch's pre-upload ships them to the GPU.
+    // Scope construction: write each captured value into its own implicit
+    // binding (created by extract_dispatched_closure_scopes) so the
+    // dispatch's pre-upload ships them to the GPU. Construction args align
+    // with the scope struct's fields by order.
     if let ExpKind::Application(_, captured) = &arg.kind {
       let scope_struct = ancestor
         .captured_scope
         .as_ref()
         .expect("dispatched closure construction without captured scope");
-      let scope_global_name = format!("{}_data", scope_struct.name.0);
-      let scope_binding = *self
-        .binding_indices
-        .get(&Arc::<str>::from(scope_global_name.as_str()))
-        .expect("dispatched closure scope binding not found");
-      let HostBindingStorage::Slots { position, .. } =
-        self.host_bindings[scope_binding as usize].storage
-      else {
-        panic!("dispatched closure scope binding wasn't slot-backed")
-      };
-      let mut offset = 0u16;
-      for captured_value in captured {
-        let value_pos = captured_value.compile_to_bytecode(false, self).unwrap();
-        let value_size = vm_type_size(&captured_value.data.unwrap_known());
-        if value_size > 0 {
-          self.push_instruction(Instruction {
-            op: Op::Move,
-            arg_positions: [value_pos, value_size, 0],
-            return_position: position + offset,
-          });
+      for (field, captured_value) in
+        scope_struct.fields.iter().zip(captured.iter())
+      {
+        let global_name: Arc<str> =
+          format!("{}_data_{}", scope_struct.name.0, field.name).into();
+        let binding = *self
+          .binding_indices
+          .get(&global_name)
+          .expect("dispatched closure capture binding not found");
+        let value_pos =
+          captured_value.compile_to_bytecode(false, self).unwrap();
+        match self.host_bindings[binding as usize].storage {
+          HostBindingStorage::Slots { position, .. } => {
+            let value_size =
+              vm_type_size(&captured_value.data.unwrap_known());
+            if value_size > 0 {
+              self.push_instruction(Instruction {
+                op: Op::Move,
+                arg_positions: [value_pos, value_size, 0],
+                return_position: position,
+              });
+            }
+          }
+          // A runtime-sized capture: the captured value is a heap id;
+          // copy its payload into the binding's region, exactly like a
+          // whole-array assignment to a dynamic global.
+          HostBindingStorage::DynamicMemory { memory } => {
+            self.push_instruction(Instruction {
+              op: Op::RegionFromHeap,
+              arg_positions: [memory, value_pos, 0],
+              return_position: 0,
+            });
+          }
+          _ => panic!(
+            "dispatched closure capture binding wasn't slot- or \
+             region-backed"
+          ),
         }
-        offset += value_size;
+        self.emit_host_op(HostOp::MarkCpuWritten { binding });
       }
-      self.emit_host_op(HostOp::MarkCpuWritten {
-        binding: scope_binding,
-      });
     }
     (entry_name, read_indices, write_indices)
   }

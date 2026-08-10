@@ -1,0 +1,17 @@
+; A struct containing a runtime-sized array may not be a GPU binding —
+; stricter than WGSL, which would permit a single trailing runtime-sized
+; member. The array must be bound as its own variable.
+(struct Holder
+  count: u32
+  data: [f32])
+
+@[storage-read 0 0]
+(var h: Holder)
+
+@[storage-write 0 1]
+(var out: [1: f32])
+
+@{workgroup-size 1}
+@compute
+(defn run []
+  (= (out 0u) 1.))
