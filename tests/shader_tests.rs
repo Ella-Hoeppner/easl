@@ -434,10 +434,6 @@ error_test!(
   CompileErrorKind::NeedsGroupAndBinding
 );
 error_test!(
-  attributes_failure_texture_address_only,
-  CompileErrorKind::NeedsGroupAndBinding
-);
-error_test!(
   var_initialization_failure_uniform,
   CompileErrorKind::DisallowedInitializationValue(
     VariableAddressSpace::Uniform
@@ -719,6 +715,7 @@ error_test!(
 );
 success_test!(gpu_window_info);
 success_test!(early_return_unit);
+success_test!(elided_bindings);
 error_test!(
   compound_mat_divide_invalid,
   CompileErrorKind::FunctionArgumentTypesIncompatible {

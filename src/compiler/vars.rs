@@ -97,13 +97,38 @@ pub struct GroupAndBinding {
   pub binding: u8,
 }
 
+/// A GPU-bound var's binding numbers: either explicitly written in the
+/// source (an interface contract the compiler must preserve — e.g. for
+/// coordination with an external host) or elided (`@[uniform]`), in which
+/// case the compiler assigns free numbers at the end of validation
+/// (`Program::assign_elided_bindings`). No `Elided` survives validation,
+/// so post-validation consumers (runtimes, emission, embedders) always
+/// see concrete numbers via `specified()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BindingSpec {
+  Specified(GroupAndBinding),
+  Elided,
+}
+
+impl BindingSpec {
+  pub fn specified(&self) -> GroupAndBinding {
+    match self {
+      BindingSpec::Specified(group_and_binding) => *group_and_binding,
+      BindingSpec::Elided => panic!(
+        "binding numbers read before elided bindings were assigned; \
+         `assign_elided_bindings` must run first"
+      ),
+    }
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TopLevelVariableKind {
   Const,
   Override,
   Var {
     address_space: VariableAddressSpace,
-    group_and_binding: Option<GroupAndBinding>,
+    group_and_binding: Option<BindingSpec>,
   },
 }
 
@@ -158,20 +183,20 @@ impl TopLevelVar {
                         }
                         Ok((group_and_binding, address_space, is_external)) => {
                           external = is_external;
+                          // With an explicit address space, the numbers may
+                          // be elided (`@[uniform]`): the compiler assigns
+                          // free ones at the end of validation.
+                          let binding_spec = group_and_binding
+                            .map(BindingSpec::Specified);
                           if let Some(address_space) = address_space {
+                            let binding_spec = binding_spec.or_else(|| {
+                              address_space
+                                .needs_group_and_binding()
+                                .then_some(BindingSpec::Elided)
+                            });
                             if let Some(required) = t.required_address_space() {
                               if address_space == required {
-                                if address_space.needs_group_and_binding()
-                                  && group_and_binding == None
-                                {
-                                  errors.log(CompileError::new(
-                                    NeedsGroupAndBinding,
-                                    parens_source_trace.clone(),
-                                  ));
-                                  None
-                                } else {
-                                  Some((group_and_binding, address_space))
-                                }
+                                Some((binding_spec, address_space))
                               } else {
                                 errors.log(CompileError::new(
                                   InvalidAddressSpace(required),
@@ -180,32 +205,22 @@ impl TopLevelVar {
                                 None
                               }
                             } else if address_space.needs_group_and_binding() {
-                              if group_and_binding.is_none() {
-                                errors.log(CompileError::new(
-                                  NeedGroupAndBinding(address_space),
-                                  annotation.source_trace.clone(),
-                                ));
-                                None
-                              } else {
-                                Some((group_and_binding, address_space))
-                              }
+                              Some((binding_spec, address_space))
                             } else {
-                              if group_and_binding.is_some() {
+                              if binding_spec.is_some() {
                                 errors.log(CompileError::new(
                                   DisallowedGroupAndBinding(address_space),
                                   annotation.source_trace.clone(),
                                 ));
                                 None
                               } else {
-                                Some((group_and_binding, address_space))
+                                Some((binding_spec, address_space))
                               }
                             }
                           } else {
                             if let Some(required) = t.required_address_space() {
-                              Some((group_and_binding, required))
-                            } else if group_and_binding.is_none()
-                              && is_external
-                            {
+                              Some((binding_spec, required))
+                            } else if binding_spec.is_none() && is_external {
                               // The annotation was just `@external`; the
                               // address space defaults the same way an
                               // unannotated var's would.
@@ -384,9 +399,9 @@ impl TopLevelVar {
           } = &self.kind
           {
             (
-              if let Some(GroupAndBinding { group, binding }) =
-                group_and_binding
-              {
+              if let Some(binding_spec) = group_and_binding {
+                let GroupAndBinding { group, binding } =
+                  binding_spec.specified();
                 format!("@group({group}) @binding({binding}) ")
               } else {
                 String::new()

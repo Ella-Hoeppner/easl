@@ -249,7 +249,11 @@ impl Annotation {
           }
         }
         (array_value, None) => match (i, property_count) {
-          (0, 3) => match VariableAddressSpace::from_str(array_value) {
+          // A one-element array (`@[uniform]`) elides the group/binding
+          // numbers; the compiler assigns free ones at the end of
+          // validation.
+          (0, 3) | (0, 1) => match VariableAddressSpace::from_str(array_value)
+          {
             Some(a) => address_space = Some(a),
             None => {
               return err(

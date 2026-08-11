@@ -1,0 +1,25 @@
+; Group/binding numbers may be elided from binding annotations — the
+; compiler assigns free numbers at the end of validation, filling gaps
+; around any explicitly-numbered bindings. Both the array shorthand
+; (`@[uniform]`) and the longhand (`@{address handle}`) support elision.
+@[uniform]
+(var scale: f32)
+
+@[uniform 0 2]
+(var offset: f32)
+
+@[storage]
+(var weights: [4: f32])
+
+@[storage-write]
+(var results: [4: f32])
+
+@{address handle}
+(var tex: (Texture2D f32))
+
+@{workgroup-size 4}
+@compute
+(defn run [@{builtin global-invocation-id} id: vec3u]
+  (let [i (.x id)]
+    (when (< i 4u)
+      (= (results i) (+ offset (* scale (weights i)))))))

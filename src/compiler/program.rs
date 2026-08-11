@@ -11,7 +11,9 @@ use crate::compiler::builtins::{
   built_in_structs_for_target,
 };
 use crate::compiler::types::ExpTypeInfo;
-use crate::compiler::vars::{GroupAndBinding, VariableAddressSpace};
+use crate::compiler::vars::{
+  BindingSpec, GroupAndBinding, VariableAddressSpace,
+};
 use crate::parse::EaslMultiDocument;
 use crate::thread_sync::participant;
 use crate::vm::bytecode::{BytecodeProgram, Instruction, Op};
@@ -359,7 +361,6 @@ enum CaptureRewrite {
 /// clones are created while iterating the registry, so they're collected
 /// here and installed at the end of the pass.
 struct DispatchScopeLiftState {
-  used_bindings: HashSet<(u8, u8)>,
   created_bindings: HashSet<Arc<str>>,
   new_vars: Vec<TopLevelVar>,
   /// Original captured-closure name → its (memoized) GPU clone.
@@ -1887,10 +1888,6 @@ impl Program {
           // pre-upload carries the values written at its own record
           // site).
           if state.created_bindings.insert(global_name.clone()) {
-            let binding = (0u8..=u8::MAX)
-              .find(|b| !state.used_bindings.contains(&(0, *b)))
-              .expect("no free binding for dispatched closure capture");
-            state.used_bindings.insert((0, binding));
             state.new_vars.push(TopLevelVar {
               name: global_name.clone(),
               kind: TopLevelVariableKind::Var {
@@ -1898,12 +1895,10 @@ impl Program {
                 // relaxed layout rules (uniform would demand 16-byte
                 // member alignment for struct-typed captures), and
                 // runtime-sized array captures are legal (uniform
-                // forbids them).
+                // forbids them). Binding numbers are assigned centrally
+                // at the end of validation.
                 address_space: VariableAddressSpace::StorageRead,
-                group_and_binding: Some(GroupAndBinding {
-                  group: 0,
-                  binding,
-                }),
+                group_and_binding: Some(BindingSpec::Elided),
               },
               var_type: field_type.clone(),
               value: None,
@@ -2028,21 +2023,6 @@ impl Program {
   pub fn extract_gpu_window_info(&mut self) {
     let mut binding_names: HashMap<WindowInfoBindingSource, Arc<str>> =
       HashMap::new();
-    let mut used_bindings: HashSet<(u8, u8)> = self
-      .top_level_vars
-      .iter()
-      .filter_map(|v| {
-        if let TopLevelVariableKind::Var {
-          group_and_binding: Some(gb),
-          ..
-        } = v.kind
-        {
-          Some((gb.group, gb.binding))
-        } else {
-          None
-        }
-      })
-      .collect();
     let mut new_vars: Vec<TopLevelVar> = vec![];
     let not_equal_ancestor = self
       .abstract_functions
@@ -2108,10 +2088,6 @@ impl Program {
               };
               let binding_name: Arc<str> =
                 self.names.write().unwrap().gensym(&base_name);
-              let binding = (0u8..)
-                .find(|binding| !used_bindings.contains(&(0, *binding)))
-                .unwrap();
-              used_bindings.insert((0, binding));
               let var_type = if kind.is_boolean() {
                 Type::U32
               } else {
@@ -2122,10 +2098,9 @@ impl Program {
                 name: binding_name.clone(),
                 kind: TopLevelVariableKind::Var {
                   address_space: VariableAddressSpace::Uniform,
-                  group_and_binding: Some(GroupAndBinding {
-                    group: 0,
-                    binding,
-                  }),
+                  // Binding numbers are assigned centrally at the end of
+                  // validation.
+                  group_and_binding: Some(BindingSpec::Elided),
                 },
                 var_type,
                 value: None,
@@ -2276,32 +2251,8 @@ impl Program {
   /// their captured scope as a function argument — WGSL entry points only
   /// accept builtin-annotated arguments. This pass converts each dispatched
   /// closure's scope argument into an implicit binding: the scope struct
-  /// becomes a top-level read-only storage var named
-  /// `<scope-struct-name>_data`, the entry function's trailing scope
-  /// argument is removed from its
-  /// signatures, and its body reads the global instead. At dispatch time the
-  /// interpreter writes the closure's captured scope value into that global
-  /// (see the `dispatch-compute-shader` handler in interpreter.rs) so the
-  /// ordinary dirty-binding upload machinery ships the captured values to the
-  /// GPU before the dispatch executes.
   pub fn extract_dispatched_closure_scopes(&mut self, errors: &mut ErrorLog) {
-    let used_bindings: HashSet<(u8, u8)> = self
-      .top_level_vars
-      .iter()
-      .filter_map(|v| {
-        if let TopLevelVariableKind::Var {
-          group_and_binding: Some(gb),
-          ..
-        } = v.kind
-        {
-          Some((gb.group, gb.binding))
-        } else {
-          None
-        }
-      })
-      .collect();
     let mut state = DispatchScopeLiftState {
-      used_bindings,
       created_bindings: HashSet::new(),
       new_vars: vec![],
       callee_clones: HashMap::new(),
@@ -5173,12 +5124,61 @@ impl Program {
         remaining_inferred_struct_field_locations;
     }
   }
+  /// Assigns concrete group/binding numbers to every binding whose
+  /// numbers were elided (`@[uniform]` in source, plus every
+  /// compiler-created binding — window-info uniforms, dispatched-closure
+  /// captures). Runs at the very end of validation, after all passes
+  /// that create implicit bindings: vars are visited in declaration
+  /// order and each elided binding takes the lowest free slot, filling
+  /// gaps between explicitly-numbered bindings, in group 0 first and
+  /// spilling to higher groups only if a group's 256 slots are
+  /// exhausted. After this pass no `BindingSpec::Elided` remains
+  /// anywhere.
+  pub fn assign_elided_bindings(&mut self) {
+    let mut used: HashSet<GroupAndBinding> = self
+      .top_level_vars
+      .iter()
+      .filter_map(|v| {
+        if let TopLevelVariableKind::Var {
+          group_and_binding: Some(BindingSpec::Specified(group_and_binding)),
+          ..
+        } = v.kind
+        {
+          Some(group_and_binding)
+        } else {
+          None
+        }
+      })
+      .collect();
+    for var in self.top_level_vars.iter_mut() {
+      if let TopLevelVariableKind::Var {
+        group_and_binding: Some(binding_spec),
+        ..
+      } = &mut var.kind
+        && *binding_spec == BindingSpec::Elided
+      {
+        let assigned = (0u8..=u8::MAX)
+          .flat_map(|group| {
+            (0u8..=u8::MAX).map(move |binding| GroupAndBinding {
+              group,
+              binding,
+            })
+          })
+          .find(|candidate| !used.contains(candidate))
+          .expect("all 65536 group/binding slots exhausted");
+        used.insert(assigned);
+        *binding_spec = BindingSpec::Specified(assigned);
+      }
+    }
+  }
   pub fn catch_bind_group_collisions(&self, errors: &mut ErrorLog) {
+    // Only explicitly-written numbers can collide; elided bindings are
+    // assigned free numbers afterward (`assign_elided_bindings`).
     let mut existing_groups_and_bindings: HashMap<GroupAndBinding, String> =
       HashMap::new();
     for var in self.top_level_vars.iter() {
       if let TopLevelVariableKind::Var {
-        group_and_binding: Some(group_and_binding),
+        group_and_binding: Some(BindingSpec::Specified(group_and_binding)),
         ..
       } = var.kind
       {
@@ -5491,6 +5491,7 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.assign_elided_bindings();
     self.track_emulated_builtins(target);
     self.has_been_validated = true;
     errors
@@ -6050,7 +6051,7 @@ impl Program {
       let binding_info = if cpu_mode
         && let TopLevelVariableKind::Var {
           address_space,
-          group_and_binding: Some(gb),
+          group_and_binding: Some(binding_spec),
         } = v.kind
         && matches!(
           address_space,
@@ -6059,7 +6060,7 @@ impl Program {
             | VariableAddressSpace::StorageReadWrite
             | VariableAddressSpace::Handle
         ) {
-        Some((gb, address_space))
+        Some((binding_spec.specified(), address_space))
       } else {
         None
       };

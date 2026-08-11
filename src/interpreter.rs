@@ -3005,7 +3005,7 @@ pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
     .filter_map(|var| {
       if let TopLevelVariableKind::Var {
         address_space,
-        group_and_binding: Some(gb),
+        group_and_binding: Some(binding_spec),
       } = var.kind
       {
         matches!(
@@ -3015,7 +3015,14 @@ pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
             | VariableAddressSpace::StorageReadWrite
             | VariableAddressSpace::Handle
         )
-        .then(|| (gb, var.name.clone(), var.var_type.clone(), address_space))
+        .then(|| {
+          (
+            binding_spec.specified(),
+            var.name.clone(),
+            var.var_type.clone(),
+            address_space,
+          )
+        })
       } else {
         None
       }

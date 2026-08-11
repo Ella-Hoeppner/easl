@@ -3,7 +3,9 @@ use crate::compiler::{
   expression::{ExpKind, Number},
   program::Program,
   types::{ConcreteArraySize, Type},
-  vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
+  vars::{
+    BindingSpec, GroupAndBinding, TopLevelVariableKind, VariableAddressSpace,
+  },
 };
 
 pub enum TypeInfo {
@@ -65,7 +67,14 @@ impl From<&Program> for ProgramInfo {
             group_and_binding,
           } = &var.kind
           {
-            group_and_binding.clone()
+            // Info extraction can run on unvalidated programs, where
+            // elided bindings don't have numbers yet.
+            group_and_binding.and_then(|spec| match spec {
+              BindingSpec::Specified(group_and_binding) => {
+                Some(group_and_binding)
+              }
+              BindingSpec::Elided => None,
+            })
           } else {
             None
           },
