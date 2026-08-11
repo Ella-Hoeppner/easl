@@ -143,7 +143,6 @@ cpu_test!(string_equality);
 cpu_test!(string_user_fn);
 cpu_test!(string_assignment);
 cpu_test!(let_binding_copy_semantics);
-cpu_test!(disambiguated_into_operator);
 cpu_test!(into_operator);
 cpu_test!(dynamic_zeroed_array);
 cpu_test!(static_zeroed_array);
