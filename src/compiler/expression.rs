@@ -1518,6 +1518,28 @@ impl TypedExp {
             O::ExpressionComment => unreachable!(
               "expression comment encountered, this should have been stripped"
             ),
+            O::Into => {
+              // `~a` is sugar for `(into a)`: rebuild the application
+              // form and parse that, so `into` behaves like any
+              // user-definable (and overloadable) function.
+              let position = encloser_or_operator_source_trace
+                .primary_position
+                .clone()
+                .expect("operator node without a source position");
+              Self::try_from_easl_tree(
+                EaslTree::Inner(
+                  (position.clone(), Encloser(E::Parens)),
+                  vec![
+                    EaslTree::Leaf(position, "into".to_string()),
+                    children_iter.next().unwrap(),
+                  ],
+                ),
+                typedefs,
+                skolems,
+                ctx,
+                names,
+              )?
+            }
           },
         }
       }

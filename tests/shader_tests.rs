@@ -596,7 +596,10 @@ error_test!(reserved_name_fn_return, CompileErrorKind::InvalidName);
 error_test!(reserved_name_fn_break, CompileErrorKind::InvalidName);
 error_test!(reserved_name_fn_continue, CompileErrorKind::InvalidName);
 error_test!(reserved_name_let_defn, CompileErrorKind::InvalidName);
-error_test!(invalid_name_tilde, CompileErrorKind::InvalidName);
+error_test!(
+  invalid_name_tilde,
+  CompileErrorKind::FunctionSignatureNotSquareBrackets
+);
 error_test!(invalid_name_dot, CompileErrorKind::InvalidName);
 error_test!(invalid_name_leading_number, CompileErrorKind::InvalidName);
 error_test!(

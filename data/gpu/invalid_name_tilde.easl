@@ -1,2 +1,5 @@
+; `~` is the unary `into` operator, so it can never appear inside a
+; name: the parser splits `invalid~name` into `invalid` followed by
+; `~name`, leaving a structurally invalid defn.
 (defn invalid~name [x: f32]: f32
   (* x 2.))

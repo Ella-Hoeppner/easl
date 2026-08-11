@@ -73,6 +73,10 @@ pub enum Operator {
   Annotation,
   TypeAscription,
   ExpressionComment,
+  /// Unary prefix `~`, sugar for an application of `into`: `~a` desugars
+  /// to `(into a)` during expression parsing (the `O::Into` arm of
+  /// `TypedExp::try_from_easl_tree`).
+  Into,
 }
 impl SSEOperator for Operator {
   fn left_args(&self) -> usize {
@@ -80,6 +84,7 @@ impl SSEOperator for Operator {
       Operator::Annotation => 0,
       Operator::TypeAscription => 1,
       Operator::ExpressionComment => 0,
+      Operator::Into => 0,
     }
   }
 
@@ -88,6 +93,7 @@ impl SSEOperator for Operator {
       Operator::Annotation => 2,
       Operator::TypeAscription => 1,
       Operator::ExpressionComment => 1,
+      Operator::Into => 1,
     }
   }
 
@@ -96,6 +102,7 @@ impl SSEOperator for Operator {
       Operator::Annotation => "@",
       Operator::TypeAscription => ":",
       Operator::ExpressionComment => "#_",
+      Operator::Into => "~",
     }
   }
 }
@@ -115,6 +122,7 @@ static DEFAULT_CTX: LazyLock<SSEContext<Encloser, Operator>> =
         Operator::Annotation,
         Operator::TypeAscription,
         Operator::ExpressionComment,
+        Operator::Into,
       ],
       None,
       standard_whitespace_chars(),

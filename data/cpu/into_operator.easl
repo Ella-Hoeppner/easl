@@ -1,0 +1,25 @@
+; `~x` is sugar for `(into x)`: `into` is an ordinary user-defined
+; function, overloadable per type, and the operator resolves through
+; the normal overload machinery.
+(struct Celsius
+  deg: f32)
+
+(struct Fahrenheit
+  deg: f32)
+
+(defn into [x: u32]: f32
+  (f32 x))
+
+(defn into [c: Celsius]: Fahrenheit
+  (Fahrenheit (+ 32. (* 2. c.deg))))
+
+@cpu
+(defn main []
+  (print ~5u)
+  (let [x 10u]
+    (print ~x))
+  (print (+ ~1u ~2u))
+  (let [c (Celsius 100.)
+        f ~c]
+    (print f.deg)))
+

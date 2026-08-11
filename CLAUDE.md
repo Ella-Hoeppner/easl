@@ -101,6 +101,7 @@ The main pipeline lives in `Program::validate_raw_program` (program.rs). The maj
 - Integer literals like `0` or `5` are ambiguous — the type checker can't tell if they're `i32` or `u32`. Use `0i` / `5i` for signed or `0u` / `5u` for unsigned to help type inference.
 - `(if cond then else)` requires both branches and they must have compatible types. For side-effect-only conditionals (e.g. `(when cond (break))`), use the `when` macro instead, which handles the unit-typed else branch automatically.
 - Float literals should include a decimal point: `5.` not `5`. An `f` suffix is also valid: `5f`.
+- `~x` is sugar for `(into x)` (desugared in the `O::Into` arm of `TypedExp::try_from_easl_tree`); `into` is an ordinary user-definable, overloadable function with no builtin definition. Pinned by the `into_operator` cpu test.
 - When printing values: `u32` prints with its suffix (`1u`), `i32` prints bare (`1`), `f32` prints with a trailing decimal point when whole (`1.`), bools print as `true`/`false`. This matters for `.txt` expected-output files.
 
 ### Entry point annotations
