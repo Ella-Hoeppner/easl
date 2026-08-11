@@ -7,7 +7,7 @@
 ; may appear anywhere. (This is exactly easl-studio's startup sequence:
 ; seed the sliders, run, start-audio — regression-pinned after it shipped
 ; silent-until-slider-drag.)
-@external
+@external @local
 (var gain: f32
      0.)
 

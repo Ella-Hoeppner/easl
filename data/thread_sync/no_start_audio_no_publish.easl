@@ -2,6 +2,7 @@
 ; exists: `gain` is statically thread-shared (main writes it, the audio
 ; entry reads it), but since start-audio is never called the table stays
 ; inactive and no publish may ever happen.
+@local
 (var gain: f32
      0.25)
 

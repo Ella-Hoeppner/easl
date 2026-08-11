@@ -1,7 +1,7 @@
 (def arr-length: u32
      10)
 
-@[uniform 0 0]
+@uniform
 (var my-arr: [arr-length: vec4f])
 
 (defn f [arr: [arr-length: vec4f]]: f32

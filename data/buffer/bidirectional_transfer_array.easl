@@ -1,6 +1,4 @@
-@{address storage-write
-  group 0
-  binding 0}
+@storage-write
 (var arr: [vec2u])
 
 @compute

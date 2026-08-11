@@ -2,7 +2,7 @@
 ; captures a closure, which captures another closure, which captures a
 ; local runtime-sized array. Every level's captures become bindings and
 ; every nested closure gets a GPU clone.
-@[storage-write 0 0]
+@storage-write
 (var out: [1: f32])
 
 @cpu

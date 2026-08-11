@@ -4,7 +4,7 @@
 ; Run by the hand-written `gpu_window_info_spoofed` test in
 ; buffer_tests.rs, which spoofs the IO manager's window-info values.
 
-@[storage-write 1 0]
+@storage-write
 (var out: [13: f32])
 
 @compute

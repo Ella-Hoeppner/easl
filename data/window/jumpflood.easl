@@ -7,29 +7,19 @@
 (def grid-size: u32
      1000)
 
-@{address uniform
-  group 0
-  binding 0}
+@uniform
 (var screenspace-scale: vec2f)
 
-@{address storage-write
-  group 0
-  binding 1}
+@storage-write
 (var seeds: [vec4f])
 
-@{address storage-write
-  group 0
-  binding 2}
+@storage-write
 (var grid: [vec4u])
 
-@{address storage-write
-  group 0
-  binding 3}
+@storage-write
 (var jumpflood-distance: u32)
 
-@{address storage
-  group 0
-  binding 4}
+@storage
 (var frame-index: u32)
 
 (defn rand [seed: f32]: f32

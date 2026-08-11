@@ -4,7 +4,7 @@
 ; main-publish at the frame boundary → audio-adopt at the next batch. The
 ; readback is the honest cost of the semantics and must happen exactly
 ; once per writing frame — only while the audio thread is live.
-@[storage-write 0 0]
+@storage-write
 (var height: [1: f32])
 
 @audio

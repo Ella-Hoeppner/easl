@@ -7,42 +7,28 @@
 (def char-glyph-cols: u32
      16)
 
-@{group 0
-  binding 0
-  address uniform}
+@uniform
 (var dimensions: vec2f)
 
-@{group 0
-  binding 1
-  address uniform}
+@uniform
 (var mouse: vec2f)
 
-@{group 0
-  binding 2
-  address uniform}
+@uniform
 (var background-color: vec3f)
 
-@{group 0
-  binding 3
-  address uniform}
+@uniform
 (var time: f32)
 
-@{group 0
-  binding 4
-  address uniform}
+@uniform
 (var char-offsets: [256: vec4f])
 
-@{group 0
-  binding 5}
+@handle
 (var char-tex: (Texture2D f32))
 
-@{group 0
-  binding 6}
+@handle
 (var char-sampler: Sampler)
 
-@{group 1
-  binding 0
-  address uniform}
+@uniform
 (var view: vec3f)
 
 (defn square [x: f32]: f32

@@ -1,9 +1,7 @@
 (def array-size: u32
      3)
 
-@{address storage-write
-  group 0
-  binding 0}
+@storage-write
 (var arr: [vec4u])
 
 @compute

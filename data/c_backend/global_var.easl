@@ -1,8 +1,10 @@
+@local
 (var x: f32)
 
 (defn increment-x []
   (+= x 1.))
 
+@local
 (var y: f32
      1.)
 

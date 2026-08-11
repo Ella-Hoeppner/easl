@@ -1,11 +1,7 @@
-@{group 0
-  binding 0
-  address uniform}
+@uniform
 (var dimensions: vec2f)
 
-@{group 0
-  binding 1
-  address uniform}
+@uniform
 (var time: f32)
 
 (defn uni->bi [x: vec2f]: vec2f

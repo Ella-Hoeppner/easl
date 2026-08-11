@@ -1,6 +1,4 @@
-@{address uniform
-  group 0
-  binding 0}
+@uniform
 (var x: u32)
 
 (defn increment [@var @ref u: u32]

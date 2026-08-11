@@ -7,7 +7,7 @@
 ; crashing error reporting; the
 ; `thread_macro_error_describes_with_source_position` test pins this.
 
-@[uniform 0 0]
+@uniform
 (var dims: vec2f)
 
 (defn f []: bool

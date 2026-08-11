@@ -2,6 +2,7 @@
 ; local copies it, and passing one to a @var argument gives the callee its
 ; own mutable copy — mutations on either side are never visible through
 ; the other.
+@local
 (var g: [f32])
 
 (defn zap [@var a: [f32]]: f32

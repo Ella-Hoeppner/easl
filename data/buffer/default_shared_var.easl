@@ -1,0 +1,15 @@
+; An unannotated global defaults to the GPU-shared `storage-write`
+; address space with elided binding numbers: the CPU and GPU read and
+; write one variable with no annotation at all.
+(var acc: vec4f)
+
+@{workgroup-size 1}
+@compute
+(defn run []
+  (= acc (+ acc (vec4f 1. 2. 3. 4.))))
+
+@cpu
+(defn main []
+  (= acc (vec4f 10. 20. 30. 40.))
+  (dispatch-compute-shader run (vec3u 1u))
+  (print acc))

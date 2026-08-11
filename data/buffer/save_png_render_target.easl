@@ -4,17 +4,13 @@
 ; second texture and read a texel back through the GPU. Green pins the
 ; channel order end-to-end.
 
-@{group 0
-  binding 0}
+@handle
 (var tex: (Texture2D f32))
 
-@{group 0
-  binding 1}
+@handle
 (var tex2: (Texture2D f32))
 
-@{address storage-write
-  group 0
-  binding 2}
+@storage-write
 (var value: vec4f)
 
 (defn fullscreen-triangle []: vec4f

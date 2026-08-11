@@ -4,7 +4,7 @@
 (defn cis [angle: f32]: vec2f
   (vec2f (cos angle) (sin angle)))
 
-@[storage-write 0 0]
+@storage-write
 (var values: [u32])
 
 (defn compute-foreach [count: u32

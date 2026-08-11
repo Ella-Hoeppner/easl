@@ -3,7 +3,7 @@
 ; the newest value lives only on the GPU. The bootstrap publish reads it
 ; back first — the audio replica's first adopt must see the GPU's value,
 ; not the stale CPU zeros.
-@[storage-write 0 0]
+@storage-write
 (var height: [1: f32])
 
 @audio

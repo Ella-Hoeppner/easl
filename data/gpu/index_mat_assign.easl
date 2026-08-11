@@ -1,4 +1,4 @@
-@[storage-write 0 0]
+@storage-write
 (var result: vec2f)
 
 @{workgroup-size 1}

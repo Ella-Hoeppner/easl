@@ -4,7 +4,7 @@
 ; publishes it exactly once, at the entry bootstrap (the initializer, for
 ; the embedder's benefit); the start-audio bootstrap leaves it alone,
 ; since a snapshot already exists for the new audio replica to adopt.
-@external
+@external @local
 (var gain: f32 0.1)
 
 @audio

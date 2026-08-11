@@ -1,16 +1,10 @@
-@{address uniform
-  group 0
-  binding 0}
+@uniform
 (var red-phase: f32)
 
-@{address uniform
-  group 0
-  binding 1}
+@uniform
 (var green-phase: f32)
 
-@{address uniform
-  group 0
-  binding 2}
+@uniform
 (var blue-phase: f32)
 
 @vertex

@@ -1,16 +1,13 @@
-@{address private}
+@local
 (var private-float: f32 0.)
 
-@{address workgroup}
+@workgroup
 (var workgroup-float: f32)
 
-@{address uniform
-  group 0
-  binding 0}
+@uniform
 (var uniform-float: f32)
 
-@{group 0
-  binding 1}
+@handle
 (var my-tex: (Texture2D f32))
 
 (defn increment [@var @ref x: f32]

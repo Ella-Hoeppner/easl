@@ -4,6 +4,7 @@
 ; publish is simply skipped (frame 1 publishes over frame 0's snapshot
 ; before the audio thread ever runs — the audio side only ever sees the
 ; frame-1 value).
+@local
 (var x: f32
      0.)
 

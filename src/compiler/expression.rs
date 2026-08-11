@@ -570,7 +570,12 @@ pub fn compile_typed_name(
         match ownership {
           Ownership::Owned => type_name,
           Ownership::Pointer(address_space) => {
-            format!("ptr<{}, {type_name}>", address_space.name())
+            format!(
+              "ptr<{}, {type_name}>",
+              address_space.compile().expect(
+                "pointer address space has no WGSL representation"
+              )
+            )
           }
           Ownership::Reference | Ownership::MutableReference => {
             panic!(

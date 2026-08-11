@@ -3,7 +3,7 @@
 ; closure's captures are lifted to their own bindings and the GPU calls a
 ; specialized clone of it, while the original stays callable from CPU
 ; code — pinned by the direct call before the dispatch.
-@[storage-write 0 0]
+@storage-write
 (var out: [1: f32])
 
 @cpu

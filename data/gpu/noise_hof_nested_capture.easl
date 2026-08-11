@@ -3,6 +3,7 @@
                p: f32]: f32
   (* bottom (pow (/ top bottom) p)))
 
+@local
 (var rand-state: f32
      0.)
 
@@ -56,6 +57,7 @@
 (defn bi->uni [x: vec4f]: vec4f
   (-> x (+ 1.) (* 0.5)))
 
+@local
 (var rand-seed-offset: f32)
 
 (defn noise [n: u32

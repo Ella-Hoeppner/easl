@@ -1,11 +1,7 @@
-@{address storage
-  group 0
-  binding 0}
+@storage
 (var color: [vec4f])
 
-@{address uniform
-  group 0
-  binding 1}
+@uniform
 (var frame-index: u32)
 
 @vertex

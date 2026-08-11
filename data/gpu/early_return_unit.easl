@@ -1,6 +1,6 @@
 ; Early return from a unit-typed function via `(return ())`.
 
-@[storage-write 0 0]
+@storage-write
 (var out: [4: f32])
 
 (defn write-unless-negative [x: f32]

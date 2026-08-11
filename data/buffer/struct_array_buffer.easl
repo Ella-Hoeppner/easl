@@ -2,11 +2,10 @@
   points: [100: vec2f]
   current-segment-count: u32)
 
-@{address storage-write
-  group 0
-  binding 0}
+@storage-write
 (var paths: [Path])
 
+@local
 (var frame-index: u32)
 
 @vertex

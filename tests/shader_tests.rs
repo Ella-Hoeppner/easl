@@ -426,12 +426,8 @@ error_test!(
   CompileErrorKind::NeedAddressAnnotation
 );
 error_test!(
-  attributes_failure_private_binding,
-  CompileErrorKind::DisallowedGroupAndBinding(VariableAddressSpace::Private)
-);
-error_test!(
-  attributes_failure_texture_no_binding,
-  CompileErrorKind::NeedsGroupAndBinding
+  attributes_failure_local_binding,
+  CompileErrorKind::DisallowedGroupAndBinding(VariableAddressSpace::Local)
 );
 error_test!(
   var_initialization_failure_uniform,
@@ -446,6 +442,16 @@ error_test!(
 error_test!(
   gpu_dyn_struct_binding_failure,
   CompileErrorKind::RuntimeSizedFieldInBinding
+);
+error_test!(
+  default_var_initializer_failure,
+  CompileErrorKind::DisallowedInitializationValue(
+    VariableAddressSpace::StorageReadWrite
+  )
+);
+error_test!(
+  unshareable_bool_var_failure,
+  CompileErrorKind::UnshareableBindingType("bool".to_string())
 );
 error_test!(external_string_var, CompileErrorKind::ExternalStringVar);
 error_test!(

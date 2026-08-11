@@ -3,7 +3,7 @@
 ; the GPU writes it via a main-dispatched shader), but start-audio is
 ; never called, so the frame-boundary publish must NOT read the GPU-dirty
 ; buffer back — no readback, no publish, ever.
-@[storage-write 0 0]
+@storage-write
 (var height: [1: f32])
 
 @audio

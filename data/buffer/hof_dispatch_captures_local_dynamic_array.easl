@@ -2,7 +2,7 @@
 ; that captures a *local* runtime-sized array. The wrapper's dispatched
 ; closure captures the lambda (as its scope), so the array reaches the
 ; GPU through a nested capture.
-@[storage-write 0 0]
+@storage-write
 (var out: [f32])
 
 (defn run-compute [count: u32

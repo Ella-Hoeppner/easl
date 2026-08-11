@@ -4,7 +4,7 @@
 ; stale), uploads before the dispatch, the GPU bumps the adopted value,
 ; and the frame-end readback publishes the result back to audio. Each
 ; boundary hands the newest value onward; nothing ping-pongs stale state.
-@[storage-write 0 0]
+@storage-write
 (var v: [1: f32])
 
 @audio

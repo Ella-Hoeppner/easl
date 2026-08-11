@@ -3,7 +3,7 @@
 (struct Holder
   data: [f32])
 
-@[storage-write 0 0]
+@storage-write
 (var out: [1: f32])
 
 @{workgroup-size 1}

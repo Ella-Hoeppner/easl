@@ -1,0 +1,8 @@
+; Bools aren't host-shareable in WGSL, so a bool-typed global can't live
+; in the (default) GPU-shared address space — it must be `@local`.
+(var flag: bool)
+
+@{workgroup-size 1}
+@compute
+(defn run []
+  (= flag true))

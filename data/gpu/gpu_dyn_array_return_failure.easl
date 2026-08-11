@@ -3,7 +3,7 @@
 (defn build []: [f32]
   (into-dynamic-array [1. 2.]))
 
-@[storage-write 0 0]
+@storage-write
 (var out: [1: f32])
 
 @{workgroup-size 1}

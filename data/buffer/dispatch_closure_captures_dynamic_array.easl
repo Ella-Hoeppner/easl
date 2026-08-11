@@ -2,7 +2,7 @@
 ; GPU reads it. Each capture travels to the GPU as its own storage
 ; binding (see `extract_dispatched_closure_scopes`), so a runtime-sized
 ; capture is just an ordinary storage-bound array.
-@[storage-write 0 0]
+@storage-write
 (var out: [1: f32])
 
 @cpu

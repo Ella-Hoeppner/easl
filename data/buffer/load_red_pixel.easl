@@ -1,10 +1,7 @@
-@{group 0
-  binding 0}
+@handle
 (var tex: (Texture2D f32))
 
-@{address storage-write
-  group 0
-  binding 1}
+@storage-write
 (var value: vec4f)
 
 @cpu

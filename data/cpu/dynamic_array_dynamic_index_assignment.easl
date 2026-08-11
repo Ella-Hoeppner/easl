@@ -2,6 +2,7 @@
 ; array. Dynamic globals live host-side in the VM CPU runtime, accessed
 ; through DynLoad/DynStore host ops — a compound assignment needs the
 ; load + op + store decomposition.
+@local
 (var arr: [f32])
 
 @cpu

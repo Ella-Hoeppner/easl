@@ -2,7 +2,7 @@
 ; flat value. Each capture travels as its own storage binding, so any
 ; number of runtime-sized captures works — a single scope-struct binding
 ; could only ever legally hold one, in last position.
-@[storage-write 0 0]
+@storage-write
 (var out: [1: f32])
 
 @cpu

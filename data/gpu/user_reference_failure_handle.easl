@@ -1,5 +1,4 @@
-@{group 0
-  binding 1}
+@handle
 (var my-tex: (Texture2D f32))
 
 (defn (print-ref T) [@ref x: T]

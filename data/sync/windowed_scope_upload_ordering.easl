@@ -3,10 +3,10 @@
 ; execute with its own values — the frame render path may not collapse
 ; per-dispatch uploads of the same binding into one.
 
-@[storage-write 0 0]
+@storage-write
 (var out: [f32])
 
-@[uniform 0 1]
+@uniform
 (var frame: u32)
 
 (defn run-compute [count: u32

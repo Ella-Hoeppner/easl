@@ -4,10 +4,10 @@
 ; audio-publish at batch end → main-adopt at frame start (which marks the
 ; GPU copy stale) → upload before the frame's dispatch → GPU reads the
 ; adopted value.
-@[uniform 0 0]
+@uniform
 (var level: f32)
 
-@[storage-write 0 1]
+@storage-write
 (var out: [1: f32])
 
 @audio

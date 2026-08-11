@@ -2,6 +2,7 @@
 ; frame ran, so its writes are real. Main bumps `gain` and closes the
 ; window on frame 1; the publish of the final value must appear before
 ; the loop stops (the remaining scheduled steps never run).
+@local
 (var gain: f32
      0.25)
 

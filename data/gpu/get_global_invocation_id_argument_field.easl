@@ -1,6 +1,4 @@
-@{address storage-write
-  group 0
-  binding 1}
+@storage-write
 (var arr: [vec4f])
 
 (struct ComputeInput

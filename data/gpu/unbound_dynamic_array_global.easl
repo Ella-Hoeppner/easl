@@ -3,6 +3,7 @@
 ; unsized array outside a storage binding, so shader output must simply
 ; omit it — emitting it produces a module the GPU rejects at runtime.
 
+@local
 (var samples: [f32])
 
 @fragment

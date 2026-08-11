@@ -1,4 +1,2 @@
-@{group 0
-  binding 0
-  address uniform}
+@uniform
 (var a: f32)

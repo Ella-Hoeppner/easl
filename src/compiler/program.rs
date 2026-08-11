@@ -2584,7 +2584,7 @@ impl Program {
       self.top_level_vars.push(TopLevelVar {
         name: attribute.compiled_name().into(),
         kind: TopLevelVariableKind::Var {
-          address_space: VariableAddressSpace::Private,
+          address_space: VariableAddressSpace::Local,
           group_and_binding: None,
         },
         var_type: attribute.value_type(),

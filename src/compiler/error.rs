@@ -305,21 +305,24 @@ pub enum CompileErrorKind {
   NeedAddressAnnotation,
   #[error("Invalid address space, this type is only compatible with `{0}`")]
   InvalidAddressSpace(VariableAddressSpace),
-  #[error("`group` or `binding` annotations are required address space `{0}`")]
-  NeedGroupAndBinding(VariableAddressSpace),
   #[error("Can't assign `group` or `binding` in address space `{0}`")]
   DisallowedGroupAndBinding(VariableAddressSpace),
-  #[error(
-    "Variable needs `group` and `binding` annotations, e.g. \
-    `@{{group 0 binding 0}}`"
-  )]
-  NeedsGroupAndBinding,
   #[error("Variables {0} and {1} have the same binding and group numbers")]
   BindGroupCollision(String, String),
-  #[error("Variables in `{0}` may not be given an initial value")]
+  #[error(
+    "Variables in `{0}` may not be given an initial value. You can annotate \
+     (unannotated variables default to `@storage-write`, annotate as `@local` \
+     if it doesn't need to be shared between contexts)"
+  )]
   DisallowedInitializationValue(VariableAddressSpace),
   #[error("Unsized arrays are not allowed in the `uniform` address space")]
   UnsizedArrayInUniform,
+  #[error(
+    "This variable's type contains a `{0}`, which can't be shared with \
+     the GPU. (unannotated variables default to `@storage-write`, annotate as \
+     `@local` if it doesn't need to be shared between contexts)"
+  )]
+  UnshareableBindingType(String),
   #[error(
     "Texture variables may not be marked `@external`: textures have no \
      word-level serialization, so they can't be shared with an external \
@@ -358,9 +361,7 @@ pub enum CompileErrorKind {
      GPU code"
   )]
   RuntimeSizedFieldOnGpu,
-  #[error(
-    "Nested runtime-sized arrays may not be bound to GPU buffers"
-  )]
+  #[error("Nested runtime-sized arrays may not be bound to GPU buffers")]
   NestedRuntimeSizedArrayBinding,
   #[error("The name `{0}` is used for more than one top-level variable")]
   VariableNameCollision(String),
@@ -649,9 +650,6 @@ impl PartialEq for CompileErrorKind {
         Self::FragmentExclusiveFunctionOutsideFragment(r0),
       ) => l0 == r0,
       (Self::InvalidAddressSpace(l0), Self::InvalidAddressSpace(r0)) => {
-        l0 == r0
-      }
-      (Self::NeedGroupAndBinding(l0), Self::NeedGroupAndBinding(r0)) => {
         l0 == r0
       }
       (

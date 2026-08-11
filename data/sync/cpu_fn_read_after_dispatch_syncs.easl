@@ -1,7 +1,7 @@
 (defn get-elem [i: u32]: f32
   (data i))
 
-@[storage-write 0 0]
+@storage-write
 (var data: [f32])
 
 @cpu

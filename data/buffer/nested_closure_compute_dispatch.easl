@@ -1,4 +1,4 @@
-@[storage-write 0 0]
+@storage-write
 (var values: [f32])
 
 (defn run-compute [count: u32

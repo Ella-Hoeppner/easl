@@ -2,6 +2,7 @@
 ; counts every sample it produces into `count`, which main prints each
 ; frame. The batch's writes are published once at the batch boundary
 ; (not once per sample) and adopted at the next frame boundary.
+@local
 (var count: u32
      0u)
 

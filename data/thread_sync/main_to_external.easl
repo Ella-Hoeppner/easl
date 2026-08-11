@@ -3,7 +3,7 @@
 ; initializer (the embedder never seeded this var), and each frame's write
 ; is published at the frame boundary for the embedder's next read to
 ; adopt.
-@external
+@external @local
 (var level: f32 0.)
 
 @cpu

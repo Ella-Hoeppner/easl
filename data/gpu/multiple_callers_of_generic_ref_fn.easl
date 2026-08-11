@@ -4,6 +4,7 @@
 (defn cis [x: f32]: vec2f
   (vec2f (cos x) (sin x)))
 
+@local
 (var rand-state: f32
      0.)
 
@@ -68,6 +69,7 @@
 (defn bi->uni [x: f32]: f32
   (-> x (+ 1.) (* 0.5)))
 
+@local
 (var filter: f32)
 
 (defn osc [x: f32]: f32
@@ -116,8 +118,10 @@
                                 t
                                 (state (- i 1)))))))))))
 
+@local
 (var main-fm-state: [2: f32])
 
+@local
 (var drum-fm-state: [3: f32])
 
 (defn audio [t: f32]: f32
@@ -271,6 +275,7 @@
                  (slider 0.2256808)))
         (slider 0.01325729))))
 
+@local
 (var main-synth-fm-state: [3: f32])
 
 (defn audio-3 [t: f32]: f32

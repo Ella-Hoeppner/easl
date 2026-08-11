@@ -1,6 +1,7 @@
 ; Nested runtime-sized arrays work as globals: the region owns child
 ; cells, loop element stores persist independently, and both element
 ; reads and whole-global prints decode correctly.
+@local
 (var rows: [[f32]])
 
 @cpu

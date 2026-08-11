@@ -1,10 +1,10 @@
-@[storage-write 0 0]
+@storage-write
 (var arr: [u32])
 
-@[storage-write 0 1]
+@storage-write
 (var scratch: [u32])
 
-@[uniform 0 2]
+@uniform
 (var bit-pos: u32)
 
 ; Each thread i scatters arr[i] into scratch at its sorted position for the

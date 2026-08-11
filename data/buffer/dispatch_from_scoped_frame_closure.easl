@@ -4,11 +4,10 @@
 ; lambda, and a compute lambda) must still make it into the GPU entry
 ; table even though the dispatch calls live inside that closure.
 
-@{group 0
-  binding 0}
+@handle
 (var tex: (Texture2D f32))
 
-@[storage-write 0 1]
+@storage-write
 (var value: vec4f)
 
 (defn fullscreen-triangle []: vec4f

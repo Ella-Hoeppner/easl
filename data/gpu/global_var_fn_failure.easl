@@ -1,3 +1,4 @@
+@local
 (var v: (Fn [f32] f32))
 
 (defn main []

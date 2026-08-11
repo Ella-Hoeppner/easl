@@ -6,10 +6,10 @@
          (slider 0.659491)
          (slider 0.5)))
 
-@[uniform 0 0]
+@uniform
 (var dimensions: vec2f)
 
-@[storage 0 1]
+@storage
 (var shapes: [Shape])
 
 (struct Shape

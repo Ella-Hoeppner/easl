@@ -1,5 +1,6 @@
 ; A multi-slot (vec2f) shared variable: the snapshot carries all
 ; components, and both runtimes' word layouts must agree.
+@local
 (var offset: vec2f
      (vec2f 0.25 0.5))
 

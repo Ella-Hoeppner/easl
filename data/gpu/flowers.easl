@@ -10,9 +10,7 @@
 (def medium-name: f32
      6.283185307179586)
 
-@{group 0
-  binding 0
-  address uniform}
+@uniform
 (var dimensions: vec2f)
 
 (defn closest-point-between-2d [p: vec2f

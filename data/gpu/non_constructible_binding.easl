@@ -12,10 +12,10 @@
   particles: [bucket-size: u32]
   current-size: (Atomic u32))
 
-@[storage-write 1 0]
+@storage-write
 (var particles: [Particle])
 
-@[storage-write 1 1]
+@storage-write
 (var grid: [Bucket])
 
 (def particle-count: u32

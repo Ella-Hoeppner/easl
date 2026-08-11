@@ -139,6 +139,7 @@ buffer_test!(dispatch_closure_captures_closure_with_dynamic_array);
 buffer_test!(dispatch_closure_captures_closure_three_deep);
 buffer_test!(hof_dispatch_captures_local_dynamic_array);
 buffer_test!(elided_bindings);
+buffer_test!(default_shared_var);
 
 /// Window-info queries used inside GPU code compile into implicit uniform
 /// bindings that the runtime refreshes from the IO manager each frame.

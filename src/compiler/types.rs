@@ -1329,6 +1329,25 @@ impl Type {
       _ => false,
     }
   }
+  /// Whether this type contains a `bool` anywhere in its structure
+  /// (directly, as an element/field, or inside an enum variant). Bools
+  /// aren't host-shareable in WGSL, so bool-containing types can't be
+  /// GPU bindings.
+  pub fn involves_bool(&self) -> bool {
+    match self {
+      Type::Bool => true,
+      Type::Array(_, inner) => inner.kind.unwrap_known().involves_bool(),
+      Type::Struct(s) => s
+        .fields
+        .iter()
+        .any(|f| f.field_type.unwrap_known().involves_bool()),
+      Type::Enum(e) => e
+        .variants
+        .iter()
+        .any(|v| v.inner_type.unwrap_known().involves_bool()),
+      _ => false,
+    }
+  }
   pub fn involves_string(&self) -> bool {
     match self {
       Type::String => true,

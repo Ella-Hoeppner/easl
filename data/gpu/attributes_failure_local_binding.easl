@@ -1,5 +1,5 @@
 @{binding 1
   group 2
-  address private}
+  address local}
 (var f: f32
      5.)

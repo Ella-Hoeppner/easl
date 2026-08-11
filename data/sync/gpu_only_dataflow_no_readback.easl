@@ -1,4 +1,4 @@
-@[storage-write 0 0]
+@storage-write
 (var data: [f32])
 
 @cpu

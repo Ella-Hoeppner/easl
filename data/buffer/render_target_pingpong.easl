@@ -6,17 +6,13 @@
 ; pass must substitute a placeholder for its own render target — and
 ; ordering of consecutive offscreen render passes relative to compute.
 
-@{group 0
-  binding 0}
+@handle
 (var tex-a: (Texture2D f32))
 
-@{group 0
-  binding 1}
+@handle
 (var tex-b: (Texture2D f32))
 
-@{address storage-write
-  group 0
-  binding 2}
+@storage-write
 (var value: vec4f)
 
 (defn fullscreen-triangle []: vec4f

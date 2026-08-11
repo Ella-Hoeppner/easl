@@ -2,6 +2,7 @@
 ; rate, into a runtime-sized global that audio code can index. The @audio
 ; entry ensures the eager audio-mode compile also handles the program.
 
+@local
 (var sample: [f32])
 
 @audio

@@ -1,6 +1,6 @@
 ; Nested runtime-sized arrays can never be GPU buffer bindings — there is
 ; no flat host-shareable layout for them.
-@[storage-write 0 0]
+@storage-write
 (var grid: [[f32]])
 
 @{workgroup-size 1}

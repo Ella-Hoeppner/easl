@@ -114,28 +114,28 @@ Easl programs can have multiple annotated sections compiled/run separately:
 
 ### GPU-bound top-level variables
 
-`(var name: type)` with an address-space annotation creates a GPU-accessible variable visible to shaders and tracked by the interpreter's `binding_vars`:
+**An unannotated top-level `(var name: type)` defaults to the GPU-shared `storage-write` address space with elided binding numbers** — the CPU and GPU (and audio thread, via the sharing analysis) see one variable. A per-execution-context variable (an independent copy per GPU invocation / CPU / audio thread, initializable, not GPU-bound) requires an explicit `@local` annotation (easl's name for what WGSL calls `private`; `compile()` still emits `var<private>`). Unannotated vars *with initializers* are errors guiding toward `@local` (shared vars can't be initialized — the initializer wouldn't run for WGSL-only hosts), as are unannotated vars of non-host-shareable types (`UnshareableBindingType`: anything containing `bool` or `String`).
+
+Address spaces can be declared at three verbosity levels, all equivalent:
 ```
-@{address uniform        group 0  binding 0}  (var frame-index: u32)
-@{address storage-read   group 0  binding 1}  (var read-only-buf: [N: vec4f])
-@{address storage-write  group 0  binding 2}  (var rw-buf: [N: vec4f])
-```
-There is also a shorthand `@[address group binding]` array annotation that specifies the three values positionally:
-```
-@[uniform        0 0]  (var frame-index: u32)
-@[storage-read   0 1]  (var read-only-buf: [N: vec4f])
-@[storage-write  0 2]  (var rw-buf: [N: vec4f])
+@storage-write (var rw-buf: [N: vec4f])                          ; terse, elided numbers (idiomatic)
+@[storage-write 0 2] (var rw-buf: [N: vec4f])                    ; positional array shorthand
+@{address storage-write  group 0  binding 2} (var rw-buf: [N: vec4f])  ; longhand
 ```
 - `uniform` — maps to `GpuBufferKind::Uniform` (read-only from shader, writable from CPU)
 - `storage` (alias `storage-read`) — maps to `GpuBufferKind::StorageReadOnly`
-- `storage-write` — maps to `GpuBufferKind::StorageReadWrite` (GPU can write; vertex shaders cannot access)
+- `storage-write` — maps to `GpuBufferKind::StorageReadWrite` (GPU can write; vertex shaders cannot access; **the default for unannotated vars**)
+- `local` — one copy per execution context; the only initializable space
 - Unsized arrays (`[vec4f]`) are valid for storage bindings; the buffer is sized at runtime
+- Textures' required `handle` space also defaults with elided numbers when unannotated
+
+Pinned by `default_shared_var` (buffer suite: unannotated var round-trips CPU→GPU→CPU) and the `default_var_initializer_failure`/`unshareable_bool_var_failure` error tests.
 
 **Binding-number elision**: the group/binding numbers may be omitted entirely — `@[uniform]`, `@[storage]`, `@{address handle}` — and the compiler assigns free numbers at the end of validation (`assign_elided_bindings`: declaration order, lowest free slot, filling gaps around explicitly-numbered bindings, group 0 first). Elision is all-or-nothing (`@[uniform 0]` is an error, pre-existing `GroupMissingBinding`/`BindingMissingGroup`). In the AST this is `BindingSpec::{Specified, Elided}` (vars.rs) on `TopLevelVariableKind::Var`; no `Elided` survives validation, so post-validation consumers always see concrete numbers via `BindingSpec::specified()`. Every compiler-created binding (window-info uniforms, dispatched-closure captures) is emitted `Elided` and numbered by the same central pass — passes never allocate numbers in place. Explicit numbers remain an interface contract the compiler never touches (`catch_bind_group_collisions` checks only those for duplicates); when coordinating with an external host that reads the emitted WGSL, specify numbers explicitly — elided bindings get numbers the host would have to discover from the output. Pinned by `elided_bindings` in both the shader suite (naga-validates gap-filling) and the buffer suite (full CPU↔GPU round trip on both runtimes).
 
 ### `@external` variables
 
-`@external` on a top-level `var` marks it as readable/writable by an embedding host program through an `ExternalVars` handle (see "Cross-thread shared variables" below). It stacks with binding annotations in either order (`@external @[uniform 0 0] (var sliders: [2: vec4f])`) or stands alone on a plain private var (`@external (var gain: f32 0.)`). Compile errors: `@external` on a texture (`ExternalTextureVar`), `@external` on a var whose type contains a String (`ExternalStringVar` — a string's words are a heap id, meaningless outside its own runtime), and any annotation on a `def` (pre-existing `ConstantMayNotHaveAnnotation`).
+`@external` on a top-level `var` marks it as readable/writable by an embedding host program through an `ExternalVars` handle (see "Cross-thread shared variables" below). It stacks with binding annotations in either order (`@external @[uniform 0 0] (var sliders: [2: vec4f])`) or stands alone on a local var (`@external @local (var gain: f32 0.)` — bare `@external` defaults to storage-write like any unannotated var, so initializable external vars need `@local`). Compile errors: `@external` on a texture (`ExternalTextureVar`), `@external` on a var whose type contains a String (`ExternalStringVar` — a string's words are a heap id, meaningless outside its own runtime), and any annotation on a `def` (pre-existing `ConstantMayNotHaveAnnotation`).
 
 ### Windowing builtins
 

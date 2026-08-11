@@ -4,7 +4,7 @@
 ; the runtime refreshes at each frame start — so both sides see the same
 ; per-frame snapshot.
 
-@[storage-write 1 0]
+@storage-write
 (var buf: [4: f32])
 
 (defn current-frame []: u32

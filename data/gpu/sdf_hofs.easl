@@ -1,19 +1,13 @@
 (def TAU: f32
      6.28318530718)
 
-@{group 0
-  binding 0
-  address uniform}
+@uniform
 (var dimensions: vec2f)
 
-@{group 0
-  binding 1
-  address uniform}
+@uniform
 (var t: f32)
 
-@{group 0
-  binding 2
-  address uniform}
+@uniform
 (var mouse: vec2f)
 
 (defn uni->bi [x: f32]: f32

@@ -1,6 +1,7 @@
 ; The audio thread writes individual elements of a runtime-sized array;
 ; the whole array is published once per batch (element writes just dirty
 ; the variable) and the main thread adopts and prints it a frame later.
+@local
 (var buf: [f32])
 
 @audio

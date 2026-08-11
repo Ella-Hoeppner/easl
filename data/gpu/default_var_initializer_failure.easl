@@ -1,0 +1,9 @@
+; Unannotated globals default to the GPU-shared `storage-write` address
+; space, which can't have an initializer — a per-execution-context
+; variable with an initial value needs an explicit `@local`.
+(var x: f32 5.)
+
+@{workgroup-size 1}
+@compute
+(defn run []
+  (= x (+ x 1.)))

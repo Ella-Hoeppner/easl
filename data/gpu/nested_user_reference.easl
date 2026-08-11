@@ -1,4 +1,4 @@
-@{address private}
+@local
 (var private-float: f32
      0.)
 

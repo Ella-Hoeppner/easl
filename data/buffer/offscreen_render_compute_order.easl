@@ -7,14 +7,13 @@
 ; compute sees the freshly-rendered red pixel; if it runs compute before
 ; renders, the compute reads the still-blank texture and this prints zeros.
 
-@{group 0
-  binding 0}
+@handle
 (var tex: (Texture2D f32))
 
-@[storage-write 0 1]
+@storage-write
 (var value: vec4f)
 
-@[uniform 0 2]
+@uniform
 (var frame: u32)
 
 (defn fullscreen-triangle []: vec4f

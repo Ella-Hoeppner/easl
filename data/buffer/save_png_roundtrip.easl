@@ -3,17 +3,13 @@
 ; and read the texel back through the GPU. No readback is involved — the
 ; CPU copy is the newest, so the save uses it directly.
 
-@{group 0
-  binding 0}
+@handle
 (var tex: (Texture2D f32))
 
-@{group 0
-  binding 1}
+@handle
 (var tex2: (Texture2D f32))
 
-@{address storage-write
-  group 0
-  binding 2}
+@storage-write
 (var value: vec4f)
 
 @cpu

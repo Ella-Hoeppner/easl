@@ -1,11 +1,7 @@
-@{group 0
-  binding 0
-  address uniform}
+@uniform
 (var dimensions: vec4f)
 
-@{group 0
-  binding 1
-  address uniform}
+@uniform
 (var time: f32)
 
 (struct VertexInput

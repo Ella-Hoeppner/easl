@@ -9,10 +9,10 @@
   mass: f32
   color: vec3f)
 
-@[uniform 0 0]
+@uniform
 (var frame-index: u32)
 
-@[storage-write 0 1]
+@storage-write
 (var particles: [Particle])
 
 @compute

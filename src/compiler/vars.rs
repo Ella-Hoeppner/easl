@@ -18,7 +18,7 @@ use super::{error::SourceTrace, expression::TypedExp};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VariableAddressSpace {
-  Private,
+  Local,
   Function,
   Workgroup,
   Uniform,
@@ -28,7 +28,7 @@ pub enum VariableAddressSpace {
 }
 impl Default for VariableAddressSpace {
   fn default() -> Self {
-    Self::Private
+    Self::Local
   }
 }
 use VariableAddressSpace::*;
@@ -36,21 +36,24 @@ use VariableAddressSpace::*;
 impl VariableAddressSpace {
   pub fn may_write_from_gpu(&self) -> bool {
     match self {
-      Function | Private | Workgroup | StorageReadWrite => true,
+      Function | Local | Workgroup | StorageReadWrite => true,
       Uniform | StorageRead | Handle => false,
     }
   }
   pub fn needs_group_and_binding(&self) -> bool {
     match self {
-      Private | Workgroup => false,
+      Local | Workgroup => false,
       _ => true,
     }
   }
   pub fn disallows_initialization(&self) -> bool {
-    *self != Private
+    *self != Local
   }
   pub fn compile(&self) -> Option<&'static str> {
     match self {
+      // easl calls this address space `local` (a copy per execution
+      // context), but WGSL's name for it is `private`.
+      Local => Some("private"),
       StorageReadWrite => Some("storage, read_write"),
       Handle => None,
       other => Some(other.name()),
@@ -59,7 +62,7 @@ impl VariableAddressSpace {
   pub fn name(&self) -> &'static str {
     match self {
       Function => "function",
-      Private => "private",
+      Local => "local",
       Workgroup => "workgroup",
       Uniform => "uniform",
       StorageRead => "storage",
@@ -69,7 +72,7 @@ impl VariableAddressSpace {
   }
   pub fn from_str(s: &str) -> Option<Self> {
     Some(match s {
-      "private" => Private,
+      "local" => Local,
       "workgroup" => Workgroup,
       "uniform" => Uniform,
       "storage" | "storage-read" => StorageRead,
@@ -80,7 +83,7 @@ impl VariableAddressSpace {
   }
   pub fn may_be_passed_as_reference(&self) -> bool {
     match self {
-      Private | Function => true,
+      Local | Function => true,
       _ => false,
     }
   }
@@ -219,12 +222,18 @@ impl TopLevelVar {
                             }
                           } else {
                             if let Some(required) = t.required_address_space() {
-                              Some((binding_spec, required))
+                              Some((
+                                binding_spec.or(Some(BindingSpec::Elided)),
+                                required,
+                              ))
                             } else if binding_spec.is_none() && is_external {
                               // The annotation was just `@external`; the
                               // address space defaults the same way an
                               // unannotated var's would.
-                              Some((None, VariableAddressSpace::default()))
+                              Some((
+                                Some(BindingSpec::Elided),
+                                StorageReadWrite,
+                              ))
                             } else {
                               errors.log(CompileError::new(
                                 NeedAddressAnnotation,
@@ -236,16 +245,17 @@ impl TopLevelVar {
                         }
                       }
                     } else {
-                      if let Some(required_address_space) =
+                      // No annotation: top-level vars default to the
+                      // GPU-shared `storage-write` address space with
+                      // elided binding numbers (types with a required
+                      // address space — textures — default to that space
+                      // instead). A per-execution-context copy requires an
+                      // explicit `@local`.
+                      Some((
+                        Some(BindingSpec::Elided),
                         t.required_address_space()
-                        && required_address_space.needs_group_and_binding()
-                      {
-                        errors.log(CompileError::new(
-                          NeedsGroupAndBinding,
-                          parens_source_trace.clone(),
-                        ));
-                      }
-                      None
+                          .unwrap_or(StorageReadWrite),
+                      ))
                     }
                     .unwrap_or_else(|| (None, VariableAddressSpace::default()));
                   if address_space == Uniform
@@ -258,6 +268,24 @@ impl TopLevelVar {
                       UnsizedArrayInUniform,
                       parens_source_trace.clone(),
                     ));
+                  }
+                  if matches!(
+                    address_space,
+                    Uniform | StorageRead | StorageReadWrite
+                  ) {
+                    // Bindings must be host-shareable; bool- and
+                    // String-containing types aren't.
+                    if t.involves_bool() {
+                      errors.log(CompileError::new(
+                        UnshareableBindingType("bool".to_string()),
+                        parens_source_trace.clone(),
+                      ));
+                    } else if t.involves_string() {
+                      errors.log(CompileError::new(
+                        UnshareableBindingType("String".to_string()),
+                        parens_source_trace.clone(),
+                      ));
+                    }
                   }
                   if external && address_space == Handle {
                     // Textures have no word serialization, so they can't
