@@ -3278,6 +3278,11 @@ impl TypedExp {
           &self.source_trace,
           errors,
         );
+        anything_changed |= f.data.constrain_fn_by_return_type(
+          &self.data.kind,
+          &self.source_trace,
+          errors,
+        );
         self.data.subtree_fully_typed = was_f_already_known
           && args.iter().fold(f.data.subtree_fully_typed, |acc, arg| {
             acc && arg.data.subtree_fully_typed

@@ -151,3 +151,5 @@ cpu_test!(hof_calls_not_skipped);
 cpu_test!(nested_associatives);
 cpu_test!(any_all);
 cpu_test!(early_return_unit);
+cpu_test!(disambiguated_overload);
+cpu_test!(disambiguated_into_overload);

@@ -2935,6 +2935,49 @@ impl TypeState {
     let other_changed = other.constrain(self, source_trace, errors);
     self_changed || other_changed
   }
+  pub fn constrain_fn_by_return_type(
+    &mut self,
+    return_type: &TypeState,
+    source_trace: &SourceTrace,
+    errors: &mut ErrorLog,
+  ) -> bool {
+    self.with_dereferenced_mut(|typestate| {
+      if let TypeState::OneOf(possibilities) = typestate {
+        let mut anything_changed = false;
+        let mut new_possibilities: Vec<Type> = vec![];
+        for possibility in possibilities {
+          match possibility {
+            Type::Function(signature) => {
+              if TypeState::are_compatible(
+                &signature.return_type.kind,
+                return_type,
+              ) {
+                new_possibilities.push(Type::Function(signature.clone()))
+              } else {
+                anything_changed = true;
+              }
+            }
+            other => new_possibilities.push(other.clone()),
+          }
+        }
+        if new_possibilities.is_empty() {
+          errors.log(CompileError::new(
+            IncompatibleTypes(
+              typestate.clone().into(),
+              return_type.clone().into(),
+            ),
+            source_trace.clone(),
+          ));
+          false
+        } else {
+          *typestate = TypeState::OneOf(new_possibilities).simplified();
+          anything_changed
+        }
+      } else {
+        false
+      }
+    })
+  }
   pub fn constrain_fn_by_argument_types(
     &mut self,
     mut arg_types: Vec<&mut TypeState>,
