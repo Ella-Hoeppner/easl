@@ -447,8 +447,34 @@ fn run_thread_sync_test(name: &str, schedule: Vec<Step>) {
       external,
     )
     .unwrap_or_else(|e| panic!("{name}: evaluation error ({label}): {e:#?}"));
-    let trace: String =
-      io.trace.into_iter().map(|line| format!("{line}\n")).collect();
+    // Lifted audio-closure scope globals (`<scope>_audio_data_<capture>`)
+    // and audio entry clones (`<closure>_audio`) carry gensym'd closure
+    // names whose numbering isn't stable across runs — normalize the
+    // gensym'd prefix, keeping the (meaningful) capture name.
+    let normalize = |line: String| -> String {
+      let line = if let Some(index) = line.find("_scope_audio_data_") {
+        let field = &line[index + "_scope_audio_data_".len()..];
+        let prefix_start = line[..index]
+          .rfind(' ')
+          .map(|space| space + 1)
+          .unwrap_or(0);
+        format!("{}<audio-scope>_{}", &line[..prefix_start], field)
+      } else {
+        line
+      };
+      if let Some(entry) = line.strip_prefix("start-audio: ")
+        && entry.ends_with("_audio")
+      {
+        "start-audio: <audio-closure>".to_string()
+      } else {
+        line
+      }
+    };
+    let trace: String = io
+      .trace
+      .into_iter()
+      .map(|line| format!("{}\n", normalize(line)))
+      .collect();
     assert_eq!(trace, expected, "{name}: trace mismatch ({label})");
   }
 }
@@ -550,4 +576,12 @@ thread_sync_test!(no_handle_no_external_publish, [Frame, Frame]);
 thread_sync_test!(
   external_seed_survives_start_audio,
   [ExternalWrite("gain", &[0.5]), Frame, AudioBatch(2)]
+);
+thread_sync_test!(
+  audio_closure_scope,
+  [Frame, AudioBatch(4), AudioBatch(4), Frame, AudioBatch(4)]
+);
+thread_sync_test!(
+  audio_entry_one_arg,
+  [Frame, AudioBatch(4)]
 );

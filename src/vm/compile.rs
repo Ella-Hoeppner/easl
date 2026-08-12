@@ -1704,6 +1704,7 @@ impl BytecodeCompilationState {
         .map(|f| Function {
           instructions: f.instructions.clone(),
           return_position: f.stack_frame_start,
+          arg_words: f.arg_sizes.iter().copied().sum(),
         })
         .collect(),
       init_function_index,
@@ -1884,6 +1885,63 @@ impl BytecodeCompilationState {
       }
     }
     (entry_name, read_indices, write_indices)
+  }
+  /// Writes every capture of a `start-audio`d closure's scope into its
+  /// lifted `<scope>_audio_data_<capture>` global (see
+  /// `extract_audio_closure_scopes`), reading from the scope value's
+  /// flat slot layout starting at `base_pos` and recursing into captured
+  /// closures' scopes at their field offsets. The audio-scope sibling of
+  /// `emit_scope_capture_writes`.
+  fn emit_audio_scope_seed_writes(
+    &mut self,
+    scope_struct: &AbstractStruct,
+    base_pos: u16,
+  ) {
+    let mut offset = 0u16;
+    for field in scope_struct.fields.iter() {
+      let AbstractType::Type(field_type) = &field.field_type else {
+        panic!("captured scope field with non-concrete type")
+      };
+      if let Type::Function(signature) = field_type {
+        if let Some(field_ancestor) = &signature.abstract_ancestor
+          && let Some(nested_struct) =
+            field_ancestor.read().unwrap().captured_scope.clone()
+        {
+          self.emit_audio_scope_seed_writes(&nested_struct, base_pos + offset);
+        }
+      } else {
+        let global_name: Arc<str> =
+          format!("{}_audio_data_{}", scope_struct.name.0, field.name).into();
+        if let Some((memory, _)) =
+          self.dynamic_array_memory.get(&global_name).copied()
+        {
+          // A runtime-sized capture: the value slot holds a heap id;
+          // copy its payload into the global's region.
+          self.push_instruction(Instruction {
+            op: Op::RegionFromHeap,
+            arg_positions: [memory, base_pos + offset, 0],
+            return_position: 0,
+          });
+        } else if let Some(position) =
+          self.globals.get(&global_name).copied()
+        {
+          let value_size = vm_type_size(field_type);
+          if value_size > 0 {
+            self.push_instruction(Instruction {
+              op: Op::Move,
+              arg_positions: [base_pos + offset, value_size, 0],
+              return_position: position,
+            });
+          }
+        } else {
+          panic!(
+            "lifted audio scope global `{global_name}` not found during \
+             bytecode compilation"
+          )
+        }
+      }
+      offset += vm_type_size(field_type);
+    }
   }
   /// Writes every capture of `scope_struct` into its implicit binding,
   /// reading from the scope value's flat slot layout starting at
@@ -2586,14 +2644,27 @@ impl TypedExp {
         let Type::Function(signature) = args[0].data.unwrap_known() else {
           panic!("start-audio argument had a non-function type")
         };
-        let entry_name = signature
-          .abstract_ancestor
-          .as_ref()
-          .expect("start-audio argument had no abstract ancestor")
-          .read()
-          .unwrap()
-          .name
-          .clone();
+        let (original_name, scope_struct) = {
+          let ancestor = signature
+            .abstract_ancestor
+            .as_ref()
+            .expect("start-audio argument had no abstract ancestor")
+            .read()
+            .unwrap();
+          (ancestor.name.clone(), ancestor.captured_scope.clone())
+        };
+        // A scoped closure runs on the audio thread as its audio clone
+        // (see `extract_audio_closure_scopes`); seed the lifted capture
+        // globals from the closure value before the host op's bootstrap
+        // publish ships them to the audio replica.
+        let entry_name: Arc<str> = if let Some(scope_struct) = &scope_struct
+        {
+          let value_pos = args[0].compile_to_bytecode(false, state).unwrap();
+          state.emit_audio_scope_seed_writes(scope_struct, value_pos);
+          format!("{original_name}_audio").into()
+        } else {
+          original_name
+        };
         let entry = state.host_string_index(&entry_name);
         state.emit_host_op(HostOp::StartAudio { entry });
         Some(None)

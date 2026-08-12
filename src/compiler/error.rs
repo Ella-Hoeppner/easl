@@ -336,6 +336,18 @@ pub enum CompileErrorKind {
   )]
   ExternalStringVar,
   #[error(
+    "The function passed to `start-audio` couldn't be statically resolved \
+     to a single audio function; pass a lambda, a named function, or a \
+     call that returns one specific closure"
+  )]
+  UnresolvableAudioFunction,
+  #[error(
+    "A closure passed to `start-audio` captures a value of a type that \
+     can't be shared with the audio thread (`{0}`); capture flat values, \
+     runtime-sized arrays, or other closures instead"
+  )]
+  UnshareableAudioCapture(String),
+  #[error(
     "A GPU binding's type may contain a runtime-sized array only when the \
      binding itself is one; bind the runtime-sized array as its own \
      variable instead of embedding it in a struct, enum, or fixed-size \

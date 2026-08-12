@@ -1900,19 +1900,33 @@ fn apply_builtin_fn<IO: IOManager>(
       Err(EvalException::CloseWindow)
     }
     "start-audio" => {
-      let (_, Type::Function(audio_f)) = &args[0] else {
+      let (audio_value, Type::Function(audio_f)) = &args[0] else {
         panic!()
       };
-      let entry_name = audio_f
-        .abstract_ancestor
-        .as_ref()
-        .unwrap()
-        .read()
-        .unwrap()
-        .name
-        .clone();
+      let (original_name, scope_struct) = {
+        let ancestor =
+          audio_f.abstract_ancestor.as_ref().unwrap().read().unwrap();
+        (ancestor.name.clone(), ancestor.captured_scope.clone())
+      };
+      // A scoped closure runs on the audio thread as its audio clone
+      // (see `extract_audio_closure_scopes`), whose captures live in
+      // lifted thread-shared globals.
+      let entry_name: Arc<str> = if scope_struct.is_some() {
+        format!("{original_name}_audio").into()
+      } else {
+        original_name
+      };
       #[cfg(feature = "window")]
       {
+        // Seed the lifted capture globals from the closure value's scope
+        // before the bootstrap publish below ships them to the audio
+        // replica's first adopt.
+        if let Some(scope_struct) = &scope_struct
+          && let Value::Fun(Function::Scoped { scope, .. }) = audio_value
+        {
+          let scope_value = (**scope).clone();
+          env.seed_audio_scope_globals(scope_struct, &scope_value);
+        }
         // A typical program puts `(start-audio ...)` inside a
         // `spawn-window` callback that fires every frame, so this builtin
         // gets called repeatedly. We only have one `AudioSource` to spend
@@ -1944,7 +1958,7 @@ fn apply_builtin_fn<IO: IOManager>(
       }
       #[cfg(not(feature = "window"))]
       {
-        let _ = entry_name;
+        let _ = (entry_name, audio_value);
         Err(EvalException::Error(WindowFeatureNotEnabled.into()))
       }
     }
@@ -4477,6 +4491,49 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     let mut written: Vec<Arc<str>> = vec![];
     let scope_value = (**scope).clone();
     self.write_scope_capture_bindings(&scope_struct, &scope_value, &mut written);
+    self.mark_cpu_written(&written);
+  }
+  /// Writes a `start-audio`d closure's captured scope values into the
+  /// lifted `<scope>_audio_data_<capture>` globals (see
+  /// `extract_audio_closure_scopes`), recursing into captured closures'
+  /// scopes. The audio-scope sibling of `write_scope_capture_bindings`.
+  #[cfg(feature = "window")]
+  fn seed_audio_scope_globals(
+    &mut self,
+    scope_struct: &AbstractStruct,
+    scope_value: &Value,
+  ) {
+    let Value::Struct(scope_fields) = scope_value else {
+      return;
+    };
+    let mut written: Vec<Arc<str>> = vec![];
+    for field in scope_struct.fields.iter() {
+      let Some(field_value) = scope_fields.get(&field.name) else {
+        continue;
+      };
+      if let AbstractType::Type(Type::Function(signature)) = &field.field_type
+        && let Some(field_ancestor) = &signature.abstract_ancestor
+        && let Some(nested_struct) =
+          field_ancestor.read().unwrap().captured_scope.clone()
+      {
+        // A captured closure's value is its own scope data.
+        let inner = match field_value {
+          Value::Fun(Function::Scoped { scope, .. }) => (**scope).clone(),
+          other => other.clone(),
+        };
+        self.seed_audio_scope_globals(&nested_struct, &inner);
+        continue;
+      }
+      let global_name: Arc<str> =
+        format!("{}_audio_data_{}", scope_struct.name.0, field.name).into();
+      let field_value = field_value.clone();
+      if let Some(bindings) = self.bindings.get_mut(&global_name)
+        && let Some((value, _)) = bindings.last_mut()
+      {
+        *value = field_value;
+        written.push(global_name);
+      }
+    }
     self.mark_cpu_written(&written);
   }
   fn write_scope_capture_bindings(
@@ -7522,7 +7579,32 @@ fn try_compile_audio_source(
          default)."
       );
       #[cfg(feature = "c_audio")]
-      try_compile_audio_c_source(source_path).map(crate::audio::AudioSource::C)
+      {
+        // The C driver calls the loaded entry through a
+        // `fn(float, float) -> float` pointer, so it can't run the
+        // relaxed 0/1-arg entries — including the scope-less clones of
+        // closure entries, which take no args.
+        for name in
+          program.find_fn_names_by_entry_point(|e| e == EntryPoint::Audio)
+        {
+          for signature in program
+            .abstract_functions
+            .get(name.as_str())
+            .into_iter()
+            .flatten()
+          {
+            if signature.read().unwrap().arg_types.len() != 2 {
+              panic!(
+                "The C audio backend requires audio functions with exactly \
+                 two arguments (t, rate); use AudioBackend::VM for closure \
+                 or reduced-argument audio entries."
+              );
+            }
+          }
+        }
+        try_compile_audio_c_source(source_path)
+          .map(crate::audio::AudioSource::C)
+      }
     }
   }
 }

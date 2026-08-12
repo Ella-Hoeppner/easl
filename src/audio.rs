@@ -173,6 +173,9 @@ pub struct VmAudioDriver {
   program: BytecodeProgram,
   fn_index: usize,
   return_position: usize,
+  /// How many of the optional `t`/`rate` arguments the entry actually
+  /// takes (0..=2): a stateful closure entry usually takes neither.
+  arg_words: usize,
   shared_table: Option<Arc<ThreadSharedTable>>,
   sample_index: u64,
 }
@@ -187,10 +190,12 @@ impl VmAudioDriver {
     let fn_index = find_audio_fn_index(entry_name, function_names)?;
     let return_position =
       program.get_function_return_position(fn_index) as usize;
+    let arg_words = program.code.functions[fn_index].arg_words as usize;
     Ok(Self {
       program,
       fn_index,
       return_position,
+      arg_words,
       shared_table,
       sample_index: 0,
     })
@@ -215,14 +220,19 @@ impl VmAudioDriver {
         .adopt_shared(table, participant::AUDIO, on_adopt);
     }
     for _ in 0..frames {
-      // The audio entry has signature `(f32 t, f32 rate) -> f32`. Args live
-      // at the function's stack frame start (== return_position) in slot
-      // order; execute() overwrites slot[0] with the return value on the
-      // way out.
+      // The audio entry takes up to two f32 args, `t` then `rate`; args
+      // live at the function's stack frame start (== return_position) in
+      // slot order, and execute() overwrites slot[0] with the return
+      // value on the way out. Entries with fewer args (e.g. stateful
+      // closure entries) simply don't receive the later ones.
       let t = self.sample_index as f32 / rate;
       self.sample_index = self.sample_index.wrapping_add(1);
-      self.program.stack[self.return_position] = t.to_bits();
-      self.program.stack[self.return_position + 1] = rate.to_bits();
+      if self.arg_words > 0 {
+        self.program.stack[self.return_position] = t.to_bits();
+      }
+      if self.arg_words > 1 {
+        self.program.stack[self.return_position + 1] = rate.to_bits();
+      }
       self.program.prepare_to_run_function(self.fn_index);
       self.program.execute();
       emit(

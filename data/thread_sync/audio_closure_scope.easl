@@ -1,0 +1,16 @@
+; A stateful closure (created by a HoF) as the audio entry: its captured
+; scope is lifted to thread-shared globals, seeded by main at
+; `start-audio` (the bootstrap publish ships them to the audio replica's
+; first adopt), mutated per-sample on the audio thread, and published at
+; every batch boundary — where main adopts it at its next frame start,
+; following the normal sharing rules.
+(defn create-counter [increment: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+        (= phase (% (+ phase increment) 1.))
+        phase)))
+
+@cpu
+(defn main []
+  (start-audio (create-counter 0.125))
+  (spawn-window (fn [] ())))

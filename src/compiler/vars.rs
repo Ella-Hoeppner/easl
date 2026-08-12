@@ -146,6 +146,12 @@ pub struct TopLevelVar {
   /// `ExternalVars` handle at any time, so it's unconditionally included in
   /// the thread-shared set (the static analysis can't see external access).
   pub external: bool,
+  /// A compiler-lifted capture of an audio-entry closure (see
+  /// `extract_audio_closure_scopes`): unconditionally thread-shared with
+  /// audience MAIN|AUDIO — the main thread seeds it at `start-audio`
+  /// (invisible to static analysis) and the audio thread owns it from
+  /// then on, publishing its state at every batch boundary.
+  pub audio_scope: bool,
 }
 
 impl TopLevelVar {
@@ -338,6 +344,7 @@ impl TopLevelVar {
                     value,
                     source_trace: parens_source_trace.clone(),
                     external,
+                    audio_scope: false,
                     kind: TopLevelVariableKind::Var {
                       address_space,
                       group_and_binding,
@@ -380,6 +387,7 @@ impl TopLevelVar {
                         value: Some(value_expression),
                         source_trace: parens_source_trace.clone(),
                         external: false,
+                        audio_scope: false,
                         kind: if var_kind_name == "override" {
                           TopLevelVariableKind::Override
                         } else {

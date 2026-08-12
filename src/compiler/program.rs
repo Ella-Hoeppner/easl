@@ -357,6 +357,19 @@ enum CaptureRewrite {
   },
 }
 
+/// Accumulator for `extract_audio_closure_scopes` (the audio sibling of
+/// `DispatchScopeLiftState`): plain thread-shared globals and audio
+/// clones, collected while iterating the registry and installed at the
+/// end of the pass.
+struct AudioScopeLiftState {
+  created_globals: HashSet<Arc<str>>,
+  new_vars: Vec<TopLevelVar>,
+  /// Original captured-closure name → its (memoized) audio clone.
+  audio_clones:
+    HashMap<Arc<str>, (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>)>,
+  new_functions: Vec<Arc<RwLock<AbstractFunctionSignature>>>,
+}
+
 /// Accumulator for `extract_dispatched_closure_scopes`: bindings and GPU
 /// clones are created while iterating the registry, so they're collected
 /// here and installed at the end of the pass.
@@ -1904,6 +1917,7 @@ impl Program {
               value: None,
               source_trace: source_trace.clone(),
               external: false,
+              audio_scope: false,
             });
           }
           (field.name.clone(), CaptureRewrite::Global(global_name))
@@ -1999,6 +2013,285 @@ impl Program {
       .callee_clones
       .insert(original_name, (clone_name.clone(), clone_signature.clone()));
     (clone_name, clone_signature)
+  }
+  /// Lifts every capture of an audio-entry closure's scope struct: data
+  /// captures each get their own plain thread-shared global
+  /// (`<scope-struct>_audio_data_<capture>`, forced audience
+  /// MAIN|AUDIO), and captured *closures* recurse — their own captures
+  /// are lifted the same way and the closure gets an audio clone via
+  /// `audioify_captured_closure`. Returns the per-field rewrite map
+  /// `rewrite_dispatched_scope_body` applies to the clone's body.
+  fn lift_audio_scope_captures(
+    &self,
+    scope_struct: &AbstractStruct,
+    source_trace: &SourceTrace,
+    state: &mut AudioScopeLiftState,
+    errors: &mut ErrorLog,
+  ) -> HashMap<Arc<str>, CaptureRewrite> {
+    let scope_struct_name = scope_struct.name.0.clone();
+    scope_struct
+      .fields
+      .iter()
+      .map(|field| {
+        let AbstractType::Type(field_type) = &field.field_type else {
+          panic!("captured scope field with non-concrete type")
+        };
+        if let Type::Function(signature) = field_type {
+          let Some(field_ancestor) = &signature.abstract_ancestor else {
+            panic!("captured closure without an abstract ancestor")
+          };
+          if field_ancestor.read().unwrap().captured_scope.is_none() {
+            panic!(
+              "captured scope-less closure; these are unit-like and \
+               shouldn't be captured"
+            )
+          }
+          let (clone_name, clone_signature) = self
+            .audioify_captured_closure(field_ancestor.clone(), state, errors);
+          (
+            field.name.clone(),
+            CaptureRewrite::CalleeClone {
+              clone_name,
+              clone_signature,
+            },
+          )
+        } else {
+          // Captures cross to the audio thread through the shared-snapshot
+          // system, which speaks flat words per variable: strings can't
+          // cross at all (their words are heap ids), and runtime-sized
+          // arrays can only cross as whole variables, not embedded in
+          // other types.
+          if field_type.involves_string() {
+            errors.log(CompileError {
+              kind: UnshareableAudioCapture("String".to_string()),
+              source_trace: source_trace.clone(),
+            });
+          } else if field_type.involves_runtime_sized_array()
+            && !matches!(
+              field_type,
+              Type::Array(Some(ConcreteArraySize::Unsized), _)
+            )
+          {
+            errors.log(CompileError {
+              kind: UnshareableAudioCapture(
+                "type embedding a runtime-sized array".to_string(),
+              ),
+              source_trace: source_trace.clone(),
+            });
+          }
+          let global_name: Arc<str> =
+            format!("{scope_struct_name}_audio_data_{}", field.name).into();
+          // The same closure definition can be captured along several
+          // paths to the audio entry; its globals are keyed by its own
+          // scope struct, so they're created once.
+          if state.created_globals.insert(global_name.clone()) {
+            state.new_vars.push(TopLevelVar {
+              name: global_name.clone(),
+              kind: TopLevelVariableKind::Var {
+                // A plain local (per-runtime-replica) global: each
+                // thread's VM holds its own copy, synchronized through
+                // the shared-snapshot system like any thread-shared var.
+                // Never GPU-bound.
+                address_space: VariableAddressSpace::Local,
+                group_and_binding: None,
+              },
+              var_type: field_type.clone(),
+              value: None,
+              source_trace: source_trace.clone(),
+              external: false,
+              audio_scope: true,
+            });
+          }
+          (field.name.clone(), CaptureRewrite::Global(global_name))
+        }
+      })
+      .collect()
+  }
+  /// Creates (and memoizes) the audio clone of a closure captured —
+  /// directly or transitively — by the closure passed to `start-audio`:
+  /// the clone's trailing scope parameter is dropped, its captures are
+  /// lifted to plain thread-shared globals (recursing into further
+  /// captured closures), and its body reads and writes those globals
+  /// instead of the scope. The original definition is left untouched, so
+  /// direct CPU calls of the closure keep working. The clone's name is
+  /// deterministic (`<original>_audio`) so both runtimes can derive the
+  /// audio entry name from the closure's ancestor at `start-audio` time.
+  fn audioify_captured_closure(
+    &self,
+    ancestor: Arc<RwLock<AbstractFunctionSignature>>,
+    state: &mut AudioScopeLiftState,
+    errors: &mut ErrorLog,
+  ) -> (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>) {
+    let (original_name, scope_struct, original_implementation) = {
+      let ancestor = ancestor.read().unwrap();
+      let Some(scope_struct) = ancestor.captured_scope.clone() else {
+        panic!("audioify_captured_closure called on a scope-less closure")
+      };
+      let FunctionImplementationKind::Composite(implementation) =
+        ancestor.implementation.clone()
+      else {
+        panic!("captured closure wasn't composite")
+      };
+      (ancestor.name.clone(), scope_struct, implementation)
+    };
+    if let Some(existing) = state.audio_clones.get(&original_name) {
+      return existing.clone();
+    }
+    let scope_struct_name = scope_struct.name.0.clone();
+    let rewrites = self.lift_audio_scope_captures(
+      &scope_struct,
+      &scope_struct.source_trace,
+      state,
+      errors,
+    );
+    let mut implementation = original_implementation.read().unwrap().clone();
+    implementation.expression.data.as_known_mut(|t| {
+      let Type::Function(signature) = t else {
+        panic!("captured closure had a non-function type")
+      };
+      if let Some((v, _)) = signature.args.last()
+        && let Type::Struct(s) = v.var_type.unwrap_known()
+        && s.name == scope_struct_name
+      {
+        signature.args.pop();
+      }
+    });
+    let scope_param_name = implementation.arg_names.pop().unwrap().0;
+    implementation.arg_annotations.pop();
+    let ExpKind::Function(fn_arg_names, body) =
+      &mut implementation.expression.kind
+    else {
+      panic!("captured closure implementation wasn't a Function")
+    };
+    fn_arg_names.pop();
+    self.rewrite_dispatched_scope_body(body, &scope_param_name, &rewrites);
+    let clone_name: Arc<str> = format!("{original_name}_audio").into();
+    assert!(
+      !self.abstract_functions.contains_key(&clone_name),
+      "audio clone name `{clone_name}` collides with an existing function"
+    );
+    self.names.write().unwrap().track_user_name(&clone_name);
+    let clone_signature = {
+      let original = ancestor.read().unwrap();
+      let mut arg_types = original.arg_types.clone();
+      if let Some((AbstractType::AbstractStruct(s), _)) = arg_types.last()
+        && s.name.0 == scope_struct_name
+      {
+        arg_types.pop();
+      }
+      Arc::new(RwLock::new(AbstractFunctionSignature {
+        name: clone_name.clone(),
+        generic_args: vec![],
+        arg_types,
+        return_type: original.return_type.clone(),
+        implementation: FunctionImplementationKind::Composite(Arc::new(
+          RwLock::new(implementation),
+        )),
+        associative: false,
+        captured_scope: None,
+        entry_point: None,
+      }))
+    };
+    state.new_functions.push(clone_signature.clone());
+    state
+      .audio_clones
+      .insert(original_name, (clone_name.clone(), clone_signature.clone()));
+    (clone_name, clone_signature)
+  }
+  /// Rewrites `start-audio` calls whose function is a *scoped closure* so
+  /// they can run on the audio thread: the closure chain is cloned into
+  /// scope-less audio versions (`audioify_captured_closure`) whose
+  /// captures live in plain thread-shared globals, and the clone becomes
+  /// the `@audio` entry point in place of the original (which the
+  /// reference-address-space rebuild would drop from the registry — it
+  /// has a non-owned trailing scope param). At runtime, `start-audio`
+  /// seeds the lifted globals from the closure value's scope and starts
+  /// the audio thread on the clone; the existing bootstrap force-publish
+  /// ships the seeds to the audio replica's first adopt.
+  pub fn extract_audio_closure_scopes(&mut self, errors: &mut ErrorLog) {
+    let mut state = AudioScopeLiftState {
+      created_globals: HashSet::new(),
+      new_vars: vec![],
+      audio_clones: HashMap::new(),
+      new_functions: vec![],
+    };
+    let mut processed_entries: HashSet<Arc<str>> = HashSet::new();
+    for f in self.abstract_functions_iter() {
+      let FunctionImplementationKind::Composite(implementation) =
+        f.read().unwrap().implementation.clone()
+      else {
+        continue;
+      };
+      implementation
+        .read()
+        .unwrap()
+        .expression
+        .walk(&mut |exp| {
+          if let ExpKind::Application(applied_f, args) = &exp.kind
+            && let ExpKind::Name(applied_f_name) = &applied_f.kind
+            && &**applied_f_name == "start-audio"
+          {
+            let Type::Function(signature) = args[0].data.unwrap_known()
+            else {
+              return Ok::<bool, Never>(true);
+            };
+            let Some(ancestor) = signature.abstract_ancestor else {
+              errors.log(CompileError::new(
+                UnresolvableAudioFunction,
+                exp.source_trace.clone(),
+              ));
+              return Ok(true);
+            };
+            let (original_name, has_scope) = {
+              let ancestor = ancestor.read().unwrap();
+              (ancestor.name.clone(), ancestor.captured_scope.is_some())
+            };
+            if !has_scope || !processed_entries.insert(original_name.clone())
+            {
+              return Ok(true);
+            }
+            // The entry-marking pass marked the original closure; move
+            // the marking to the audio clone, which is what actually
+            // runs on the audio thread (and survives the
+            // reference-address-space rebuild).
+            {
+              let mut ancestor = ancestor.write().unwrap();
+              ancestor.entry_point = None;
+              if let FunctionImplementationKind::Composite(implementation) =
+                &ancestor.implementation
+              {
+                implementation.write().unwrap().entry_point = None;
+              }
+            }
+            let (_, clone_signature) = self.audioify_captured_closure(
+              ancestor.clone(),
+              &mut state,
+              errors,
+            );
+            {
+              let mut clone = clone_signature.write().unwrap();
+              clone.entry_point = Some(EntryPoint::Audio);
+              if let FunctionImplementationKind::Composite(implementation) =
+                &clone.implementation
+              {
+                implementation.write().unwrap().entry_point =
+                  Some(EntryPoint::Audio);
+              }
+            }
+          }
+          Ok::<bool, Never>(true)
+        })
+        .unwrap();
+    }
+    let AudioScopeLiftState {
+      new_vars,
+      new_functions,
+      ..
+    } = state;
+    self.top_level_vars.extend(new_vars);
+    for f in new_functions {
+      self.add_abstract_function(f);
+    }
   }
   /// Rewrites every window-info query (`window-time`, `mouse-coords`,
   /// `key-down?`, etc.) into a read of an implicit uniform binding, creating
@@ -2106,6 +2399,7 @@ impl Program {
                 value: None,
                 source_trace: exp.source_trace.clone(),
                 external: false,
+                audio_scope: false,
               });
               binding_name
             })
@@ -2591,6 +2885,7 @@ impl Program {
         value: None,
         source_trace: SourceTrace::empty(),
         external: false,
+        audio_scope: false,
       })
     }
   }
@@ -4741,9 +5036,14 @@ impl Program {
                 ));
                 errored = true;
               }
-              if signature.args.len() != 2
-                || signature.args[0].0.var_type.unwrap_known() != Type::F32
-                || signature.args[1].0.var_type.unwrap_known() != Type::F32
+              // Audio entries take up to two f32 args: `t` and `rate`,
+              // in that order. Shorter signatures simply don't receive
+              // the later args (a stateful closure entry usually needs
+              // neither).
+              if signature.args.len() > 2
+                || signature.args.iter().any(|(arg, _)| {
+                  arg.var_type.unwrap_known() != Type::F32
+                })
               {
                 errors.log(CompileError::new(
                   AudioEntryHasWrongArgumentTypes,
@@ -5559,6 +5859,14 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    // Must run after entry marking (it moves `@audio` markings from
+    // scoped closures to their audio clones) and before the
+    // reference-address-space rebuild (which drops scoped closures from
+    // the registry).
+    self.extract_audio_closure_scopes(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     self.monomorphize_reference_address_spaces();
     self.inline_static_array_length_calls();
     self.validate_gpu_window_info(&mut errors);
@@ -6063,6 +6371,16 @@ impl Program {
       .filter(|v| v.external)
       .map(|v| v.name.clone())
       .collect();
+    // Lifted audio-closure captures are seeded by the main thread at
+    // `start-audio` (a runtime write the reachability analysis can't
+    // see) and owned by the audio thread afterward — always shared,
+    // audience MAIN|AUDIO.
+    let audio_scope_globals: HashSet<Arc<str>> = self
+      .top_level_vars
+      .iter()
+      .filter(|v| v.audio_scope)
+      .map(|v| v.name.clone())
+      .collect();
     let mut shared: Vec<(Arc<str>, u32)> = var_names
       .iter()
       .filter_map(|name| {
@@ -6076,6 +6394,10 @@ impl Program {
           0
         } | if external_globals.contains(name) {
           participant::EXTERNAL
+        } else {
+          0
+        } | if audio_scope_globals.contains(name) {
+          participant::MAIN | participant::AUDIO
         } else {
           0
         };

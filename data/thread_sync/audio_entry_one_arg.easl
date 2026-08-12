@@ -1,0 +1,9 @@
+; Audio entries may take fewer than two arguments: a one-arg entry
+; receives `t` (and no `rate`); a zero-arg entry receives neither.
+(defn double-t [t: f32]: f32
+  (* 2. t))
+
+@cpu
+(defn main []
+  (start-audio double-t)
+  (spawn-window (fn [] ())))

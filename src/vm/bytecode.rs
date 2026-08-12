@@ -455,6 +455,11 @@ impl Instruction {
 pub struct Function {
   pub instructions: Range<u32>,
   pub return_position: u16,
+  /// Total stack words occupied by the function's arguments (which sit at
+  /// the start of its frame). Lets drivers that write args generically —
+  /// e.g. the audio driver's optional `t`/`rate` — know how many the
+  /// function actually takes.
+  pub arg_words: u16,
 }
 
 /// How the CPU-side value of a GPU-bound global is stored in the VM runtime.
