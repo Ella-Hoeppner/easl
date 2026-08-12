@@ -1,0 +1,9 @@
+2u
+7
+3.
+true
+(vec3u 1u 2u 3u)
+(vec2f 3. 4.)
+(vec4u 1u 0u 1u 0u)
+(vec3f 2. 2. 2.)
+(vec2f 1. 1.)

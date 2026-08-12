@@ -2101,6 +2101,105 @@ fn print_functions() -> Vec<AbstractFunctionSignature> {
   }]
 }
 
+/// The static name of the typed vector constructor for a size/suffix
+/// pair, e.g. (3, "u") → "vec3u". Alias targets need `&'static str`s.
+fn vec_constructor_name(n: u8, suffix: &str) -> &'static str {
+  match (n, suffix) {
+    (2, "f") => "vec2f",
+    (2, "i") => "vec2i",
+    (2, "u") => "vec2u",
+    (2, "b") => "vec2b",
+    (3, "f") => "vec3f",
+    (3, "i") => "vec3i",
+    (3, "u") => "vec3u",
+    (3, "b") => "vec3b",
+    (4, "f") => "vec4f",
+    (4, "i") => "vec4i",
+    (4, "u") => "vec4u",
+    (4, "b") => "vec4b",
+    _ => panic!("no vec constructor for size {n} suffix \"{suffix}\""),
+  }
+}
+
+/// Built-in `into` conversion overloads. Every one is a pure alias of an
+/// existing cast or constructor builtin (`AliasedBuiltin`): scalar →
+/// scalar casts, same-size vector → vector conversions, and scalar →
+/// vector splats. `rewrite_aliased_builtin_calls` rewrites resolved
+/// calls to the target builtin after inference, so these add no new
+/// backend logic. Users add their own `into` overloads for custom types
+/// as ordinary definitions; only an exact duplicate of one of these
+/// signatures conflicts.
+fn into_conversion_functions() -> Vec<AbstractFunctionSignature> {
+  let alias_signature = |arg: AbstractType,
+                         return_type: AbstractType,
+                         alias: &'static str| {
+    AbstractFunctionSignature {
+      name: "into".into(),
+      arg_types: vec![arg.owned()],
+      return_type,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::AliasedBuiltin(
+          alias,
+        ),
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    }
+  };
+  let mut signatures = vec![];
+  // Scalar → scalar casts. Sources exclude bool because the cast
+  // builtins' generic is constrained to `scalar()`; targets include it.
+  let numeric_scalars = [Type::F32, Type::I32, Type::U32];
+  let cast_targets = [
+    (Type::F32, "f32"),
+    (Type::I32, "i32"),
+    (Type::U32, "u32"),
+    (Type::Bool, "bool"),
+  ];
+  for from in &numeric_scalars {
+    for (to, cast_name) in &cast_targets {
+      if from != to {
+        signatures.push(alias_signature(
+          AbstractType::Type(from.clone()),
+          AbstractType::Type(to.clone()),
+          cast_name,
+        ));
+      }
+    }
+  }
+  // Same-size vector → vector conversions, and scalar → vector splats
+  // (the constructors' generics are `scalar_or_bool`, so bool sources
+  // are expressible here).
+  let all_scalars = [
+    (Type::F32, "f"),
+    (Type::I32, "i"),
+    (Type::U32, "u"),
+    (Type::Bool, "b"),
+  ];
+  for n in [2u8, 3, 4] {
+    for (_, to_suffix) in &all_scalars {
+      let constructor = vec_constructor_name(n, to_suffix);
+      let to_vec = specialized_vec_n_type(n, to_suffix);
+      for (from_scalar, from_suffix) in &all_scalars {
+        if from_suffix != to_suffix {
+          signatures.push(alias_signature(
+            specialized_vec_n_type(n, from_suffix),
+            to_vec.clone(),
+            constructor,
+          ));
+        }
+        signatures.push(alias_signature(
+          AbstractType::Type(from_scalar.clone()),
+          to_vec.clone(),
+          constructor,
+        ));
+      }
+    }
+  }
+  signatures
+}
+
 fn string_functions() -> Vec<AbstractFunctionSignature> {
   let string = AbstractType::Type(Type::String);
   let u32 = AbstractType::Type(Type::U32);
@@ -2855,6 +2954,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut bit_manipulation_functions());
   signatures.append(&mut derivative_functions());
   signatures.append(&mut print_functions());
+  signatures.append(&mut into_conversion_functions());
   signatures.append(&mut string_functions());
   signatures.append(&mut shader_dispatch_functions());
   signatures.append(&mut dynamic_array_functions());

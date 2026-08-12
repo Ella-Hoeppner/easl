@@ -598,3 +598,4 @@ conformance_test!(compound_mat_times_scalar);
 conformance_test!(compound_mat_plus_mat);
 conformance_test!(compound_mat_minus_mat);
 conformance_test!(compound_swizzle_vec_times_mat);
+conformance_test!(into_conversions);

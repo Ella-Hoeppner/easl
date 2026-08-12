@@ -2142,6 +2142,10 @@ impl TypedExp {
                 FunctionTargetConfiguration::BuiltinAttributeLookup(
                   builtin_ioattribute,
                 ) => return builtin_ioattribute.compiled_name().into(),
+                FunctionTargetConfiguration::AliasedBuiltin(alias) => panic!(
+                  "call to aliased builtin (alias of `{alias}`) survived to \
+                   emission; `rewrite_aliased_builtin_calls` must run first"
+                ),
                 FunctionTargetConfiguration::Default => {}
               },
               FunctionImplementationKind::StructConstructor => {

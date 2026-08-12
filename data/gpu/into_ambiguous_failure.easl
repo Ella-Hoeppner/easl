@@ -1,0 +1,6 @@
+; An `into` call with no expected type in context is ambiguous — many
+; overloads accept a u32 — and must fail with an inference error rather
+; than arbitrarily picking one.
+@cpu
+(defn main []
+  (print ~5u))

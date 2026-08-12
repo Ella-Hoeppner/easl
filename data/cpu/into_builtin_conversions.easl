@@ -1,0 +1,14 @@
+; Built-in `into` conversions: scalar casts, same-size vector
+; conversions, and scalar -> vector splats, all aliases of the
+; underlying cast/constructor builtins.
+@cpu
+(defn main []
+  (print ~2.9: u32)
+  (print ~7u: i32)
+  (print ~3i: f32)
+  (print ~1u: bool)
+  (print ~(vec3f 1.5 2.5 3.5): vec3u)
+  (print ~(vec2u 3u 4u): vec2f)
+  (print ~(vec4b true false true false): vec4u)
+  (print ~2.: vec3f)
+  (print ~1u: vec2f))

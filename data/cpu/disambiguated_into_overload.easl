@@ -1,11 +1,7 @@
-(defn into [x: u32]: f32
-  (f32 x))
-
-(defn into [x: u32]: i32
-  (i32 x))
-
+; The built-in `into` conversions are selected by the expected result
+; type: the same expression converts to different targets under
+; different ascriptions.
 @cpu
 (defn main []
   (print ~5u: f32)
   (print ~5u: i32))
-

@@ -130,6 +130,12 @@ pub enum FunctionTargetConfiguration {
   Default,
   SpecialCased(SpecialCasedBuiltinFunction),
   BuiltinAttributeLookup(BuiltinIOAttribute),
+  /// A builtin that's a pure alias of another builtin (e.g. the `into`
+  /// conversion overloads, which alias the cast/constructor builtins).
+  /// `rewrite_aliased_builtin_calls` replaces every resolved call to one
+  /// of these with a call to the target builtin right after type
+  /// inference, so no backend ever sees the alias name.
+  AliasedBuiltin(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq)]

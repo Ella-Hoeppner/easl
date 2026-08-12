@@ -38,7 +38,7 @@ use crate::{
     },
     functions::{
       AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
-      Ownership, TopLevelFunction,
+      FunctionTargetConfiguration, Ownership, TopLevelFunction,
     },
     structs::{AbstractStructField, UntypedStruct},
     types::{
@@ -5171,6 +5171,95 @@ impl Program {
       }
     }
   }
+  /// Rewrites one expression's aliased-builtin calls in place (see
+  /// `rewrite_aliased_builtin_calls`).
+  fn rewrite_aliased_builtin_calls_in_exp(&self, exp: &mut TypedExp) {
+    exp
+      .walk_mut(&mut |e| {
+        if let ExpKind::Application(f_exp, _) = &mut e.kind {
+          let alias: Option<&'static str> =
+            if let TypeState::Known(Type::Function(signature)) =
+              &f_exp.data.kind
+              && let Some(ancestor) = &signature.abstract_ancestor
+              && let FunctionImplementationKind::Builtin {
+                target_configuration:
+                  FunctionTargetConfiguration::AliasedBuiltin(alias),
+                ..
+              } = ancestor.read().unwrap().implementation
+            {
+              Some(alias)
+            } else {
+              None
+            };
+          if let Some(alias) = alias {
+            let ExpKind::Name(callee_name) = &mut f_exp.kind else {
+              panic!("aliased builtin applied through a non-Name callee")
+            };
+            *callee_name = alias.into();
+            // Swap in an abstract ancestor from the target builtin's
+            // registry bucket: backends dispatch on the (rewritten)
+            // callee name plus the concrete signature's types, which
+            // inference already resolved, so among same-name candidates
+            // only arity needs to match (for ownership zipping).
+            let concrete_arity =
+              if let TypeState::Known(Type::Function(signature)) =
+                &f_exp.data.kind
+              {
+                signature.args.len()
+              } else {
+                unreachable!()
+              };
+            let replacement_ancestor = self
+              .abstract_functions
+              .get(alias)
+              .and_then(|candidates| {
+                candidates
+                  .iter()
+                  .find(|candidate| {
+                    candidate.read().unwrap().arg_types.len()
+                      == concrete_arity
+                  })
+                  .or(candidates.first())
+                  .cloned()
+              })
+              .unwrap_or_else(|| {
+                panic!("alias target `{alias}` not found in registry")
+              });
+            if let TypeState::Known(Type::Function(signature)) =
+              &mut f_exp.data.kind
+            {
+              signature.abstract_ancestor = Some(replacement_ancestor);
+            }
+          }
+        }
+        Ok::<bool, Never>(true)
+      })
+      .unwrap();
+  }
+  /// Replaces every resolved call to an `AliasedBuiltin` (e.g. the
+  /// built-in `into` conversion overloads) with a call to its target
+  /// builtin — callee name and abstract ancestor both — so no backend
+  /// ever needs to know the alias name. Runs immediately after type
+  /// inference, when overload resolution has already chosen the alias
+  /// signature and the concrete argument/return types are final.
+  pub fn rewrite_aliased_builtin_calls(&mut self) {
+    for f in self.abstract_functions_iter() {
+      let FunctionImplementationKind::Composite(implementation) =
+        f.read().unwrap().implementation.clone()
+      else {
+        continue;
+      };
+      let mut implementation = implementation.write().unwrap();
+      self.rewrite_aliased_builtin_calls_in_exp(&mut implementation.expression);
+    }
+    let mut top_level_vars = std::mem::take(&mut self.top_level_vars);
+    for var in top_level_vars.iter_mut() {
+      if let Some(value) = &mut var.value {
+        self.rewrite_aliased_builtin_calls_in_exp(value);
+      }
+    }
+    self.top_level_vars = top_level_vars;
+  }
   pub fn catch_bind_group_collisions(&self, errors: &mut ErrorLog) {
     // Only explicitly-written numbers can collide; elided bindings are
     // assigned free numbers afterward (`assign_elided_bindings`).
@@ -5367,6 +5456,7 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.rewrite_aliased_builtin_calls();
     self.validate_control_flow(&mut errors);
     if !errors.is_empty() {
       return errors;

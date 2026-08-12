@@ -453,6 +453,10 @@ error_test!(
   unshareable_bool_var_failure,
   CompileErrorKind::UnshareableBindingType("bool".to_string())
 );
+error_test!(
+  into_ambiguous_failure,
+  CompileErrorKind::CouldntInferTypes
+);
 error_test!(external_string_var, CompileErrorKind::ExternalStringVar);
 error_test!(
   external_string_field_var,

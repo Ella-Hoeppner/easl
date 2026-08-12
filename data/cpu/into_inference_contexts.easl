@@ -1,0 +1,30 @@
+; The expected result type that selects among `into` overloads can come
+; from any inference context, not just a literal ascription: concrete
+; function-argument types, declared return types, if-branch unification,
+; assignment targets, and nesting.
+(struct Celsius
+  deg: f32)
+
+(defn into [x: u32]: Celsius
+  (Celsius (f32 x)))
+
+(defn plus-32 [f: f32]: f32
+  (+ 32. f))
+
+(defn as-f32 [x: u32]: f32
+  ~x)
+
+@local
+(var accum: f32 0.)
+
+@cpu
+(defn main []
+  (print (plus-32 ~5u))
+  (print (as-f32 9u))
+  (print (if true ~1u 2.5))
+  (= accum ~3u)
+  (print accum)
+  (let [c ~7u: Celsius]
+    (print c.deg))
+  (let [f2 ~2u: f32]
+    (print ~f2: vec2f)))
