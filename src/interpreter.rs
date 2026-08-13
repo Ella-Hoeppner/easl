@@ -1918,15 +1918,6 @@ fn apply_builtin_fn<IO: IOManager>(
       };
       #[cfg(feature = "window")]
       {
-        // Seed the lifted capture globals from the closure value's scope
-        // before the bootstrap publish below ships them to the audio
-        // replica's first adopt.
-        if let Some(scope_struct) = &scope_struct
-          && let Value::Fun(Function::Scoped { scope, .. }) = audio_value
-        {
-          let scope_value = (**scope).clone();
-          env.seed_audio_scope_globals(scope_struct, &scope_value);
-        }
         // A typical program puts `(start-audio ...)` inside a
         // `spawn-window` callback that fires every frame, so this builtin
         // gets called repeatedly. We only have one `AudioSource` to spend
@@ -1935,6 +1926,20 @@ fn apply_builtin_fn<IO: IOManager>(
         // manager decides what to do with each (StdoutIO noops on the
         // already-running case; StringIO records every event).
         let mut source = env.audio_source.take();
+        // Seed the lifted capture globals from the closure value's scope
+        // before the bootstrap publish below ships them to the audio
+        // replica's first adopt. Only on the call that actually starts
+        // the audio thread: re-seeding on later calls would overwrite
+        // main's replica (and its adopted audio-thread state) with the
+        // closure value's original fields — replica contents and dirty
+        // flags must track actual handoffs, not every frame's no-op call.
+        if source.is_some()
+          && let Some(scope_struct) = &scope_struct
+          && let Value::Fun(Function::Scoped { scope, .. }) = audio_value
+        {
+          let scope_value = (**scope).clone();
+          env.seed_audio_scope_globals(scope_struct, &scope_value);
+        }
         // First call (we hold the source): activate the shared table and
         // bootstrap-publish every shared global, so the new replica's first
         // adopt sees the current state of everything (e.g. `load-wav`ed
@@ -3006,8 +3011,13 @@ fn gpu_binding_infos_from(
     .collect()
 }
 
-/// Derives the [`DerivedGpuInterface`] of a validated program.
+/// Derives the [`DerivedGpuInterface`] of a validated program. Only vars
+/// actually referenced by GPU code (`Program::gpu_used_globals`) become
+/// binding vars: a GPU-space var no shader touches is an ordinary CPU
+/// value with no buffer, no uploads, and no readbacks — its declaration
+/// exists only in the emitted WGSL.
 pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
+  let gpu_used = program.gpu_used_globals();
   let binding_vars: Vec<(
     GroupAndBinding,
     Arc<str>,
@@ -3021,6 +3031,7 @@ pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
         address_space,
         group_and_binding: Some(binding_spec),
       } = var.kind
+        && gpu_used.contains(&var.name)
       {
         matches!(
           address_space,
@@ -4158,9 +4169,12 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   gpu_entries: Vec<GpuEntryInfo>,
   /// Source-level entry name -> dense id into `gpu_entries`.
   gpu_entry_ids: HashMap<Arc<str>, u16>,
-  /// Implicit uniform bindings for window-info queries, refreshed from the
-  /// IO manager at the start of each frame.
-  window_info_bindings: Vec<(WindowInfoBindingSource, Arc<str>)>,
+  /// Implicit uniform vars for window-info queries, refreshed from the IO
+  /// manager at the start of each frame. The type is carried here (rather
+  /// than looked up in `binding_vars`) because a query used only by CPU
+  /// code is not GPU-used and so has no binding — its env value still
+  /// needs the per-frame refresh.
+  window_info_bindings: Vec<(WindowInfoBindingSource, Arc<str>, Type)>,
   /// Sync state for each GPU-bound variable, keyed by name.
   buffer_states: HashMap<Arc<str>, SharedBufferState>,
   /// Directory of the source .easl file, used to resolve relative paths.
@@ -4284,7 +4298,19 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       binding_stages,
       gpu_entries,
       gpu_entry_ids,
-      window_info_bindings: program.window_info_bindings.clone(),
+      window_info_bindings: program
+        .window_info_bindings
+        .iter()
+        .map(|(source, name)| {
+          let ty = program
+            .top_level_vars
+            .iter()
+            .find(|v| v.name == *name)
+            .map(|v| v.var_type.clone())
+            .expect("window-info binding without a top-level var");
+          (source.clone(), name.clone(), ty)
+        })
+        .collect(),
       buffer_states,
       source_dir,
       current_render_target: None,
@@ -4371,15 +4397,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       return;
     }
     let infos = self.window_info_bindings.clone();
-    for (source, name) in infos {
-      let Some(ty) = self
-        .binding_vars
-        .iter()
-        .find(|(_, n, _, _)| *n == name)
-        .map(|(_, _, ty, _)| ty.clone())
-      else {
-        continue;
-      };
+    for (source, name, ty) in infos {
       let words = window_info_words(&source, &self.io);
       let value = Value::from_vm_words(&ty, &words);
       if let Some(binding) =
@@ -4771,11 +4789,11 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   }
 
   /// Entry-start bootstrap for embedder-facing (`@external`) vars: adopt
-  /// anything the handle pre-seeded (so even the first frame sees it),
-  /// then publish the program-computed initial value of any external var
-  /// the embedder hasn't seeded — this is how `read_external_var`
-  /// observes initializer values. No-op unless an external handle is
-  /// live.
+  /// anything the handle pre-seeded, so even code before the first frame
+  /// boundary (and frame 0's dispatches) sees the embedder's values.
+  /// `@external` vars live in GPU-space address spaces and so can't have
+  /// initializers — seeding is the embedder's job, through the handle.
+  /// No-op unless an external handle is live.
   pub fn bootstrap_external_globals(&mut self) {
     if self.shared_table.live_others(participant::MAIN)
       & participant::EXTERNAL
@@ -4784,14 +4802,6 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       return;
     }
     self.adopt_shared_globals();
-    for index in 0..self.shared_globals.len() {
-      if self.shared_globals[index].2 & participant::EXTERNAL != 0
-        && !self.shared_table.slots[index].has_published()
-      {
-        self.shared_dirty[index] = true;
-      }
-    }
-    self.publish_shared_globals(0);
   }
 
   /// Adopts any shared-global snapshots published by other participants
@@ -6989,7 +6999,7 @@ fn refresh_vm_window_info<IO: IOManager>(
     return;
   }
   let infos = env.window_info_bindings.clone();
-  for (source, name) in infos {
+  for (source, name, _) in infos {
     let words = window_info_words(&source, &env.io);
     program.write_global(&name, &words);
     if let Some(index) = program
@@ -7123,10 +7133,11 @@ fn vm_publish_shared<IO: IOManager>(
 }
 
 /// Entry-start bootstrap for embedder-facing (`@external`) vars, VM side:
-/// adopt anything the handle pre-seeded (so even the first frame sees it),
-/// then publish the program-computed initial value of any external var the
-/// embedder hasn't seeded — this is how `read_external_var` observes
-/// initializer values. No-op unless an external handle is live.
+/// adopt anything the handle pre-seeded, so even code before the first
+/// frame boundary (and frame 0's dispatches) sees the embedder's values.
+/// `@external` vars live in GPU-space address spaces and so can't have
+/// initializers — seeding is the embedder's job, through the handle.
+/// No-op unless an external handle is live.
 fn vm_bootstrap_external<IO: IOManager>(
   program: &mut crate::vm::bytecode::BytecodeProgram,
   env: &mut EvaluationEnvironment<IO>,
@@ -7137,14 +7148,7 @@ fn vm_bootstrap_external<IO: IOManager>(
     return Ok(());
   }
   vm_adopt_shared(program, env, slots_dirty);
-  for index in 0..program.code.shared_vars.len() {
-    if program.code.shared_vars[index].audience & participant::EXTERNAL != 0
-      && !table.slots[index].has_published()
-    {
-      program.shared_dirty[index] = true;
-    }
-  }
-  vm_publish_shared(program, env, slots_dirty, 0)
+  Ok(())
 }
 
 impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {

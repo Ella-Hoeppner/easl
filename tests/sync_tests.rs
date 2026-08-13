@@ -112,3 +112,7 @@ sync_test!(array_length_no_readback);
 // windowed frame path may not collapse per-dispatch uploads of the same
 // binding into one before running the passes.
 sync_test!(windowed_scope_upload_ordering);
+// A storage-write var no shader touches must never sync (the
+// usage-derived sharing analysis: address space alone creates no GPU
+// obligations).
+sync_test!(cpu_scratch_var_no_upload);

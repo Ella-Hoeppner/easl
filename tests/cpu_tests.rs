@@ -157,3 +157,4 @@ cpu_test!(disambiguated_overload);
 cpu_test!(disambiguated_into_overload);
 cpu_test!(audio_closure_entry);
 cpu_test!(audio_closure_entry_hofs);
+cpu_test!(cpu_only_bool_var);

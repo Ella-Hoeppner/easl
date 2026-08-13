@@ -1,0 +1,12 @@
+; An unannotated (storage-write) var no shader touches is pure CPU
+; scratch: it carries no GPU sync obligations, so no upload or readback
+; of `scratch` may ever appear — while the GPU-used var syncs normally.
+(var scratch: f32)
+(var result: f32)
+
+@cpu
+(defn main []: ()
+  (= scratch 3.)
+  (dispatch-compute-shader (fn [] (= result 7.)) (vec3u 1u 1u 1u))
+  (= scratch (+ scratch 1.))
+  (print (* scratch result)))

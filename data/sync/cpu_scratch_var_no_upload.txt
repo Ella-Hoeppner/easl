@@ -1,0 +1,3 @@
+upload: result
+readback: result
+print: 28.

@@ -4,11 +4,9 @@
 ; thread-shared, so the `start-audio` bootstrap publish carries the main
 ; side's current values into the audio replica.
 
-@local
 (var sample: [f32])
 
-@local
-(var gain: f32 0.5)
+(var gain: f32)
 
 @audio
 (defn f [t: f32 rate: f32]: f32

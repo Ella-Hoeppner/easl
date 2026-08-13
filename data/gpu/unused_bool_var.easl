@@ -1,0 +1,10 @@
+; A bool-typed storage-write var is legal when no GPU entry point touches
+; it: it's an ordinary CPU value, omitted from the emitted WGSL (WGSL has
+; no host-shareable bool), so the shader output still validates.
+(var muted: bool)
+(var out: f32)
+
+@{workgroup-size 1}
+@compute
+(defn run []
+  (= out 1.))

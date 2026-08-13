@@ -1,11 +1,11 @@
 ; An @external var read only by the audio thread: its audience has no main
 ; bit, so embedder writes flow to audio directly through the table — the
-; main thread must never adopt it (no main-adopt lines may appear). Main
-; publishes it exactly once, at the entry bootstrap (the initializer, for
-; the embedder's benefit); the start-audio bootstrap leaves it alone,
-; since a snapshot already exists for the new audio replica to adopt.
-@external @local
-(var gain: f32 0.1)
+; main thread must never publish OR adopt it (no main- lines for `gain`
+; may appear anywhere, bootstrap included: main's replica of a var outside
+; its audience is never authoritative). The embedder seeds it before the
+; run and retunes it mid-run; each audio batch adopts the newest value.
+@external
+(var gain: f32)
 
 @audio
 (defn f [t: f32

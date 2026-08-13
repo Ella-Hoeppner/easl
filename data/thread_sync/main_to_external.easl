@@ -1,10 +1,10 @@
 ; The program writes an @external var each frame; the embedder reads it
-; after each frame boundary. The entry-start bootstrap publishes the
-; initializer (the embedder never seeded this var), and each frame's write
-; is published at the frame boundary for the embedder's next read to
-; adopt.
-@external @local
-(var level: f32 0.)
+; after each frame boundary: each frame's write is published at the frame
+; boundary for the embedder's next read to adopt. (@external vars can't
+; have initializers — storage starts zeroed, and seeding is the embedder's
+; job through the handle.)
+@external
+(var level: f32)
 
 @cpu
 (defn main []

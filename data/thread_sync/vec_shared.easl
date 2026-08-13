@@ -1,8 +1,6 @@
 ; A multi-slot (vec2f) shared variable: the snapshot carries all
 ; components, and both runtimes' word layouts must agree.
-@local
-(var offset: vec2f
-     (vec2f 0.25 0.5))
+(var offset: vec2f)
 
 @audio
 (defn f [t: f32
@@ -14,5 +12,5 @@
   (spawn-window (fn []
                     (start-audio f)
                     (= offset
-                       (+ offset (vec2f 0.25 0.))))))
+                       (+ offset (vec2f 0.25 0.5))))))
 

@@ -1,4 +1,4 @@
-main-publish: gain
+external-write: gain = 0.1
 spawn-window
 frame 0
 start-audio: f

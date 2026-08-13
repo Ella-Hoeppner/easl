@@ -1891,11 +1891,14 @@ impl BytecodeCompilationState {
   /// `extract_audio_closure_scopes`), reading from the scope value's
   /// flat slot layout starting at `base_pos` and recursing into captured
   /// closures' scopes at their field offsets. The audio-scope sibling of
-  /// `emit_scope_capture_writes`.
+  /// `emit_scope_capture_writes`. Every seeded global's name is pushed
+  /// into `seeded`, so the caller can mark exactly those vars
+  /// shared-dirty inside the same one-shot guard the writes run under.
   fn emit_audio_scope_seed_writes(
     &mut self,
     scope_struct: &AbstractStruct,
     base_pos: u16,
+    seeded: &mut Vec<Arc<str>>,
   ) {
     let mut offset = 0u16;
     for field in scope_struct.fields.iter() {
@@ -1907,7 +1910,11 @@ impl BytecodeCompilationState {
           && let Some(nested_struct) =
             field_ancestor.read().unwrap().captured_scope.clone()
         {
-          self.emit_audio_scope_seed_writes(&nested_struct, base_pos + offset);
+          self.emit_audio_scope_seed_writes(
+            &nested_struct,
+            base_pos + offset,
+            seeded,
+          );
         }
       } else {
         let global_name: Arc<str> =
@@ -1939,6 +1946,7 @@ impl BytecodeCompilationState {
              bytecode compilation"
           )
         }
+        seeded.push(global_name);
       }
       offset += vm_type_size(field_type);
     }
@@ -2656,11 +2664,57 @@ impl TypedExp {
         // A scoped closure runs on the audio thread as its audio clone
         // (see `extract_audio_closure_scopes`); seed the lifted capture
         // globals from the closure value before the host op's bootstrap
-        // publish ships them to the audio replica.
+        // publish ships them to the audio replica. The seeds run under a
+        // one-shot guard: `start-audio` is typically called every frame,
+        // and re-seeding on later calls would overwrite main's replica
+        // with the closure value's original state — dirty flags and
+        // replica contents must track actual writes, and only the call
+        // that starts the audio thread actually hands the state off. The
+        // guard flag lives in a fresh stack slot, which starts zeroed and
+        // persists across calls (static addressing, the stack is never
+        // reset).
         let entry_name: Arc<str> = if let Some(scope_struct) = &scope_struct
         {
           let value_pos = args[0].compile_to_bytecode(false, state).unwrap();
-          state.emit_audio_scope_seed_writes(scope_struct, value_pos);
+          let seed_done_slot = state.take_stack_slot(1);
+          let guard_jump_pos = state.instructions.len();
+          state.push_instruction(Instruction {
+            op: Op::JumpWhen,
+            arg_positions: [seed_done_slot, 0, 0],
+            return_position: 0,
+          });
+          let mut seeded: Vec<Arc<str>> = vec![];
+          state.emit_audio_scope_seed_writes(
+            scope_struct,
+            value_pos,
+            &mut seeded,
+          );
+          // Mark the seeded shared vars dirty inside the same guard, so
+          // the host op's bootstrap publish (which consumes dirty flags)
+          // ships them — the generic post-application marking ignores
+          // `SeedsGlobalVar` effects precisely so that this, the accurate
+          // conditional marking, is the only marking.
+          for name in seeded {
+            if let Some(shared_index) =
+              state.shared_var_indices.get(&name).copied()
+            {
+              state.push_instruction(Instruction {
+                op: Op::MarkSharedDirty,
+                arg_positions: [shared_index, 0, 0],
+                return_position: 0,
+              });
+            }
+          }
+          state.push_instruction(Instruction {
+            op: Op::Constant,
+            arg_positions: [0, 1, 0],
+            return_position: seed_done_slot,
+          });
+          let after_seeds = state.instructions.len() as u32;
+          state.instructions[guard_jump_pos].arg_positions[1] =
+            (after_seeds >> 16) as u16;
+          state.instructions[guard_jump_pos].arg_positions[2] =
+            after_seeds as u16;
           format!("{original_name}_audio").into()
         } else {
           original_name

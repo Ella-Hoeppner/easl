@@ -555,6 +555,7 @@ thread_sync_test!(
 thread_sync_test!(
   external_to_audio_direct,
   [
+    ExternalWrite("gain", &[0.1]),
     Frame,
     AudioBatch(2),
     ExternalWrite("gain", &[0.3]),
@@ -584,4 +585,8 @@ thread_sync_test!(
 thread_sync_test!(
   audio_entry_one_arg,
   [Frame, AudioBatch(4)]
+);
+thread_sync_test!(
+  local_never_shared,
+  [Frame, AudioBatch(2), Frame, AudioBatch(2)]
 );

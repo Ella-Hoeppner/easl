@@ -318,11 +318,17 @@ pub enum CompileErrorKind {
   #[error("Unsized arrays are not allowed in the `uniform` address space")]
   UnsizedArrayInUniform,
   #[error(
-    "This variable's type contains a `{0}`, which can't be shared with \
-     the GPU. (unannotated variables default to `@storage-write`, annotate as \
-     `@local` if it doesn't need to be shared between contexts)"
+    "This variable is used by GPU shader code, but its type contains a \
+     `{0}`, which can't be shared with the GPU. (a `{0}`-containing \
+     variable is fine as long as no GPU entry point touches it)"
   )]
   UnshareableBindingType(String),
+  #[error(
+    "`@local` variables may not be marked `@external`: `@local` means one \
+     independent copy per execution context, never shared. Use a GPU-space \
+     address space instead (the default, `storage-write`, works)"
+  )]
+  ExternalLocalVar,
   #[error(
     "Texture variables may not be marked `@external`: textures have no \
      word-level serialization, so they can't be shared with an external \

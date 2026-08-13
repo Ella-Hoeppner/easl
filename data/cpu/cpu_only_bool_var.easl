@@ -1,0 +1,12 @@
+; A storage-write var whose type contains a bool is legal as long as no
+; GPU entry point touches it — it's an ordinary CPU value (and is
+; skipped from WGSL emission).
+(var flag: bool)
+(var count: u32)
+
+@cpu
+(defn main []
+  (= flag true)
+  (when flag
+    (= count 5u))
+  (print count))

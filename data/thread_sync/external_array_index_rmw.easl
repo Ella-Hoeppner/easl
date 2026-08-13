@@ -1,7 +1,7 @@
 ; Index writes through the handle are read-modify-write on the whole
 ; array: writing element 2 must preserve element 1's earlier value, and
 ; each write publishes the full array for main to adopt and print.
-@external @local
+@external
 (var params: [3: f32])
 
 @cpu

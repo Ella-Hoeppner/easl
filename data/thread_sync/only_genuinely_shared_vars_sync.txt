@@ -5,9 +5,9 @@ start-audio: f
 main-publish: both
 audio-batch 0 x2
 audio-adopt: both
-samples: 0.4 0.4
+samples: 0.1 0.1
 frame 1
 main-publish: both
 audio-batch 1 x2
 audio-adopt: both
-samples: 0.5 0.5
+samples: 0.2 0.2

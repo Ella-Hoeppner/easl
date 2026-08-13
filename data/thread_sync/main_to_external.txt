@@ -1,4 +1,3 @@
-main-publish: level
 spawn-window
 frame 0
 main-publish: level

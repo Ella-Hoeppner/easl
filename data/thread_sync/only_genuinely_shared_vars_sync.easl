@@ -3,17 +3,11 @@
 ; published or adopted, even though both are written every iteration. Only
 ; `both` (written by main, read by audio) is thread-shared, and the
 ; bootstrap publish at start-audio enumerates exactly the shared set.
-@local
-(var mainside: f32
-     1.)
+(var mainside: f32)
 
-@local
-(var audioside: f32
-     2.)
+(var audioside: f32)
 
-@local
-(var both: f32
-     3.)
+(var both: f32)
 
 @audio
 (defn f [t: f32

@@ -146,12 +146,6 @@ pub struct TopLevelVar {
   /// `ExternalVars` handle at any time, so it's unconditionally included in
   /// the thread-shared set (the static analysis can't see external access).
   pub external: bool,
-  /// A compiler-lifted capture of an audio-entry closure (see
-  /// `extract_audio_closure_scopes`): unconditionally thread-shared with
-  /// audience MAIN|AUDIO — the main thread seeds it at `start-audio`
-  /// (invisible to static analysis) and the audio thread owns it from
-  /// then on, publishing its state at every batch boundary.
-  pub audio_scope: bool,
 }
 
 impl TopLevelVar {
@@ -275,23 +269,20 @@ impl TopLevelVar {
                       parens_source_trace.clone(),
                     ));
                   }
-                  if matches!(
-                    address_space,
-                    Uniform | StorageRead | StorageReadWrite
-                  ) {
-                    // Bindings must be host-shareable; bool- and
-                    // String-containing types aren't.
-                    if t.involves_bool() {
-                      errors.log(CompileError::new(
-                        UnshareableBindingType("bool".to_string()),
-                        parens_source_trace.clone(),
-                      ));
-                    } else if t.involves_string() {
-                      errors.log(CompileError::new(
-                        UnshareableBindingType("String".to_string()),
-                        parens_source_trace.clone(),
-                      ));
-                    }
+                  // Note: bool-/String-containing types in GPU address
+                  // spaces are NOT rejected here — such a var is an
+                  // ordinary CPU value as long as no GPU entry point
+                  // touches it. The usage-based check lives in
+                  // `Program::validate_gpu_used_binding_types`.
+                  if external && address_space == Local {
+                    // `@local` means one independent copy per execution
+                    // context, never shared — with anything, including an
+                    // embedder. External vars live in the GPU-space
+                    // address spaces (the default, storage-write, works).
+                    errors.log(CompileError::new(
+                      ExternalLocalVar,
+                      parens_source_trace.clone(),
+                    ));
                   }
                   if external && address_space == Handle {
                     // Textures have no word serialization, so they can't
@@ -344,7 +335,6 @@ impl TopLevelVar {
                     value,
                     source_trace: parens_source_trace.clone(),
                     external,
-                    audio_scope: false,
                     kind: TopLevelVariableKind::Var {
                       address_space,
                       group_and_binding,
@@ -387,7 +377,6 @@ impl TopLevelVar {
                         value: Some(value_expression),
                         source_trace: parens_source_trace.clone(),
                         external: false,
-                        audio_scope: false,
                         kind: if var_kind_name == "override" {
                           TopLevelVariableKind::Override
                         } else {

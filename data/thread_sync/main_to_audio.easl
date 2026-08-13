@@ -3,9 +3,7 @@
 ; Each frame's write is published at the frame boundary and adopted at the
 ; next audio batch boundary — the samples step through the values one batch
 ; behind the frame that wrote them.
-@local
-(var gain: f32
-     0.25)
+(var gain: f32)
 
 @audio
 (defn f [t: f32

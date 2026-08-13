@@ -1,4 +1,4 @@
-@external @local (var s: String "hi")
+@external (var s: String)
 
 @cpu
 (defn main []

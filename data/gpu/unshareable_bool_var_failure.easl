@@ -1,5 +1,6 @@
-; Bools aren't host-shareable in WGSL, so a bool-typed global can't live
-; in the (default) GPU-shared address space — it must be `@local`.
+; Bools aren't host-shareable in WGSL, so a bool-typed global may not be
+; touched by GPU code. (Declaring one is fine — it's an ordinary CPU
+; value until a shader references it.)
 (var flag: bool)
 
 @{workgroup-size 1}

@@ -19,7 +19,7 @@ Easl doesn't yet have fully-fledged documentation. For now, an explanation of ea
 | Sum Types | aka rust-style Enums | ✅² |
 | Tuples | | ❌ |
 | Higher-order functions | Functions that can accept other functions as inputs, and return other functions as outputs | ✅³ |
-| Closures | Anonymous functions that capture bindings from the scope in which they're created | ✅⁴ |
+| Closures | Anonymous functions that capture bindings from the scope in which they're created | ✅ |
 | Type Constraints | Similar to typeclasses/traits/interfaces, but able to coexist seamlessly with arbitrary function overloading | 🚧 |
 | Modules | Organize types and functions into modules, and refer to modules defined in other files | ❌ |
 | Anonymous Structs | Structs without names, characterized only by the names and types of their fields. Useful for grouping values together in a way that offers more clarity than a tuple, without having to explicitly declare a new type. | ❌ |
@@ -30,4 +30,3 @@ Easl doesn't yet have fully-fledged documentation. For now, an explanation of ea
 * ¹ All core types, math functions, and control flow operations from wgsl are already implemented. Missing features include barrier functions, texture types other than basic 2d textures, and extension features like subgroup/quad functions.
 * ² Sum Types are supported, but for now may only contain at most a single internal field. This limitation will be resolved as soon as tuple are implemented.
 * ³ Higher-order functions currently have a significant restriction: all function-type arguments must be inlinable at compile time. A function `f` that takes another function as an argument may be called like `(f g)`, but not like `(f (if a g h))`, because the compiler needs to be able to inline the higher-order argument at compile time. If you violate this restriction, you'll get a compilation error. This limitation will eventually be resolved, but is blocked behind several other unimplemented internal features, so it may take some time.
-* ⁴ Closures work but have one signicant restriction: they may not modify any locally-bound values that they capture. This restriction will eventually be relaxed.

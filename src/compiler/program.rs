@@ -370,6 +370,34 @@ struct AudioScopeLiftState {
   new_functions: Vec<Arc<RwLock<AbstractFunctionSignature>>>,
 }
 
+/// The transitive set of lifted-capture global names for a closure chain
+/// rooted at `scope_struct` (`<scope>_audio_data_<capture>` for every data
+/// field, recursing through captured closures' own scopes) — the same
+/// traversal the runtime seed writers walk, so the set matches exactly
+/// what `start-audio` seeds at handoff.
+fn collect_audio_scope_global_names(
+  scope_struct: &AbstractStruct,
+  out: &mut Vec<Arc<str>>,
+) {
+  for field in scope_struct.fields.iter() {
+    let AbstractType::Type(field_type) = &field.field_type else {
+      panic!("captured scope field with non-concrete type")
+    };
+    if let Type::Function(signature) = field_type {
+      if let Some(field_ancestor) = &signature.abstract_ancestor
+        && let Some(nested_struct) =
+          field_ancestor.read().unwrap().captured_scope.clone()
+      {
+        collect_audio_scope_global_names(&nested_struct, out);
+      }
+    } else {
+      out.push(
+        format!("{}_audio_data_{}", scope_struct.name.0, field.name).into(),
+      );
+    }
+  }
+}
+
 /// Accumulator for `extract_dispatched_closure_scopes`: bindings and GPU
 /// clones are created while iterating the registry, so they're collected
 /// here and installed at the end of the pass.
@@ -377,7 +405,8 @@ struct DispatchScopeLiftState {
   created_bindings: HashSet<Arc<str>>,
   new_vars: Vec<TopLevelVar>,
   /// Original captured-closure name → its (memoized) GPU clone.
-  callee_clones: HashMap<Arc<str>, (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>)>,
+  callee_clones:
+    HashMap<Arc<str>, (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>)>,
   new_functions: Vec<Arc<RwLock<AbstractFunctionSignature>>>,
 }
 
@@ -1725,8 +1754,7 @@ impl Program {
     body
       .walk_mut(&mut |e| {
         let scope_field_name = |exp: &TypedExp| -> Option<Arc<str>> {
-          if let ExpKind::Access(Accessor::Field(field_name), inner) =
-            &exp.kind
+          if let ExpKind::Access(Accessor::Field(field_name), inner) = &exp.kind
             && matches!(&inner.kind, ExpKind::Name(name) if name == scope_name)
           {
             Some(field_name.clone())
@@ -1786,8 +1814,7 @@ impl Program {
                rewrite"
             ),
           }
-        } else if matches!(&e.kind, ExpKind::Name(name) if name == scope_name)
-        {
+        } else if matches!(&e.kind, ExpKind::Name(name) if name == scope_name) {
           panic!(
             "dispatched closure body uses its whole captured scope as a \
              value; captures are lifted to per-field globals, which only \
@@ -1917,7 +1944,6 @@ impl Program {
               value: None,
               source_trace: source_trace.clone(),
               external: false,
-              audio_scope: false,
             });
           }
           (field.name.clone(), CaptureRewrite::Global(global_name))
@@ -2046,8 +2072,11 @@ impl Program {
                shouldn't be captured"
             )
           }
-          let (clone_name, clone_signature) = self
-            .audioify_captured_closure(field_ancestor.clone(), state, errors);
+          let (clone_name, clone_signature) = self.audioify_captured_closure(
+            field_ancestor.clone(),
+            state,
+            errors,
+          );
           (
             field.name.clone(),
             CaptureRewrite::CalleeClone {
@@ -2088,18 +2117,20 @@ impl Program {
             state.new_vars.push(TopLevelVar {
               name: global_name.clone(),
               kind: TopLevelVariableKind::Var {
-                // A plain local (per-runtime-replica) global: each
-                // thread's VM holds its own copy, synchronized through
-                // the shared-snapshot system like any thread-shared var.
-                // Never GPU-bound.
-                address_space: VariableAddressSpace::Local,
-                group_and_binding: None,
+                // An ordinary storage-write global, shared between main
+                // and audio through the standard usage-derived analysis:
+                // the audio clone's body reads/writes it, and main's seed
+                // write at `start-audio` is visible as a
+                // `SeedsGlobalVar` effect on the call site. No GPU entry
+                // ever references it, so it never becomes a runtime GPU
+                // binding.
+                address_space: VariableAddressSpace::StorageReadWrite,
+                group_and_binding: Some(BindingSpec::Elided),
               },
               var_type: field_type.clone(),
               value: None,
               source_trace: source_trace.clone(),
               external: false,
-              audio_scope: true,
             });
           }
           (field.name.clone(), CaptureRewrite::Global(global_name))
@@ -2215,7 +2246,6 @@ impl Program {
       audio_clones: HashMap::new(),
       new_functions: vec![],
     };
-    let mut processed_entries: HashSet<Arc<str>> = HashSet::new();
     for f in self.abstract_functions_iter() {
       let FunctionImplementationKind::Composite(implementation) =
         f.read().unwrap().implementation.clone()
@@ -2223,37 +2253,36 @@ impl Program {
         continue;
       };
       implementation
-        .read()
+        .write()
         .unwrap()
         .expression
-        .walk(&mut |exp| {
-          if let ExpKind::Application(applied_f, args) = &exp.kind
+        .walk_mut(&mut |exp| {
+          let source_trace = exp.source_trace.clone();
+          if let ExpKind::Application(applied_f, args) = &mut exp.kind
             && let ExpKind::Name(applied_f_name) = &applied_f.kind
             && &**applied_f_name == "start-audio"
           {
-            let Type::Function(signature) = args[0].data.unwrap_known()
-            else {
+            let Type::Function(signature) = args[0].data.unwrap_known() else {
               return Ok::<bool, Never>(true);
             };
             let Some(ancestor) = signature.abstract_ancestor else {
               errors.log(CompileError::new(
                 UnresolvableAudioFunction,
-                exp.source_trace.clone(),
+                source_trace,
               ));
               return Ok(true);
             };
-            let (original_name, has_scope) = {
-              let ancestor = ancestor.read().unwrap();
-              (ancestor.name.clone(), ancestor.captured_scope.is_some())
-            };
-            if !has_scope || !processed_entries.insert(original_name.clone())
-            {
+            let Some(scope_struct) =
+              ancestor.read().unwrap().captured_scope.clone()
+            else {
               return Ok(true);
-            }
+            };
             // The entry-marking pass marked the original closure; move
             // the marking to the audio clone, which is what actually
             // runs on the audio thread (and survives the
-            // reference-address-space rebuild).
+            // reference-address-space rebuild). Both steps are idempotent
+            // (`audioify_captured_closure` memoizes), so repeat call
+            // sites of the same closure need no guard.
             {
               let mut ancestor = ancestor.write().unwrap();
               ancestor.entry_point = None;
@@ -2278,6 +2307,34 @@ impl Program {
                   Some(EntryPoint::Audio);
               }
             }
+            // Record the seed writes on this call site's callee: at
+            // runtime the builtin copies the closure value's captured
+            // fields into the lifted globals on the call that starts the
+            // audio thread, and this private ancestor clone makes those
+            // writes visible to the sharing-audience analysis as
+            // `SeedsGlobalVar` effects — the standard analysis then sees
+            // the main thread touching the lifted globals, with no
+            // force-membership flag anywhere.
+            let mut seeded_names: Vec<Arc<str>> = vec![];
+            collect_audio_scope_global_names(&scope_struct, &mut seeded_names);
+            applied_f.data.as_known_mut(|t| {
+              if let Type::Function(callee_signature) = t
+                && let Some(builtin_ancestor) =
+                  &callee_signature.abstract_ancestor
+              {
+                let mut augmented = builtin_ancestor.read().unwrap().clone();
+                if let FunctionImplementationKind::Builtin {
+                  effect_type, ..
+                } = &mut augmented.implementation
+                {
+                  for name in &seeded_names {
+                    effect_type.merge(Effect::SeedsGlobalVar(name.clone()));
+                  }
+                }
+                callee_signature.abstract_ancestor =
+                  Some(Arc::new(RwLock::new(augmented)));
+              }
+            });
           }
           Ok::<bool, Never>(true)
         })
@@ -2399,7 +2456,6 @@ impl Program {
                 value: None,
                 source_trace: exp.source_trace.clone(),
                 external: false,
-                audio_scope: false,
               });
               binding_name
             })
@@ -2885,7 +2941,6 @@ impl Program {
         value: None,
         source_trace: SourceTrace::empty(),
         external: false,
-        audio_scope: false,
       })
     }
   }
@@ -3828,6 +3883,31 @@ impl Program {
           }
         )
       {
+        continue;
+      }
+      // A GPU-space var whose type isn't host-shareable (bool- or
+      // String-containing) is guaranteed GPU-unused by
+      // `validate_gpu_used_binding_types` — it's an ordinary CPU value
+      // with no legal WGSL declaration, so it's omitted from shader
+      // output. (`@local` bool vars stay: `var<private> b: bool` is
+      // valid WGSL.)
+      if target == CompilerTarget::WGSL
+        && matches!(
+          v.kind,
+          TopLevelVariableKind::Var {
+            address_space: VariableAddressSpace::Uniform
+              | VariableAddressSpace::StorageRead
+              | VariableAddressSpace::StorageReadWrite,
+            ..
+          }
+        )
+        && (v.var_type.involves_bool() || v.var_type.involves_string())
+      {
+        continue;
+      }
+      // Strings exist only on the CPU runtimes' heaps — a String-typed
+      // global has no C representation at all.
+      if target == CompilerTarget::C && v.var_type.involves_string() {
         continue;
       }
       compiled_string += &v.clone().compile(&mut names, target);
@@ -4823,10 +4903,8 @@ impl Program {
             _ => {}
           }
           // struct/enum *values* with runtime-sized contents
-          if matches!(
-            exp.data.unwrap_known(),
-            Type::Struct(_) | Type::Enum(_)
-          ) && exp.data.unwrap_known().involves_runtime_sized_array()
+          if matches!(exp.data.unwrap_known(), Type::Struct(_) | Type::Enum(_))
+            && exp.data.unwrap_known().involves_runtime_sized_array()
           {
             errors.log(CompileError {
               kind: RuntimeSizedFieldOnGpu,
@@ -5041,9 +5119,10 @@ impl Program {
               // the later args (a stateful closure entry usually needs
               // neither).
               if signature.args.len() > 2
-                || signature.args.iter().any(|(arg, _)| {
-                  arg.var_type.unwrap_known() != Type::F32
-                })
+                || signature
+                  .args
+                  .iter()
+                  .any(|(arg, _)| arg.var_type.unwrap_known() != Type::F32)
               {
                 errors.log(CompileError::new(
                   AudioEntryHasWrongArgumentTypes,
@@ -5459,10 +5538,8 @@ impl Program {
       {
         let assigned = (0u8..=u8::MAX)
           .flat_map(|group| {
-            (0u8..=u8::MAX).map(move |binding| GroupAndBinding {
-              group,
-              binding,
-            })
+            (0u8..=u8::MAX)
+              .map(move |binding| GroupAndBinding { group, binding })
           })
           .find(|candidate| !used.contains(candidate))
           .expect("all 65536 group/binding slots exhausted");
@@ -5516,8 +5593,7 @@ impl Program {
                 candidates
                   .iter()
                   .find(|candidate| {
-                    candidate.read().unwrap().arg_types.len()
-                      == concrete_arity
+                    candidate.read().unwrap().arg_types.len() == concrete_arity
                   })
                   .or(candidates.first())
                   .cloned()
@@ -5886,6 +5962,10 @@ impl Program {
       return errors;
     }
     self.catch_non_constructible_bindings(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.validate_gpu_used_binding_types(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
@@ -6297,6 +6377,91 @@ impl Program {
   /// index-aligns every artifact's `Code::shared_vars`, the env's
   /// `shared_globals`, `ExternalVars` handles, and the
   /// `ThreadSharedTable`'s slots.
+  /// The top-level vars actually referenced by GPU code: the union of every
+  /// GPU entry point's effect-derived global reads and writes (including
+  /// length-only reads — WGSL's `arrayLength` derives from buffer size, so
+  /// a length-read still needs the binding uploaded), plus every
+  /// handle-space (texture) var, since texture use isn't effect-tracked.
+  /// Only vars in this set become runtime GPU bindings: a GPU-space var no
+  /// shader touches is an ordinary CPU value with zero sync obligations
+  /// (no buffer, no uploads, no readbacks), though its declaration still
+  /// appears in emitted WGSL when its type is host-shareable.
+  pub fn gpu_used_globals(&self) -> HashSet<Arc<str>> {
+    let var_names: HashSet<Arc<str>> =
+      self.top_level_vars.iter().map(|v| v.name.clone()).collect();
+    let mut used: HashSet<Arc<str>> = HashSet::new();
+    for f in self.abstract_functions_iter() {
+      let f = f.read().unwrap();
+      if f
+        .entry_point
+        .map(|e| {
+          matches!(
+            e,
+            EntryPoint::Vertex | EntryPoint::Fragment | EntryPoint::Compute(_)
+          )
+        })
+        .unwrap_or(false)
+        && let FunctionImplementationKind::Composite(implementation) =
+          &f.implementation
+      {
+        let (reads, writes) = implementation
+          .read()
+          .unwrap()
+          .effects()
+          .gpu_read_and_written_globals();
+        used.extend(
+          reads
+            .into_iter()
+            .chain(writes.into_iter())
+            .filter(|name| var_names.contains(name)),
+        );
+      }
+    }
+    used.extend(self.top_level_vars.iter().filter_map(|v| {
+      matches!(
+        v.kind,
+        TopLevelVariableKind::Var {
+          address_space: VariableAddressSpace::Handle,
+          ..
+        }
+      )
+      .then(|| v.name.clone())
+    }));
+    used
+  }
+  /// Rejects GPU-space vars whose types can't be host-shared (bool- or
+  /// String-containing) — but only when GPU code actually touches them. A
+  /// storage-write bool var no shader references is an ordinary CPU value
+  /// (usable, e.g., as main↔audio shared state); it's simply skipped from
+  /// WGSL emission. Must run after every pass that rewrites GPU entry
+  /// bodies (window-info extraction, dispatched-closure lifts), since
+  /// GPU usage is derived from entry-point effects.
+  pub fn validate_gpu_used_binding_types(&self, errors: &mut ErrorLog) {
+    let gpu_used = self.gpu_used_globals();
+    for v in self.top_level_vars.iter() {
+      if let TopLevelVariableKind::Var {
+        address_space:
+          VariableAddressSpace::Uniform
+          | VariableAddressSpace::StorageRead
+          | VariableAddressSpace::StorageReadWrite,
+        ..
+      } = v.kind
+        && gpu_used.contains(&v.name)
+      {
+        if v.var_type.involves_bool() {
+          errors.log(CompileError::new(
+            UnshareableBindingType("bool".to_string()),
+            v.source_trace.clone(),
+          ));
+        } else if v.var_type.involves_string() {
+          errors.log(CompileError::new(
+            UnshareableBindingType("String".to_string()),
+            v.source_trace.clone(),
+          ));
+        }
+      }
+    }
+  }
   pub fn thread_shared_globals(&self) -> Vec<(Arc<str>, u32)> {
     use crate::compiler::expression::ExpKind;
     let var_names: HashSet<Arc<str>> =
@@ -6317,11 +6482,18 @@ impl Program {
       let mut globals: HashSet<Arc<str>> = HashSet::new();
       while let Some(f) = queue.pop() {
         let f = f.read().unwrap();
-        let (reads, writes) = f.effects().read_and_written_globals();
+        let effects = f.effects();
+        let (reads, writes) = effects.read_and_written_globals();
+        // Seed writes (`Effect::SeedsGlobalVar`) count as touches here —
+        // this is how the analysis sees the main thread writing the lifted
+        // audio-closure capture globals inside `start-audio` — but stay
+        // invisible to the runtime dirty-marking machinery, which the
+        // builtin drives itself on the call that actually seeds.
         globals.extend(
           reads
             .into_iter()
             .chain(writes.into_iter())
+            .chain(effects.seeded_globals().into_iter())
             .filter(|name| var_names.contains(name)),
         );
         let mut discovered: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> =
@@ -6371,19 +6543,30 @@ impl Program {
       .filter(|v| v.external)
       .map(|v| v.name.clone())
       .collect();
-    // Lifted audio-closure captures are seeded by the main thread at
-    // `start-audio` (a runtime write the reachability analysis can't
-    // see) and owned by the audio thread afterward — always shared,
-    // audience MAIN|AUDIO.
-    let audio_scope_globals: HashSet<Arc<str>> = self
+    // `@local` vars are never shared: one independent copy per execution
+    // context — a CPU thread's local is exactly like a GPU invocation's
+    // `var<private>`. Only vars in the GPU-bindable (host-shareable)
+    // address spaces participate in cross-thread sharing.
+    let local_vars: HashSet<Arc<str>> = self
       .top_level_vars
       .iter()
-      .filter(|v| v.audio_scope)
+      .filter(|v| {
+        matches!(
+          v.kind,
+          TopLevelVariableKind::Var {
+            address_space: VariableAddressSpace::Local,
+            ..
+          }
+        )
+      })
       .map(|v| v.name.clone())
       .collect();
     let mut shared: Vec<(Arc<str>, u32)> = var_names
       .iter()
       .filter_map(|name| {
+        if local_vars.contains(name) {
+          return None;
+        }
         let audience = if main_globals.contains(name) {
           participant::MAIN
         } else {
@@ -6394,10 +6577,6 @@ impl Program {
           0
         } | if external_globals.contains(name) {
           participant::EXTERNAL
-        } else {
-          0
-        } | if audio_scope_globals.contains(name) {
-          participant::MAIN | participant::AUDIO
         } else {
           0
         };
@@ -6447,6 +6626,15 @@ impl Program {
       .collect();
     let shared_var_audiences: HashMap<Arc<str>, u32> =
       shared_globals.into_iter().collect();
+    // Only vars actually referenced by GPU code carry sync obligations —
+    // a GPU-space var no shader touches is an ordinary CPU value, so it
+    // gets no host binding (no `CheckGpuToCpu`/`MarkCpuWritten` emission,
+    // no upload serialization).
+    let gpu_used = if cpu_mode {
+      self.gpu_used_globals()
+    } else {
+      HashSet::new()
+    };
     let mut dyn_memory_count: u16 = 0;
     for v in self.top_level_vars.iter() {
       let is_dynamic_array = matches!(
@@ -6461,6 +6649,7 @@ impl Program {
         }
       );
       let binding_info = if cpu_mode
+        && gpu_used.contains(&v.name)
         && let TopLevelVariableKind::Var {
           address_space,
           group_and_binding: Some(binding_spec),

@@ -3,7 +3,6 @@
 ; the frame-end publish must NOT repeat it, since the bootstrap consumed
 ; the dirty flag), the audio function plays it in a loop, and a later
 ; whole-array reassignment on main propagates at the usual boundaries.
-@local
 (var sample: [f32])
 
 @audio

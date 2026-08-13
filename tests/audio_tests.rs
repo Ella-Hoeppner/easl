@@ -145,6 +145,6 @@ fn start_audio_bootstrap_publishes_current_globals() {
   audio_program.execute();
   let slot = audio_program.get_function_return_position(f_index);
   let result = f32::from_bits(audio_program.stack[slot as usize]);
-  // gain (0.75, overwritten from its 0.5 initializer) * sample[2] (3.0)
+  // gain (0.75) * sample[2] (3.0)
   assert_eq!(result, 2.25);
 }

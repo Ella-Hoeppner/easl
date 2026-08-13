@@ -116,6 +116,18 @@ pub enum Effect {
   ReadsArrayLength(Arc<str>),
   ModifiesLocalVar(Arc<str>),
   ModifiesGlobalVar(Arc<str>),
+  /// A write of a lifted audio-closure capture global performed *inside*
+  /// the `start-audio` builtin, on the call that actually starts the audio
+  /// thread (the handoff that seeds the audio replica's initial state).
+  /// Counts as a write for the thread-sharing audience analysis — it's how
+  /// the analysis sees the main thread touching the lifted globals — but
+  /// is deliberately excluded from `read_and_written_globals` and thus
+  /// from the generic post-application dirty marking: the seed happens
+  /// conditionally at runtime (first call only), so the builtin marks the
+  /// vars dirty itself exactly when it seeds. Generic every-call marking
+  /// would republish main's stale replica each frame, clobbering the audio
+  /// thread's state.
+  SeedsGlobalVar(Arc<str>),
   Break,
   Return,
   Continue,
@@ -268,6 +280,19 @@ impl EffectType {
       _ => None,
     }));
     (reads, writes)
+  }
+  /// The globals seeded inside a `start-audio` call (see
+  /// `Effect::SeedsGlobalVar`). Only the thread-sharing audience analysis
+  /// consumes these.
+  pub fn seeded_globals(&self) -> Vec<Arc<str>> {
+    self
+      .0
+      .iter()
+      .filter_map(|effect| match effect {
+        Effect::SeedsGlobalVar(name) => Some(name.clone()),
+        _ => None,
+      })
+      .collect()
   }
   pub fn looked_up_builtin_attributes(&self) -> Vec<BuiltinIOAttribute> {
     self
