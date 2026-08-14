@@ -1,5 +1,5 @@
 @audio
-(defn my-audio [t: f32 rate: f32]: f32
+(defn my-audio [t: f32]: f32
   (sin (* 440. t)))
 
 @cpu

@@ -173,9 +173,16 @@ pub struct VmAudioDriver {
   program: BytecodeProgram,
   fn_index: usize,
   return_position: usize,
-  /// How many of the optional `t`/`rate` arguments the entry actually
-  /// takes (0..=2): a stateful closure entry usually takes neither.
+  /// Whether the entry takes the optional `t` argument (0..=1 args): a
+  /// stateful closure entry usually takes none.
   arg_words: usize,
+  /// Slot of the implicit `easl_audio_time` var, present iff the program
+  /// calls `(audio-time)` (see `Program::extract_audio_info`). Written
+  /// before every sample.
+  time_slot: Option<usize>,
+  /// Slot of the implicit `easl_sample_rate` var, present iff the program
+  /// calls `(sample-rate)`. Written once per batch.
+  rate_slot: Option<usize>,
   shared_table: Option<Arc<ThreadSharedTable>>,
   sample_index: u64,
 }
@@ -191,11 +198,19 @@ impl VmAudioDriver {
     let return_position =
       program.get_function_return_position(fn_index) as usize;
     let arg_words = program.code.functions[fn_index].arg_words as usize;
+    let time_slot = program
+      .get_global_slot("easl_audio_time")
+      .map(|(slot, _)| slot as usize);
+    let rate_slot = program
+      .get_global_slot("easl_sample_rate")
+      .map(|(slot, _)| slot as usize);
     Ok(Self {
       program,
       fn_index,
       return_position,
       arg_words,
+      time_slot,
+      rate_slot,
       shared_table,
       sample_index: 0,
     })
@@ -219,19 +234,22 @@ impl VmAudioDriver {
         .program
         .adopt_shared(table, participant::AUDIO, on_adopt);
     }
+    if let Some(slot) = self.rate_slot {
+      self.program.stack[slot] = rate.to_bits();
+    }
     for _ in 0..frames {
-      // The audio entry takes up to two f32 args, `t` then `rate`; args
-      // live at the function's stack frame start (== return_position) in
-      // slot order, and execute() overwrites slot[0] with the return
-      // value on the way out. Entries with fewer args (e.g. stateful
-      // closure entries) simply don't receive the later ones.
+      // The audio entry takes at most one f32 arg, `t`, living at the
+      // function's stack frame start (== return_position); execute()
+      // overwrites that slot with the return value on the way out.
+      // Zero-arg entries (e.g. stateful closures) receive nothing and can
+      // read `(audio-time)` instead.
       let t = self.sample_index as f32 / rate;
       self.sample_index = self.sample_index.wrapping_add(1);
       if self.arg_words > 0 {
         self.program.stack[self.return_position] = t.to_bits();
       }
-      if self.arg_words > 1 {
-        self.program.stack[self.return_position + 1] = rate.to_bits();
+      if let Some(slot) = self.time_slot {
+        self.program.stack[slot] = t.to_bits();
       }
       self.program.prepare_to_run_function(self.fn_index);
       self.program.execute();
@@ -425,7 +443,11 @@ mod c_audio {
     let tmp_dir = std::env::temp_dir().join("easl_audio");
     std::fs::create_dir_all(&tmp_dir)
       .map_err(|e| format!("create tmp dir: {e}"))?;
-    let c_symbol = easl_fn_name_to_c(entry_name);
+    // The driver always calls through the generated fixed-signature
+    // wrapper (see `append_c_audio_wrappers`), which stores the ambient
+    // audio info and forwards to the 0/1-arg entry.
+    let c_symbol =
+      format!("{}_easl_audio_wrapper", easl_fn_name_to_c(entry_name));
     let c_with_decls = inject_forward_decls(c_source);
 
     let mut state_lock = audio_state.lock().unwrap();

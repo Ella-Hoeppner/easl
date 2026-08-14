@@ -9,7 +9,7 @@
 (var buf: [f32])
 
 @audio
-(defn tone [t: f32 rate: f32]: f32
+(defn tone [t: f32]: f32
   (sin (* 440. t)))
 
 @cpu

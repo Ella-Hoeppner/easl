@@ -1,0 +1,11 @@
+; A zero-arg audio entry reading the clock through `audio-time` instead
+; of an argument: samples follow the global audio time (8 Hz harness, so
+; t steps by 0.125 per sample).
+@audio
+(defn f []: f32
+  (* 2. (audio-time)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (start-audio f))))

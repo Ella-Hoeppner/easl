@@ -8,6 +8,12 @@ use thiserror::Error;
 
 use std::sync::Arc;
 
+#[cfg(all(feature = "window", feature = "c_audio"))]
+use crate::compiler::core::compile_easl_file_to_target;
+use crate::compiler::effects::{
+  EffectType, WindowInfoBindingSource, WindowInfoKind,
+};
+use crate::compiler::entry::EntryPoint;
 use crate::compiler::{
   builtins::{ASSIGNMENT_OPS, ATOMIC_MUTATION_OPS},
   error::CompileError,
@@ -24,19 +30,13 @@ use crate::compiler::{
   },
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
-use crate::compiler::effects::{
-  EffectType, WindowInfoBindingSource, WindowInfoKind,
-};
-use crate::compiler::entry::EntryPoint;
+use crate::external::ExternalVars;
+use crate::thread_sync::participant;
 use crate::vm::bytecode::{
   DynMemory, HeapCell, alloc_heap_cell, heap_string_words, release_heap_id,
   string_to_words, words_to_string,
 };
 use crate::vm::compile::vm_type_size;
-use crate::external::ExternalVars;
-use crate::thread_sync::participant;
-#[cfg(all(feature = "window", feature = "c_audio"))]
-use crate::compiler::core::compile_easl_file_to_target;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Primitive {
@@ -1949,9 +1949,7 @@ fn apply_builtin_fn<IO: IOManager>(
           shared_table, ..
         }) = &mut source
         {
-          env
-            .shared_table
-            .join(participant::AUDIO);
+          env.shared_table.join(participant::AUDIO);
           env.publish_shared_globals(participant::AUDIO);
           *shared_table = Some(env.shared_table.clone());
         }
@@ -2568,10 +2566,7 @@ impl Value {
         Value::Array(
           (0..*count as usize)
             .map(|i| {
-              Value::from_vm_words(
-                &inner,
-                &words[i * stride..(i + 1) * stride],
-              )
+              Value::from_vm_words(&inner, &words[i * stride..(i + 1) * stride])
             })
             .collect(),
         )
@@ -3184,7 +3179,9 @@ impl<IO: IOManager> FrameDriver for AstFrameDriver<'_, IO> {
     result
   }
   fn overwrite_binding_bytes(&mut self, group: u8, binding: u8, bytes: &[u8]) {
-    self.env.overwrite_binding_from_gpu_bytes(group, binding, bytes);
+    self
+      .env
+      .overwrite_binding_from_gpu_bytes(group, binding, bytes);
   }
 }
 
@@ -3379,14 +3376,25 @@ pub trait IOManager: Sized {
     _entry_name: &str,
     _source: Option<crate::audio::AudioSource>,
   ) -> Result<(), EvalError> {
-    Err(UserspaceEvalError::AudioRuntimeError(
-      "start-audio not supported by this IO manager".to_string(),
+    Err(
+      UserspaceEvalError::AudioRuntimeError(
+        "start-audio not supported by this IO manager".to_string(),
+      )
+      .into(),
     )
-    .into())
   }
   #[cfg(not(feature = "window"))]
   fn start_audio(&mut self, _entry_name: &str) -> Result<(), EvalError> {
     Err(WindowFeatureNotEnabled.into())
+  }
+  /// The sample rate the audio stream runs (or would run) at, readable
+  /// before any stream exists — main-thread `(sample-rate)` calls report
+  /// this (the audio thread's copy is written by the driver from the live
+  /// stream instead). The default matches the fixed rate
+  /// `build_audio_stream_batched` opens streams with; test managers
+  /// override it with their harness rate.
+  fn sample_rate(&self) -> f32 {
+    44_100.
   }
 }
 
@@ -3536,10 +3544,11 @@ impl IOManager for StdoutIO {
       // on a throwaway GPU and its results would be lost when setup_window()
       // replaces self.gpu with the persistent one.
       if let Some(gpu) = crate::window::persistent_gpu() {
-        gpu
-          .write()
-          .unwrap()
-          .update_for_reload(wgsl, binding_infos, gpu_entries);
+        gpu.write().unwrap().update_for_reload(
+          wgsl,
+          binding_infos,
+          gpu_entries,
+        );
         self.gpu = Some(gpu);
       } else {
         self.gpu = Some(crate::window::create_headless_gpu_core(
@@ -3792,6 +3801,12 @@ impl IOManager for StringIO {
     self.events.push(IOEvent::Print(s.to_string()));
   }
 
+  /// Matches the thread-sync test harness's rate, so `t` values and
+  /// rate-derived math stay exactly representable in goldens.
+  fn sample_rate(&self) -> f32 {
+    8.
+  }
+
   fn record_draw(
     &mut self,
     _vert: u16,
@@ -4025,7 +4040,9 @@ impl IOManager for CaptureIO {
     binding_infos: &[GpuBindingInfo],
     gpu_entries: &[GpuEntryInfo],
   ) {
-    self.inner.ensure_gpu_ready(wgsl, binding_infos, gpu_entries)
+    self
+      .inner
+      .ensure_gpu_ready(wgsl, binding_infos, gpu_entries)
   }
 
   #[cfg(feature = "window")]
@@ -4242,9 +4259,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     program: Program,
     io: IO,
     source_dir: Option<PathBuf>,
-    #[cfg(feature = "window")] audio_source: Option<
-      crate::audio::AudioSource,
-    >,
+    #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
     external_vars: Option<Arc<ExternalVars>>,
   ) -> Result<Self, EvalError> {
     let DerivedGpuInterface {
@@ -4380,6 +4395,20 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     // Initial window-info values: dispatches that happen outside a frame
     // loop should see the IO manager's defaults rather than zeros.
     env.refresh_window_info_bindings();
+    // Main's copy of the implicit `easl_sample_rate` local (see
+    // `Program::extract_audio_info`): the stream rate is fixed and
+    // knowable before any stream exists, so main-thread `(sample-rate)`
+    // calls — including closure constructors sizing delay buffers during
+    // `start-audio` argument evaluation — read a real value. The audio
+    // thread's own copy is written by the driver instead.
+    let main_sample_rate = env.io.sample_rate();
+    if let Some(slot) = env
+      .bindings
+      .get_mut("easl_sample_rate")
+      .and_then(|v| v.last_mut())
+    {
+      slot.0 = Value::Prim(Primitive::F32(main_sample_rate));
+    }
     let wgsl = program.compile_to_target(CompilerTarget::WGSL)?;
     env.wgsl = wgsl;
     Ok(env)
@@ -4508,7 +4537,11 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     // `extract_dispatched_closure_scopes`).
     let mut written: Vec<Arc<str>> = vec![];
     let scope_value = (**scope).clone();
-    self.write_scope_capture_bindings(&scope_struct, &scope_value, &mut written);
+    self.write_scope_capture_bindings(
+      &scope_struct,
+      &scope_value,
+      &mut written,
+    );
     self.mark_cpu_written(&written);
   }
   /// Writes a `start-audio`d closure's captured scope values into the
@@ -4740,8 +4773,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       }
       let gpu_fresh = {
         let name = &self.shared_globals[index].0;
-        self.buffer_states.get(name)
-          == Some(&SharedBufferState::CPUOutOfDate)
+        self.buffer_states.get(name) == Some(&SharedBufferState::CPUOutOfDate)
       };
       if gpu_fresh {
         let name = self.shared_globals[index].0.clone();
@@ -4795,8 +4827,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   /// initializers — seeding is the embedder's job, through the handle.
   /// No-op unless an external handle is live.
   pub fn bootstrap_external_globals(&mut self) {
-    if self.shared_table.live_others(participant::MAIN)
-      & participant::EXTERNAL
+    if self.shared_table.live_others(participant::MAIN) & participant::EXTERNAL
       == 0
     {
       return;
@@ -4828,8 +4859,10 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       let value = shared_words_to_value(&snapshot.words, &ty);
       self.shared_adopted[index] = snapshot.version;
       drop(snapshot);
-      if let Some(slot) =
-        self.bindings.get_mut(&name).and_then(|stack| stack.last_mut())
+      if let Some(slot) = self
+        .bindings
+        .get_mut(&name)
+        .and_then(|stack| stack.last_mut())
       {
         slot.0 = value;
       }
@@ -4867,9 +4900,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     else {
       return Ok(texture);
     };
-    if self.buffer_states.get(&name)
-      != Some(&SharedBufferState::CPUOutOfDate)
-    {
+    if self.buffer_states.get(&name) != Some(&SharedBufferState::CPUOutOfDate) {
       return Ok(texture);
     }
     // Run the frame's queued GPU work (the render into this texture may
@@ -4888,8 +4919,10 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       data,
       binding: Some(gb),
     };
-    if let Some(slot) =
-      self.bindings.get_mut(&name).and_then(|stack| stack.last_mut())
+    if let Some(slot) = self
+      .bindings
+      .get_mut(&name)
+      .and_then(|stack| stack.last_mut())
     {
       slot.0 = fresh.clone();
     }
@@ -5014,7 +5047,9 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       let wgsl = self.wgsl.clone();
       let binding_infos = self.binding_infos();
       let gpu_entries = self.gpu_entries.clone();
-      self.io.ensure_gpu_ready(&wgsl, &binding_infos, &gpu_entries);
+      self
+        .io
+        .ensure_gpu_ready(&wgsl, &binding_infos, &gpu_entries);
     }
   }
 
@@ -5440,10 +5475,8 @@ pub fn eval(
             // the caller's environment, using the callsite LHS expression
             // we saved before the call. Owned args just get unbound and
             // the value dropped, same as before.
-            for (name, lhs) in arg_names
-              .iter()
-              .zip(ref_arg_lhs_exprs.into_iter())
-              .rev()
+            for (name, lhs) in
+              arg_names.iter().zip(ref_arg_lhs_exprs.into_iter()).rev()
             {
               let (binding_value, _) = env.unbind(name);
               if let Some(lhs_exp) = lhs {
@@ -6472,9 +6505,7 @@ fn readback_binding_into_vm<IO: IOManager>(
 ) -> Result<(), EvalError> {
   use crate::vm::bytecode::HostBindingStorage;
   let b = &code.host_bindings[binding as usize];
-  if env.buffer_states.get(&b.name)
-    == Some(&SharedBufferState::CPUOutOfDate)
-  {
+  if env.buffer_states.get(&b.name) == Some(&SharedBufferState::CPUOutOfDate) {
     env.check_cpu_readable(&[b.name.clone()]);
     // Readback landed in the env's Value; mirror it into the VM slots
     // where CPU code actually reads it.
@@ -6534,9 +6565,7 @@ fn value_from_vm_words_heap(
           Value::Array(
             cell_words
               .chunks(stride)
-              .map(|chunk| {
-                value_from_vm_words_heap(&element_type, chunk, heap)
-              })
+              .map(|chunk| value_from_vm_words_heap(&element_type, chunk, heap))
               .collect(),
           )
         }
@@ -6873,10 +6902,8 @@ fn vm_host_call<IO: IOManager>(
             {
               continue;
             }
-            if let Some(binding) = code
-              .host_bindings
-              .iter()
-              .position(|b| b.name == info.name)
+            if let Some(binding) =
+              code.host_bindings.iter().position(|b| b.name == info.name)
             {
               readback_binding_into_vm(
                 env,
@@ -7097,9 +7124,7 @@ fn vm_publish_shared<IO: IOManager>(
       continue;
     }
     let name = &info.name;
-    if env.buffer_states.get(name)
-      != Some(&SharedBufferState::CPUOutOfDate)
-    {
+    if env.buffer_states.get(name) != Some(&SharedBufferState::CPUOutOfDate) {
       continue;
     }
     let Some(binding) = program
@@ -7201,7 +7226,10 @@ impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
   }
   fn overwrite_binding_bytes(&mut self, group: u8, binding: u8, bytes: &[u8]) {
     use crate::vm::bytecode::HostBindingStorage;
-    if !self.env.overwrite_binding_from_gpu_bytes(group, binding, bytes) {
+    if !self
+      .env
+      .overwrite_binding_from_gpu_bytes(group, binding, bytes)
+    {
       return;
     }
     // The env's `Value` copy is a mirror; write through to the
@@ -7246,9 +7274,7 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
     program: Program,
     io: IO,
     source_dir: Option<PathBuf>,
-    #[cfg(feature = "window")] audio_source: Option<
-      crate::audio::AudioSource,
-    >,
+    #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
   ) -> Result<Self, EvalError> {
     Self::new_with_external(
       program,
@@ -7266,9 +7292,7 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
     program: Program,
     io: IO,
     source_dir: Option<PathBuf>,
-    #[cfg(feature = "window")] audio_source: Option<
-      crate::audio::AudioSource,
-    >,
+    #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
     external_vars: Option<Arc<ExternalVars>>,
   ) -> Result<Self, EvalError> {
     let env_program = program.clone();
@@ -7288,7 +7312,13 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
       source_dir,
       external_vars,
     )?;
-    let (vm_program, function_names) = program.compile_to_bytecode_program_cpu();
+    let (mut vm_program, function_names) =
+      program.compile_to_bytecode_program_cpu();
+    // Main's copy of the implicit `easl_sample_rate` local (see
+    // `Program::extract_audio_info`) — the tree-walker env's copy is
+    // seeded at env construction, but the VM reads its own slots.
+    let main_sample_rate = env.io.sample_rate();
+    vm_program.write_global("easl_sample_rate", &[main_sample_rate.to_bits()]);
     let slots_dirty = vec![false; vm_program.code.host_bindings.len()];
     Ok(Self {
       program: vm_program,
@@ -7491,9 +7521,7 @@ pub fn run_program_test_io_with_runtime(
   program: Program,
   runtime: CpuRuntime,
 ) -> Result<StringIO, EvalError> {
-  Ok(
-    run_program_with_runtime(program, None, StringIO::new(), None, runtime)?.0,
-  )
+  Ok(run_program_with_runtime(program, None, StringIO::new(), None, runtime)?.0)
 }
 
 pub fn run_program(program: Program) -> Result<(), EvalError> {
@@ -7584,29 +7612,23 @@ fn try_compile_audio_source(
       );
       #[cfg(feature = "c_audio")]
       {
-        // The C driver calls the loaded entry through a
-        // `fn(float, float) -> float` pointer, so it can't run the
-        // relaxed 0/1-arg entries — including the scope-less clones of
-        // closure entries, which take no args.
-        for name in
-          program.find_fn_names_by_entry_point(|e| e == EntryPoint::Audio)
+        // Closure audio entries rely on the thread-shared table to carry
+        // their captured state (seeded lifted globals); the C path has
+        // compile-time-baked globals and no table, so the captures would
+        // be silent zeros. The lifted vars' `_audio_data_` infix is
+        // compiler-generated, so its presence identifies a closure entry.
+        if program
+          .top_level_vars
+          .iter()
+          .any(|v| v.name.contains("_audio_data_"))
         {
-          for signature in program
-            .abstract_functions
-            .get(name.as_str())
-            .into_iter()
-            .flatten()
-          {
-            if signature.read().unwrap().arg_types.len() != 2 {
-              panic!(
-                "The C audio backend requires audio functions with exactly \
-                 two arguments (t, rate); use AudioBackend::VM for closure \
-                 or reduced-argument audio entries."
-              );
-            }
-          }
+          panic!(
+            "The C audio backend doesn't support closure audio entries \
+             (their captured state travels through the thread-shared \
+             table, which the C path doesn't have); use AudioBackend::VM."
+          );
         }
-        try_compile_audio_c_source(source_path)
+        try_compile_audio_c_source(program, source_path)
           .map(crate::audio::AudioSource::C)
       }
     }
@@ -7637,12 +7659,62 @@ fn try_compile_audio_bytecode(
   })
 }
 
+/// Appends one fixed-signature wrapper per audio entry to the compiled C
+/// source: the C driver always calls a `fn(float, float) -> float`
+/// pointer, so the wrapper stores the ambient audio info into the
+/// implicit `easl_audio_time`/`easl_sample_rate` globals (when the
+/// program uses them — the fixed names are what make this generable
+/// against a separate compilation of the same source) and forwards `t`
+/// to the actual 0- or 1-arg entry.
+#[cfg(all(feature = "window", feature = "c_audio"))]
+fn append_c_audio_wrappers(program: &Program, c_source: &mut String) {
+  let has_var =
+    |name: &str| program.top_level_vars.iter().any(|v| &*v.name == name);
+  let stores = format!(
+    "{}{}",
+    if has_var("easl_audio_time") {
+      "  easl_audio_time = t;\n"
+    } else {
+      ""
+    },
+    if has_var("easl_sample_rate") {
+      "  easl_sample_rate = rate;\n"
+    } else {
+      ""
+    }
+  );
+  for name in program.find_fn_names_by_entry_point(|e| e == EntryPoint::Audio) {
+    let arg_count = program
+      .abstract_functions
+      .get(name.as_str())
+      .into_iter()
+      .flatten()
+      .next()
+      .map(|signature| signature.read().unwrap().arg_types.len())
+      .unwrap_or(0);
+    let entry_c = name.replace('-', "_");
+    let call = if arg_count > 0 {
+      format!("{entry_c}(t)")
+    } else {
+      format!("{entry_c}()")
+    };
+    c_source.push_str(&format!(
+      "\nfloat {entry_c}_easl_audio_wrapper(float t, float rate) {{\n\
+       {stores}  (void)rate;\n  return {call};\n}}\n"
+    ));
+  }
+}
+
 #[cfg(all(feature = "window", feature = "c_audio"))]
 fn try_compile_audio_c_source(
+  program: &Program,
   source_path: &std::path::Path,
 ) -> Option<String> {
   match compile_easl_file_to_target(source_path, CompilerTarget::C) {
-    Ok(Ok(Ok(c_source))) => Some(c_source),
+    Ok(Ok(Ok(mut c_source))) => {
+      append_c_audio_wrappers(program, &mut c_source);
+      Some(c_source)
+    }
     Ok(Ok(Err((documents, errors)))) => {
       eprintln!(
         "Note: failed to compile program to C for audio support:\n{}",
@@ -7657,9 +7729,7 @@ fn try_compile_audio_c_source(
       None
     }
     Err(e) => {
-      eprintln!(
-        "Note: failed to re-read source for audio C compilation: {e}"
-      );
+      eprintln!("Note: failed to re-read source for audio C compilation: {e}");
       None
     }
   }
@@ -7786,9 +7856,7 @@ pub fn run_program_entry_with_io_runtime_and_external_from_path<
 /// to opt into the C audio backend (requires `c_audio` feature) instead of
 /// the default bytecode VM.
 #[cfg(feature = "window")]
-pub fn run_program_entry_with_io_and_audio_backend_from_path<
-  IO: IOManager,
->(
+pub fn run_program_entry_with_io_and_audio_backend_from_path<IO: IOManager>(
   program: Program,
   entry: Option<&str>,
   io: IO,

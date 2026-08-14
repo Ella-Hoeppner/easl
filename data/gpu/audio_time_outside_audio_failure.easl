@@ -1,0 +1,3 @@
+@cpu
+(defn main []
+  (print (audio-time)))

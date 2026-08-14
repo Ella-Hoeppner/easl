@@ -431,8 +431,18 @@ pub enum CompileErrorKind {
   ComputeEntryReturnAttributes,
   #[error("Audio entry point must return an f32")]
   AudioEntryHasWrongReturnType,
-  #[error("Audio entry accept two f32 arguments (time and sample rate)")]
+  #[error(
+    "Audio functions take at most one f32 argument (the time); use \
+     `(sample-rate)` and `(audio-time)` for ambient audio info"
+  )]
   AudioEntryHasWrongArgumentTypes,
+  #[error(
+    "`{0}` may only be called from audio functions (the function passed to \
+     `start-audio`, or a helper called only from one)"
+  )]
+  AudioInfoOutsideAudio(String),
+  #[error("The name `{0}` is reserved by the easl compiler")]
+  EaslReservedName(String),
   #[error("CPU entry point must return unit")]
   CpuEntryHasReturnType,
   #[error("CPU entry point may not have arguments")]

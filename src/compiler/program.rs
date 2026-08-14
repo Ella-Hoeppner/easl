@@ -49,6 +49,7 @@ use crate::{
     },
     util::{compile_word, is_valid_name},
     vars::TopLevelVariableKind,
+    wgsl::is_easl_reserved_word,
   },
   parse::{EaslSyntax, EaslTree, Encloser, Operator, parse_easl},
 };
@@ -2229,6 +2230,147 @@ impl Program {
       .insert(original_name, (clone_name.clone(), clone_signature.clone()));
     (clone_name, clone_signature)
   }
+  /// Rejects `audio-time` calls in any function reachable from a
+  /// non-audio entry point (`@cpu`, `@vertex`, `@fragment`, `@compute`),
+  /// walking function-valued references like `thread_shared_globals` does
+  /// — including spawn-window frame closures and dispatch arguments, but
+  /// **cutting the argument edge of `(start-audio ...)`** so a closure
+  /// handed off inline to the audio thread isn't counted as
+  /// main-reachable. A function that *might* run on a non-audio thread
+  /// may not read the ambient audio time; a closure bound to a local
+  /// before being passed to `start-audio` is conservatively rejected
+  /// (construct it inline in the `start-audio` call instead).
+  /// (`sample-rate` is deliberately NOT restricted: the device rate is
+  /// knowable before the stream opens, and closure *constructors* — which
+  /// run on main during `start-audio`'s argument evaluation — legitimately
+  /// need it, e.g. to size delay buffers. Known hole, accepted: an
+  /// `audio-time` call in such a constructor body is skipped by the cut
+  /// and reads main's zeroed copy instead of erroring.) Must run after
+  /// implicit entry-point marking and before `extract_audio_info` erases
+  /// the calls.
+  pub fn validate_audio_info_usage(&self, errors: &mut ErrorLog) {
+    use crate::compiler::expression::ExpKind;
+    let mut visited: HashSet<Arc<str>> = HashSet::new();
+    let mut queue: Vec<Arc<RwLock<TopLevelFunction>>> = vec![];
+    for f in self.abstract_functions_iter() {
+      let f = f.read().unwrap();
+      if f
+        .entry_point
+        .map(|e| {
+          matches!(
+            e,
+            EntryPoint::Cpu
+              | EntryPoint::Vertex
+              | EntryPoint::Fragment
+              | EntryPoint::Compute(_)
+          )
+        })
+        .unwrap_or(false)
+        && let FunctionImplementationKind::Composite(implementation) =
+          &f.implementation
+        && visited.insert(f.name.clone())
+      {
+        queue.push(implementation.clone());
+      }
+    }
+    while let Some(f) = queue.pop() {
+      let f = f.read().unwrap();
+      let mut discovered: Vec<Arc<RwLock<TopLevelFunction>>> = vec![];
+      f.expression
+        .walk(&mut |exp| {
+          if let ExpKind::Application(applied_f, args) = &exp.kind
+            && let ExpKind::Name(applied_name) = &applied_f.kind
+          {
+            if &**applied_name == "start-audio" {
+              return Ok::<bool, Never>(false);
+            }
+            if &**applied_name == "audio-time" && args.is_empty() {
+              errors.log(CompileError::new(
+                AudioInfoOutsideAudio(applied_name.to_string()),
+                exp.source_trace.clone(),
+              ));
+            }
+          }
+          if let TypeState::Known(Type::Function(signature)) = &exp.data.kind
+            && let Some(ancestor) = &signature.abstract_ancestor
+          {
+            let ancestor = ancestor.read().unwrap();
+            if let FunctionImplementationKind::Composite(implementation) =
+              &ancestor.implementation
+              && !visited.contains(&ancestor.name)
+            {
+              visited.insert(ancestor.name.clone());
+              discovered.push(implementation.clone());
+            }
+          }
+          Ok(true)
+        })
+        .unwrap();
+      queue.extend(discovered);
+    }
+  }
+  /// Rewrites every `sample-rate`/`audio-time` call into a read of a
+  /// fixed-name implicit `@local` f32 var (`easl_sample_rate` /
+  /// `easl_audio_time`, created on first use). The audio driver writes
+  /// the audio replica's copies directly — the rate once per batch, the
+  /// time before every sample (`VmAudioDriver::run_batch`; the C backend's
+  /// generated entry wrapper stores both) — so no backend ever compiles
+  /// the calls themselves. The names are deliberately fixed rather than
+  /// gensym'd: the C audio wrapper is generated against a *separate*
+  /// compilation of the same source, and gensym numbering isn't stable
+  /// across compilations. `@local` keeps the vars out of the
+  /// thread-sharing system for free (per-execution-context, driver- or
+  /// nobody-authoritative).
+  pub fn extract_audio_info(&mut self) {
+    use crate::compiler::expression::ExpKind;
+    let mut new_vars: Vec<TopLevelVar> = vec![];
+    let mut created: HashSet<&'static str> = HashSet::new();
+    for f in self.abstract_functions_iter() {
+      let FunctionImplementationKind::Composite(implementation) =
+        f.read().unwrap().implementation.clone()
+      else {
+        continue;
+      };
+      implementation
+        .write()
+        .unwrap()
+        .expression
+        .walk_mut(&mut |exp| {
+          let ExpKind::Application(applied_f, args) = &exp.kind else {
+            return Ok::<bool, Never>(true);
+          };
+          let ExpKind::Name(applied_name) = &applied_f.kind else {
+            return Ok(true);
+          };
+          if !args.is_empty() {
+            return Ok(true);
+          }
+          let var_name = match &**applied_name {
+            "sample-rate" => "easl_sample_rate",
+            "audio-time" => "easl_audio_time",
+            _ => return Ok(true),
+          };
+          if created.insert(var_name) {
+            new_vars.push(TopLevelVar {
+              name: var_name.into(),
+              kind: TopLevelVariableKind::Var {
+                address_space: VariableAddressSpace::Local,
+                group_and_binding: None,
+              },
+              var_type: Type::F32,
+              value: None,
+              source_trace: exp.source_trace.clone(),
+              external: false,
+            });
+          }
+          exp.kind = ExpKind::Name(var_name.into());
+          exp.data.is_globally_bound = true;
+          Ok(true)
+        })
+        .unwrap();
+    }
+    self.top_level_vars.extend(new_vars);
+  }
   /// Rewrites `start-audio` calls whose function is a *scoped closure* so
   /// they can run on the audio thread: the closure chain is cloned into
   /// scope-less audio versions (`audioify_captured_closure`) whose
@@ -4275,6 +4417,21 @@ impl Program {
     }
   }
   fn validate_names(&self, errors: &mut ErrorLog) {
+    // Runs before any compiler-created names exist (implicit audio-info
+    // vars, window-info bindings, lifted captures), so reserved-name
+    // rejection here can only ever fire on user-written declarations.
+    let log_if_reserved =
+      |name: &Arc<str>, source: &SourceTrace, errors: &mut ErrorLog| {
+        if is_easl_reserved_word(name) {
+          errors.log(CompileError::new(
+            CompileErrorKind::EaslReservedName(name.to_string()),
+            source.clone(),
+          ));
+        }
+      };
+    for v in self.top_level_vars.iter() {
+      log_if_reserved(&v.name, &v.source_trace, errors);
+    }
     for signature in self.abstract_functions_iter() {
       let signature = signature.read().unwrap();
       if let FunctionImplementationKind::Composite(implementation) =
@@ -4286,6 +4443,14 @@ impl Program {
             CompileErrorKind::InvalidName,
             implementation.name_source_trace.clone(),
           ))
+        }
+        log_if_reserved(
+          &signature.name,
+          &implementation.name_source_trace,
+          errors,
+        );
+        for (arg_name, arg_source) in implementation.arg_names.iter() {
+          log_if_reserved(arg_name, arg_source, errors);
         }
         for (generic_name, _, source_trace) in signature.generic_args.iter() {
           if !is_valid_name(generic_name) {
@@ -4337,6 +4502,7 @@ impl Program {
                   source.clone(),
                 ));
               }
+              log_if_reserved(name, source, errors);
             }
             Ok::<bool, Never>(true)
           })
@@ -5114,11 +5280,10 @@ impl Program {
                 ));
                 errored = true;
               }
-              // Audio entries take up to two f32 args: `t` and `rate`,
-              // in that order. Shorter signatures simply don't receive
-              // the later args (a stateful closure entry usually needs
-              // neither).
-              if signature.args.len() > 2
+              // Audio entries take at most one f32 arg: the time. (A
+              // stateful closure entry usually takes none; ambient info
+              // is available via `audio-time`/`sample-rate`.)
+              if signature.args.len() > 1
                 || signature
                   .args
                   .iter()
@@ -5935,6 +6100,14 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    // Audio-info validation needs entry markings (above) and must see the
+    // original calls; the rewrite must precede the audio-closure lift so
+    // clones inherit the rewritten reads.
+    self.validate_audio_info_usage(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.extract_audio_info();
     // Must run after entry marking (it moves `@audio` markings from
     // scoped closures to their audio clones) and before the
     // reference-address-space rebuild (which drops scoped closures from

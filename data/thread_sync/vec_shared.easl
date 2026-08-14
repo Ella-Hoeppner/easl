@@ -3,8 +3,7 @@
 (var offset: vec2f)
 
 @audio
-(defn f [t: f32
-         rate: f32]: f32
+(defn f [t: f32]: f32
   (- offset.y offset.x))
 
 @cpu

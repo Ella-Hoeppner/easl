@@ -1,0 +1,6 @@
+spawn-window
+frame 0
+start-audio: f
+print: 8.
+audio-batch 0 x4
+samples: 0.125 0.125 0.125 0.125

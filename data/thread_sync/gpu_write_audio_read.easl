@@ -8,8 +8,7 @@
 (var height: [1: f32])
 
 @audio
-(defn f [t: f32
-         rate: f32]: f32
+(defn f [t: f32]: f32
   (height 0u))
 
 @{workgroup-size 1}

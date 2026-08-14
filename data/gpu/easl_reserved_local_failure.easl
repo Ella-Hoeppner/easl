@@ -1,0 +1,4 @@
+@cpu
+(defn main []
+  (let [easl-sample-rate 8.]
+    (print easl-sample-rate)))

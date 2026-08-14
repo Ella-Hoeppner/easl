@@ -1,15 +1,12 @@
 (def TAU: f32
      6.28)
 
-(def sample-rate: f32
-     44100)
-
 (defn create-osc [freq: f32]: (Fn [] f32)
   (let [@var phase 0.]
     (fn []
         (= phase
            (-> phase
-               (+ (/ sample-rate))
+               (+ (/ (sample-rate)))
                (% 1.)))
         (* phase TAU freq))))
 

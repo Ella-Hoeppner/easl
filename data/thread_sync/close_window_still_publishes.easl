@@ -5,8 +5,7 @@
 (var gain: f32)
 
 @audio
-(defn f [t: f32
-         rate: f32]: f32
+(defn f [t: f32]: f32
   gain)
 
 @cpu

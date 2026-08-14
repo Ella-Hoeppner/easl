@@ -1,16 +1,13 @@
 (def TAU: f32
      6.28)
 
-(def sample-rate: f32
-     44100)
-
 (defn repeating-pulse-envelope [on-duration: f32
                                 repeat-duration: f32]: (Fn [] f32)
   (let [@var phase 0.]
     (fn []
         (= phase
            (-> phase
-               (+ (/ sample-rate))
+               (+ (/ (sample-rate)))
                (% repeat-duration)))
         (if (< phase on-duration)
           1.
@@ -25,13 +22,13 @@
     (fn []
         (= phase
            (-> phase
-               (+ (/ sample-rate))
+               (+ (/ (sample-rate)))
                (% 1.)))
         (* phase TAU freq))))
 
 (defn echo [signal: (Fn [] f32)
             delay-time: f32]: (Fn [] f32)
-  (let [delay-length (u32 (* sample-rate delay-time))
+  (let [delay-length (u32 (* (sample-rate) delay-time))
         @var delay-buffer (zeroed-array delay-length): [f32]
         @var delay-index 0u]
     (fn []

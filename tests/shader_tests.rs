@@ -456,6 +456,18 @@ error_test!(
 success_test!(unused_bool_var);
 error_test!(external_local_var_failure, CompileErrorKind::ExternalLocalVar);
 error_test!(
+  audio_time_outside_audio_failure,
+  CompileErrorKind::AudioInfoOutsideAudio("audio-time".to_string())
+);
+error_test!(
+  easl_reserved_name_failure,
+  CompileErrorKind::EaslReservedName("easl_audio_time".to_string())
+);
+error_test!(
+  easl_reserved_local_failure,
+  CompileErrorKind::EaslReservedName("easl-sample-rate".to_string())
+);
+error_test!(
   into_ambiguous_failure,
   CompileErrorKind::CouldntInferTypes
 );

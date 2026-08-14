@@ -11,8 +11,7 @@
 (var out: [1: f32])
 
 @audio
-(defn f [t: f32
-         rate: f32]: f32
+(defn f [t: f32]: f32
   (= level t)
   0.)
 

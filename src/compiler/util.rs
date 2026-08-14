@@ -74,6 +74,11 @@ pub fn compile_word(word: Arc<str>) -> String {
       .replace("!", "EMARK")
       .replace("=", "EQUAL_SIGN"),
   };
+  // Note: easl's own reserved names (`is_easl_reserved_word`) are NOT
+  // escaped here — user declarations of them are rejected outright in
+  // `validate_names`, so the only occurrences reaching emission are the
+  // compiler's own implicit vars, which must emit under their exact names
+  // (the C audio wrapper references them by name).
   if is_wgsl_reserved_word(&compiled_word) {
     compiled_word + "_"
   } else {

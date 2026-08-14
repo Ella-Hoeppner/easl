@@ -186,3 +186,25 @@ lazy_static! {
 pub fn is_wgsl_reserved_word(word: &str) -> bool {
   WGSL_RESERVED_WORDS_SET.contains(word)
 }
+
+/// Names reserved for the compiler's own implicit globals (see
+/// `Program::extract_audio_info`). User declarations of these are rejected
+/// in `validate_names` — they'd collide with the fixed-name vars in every
+/// name-keyed runtime path (VM global slots, env bindings, the C audio
+/// wrapper's references). Both spellings are listed because the kebab form
+/// emits to the same WGSL/C identifier as the snake form.
+pub const EASL_RESERVED_WORDS: &[&'static str] = &[
+  "easl_audio_time",
+  "easl_sample_rate",
+  "easl-audio-time",
+  "easl-sample-rate",
+];
+
+lazy_static! {
+  static ref EASL_RESERVED_WORDS_SET: HashSet<&'static str> =
+    EASL_RESERVED_WORDS.iter().copied().collect();
+}
+
+pub fn is_easl_reserved_word(word: &str) -> bool {
+  EASL_RESERVED_WORDS_SET.contains(word)
+}

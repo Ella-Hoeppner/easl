@@ -1,0 +1,16 @@
+; `sample-rate` and `audio-time` are ambient audio-info functions, no
+; argument threading required: the driver writes the rate once per batch
+; and the time before every sample. `audio-time` matches the `t` argument
+; exactly (drift amplified 100x would show in the samples), and
+; `sample-rate` also works on the main thread — it reports the rate the
+; stream runs (or would run) at, here the harness's 8 Hz.
+@audio
+(defn f [t: f32]: f32
+  (+ (* 100. (- (audio-time) t))
+     (/ 1. (sample-rate))))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (start-audio f)
+                    (print (sample-rate)))))

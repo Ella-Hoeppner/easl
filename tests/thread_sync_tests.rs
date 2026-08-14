@@ -195,6 +195,10 @@ impl IOManager for ThreadSyncIO {
     self.trace.push(format!("print: {s}"));
   }
 
+  fn sample_rate(&self) -> f32 {
+    TEST_SAMPLE_RATE
+  }
+
   fn record_draw(
     &mut self,
     vert: u16,
@@ -590,3 +594,5 @@ thread_sync_test!(
   local_never_shared,
   [Frame, AudioBatch(2), Frame, AudioBatch(2)]
 );
+thread_sync_test!(audio_info_fns, [Frame, AudioBatch(4)]);
+thread_sync_test!(audio_time_zero_arg, [Frame, AudioBatch(4)]);

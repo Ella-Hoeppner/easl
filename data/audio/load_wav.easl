@@ -6,8 +6,8 @@
 (var sample: [f32])
 
 @audio
-(defn tone [t: f32 rate: f32]: f32
-  (let [i (u32 (* t rate))]
+(defn tone [t: f32]: f32
+  (let [i (u32 (* t (sample-rate)))]
     (if (< i (array-length sample))
       (sample i)
       0.)))

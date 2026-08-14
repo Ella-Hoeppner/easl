@@ -2130,23 +2130,22 @@ fn vec_constructor_name(n: u8, suffix: &str) -> &'static str {
 /// as ordinary definitions; only an exact duplicate of one of these
 /// signatures conflicts.
 fn into_conversion_functions() -> Vec<AbstractFunctionSignature> {
-  let alias_signature = |arg: AbstractType,
-                         return_type: AbstractType,
-                         alias: &'static str| {
-    AbstractFunctionSignature {
-      name: "into".into(),
-      arg_types: vec![arg.owned()],
-      return_type,
-      implementation: FunctionImplementationKind::Builtin {
-        effect_type: EffectType::empty(),
-        target_configuration: FunctionTargetConfiguration::AliasedBuiltin(
-          alias,
-        ),
-        target_specific_emulations: HashSet::new(),
-      },
-      ..Default::default()
-    }
-  };
+  let alias_signature =
+    |arg: AbstractType, return_type: AbstractType, alias: &'static str| {
+      AbstractFunctionSignature {
+        name: "into".into(),
+        arg_types: vec![arg.owned()],
+        return_type,
+        implementation: FunctionImplementationKind::Builtin {
+          effect_type: EffectType::empty(),
+          target_configuration: FunctionTargetConfiguration::AliasedBuiltin(
+            alias,
+          ),
+          target_specific_emulations: HashSet::new(),
+        },
+        ..Default::default()
+      }
+    };
   let mut signatures = vec![];
   // Scalar → scalar casts. Sources exclude bool because the cast
   // builtins' generic is constrained to `scalar()`; targets include it.
@@ -2235,11 +2234,7 @@ fn string_functions() -> Vec<AbstractFunctionSignature> {
     // the empty string.
     AbstractFunctionSignature {
       name: "substr".into(),
-      arg_types: vec![
-        string.clone().owned(),
-        u32.clone().owned(),
-        u32.owned(),
-      ],
+      arg_types: vec![string.clone().owned(), u32.clone().owned(), u32.owned()],
       return_type: string.clone(),
       ..Default::default()
     },
@@ -2437,6 +2432,33 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
           Effect::WindowInfo(WindowInfoKind::Time),
         ]
         .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    // Audio-info functions: readable from audio code without threading
+    // them through entry arguments. `validate_audio_info_usage` rejects
+    // calls reachable from non-audio entry points, then
+    // `extract_audio_info` rewrites every call into a read of a
+    // fixed-name implicit `@local` var (`easl_audio_time` /
+    // `easl_sample_rate`) that the audio driver writes directly — so no
+    // backend ever sees these calls, and no effect machinery is needed.
+    AbstractFunctionSignature {
+      name: "audio-time".into(),
+      return_type: AbstractType::Type(Type::F32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "sample-rate".into(),
+      return_type: AbstractType::Type(Type::F32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
         target_configuration: FunctionTargetConfiguration::Default,
         target_specific_emulations: HashSet::new(),
       },
