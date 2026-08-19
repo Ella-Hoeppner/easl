@@ -1,0 +1,26 @@
+; KNOWN-FAILING (runtime WGSL-validation panic): a user overload of `+`
+; on audio functions, applied to closures whose scopes capture a
+; runtime-sized array. The scope structs are correctly skipped from WGSL
+; emission (CPU-only), but the HoF-specialized `+` clone is NOT skipped —
+; `TopLevelFunction::compile`'s allowed_on_gpu gate checks signatures for
+; runtime-sized values and Strings but not for closure-scope-struct
+; types — so the emitted WGSL references undeclared `inner_fn_N_scope`
+; identifiers and naga rejects the module.
+(defn echoish [s: (Fn [] f32)]: (Fn [] f32)
+  (let [@var buf (zeroed-array 8u): [f32]
+        @var i 0u]
+    (fn []
+        (= (buf i) (s))
+        (= i (% (+ i 1u) 8u))
+        (buf i))))
+
+@associative
+(defn + [a: (Fn [] f32)
+         b: (Fn [] f32)]: (Fn [] f32)
+  (fn [] (+ (a) (b))))
+
+@cpu
+(defn main []
+  (start-audio (+ (echoish (fn [] 0.25))
+                  (echoish (fn [] 0.5))))
+  (spawn-window (fn [] ())))

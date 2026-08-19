@@ -454,7 +454,10 @@ error_test!(
   CompileErrorKind::UnshareableBindingType("bool".to_string())
 );
 success_test!(unused_bool_var);
-error_test!(external_local_var_failure, CompileErrorKind::ExternalLocalVar);
+error_test!(
+  external_local_var_failure,
+  CompileErrorKind::ExternalLocalVar
+);
 error_test!(
   audio_time_outside_audio_failure,
   CompileErrorKind::AudioInfoOutsideAudio("audio-time".to_string())
@@ -467,10 +470,22 @@ error_test!(
   easl_reserved_local_failure,
   CompileErrorKind::EaslReservedName("easl-sample-rate".to_string())
 );
+// Pins the `audio-time` constructor hole: a call in a closure-CONSTRUCTOR
+// body (which runs on main during `start-audio` argument evaluation)
+// escapes `validate_audio_info_usage` — the reachability walk cuts the
+// whole start-audio argument subtree, cutting the constructor invocation
+// along with the (legitimately exempt) closure body. Currently compiles
+// clean and reads main's zeroed copy at runtime. Should pass once
+// `audio-time` carries an audio-exclusive effect validated at entry
+// points (effects flow through constructor CALLS but not closure-body
+// REFERENCES, distinguishing exactly these two cases).
+// KNOWN-FAILING: naga rejects the emitted WGSL (see the .easl header).
+success_test!(audio_closure_plus_overload);
 error_test!(
-  into_ambiguous_failure,
-  CompileErrorKind::CouldntInferTypes
+  audio_time_in_constructor_failure,
+  CompileErrorKind::AudioInfoOutsideAudio("audio-time".to_string())
 );
+error_test!(into_ambiguous_failure, CompileErrorKind::CouldntInferTypes);
 error_test!(external_string_var, CompileErrorKind::ExternalStringVar);
 error_test!(
   external_string_field_var,

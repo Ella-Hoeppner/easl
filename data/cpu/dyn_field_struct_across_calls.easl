@@ -1,0 +1,18 @@
+; Value semantics for a struct holding a runtime-sized field, held across
+; a second call of the function that built it: `a.data` must keep its
+; original contents after `make-held` runs again. Pins the Arc-MM v1
+; ownership gap — the embedded heap id is a borrow of the constructor's
+; allocation site, which drop-on-overwrite frees when the site
+; re-executes.
+(struct Held
+  data: [f32])
+
+(defn make-held [x: f32]: Held
+  (Held (into-dynamic-array [x x x])))
+
+@cpu
+(defn main []
+  (let [a (make-held 1.)
+        b (make-held 9.)]
+    (print (b.data 0u))
+    (print (a.data 0u))))

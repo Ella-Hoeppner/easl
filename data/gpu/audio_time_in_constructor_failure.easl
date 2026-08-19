@@ -1,0 +1,14 @@
+; `audio-time` in a closure-CONSTRUCTOR body: `make-osc` runs on the main
+; thread during `start-audio` argument evaluation, so its `(audio-time)`
+; call reads main's zeroed copy, never the audio clock — it should be a
+; compile error. The call in the returned closure's BODY is legal (the
+; body runs on the audio thread), so exactly one error is expected.
+(defn make-osc []: (Fn [] f32)
+  (let [t0 (audio-time)]
+    (fn []
+        (- (audio-time) t0))))
+
+@cpu
+(defn main []
+  (start-audio (make-osc))
+  (spawn-window (fn [] ())))
