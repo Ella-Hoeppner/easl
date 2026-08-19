@@ -2230,23 +2230,27 @@ impl Program {
       .insert(original_name, (clone_name.clone(), clone_signature.clone()));
     (clone_name, clone_signature)
   }
-  /// Rejects `audio-time` calls in any function reachable from a
-  /// non-audio entry point (`@cpu`, `@vertex`, `@fragment`, `@compute`),
-  /// walking function-valued references like `thread_shared_globals` does
-  /// — including spawn-window frame closures and dispatch arguments, but
-  /// **cutting the argument edge of `(start-audio ...)`** so a closure
-  /// handed off inline to the audio thread isn't counted as
-  /// main-reachable. A function that *might* run on a non-audio thread
-  /// may not read the ambient audio time; a closure bound to a local
-  /// before being passed to `start-audio` is conservatively rejected
-  /// (construct it inline in the `start-audio` call instead).
-  /// (`sample-rate` is deliberately NOT restricted: the device rate is
-  /// knowable before the stream opens, and closure *constructors* — which
-  /// run on main during `start-audio`'s argument evaluation — legitimately
-  /// need it, e.g. to size delay buffers. Known hole, accepted: an
-  /// `audio-time` call in such a constructor body is skipped by the cut
-  /// and reads main's zeroed copy instead of erroring.) Must run after
-  /// implicit entry-point marking and before `extract_audio_info` erases
+  /// Rejects `audio-time` calls in code a non-audio thread can actually
+  /// RUN, following the effect system's propagation rule: effects flow
+  /// through *calls*, not through function-value *references*. The walk
+  /// visits every function reachable from a non-audio entry point
+  /// (`@cpu`, `@vertex`, `@fragment`, `@compute`) through
+  /// application-callee edges — which includes closure-constructor calls
+  /// made while evaluating `start-audio`'s argument, since those run on
+  /// the main thread — plus one host-invocation edge: `spawn-window`'s
+  /// function argument, which the frame loop calls every frame. A closure
+  /// that is merely *constructed* on main and handed to `start-audio` is
+  /// never visited (its construction's callee is a `StructConstructor`,
+  /// not a composite), so its body — which runs only on the audio thread
+  /// — may call `audio-time` freely; *invoking* such a closure from
+  /// visited code is a call edge and gets flagged. Following call edges
+  /// rather than syntactic position makes this robust to passes that
+  /// relocate argument evaluation (deexpressionification lifts nested
+  /// HoF chains out of the `start-audio` form). `sample-rate` is
+  /// deliberately unrestricted: the stream rate is knowable before any
+  /// stream exists, and constructors legitimately need it to size delay
+  /// buffers. Must run after implicit entry-point marking (dispatched
+  /// GPU clones count as roots) and before `extract_audio_info` erases
   /// the calls.
   pub fn validate_audio_info_usage(&self, errors: &mut ErrorLog) {
     use crate::compiler::expression::ExpKind;
@@ -2276,34 +2280,45 @@ impl Program {
     while let Some(f) = queue.pop() {
       let f = f.read().unwrap();
       let mut discovered: Vec<Arc<RwLock<TopLevelFunction>>> = vec![];
-      f.expression
-        .walk(&mut |exp| {
-          if let ExpKind::Application(applied_f, args) = &exp.kind
-            && let ExpKind::Name(applied_name) = &applied_f.kind
-          {
-            if &**applied_name == "start-audio" {
-              return Ok::<bool, Never>(false);
-            }
-            if &**applied_name == "audio-time" && args.is_empty() {
-              errors.log(CompileError::new(
-                AudioInfoOutsideAudio(applied_name.to_string()),
-                exp.source_trace.clone(),
-              ));
-            }
-          }
-          if let TypeState::Known(Type::Function(signature)) = &exp.data.kind
-            && let Some(ancestor) = &signature.abstract_ancestor
-          {
+      let discover =
+        |signature: &FunctionSignature,
+         visited: &mut HashSet<Arc<str>>,
+         discovered: &mut Vec<Arc<RwLock<TopLevelFunction>>>| {
+          if let Some(ancestor) = &signature.abstract_ancestor {
             let ancestor = ancestor.read().unwrap();
             if let FunctionImplementationKind::Composite(implementation) =
               &ancestor.implementation
-              && !visited.contains(&ancestor.name)
+              && visited.insert(ancestor.name.clone())
             {
-              visited.insert(ancestor.name.clone());
               discovered.push(implementation.clone());
             }
           }
-          Ok(true)
+        };
+      f.expression
+        .walk(&mut |exp| {
+          if let ExpKind::Application(applied_f, args) = &exp.kind {
+            if let ExpKind::Name(applied_name) = &applied_f.kind {
+              if &**applied_name == "audio-time" && args.is_empty() {
+                errors.log(CompileError::new(
+                  AudioInfoOutsideAudio(applied_name.to_string()),
+                  exp.source_trace.clone(),
+                ));
+              }
+              if &**applied_name == "spawn-window"
+                && let Some(arg) = args.first()
+                && let TypeState::Known(Type::Function(signature)) =
+                  &arg.data.kind
+              {
+                discover(signature, &mut visited, &mut discovered);
+              }
+            }
+            if let TypeState::Known(Type::Function(signature)) =
+              &applied_f.data.kind
+            {
+              discover(signature, &mut visited, &mut discovered);
+            }
+          }
+          Ok::<bool, Never>(true)
         })
         .unwrap();
       queue.extend(discovered);
