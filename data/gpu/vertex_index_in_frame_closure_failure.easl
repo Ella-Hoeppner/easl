@@ -1,0 +1,8 @@
+; Builtin-attribute lookups are stage-specific; a frame closure runs in
+; CPU context, where `vertex-index` doesn't exist. Must be a compile
+; error, not the `spawn-window frame fn not compiled` panic it used to
+; be.
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (print (vertex-index)))))

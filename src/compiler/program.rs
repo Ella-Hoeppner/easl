@@ -2230,98 +2230,378 @@ impl Program {
       .insert(original_name, (clone_name.clone(), clone_signature.clone()));
     (clone_name, clone_signature)
   }
-  /// Rejects `audio-time` calls in code a non-audio thread can actually
-  /// RUN, following the effect system's propagation rule: effects flow
-  /// through *calls*, not through function-value *references*. The walk
-  /// visits every function reachable from a non-audio entry point
-  /// (`@cpu`, `@vertex`, `@fragment`, `@compute`) through
-  /// application-callee edges — which includes closure-constructor calls
-  /// made while evaluating `start-audio`'s argument, since those run on
-  /// the main thread — plus one host-invocation edge: `spawn-window`'s
-  /// function argument, which the frame loop calls every frame. A closure
-  /// that is merely *constructed* on main and handed to `start-audio` is
-  /// never visited (its construction's callee is a `StructConstructor`,
-  /// not a composite), so its body — which runs only on the audio thread
-  /// — may call `audio-time` freely; *invoking* such a closure from
-  /// visited code is a call edge and gets flagged. Following call edges
-  /// rather than syntactic position makes this robust to passes that
-  /// relocate argument evaluation (deexpressionification lifts nested
-  /// HoF chains out of the `start-audio` form). `sample-rate` is
-  /// deliberately unrestricted: the stream rate is knowable before any
-  /// stream exists, and constructors legitimately need it to size delay
-  /// buffers. Must run after implicit entry-point marking (dispatched
-  /// GPU clones count as roots) and before `extract_audio_info` erases
-  /// the calls.
-  pub fn validate_audio_info_usage(&self, errors: &mut ErrorLog) {
+  /// The unified context-exclusivity pass: one analysis of *which
+  /// execution contexts each function can run in* (CPU, vertex, fragment,
+  /// compute, audio), and one scan applying every context-exclusive rule
+  /// against it. Contexts propagate the way effects do — through *calls*,
+  /// never through function-value *references* — via a bitmask fixpoint
+  /// over application-callee edges, seeded from every marked entry point,
+  /// plus two host-invocation edges: `spawn-window`'s function argument
+  /// runs in CPU context (the frame loop calls it every frame), and
+  /// `start-audio`'s function argument runs in audio context. A closure
+  /// that is merely constructed in one context and handed off through
+  /// `start-audio` therefore never inherits the constructing context —
+  /// while the constructor call itself, which genuinely runs where it is
+  /// written, does. Each (function, context) pair records the call edge
+  /// that introduced it and the entry point it traces back to, so every
+  /// violation reports the offending call as its primary source position
+  /// with that edge and the root entry as secondary positions.
+  ///
+  /// The rules:
+  /// - fragment-exclusive builtins (`dpdx`, `texture-sample`, ...) and
+  ///   `discard`: fragment context only
+  /// - CPU-exclusive builtins (`print`, `spawn-window`, dispatches, ...):
+  ///   CPU context only (with the runtime-sized-error suppression for the
+  ///   dynamic-array constructors, which would otherwise double-report)
+  /// - builtin-attribute lookups (`vertex-index`,
+  ///   `global-invocation-id`, ...): contexts per
+  ///   `BuiltinIOAttribute::is_valid_input_for_stage`
+  /// - `audio-time`: audio context only (`sample-rate` is deliberately
+  ///   unrestricted — the stream rate is knowable before any stream
+  ///   exists, and closure constructors legitimately need it to size
+  ///   delay buffers)
+  ///
+  /// Must run after implicit entry-point marking (dispatched GPU clones
+  /// count as roots) and before `extract_audio_info` erases the
+  /// audio-info calls. Known gap: a closure produced by a *helper* and
+  /// handed to `start-audio` has no statically-known ancestor at the
+  /// argument position, so its body runs unchecked in audio context
+  /// (direct `(fn [] ...)` arguments are covered).
+  pub fn validate_context_exclusivity(&self, errors: &mut ErrorLog) {
     use crate::compiler::expression::ExpKind;
-    let mut visited: HashSet<Arc<str>> = HashSet::new();
-    let mut queue: Vec<Arc<RwLock<TopLevelFunction>>> = vec![];
-    for f in self.abstract_functions_iter() {
-      let f = f.read().unwrap();
-      if f
-        .entry_point
-        .map(|e| {
-          matches!(
-            e,
-            EntryPoint::Cpu
-              | EntryPoint::Vertex
-              | EntryPoint::Fragment
-              | EntryPoint::Compute(_)
-          )
-        })
-        .unwrap_or(false)
-        && let FunctionImplementationKind::Composite(implementation) =
-          &f.implementation
-        && visited.insert(f.name.clone())
-      {
-        queue.push(implementation.clone());
+    const CONTEXT_COUNT: usize = 5;
+    const CPU: usize = 0;
+    const VERTEX: usize = 1;
+    const FRAGMENT: usize = 2;
+    const COMPUTE: usize = 3;
+    const AUDIO: usize = 4;
+    const CONTEXT_NAMES: [&str; CONTEXT_COUNT] =
+      ["cpu", "vertex", "fragment", "compute", "audio"];
+    // representative EntryPoint per context, for
+    // `BuiltinIOAttribute::is_valid_input_for_stage`
+    const CONTEXT_ENTRIES: [EntryPoint; CONTEXT_COUNT] = [
+      EntryPoint::Cpu,
+      EntryPoint::Vertex,
+      EntryPoint::Fragment,
+      EntryPoint::Compute(1),
+      EntryPoint::Audio,
+    ];
+    fn bit(context: usize) -> u8 {
+      1 << context
+    }
+    fn context_of_entry(entry: &EntryPoint) -> usize {
+      match entry {
+        EntryPoint::Cpu => CPU,
+        EntryPoint::Vertex => VERTEX,
+        EntryPoint::Fragment => FRAGMENT,
+        EntryPoint::Compute(_) => COMPUTE,
+        EntryPoint::Audio => AUDIO,
       }
     }
-    while let Some(f) = queue.pop() {
+
+    struct FnContexts {
+      implementation: Arc<RwLock<TopLevelFunction>>,
+      mask: u8,
+      /// Per context: the call edge that first placed this function in
+      /// that context, and the entry-point function it traces back to.
+      /// `None` for contexts the function is itself an entry of.
+      discovery: [Option<(SourceTrace, Arc<str>)>; CONTEXT_COUNT],
+    }
+
+    let mut fns: HashMap<Arc<str>, FnContexts> = HashMap::new();
+    let mut worklist: Vec<(Arc<str>, u8)> = vec![];
+    for f in self.abstract_functions_iter() {
       let f = f.read().unwrap();
-      let mut discovered: Vec<Arc<RwLock<TopLevelFunction>>> = vec![];
-      let discover =
-        |signature: &FunctionSignature,
-         visited: &mut HashSet<Arc<str>>,
-         discovered: &mut Vec<Arc<RwLock<TopLevelFunction>>>| {
-          if let Some(ancestor) = &signature.abstract_ancestor {
-            let ancestor = ancestor.read().unwrap();
-            if let FunctionImplementationKind::Composite(implementation) =
-              &ancestor.implementation
-              && visited.insert(ancestor.name.clone())
-            {
-              discovered.push(implementation.clone());
-            }
+      if let FunctionImplementationKind::Composite(implementation) =
+        &f.implementation
+      {
+        let mask = f
+          .entry_point
+          .map(|e| bit(context_of_entry(&e)))
+          .unwrap_or(0);
+        if mask != 0 {
+          worklist.push((f.name.clone(), mask));
+        }
+        fns.insert(
+          f.name.clone(),
+          FnContexts {
+            implementation: implementation.clone(),
+            mask,
+            discovery: [const { None }; CONTEXT_COUNT],
+          },
+        );
+      }
+    }
+
+    // fixpoint: propagate context bits along call edges (and the two
+    // host-invocation edges), recording discovery edges for new bits
+    while let Some((name, bits)) = worklist.pop() {
+      let Some(info) = fns.get(&name) else {
+        continue;
+      };
+      let implementation = info.implementation.clone();
+      // (root per context: this fn's own root, or itself where it's an
+      // entry)
+      let roots: [Option<Arc<str>>; CONTEXT_COUNT] =
+        std::array::from_fn(|context| {
+          if info.mask & bit(context) == 0 {
+            None
+          } else {
+            Some(match &info.discovery[context] {
+              Some((_, root)) => root.clone(),
+              None => name.clone(),
+            })
           }
-        };
-      f.expression
+        });
+      let mut propagations: Vec<(Arc<str>, u8, SourceTrace)> = vec![];
+      implementation
+        .read()
+        .unwrap()
+        .expression
         .walk(&mut |exp| {
           if let ExpKind::Application(applied_f, args) = &exp.kind {
-            if let ExpKind::Name(applied_name) = &applied_f.kind {
-              if &**applied_name == "audio-time" && args.is_empty() {
-                errors.log(CompileError::new(
-                  AudioInfoOutsideAudio(applied_name.to_string()),
+            if let TypeState::Known(Type::Function(signature)) =
+              &applied_f.data.kind
+              && let Some(ancestor) = &signature.abstract_ancestor
+            {
+              let ancestor = ancestor.read().unwrap();
+              if matches!(
+                ancestor.implementation,
+                FunctionImplementationKind::Composite(_)
+              ) {
+                propagations.push((
+                  ancestor.name.clone(),
+                  bits,
                   exp.source_trace.clone(),
                 ));
               }
-              if &**applied_name == "spawn-window"
-                && let Some(arg) = args.first()
-                && let TypeState::Known(Type::Function(signature)) =
-                  &arg.data.kind
-              {
-                discover(signature, &mut visited, &mut discovered);
-              }
             }
-            if let TypeState::Known(Type::Function(signature)) =
-              &applied_f.data.kind
+            if let ExpKind::Name(applied_name) = &applied_f.kind
+              && let Some(arg) = args.first()
+              && let TypeState::Known(Type::Function(signature)) =
+                &arg.data.kind
+              && let Some(ancestor) = &signature.abstract_ancestor
             {
-              discover(signature, &mut visited, &mut discovered);
+              // host-invocation edges: the frame loop calls
+              // spawn-window's argument on the CPU; the audio thread
+              // calls start-audio's argument
+              let host_context = match &**applied_name {
+                "spawn-window" => Some(CPU),
+                "start-audio" => Some(AUDIO),
+                _ => None,
+              };
+              if let Some(context) = host_context {
+                let ancestor = ancestor.read().unwrap();
+                if matches!(
+                  ancestor.implementation,
+                  FunctionImplementationKind::Composite(_)
+                ) {
+                  propagations.push((
+                    ancestor.name.clone(),
+                    bit(context),
+                    exp.source_trace.clone(),
+                  ));
+                }
+              }
             }
           }
           Ok::<bool, Never>(true)
         })
         .unwrap();
-      queue.extend(discovered);
+      for (callee, callee_bits, edge) in propagations {
+        let Some(callee_info) = fns.get_mut(&callee) else {
+          continue;
+        };
+        let new_bits = callee_bits & !callee_info.mask;
+        if new_bits == 0 {
+          continue;
+        }
+        callee_info.mask |= new_bits;
+        for context in 0..CONTEXT_COUNT {
+          if new_bits & bit(context) != 0 {
+            let root = roots[context].clone().unwrap_or_else(|| name.clone());
+            callee_info.discovery[context] = Some((edge.clone(), root));
+          }
+        }
+        worklist.push((callee, new_bits));
+      }
+    }
+
+    // rule scan: check each function's direct uses against every context
+    // it can run in
+    let runtime_sized_error_present = errors.iter().any(|e| {
+      matches!(
+        e.kind,
+        GpuFunctionReturnsRuntimeSizedArray
+          | GpuFunctionAcceptsRuntimeSizedArray
+          | RuntimeSizedLocalInGpuCode
+          | RuntimeSizedFieldOnGpu
+          | NestedRuntimeSizedArrayBinding
+      )
+    });
+    for (name, info) in fns.iter() {
+      if info.mask == 0 {
+        continue;
+      }
+      // (use, allowed-context mask, error kind per offending context)
+      let mut violations: Vec<(SourceTrace, u8, [Option<CompileErrorKind>; CONTEXT_COUNT])> =
+        vec![];
+      info
+        .implementation
+        .read()
+        .unwrap()
+        .expression
+        .walk(&mut |exp| {
+          match &exp.kind {
+            ExpKind::Discard => {
+              violations.push((
+                exp.source_trace.clone(),
+                bit(FRAGMENT),
+                std::array::from_fn(|_| Some(DiscardOutsideFragment)),
+              ));
+            }
+            ExpKind::Application(applied_f, args) => {
+              if let ExpKind::Name(applied_name) = &applied_f.kind
+                && &**applied_name == "audio-time"
+                && args.is_empty()
+              {
+                violations.push((
+                  exp.source_trace.clone(),
+                  bit(AUDIO),
+                  std::array::from_fn(|_| {
+                    Some(AudioInfoOutsideAudio("audio-time".to_string()))
+                  }),
+                ));
+              }
+              // builtin callees carry their exclusivity in their effect
+              // sets; composite callees are covered by their own scan
+              if let TypeState::Known(Type::Function(signature)) =
+                &applied_f.data.kind
+                && let Some(ancestor) = &signature.abstract_ancestor
+                && let FunctionImplementationKind::Builtin {
+                  effect_type, ..
+                } = &ancestor.read().unwrap().implementation
+              {
+                for effect in effect_type.0.iter() {
+                  match effect {
+                    // `print` is the one CPU-only builtin whose CPU-ness
+                    // is signaled by its observable effect alone (every
+                    // other CPU builtin pairs one with
+                    // `CPUExclusiveFunction`)
+                    Effect::Print => {
+                      violations.push((
+                        exp.source_trace.clone(),
+                        bit(CPU),
+                        std::array::from_fn(|context| {
+                          if context == AUDIO {
+                            Some(CPUExclusiveFunctionInAudioFunction(
+                              "print".to_string(),
+                            ))
+                          } else {
+                            Some(CPUExclusiveFunctionInGPUEntryPoint(
+                              "print".to_string(),
+                            ))
+                          }
+                        }),
+                      ));
+                    }
+                    Effect::FragmentExclusiveFunction(fn_name) => {
+                      violations.push((
+                        exp.source_trace.clone(),
+                        bit(FRAGMENT),
+                        std::array::from_fn(|_| {
+                          Some(FragmentExclusiveFunctionOutsideFragment(
+                            fn_name.to_string(),
+                          ))
+                        }),
+                      ));
+                    }
+                    Effect::CPUExclusiveFunction(fn_name) => {
+                      // dynamic-array constructor misuse on the GPU is
+                      // already reported precisely by the runtime-sized
+                      // validation; the generic complaint would be
+                      // redundant noise there (but audio context keeps
+                      // its error — that validation is GPU-only)
+                      let suppress_gpu = runtime_sized_error_present
+                        && matches!(
+                          &**fn_name,
+                          "into-dynamic-array" | "zeroed-array"
+                        );
+                      violations.push((
+                        exp.source_trace.clone(),
+                        bit(CPU),
+                        std::array::from_fn(|context| {
+                          if context == AUDIO {
+                            Some(CPUExclusiveFunctionInAudioFunction(
+                              fn_name.to_string(),
+                            ))
+                          } else if suppress_gpu {
+                            None
+                          } else {
+                            Some(CPUExclusiveFunctionInGPUEntryPoint(
+                              fn_name.to_string(),
+                            ))
+                          }
+                        }),
+                      ));
+                    }
+                    Effect::LookupBuiltinAttribute(attribute) => {
+                      let allowed = (0..CONTEXT_COUNT)
+                        .filter(|context| {
+                          attribute
+                            .is_valid_input_for_stage(&CONTEXT_ENTRIES[*context])
+                        })
+                        .fold(0u8, |mask, context| mask | bit(context));
+                      let attribute = *attribute;
+                      violations.push((
+                        exp.source_trace.clone(),
+                        allowed,
+                        std::array::from_fn(|context| {
+                          Some(InvalidBuiltinForEntryPoint(
+                            attribute.name().into(),
+                            InputOrOutput::Input,
+                            CONTEXT_NAMES[context].into(),
+                          ))
+                        }),
+                      ));
+                    }
+                    _ => {}
+                  }
+                }
+              }
+            }
+            _ => {}
+          }
+          Ok::<bool, Never>(true)
+        })
+        .unwrap();
+      for (use_trace, allowed, kinds) in violations {
+        for context in 0..CONTEXT_COUNT {
+          if info.mask & bit(context) == 0 || allowed & bit(context) != 0 {
+            continue;
+          }
+          let Some(kind) = kinds[context].clone() else {
+            continue;
+          };
+          let mut trace = use_trace.clone();
+          if let Some((edge, root)) = &info.discovery[context] {
+            trace = trace.insert_as_secondary(edge.clone());
+            if let Some(root_info) = fns.get(root)
+              && root != name
+            {
+              trace = trace.insert_as_secondary(
+                root_info
+                  .implementation
+                  .read()
+                  .unwrap()
+                  .name_source_trace
+                  .clone(),
+              );
+            }
+          }
+          errors.log(CompileError::new(kind, trace));
+        }
+      }
     }
   }
   /// Rewrites every `sample-rate`/`audio-time` call into a read of a
@@ -2933,10 +3213,7 @@ impl Program {
       }
     }
   }
-  pub fn extract_builtin_attribute_lookup_functions(
-    &mut self,
-    errors: &mut ErrorLog,
-  ) {
+  pub fn extract_builtin_attribute_lookup_functions(&mut self) {
     let mut used_attributes: HashSet<BuiltinIOAttribute> = HashSet::new();
     for f in self.abstract_functions_iter() {
       let borrowed_f = f.read().unwrap();
@@ -2953,17 +3230,9 @@ impl Program {
         };
         for attribute in attributes {
           used_attributes.insert(attribute);
-          if let Some(entry_point) = borrowed_f.entry_point {
-            if !attribute.is_valid_input_for_stage(&entry_point) {
-              errors.log(CompileError::new(
-                InvalidBuiltinForEntryPoint(
-                  attribute.name().into(),
-                  InputOrOutput::Input,
-                  entry_point.name().into(),
-                ),
-                implementation.name_source_trace.clone(),
-              ));
-            }
+          if borrowed_f.entry_point.is_some() {
+            // (stage validity of the lookup was already checked by
+            // `validate_context_exclusivity`; this pass only rewrites)
             let global_var_name = attribute.compiled_name();
             let value_type_info: ExpTypeInfo =
               attribute.value_type().known().into();
@@ -5132,34 +5401,9 @@ impl Program {
           | EntryPoint::Compute(_)
           | EntryPoint::Fragment = entry_point
           {
-            // When the runtime-sized-use validation already produced a
-            // precise error, the generic "CPU-exclusive function in GPU
-            // entry" complaint for the array constructors is redundant
-            // noise (the exact same use sites triggered both). It still
-            // fires when that pass found nothing, so constructor misuse
-            // it doesn't model (e.g. an unbound inline construction)
-            // keeps an error.
-            let runtime_sized_error_present = errors.iter().any(|e| {
-              matches!(
-                e.kind,
-                GpuFunctionReturnsRuntimeSizedArray
-                  | GpuFunctionAcceptsRuntimeSizedArray
-                  | RuntimeSizedLocalInGpuCode
-                  | RuntimeSizedFieldOnGpu
-                  | NestedRuntimeSizedArrayBinding
-              )
-            });
-            for f_name in effects.cpu_exclusive_functions() {
-              if runtime_sized_error_present
-                && matches!(&*f_name, "into-dynamic-array" | "zeroed-array")
-              {
-                continue;
-              }
-              errors.log(CompileError {
-                kind: CPUExclusiveFunctionInGPUEntryPoint(f_name.to_string()),
-                source_trace: f.expression.source_trace.clone(),
-              });
-            }
+            // CPU-exclusive *function* checks live in
+            // `validate_context_exclusivity`; the type- and write-shaped
+            // checks below are effect-set-based and remain here.
             for type_name in effects.cpu_exclusive_types() {
               errors.log(CompileError {
                 kind: CPUExclusiveTypeInGPUEntryPoint(type_name.to_string()),
@@ -5181,27 +5425,6 @@ impl Program {
                   ),
                   source_trace: f.expression.source_trace.clone(),
                 });
-              }
-            }
-          }
-          if let EntryPoint::Vertex | EntryPoint::Compute(_) = entry_point {
-            for e in effects.0.iter() {
-              match e {
-                Effect::Discard => {
-                  errors.log(CompileError {
-                    kind: DiscardOutsideFragment,
-                    source_trace: f.expression.source_trace.clone(),
-                  });
-                }
-                Effect::FragmentExclusiveFunction(name) => {
-                  errors.log(CompileError {
-                    kind: FragmentExclusiveFunctionOutsideFragment(
-                      name.to_string(),
-                    ),
-                    source_trace: f.expression.source_trace.clone(),
-                  });
-                }
-                _ => {}
               }
             }
           }
@@ -6115,10 +6338,11 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    // Audio-info validation needs entry markings (above) and must see the
-    // original calls; the rewrite must precede the audio-closure lift so
-    // clones inherit the rewritten reads.
-    self.validate_audio_info_usage(&mut errors);
+    // Context-exclusivity validation needs entry markings (above) and
+    // must see the original audio-info calls; the audio-info rewrite must
+    // precede the audio-closure lift so clones inherit the rewritten
+    // reads.
+    self.validate_context_exclusivity(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
@@ -6137,10 +6361,7 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
-    self.extract_builtin_attribute_lookup_functions(&mut errors);
-    if !errors.is_empty() {
-      return errors;
-    }
+    self.extract_builtin_attribute_lookup_functions();
     self.validate_entry_points(&mut errors);
     if !errors.is_empty() {
       return errors;

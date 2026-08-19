@@ -1,0 +1,6 @@
+; Fragment-exclusive functions have no meaning on the CPU: this must be a
+; compile error, not the runtime `CpuEntryPointNotFound` it used to be
+; (the VM compile silently filtered `main` out for carrying the effect).
+@cpu
+(defn main []
+  (print (dpdx 1.)))

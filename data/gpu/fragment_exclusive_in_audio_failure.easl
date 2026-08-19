@@ -1,0 +1,11 @@
+; Fragment-exclusive functions have no meaning on the audio thread: this
+; must be a compile error, not the VM-compile `todo!()` panic it used to
+; be.
+@audio
+(defn f [t: f32]: f32
+  (dpdx t))
+
+@cpu
+(defn main []
+  (start-audio f)
+  (spawn-window (fn [] ())))

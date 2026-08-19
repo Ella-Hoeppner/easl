@@ -485,6 +485,37 @@ error_test!(
   audio_time_in_constructor_failure,
   CompileErrorKind::AudioInfoOutsideAudio("audio-time".to_string())
 );
+// Context-exclusivity holes in the fragmented validation system, pinned
+// ahead of the unified context-exclusivity pass (see each .easl header
+// for the pre-unification failure mode):
+error_test!(
+  fragment_exclusive_in_cpu_failure,
+  CompileErrorKind::FragmentExclusiveFunctionOutsideFragment("dpdx".into())
+);
+error_test!(
+  fragment_exclusive_in_audio_failure,
+  CompileErrorKind::FragmentExclusiveFunctionOutsideFragment("dpdx".into())
+);
+error_test!(
+  fragment_exclusive_in_frame_closure_failure,
+  CompileErrorKind::FragmentExclusiveFunctionOutsideFragment("dpdx".into())
+);
+error_test!(
+  vertex_index_in_frame_closure_failure,
+  CompileErrorKind::InvalidBuiltinForEntryPoint(
+    "vertex-index".into(),
+    InputOrOutput::Input,
+    "cpu".into(),
+  )
+);
+error_test!(
+  print_in_audio_failure,
+  CompileErrorKind::CPUExclusiveFunctionInAudioFunction("print".to_string())
+);
+error_test!(
+  discard_in_cpu_failure,
+  CompileErrorKind::DiscardOutsideFragment
+);
 error_test!(into_ambiguous_failure, CompileErrorKind::CouldntInferTypes);
 error_test!(external_string_var, CompileErrorKind::ExternalStringVar);
 error_test!(

@@ -1,0 +1,12 @@
+; A spawn-window frame closure runs on the CPU every frame, and that
+; extends transitively through helpers — a fragment-exclusive call two
+; hops away must be a compile error, not the `spawn-window frame fn not
+; compiled` panic it used to be. (Frame closures are invoked by the host
+; rather than called, so entry-level effect checks never saw them.)
+(defn edge-strength [x: f32]: f32
+  (dpdx x))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (print (edge-strength 1.)))))

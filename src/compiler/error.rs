@@ -443,6 +443,11 @@ pub enum CompileErrorKind {
   AudioInfoOutsideAudio(String),
   #[error("The name `{0}` is reserved by the easl compiler")]
   EaslReservedName(String),
+  #[error(
+    "`{0}` can only be used in CPU code, but this call can run on the \
+     audio thread"
+  )]
+  CPUExclusiveFunctionInAudioFunction(String),
   #[error("CPU entry point must return unit")]
   CpuEntryHasReturnType,
   #[error("CPU entry point may not have arguments")]
@@ -783,6 +788,13 @@ impl CompileError {
     description += "\n";
     description += &format!("{}", self.kind);
     description += "\n";
+    if !self.source_trace.secondary_positions.is_empty() {
+      description += "reached via:\n";
+      for pos in self.source_trace.secondary_positions.iter() {
+        description += &documents.describe_document_position(pos.clone());
+        description += "\n";
+      }
+    }
     description
   }
   pub fn priority(&self) -> usize {

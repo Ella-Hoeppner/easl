@@ -1,0 +1,14 @@
+; CPU-exclusive functions can't run on the real-time audio thread (the
+; audio VM has no host calls at all): this must be a compile error, not
+; the runtime "audio entry not found in compiled bytecode" it used to be
+; (the audio compile silently filtered the entry out for carrying the
+; Print effect).
+@audio
+(defn f [t: f32]: f32
+  (print t)
+  t)
+
+@cpu
+(defn main []
+  (start-audio f)
+  (spawn-window (fn [] ())))

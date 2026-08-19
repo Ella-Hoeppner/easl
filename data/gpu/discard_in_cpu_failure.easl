@@ -1,0 +1,6 @@
+; `discard` only means something in a fragment shader: in CPU code it
+; must be a compile error, not the VM-compile "can't handle discard
+; statements" panic it used to be.
+@cpu
+(defn main []
+  (discard))
