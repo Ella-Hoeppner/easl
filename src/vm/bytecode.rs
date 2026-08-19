@@ -620,9 +620,12 @@ pub enum HostOp {
   /// Suspends the current (frame) execution; the frame loop stops.
   CloseWindow,
   StartAudio { entry: u16 },
-  /// `(= dyn-array-global (load-wav "path"))`: parse the WAV file and
-  /// store its samples as f32 words in the dynamic-memory region.
-  AssignDynFromWav { memory: u16, path: u16 },
+  /// `(load-wav "path")`: parse the WAV file and store its samples as a
+  /// fresh heap cell (f32 words, stride 1), writing the cell's id to
+  /// `dest` (releasing the slot's previous occupant). An ordinary value —
+  /// assignment to a dynamic global goes through the generic
+  /// `RegionFromHeap` path like any other runtime-sized value.
+  LoadWav { path: u16, dest: u16 },
   /// `(= texture-global (load-image "path"))`
   AssignTextureFromImage { binding: u16, path: u16 },
   /// `(= texture-global (blank-texture w h))` — 2 u32 slots at `size_slot`.

@@ -6267,7 +6267,7 @@ fn save_png_file(
 /// Loads a `.wav` file as mono f32 samples at the file's native sample
 /// rate, resolving relative paths against `source_dir` (multi-channel files
 /// are mixed down by averaging). Shared by the `load-wav` builtin's
-/// tree-walker arm and the VM runtime's `AssignDynFromWav` host op.
+/// tree-walker arm and the VM runtime's `LoadWav` host op.
 fn load_wav_samples(
   path: &str,
   source_dir: &Option<PathBuf>,
@@ -6939,12 +6939,17 @@ fn vm_host_call<IO: IOManager>(
         return Err(WindowFeatureNotEnabled.into());
       }
     }
-    HostOp::AssignDynFromWav { memory, path } => {
+    HostOp::LoadWav { path, dest } => {
       let path = code.host_strings[*path as usize].clone();
       let samples = load_wav_samples(&path, &env.source_dir)?;
-      dyn_memory[*memory as usize] = crate::vm::bytecode::DynMemory::Words(
-        samples.into_iter().map(f32::to_bits).collect(),
-      );
+      let cell = Arc::new(HeapCell {
+        memory: DynMemory::Words(
+          samples.into_iter().map(f32::to_bits).collect(),
+        ),
+        stride: 1,
+      });
+      release_heap_id(heap, heap_free, stack[*dest as usize]);
+      stack[*dest as usize] = alloc_heap_cell(heap, heap_free, cell);
     }
     HostOp::AssignTextureFromImage { binding, path } => {
       let b = &code.host_bindings[*binding as usize];

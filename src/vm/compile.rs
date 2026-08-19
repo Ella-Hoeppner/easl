@@ -2141,15 +2141,12 @@ fn copy_op_for(t: &Type) -> Op {
 
 /// True when an assignment right-hand side is one of the forms with a
 /// dedicated whole-global fast path in `try_compile_cpu_builtin`
-/// (`zeroed-array`, `into-dynamic-array`, `load-wav`).
+/// (`zeroed-array`, `into-dynamic-array`).
 fn assigns_special_dyn_rhs(rhs: &TypedExp) -> bool {
   if let ExpKind::Application(rhs_f, _) = &rhs.kind
     && let ExpKind::Name(rhs_f_name) = &rhs_f.kind
   {
-    matches!(
-      &**rhs_f_name,
-      "zeroed-array" | "into-dynamic-array" | "load-wav"
-    )
+    matches!(&**rhs_f_name, "zeroed-array" | "into-dynamic-array")
   } else {
     false
   }
@@ -2456,7 +2453,8 @@ impl TypedExp {
           // `try_compile_cpu_builtin` — but only for flat element types;
           // heap-backed elements need `Cells` storage, which the generic
           // value-then-`RegionFromHeap` path produces.)
-          if let ExpKind::Application(rhs_f, _) = &args[1].kind
+          if !state.cpu_mode
+            && let ExpKind::Application(rhs_f, _) = &args[1].kind
             && let ExpKind::Name(rhs_f_name) = &rhs_f.kind
             && &**rhs_f_name == "load-wav"
           {
@@ -2484,6 +2482,15 @@ impl TypedExp {
     state: &mut BytecodeCompilationState,
   ) -> Option<Option<u16>> {
     match f_name {
+      "load-wav" => {
+        let ExpKind::StringLiteral(path) = &args[0].kind else {
+          panic!("load-wav argument must be a string literal")
+        };
+        let path = state.host_string_index(&path.to_string());
+        let dest = state.take_stack_slot(1);
+        state.emit_host_op(HostOp::LoadWav { path, dest });
+        Some(Some(dest))
+      }
       "print" => {
         let arg = &args[0];
         if let ExpKind::StringLiteral(text) = &arg.kind {
@@ -2847,13 +2854,6 @@ impl TypedExp {
                 arg_positions: [memory, src_slot, count as u16],
                 return_position: stride,
               });
-            }
-            "load-wav" => {
-              let ExpKind::StringLiteral(path) = &rhs_args[0].kind else {
-                panic!("load-wav argument must be a string literal")
-              };
-              let path = state.host_string_index(&path.to_string());
-              state.emit_host_op(HostOp::AssignDynFromWav { memory, path });
             }
             other => panic!(
               "unsupported assignment of `{other}` result to dynamic array \
