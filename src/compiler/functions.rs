@@ -65,7 +65,16 @@ pub struct TopLevelFunction {
   pub arg_annotations: Vec<FunctionArgumentAnnotation>,
   pub return_attributes: IOAttributes,
   pub entry_point: Option<EntryPoint>,
+  pub directly_user_written: bool,
   pub expression: TypedExp,
+}
+
+impl TopLevelFunction {
+  pub fn derived_from(&self) -> Self {
+    let mut derived = self.clone();
+    derived.directly_user_written = false;
+    derived
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -547,6 +556,7 @@ impl AbstractFunctionSignature {
                       arg_annotations,
                       return_attributes,
                       entry_point: parsed_annotation.entry,
+                      directly_user_written: true,
                       expression,
                     })),
                   );
@@ -758,7 +768,7 @@ impl AbstractFunctionSignature {
     if let FunctionImplementationKind::Composite(monomorphized_fn) =
       &mut monomorphized.implementation
     {
-      let mut new_fn = monomorphized_fn.read().unwrap().clone();
+      let mut new_fn = monomorphized_fn.read().unwrap().derived_from();
       let replacement_pairs: HashMap<Arc<str>, Type> = generic_type_bindings
         .iter()
         .map(|(x, y)| (x.clone(), y.clone()))
@@ -784,7 +794,8 @@ impl AbstractFunctionSignature {
     ctx: &mut Program,
     source_trace: &SourceTrace,
   ) -> CompileResult<Self> {
-    let mut implementation = self.implementation(source_trace.clone())?;
+    let mut implementation =
+      self.implementation(source_trace.clone())?.derived_from();
     let arg_name = &self.arg_names(source_trace)?[argument_index].0;
     let inlined_fn_name = &signature.read().unwrap().name;
     if let TypeState::Known(Type::Function(f)) =
@@ -1210,16 +1221,28 @@ impl TopLevelFunction {
     // the signature have no flat WGSL/C encoding. `fn_string` below is
     // only evaluated when this passes, so skipped functions' bodies are
     // never lowered at all.
-    let signature_involves_runtime_sized_types = args
+    let signature_involves_cpu_only_types = args
       .iter()
       .map(|(arg, _)| arg.var_type.unwrap_known())
       .chain(std::iter::once(return_type.unwrap_known()))
-      .any(|t| t.involves_runtime_sized_array() || t.involves_string());
+      .any(|t| {
+        // `type_makes_struct_cpu_only` extends the flat checks through
+        // *closure types*, recursing into their scope structs: a
+        // HoF-specialized function whose closure-typed params capture a
+        // runtime-sized array (or a String, or another CPU-only closure)
+        // compiles to `ptr<function, <scope>>` args referencing scope
+        // structs that struct emission skips as CPU-only — so the
+        // function must be skipped by the same predicate, or the emitted
+        // WGSL/C dangles on the missing struct.
+        t.involves_runtime_sized_array()
+          || t.involves_string()
+          || program.type_makes_struct_cpu_only(&t)
+      });
     let allowed_on_gpu = effects.cpu_exclusive_functions().is_empty()
       && effects.cpu_exclusive_types().is_empty()
       && effects.window_info_kinds().is_empty()
       && effects.gpu_illegal_address_space_writes(program).is_empty()
-      && !signature_involves_runtime_sized_types;
+      && !signature_involves_cpu_only_types;
 
     let fn_string = || {
       let args = arg_names

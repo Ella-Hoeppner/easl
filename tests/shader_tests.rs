@@ -481,6 +481,23 @@ error_test!(
 // REFERENCES, distinguishing exactly these two cases).
 // KNOWN-FAILING: naga rejects the emitted WGSL (see the .easl header).
 success_test!(audio_closure_plus_overload);
+success_test!(audio_closure_chain_dyn_capture);
+
+/// Pins the "easl as a WGSL library" contract: plain user-written
+/// functions emit to WGSL even when no shader entry point reaches them
+/// (here `scale-brightness` is only called from CPU code), so external
+/// WGSL can call them.
+#[test]
+fn exported_helper_emitted() {
+  let wgsl = compile_shader("exported_helper").unwrap_or_else(|errors| {
+    panic!("exported_helper.easl failed to compile: {errors:?}")
+  });
+  validate_wgsl("exported_helper", &wgsl);
+  assert!(
+    wgsl.contains("fn scale_brightness"),
+    "user-written helper missing from emitted WGSL:\n{wgsl}"
+  );
+}
 error_test!(
   audio_time_in_constructor_failure,
   CompileErrorKind::AudioInfoOutsideAudio("audio-time".to_string())

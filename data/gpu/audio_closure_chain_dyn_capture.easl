@@ -1,0 +1,31 @@
+; A closure capturing a runtime-sized local, handed to `start-audio`
+; through a HoF chain: the *nested* audio clones (captured closures,
+; audioified recursively) carry no Audio entry marking and flat
+; signatures, so nothing excludes them from WGSL emission — and their
+; bodies are CPU-semantics (whole-array locals of lifted dyn globals),
+; so naga rejects the module. Audio-only clones must not be emitted at
+; all.
+(defn with-phase [f: (Fn [f32] f32)]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+        (= phase (+ phase (/ (sample-rate))))
+        (f phase))))
+
+(defn echoish [s: (Fn [] f32)]: (Fn [] f32)
+  (let [@var buf (zeroed-array 8u): [f32]
+        @var i 0u]
+    (fn []
+        (= (buf i) (s))
+        (= i (% (+ i 1u) 8u))
+        (buf i))))
+
+@cpu
+(defn main []
+  (let [samples (load-wav "test_sample.wav")]
+    (start-audio (-> (fn [t]
+                         (if (< (u32 t) (array-length samples))
+                           (samples (u32 t))
+                           0.))
+                     (with-phase)
+                     (echoish)))
+    (spawn-window (fn [] ()))))

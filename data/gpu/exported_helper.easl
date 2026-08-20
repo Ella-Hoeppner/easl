@@ -1,0 +1,12 @@
+; The "easl as a WGSL library" contract: a plain user-written function is
+; always emitted to WGSL — even when only CPU code (or nothing) calls it
+; — so hand-written WGSL that links against easl's output can call it.
+; Compiler-generated functions (monomorphized instances, specializations,
+; clones) follow usage-based emission instead.
+(defn scale-brightness [c: vec3f
+                        k: f32]: vec3f
+  (* c (vec3f k)))
+
+@cpu
+(defn main []
+  (print (scale-brightness (vec3f 1.) 0.5)))

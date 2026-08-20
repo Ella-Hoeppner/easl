@@ -358,18 +358,6 @@ enum CaptureRewrite {
   },
 }
 
-/// Accumulator for `extract_audio_closure_scopes` (the audio sibling of
-/// `DispatchScopeLiftState`): plain thread-shared globals and audio
-/// clones, collected while iterating the registry and installed at the
-/// end of the pass.
-struct AudioScopeLiftState {
-  created_globals: HashSet<Arc<str>>,
-  new_vars: Vec<TopLevelVar>,
-  /// Original captured-closure name → its (memoized) audio clone.
-  audio_clones:
-    HashMap<Arc<str>, (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>)>,
-  new_functions: Vec<Arc<RwLock<AbstractFunctionSignature>>>,
-}
 
 /// The transitive set of lifted-capture global names for a closure chain
 /// rooted at `scope_struct` (`<scope>_audio_data_<capture>` for every data
@@ -399,14 +387,181 @@ fn collect_audio_scope_global_names(
   }
 }
 
-/// Accumulator for `extract_dispatched_closure_scopes`: bindings and GPU
-/// clones are created while iterating the registry, so they're collected
-/// here and installed at the end of the pass.
-struct DispatchScopeLiftState {
-  created_bindings: HashSet<Arc<str>>,
+/// Execution-context bit indices shared by the context-exclusivity
+/// validation (`validate_context_exclusivity`) and target emission
+/// (`compile_to_target`), both driven by
+/// `Program::compute_function_contexts`.
+pub(crate) mod execution_context {
+  use crate::compiler::entry::EntryPoint;
+
+  pub const CONTEXT_COUNT: usize = 5;
+  pub const CPU: usize = 0;
+  pub const VERTEX: usize = 1;
+  pub const FRAGMENT: usize = 2;
+  pub const COMPUTE: usize = 3;
+  pub const AUDIO: usize = 4;
+  pub const CONTEXT_NAMES: [&str; CONTEXT_COUNT] =
+    ["cpu", "vertex", "fragment", "compute", "audio"];
+  /// representative EntryPoint per context, for
+  /// `BuiltinIOAttribute::is_valid_input_for_stage`
+  pub const CONTEXT_ENTRIES: [EntryPoint; CONTEXT_COUNT] = [
+    EntryPoint::Cpu,
+    EntryPoint::Vertex,
+    EntryPoint::Fragment,
+    EntryPoint::Compute(1),
+    EntryPoint::Audio,
+  ];
+  pub fn bit(context: usize) -> u8 {
+    1 << context
+  }
+  pub fn context_of_entry(entry: &EntryPoint) -> usize {
+    match entry {
+      EntryPoint::Cpu => CPU,
+      EntryPoint::Vertex => VERTEX,
+      EntryPoint::Fragment => FRAGMENT,
+      EntryPoint::Compute(_) => COMPUTE,
+      EntryPoint::Audio => AUDIO,
+    }
+  }
+  /// The contexts whose code a compilation target actually compiles:
+  /// a generated (non-user-written) function reachable only from
+  /// contexts outside this set is skipped from the target's output.
+  pub fn target_context_mask(
+    target: crate::compiler::program::CompilerTarget,
+  ) -> u8 {
+    match target {
+      crate::compiler::program::CompilerTarget::WGSL => {
+        bit(VERTEX) | bit(FRAGMENT) | bit(COMPUTE)
+      }
+      crate::compiler::program::CompilerTarget::C => {
+        bit(VERTEX) | bit(FRAGMENT) | bit(COMPUTE) | bit(AUDIO)
+      }
+      crate::compiler::program::CompilerTarget::VM => {
+        panic!("VM compilation doesn't go through text emission")
+      }
+    }
+  }
+}
+
+/// Which execution contexts a function can run in, with per-context
+/// discovery bookkeeping for error traces (see
+/// `Program::compute_function_contexts`).
+pub(crate) struct FnContexts {
+  pub(crate) implementation: Arc<RwLock<TopLevelFunction>>,
+  pub(crate) mask: u8,
+  /// Per context: the call edge that first placed this function in
+  /// that context, and the entry-point function it traces back to.
+  /// `None` for contexts the function is itself an entry of.
+  pub(crate) discovery:
+    [Option<(SourceTrace, Arc<str>)>; execution_context::CONTEXT_COUNT],
+}
+
+/// The two host-invoked closure-entry systems — GPU dispatch and audio —
+/// share all closure-lift mechanics (clone a scope-less version of each
+/// captured closure, lift every data capture to its own global, rewrite
+/// scope accesses into global accesses via `CaptureRewrite` /
+/// `rewrite_dispatched_scope_body`) and differ only in what a capture
+/// *becomes* and how clones are named:
+///
+/// - **GpuDispatch**: captures are per-dispatch *inputs* — implicit
+///   read-only storage bindings (elided numbers), re-written and uploaded
+///   at every dispatch; mutating one is a compile error
+///   (`catch_dispatched_closure_scope_mutations`). Read-only storage
+///   rather than uniform because storage has relaxed layout rules and
+///   permits runtime-sized array captures. Clones get gensym'd `_gpu`
+///   names, resolved through the registry at dispatch-record time.
+/// - **Audio**: captures are owned mutable *state* — ordinary
+///   storage-write globals, shared between main and audio through the
+///   standard usage-derived analysis (main's one-shot seed write at the
+///   `start-audio` handoff is visible as a `SeedsGlobalVar` effect on
+///   the call site), thereafter mutated per-sample by the audio thread
+///   and synced at batch boundaries. No GPU entry ever references them,
+///   so they never become runtime GPU bindings. Clones get deterministic
+///   `<original>_audio` names so both runtimes can derive the entry name
+///   at `start-audio` time. Clone bodies are CPU-semantics and are kept
+///   out of WGSL/C output by usage-based emission (they're reachable
+///   only from audio context — see `compile_to_target`).
+#[derive(Clone, Copy, PartialEq)]
+enum ClosureLiftTarget {
+  GpuDispatch,
+  Audio,
+}
+
+impl ClosureLiftTarget {
+  fn capture_global_name(
+    &self,
+    scope_struct_name: &str,
+    field_name: &str,
+  ) -> Arc<str> {
+    match self {
+      ClosureLiftTarget::GpuDispatch => {
+        format!("{scope_struct_name}_data_{field_name}").into()
+      }
+      ClosureLiftTarget::Audio => {
+        format!("{scope_struct_name}_audio_data_{field_name}").into()
+      }
+    }
+  }
+  fn capture_address_space(&self) -> VariableAddressSpace {
+    match self {
+      ClosureLiftTarget::GpuDispatch => VariableAddressSpace::StorageRead,
+      ClosureLiftTarget::Audio => VariableAddressSpace::StorageReadWrite,
+    }
+  }
+  /// Which capture types each target can carry: GPU capture bindings obey
+  /// the same rule as explicit bindings (may involve a runtime-sized
+  /// array only by *being* one — `validate_gpu_runtime_sized_use` runs
+  /// before the lift, so it can't see the bindings created here); audio
+  /// captures cross threads through the shared-snapshot system, which
+  /// speaks flat words per variable (no Strings — their words are heap
+  /// ids — and runtime-sized arrays only as whole variables).
+  fn validate_capture(
+    &self,
+    field_type: &Type,
+    source_trace: &SourceTrace,
+    errors: &mut ErrorLog,
+  ) {
+    let embeds_runtime_sized = field_type.involves_runtime_sized_array()
+      && !matches!(
+        field_type,
+        Type::Array(Some(ConcreteArraySize::Unsized), _)
+      );
+    match self {
+      ClosureLiftTarget::GpuDispatch => {
+        if embeds_runtime_sized {
+          errors.log(CompileError {
+            kind: RuntimeSizedFieldInBinding,
+            source_trace: source_trace.clone(),
+          });
+        }
+      }
+      ClosureLiftTarget::Audio => {
+        if field_type.involves_string() {
+          errors.log(CompileError {
+            kind: UnshareableAudioCapture("String".to_string()),
+            source_trace: source_trace.clone(),
+          });
+        } else if embeds_runtime_sized {
+          errors.log(CompileError {
+            kind: UnshareableAudioCapture(
+              "type embedding a runtime-sized array".to_string(),
+            ),
+            source_trace: source_trace.clone(),
+          });
+        }
+      }
+    }
+  }
+}
+
+/// Accumulator for a closure-entry lift pass: globals and clones are
+/// created while iterating the registry, so they're collected here and
+/// installed at the end of the pass.
+struct ClosureLiftState {
+  created_globals: HashSet<Arc<str>>,
   new_vars: Vec<TopLevelVar>,
-  /// Original captured-closure name → its (memoized) GPU clone.
-  callee_clones:
+  /// Original captured-closure name → its (memoized) clone.
+  clones:
     HashMap<Arc<str>, (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>)>,
   new_functions: Vec<Arc<RwLock<AbstractFunctionSignature>>>,
 }
@@ -1736,7 +1891,7 @@ impl Program {
   /// own global, and each call forwarding a captured *closure* (its
   /// trailing `scope.field` arg) is repointed to the callee's GPU clone
   /// with the scope arg dropped — the clone reads its own lifted globals
-  /// instead (see `gpuify_captured_closure`). Reference-ownership access
+  /// instead (see `cloneify_captured_closure`). Reference-ownership access
   /// chains rooted at the scope become owned — naga doesn't allow
   /// storage-space pointers, and scopes are read-only on the GPU.
   fn rewrite_dispatched_scope_body(
@@ -1839,7 +1994,7 @@ impl Program {
   /// (or no legal) shader representation, and function-typed fields
   /// declare as their representative captured-scope structs, so the
   /// check recurses through those scopes' own fields.
-  fn type_makes_struct_cpu_only(&self, t: &Type) -> bool {
+  pub(crate) fn type_makes_struct_cpu_only(&self, t: &Type) -> bool {
     match t {
       Type::Function(signature) => {
         let Some(ancestor) = &signature.abstract_ancestor else {
@@ -1864,17 +2019,19 @@ impl Program {
       other => other.involves_string() || other.involves_runtime_sized_array(),
     }
   }
-  /// Lifts every capture of a dispatched closure's scope struct: data
-  /// captures each get their own implicit read-only storage binding
-  /// (`<scope-struct>_data_<capture>`), and captured *closures* recurse —
-  /// their own captures are lifted the same way and the closure gets a
-  /// GPU clone via `gpuify_captured_closure`. Returns the per-field
-  /// rewrite map `rewrite_dispatched_scope_body` applies to the body.
-  fn lift_scope_captures(
+  /// Lifts every capture of a closure-entry scope struct (see
+  /// `ClosureLiftTarget` for what each target turns captures into): data
+  /// captures each get their own implicit global, and captured *closures*
+  /// recurse — their own captures are lifted the same way and the closure
+  /// gets a memoized clone via `cloneify_captured_closure`. Returns the
+  /// per-field rewrite map `rewrite_dispatched_scope_body` applies to the
+  /// body.
+  fn lift_closure_entry_captures(
     &self,
     scope_struct: &AbstractStruct,
     source_trace: &SourceTrace,
-    state: &mut DispatchScopeLiftState,
+    target: ClosureLiftTarget,
+    state: &mut ClosureLiftState,
     errors: &mut ErrorLog,
   ) -> HashMap<Arc<str>, CaptureRewrite> {
     let scope_struct_name = scope_struct.name.0.clone();
@@ -1895,186 +2052,9 @@ impl Program {
                shouldn't be captured"
             )
           }
-          let (clone_name, clone_signature) =
-            self.gpuify_captured_closure(field_ancestor.clone(), state, errors);
-          (
-            field.name.clone(),
-            CaptureRewrite::CalleeClone {
-              clone_name,
-              clone_signature,
-            },
-          )
-        } else {
-          // The implicit binding obeys the same rule as explicit ones: it
-          // may involve a runtime-sized array only by being one. This
-          // catches e.g. capturing a struct value with a runtime-sized
-          // field — `validate_gpu_runtime_sized_use` runs before this
-          // pass, so it can't see the bindings created here.
-          if field_type.involves_runtime_sized_array()
-            && !matches!(
-              field_type,
-              Type::Array(Some(ConcreteArraySize::Unsized), _)
-            )
-          {
-            errors.log(CompileError {
-              kind: RuntimeSizedFieldInBinding,
-              source_trace: source_trace.clone(),
-            });
-          }
-          let global_name: Arc<str> =
-            format!("{scope_struct_name}_data_{}", field.name).into();
-          // The same closure definition can be captured by several
-          // dispatched entries; its bindings are keyed by its own scope
-          // struct, so they're created once and shared (each dispatch's
-          // pre-upload carries the values written at its own record
-          // site).
-          if state.created_bindings.insert(global_name.clone()) {
-            state.new_vars.push(TopLevelVar {
-              name: global_name.clone(),
-              kind: TopLevelVariableKind::Var {
-                // Read-only storage rather than uniform: storage has
-                // relaxed layout rules (uniform would demand 16-byte
-                // member alignment for struct-typed captures), and
-                // runtime-sized array captures are legal (uniform
-                // forbids them). Binding numbers are assigned centrally
-                // at the end of validation.
-                address_space: VariableAddressSpace::StorageRead,
-                group_and_binding: Some(BindingSpec::Elided),
-              },
-              var_type: field_type.clone(),
-              value: None,
-              source_trace: source_trace.clone(),
-              external: false,
-            });
-          }
-          (field.name.clone(), CaptureRewrite::Global(global_name))
-        }
-      })
-      .collect()
-  }
-  /// Creates (and memoizes) the GPU clone of a closure captured —
-  /// directly or transitively — by a dispatched entry: the clone's
-  /// trailing scope parameter is dropped, its captures are lifted to
-  /// per-capture bindings (recursing into further captured closures),
-  /// and its body reads those globals instead of the scope. The original
-  /// definition is left untouched, so direct CPU calls of the closure
-  /// keep working.
-  fn gpuify_captured_closure(
-    &self,
-    ancestor: Arc<RwLock<AbstractFunctionSignature>>,
-    state: &mut DispatchScopeLiftState,
-    errors: &mut ErrorLog,
-  ) -> (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>) {
-    let (original_name, scope_struct, original_implementation) = {
-      let ancestor = ancestor.read().unwrap();
-      let Some(scope_struct) = ancestor.captured_scope.clone() else {
-        panic!("gpuify_captured_closure called on a scope-less closure")
-      };
-      let FunctionImplementationKind::Composite(implementation) =
-        ancestor.implementation.clone()
-      else {
-        panic!("captured closure wasn't composite")
-      };
-      (ancestor.name.clone(), scope_struct, implementation)
-    };
-    if let Some(existing) = state.callee_clones.get(&original_name) {
-      return existing.clone();
-    }
-    let scope_struct_name = scope_struct.name.0.clone();
-    let rewrites = self.lift_scope_captures(
-      &scope_struct,
-      &scope_struct.source_trace,
-      state,
-      errors,
-    );
-    let mut implementation = original_implementation.read().unwrap().clone();
-    implementation.expression.data.as_known_mut(|t| {
-      let Type::Function(signature) = t else {
-        panic!("captured closure had a non-function type")
-      };
-      if let Some((v, _)) = signature.args.last()
-        && let Type::Struct(s) = v.var_type.unwrap_known()
-        && s.name == scope_struct_name
-      {
-        signature.args.pop();
-      }
-    });
-    let scope_param_name = implementation.arg_names.pop().unwrap().0;
-    implementation.arg_annotations.pop();
-    let ExpKind::Function(fn_arg_names, body) =
-      &mut implementation.expression.kind
-    else {
-      panic!("captured closure implementation wasn't a Function")
-    };
-    fn_arg_names.pop();
-    self.rewrite_dispatched_scope_body(body, &scope_param_name, &rewrites);
-    let clone_name: Arc<str> = self
-      .names
-      .write()
-      .unwrap()
-      .gensym(&format!("{original_name}_gpu"))
-      .into();
-    let clone_signature = {
-      let original = ancestor.read().unwrap();
-      let mut arg_types = original.arg_types.clone();
-      if let Some((AbstractType::AbstractStruct(s), _)) = arg_types.last()
-        && s.name.0 == scope_struct_name
-      {
-        arg_types.pop();
-      }
-      Arc::new(RwLock::new(AbstractFunctionSignature {
-        name: clone_name.clone(),
-        generic_args: vec![],
-        arg_types,
-        return_type: original.return_type.clone(),
-        implementation: FunctionImplementationKind::Composite(Arc::new(
-          RwLock::new(implementation),
-        )),
-        associative: false,
-        captured_scope: None,
-        entry_point: None,
-      }))
-    };
-    state.new_functions.push(clone_signature.clone());
-    state
-      .callee_clones
-      .insert(original_name, (clone_name.clone(), clone_signature.clone()));
-    (clone_name, clone_signature)
-  }
-  /// Lifts every capture of an audio-entry closure's scope struct: data
-  /// captures each get their own plain thread-shared global
-  /// (`<scope-struct>_audio_data_<capture>`, forced audience
-  /// MAIN|AUDIO), and captured *closures* recurse — their own captures
-  /// are lifted the same way and the closure gets an audio clone via
-  /// `audioify_captured_closure`. Returns the per-field rewrite map
-  /// `rewrite_dispatched_scope_body` applies to the clone's body.
-  fn lift_audio_scope_captures(
-    &self,
-    scope_struct: &AbstractStruct,
-    source_trace: &SourceTrace,
-    state: &mut AudioScopeLiftState,
-    errors: &mut ErrorLog,
-  ) -> HashMap<Arc<str>, CaptureRewrite> {
-    let scope_struct_name = scope_struct.name.0.clone();
-    scope_struct
-      .fields
-      .iter()
-      .map(|field| {
-        let AbstractType::Type(field_type) = &field.field_type else {
-          panic!("captured scope field with non-concrete type")
-        };
-        if let Type::Function(signature) = field_type {
-          let Some(field_ancestor) = &signature.abstract_ancestor else {
-            panic!("captured closure without an abstract ancestor")
-          };
-          if field_ancestor.read().unwrap().captured_scope.is_none() {
-            panic!(
-              "captured scope-less closure; these are unit-like and \
-               shouldn't be captured"
-            )
-          }
-          let (clone_name, clone_signature) = self.audioify_captured_closure(
+          let (clone_name, clone_signature) = self.cloneify_captured_closure(
             field_ancestor.clone(),
+            target,
             state,
             errors,
           );
@@ -2086,46 +2066,21 @@ impl Program {
             },
           )
         } else {
-          // Captures cross to the audio thread through the shared-snapshot
-          // system, which speaks flat words per variable: strings can't
-          // cross at all (their words are heap ids), and runtime-sized
-          // arrays can only cross as whole variables, not embedded in
-          // other types.
-          if field_type.involves_string() {
-            errors.log(CompileError {
-              kind: UnshareableAudioCapture("String".to_string()),
-              source_trace: source_trace.clone(),
-            });
-          } else if field_type.involves_runtime_sized_array()
-            && !matches!(
-              field_type,
-              Type::Array(Some(ConcreteArraySize::Unsized), _)
-            )
-          {
-            errors.log(CompileError {
-              kind: UnshareableAudioCapture(
-                "type embedding a runtime-sized array".to_string(),
-              ),
-              source_trace: source_trace.clone(),
-            });
-          }
-          let global_name: Arc<str> =
-            format!("{scope_struct_name}_audio_data_{}", field.name).into();
+          target.validate_capture(field_type, source_trace, errors);
+          let global_name =
+            target.capture_global_name(&scope_struct_name, &field.name);
           // The same closure definition can be captured along several
-          // paths to the audio entry; its globals are keyed by its own
-          // scope struct, so they're created once.
+          // paths to an entry; its globals are keyed by its own scope
+          // struct, so they're created once and shared.
           if state.created_globals.insert(global_name.clone()) {
             state.new_vars.push(TopLevelVar {
               name: global_name.clone(),
               kind: TopLevelVariableKind::Var {
-                // An ordinary storage-write global, shared between main
-                // and audio through the standard usage-derived analysis:
-                // the audio clone's body reads/writes it, and main's seed
-                // write at `start-audio` is visible as a
-                // `SeedsGlobalVar` effect on the call site. No GPU entry
-                // ever references it, so it never becomes a runtime GPU
-                // binding.
-                address_space: VariableAddressSpace::StorageReadWrite,
+                address_space: target.capture_address_space(),
+                // Binding numbers are assigned centrally at the end of
+                // validation. (Audio capture globals never become
+                // runtime GPU bindings — no GPU entry references them —
+                // but carry elided numbers like any storage var.)
                 group_and_binding: Some(BindingSpec::Elided),
               },
               var_type: field_type.clone(),
@@ -2139,25 +2094,24 @@ impl Program {
       })
       .collect()
   }
-  /// Creates (and memoizes) the audio clone of a closure captured —
-  /// directly or transitively — by the closure passed to `start-audio`:
-  /// the clone's trailing scope parameter is dropped, its captures are
-  /// lifted to plain thread-shared globals (recursing into further
-  /// captured closures), and its body reads and writes those globals
-  /// instead of the scope. The original definition is left untouched, so
-  /// direct CPU calls of the closure keep working. The clone's name is
-  /// deterministic (`<original>_audio`) so both runtimes can derive the
-  /// audio entry name from the closure's ancestor at `start-audio` time.
-  fn audioify_captured_closure(
+  /// Creates (and memoizes) the scope-less clone of a closure captured —
+  /// directly or transitively — by a closure entry: the clone's trailing
+  /// scope parameter is dropped, its captures are lifted to per-capture
+  /// globals (recursing into further captured closures), and its body
+  /// reads those globals instead of the scope. The original definition is
+  /// left untouched, so direct CPU calls of the closure keep working.
+  /// Naming and capture semantics per `ClosureLiftTarget`.
+  fn cloneify_captured_closure(
     &self,
     ancestor: Arc<RwLock<AbstractFunctionSignature>>,
-    state: &mut AudioScopeLiftState,
+    target: ClosureLiftTarget,
+    state: &mut ClosureLiftState,
     errors: &mut ErrorLog,
   ) -> (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>) {
     let (original_name, scope_struct, original_implementation) = {
       let ancestor = ancestor.read().unwrap();
       let Some(scope_struct) = ancestor.captured_scope.clone() else {
-        panic!("audioify_captured_closure called on a scope-less closure")
+        panic!("cloneify_captured_closure called on a scope-less closure")
       };
       let FunctionImplementationKind::Composite(implementation) =
         ancestor.implementation.clone()
@@ -2166,17 +2120,19 @@ impl Program {
       };
       (ancestor.name.clone(), scope_struct, implementation)
     };
-    if let Some(existing) = state.audio_clones.get(&original_name) {
+    if let Some(existing) = state.clones.get(&original_name) {
       return existing.clone();
     }
     let scope_struct_name = scope_struct.name.0.clone();
-    let rewrites = self.lift_audio_scope_captures(
+    let rewrites = self.lift_closure_entry_captures(
       &scope_struct,
       &scope_struct.source_trace,
+      target,
       state,
       errors,
     );
-    let mut implementation = original_implementation.read().unwrap().clone();
+    let mut implementation =
+      original_implementation.read().unwrap().derived_from();
     implementation.expression.data.as_known_mut(|t| {
       let Type::Function(signature) = t else {
         panic!("captured closure had a non-function type")
@@ -2197,12 +2153,25 @@ impl Program {
     };
     fn_arg_names.pop();
     self.rewrite_dispatched_scope_body(body, &scope_param_name, &rewrites);
-    let clone_name: Arc<str> = format!("{original_name}_audio").into();
-    assert!(
-      !self.abstract_functions.contains_key(&clone_name),
-      "audio clone name `{clone_name}` collides with an existing function"
-    );
-    self.names.write().unwrap().track_user_name(&clone_name);
+    let clone_name: Arc<str> = match target {
+      ClosureLiftTarget::GpuDispatch => self
+        .names
+        .write()
+        .unwrap()
+        .gensym(&format!("{original_name}_gpu"))
+        .into(),
+      ClosureLiftTarget::Audio => {
+        // Deterministic name — both runtimes derive the audio entry name
+        // from the closure's ancestor at `start-audio` time.
+        let clone_name: Arc<str> = format!("{original_name}_audio").into();
+        assert!(
+          !self.abstract_functions.contains_key(&clone_name),
+          "audio clone name `{clone_name}` collides with an existing function"
+        );
+        self.names.write().unwrap().track_user_name(&clone_name);
+        clone_name
+      }
+    };
     let clone_signature = {
       let original = ancestor.read().unwrap();
       let mut arg_types = original.arg_types.clone();
@@ -2226,7 +2195,7 @@ impl Program {
     };
     state.new_functions.push(clone_signature.clone());
     state
-      .audio_clones
+      .clones
       .insert(original_name, (clone_name.clone(), clone_signature.clone()));
     (clone_name, clone_signature)
   }
@@ -2267,47 +2236,18 @@ impl Program {
   /// handed to `start-audio` has no statically-known ancestor at the
   /// argument position, so its body runs unchecked in audio context
   /// (direct `(fn [] ...)` arguments are covered).
-  pub fn validate_context_exclusivity(&self, errors: &mut ErrorLog) {
+  /// Computes which execution contexts each composite function can run
+  /// in, as a bitmask fixpoint over call edges plus the two
+  /// host-invocation edges (see `validate_context_exclusivity` for the
+  /// propagation model). Shared by the context-exclusivity validation
+  /// (which also consumes the discovery edges for error traces) and
+  /// target emission (which consults only the masks — see
+  /// `compile_to_target`).
+  pub(crate) fn compute_function_contexts(
+    &self,
+  ) -> HashMap<Arc<str>, FnContexts> {
     use crate::compiler::expression::ExpKind;
-    const CONTEXT_COUNT: usize = 5;
-    const CPU: usize = 0;
-    const VERTEX: usize = 1;
-    const FRAGMENT: usize = 2;
-    const COMPUTE: usize = 3;
-    const AUDIO: usize = 4;
-    const CONTEXT_NAMES: [&str; CONTEXT_COUNT] =
-      ["cpu", "vertex", "fragment", "compute", "audio"];
-    // representative EntryPoint per context, for
-    // `BuiltinIOAttribute::is_valid_input_for_stage`
-    const CONTEXT_ENTRIES: [EntryPoint; CONTEXT_COUNT] = [
-      EntryPoint::Cpu,
-      EntryPoint::Vertex,
-      EntryPoint::Fragment,
-      EntryPoint::Compute(1),
-      EntryPoint::Audio,
-    ];
-    fn bit(context: usize) -> u8 {
-      1 << context
-    }
-    fn context_of_entry(entry: &EntryPoint) -> usize {
-      match entry {
-        EntryPoint::Cpu => CPU,
-        EntryPoint::Vertex => VERTEX,
-        EntryPoint::Fragment => FRAGMENT,
-        EntryPoint::Compute(_) => COMPUTE,
-        EntryPoint::Audio => AUDIO,
-      }
-    }
-
-    struct FnContexts {
-      implementation: Arc<RwLock<TopLevelFunction>>,
-      mask: u8,
-      /// Per context: the call edge that first placed this function in
-      /// that context, and the entry-point function it traces back to.
-      /// `None` for contexts the function is itself an entry of.
-      discovery: [Option<(SourceTrace, Arc<str>)>; CONTEXT_COUNT],
-    }
-
+    use execution_context::{AUDIO, CONTEXT_COUNT, CPU, bit, context_of_entry};
     let mut fns: HashMap<Arc<str>, FnContexts> = HashMap::new();
     let mut worklist: Vec<(Arc<str>, u8)> = vec![];
     for f in self.abstract_functions_iter() {
@@ -2426,7 +2366,15 @@ impl Program {
         worklist.push((callee, new_bits));
       }
     }
-
+    fns
+  }
+  pub fn validate_context_exclusivity(&self, errors: &mut ErrorLog) {
+    use crate::compiler::expression::ExpKind;
+    use execution_context::{
+      AUDIO, CONTEXT_COUNT, CONTEXT_ENTRIES, CONTEXT_NAMES, CPU, FRAGMENT,
+      bit,
+    };
+    let fns = self.compute_function_contexts();
     // rule scan: check each function's direct uses against every context
     // it can run in
     let runtime_sized_error_present = errors.iter().any(|e| {
@@ -2668,7 +2616,7 @@ impl Program {
   }
   /// Rewrites `start-audio` calls whose function is a *scoped closure* so
   /// they can run on the audio thread: the closure chain is cloned into
-  /// scope-less audio versions (`audioify_captured_closure`) whose
+  /// scope-less audio versions (`cloneify_captured_closure`) whose
   /// captures live in plain thread-shared globals, and the clone becomes
   /// the `@audio` entry point in place of the original (which the
   /// reference-address-space rebuild would drop from the registry — it
@@ -2677,10 +2625,10 @@ impl Program {
   /// the audio thread on the clone; the existing bootstrap force-publish
   /// ships the seeds to the audio replica's first adopt.
   pub fn extract_audio_closure_scopes(&mut self, errors: &mut ErrorLog) {
-    let mut state = AudioScopeLiftState {
+    let mut state = ClosureLiftState {
       created_globals: HashSet::new(),
       new_vars: vec![],
-      audio_clones: HashMap::new(),
+      clones: HashMap::new(),
       new_functions: vec![],
     };
     for f in self.abstract_functions_iter() {
@@ -2718,7 +2666,7 @@ impl Program {
             // the marking to the audio clone, which is what actually
             // runs on the audio thread (and survives the
             // reference-address-space rebuild). Both steps are idempotent
-            // (`audioify_captured_closure` memoizes), so repeat call
+            // (`cloneify_captured_closure` memoizes), so repeat call
             // sites of the same closure need no guard.
             {
               let mut ancestor = ancestor.write().unwrap();
@@ -2729,8 +2677,9 @@ impl Program {
                 implementation.write().unwrap().entry_point = None;
               }
             }
-            let (_, clone_signature) = self.audioify_captured_closure(
+            let (_, clone_signature) = self.cloneify_captured_closure(
               ancestor.clone(),
+              ClosureLiftTarget::Audio,
               &mut state,
               errors,
             );
@@ -2777,7 +2726,7 @@ impl Program {
         })
         .unwrap();
     }
-    let AudioScopeLiftState {
+    let ClosureLiftState {
       new_vars,
       new_functions,
       ..
@@ -3039,10 +2988,10 @@ impl Program {
   /// accept builtin-annotated arguments. This pass converts each dispatched
   /// closure's scope argument into an implicit binding: the scope struct
   pub fn extract_dispatched_closure_scopes(&mut self, errors: &mut ErrorLog) {
-    let mut state = DispatchScopeLiftState {
-      created_bindings: HashSet::new(),
+    let mut state = ClosureLiftState {
+      created_globals: HashSet::new(),
       new_vars: vec![],
-      callee_clones: HashMap::new(),
+      clones: HashMap::new(),
       new_functions: vec![],
     };
     let mut processed_entries: HashSet<Arc<str>> = HashSet::new();
@@ -3145,10 +3094,11 @@ impl Program {
               // express (WGSL allows at most one runtime-sized member,
               // and only in last position). Captured *closures* recurse:
               // their captures are lifted the same way and the body calls
-              // a GPU clone (see `lift_scope_captures`).
-              let rewrites = self.lift_scope_captures(
+              // a GPU clone (see `cloneify_captured_closure`).
+              let rewrites = self.lift_closure_entry_captures(
                 &scope_struct,
                 &exp.source_trace,
+                ClosureLiftTarget::GpuDispatch,
                 &mut state,
                 errors,
               );
@@ -3163,7 +3113,7 @@ impl Program {
         })
         .unwrap();
     }
-    let DispatchScopeLiftState {
+    let ClosureLiftState {
       new_vars,
       new_functions,
       ..
@@ -3922,6 +3872,7 @@ impl Program {
                             exp.source_trace.clone(),
                           ),
                           entry_point: None,
+                          directly_user_written: false,
                           expression: {
                             let mut new_exp = exp.clone();
                             if !unitlike_fn_substitutions.is_empty() {
@@ -4535,6 +4486,15 @@ impl Program {
       compiled_string += &chunk;
       compiled_string += "\n\n";
     }
+    // Usage-based emission: a compiler-generated function reachable only
+    // from contexts this target doesn't compile (e.g. an audio clone, or
+    // a cpu-only monomorphized instance, in WGSL output) is skipped.
+    // Directly user-written functions always emit (modulo the type and
+    // effect gates in `TopLevelFunction::compile`) so external WGSL/C
+    // that links against easl's output can call them, and functions no
+    // entry reaches (mask 0) emit for the same reason.
+    let function_contexts = self.compute_function_contexts();
+    let target_contexts = execution_context::target_context_mask(target);
     for (f_name, implementation) in self.composite_functions_in_usage_order() {
       {
         let implementation = implementation.read().unwrap();
@@ -4546,6 +4506,13 @@ impl Program {
         let return_type = signature.return_type.unwrap_known();
         if matches!(return_type, Type::Function(_))
           && return_type.is_unitlike(&mut names)
+        {
+          continue;
+        }
+        if !implementation.directly_user_written
+          && let Some(info) = function_contexts.get(&f_name)
+          && info.mask != 0
+          && info.mask & target_contexts == 0
         {
           continue;
         }
