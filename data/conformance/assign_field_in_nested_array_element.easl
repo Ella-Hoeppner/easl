@@ -1,0 +1,4 @@
+(defn f []: f32
+  (let [@var grid [[(vec2f 0. 0.)]]]
+    (= (.x ((grid 0u) 0u)) 1.)
+    (.x ((grid 0u) 0u))))

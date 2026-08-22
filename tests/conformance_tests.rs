@@ -585,6 +585,13 @@ conformance_test!(mat_diagonal_sum);
 conformance_test!(struct_field_assignment);
 conformance_test!(array_index_assignment);
 conformance_test!(array_argument);
+// Assignment to a field of an array element (the write-back-propagation
+// fix in the VM's Field/ArrayIndex accessor lowering). Dynamic-array
+// sibling: `assign_field_in_dyn_array_element` in the cpu suite.
+conformance_test!(assign_field_in_array_element);
+// Two levels of nesting: exercises ref-position propagation through both
+// accessor arms plus the innermost-last ordering of pending store-backs.
+conformance_test!(assign_field_in_nested_array_element);
 conformance_test!(for_loop);
 conformance_test!(for_loop_init);
 conformance_test!(closure_scope_write_back);

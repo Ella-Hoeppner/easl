@@ -13,7 +13,9 @@ use crate::compiler::functions::{
   extract_mat_size as parse_mat_size,
 };
 use crate::compiler::structs::AbstractStruct;
-use crate::compiler::types::{AbstractType, ConcreteArraySize, Type, TypeState};
+use crate::compiler::types::{
+  AbstractType, ConcreteArraySize, Type, TypeState,
+};
 use crate::vm::bytecode::{
   BytecodeProgram, Code, Function, HostBinding, HostBindingStorage,
   HostDispatch, HostOp, Instruction, Op, SharedVarInfo, WindowQueryKind,
@@ -787,11 +789,11 @@ impl BytecodeCompilationState {
       )),
 
       // --- Arithmetic ---
-      "+" => Some(self.emit_mixed_shape_binary(
-        arg_types,
-        arg_positions,
-        |e| arithmetic_op_for(e, "+"),
-      )),
+      "+" => {
+        Some(self.emit_mixed_shape_binary(arg_types, arg_positions, |e| {
+          arithmetic_op_for(e, "+")
+        }))
+      }
       "-" => {
         if args.len() == 1 {
           let neg_op = |e: &Type| match e {
@@ -805,11 +807,9 @@ impl BytecodeCompilationState {
             neg_op,
           ))
         } else {
-          Some(self.emit_mixed_shape_binary(
-            arg_types,
-            arg_positions,
-            |e| arithmetic_op_for(e, "-"),
-          ))
+          Some(self.emit_mixed_shape_binary(arg_types, arg_positions, |e| {
+            arithmetic_op_for(e, "-")
+          }))
         }
       }
       "*" => {
@@ -953,44 +953,45 @@ impl BytecodeCompilationState {
           }
         }
       }
-      "%" => Some(self.emit_mixed_shape_binary(
-        arg_types,
-        arg_positions,
-        |e| arithmetic_op_for(e, "%"),
-      )),
+      "%" => {
+        Some(self.emit_mixed_shape_binary(arg_types, arg_positions, |e| {
+          arithmetic_op_for(e, "%")
+        }))
+      }
 
       // --- Compound assignment ---
       "+=" | "-=" | "*=" | "/=" | "%=" => {
         let base = &f_name[..f_name.len() - 1];
         let b_mat = mat_kind(&arg_types[1]);
-        if base == "*" && let Some((b_cols, b_rows, e)) = b_mat {
+        if base == "*"
+          && let Some((b_cols, b_rows, e)) = b_mat
+        {
           // The matrix-multiplying compound forms, `mat *= mat` and
           // `vec *= mat`: the product isn't elementwise in the lhs, so
           // compute it into fresh slots exactly like the binary `*` does,
           // then move it over the lhs. (All reads happen before the move,
           // so `(*= m m)` aliasing is fine.)
-          let product = if let Some((a_cols, a_rows, _)) =
-            mat_kind(&arg_types[0])
-          {
-            self.emit_mat_mul(
-              a_cols,
-              a_rows,
-              b_cols,
-              arg_positions[0],
-              arg_positions[1],
-              &e,
-            )
-          } else {
-            // row-vector times matrix
-            self.emit_mat_mul(
-              b_rows,
-              1,
-              b_cols,
-              arg_positions[0],
-              arg_positions[1],
-              &e,
-            )
-          };
+          let product =
+            if let Some((a_cols, a_rows, _)) = mat_kind(&arg_types[0]) {
+              self.emit_mat_mul(
+                a_cols,
+                a_rows,
+                b_cols,
+                arg_positions[0],
+                arg_positions[1],
+                &e,
+              )
+            } else {
+              // row-vector times matrix
+              self.emit_mat_mul(
+                b_rows,
+                1,
+                b_cols,
+                arg_positions[0],
+                arg_positions[1],
+                &e,
+              )
+            };
           let size = arg_types[0]
             .data_size_in_u32s(&args[0].source_trace)
             .unwrap() as u16;
@@ -1119,11 +1120,9 @@ impl BytecodeCompilationState {
       }
 
       // --- Comparisons ---
-      "==" if matches!(arg_types[0], Type::String) => Some(self.emit_binary(
-        Op::StrEq,
-        arg_positions[0],
-        arg_positions[1],
-      )),
+      "==" if matches!(arg_types[0], Type::String) => {
+        Some(self.emit_binary(Op::StrEq, arg_positions[0], arg_positions[1]))
+      }
       "!=" if matches!(arg_types[0], Type::String) => {
         let eq =
           self.emit_binary(Op::StrEq, arg_positions[0], arg_positions[1]);
@@ -1273,11 +1272,7 @@ impl BytecodeCompilationState {
         let result = self.take_stack_slot(1);
         self.push_instruction(Instruction {
           op: Op::StrSubstr,
-          arg_positions: [
-            arg_positions[0],
-            arg_positions[1],
-            arg_positions[2],
-          ],
+          arg_positions: [arg_positions[0], arg_positions[1], arg_positions[2]],
           return_position: result,
         });
         Some(result)
@@ -1518,7 +1513,9 @@ impl BytecodeCompilationState {
           Some(arg_positions[0])
         }
       }
-      "pack-4x8-snorm" => Some(self.emit_unary(Op::PackSnorm4x8, arg_positions[0])),
+      "pack-4x8-snorm" => {
+        Some(self.emit_unary(Op::PackSnorm4x8, arg_positions[0]))
+      }
       "unpack-4x8-snorm" => {
         let result = self.take_stack_slot(4);
         self.push_instruction(Instruction {
@@ -1528,7 +1525,9 @@ impl BytecodeCompilationState {
         });
         Some(result)
       }
-      "pack-4x8-unorm" => Some(self.emit_unary(Op::PackUnorm4x8, arg_positions[0])),
+      "pack-4x8-unorm" => {
+        Some(self.emit_unary(Op::PackUnorm4x8, arg_positions[0]))
+      }
       "unpack-4x8-unorm" => {
         let result = self.take_stack_slot(4);
         self.push_instruction(Instruction {
@@ -1538,7 +1537,9 @@ impl BytecodeCompilationState {
         });
         Some(result)
       }
-      "pack-2x16-snorm" => Some(self.emit_unary(Op::PackSnorm2x16, arg_positions[0])),
+      "pack-2x16-snorm" => {
+        Some(self.emit_unary(Op::PackSnorm2x16, arg_positions[0]))
+      }
       "unpack-2x16-snorm" => {
         let result = self.take_stack_slot(2);
         self.push_instruction(Instruction {
@@ -1548,7 +1549,9 @@ impl BytecodeCompilationState {
         });
         Some(result)
       }
-      "pack-2x16-unorm" => Some(self.emit_unary(Op::PackUnorm2x16, arg_positions[0])),
+      "pack-2x16-unorm" => {
+        Some(self.emit_unary(Op::PackUnorm2x16, arg_positions[0]))
+      }
       "unpack-2x16-unorm" => {
         let result = self.take_stack_slot(2);
         self.push_instruction(Instruction {
@@ -1929,9 +1932,7 @@ impl BytecodeCompilationState {
             arg_positions: [memory, base_pos + offset, 0],
             return_position: 0,
           });
-        } else if let Some(position) =
-          self.globals.get(&global_name).copied()
-        {
+        } else if let Some(position) = self.globals.get(&global_name).copied() {
           let value_size = vm_type_size(field_type);
           if value_size > 0 {
             self.push_instruction(Instruction {
@@ -2077,8 +2078,7 @@ pub fn vm_type_size(t: &Type) -> u16 {
       }
     }
     _ => {
-      match t.data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
-      {
+      match t.data_size_in_u32s(&crate::compiler::error::SourceTrace::empty()) {
         Ok(size) => size as u16,
         // data_size_in_u32s errors on nested function types — a scope
         // struct capturing a closure. Recurse per-field so function-typed
@@ -2405,8 +2405,7 @@ impl TypedExp {
           && let Some((memory, stride)) =
             state.dynamic_array_memory.get(name).copied()
         {
-          let index_slot =
-            index_exp.compile_to_bytecode(false, state).unwrap();
+          let index_slot = index_exp.compile_to_bytecode(false, state).unwrap();
           let src_slot = args[1].compile_to_bytecode(false, state).unwrap();
           state.push_instruction(Instruction {
             op: Op::DynStore,
@@ -2426,8 +2425,7 @@ impl TypedExp {
           // field, or a nested element), through its heap id with
           // copy-on-write
           let heap_id_slot = inner.compile_to_bytecode(false, state).unwrap();
-          let index_slot =
-            index_exp.compile_to_bytecode(false, state).unwrap();
+          let index_slot = index_exp.compile_to_bytecode(false, state).unwrap();
           let src_slot = args[1].compile_to_bytecode(false, state).unwrap();
           let stride = vm_type_size(&element_type.unwrap_known());
           state.push_instruction(Instruction {
@@ -2527,8 +2525,7 @@ impl TypedExp {
         Some(Some(dest))
       }
       "dispatch-compute-shader" => {
-        let (entry_name, reads, writes) =
-          state.resolve_dispatched_fn(&args[0]);
+        let (entry_name, reads, writes) = state.resolve_dispatched_fn(&args[0]);
         let entry = state.host_string_index(&entry_name);
         let sets = state.host_dispatches.len() as u16;
         state.host_dispatches.push(HostDispatch { reads, writes });
@@ -2680,8 +2677,7 @@ impl TypedExp {
         // guard flag lives in a fresh stack slot, which starts zeroed and
         // persists across calls (static addressing, the stack is never
         // reset).
-        let entry_name: Arc<str> = if let Some(scope_struct) = &scope_struct
-        {
+        let entry_name: Arc<str> = if let Some(scope_struct) = &scope_struct {
           let value_pos = args[0].compile_to_bytecode(false, state).unwrap();
           let seed_done_slot = state.take_stack_slot(1);
           let guard_jump_pos = state.instructions.len();
@@ -2824,9 +2820,7 @@ impl TypedExp {
         {
           // whole-array assignment to a dynamic-memory array
           let ExpKind::Application(rhs_f, rhs_args) = &rhs.kind else {
-            panic!(
-              "unsupported assignment to dynamic global in VM CPU runtime"
-            )
+            panic!("unsupported assignment to dynamic global in VM CPU runtime")
           };
           let ExpKind::Name(rhs_f_name) = &rhs_f.kind else {
             panic!()
@@ -2865,9 +2859,7 @@ impl TypedExp {
           && let Some(binding) = state.dynamic_globals.get(name).copied()
         {
           let ExpKind::Application(rhs_f, rhs_args) = &rhs.kind else {
-            panic!(
-              "unsupported assignment to dynamic global in VM CPU runtime"
-            )
+            panic!("unsupported assignment to dynamic global in VM CPU runtime")
           };
           let ExpKind::Name(rhs_f_name) = &rhs_f.kind else {
             panic!()
@@ -2878,10 +2870,8 @@ impl TypedExp {
                 panic!("load-image argument must be a string literal")
               };
               let path = state.host_string_index(&path.to_string());
-              state.emit_host_op(HostOp::AssignTextureFromImage {
-                binding,
-                path,
-              });
+              state
+                .emit_host_op(HostOp::AssignTextureFromImage { binding, path });
             }
             "blank-texture" => {
               // Both arg shapes compile to two consecutive u32 slots: (w h)
@@ -2948,18 +2938,17 @@ impl TypedExp {
         // same granularity — `check_cpu_readable` for the application's
         // read set before it evaluates, `mark_cpu_written` for its write
         // set after. All name resolution happens here at compile time.
-        let cpu_write_marks: Option<Vec<Arc<str>>> = if state.cpu_mode
-          || !state.shared_var_indices.is_empty()
-        {
-          let effects = self.effects();
-          let (reads, writes) = effects.read_and_written_globals();
-          if state.cpu_mode {
-            state.emit_sync_checks(&reads);
-          }
-          Some(writes)
-        } else {
-          None
-        };
+        let cpu_write_marks: Option<Vec<Arc<str>>> =
+          if state.cpu_mode || !state.shared_var_indices.is_empty() {
+            let effects = self.effects();
+            let (reads, writes) = effects.read_and_written_globals();
+            if state.cpu_mode {
+              state.emit_sync_checks(&reads);
+            }
+            Some(writes)
+          } else {
+            None
+          };
         if let Some(result) =
           self.try_compile_dyn_array_builtin(&f_name, args, state)
         {
@@ -3057,8 +3046,8 @@ impl TypedExp {
             &return_type,
           ),
           FunctionImplementationKind::StructConstructor => {
-            let struct_slot_pos = state
-              .take_stack_slot(vm_type_size(&self.data.unwrap_known()));
+            let struct_slot_pos =
+              state.take_stack_slot(vm_type_size(&self.data.unwrap_known()));
             let mut offset = 0u16;
             for arg in args {
               let arg_pos = arg.compile_to_bytecode(false, state).unwrap();
@@ -3192,7 +3181,7 @@ impl TypedExp {
         };
         let array_mut_ref_store_instructions =
           state.array_mut_ref_store_instructions.pop().unwrap();
-        for instruction in array_mut_ref_store_instructions {
+        for instruction in array_mut_ref_store_instructions.into_iter().rev() {
           state.push_instruction(instruction);
         }
         if let Some(writes) = &cpu_write_marks {
@@ -3236,10 +3225,8 @@ impl TypedExp {
         // generic enums (e.g. `None_Option_f32`) while the enum's variant
         // list holds base names — resolve through the demangling map.
         if let Type::Enum(enum_type) = self.data.unwrap_known()
-          && let base_name = state
-            .monomorphized_to_base_names
-            .get(name)
-            .unwrap_or(name)
+          && let base_name =
+            state.monomorphized_to_base_names.get(name).unwrap_or(name)
           && let Some(idx) =
             enum_type.variants.iter().position(|v| v.name == *base_name)
         {
@@ -3818,8 +3805,7 @@ impl TypedExp {
             ) {
               // element read of a runtime-sized array *value* through its
               // heap id
-              let heap_id_slot =
-                exp.compile_to_bytecode(false, state).unwrap();
+              let heap_id_slot = exp.compile_to_bytecode(false, state).unwrap();
               let stride = vm_type_size(&self.data.unwrap_known());
               let dest = state.take_stack_slot(stride);
               let index_slot =
@@ -3842,7 +3828,8 @@ impl TypedExp {
               }
               return Some(dest);
             }
-            let inner_exp_pos = exp.compile_to_bytecode(false, state).unwrap();
+            let inner_exp_pos =
+              exp.compile_to_bytecode(is_ref_arg_position, state).unwrap();
             let inner_data_size = vm_type_size(&self.data.unwrap_known());
             let result_position = state.take_stack_slot(inner_data_size);
             let index_pos =
@@ -3866,7 +3853,8 @@ impl TypedExp {
             Some(result_position)
           }
           Accessor::Field(field_name) => {
-            let inner_exp_pos = exp.compile_to_bytecode(false, state).unwrap();
+            let inner_exp_pos =
+              exp.compile_to_bytecode(is_ref_arg_position, state).unwrap();
             let Type::Struct(s) = exp.data.unwrap_known() else {
               panic!()
             };

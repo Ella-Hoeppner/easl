@@ -1,0 +1,4 @@
+(defn f []: f32
+  (let [@var arr [(vec2f 0. 0.)]]
+    (= (.x (arr 0u)) 1.)
+    (.x (arr 0u))))

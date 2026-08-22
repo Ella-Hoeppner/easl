@@ -169,3 +169,4 @@ cpu_test!(dyn_field_struct_across_calls);
 // file's header comment for the failure mode and suspected cause):
 cpu_test!(audio_time_through_hof_chain);
 cpu_test!(load_wav_local_binding);
+cpu_test!(assign_field_in_dyn_array_element);

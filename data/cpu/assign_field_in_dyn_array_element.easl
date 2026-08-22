@@ -1,0 +1,11 @@
+; Assignment to a field of a runtime-sized array's element must stick
+; (the write-back-propagation fix in the VM's accessor lowering). The
+; fixed-size sibling is the `assign_field_in_array_element` conformance
+; test; this one lives in the cpu suite because runtime-sized locals
+; (and `zeroed-array`) are CPU-only, so the conformance harness's GPU
+; stage can't run it.
+@cpu
+(defn main []
+  (let [@var arr: [vec2f] (zeroed-array 1)]
+    (= (.x (arr 0u)) 1.)
+    (print (.x (arr 0u)))))
