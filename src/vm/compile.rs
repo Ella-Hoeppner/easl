@@ -1036,9 +1036,10 @@ impl BytecodeCompilationState {
       {
         // use the argument expression's own type — it's concrete at the
         // call site, while the signature's is const-generic
-        let Type::Array(Some(ConcreteArraySize::Literal(count)), _) =
-          args[0].data.unwrap_known()
-        else {
+        let Type::Array(Some(size), _) = args[0].data.unwrap_known() else {
+          panic!("into-dynamic-array argument wasn't a sized array")
+        };
+        let Some(count) = size.as_literal() else {
           panic!("into-dynamic-array argument wasn't a sized array")
         };
         let count = &count;
@@ -2376,10 +2377,10 @@ impl TypedExp {
             return_position: dest,
           });
           Some(Some(dest))
-        } else if let Type::Array(Some(ConcreteArraySize::Literal(n)), _) =
-          args[0].data.unwrap_known()
+        } else if let Type::Array(Some(size), _) = args[0].data.unwrap_known()
+          && let Some(n) = size.as_literal()
         {
-          Some(Some(state.emit_u32_constant(n as u32)))
+          Some(Some(state.emit_u32_constant(n)))
         } else if matches!(
           args[0].data.unwrap_known(),
           Type::Array(Some(ConcreteArraySize::Unsized), _)
@@ -2837,9 +2838,11 @@ impl TypedExp {
             }
             "into-dynamic-array" => {
               let source = &rhs_args[0];
-              let Type::Array(Some(ConcreteArraySize::Literal(count)), _) =
-                source.data.unwrap_known()
+              let Type::Array(Some(size), _) = source.data.unwrap_known()
               else {
+                panic!("into-dynamic-array argument wasn't a sized array")
+              };
+              let Some(count) = size.as_literal() else {
                 panic!("into-dynamic-array argument wasn't a sized array")
               };
               let src_slot = source.compile_to_bytecode(false, state).unwrap();

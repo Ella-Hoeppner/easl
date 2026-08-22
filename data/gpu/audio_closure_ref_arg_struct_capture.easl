@@ -1,0 +1,28 @@
+; An audio closure capturing a struct that its body passes by `@ref` to
+; a helper. The audio lift turns the capture into a storage-write global,
+; so the clone's body creates a storage-space reference (user code is
+; deliberately forbidden from writing one, but the lift-created global
+; appears after that validation runs), and reference-address-space
+; monomorphization makes a `_storage_write` pointer variant of the
+; helper. The variant is compiler-generated (`derived_from`), so
+; usage-based emission keeps it out of the WGSL — it's reachable only
+; from audio context. (Note: WGSL emission of storage-space pointer args
+; would be malformed if one ever legitimately reached it — access mode
+; belongs third in `ptr<storage, T, read_write>` — but no legal program
+; can put one in GPU code today.)
+(struct Filter
+  s1: f32)
+
+(defn step-filter [x: f32
+                   @var @ref state: Filter]: f32
+  (= state.s1 (+ state.s1 x))
+  state.s1)
+
+(defn filtered [f: (Fn [] f32)]: (Fn [] f32)
+  (let [@var state (Filter 0.)]
+    (fn [] (step-filter (f) state))))
+
+@cpu
+(defn main []
+  (start-audio (filtered (fn [] 0.5)))
+  (spawn-window (fn [] ())))

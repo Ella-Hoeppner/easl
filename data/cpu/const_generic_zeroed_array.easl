@@ -1,0 +1,16 @@
+; `(zeroed-array)` with an inferred const-generic size: the array size
+; can reach sizing still wrapped in a (resolved) unification variable, so
+; the sizing arms must unwrap via `ConcreteArraySize::as_literal` rather
+; than matching `Literal` directly. Generic-element sibling:
+; `const_generic_zeroed_array_map`.
+(defn (pass C: u32) [arr: [C: u32]]: [C: u32]
+  (let [@var out (zeroed-array)]
+    (= (out 0u) (arr 0u))
+    out))
+
+@cpu
+(defn main []
+  ; whole-array print: decoding a const-generic-sized result exercises
+  ; `from_vm_words`' array arm, not just the sizing path
+  (print (pass [8u 2u]))
+  (print ((pass [8u 2u]) 0u)))

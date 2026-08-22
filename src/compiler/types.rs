@@ -1398,9 +1398,9 @@ impl Type {
       Type::Skolem(_, _) => panic!("tried to calculate size of skolem"),
       Type::Array(size, inner_type) => {
         inner_type.unwrap_known().data_size_in_u32s(source_trace)?
-          * match size {
-            Some(ConcreteArraySize::Literal(x)) => *x as usize,
-            _ => {
+          * match size.as_ref().and_then(|s| s.as_literal()) {
+            Some(x) => x as usize,
+            None => {
               return Err(CompileError::new(
                 CompileErrorKind::CantCalculateSize,
                 source_trace.clone(),
@@ -1473,9 +1473,9 @@ impl Type {
           inner_ty.wgsl_alignment_in_u32s(),
           inner_ty.wgsl_data_size_in_u32s(),
         );
-        match size {
-          Some(ConcreteArraySize::Literal(x)) => stride * *x as usize,
-          _ => 0,
+        match size.as_ref().and_then(|s| s.as_literal()) {
+          Some(x) => stride * x as usize,
+          None => 0,
         }
       }
       _ => 0,

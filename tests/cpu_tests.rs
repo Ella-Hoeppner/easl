@@ -170,3 +170,5 @@ cpu_test!(dyn_field_struct_across_calls);
 cpu_test!(audio_time_through_hof_chain);
 cpu_test!(load_wav_local_binding);
 cpu_test!(assign_field_in_dyn_array_element);
+cpu_test!(const_generic_zeroed_array);
+cpu_test!(const_generic_zeroed_array_map);

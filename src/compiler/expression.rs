@@ -4145,7 +4145,8 @@ impl TypedExp {
                 if !reference_arg_positions.is_empty() {
                   let mut new_abstract_ancestor =
                     (**abstract_ancestor).read().unwrap().clone();
-                  let mut new_top_level_f = top_level_f.read().unwrap().clone();
+                  let mut new_top_level_f =
+                    top_level_f.read().unwrap().derived_from();
                   let mut address_space_names = vec![];
                   for i in reference_arg_positions {
                     let name = args[i].name_or_inner_accessed_name().unwrap();

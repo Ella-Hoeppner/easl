@@ -2560,11 +2560,12 @@ impl Value {
         };
         Value::Enum(variant.name.clone(), Box::new(inner))
       }
-      Type::Array(Some(ConcreteArraySize::Literal(count)), inner_type) => {
+      Type::Array(Some(size), inner_type) if size.as_literal().is_some() => {
+        let count = size.as_literal().unwrap();
         let inner = inner_type.kind.unwrap_known();
         let stride = words_of(&inner);
         Value::Array(
-          (0..*count as usize)
+          (0..count as usize)
             .map(|i| {
               Value::from_vm_words(&inner, &words[i * stride..(i + 1) * stride])
             })
@@ -2720,10 +2721,7 @@ impl Value {
         let elem_size = inner_ty.wgsl_data_size_in_u32s();
         let align = inner_ty.wgsl_alignment_in_u32s();
         let stride = ((elem_size + align - 1) / align) * align;
-        let count = match size {
-          crate::compiler::types::ConcreteArraySize::Literal(n) => *n as usize,
-          _ => 0,
-        };
+        let count = size.as_literal().map(|n| n as usize).unwrap_or(0);
         Value::Array(
           (0..count)
             .map(|_| {
@@ -6577,11 +6575,12 @@ fn value_from_vm_words_heap(
         ),
       }
     }
-    Type::Array(Some(ConcreteArraySize::Literal(count)), element_type) => {
+    Type::Array(Some(size), element_type) if size.as_literal().is_some() => {
+      let count = size.as_literal().unwrap();
       let element_type = element_type.kind.unwrap_known();
       let stride = (vm_type_size(&element_type) as usize).max(1);
       Value::Array(
-        (0..*count as usize)
+        (0..count as usize)
           .map(|i| {
             value_from_vm_words_heap(
               &element_type,

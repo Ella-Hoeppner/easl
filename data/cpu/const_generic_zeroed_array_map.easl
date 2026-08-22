@@ -1,0 +1,16 @@
+; The generic-element sibling of `const_generic_zeroed_array`: a
+; `(map T U C)`-style function whose element types resolve through a
+; lambda, leaving both the size and the element type wrapped in
+; (resolved) unification variables at sizing time.
+(defn (map T U C: u32)
+      [f: (Fn [T] U)
+       arr: [C: T]]: [C: U]
+      (let [@var out (zeroed-array)]
+        (for [i (array-length arr)]
+          (= (out i) (f (arr i))))
+        out))
+
+@cpu
+(defn main []
+  (print (map (fn [x] (* x 0.5)) [1. 2.]))
+  (print ((map (fn [x] (* x 0.5)) [1. 2.]) 1u)))

@@ -482,6 +482,7 @@ error_test!(
 // KNOWN-FAILING: naga rejects the emitted WGSL (see the .easl header).
 success_test!(audio_closure_plus_overload);
 success_test!(audio_closure_chain_dyn_capture);
+success_test!(audio_closure_ref_arg_struct_capture);
 
 /// Pins the "easl as a WGSL library" contract: plain user-written
 /// functions emit to WGSL even when no shader entry point reaches them
