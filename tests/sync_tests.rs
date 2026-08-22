@@ -27,8 +27,20 @@ fn run_sync_test(name: &str) {
       let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
       // Both CPU runtimes must produce the identical transfer trace.
-      run_sync_test_on(name, program.clone(), source_path, &expected, CpuRuntime::TreeWalking);
-      run_sync_test_on(name, program, source_path, &expected, CpuRuntime::BytecodeVm);
+      run_sync_test_on(
+        name,
+        program.clone(),
+        source_path,
+        &expected,
+        CpuRuntime::TreeWalking,
+      );
+      run_sync_test_on(
+        name,
+        program,
+        source_path,
+        &expected,
+        CpuRuntime::BytecodeVm,
+      );
     }
     Ok(Ok((document, Err(errors)))) => {
       panic!("{name}: {}", errors.describe(&document));
@@ -72,8 +84,7 @@ fn run_sync_test_on(
         })
         .collect();
       assert_eq!(
-        actual,
-        *expected,
+        actual, *expected,
         "{name}: sync trace mismatch ({runtime:?})"
       );
     }

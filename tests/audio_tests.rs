@@ -118,7 +118,10 @@ fn start_audio_bootstrap_publishes_current_globals() {
   main_program.write_global("gain", &[0.75f32.to_bits()]);
   let (region, _) = main_program.get_dyn_memory_region("sample").unwrap();
   main_program.dyn_memory[region as usize] = DynMemory::Words(
-    [1.0f32, 2.0, 3.0, 4.0].iter().map(|s| s.to_bits()).collect(),
+    [1.0f32, 2.0, 3.0, 4.0]
+      .iter()
+      .map(|s| s.to_bits())
+      .collect(),
   );
 
   // the start-audio bootstrap: the audio participant joins and main
@@ -135,9 +138,7 @@ fn start_audio_bootstrap_publishes_current_globals() {
   );
   assert_eq!(published, vec![0, 1]);
   let mut adopted = Vec::new();
-  audio_program.adopt_shared(&table, participant::AUDIO, |i| {
-    adopted.push(i)
-  });
+  audio_program.adopt_shared(&table, participant::AUDIO, |i| adopted.push(i));
   assert_eq!(adopted, vec![0, 1]);
 
   let f_index = audio_names.iter().position(|n| &**n == "f").unwrap();

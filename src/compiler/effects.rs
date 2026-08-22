@@ -70,7 +70,10 @@ impl WindowInfoKind {
     }
   }
   pub fn from_fn_name(name: &str) -> Option<Self> {
-    Self::ALL.iter().copied().find(|kind| kind.fn_name() == name)
+    Self::ALL
+      .iter()
+      .copied()
+      .find(|kind| kind.fn_name() == name)
   }
   /// The base name for the implicit uniform binding generated for GPU uses.
   pub fn binding_base_name(&self) -> &'static str {

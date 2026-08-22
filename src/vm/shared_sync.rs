@@ -10,8 +10,7 @@
 
 use crate::thread_sync::ThreadSharedTable;
 use crate::vm::bytecode::{
-  BytecodeProgram, DynMemory, SharedStateParts, SharedVarInfo,
-  SharedVarStorage,
+  BytecodeProgram, DynMemory, SharedStateParts, SharedVarInfo, SharedVarStorage,
 };
 
 /// Publishes this replica's shared variables into the table, acting as the
@@ -55,8 +54,7 @@ pub fn publish_shared(
     if !(forced || shared.dirty[index]) {
       continue;
     }
-    let mut buffer =
-      shared.scratch[index].take().unwrap_or_else(Vec::new);
+    let mut buffer = shared.scratch[index].take().unwrap_or_else(Vec::new);
     buffer.clear();
     match info.storage {
       SharedVarStorage::Slots { position, size } => {

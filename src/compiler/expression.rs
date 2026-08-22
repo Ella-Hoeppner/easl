@@ -572,9 +572,9 @@ pub fn compile_typed_name(
           Ownership::Pointer(address_space) => {
             format!(
               "ptr<{}, {type_name}>",
-              address_space.compile().expect(
-                "pointer address space has no WGSL representation"
-              )
+              address_space
+                .compile()
+                .expect("pointer address space has no WGSL representation")
             )
           }
           Ownership::Reference | Ownership::MutableReference => {
@@ -2735,7 +2735,11 @@ impl TypedExp {
           // nothing), then return without a value.
           format!(
             "{}\nreturn;",
-            exp.compile(ExpressionCompilationPosition::InnerLine, names, target)
+            exp.compile(
+              ExpressionCompilationPosition::InnerLine,
+              names,
+              target
+            )
           )
         } else {
           format!(
@@ -4691,9 +4695,7 @@ impl TypedExp {
             .chain(std::iter::repeat(None))
             .zip(args.iter())
           {
-            if is_array_length
-              && let ExpKind::Name(name) = &arg.kind
-            {
+            if is_array_length && let ExpKind::Name(name) = &arg.kind {
               effects.merge(Effect::ReadsArrayLength(name.clone()));
               continue;
             }

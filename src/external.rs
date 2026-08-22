@@ -77,10 +77,9 @@ impl Display for ExternalVarError {
       ExternalVarError::UnknownVar(name) => {
         write!(f, "`{name}` is not a shared global variable")
       }
-      ExternalVarError::NotExternal(name) => write!(
-        f,
-        "the global variable `{name}` is not marked `@external`"
-      ),
+      ExternalVarError::NotExternal(name) => {
+        write!(f, "the global variable `{name}` is not marked `@external`")
+      }
       ExternalVarError::NotAnArray(name) => write!(
         f,
         "`{name}` is not an array; index-based access isn't available"
@@ -89,10 +88,9 @@ impl Display for ExternalVarError {
         f,
         "index {index} is out of bounds for `{var}` (length {length})"
       ),
-      ExternalVarError::WrongWordCount { expected, got } => write!(
-        f,
-        "wrong number of words: expected {expected}, got {got}"
-      ),
+      ExternalVarError::WrongWordCount { expected, got } => {
+        write!(f, "wrong number of words: expected {expected}, got {got}")
+      }
       ExternalVarError::WrongValueShape { expected, got } => write!(
         f,
         "value has the wrong shape: expected {expected} words, got {got}"
@@ -153,12 +151,9 @@ impl ExternalVars {
           .clone();
         let (element_stride, word_len) = match &ty {
           Type::Array(size, element_type) => {
-            let stride =
-              vm_words_of(&element_type.kind.unwrap_known()).max(1);
+            let stride = vm_words_of(&element_type.kind.unwrap_known()).max(1);
             let len = match size {
-              Some(ConcreteArraySize::Literal(n)) => {
-                Some(*n as usize * stride)
-              }
+              Some(ConcreteArraySize::Literal(n)) => Some(*n as usize * stride),
               _ => None,
             };
             (Some(stride), len)

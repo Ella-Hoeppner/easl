@@ -252,16 +252,17 @@ impl Annotation {
           // A one-element array (`@[uniform]`) elides the group/binding
           // numbers; the compiler assigns free ones at the end of
           // validation.
-          (0, 3) | (0, 1) => match VariableAddressSpace::from_str(array_value)
-          {
-            Some(a) => address_space = Some(a),
-            None => {
-              return err(
-                InvalidVariableAnnotation(self.clone().into()),
-                name_source,
-              );
+          (0, 3) | (0, 1) => {
+            match VariableAddressSpace::from_str(array_value) {
+              Some(a) => address_space = Some(a),
+              None => {
+                return err(
+                  InvalidVariableAnnotation(self.clone().into()),
+                  name_source,
+                );
+              }
             }
-          },
+          }
           (1, 3) | (0, 2) => match u8::from_str(array_value) {
             Ok(value) => group = Some(value),
             Err(_) => {

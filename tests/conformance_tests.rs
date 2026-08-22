@@ -132,7 +132,8 @@ fn run_interpreter(
         None,
         CpuRuntime::TreeWalking,
       )
-      .map(|(io, _)| io.prints) {
+      .map(|(io, _)| io.prints)
+      {
         Ok(p) => p,
         Err(e) => {
           return BackendResult::Failed {

@@ -17,8 +17,11 @@ fn compile_import(name: &str) -> Result<String, Vec<CompileErrorKind>> {
       Ok(wgsl)
     }
     Ok(Ok(Err((document, error_log)))) => {
-      fs::write(format!("./out/import/{name}.wgsl"), error_log.describe(&document))
-        .expect("Unable to write output file");
+      fs::write(
+        format!("./out/import/{name}.wgsl"),
+        error_log.describe(&document),
+      )
+      .expect("Unable to write output file");
       Err(error_log.errors.into_iter().map(|e| e.kind).collect())
     }
     Ok(Err(mut failed_documents)) => {

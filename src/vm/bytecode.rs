@@ -420,20 +420,17 @@ impl Instruction {
       }
       Op::HeapFromSlots => {
         // src spans count (arg 1) * stride (arg 2) slots
-        self
-          .return_position
-          .max(
-            self.arg_positions[0]
-              + (self.arg_positions[1] * self.arg_positions[2])
-                .saturating_sub(1),
-          )
+        self.return_position.max(
+          self.arg_positions[0]
+            + (self.arg_positions[1] * self.arg_positions[2]).saturating_sub(1),
+        )
       }
       Op::HeapZeroed | Op::HeapZeroedCells => {
         self.return_position.max(self.arg_positions[0])
       }
-      Op::HeapFromSlotsCells => self.return_position.max(
-        self.arg_positions[0] + self.arg_positions[1].saturating_sub(1),
-      ),
+      Op::HeapFromSlotsCells => self
+        .return_position
+        .max(self.arg_positions[0] + self.arg_positions[1].saturating_sub(1)),
       // arg 0 is a region id, not a slot
       Op::HeapFromRegion => self.return_position,
       // arg 0 is a host_strings index, not a slot
@@ -586,19 +583,33 @@ pub enum WindowQueryKind {
 pub enum HostOp {
   /// Print the value starting at `slot`, of type `host_types[ty]`, with the
   /// same formatting as the tree-walking interpreter.
-  Print { slot: u16, ty: u16 },
+  Print {
+    slot: u16,
+    ty: u16,
+  },
   /// Print a string literal.
-  PrintString { string: u16 },
+  PrintString {
+    string: u16,
+  },
   /// Print a lazily-zeroed unsized array (`(print (zeroed-array n): [T])`)
   /// without materializing it; `ty` is the array type.
-  PrintZeroed { len_slot: u16, ty: u16 },
+  PrintZeroed {
+    len_slot: u16,
+    ty: u16,
+  },
   /// Print the host-side value of a dynamic binding.
-  PrintBinding { binding: u16 },
+  PrintBinding {
+    binding: u16,
+  },
   /// If the binding is CPUOutOfDate (GPU wrote it), flush queued compute and
   /// read it back before CPU code reads the value. Early-returns when synced.
-  CheckGpuToCpu { binding: u16 },
+  CheckGpuToCpu {
+    binding: u16,
+  },
   /// CPU code just wrote this binding; its GPU copy is now stale.
-  MarkCpuWritten { binding: u16 },
+  MarkCpuWritten {
+    binding: u16,
+  },
   DispatchCompute {
     entry: u16,
     sets: u16,
@@ -612,36 +623,68 @@ pub enum HostOp {
     vert_count_slot: u16,
     additive_slot: Option<u16>,
   },
-  WindowQuery { kind: WindowQueryKind, dest: u16 },
-  KeyQuery { just: bool, key: u16, dest: u16 },
+  WindowQuery {
+    kind: WindowQueryKind,
+    dest: u16,
+  },
+  KeyQuery {
+    just: bool,
+    key: u16,
+    dest: u16,
+  },
   /// Suspends execution; the driver runs the window frame loop, invoking
   /// function `frame_fn` once per frame, then resumes.
-  SpawnWindow { frame_fn: u16 },
+  SpawnWindow {
+    frame_fn: u16,
+  },
   /// Suspends the current (frame) execution; the frame loop stops.
   CloseWindow,
-  StartAudio { entry: u16 },
+  StartAudio {
+    entry: u16,
+  },
   /// `(load-wav "path")`: parse the WAV file and store its samples as a
   /// fresh heap cell (f32 words, stride 1), writing the cell's id to
   /// `dest` (releasing the slot's previous occupant). An ordinary value —
   /// assignment to a dynamic global goes through the generic
   /// `RegionFromHeap` path like any other runtime-sized value.
-  LoadWav { path: u16, dest: u16 },
+  LoadWav {
+    path: u16,
+    dest: u16,
+  },
   /// `(= texture-global (load-image "path"))`
-  AssignTextureFromImage { binding: u16, path: u16 },
+  AssignTextureFromImage {
+    binding: u16,
+    path: u16,
+  },
   /// `(= texture-global (blank-texture w h))` — 2 u32 slots at `size_slot`.
-  AssignTextureBlank { binding: u16, size_slot: u16 },
+  AssignTextureBlank {
+    binding: u16,
+    size_slot: u16,
+  },
   /// `(texture-dimensions tex)` → vec2u (2 slots) at `dest`.
-  TextureDims { binding: u16, dest: u16 },
-  SetRenderTarget { binding: u16 },
+  TextureDims {
+    binding: u16,
+    dest: u16,
+  },
+  SetRenderTarget {
+    binding: u16,
+  },
   /// `save-png`: write the texture at `binding` to the path at
   /// `host_strings[path]` as a PNG, reading it back from the GPU first if
   /// it was rendered into.
-  SavePng { binding: u16, path: u16 },
+  SavePng {
+    binding: u16,
+    path: u16,
+  },
   ClearRenderTarget,
   /// `(string x)`: format the value at `slot` (of type `host_types[ty]`)
   /// exactly as `print` would, and store the result as a fresh string
   /// cell whose id is written to `dest`.
-  Stringify { slot: u16, ty: u16, dest: u16 },
+  Stringify {
+    slot: u16,
+    ty: u16,
+    dest: u16,
+  },
 }
 
 /// Why `execute_with_host` returned before running to completion.
@@ -816,10 +859,7 @@ pub fn words_to_string(words: &[u32]) -> String {
 
 /// Reads the payload words of the string cell referenced by the heap id
 /// `id` (a null id reads as the empty string).
-pub fn heap_string_words(
-  heap: &[Option<Arc<HeapCell>>],
-  id: u32,
-) -> &[u32] {
+pub fn heap_string_words(heap: &[Option<Arc<HeapCell>>], id: u32) -> &[u32] {
   match heap_index(id).and_then(|i| heap[i].as_ref()) {
     Some(cell) => match &cell.memory {
       DynMemory::Words(words) => words,
@@ -1115,8 +1155,9 @@ impl BytecodeProgram {
           let e2 = *stack.get_unchecked(instruction.arg_positions[1] as usize);
           let mut acc: u32 = 0;
           for i in 0..4 {
-            acc = acc
-              .wrapping_add(((e1 >> (i * 8)) & 0xFF) * ((e2 >> (i * 8)) & 0xFF));
+            acc = acc.wrapping_add(
+              ((e1 >> (i * 8)) & 0xFF) * ((e2 >> (i * 8)) & 0xFF),
+            );
           }
           *stack.get_unchecked_mut(instruction.return_position as usize) = acc;
         },
@@ -1133,8 +1174,7 @@ impl BytecodeProgram {
             acc as u32;
         },
         Op::HostCall => {
-          let op =
-            &code.host_ops[instruction.arg_positions[0] as usize];
+          let op = &code.host_ops[instruction.arg_positions[0] as usize];
           if let Some(reason) = host.host_call(
             op,
             stack,
@@ -1593,9 +1633,8 @@ impl BytecodeProgram {
               None
             }
             DynMemory::Words(words) => {
-              stack[dest..dest + stride].copy_from_slice(
-                &words[index * stride..(index + 1) * stride],
-              );
+              stack[dest..dest + stride]
+                .copy_from_slice(&words[index * stride..(index + 1) * stride]);
               None
             }
             DynMemory::Cells(cells) => Some(cells[index].clone()),
@@ -1650,8 +1689,7 @@ impl BytecodeProgram {
             cells[index] = child;
           } else {
             let src = src_slot as usize;
-            cell.memory.words_mut(stride)
-              [index * stride..(index + 1) * stride]
+            cell.memory.words_mut(stride)[index * stride..(index + 1) * stride]
               .copy_from_slice(&stack[src..src + stride]);
           }
         }
@@ -1746,10 +1784,8 @@ impl BytecodeProgram {
           let [a_slot, b_slot, _] = instruction.arg_positions;
           let mut words =
             heap_string_words(heap, stack[a_slot as usize]).to_vec();
-          words.extend_from_slice(heap_string_words(
-            heap,
-            stack[b_slot as usize],
-          ));
+          words
+            .extend_from_slice(heap_string_words(heap, stack[b_slot as usize]));
           let cell = Arc::new(HeapCell {
             memory: DynMemory::Words(words),
             stride: 1,

@@ -210,9 +210,9 @@ impl IOManager for ThreadSyncIO {
     additive: bool,
     render_target: Option<(u8, u8)>,
   ) -> Result<(), EvalError> {
-    self
-      .trace
-      .push(format!("dispatch-render-shaders {vert_name} {frag_name} {vert_count}"));
+    self.trace.push(format!(
+      "dispatch-render-shaders {vert_name} {frag_name} {vert_count}"
+    ));
     self.inner.record_draw(
       vert,
       frag,
@@ -232,9 +232,9 @@ impl IOManager for ThreadSyncIO {
     workgroup_count: (u32, u32, u32),
     pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) -> Result<(), EvalError> {
-    self
-      .trace
-      .push(format!("dispatch-compute-shader {entry_name} {workgroup_count:?}"));
+    self.trace.push(format!(
+      "dispatch-compute-shader {entry_name} {workgroup_count:?}"
+    ));
     self
       .inner
       .record_compute(entry, entry_name, workgroup_count, pre_upload)
@@ -277,7 +277,9 @@ impl IOManager for ThreadSyncIO {
     binding_infos: &[GpuBindingInfo],
     gpu_entries: &[GpuEntryInfo],
   ) {
-    self.inner.ensure_gpu_ready(wgsl, binding_infos, gpu_entries)
+    self
+      .inner
+      .ensure_gpu_ready(wgsl, binding_infos, gpu_entries)
   }
 
   fn get_buffer_byte_size(&self, group: u8, binding: u8) -> Option<u64> {
@@ -425,8 +427,7 @@ fn run_thread_sync_test(name: &str, schedule: Vec<Step>) {
     .position(|step| !step.is_external())
     .unwrap_or(schedule.len());
   let (pre_run_steps, loop_steps) = schedule.split_at(boundary);
-  let has_external_steps =
-    schedule.iter().any(|step| step.is_external());
+  let has_external_steps = schedule.iter().any(|step| step.is_external());
 
   // Both main-thread runtimes must produce the identical trace: the frame
   // and batch boundaries are the semantics, not a runtime detail.
@@ -438,9 +439,7 @@ fn run_thread_sync_test(name: &str, schedule: Vec<Step>) {
     let external = has_external_steps.then(|| ExternalVars::new(&program));
     let initial_trace: Vec<String> = pre_run_steps
       .iter()
-      .map(|step| {
-        run_external_step(external.as_ref().unwrap(), step)
-      })
+      .map(|step| run_external_step(external.as_ref().unwrap(), step))
       .collect();
     let (io, _) = run_program_entry_with_io_runtime_and_external_from_path(
       program.clone(),
@@ -458,10 +457,8 @@ fn run_thread_sync_test(name: &str, schedule: Vec<Step>) {
     let normalize = |line: String| -> String {
       let line = if let Some(index) = line.find("_scope_audio_data_") {
         let field = &line[index + "_scope_audio_data_".len()..];
-        let prefix_start = line[..index]
-          .rfind(' ')
-          .map(|space| space + 1)
-          .unwrap_or(0);
+        let prefix_start =
+          line[..index].rfind(' ').map(|space| space + 1).unwrap_or(0);
         format!("{}<audio-scope>_{}", &line[..prefix_start], field)
       } else {
         line
@@ -494,7 +491,14 @@ macro_rules! thread_sync_test {
 
 thread_sync_test!(
   main_to_audio,
-  [Frame, AudioBatch(2), Frame, AudioBatch(2), Frame, AudioBatch(2)]
+  [
+    Frame,
+    AudioBatch(2),
+    Frame,
+    AudioBatch(2),
+    Frame,
+    AudioBatch(2)
+  ]
 );
 thread_sync_test!(
   audio_to_main,
@@ -506,12 +510,16 @@ thread_sync_test!(
 );
 thread_sync_test!(
   dynamic_array_shared,
-  [Frame, AudioBatch(4), Frame, AudioBatch(4), Frame, AudioBatch(4)]
+  [
+    Frame,
+    AudioBatch(4),
+    Frame,
+    AudioBatch(4),
+    Frame,
+    AudioBatch(4)
+  ]
 );
-thread_sync_test!(
-  no_start_audio_no_publish,
-  [Frame, Frame, Frame]
-);
+thread_sync_test!(no_start_audio_no_publish, [Frame, Frame, Frame]);
 thread_sync_test!(
   close_window_still_publishes,
   [Frame, Frame, AudioBatch(2), Frame, AudioBatch(2)]
@@ -531,13 +539,17 @@ thread_sync_test!(
 );
 thread_sync_test!(
   gpu_write_audio_read,
-  [Frame, AudioBatch(2), Frame, AudioBatch(2), Frame, AudioBatch(2)]
+  [
+    Frame,
+    AudioBatch(2),
+    Frame,
+    AudioBatch(2),
+    Frame,
+    AudioBatch(2)
+  ]
 );
 thread_sync_test!(gpu_write_no_audio_no_readback, [Frame, Frame, Frame]);
-thread_sync_test!(
-  gpu_write_before_start_audio,
-  [Frame, Frame, AudioBatch(2)]
-);
+thread_sync_test!(gpu_write_before_start_audio, [Frame, Frame, AudioBatch(2)]);
 thread_sync_test!(
   audio_and_gpu_write_cycle,
   [Frame, AudioBatch(2), Frame, AudioBatch(2), Frame]
@@ -586,10 +598,7 @@ thread_sync_test!(
   audio_closure_scope,
   [Frame, AudioBatch(4), AudioBatch(4), Frame, AudioBatch(4)]
 );
-thread_sync_test!(
-  audio_entry_one_arg,
-  [Frame, AudioBatch(4)]
-);
+thread_sync_test!(audio_entry_one_arg, [Frame, AudioBatch(4)]);
 thread_sync_test!(
   local_never_shared,
   [Frame, AudioBatch(2), Frame, AudioBatch(2)]

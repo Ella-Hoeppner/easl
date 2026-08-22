@@ -189,8 +189,8 @@ impl TopLevelVar {
                           // With an explicit address space, the numbers may
                           // be elided (`@[uniform]`): the compiler assigns
                           // free ones at the end of validation.
-                          let binding_spec = group_and_binding
-                            .map(BindingSpec::Specified);
+                          let binding_spec =
+                            group_and_binding.map(BindingSpec::Specified);
                           if let Some(address_space) = address_space {
                             let binding_spec = binding_spec.or_else(|| {
                               address_space
@@ -253,8 +253,7 @@ impl TopLevelVar {
                       // explicit `@local`.
                       Some((
                         Some(BindingSpec::Elided),
-                        t.required_address_space()
-                          .unwrap_or(StorageReadWrite),
+                        t.required_address_space().unwrap_or(StorageReadWrite),
                       ))
                     }
                     .unwrap_or_else(|| (None, VariableAddressSpace::default()));

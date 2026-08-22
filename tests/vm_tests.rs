@@ -106,8 +106,7 @@ vm_test!(generic_enum_match);
 fn for_loop_repeated_execute() {
   let source_path_str = "./data/vm/for_loop.easl".to_string();
   let source_path = Path::new(&source_path_str);
-  let Ok(Ok((_, Ok(mut program)))) =
-    load_easl_program_from_file(source_path)
+  let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
   else {
     panic!("couldn't load data/vm/for_loop.easl");
   };

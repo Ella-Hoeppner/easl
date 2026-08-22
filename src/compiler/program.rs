@@ -358,7 +358,6 @@ enum CaptureRewrite {
   },
 }
 
-
 /// The transitive set of lifted-capture global names for a closure chain
 /// rooted at `scope_struct` (`<scope>_audio_data_<capture>` for every data
 /// field, recursing through captured closures' own scopes) — the same
@@ -561,8 +560,7 @@ struct ClosureLiftState {
   created_globals: HashSet<Arc<str>>,
   new_vars: Vec<TopLevelVar>,
   /// Original captured-closure name → its (memoized) clone.
-  clones:
-    HashMap<Arc<str>, (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>)>,
+  clones: HashMap<Arc<str>, (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>)>,
   new_functions: Vec<Arc<RwLock<AbstractFunctionSignature>>>,
 }
 
@@ -2371,8 +2369,7 @@ impl Program {
   pub fn validate_context_exclusivity(&self, errors: &mut ErrorLog) {
     use crate::compiler::expression::ExpKind;
     use execution_context::{
-      AUDIO, CONTEXT_COUNT, CONTEXT_ENTRIES, CONTEXT_NAMES, CPU, FRAGMENT,
-      bit,
+      AUDIO, CONTEXT_COUNT, CONTEXT_ENTRIES, CONTEXT_NAMES, CPU, FRAGMENT, bit,
     };
     let fns = self.compute_function_contexts();
     // rule scan: check each function's direct uses against every context
@@ -2392,8 +2389,11 @@ impl Program {
         continue;
       }
       // (use, allowed-context mask, error kind per offending context)
-      let mut violations: Vec<(SourceTrace, u8, [Option<CompileErrorKind>; CONTEXT_COUNT])> =
-        vec![];
+      let mut violations: Vec<(
+        SourceTrace,
+        u8,
+        [Option<CompileErrorKind>; CONTEXT_COUNT],
+      )> = vec![];
       info
         .implementation
         .read()
@@ -2496,8 +2496,9 @@ impl Program {
                     Effect::LookupBuiltinAttribute(attribute) => {
                       let allowed = (0..CONTEXT_COUNT)
                         .filter(|context| {
-                          attribute
-                            .is_valid_input_for_stage(&CONTEXT_ENTRIES[*context])
+                          attribute.is_valid_input_for_stage(
+                            &CONTEXT_ENTRIES[*context],
+                          )
                         })
                         .fold(0u8, |mask, context| mask | bit(context));
                       let attribute = *attribute;

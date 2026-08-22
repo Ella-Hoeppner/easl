@@ -18,11 +18,9 @@ use winit::{
 #[cfg(not(target_os = "ios"))]
 use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 
-use crate::{
-  interpreter::{
-    BufferUpload, EvalError, EvalException, FrameDriver, GpuBindingInfo,
-    GpuBufferKind, GpuEntryInfo, IOManager, WindowEvent,
-  },
+use crate::interpreter::{
+  BufferUpload, EvalError, EvalException, FrameDriver, GpuBindingInfo,
+  GpuBufferKind, GpuEntryInfo, IOManager, WindowEvent,
 };
 
 // winit forbids creating more than one EventLoop per process. We keep one alive
@@ -420,12 +418,13 @@ impl GpuCore {
     let mut all_stages = wgpu::ShaderStages::NONE;
     for (entry_id, stage) in stage_entries {
       all_stages |= *stage;
-      let entry = self.gpu_entries.get(*entry_id as usize).unwrap_or_else(|| {
-        panic!(
-          "easl internal error: entry id {entry_id} out of range for the \
+      let entry =
+        self.gpu_entries.get(*entry_id as usize).unwrap_or_else(|| {
+          panic!(
+            "easl internal error: entry id {entry_id} out of range for the \
            GPU entry table ({label})"
-        )
-      });
+          )
+        });
       for key in &entry.used_bindings {
         *used.entry(*key).or_insert(wgpu::ShaderStages::NONE) |= *stage;
       }
@@ -610,8 +609,11 @@ impl GpuCore {
       }
     }
     for (id, groups) in rebuilt_compute {
-      self.compute_pipelines[id].as_mut().unwrap().bindings.bind_groups =
-        groups;
+      self.compute_pipelines[id]
+        .as_mut()
+        .unwrap()
+        .bindings
+        .bind_groups = groups;
     }
     let mut rebuilt_render: Vec<(usize, Vec<wgpu::BindGroup>)> = vec![];
     for (i, (_, cached)) in self.render_pipelines.iter().enumerate() {
@@ -726,7 +728,9 @@ impl GpuCore {
 
   pub fn get_or_create_compute_pipeline(&mut self, entry: u16) {
     if self.compute_pipelines.len() <= entry as usize {
-      self.compute_pipelines.resize_with(entry as usize + 1, || None);
+      self
+        .compute_pipelines
+        .resize_with(entry as usize + 1, || None);
     }
     if self.compute_pipelines[entry as usize].is_some() {
       return;
@@ -996,8 +1000,7 @@ impl GpuCore {
             label: Some("compute pass"),
             timestamp_writes: None,
           });
-        let cached =
-          self.compute_pipelines[entry as usize].as_ref().unwrap();
+        let cached = self.compute_pipelines[entry as usize].as_ref().unwrap();
         for (group_idx, bind_group) in
           cached.bindings.bind_groups.iter().enumerate()
         {
@@ -1228,8 +1231,7 @@ impl GpuCore {
           $self.encode_compute_batch(std::mem::take(&mut pending_compute));
         }
         if !pending_renders.is_empty() {
-          $self
-            .upload_bindings(&std::mem::take(&mut pending_render_uploads));
+          $self.upload_bindings(&std::mem::take(&mut pending_render_uploads));
           $self
             .encode_render_groups(&std::mem::take(&mut pending_renders), None);
         }
@@ -1260,7 +1262,13 @@ impl GpuCore {
             flush_runs!(self);
           }
           pending_render_uploads.extend(pre_upload.iter().cloned());
-          pending_renders.push((*vert, *frag, *vert_count, *additive, Some(*rt)));
+          pending_renders.push((
+            *vert,
+            *frag,
+            *vert_count,
+            *additive,
+            Some(*rt),
+          ));
         }
         WindowEvent::RenderShaders {
           render_target: None,
@@ -1288,21 +1296,20 @@ impl GpuCore {
     if screen_view.is_none() {
       return;
     }
-    let screen_calls: Vec<(u16, u16, u32, bool, Option<(u8, u8)>)> =
-      draw_calls
-        .iter()
-        .filter_map(|c| match c {
-          WindowEvent::RenderShaders {
-            vert,
-            frag,
-            vert_count,
-            additive,
-            render_target: None,
-            ..
-          } => Some((*vert, *frag, *vert_count, *additive, None)),
-          _ => None,
-        })
-        .collect();
+    let screen_calls: Vec<(u16, u16, u32, bool, Option<(u8, u8)>)> = draw_calls
+      .iter()
+      .filter_map(|c| match c {
+        WindowEvent::RenderShaders {
+          vert,
+          frag,
+          vert_count,
+          additive,
+          render_target: None,
+          ..
+        } => Some((*vert, *frag, *vert_count, *additive, None)),
+        _ => None,
+      })
+      .collect();
     self.encode_render_groups(&screen_calls, screen_view);
   }
 
@@ -2042,16 +2049,14 @@ impl<'a, D: FrameDriver> App<'a, D> {
           .with_active(false)
       })
       .or_else(|| {
-        self
-          .driver
-          .io_mut()
-          .preferred_window_hints()
-          .map(|((w, h), activate)| {
+        self.driver.io_mut().preferred_window_hints().map(
+          |((w, h), activate)| {
             Window::default_attributes()
               .with_title("easl")
               .with_inner_size(PhysicalSize::new(w, h))
               .with_active(activate)
-          })
+          },
+        )
       })
       .unwrap_or_else(|| Window::default_attributes().with_title("easl"));
     let window = Arc::new(event_loop.create_window(attrs).unwrap());

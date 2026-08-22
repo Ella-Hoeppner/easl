@@ -1,6 +1,8 @@
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
-use easl::interpreter::{CpuRuntime, IOEvent, run_program_test_io_with_runtime};
+use easl::interpreter::{
+  CpuRuntime, IOEvent, run_program_test_io_with_runtime,
+};
 use std::fs;
 use std::path::Path;
 
@@ -89,7 +91,10 @@ fn run_window_test(name: &str) {
           .unwrap_or_else(|e| {
             panic!("{name}: evaluation error (bytecode VM): {e:#?}");
           });
-      assert_eq!(vm_io.events, expected, "{name}: event mismatch (bytecode VM)");
+      assert_eq!(
+        vm_io.events, expected,
+        "{name}: event mismatch (bytecode VM)"
+      );
     }
     Ok(Ok((document, Err(errors)))) => {
       let description = errors.describe(&document);
