@@ -1,0 +1,30 @@
+; A HoF specialization referenced from more than one call site: the 1-arg
+; `apply-f` wrapper calls `apply-f_..._helper` directly, and the
+; `apply-twice_..._helper` specialization's body calls it twice more. All
+; those sites' ancestor signatures can share one implementation Arc
+; (whether the inlining memo shares or re-creates the specialization
+; depends on registry iteration order), so the implementation's arg-list
+; shrink must be idempotent: it scans its own function type for unitlike
+; entries rather than taking indices from a caller. An index-driven
+; per-site shrink over-removed, panicking or deleting the wrong argument
+; depending on the order the registry HashMap happened to iterate in.
+(defn helper [x: f32]: f32
+  (* x 2.))
+
+(defn apply-f [x: f32
+               f: (Fn [f32] f32)]: f32
+  (f x))
+
+(defn apply-f [x: f32]: f32
+  (apply-f x helper))
+
+(defn apply-twice [x: f32
+                   f: (Fn [f32] f32)]: f32
+  (apply-f (apply-f x f) f))
+
+(defn apply-twice [x: f32]: f32
+  (apply-twice x helper))
+
+@cpu
+(defn main []
+  (print (+ (apply-f 1.) (apply-twice 1.))))

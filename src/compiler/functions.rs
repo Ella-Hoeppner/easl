@@ -75,6 +75,45 @@ impl TopLevelFunction {
     derived.directly_user_written = false;
     derived
   }
+  /// Removes every unitlike argument from this function's own arg lists —
+  /// the expression's arg names, its function type's args, and the
+  /// `arg_names`/`arg_annotations` metadata — with the indices determined
+  /// from the function type's own argument types. Idempotent: a second
+  /// call finds no unitlike entries left and does nothing. That matters
+  /// because several call sites' ancestor signatures can share one
+  /// implementation Arc (the HoF-inlining memo reuses specializations),
+  /// so this runs once per call site; a removal driven by a caller's
+  /// indices instead of these lists' own contents over-removed here,
+  /// nondeterministically with registry iteration order.
+  pub fn remove_unitlike_arguments(&mut self, names: &mut NameContext) {
+    let mut removed_indices: Vec<usize> = vec![];
+    self.expression.data.as_known_mut(|t| {
+      if let Type::Function(function_signature) = t {
+        removed_indices = (0..function_signature.args.len())
+          .rev()
+          .filter(|i| {
+            function_signature.args[*i]
+              .0
+              .var_type
+              .unwrap_known()
+              .is_unitlike(names)
+          })
+          .collect();
+        for i in removed_indices.iter() {
+          function_signature.args.remove(*i);
+        }
+      }
+    });
+    let ExpKind::Function(expression_arg_names, _) = &mut self.expression.kind
+    else {
+      panic!()
+    };
+    for i in removed_indices {
+      expression_arg_names.remove(i);
+      self.arg_names.remove(i);
+      self.arg_annotations.remove(i);
+    }
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -252,38 +291,20 @@ impl AbstractFunctionSignature {
       .collect()
   }
   pub fn remove_unitlike_arguments(&mut self, names: &mut NameContext) {
-    let mut arg_types = self.arg_types.clone();
     if let FunctionImplementationKind::Composite(implementation) =
       &self.implementation
     {
-      let mut implementation = implementation.write().unwrap();
-      loop {
-        let mut changed = false;
-        for i in 0..arg_types.len() {
-          if arg_types[i].0.is_unitlike(names) {
-            arg_types.remove(i);
-            let ExpKind::Function(arg_names, _) =
-              &mut implementation.expression.kind
-            else {
-              panic!()
-            };
-            arg_names.remove(i);
-            implementation.expression.data.as_known_mut(|t| match t {
-              Type::Function(function_signature) => {
-                function_signature.args.remove(i);
-              }
-              _ => {}
-            });
-            changed = true;
-            break;
-          }
-        }
-        if !changed {
-          break;
-        }
-      }
+      take(&mut self.arg_types, |arg_types| {
+        arg_types
+          .into_iter()
+          .filter(|(t, _)| !t.is_unitlike(names))
+          .collect()
+      });
+      implementation
+        .write()
+        .unwrap()
+        .remove_unitlike_arguments(names);
     }
-    self.arg_types = arg_types;
   }
   pub fn inline_def_array_sizes(
     &mut self,

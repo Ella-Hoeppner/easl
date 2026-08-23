@@ -4289,11 +4289,9 @@ impl TypedExp {
               if let Some(signature) = existing_signature {
                 *abstract_signature = signature;
               } else {
-                *abstract_signature =
-                  Arc::new(RwLock::new(inlined_signature.clone()));
-                new_ctx.add_abstract_function(Arc::new(RwLock::new(
-                  inlined_signature,
-                )));
+                let signature = Arc::new(RwLock::new(inlined_signature));
+                *abstract_signature = Arc::clone(&signature);
+                new_ctx.add_abstract_function(signature);
               }
               new_ctx.add_monomorphized_struct(representative_struct);
               changed = true;

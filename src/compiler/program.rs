@@ -4169,7 +4169,7 @@ impl Program {
                         } else {
                           None
                         };
-                      if let Some(f) = composite_f {
+                      if composite_f.is_some() {
                         args_to_remove = (0..args.len())
                           .rev()
                           .filter(|i| {
@@ -4183,11 +4183,6 @@ impl Program {
                           .remove_unitlike_arguments(&mut names);
                         applied_f_signature.abstract_ancestor =
                           Some(Arc::clone(&new_sig));
-                        let mut f = f.write().unwrap();
-                        for i in args_to_remove.iter() {
-                          f.arg_names.remove(*i);
-                          f.arg_annotations.remove(*i);
-                        }
                       } else {
                         args_to_remove = (0..args.len())
                           .rev()
