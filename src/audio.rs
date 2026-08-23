@@ -61,11 +61,44 @@ pub enum AudioSource {
   C(String),
 }
 
+/// A pending change for a running VM-backed audio stream, applied by the
+/// cpal callback at its next batch boundary.
+enum VmSwapMessage {
+  /// Replace the whole driver — a freshly-compiled program, e.g. from a
+  /// `--watch` reload. The new driver starts at its own sample 0, so
+  /// `t`/`(audio-time)` restart alongside the rest of the program's state.
+  Replace(Box<VmAudioDriver>),
+  /// Re-point the running driver at a different entry function in the same
+  /// program, preserving program state and sample position. Carries an
+  /// index into the running program's function table: entry *names* only
+  /// exist at the IO-manager boundary (they're the one identifier shared
+  /// between the main-thread artifact and the audio artifact, whose
+  /// function orderings differ); they're resolved and validated against
+  /// the running program before a message is ever sent.
+  SwitchEntry(usize),
+}
+
+/// Main-thread bookkeeping for a running VM-backed stream.
+struct VmStreamState {
+  /// One-slot mailbox to the cpal callback. The callback only ever
+  /// `try_lock`s it (never blocking the real-time thread); the main thread
+  /// locks briefly to insert. A message overwritten before the callback
+  /// consumes it is simply superseded — last write wins.
+  mailbox: Arc<Mutex<Option<VmSwapMessage>>>,
+  /// The entry the stream is currently (or will next be) running; makes
+  /// the typical every-frame repeat `start-audio` call a cheap no-op.
+  current_entry: Arc<str>,
+  /// Function names of the running program, for resolving an entry switch
+  /// to a function index before sending it to the callback.
+  function_names: Vec<Arc<str>>,
+}
+
 /// Active audio thread state. The cpal stream is `!Send`, so we stash it in a
 /// Mutex on the thread that created it and never actually move it across
 /// threads — the mutex is just a one-time-init slot.
 struct AudioState {
   _stream: cpal::Stream,
+  vm: Option<VmStreamState>,
   #[cfg(feature = "c_audio")]
   c: Option<c_audio::CAudioState>,
 }
@@ -171,6 +204,7 @@ where
 /// monomorphize away when passed `|_| {}` (the production path).
 pub struct VmAudioDriver {
   program: BytecodeProgram,
+  function_names: Vec<Arc<str>>,
   fn_index: usize,
   return_position: usize,
   /// Whether the entry takes the optional `t` argument (0..=1 args): a
@@ -206,6 +240,7 @@ impl VmAudioDriver {
       .map(|(slot, _)| slot as usize);
     Ok(Self {
       program,
+      function_names: function_names.to_vec(),
       fn_index,
       return_position,
       arg_words,
@@ -214,6 +249,34 @@ impl VmAudioDriver {
       shared_table,
       sample_index: 0,
     })
+  }
+
+  /// Re-points the driver at a different entry function in its program, by
+  /// name. Resolution happens once, here; everything past this point (the
+  /// swap mailbox, the actual switch) works in function indices.
+  pub fn switch_entry(&mut self, entry_name: &str) -> Result<(), String> {
+    let fn_index = find_audio_fn_index(entry_name, &self.function_names)?;
+    self.switch_entry_by_index(fn_index);
+    Ok(())
+  }
+
+  /// Index-based sibling of `switch_entry`. Preserves all program state
+  /// and the sample position (`t` keeps advancing — an entry switch is a
+  /// live-performance move, not a restart). Message-ordering invariants
+  /// make an index from a different artifact unreachable (a `Replace`
+  /// superseding a pending switch drops it; a switch after a pending
+  /// `Replace` retargets that driver directly), so the bounds check is
+  /// pure insurance — a panic here would unwind into the real-time
+  /// callback.
+  fn switch_entry_by_index(&mut self, fn_index: usize) {
+    if fn_index >= self.program.code.functions.len() {
+      eprintln!("audio entry switch: function index out of range, ignoring");
+      return;
+    }
+    self.fn_index = fn_index;
+    self.return_position =
+      self.program.get_function_return_position(fn_index) as usize;
+    self.arg_words = self.program.code.functions[fn_index].arg_words as usize;
   }
 
   /// Runs one batch of `frames` samples, calling `emit` with each computed
@@ -266,10 +329,13 @@ impl VmAudioDriver {
   }
 }
 
-/// Boot the audio thread with the bytecode VM driver. The bytecode program
-/// is moved into the cpal callback; subsequent calls to `start-audio` are
-/// currently no-ops (logged) — we don't yet support hot-swapping the
-/// underlying bytecode in the VM path.
+/// Boot the audio thread with the bytecode VM driver, or — if a VM-backed
+/// stream is already running — hand it the new driver as a hot-swap,
+/// applied at the callback's next batch boundary. Hot-swapping is what
+/// makes the CLI's `--watch` reload work for audio: each reload compiles a
+/// fresh program whose first `start-audio` call lands here with a fresh
+/// source, and the running stream switches to it without being torn down
+/// and rebuilt (no device re-open, no gap in playback).
 pub fn start_audio_thread_vm(
   entry_name: &str,
   program: BytecodeProgram,
@@ -279,14 +345,42 @@ pub fn start_audio_thread_vm(
   let mut driver =
     VmAudioDriver::new(entry_name, program, &function_names, shared_table)?;
   let mut state_lock = AUDIO_STATE.lock().unwrap();
-  if state_lock.is_some() {
-    eprintln!(
-      "Note: `start-audio` called more than once; VM-backed audio does not \
-       yet support hot-swap, ignoring subsequent calls."
-    );
+  if let Some(state) = state_lock.as_mut() {
+    let Some(vm) = state.vm.as_mut() else {
+      eprintln!(
+        "Note: `start-audio` called with the VM backend, but the audio \
+         thread was previously started via the C backend. Ignoring."
+      );
+      return Ok(());
+    };
+    vm.current_entry = entry_name.into();
+    vm.function_names = function_names;
+    *vm.mailbox.lock().unwrap() =
+      Some(VmSwapMessage::Replace(Box::new(driver)));
     return Ok(());
   }
+  let mailbox: Arc<Mutex<Option<VmSwapMessage>>> = Arc::new(Mutex::new(None));
+  let cb_mailbox = mailbox.clone();
   let stream = build_audio_stream_batched(move |output, channels, rate| {
+    // Apply any pending swap first, so it takes effect at a batch
+    // boundary. `try_lock` only: if the main thread happens to be
+    // mid-insert, run the old driver one more batch rather than blocking
+    // the real-time thread.
+    if let Ok(mut pending) = cb_mailbox.try_lock()
+      && let Some(message) = pending.take()
+    {
+      match message {
+        VmSwapMessage::Replace(new_driver) => {
+          // Dropping the old driver deallocates its program here on the
+          // audio thread — a one-off cost at swap time, well within a
+          // batch's time budget.
+          driver = *new_driver;
+        }
+        VmSwapMessage::SwitchEntry(fn_index) => {
+          driver.switch_entry_by_index(fn_index);
+        }
+      }
+    }
     let frame_count = output.len() / channels;
     let mut frames = output.chunks_mut(channels);
     driver.run_batch(
@@ -303,10 +397,61 @@ pub fn start_audio_thread_vm(
   })?;
   *state_lock = Some(AudioState {
     _stream: stream,
+    vm: Some(VmStreamState {
+      mailbox,
+      current_entry: entry_name.into(),
+      function_names,
+    }),
     #[cfg(feature = "c_audio")]
     c: None,
   });
   Ok(())
+}
+
+/// Re-points a running VM-backed audio stream at a different entry
+/// function in its already-loaded program. This is what repeated
+/// `start-audio` calls within one program run come through (the compiled
+/// source was consumed by the first call): with the same entry name — the
+/// typical every-frame repeat — it's a cheap no-op; with a different name,
+/// the running program switches entries at the next batch boundary,
+/// preserving its state and sample position. On a C-backend stream this is
+/// a no-op — the C driver calls a fixed compiled-in symbol, and without a
+/// fresh source there is nothing to switch to.
+pub fn switch_vm_audio_entry(entry_name: &str) -> Result<(), String> {
+  let mut state_lock = AUDIO_STATE.lock().unwrap();
+  let Some(state) = state_lock.as_mut() else {
+    return Err("`start-audio`: no audio stream is running".to_string());
+  };
+  let Some(vm) = state.vm.as_mut() else {
+    return Ok(());
+  };
+  if *vm.current_entry == *entry_name {
+    return Ok(());
+  }
+  let fn_index = find_audio_fn_index(entry_name, &vm.function_names)?;
+  vm.current_entry = entry_name.into();
+  let mut pending = vm.mailbox.lock().unwrap();
+  *pending = Some(match pending.take() {
+    // An unconsumed replacement is still pending; retarget it directly so
+    // the entry switch isn't lost when the replacement lands.
+    Some(VmSwapMessage::Replace(mut driver)) => {
+      driver.switch_entry_by_index(fn_index);
+      VmSwapMessage::Replace(driver)
+    }
+    _ => VmSwapMessage::SwitchEntry(fn_index),
+  });
+  Ok(())
+}
+
+/// Tears down the audio thread, if one is running: drops the cpal stream
+/// (stopping playback) and clears all audio state, so a later
+/// `start-audio` builds a fresh stream. Must be called from the thread
+/// that started the audio — the cpal stream is not `Send`. The CLI's
+/// `--watch` loop uses this when a reloaded program no longer has an audio
+/// entry point; audio otherwise deliberately persists across reloads so
+/// that `start-audio` hot-swaps instead of glitching.
+pub fn stop_audio() {
+  *AUDIO_STATE.lock().unwrap() = None;
 }
 
 /// Boot the audio thread with the C backend (JIT-compiled dylib). Requires
@@ -488,6 +633,7 @@ mod c_audio {
     let counter = Arc::new(AtomicU64::new(0));
     *state_lock = Some(AudioState {
       _stream: stream,
+      vm: None,
       c: Some(CAudioState {
         _lib: lib,
         _counter: counter,

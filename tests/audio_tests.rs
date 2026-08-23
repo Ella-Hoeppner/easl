@@ -149,3 +149,41 @@ fn start_audio_bootstrap_publishes_current_globals() {
   // gain (0.75) * sample[2] (3.0)
   assert_eq!(result, 2.25);
 }
+
+#[test]
+fn vm_audio_driver_entry_switch() {
+  // `switch-entry` re-points a running driver at a different entry in the
+  // same compiled program — the mechanism behind repeated `start-audio`
+  // calls with a different function within one run — preserving program
+  // state and the sample position. Driven directly on the driver rather
+  // than through `start-audio`, which would open a real audio stream.
+  use easl::audio::VmAudioDriver;
+  let source_path = Path::new("./data/audio/entry_switch.easl");
+  let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
+  else {
+    panic!("failed to load program");
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  let (program, names) = program.compile_to_bytecode_program();
+
+  let mut driver = VmAudioDriver::new("f", program, &names, None).unwrap();
+  let rate = 8.0;
+  let mut samples = Vec::new();
+  driver.run_batch(4, rate, |s| samples.push(s), |_| {}, |_| {});
+  assert_eq!(samples, vec![0.0, 0.125, 0.25, 0.375]);
+
+  // t keeps advancing across the switch: `g` negates it
+  driver.switch_entry("g").unwrap();
+  samples.clear();
+  driver.run_batch(4, rate, |s| samples.push(s), |_| {}, |_| {});
+  assert_eq!(samples, vec![-0.5, -0.625, -0.75, -0.875]);
+
+  // ...and back, still without resetting the sample position
+  driver.switch_entry("f").unwrap();
+  samples.clear();
+  driver.run_batch(2, rate, |s| samples.push(s), |_| {}, |_| {});
+  assert_eq!(samples, vec![1.0, 1.0]); // t = 1.0, 1.125, clamped
+
+  assert!(driver.switch_entry("no-such-entry").is_err());
+}

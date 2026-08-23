@@ -1,0 +1,16 @@
+; Used by the hand-written `vm_audio_driver_entry_switch` test: two audio
+; entries whose samples encode `t`, so switching the driver between them
+; proves both that the entry changes and that the sample position is
+; preserved across the switch (an entry switch is a live-performance move,
+; not a restart).
+
+@audio
+(defn f [t: f32]: f32
+  t)
+
+@audio
+(defn g [t: f32]: f32
+  (- 0. t))
+
+@cpu
+(defn main [])

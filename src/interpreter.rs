@@ -1927,15 +1927,19 @@ fn apply_builtin_fn<IO: IOManager>(
         // already-running case; StringIO records every event).
         let mut source = env.audio_source.take();
         // Seed the lifted capture globals from the closure value's scope
-        // before the bootstrap publish below ships them to the audio
-        // replica's first adopt. Only on the call that actually starts
-        // the audio thread: re-seeding on later calls would overwrite
-        // main's replica (and its adopted audio-thread state) with the
-        // closure value's original fields — replica contents and dirty
-        // flags must track actual handoffs, not every frame's no-op call.
-        if source.is_some()
-          && let Some(scope_struct) = &scope_struct
+        // before the publish machinery ships them to the audio replica.
+        // Once per closure (the `seeded_audio_scopes` one-shot, matching
+        // the VM runtime's per-call-site seed guard): re-seeding on later
+        // calls would overwrite main's replica (and its adopted
+        // audio-thread state) with the closure value's original fields —
+        // replica contents and dirty flags must track actual handoffs, not
+        // every frame's no-op call. A closure seeded after the stream is
+        // already running (a second `start-audio` site switching entries)
+        // marks its globals dirty here and rides the normal frame-end
+        // publish.
+        if let Some(scope_struct) = &scope_struct
           && let Value::Fun(Function::Scoped { scope, .. }) = audio_value
+          && env.seeded_audio_scopes.insert(scope_struct.name.0.clone())
         {
           let scope_value = (**scope).clone();
           env.seed_audio_scope_globals(scope_struct, &scope_value);
@@ -3735,11 +3739,14 @@ impl IOManager for StdoutIO {
   ) -> Result<(), EvalError> {
     let Some(source) = source else {
       // Repeated call: the audio source was already consumed on the first
-      // call. If a stream is actually running we treat this as a no-op (a
-      // typical program puts `start-audio` inside a frame callback); if
-      // not, the run was started without audio support in the first place.
+      // call. If a stream is actually running, re-point it at `entry_name`
+      // — a cheap no-op when the name is unchanged (a typical program puts
+      // `start-audio` inside a frame callback), a live entry switch when
+      // it isn't. If no stream is running, the run was started without
+      // audio support in the first place.
       return if crate::audio::is_audio_thread_started() {
-        Ok(())
+        crate::audio::switch_vm_audio_entry(entry_name)
+          .map_err(|e| UserspaceEvalError::AudioRuntimeError(e).into())
       } else {
         Err(UserspaceEvalError::AudioSourceMissing.into())
       };
@@ -4205,6 +4212,12 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   /// decides what to do (noop if a stream is already running, error if not).
   #[cfg(feature = "window")]
   audio_source: Option<crate::audio::AudioSource>,
+  /// Scope-struct names of audio closures whose lifted capture globals
+  /// have already been seeded, so each closure's state is handed off
+  /// exactly once (the tree-walker sibling of the VM's per-call-site
+  /// one-shot seed guard).
+  #[cfg(feature = "window")]
+  seeded_audio_scopes: HashSet<Arc<str>>,
   /// Thread-shared globals (see `Program::thread_shared_globals`) with
   /// their audience masks, sorted by name; index-aligned with
   /// `shared_table` slots and every compiled artifact's
@@ -4329,6 +4342,8 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       current_render_target: None,
       #[cfg(feature = "window")]
       audio_source,
+      #[cfg(feature = "window")]
+      seeded_audio_scopes: HashSet::new(),
       shared_dirty: vec![false; shared_globals.len()],
       shared_adopted: vec![0; shared_globals.len()],
       shared_globals,
