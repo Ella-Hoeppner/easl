@@ -1,0 +1,12 @@
+main-publish: <audio-scope>_grains
+main-publish: <audio-scope>_my-wave
+start-audio: <audio-closure>
+spawn-window
+frame 0
+audio-batch 0 x6
+audio-adopt: <audio-scope>_grains
+audio-adopt: <audio-scope>_my-wave
+samples: 0.25 0.5 0.75 0.75 0.75 0.75
+audio-publish: <audio-scope>_grains
+frame 1
+main-adopt: <audio-scope>_grains

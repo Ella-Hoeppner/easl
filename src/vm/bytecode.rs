@@ -452,11 +452,17 @@ impl Instruction {
 pub struct Function {
   pub instructions: Range<u32>,
   pub return_position: u16,
-  /// Total stack words occupied by the function's arguments (which sit at
-  /// the start of its frame). Lets drivers that write args generically —
-  /// e.g. the audio driver's optional `t`/`rate` — know how many the
-  /// function actually takes.
+  /// Total stack words occupied by the function's arguments. Lets drivers
+  /// that write args generically — e.g. the audio driver's optional `t` —
+  /// know how many the function actually takes.
   pub arg_words: u16,
+  /// Slot of the function's first argument. Args follow the reserved
+  /// return slot(s) at the start of the frame, so this is NOT
+  /// `return_position` — the return value must never time-share a slot
+  /// with an arg (a heap-typed arg's release-on-overwrite would misread a
+  /// scalar return's bits as a heap id). Meaningless when `arg_words` is
+  /// 0.
+  pub first_arg_position: u16,
 }
 
 /// How the CPU-side value of a GPU-bound global is stored in the VM runtime.

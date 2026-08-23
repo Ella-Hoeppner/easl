@@ -1,0 +1,76 @@
+; A granular engine at harness scale — an audio closure capturing a
+; grain bank and a wavetable (both runtime-sized), updating the bank by
+; value and summing grain samples per sample. Pins the
+; reserved-return-slot layout in its per-usage-specialized form (the
+; minimal form is the `dyn_array_arg_scalar_return` cpu test):
+; `sample-grainbank`'s specialization must not write its f32 sum over the
+; owned wavetable arg's heap-id slot, which the next sample's arg copy
+; release-reads. Also pins a realistic synth-graph shape end-to-end:
+; pass-by-value of a captured dyn global with per-sample write-back,
+; struct elements passed by ref out of a dyn array, and enum
+; (Option Grain) flow through match.
+;
+; Sample math at the 8 Hz harness rate: the grain advances 1/8 per sample
+; *before* sampling, and dies (freezing at pos 0.375, since `unwrap-or`
+; falls back to the un-updated element) once pos - start reaches the 0.5
+; length — so sample k reads wavetable[min(k+1, 3)]:
+; 0.25 0.5 0.75, then 0.75 forever.
+(struct Grain
+  start-pos: f32
+  length: f32
+  speed: f32
+  pos: f32)
+
+(enum (Option T)
+  (Some T)
+  None)
+
+(defn (unwrap-or T)
+      [o: (Option T)
+       default: T]: T
+      (match o
+        (Some v) v
+        None default))
+
+(defn update-grain [@var grain: Grain]: (Option Grain)
+  (+= grain.pos
+      (/ grain.speed (sample-rate)))
+  (if (< (- grain.pos grain.start-pos)
+         grain.length)
+    (Some grain)
+    None))
+
+(defn update-grainbank [@var grainbank: [Grain]]: [Grain]
+  (for [i (array-length grainbank)]
+    (= (grainbank i)
+       (unwrap-or (update-grain (grainbank i))
+                  (grainbank i))))
+  grainbank)
+
+(defn sample-grain [@ref grain: Grain
+                    @ref wavetable: [f32]]: f32
+  (wavetable (min (u32 (* (sample-rate) grain.pos))
+                  (- (array-length wavetable) 1))))
+
+(defn sample-grainbank [@ref grainbank: [Grain]
+                        wavetable: [f32]]: f32
+  (let [@var sum 0.]
+    (for [i (array-length grainbank)]
+      (+= sum
+          (sample-grain (grainbank i) wavetable)))
+    sum))
+
+@cpu
+(defn main []
+  (let [@var my-wave: [f32] (zeroed-array 4)]
+    (for [i (array-length my-wave)]
+      (= (my-wave i)
+         (/ (f32 i) 4.)))
+    (let [@var grains: [Grain] (zeroed-array 1)]
+      (= (grains 0u)
+         (Grain 0. 0.5 1. 0.))
+      (start-audio (fn []
+                       (= grains
+                          (update-grainbank grains))
+                       (sample-grainbank grains my-wave))))
+    (spawn-window (fn [] ()))))

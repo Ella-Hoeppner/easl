@@ -7144,7 +7144,7 @@ impl Program {
     // it once at construction so globals are live before any user code.
     let init_function_index =
       if self.top_level_vars.iter().any(|v| v.value.is_some()) {
-        state.open_function("$init_globals".into());
+        state.open_function("$init_globals".into(), 0);
         for v in self.top_level_vars.iter() {
           if let Some(value_exp) = &v.value {
             let value_slot =

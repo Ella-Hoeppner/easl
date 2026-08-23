@@ -1,0 +1,15 @@
+; A function taking a runtime-sized array by value and returning a
+; scalar, called more than once. Pins the reserved-return-slot layout
+; (`open_function`): the return slot must never time-share with the first
+; arg's slot — a heap-typed arg's slot carries a release-on-overwrite
+; obligation, and a scalar return written over its heap id would poison
+; the next call's arg-setup release (float bits misread as a heap id) and
+; leak the cell.
+(defn total [xs: [f32]]: f32
+  (+ (xs 0u) (xs 1u)))
+
+@cpu
+(defn main []
+  (let [@var xs (into-dynamic-array [1. 2.])]
+    (print (total xs))
+    (print (total xs))))

@@ -1344,10 +1344,13 @@ impl TopLevelFunction {
     state: &mut BytecodeCompilationState,
     ref_arg_positions: &[(usize, RefArgBinding)],
   ) {
-    state.open_function(f_name.clone());
     let Type::Function(f) = self.expression.data.unwrap_known() else {
       panic!()
     };
+    state.open_function(
+      f_name.clone(),
+      crate::vm::compile::vm_type_size(&f.return_type.unwrap_known()),
+    );
     for (i, (arg, _)) in f.args.iter().enumerate() {
       let arg_size =
         crate::vm::compile::vm_type_size(&arg.var_type.unwrap_known());

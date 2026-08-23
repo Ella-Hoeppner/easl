@@ -196,7 +196,7 @@ impl BytecodeCompilationState {
       .expect("VM stack exceeded 65536 slots (u16 addressing limit)");
     i as u16
   }
-  pub fn open_function(&mut self, name: Arc<str>) {
+  pub fn open_function(&mut self, name: Arc<str>, return_size: u16) {
     let instruction_start = self.instructions.len() as u32;
     self.current_function = Some(IntermediateBytecodeFunction {
       name,
@@ -205,6 +205,13 @@ impl BytecodeCompilationState {
       arg_positions: vec![],
       arg_sizes: vec![],
     });
+    // Reserve the return slot(s) at the very start of the frame, before
+    // any arg or body-temp allocation. The return value must not
+    // time-share a slot with anything else: a slot that holds a heap id
+    // during the body carries a release-on-overwrite obligation, and a
+    // scalar return written over it would poison the next execution's
+    // release (float bits misread as a heap id) and leak the cell.
+    self.take_stack_slot(return_size);
   }
   pub fn close_function(&mut self) {
     let mut f = self.current_function.take().unwrap();
@@ -1747,6 +1754,11 @@ impl BytecodeCompilationState {
           instructions: f.instructions.clone(),
           return_position: f.stack_frame_start,
           arg_words: f.arg_sizes.iter().copied().sum(),
+          first_arg_position: f
+            .arg_positions
+            .first()
+            .copied()
+            .unwrap_or(f.stack_frame_start),
         })
         .collect(),
       init_function_index,
