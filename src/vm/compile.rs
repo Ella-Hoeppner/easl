@@ -38,12 +38,42 @@ pub struct IntermediateBytecodeFunction {
   pub arg_sizes: Vec<u16>,
 }
 
+/// Where a per-usage-specialized function's argument lives at one call
+/// site. Owned args and most ref args are stack slots; a runtime-sized
+/// *global* passed by reference binds to its dynamic-memory region
+/// instead — the specialized body then compiles the param's element and
+/// length accesses to the same direct region ops (`DynLen`/`DynLoad`/
+/// `DynStore`) as reads of the global itself: true aliasing, no
+/// per-call copy of the array.
+#[derive(Clone, Copy)]
+pub enum RefArgBinding {
+  Slot(u16),
+  DynRegion { region: u16, stride: u16 },
+}
+
+impl RefArgBinding {
+  /// The stack slot of an owned arg's binding (owned args are always
+  /// slot-backed; only ref args can bind to a region).
+  pub fn owned_slot(&self) -> u16 {
+    match self {
+      RefArgBinding::Slot(slot) => *slot,
+      RefArgBinding::DynRegion { .. } => {
+        panic!("owned function argument bound to a dynamic-memory region")
+      }
+    }
+  }
+}
+
 pub struct PendingRefFnUsage {
   pub name: Arc<str>,
   pub fn_dispatch_position: u32,
-  pub arg_move_positions: Vec<u32>,
+  /// `(arg index, instruction position)` of the placeholder copy emitted
+  /// for each *owned* arg — ref args get no placeholder at all (they
+  /// aren't copied at the call boundary; the per-usage specialization
+  /// binds them directly to the caller's storage).
+  pub arg_move_positions: Vec<(usize, u32)>,
   pub return_move_position: u32,
-  pub arg_positions: Vec<u16>,
+  pub arg_positions: Vec<RefArgBinding>,
 }
 
 /// A `spawn-window` whose frame closure has a captured scope. The frame fn
@@ -115,6 +145,13 @@ pub struct BytecodeCompilationState {
   pub pending_ref_arg_function_usages: Vec<PendingRefFnUsage>,
   pub pending_frame_fn_usages: Vec<PendingFrameFnUsage>,
   pub array_mut_ref_store_instructions: Vec<Vec<Instruction>>,
+  /// Region bindings for the function currently being compiled as a
+  /// per-usage ref-arg specialization, keyed by arg index. Set by
+  /// `TopLevelFunction::compile_to_bytecode` just before the body
+  /// compiles; the `Function` arm consumes it, registering each such
+  /// param in `dynamic_array_memory` (and unregistering it after the
+  /// body) instead of binding a local slot.
+  pub pending_ref_region_params: HashMap<usize, (u16, u16)>,
 }
 
 impl BytecodeCompilationState {
@@ -144,6 +181,7 @@ impl BytecodeCompilationState {
       loop_start_instructions: vec![],
       break_jump_instruction_positions: vec![],
       continue_jump_instruction_positions: vec![],
+      pending_ref_region_params: HashMap::new(),
       ref_arg_functions: vec![],
       pending_ref_arg_function_usages: vec![],
       pending_frame_fn_usages: vec![],
@@ -3021,13 +3059,39 @@ impl TypedExp {
         };
         let abstract_f = f.abstract_ancestor.unwrap();
         let abstract_f = abstract_f.read().unwrap();
-        let arg_positions: Vec<u16> = args
+        let arg_bindings: Vec<RefArgBinding> = args
           .iter()
           .zip(abstract_f.arg_types.iter())
           .map(|(arg, (_, ownership))| {
-            arg
-              .compile_to_bytecode(*ownership != Ownership::Owned, state)
-              .unwrap()
+            // A runtime-sized global passed by reference binds to its
+            // region directly — compiling it as a value would deep-copy
+            // the whole array at every call (and writes through the ref
+            // would mutate the copy). Only reachable through
+            // compiler-created ref passes (the audio closure lift):
+            // user code can't pass storage-space vars by reference.
+            if *ownership != Ownership::Owned
+              && let ExpKind::Name(arg_name) = &arg.kind
+              && let Some((region, stride)) =
+                state.dynamic_array_memory.get(arg_name).copied()
+            {
+              RefArgBinding::DynRegion { region, stride }
+            } else {
+              RefArgBinding::Slot(
+                arg
+                  .compile_to_bytecode(*ownership != Ownership::Owned, state)
+                  .unwrap(),
+              )
+            }
+          })
+          .collect();
+        // Slot view for the all-owned-args consumers (builtins, enum
+        // constructors, non-ref composite calls — none of which can see a
+        // region-bound arg).
+        let arg_positions: Vec<u16> = arg_bindings
+          .iter()
+          .map(|binding| match binding {
+            RefArgBinding::Slot(slot) => *slot,
+            RefArgBinding::DynRegion { .. } => 0,
           })
           .collect();
         // Use the application expression's own type rather than the
@@ -3113,8 +3177,17 @@ impl TypedExp {
               .is_some()
             {
               let mut arg_move_positions = vec![];
-              for arg_type in arg_types.iter() {
-                arg_move_positions.push(state.instructions.len() as u32);
+              for (arg_index, arg_type) in arg_types.iter().enumerate() {
+                // Only owned args get a call-boundary copy (patched during
+                // per-usage resolution); ref args bind directly to the
+                // caller's slots, and an unpatched placeholder for one
+                // would survive as a garbage copy — for a heap-typed arg,
+                // a `HeapCopy` dereferencing slot 0 as a heap id.
+                if f.args[arg_index].0.var_type.ownership != Ownership::Owned {
+                  continue;
+                }
+                arg_move_positions
+                  .push((arg_index, state.instructions.len() as u32));
                 state.push_instruction(Instruction {
                   op: copy_op_for(arg_type),
                   arg_positions: [0, 0, 0],
@@ -3140,7 +3213,7 @@ impl TypedExp {
                   arg_move_positions,
                   fn_dispatch_position,
                   return_move_position,
-                  arg_positions,
+                  arg_positions: arg_bindings,
                 });
               Some(result_position)
             } else {
@@ -3248,17 +3321,40 @@ impl TypedExp {
         let Type::Function(f) = self.data.unwrap_known() else {
           panic!()
         };
-        for ((arg_name, _), arg_position) in args.iter().zip(
-          state
-            .current_function
-            .as_ref()
-            .unwrap()
-            .arg_positions
-            .iter(),
-        ) {
-          state.locals.insert(arg_name.clone(), *arg_position);
+        let ref_region_params =
+          std::mem::take(&mut state.pending_ref_region_params);
+        let mut region_param_names = vec![];
+        for (i, ((arg_name, _), arg_position)) in args
+          .iter()
+          .zip(
+            state
+              .current_function
+              .as_ref()
+              .unwrap()
+              .arg_positions
+              .clone()
+              .iter(),
+          )
+          .enumerate()
+        {
+          if let Some(&(region, stride)) = ref_region_params.get(&i) {
+            // A region-bound ref param: the body's accesses compile to
+            // direct region ops, exactly as if they named the global
+            // itself. Unregistered after the body so the param name
+            // can't leak into later functions' compiles.
+            state
+              .dynamic_array_memory
+              .insert(arg_name.clone(), (region, stride));
+            region_param_names.push(arg_name.clone());
+          } else {
+            state.locals.insert(arg_name.clone(), *arg_position);
+          }
         }
-        if let Some(result_position) = exp.compile_to_bytecode(false, state) {
+        let body_result = exp.compile_to_bytecode(false, state);
+        for region_param_name in region_param_names {
+          state.dynamic_array_memory.remove(&region_param_name);
+        }
+        if let Some(result_position) = body_result {
           state.push_instruction(Instruction {
             op: Op::Move,
             arg_positions: [

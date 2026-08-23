@@ -7,7 +7,7 @@ use take_mut::take;
 use crate::compiler::entry::BuiltinIOAttribute;
 use crate::compiler::expression::compile_typed_name;
 use crate::compiler::types::AbstractArraySize;
-use crate::vm::compile::BytecodeCompilationState;
+use crate::vm::compile::{BytecodeCompilationState, RefArgBinding};
 use crate::{
   Never,
   compiler::{
@@ -1342,7 +1342,7 @@ impl TopLevelFunction {
     &self,
     f_name: &Arc<str>,
     state: &mut BytecodeCompilationState,
-    ref_arg_positions: &[(usize, u16)],
+    ref_arg_positions: &[(usize, RefArgBinding)],
   ) {
     state.open_function(f_name.clone());
     let Type::Function(f) = self.expression.data.unwrap_known() else {
@@ -1351,13 +1351,23 @@ impl TopLevelFunction {
     for (i, (arg, _)) in f.args.iter().enumerate() {
       let arg_size =
         crate::vm::compile::vm_type_size(&arg.var_type.unwrap_known());
-      let arg_slot = if let Some((_, caller_slot)) = ref_arg_positions
+      let arg_slot = match ref_arg_positions
         .iter()
         .find(|(arg_index, _)| *arg_index == i)
       {
-        *caller_slot
-      } else {
-        state.take_stack_slot(arg_size)
+        Some((_, RefArgBinding::Slot(caller_slot))) => *caller_slot,
+        Some((_, RefArgBinding::DynRegion { region, stride })) => {
+          // A region-bound ref param has no slot; the `Function` arm
+          // registers it in `dynamic_array_memory` under the param's
+          // name instead, so the body's accesses compile to direct
+          // region ops. The placeholder keeps `arg_positions`
+          // index-aligned (callers only read the owned entries).
+          state
+            .pending_ref_region_params
+            .insert(i, (*region, *stride));
+          0
+        }
+        None => state.take_stack_slot(arg_size),
       };
       let current_function = state.current_function.as_mut().unwrap();
       current_function.arg_positions.push(arg_slot);

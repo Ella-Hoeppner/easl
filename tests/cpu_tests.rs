@@ -165,8 +165,7 @@ cpu_test!(cpu_only_bool_var);
 // reuses). The tree-walker passes. Should pass once embedded heap ids are
 // promoted to owned copies (or the v2 liveness-based reclamation lands).
 cpu_test!(dyn_field_struct_across_calls);
-// Deliberately-failing pins of known audio-runtime bugs (see each .easl
-// file's header comment for the failure mode and suspected cause):
+cpu_test!(ref_dyn_array_arg);
 cpu_test!(audio_time_through_hof_chain);
 cpu_test!(load_wav_local_binding);
 cpu_test!(assign_field_in_dyn_array_element);

@@ -1,0 +1,25 @@
+; The ref-wavetable pattern: an audio closure captures a local
+; runtime-sized wavetable and passes it to the sampling helper as a `@ref`
+; argument — semantically identical to the helper reading a global
+; wavetable directly, and compiled identically: the capture is lifted to a
+; dyn global, and the ref param binds to the global's *region*
+; (`RefArgBinding::DynRegion`), so the specialized body's element/length
+; accesses are the same direct `DynLen`/`DynLoad` ops as reads of the
+; global itself — true aliasing, no per-sample copy of the array. At the
+; 8 Hz harness rate, sample k reads wavetable[k % 4], one ramp cycle every
+; four samples.
+(defn sample-wavetable [t: f32
+                        @ref wavetable: [f32]]: f32
+  (wavetable (% (u32 (* (sample-rate) t))
+                (array-length wavetable))))
+
+@cpu
+(defn main []
+  (let [@var wavetable (zeroed-array 4)]
+    (for [i (array-length wavetable)]
+      (= (wavetable i)
+         (/ (f32 i)
+            (f32 (array-length wavetable)))))
+    (start-audio (fn []
+                     (sample-wavetable (audio-time) wavetable))))
+  (spawn-window (fn [] ())))

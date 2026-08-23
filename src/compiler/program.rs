@@ -19,7 +19,7 @@ use crate::thread_sync::participant;
 use crate::vm::bytecode::{BytecodeProgram, Instruction, Op};
 use crate::vm::compile::{
   BytecodeCompilationState, PendingFrameFnUsage, PendingRefFnUsage,
-  vm_type_size,
+  RefArgBinding, vm_type_size,
 };
 use crate::{
   Never,
@@ -7338,21 +7338,19 @@ impl Program {
           else {
             panic!()
           };
-          let mut owned_arg_indeces = vec![];
           let mut ref_arg_positions = vec![];
           for (i, (v, _)) in f_signature.args.iter().enumerate() {
-            if v.var_type.ownership == Ownership::Owned {
-              owned_arg_indeces.push(i);
-            } else {
+            if v.var_type.ownership != Ownership::Owned {
               ref_arg_positions.push((i, arg_positions[i]));
             }
           }
           f.compile_to_bytecode(&name, &mut state, &ref_arg_positions);
           let bytecode_fn = state.finished_functions.last().unwrap();
-          for owned_arg_index in owned_arg_indeces {
-            let move_instruction = &mut state.instructions
-              [arg_move_positions[owned_arg_index] as usize];
-            move_instruction.arg_positions[0] = arg_positions[owned_arg_index];
+          for (owned_arg_index, move_position) in arg_move_positions {
+            let move_instruction =
+              &mut state.instructions[move_position as usize];
+            move_instruction.arg_positions[0] =
+              arg_positions[owned_arg_index].owned_slot();
             move_instruction.arg_positions[1] =
               bytecode_fn.arg_sizes[owned_arg_index];
             move_instruction.return_position =
@@ -7385,7 +7383,7 @@ impl Program {
           f.compile_to_bytecode(
             &name,
             &mut state,
-            &[(scope_arg_index, scope_slot)],
+            &[(scope_arg_index, RefArgBinding::Slot(scope_slot))],
           );
           let frame_fn = (state.finished_functions.len() - 1) as u16;
           state.host_ops[host_op_index] =
