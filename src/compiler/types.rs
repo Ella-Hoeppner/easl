@@ -3471,7 +3471,13 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
           .iter()
           .find_map(|v| (&*v.name == name).then(|| v.variable_kind())),
       )
-      .unwrap()
+      .unwrap_or_else(|| {
+        panic!(
+          "compiler bug: variable {name:?} not found in local context \
+           (in-scope: {:?})",
+          self.variables.keys().collect::<Vec<_>>()
+        )
+      })
   }
   pub fn get_name_definition_source(
     &self,

@@ -52,7 +52,7 @@ The main pipeline lives in `Program::validate_raw_program` (program.rs). The maj
 
 1. **Name validation** — checks for reserved/invalid names
 2. **Mutable arg wrapping** — wraps `@var` function args
-3. **Deshadowing** — renames shadowed local bindings to unique names
+3. **Deshadowing** — renames local bindings so every local name is bound at most once per function (shadowing *and* sibling-scope reuse; later passes key variables by name and can merge sibling scopes, e.g. deexpressionification hoisting lets out of argument position)
 4. **Type inference** (`fully_infer_types`) — bidirectional type inference with unification
 5. **Control flow validation** — checks for expressions after `break`/`return`, validates match exhaustiveness
 6. **Associative expansion** — expands `(+ a b c)` into `(+ (+ a b) c)`

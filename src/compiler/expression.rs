@@ -4384,8 +4384,7 @@ impl TypedExp {
       |name: &mut Arc<str>,
        bindings: &mut HashMap<Arc<str>, Vec<Arc<str>>>,
        reverse_bindings: &mut HashMap<Arc<str>, Arc<str>>| {
-        if bindings.remove(name).is_none() {
-          let original_name = reverse_bindings.get(name).unwrap();
+        if let Some(original_name) = reverse_bindings.get(name) {
           bindings.get_mut(original_name).unwrap().pop();
         }
       };
