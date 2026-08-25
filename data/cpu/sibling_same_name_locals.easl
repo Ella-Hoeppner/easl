@@ -1,0 +1,29 @@
+; Two sibling `let` scopes binding the same name, each captured by a
+; closure and passed to a plain-`@ref` helper, combined through nested
+; applications. Pins function-wide local-name uniqueness in deshadowing:
+; sibling reuse (not just shadowing) must rename, because
+; deexpressionification hoists lets out of argument position — merging
+; formerly-sibling scopes — and its name-keyed argument-order snapshot
+; then conflates same-named distinct variables (previously a compiler
+; panic: "variable not found in local context"). The golden also proves
+; the two arrays stay independent.
+@associative
+(defn + [a: (Fn [] f32)
+         b: (Fn [] f32)]: (Fn [] f32)
+  (fn [] (+ (a) (b))))
+
+(defn total [@ref arr: [f32]]: f32
+  (+ (arr 0u) (arr 1u)))
+
+@cpu
+(defn main []
+  (let [f (+ (fn [] 0.5)
+             (let [@var xs: [f32] (zeroed-array 2)]
+               (= (xs 0u) 1.)
+               (= (xs 1u) 2.)
+               (fn [] (total xs)))
+             (let [@var xs: [f32] (zeroed-array 2)]
+               (= (xs 0u) 10.)
+               (= (xs 1u) 20.)
+               (fn [] (total xs))))]
+    (print (f))))
