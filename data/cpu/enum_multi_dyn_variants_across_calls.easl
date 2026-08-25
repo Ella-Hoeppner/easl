@@ -1,0 +1,41 @@
+; KNOWN-FAILING (bytecode VM): an enum with three variants, two carrying
+; runtime-sized payloads — the copy dispatch must select each variant's
+; own fixups (and the unit variant's none-at-all branch). Today's
+; whole-enum borrow copies alias each variant's payload with the last
+; value its construction site produced: `a` borrows the Ints site, which
+; `d`'s construction re-executes, so `a` reads d's length.
+(enum Chunk
+  (Ints [u32])
+  (Floats [f32])
+  Empty)
+
+(defn make [kind: u32
+            n: u32]: Chunk
+  (if (== kind 0u)
+    (Ints (zeroed-array n))
+    (if (== kind 1u)
+      (Floats (zeroed-array n))
+      Empty)))
+
+@cpu
+(defn main []
+  (let [a (make 0u 3u)
+        b (make 1u 2u)
+        c (make 2u 0u)
+        d (make 0u 5u)]
+    (match a
+      (Ints xs) (print (array-length xs))
+      (Floats xs) (print (array-length xs))
+      Empty (print 999u))
+    (match b
+      (Ints xs) (print (array-length xs))
+      (Floats xs) (print (array-length xs))
+      Empty (print 999u))
+    (match c
+      (Ints xs) (print (array-length xs))
+      (Floats xs) (print (array-length xs))
+      Empty (print 999u))
+    (match d
+      (Ints xs) (print (array-length xs))
+      (Floats xs) (print (array-length xs))
+      Empty (print 999u))))

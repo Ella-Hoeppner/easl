@@ -1,0 +1,29 @@
+; KNOWN-FAILING (bytecode VM): a heap-payload enum passed as an *owned*
+; arg to a ref-arg function — the copy travels through the pending-ref
+; placeholder machinery (pre-emitted groups whose destinations are
+; patched at per-usage resolution), which the enum dispatch must survive:
+; the group's shape is static but its jump-bearing fixup branches need
+; destination-relative operand patching. Today the placeholder copy is a
+; plain Move, so `a`'s payload id — a borrow of `wrap`'s construction
+; site, freed and reused by the second `wrap` call — reads the wrong
+; buffer inside `stash`.
+(enum (Option T)
+  (Some T)
+  None)
+
+(defn wrap [n: u32]: (Option [f32])
+  (Some (zeroed-array n)))
+
+(defn stash [@var @ref target: [f32]
+             item: (Option [f32])]: f32
+  (match item
+    (Some arr) (= (target 0u) (f32 (array-length arr)))
+    None (= (target 0u) 0.))
+  (target 0u))
+
+@cpu
+(defn main []
+  (let [@var out (into-dynamic-array [0.])
+        a (wrap 3u)]
+    (print (stash out (wrap 2u)))
+    (print (stash out a))))

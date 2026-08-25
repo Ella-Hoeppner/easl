@@ -1,0 +1,31 @@
+; KNOWN-FAILING (bytecode VM): an enum nested inside another enum's
+; variant, the inner one carrying the runtime-sized payload — the outer
+; variant's fixups must contain the inner enum's own dispatch (a nested
+; conditional region), the depth case of the recursion scheme. Today the
+; doubly-embedded payload id borrows the constructor's site and aliases
+; the second call's buffer.
+(enum (Option T)
+  (Some T)
+  None)
+
+(enum Outer
+  (Wrapped (Option [f32]))
+  Bare)
+
+(defn make [n: u32]: Outer
+  (Wrapped (Some (zeroed-array n))))
+
+@cpu
+(defn main []
+  (let [a (make 3u)
+        b (make 2u)]
+    (match a
+      (Wrapped o) (match o
+                    (Some arr) (print (array-length arr))
+                    None (print 0u))
+      Bare (print 999u))
+    (match b
+      (Wrapped o) (match o
+                    (Some arr) (print (array-length arr))
+                    None (print 0u))
+      Bare (print 999u))))

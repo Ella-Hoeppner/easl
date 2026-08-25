@@ -1,0 +1,23 @@
+; A payload extracted from a match arm and kept past the constructor's
+; next call. This already works — an extracted payload has the bare
+; runtime-sized array type, and whole-heap-typed values have copied via
+; `HeapCopy` (owned shares) since Arc-MM v1 — so this is a regression
+; guard for the enum copy-dispatch work: extraction must keep its static
+; (variant-known, dispatch-free) promotion behavior.
+(enum (Option T)
+  (Some T)
+  None)
+
+(defn make [n: u32]: (Option [f32])
+  (Some (zeroed-array n)))
+
+@cpu
+(defn main []
+  (let [first-arr (match (make 3u)
+                    (Some arr) arr
+                    None (into-dynamic-array [0.]))]
+    (let [second (make 2u)]
+      (print (array-length first-arr))
+      (match second
+        (Some arr) (print (array-length arr))
+        None (print 0u)))))

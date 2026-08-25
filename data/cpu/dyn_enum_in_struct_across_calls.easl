@@ -1,0 +1,28 @@
+; KNOWN-FAILING (bytecode VM): a heap-payload enum nested inside a struct
+; field — the copy plan's enum region sits at a nonzero offset within the
+; struct (id: f32 at 0, discriminant at 1, payload id at 2), exercising
+; base-offset recursion. Today the struct's bulk-Move copy leaves the
+; embedded payload id a borrow of the constructor's site, so `a` aliases
+; `b`'s buffer after the second call.
+(enum (Option T)
+  (Some T)
+  None)
+
+(struct Slot
+  id: f32
+  data: (Option [f32]))
+
+(defn make-slot [n: u32]: Slot
+  (Slot (f32 n) (Some (zeroed-array n))))
+
+@cpu
+(defn main []
+  (let [a (make-slot 3u)
+        b (make-slot 2u)]
+    (print a.id)
+    (match a.data
+      (Some arr) (print (array-length arr))
+      None (print 0u))
+    (match b.data
+      (Some arr) (print (array-length arr))
+      None (print 0u))))

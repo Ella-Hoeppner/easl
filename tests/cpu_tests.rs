@@ -166,8 +166,18 @@ cpu_test!(dyn_field_struct_across_calls);
 cpu_test!(closure_dyn_capture_across_calls);
 // KNOWN-FAILING: whole-enum copies of heap payloads keep v1 borrow
 // semantics — payload offsets depend on the runtime discriminant, so
-// they can't be statically promoted (see the .easl header).
+// they can't be statically promoted; the planned fix is per-variant
+// fixup dispatch on the discriminant (release side keyed on the
+// destination's old discriminant, promote side on the source's). Each
+// pin below covers one face of that machinery — see the .easl headers.
 cpu_test!(enum_dyn_payload_across_calls);
+cpu_test!(enum_dyn_payload_transitions);
+cpu_test!(enum_multi_dyn_variants_across_calls);
+cpu_test!(dyn_enum_in_struct_across_calls);
+cpu_test!(dyn_struct_in_enum_variant_across_calls);
+cpu_test!(dyn_enum_in_enum_across_calls);
+cpu_test!(dyn_enum_ref_fn_arg);
+cpu_test!(dyn_enum_payload_extraction_outlives);
 cpu_test!(closure_seeded_capture_read);
 cpu_test!(ref_dyn_array_arg);
 cpu_test!(dyn_array_arg_scalar_return);
