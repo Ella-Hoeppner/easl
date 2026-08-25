@@ -18,8 +18,8 @@ use crate::parse::EaslMultiDocument;
 use crate::thread_sync::participant;
 use crate::vm::bytecode::{BytecodeProgram, Instruction, Op};
 use crate::vm::compile::{
-  BytecodeCompilationState, PendingFrameFnUsage, PendingRefFnUsage,
-  RefArgBinding, vm_type_size,
+  BytecodeCompilationState, HeapCopyPlan, PendingFrameFnUsage,
+  PendingRefFnUsage, RefArgBinding, vm_type_size,
 };
 use crate::{
   Never,
@@ -7341,15 +7341,26 @@ impl Program {
           }
           f.compile_to_bytecode(&name, &mut state, &ref_arg_positions);
           let bytecode_fn = state.finished_functions.last().unwrap();
-          for (owned_arg_index, move_position) in arg_move_positions {
-            let move_instruction =
-              &mut state.instructions[move_position as usize];
-            move_instruction.arg_positions[0] =
-              arg_positions[owned_arg_index].owned_slot();
-            move_instruction.arg_positions[1] =
-              bytecode_fn.arg_sizes[owned_arg_index];
-            move_instruction.return_position =
-              bytecode_fn.arg_positions[owned_arg_index];
+          for (owned_arg_index, start_position, plan) in arg_move_positions {
+            // The group's sources and sizes were filled at emission; only
+            // the destinations depend on the specialized function's arg
+            // slots, patched here per the plan's layout.
+            let dest = bytecode_fn.arg_positions[owned_arg_index];
+            let start = start_position as usize;
+            match plan {
+              HeapCopyPlan::Flat | HeapCopyPlan::WholeHeap => {
+                state.instructions[start].return_position = dest;
+              }
+              HeapCopyPlan::Fixups(offsets) => {
+                let fixup_count = offsets.len();
+                for (k, offset) in offsets.iter().enumerate() {
+                  state.instructions[start + k].return_position = dest + offset;
+                  state.instructions[start + fixup_count + 1 + k]
+                    .return_position = dest + offset;
+                }
+                state.instructions[start + fixup_count].return_position = dest;
+              }
+            }
           }
           state.instructions[return_move_position as usize].arg_positions[0] =
             bytecode_fn.stack_frame_start;

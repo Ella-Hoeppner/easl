@@ -1,0 +1,23 @@
+; KNOWN-FAILING (tree-walker): an element write to a local runtime-sized
+; array, performed before a closure captures it, must be visible through
+; the capture. The tree-walker loses the write — but only when the
+; closure both mutates another captured variable and element-indexes the
+; array with it (either alone works; see the probes in this test's
+; originating session). The VM runtime is correct, and its output is the
+; golden: three zeroed reads, then the seeded 10. at index 0.
+(defn make-reader [n: u32
+                   v: f32]: (Fn [] f32)
+  (let [@var buf (zeroed-array n): [f32]
+        @var idx 0u]
+    (= (buf 0u) v)
+    (fn []
+        (= idx (% (+ idx 1u) n))
+        (buf idx))))
+
+@cpu
+(defn main []
+  (let [c (make-reader 4u 10.)]
+    (print (c))
+    (print (c))
+    (print (c))
+    (print (c))))

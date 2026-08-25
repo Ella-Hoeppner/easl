@@ -67,11 +67,14 @@ impl RefArgBinding {
 pub struct PendingRefFnUsage {
   pub name: Arc<str>,
   pub fn_dispatch_position: u32,
-  /// `(arg index, instruction position)` of the placeholder copy emitted
-  /// for each *owned* arg — ref args get no placeholder at all (they
-  /// aren't copied at the call boundary; the per-usage specialization
-  /// binds them directly to the caller's storage).
-  pub arg_move_positions: Vec<(usize, u32)>,
+  /// `(arg index, first instruction position, copy plan)` of the
+  /// placeholder copy group emitted for each *owned* arg — ref args get
+  /// no placeholders at all (they aren't copied at the call boundary; the
+  /// per-usage specialization binds them directly to the caller's
+  /// storage). The group's source slots and sizes are filled at emission;
+  /// resolution patches only the destination positions, laid out per the
+  /// plan (`Fixups`: n releases, the move, n promotes, consecutively).
+  pub arg_move_positions: Vec<(usize, u32, HeapCopyPlan)>,
   pub return_move_position: u32,
   pub arg_positions: Vec<RefArgBinding>,
 }
@@ -220,6 +223,53 @@ impl BytecodeCompilationState {
   }
   pub fn push_instruction(&mut self, instruction: Instruction) {
     self.instructions.push(instruction);
+  }
+  /// Emits an ownership-correct copy of a `t`-typed value from `src` to
+  /// `dest` (see `HeapCopyPlan`). Flat values cost the same single `Move`
+  /// as always; aggregates with embedded heap ids additionally release
+  /// the destination's old ids before the move and promote the copied
+  /// (borrowed) ids to owned shares after it — O(1) per heap field.
+  pub fn emit_value_copy(&mut self, src: u16, size: u16, dest: u16, t: &Type) {
+    if size == 0 {
+      return;
+    }
+    match HeapCopyPlan::for_type(t) {
+      HeapCopyPlan::WholeHeap => {
+        self.push_instruction(Instruction {
+          op: Op::HeapCopy,
+          arg_positions: [src, 0, 0],
+          return_position: dest,
+        });
+      }
+      HeapCopyPlan::Flat => {
+        self.push_instruction(Instruction {
+          op: Op::Move,
+          arg_positions: [src, size, 0],
+          return_position: dest,
+        });
+      }
+      HeapCopyPlan::Fixups(offsets) => {
+        for offset in offsets.iter() {
+          self.push_instruction(Instruction {
+            op: Op::HeapRelease,
+            arg_positions: [0, 0, 0],
+            return_position: dest + offset,
+          });
+        }
+        self.push_instruction(Instruction {
+          op: Op::Move,
+          arg_positions: [src, size, 0],
+          return_position: dest,
+        });
+        for offset in offsets {
+          self.push_instruction(Instruction {
+            op: Op::HeapPromote,
+            arg_positions: [0, 0, 0],
+            return_position: dest + offset,
+          });
+        }
+      }
+    }
   }
 
   // --- Basic emit helpers ---
@@ -1156,11 +1206,12 @@ impl BytecodeCompilationState {
           });
         } else {
           let arg_size = vm_type_size(&arg_types[0]);
-          self.push_instruction(Instruction {
-            op: Op::Move,
-            arg_positions: [arg_positions[1], arg_size, 0],
-            return_position: arg_positions[0],
-          });
+          self.emit_value_copy(
+            arg_positions[1],
+            arg_size,
+            arg_positions[0],
+            &arg_types[0],
+          );
         }
         None
       }
@@ -2182,11 +2233,132 @@ fn is_heap_value_type(t: &Type) -> bool {
   )
 }
 
-fn copy_op_for(t: &Type) -> Op {
+/// How a value of a given type must be copied between stack locations to
+/// preserve heap-id ownership (see "First-class runtime-sized arrays" —
+/// a plain `Move` of an id word is a borrow of the source's allocation
+/// site, which dangles when that site re-executes).
+pub enum HeapCopyPlan {
+  /// No heap ids anywhere: one bulk `Move`.
+  Flat,
+  /// The value *is* a single heap id: one `HeapCopy`.
+  WholeHeap,
+  /// An aggregate with heap ids embedded at these offsets: a `HeapRelease`
+  /// per offset (freeing the destination's previous owned ids), one bulk
+  /// `Move`, then a `HeapPromote` per offset (replacing the borrowed ids
+  /// with owned shares).
+  Fixups(Vec<u16>),
+}
+
+impl HeapCopyPlan {
+  pub fn for_type(t: &Type) -> Self {
+    if is_heap_value_type(t) {
+      return HeapCopyPlan::WholeHeap;
+    }
+    let mut offsets = vec![];
+    heap_field_offsets(t, 0, &mut offsets);
+    if offsets.is_empty() {
+      HeapCopyPlan::Flat
+    } else {
+      HeapCopyPlan::Fixups(offsets)
+    }
+  }
+  /// Number of instructions the plan emits.
+  pub fn instruction_count(&self) -> usize {
+    match self {
+      HeapCopyPlan::Flat | HeapCopyPlan::WholeHeap => 1,
+      HeapCopyPlan::Fixups(offsets) => 2 * offsets.len() + 1,
+    }
+  }
+}
+
+/// Whether a value of this type contains any heap-id words (directly, or
+/// embedded in struct fields, captured closure scopes, or fixed-array
+/// elements). Total on abstract types — a skolem contains no heap values
+/// and must not be sized. Enums are deliberately `false`, matching
+/// `heap_field_offsets`' whole-enum punt.
+fn involves_heap_values(t: &Type) -> bool {
   if is_heap_value_type(t) {
-    Op::HeapCopy
-  } else {
-    Op::Move
+    return true;
+  }
+  match t {
+    Type::Struct(s) => s
+      .fields
+      .iter()
+      .any(|field| involves_heap_values(&field.field_type.unwrap_known())),
+    Type::Function(f) => {
+      if let Some(ancestor) = &f.abstract_ancestor
+        && let Some(scope) = &ancestor.read().unwrap().captured_scope
+      {
+        scope.fields.iter().any(|field| match &field.field_type {
+          crate::compiler::types::AbstractType::Type(field_type) => {
+            involves_heap_values(field_type)
+          }
+          _ => false,
+        })
+      } else {
+        false
+      }
+    }
+    Type::Array(_, inner) => involves_heap_values(&inner.unwrap_known()),
+    _ => false,
+  }
+}
+
+/// Collects the offsets of embedded heap-id words within a value's flat
+/// slot layout. Whole-enum values are deliberately excluded: an enum's
+/// payload offsets depend on the runtime discriminant, so they can't be
+/// statically fixed up — whole-enum copies of heap payloads keep the v1
+/// borrow semantics (pinned by `enum_dyn_payload_across_calls`; enum
+/// *construction* is safe, since the variant is known there).
+fn heap_field_offsets(t: &Type, base: u16, out: &mut Vec<u16>) {
+  // Pre-check that also keeps this walk total: types with no heap values
+  // contribute no offsets and need no size computation. Sizing must not
+  // be attempted unconditionally because abstract types (skolems) can
+  // still appear in stale signature views — copy plans are derived from
+  // argument/return *expression* types, which are fully resolved, so an
+  // abstract type reaching this walk is one with nothing to promote.
+  if !involves_heap_values(t) {
+    return;
+  }
+  if is_heap_value_type(t) {
+    out.push(base);
+    return;
+  }
+  match t {
+    Type::Struct(s) => {
+      let mut offset = base;
+      for field in s.fields.iter() {
+        let field_type = field.field_type.unwrap_known();
+        heap_field_offsets(&field_type, offset, out);
+        offset += vm_type_size(&field_type);
+      }
+    }
+    Type::Function(f) => {
+      if let Some(ancestor) = &f.abstract_ancestor
+        && let Some(scope) = &ancestor.read().unwrap().captured_scope
+      {
+        let mut offset = base;
+        for field in scope.fields.iter() {
+          let crate::compiler::types::AbstractType::Type(field_type) =
+            &field.field_type
+          else {
+            panic!("captured scope field with non-concrete type")
+          };
+          heap_field_offsets(field_type, offset, out);
+          offset += vm_type_size(field_type);
+        }
+      }
+    }
+    Type::Array(Some(size), inner) => {
+      if let Some(count) = size.as_literal() {
+        let inner = inner.unwrap_known();
+        let stride = vm_type_size(&inner);
+        for i in 0..count as u16 {
+          heap_field_offsets(&inner, base + i * stride, out);
+        }
+      }
+    }
+    _ => {}
   }
 }
 
@@ -3050,14 +3222,9 @@ impl TypedExp {
           let mut offset = 0u16;
           for arg in args {
             let arg_pos = arg.compile_to_bytecode(false, state).unwrap();
-            let size = vm_type_size(&arg.data.unwrap_known());
-            if size > 0 {
-              state.push_instruction(Instruction {
-                op: Op::Move,
-                arg_positions: [arg_pos, size, 0],
-                return_position: result + offset,
-              });
-            }
+            let arg_type = arg.data.unwrap_known();
+            let size = vm_type_size(&arg_type);
+            state.emit_value_copy(arg_pos, size, result + offset, &arg_type);
             offset += size;
           }
           if let Some(writes) = &cpu_write_marks {
@@ -3130,12 +3297,14 @@ impl TypedExp {
             let mut offset = 0u16;
             for arg in args {
               let arg_pos = arg.compile_to_bytecode(false, state).unwrap();
-              let arg_size = vm_type_size(&arg.data.unwrap_known());
-              state.push_instruction(Instruction {
-                op: Op::Move,
-                arg_positions: [arg_pos, arg_size, 0],
-                return_position: struct_slot_pos + offset,
-              });
+              let arg_type = arg.data.unwrap_known();
+              let arg_size = vm_type_size(&arg_type);
+              state.emit_value_copy(
+                arg_pos,
+                arg_size,
+                struct_slot_pos + offset,
+                &arg_type,
+              );
               offset += arg_size;
             }
             Some(struct_slot_pos)
@@ -3169,12 +3338,14 @@ impl TypedExp {
             });
             let mut offset = 1u16;
             for (arg_i, arg) in args.iter().enumerate() {
-              let arg_size = vm_type_size(&arg.data.unwrap_known());
-              state.push_instruction(Instruction {
-                op: Op::Move,
-                arg_positions: [arg_positions[arg_i], arg_size, 0],
-                return_position: result + offset,
-              });
+              let arg_type = arg.data.unwrap_known();
+              let arg_size = vm_type_size(&arg_type);
+              state.emit_value_copy(
+                arg_positions[arg_i],
+                arg_size,
+                result + offset,
+                &arg_type,
+              );
               offset += arg_size;
             }
             Some(result)
@@ -3189,22 +3360,65 @@ impl TypedExp {
               .is_some()
             {
               let mut arg_move_positions = vec![];
-              for (arg_index, arg_type) in arg_types.iter().enumerate() {
-                // Only owned args get a call-boundary copy (patched during
-                // per-usage resolution); ref args bind directly to the
-                // caller's slots, and an unpatched placeholder for one
-                // would survive as a garbage copy — for a heap-typed arg,
-                // a `HeapCopy` dereferencing slot 0 as a heap id.
+              for arg_index in 0..arg_types.len() {
+                // Only owned args get a call-boundary copy group (its
+                // destinations patched during per-usage resolution); ref
+                // args bind directly to the caller's slots, and an
+                // unpatched placeholder for one would survive as a
+                // garbage copy — for a heap-typed arg, a `HeapCopy`
+                // dereferencing slot 0 as a heap id.
                 if f.args[arg_index].0.var_type.ownership != Ownership::Owned {
                   continue;
                 }
-                arg_move_positions
-                  .push((arg_index, state.instructions.len() as u32));
-                state.push_instruction(Instruction {
-                  op: copy_op_for(arg_type),
-                  arg_positions: [0, 0, 0],
-                  return_position: 0,
-                });
+                let src = arg_positions[arg_index];
+                // As in the non-ref path: plan from the argument
+                // expression's own (fully resolved) type, not the
+                // signature view.
+                let arg_expression_type = args[arg_index].data.unwrap_known();
+                let size = vm_type_size(&arg_expression_type);
+                let plan = HeapCopyPlan::for_type(&arg_expression_type);
+                arg_move_positions.push((
+                  arg_index,
+                  state.instructions.len() as u32,
+                  HeapCopyPlan::for_type(&arg_expression_type),
+                ));
+                match &plan {
+                  HeapCopyPlan::WholeHeap => {
+                    state.push_instruction(Instruction {
+                      op: Op::HeapCopy,
+                      arg_positions: [src, 0, 0],
+                      return_position: 0,
+                    });
+                  }
+                  HeapCopyPlan::Flat => {
+                    state.push_instruction(Instruction {
+                      op: Op::Move,
+                      arg_positions: [src, size, 0],
+                      return_position: 0,
+                    });
+                  }
+                  HeapCopyPlan::Fixups(offsets) => {
+                    for _ in offsets.iter() {
+                      state.push_instruction(Instruction {
+                        op: Op::HeapRelease,
+                        arg_positions: [0, 0, 0],
+                        return_position: 0,
+                      });
+                    }
+                    state.push_instruction(Instruction {
+                      op: Op::Move,
+                      arg_positions: [src, size, 0],
+                      return_position: 0,
+                    });
+                    for _ in offsets.iter() {
+                      state.push_instruction(Instruction {
+                        op: Op::HeapPromote,
+                        arg_positions: [0, 0, 0],
+                        return_position: 0,
+                      });
+                    }
+                  }
+                }
               }
               let fn_dispatch_position = state.instructions.len() as u32;
               state.push_instruction(Instruction {
@@ -3212,12 +3426,38 @@ impl TypedExp {
                 arg_positions: [0, 0, 0],
                 return_position: 0,
               });
+              // The return copy's destination and plan are known here;
+              // only the source (the callee's frame start) waits for
+              // resolution, so the releases and promotes are emitted
+              // final and just the middle instruction gets patched.
+              let return_plan = HeapCopyPlan::for_type(&return_type);
+              if let HeapCopyPlan::Fixups(offsets) = &return_plan {
+                for offset in offsets.iter() {
+                  state.push_instruction(Instruction {
+                    op: Op::HeapRelease,
+                    arg_positions: [0, 0, 0],
+                    return_position: result_position + offset,
+                  });
+                }
+              }
               let return_move_position = state.instructions.len() as u32;
               state.push_instruction(Instruction {
-                op: copy_op_for(&return_type),
+                op: match &return_plan {
+                  HeapCopyPlan::WholeHeap => Op::HeapCopy,
+                  _ => Op::Move,
+                },
                 arg_positions: [0, return_size, 0],
                 return_position: result_position,
               });
+              if let HeapCopyPlan::Fixups(offsets) = &return_plan {
+                for offset in offsets.iter() {
+                  state.push_instruction(Instruction {
+                    op: Op::HeapPromote,
+                    arg_positions: [0, 0, 0],
+                    return_position: result_position + offset,
+                  });
+                }
+              }
               state
                 .pending_ref_arg_function_usages
                 .push(PendingRefFnUsage {
@@ -3238,8 +3478,8 @@ impl TypedExp {
                 })
                 .unwrap();
 
-              for ((arg_pos, arg_type), (fn_arg_pos, arg_size)) in
-                arg_positions.iter().copied().zip(arg_types.iter()).zip(
+              for ((arg_pos, arg), (fn_arg_pos, arg_size)) in
+                arg_positions.iter().copied().zip(args.iter()).zip(
                   bytecode_fn
                     .arg_positions
                     .iter()
@@ -3247,22 +3487,29 @@ impl TypedExp {
                     .zip(bytecode_fn.arg_sizes.iter().copied()),
                 )
               {
-                state.push_instruction(Instruction {
-                  op: copy_op_for(arg_type),
-                  arg_positions: [arg_pos, arg_size, 0],
-                  return_position: fn_arg_pos,
-                });
+                // The argument expression's own type, not the signature
+                // view: like the return type above, it's always at least
+                // as resolved (a const-generic callee's signature view can
+                // retain unsubstituted skolems, which would hide heap
+                // fields from the copy plan).
+                state.emit_value_copy(
+                  arg_pos,
+                  arg_size,
+                  fn_arg_pos,
+                  &arg.data.unwrap_known(),
+                );
               }
               state.push_instruction(Instruction {
                 op: Op::InvokeFunction,
                 arg_positions: [fn_index, 0, 0],
                 return_position: 0,
               });
-              state.push_instruction(Instruction {
-                op: copy_op_for(&return_type),
-                arg_positions: [bytecode_fn.stack_frame_start, return_size, 0],
-                return_position: result_position,
-              });
+              state.emit_value_copy(
+                bytecode_fn.stack_frame_start,
+                return_size,
+                result_position,
+                &return_type,
+              );
               Some(result_position)
             }
           }
@@ -3406,16 +3653,7 @@ impl TypedExp {
               // other initializer's result slot is owned by this
               // binding alone, so aliasing it is safe.)
               let slot = state.take_stack_slot(size);
-              let op = copy_op_for(&t);
-              state.push_instruction(Instruction {
-                op,
-                arg_positions: [
-                  value_pos,
-                  if op == Op::Move { size } else { 0 },
-                  0,
-                ],
-                return_position: slot,
-              });
+              state.emit_value_copy(value_pos, size, slot, &t);
               state.locals.insert(name.clone(), slot);
             } else {
               state.locals.insert(name.clone(), value_pos);

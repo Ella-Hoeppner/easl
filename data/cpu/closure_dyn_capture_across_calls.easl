@@ -1,0 +1,26 @@
+; The closure-scope variant of embedded-heap-id promotion (the sibling of
+; dyn_field_struct_across_calls): two calls of a constructor whose
+; closure captures a locally-allocated runtime-sized array. Scope
+; construction must give the scope an owned share of the array's cell
+; (`HeapCopy`/`HeapPromote`, see `HeapCopyPlan`) rather than a borrowed
+; id — a borrow dangles when the second call's allocation site releases
+; and reuses it, making every instance alias the last-constructed buffer
+; (the original freeverb-in-easl crash: eight combs and four allpasses
+; all sharing one buffer). The golden's lengths (4s from `a`, 2 from `b`)
+; prove each closure reads its own buffer.
+(defn make-reader [n: u32]: (Fn [] f32)
+  (let [@var buf (zeroed-array n): [f32]
+        @var idx 0u]
+    (fn []
+        (= idx (% (+ idx 1u) n))
+        (+ (f32 (array-length buf))
+           (buf idx)))))
+
+@cpu
+(defn main []
+  (let [a (make-reader 4u)
+        b (make-reader 2u)]
+    (print (a))
+    (print (a))
+    (print (a))
+    (print (b))))

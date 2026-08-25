@@ -158,13 +158,20 @@ cpu_test!(disambiguated_into_overload);
 cpu_test!(audio_closure_entry);
 cpu_test!(audio_closure_entry_hofs);
 cpu_test!(cpu_only_bool_var);
-// Pins the Arc-MM v1 ownership gap: a struct holding a runtime-sized
-// field, kept across a second call of its constructor, silently aliases
-// the new call's array on the VM runtime (the embedded heap id is a
-// borrow of the allocation site, which drop-on-overwrite frees and
-// reuses). The tree-walker passes. Should pass once embedded heap ids are
-// promoted to owned copies (or the v2 liveness-based reclamation lands).
+// The embedded-heap-id promotion pins: aggregates (structs, closure
+// scopes) carrying runtime-sized fields across constructions and call
+// boundaries, where the ids must be owned shares rather than borrows of
+// the allocation site (see `HeapCopyPlan`).
 cpu_test!(dyn_field_struct_across_calls);
+cpu_test!(closure_dyn_capture_across_calls);
+// KNOWN-FAILING: whole-enum copies of heap payloads keep v1 borrow
+// semantics — payload offsets depend on the runtime discriminant, so
+// they can't be statically promoted (see the .easl header).
+cpu_test!(enum_dyn_payload_across_calls);
+// KNOWN-FAILING: tree-walker loses a pre-capture element write when the
+// closure mutates a captured index var and element-reads with it (the VM
+// is correct; found while building the pin above).
+cpu_test!(closure_seeded_capture_read);
 cpu_test!(ref_dyn_array_arg);
 cpu_test!(dyn_array_arg_scalar_return);
 cpu_test!(hof_shared_specialization);

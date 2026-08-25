@@ -209,6 +209,20 @@ pub enum Op {
   /// Fresh id sharing `src`'s payload (value-semantics copy; O(1)):
   /// args [src_id_slot, _, _] → dest id slot
   HeapCopy,
+  /// Frees the cell owned by the heap id in the slot (if any) and zeroes
+  /// the slot. Emitted before a bulk `Move` copies an aggregate over a
+  /// destination whose embedded heap-field slots hold the previous
+  /// execution's owned ids — the Move would otherwise clobber them
+  /// without release: args [_, _, _] → slot
+  HeapRelease,
+  /// Promotes a *borrowed* heap id, in place: replaces the id in the slot
+  /// with a fresh id sharing the same payload (O(1) Arc clone). No
+  /// release — the old id in the slot belongs to the copy's source, which
+  /// still owns it. Emitted after a bulk `Move` of an aggregate with
+  /// embedded heap fields, so the destination owns its ids rather than
+  /// borrowing the source's (which dangle when the source site
+  /// re-executes): args [_, _, _] → slot
+  HeapPromote,
   /// Deep-copies a dynamic *global*'s region into a fresh cell: args
   /// [region, stride, _] → dest id slot
   HeapFromRegion,
@@ -406,6 +420,7 @@ impl Instruction {
       Op::HeapLen | Op::HeapCopy => {
         self.return_position.max(self.arg_positions[0])
       }
+      Op::HeapRelease | Op::HeapPromote => self.return_position,
       Op::HeapLoad => {
         // dest spans stride (arg 2) slots
         (self.return_position + self.arg_positions[2].saturating_sub(1))
@@ -1754,6 +1769,18 @@ impl BytecodeProgram {
             .map(std::sync::Arc::clone);
           release_cell!(instruction.return_position);
           stack[instruction.return_position as usize] = match src {
+            Some(cell) => alloc_cell!(cell),
+            None => 0,
+          };
+        }
+        Op::HeapRelease => {
+          release_cell!(instruction.return_position);
+          stack[instruction.return_position as usize] = 0;
+        }
+        Op::HeapPromote => {
+          let shared =
+            deref_cell!(instruction.return_position).map(std::sync::Arc::clone);
+          stack[instruction.return_position as usize] = match shared {
             Some(cell) => alloc_cell!(cell),
             None => 0,
           };

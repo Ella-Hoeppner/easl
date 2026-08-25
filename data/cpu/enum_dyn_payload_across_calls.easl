@@ -1,0 +1,26 @@
+; KNOWN-FAILING (bytecode VM): whole-enum copies of heap payloads. Enum
+; *construction* promotes its payload's heap id (the variant is known
+; statically), but a whole-enum value crossing a call boundary is copied
+; with a plain bulk Move — the payload offsets depend on the runtime
+; discriminant, so `HeapCopyPlan` can't statically place the promotes —
+; leaving the caller's payload id a borrow of the callee's enum region.
+; The second `make` call releases and reuses it, so `a`'s payload aliases
+; `b`'s shorter array. The tree-walker passes. Fixable with a
+; discriminant-aware promote op (or v2 liveness-based reclamation).
+(enum (Option T)
+  (Some T)
+  None)
+
+(defn make [n: u32]: (Option [f32])
+  (Some (zeroed-array n)))
+
+@cpu
+(defn main []
+  (let [a (make 4u)
+        b (make 2u)]
+    (match a
+      (Some arr) (print (array-length arr))
+      None (print 0u))
+    (match b
+      (Some arr) (print (array-length arr))
+      None (print 0u))))
