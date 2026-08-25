@@ -1,9 +1,7 @@
-; KNOWN-FAILING (bytecode VM): a heap-payload enum nested inside a struct
-; field — the copy plan's enum region sits at a nonzero offset within the
-; struct (id: f32 at 0, discriminant at 1, payload id at 2), exercising
-; base-offset recursion. Today the struct's bulk-Move copy leaves the
-; embedded payload id a borrow of the constructor's site, so `a` aliases
-; `b`'s buffer after the second call.
+; A heap-payload enum nested inside a struct field (bytecode VM) — the
+; copy plan's enum region sits at a nonzero offset within the struct
+; (id: f32 at 0, discriminant at 1, payload id at 2), exercising
+; base-offset recursion in `collect_heap_fixups`.
 (enum (Option T)
   (Some T)
   None)

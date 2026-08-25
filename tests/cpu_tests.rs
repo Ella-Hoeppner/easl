@@ -164,12 +164,12 @@ cpu_test!(cpu_only_bool_var);
 // the allocation site (see `HeapCopyPlan`).
 cpu_test!(dyn_field_struct_across_calls);
 cpu_test!(closure_dyn_capture_across_calls);
-// KNOWN-FAILING: whole-enum copies of heap payloads keep v1 borrow
-// semantics — payload offsets depend on the runtime discriminant, so
-// they can't be statically promoted; the planned fix is per-variant
-// fixup dispatch on the discriminant (release side keyed on the
-// destination's old discriminant, promote side on the source's). Each
-// pin below covers one face of that machinery — see the .easl headers.
+// Whole-enum copies of heap payloads: payload offsets depend on the
+// runtime discriminant, so the release/promote fixups are emitted as a
+// per-variant compare-and-skip dispatch (release side keyed on the
+// destination's old discriminant, promote side on the copied value's —
+// `emit_heap_fixups` in vm/compile.rs). Each pin below covers one face
+// of that machinery — see the .easl headers.
 cpu_test!(enum_dyn_payload_across_calls);
 cpu_test!(enum_dyn_payload_transitions);
 cpu_test!(enum_multi_dyn_variants_across_calls);

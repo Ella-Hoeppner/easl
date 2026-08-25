@@ -18,8 +18,8 @@ use crate::parse::EaslMultiDocument;
 use crate::thread_sync::participant;
 use crate::vm::bytecode::{BytecodeProgram, Instruction, Op};
 use crate::vm::compile::{
-  BytecodeCompilationState, HeapCopyPlan, PendingFrameFnUsage,
-  PendingRefFnUsage, RefArgBinding, vm_type_size,
+  BytecodeCompilationState, PendingFrameFnUsage, PendingRefFnUsage,
+  RefArgBinding, vm_type_size,
 };
 use crate::{
   Never,
@@ -7502,26 +7502,12 @@ impl Program {
           }
           f.compile_to_bytecode(&name, &mut state, &ref_arg_positions);
           let bytecode_fn = state.finished_functions.last().unwrap();
-          for (owned_arg_index, start_position, plan) in arg_move_positions {
-            // The group's sources and sizes were filled at emission; only
-            // the destinations depend on the specialized function's arg
-            // slots, patched here per the plan's layout.
+          for (owned_arg_index, copy_group) in arg_move_positions {
+            // The group's sources, sizes, and jump targets were filled at
+            // emission; only the destination-relative operands it recorded
+            // depend on the specialized function's arg slots.
             let dest = bytecode_fn.arg_positions[owned_arg_index];
-            let start = start_position as usize;
-            match plan {
-              HeapCopyPlan::Flat | HeapCopyPlan::WholeHeap => {
-                state.instructions[start].return_position = dest;
-              }
-              HeapCopyPlan::Fixups(offsets) => {
-                let fixup_count = offsets.len();
-                for (k, offset) in offsets.iter().enumerate() {
-                  state.instructions[start + k].return_position = dest + offset;
-                  state.instructions[start + fixup_count + 1 + k]
-                    .return_position = dest + offset;
-                }
-                state.instructions[start + fixup_count].return_position = dest;
-              }
-            }
+            copy_group.apply(&mut state.instructions, dest);
           }
           state.instructions[return_move_position as usize].arg_positions[0] =
             bytecode_fn.stack_frame_start;

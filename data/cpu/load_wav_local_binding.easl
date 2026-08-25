@@ -1,9 +1,9 @@
-; KNOWN-FAILING (VM-compile panic): `load-wav` bound to a LOCAL rather
-; than assigned to a dynamic global. The VM's cpu-mode lowering only
-; matches the whole-global-assignment pattern (`HostOp::AssignDynFromWav`
-; writes into a global's dyn region), so a value-position call falls
-; through to the generic builtin compiler's todo!(). The tree-walker
-; handles it fine.
+; `load-wav` bound to a LOCAL rather than assigned to a dynamic global:
+; the call is an ordinary value-position `[f32]` producer (the VM's
+; `HostOp::LoadWav` writes a fresh heap cell, and whole-global
+; assignment goes through the generic `RegionFromHeap` path — there is
+; no global-assignment fast path for a value-position call to fall
+; outside of). The tree-walker binds a plain `Value::Array`.
 @cpu
 (defn main []
   (let [samples (load-wav "data/audio/test_sample.wav")]

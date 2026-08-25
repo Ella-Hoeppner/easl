@@ -1,10 +1,9 @@
-; KNOWN-FAILING (compile error that shouldn't happen): an anonymous
-; closure calling `audio-time` is handed to `start-audio` through TWO
-; higher-order wrappers. The closure genuinely runs on the audio thread,
-; so this should compile — and with only ONE wrapper layer it does — but
-; `validate_audio_info_usage` spuriously rejects the call. Expected to be
-; resolved by the effect-based audio-exclusivity overhaul (see
-; audio_time_in_constructor_failure).
+; An anonymous closure calling `audio-time` handed to `start-audio`
+; through TWO higher-order wrappers. The closure genuinely runs on the
+; audio thread, so this compiles: the context-exclusivity pass follows
+; call edges to decide where code runs, so wrapper depth is irrelevant
+; (the old cut-based `validate_audio_info_usage` walk spuriously
+; rejected exactly this shape).
 (defn attenuate [s: (Fn [] f32)
                  k: f32]: (Fn [] f32)
   (fn [] (* k (s))))

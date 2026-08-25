@@ -1,12 +1,10 @@
-; KNOWN-FAILING (bytecode VM): a heap-payload enum passed as an *owned*
-; arg to a ref-arg function — the copy travels through the pending-ref
-; placeholder machinery (pre-emitted groups whose destinations are
-; patched at per-usage resolution), which the enum dispatch must survive:
-; the group's shape is static but its jump-bearing fixup branches need
-; destination-relative operand patching. Today the placeholder copy is a
-; plain Move, so `a`'s payload id — a borrow of `wrap`'s construction
-; site, freed and reused by the second `wrap` call — reads the wrong
-; buffer inside `stash`.
+; A heap-payload enum passed as an *owned* arg to a ref-arg function
+; (bytecode VM) — the copy travels through the pending-ref placeholder
+; machinery (pre-emitted groups whose destinations are patched at
+; per-usage resolution), which the enum dispatch must survive: the
+; group's jump targets and condition/constant slots are final at
+; emission, while the discriminant reads and fixup destinations are
+; recorded as destination-relative patches (`PendingCopyGroup`).
 (enum (Option T)
   (Some T)
   None)

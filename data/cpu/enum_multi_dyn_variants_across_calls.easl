@@ -1,9 +1,9 @@
-; KNOWN-FAILING (bytecode VM): an enum with three variants, two carrying
-; runtime-sized payloads — the copy dispatch must select each variant's
-; own fixups (and the unit variant's none-at-all branch). Today's
-; whole-enum borrow copies alias each variant's payload with the last
-; value its construction site produced: `a` borrows the Ints site, which
-; `d`'s construction re-executes, so `a` reads d's length.
+; An enum with three variants, two carrying runtime-sized payloads
+; (bytecode VM) — the copy dispatch must select each variant's own
+; fixups (and fall through with zero instructions for the unit variant).
+; Without per-variant selection, each variant's payload would alias the
+; last value its construction site produced: `a` borrows the Ints site,
+; which `d`'s construction re-executes.
 (enum Chunk
   (Ints [u32])
   (Floats [f32])

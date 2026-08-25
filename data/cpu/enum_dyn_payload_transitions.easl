@@ -1,11 +1,13 @@
-; KNOWN-FAILING (bytecode VM): variant transitions under whole-enum
-; assignment. `(= y x)` overwriting a None with a Some must promote the
-; copied payload id to an owned share (release side: none — the dest's
-; old discriminant has no payload); `(= x None)` overwriting a Some must
-; release the dest's old payload while y's share survives. Today both
-; are plain Moves: y's id stays a borrow of `boxed`'s construction site,
-; which the second `boxed` call frees and reuses, so y silently reads
-; the fresh [9. 9. 9.] instead of its own [1. 1. 1.].
+; Variant transitions under whole-enum assignment (bytecode VM). `(= y
+; x)` overwriting a None with a Some must promote the copied payload id
+; to an owned share (release side: none — the dest's old discriminant
+; has no payload); `(= x None)` overwriting a Some must release the
+; dest's old payload while y's share survives. This is why the copy
+; dispatch reads the *destination's* discriminant before the Move (old
+; variant's releases) and again after it (new variant's promotes) — the
+; two variants differ exactly here. Without it, y's id would stay a
+; borrow of `boxed`'s construction site, freed and reused by the second
+; `boxed` call.
 (enum (Option T)
   (Some T)
   None)

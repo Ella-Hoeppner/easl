@@ -1,9 +1,7 @@
-; KNOWN-FAILING (bytecode VM): an enum nested inside another enum's
-; variant, the inner one carrying the runtime-sized payload — the outer
-; variant's fixups must contain the inner enum's own dispatch (a nested
-; conditional region), the depth case of the recursion scheme. Today the
-; doubly-embedded payload id borrows the constructor's site and aliases
-; the second call's buffer.
+; An enum nested inside another enum's variant, the inner one carrying
+; the runtime-sized payload (bytecode VM) — the outer variant's fixups
+; contain the inner enum's own dispatch (a nested conditional region),
+; the depth case of the recursion scheme.
 (enum (Option T)
   (Some T)
   None)

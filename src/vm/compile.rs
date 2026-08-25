@@ -68,16 +68,69 @@ impl RefArgBinding {
 pub struct PendingRefFnUsage {
   pub name: Arc<str>,
   pub fn_dispatch_position: u32,
-  /// `(arg index, first instruction position, copy plan)` of the
-  /// placeholder copy group emitted for each *owned* arg — ref args get
-  /// no placeholders at all (they aren't copied at the call boundary; the
-  /// per-usage specialization binds them directly to the caller's
-  /// storage). The group's source slots and sizes are filled at emission;
-  /// resolution patches only the destination positions, laid out per the
-  /// plan (`Fixups`: n releases, the move, n promotes, consecutively).
-  pub arg_move_positions: Vec<(usize, u32, HeapCopyPlan)>,
+  /// `(arg index, patch group)` of the placeholder copy group emitted for
+  /// each *owned* arg — ref args get no placeholders at all (they aren't
+  /// copied at the call boundary; the per-usage specialization binds them
+  /// directly to the caller's storage). The group's source slots, sizes,
+  /// and jump targets are all filled at emission; resolution patches only
+  /// the destination-relative operands the group recorded.
+  pub arg_move_positions: Vec<(usize, PendingCopyGroup)>,
   pub return_move_position: u32,
   pub arg_positions: Vec<RefArgBinding>,
+}
+
+enum PatchedOperand {
+  ReturnPosition,
+  FirstArg,
+}
+
+struct PendingPatch {
+  instruction_offset: u32,
+  operand: PatchedOperand,
+  dest_offset: u16,
+}
+
+/// A copy sequence emitted before its destination slots exist (the owned
+/// args of a not-yet-specialized ref-arg callee). Instead of re-deriving
+/// the sequence's shape at resolution time, emission records exactly which
+/// operands are destination-relative and at what offset; `apply` rewrites
+/// them once the destination is known. Everything else in the group —
+/// sources, sizes, condition/constant slots, jump targets (absolute
+/// instruction indices; the group is patched in place, never relocated) —
+/// is final at emission.
+pub struct PendingCopyGroup {
+  start_position: u32,
+  patches: Vec<PendingPatch>,
+}
+
+impl PendingCopyGroup {
+  fn new(start_position: u32) -> Self {
+    Self {
+      start_position,
+      patches: vec![],
+    }
+  }
+  fn record(&mut self, position: u32, operand: PatchedOperand, offset: u16) {
+    self.patches.push(PendingPatch {
+      instruction_offset: position - self.start_position,
+      operand,
+      dest_offset: offset,
+    });
+  }
+  pub fn apply(&self, instructions: &mut [Instruction], dest: u16) {
+    for patch in self.patches.iter() {
+      let instruction = &mut instructions
+        [(self.start_position + patch.instruction_offset) as usize];
+      match patch.operand {
+        PatchedOperand::ReturnPosition => {
+          instruction.return_position = dest + patch.dest_offset;
+        }
+        PatchedOperand::FirstArg => {
+          instruction.arg_positions[0] = dest + patch.dest_offset;
+        }
+      }
+    }
+  }
 }
 
 /// A `spawn-window` whose frame closure has a captured scope. The frame fn
@@ -236,48 +289,126 @@ impl BytecodeCompilationState {
   /// `dest` (see `HeapCopyPlan`). Flat values cost the same single `Move`
   /// as always; aggregates with embedded heap ids additionally release
   /// the destination's old ids before the move and promote the copied
-  /// (borrowed) ids to owned shares after it — O(1) per heap field.
+  /// (borrowed) ids to owned shares after it — O(1) per statically-placed
+  /// heap field, plus a discriminant compare-and-skip per heap-bearing
+  /// enum variant.
   pub fn emit_value_copy(&mut self, src: u16, size: u16, dest: u16, t: &Type) {
     if size == 0 {
       return;
     }
-    match HeapCopyPlan::for_type(t) {
+    let plan = HeapCopyPlan::for_type(t);
+    self.emit_copy_with_plan(src, size, dest, &plan, &mut None);
+  }
+  /// The copy emitter behind `emit_value_copy`. With `pending: Some`, the
+  /// destination isn't known yet (a ref-fn placeholder group, patched at
+  /// specialization time): `dest` must be 0 and every destination-relative
+  /// operand is recorded in the group instead of being computed.
+  fn emit_copy_with_plan(
+    &mut self,
+    src: u16,
+    size: u16,
+    dest: u16,
+    plan: &HeapCopyPlan,
+    pending: &mut Option<PendingCopyGroup>,
+  ) {
+    match plan {
       HeapCopyPlan::WholeHeap => {
-        self.push_instruction(Instruction {
-          op: Op::HeapCopy,
-          arg_positions: [src, 0, 0],
-          return_position: dest,
-        });
+        self.emit_copy_instruction(Op::HeapCopy, [src, 0, 0], dest, 0, pending);
       }
       HeapCopyPlan::Flat => {
-        self.push_instruction(Instruction {
-          op: Op::Move,
-          arg_positions: [src, size, 0],
-          return_position: dest,
-        });
+        self.emit_copy_instruction(Op::Move, [src, size, 0], dest, 0, pending);
       }
-      HeapCopyPlan::Fixups(offsets) => {
-        for offset in offsets.iter() {
-          self.push_instruction(Instruction {
-            op: Op::HeapRelease,
-            arg_positions: [0, 0, 0],
-            return_position: dest + offset,
-          });
-        }
-        self.push_instruction(Instruction {
-          op: Op::Move,
-          arg_positions: [src, size, 0],
-          return_position: dest,
-        });
-        for offset in offsets {
-          self.push_instruction(Instruction {
-            op: Op::HeapPromote,
-            arg_positions: [0, 0, 0],
-            return_position: dest + offset,
-          });
-        }
+      HeapCopyPlan::Fixups(fixups) => {
+        self.emit_heap_fixups(fixups, Op::HeapRelease, dest, pending);
+        self.emit_copy_instruction(Op::Move, [src, size, 0], dest, 0, pending);
+        self.emit_heap_fixups(fixups, Op::HeapPromote, dest, pending);
       }
     }
+  }
+  /// Emits one phase — `HeapRelease` or `HeapPromote` — of a fixup set
+  /// against a copy destination. Static offsets emit unconditionally.
+  /// Each enum region emits, per heap-bearing variant, a discriminant
+  /// compare and a conditional skip over that variant's fixups (recursing
+  /// for nested regions). The discriminant is read from the *destination*,
+  /// which during the release phase (before the Move) holds the old
+  /// value's discriminant and during the promote phase (after it) the
+  /// newly copied value's — exactly the two variants whose payloads each
+  /// phase must touch. A first-ever execution reads a zeroed destination:
+  /// discriminant 0 with zeroed payload words, whose releases no-op.
+  fn emit_heap_fixups(
+    &mut self,
+    fixups: &HeapFixups,
+    op: Op,
+    dest: u16,
+    pending: &mut Option<PendingCopyGroup>,
+  ) {
+    for offset in fixups.static_offsets.iter() {
+      self.emit_copy_instruction(op, [0, 0, 0], dest, *offset, pending);
+    }
+    for region in fixups.enum_regions.iter() {
+      for (variant_index, variant_fixups) in region.variants.iter().enumerate()
+      {
+        if variant_fixups.is_empty() {
+          continue;
+        }
+        let index_slot = self.emit_u32_constant(variant_index as u32);
+        let condition_slot = self.take_stack_slot(1);
+        let discriminant_slot = if let Some(group) = pending {
+          group.record(
+            self.instructions.len() as u32,
+            PatchedOperand::FirstArg,
+            region.discriminant_offset,
+          );
+          0
+        } else {
+          dest + region.discriminant_offset
+        };
+        self.push_instruction(Instruction {
+          op: Op::IsEqualU32,
+          arg_positions: [discriminant_slot, index_slot, 0],
+          return_position: condition_slot,
+        });
+        let jump_position = self.instructions.len();
+        self.push_instruction(Instruction {
+          op: Op::JumpWhenNot,
+          arg_positions: [condition_slot, 0, 0],
+          return_position: 0,
+        });
+        self.emit_heap_fixups(variant_fixups, op, dest, pending);
+        let after_variant = self.instructions.len() as u32;
+        self.instructions[jump_position].arg_positions[1] =
+          (after_variant >> 16) as u16;
+        self.instructions[jump_position].arg_positions[2] =
+          after_variant as u16;
+      }
+    }
+  }
+  /// Emits one instruction of a copy sequence whose `return_position` is
+  /// destination-relative, either computing it directly or recording a
+  /// patch in the pending group.
+  fn emit_copy_instruction(
+    &mut self,
+    op: Op,
+    arg_positions: [u16; 3],
+    dest: u16,
+    dest_offset: u16,
+    pending: &mut Option<PendingCopyGroup>,
+  ) {
+    let return_position = if let Some(group) = pending {
+      group.record(
+        self.instructions.len() as u32,
+        PatchedOperand::ReturnPosition,
+        dest_offset,
+      );
+      0
+    } else {
+      dest + dest_offset
+    };
+    self.push_instruction(Instruction {
+      op,
+      arg_positions,
+      return_position,
+    });
   }
 
   // --- Basic emit helpers ---
@@ -2301,11 +2432,39 @@ pub enum HeapCopyPlan {
   Flat,
   /// The value *is* a single heap id: one `HeapCopy`.
   WholeHeap,
-  /// An aggregate with heap ids embedded at these offsets: a `HeapRelease`
-  /// per offset (freeing the destination's previous owned ids), one bulk
-  /// `Move`, then a `HeapPromote` per offset (replacing the borrowed ids
-  /// with owned shares).
-  Fixups(Vec<u16>),
+  /// An aggregate with embedded heap ids: release the destination's old
+  /// ids, one bulk `Move`, then promote the copied (borrowed) ids to
+  /// owned shares — see `HeapFixups` for how enum-embedded ids get
+  /// discriminant-dispatched.
+  Fixups(HeapFixups),
+}
+
+/// The heap-id locations within one value layout, as consumed by one
+/// phase (release or promote) of a fixup copy. `static_offsets` are
+/// unconditional; each `EnumRegion` contributes ids whose presence and
+/// offsets depend on a discriminant word read at runtime, emitted as a
+/// compare-and-skip dispatch per heap-bearing variant (heap-free variants
+/// fall through with zero instructions).
+#[derive(Default)]
+pub struct HeapFixups {
+  static_offsets: Vec<u16>,
+  enum_regions: Vec<EnumRegion>,
+}
+
+impl HeapFixups {
+  fn is_empty(&self) -> bool {
+    self.static_offsets.is_empty() && self.enum_regions.is_empty()
+  }
+}
+
+/// An enum embedded in a copied value's layout, with heap ids in at least
+/// one variant's payload. `variants` is indexed by discriminant; nesting
+/// (enum-in-struct-in-enum, ...) recurses through each variant's own
+/// `HeapFixups`. All offsets are relative to the copied value's base, not
+/// the region's.
+struct EnumRegion {
+  discriminant_offset: u16,
+  variants: Vec<HeapFixups>,
 }
 
 impl HeapCopyPlan {
@@ -2313,28 +2472,20 @@ impl HeapCopyPlan {
     if is_heap_value_type(t) {
       return HeapCopyPlan::WholeHeap;
     }
-    let mut offsets = vec![];
-    heap_field_offsets(t, 0, &mut offsets);
-    if offsets.is_empty() {
+    let mut fixups = HeapFixups::default();
+    collect_heap_fixups(t, 0, &mut fixups);
+    if fixups.is_empty() {
       HeapCopyPlan::Flat
     } else {
-      HeapCopyPlan::Fixups(offsets)
-    }
-  }
-  /// Number of instructions the plan emits.
-  pub fn instruction_count(&self) -> usize {
-    match self {
-      HeapCopyPlan::Flat | HeapCopyPlan::WholeHeap => 1,
-      HeapCopyPlan::Fixups(offsets) => 2 * offsets.len() + 1,
+      HeapCopyPlan::Fixups(fixups)
     }
   }
 }
 
 /// Whether a value of this type contains any heap-id words (directly, or
-/// embedded in struct fields, captured closure scopes, or fixed-array
-/// elements). Total on abstract types — a skolem contains no heap values
-/// and must not be sized. Enums are deliberately `false`, matching
-/// `heap_field_offsets`' whole-enum punt.
+/// embedded in struct fields, captured closure scopes, fixed-array
+/// elements, or enum variant payloads). Total on abstract types — a
+/// skolem contains no heap values and must not be sized.
 fn involves_heap_values(t: &Type) -> bool {
   if is_heap_value_type(t) {
     return true;
@@ -2359,17 +2510,22 @@ fn involves_heap_values(t: &Type) -> bool {
       }
     }
     Type::Array(_, inner) => involves_heap_values(&inner.unwrap_known()),
+    Type::Enum(e) => e.variants.iter().any(|variant| {
+      variant.inner_type.with_dereferenced(|state| match state {
+        TypeState::Known(inner) => involves_heap_values(inner),
+        _ => false,
+      })
+    }),
     _ => false,
   }
 }
 
-/// Collects the offsets of embedded heap-id words within a value's flat
-/// slot layout. Whole-enum values are deliberately excluded: an enum's
-/// payload offsets depend on the runtime discriminant, so they can't be
-/// statically fixed up — whole-enum copies of heap payloads keep the v1
-/// borrow semantics (pinned by `enum_dyn_payload_across_calls`; enum
-/// *construction* is safe, since the variant is known there).
-fn heap_field_offsets(t: &Type, base: u16, out: &mut Vec<u16>) {
+/// Collects the embedded heap-id locations within a value's flat slot
+/// layout — unconditional offsets for struct/scope/fixed-array fields,
+/// and discriminant-keyed `EnumRegion`s wherever an enum's payload can
+/// hold heap ids (every variant's payload starts right after the
+/// discriminant word, per `vm_type_size`'s enum layout).
+fn collect_heap_fixups(t: &Type, base: u16, out: &mut HeapFixups) {
   // Pre-check that also keeps this walk total: types with no heap values
   // contribute no offsets and need no size computation. Sizing must not
   // be attempted unconditionally because abstract types (skolems) can
@@ -2380,7 +2536,7 @@ fn heap_field_offsets(t: &Type, base: u16, out: &mut Vec<u16>) {
     return;
   }
   if is_heap_value_type(t) {
-    out.push(base);
+    out.static_offsets.push(base);
     return;
   }
   match t {
@@ -2388,7 +2544,7 @@ fn heap_field_offsets(t: &Type, base: u16, out: &mut Vec<u16>) {
       let mut offset = base;
       for field in s.fields.iter() {
         let field_type = field.field_type.unwrap_known();
-        heap_field_offsets(&field_type, offset, out);
+        collect_heap_fixups(&field_type, offset, out);
         offset += vm_type_size(&field_type);
       }
     }
@@ -2403,7 +2559,7 @@ fn heap_field_offsets(t: &Type, base: u16, out: &mut Vec<u16>) {
           else {
             panic!("captured scope field with non-concrete type")
           };
-          heap_field_offsets(field_type, offset, out);
+          collect_heap_fixups(field_type, offset, out);
           offset += vm_type_size(field_type);
         }
       }
@@ -2413,8 +2569,28 @@ fn heap_field_offsets(t: &Type, base: u16, out: &mut Vec<u16>) {
         let inner = inner.unwrap_known();
         let stride = vm_type_size(&inner);
         for i in 0..count as u16 {
-          heap_field_offsets(&inner, base + i * stride, out);
+          collect_heap_fixups(&inner, base + i * stride, out);
         }
+      }
+    }
+    Type::Enum(e) => {
+      let variants: Vec<HeapFixups> = e
+        .variants
+        .iter()
+        .map(|variant| {
+          let mut variant_fixups = HeapFixups::default();
+          match variant.inner_type.unwrap_known() {
+            Type::Unit => {}
+            inner => collect_heap_fixups(&inner, base + 1, &mut variant_fixups),
+          }
+          variant_fixups
+        })
+        .collect();
+      if variants.iter().any(|fixups| !fixups.is_empty()) {
+        out.enum_regions.push(EnumRegion {
+          discriminant_offset: base,
+          variants,
+        });
       }
     }
     _ => {}
@@ -3447,48 +3623,10 @@ impl TypedExp {
                 let arg_expression_type = args[arg_index].data.unwrap_known();
                 let size = vm_type_size(&arg_expression_type);
                 let plan = HeapCopyPlan::for_type(&arg_expression_type);
-                arg_move_positions.push((
-                  arg_index,
-                  state.instructions.len() as u32,
-                  HeapCopyPlan::for_type(&arg_expression_type),
-                ));
-                match &plan {
-                  HeapCopyPlan::WholeHeap => {
-                    state.push_instruction(Instruction {
-                      op: Op::HeapCopy,
-                      arg_positions: [src, 0, 0],
-                      return_position: 0,
-                    });
-                  }
-                  HeapCopyPlan::Flat => {
-                    state.push_instruction(Instruction {
-                      op: Op::Move,
-                      arg_positions: [src, size, 0],
-                      return_position: 0,
-                    });
-                  }
-                  HeapCopyPlan::Fixups(offsets) => {
-                    for _ in offsets.iter() {
-                      state.push_instruction(Instruction {
-                        op: Op::HeapRelease,
-                        arg_positions: [0, 0, 0],
-                        return_position: 0,
-                      });
-                    }
-                    state.push_instruction(Instruction {
-                      op: Op::Move,
-                      arg_positions: [src, size, 0],
-                      return_position: 0,
-                    });
-                    for _ in offsets.iter() {
-                      state.push_instruction(Instruction {
-                        op: Op::HeapPromote,
-                        arg_positions: [0, 0, 0],
-                        return_position: 0,
-                      });
-                    }
-                  }
-                }
+                let mut pending =
+                  Some(PendingCopyGroup::new(state.instructions.len() as u32));
+                state.emit_copy_with_plan(src, size, 0, &plan, &mut pending);
+                arg_move_positions.push((arg_index, pending.unwrap()));
               }
               let fn_dispatch_position = state.instructions.len() as u32;
               state.push_instruction(Instruction {
@@ -3501,14 +3639,13 @@ impl TypedExp {
               // resolution, so the releases and promotes are emitted
               // final and just the middle instruction gets patched.
               let return_plan = HeapCopyPlan::for_type(&return_type);
-              if let HeapCopyPlan::Fixups(offsets) = &return_plan {
-                for offset in offsets.iter() {
-                  state.push_instruction(Instruction {
-                    op: Op::HeapRelease,
-                    arg_positions: [0, 0, 0],
-                    return_position: result_position + offset,
-                  });
-                }
+              if let HeapCopyPlan::Fixups(fixups) = &return_plan {
+                state.emit_heap_fixups(
+                  fixups,
+                  Op::HeapRelease,
+                  result_position,
+                  &mut None,
+                );
               }
               let return_move_position = state.instructions.len() as u32;
               state.push_instruction(Instruction {
@@ -3519,14 +3656,13 @@ impl TypedExp {
                 arg_positions: [0, return_size, 0],
                 return_position: result_position,
               });
-              if let HeapCopyPlan::Fixups(offsets) = &return_plan {
-                for offset in offsets.iter() {
-                  state.push_instruction(Instruction {
-                    op: Op::HeapPromote,
-                    arg_positions: [0, 0, 0],
-                    return_position: result_position + offset,
-                  });
-                }
+              if let HeapCopyPlan::Fixups(fixups) = &return_plan {
+                state.emit_heap_fixups(
+                  fixups,
+                  Op::HeapPromote,
+                  result_position,
+                  &mut None,
+                );
               }
               state
                 .pending_ref_arg_function_usages

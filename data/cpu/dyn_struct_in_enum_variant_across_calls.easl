@@ -1,9 +1,7 @@
-; KNOWN-FAILING (bytecode VM): a struct carrying a runtime-sized field
-; nested inside one enum variant — the variant's fixups must recurse into
-; the payload struct's layout (discriminant at 0, tag at 1, body id at
-; 2), exercising nontrivial fixup offsets *within* a variant branch.
-; Today `a`'s embedded body id borrows the constructor's site and aliases
-; `b`'s buffer after the second call.
+; A struct carrying a runtime-sized field nested inside one enum variant
+; (bytecode VM) — the variant's fixups recurse into the payload struct's
+; layout (discriminant at 0, tag at 1, body id at 2), exercising
+; nontrivial fixup offsets *within* a variant branch.
 (struct Packet
   tag: f32
   body: [f32])
