@@ -1,0 +1,17 @@
+; As const_generic_chain but with a third link — one more inference
+; hop, exercising the round-per-hop propagation and the fixpoint
+; continuing while size cells are still being refined.
+(defn (assoc T
+             C: u32)
+      [@var arr: [C: T]
+       idx: u32
+       value: T]: [C: T]
+      (= (arr idx) value)
+      arr)
+
+@cpu
+(defn main []
+  (print (-> (zeroed-array): [3: f32]
+             (assoc 0u 1.)
+             (assoc 1u 2.)
+             (assoc 2u 3.))))

@@ -169,6 +169,8 @@ cpu_test!(ref_dyn_array_arg);
 cpu_test!(dyn_array_arg_scalar_return);
 cpu_test!(hof_shared_specialization);
 cpu_test!(sibling_same_name_locals);
+cpu_test!(const_generic_chain);
+cpu_test!(const_generic_chain_three);
 cpu_test!(audio_time_through_hof_chain);
 cpu_test!(load_wav_local_binding);
 cpu_test!(assign_field_in_dyn_array_element);

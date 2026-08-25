@@ -937,6 +937,10 @@ impl ConcreteArraySize {
       (
         ConcreteArraySize::UnificationVariable(var),
         ConcreteArraySize::Literal(value),
+      )
+      | (
+        ConcreteArraySize::Literal(value),
+        ConcreteArraySize::UnificationVariable(var),
       ) => {
         let mut unification_value = var.value.write().unwrap();
         match &*unification_value {
@@ -976,6 +980,40 @@ impl ConcreteArraySize {
               Some(ConstGenericResolution::Skolem(name.clone()));
             Ok(true)
           }
+        }
+      }
+      (
+        ConcreteArraySize::UnificationVariable(a),
+        ConcreteArraySize::UnificationVariable(b),
+      ) => {
+        if Arc::ptr_eq(&a.value, &b.value) {
+          return Ok(false);
+        }
+        let a_resolution = a.value.read().unwrap().clone();
+        let b_resolution = b.value.read().unwrap().clone();
+        match (a_resolution, b_resolution) {
+          (Some(a_resolution), Some(b_resolution)) => {
+            if a_resolution == b_resolution {
+              Ok(false)
+            } else {
+              err(
+                IncompatibleArraySize(
+                  self.clone().into(),
+                  other.clone().into(),
+                ),
+                source_trace.clone(),
+              )
+            }
+          }
+          (Some(resolution), None) => {
+            *b.value.write().unwrap() = Some(resolution);
+            Ok(true)
+          }
+          (None, Some(resolution)) => {
+            *a.value.write().unwrap() = Some(resolution);
+            Ok(true)
+          }
+          (None, None) => Ok(false),
         }
       }
       (ConcreteArraySize::UnificationVariable(_), _)
@@ -1135,6 +1173,22 @@ impl ConstGenericValue {
   pub fn fresh() -> Self {
     Self {
       value: Arc::new(RwLock::new(None)),
+    }
+  }
+}
+
+impl ConcreteArraySize {
+  /// Whether this size is settled enough to compile against: everything
+  /// except an unification variable whose cell is still empty. An
+  /// unresolved cell must count as not-fully-known, so incomplete
+  /// inference surfaces as `CouldntInferTypes` rather than reaching a
+  /// backend as an unsizable type.
+  pub fn is_resolved(&self) -> bool {
+    match self {
+      ConcreteArraySize::UnificationVariable(var) => {
+        var.value.read().unwrap().is_some()
+      }
+      _ => true,
     }
   }
 }
@@ -2410,7 +2464,8 @@ impl Type {
         )
       }
       Type::Array(size, inner_type) => {
-        size.is_some() && inner_type.check_is_fully_known()
+        size.as_ref().map(|s| s.is_resolved()).unwrap_or(false)
+          && inner_type.check_is_fully_known()
       }
       _ => true,
     }

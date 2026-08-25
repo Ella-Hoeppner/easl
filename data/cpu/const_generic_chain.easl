@@ -1,0 +1,21 @@
+; Two chained calls of a const-generic function, where the second call's
+; size argument must be inferred from the first call's return type. Pins
+; size propagation across variable-to-variable constraints
+; (`ConcreteArraySize::constrain`'s unification-variable arms): the
+; resolution in one call's cell must be copied into the next call's when
+; they're constrained, one hop per inference round. This used to be a
+; silent no-op, leaving the second call's size cell empty — past
+; validation and into a VM panic on an unsizable type.
+(defn (assoc T
+             C: u32)
+      [@var arr: [C: T]
+       idx: u32
+       value: T]: [C: T]
+      (= (arr idx) value)
+      arr)
+
+@cpu
+(defn main []
+  (print (-> (zeroed-array): [3: f32]
+             (assoc 0u 1.)
+             (assoc 1u 2.))))
