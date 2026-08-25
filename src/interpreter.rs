@@ -5446,6 +5446,33 @@ pub fn eval(
           &name,
           env,
         )?;
+        // For composite callees, re-derive the per-parameter ownerships
+        // from the *implementation's* own function type — the same
+        // signature-level source the VM's ref-arg detection uses — rather
+        // than trusting the call site's signature view captured above.
+        // The lowering passes that append trailing scope args are
+        // supposed to keep that view aligned (and now do), but
+        // bookkeeping driven by a stale view silently dropped the scope
+        // write-back and leaked the binding, so the runtime prefers the
+        // authoritative source (pinned by `closure_seeded_capture_read`).
+        let param_ownerships: Vec<Ownership> =
+          if let FunctionImplementationKind::Composite(implementation) =
+            &f_arc.read().unwrap().implementation
+            && let Type::Function(impl_signature) = implementation
+              .read()
+              .unwrap()
+              .expression
+              .data
+              .unwrap_known()
+          {
+            impl_signature
+              .args
+              .iter()
+              .map(|(v, _)| v.var_type.ownership)
+              .collect()
+          } else {
+            param_ownerships
+          };
         let arg_types: Vec<Type> =
           args.iter().map(|a| a.data.kind.unwrap_known()).collect();
         let return_type = exp.data.unwrap_known();
@@ -5524,6 +5551,13 @@ pub fn eval(
             if arg_names.len() != arg_values.len() {
               return Err(WrongArity(arg_names.len(), arg_values.len()).into());
             }
+            assert_eq!(
+              arg_names.len(),
+              ref_arg_lhs_exprs.len(),
+              "compiler bug: call-site argument bookkeeping misaligned with \
+               `{name}`'s parameters — a silent zip truncation here drops \
+               reference write-backs and leaks bindings"
+            );
             for (name, (value, ty)) in arg_names
               .iter()
               .zip(arg_values.into_iter().zip(arg_types.into_iter()))

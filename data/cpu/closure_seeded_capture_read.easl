@@ -1,10 +1,17 @@
-; KNOWN-FAILING (tree-walker): an element write to a local runtime-sized
-; array, performed before a closure captures it, must be visible through
-; the capture. The tree-walker loses the write — but only when the
-; closure both mutates another captured variable and element-indexes the
-; array with it (either alone works; see the probes in this test's
-; originating session). The VM runtime is correct, and its output is the
-; golden: three zeroed reads, then the seeded 10. at index 0.
+; A closure over a seeded runtime-sized array and a mutated index
+; variable, called repeatedly: the pre-capture element write must be
+; visible through the capture, and the index mutation must persist across
+; calls (reads walk indices 1, 2, 3, 0 — the last hitting the seeded
+; 10.). Pins two things: the call-site view invariant — when
+; `inline_local_bound_function_applications` rewrites a direct closure
+; call to `(inner_fn c)`, the callee's own function-type view must gain
+; the scope param alongside the appended arg (its LocalBinding arm once
+; skipped this, leaving a zero-arg view whose empty ownership bookkeeping
+; silently dropped the captured scope's write-back, freezing the
+; closure's state, and leaked the scope binding each call) — and the
+; tree-walker's defense: per-param ownerships come from the
+; implementation's own function type, the source the VM's ref-arg
+; detection uses, so a stale view can't repeat the damage.
 (defn make-reader [n: u32
                    v: f32]: (Fn [] f32)
   (let [@var buf (zeroed-array n): [f32]

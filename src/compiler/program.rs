@@ -3708,6 +3708,7 @@ impl Program {
                         else {
                           panic!()
                         };
+                        let original_name = original_name.clone();
                         if let Some(abstract_fn) =
                           bound_signature.abstract_ancestor
                         {
@@ -3716,24 +3717,46 @@ impl Program {
                           if let Some(captured_scope) =
                             abstract_fn.captured_scope.as_ref()
                           {
-                            args.push(Exp {
-                              data: Type::Struct(
-                                AbstractStruct::concretize(
-                                  Arc::new(captured_scope.clone()),
-                                  &self.typedefs,
-                                  &vec![],
-                                  f.source_trace.clone(),
-                                )
-                                .unwrap(),
+                            let scope_type = Type::Struct(
+                              AbstractStruct::concretize(
+                                Arc::new(captured_scope.clone()),
+                                &self.typedefs,
+                                &vec![],
+                                f.source_trace.clone(),
                               )
-                              .known()
-                              .into(),
+                              .unwrap(),
+                            );
+                            args.push(Exp {
+                              data: scope_type.clone().known().into(),
                               kind: ExpKind::Name(original_name.clone()),
                               source_trace: f.source_trace.clone(),
                             });
+                            // As in the Access-callee arm above: the
+                            // callee's own function-type view gains the
+                            // scope param, so downstream consumers of
+                            // that view (interpreter write-back
+                            // bookkeeping, reference address-space
+                            // monomorphization) stay aligned with the
+                            // ancestor, the implementation, and the call
+                            // args (pinned by
+                            // closure_seeded_capture_read).
+                            let mut var_type: ExpTypeInfo =
+                              scope_type.known().into();
+                            var_type.ownership = Ownership::MutableReference;
+                            if let TypeState::Known(Type::Function(sig)) =
+                              &mut f.data.kind
+                            {
+                              sig.args.push((
+                                Variable {
+                                  kind: VariableKind::Var,
+                                  var_type,
+                                },
+                                vec![],
+                              ));
+                            }
                             representative_structs.push(captured_scope.clone());
                           }
-                          *original_name = new_name;
+                          f.kind = ExpKind::Name(new_name);
                         }
                       }
                       _ => {}

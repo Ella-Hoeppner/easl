@@ -168,9 +168,6 @@ cpu_test!(closure_dyn_capture_across_calls);
 // semantics — payload offsets depend on the runtime discriminant, so
 // they can't be statically promoted (see the .easl header).
 cpu_test!(enum_dyn_payload_across_calls);
-// KNOWN-FAILING: tree-walker loses a pre-capture element write when the
-// closure mutates a captured index var and element-reads with it (the VM
-// is correct; found while building the pin above).
 cpu_test!(closure_seeded_capture_read);
 cpu_test!(ref_dyn_array_arg);
 cpu_test!(dyn_array_arg_scalar_return);
