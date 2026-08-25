@@ -1,0 +1,25 @@
+main-publish: <audio-scope>_c1_buf
+main-publish: <audio-scope>_c1_delay
+main-publish: <audio-scope>_c1_feedback
+main-publish: <audio-scope>_c1_idx
+main-publish: <audio-scope>_c2_buf
+main-publish: <audio-scope>_c2_delay
+main-publish: <audio-scope>_c2_feedback
+main-publish: <audio-scope>_c2_idx
+start-audio: <audio-closure>
+spawn-window
+frame 0
+audio-batch 0 x6
+audio-adopt: <audio-scope>_c1_buf
+audio-adopt: <audio-scope>_c1_delay
+audio-adopt: <audio-scope>_c1_feedback
+audio-adopt: <audio-scope>_c1_idx
+audio-adopt: <audio-scope>_c2_buf
+audio-adopt: <audio-scope>_c2_delay
+audio-adopt: <audio-scope>_c2_feedback
+audio-adopt: <audio-scope>_c2_idx
+samples: 0 0 0.25 0.5 0.625 0.625
+audio-publish: <audio-scope>_c1_buf
+audio-publish: <audio-scope>_c1_idx
+audio-publish: <audio-scope>_c2_buf
+audio-publish: <audio-scope>_c2_idx

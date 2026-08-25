@@ -22,7 +22,7 @@ use crate::compiler::{
     AbstractFunctionSignature, FunctionImplementationKind, FunctionSignature,
     Ownership,
   },
-  program::{CompilerTarget, Program},
+  program::{CompilerTarget, LiftedCapture, LiftedCaptures, Program},
   structs::AbstractStruct,
   types::{
     AbstractType, ConcreteArraySize, ConstGenericResolution, ExpTypeInfo, Type,
@@ -1914,7 +1914,7 @@ fn apply_builtin_fn<IO: IOManager>(
       let entry_name: Arc<str> = if scope_struct.is_some() {
         format!("{original_name}_audio").into()
       } else {
-        original_name
+        original_name.clone()
       };
       #[cfg(feature = "window")]
       {
@@ -1942,7 +1942,17 @@ fn apply_builtin_fn<IO: IOManager>(
           && env.seeded_audio_scopes.insert(scope_struct.name.0.clone())
         {
           let scope_value = (**scope).clone();
-          env.seed_audio_scope_globals(scope_struct, &scope_value);
+          let captures = env
+            .lifted_audio_captures
+            .get(&original_name)
+            .unwrap_or_else(|| {
+              panic!(
+                "compiler bug: no lifted-capture record for audio entry \
+                 `{original_name}`"
+              )
+            })
+            .clone();
+          env.seed_audio_scope_globals(scope_struct, &scope_value, &captures);
         }
         // First call (we hold the source): activate the shared table and
         // bootstrap-publish every shared global, so the new replica's first
@@ -4218,6 +4228,12 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   /// one-shot seed guard).
   #[cfg(feature = "window")]
   seeded_audio_scopes: HashSet<Arc<str>>,
+  /// Lifted-capture records by entry fn name, copied from the validated
+  /// `Program` — the seed walkers read global names from these instead of
+  /// reconstructing them (see `LiftedCaptures`).
+  #[cfg(feature = "window")]
+  lifted_audio_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
+  lifted_gpu_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
   /// Thread-shared globals (see `Program::thread_shared_globals`) with
   /// their audience masks, sorted by name; index-aligned with
   /// `shared_table` slots and every compiled artifact's
@@ -4344,6 +4360,9 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       audio_source,
       #[cfg(feature = "window")]
       seeded_audio_scopes: HashSet::new(),
+      #[cfg(feature = "window")]
+      lifted_audio_captures: program.lifted_audio_captures.clone(),
+      lifted_gpu_captures: program.lifted_gpu_captures.clone(),
       shared_dirty: vec![false; shared_globals.len()],
       shared_adopted: vec![0; shared_globals.len()],
       shared_globals,
@@ -4548,11 +4567,23 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     // Each captured var has its own binding, and captured closures
     // recurse into their own scope's bindings (see
     // `extract_dispatched_closure_scopes`).
+    let entry_name = ancestor.read().unwrap().name.clone();
+    let captures = self
+      .lifted_gpu_captures
+      .get(&entry_name)
+      .unwrap_or_else(|| {
+        panic!(
+          "compiler bug: no lifted-capture record for dispatched entry \
+           `{entry_name}`"
+        )
+      })
+      .clone();
     let mut written: Vec<Arc<str>> = vec![];
     let scope_value = (**scope).clone();
     self.write_scope_capture_bindings(
       &scope_struct,
       &scope_value,
+      &captures,
       &mut written,
     );
     self.mark_cpu_written(&written);
@@ -4566,36 +4597,54 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     &mut self,
     scope_struct: &AbstractStruct,
     scope_value: &Value,
+    captures: &LiftedCaptures,
   ) {
     let Value::Struct(scope_fields) = scope_value else {
       return;
     };
+    assert_eq!(
+      scope_struct.fields.len(),
+      captures.fields.len(),
+      "lifted-capture record misaligned with scope struct"
+    );
     let mut written: Vec<Arc<str>> = vec![];
-    for field in scope_struct.fields.iter() {
+    for (field, capture) in
+      scope_struct.fields.iter().zip(captures.fields.iter())
+    {
       let Some(field_value) = scope_fields.get(&field.name) else {
         continue;
       };
-      if let AbstractType::Type(Type::Function(signature)) = &field.field_type
-        && let Some(field_ancestor) = &signature.abstract_ancestor
-        && let Some(nested_struct) =
-          field_ancestor.read().unwrap().captured_scope.clone()
-      {
-        // A captured closure's value is its own scope data.
-        let inner = match field_value {
-          Value::Fun(Function::Scoped { scope, .. }) => (**scope).clone(),
-          other => other.clone(),
-        };
-        self.seed_audio_scope_globals(&nested_struct, &inner);
-        continue;
-      }
-      let global_name: Arc<str> =
-        format!("{}_audio_data_{}", scope_struct.name.0, field.name).into();
-      let field_value = field_value.clone();
-      if let Some(bindings) = self.bindings.get_mut(&global_name)
-        && let Some((value, _)) = bindings.last_mut()
-      {
-        *value = field_value;
-        written.push(global_name);
+      match capture {
+        LiftedCapture::Closure(nested_captures) => {
+          let AbstractType::Type(Type::Function(signature)) = &field.field_type
+          else {
+            panic!("closure capture record on a non-function field")
+          };
+          let nested_struct = signature
+            .abstract_ancestor
+            .as_ref()
+            .and_then(|a| a.read().unwrap().captured_scope.clone())
+            .expect("captured closure without a scope struct");
+          // A captured closure's value is its own scope data.
+          let inner = match field_value {
+            Value::Fun(Function::Scoped { scope, .. }) => (**scope).clone(),
+            other => other.clone(),
+          };
+          self.seed_audio_scope_globals(
+            &nested_struct,
+            &inner,
+            nested_captures,
+          );
+        }
+        LiftedCapture::Global(global_name) => {
+          let field_value = field_value.clone();
+          if let Some(bindings) = self.bindings.get_mut(global_name)
+            && let Some((value, _)) = bindings.last_mut()
+          {
+            *value = field_value;
+            written.push(global_name.clone());
+          }
+        }
       }
     }
     self.mark_cpu_written(&written);
@@ -4604,40 +4653,59 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     &mut self,
     scope_struct: &AbstractStruct,
     scope_value: &Value,
+    captures: &LiftedCaptures,
     written: &mut Vec<Arc<str>>,
   ) {
     let Value::Struct(scope_fields) = scope_value else {
       return;
     };
-    for field in scope_struct.fields.iter() {
+    assert_eq!(
+      scope_struct.fields.len(),
+      captures.fields.len(),
+      "lifted-capture record misaligned with scope struct"
+    );
+    for (field, capture) in
+      scope_struct.fields.iter().zip(captures.fields.iter())
+    {
       let Some(field_value) = scope_fields.get(&field.name) else {
         continue;
       };
-      if let AbstractType::Type(Type::Function(signature)) = &field.field_type
-        && let Some(field_ancestor) = &signature.abstract_ancestor
-        && let Some(nested_struct) =
-          field_ancestor.read().unwrap().captured_scope.clone()
-      {
-        // A captured closure's value is its own scope data.
-        let inner = match field_value {
-          Value::Fun(Function::Scoped { scope, .. }) => (**scope).clone(),
-          other => other.clone(),
-        };
-        self.write_scope_capture_bindings(&nested_struct, &inner, written);
-        continue;
+      match capture {
+        LiftedCapture::Closure(nested_captures) => {
+          let AbstractType::Type(Type::Function(signature)) = &field.field_type
+          else {
+            panic!("closure capture record on a non-function field")
+          };
+          let nested_struct = signature
+            .abstract_ancestor
+            .as_ref()
+            .and_then(|a| a.read().unwrap().captured_scope.clone())
+            .expect("captured closure without a scope struct");
+          // A captured closure's value is its own scope data.
+          let inner = match field_value {
+            Value::Fun(Function::Scoped { scope, .. }) => (**scope).clone(),
+            other => other.clone(),
+          };
+          self.write_scope_capture_bindings(
+            &nested_struct,
+            &inner,
+            nested_captures,
+            written,
+          );
+        }
+        LiftedCapture::Global(global_name) => {
+          if !self.is_binding_var(global_name) {
+            continue;
+          }
+          let field_value = field_value.clone();
+          if let Some(bindings) = self.bindings.get_mut(global_name)
+            && let Some((value, _)) = bindings.last_mut()
+          {
+            *value = field_value;
+          }
+          written.push(global_name.clone());
+        }
       }
-      let global_name: Arc<str> =
-        format!("{}_data_{}", scope_struct.name.0, field.name).into();
-      if !self.is_binding_var(&global_name) {
-        continue;
-      }
-      let field_value = field_value.clone();
-      if let Some(bindings) = self.bindings.get_mut(&global_name)
-        && let Some((value, _)) = bindings.last_mut()
-      {
-        *value = field_value;
-      }
-      written.push(global_name);
     }
   }
 

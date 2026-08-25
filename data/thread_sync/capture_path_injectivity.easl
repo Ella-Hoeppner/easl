@@ -1,0 +1,31 @@
+; Capture-path name collisions: underscore-concatenating capture-path
+; field names is not injective — underscores are legal in identifiers, so
+; entry field `a_b` with nested capture `c` and entry field `a` with
+; nested capture `b_c` share the concatenation `a_b_c`, and
+; convention-reconstructed names silently merged the two counters into
+; one cell (both f32, so no type error — the closures coupled through
+; shared state, producing 0.25 0.625 1 1 here). Pins the recorded-name
+; design: capture globals are minted once by `NameContext::gensym` at
+; lift time (the collision surfaces as the `_0` suffix in this golden)
+; and carried to the seed/effect walkers in `LiftedCaptures` records —
+; never re-derived. The samples are the ground truth: counter one steps
+; by v, counter two by 2v, so the sums are 3v 6v 9v 12v.
+(defn make-inner-c [v: f32]: (Fn [] f32)
+  (let [@var c 0.]
+    (fn []
+        (= c (+ c v))
+        c)))
+
+(defn make-inner-bc [v: f32]: (Fn [] f32)
+  (let [@var b_c 0.]
+    (fn []
+        (= b_c (+ b_c (* 2. v)))
+        b_c)))
+
+@cpu
+(defn main []
+  (let [a_b (make-inner-c 0.0625)
+        a (make-inner-bc 0.0625)]
+    (start-audio (fn []
+                     (+ (a_b) (a)))))
+  (spawn-window (fn [] ())))

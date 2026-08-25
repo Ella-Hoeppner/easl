@@ -1,0 +1,28 @@
+; Two instances of one comb constructor captured by the audio entry — the
+; minimal form of a freeverb-style synth graph. Each instance's captures
+; must lift to its own set of globals, keyed by the capture *path* from
+; the entry (c1_buf vs c2_buf), with a per-path audio clone reading them:
+; keying by the closure's scope struct alone collapsed every instance of
+; the same constructor into one shared buf/idx/delay/feedback, seeded by
+; whichever instance's writes landed last (a comb bank sharing one buffer
+; feeds back chaotically, and mismatched lengths kill the audio thread on
+; a bounds check — the freeverb chirp-then-silence). The golden's samples
+; are the exact two-comb sums: delay-2 and delay-3 combs, feedback 0.5,
+; unit input.
+(defn make-comb [delay: u32
+                 feedback: f32]: (Fn [f32] f32)
+  (let [@var buf (zeroed-array delay): [f32]
+        @var idx 0u]
+    (fn [x]
+        (let [out (buf idx)]
+          (= (buf idx) (+ x (* feedback out)))
+          (= idx (% (+ idx 1u) delay))
+          out))))
+
+@cpu
+(defn main []
+  (let [c1 (make-comb 2u 0.5)
+        c2 (make-comb 3u 0.5)]
+    (start-audio (fn []
+                     (+ (c1 0.25) (c2 0.25)))))
+  (spawn-window (fn [] ())))

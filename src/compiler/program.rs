@@ -363,28 +363,6 @@ enum CaptureRewrite {
 /// field, recursing through captured closures' own scopes) — the same
 /// traversal the runtime seed writers walk, so the set matches exactly
 /// what `start-audio` seeds at handoff.
-fn collect_audio_scope_global_names(
-  scope_struct: &AbstractStruct,
-  out: &mut Vec<Arc<str>>,
-) {
-  for field in scope_struct.fields.iter() {
-    let AbstractType::Type(field_type) = &field.field_type else {
-      panic!("captured scope field with non-concrete type")
-    };
-    if let Type::Function(signature) = field_type {
-      if let Some(field_ancestor) = &signature.abstract_ancestor
-        && let Some(nested_struct) =
-          field_ancestor.read().unwrap().captured_scope.clone()
-      {
-        collect_audio_scope_global_names(&nested_struct, out);
-      }
-    } else {
-      out.push(
-        format!("{}_audio_data_{}", scope_struct.name.0, field.name).into(),
-      );
-    }
-  }
-}
 
 /// Execution-context bit indices shared by the context-exclusivity
 /// validation (`validate_context_exclusivity`) and target emission
@@ -480,6 +458,40 @@ pub(crate) struct FnContexts {
 ///   at `start-audio` time. Clone bodies are CPU-semantics and are kept
 ///   out of WGSL/C output by usage-based emission (they're reachable
 ///   only from audio context — see `compile_to_target`).
+/// The record of one closure entry's lifted captures, stored in
+/// `Program::lifted_audio_captures` / `lifted_gpu_captures` by the
+/// closure-entry lift passes and read by the seed/effect walkers in both
+/// runtimes. Entries are positionally aligned with the scope struct's
+/// fields: a data capture carries its lifted global's name, a captured
+/// closure carries the record of its own scope's lift. Names are minted
+/// once, by `NameContext::gensym`, and carried here — never reconstructed
+/// by convention: underscore-concatenated capture paths aren't injective
+/// (entry field `a_b` with capture `c` collides with field `a` and
+/// capture `b_c`), which silently merged distinct captures into one
+/// global (pinned by the `capture_path_injectivity` thread_sync golden).
+#[derive(Debug, Clone, PartialEq)]
+pub enum LiftedCapture {
+  Global(Arc<str>),
+  Closure(Arc<LiftedCaptures>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiftedCaptures {
+  pub fields: Vec<LiftedCapture>,
+}
+
+impl LiftedCaptures {
+  /// Every lifted global name in the tree, depth-first in field order.
+  pub fn global_names(&self, out: &mut Vec<Arc<str>>) {
+    for field in &self.fields {
+      match field {
+        LiftedCapture::Global(name) => out.push(name.clone()),
+        LiftedCapture::Closure(sub) => sub.global_names(out),
+      }
+    }
+  }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum ClosureLiftTarget {
   GpuDispatch,
@@ -487,17 +499,31 @@ enum ClosureLiftTarget {
 }
 
 impl ClosureLiftTarget {
+  /// `entry_scope_name` is the *entry* closure's scope struct (unique per
+  /// closure definition), and `capture_path` the chain of closure-field
+  /// names from there down to (but not including) `field_name`,
+  /// underscore-joined with a trailing underscore (empty at the entry's
+  /// own scope). Together they make capture globals per-instance and
+  /// per-entry: several fields of one entry can hold closures of the same
+  /// definition (a comb bank), and two entries can capture same-named
+  /// fields of the same definition — leaf-scope-keyed names collapsed the
+  /// former, and path-only keys would collapse the latter. Global names
+  /// must be *derivable* (no gensym): the seed emitters in both runtimes
+  /// and the seeds-effect enumeration reconstruct them independently from
+  /// the scope-struct tree.
   fn capture_global_name(
     &self,
-    scope_struct_name: &str,
+    entry_scope_name: &str,
+    capture_path: &str,
     field_name: &str,
   ) -> Arc<str> {
     match self {
       ClosureLiftTarget::GpuDispatch => {
-        format!("{scope_struct_name}_data_{field_name}").into()
+        format!("{entry_scope_name}_data_{capture_path}{field_name}").into()
       }
       ClosureLiftTarget::Audio => {
-        format!("{scope_struct_name}_audio_data_{field_name}").into()
+        format!("{entry_scope_name}_audio_data_{capture_path}{field_name}")
+          .into()
       }
     }
   }
@@ -557,11 +583,23 @@ impl ClosureLiftTarget {
 /// created while iterating the registry, so they're collected here and
 /// installed at the end of the pass.
 struct ClosureLiftState {
-  created_globals: HashSet<Arc<str>>,
   new_vars: Vec<TopLevelVar>,
-  /// Original captured-closure name → its (memoized) clone.
-  clones: HashMap<Arc<str>, (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>)>,
+  /// (Original captured-closure name, entry scope + capture path) → its
+  /// (memoized) clone and lifted-capture record. Per-path, not
+  /// per-closure: each instance a distinct capture path reaches needs its
+  /// own clone reading its own globals.
+  clones: HashMap<
+    (Arc<str>, String),
+    (
+      Arc<str>,
+      Arc<RwLock<AbstractFunctionSignature>>,
+      Arc<LiftedCaptures>,
+    ),
+  >,
   new_functions: Vec<Arc<RwLock<AbstractFunctionSignature>>>,
+  /// Entry-fn-name → lifted-capture record, installed into the Program's
+  /// registry at the end of the pass.
+  lifted_captures: Vec<(Arc<str>, Arc<LiftedCaptures>)>,
 }
 
 #[derive(Debug)]
@@ -578,6 +616,13 @@ pub struct Program {
   /// refreshes each of these from the IO manager at the start of every
   /// frame, so GPU reads see a per-frame snapshot of the ambient state.
   pub window_info_bindings: Vec<(WindowInfoBindingSource, Arc<str>)>,
+  /// Lifted-capture records for audio closure entries, keyed by the entry
+  /// closure's (unique) original function name — see [`LiftedCaptures`].
+  /// Carried through registry-rebuilding passes like
+  /// `window_info_bindings`.
+  pub lifted_audio_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
+  /// As `lifted_audio_captures`, for dispatched GPU closure entries.
+  pub lifted_gpu_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
 }
 impl Clone for Program {
   fn clone(&self) -> Self {
@@ -589,6 +634,8 @@ impl Clone for Program {
       emulated_functions: self.emulated_functions.clone(),
       has_been_validated: self.has_been_validated,
       window_info_bindings: self.window_info_bindings.clone(),
+      lifted_audio_captures: self.lifted_audio_captures.clone(),
+      lifted_gpu_captures: self.lifted_gpu_captures.clone(),
     }
   }
 }
@@ -609,6 +656,8 @@ impl Program {
       emulated_functions: EmulatedFunctionRecord::empty(),
       has_been_validated: false,
       window_info_bindings: vec![],
+      lifted_audio_captures: HashMap::new(),
+      lifted_gpu_captures: HashMap::new(),
     }
   }
   pub fn add_top_level_var(&mut self, var: TopLevelVar, errors: &mut ErrorLog) {
@@ -1318,6 +1367,8 @@ impl Program {
     take(self, |old_ctx| {
       monomorphized_ctx.top_level_vars = old_ctx.top_level_vars;
       monomorphized_ctx.window_info_bindings = old_ctx.window_info_bindings;
+      monomorphized_ctx.lifted_audio_captures = old_ctx.lifted_audio_captures;
+      monomorphized_ctx.lifted_gpu_captures = old_ctx.lifted_gpu_captures;
       monomorphized_ctx
     });
   }
@@ -1921,6 +1972,8 @@ impl Program {
           loop {
             match &root.kind {
               ExpKind::Access(_, inner) => root = inner,
+              // An array-lookup application is rooted at its callee.
+              ExpKind::Application(callee, _) => root = callee,
               ExpKind::Name(name) => {
                 break name == scope_name || lifted_globals.contains(name);
               }
@@ -1974,14 +2027,25 @@ impl Program {
              value; captures are lifted to per-field globals, which only \
              supports field accesses"
           );
-        } else if matches!(&e.kind, ExpKind::Access(_, _))
-          && scope_rooted(e)
-          && matches!(
+        } else if matches!(
+          &e.kind,
+          ExpKind::Access(_, _) | ExpKind::Application(_, _)
+        ) && scope_rooted(e)
+        {
+          // Mirror what inference produces for expressions rooted at an
+          // ordinary global: accessor/lookup nodes over the lifted
+          // global are globally bound (the mutable-ref effect derivation
+          // reads the *outer* node's flag, and a stale local flag would
+          // turn the write into `ModifiesLocalVar` — invisible to
+          // shared-dirty marking, so the audio thread's element writes
+          // would never publish).
+          e.data.is_globally_bound = true;
+          if matches!(
             e.data.ownership,
             Ownership::Reference | Ownership::MutableReference
-          )
-        {
-          e.data.ownership = Ownership::Owned;
+          ) {
+            e.data.ownership = Ownership::Owned;
+          }
         }
         Ok::<bool, Never>(true)
       })
@@ -2029,68 +2093,86 @@ impl Program {
     scope_struct: &AbstractStruct,
     source_trace: &SourceTrace,
     target: ClosureLiftTarget,
+    entry_scope_name: &str,
+    capture_path: &str,
     state: &mut ClosureLiftState,
     errors: &mut ErrorLog,
-  ) -> HashMap<Arc<str>, CaptureRewrite> {
-    let scope_struct_name = scope_struct.name.0.clone();
-    scope_struct
-      .fields
-      .iter()
-      .map(|field| {
-        let AbstractType::Type(field_type) = &field.field_type else {
-          panic!("captured scope field with non-concrete type")
+  ) -> (HashMap<Arc<str>, CaptureRewrite>, Arc<LiftedCaptures>) {
+    let mut rewrites = HashMap::new();
+    let mut lifted_fields = Vec::with_capacity(scope_struct.fields.len());
+    for field in scope_struct.fields.iter() {
+      let AbstractType::Type(field_type) = &field.field_type else {
+        panic!("captured scope field with non-concrete type")
+      };
+      if let Type::Function(signature) = field_type {
+        let Some(field_ancestor) = &signature.abstract_ancestor else {
+          panic!("captured closure without an abstract ancestor")
         };
-        if let Type::Function(signature) = field_type {
-          let Some(field_ancestor) = &signature.abstract_ancestor else {
-            panic!("captured closure without an abstract ancestor")
-          };
-          if field_ancestor.read().unwrap().captured_scope.is_none() {
-            panic!(
-              "captured scope-less closure; these are unit-like and \
-               shouldn't be captured"
-            )
-          }
-          let (clone_name, clone_signature) = self.cloneify_captured_closure(
+        if field_ancestor.read().unwrap().captured_scope.is_none() {
+          panic!(
+            "captured scope-less closure; these are unit-like and \
+             shouldn't be captured"
+          )
+        }
+        let (clone_name, clone_signature, nested_captures) = self
+          .cloneify_captured_closure(
             field_ancestor.clone(),
             target,
+            entry_scope_name,
+            &format!("{capture_path}{}_", field.name),
             state,
             errors,
           );
-          (
-            field.name.clone(),
-            CaptureRewrite::CalleeClone {
-              clone_name,
-              clone_signature,
-            },
-          )
-        } else {
-          target.validate_capture(field_type, source_trace, errors);
-          let global_name =
-            target.capture_global_name(&scope_struct_name, &field.name);
-          // The same closure definition can be captured along several
-          // paths to an entry; its globals are keyed by its own scope
-          // struct, so they're created once and shared.
-          if state.created_globals.insert(global_name.clone()) {
-            state.new_vars.push(TopLevelVar {
-              name: global_name.clone(),
-              kind: TopLevelVariableKind::Var {
-                address_space: target.capture_address_space(),
-                // Binding numbers are assigned centrally at the end of
-                // validation. (Audio capture globals never become
-                // runtime GPU bindings — no GPU entry references them —
-                // but carry elided numbers like any storage var.)
-                group_and_binding: Some(BindingSpec::Elided),
-              },
-              var_type: field_type.clone(),
-              value: None,
-              source_trace: source_trace.clone(),
-              external: false,
-            });
-          }
-          (field.name.clone(), CaptureRewrite::Global(global_name))
-        }
-      })
-      .collect()
+        lifted_fields.push(LiftedCapture::Closure(nested_captures));
+        rewrites.insert(
+          field.name.clone(),
+          CaptureRewrite::CalleeClone {
+            clone_name,
+            clone_signature,
+          },
+        );
+      } else {
+        target.validate_capture(field_type, source_trace, errors);
+        // The entry-scope/path concatenation is only a *readable base* —
+        // `gensym` is what guarantees uniqueness (concatenated paths
+        // aren't injective), and the resulting name is recorded in the
+        // `LiftedCaptures` tree rather than ever being re-derived.
+        let global_name: Arc<str> =
+          self
+            .names
+            .write()
+            .unwrap()
+            .gensym(&target.capture_global_name(
+              entry_scope_name,
+              capture_path,
+              &field.name,
+            ));
+        state.new_vars.push(TopLevelVar {
+          name: global_name.clone(),
+          kind: TopLevelVariableKind::Var {
+            address_space: target.capture_address_space(),
+            // Binding numbers are assigned centrally at the end of
+            // validation. (Audio capture globals never become
+            // runtime GPU bindings — no GPU entry references them —
+            // but carry elided numbers like any storage var.)
+            group_and_binding: Some(BindingSpec::Elided),
+          },
+          var_type: field_type.clone(),
+          value: None,
+          source_trace: source_trace.clone(),
+          external: false,
+        });
+        lifted_fields.push(LiftedCapture::Global(global_name.clone()));
+        rewrites
+          .insert(field.name.clone(), CaptureRewrite::Global(global_name));
+      }
+    }
+    (
+      rewrites,
+      Arc::new(LiftedCaptures {
+        fields: lifted_fields,
+      }),
+    )
   }
   /// Creates (and memoizes) the scope-less clone of a closure captured —
   /// directly or transitively — by a closure entry: the clone's trailing
@@ -2103,9 +2185,15 @@ impl Program {
     &self,
     ancestor: Arc<RwLock<AbstractFunctionSignature>>,
     target: ClosureLiftTarget,
+    entry_scope_name: &str,
+    capture_path: &str,
     state: &mut ClosureLiftState,
     errors: &mut ErrorLog,
-  ) -> (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>) {
+  ) -> (
+    Arc<str>,
+    Arc<RwLock<AbstractFunctionSignature>>,
+    Arc<LiftedCaptures>,
+  ) {
     let (original_name, scope_struct, original_implementation) = {
       let ancestor = ancestor.read().unwrap();
       let Some(scope_struct) = ancestor.captured_scope.clone() else {
@@ -2118,14 +2206,20 @@ impl Program {
       };
       (ancestor.name.clone(), scope_struct, implementation)
     };
-    if let Some(existing) = state.clones.get(&original_name) {
+    let memo_key = (
+      original_name.clone(),
+      format!("{entry_scope_name}/{capture_path}"),
+    );
+    if let Some(existing) = state.clones.get(&memo_key) {
       return existing.clone();
     }
     let scope_struct_name = scope_struct.name.0.clone();
-    let rewrites = self.lift_closure_entry_captures(
+    let (rewrites, lifted_captures) = self.lift_closure_entry_captures(
       &scope_struct,
       &scope_struct.source_trace,
       target,
+      entry_scope_name,
+      capture_path,
       state,
       errors,
     );
@@ -2159,9 +2253,25 @@ impl Program {
         .gensym(&format!("{original_name}_gpu"))
         .into(),
       ClosureLiftTarget::Audio => {
-        // Deterministic name — both runtimes derive the audio entry name
-        // from the closure's ancestor at `start-audio` time.
-        let clone_name: Arc<str> = format!("{original_name}_audio").into();
+        // The *entry* clone's name is deterministic — both runtimes
+        // derive it from the closure's ancestor at `start-audio` time.
+        // Nested clones are referenced only by the bodies rewritten in
+        // this same pass, so they're gensym'd (with the capture path in
+        // the base for readability), which also keeps two entries'
+        // same-path clones distinct.
+        let clone_name: Arc<str> = if capture_path.is_empty() {
+          format!("{original_name}_audio").into()
+        } else {
+          self
+            .names
+            .write()
+            .unwrap()
+            .gensym(&format!(
+              "{original_name}_audio_{}",
+              capture_path.trim_end_matches('_')
+            ))
+            .into()
+        };
         assert!(
           !self.abstract_functions.contains_key(&clone_name),
           "audio clone name `{clone_name}` collides with an existing function"
@@ -2192,10 +2302,15 @@ impl Program {
       }))
     };
     state.new_functions.push(clone_signature.clone());
-    state
-      .clones
-      .insert(original_name, (clone_name.clone(), clone_signature.clone()));
-    (clone_name, clone_signature)
+    state.clones.insert(
+      memo_key,
+      (
+        clone_name.clone(),
+        clone_signature.clone(),
+        lifted_captures.clone(),
+      ),
+    );
+    (clone_name, clone_signature, lifted_captures)
   }
   /// The unified context-exclusivity pass: one analysis of *which
   /// execution contexts each function can run in* (CPU, vertex, fragment,
@@ -2627,10 +2742,10 @@ impl Program {
   /// ships the seeds to the audio replica's first adopt.
   pub fn extract_audio_closure_scopes(&mut self, errors: &mut ErrorLog) {
     let mut state = ClosureLiftState {
-      created_globals: HashSet::new(),
       new_vars: vec![],
       clones: HashMap::new(),
       new_functions: vec![],
+      lifted_captures: vec![],
     };
     for f in self.abstract_functions_iter() {
       let FunctionImplementationKind::Composite(implementation) =
@@ -2669,6 +2784,7 @@ impl Program {
             // reference-address-space rebuild). Both steps are idempotent
             // (`cloneify_captured_closure` memoizes), so repeat call
             // sites of the same closure need no guard.
+            let original_name = ancestor.read().unwrap().name.clone();
             {
               let mut ancestor = ancestor.write().unwrap();
               ancestor.entry_point = None;
@@ -2678,12 +2794,18 @@ impl Program {
                 implementation.write().unwrap().entry_point = None;
               }
             }
-            let (_, clone_signature) = self.cloneify_captured_closure(
-              ancestor.clone(),
-              ClosureLiftTarget::Audio,
-              &mut state,
-              errors,
-            );
+            let (_, clone_signature, lifted_captures) = self
+              .cloneify_captured_closure(
+                ancestor.clone(),
+                ClosureLiftTarget::Audio,
+                &scope_struct.name.0.clone(),
+                "",
+                &mut state,
+                errors,
+              );
+            state
+              .lifted_captures
+              .push((original_name.clone(), lifted_captures.clone()));
             {
               let mut clone = clone_signature.write().unwrap();
               clone.entry_point = Some(EntryPoint::Audio);
@@ -2703,7 +2825,7 @@ impl Program {
             // the main thread touching the lifted globals, with no
             // force-membership flag anywhere.
             let mut seeded_names: Vec<Arc<str>> = vec![];
-            collect_audio_scope_global_names(&scope_struct, &mut seeded_names);
+            lifted_captures.global_names(&mut seeded_names);
             applied_f.data.as_known_mut(|t| {
               if let Type::Function(callee_signature) = t
                 && let Some(builtin_ancestor) =
@@ -2730,12 +2852,14 @@ impl Program {
     let ClosureLiftState {
       new_vars,
       new_functions,
+      lifted_captures,
       ..
     } = state;
     self.top_level_vars.extend(new_vars);
     for f in new_functions {
       self.add_abstract_function(f);
     }
+    self.lifted_audio_captures.extend(lifted_captures);
   }
   /// Rewrites every window-info query (`window-time`, `mouse-coords`,
   /// `key-down?`, etc.) into a read of an implicit uniform binding, creating
@@ -2990,10 +3114,10 @@ impl Program {
   /// closure's scope argument into an implicit binding: the scope struct
   pub fn extract_dispatched_closure_scopes(&mut self, errors: &mut ErrorLog) {
     let mut state = ClosureLiftState {
-      created_globals: HashSet::new(),
       new_vars: vec![],
       clones: HashMap::new(),
       new_functions: vec![],
+      lifted_captures: vec![],
     };
     let mut processed_entries: HashSet<Arc<str>> = HashSet::new();
     for f in self.abstract_functions_iter() {
@@ -3096,13 +3220,19 @@ impl Program {
               // and only in last position). Captured *closures* recurse:
               // their captures are lifted the same way and the body calls
               // a GPU clone (see `cloneify_captured_closure`).
-              let rewrites = self.lift_closure_entry_captures(
-                &scope_struct,
-                &exp.source_trace,
-                ClosureLiftTarget::GpuDispatch,
-                &mut state,
-                errors,
-              );
+              let (rewrites, lifted_captures) = self
+                .lift_closure_entry_captures(
+                  &scope_struct,
+                  &exp.source_trace,
+                  ClosureLiftTarget::GpuDispatch,
+                  &scope_struct.name.0.clone(),
+                  "",
+                  &mut state,
+                  errors,
+                );
+              state
+                .lifted_captures
+                .push((entry_name.clone(), lifted_captures));
               self.rewrite_dispatched_scope_body(
                 body,
                 &scope_arg_name,
@@ -3117,12 +3247,14 @@ impl Program {
     let ClosureLiftState {
       new_vars,
       new_functions,
+      lifted_captures,
       ..
     } = state;
     self.top_level_vars.extend(new_vars);
     for f in new_functions {
       self.add_abstract_function(f);
     }
+    self.lifted_gpu_captures.extend(lifted_captures);
   }
   pub fn monomorphize_reference_address_spaces(&mut self) {
     loop {
@@ -3157,6 +3289,8 @@ impl Program {
       take(self, |old_ctx| {
         monomorphized_ctx.top_level_vars = old_ctx.top_level_vars;
         monomorphized_ctx.window_info_bindings = old_ctx.window_info_bindings;
+        monomorphized_ctx.lifted_audio_captures = old_ctx.lifted_audio_captures;
+        monomorphized_ctx.lifted_gpu_captures = old_ctx.lifted_gpu_captures;
         monomorphized_ctx
       });
       if !changed {
@@ -4123,6 +4257,8 @@ impl Program {
     take(self, |old_ctx| {
       inlined_ctx.top_level_vars = old_ctx.top_level_vars;
       inlined_ctx.window_info_bindings = old_ctx.window_info_bindings;
+      inlined_ctx.lifted_audio_captures = old_ctx.lifted_audio_captures;
+      inlined_ctx.lifted_gpu_captures = old_ctx.lifted_gpu_captures;
       inlined_ctx
     });
     changed
@@ -6984,6 +7120,8 @@ impl Program {
     };
     let mut state = BytecodeCompilationState::new();
     state.cpu_mode = cpu_mode;
+    state.lifted_audio_captures = self.lifted_audio_captures.clone();
+    state.lifted_gpu_captures = self.lifted_gpu_captures.clone();
     state.monomorphized_to_base_names =
       self.names.read().unwrap().monomorphized_to_base_names();
     // Thread-shared globals: same sorted list in every compiled artifact,

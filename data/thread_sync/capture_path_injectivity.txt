@@ -1,0 +1,15 @@
+main-publish: <audio-scope>_a_b_c
+main-publish: <audio-scope>_a_b_c_0
+main-publish: <audio-scope>_a_b_v
+main-publish: <audio-scope>_a_v
+start-audio: <audio-closure>
+spawn-window
+frame 0
+audio-batch 0 x4
+audio-adopt: <audio-scope>_a_b_c
+audio-adopt: <audio-scope>_a_b_c_0
+audio-adopt: <audio-scope>_a_b_v
+audio-adopt: <audio-scope>_a_v
+samples: 0.1875 0.375 0.5625 0.75
+audio-publish: <audio-scope>_a_b_c
+audio-publish: <audio-scope>_a_b_c_0

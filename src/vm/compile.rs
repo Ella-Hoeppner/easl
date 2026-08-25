@@ -12,6 +12,7 @@ use crate::compiler::functions::{
   FunctionImplementationKind, Ownership, TopLevelFunction,
   extract_mat_size as parse_mat_size,
 };
+use crate::compiler::program::{LiftedCapture, LiftedCaptures};
 use crate::compiler::structs::AbstractStruct;
 use crate::compiler::types::{
   AbstractType, ConcreteArraySize, Type, TypeState,
@@ -148,6 +149,11 @@ pub struct BytecodeCompilationState {
   pub pending_ref_arg_function_usages: Vec<PendingRefFnUsage>,
   pub pending_frame_fn_usages: Vec<PendingFrameFnUsage>,
   pub array_mut_ref_store_instructions: Vec<Vec<Instruction>>,
+  /// Lifted-capture records by entry fn name, copied from the validated
+  /// `Program` (see `LiftedCaptures`); consumed by the audio-seed and
+  /// dispatched-capture emitters.
+  pub lifted_audio_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
+  pub lifted_gpu_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
   /// Region bindings for the function currently being compiled as a
   /// per-usage ref-arg specialization, keyed by arg index. Set by
   /// `TopLevelFunction::compile_to_bytecode` just before the body
@@ -189,6 +195,8 @@ impl BytecodeCompilationState {
       pending_ref_arg_function_usages: vec![],
       pending_frame_fn_usages: vec![],
       array_mut_ref_store_instructions: vec![],
+      lifted_audio_captures: HashMap::new(),
+      lifted_gpu_captures: HashMap::new(),
     }
   }
   pub fn take_stack_slot(&mut self, size: u16) -> u16 {
@@ -1964,28 +1972,51 @@ impl BytecodeCompilationState {
         .captured_scope
         .as_ref()
         .expect("dispatched closure construction without captured scope");
-      for (field, captured_value) in
-        scope_struct.fields.iter().zip(captured.iter())
+      let captures = self
+        .lifted_gpu_captures
+        .get(&entry_name)
+        .unwrap_or_else(|| {
+          panic!(
+            "compiler bug: no lifted-capture record for dispatched entry \
+             `{entry_name}`"
+          )
+        })
+        .clone();
+      assert_eq!(
+        scope_struct.fields.len(),
+        captures.fields.len(),
+        "lifted-capture record misaligned with scope struct"
+      );
+      for ((field, capture), captured_value) in scope_struct
+        .fields
+        .iter()
+        .zip(captures.fields.iter())
+        .zip(captured.iter())
       {
         let value_pos =
           captured_value.compile_to_bytecode(false, self).unwrap();
         let AbstractType::Type(field_type) = &field.field_type else {
           panic!("captured scope field with non-concrete type")
         };
-        if let Type::Function(signature) = field_type {
-          if let Some(field_ancestor) = &signature.abstract_ancestor
-            && let Some(nested_struct) =
-              field_ancestor.read().unwrap().captured_scope.clone()
-          {
-            self.emit_scope_capture_writes(&nested_struct, value_pos);
+        match capture {
+          LiftedCapture::Closure(nested_captures) => {
+            let Type::Function(signature) = field_type else {
+              panic!("closure capture record on a non-function field")
+            };
+            let nested_struct = signature
+              .abstract_ancestor
+              .as_ref()
+              .and_then(|a| a.read().unwrap().captured_scope.clone())
+              .expect("captured closure without a scope struct");
+            self.emit_scope_capture_writes(
+              &nested_struct,
+              value_pos,
+              nested_captures,
+            );
           }
-        } else {
-          self.emit_capture_field_write(
-            &scope_struct.name.0,
-            &field.name,
-            field_type,
-            value_pos,
-          );
+          LiftedCapture::Global(global_name) => {
+            self.emit_capture_field_write(global_name, field_type, value_pos);
+          }
         }
       }
     }
@@ -2003,53 +2034,67 @@ impl BytecodeCompilationState {
     &mut self,
     scope_struct: &AbstractStruct,
     base_pos: u16,
+    captures: &LiftedCaptures,
     seeded: &mut Vec<Arc<str>>,
   ) {
+    assert_eq!(
+      scope_struct.fields.len(),
+      captures.fields.len(),
+      "lifted-capture record misaligned with scope struct"
+    );
     let mut offset = 0u16;
-    for field in scope_struct.fields.iter() {
+    for (field, capture) in
+      scope_struct.fields.iter().zip(captures.fields.iter())
+    {
       let AbstractType::Type(field_type) = &field.field_type else {
         panic!("captured scope field with non-concrete type")
       };
-      if let Type::Function(signature) = field_type {
-        if let Some(field_ancestor) = &signature.abstract_ancestor
-          && let Some(nested_struct) =
-            field_ancestor.read().unwrap().captured_scope.clone()
-        {
+      match capture {
+        LiftedCapture::Closure(nested_captures) => {
+          let Type::Function(signature) = field_type else {
+            panic!("closure capture record on a non-function field")
+          };
+          let nested_struct = signature
+            .abstract_ancestor
+            .as_ref()
+            .and_then(|a| a.read().unwrap().captured_scope.clone())
+            .expect("captured closure without a scope struct");
           self.emit_audio_scope_seed_writes(
             &nested_struct,
             base_pos + offset,
+            nested_captures,
             seeded,
           );
         }
-      } else {
-        let global_name: Arc<str> =
-          format!("{}_audio_data_{}", scope_struct.name.0, field.name).into();
-        if let Some((memory, _)) =
-          self.dynamic_array_memory.get(&global_name).copied()
-        {
-          // A runtime-sized capture: the value slot holds a heap id;
-          // copy its payload into the global's region.
-          self.push_instruction(Instruction {
-            op: Op::RegionFromHeap,
-            arg_positions: [memory, base_pos + offset, 0],
-            return_position: 0,
-          });
-        } else if let Some(position) = self.globals.get(&global_name).copied() {
-          let value_size = vm_type_size(field_type);
-          if value_size > 0 {
+        LiftedCapture::Global(global_name) => {
+          if let Some((memory, _)) =
+            self.dynamic_array_memory.get(global_name).copied()
+          {
+            // A runtime-sized capture: the value slot holds a heap id;
+            // copy its payload into the global's region.
             self.push_instruction(Instruction {
-              op: Op::Move,
-              arg_positions: [base_pos + offset, value_size, 0],
-              return_position: position,
+              op: Op::RegionFromHeap,
+              arg_positions: [memory, base_pos + offset, 0],
+              return_position: 0,
             });
+          } else if let Some(position) = self.globals.get(global_name).copied()
+          {
+            let value_size = vm_type_size(field_type);
+            if value_size > 0 {
+              self.push_instruction(Instruction {
+                op: Op::Move,
+                arg_positions: [base_pos + offset, value_size, 0],
+                return_position: position,
+              });
+            }
+          } else {
+            panic!(
+              "lifted audio scope global `{global_name}` not found during \
+               bytecode compilation"
+            )
           }
-        } else {
-          panic!(
-            "lifted audio scope global `{global_name}` not found during \
-             bytecode compilation"
-          )
+          seeded.push(global_name.clone());
         }
-        seeded.push(global_name);
       }
       offset += vm_type_size(field_type);
     }
@@ -2062,26 +2107,43 @@ impl BytecodeCompilationState {
     &mut self,
     scope_struct: &AbstractStruct,
     base_pos: u16,
+    captures: &LiftedCaptures,
   ) {
+    assert_eq!(
+      scope_struct.fields.len(),
+      captures.fields.len(),
+      "lifted-capture record misaligned with scope struct"
+    );
     let mut offset = 0u16;
-    for field in scope_struct.fields.iter() {
+    for (field, capture) in
+      scope_struct.fields.iter().zip(captures.fields.iter())
+    {
       let AbstractType::Type(field_type) = &field.field_type else {
         panic!("captured scope field with non-concrete type")
       };
-      if let Type::Function(signature) = field_type {
-        if let Some(field_ancestor) = &signature.abstract_ancestor
-          && let Some(nested_struct) =
-            field_ancestor.read().unwrap().captured_scope.clone()
-        {
-          self.emit_scope_capture_writes(&nested_struct, base_pos + offset);
+      match capture {
+        LiftedCapture::Closure(nested_captures) => {
+          let Type::Function(signature) = field_type else {
+            panic!("closure capture record on a non-function field")
+          };
+          let nested_struct = signature
+            .abstract_ancestor
+            .as_ref()
+            .and_then(|a| a.read().unwrap().captured_scope.clone())
+            .expect("captured closure without a scope struct");
+          self.emit_scope_capture_writes(
+            &nested_struct,
+            base_pos + offset,
+            nested_captures,
+          );
         }
-      } else {
-        self.emit_capture_field_write(
-          &scope_struct.name.0,
-          &field.name,
-          field_type,
-          base_pos + offset,
-        );
+        LiftedCapture::Global(global_name) => {
+          self.emit_capture_field_write(
+            global_name,
+            field_type,
+            base_pos + offset,
+          );
+        }
       }
       offset += vm_type_size(field_type);
     }
@@ -2093,16 +2155,13 @@ impl BytecodeCompilationState {
   /// dynamic global).
   fn emit_capture_field_write(
     &mut self,
-    scope_struct_name: &Arc<str>,
-    field_name: &Arc<str>,
+    global_name: &Arc<str>,
     field_type: &Type,
     value_pos: u16,
   ) {
-    let global_name: Arc<str> =
-      format!("{scope_struct_name}_data_{field_name}").into();
     let binding = *self
       .binding_indices
-      .get(&global_name)
+      .get(global_name)
       .expect("dispatched closure capture binding not found");
     match self.host_bindings[binding as usize].storage {
       HostBindingStorage::Slots { position, .. } => {
@@ -2910,9 +2969,20 @@ impl TypedExp {
             return_position: 0,
           });
           let mut seeded: Vec<Arc<str>> = vec![];
+          let captures = state
+            .lifted_audio_captures
+            .get(&original_name)
+            .unwrap_or_else(|| {
+              panic!(
+                "compiler bug: no lifted-capture record for audio entry \
+                 `{original_name}`"
+              )
+            })
+            .clone();
           state.emit_audio_scope_seed_writes(
             scope_struct,
             value_pos,
+            &captures,
             &mut seeded,
           );
           // Mark the seeded shared vars dirty inside the same guard, so
