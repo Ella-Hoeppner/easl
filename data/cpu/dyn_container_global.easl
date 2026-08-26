@@ -1,0 +1,26 @@
+; KNOWN-FAILING (bytecode VM): a global whose type is a runtime-sized
+; array of heap-payload enums. Whole-global assignment goes through
+; `RegionFromHeap`, whose flat-words clone copies the embedded payload
+; ids into the region as borrows of the builder's construction site —
+; freed and reused by the second `build` call, so the global's element
+; payload dangles.
+(enum (Option T)
+  None
+  (Some T))
+
+@local
+(var g: [(Option [f32])])
+
+(defn build [v: f32]: [(Option [f32])]
+  (into-dynamic-array [(Some (into-dynamic-array [v v]))]))
+
+@cpu
+(defn main []
+  (= g (build 1.))
+  (let [other (build 9.)]
+    (match (g 0u)
+      (Some arr) (print (arr 0u))
+      None (print 99.))
+    (match (other 0u)
+      (Some arr) (print (arr 0u))
+      None (print 99.))))

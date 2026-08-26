@@ -1,0 +1,22 @@
+; KNOWN-FAILING (bytecode VM): a runtime-sized array of structs carrying
+; a String field. Strings are heap values like dyn arrays, so the
+; embedding element type hits the same flat-words borrow hole; reading
+; the element after the second `build` call dereferences a freed string
+; id (wrong text, or a heap-decode panic if the id slot was vacated).
+(struct Named
+  id: f32
+  name: String)
+
+(defn build [id: f32 name: String]: [Named]
+  (into-dynamic-array [(Named id name)]))
+
+@cpu
+(defn main []
+  (let [a (build 1. "one")
+        b (build 2. "two")]
+    (let [n (a 0u)]
+      (print n.id)
+      (print n.name))
+    (let [m (b 0u)]
+      (print m.id)
+      (print m.name))))

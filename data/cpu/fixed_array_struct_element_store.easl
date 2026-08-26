@@ -1,0 +1,28 @@
+; KNOWN-FAILING (bytecode VM): runtime-index element stores into a
+; FIXED-size array of structs carrying a runtime-sized field. Today: the
+; `vm_type_size` sized-array panic (see
+; fixed_array_dyn_elements_across_calls). After sizing: the `ArrayStore`
+; raw-copy hole with an *embedding* element type — the stored element's
+; body id sits at a static offset within the element, but the store
+; address is `base + i*stride`, so the release/promote fixups need
+; index-relative addressing rather than the static slots
+; `emit_value_copy` handles.
+(struct Packet
+  tag: f32
+  body: [f32])
+
+(defn empty-pair []: [2: Packet]
+  [(Packet 0. (into-dynamic-array [0.]))
+   (Packet 0. (into-dynamic-array [0.]))])
+
+@cpu
+(defn main []
+  (let [@var xs (empty-pair)]
+    (for [i 0u (< i 2u) (+= i 1u)]
+      (= (xs i) (Packet (f32 i) (into-dynamic-array [(f32 i) (f32 i)]))))
+    (let [p (xs 0u)
+          q (xs 1u)]
+      (print p.tag)
+      (print (p.body 0u))
+      (print q.tag)
+      (print (q.body 0u)))))

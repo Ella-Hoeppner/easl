@@ -1,0 +1,21 @@
+; KNOWN-FAILING (bytecode VM): a FIXED-size array of dyn arrays.
+; Currently a VM-compile panic — `vm_type_size`'s sized-array case
+; delegates to `data_size_in_u32s` (GPU sizing), which errors on a
+; heap-value element type, instead of recursing with VM sizing
+; (`count * vm_type_size(element)`, where a dyn element is one id
+; word). The tree-walker runs this fine. Once sizing lands, this test
+; should PASS outright: fixed arrays are slot-resident, so whole-array
+; copies go through `emit_value_copy`, whose fixup walker already
+; recurses literal-count elements (`collect_heap_fixups`) and promotes
+; each element id — making this the guard proving the container hole is
+; specific to *indexed* element traffic and heap-backed containers.
+(defn build [v: f32]: [2: [f32]]
+  [(into-dynamic-array [v v]) (into-dynamic-array [v])])
+
+@cpu
+(defn main []
+  (let [a (build 1.)
+        b (build 9.)]
+    (print ((a 0u) 0u))
+    (print (array-length (a 1u)))
+    (print ((b 0u) 0u))))

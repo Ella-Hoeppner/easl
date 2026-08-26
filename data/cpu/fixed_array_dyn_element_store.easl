@@ -1,0 +1,17 @@
+; KNOWN-FAILING (bytecode VM): runtime-index element stores into a
+; FIXED-size array of dyn arrays. Today this dies earlier, in the
+; `vm_type_size` sized-array panic (see
+; fixed_array_dyn_elements_across_calls); once sizing lands, the exposed
+; hole is `ArrayStore` — a raw `ptr::copy` at `base + i*stride` with no
+; release of the old element id and no promotion of the new one, so each
+; stored id is a borrow of the `into-dynamic-array` site the next loop
+; iteration frees. The dyn-outer sibling
+; (`nested_dynamic_array_element_store`) passes via `Cells` containers;
+; the fixed-size outer misses the accounting entirely.
+@cpu
+(defn main []
+  (let [@var xs [(into-dynamic-array [9.]) (into-dynamic-array [9.])]]
+    (for [i 0u (< i 2u) (+= i 1u)]
+      (= (xs i) (into-dynamic-array [(f32 i) (f32 i)])))
+    (print ((xs 0u) 0u))
+    (print ((xs 1u) 0u))))

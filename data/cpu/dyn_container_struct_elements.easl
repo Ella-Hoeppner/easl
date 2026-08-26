@@ -1,0 +1,23 @@
+; KNOWN-FAILING (bytecode VM): a runtime-sized array of structs carrying
+; a runtime-sized field. Same flat-words container hole as the enum
+; case, with nothing discriminant-dependent: the element's `body` id is
+; embedded at a static offset, but `HeapFromSlots` copies it in as a
+; borrow, so after the second `build` call `a`'s element reads a correct
+; `tag` (flat words are genuinely copied) next to a dangling `body`.
+(struct Packet
+  tag: f32
+  body: [f32])
+
+(defn build [v: f32]: [Packet]
+  (into-dynamic-array [(Packet v (into-dynamic-array [v v v]))]))
+
+@cpu
+(defn main []
+  (let [a (build 1.)
+        b (build 9.)]
+    (let [p (a 0u)]
+      (print p.tag)
+      (print (p.body 0u)))
+    (let [q (b 0u)]
+      (print q.tag)
+      (print (q.body 0u)))))

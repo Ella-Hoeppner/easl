@@ -1,0 +1,25 @@
+; KNOWN-FAILING (bytecode VM): runtime-index element stores into a
+; FIXED-size array of heap-payload enums. Today: the `vm_type_size`
+; sized-array panic (see fixed_array_dyn_elements_across_calls). After
+; sizing: the `ArrayStore` raw-copy hole composed with
+; discriminant-dependent payload offsets — a correct store here needs
+; the same per-variant dispatch whole-enum copies use, addressed at
+; `base + i*stride`.
+(enum (Option T)
+  None
+  (Some T))
+
+(defn empty-pair []: [2: (Option [f32])]
+  [None None])
+
+@cpu
+(defn main []
+  (let [@var xs (empty-pair)]
+    (for [i 0u (< i 2u) (+= i 1u)]
+      (= (xs i) (Some (into-dynamic-array [(f32 i)]))))
+    (match (xs 0u)
+      (Some arr) (print (arr 0u))
+      None (print 99.))
+    (match (xs 1u)
+      (Some arr) (print (arr 0u))
+      None (print 99.))))

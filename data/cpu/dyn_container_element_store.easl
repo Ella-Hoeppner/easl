@@ -1,0 +1,26 @@
+; KNOWN-FAILING (bytecode VM): element stores into a runtime-sized array
+; of heap-payload enums. `DynStore`'s flat-words arm copies the element's
+; words into the region without releasing the old element's ids or
+; promoting the new one's, so each loop iteration's payload id is a
+; borrow of the `Some (into-dynamic-array ...)` construction site — which
+; the next iteration frees and reuses. The `[String]`/`[[f32]]` `Cells`
+; containers handle exactly this correctly; embedding element types miss
+; it.
+(enum (Option T)
+  None
+  (Some T))
+
+(defn empty-pair []: [(Option [f32])]
+  (zeroed-array 2u))
+
+@cpu
+(defn main []
+  (let [@var xs (empty-pair)]
+    (for [i 0u (< i 2u) (+= i 1u)]
+      (= (xs i) (Some (into-dynamic-array [(f32 i) (f32 i)]))))
+    (match (xs 0u)
+      (Some arr) (print (arr 0u))
+      None (print 99.))
+    (match (xs 1u)
+      (Some arr) (print (arr 0u))
+      None (print 99.))))

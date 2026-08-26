@@ -1,0 +1,24 @@
+; KNOWN-FAILING (bytecode VM): a runtime-sized array whose elements are
+; heap-payload enums. The element type embeds a heap id without being
+; one, so the container stores flat words (`DynMemory::Words`), and
+; construction (`HeapFromSlots`) copies the payload ids in as borrows of
+; the source fixed-array literal's slots — which the second `build` call
+; releases and reuses, so `a`'s element payload aliases `b`'s.
+(enum (Option T)
+  None
+  (Some T))
+
+(defn build [v: f32]: [(Option [f32])]
+  (into-dynamic-array [(Some (into-dynamic-array [v v]))
+                       None]))
+
+@cpu
+(defn main []
+  (let [a (build 1.)
+        b (build 9.)]
+    (match (a 0u)
+      (Some arr) (print (arr 0u))
+      None (print 99.))
+    (match (b 0u)
+      (Some arr) (print (arr 0u))
+      None (print 99.))))

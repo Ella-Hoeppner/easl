@@ -1,0 +1,30 @@
+; KNOWN-FAILING (bytecode VM): value semantics across a copy of a
+; container with heap-embedding elements. Copying the container itself
+; is an `Arc` share (correct), and the element store into `a` triggers
+; the `Arc::make_mut` flat-words clone — duplicating embedded body ids
+; with no ownership accounting — while `b` keeps the original cell,
+; whose body id is a borrow of `pair-of`'s construction site. After the
+; store diverges the copies and `pair-of` re-executes, `b`'s element
+; must still hold its own original payload.
+(struct Packet
+  tag: f32
+  body: [f32])
+
+(defn pair-of [t: f32]: [Packet]
+  (into-dynamic-array [(Packet t (into-dynamic-array [t]))]))
+
+@cpu
+(defn main []
+  (let [@var a (pair-of 1.)
+        b a]
+    (= (a 0u) (Packet 2. (into-dynamic-array [2.])))
+    (let [other (pair-of 9.)]
+      (let [pa (a 0u)
+            pb (b 0u)
+            po (other 0u)]
+        (print pa.tag)
+        (print (pa.body 0u))
+        (print pb.tag)
+        (print (pb.body 0u))
+        (print po.tag)
+        (print (po.body 0u))))))

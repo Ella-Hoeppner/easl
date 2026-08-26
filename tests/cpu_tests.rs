@@ -190,3 +190,28 @@ cpu_test!(load_wav_local_binding);
 cpu_test!(assign_field_in_dyn_array_element);
 cpu_test!(const_generic_zeroed_array);
 cpu_test!(const_generic_zeroed_array_map);
+// KNOWN-FAILING: containers whose ELEMENT type involves heap values —
+// two distinct holes, one per container kind. Runtime-sized containers
+// with elements that *embed* heap ids without being one
+// (`[(Option [f32])]`, `[Packet]`-with-dyn-field) store flat words
+// (`DynMemory::Words`), so construction/store/COW-clone traffic copies
+// embedded ids as silent borrows. FIXED-size arrays with heap-value
+// elements (`[2: [f32]]`, `[2: (Option [f32])]`, `[2: Packet]`)
+// currently panic at VM compile — `vm_type_size`'s sized-array case
+// delegates to GPU sizing, which can't size heap elements — and once
+// sized, `ArrayLookup`/`ArrayStore` raw-copy at `base + i*stride` with
+// no release/promote (whole-array copies should be sound via
+// `collect_heap_fixups`' element recursion — the `_across_calls` guard
+// pins that). See each .easl header for the exact surface, and the
+// container-support design notes for the agreed fix (sharedness-branch
+// + compile-time-emitted per-element fixup loops).
+cpu_test!(dyn_container_enum_elements);
+cpu_test!(dyn_container_struct_elements);
+cpu_test!(dyn_container_element_store);
+cpu_test!(dyn_container_copy_semantics);
+cpu_test!(dyn_container_string_elements);
+cpu_test!(dyn_container_global);
+cpu_test!(fixed_array_dyn_elements_across_calls);
+cpu_test!(fixed_array_dyn_element_store);
+cpu_test!(fixed_array_enum_element_store);
+cpu_test!(fixed_array_struct_element_store);
