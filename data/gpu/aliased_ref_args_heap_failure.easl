@@ -1,0 +1,14 @@
+; The aliased-mutable-ref rejection with a heap value (`[f32]` local) —
+; same rule, same root-variable detection; the runtime divergence this
+; closes additionally involved drop-on-overwrite releasing the shared
+; cell through one alias.
+(defn clobber-read [@var @ref a: [f32]
+                    @var @ref b: [f32]]: f32
+  (= a (into-dynamic-array [5.]))
+  (b 0u))
+
+@cpu
+(defn main []
+  (let [@var x (into-dynamic-array [1.])]
+    (print (clobber-read x x))
+    (print (x 0u))))

@@ -1,0 +1,24 @@
+; Disjoint reference arguments — two different literal indices, or two
+; different struct fields, of one root — are allowed by the ref-arg
+; aliasing rule (`validate_ref_arg_aliasing`) and behave identically on
+; both runtimes.
+(struct Pair
+  a: f32
+  b: f32)
+
+(defn swap-two [@var @ref x: f32
+                @var @ref y: f32]
+  (let [t x]
+    (= x y)
+    (= y t)))
+
+@cpu
+(defn main []
+  (let [@var xs [1. 2.]]
+    (swap-two (xs 0u) (xs 1u))
+    (print (xs 0u))
+    (print (xs 1u)))
+  (let [@var p (Pair 3. 4.)]
+    (swap-two p.a p.b)
+    (print p.a)
+    (print p.b)))

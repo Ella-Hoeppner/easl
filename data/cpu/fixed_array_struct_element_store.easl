@@ -1,12 +1,9 @@
-; KNOWN-FAILING (bytecode VM): runtime-index element stores into a
-; FIXED-size array of structs carrying a runtime-sized field. Today: the
-; `vm_type_size` sized-array panic (see
-; fixed_array_dyn_elements_across_calls). After sizing: the `ArrayStore`
-; raw-copy hole with an *embedding* element type — the stored element's
-; body id sits at a static offset within the element, but the store
-; address is `base + i*stride`, so the release/promote fixups need
-; index-relative addressing rather than the static slots
-; `emit_value_copy` handles.
+; Runtime-index element stores into a FIXED-size array of structs
+; carrying a runtime-sized field: the embedded body id sits at a static
+; offset within the write-back temp, where `emit_value_copy`'s fixups
+; handle it; `ArrayStore` then word-copies the whole element to
+; `base + i*stride` (see fixed_array_dyn_element_store for why the
+; composition is sound).
 (struct Packet
   tag: f32
   body: [f32])

@@ -449,6 +449,22 @@ error_test!(
     VariableAddressSpace::StorageReadWrite
   )
 );
+// The ref-arg aliasing rule (`validate_ref_arg_aliasing`): overlapping
+// lvalues may not reach two reference params when either is mutable.
+// The allowed disjoint shapes are pinned by the `disjoint_ref_args_swap`
+// cpu test.
+error_test!(
+  aliased_ref_args_flat_failure,
+  CompileErrorKind::AliasedRefArgs("x".to_string())
+);
+error_test!(
+  aliased_ref_args_heap_failure,
+  CompileErrorKind::AliasedRefArgs("x".to_string())
+);
+error_test!(
+  aliased_ref_args_element_failure,
+  CompileErrorKind::AliasedRefArgs("xs".to_string())
+);
 error_test!(
   unshareable_bool_var_failure,
   CompileErrorKind::UnshareableBindingType("bool".to_string())

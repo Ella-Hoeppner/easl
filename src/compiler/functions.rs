@@ -1370,11 +1370,11 @@ impl TopLevelFunction {
     };
     state.open_function(
       f_name.clone(),
-      crate::vm::compile::vm_type_size(&f.return_type.unwrap_known()),
+      crate::vm::compile::vm_stack_size(&f.return_type.unwrap_known()),
     );
     for (i, (arg, _)) in f.args.iter().enumerate() {
       let arg_size =
-        crate::vm::compile::vm_type_size(&arg.var_type.unwrap_known());
+        crate::vm::compile::vm_stack_size(&arg.var_type.unwrap_known());
       let arg_slot = match ref_arg_positions
         .iter()
         .find(|(arg_index, _)| *arg_index == i)

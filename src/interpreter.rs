@@ -36,7 +36,7 @@ use crate::vm::bytecode::{
   DynMemory, HeapCell, alloc_heap_cell, heap_string_words, release_heap_id,
   string_to_words, words_to_string,
 };
-use crate::vm::compile::vm_type_size;
+use crate::vm::compile::vm_stack_size;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Primitive {
@@ -2423,13 +2423,13 @@ impl Value {
       Value::Prim(Primitive::Bool(b)) => (*b as u32).to_ne_bytes().to_vec(),
       Value::Struct(fields) => {
         let Type::Struct(s) = ty else { panic!() };
-        let struct_size_u32s = ty.wgsl_data_size_in_u32s();
+        let struct_size_u32s = ty.wgsl_flat_data_size_in_u32s();
         let mut bytes = vec![];
         let mut offset_u32s = 0usize;
         for field in &s.fields {
           let ft = field.field_type.unwrap_known();
           let align = ft.wgsl_alignment_in_u32s();
-          let field_size = ft.wgsl_data_size_in_u32s();
+          let field_size = ft.wgsl_flat_data_size_in_u32s();
           let target = ((offset_u32s + align - 1) / align) * align;
           bytes.extend(std::iter::repeat(0u8).take((target - offset_u32s) * 4));
           offset_u32s = target;
@@ -2450,7 +2450,7 @@ impl Value {
           panic!()
         };
         let inner_ty = inner_type.unwrap_known();
-        let elem_size = inner_ty.wgsl_data_size_in_u32s();
+        let elem_size = inner_ty.wgsl_flat_data_size_in_u32s();
         let stride = ((elem_size + inner_ty.wgsl_alignment_in_u32s() - 1)
           / inner_ty.wgsl_alignment_in_u32s())
           * inner_ty.wgsl_alignment_in_u32s();
@@ -2466,7 +2466,7 @@ impl Value {
           panic!()
         };
         let inner_ty = inner_type.unwrap_known();
-        let elem_size = inner_ty.wgsl_data_size_in_u32s();
+        let elem_size = inner_ty.wgsl_flat_data_size_in_u32s();
         let align = inner_ty.wgsl_alignment_in_u32s();
         let stride = ((elem_size + align - 1) / align) * align;
         vec![0u8; length * stride * 4]
@@ -2480,7 +2480,7 @@ impl Value {
           .iter()
           .position(|v| v.name == *variant)
           .unwrap_or(0) as u32;
-        let max_inner_size = e.inner_data_size_in_u32s().unwrap_or(0);
+        let max_inner_size = e.inner_flat_data_size_in_u32s().unwrap_or(0);
         let mut bytes = discriminant.to_ne_bytes().to_vec();
         if max_inner_size > 0 {
           if let Some(variant_def) =
@@ -2512,7 +2512,7 @@ impl Value {
   /// serialization behave identically across both runtimes.
   pub fn from_vm_words(t: &Type, words: &[u32]) -> Value {
     fn words_of(t: &Type) -> usize {
-      t.data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+      t.flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
         .unwrap() as usize
     }
     match t {
@@ -2594,7 +2594,7 @@ impl Value {
   /// inverse of `from_vm_words`.
   pub fn to_vm_words(&self, t: &Type) -> Vec<u32> {
     fn words_of(t: &Type) -> usize {
-      t.data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+      t.flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
         .unwrap() as usize
     }
     match (self, t) {
@@ -2673,7 +2673,7 @@ impl Value {
     // how many whole elements fit in the returned byte slice.
     if let Type::Array(Some(ConcreteArraySize::Unsized), inner_type) = ty {
       let inner_ty = inner_type.unwrap_known();
-      let elem_size = inner_ty.wgsl_data_size_in_u32s();
+      let elem_size = inner_ty.wgsl_flat_data_size_in_u32s();
       let align = inner_ty.wgsl_alignment_in_u32s();
       let stride = ((elem_size + align - 1) / align) * align;
       let stride_bytes = stride * 4;
@@ -2714,13 +2714,13 @@ impl Value {
       Type::Bool => Value::Prim(Primitive::Bool(read_u32(bytes, offset) != 0)),
       Type::Struct(s) => {
         let struct_start = *offset;
-        let struct_size_u32s = ty.wgsl_data_size_in_u32s();
+        let struct_size_u32s = ty.wgsl_flat_data_size_in_u32s();
         let mut field_cursor = 0usize;
         let mut fields_map = HashMap::new();
         for field in &s.fields {
           let inner_ty = field.field_type.unwrap_known();
           let align = inner_ty.wgsl_alignment_in_u32s();
-          let size = inner_ty.wgsl_data_size_in_u32s();
+          let size = inner_ty.wgsl_flat_data_size_in_u32s();
           field_cursor = ((field_cursor + align - 1) / align) * align;
           *offset = struct_start + field_cursor * 4;
           let v = Self::from_gpu_bytes_at(bytes, &inner_ty, offset);
@@ -2732,7 +2732,7 @@ impl Value {
       }
       Type::Array(Some(size), inner_type) => {
         let inner_ty = inner_type.unwrap_known();
-        let elem_size = inner_ty.wgsl_data_size_in_u32s();
+        let elem_size = inner_ty.wgsl_flat_data_size_in_u32s();
         let align = inner_ty.wgsl_alignment_in_u32s();
         let stride = ((elem_size + align - 1) / align) * align;
         let count = size.as_literal().map(|n| n as usize).unwrap_or(0);
@@ -2749,8 +2749,8 @@ impl Value {
       }
       Type::Enum(e) => {
         // GPU layout: { discriminant: u32, data: array<u32, N> }
-        // where N = inner_data_size_in_u32s() (max inner size across variants).
-        let inner_size = e.inner_data_size_in_u32s().unwrap_or(0);
+        // where N = inner_flat_data_size_in_u32s() (max inner size across variants).
+        let inner_size = e.inner_flat_data_size_in_u32s().unwrap_or(0);
         let discriminant = read_u32(bytes, offset) as usize;
         let inner_data_start = *offset;
         *offset += inner_size * 4;
@@ -2999,7 +2999,7 @@ fn gpu_binding_infos_from(
       let size = if kind == GpuBufferKind::Texture2D {
         0
       } else {
-        let u32s = ty.wgsl_data_size_in_u32s();
+        let u32s = ty.wgsl_flat_data_size_in_u32s();
         if u32s == 0 {
           0
         } else {
@@ -4503,7 +4503,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
               panic!()
             };
             let inner_ty = inner_type_info.unwrap_known();
-            let elem_size = inner_ty.wgsl_data_size_in_u32s();
+            let elem_size = inner_ty.wgsl_flat_data_size_in_u32s();
             let align = inner_ty.wgsl_alignment_in_u32s();
             let stride = ((elem_size + align - 1) / align) * align;
             let raw_bytes =
@@ -4736,7 +4736,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             panic!()
           };
           let inner_ty = inner_type_info.unwrap_known();
-          let elem_size = inner_ty.wgsl_data_size_in_u32s();
+          let elem_size = inner_ty.wgsl_flat_data_size_in_u32s();
           let align = inner_ty.wgsl_alignment_in_u32s();
           let stride = ((elem_size + align - 1) / align) * align;
           let raw_bytes =
@@ -5043,7 +5043,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       // padded size for readback would cause from_gpu_bytes to count the
       // padding bytes as extra elements.
       let size = ty
-        .data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+        .flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
         .ok()
         .map(|u32s| ((u32s as u64 * 4 + 15) & !15).max(16))
         .or_else(|| {
@@ -5053,7 +5053,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           ) = &ty
           {
             let inner_ty = inner.unwrap_known();
-            let elem_size = inner_ty.wgsl_data_size_in_u32s();
+            let elem_size = inner_ty.wgsl_flat_data_size_in_u32s();
             let align = inner_ty.wgsl_alignment_in_u32s();
             let stride = ((elem_size + align - 1) / align) * align;
             let count = self
@@ -6426,7 +6426,7 @@ fn load_wav_samples(
 
 /// Number of u32 words a type occupies in the VM's flat layout.
 pub(crate) fn vm_words_of(t: &Type) -> usize {
-  t.data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+  t.flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
     .unwrap() as usize
 }
 
@@ -6488,7 +6488,7 @@ fn value_from_heap_cell(t: &Type, cell: Option<&Arc<HeapCell>>) -> Value {
           length: *elements as usize,
         },
         DynMemory::Words(words) => {
-          let stride = (vm_type_size(&element_type) as usize).max(1);
+          let stride = (vm_stack_size(&element_type) as usize).max(1);
           Value::Array(
             words
               .chunks(stride)
@@ -6676,7 +6676,7 @@ fn value_from_vm_words_heap(
           length: *elements as usize,
         },
         DynMemory::Words(cell_words) => {
-          let stride = (vm_type_size(&element_type) as usize).max(1);
+          let stride = (vm_stack_size(&element_type) as usize).max(1);
           Value::Array(
             cell_words
               .chunks(stride)
@@ -6695,7 +6695,7 @@ fn value_from_vm_words_heap(
     Type::Array(Some(size), element_type) if size.as_literal().is_some() => {
       let count = size.as_literal().unwrap();
       let element_type = element_type.kind.unwrap_known();
-      let stride = (vm_type_size(&element_type) as usize).max(1);
+      let stride = (vm_stack_size(&element_type) as usize).max(1);
       Value::Array(
         (0..count as usize)
           .map(|i| {
@@ -6715,7 +6715,7 @@ fn value_from_vm_words_heap(
           .iter()
           .map(|field| {
             let field_type = field.field_type.unwrap_known();
-            let size = vm_type_size(&field_type) as usize;
+            let size = vm_stack_size(&field_type) as usize;
             let value = value_from_vm_words_heap(
               &field_type,
               &words[offset..offset + size],
@@ -6734,7 +6734,7 @@ fn value_from_vm_words_heap(
       let inner = if inner_type == Type::Unit {
         Value::Unit
       } else {
-        let n = vm_type_size(&inner_type) as usize;
+        let n = vm_stack_size(&inner_type) as usize;
         value_from_vm_words_heap(&inner_type, &words[1..1 + n], heap)
       };
       Value::Enum(variant.name.clone(), Box::new(inner))
@@ -6761,7 +6761,7 @@ fn vm_host_call<IO: IOManager>(
   match op {
     HostOp::Print { slot, ty } => {
       let t = &code.host_types[*ty as usize];
-      let n = vm_type_size(t) as usize;
+      let n = vm_stack_size(t) as usize;
       let value = value_from_vm_words_heap(
         t,
         &stack[*slot as usize..*slot as usize + n],
@@ -6772,7 +6772,7 @@ fn vm_host_call<IO: IOManager>(
     }
     HostOp::Stringify { slot, ty, dest } => {
       let t = &code.host_types[*ty as usize];
-      let n = vm_type_size(t) as usize;
+      let n = vm_stack_size(t) as usize;
       let value = value_from_vm_words_heap(
         t,
         &stack[*slot as usize..*slot as usize + n],

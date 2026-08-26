@@ -929,7 +929,7 @@ impl BytecodeCompilationState {
         if elem_for_dispatch == Type::U32 {
           // abs on u32 is identity. Just Move the arg's slots into a fresh dest.
           let size = arg_types[0]
-            .data_size_in_u32s(&args[0].source_trace)
+            .flat_data_size_in_u32s(&args[0].source_trace)
             .unwrap() as u16;
           let result = self.take_stack_slot(size);
           self.push_instruction(Instruction {
@@ -1087,7 +1087,7 @@ impl BytecodeCompilationState {
           )),
           (Some((_, _, e)), None, _, None) => {
             let size = arg_types[0]
-              .data_size_in_u32s(&args[0].source_trace)
+              .flat_data_size_in_u32s(&args[0].source_trace)
               .unwrap() as u16;
             Some(self.emit_fanout_binary_scalar_rhs(
               arithmetic_op_for(&e, "*"),
@@ -1098,7 +1098,7 @@ impl BytecodeCompilationState {
           }
           (None, Some((_, _, e)), None, _) => {
             let size = arg_types[1]
-              .data_size_in_u32s(&args[1].source_trace)
+              .flat_data_size_in_u32s(&args[1].source_trace)
               .unwrap() as u16;
             Some(self.emit_fanout_binary_scalar_lhs(
               arithmetic_op_for(&e, "*"),
@@ -1227,7 +1227,7 @@ impl BytecodeCompilationState {
               )
             };
           let size = arg_types[0]
-            .data_size_in_u32s(&args[0].source_trace)
+            .flat_data_size_in_u32s(&args[0].source_trace)
             .unwrap() as u16;
           self.push_instruction(Instruction {
             op: Op::Move,
@@ -1291,7 +1291,7 @@ impl BytecodeCompilationState {
             return_position: dest,
           });
         } else {
-          let stride = vm_type_size(&element_type);
+          let stride = vm_stack_size(&element_type);
           self.push_instruction(Instruction {
             op: Op::HeapFromSlots,
             arg_positions: [arg_positions[0], *count as u16, stride],
@@ -1318,7 +1318,7 @@ impl BytecodeCompilationState {
             return_position: dest,
           });
         } else {
-          let stride = vm_type_size(&element_type);
+          let stride = vm_stack_size(&element_type);
           self.push_instruction(Instruction {
             op: Op::HeapZeroed,
             arg_positions: [arg_positions[0], stride, 0],
@@ -1344,7 +1344,7 @@ impl BytecodeCompilationState {
             return_position: arg_positions[0],
           });
         } else {
-          let arg_size = vm_type_size(&arg_types[0]);
+          let arg_size = vm_stack_size(&arg_types[0]);
           self.emit_value_copy(
             arg_positions[1],
             arg_size,
@@ -1478,7 +1478,7 @@ impl BytecodeCompilationState {
       // --- bitcast (often called via bitcast<T> with the type baked in) ---
       n if n == "bitcast" || n.starts_with("bitcast<") => {
         let size = return_type
-          .data_size_in_u32s(&args[0].source_trace)
+          .flat_data_size_in_u32s(&args[0].source_trace)
           .unwrap() as u16;
         let result = self.take_stack_slot(size);
         self.push_instruction(Instruction {
@@ -1709,7 +1709,7 @@ impl BytecodeCompilationState {
         // runtime-sized form only appears in positions the CPU-mode
         // interceptions handle.)
         let total = return_type
-          .data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+          .flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
           .expect("zeroed-array of runtime-sized type outside an intercepted position")
           as u16;
         let result = self.take_stack_slot(total);
@@ -2210,7 +2210,7 @@ impl BytecodeCompilationState {
             });
           } else if let Some(position) = self.globals.get(global_name).copied()
           {
-            let value_size = vm_type_size(field_type);
+            let value_size = vm_stack_size(field_type);
             if value_size > 0 {
               self.push_instruction(Instruction {
                 op: Op::Move,
@@ -2227,7 +2227,7 @@ impl BytecodeCompilationState {
           seeded.push(global_name.clone());
         }
       }
-      offset += vm_type_size(field_type);
+      offset += vm_stack_size(field_type);
     }
   }
   /// Writes every capture of `scope_struct` into its implicit binding,
@@ -2276,7 +2276,7 @@ impl BytecodeCompilationState {
           );
         }
       }
-      offset += vm_type_size(field_type);
+      offset += vm_stack_size(field_type);
     }
   }
   /// Writes one data capture into its implicit binding: a `Move` for
@@ -2296,7 +2296,7 @@ impl BytecodeCompilationState {
       .expect("dispatched closure capture binding not found");
     match self.host_bindings[binding as usize].storage {
       HostBindingStorage::Slots { position, .. } => {
-        let value_size = vm_type_size(field_type);
+        let value_size = vm_stack_size(field_type);
         if value_size > 0 {
           self.push_instruction(Instruction {
             op: Op::Move,
@@ -2328,15 +2328,24 @@ impl BytecodeCompilationState {
 /// represented by their captured scope's data (zero slots for scope-less
 /// closures) — the code part of a closure is static, so only its captured
 /// state occupies memory.
-pub fn vm_type_size(t: &Type) -> u16 {
+pub fn vm_stack_size(t: &Type) -> u16 {
   match t {
     // A runtime-sized array *value* is a one-word heap id (see the
     // `Heap*` opcodes); only dynamic globals get region storage.
     Type::Array(Some(ConcreteArraySize::Unsized), _) => 1,
     // Strings are heap-backed the same way (see the `Str*` opcodes).
     Type::String => 1,
+    // A fixed-size array occupies count × element-size slots. Recursing
+    // with stack sizing rather than delegating to the flat layout is what
+    // lets elements be heap values (one id word each) or embed them.
+    Type::Array(Some(size), inner) => {
+      let count = size.as_literal().unwrap_or_else(|| {
+        panic!("vm_stack_size: non-literal array size in {t:?}")
+      });
+      count as u16 * vm_stack_size(&inner.unwrap_known())
+    }
     // Enums may carry runtime-sized payloads on the CPU (as heap-id words),
-    // which `data_size_in_u32s` can't size — compute the layout
+    // which `flat_data_size_in_u32s` can't size — compute the layout
     // (discriminant + max variant payload) with heap-id-aware field sizes.
     Type::Enum(e) => {
       1 + e
@@ -2344,7 +2353,7 @@ pub fn vm_type_size(t: &Type) -> u16 {
         .iter()
         .map(|v| match v.inner_type.unwrap_known() {
           Type::Unit => 0,
-          inner => vm_type_size(&inner),
+          inner => vm_stack_size(&inner),
         })
         .max()
         .unwrap_or(0)
@@ -2362,7 +2371,7 @@ pub fn vm_type_size(t: &Type) -> u16 {
             else {
               panic!("captured scope field with non-concrete type")
             };
-            vm_type_size(field_type)
+            vm_stack_size(field_type)
           })
           .sum()
       } else {
@@ -2370,20 +2379,22 @@ pub fn vm_type_size(t: &Type) -> u16 {
       }
     }
     _ => {
-      match t.data_size_in_u32s(&crate::compiler::error::SourceTrace::empty()) {
+      match t
+        .flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+      {
         Ok(size) => size as u16,
-        // data_size_in_u32s errors on nested function types — a scope
+        // flat_data_size_in_u32s errors on nested function types — a scope
         // struct capturing a closure. Recurse per-field so function-typed
         // fields size as their own captured scope's data. (Not the default
-        // path: data_size_in_u32s special-cases matNxM sizing.)
+        // path: flat_data_size_in_u32s special-cases matNxM sizing.)
         Err(e) => {
           if let Type::Struct(s) = t {
             s.fields
               .iter()
-              .map(|field| vm_type_size(&field.field_type.unwrap_known()))
+              .map(|field| vm_stack_size(&field.field_type.unwrap_known()))
               .sum()
           } else {
-            panic!("vm_type_size: unsizable type {t:?}: {e:?}")
+            panic!("vm_stack_size: unsizable type {t:?}: {e:?}")
           }
         }
       }
@@ -2524,7 +2535,7 @@ fn involves_heap_values(t: &Type) -> bool {
 /// layout — unconditional offsets for struct/scope/fixed-array fields,
 /// and discriminant-keyed `EnumRegion`s wherever an enum's payload can
 /// hold heap ids (every variant's payload starts right after the
-/// discriminant word, per `vm_type_size`'s enum layout).
+/// discriminant word, per `vm_stack_size`'s enum layout).
 fn collect_heap_fixups(t: &Type, base: u16, out: &mut HeapFixups) {
   // Pre-check that also keeps this walk total: types with no heap values
   // contribute no offsets and need no size computation. Sizing must not
@@ -2545,7 +2556,7 @@ fn collect_heap_fixups(t: &Type, base: u16, out: &mut HeapFixups) {
       for field in s.fields.iter() {
         let field_type = field.field_type.unwrap_known();
         collect_heap_fixups(&field_type, offset, out);
-        offset += vm_type_size(&field_type);
+        offset += vm_stack_size(&field_type);
       }
     }
     Type::Function(f) => {
@@ -2560,14 +2571,14 @@ fn collect_heap_fixups(t: &Type, base: u16, out: &mut HeapFixups) {
             panic!("captured scope field with non-concrete type")
           };
           collect_heap_fixups(field_type, offset, out);
-          offset += vm_type_size(field_type);
+          offset += vm_stack_size(field_type);
         }
       }
     }
     Type::Array(Some(size), inner) => {
       if let Some(count) = size.as_literal() {
         let inner = inner.unwrap_known();
-        let stride = vm_type_size(&inner);
+        let stride = vm_stack_size(&inner);
         for i in 0..count as u16 {
           collect_heap_fixups(&inner, base + i * stride, out);
         }
@@ -2885,7 +2896,7 @@ impl TypedExp {
           let heap_id_slot = inner.compile_to_bytecode(false, state).unwrap();
           let index_slot = index_exp.compile_to_bytecode(false, state).unwrap();
           let src_slot = args[1].compile_to_bytecode(false, state).unwrap();
-          let stride = vm_type_size(&element_type.unwrap_known());
+          let stride = vm_stack_size(&element_type.unwrap_known());
           state.push_instruction(Instruction {
             op: Op::HeapStore,
             arg_positions: [heap_id_slot, index_slot, src_slot],
@@ -3062,7 +3073,7 @@ impl TypedExp {
               else {
                 panic!()
               };
-              vm_type_size(
+              vm_stack_size(
                 &signature.args.last().unwrap().0.var_type.unwrap_known(),
               )
             };
@@ -3072,7 +3083,7 @@ impl TypedExp {
               let value_pos =
                 captured_value.compile_to_bytecode(false, state).unwrap();
               let value_size =
-                vm_type_size(&captured_value.data.unwrap_known());
+                vm_stack_size(&captured_value.data.unwrap_known());
               if value_size > 0 {
                 state.push_instruction(Instruction {
                   op: Op::Move,
@@ -3458,18 +3469,18 @@ impl TypedExp {
           // extract_inner_functions): a closure's VM representation is just
           // its captured scope data, laid out like the scope struct. Kept
           // separate from the generic StructConstructor arm below because
-          // scope layout uses vm_type_size — captured fields can themselves
+          // scope layout uses vm_stack_size — captured fields can themselves
           // be closures.
           let total: u16 = args
             .iter()
-            .map(|a| vm_type_size(&a.data.unwrap_known()))
+            .map(|a| vm_stack_size(&a.data.unwrap_known()))
             .sum();
           let result = state.take_stack_slot(total);
           let mut offset = 0u16;
           for arg in args {
             let arg_pos = arg.compile_to_bytecode(false, state).unwrap();
             let arg_type = arg.data.unwrap_known();
-            let size = vm_type_size(&arg_type);
+            let size = vm_stack_size(&arg_type);
             state.emit_value_copy(arg_pos, size, result + offset, &arg_type);
             offset += size;
           }
@@ -3539,12 +3550,12 @@ impl TypedExp {
           ),
           FunctionImplementationKind::StructConstructor => {
             let struct_slot_pos =
-              state.take_stack_slot(vm_type_size(&self.data.unwrap_known()));
+              state.take_stack_slot(vm_stack_size(&self.data.unwrap_known()));
             let mut offset = 0u16;
             for arg in args {
               let arg_pos = arg.compile_to_bytecode(false, state).unwrap();
               let arg_type = arg.data.unwrap_known();
-              let arg_size = vm_type_size(&arg_type);
+              let arg_size = vm_stack_size(&arg_type);
               state.emit_value_copy(
                 arg_pos,
                 arg_size,
@@ -3567,7 +3578,7 @@ impl TypedExp {
               .position(|v| v.name == *variant_name)
               .expect("EnumConstructor variant not found in enum")
               as u32;
-            let total_size = vm_type_size(&return_type);
+            let total_size = vm_stack_size(&return_type);
             let result = state.take_stack_slot(total_size);
             // Discriminant at result[0] — first slot of the freshly allocated
             // region. We write it directly rather than using emit_u32_constant
@@ -3585,7 +3596,7 @@ impl TypedExp {
             let mut offset = 1u16;
             for (arg_i, arg) in args.iter().enumerate() {
               let arg_type = arg.data.unwrap_known();
-              let arg_size = vm_type_size(&arg_type);
+              let arg_size = vm_stack_size(&arg_type);
               state.emit_value_copy(
                 arg_positions[arg_i],
                 arg_size,
@@ -3597,7 +3608,7 @@ impl TypedExp {
             Some(result)
           }
           FunctionImplementationKind::Composite(_) => {
-            let return_size = vm_type_size(&return_type);
+            let return_size = vm_stack_size(&return_type);
             let result_position = state.take_stack_slot(return_size);
             if state
               .ref_arg_functions
@@ -3621,7 +3632,7 @@ impl TypedExp {
                 // expression's own (fully resolved) type, not the
                 // signature view.
                 let arg_expression_type = args[arg_index].data.unwrap_known();
-                let size = vm_type_size(&arg_expression_type);
+                let size = vm_stack_size(&arg_expression_type);
                 let plan = HeapCopyPlan::for_type(&arg_expression_type);
                 let mut pending =
                   Some(PendingCopyGroup::new(state.instructions.len() as u32));
@@ -3771,7 +3782,7 @@ impl TypedExp {
           && let Some(idx) =
             enum_type.variants.iter().position(|v| v.name == *base_name)
         {
-          let total_size = vm_type_size(&self.data.unwrap_known());
+          let total_size = vm_stack_size(&self.data.unwrap_known());
           let result = state.take_stack_slot(total_size);
           state.push_instruction(Instruction {
             op: Op::Constant,
@@ -3824,7 +3835,7 @@ impl TypedExp {
             op: Op::Move,
             arg_positions: [
               result_position,
-              vm_type_size(&f.return_type.unwrap_known()),
+              vm_stack_size(&f.return_type.unwrap_known()),
               0,
             ],
             return_position: state
@@ -3843,13 +3854,13 @@ impl TypedExp {
           // need to allocate a fresh slot of the binding's type so subsequent
           // assignments have a destination.
           if matches!(value.kind, ExpKind::Uninitialized) {
-            let size = vm_type_size(&value.data.unwrap_known());
+            let size = vm_stack_size(&value.data.unwrap_known());
             let slot = state.take_stack_slot(size);
             state.locals.insert(name.clone(), slot);
           } else {
             let value_pos = value.compile_to_bytecode(false, state).unwrap();
             let t = value.data.unwrap_known();
-            let size = vm_type_size(&t);
+            let size = vm_stack_size(&t);
             if aliases_variable_storage(value) && size > 0 {
               // An initializer that compiles to another variable's
               // storage (a bare Name, or a field chain rooted in one)
@@ -3870,7 +3881,7 @@ impl TypedExp {
       }
       Match(scrutinee, arms) => {
         let result_type = self.data.unwrap_known();
-        let result_type_size = vm_type_size(&result_type);
+        let result_type_size = vm_stack_size(&result_type);
         let scrutinee_pos =
           scrutinee.compile_to_bytecode(false, state).unwrap();
         let scrutinee_type = scrutinee.data.unwrap_known();
@@ -4183,7 +4194,7 @@ impl TypedExp {
             .unwrap();
         let increment_var_size = increment_variable_type
           .unwrap_known()
-          .data_size_in_u32s(&self.source_trace)
+          .flat_data_size_in_u32s(&self.source_trace)
           .unwrap() as u16;
         let increment_var_pos = state.take_stack_slot(increment_var_size);
         state.push_instruction(Instruction {
@@ -4286,7 +4297,7 @@ impl TypedExp {
               exp
                 .data
                 .unwrap_known()
-                .data_size_in_u32s(&exp.source_trace)
+                .flat_data_size_in_u32s(&exp.source_trace)
                 .unwrap() as u16,
               0,
             ],
@@ -4306,7 +4317,7 @@ impl TypedExp {
       }
       ArrayLiteral(inner_expressions) => {
         let inner_data_size =
-          vm_type_size(&inner_expressions[0].data.unwrap_known());
+          vm_stack_size(&inner_expressions[0].data.unwrap_known());
         let array_pos = state
           .take_stack_slot(inner_data_size * (inner_expressions.len() as u16));
         for (i, inner_exp) in inner_expressions.iter().enumerate() {
@@ -4361,7 +4372,7 @@ impl TypedExp {
               // element read of a runtime-sized array *value* through its
               // heap id
               let heap_id_slot = exp.compile_to_bytecode(false, state).unwrap();
-              let stride = vm_type_size(&self.data.unwrap_known());
+              let stride = vm_stack_size(&self.data.unwrap_known());
               let dest = state.take_stack_slot(stride);
               let index_slot =
                 index_exp.compile_to_bytecode(false, state).unwrap();
@@ -4385,7 +4396,7 @@ impl TypedExp {
             }
             let inner_exp_pos =
               exp.compile_to_bytecode(is_ref_arg_position, state).unwrap();
-            let inner_data_size = vm_type_size(&self.data.unwrap_known());
+            let inner_data_size = vm_stack_size(&self.data.unwrap_known());
             let result_position = state.take_stack_slot(inner_data_size);
             let index_pos =
               index_exp.compile_to_bytecode(false, state).unwrap();
@@ -4418,7 +4429,7 @@ impl TypedExp {
               if field.name == *field_name {
                 break;
               }
-              offset += vm_type_size(&field.field_type.unwrap_known());
+              offset += vm_stack_size(&field.field_type.unwrap_known());
             }
             Some(inner_exp_pos + offset)
           }
@@ -4432,7 +4443,7 @@ impl TypedExp {
             let inner_data_size = self
               .data
               .unwrap_known()
-              .data_size_in_u32s(&self.source_trace)
+              .flat_data_size_in_u32s(&self.source_trace)
               .unwrap() as u16;
             let result_position = state.take_stack_slot(inner_data_size);
             for (i, field) in swizzle_fields.iter().enumerate() {

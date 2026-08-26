@@ -1,0 +1,14 @@
+; Nested FIXED-size arrays (`[2: [1: [f32]]]`) under doubly-indexed
+; element stores. The pending write-back chain nests: the outer lookup
+; preloads the inner array (id words) into a temp, the inner store runs
+; the full release/promote copy against that temp, and the write-backs
+; flush innermost-first, so the mutated element lands back through both
+; levels. Guards the recursion of the fixed-array store composition
+; (see fixed_array_dyn_element_store).
+@cpu
+(defn main []
+  (let [@var xs [[(into-dynamic-array [9.])] [(into-dynamic-array [9.])]]]
+    (for [i 0u (< i 2u) (+= i 1u)]
+      (= ((xs i) 0u) (into-dynamic-array [(f32 i)])))
+    (print (((xs 0u) 0u) 0u))
+    (print (((xs 1u) 0u) 0u))))

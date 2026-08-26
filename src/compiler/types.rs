@@ -702,31 +702,31 @@ impl AbstractType {
       other => other,
     }
   }
-  pub fn data_size_in_u32s(
+  pub fn flat_data_size_in_u32s(
     &self,
     source_trace: &SourceTrace,
   ) -> CompileResult<usize> {
     Ok(match self {
       AbstractType::Unit => 0,
       AbstractType::Generic(_) => panic!(
-        "encountered Generic while calculating data_size_in_u32s, this should \
+        "encountered Generic while calculating flat_data_size_in_u32s, this should \
         never happen"
       ),
-      AbstractType::Type(t) => t.data_size_in_u32s(source_trace)?,
+      AbstractType::Type(t) => t.flat_data_size_in_u32s(source_trace)?,
       AbstractType::AbstractStruct(s) => s
         .fields
         .iter()
-        .map(|f| f.field_type.data_size_in_u32s(source_trace))
+        .map(|f| f.field_type.flat_data_size_in_u32s(source_trace))
         .collect::<CompileResult<Vec<usize>>>()?
         .into_iter()
         .sum::<usize>(),
-      AbstractType::AbstractEnum(e) => e.inner_data_size_in_u32s()? + 1,
+      AbstractType::AbstractEnum(e) => e.inner_flat_data_size_in_u32s()? + 1,
       AbstractType::AbstractArray {
         size,
         inner_type,
         source_trace,
       } => {
-        inner_type.data_size_in_u32s(source_trace)?
+        inner_type.flat_data_size_in_u32s(source_trace)?
           * match size {
             AbstractArraySize::Literal(x) => *x as usize,
             _ => {
@@ -1418,7 +1418,7 @@ impl Type {
     }
   }
 
-  pub fn data_size_in_u32s(
+  pub fn flat_data_size_in_u32s(
     &self,
     source_trace: &SourceTrace,
   ) -> CompileResult<usize> {
@@ -1433,25 +1433,29 @@ impl Type {
           && let Some(elem) =
             s.fields.first().map(|f| f.field_type.unwrap_known())
         {
-          cols * rows * elem.data_size_in_u32s(source_trace)?
+          cols * rows * elem.flat_data_size_in_u32s(source_trace)?
         } else {
           s.fields
             .iter()
             .map(|f| {
-              f.field_type.unwrap_known().data_size_in_u32s(source_trace)
+              f.field_type
+                .unwrap_known()
+                .flat_data_size_in_u32s(source_trace)
             })
             .collect::<CompileResult<Vec<usize>>>()?
             .into_iter()
             .sum::<usize>()
         }
       }
-      Type::Enum(e) => e.inner_data_size_in_u32s()? + 1,
+      Type::Enum(e) => e.inner_flat_data_size_in_u32s()? + 1,
       Type::Function(_) => {
         return err(UninlinableHigherOrderFunction, source_trace.clone());
       }
       Type::Skolem(_, _) => panic!("tried to calculate size of skolem"),
       Type::Array(size, inner_type) => {
-        inner_type.unwrap_known().data_size_in_u32s(source_trace)?
+        inner_type
+          .unwrap_known()
+          .flat_data_size_in_u32s(source_trace)?
           * match size.as_ref().and_then(|s| s.as_literal()) {
             Some(x) => x as usize,
             None => {
@@ -1491,7 +1495,7 @@ impl Type {
   /// For user-defined structs and arrays, inter-field / stride padding IS
   /// included.
   /// See https://www.w3.org/TR/WGSL/#alignment-and-size
-  pub fn wgsl_data_size_in_u32s(&self) -> usize {
+  pub fn wgsl_flat_data_size_in_u32s(&self) -> usize {
     fn round_up(align: usize, size: usize) -> usize {
       if align == 0 {
         return size;
@@ -1512,20 +1516,20 @@ impl Type {
           for field in &s.fields {
             let ft = field.field_type.unwrap_known();
             offset = round_up(ft.wgsl_alignment_in_u32s(), offset);
-            offset += ft.wgsl_data_size_in_u32s();
+            offset += ft.wgsl_flat_data_size_in_u32s();
           }
           round_up(self.wgsl_alignment_in_u32s(), offset)
         }
       },
       Type::Enum(e) => {
         // Compiled as struct { discriminant: u32, data: array<u32, N> }
-        e.inner_data_size_in_u32s().unwrap_or(0) + 1
+        e.inner_flat_data_size_in_u32s().unwrap_or(0) + 1
       }
       Type::Array(size, inner_type) => {
         let inner_ty = inner_type.unwrap_known();
         let stride = round_up(
           inner_ty.wgsl_alignment_in_u32s(),
-          inner_ty.wgsl_data_size_in_u32s(),
+          inner_ty.wgsl_flat_data_size_in_u32s(),
         );
         match size.as_ref().and_then(|s| s.as_literal()) {
           Some(x) => stride * x as usize,
@@ -2057,7 +2061,7 @@ impl Type {
       }],
       Type::Struct(s) => s.bitcastable_chunk_accessors(value_name),
       Type::Enum(e) => {
-        let data_array_length = e.inner_data_size_in_u32s().unwrap();
+        let data_array_length = e.inner_flat_data_size_in_u32s().unwrap();
         std::iter::once(TypedExp {
           data: Type::U32.known().into(),
           kind: ExpKind::Access(
@@ -2148,7 +2152,7 @@ impl Type {
         TypedExp {
           data: Type::Array(
             Some(ConcreteArraySize::Literal(
-              enum_type.inner_data_size_in_u32s().unwrap() as u32,
+              enum_type.inner_flat_data_size_in_u32s().unwrap() as u32,
             )),
             Box::new(Type::U32.known().into()),
           )
@@ -2209,13 +2213,13 @@ impl Type {
         let name = e.monomorphized_name(names, target);
         let inner_data_array_type: ExpTypeInfo = Type::Array(
           Some(ConcreteArraySize::Literal(
-            e.inner_data_size_in_u32s().unwrap() as u32,
+            e.inner_flat_data_size_in_u32s().unwrap() as u32,
           )),
           Box::new(Type::U32.known().into()),
         )
         .known()
         .into();
-        let inner_data_size = e.inner_data_size_in_u32s().unwrap();
+        let inner_data_size = e.inner_flat_data_size_in_u32s().unwrap();
         (
           ExpKind::Application(
             TypedExp {
@@ -2348,8 +2352,9 @@ impl Type {
         };
         let size = *size as usize;
         let inner_type = inner_type.unwrap_known();
-        let inner_type_size =
-          inner_type.data_size_in_u32s(&SourceTrace::empty()).unwrap();
+        let inner_type_size = inner_type
+          .flat_data_size_in_u32s(&SourceTrace::empty())
+          .unwrap();
         (
           ExpKind::ArrayLiteral(
             (0..size)

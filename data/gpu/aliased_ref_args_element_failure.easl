@@ -1,0 +1,19 @@
+; Mutable refs to elements of the same array, one at a runtime index —
+; rejected because a runtime index can never be proven disjoint from any
+; other path into the same root (`(xs i)` vs `(xs 0u)` may collide at
+; runtime; contrast `disjoint_ref_args_swap`, where two literal indices
+; are provably distinct and allowed). This closes what was a genuine
+; use-after-free on the VM: the two write-back temps held the same heap
+; id, and whole-assignment through one released it out from under the
+; other.
+(defn clobber-read [@var @ref a: [f32]
+                    @var @ref b: [f32]]: f32
+  (= a (into-dynamic-array [5.]))
+  (b 0u))
+
+@cpu
+(defn main []
+  (let [@var xs [(into-dynamic-array [1.]) (into-dynamic-array [2.])]
+        @var i 0u]
+    (print (clobber-read (xs i) (xs 0u)))
+    (print ((xs 0u) 0u))))

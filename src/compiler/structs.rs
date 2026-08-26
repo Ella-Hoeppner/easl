@@ -849,7 +849,7 @@ impl Struct {
         },
         Type::Unit => {}
         Type::Enum(e) => {
-          let data_array_size = e.inner_data_size_in_u32s().unwrap();
+          let data_array_size = e.inner_flat_data_size_in_u32s().unwrap();
           chunks.append(
             &mut std::iter::once(TypedExp {
               data: Type::U32.known().into(),

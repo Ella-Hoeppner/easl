@@ -1,0 +1,7 @@
+; Printing a whole FIXED-size array of dyn arrays — the heap-aware
+; decode path (`value_from_vm_words_heap`) must recurse sized-array
+; elements as heap ids, matching the tree-walker's output exactly.
+@cpu
+(defn main []
+  (let [xs [(into-dynamic-array [1. 2.]) (into-dynamic-array [3.])]]
+    (print xs)))

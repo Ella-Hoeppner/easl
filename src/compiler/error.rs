@@ -203,6 +203,11 @@ pub enum CompileErrorKind {
   InvalidAssignmentTarget,
   #[error("Assignment target must be a variable: `{0}`")]
   AssignmentTargetMustBeVariable(String),
+  #[error(
+    "reference arguments alias `{0}`: a function may not receive \
+     overlapping reference arguments when any of them is mutable"
+  )]
+  AliasedRefArgs(String),
   #[error("Match expression missing scrutinee")]
   MatchMissingScrutinee,
   #[error("Match expression missing arms")]
@@ -662,6 +667,7 @@ impl PartialEq for CompileErrorKind {
         Self::AssignmentTargetMustBeVariable(l0),
         Self::AssignmentTargetMustBeVariable(r0),
       ) => l0 == r0,
+      (Self::AliasedRefArgs(l0), Self::AliasedRefArgs(r0)) => l0 == r0,
       (
         Self::UnsatisfiedTypeConstraint(l0),
         Self::UnsatisfiedTypeConstraint(r0),

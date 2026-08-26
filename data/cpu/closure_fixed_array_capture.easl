@@ -1,0 +1,17 @@
+; A closure capturing a mutable FIXED-size array of dyn arrays (the
+; comb-filter pattern with a fixed-size outer array): scope construction
+; copies the array via `emit_value_copy`'s per-element fixups, element
+; stores inside the closure run the write-back composition against the
+; scope-bound param, and the scope write-back re-wraps the mutated
+; state, so mutations persist across calls.
+(defn make-swapper []: (Fn [u32] f32)
+  (let [@var buf [(into-dynamic-array [1.]) (into-dynamic-array [2.])]]
+    (fn [i: u32]
+        (= (buf i) (into-dynamic-array [7.]))
+        ((buf i) 0u))))
+
+@cpu
+(defn main []
+  (let [swap (make-swapper)]
+    (print (swap 0u))
+    (print (swap 1u))))

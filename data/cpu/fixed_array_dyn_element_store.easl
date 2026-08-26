@@ -1,13 +1,13 @@
-; KNOWN-FAILING (bytecode VM): runtime-index element stores into a
-; FIXED-size array of dyn arrays. Today this dies earlier, in the
-; `vm_type_size` sized-array panic (see
-; fixed_array_dyn_elements_across_calls); once sizing lands, the exposed
-; hole is `ArrayStore` — a raw `ptr::copy` at `base + i*stride` with no
-; release of the old element id and no promotion of the new one, so each
-; stored id is a borrow of the `into-dynamic-array` site the next loop
-; iteration frees. The dyn-outer sibling
-; (`nested_dynamic_array_element_store`) passes via `Cells` containers;
-; the fixed-size outer misses the accounting entirely.
+; Runtime-index element stores into a FIXED-size array of dyn arrays.
+; Sound by composition: the assignment LHS compiles in ref-arg position,
+; so `ArrayLookup` preloads the OLD element into the site's static temp,
+; `emit_value_copy` RHS→temp releases it and owns the new id, and the
+; pending `ArrayStore` word-copies the id back into `base + i*stride`.
+; The array slot's word is nominally a borrow, but the element cell
+; stays alive through the heap table and is released exactly once by
+; the next store's preload — the same one-live-cell-per-site reclamation
+; as every other v1 site. (Contrast `dyn_container_element_store`: the
+; heap-backed container path lacks this preload/release composition.)
 @cpu
 (defn main []
   (let [@var xs [(into-dynamic-array [9.]) (into-dynamic-array [9.])]]

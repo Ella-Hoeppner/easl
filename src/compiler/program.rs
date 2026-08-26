@@ -19,7 +19,7 @@ use crate::thread_sync::participant;
 use crate::vm::bytecode::{BytecodeProgram, Instruction, Op};
 use crate::vm::compile::{
   BytecodeCompilationState, PendingFrameFnUsage, PendingRefFnUsage,
-  RefArgBinding, vm_type_size,
+  RefArgBinding, vm_stack_size,
 };
 use crate::{
   Never,
@@ -1301,6 +1301,76 @@ impl Program {
                     f.into(),
                   )
                 });
+              }
+            }
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
+      }
+    }
+  }
+  /// Rejects applications passing overlapping lvalues to two reference
+  /// parameters when either is mutable (`AliasedRefArgs`) — easl's
+  /// analogue of Rust's exclusive `&mut`. Because references are
+  /// second-class (never stored, returned, or rebound; `let` copies),
+  /// two references can only ever alias by being formed at the same
+  /// application from the same root variable, so this purely local
+  /// syntactic check is a *complete* alias analysis. Overlap is judged
+  /// conservatively per accessor path: paths conflict unless they
+  /// diverge at a compile-time-distinguishable step (different struct
+  /// fields, different literal indices) — any runtime index is treated
+  /// as potentially equal, so `(f (xs i) (xs j))` is rejected while
+  /// `(f (xs 0u) (xs 1u))` and `(f p.left p.right)` are allowed. Runs
+  /// after `normalize_pseudoapplication_data_accesses` (so indexing is
+  /// uniformly `Access`) and before deshadowing (args of one application
+  /// share a scope, so equal names mean equal bindings). This is also
+  /// what makes the runtimes' differing call conventions unobservable:
+  /// the tree-walker and the VM's per-usage ref bindings only disagree
+  /// on aliased shapes (and the fixed-array-element write-back temps
+  /// were memory-unsafe under them).
+  pub fn validate_ref_arg_aliasing(&self, errors: &mut ErrorLog) {
+    for abstract_f in self.abstract_functions_iter() {
+      let abstract_f = abstract_f.read().unwrap();
+      if let FunctionImplementationKind::Composite(implementation) =
+        &abstract_f.implementation
+      {
+        implementation
+          .read()
+          .unwrap()
+          .expression
+          .walk(&mut |exp| {
+            if let ExpKind::Application(callee, args) = &exp.kind
+              && let TypeState::Known(Type::Function(signature)) =
+                &callee.data.kind
+            {
+              let mut ref_lvalues: Vec<(
+                Ownership,
+                Arc<str>,
+                Vec<RefArgPathStep>,
+              )> = vec![];
+              for ((var, _), arg) in signature.args.iter().zip(args.iter()) {
+                if var.var_type.ownership == Ownership::Owned {
+                  continue;
+                }
+                if let Some((root, path)) = ref_arg_lvalue_path(arg) {
+                  ref_lvalues.push((var.var_type.ownership, root, path));
+                }
+              }
+              for i in 0..ref_lvalues.len() {
+                for j in (i + 1)..ref_lvalues.len() {
+                  let (ownership_a, root_a, path_a) = &ref_lvalues[i];
+                  let (ownership_b, root_b, path_b) = &ref_lvalues[j];
+                  if root_a == root_b
+                    && (*ownership_a == Ownership::MutableReference
+                      || *ownership_b == Ownership::MutableReference)
+                    && !ref_paths_provably_disjoint(path_a, path_b)
+                  {
+                    errors.log(CompileError::new(
+                      CompileErrorKind::AliasedRefArgs(root_a.to_string()),
+                      exp.source_trace.clone(),
+                    ));
+                  }
+                }
               }
             }
             Ok::<bool, Never>(true)
@@ -4490,11 +4560,11 @@ impl Program {
       // have no fixed GPU layout) — skip their WGSL emission entirely,
       // like unbound unsized-array globals. GPU code referencing one is
       // caught by validation, so nothing in the emitted WGSL can miss it.
-      if e
-        .variants
-        .iter()
-        .any(|v| v.inner_type.data_size_in_u32s(&e.source_trace).is_err())
-      {
+      if e.variants.iter().any(|v| {
+        v.inner_type
+          .flat_data_size_in_u32s(&e.source_trace)
+          .is_err()
+      }) {
         continue;
       }
       if let Some(compiled_enum) =
@@ -4595,7 +4665,7 @@ impl Program {
                     )
                   })
                   .chain(std::iter::repeat("0u".into()))
-                  .take(e.inner_data_size_in_u32s()?)
+                  .take(e.inner_flat_data_size_in_u32s()?)
                   .collect::<Vec<String>>()
                   .join(", ");
                 format!(
@@ -6388,6 +6458,10 @@ impl Program {
     self.desugar_swizzle_assignments();
     self.deexpressionify(target);
     self.normalize_pseudoapplication_data_accesses();
+    self.validate_ref_arg_aliasing(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     self.deshadow(&mut errors);
     if !errors.is_empty() {
       return errors;
@@ -7209,11 +7283,11 @@ impl Program {
         let Type::Array(_, element_type) = &v.var_type else {
           unreachable!()
         };
-        // `vm_type_size`, not `data_size_in_u32s`: heap-backed element
+        // `vm_stack_size`, not `flat_data_size_in_u32s`: heap-backed element
         // types (nested arrays, strings) size as one id word — their
         // regions use `DynMemory::Cells` storage, where the stride is
         // never consulted.
-        let element_stride = vm_type_size(&element_type.unwrap_known());
+        let element_stride = vm_stack_size(&element_type.unwrap_known());
         let memory = dyn_memory_count;
         dyn_memory_count += 1;
         state
@@ -7269,7 +7343,8 @@ impl Program {
         continue;
       }
       let position = state.consumed_stack_space as u16;
-      let size = v.var_type.data_size_in_u32s(&v.source_trace).unwrap() as u16;
+      let size =
+        v.var_type.flat_data_size_in_u32s(&v.source_trace).unwrap() as u16;
       state.globals.insert(v.name.clone(), position);
       state.global_slots.push((v.name.clone(), position, size));
       state.global_types.push(v.var_type.clone());
@@ -7306,7 +7381,8 @@ impl Program {
             let value_slot =
               value_exp.compile_to_bytecode(false, &mut state).unwrap();
             let var_size =
-              v.var_type.data_size_in_u32s(&v.source_trace).unwrap() as u16;
+              v.var_type.flat_data_size_in_u32s(&v.source_trace).unwrap()
+                as u16;
             let global_slot = *state.globals.get(&v.name).unwrap();
             state.push_instruction(Instruction {
               op: Op::Move,
@@ -7546,4 +7622,70 @@ impl Program {
     }
     state.finalize(init_function_index)
   }
+}
+
+/// One accessor step in a reference argument's lvalue path, as compared
+/// by `Program::validate_ref_arg_aliasing`. `Opaque` covers anything the
+/// check can't statically distinguish (runtime indices, swizzles) and is
+/// never provably disjoint from any other step.
+enum RefArgPathStep {
+  Field(Arc<str>),
+  LiteralIndex(i64),
+  Opaque,
+}
+
+/// Peels an lvalue expression to its root variable and accessor path
+/// (root-outward). Returns None for non-lvalues, which can never alias —
+/// a reference to a temporary is the only holder of its storage.
+fn ref_arg_lvalue_path(
+  exp: &TypedExp,
+) -> Option<(Arc<str>, Vec<RefArgPathStep>)> {
+  match &exp.kind {
+    ExpKind::Name(name) => Some((name.clone(), vec![])),
+    ExpKind::Access(accessor, inner) => {
+      let (root, mut path) = ref_arg_lvalue_path(inner)?;
+      path.push(match accessor {
+        Accessor::Field(field) => RefArgPathStep::Field(field.clone()),
+        Accessor::ArrayIndex(index) => match &index.kind {
+          ExpKind::NumberLiteral(Number::Int(i)) => {
+            RefArgPathStep::LiteralIndex(*i)
+          }
+          _ => RefArgPathStep::Opaque,
+        },
+        Accessor::Swizzle(_) => RefArgPathStep::Opaque,
+      });
+      Some((root, path))
+    }
+    _ => None,
+  }
+}
+
+/// Whether two same-root accessor paths provably address disjoint
+/// storage: they must diverge at some depth on two statically-comparable
+/// steps (different fields, different literal indices). Equal prefixes
+/// that run out (one path extends the other) overlap, and `Opaque` steps
+/// can never establish divergence.
+fn ref_paths_provably_disjoint(
+  a: &[RefArgPathStep],
+  b: &[RefArgPathStep],
+) -> bool {
+  for (step_a, step_b) in a.iter().zip(b.iter()) {
+    match (step_a, step_b) {
+      (RefArgPathStep::Field(f_a), RefArgPathStep::Field(f_b)) => {
+        if f_a != f_b {
+          return true;
+        }
+      }
+      (
+        RefArgPathStep::LiteralIndex(i_a),
+        RefArgPathStep::LiteralIndex(i_b),
+      ) => {
+        if i_a != i_b {
+          return true;
+        }
+      }
+      _ => return false,
+    }
+  }
+  false
 }

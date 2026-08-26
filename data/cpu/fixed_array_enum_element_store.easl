@@ -1,10 +1,10 @@
-; KNOWN-FAILING (bytecode VM): runtime-index element stores into a
-; FIXED-size array of heap-payload enums. Today: the `vm_type_size`
-; sized-array panic (see fixed_array_dyn_elements_across_calls). After
-; sizing: the `ArrayStore` raw-copy hole composed with
-; discriminant-dependent payload offsets — a correct store here needs
-; the same per-variant dispatch whole-enum copies use, addressed at
-; `base + i*stride`.
+; Runtime-index element stores into a FIXED-size array of heap-payload
+; enums. The store's temp copy is a full enum-dispatch `emit_value_copy`
+; — the release side dispatches on the preloaded OLD element's
+; discriminant, the promote side on the new one's — composed with the
+; `ArrayLookup`/`ArrayStore` write-back (see
+; fixed_array_dyn_element_store). Guards the dispatch machinery through
+; the indexed-store path.
 (enum (Option T)
   None
   (Some T))

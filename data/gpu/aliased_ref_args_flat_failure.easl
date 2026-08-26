@@ -1,0 +1,16 @@
+; Two mutable reference args bound to the same local — rejected by
+; `validate_ref_arg_aliasing` (easl's analogue of Rust's exclusive
+; `&mut`; see the pass doc for why the local syntactic check is a
+; complete alias analysis). Before the rule existed the runtimes
+; genuinely diverged on this shape: the tree-walker gave each param an
+; independent snapshot while the VM bound both to the same slot.
+(defn clobber-read [@var @ref a: f32
+                    @var @ref b: f32]: f32
+  (= a 5.)
+  b)
+
+@cpu
+(defn main []
+  (let [@var x 1.]
+    (print (clobber-read x x))
+    (print x)))

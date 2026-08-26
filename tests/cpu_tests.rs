@@ -190,21 +190,17 @@ cpu_test!(load_wav_local_binding);
 cpu_test!(assign_field_in_dyn_array_element);
 cpu_test!(const_generic_zeroed_array);
 cpu_test!(const_generic_zeroed_array_map);
-// KNOWN-FAILING: containers whose ELEMENT type involves heap values —
-// two distinct holes, one per container kind. Runtime-sized containers
-// with elements that *embed* heap ids without being one
+// KNOWN-FAILING (the dyn_container_* block): RUNTIME-SIZED containers
+// whose element type *embeds* heap ids without being one
 // (`[(Option [f32])]`, `[Packet]`-with-dyn-field) store flat words
 // (`DynMemory::Words`), so construction/store/COW-clone traffic copies
-// embedded ids as silent borrows. FIXED-size arrays with heap-value
-// elements (`[2: [f32]]`, `[2: (Option [f32])]`, `[2: Packet]`)
-// currently panic at VM compile — `vm_type_size`'s sized-array case
-// delegates to GPU sizing, which can't size heap elements — and once
-// sized, `ArrayLookup`/`ArrayStore` raw-copy at `base + i*stride` with
-// no release/promote (whole-array copies should be sound via
-// `collect_heap_fixups`' element recursion — the `_across_calls` guard
-// pins that). See each .easl header for the exact surface, and the
-// container-support design notes for the agreed fix (sharedness-branch
-// + compile-time-emitted per-element fixup loops).
+// embedded ids as silent borrows. See each .easl header for the exact
+// surface, and the container-support design notes for the agreed fix
+// (sharedness-branch + compile-time-emitted per-element fixup loops).
+// The fixed_array_* tests PASS and guard the sound half: FIXED-size
+// arrays are slot-resident (`vm_stack_size` recurses per element), and
+// both whole-array copies and indexed element stores compose correctly
+// with the fixup machinery — see the .easl headers for why.
 cpu_test!(dyn_container_enum_elements);
 cpu_test!(dyn_container_struct_elements);
 cpu_test!(dyn_container_element_store);
@@ -215,3 +211,11 @@ cpu_test!(fixed_array_dyn_elements_across_calls);
 cpu_test!(fixed_array_dyn_element_store);
 cpu_test!(fixed_array_enum_element_store);
 cpu_test!(fixed_array_struct_element_store);
+cpu_test!(fixed_array_nested_element_store);
+cpu_test!(print_fixed_array_dyn_elements);
+cpu_test!(closure_fixed_array_capture);
+// Aliased mutable-reference args are rejected at compile time
+// (`validate_ref_arg_aliasing`; the aliased_ref_args_*_failure shader
+// error tests pin the rejections) — this pins the *allowed* disjoint
+// shapes' runtime behavior.
+cpu_test!(disjoint_ref_args_swap);

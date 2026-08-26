@@ -353,12 +353,12 @@ impl AbstractEnum {
       .collect();
     Self::fill_generics_ordered(s, generic_values, typedefs, source_trace)
   }
-  pub fn inner_data_size_in_u32s(&self) -> CompileResult<usize> {
+  pub fn inner_flat_data_size_in_u32s(&self) -> CompileResult<usize> {
     Ok(
       self
         .variants
         .iter()
-        .map(|x| x.inner_type.data_size_in_u32s(&self.source_trace))
+        .map(|x| x.inner_type.flat_data_size_in_u32s(&self.source_trace))
         .collect::<CompileResult<Vec<usize>>>()?
         .into_iter()
         .max()
@@ -388,7 +388,7 @@ impl AbstractEnum {
           .collect::<CompileResult<Vec<Type>>>()?;
         let monomorphized_name =
           compile_word(self.monomorphized_name(&field_types, names, target));
-        let size = self.inner_data_size_in_u32s()?;
+        let size = self.inner_flat_data_size_in_u32s()?;
         let unit_constructor_constants: Vec<String> = self
           .variants
           .iter()
@@ -412,7 +412,7 @@ impl AbstractEnum {
                     String::new()
                   } else {
                     let mut zeroed_array_string = ", array(".to_string();
-                    for i in 0..self.inner_data_size_in_u32s()? {
+                    for i in 0..self.inner_flat_data_size_in_u32s()? {
                       zeroed_array_string += if i == 0 { "0" } else { ", 0" }
                     }
                     zeroed_array_string += ")";
@@ -703,7 +703,7 @@ impl Enum {
       target,
     )
   }
-  pub fn inner_data_size_in_u32s(&self) -> CompileResult<usize> {
+  pub fn inner_flat_data_size_in_u32s(&self) -> CompileResult<usize> {
     Ok(
       self
         .variants
@@ -711,7 +711,7 @@ impl Enum {
         .map(|v| {
           v.inner_type
             .unwrap_known()
-            .data_size_in_u32s(&self.abstract_ancestor.source_trace)
+            .flat_data_size_in_u32s(&self.abstract_ancestor.source_trace)
         })
         .collect::<CompileResult<Vec<usize>>>()?
         .into_iter()
