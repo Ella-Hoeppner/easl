@@ -208,6 +208,19 @@ pub enum CompileErrorKind {
      overlapping reference arguments when any of them is mutable"
   )]
   AliasedRefArgs(String),
+  #[error(
+    "a closure may not capture the mutable reference argument `{0}` — \
+     mutations through a captured reference would not be visible to the \
+     caller; capture the value directly, or take the mutable state as an \
+     explicit @ref argument of the called function"
+  )]
+  ClosureCapturesMutableRefArg(String),
+  #[error(
+    "a closure capturing the reference argument `{0}` may not outlive \
+     the call — remove `@ref` so the closure captures an owned copy of \
+     the value"
+  )]
+  EscapingClosureCapturesRefArg(String),
   #[error("Match expression missing scrutinee")]
   MatchMissingScrutinee,
   #[error("Match expression missing arms")]
@@ -668,6 +681,14 @@ impl PartialEq for CompileErrorKind {
         Self::AssignmentTargetMustBeVariable(r0),
       ) => l0 == r0,
       (Self::AliasedRefArgs(l0), Self::AliasedRefArgs(r0)) => l0 == r0,
+      (
+        Self::ClosureCapturesMutableRefArg(l0),
+        Self::ClosureCapturesMutableRefArg(r0),
+      ) => l0 == r0,
+      (
+        Self::EscapingClosureCapturesRefArg(l0),
+        Self::EscapingClosureCapturesRefArg(r0),
+      ) => l0 == r0,
       (
         Self::UnsatisfiedTypeConstraint(l0),
         Self::UnsatisfiedTypeConstraint(r0),

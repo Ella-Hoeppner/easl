@@ -1,0 +1,12 @@
+; The escape rule follows transitive captures: the returned closure
+; doesn't reference the `@ref` param itself — it captures a local helper
+; closure that does.
+(defn make-reader [@ref data: [f32]]: (Fn [] f32)
+  (let [first-element (fn [] (data 0u))]
+    (fn [] (* 2. (first-element)))))
+
+@cpu
+(defn main []
+  (let [arr (into-dynamic-array [1. 2.])]
+    (let [r (make-reader arr)]
+      (print (r)))))

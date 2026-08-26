@@ -1,0 +1,16 @@
+; A lambda capturing a bare `@ref` param passed as a higher-order
+; argument to a scalar-returning helper — the closure is called during
+; the call and never escapes (the helper's result type can't hold it),
+; so the escape rule allows it.
+(defn apply-to-ends [f: (Fn [u32] f32)
+                     last: u32]: f32
+  (+ (f 0u) (f last)))
+
+(defn end-sum [@ref arr: [f32]]: f32
+  (apply-to-ends (fn [i: u32] (arr i))
+                 (- (array-length arr) 1u)))
+
+@cpu
+(defn main []
+  (let [data (into-dynamic-array [3. 10. 4.])]
+    (print (end-sum data))))

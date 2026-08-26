@@ -1,0 +1,12 @@
+; A returned closure capturing a bare `@ref` param — rejected
+; (`EscapingClosureCapturesRefArg`): the reference doesn't outlive the
+; call, so the escaped closure would hold an owned copy, making the
+; `@ref` annotation a no-op the user should remove.
+(defn make-reader [@ref data: [f32]]: (Fn [] f32)
+  (fn [] (data 0u)))
+
+@cpu
+(defn main []
+  (let [arr (into-dynamic-array [1. 2.])]
+    (let [r (make-reader arr)]
+      (print (r)))))

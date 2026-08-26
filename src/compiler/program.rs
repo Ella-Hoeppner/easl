@@ -1379,6 +1379,69 @@ impl Program {
       }
     }
   }
+  /// Enforces the two closure-capture rules for reference arguments.
+  /// (1) A closure may never capture a `MutableReference` param
+  /// (`ClosureCapturesMutableRefArg`): captures are by-value snapshots,
+  /// so mutations through the capture would land in the closure's scope
+  /// copy and silently never reach the caller — the one thing
+  /// `@var @ref` exists to promise. (2) A closure capturing a bare
+  /// `Reference` param may be used freely within the call (captures are
+  /// owned shares, so local helper closures are sound and well-defined)
+  /// but may not *escape* it (`EscapingClosureCapturesRefArg`) — via the
+  /// return value, a `return` statement, or a host sink
+  /// (`start-audio`/`spawn-window`) — because the reference does not
+  /// outlive the call: the escaped closure would hold a copy, making the
+  /// `@ref` annotation a no-op the user should remove. Escape tracking
+  /// is a purely local taint walk (closures can't be stored in
+  /// data structures or globals, and closure arguments are compile-time
+  /// inlined, so a ref-capturing closure can only leave through this
+  /// function's own return positions and sink calls); taint propagates
+  /// through let bindings, assignments, and calls whose result type
+  /// involves a function type. Runs after deshadowing, so any name
+  /// inside a lambda that matches a param name *is* that param.
+  pub fn validate_ref_captures(&self, errors: &mut ErrorLog) {
+    for abstract_f in self.abstract_functions_iter() {
+      let abstract_f = abstract_f.read().unwrap();
+      if let FunctionImplementationKind::Composite(implementation) =
+        &abstract_f.implementation
+      {
+        let implementation = implementation.read().unwrap();
+        let ExpKind::Function(arg_names, body) =
+          &implementation.expression.kind
+        else {
+          continue;
+        };
+        let TypeState::Known(Type::Function(signature)) =
+          &implementation.expression.data.kind
+        else {
+          continue;
+        };
+        let ref_params: HashMap<Arc<str>, Ownership> = arg_names
+          .iter()
+          .zip(signature.args.iter())
+          .filter_map(|((name, _), (var, _))| {
+            (var.var_type.ownership != Ownership::Owned)
+              .then(|| (name.clone(), var.var_type.ownership))
+          })
+          .collect();
+        if ref_params.is_empty() {
+          continue;
+        }
+        let mut analyzer = RefCaptureAnalyzer {
+          ref_params: &ref_params,
+          tainted: HashMap::new(),
+          errors,
+        };
+        if let Some(param) = analyzer.taint_of(body) {
+          let tail = tail_value_expression(body);
+          errors.log(CompileError::new(
+            EscapingClosureCapturesRefArg(param.to_string()),
+            tail.source_trace.clone(),
+          ));
+        }
+      }
+    }
+  }
   pub fn validate_assignments(&mut self, errors: &mut ErrorLog) {
     for abstract_f in self.abstract_functions_iter() {
       let abstract_f = abstract_f.read().unwrap();
@@ -6466,6 +6529,10 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.validate_ref_captures(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     self.monomorphize(&mut errors, target);
     if !errors.is_empty() {
       return errors;
@@ -7688,4 +7755,193 @@ fn ref_paths_provably_disjoint(
     }
   }
   false
+}
+
+/// The walk behind `Program::validate_ref_captures`. `taint_of` returns
+/// the name of the reference param responsible when the expression's
+/// value may be (or contain) a closure capturing one, logging
+/// `ClosureCapturesMutableRefArg` for mutable-ref captures and
+/// `EscapingClosureCapturesRefArg` for taints reaching `return`
+/// statements or host-sink calls as it goes; the caller checks the
+/// body's own value position.
+struct RefCaptureAnalyzer<'a, 'e> {
+  ref_params: &'a HashMap<Arc<str>, Ownership>,
+  /// Names let-bound or assigned to tainted values, mapped to the
+  /// responsible param.
+  tainted: HashMap<Arc<str>, Arc<str>>,
+  errors: &'e mut ErrorLog,
+}
+
+impl RefCaptureAnalyzer<'_, '_> {
+  fn taint_of(&mut self, exp: &TypedExp) -> Option<Arc<str>> {
+    match &exp.kind {
+      ExpKind::Name(name) => self.tainted.get(name).cloned(),
+      ExpKind::Function(_, lambda_body) => self.scan_lambda(lambda_body),
+      ExpKind::Let(bindings, body) => {
+        for (name, _, _, value) in bindings.iter() {
+          if let Some(param) = self.taint_of(value) {
+            self.tainted.insert(name.clone(), param);
+          }
+        }
+        self.taint_of(body)
+      }
+      ExpKind::Application(callee, args) => {
+        if let ExpKind::Name(callee_name) = &callee.kind {
+          match &**callee_name {
+            "start-audio" | "spawn-window" => {
+              for arg in args.iter() {
+                if let Some(param) = self.taint_of(arg) {
+                  self.errors.log(CompileError::new(
+                    EscapingClosureCapturesRefArg(param.to_string()),
+                    arg.source_trace.clone(),
+                  ));
+                }
+              }
+              return None;
+            }
+            "=" => {
+              let taint = self.taint_of(&args[1]);
+              if let ExpKind::Name(target) = &args[0].kind
+                && let Some(param) = taint
+              {
+                self.tainted.insert(target.clone(), param);
+              }
+              return None;
+            }
+            _ => {}
+          }
+        }
+        let mut taint = self.taint_of(callee);
+        for arg in args.iter() {
+          let arg_taint = self.taint_of(arg);
+          taint = taint.or(arg_taint);
+        }
+        // A call result can only carry a closure onward if its type can
+        // hold one; calling a tainted closure for its (non-function)
+        // value doesn't propagate.
+        taint.filter(|_| {
+          exp.data.with_dereferenced(|state| match state {
+            TypeState::Known(t) => type_involves_function(t),
+            _ => false,
+          })
+        })
+      }
+      ExpKind::Access(_, inner) => self.taint_of(inner),
+      ExpKind::Match(scrutinee, arms) => {
+        self.taint_of(scrutinee);
+        let mut taint = None;
+        for (_, arm_body) in arms.iter() {
+          let arm_taint = self.taint_of(arm_body);
+          taint = taint.or(arm_taint);
+        }
+        taint
+      }
+      ExpKind::Block(expressions) => {
+        let mut taint = None;
+        for expression in expressions.iter() {
+          taint = self.taint_of(expression);
+        }
+        taint
+      }
+      ExpKind::Return(inner) => {
+        if let Some(param) = self.taint_of(inner) {
+          self.errors.log(CompileError::new(
+            EscapingClosureCapturesRefArg(param.to_string()),
+            exp.source_trace.clone(),
+          ));
+        }
+        None
+      }
+      ExpKind::ForLoop {
+        increment_variable_initial_value_expression,
+        continue_condition_expression,
+        update_expression,
+        body_expression,
+        ..
+      } => {
+        self.taint_of(increment_variable_initial_value_expression);
+        self.taint_of(continue_condition_expression);
+        if let Some(update) = update_expression {
+          self.taint_of(update);
+        }
+        self.taint_of(body_expression);
+        None
+      }
+      ExpKind::WhileLoop {
+        condition_expression,
+        body_expression,
+      } => {
+        self.taint_of(condition_expression);
+        self.taint_of(body_expression);
+        None
+      }
+      ExpKind::ArrayLiteral(elements) => {
+        let mut taint = None;
+        for element in elements.iter() {
+          let element_taint = self.taint_of(element);
+          taint = taint.or(element_taint);
+        }
+        taint
+      }
+      _ => None,
+    }
+  }
+  /// A lambda captures whatever free names its body (including nested
+  /// lambdas) references. Mutable-ref captures error immediately; any
+  /// ref-param or tainted-name capture taints the lambda value.
+  fn scan_lambda(&mut self, lambda_body: &TypedExp) -> Option<Arc<str>> {
+    let mut taint = None;
+    let mut reported: HashSet<Arc<str>> = HashSet::new();
+    lambda_body
+      .walk(&mut |exp| {
+        if let ExpKind::Name(name) = &exp.kind {
+          if let Some(ownership) = self.ref_params.get(name) {
+            if *ownership == Ownership::MutableReference
+              && reported.insert(name.clone())
+            {
+              self.errors.log(CompileError::new(
+                ClosureCapturesMutableRefArg(name.to_string()),
+                exp.source_trace.clone(),
+              ));
+            }
+            taint.get_or_insert_with(|| name.clone());
+          } else if let Some(param) = self.tainted.get(name) {
+            let param = param.clone();
+            taint.get_or_insert(param);
+          }
+        }
+        Ok::<bool, Never>(true)
+      })
+      .unwrap();
+    taint
+  }
+}
+
+/// Whether a value of this type can hold a closure — used by the
+/// ref-capture escape walk to decide if a call result can carry taint.
+/// Function-typed struct/enum fields and globals are rejected elsewhere
+/// (`CantStoreFunctionInDataStructure`), so functions and arrays are the
+/// only containers to consider.
+fn type_involves_function(t: &Type) -> bool {
+  match t {
+    Type::Function(_) => true,
+    Type::Array(_, inner) => inner.with_dereferenced(|state| match state {
+      TypeState::Known(inner) => type_involves_function(inner),
+      _ => false,
+    }),
+    _ => false,
+  }
+}
+
+/// The expression whose value a function body evaluates to — descends
+/// let bodies and block tails — used to position the implicit-return
+/// escape error.
+fn tail_value_expression(exp: &TypedExp) -> &TypedExp {
+  match &exp.kind {
+    ExpKind::Let(_, body) => tail_value_expression(body),
+    ExpKind::Block(expressions) => {
+      expressions.last().map(tail_value_expression).unwrap_or(exp)
+    }
+    _ => exp,
+  }
 }

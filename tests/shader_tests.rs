@@ -465,6 +465,36 @@ error_test!(
   aliased_ref_args_element_failure,
   CompileErrorKind::AliasedRefArgs("xs".to_string())
 );
+// The ref-capture rules: closures may never capture a mutable reference
+// argument, and closures capturing any reference argument may not
+// escape the call (returns and host sinks; see
+// `Program::validate_ref_captures`). The allowed local-helper shapes
+// are pinned by the `local_ref_capture_helper` / `ref_capture_hof_arg`
+// cpu tests.
+error_test!(
+  closure_captures_mut_ref_failure,
+  CompileErrorKind::ClosureCapturesMutableRefArg("out".to_string())
+);
+error_test!(
+  escaping_closure_captures_ref_failure,
+  CompileErrorKind::EscapingClosureCapturesRefArg("data".to_string())
+);
+error_test!(
+  escaping_closure_captures_ref_let_failure,
+  CompileErrorKind::EscapingClosureCapturesRefArg("data".to_string())
+);
+error_test!(
+  escaping_closure_captures_ref_nested_failure,
+  CompileErrorKind::EscapingClosureCapturesRefArg("data".to_string())
+);
+error_test!(
+  escaping_closure_captures_ref_call_failure,
+  CompileErrorKind::EscapingClosureCapturesRefArg("data".to_string())
+);
+error_test!(
+  escaping_closure_captures_ref_two_level_failure,
+  CompileErrorKind::EscapingClosureCapturesRefArg("wavetable".to_string())
+);
 error_test!(
   unshareable_bool_var_failure,
   CompileErrorKind::UnshareableBindingType("bool".to_string())

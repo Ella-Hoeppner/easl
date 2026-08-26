@@ -1,0 +1,16 @@
+; A closure mutating through a captured `@var @ref` param — rejected
+; (`ClosureCapturesMutableRefArg`): captures are by-value snapshots, so
+; the write would land in the closure's scope copy and silently never
+; reach the caller (before the rule, both runtimes compiled this clean
+; and dropped the mutation).
+(defn sneaky-add [@var @ref out: [f32]]: f32
+  (let [add (fn [v: f32]
+                (= (out 0u) v))]
+    (add 5.)
+    0.))
+
+@cpu
+(defn main []
+  (let [@var xs (into-dynamic-array [1.])]
+    (print (sneaky-add xs))
+    (print (xs 0u))))

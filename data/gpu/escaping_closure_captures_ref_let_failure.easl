@@ -1,0 +1,11 @@
+; The escape rule sees through let bindings: the ref-capturing closure
+; is bound to a local and the *name* is returned.
+(defn make-reader [@ref data: [f32]]: (Fn [] f32)
+  (let [reader (fn [] (data 0u))]
+    reader))
+
+@cpu
+(defn main []
+  (let [arr (into-dynamic-array [1. 2.])]
+    (let [r (make-reader arr)]
+      (print (r)))))

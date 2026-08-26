@@ -1,0 +1,14 @@
+; The escape rule tracks taint through calls whose result type can hold
+; a closure: the ref-capturing lambda is laundered through an
+; identity-shaped helper before being returned.
+(defn pick [f: (Fn [] f32)]: (Fn [] f32)
+  f)
+
+(defn make-reader [@ref data: [f32]]: (Fn [] f32)
+  (pick (fn [] (data 0u))))
+
+@cpu
+(defn main []
+  (let [arr (into-dynamic-array [1. 2.])]
+    (let [r (make-reader arr)]
+      (print (r)))))

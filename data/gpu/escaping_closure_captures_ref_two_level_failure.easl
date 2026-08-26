@@ -1,0 +1,17 @@
+; The `suspicious/main.easl` granular-sampler shape, distilled: the
+; constructor takes `@ref wavetable` and returns a sampling closure
+; capturing it, and a second function loads the data and returns the
+; constructor's result. The error fires in the constructor — the outer
+; function passes an owned local by reference and returns the result,
+; which is fine at its level.
+(defn sampler [@ref wavetable: [f32]]: (Fn [u32] f32)
+  (fn [i: u32] (wavetable i)))
+
+(defn make-vocal-sampler []: (Fn [u32] f32)
+  (let [vocals (into-dynamic-array [1. 2. 3.])]
+    (sampler vocals)))
+
+@cpu
+(defn main []
+  (let [s (make-vocal-sampler)]
+    (print (s 0u))))
