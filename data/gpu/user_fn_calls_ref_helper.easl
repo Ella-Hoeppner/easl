@@ -1,0 +1,23 @@
+; The distilled problem.easl shape: a user-written GPU-valid function
+; calling a `@ref`-taking helper, in a program with NO shader entry
+; points. The helper survives only as its reference-monomorphization
+; `_function` pointer variant (the original is dropped from the
+; registry), so emission must include the variant in the closure of the
+; user-written root — under the old per-function context-mask skip, the
+; generated variant was excluded (every function's context mask was
+; cpu/audio-only) while the user-written caller emitted, leaving a
+; dangling reference naga rejected at runtime. Checked by a hand-written
+; test asserting the variant is present.
+(struct Voice
+  gain: f32
+  level: f32)
+
+(defn env-level [@ref v: Voice]: f32
+  (* v.gain v.level))
+
+(defn sample-voice [v: Voice]: f32
+  (* 2. (env-level v)))
+
+@cpu
+(defn main []
+  (print (sample-voice (Voice 0.5 0.8))))

@@ -4145,8 +4145,18 @@ impl TypedExp {
                 if !reference_arg_positions.is_empty() {
                   let mut new_abstract_ancestor =
                     (**abstract_ancestor).read().unwrap().clone();
-                  let mut new_top_level_f =
-                    top_level_f.read().unwrap().derived_from();
+                  // Deliberately `.clone()`, not `.derived_from()`: this
+                  // pass is a rename-family, not a derivation — the
+                  // original ref-arg function is dropped from the registry
+                  // (only fns with no ref args are re-added), so its
+                  // address-space variants ARE the user's function under
+                  // suffixed names, exactly like overload separation's
+                  // renames. Keeping `directly_user_written` keeps
+                  // user-written @ref fns in the library-emission
+                  // contract via their function-space variant (storage-
+                  // space variants are excluded by the WGSL validity
+                  // predicate's pointer-space check instead).
+                  let mut new_top_level_f = top_level_f.read().unwrap().clone();
                   let mut address_space_names = vec![];
                   for i in reference_arg_positions {
                     let name = args[i].name_or_inner_accessed_name().unwrap();

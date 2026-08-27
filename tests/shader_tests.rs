@@ -132,6 +132,7 @@ macro_rules! error_test {
 
 // --- Success tests ---
 
+success_test!(user_fn_calls_generic_helper);
 success_test!(inversion);
 success_test!(associative);
 success_test!(assignment);
@@ -545,6 +546,28 @@ fn exported_helper_emitted() {
     "user-written helper missing from emitted WGSL:\n{wgsl}"
   );
 }
+/// The library contract extends to `@ref`-taking user functions via
+/// their reference-monomorphization variants: the ref-mono pass is a
+/// rename-family (the original is dropped from the registry), so the
+/// function-space pointer variant keeps `directly_user_written` and
+/// emits — and closure emission carries it along wherever a user-written
+/// caller needs it. Pins the problem.easl dangling-reference bug.
+#[test]
+fn ref_helper_variant_emitted() {
+  let wgsl = compile_shader("user_fn_calls_ref_helper").unwrap_or_else(|e| {
+    panic!("user_fn_calls_ref_helper failed to compile: {e:?}")
+  });
+  validate_wgsl("user_fn_calls_ref_helper", &wgsl);
+  assert!(
+    wgsl.contains("fn env_level_function"),
+    "ref-variant of user-written helper missing from emitted WGSL:\n{wgsl}"
+  );
+  assert!(
+    wgsl.contains("fn sample_voice"),
+    "user-written caller missing from emitted WGSL:\n{wgsl}"
+  );
+}
+
 error_test!(
   audio_time_in_constructor_failure,
   CompileErrorKind::AudioInfoOutsideAudio("audio-time".to_string())

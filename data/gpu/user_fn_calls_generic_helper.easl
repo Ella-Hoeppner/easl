@@ -1,0 +1,14 @@
+; The monomorphization sibling of user_fn_calls_ref_helper: a
+; user-written function calling a generic helper, with no shader entry
+; points. The monomorphized instance is compiler-generated, so the old
+; context-mask skip excluded it while its user-written caller emitted —
+; the same dangling-reference class; closure emission includes it.
+(defn (twice T: Scalar) [x: T]: T
+  (+ x x))
+
+(defn quadruple [x: f32]: f32
+  (twice (twice x)))
+
+@cpu
+(defn main []
+  (print (quadruple 1.5)))

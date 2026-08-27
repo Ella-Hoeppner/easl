@@ -400,24 +400,6 @@ pub(crate) mod execution_context {
       EntryPoint::Audio => AUDIO,
     }
   }
-  /// The contexts whose code a compilation target actually compiles:
-  /// a generated (non-user-written) function reachable only from
-  /// contexts outside this set is skipped from the target's output.
-  pub fn target_context_mask(
-    target: crate::compiler::program::CompilerTarget,
-  ) -> u8 {
-    match target {
-      crate::compiler::program::CompilerTarget::WGSL => {
-        bit(VERTEX) | bit(FRAGMENT) | bit(COMPUTE)
-      }
-      crate::compiler::program::CompilerTarget::C => {
-        bit(VERTEX) | bit(FRAGMENT) | bit(COMPUTE) | bit(AUDIO)
-      }
-      crate::compiler::program::CompilerTarget::VM => {
-        panic!("VM compilation doesn't go through text emission")
-      }
-    }
-  }
 }
 
 /// Which execution contexts a function can run in, with per-context
@@ -4774,16 +4756,78 @@ impl Program {
       compiled_string += &chunk;
       compiled_string += "\n\n";
     }
-    // Usage-based emission: a compiler-generated function reachable only
-    // from contexts this target doesn't compile (e.g. an audio clone, or
-    // a cpu-only monomorphized instance, in WGSL output) is skipped.
-    // Directly user-written functions always emit (modulo the type and
-    // effect gates in `TopLevelFunction::compile`) so external WGSL/C
-    // that links against easl's output can call them, and functions no
-    // entry reaches (mask 0) emit for the same reason.
-    let function_contexts = self.compute_function_contexts();
-    let target_contexts = execution_context::target_context_mask(target);
-    for (f_name, implementation) in self.composite_functions_in_usage_order() {
+    // Closure-based emission: the output's function set is the transitive
+    // call-graph closure of a root set, so an emitted function can never
+    // reference an unemitted one. Roots are this target's entry points
+    // plus every directly-user-written function that is *transitively
+    // target-valid* (`is_valid_for_target` holding for it and every
+    // function it transitively calls) — the easl-as-a-library contract,
+    // stated precisely: a user-written function emits iff it could
+    // actually be called from the target's code. Compiler-generated
+    // functions emit exactly when something emitted needs them (a
+    // monomorphization or reference variant a user-written function
+    // calls), and audio clones / CPU-only specializations fall away by
+    // unreachability — no per-function context-mask heuristics.
+    let ordered_functions = self.composite_functions_in_usage_order();
+    let registry_names: HashSet<Arc<str>> = ordered_functions
+      .iter()
+      .map(|(name, _)| name.clone())
+      .collect();
+    let mut callees: HashMap<Arc<str>, Vec<Arc<str>>> = HashMap::new();
+    for (f_name, implementation) in ordered_functions.iter() {
+      let mut found: Vec<Arc<str>> = vec![];
+      implementation
+        .read()
+        .unwrap()
+        .expression
+        .walk(&mut |exp| {
+          if let ExpKind::Name(name) = &exp.kind
+            && registry_names.contains(name)
+            && name != f_name
+          {
+            found.push(name.clone());
+          }
+          Ok::<bool, Never>(true)
+        })
+        .unwrap();
+      callees.insert(f_name.clone(), found);
+    }
+    // `ordered_functions` is topological (callees first), so one pass
+    // suffices for the transitive-validity fixpoint.
+    let mut transitively_valid: HashMap<Arc<str>, bool> = HashMap::new();
+    for (f_name, implementation) in ordered_functions.iter() {
+      let valid = implementation
+        .read()
+        .unwrap()
+        .is_valid_for_target(&self, target)
+        && callees[f_name]
+          .iter()
+          .all(|callee| transitively_valid[callee]);
+      transitively_valid.insert(f_name.clone(), valid);
+    }
+    let mut emitted: HashSet<Arc<str>> = HashSet::new();
+    let mut queue: Vec<Arc<str>> = ordered_functions
+      .iter()
+      .filter(|(f_name, implementation)| {
+        let implementation = implementation.read().unwrap();
+        implementation
+          .entry_point
+          .map(|entry| entry.should_compile_to_target(target))
+          .unwrap_or(false)
+          || (implementation.directly_user_written
+            && transitively_valid[f_name])
+      })
+      .map(|(f_name, _)| f_name.clone())
+      .collect();
+    while let Some(f_name) = queue.pop() {
+      if emitted.insert(f_name.clone()) {
+        queue.extend(callees[&f_name].iter().cloned());
+      }
+    }
+    for (f_name, implementation) in ordered_functions {
+      if !emitted.contains(&f_name) {
+        continue;
+      }
       {
         let implementation = implementation.read().unwrap();
         let Type::Function(signature) =
@@ -4794,13 +4838,6 @@ impl Program {
         let return_type = signature.return_type.unwrap_known();
         if matches!(return_type, Type::Function(_))
           && return_type.is_unitlike(&mut names)
-        {
-          continue;
-        }
-        if !implementation.directly_user_written
-          && let Some(info) = function_contexts.get(&f_name)
-          && info.mask != 0
-          && info.mask & target_contexts == 0
         {
           continue;
         }

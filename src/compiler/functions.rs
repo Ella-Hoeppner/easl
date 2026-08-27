@@ -1216,6 +1216,66 @@ pub struct BuiltInFunction {
 }
 
 impl TopLevelFunction {
+  /// Whether this function has a valid representation in `target`'s
+  /// output — the leaf predicate of `compile_to_target`'s closure-based
+  /// emission. A function is target-invalid through its effects
+  /// (CPU-exclusive calls/types, window queries, address-space writes
+  /// the GPU can't perform), through its types (runtime-sized values,
+  /// Strings, or CPU-only closure scopes in the signature — see
+  /// `type_makes_struct_cpu_only`), through a reference param bound to a
+  /// non-function address space (WGSL: the storage-space `ptr` argument
+  /// emission is malformed, and no shader-callable code can produce such
+  /// a reference anyway), or through an entry-point marking the target
+  /// doesn't compile. `compile` emits an empty string for exactly the
+  /// functions this rejects.
+  pub fn is_valid_for_target(
+    &self,
+    program: &Program,
+    target: CompilerTarget,
+  ) -> bool {
+    if !self
+      .entry_point
+      .map(|entry| entry.should_compile_to_target(target))
+      .unwrap_or(true)
+    {
+      return false;
+    }
+    let Type::Function(signature) = self.expression.data.unwrap_known() else {
+      panic!("attempted to validate function with invalid type data")
+    };
+    let signature_involves_cpu_only_types = signature
+      .args
+      .iter()
+      .map(|(arg, _)| arg.var_type.unwrap_known())
+      .chain(std::iter::once(signature.return_type.unwrap_known()))
+      .any(|t| {
+        t.involves_runtime_sized_array()
+          || t.involves_string()
+          || program.type_makes_struct_cpu_only(&t)
+      });
+    if signature_involves_cpu_only_types {
+      return false;
+    }
+    if target == CompilerTarget::WGSL
+      && signature.args.iter().any(|(arg, _)| {
+        matches!(
+          arg.var_type.ownership,
+          Ownership::Pointer(space)
+            if !matches!(
+              space,
+              VariableAddressSpace::Function | VariableAddressSpace::Local
+            )
+        )
+      })
+    {
+      return false;
+    }
+    let effects = self.effects();
+    effects.cpu_exclusive_functions().is_empty()
+      && effects.cpu_exclusive_types().is_empty()
+      && effects.window_info_kinds().is_empty()
+      && effects.gpu_illegal_address_space_writes(program).is_empty()
+  }
   pub fn compile(
     self,
     name: &str,
@@ -1223,6 +1283,10 @@ impl TopLevelFunction {
     program: &Program,
     target: CompilerTarget,
   ) -> CompileResult<String> {
+    // The validity gate is `is_valid_for_target` above; `fn_string` below
+    // is only evaluated when it passes, so skipped functions' bodies are
+    // never lowered at all.
+    let valid = self.is_valid_for_target(program, target);
     let TypedExp { data, kind, .. } = self.expression;
     let Type::Function(signature) = data.unwrap_known() else {
       panic!("attempted to compile function with invalid type data")
@@ -1235,35 +1299,6 @@ impl TopLevelFunction {
     } else {
       panic!("attempted to compile function with invalid ExpKind {kind:?}")
     };
-    let effects = body.effects();
-    // A function is CPU-only either through its effects (CPU-exclusive
-    // calls/types, window queries, address-space writes the GPU can't
-    // perform) or through its types: runtime-sized values and strings in
-    // the signature have no flat WGSL/C encoding. `fn_string` below is
-    // only evaluated when this passes, so skipped functions' bodies are
-    // never lowered at all.
-    let signature_involves_cpu_only_types = args
-      .iter()
-      .map(|(arg, _)| arg.var_type.unwrap_known())
-      .chain(std::iter::once(return_type.unwrap_known()))
-      .any(|t| {
-        // `type_makes_struct_cpu_only` extends the flat checks through
-        // *closure types*, recursing into their scope structs: a
-        // HoF-specialized function whose closure-typed params capture a
-        // runtime-sized array (or a String, or another CPU-only closure)
-        // compiles to `ptr<function, <scope>>` args referencing scope
-        // structs that struct emission skips as CPU-only — so the
-        // function must be skipped by the same predicate, or the emitted
-        // WGSL/C dangles on the missing struct.
-        t.involves_runtime_sized_array()
-          || t.involves_string()
-          || program.type_makes_struct_cpu_only(&t)
-      });
-    let allowed_on_gpu = effects.cpu_exclusive_functions().is_empty()
-      && effects.cpu_exclusive_types().is_empty()
-      && effects.window_info_kinds().is_empty()
-      && effects.gpu_illegal_address_space_writes(program).is_empty()
-      && !signature_involves_cpu_only_types;
 
     let fn_string = || {
       let args = arg_names
@@ -1329,21 +1364,14 @@ impl TopLevelFunction {
         CompilerTarget::VM => panic!(),
       }
     };
-    Ok(
-      if self
-        .entry_point
-        .map(|entry| entry.should_compile_to_target(target))
-        .unwrap_or(true)
-        && allowed_on_gpu
-      {
-        fn_string()
-      } else {
-        String::new()
-        // DEBUG: uncommenting the following will compile CPU-exclusive
-        // functions as commented-out pseudocode in the final WGSL file
-        // "// ".to_string() + &fn_string().replace("\n", "\n// ")
-      },
-    )
+    Ok(if valid {
+      fn_string()
+    } else {
+      String::new()
+      // DEBUG: uncommenting the following will compile CPU-exclusive
+      // functions as commented-out pseudocode in the final WGSL file
+      // "// ".to_string() + &fn_string().replace("\n", "\n// ")
+    })
   }
   pub fn effects(&self) -> EffectType {
     if let ExpKind::Function(arg_names, body) = &self.expression.kind {
