@@ -1,11 +1,11 @@
-; KNOWN-FAILING (bytecode VM): element stores into a runtime-sized array
-; of heap-payload enums. `DynStore`'s flat-words arm copies the element's
-; words into the region without releasing the old element's ids or
-; promoting the new one's, so each loop iteration's payload id is a
-; borrow of the `Some (into-dynamic-array ...)` construction site — which
-; the next iteration frees and reuses. The `[String]`/`[[f32]]` `Cells`
-; containers handle exactly this correctly; embedding element types miss
-; it.
+; Element stores into a runtime-sized array of heap-payload enums
+; (`emit_embedding_element_store`): the old element's embedded ids are
+; released (loaded to scratch — releasing by id value releases the
+; container's ids), the new value is staged with fresh owned shares,
+; word-copied in, and the stage's id words zeroed (ownership moved into
+; the container). Each loop iteration's payload then survives the next
+; iteration's construction-site release. The `[String]`/`[[f32]]`
+; `Cells` containers handle the same pattern via Arc children.
 (enum (Option T)
   None
   (Some T))

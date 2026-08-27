@@ -189,6 +189,12 @@ pub enum Op {
   // site next re-executes.
   /// args: [src_id_slot, _, _] → element count (0 for a null id)
   HeapLen,
+  /// args: [id_slot, _, _] → 1 when the id is non-null and its cell has
+  /// exactly one live share (this table entry), else 0. The branch
+  /// condition for the compile-time-emitted ensure-unique / element-
+  /// release sequences around containers whose flat element words embed
+  /// heap ids (see "emit_embedding_element_store" in vm/compile.rs).
+  HeapUnique,
   /// args: [id_slot, index_slot, stride] → element dest
   HeapLoad,
   /// args: [id_slot, index_slot, src_slot]; return_position = stride
@@ -1627,6 +1633,12 @@ impl BytecodeProgram {
             .map(|cell| cell.memory.len_elements(cell.stride as usize))
             .unwrap_or(0);
           stack[instruction.return_position as usize] = count;
+        }
+        Op::HeapUnique => {
+          let unique = deref_cell!(instruction.arg_positions[0])
+            .map(|cell| std::sync::Arc::strong_count(cell) == 1)
+            .unwrap_or(false);
+          stack[instruction.return_position as usize] = unique as u32;
         }
         Op::HeapLoad => {
           let [id_slot, index_slot, stride] = instruction.arg_positions;

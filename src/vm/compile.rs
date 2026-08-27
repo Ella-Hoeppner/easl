@@ -297,7 +297,7 @@ impl BytecodeCompilationState {
       return;
     }
     let plan = HeapCopyPlan::for_type(t);
-    self.emit_copy_with_plan(src, size, dest, &plan, &mut None);
+    self.emit_copy_with_plan(src, size, dest, t, &plan, &mut None);
   }
   /// The copy emitter behind `emit_value_copy`. With `pending: Some`, the
   /// destination isn't known yet (a ref-fn placeholder group, patched at
@@ -308,11 +308,15 @@ impl BytecodeCompilationState {
     src: u16,
     size: u16,
     dest: u16,
+    t: &Type,
     plan: &HeapCopyPlan,
     pending: &mut Option<PendingCopyGroup>,
   ) {
     match plan {
       HeapCopyPlan::WholeHeap => {
+        if pending.is_none() {
+          self.emit_container_dest_hygiene(dest, t);
+        }
         self.emit_copy_instruction(Op::HeapCopy, [src, 0, 0], dest, 0, pending);
       }
       HeapCopyPlan::Flat => {
@@ -409,6 +413,330 @@ impl BytecodeCompilationState {
       arg_positions,
       return_position,
     });
+  }
+
+  /// The fixups of a container's *element* layout when its flat words
+  /// embed heap ids without being one — the `DynMemory::Words`-with-ids
+  /// case (`[(Option [f32])]`, `[Packet]`-with-dyn-field). Heap-value
+  /// elements (`[[f32]]`, `[String]`) use `Cells` storage and return
+  /// None, as do flat elements.
+  fn embedding_element_fixups(element_type: &Type) -> Option<HeapFixups> {
+    if is_heap_value_type(element_type) {
+      return None;
+    }
+    let mut fixups = HeapFixups::default();
+    collect_heap_fixups(element_type, 0, &mut fixups);
+    (!fixups.is_empty()).then_some(fixups)
+  }
+  /// Emits a compile-time loop over a container's elements, running
+  /// `body` per element with the element's words staged in `scratch`
+  /// (the closure also decides whether the possibly-mutated scratch is
+  /// written back). `length_of` and the load/store per backend are
+  /// provided by the two public wrappers below.
+  fn emit_element_loop(
+    &mut self,
+    length_source: EmbeddingContainer,
+    stride: u16,
+    write_back: bool,
+    body: impl FnOnce(&mut Self, u16),
+  ) {
+    let length_slot = self.take_stack_slot(1);
+    let (length_op, length_args) = match length_source {
+      EmbeddingContainer::Cell(id_slot) => (Op::HeapLen, [id_slot, 0, 0]),
+      EmbeddingContainer::Region(memory) => (Op::DynLen, [memory, stride, 0]),
+    };
+    self.push_instruction(Instruction {
+      op: length_op,
+      arg_positions: length_args,
+      return_position: length_slot,
+    });
+    let index_slot = self.take_stack_slot(1);
+    let one_slot = self.emit_u32_constant(1);
+    self.push_instruction(Instruction {
+      op: Op::Constant,
+      arg_positions: [0, 0, 0],
+      return_position: index_slot,
+    });
+    let loop_start = self.instructions.len() as u32;
+    let condition_slot = self.take_stack_slot(1);
+    self.push_instruction(Instruction {
+      op: Op::LessThanU32,
+      arg_positions: [index_slot, length_slot, 0],
+      return_position: condition_slot,
+    });
+    let exit_jump = self.instructions.len();
+    self.push_instruction(Instruction {
+      op: Op::JumpWhenNot,
+      arg_positions: [condition_slot, 0, 0],
+      return_position: 0,
+    });
+    let scratch = self.take_stack_slot(stride);
+    self.push_instruction(match length_source {
+      EmbeddingContainer::Cell(id_slot) => Instruction {
+        op: Op::HeapLoad,
+        arg_positions: [id_slot, index_slot, stride],
+        return_position: scratch,
+      },
+      EmbeddingContainer::Region(memory) => Instruction {
+        op: Op::DynLoad,
+        arg_positions: [memory, index_slot, stride],
+        return_position: scratch,
+      },
+    });
+    body(self, scratch);
+    if write_back {
+      self.push_instruction(match length_source {
+        EmbeddingContainer::Cell(id_slot) => Instruction {
+          op: Op::HeapStore,
+          arg_positions: [id_slot, index_slot, scratch],
+          return_position: stride,
+        },
+        EmbeddingContainer::Region(memory) => Instruction {
+          op: Op::DynStore,
+          arg_positions: [memory, index_slot, scratch],
+          return_position: stride,
+        },
+      });
+    }
+    self.push_instruction(Instruction {
+      op: Op::PlusU32,
+      arg_positions: [index_slot, one_slot, 0],
+      return_position: index_slot,
+    });
+    self.push_instruction(Instruction {
+      op: Op::Jump,
+      arg_positions: [(loop_start >> 16) as u16, loop_start as u16, 0],
+      return_position: 0,
+    });
+    let after = self.instructions.len() as u32;
+    self.instructions[exit_jump].arg_positions[1] = (after >> 16) as u16;
+    self.instructions[exit_jump].arg_positions[2] = after as u16;
+  }
+  /// Re-owns a container's embedded element ids in place: each element's
+  /// id words (borrows of whatever slots the container was built from)
+  /// are replaced with fresh owned `Arc` shares, so the container's own
+  /// words keep the cells alive regardless of what the source sites do
+  /// next. Runs after any op that clones foreign words into a container
+  /// (`HeapFromSlots`, `RegionFromHeap`, `HeapFromRegion`).
+  fn emit_reown_container_elements(
+    &mut self,
+    container: EmbeddingContainer,
+    stride: u16,
+    fixups: &HeapFixups,
+  ) {
+    self.emit_element_loop(container, stride, true, |state, scratch| {
+      state.emit_heap_fixups(fixups, Op::HeapPromote, scratch, &mut None);
+    });
+  }
+  /// Releases every element's embedded ids — the mirror of re-owning,
+  /// run before a container's contents are discarded (whole-region
+  /// overwrite, or a cell about to be freed).
+  fn emit_release_container_elements(
+    &mut self,
+    container: EmbeddingContainer,
+    stride: u16,
+    fixups: &HeapFixups,
+  ) {
+    self.emit_element_loop(container, stride, false, |state, scratch| {
+      state.emit_heap_fixups(fixups, Op::HeapRelease, scratch, &mut None);
+    });
+  }
+  /// Destination hygiene for slots about to be overwritten with a fresh
+  /// container id: when this site's previous execution left a container
+  /// here holding the last share of its cell, release the embedded
+  /// element ids before the op's drop-on-overwrite frees the cell
+  /// itself. Skipped when the slot's old cell is still shared — the
+  /// other holders keep the elements alive.
+  fn emit_container_dest_hygiene(&mut self, dest: u16, container_type: &Type) {
+    let Type::Array(Some(ConcreteArraySize::Unsized), element_type) =
+      container_type
+    else {
+      return;
+    };
+    let element_type = element_type.unwrap_known();
+    let Some(fixups) = Self::embedding_element_fixups(&element_type) else {
+      return;
+    };
+    let stride = vm_stack_size(&element_type);
+    let unique_slot = self.take_stack_slot(1);
+    self.push_instruction(Instruction {
+      op: Op::HeapUnique,
+      arg_positions: [dest, 0, 0],
+      return_position: unique_slot,
+    });
+    let skip_jump = self.instructions.len();
+    self.push_instruction(Instruction {
+      op: Op::JumpWhenNot,
+      arg_positions: [unique_slot, 0, 0],
+      return_position: 0,
+    });
+    self.emit_release_container_elements(
+      EmbeddingContainer::Cell(dest),
+      stride,
+      &fixups,
+    );
+    let after = self.instructions.len() as u32;
+    self.instructions[skip_jump].arg_positions[1] = (after >> 16) as u16;
+    self.instructions[skip_jump].arg_positions[2] = after as u16;
+  }
+  /// The copy-on-write half of embedding-element containers, emitted as
+  /// instructions because the runtime's `Arc::make_mut` word clone can't
+  /// re-own embedded ids (it has no layout): when the cell is shared,
+  /// rebuild it as a fresh uniquely-owned cell whose elements hold fresh
+  /// owned shares, release the old share, and repoint the container slot.
+  /// Linear (unshared) use pays one `HeapUnique` and an untaken branch.
+  fn emit_ensure_unique_cell(
+    &mut self,
+    id_slot: u16,
+    stride: u16,
+    fixups: &HeapFixups,
+  ) {
+    let unique_slot = self.take_stack_slot(1);
+    self.push_instruction(Instruction {
+      op: Op::HeapUnique,
+      arg_positions: [id_slot, 0, 0],
+      return_position: unique_slot,
+    });
+    let skip_jump = self.instructions.len();
+    self.push_instruction(Instruction {
+      op: Op::JumpWhen,
+      arg_positions: [unique_slot, 0, 0],
+      return_position: 0,
+    });
+    let length_slot = self.take_stack_slot(1);
+    self.push_instruction(Instruction {
+      op: Op::HeapLen,
+      arg_positions: [id_slot, 0, 0],
+      return_position: length_slot,
+    });
+    let fresh_slot = self.take_stack_slot(1);
+    self.push_instruction(Instruction {
+      op: Op::HeapZeroed,
+      arg_positions: [length_slot, stride, 0],
+      return_position: fresh_slot,
+    });
+    let index_slot = self.take_stack_slot(1);
+    let one_slot = self.emit_u32_constant(1);
+    self.push_instruction(Instruction {
+      op: Op::Constant,
+      arg_positions: [0, 0, 0],
+      return_position: index_slot,
+    });
+    let loop_start = self.instructions.len() as u32;
+    let condition_slot = self.take_stack_slot(1);
+    self.push_instruction(Instruction {
+      op: Op::LessThanU32,
+      arg_positions: [index_slot, length_slot, 0],
+      return_position: condition_slot,
+    });
+    let exit_jump = self.instructions.len();
+    self.push_instruction(Instruction {
+      op: Op::JumpWhenNot,
+      arg_positions: [condition_slot, 0, 0],
+      return_position: 0,
+    });
+    let scratch = self.take_stack_slot(stride);
+    self.push_instruction(Instruction {
+      op: Op::HeapLoad,
+      arg_positions: [id_slot, index_slot, stride],
+      return_position: scratch,
+    });
+    self.emit_heap_fixups(fixups, Op::HeapPromote, scratch, &mut None);
+    self.push_instruction(Instruction {
+      op: Op::HeapStore,
+      arg_positions: [fresh_slot, index_slot, scratch],
+      return_position: stride,
+    });
+    // The promoted shares now live in the fresh cell's words; zero the
+    // scratch ids so nothing else ever releases them.
+    self.emit_heap_fixups(fixups, Op::Constant, scratch, &mut None);
+    self.push_instruction(Instruction {
+      op: Op::PlusU32,
+      arg_positions: [index_slot, one_slot, 0],
+      return_position: index_slot,
+    });
+    self.push_instruction(Instruction {
+      op: Op::Jump,
+      arg_positions: [(loop_start >> 16) as u16, loop_start as u16, 0],
+      return_position: 0,
+    });
+    let loop_end = self.instructions.len();
+    self.instructions[exit_jump].arg_positions[1] =
+      (loop_end as u32 >> 16) as u16;
+    self.instructions[exit_jump].arg_positions[2] = loop_end as u16;
+    self.push_instruction(Instruction {
+      op: Op::HeapRelease,
+      arg_positions: [0, 0, 0],
+      return_position: id_slot,
+    });
+    self.push_instruction(Instruction {
+      op: Op::Move,
+      arg_positions: [fresh_slot, 1, 0],
+      return_position: id_slot,
+    });
+    // The fresh slot's stale copy of the id must not be release-eligible
+    // on this site's next execution — the container slot owns it now.
+    self.push_instruction(Instruction {
+      op: Op::Constant,
+      arg_positions: [0, 0, 0],
+      return_position: fresh_slot,
+    });
+    let after = self.instructions.len() as u32;
+    self.instructions[skip_jump].arg_positions[1] = (after >> 16) as u16;
+    self.instructions[skip_jump].arg_positions[2] = after as u16;
+  }
+  /// An ownership-correct element store into an embedding-element
+  /// container: ensure the cell is uniquely owned (cells only — regions
+  /// are never shared), release the old element's embedded ids (read
+  /// into scratch — releasing by id value is releasing the container's
+  /// ids), stage the new value with fresh owned shares, word-copy the
+  /// stage into the container, and zero the stage's id words (ownership
+  /// moved into the container; the source slots keep their own).
+  fn emit_embedding_element_store(
+    &mut self,
+    container: EmbeddingContainer,
+    index_slot: u16,
+    src_slot: u16,
+    stride: u16,
+    fixups: &HeapFixups,
+  ) {
+    if let EmbeddingContainer::Cell(id_slot) = container {
+      self.emit_ensure_unique_cell(id_slot, stride, fixups);
+    }
+    let old_scratch = self.take_stack_slot(stride);
+    self.push_instruction(match container {
+      EmbeddingContainer::Cell(id_slot) => Instruction {
+        op: Op::HeapLoad,
+        arg_positions: [id_slot, index_slot, stride],
+        return_position: old_scratch,
+      },
+      EmbeddingContainer::Region(memory) => Instruction {
+        op: Op::DynLoad,
+        arg_positions: [memory, index_slot, stride],
+        return_position: old_scratch,
+      },
+    });
+    self.emit_heap_fixups(fixups, Op::HeapRelease, old_scratch, &mut None);
+    let staging = self.take_stack_slot(stride);
+    self.push_instruction(Instruction {
+      op: Op::Move,
+      arg_positions: [src_slot, stride, 0],
+      return_position: staging,
+    });
+    self.emit_heap_fixups(fixups, Op::HeapPromote, staging, &mut None);
+    self.push_instruction(match container {
+      EmbeddingContainer::Cell(id_slot) => Instruction {
+        op: Op::HeapStore,
+        arg_positions: [id_slot, index_slot, staging],
+        return_position: stride,
+      },
+      EmbeddingContainer::Region(memory) => Instruction {
+        op: Op::DynStore,
+        arg_positions: [memory, index_slot, staging],
+        return_position: stride,
+      },
+    });
+    self.emit_heap_fixups(fixups, Op::Constant, staging, &mut None);
   }
 
   // --- Basic emit helpers ---
@@ -1292,11 +1620,24 @@ impl BytecodeCompilationState {
           });
         } else {
           let stride = vm_stack_size(&element_type);
+          let fixups = Self::embedding_element_fixups(&element_type);
+          if fixups.is_some() {
+            self.emit_container_dest_hygiene(dest, return_type);
+          }
           self.push_instruction(Instruction {
             op: Op::HeapFromSlots,
             arg_positions: [arg_positions[0], *count as u16, stride],
             return_position: dest,
           });
+          // The words just cloned in borrow their ids from the source
+          // slots; give the cell owned shares of its own.
+          if let Some(fixups) = fixups {
+            self.emit_reown_container_elements(
+              EmbeddingContainer::Cell(dest),
+              stride,
+              &fixups,
+            );
+          }
         }
         Some(dest)
       }
@@ -1319,6 +1660,9 @@ impl BytecodeCompilationState {
           });
         } else {
           let stride = vm_stack_size(&element_type);
+          if Self::embedding_element_fixups(&element_type).is_some() {
+            self.emit_container_dest_hygiene(dest, return_type);
+          }
           self.push_instruction(Instruction {
             op: Op::HeapZeroed,
             arg_positions: [arg_positions[0], stride, 0],
@@ -1338,6 +1682,7 @@ impl BytecodeCompilationState {
           // (mutation later copies-on-write). A plain `Move` of the id
           // word would leave the destination borrowing a cell the source
           // site frees on its next execution.
+          self.emit_container_dest_hygiene(arg_positions[0], &arg_types[0]);
           self.push_instruction(Instruction {
             op: Op::HeapCopy,
             arg_positions: [arg_positions[1], 0, 0],
@@ -2423,6 +2768,16 @@ fn aliases_variable_storage(e: &TypedExp) -> bool {
   }
 }
 
+/// Which storage an embedding-element container lives in: a heap cell
+/// (locals and values, addressed through the id in a slot) or a
+/// dynamic-memory region (globals). Regions are never `Arc`-shared, so
+/// only cells need ensure-unique treatment.
+#[derive(Clone, Copy)]
+enum EmbeddingContainer {
+  Cell(u16),
+  Region(u16),
+}
+
 /// True for types whose VM value representation is a single heap id —
 /// runtime-sized arrays and strings. Containers of such elements use
 /// `DynMemory::Cells` storage (owned `Arc` children) rather than flat
@@ -2873,14 +3228,29 @@ impl TypedExp {
           && let ExpKind::Name(name) = &inner.kind
           && let Some((memory, stride)) =
             state.dynamic_array_memory.get(name).copied()
+          && let Type::Array(_, element_type) = inner.data.unwrap_known()
         {
           let index_slot = index_exp.compile_to_bytecode(false, state).unwrap();
           let src_slot = args[1].compile_to_bytecode(false, state).unwrap();
-          state.push_instruction(Instruction {
-            op: Op::DynStore,
-            arg_positions: [memory, index_slot, src_slot],
-            return_position: stride,
-          });
+          if let Some(fixups) =
+            BytecodeCompilationState::embedding_element_fixups(
+              &element_type.unwrap_known(),
+            )
+          {
+            state.emit_embedding_element_store(
+              EmbeddingContainer::Region(memory),
+              index_slot,
+              src_slot,
+              stride,
+              &fixups,
+            );
+          } else {
+            state.push_instruction(Instruction {
+              op: Op::DynStore,
+              arg_positions: [memory, index_slot, src_slot],
+              return_position: stride,
+            });
+          }
           Some(None)
         } else if let ExpKind::Access(Accessor::ArrayIndex(index_exp), inner) =
           &args[0].kind
@@ -2896,12 +3266,25 @@ impl TypedExp {
           let heap_id_slot = inner.compile_to_bytecode(false, state).unwrap();
           let index_slot = index_exp.compile_to_bytecode(false, state).unwrap();
           let src_slot = args[1].compile_to_bytecode(false, state).unwrap();
-          let stride = vm_stack_size(&element_type.unwrap_known());
-          state.push_instruction(Instruction {
-            op: Op::HeapStore,
-            arg_positions: [heap_id_slot, index_slot, src_slot],
-            return_position: stride,
-          });
+          let element_type = element_type.unwrap_known();
+          let stride = vm_stack_size(&element_type);
+          if let Some(fixups) =
+            BytecodeCompilationState::embedding_element_fixups(&element_type)
+          {
+            state.emit_embedding_element_store(
+              EmbeddingContainer::Cell(heap_id_slot),
+              index_slot,
+              src_slot,
+              stride,
+              &fixups,
+            );
+          } else {
+            state.push_instruction(Instruction {
+              op: Op::HeapStore,
+              arg_positions: [heap_id_slot, index_slot, src_slot],
+              return_position: stride,
+            });
+          }
           Some(None)
         } else if let ExpKind::Name(name) = &args[0].kind
           && let Some((memory, _)) =
@@ -2910,7 +3293,7 @@ impl TypedExp {
             args[0].data.unwrap_known()
           && !(state.cpu_mode
             && assigns_special_dyn_rhs(&args[1])
-            && !is_heap_value_type(&element_type.unwrap_known()))
+            && !involves_heap_values(&element_type.unwrap_known()))
         {
           // whole-array assignment of a general runtime-sized value to a
           // dynamic global: compile the value to a heap cell and copy its
@@ -2928,11 +3311,34 @@ impl TypedExp {
             panic!("load-wav is only available in the CPU runtime");
           }
           let src_slot = args[1].compile_to_bytecode(false, state).unwrap();
+          let embedding_fixups =
+            BytecodeCompilationState::embedding_element_fixups(
+              &element_type.unwrap_known(),
+            );
+          let stride = vm_stack_size(&element_type.unwrap_known());
+          // The region owns its elements' embedded ids: release the old
+          // contents before the wholesale replacement, and re-own the
+          // fresh words after (`RegionFromHeap`'s clone copies the
+          // cell's ids in as borrows).
+          if let Some(fixups) = &embedding_fixups {
+            state.emit_release_container_elements(
+              EmbeddingContainer::Region(memory),
+              stride,
+              fixups,
+            );
+          }
           state.push_instruction(Instruction {
             op: Op::RegionFromHeap,
             arg_positions: [memory, src_slot, 0],
             return_position: 0,
           });
+          if let Some(fixups) = &embedding_fixups {
+            state.emit_reown_container_elements(
+              EmbeddingContainer::Region(memory),
+              stride,
+              fixups,
+            );
+          }
           Some(None)
         } else {
           None
@@ -3636,7 +4042,14 @@ impl TypedExp {
                 let plan = HeapCopyPlan::for_type(&arg_expression_type);
                 let mut pending =
                   Some(PendingCopyGroup::new(state.instructions.len() as u32));
-                state.emit_copy_with_plan(src, size, 0, &plan, &mut pending);
+                state.emit_copy_with_plan(
+                  src,
+                  size,
+                  0,
+                  &arg_expression_type,
+                  &plan,
+                  &mut pending,
+                );
                 arg_move_positions.push((arg_index, pending.unwrap()));
               }
               let fn_dispatch_position = state.instructions.len() as u32;
@@ -3749,11 +4162,32 @@ impl TypedExp {
           // a fresh heap cell (value semantics — later writes to the
           // global must not show through the copy).
           let dest = state.take_stack_slot(1);
+          let embedding_fixups = if let Type::Array(
+            Some(ConcreteArraySize::Unsized),
+            element_type,
+          ) = self.data.unwrap_known()
+          {
+            BytecodeCompilationState::embedding_element_fixups(
+              &element_type.unwrap_known(),
+            )
+          } else {
+            None
+          };
+          if embedding_fixups.is_some() {
+            state.emit_container_dest_hygiene(dest, &self.data.unwrap_known());
+          }
           state.push_instruction(Instruction {
             op: Op::HeapFromRegion,
             arg_positions: [memory, stride, 0],
             return_position: dest,
           });
+          if let Some(fixups) = embedding_fixups {
+            state.emit_reown_container_elements(
+              EmbeddingContainer::Cell(dest),
+              stride,
+              &fixups,
+            );
+          }
           return Some(dest);
         }
         if state.dynamic_globals.contains_key(name) {
@@ -4376,6 +4810,18 @@ impl TypedExp {
               let dest = state.take_stack_slot(stride);
               let index_slot =
                 index_exp.compile_to_bytecode(false, state).unwrap();
+              // A mutable-position element of an embedding-element
+              // container will be written back through `HeapStore`, whose
+              // internal clone-on-shared can't re-own embedded ids —
+              // guarantee uniqueness before reading the element out.
+              if is_ref_arg_position
+                && let Some(fixups) =
+                  BytecodeCompilationState::embedding_element_fixups(
+                    &self.data.unwrap_known(),
+                  )
+              {
+                state.emit_ensure_unique_cell(heap_id_slot, stride, &fixups);
+              }
               state.push_instruction(Instruction {
                 op: Op::HeapLoad,
                 arg_positions: [heap_id_slot, index_slot, stride],

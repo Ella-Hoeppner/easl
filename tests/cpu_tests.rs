@@ -190,17 +190,18 @@ cpu_test!(load_wav_local_binding);
 cpu_test!(assign_field_in_dyn_array_element);
 cpu_test!(const_generic_zeroed_array);
 cpu_test!(const_generic_zeroed_array_map);
-// KNOWN-FAILING (the dyn_container_* block): RUNTIME-SIZED containers
-// whose element type *embeds* heap ids without being one
-// (`[(Option [f32])]`, `[Packet]`-with-dyn-field) store flat words
-// (`DynMemory::Words`), so construction/store/COW-clone traffic copies
-// embedded ids as silent borrows. See each .easl header for the exact
-// surface, and the container-support design notes for the agreed fix
-// (sharedness-branch + compile-time-emitted per-element fixup loops).
-// The fixed_array_* tests PASS and guard the sound half: FIXED-size
-// arrays are slot-resident (`vm_stack_size` recurses per element), and
-// both whole-array copies and indexed element stores compose correctly
-// with the fixup machinery — see the .easl headers for why.
+// The embedding-element container pins: RUNTIME-SIZED containers whose
+// element type *embeds* heap ids without being one (`[(Option [f32])]`,
+// `[Packet]`-with-dyn-field) store flat words (`DynMemory::Words`), and
+// every path cloning words into or out of one re-owns / releases the
+// embedded ids through compile-time-emitted per-element fixup sequences
+// (`emit_embedding_element_store` / `emit_reown_container_elements` /
+// `emit_ensure_unique_cell` in vm/compile.rs — sharedness reflected as
+// an emitted `HeapUnique` branch, no runtime layout metadata; each
+// .easl header covers one surface). The fixed_array_* tests guard the
+// slot-resident half: whole-array copies and indexed element stores
+// compose with the same fixup machinery via `vm_stack_size`'s
+// per-element recursion.
 cpu_test!(dyn_container_enum_elements);
 cpu_test!(dyn_container_struct_elements);
 cpu_test!(dyn_container_element_store);

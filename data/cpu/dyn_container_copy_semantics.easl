@@ -1,11 +1,11 @@
-; KNOWN-FAILING (bytecode VM): value semantics across a copy of a
-; container with heap-embedding elements. Copying the container itself
-; is an `Arc` share (correct), and the element store into `a` triggers
-; the `Arc::make_mut` flat-words clone — duplicating embedded body ids
-; with no ownership accounting — while `b` keeps the original cell,
-; whose body id is a borrow of `pair-of`'s construction site. After the
-; store diverges the copies and `pair-of` re-executes, `b`'s element
-; must still hold its own original payload.
+; Value semantics across a copy of a container with heap-embedding
+; elements. Copying the container is an `Arc` share; the first element
+; store through `a` hits the emitted ensure-unique sequence
+; (`emit_ensure_unique_cell` — the compile-time-emitted replacement for
+; `Arc::make_mut`'s layout-blind word clone): a fresh uniquely-owned
+; cell is built with re-owned element ids, so `b` keeps the original
+; cell and its own payloads through both the store and `pair-of`'s
+; re-execution.
 (struct Packet
   tag: f32
   body: [f32])

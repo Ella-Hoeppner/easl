@@ -1,9 +1,10 @@
-; KNOWN-FAILING (bytecode VM): a runtime-sized array whose elements are
-; heap-payload enums. The element type embeds a heap id without being
-; one, so the container stores flat words (`DynMemory::Words`), and
-; construction (`HeapFromSlots`) copies the payload ids in as borrows of
-; the source fixed-array literal's slots — which the second `build` call
-; releases and reuses, so `a`'s element payload aliases `b`'s.
+; A runtime-sized array whose elements are heap-payload enums. The
+; container stores flat words (`DynMemory::Words`), and construction
+; (`HeapFromSlots`) clones the source slots' words — so the emitted
+; re-own pass (`emit_reown_container_elements`) walks the fresh cell
+; giving each element's payload id an owned share, with the per-variant
+; discriminant dispatch selecting which offsets hold ids. The second
+; `build` call's slot releases then can't touch `a`'s payloads.
 (enum (Option T)
   None
   (Some T))

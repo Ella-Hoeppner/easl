@@ -1,8 +1,7 @@
-; KNOWN-FAILING (bytecode VM): a runtime-sized array of structs carrying
-; a String field. Strings are heap values like dyn arrays, so the
-; embedding element type hits the same flat-words borrow hole; reading
-; the element after the second `build` call dereferences a freed string
-; id (wrong text, or a heap-decode panic if the id slot was vacated).
+; A runtime-sized array of structs carrying a String field — Strings
+; are heap values like dyn arrays, so the embedding-element machinery
+; covers them with the same fixup offsets; each element's name survives
+; the second `build` call.
 (struct Named
   id: f32
   name: String)

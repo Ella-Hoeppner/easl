@@ -1,9 +1,9 @@
-; KNOWN-FAILING (bytecode VM): a global whose type is a runtime-sized
-; array of heap-payload enums. Whole-global assignment goes through
-; `RegionFromHeap`, whose flat-words clone copies the embedded payload
-; ids into the region as borrows of the builder's construction site —
-; freed and reused by the second `build` call, so the global's element
-; payload dangles.
+; A global whose type is a runtime-sized array of heap-payload enums.
+; Whole-global assignment (`RegionFromHeap`) releases the region's old
+; element ids, clones the cell's words, and re-owns the fresh region
+; words (`emit_release/reown_container_elements` around the op) — the
+; region owns its elements' ids, so the builder's later releases can't
+; dangle them.
 (enum (Option T)
   None
   (Some T))

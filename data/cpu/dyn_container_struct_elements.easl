@@ -1,9 +1,8 @@
-; KNOWN-FAILING (bytecode VM): a runtime-sized array of structs carrying
-; a runtime-sized field. Same flat-words container hole as the enum
-; case, with nothing discriminant-dependent: the element's `body` id is
-; embedded at a static offset, but `HeapFromSlots` copies it in as a
-; borrow, so after the second `build` call `a`'s element reads a correct
-; `tag` (flat words are genuinely copied) next to a dangling `body`.
+; A runtime-sized array of structs carrying a runtime-sized field —
+; the flat-words container path with static (non-discriminant) fixup
+; offsets: construction re-owns each element's `body` id, so `a`'s
+; element keeps both its flat `tag` and its heap `body` after `build`
+; re-executes.
 (struct Packet
   tag: f32
   body: [f32])
