@@ -4321,13 +4321,17 @@ impl TypedExp {
             arg_positions: [scrutinee_pos, 0, 0],
             return_position: 0,
           });
-          if let Some(false_branch_result_pos) =
-            arms[1].1.compile_to_bytecode(false, state)
+          // Arms are compiled for their effects even when the match's own
+          // type is zero-size; a `Some` arm result with no result slot is
+          // simply discarded (e.g. a statement-position `if` whose arms
+          // are compound assignments — those return their mutated slot).
+          if let (Some(false_branch_result_pos), Some(result_pos)) =
+            (arms[1].1.compile_to_bytecode(false, state), result_pos)
           {
             state.push_instruction(Instruction {
               op: Op::Move,
               arg_positions: [false_branch_result_pos, result_type_size, 0],
-              return_position: result_pos.unwrap(),
+              return_position: result_pos,
             });
           }
           let false_branch_end_jump_instruction_pos = state.instructions.len();
@@ -4342,13 +4346,13 @@ impl TypedExp {
             [1] = (true_branch_start_instruction_pos >> 16) as u16;
           state.instructions[true_branch_jump_instruction_pos].arg_positions
             [2] = true_branch_start_instruction_pos as u16;
-          if let Some(true_branch_result_pos) =
-            arms[0].1.compile_to_bytecode(false, state)
+          if let (Some(true_branch_result_pos), Some(result_pos)) =
+            (arms[0].1.compile_to_bytecode(false, state), result_pos)
           {
             state.push_instruction(Instruction {
               op: Op::Move,
               arg_positions: [true_branch_result_pos, result_type_size, 0],
-              return_position: result_pos.unwrap(),
+              return_position: result_pos,
             });
           }
           let true_branch_end_pos = state.instructions.len() as u32;
@@ -4390,13 +4394,13 @@ impl TypedExp {
                   return_position: 0,
                 });
               }
-              if let Some(last_arm_result_pos) =
-                last_arm_body.compile_to_bytecode(false, state)
+              if let (Some(last_arm_result_pos), Some(result_pos)) =
+                (last_arm_body.compile_to_bytecode(false, state), result_pos)
               {
                 state.push_instruction(Instruction {
                   op: Op::Move,
                   arg_positions: [last_arm_result_pos, result_type_size, 0],
-                  return_position: result_pos.unwrap(),
+                  return_position: result_pos,
                 });
               }
               let mut arm_end_instruction_positions =
@@ -4412,13 +4416,13 @@ impl TypedExp {
                   .arg_positions[1] = (start_pos >> 16) as u16;
                 state.instructions[jump_into_block_instruction_positions[i]]
                   .arg_positions[2] = start_pos as u16;
-                if let Some(arm_result_pos) =
-                  body.compile_to_bytecode(false, state)
+                if let (Some(arm_result_pos), Some(result_pos)) =
+                  (body.compile_to_bytecode(false, state), result_pos)
                 {
                   state.push_instruction(Instruction {
                     op: Op::Move,
                     arg_positions: [arm_result_pos, result_type_size, 0],
-                    return_position: result_pos.unwrap(),
+                    return_position: result_pos,
                   });
                 }
                 arm_end_instruction_positions.push(state.instructions.len());
@@ -4481,13 +4485,13 @@ impl TypedExp {
                   return_position: 0,
                 });
               }
-              if let Some(last_arm_result_pos) =
-                last_arm_body.compile_to_bytecode(false, state)
+              if let (Some(last_arm_result_pos), Some(result_pos)) =
+                (last_arm_body.compile_to_bytecode(false, state), result_pos)
               {
                 state.push_instruction(Instruction {
                   op: Op::Move,
                   arg_positions: [last_arm_result_pos, result_type_size, 0],
-                  return_position: result_pos.unwrap(),
+                  return_position: result_pos,
                 });
               }
               let mut arm_end_instruction_positions =
@@ -4518,13 +4522,13 @@ impl TypedExp {
                     }
                   }
                 }
-                if let Some(arm_result_pos) =
-                  body.compile_to_bytecode(false, state)
+                if let (Some(arm_result_pos), Some(result_pos)) =
+                  (body.compile_to_bytecode(false, state), result_pos)
                 {
                   state.push_instruction(Instruction {
                     op: Op::Move,
                     arg_positions: [arm_result_pos, result_type_size, 0],
-                    return_position: result_pos.unwrap(),
+                    return_position: result_pos,
                   });
                 }
                 arm_end_instruction_positions.push(state.instructions.len());

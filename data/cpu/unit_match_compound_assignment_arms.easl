@@ -1,0 +1,17 @@
+; The general (non-bool) match form of unit_if_compound_assignment_arms:
+; a statement-position integer match whose arms are compound
+; assignments, covering the per-arm and last-arm result-discard sites of
+; the VM's match compilation.
+(defn adjust [@var x: f32
+              sel: u32]: f32
+  (match sel
+    0 (+= x 10.)
+    1 (*= x -1.)
+    _ (-= x 5.))
+  x)
+
+@cpu
+(defn main []
+  (print (adjust 1. 0u))
+  (print (adjust 1. 1u))
+  (print (adjust 1. 2u)))

@@ -1,0 +1,25 @@
+; A statement-position `if` whose arms are compound assignments (the
+; polyphonic-synth `update-voice` shape: gate-conditional accumulation
+; into struct fields). The if's own type is unit, but the VM's compound
+; assignment yields its mutated slot as a result position — the match
+; compilation must discard arm results when the match has no result
+; slot, not unwrap one.
+(struct Timers
+  on: f32
+  off: f32)
+
+(defn step [@var t: Timers
+            gate: bool]: Timers
+  (if gate
+    (+= t.on 1.)
+    (+= t.off 1.))
+  t)
+
+@cpu
+(defn main []
+  (let [a (step (Timers 0. 0.) true)
+        b (step (Timers 0. 0.) false)]
+    (print a.on)
+    (print a.off)
+    (print b.on)
+    (print b.off)))
