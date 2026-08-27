@@ -3543,24 +3543,16 @@ impl TypedExp {
         // A scoped closure runs on the audio thread as its audio clone
         // (see `extract_audio_closure_scopes`); seed the lifted capture
         // globals from the closure value before the host op's bootstrap
-        // publish ships them to the audio replica. The seeds run under a
-        // one-shot guard: `start-audio` is typically called every frame,
-        // and re-seeding on later calls would overwrite main's replica
-        // with the closure value's original state — dirty flags and
-        // replica contents must track actual writes, and only the call
-        // that starts the audio thread actually hands the state off. The
-        // guard flag lives in a fresh stack slot, which starts zeroed and
-        // persists across calls (static addressing, the stack is never
-        // reset).
+        // publish (or, on later calls, the ordinary frame-end publish)
+        // ships them to the audio replica. Seeds run on EVERY execution:
+        // `start-audio` hands off the value you pass it, so each call is
+        // a fresh handoff — constructing a new closure and passing it
+        // re-seeds the captured state (the keypress-selects-pitch
+        // pattern). Call sites that shouldn't re-hand-off shouldn't
+        // re-execute; a `start-audio` called unconditionally every frame
+        // with a closure resets its state every frame, by meaning.
         let entry_name: Arc<str> = if let Some(scope_struct) = &scope_struct {
           let value_pos = args[0].compile_to_bytecode(false, state).unwrap();
-          let seed_done_slot = state.take_stack_slot(1);
-          let guard_jump_pos = state.instructions.len();
-          state.push_instruction(Instruction {
-            op: Op::JumpWhen,
-            arg_positions: [seed_done_slot, 0, 0],
-            return_position: 0,
-          });
           let mut seeded: Vec<Arc<str>> = vec![];
           let captures = state
             .lifted_audio_captures
@@ -3578,11 +3570,11 @@ impl TypedExp {
             &captures,
             &mut seeded,
           );
-          // Mark the seeded shared vars dirty inside the same guard, so
-          // the host op's bootstrap publish (which consumes dirty flags)
-          // ships them — the generic post-application marking ignores
-          // `SeedsGlobalVar` effects precisely so that this, the accurate
-          // conditional marking, is the only marking.
+          // Mark the seeded shared vars dirty alongside the seeds, so the
+          // host op's bootstrap publish (which consumes dirty flags) or
+          // the frame-end publish ships them — the generic
+          // post-application marking ignores `SeedsGlobalVar` effects so
+          // that this, the builtin's own marking, is the only marking.
           for name in seeded {
             if let Some(shared_index) =
               state.shared_var_indices.get(&name).copied()
@@ -3594,16 +3586,6 @@ impl TypedExp {
               });
             }
           }
-          state.push_instruction(Instruction {
-            op: Op::Constant,
-            arg_positions: [0, 1, 0],
-            return_position: seed_done_slot,
-          });
-          let after_seeds = state.instructions.len() as u32;
-          state.instructions[guard_jump_pos].arg_positions[1] =
-            (after_seeds >> 16) as u16;
-          state.instructions[guard_jump_pos].arg_positions[2] =
-            after_seeds as u16;
           format!("{original_name}_audio").into()
         } else {
           original_name

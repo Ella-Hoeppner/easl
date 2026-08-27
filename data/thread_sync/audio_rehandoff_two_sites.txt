@@ -1,0 +1,8 @@
+main-publish: <audio-scope>_pitch
+start-audio: <audio-closure>
+spawn-window
+frame 0
+main-publish: <audio-scope>_pitch
+audio-batch 0 x2
+audio-adopt: <audio-scope>_pitch
+samples: 0.375 0.375

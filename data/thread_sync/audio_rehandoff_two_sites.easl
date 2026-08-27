@@ -1,0 +1,14 @@
+; Two consecutive `start-audio` sites passing different instances of one
+; closure constructor (the play-a-note-then-switch pattern): every call
+; is a fresh handoff, so the second site's seed overwrites the first's
+; and the audio thread plays the second pitch. (Both runtimes must
+; agree — the old once-per-guard seeding made them diverge here: the VM
+; seeded per call site, the tree-walker once per closure per run.)
+(defn osc [pitch: f32]: (Fn [] f32)
+  (fn [] pitch))
+
+@cpu
+(defn main []
+  (start-audio (osc 0.125))
+  (start-audio (osc 0.375))
+  (spawn-window (fn [] ())))

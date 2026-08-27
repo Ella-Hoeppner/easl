@@ -1,0 +1,16 @@
+; One `start-audio` site re-executed with different constructor
+; arguments (the keypress-selects-pitch pattern, driven here by a frame
+; counter): each execution re-seeds the captured pitch, so every
+; handoff is heard. (The old per-call-site seed guard froze the pitch
+; at the site's first execution.)
+(defn osc [pitch: f32]: (Fn [] f32)
+  (fn [] pitch))
+
+@local
+(var count: f32)
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (+= count 0.25)
+                    (start-audio (osc count)))))

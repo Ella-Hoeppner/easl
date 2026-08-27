@@ -489,6 +489,11 @@ macro_rules! thread_sync_test {
   };
 }
 
+thread_sync_test!(audio_rehandoff_two_sites, [Frame, AudioBatch(2)]);
+thread_sync_test!(
+  audio_rehandoff_repeated_site,
+  [Frame, AudioBatch(2), Frame, AudioBatch(2)]
+);
 thread_sync_test!(
   main_to_audio,
   [

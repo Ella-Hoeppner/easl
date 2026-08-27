@@ -1928,18 +1928,14 @@ fn apply_builtin_fn<IO: IOManager>(
         let mut source = env.audio_source.take();
         // Seed the lifted capture globals from the closure value's scope
         // before the publish machinery ships them to the audio replica.
-        // Once per closure (the `seeded_audio_scopes` one-shot, matching
-        // the VM runtime's per-call-site seed guard): re-seeding on later
-        // calls would overwrite main's replica (and its adopted
-        // audio-thread state) with the closure value's original fields —
-        // replica contents and dirty flags must track actual handoffs, not
-        // every frame's no-op call. A closure seeded after the stream is
-        // already running (a second `start-audio` site switching entries)
-        // marks its globals dirty here and rides the normal frame-end
-        // publish.
+        // On EVERY call: `start-audio` hands off the value it's passed,
+        // so each execution re-seeds the lifted capture globals from the
+        // just-constructed closure. On the thread-starting call the
+        // bootstrap publish below ships them; on later calls
+        // `mark_cpu_written` inside the seeding sets the shared-dirty
+        // flags and the ordinary frame-end publish ships them.
         if let Some(scope_struct) = &scope_struct
           && let Value::Fun(Function::Scoped { scope, .. }) = audio_value
-          && env.seeded_audio_scopes.insert(scope_struct.name.0.clone())
         {
           let scope_value = (**scope).clone();
           let captures = env
@@ -4227,7 +4223,6 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   /// exactly once (the tree-walker sibling of the VM's per-call-site
   /// one-shot seed guard).
   #[cfg(feature = "window")]
-  seeded_audio_scopes: HashSet<Arc<str>>,
   /// Lifted-capture records by entry fn name, copied from the validated
   /// `Program` — the seed walkers read global names from these instead of
   /// reconstructing them (see `LiftedCaptures`).
@@ -4359,7 +4354,6 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       #[cfg(feature = "window")]
       audio_source,
       #[cfg(feature = "window")]
-      seeded_audio_scopes: HashSet::new(),
       #[cfg(feature = "window")]
       lifted_audio_captures: program.lifted_audio_captures.clone(),
       lifted_gpu_captures: program.lifted_gpu_captures.clone(),
