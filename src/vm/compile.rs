@@ -3623,16 +3623,22 @@ impl TypedExp {
         Some(Some(dest))
       }
       "key-down?" | "key-just-down?" => {
-        let ExpKind::StringLiteral(key) = &args[0].kind else {
-          panic!("key query argument must be a string literal")
-        };
-        let key = state.host_string_index(&key.to_string());
+        let just = f_name == "key-just-down?";
         let dest = state.take_stack_slot(1);
-        state.emit_host_op(HostOp::KeyQuery {
-          just: f_name == "key-just-down?",
-          key,
-          dest,
-        });
+        if let ExpKind::StringLiteral(key) = &args[0].kind {
+          let key = state.host_string_index(&key.to_string());
+          state.emit_host_op(HostOp::KeyQuery { just, key, dest });
+        } else {
+          // Runtime-computed key: a live query against the IO manager's
+          // per-frame key state (CPU-only — GPU-reachable non-literal
+          // keys are a `GpuKeyQueryRequiresLiteralString` compile error).
+          let key_slot = args[0].compile_to_bytecode(false, state).unwrap();
+          state.emit_host_op(HostOp::KeyQueryDynamic {
+            just,
+            key_slot,
+            dest,
+          });
+        }
         Some(Some(dest))
       }
       "texture-dimensions" => {

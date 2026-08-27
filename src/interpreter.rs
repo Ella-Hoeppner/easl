@@ -6976,6 +6976,19 @@ fn vm_host_call<IO: IOManager>(
         env.io.key_down(key)
       } as u32;
     }
+    HostOp::KeyQueryDynamic {
+      just,
+      key_slot,
+      dest,
+    } => {
+      let key =
+        words_to_string(heap_string_words(heap, stack[*key_slot as usize]));
+      stack[*dest as usize] = if *just {
+        env.io.key_just_down(&key)
+      } else {
+        env.io.key_down(&key)
+      } as u32;
+    }
     HostOp::SpawnWindow { frame_fn } => {
       return Ok(Some(HostSuspendReason::SpawnWindow {
         frame_fn: *frame_fn,

@@ -659,6 +659,16 @@ pub enum HostOp {
     key: u16,
     dest: u16,
   },
+  /// A key query whose key is computed at runtime (`key_slot` holds a
+  /// string heap id). Literal keys use `KeyQuery`'s interned index —
+  /// and, when GPU-reachable, the implicit-binding rewrite; dynamic
+  /// keys are CPU-only live queries (GPU reachability is rejected by
+  /// `validate_gpu_window_info`).
+  KeyQueryDynamic {
+    just: bool,
+    key_slot: u16,
+    dest: u16,
+  },
   /// Suspends execution; the driver runs the window frame loop, invoking
   /// function `frame_fn` once per frame, then resumes.
   SpawnWindow {

@@ -145,6 +145,56 @@ buffer_test!(default_shared_var);
 /// bindings that the runtime refreshes from the IO manager each frame.
 /// Spoofed IO values must round-trip through the binding upload, the
 /// shader, and the storage readback — identically on both CPU runtimes.
+/// Runtime-computed key queries: the keybind-scan pattern where the key
+/// string is built at runtime. Dynamic keys are live CPU queries (no
+/// implicit binding), literal keys keep the binding rewrite — both read
+/// the same spoofed per-frame state, identically on both CPU runtimes.
+#[test]
+fn dynamic_key_query_spoofed() {
+  use easl::interpreter::{
+    CaptureIO, SpoofedWindowInfo, run_program_with_runtime,
+  };
+  let source_path_str = "./data/buffer/dynamic_key_query.easl";
+  let source_path = Path::new(&source_path_str);
+  let spoof = SpoofedWindowInfo {
+    size: (320, 240),
+    time: 0.,
+    delta_time: 0.,
+    frame_index: 0,
+    mouse_coords: (0, 0),
+    mouse_present: false,
+    mouse_down: false,
+    mouse_just_down: false,
+    keys_down: vec!["3u".to_string(), "7u".to_string(), "a".to_string()],
+    keys_just_down: vec!["f1u".to_string()],
+  };
+  let expected = vec![
+    "3u".to_string(),
+    "7u".to_string(),
+    "99u".to_string(),
+    "100u".to_string(),
+  ];
+  for runtime in [CpuRuntime::TreeWalking, CpuRuntime::BytecodeVm] {
+    let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
+    else {
+      panic!("failed to load program")
+    };
+    let errors = program.validate_raw_program(CompilerTarget::WGSL);
+    assert!(errors.is_empty(), "compile errors: {errors:#?}");
+    let mut io = CaptureIO::new();
+    io.spoofed_window_info = Some(spoof.clone());
+    let (io, _) = run_program_with_runtime(
+      program,
+      None,
+      io,
+      source_path.parent().map(|p| p.to_path_buf()),
+      runtime,
+    )
+    .unwrap();
+    assert_eq!(io.prints, expected, "runtime {runtime:?}");
+  }
+}
+
 #[test]
 fn gpu_window_info_spoofed() {
   use easl::interpreter::{

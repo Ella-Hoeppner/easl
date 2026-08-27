@@ -465,6 +465,10 @@ error_test!(
   aliased_ref_args_element_failure,
   CompileErrorKind::AliasedRefArgs("xs".to_string())
 );
+error_test!(
+  gpu_dynamic_key_failure,
+  CompileErrorKind::CPUExclusiveTypeInGPUEntryPoint("String".to_string())
+);
 // The ref-capture rules: closures may never capture a mutable reference
 // argument, and closures capturing any reference argument may not
 // escape the call (returns and host sinks; see

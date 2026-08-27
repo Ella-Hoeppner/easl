@@ -1,0 +1,18 @@
+; Runtime-computed key queries (`(key-down? (string i))` — Ella's
+; keybind-scan pattern): non-literal keys are live CPU queries against
+; the IO manager's per-frame key state (`HostOp::KeyQueryDynamic` on the
+; VM; the tree-walker evaluates the argument like any builtin's). A
+; literal query runs alongside to pin that the two paths coexist and
+; agree under the same spoofed state. Run by the hand-written
+; `dynamic_key_query_spoofed` test in buffer_tests.rs.
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (for [i 0u (< i 10u) (+= i 1u)]
+                      (when (key-down? (string i))
+                        (print i)))
+                    (when (key-just-down? (concat "f" (string 1u)))
+                      (print 99u))
+                    (when (key-down? "a")
+                      (print 100u))
+                    (close-window))))

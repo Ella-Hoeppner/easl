@@ -1,0 +1,22 @@
+; A runtime-computed key query reaching GPU code — rejected. The general
+; String gate catches it first (`CPUExclusiveTypeInGPUEntryPoint`: a
+; non-literal key is a String-typed expression, and Strings are
+; CPU-exclusive wholesale); `GpuKeyQueryRequiresLiteralString` remains
+; as `validate_gpu_window_info`'s backstop behind it. GPU key queries
+; compile into one implicit uniform binding per distinct compile-time
+; key, so a dynamic key could never bind regardless. On the CPU the
+; same expression is a legal live query (see the
+; `dynamic_key_query_spoofed` buffer test).
+@storage-write
+(var out: [1: f32])
+
+@compute
+(defn probe []
+  (= (out 0u)
+     (if (key-down? (string 3u)) 1. 0.)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-compute-shader probe (vec3u 1u))
+                    (close-window))))
