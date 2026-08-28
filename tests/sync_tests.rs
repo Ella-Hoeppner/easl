@@ -102,6 +102,7 @@ macro_rules! sync_test {
 
 // Data flows GPU→GPU only (dispatch 2 reads what dispatch 1 wrote): the
 // array uploads exactly once and no GPU→CPU readback ever happens.
+sync_test!(storage_ref_write_upload);
 sync_test!(gpu_only_dataflow_no_readback);
 // Same, but with the dispatch wrapped in a higher-order helper and the
 // callback capturing a local — the realistic sketch shape. The captured

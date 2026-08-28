@@ -1,0 +1,25 @@
+; A CPU write through a `@var @ref` helper into a GPU-read storage var:
+; the mutable-ref effect flow must mark the global CPU-written exactly
+; as a direct assignment would, so the dirty-upload machinery ships it
+; before the dispatch — passing storage vars by reference is
+; sync-transparent.
+(var wave: [f32])
+
+@storage-write
+(var out: [1: f32])
+
+(defn poke [@var @ref w: [f32]]
+  (= (w 0u) 7.))
+
+@compute
+(defn read-it []
+  (= (out 0u) (wave 0u)))
+
+@cpu
+(defn main []
+  (= wave (zeroed-array 4))
+  (spawn-window (fn []
+                    (poke wave)
+                    (dispatch-compute-shader read-it (vec3u 1u))
+                    (print (out 0u))
+                    (close-window))))

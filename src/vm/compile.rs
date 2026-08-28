@@ -4140,9 +4140,11 @@ impl TypedExp {
             // A runtime-sized global passed by reference binds to its
             // region directly — compiling it as a value would deep-copy
             // the whole array at every call (and writes through the ref
-            // would mutate the copy). Only reachable through
-            // compiler-created ref passes (the audio closure lift):
-            // user code can't pass storage-space vars by reference.
+            // would mutate the copy). Reached by the audio closure
+            // lift's compiler-created ref passes and by user code
+            // passing storage-space vars by reference in cpu/audio
+            // contexts (context-gated: GPU-reachable call sites are
+            // rejected by `validate_context_exclusivity`).
             if *ownership != Ownership::Owned
               && let ExpKind::Name(arg_name) = &arg.kind
               && let Some((region, stride)) =

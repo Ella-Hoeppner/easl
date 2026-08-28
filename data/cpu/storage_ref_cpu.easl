@@ -1,0 +1,38 @@
+; Storage-space vars passed as references in CPU code — the ring-buffer
+; pattern from adsr_demo: generic `@ref`/`@var @ref` helpers reading and
+; mutating a storage-write dyn global and its u32 cursor directly, with
+; zero-copy region/slot bindings on the VM. Legal because the call sites
+; are CPU-only; the same calls in GPU-reachable code are rejected by the
+; context-exclusivity pass (`user_reference_failure_uniform` pins that
+; side).
+(defn (get-ring T)
+      [@ref buffer: [T]
+       start: u32
+       index: u32]: T
+  (-> index
+      (+ start)
+      (% (length buffer))
+      buffer))
+
+(defn (push-ring T)
+      [@var @ref buffer: [T]
+       @var @ref start: u32
+       value: T]
+  (= (buffer start) value)
+  (= start (% (+ start 1u) (length buffer))))
+
+(var history: [f32])
+
+(var cursor: u32)
+
+@cpu
+(defn main []
+  (= history (zeroed-array 3))
+  (push-ring history cursor 1.)
+  (push-ring history cursor 2.)
+  (push-ring history cursor 3.)
+  (push-ring history cursor 4.)
+  (print cursor)
+  (print (get-ring history cursor 0u))
+  (print (get-ring history cursor 1u))
+  (print (get-ring history cursor 2u)))

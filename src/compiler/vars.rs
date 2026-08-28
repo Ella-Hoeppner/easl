@@ -81,11 +81,15 @@ impl VariableAddressSpace {
       _ => return None,
     })
   }
-  pub fn may_be_passed_as_reference(&self) -> bool {
-    match self {
-      Local | Function => true,
-      _ => false,
-    }
+  /// Address spaces with no CPU-side storage at all — passing one as a
+  /// reference is rejected in every context (workgroup memory only
+  /// exists inside a GPU workgroup; handles are opaque texture/sampler
+  /// bindings). Storage and uniform spaces are CPU-referenceable — those
+  /// are context-gated instead (`validate_context_exclusivity`: legal in
+  /// cpu/audio code, rejected where the call site can run on the GPU,
+  /// since base WGSL only permits function/private pointer params).
+  pub fn may_never_be_passed_as_reference(&self) -> bool {
+    matches!(self, Workgroup | Handle)
   }
 }
 

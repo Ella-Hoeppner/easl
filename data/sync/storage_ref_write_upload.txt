@@ -1,0 +1,4 @@
+upload: wave
+upload: out
+readback: out
+print: 7.

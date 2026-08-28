@@ -1,8 +1,21 @@
+; A uniform-space var passed as a reference from GPU-reachable code:
+; rejected by the context-exclusivity pass (base WGSL only allows
+; function/private pointer params). Read-only `@ref`, so this pins the
+; reference rule itself — a mutable ref would trip the illegal-GPU-write
+; validation first. The same call in cpu/audio-only code is legal —
+; pinned by the `storage_ref_cpu` cpu test.
 @uniform
 (var uniform-float: f32)
 
-(defn increment [@var @ref x: f32]
-  (+= x 1.))
+@storage-write
+(var out: [1: f32])
 
-(defn f []
-  (increment uniform-float))
+(defn get-it [@ref x: f32]: f32
+  x)
+
+(defn f []: f32
+  (get-it uniform-float))
+
+@compute
+(defn entry []
+  (= (out 0u) (f)))

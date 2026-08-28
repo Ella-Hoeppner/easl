@@ -1569,7 +1569,8 @@ impl Program {
                                 },
                               ..
                             }) = top_level_var
-                              && !address_space.may_be_passed_as_reference()
+                              && address_space
+                                .may_never_be_passed_as_reference()
                             {
                               errors.log(CompileError::new(
                                 PassedReferenceFromInvalidAddressSpace(
@@ -2660,6 +2661,52 @@ impl Program {
                     Some(AudioInfoOutsideAudio("audio-time".to_string()))
                   }),
                 ));
+              }
+              // Storage/uniform-space vars passed as references: legal
+              // in cpu/audio contexts (the VM binds regions/slots
+              // directly; the tree-walker copies + writes back), but
+              // base WGSL only permits function/private pointer params,
+              // so any context that can run on the GPU rejects the call
+              // site. (Workgroup/handle refs are rejected everywhere, in
+              // the ownership walk — they have no CPU storage at all.)
+              if let TypeState::Known(Type::Function(signature)) =
+                &applied_f.data.kind
+                && let Some(ancestor) = &signature.abstract_ancestor
+                && matches!(
+                  ancestor.read().unwrap().implementation,
+                  FunctionImplementationKind::Composite(_)
+                )
+              {
+                let ancestor = ancestor.read().unwrap();
+                for (i, (_, ownership)) in ancestor.arg_types.iter().enumerate()
+                {
+                  if matches!(
+                    ownership,
+                    Ownership::Reference | Ownership::MutableReference
+                  ) && let Some(arg) = args.get(i)
+                    && let Some(root) = arg.name_or_inner_accessed_name()
+                    && let Some(TopLevelVar {
+                      kind: TopLevelVariableKind::Var { address_space, .. },
+                      ..
+                    }) = self.top_level_vars.iter().find(|v| v.name == *root)
+                    && matches!(
+                      address_space,
+                      VariableAddressSpace::Uniform
+                        | VariableAddressSpace::StorageRead
+                        | VariableAddressSpace::StorageReadWrite
+                    )
+                  {
+                    violations.push((
+                      arg.source_trace.clone(),
+                      bit(CPU) | bit(AUDIO),
+                      std::array::from_fn(|_| {
+                        Some(PassedReferenceFromInvalidAddressSpace(
+                          *address_space,
+                        ))
+                      }),
+                    ));
+                  }
+                }
               }
               // builtin callees carry their exclusivity in their effect
               // sets; composite callees are covered by their own scan
