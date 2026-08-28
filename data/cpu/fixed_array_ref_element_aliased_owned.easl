@@ -1,0 +1,16 @@
+; The fixed-array form of ref_element_aliased_owned_snapshot: a mutable
+; element ref and an owned copy of the same fixed array in one call.
+; The owned param's copy promotes its element ids (`collect_heap_fixups`
+; recursion in `emit_value_copy`), so it holds a coherent snapshot the
+; ref mutation can never show through.
+(defn poke [@var @ref slot: [f32]
+            snapshot: [2: [f32]]]: f32
+  (= slot (into-dynamic-array [5.]))
+  ((snapshot 0u) 0u))
+
+@cpu
+(defn main []
+  (let [@var xs [(into-dynamic-array [1.]) (into-dynamic-array [2.])]]
+    (print (poke (xs 0u) xs))
+    (print ((xs 0u) 0u))
+    (print ((xs 1u) 0u))))

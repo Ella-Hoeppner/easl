@@ -1,0 +1,25 @@
+; The fixed-size-array form of ref_element_snapshot_intervening_mutation:
+; `(combine (xs 0u) (mutate xs))` on `[2: [f32]]`. Strict left-to-right
+; requires the ref param to see the element as of its argument position
+; and the outer write-back to win. Fixed-array slots OWN their element
+; heap ids (construction promotes via per-element `emit_value_copy`;
+; the `ArrayLookup` preload promotes its snapshot; the write-back
+; releases the array's current element and transfers the temp's claims
+; — `PendingWriteBack::FixedArray`), so the intervening mutation's
+; release can't dangle the snapshot.
+(defn combine [@var @ref slot: [f32]
+               other: f32]: f32
+  (let [result (+ (slot 0u) other)]
+    (= slot (into-dynamic-array [result]))
+    result))
+
+(defn mutate [@var @ref xs: [2: [f32]]]: f32
+  (= (xs 0u) (into-dynamic-array [99.]))
+  0.)
+
+@cpu
+(defn main []
+  (let [@var xs [(into-dynamic-array [1.]) (into-dynamic-array [2.])]]
+    (print (combine (xs 0u) (mutate xs)))
+    (print ((xs 0u) 0u))
+    (print ((xs 1u) 0u))))

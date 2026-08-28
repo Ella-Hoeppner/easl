@@ -220,6 +220,11 @@ cpu_test!(closure_fixed_array_capture);
 // error tests pin the rejections) — this pins the *allowed* disjoint
 // shapes' runtime behavior.
 cpu_test!(disjoint_ref_args_swap);
+cpu_test!(ref_element_snapshot_intervening_mutation);
+cpu_test!(fixed_array_ref_element_intervening_mutation);
+cpu_test!(fixed_array_ref_element_aliased_owned);
+cpu_test!(fixed_array_literal_in_loop);
+cpu_test!(ref_element_aliased_owned_snapshot);
 cpu_test!(unit_if_compound_assignment_arms);
 cpu_test!(unit_match_compound_assignment_arms);
 cpu_test!(local_ref_capture_helper);

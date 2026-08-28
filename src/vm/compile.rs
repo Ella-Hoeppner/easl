@@ -65,6 +65,38 @@ impl RefArgBinding {
   }
 }
 
+/// A write-back recorded while compiling a mutable-position element
+/// lookup, emitted when the enclosing application's arguments and call
+/// have all been compiled (the flush at the end of the Application arm).
+/// Simple write-backs are pre-built instructions; embedding-element
+/// containers need a multi-instruction ownership sequence whose jumps
+/// must be materialized at the flush position, so they carry the
+/// ingredients instead.
+pub enum PendingWriteBack {
+  Raw(Instruction),
+  /// Ownership-correct element write-back into an embedding-element
+  /// container (see `emit_owned_element_write_back`).
+  Embedding {
+    container: EmbeddingContainer,
+    index_slot: u16,
+    temp: u16,
+    stride: u16,
+    element_type: Type,
+  },
+  /// Ownership-correct element write-back into a slot-resident
+  /// fixed-size array whose element type involves heap ids (is one, or
+  /// embeds them): release the array's current element ids (loaded to
+  /// scratch), then `ArrayStore` the temp in, transferring its claims.
+  /// No ensure-unique — fixed arrays are never `Arc`-shared.
+  FixedArray {
+    base_slot: u16,
+    index_slot: u16,
+    temp: u16,
+    element_size: u16,
+    element_type: Type,
+  },
+}
+
 pub struct PendingRefFnUsage {
   pub name: Arc<str>,
   pub fn_dispatch_position: u32,
@@ -201,7 +233,7 @@ pub struct BytecodeCompilationState {
   pub current_function: Option<IntermediateBytecodeFunction>,
   pub pending_ref_arg_function_usages: Vec<PendingRefFnUsage>,
   pub pending_frame_fn_usages: Vec<PendingFrameFnUsage>,
-  pub array_mut_ref_store_instructions: Vec<Vec<Instruction>>,
+  pub array_mut_ref_store_instructions: Vec<Vec<PendingWriteBack>>,
   /// Lifted-capture records by entry fn name, copied from the validated
   /// `Program` (see `LiftedCaptures`); consumed by the audio-seed and
   /// dispatched-capture emitters.
@@ -684,6 +716,59 @@ impl BytecodeCompilationState {
     let after = self.instructions.len() as u32;
     self.instructions[skip_jump].arg_positions[1] = (after >> 16) as u16;
     self.instructions[skip_jump].arg_positions[2] = after as u16;
+  }
+  /// The flush half of a mutable-position element lookup on an
+  /// embedding-element container (see `PendingWriteBack::Embedding`):
+  /// ensure the cell is uniquely owned (cells only — regions are never
+  /// shared; this runs after ALL argument evaluation and the call, so
+  /// any share created anywhere before the mutation is handled), release
+  /// the container's current element ids (read into scratch — releasing
+  /// by id value is releasing the container's ids), then word-copy the
+  /// temp in. Unlike `emit_embedding_element_store` there is no staging
+  /// promote: the temp already owns its ids (promoted at preload — see
+  /// the ref-position `HeapLoad`/`DynLoad` sites), and the word-copy
+  /// transfers that claim to the container, leaving the temp's stale
+  /// words unclaimed (the next preload overwrites them without release
+  /// and re-promotes).
+  fn emit_owned_element_write_back(
+    &mut self,
+    container: EmbeddingContainer,
+    index_slot: u16,
+    temp: u16,
+    stride: u16,
+    element_type: &Type,
+  ) {
+    let fixups = Self::embedding_element_fixups(element_type)
+      .expect("owned element write-back on a non-embedding element type");
+    if let EmbeddingContainer::Cell(id_slot) = container {
+      self.emit_ensure_unique_cell(id_slot, stride, &fixups);
+    }
+    let old_scratch = self.take_stack_slot(stride);
+    self.push_instruction(match container {
+      EmbeddingContainer::Cell(id_slot) => Instruction {
+        op: Op::HeapLoad,
+        arg_positions: [id_slot, index_slot, stride],
+        return_position: old_scratch,
+      },
+      EmbeddingContainer::Region(memory) => Instruction {
+        op: Op::DynLoad,
+        arg_positions: [memory, index_slot, stride],
+        return_position: old_scratch,
+      },
+    });
+    self.emit_heap_fixups(&fixups, Op::HeapRelease, old_scratch, &mut None);
+    self.push_instruction(match container {
+      EmbeddingContainer::Cell(id_slot) => Instruction {
+        op: Op::HeapStore,
+        arg_positions: [id_slot, index_slot, temp],
+        return_position: stride,
+      },
+      EmbeddingContainer::Region(memory) => Instruction {
+        op: Op::DynStore,
+        arg_positions: [memory, index_slot, temp],
+        return_position: stride,
+      },
+    });
   }
   /// An ownership-correct element store into an embedding-element
   /// container: ensure the cell is uniquely owned (cells only — regions
@@ -2773,7 +2858,7 @@ fn aliases_variable_storage(e: &TypedExp) -> bool {
 /// dynamic-memory region (globals). Regions are never `Arc`-shared, so
 /// only cells need ensure-unique treatment.
 #[derive(Clone, Copy)]
-enum EmbeddingContainer {
+pub enum EmbeddingContainer {
   Cell(u16),
   Region(u16),
 }
@@ -4132,10 +4217,56 @@ impl TypedExp {
             }
           }
         };
-        let array_mut_ref_store_instructions =
+        let pending_write_backs =
           state.array_mut_ref_store_instructions.pop().unwrap();
-        for instruction in array_mut_ref_store_instructions.into_iter().rev() {
-          state.push_instruction(instruction);
+        for write_back in pending_write_backs.into_iter().rev() {
+          match write_back {
+            PendingWriteBack::Raw(instruction) => {
+              state.push_instruction(instruction);
+            }
+            PendingWriteBack::Embedding {
+              container,
+              index_slot,
+              temp,
+              stride,
+              element_type,
+            } => {
+              state.emit_owned_element_write_back(
+                container,
+                index_slot,
+                temp,
+                stride,
+                &element_type,
+              );
+            }
+            PendingWriteBack::FixedArray {
+              base_slot,
+              index_slot,
+              temp,
+              element_size,
+              element_type,
+            } => {
+              let mut element_fixups = HeapFixups::default();
+              collect_heap_fixups(&element_type, 0, &mut element_fixups);
+              let old_scratch = state.take_stack_slot(element_size);
+              state.push_instruction(Instruction {
+                op: Op::ArrayLookup,
+                arg_positions: [base_slot, index_slot, element_size],
+                return_position: old_scratch,
+              });
+              state.emit_heap_fixups(
+                &element_fixups,
+                Op::HeapRelease,
+                old_scratch,
+                &mut None,
+              );
+              state.push_instruction(Instruction {
+                op: Op::ArrayStore,
+                arg_positions: [temp, index_slot, element_size],
+                return_position: base_slot,
+              });
+            }
+          }
         }
         if let Some(writes) = &cpu_write_marks {
           state.emit_write_marks(writes);
@@ -4742,18 +4873,24 @@ impl TypedExp {
         None
       }
       ArrayLiteral(inner_expressions) => {
-        let inner_data_size =
-          vm_stack_size(&inner_expressions[0].data.unwrap_known());
+        let element_type = inner_expressions[0].data.unwrap_known();
+        let inner_data_size = vm_stack_size(&element_type);
         let array_pos = state
           .take_stack_slot(inner_data_size * (inner_expressions.len() as u16));
         for (i, inner_exp) in inner_expressions.iter().enumerate() {
           let inner_exp_pos =
             inner_exp.compile_to_bytecode(false, state).unwrap();
-          state.push_instruction(Instruction {
-            op: Op::Move,
-            arg_positions: [inner_exp_pos, inner_data_size, 0],
-            return_position: array_pos + (i as u16 * inner_data_size),
-          });
+          // Ownership-correct element copy: a fixed array's slots OWN
+          // their element heap ids (like dyn containers' words), so
+          // heap-involving elements are promoted in (and the previous
+          // execution's ids released — the site's slots persist). Flat
+          // elements compile to the same single Move as always.
+          state.emit_value_copy(
+            inner_exp_pos,
+            inner_data_size,
+            array_pos + (i as u16 * inner_data_size),
+            &element_type,
+          );
         }
         Some(array_pos)
       }
@@ -4779,15 +4916,45 @@ impl TypedExp {
                 return_position: dest,
               });
               if is_ref_arg_position {
-                state
-                  .array_mut_ref_store_instructions
-                  .last_mut()
-                  .unwrap()
-                  .push(Instruction {
-                    op: Op::DynStore,
-                    arg_positions: [memory, index_slot, dest],
-                    return_position: stride,
-                  });
+                let element_type = self.data.unwrap_known();
+                if let Some(fixups) =
+                  BytecodeCompilationState::embedding_element_fixups(
+                    &element_type,
+                  )
+                {
+                  // The temp must OWN its snapshot: a borrowed id could
+                  // be freed by a mutation of the container between this
+                  // load and the enclosing call (strict left-to-right
+                  // argument evaluation makes that expressible), and the
+                  // write-back needs claims it can transfer.
+                  state.emit_heap_fixups(
+                    &fixups,
+                    Op::HeapPromote,
+                    dest,
+                    &mut None,
+                  );
+                  state
+                    .array_mut_ref_store_instructions
+                    .last_mut()
+                    .unwrap()
+                    .push(PendingWriteBack::Embedding {
+                      container: EmbeddingContainer::Region(memory),
+                      index_slot,
+                      temp: dest,
+                      stride,
+                      element_type,
+                    });
+                } else {
+                  state
+                    .array_mut_ref_store_instructions
+                    .last_mut()
+                    .unwrap()
+                    .push(PendingWriteBack::Raw(Instruction {
+                      op: Op::DynStore,
+                      arg_positions: [memory, index_slot, dest],
+                      return_position: stride,
+                    }));
+                }
               }
               return Some(dest);
             }
@@ -4802,39 +4969,61 @@ impl TypedExp {
               let dest = state.take_stack_slot(stride);
               let index_slot =
                 index_exp.compile_to_bytecode(false, state).unwrap();
-              // A mutable-position element of an embedding-element
-              // container will be written back through `HeapStore`, whose
-              // internal clone-on-shared can't re-own embedded ids —
-              // guarantee uniqueness before reading the element out.
-              if is_ref_arg_position
-                && let Some(fixups) =
-                  BytecodeCompilationState::embedding_element_fixups(
-                    &self.data.unwrap_known(),
-                  )
-              {
-                state.emit_ensure_unique_cell(heap_id_slot, stride, &fixups);
-              }
               state.push_instruction(Instruction {
                 op: Op::HeapLoad,
                 arg_positions: [heap_id_slot, index_slot, stride],
                 return_position: dest,
               });
               if is_ref_arg_position {
-                state
-                  .array_mut_ref_store_instructions
-                  .last_mut()
-                  .unwrap()
-                  .push(Instruction {
-                    op: Op::HeapStore,
-                    arg_positions: [heap_id_slot, index_slot, dest],
-                    return_position: stride,
-                  });
+                let element_type = self.data.unwrap_known();
+                if let Some(fixups) =
+                  BytecodeCompilationState::embedding_element_fixups(
+                    &element_type,
+                  )
+                {
+                  // The temp must OWN its snapshot ids (a borrow could be
+                  // freed by an intervening mutation of the container —
+                  // strict left-to-right argument evaluation makes that
+                  // expressible — and by-then-shared cells need claims
+                  // the write-back can transfer); uniqueness for the
+                  // mutation itself is established at the write-back
+                  // flush, after every share-creating argument has been
+                  // evaluated (see `emit_owned_element_write_back`).
+                  state.emit_heap_fixups(
+                    &fixups,
+                    Op::HeapPromote,
+                    dest,
+                    &mut None,
+                  );
+                  state
+                    .array_mut_ref_store_instructions
+                    .last_mut()
+                    .unwrap()
+                    .push(PendingWriteBack::Embedding {
+                      container: EmbeddingContainer::Cell(heap_id_slot),
+                      index_slot,
+                      temp: dest,
+                      stride,
+                      element_type,
+                    });
+                } else {
+                  state
+                    .array_mut_ref_store_instructions
+                    .last_mut()
+                    .unwrap()
+                    .push(PendingWriteBack::Raw(Instruction {
+                      op: Op::HeapStore,
+                      arg_positions: [heap_id_slot, index_slot, dest],
+                      return_position: stride,
+                    }));
+                }
               }
               return Some(dest);
             }
             let inner_exp_pos =
               exp.compile_to_bytecode(is_ref_arg_position, state).unwrap();
-            let inner_data_size = vm_stack_size(&self.data.unwrap_known());
+            let element_type = self.data.unwrap_known();
+            let inner_data_size = vm_stack_size(&element_type);
             let result_position = state.take_stack_slot(inner_data_size);
             let index_pos =
               index_exp.compile_to_bytecode(false, state).unwrap();
@@ -4844,15 +5033,45 @@ impl TypedExp {
               return_position: result_position,
             });
             if is_ref_arg_position {
-              state
-                .array_mut_ref_store_instructions
-                .last_mut()
-                .unwrap()
-                .push(Instruction {
-                  op: Op::ArrayStore,
-                  arg_positions: [result_position, index_pos, inner_data_size],
-                  return_position: inner_exp_pos,
-                });
+              let mut element_fixups = HeapFixups::default();
+              collect_heap_fixups(&element_type, 0, &mut element_fixups);
+              if element_fixups.is_empty() {
+                state
+                  .array_mut_ref_store_instructions
+                  .last_mut()
+                  .unwrap()
+                  .push(PendingWriteBack::Raw(Instruction {
+                    op: Op::ArrayStore,
+                    arg_positions: [
+                      result_position,
+                      index_pos,
+                      inner_data_size,
+                    ],
+                    return_position: inner_exp_pos,
+                  }));
+              } else {
+                // The temp must OWN its snapshot ids — a borrow could be
+                // freed by a mutation of the array between this lookup
+                // and the enclosing call (strict left-to-right argument
+                // evaluation makes that expressible).
+                state.emit_heap_fixups(
+                  &element_fixups,
+                  Op::HeapPromote,
+                  result_position,
+                  &mut None,
+                );
+                state
+                  .array_mut_ref_store_instructions
+                  .last_mut()
+                  .unwrap()
+                  .push(PendingWriteBack::FixedArray {
+                    base_slot: inner_exp_pos,
+                    index_slot: index_pos,
+                    temp: result_position,
+                    element_size: inner_data_size,
+                    element_type,
+                  });
+              }
             }
             Some(result_position)
           }

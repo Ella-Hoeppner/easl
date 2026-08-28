@@ -1,0 +1,15 @@
+; A fixed-array literal with heap-value elements constructed fresh each
+; loop iteration: the literal site's slots own their element ids, and
+; each re-execution's `emit_value_copy` releases the previous
+; iteration's ids before promoting the new ones — elements captured
+; from earlier iterations (here via an element store into an outer
+; array) stay alive through their own claims.
+@cpu
+(defn main []
+  (let [@var keep (into-dynamic-array [(into-dynamic-array [0.])])]
+    (for [i 0u (< i 3u) (+= i 1u)]
+      (let [pair [(into-dynamic-array [(f32 i)])
+                  (into-dynamic-array [(* 10. (f32 i))])]]
+        (when (== i 1u)
+          (= (keep 0u) (pair 1u)))))
+    (print ((keep 0u) 0u))))

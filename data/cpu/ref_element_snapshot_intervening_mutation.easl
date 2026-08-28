@@ -1,0 +1,33 @@
+; Strict left-to-right argument evaluation for a mutable element ref
+; followed by an argument that MUTATES the same container:
+; `(combine (xs 0u) (mutate xs))` — the ref param must see the element
+; as it was at its argument position (the original [1.]), and the outer
+; call's write-back must win over the intervening mutation. On the VM
+; this requires the preload temp to OWN its snapshot ids
+; (promote-at-preload): a borrowed id was freed by `mutate`'s element
+; store and silently re-pointed at the reused cell, so the callee read
+; the post-mutation value — a use-after-free violating evaluation
+; order.
+(enum (Option T)
+  None
+  (Some T))
+
+(defn combine [@var @ref slot: (Option [f32])
+               other: f32]: f32
+  (let [result (match slot
+                 (Some arr) (+ (arr 0u) other)
+                 None other)]
+    (= slot (Some (into-dynamic-array [result])))
+    result))
+
+(defn mutate [@var @ref xs: [(Option [f32])]]: f32
+  (= (xs 0u) (Some (into-dynamic-array [99.])))
+  0.)
+
+@cpu
+(defn main []
+  (let [@var xs (into-dynamic-array [(Some (into-dynamic-array [1.]))])]
+    (print (combine (xs 0u) (mutate xs)))
+    (match (xs 0u)
+      (Some arr) (print (arr 0u))
+      None (print -1.))))

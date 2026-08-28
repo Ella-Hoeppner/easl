@@ -1,0 +1,27 @@
+; A mutable element ref and an owned copy of the same container in one
+; call: `(poke (xs 0u) xs)`. The owned param is a coherent snapshot —
+; the ref mutation must never show through it, during the call or
+; after. On the VM this is what the write-back-flush-time ensure-unique
+; buys (`emit_owned_element_write_back`): the owned `HeapCopy` shares
+; the cell AFTER the preload, so uniqueness must be established at the
+; mutation (the flush, after all argument evaluation), not at the
+; preload — the aliasing rule deliberately permits owned+ref mixes on
+; exactly this snapshot promise.
+(enum (Option T)
+  None
+  (Some T))
+
+(defn poke [@var @ref slot: (Option [f32])
+            snapshot: [(Option [f32])]]: f32
+  (= slot (Some (into-dynamic-array [5.])))
+  (match (snapshot 0u)
+    (Some arr) (arr 0u)
+    None -1.))
+
+@cpu
+(defn main []
+  (let [@var xs (into-dynamic-array [(Some (into-dynamic-array [1.]))])]
+    (print (poke (xs 0u) xs))
+    (match (xs 0u)
+      (Some arr) (print (arr 0u))
+      None (print -1.))))
