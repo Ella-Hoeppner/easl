@@ -1,0 +1,14 @@
+; `length` as an alias for `array-length` on both array shapes,
+; overloading the existing vector and String `length`s — all four
+; resolve side by side. The aliases are rewritten to `array-length`
+; after inference (`rewrite_aliased_builtin_calls`), with the
+; shape-aware candidate matcher picking the sized vs unsized target
+; ancestor.
+@cpu
+(defn main []
+  (let [fixed [1. 2. 3.]
+        dyn (into-dynamic-array [1. 2.])]
+    (print (length fixed))
+    (print (length dyn))
+    (print (length (vec3f 3. 0. 0.)))
+    (print (length "hello"))))

@@ -1,0 +1,19 @@
+; The `length` alias for `array-length` in shader code: the unsized form
+; emits `arrayLength` over the storage binding, the sized form resolves
+; statically — both through the post-inference rewrite, so WGSL emission
+; only ever sees `array-length`.
+@storage-write
+(var out: [2: f32])
+
+@storage
+(var data: [f32])
+
+@compute
+(defn count-them []
+  (= (out 0u) (f32 (length data)))
+  (= (out 1u) (f32 (length [1. 2. 3.]))))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-compute-shader count-them (vec3u 1u)))))

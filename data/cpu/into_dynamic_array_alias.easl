@@ -1,0 +1,18 @@
+; `~arr` / `(into arr)` as an alias for `into-dynamic-array`: fixed to
+; runtime-sized array conversion through the standard into machinery —
+; ascription context, argument-position context, and the explicit call
+; all select the alias overload, which the rewrite repoints at
+; `into-dynamic-array`.
+(defn total [arr: [f32]]: f32
+  (let [@var sum 0.]
+    (for [i (length arr)]
+      (+= sum (arr i)))
+    sum))
+
+@cpu
+(defn main []
+  (let [d: [f32] ~[1. 2. 3.]]
+    (print (length d))
+    (print (total d))
+    (print (total ~[10. 20.]))
+    (print (total (into [4. 4.])))))

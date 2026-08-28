@@ -149,6 +149,8 @@ cpu_test!(string_assignment);
 cpu_test!(let_binding_copy_semantics);
 cpu_test!(into_operator);
 cpu_test!(into_builtin_conversions);
+cpu_test!(length_aliases);
+cpu_test!(into_dynamic_array_alias);
 cpu_test!(into_inference_contexts);
 cpu_test!(dynamic_zeroed_array);
 cpu_test!(static_zeroed_array);

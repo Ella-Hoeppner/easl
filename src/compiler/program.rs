@@ -6291,6 +6291,18 @@ impl Program {
               } else {
                 unreachable!()
               };
+            let concrete_arg_types: Vec<Type> =
+              if let TypeState::Known(Type::Function(signature)) =
+                &f_exp.data.kind
+              {
+                signature
+                  .args
+                  .iter()
+                  .map(|(arg, _)| arg.var_type.unwrap_known())
+                  .collect()
+              } else {
+                unreachable!()
+              };
             let replacement_ancestor = self
               .abstract_functions
               .get(alias)
@@ -6298,7 +6310,15 @@ impl Program {
                 candidates
                   .iter()
                   .find(|candidate| {
-                    candidate.read().unwrap().arg_types.len() == concrete_arity
+                    let candidate = candidate.read().unwrap();
+                    candidate.arg_types.len() == concrete_arity
+                      && candidate
+                        .arg_types
+                        .iter()
+                        .zip(concrete_arg_types.iter())
+                        .all(|((abstract_type, _), concrete)| {
+                          abstract_type_shallow_matches(abstract_type, concrete)
+                        })
                   })
                   .or(candidates.first())
                   .cloned()
@@ -7962,6 +7982,37 @@ impl RefCaptureAnalyzer<'_, '_> {
       })
       .unwrap();
     taint
+  }
+}
+
+/// Whether an alias target candidate's abstract argument shape could
+/// have produced a resolved concrete type — the discriminator
+/// `rewrite_aliased_builtin_calls` uses to pick among same-name,
+/// same-arity target overloads (e.g. `array-length`'s sized vs unsized
+/// signatures, whose ancestors differ in target emulations). Shallow by
+/// design: generics match anything, arrays match on sized/unsized-ness
+/// (a generic or literal abstract size can't have produced an unsized
+/// concrete array, and vice versa), exact types match exactly, and
+/// anything else is permissive — inference already proved the call
+/// resolves; this only distinguishes shapes.
+fn abstract_type_shallow_matches(
+  abstract_type: &AbstractType,
+  concrete: &Type,
+) -> bool {
+  match (abstract_type, concrete) {
+    (AbstractType::Generic(_), _) => true,
+    (AbstractType::Type(t), concrete) => t == concrete,
+    (
+      AbstractType::AbstractArray { size, .. },
+      Type::Array(concrete_size, _),
+    ) => match size {
+      AbstractArraySize::Unsized => {
+        matches!(concrete_size, Some(ConcreteArraySize::Unsized))
+      }
+      _ => !matches!(concrete_size, Some(ConcreteArraySize::Unsized)),
+    },
+    (AbstractType::AbstractArray { .. }, _) => false,
+    _ => true,
   }
 }
 

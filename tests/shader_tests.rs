@@ -238,6 +238,11 @@ success_test!(for_multitype);
 success_test!(complex_loops);
 success_test!(reserved_wgsl_names);
 success_test!(static_array_length);
+success_test!(length_alias_gpu);
+error_test!(
+  into_dynamic_alias_gpu_failure,
+  CompileErrorKind::RuntimeSizedLocalInGpuCode
+);
 success_test!(def_sized_array);
 success_test!(closure);
 success_test!(return_fn);

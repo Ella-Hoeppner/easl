@@ -1,0 +1,15 @@
+; `~arr` (the into-dynamic-array alias) in GPU code: the rewrite runs
+; before validation, so the error reports the TARGET builtin's
+; restriction, exactly as if `into-dynamic-array` had been written.
+@storage-write
+(var out: [1: f32])
+
+@compute
+(defn bad []
+  (let [d: [f32] ~[1. 2.]]
+    (= (out 0u) (d 0u))))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-compute-shader bad (vec3u 1u)))))

@@ -2011,6 +2011,56 @@ fn array_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
+    // `length` as a terse alias for `array-length`, on both array shapes
+    // (overloading the vector and String `length`s — arrays are a
+    // distinct argument type, so resolution is unambiguous). Pure
+    // aliases: `rewrite_aliased_builtin_calls` repoints resolved calls
+    // at `array-length`, so every backend and the `ReadsArrayLength`
+    // effect machinery see the target builtin, never these.
+    AbstractFunctionSignature {
+      name: "length".into(),
+      generic_args: generic_args.clone(),
+      arg_types: vec![(
+        AbstractType::AbstractArray {
+          size: AbstractArraySize::Generic("S".into()),
+          inner_type: AbstractType::Generic("T".into()).into(),
+          source_trace: SourceTrace::empty(),
+        }
+        .into(),
+        Ownership::Reference,
+      )],
+      return_type: AbstractType::Type(Type::U32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::AliasedBuiltin(
+          "array-length",
+        ),
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "length".into(),
+      generic_args: generic_args.clone(),
+      arg_types: vec![(
+        AbstractType::AbstractArray {
+          size: AbstractArraySize::Unsized,
+          inner_type: AbstractType::Generic("T".into()).into(),
+          source_trace: SourceTrace::empty(),
+        }
+        .into(),
+        Ownership::Reference,
+      )],
+      return_type: AbstractType::Type(Type::U32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::AliasedBuiltin(
+          "array-length",
+        ),
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
     AbstractFunctionSignature {
       name: "zeroed-array".into(),
       generic_args,
@@ -2718,37 +2768,76 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
 }
 
 fn dynamic_array_functions() -> Vec<AbstractFunctionSignature> {
-  vec![AbstractFunctionSignature {
-    generic_args: vec![
-      (
-        "T".into(),
-        GenericArgument::Type(vec![]),
-        SourceTrace::empty(),
-      ),
-      ("C".into(), GenericArgument::Constant, SourceTrace::empty()),
-    ],
-    name: "into-dynamic-array".into(),
-    arg_types: vec![
-      AbstractType::AbstractArray {
-        size: AbstractArraySize::Generic("C".into()),
+  vec![
+    AbstractFunctionSignature {
+      generic_args: vec![
+        (
+          "T".into(),
+          GenericArgument::Type(vec![]),
+          SourceTrace::empty(),
+        ),
+        ("C".into(), GenericArgument::Constant, SourceTrace::empty()),
+      ],
+      name: "into-dynamic-array".into(),
+      arg_types: vec![
+        AbstractType::AbstractArray {
+          size: AbstractArraySize::Generic("C".into()),
+          inner_type: AbstractType::Generic("T".into()).into(),
+          source_trace: SourceTrace::empty(),
+        }
+        .owned(),
+      ],
+      return_type: AbstractType::AbstractArray {
+        size: AbstractArraySize::Unsized,
         inner_type: AbstractType::Generic("T".into()).into(),
         source_trace: SourceTrace::empty(),
-      }
-      .owned(),
-    ],
-    return_type: AbstractType::AbstractArray {
-      size: AbstractArraySize::Unsized,
-      inner_type: AbstractType::Generic("T".into()).into(),
-      source_trace: SourceTrace::empty(),
+      },
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("into-dynamic-array".into())
+          .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: [CompilerTarget::C].into(),
+      },
+      ..Default::default()
     },
-    implementation: FunctionImplementationKind::Builtin {
-      effect_type: Effect::CPUExclusiveFunction("into-dynamic-array".into())
-        .into(),
-      target_configuration: FunctionTargetConfiguration::Default,
-      target_specific_emulations: [CompilerTarget::C].into(),
+    // `~arr` / `(into arr)` as a terse alias for `into-dynamic-array` —
+    // fixed-size array to runtime-sized array. A pure alias like the
+    // scalar/vector `into` conversions: the rewrite repoints resolved
+    // calls at the target, whose `CPUExclusiveFunction` effect then
+    // applies as usual (GPU contexts reject it under the target's name).
+    AbstractFunctionSignature {
+      generic_args: vec![
+        (
+          "T".into(),
+          GenericArgument::Type(vec![]),
+          SourceTrace::empty(),
+        ),
+        ("C".into(), GenericArgument::Constant, SourceTrace::empty()),
+      ],
+      name: "into".into(),
+      arg_types: vec![
+        AbstractType::AbstractArray {
+          size: AbstractArraySize::Generic("C".into()),
+          inner_type: AbstractType::Generic("T".into()).into(),
+          source_trace: SourceTrace::empty(),
+        }
+        .owned(),
+      ],
+      return_type: AbstractType::AbstractArray {
+        size: AbstractArraySize::Unsized,
+        inner_type: AbstractType::Generic("T".into()).into(),
+        source_trace: SourceTrace::empty(),
+      },
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::AliasedBuiltin(
+          "into-dynamic-array",
+        ),
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
     },
-    ..Default::default()
-  }]
+  ]
 }
 
 fn atomic_functions() -> Vec<AbstractFunctionSignature> {
