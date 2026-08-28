@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 use crate::compiler::enums::Enum;
 use crate::compiler::expression::{Accessor, ExpKind, Number, TypedExp};
 use crate::compiler::functions::{
-  FunctionImplementationKind, Ownership, TopLevelFunction,
+  FunctionImplementationKind, Ownership, RefMutability, TopLevelFunction,
   extract_mat_size as parse_mat_size,
 };
 use crate::compiler::program::{LiftedCapture, LiftedCaptures};
@@ -72,6 +72,38 @@ impl RefArgBinding {
 /// containers need a multi-instruction ownership sequence whose jumps
 /// must be materialized at the flush position, so they carry the
 /// ingredients instead.
+/// How the enclosing context consumes an expression's compiled result —
+/// the three-valued replacement for the old ref-position bool. `Value`:
+/// an owned result slot. `Ref`: the storage will be read through (a bare
+/// `@ref` arg) — element lookups preload without registering write-backs
+/// (writes through an immutable ref are compile errors, so storing the
+/// unchanged temp back would be pure waste), though embedding-element
+/// temps still promote their snapshot ids (an intervening mutation
+/// elsewhere in the argument list could otherwise free them) and release
+/// them at flush. `MutRef`: mutable aliasing (`@var @ref` args,
+/// assignment left-hand sides) — the full preload + pending-write-back
+/// convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompilePosition {
+  Value,
+  Ref,
+  MutRef,
+}
+
+impl CompilePosition {
+  pub fn from_ownership(ownership: Ownership) -> Self {
+    match ownership {
+      Ownership::Owned => CompilePosition::Value,
+      Ownership::Reference
+      | Ownership::Pointer(_, RefMutability::Immutable) => CompilePosition::Ref,
+      Ownership::MutableReference
+      | Ownership::Pointer(_, RefMutability::Mutable) => {
+        CompilePosition::MutRef
+      }
+    }
+  }
+}
+
 pub enum PendingWriteBack {
   Raw(Instruction),
   /// Ownership-correct element write-back into an embedding-element
@@ -93,6 +125,17 @@ pub enum PendingWriteBack {
     index_slot: u16,
     temp: u16,
     element_size: u16,
+    element_type: Type,
+  },
+  /// Releases an immutable-ref-position temp's owned snapshot claims
+  /// after the call: embedding-element temps promote at preload for
+  /// snapshot integrity, and with no store transferring those claims
+  /// into a container, they must be dropped at flush or they'd
+  /// accumulate one net claim per execution. `HeapRelease` zeroes the
+  /// slots it releases, so the temp is left stale-unclaimed like its
+  /// mutable siblings.
+  ReleaseTemp {
+    temp: u16,
     element_type: Type,
   },
 }
@@ -716,6 +759,74 @@ impl BytecodeCompilationState {
     let after = self.instructions.len() as u32;
     self.instructions[skip_jump].arg_positions[1] = (after >> 16) as u16;
     self.instructions[skip_jump].arg_positions[2] = after as u16;
+  }
+  /// Pops the innermost pending-write-back frame and emits its entries in
+  /// reverse order (innermost lookup writes back first). Every context
+  /// that compiles an lvalue in ref position must have pushed a frame —
+  /// the enclosing Application arm, or the special-cased `=` arms for
+  /// nested element stores.
+  fn flush_pending_write_backs(&mut self) {
+    let pending_write_backs =
+      self.array_mut_ref_store_instructions.pop().unwrap();
+    for write_back in pending_write_backs.into_iter().rev() {
+      match write_back {
+        PendingWriteBack::Raw(instruction) => {
+          self.push_instruction(instruction);
+        }
+        PendingWriteBack::Embedding {
+          container,
+          index_slot,
+          temp,
+          stride,
+          element_type,
+        } => {
+          self.emit_owned_element_write_back(
+            container,
+            index_slot,
+            temp,
+            stride,
+            &element_type,
+          );
+        }
+        PendingWriteBack::FixedArray {
+          base_slot,
+          index_slot,
+          temp,
+          element_size,
+          element_type,
+        } => {
+          let mut element_fixups = HeapFixups::default();
+          collect_heap_fixups(&element_type, 0, &mut element_fixups);
+          let old_scratch = self.take_stack_slot(element_size);
+          self.push_instruction(Instruction {
+            op: Op::ArrayLookup,
+            arg_positions: [base_slot, index_slot, element_size],
+            return_position: old_scratch,
+          });
+          self.emit_heap_fixups(
+            &element_fixups,
+            Op::HeapRelease,
+            old_scratch,
+            &mut None,
+          );
+          self.push_instruction(Instruction {
+            op: Op::ArrayStore,
+            arg_positions: [temp, index_slot, element_size],
+            return_position: base_slot,
+          });
+        }
+        PendingWriteBack::ReleaseTemp { temp, element_type } => {
+          let mut element_fixups = HeapFixups::default();
+          collect_heap_fixups(&element_type, 0, &mut element_fixups);
+          self.emit_heap_fixups(
+            &element_fixups,
+            Op::HeapRelease,
+            temp,
+            &mut None,
+          );
+        }
+      }
+    }
   }
   /// The flush half of a mutable-position element lookup on an
   /// embedding-element container (see `PendingWriteBack::Embedding`):
@@ -2554,8 +2665,9 @@ impl BytecodeCompilationState {
         .zip(captures.fields.iter())
         .zip(captured.iter())
       {
-        let value_pos =
-          captured_value.compile_to_bytecode(false, self).unwrap();
+        let value_pos = captured_value
+          .compile_to_bytecode(CompilePosition::Value, self)
+          .unwrap();
         let AbstractType::Type(field_type) = &field.field_type else {
           panic!("captured scope field with non-concrete type")
         };
@@ -3294,7 +3406,9 @@ impl TypedExp {
           Type::Array(Some(ConcreteArraySize::Unsized), _)
         ) {
           // runtime-sized array *value*: length via its heap id
-          let heap_id_slot = args[0].compile_to_bytecode(false, state).unwrap();
+          let heap_id_slot = args[0]
+            .compile_to_bytecode(CompilePosition::Value, state)
+            .unwrap();
           let dest = state.take_stack_slot(1);
           state.push_instruction(Instruction {
             op: Op::HeapLen,
@@ -3315,8 +3429,12 @@ impl TypedExp {
             state.dynamic_array_memory.get(name).copied()
           && let Type::Array(_, element_type) = inner.data.unwrap_known()
         {
-          let index_slot = index_exp.compile_to_bytecode(false, state).unwrap();
-          let src_slot = args[1].compile_to_bytecode(false, state).unwrap();
+          let index_slot = index_exp
+            .compile_to_bytecode(CompilePosition::Value, state)
+            .unwrap();
+          let src_slot = args[1]
+            .compile_to_bytecode(CompilePosition::Value, state)
+            .unwrap();
           if let Some(fixups) =
             BytecodeCompilationState::embedding_element_fixups(
               &element_type.unwrap_known(),
@@ -3347,10 +3465,21 @@ impl TypedExp {
         {
           // element store into a runtime-sized array *value* (a local, a
           // field, or a nested element), through its heap id with
-          // copy-on-write
-          let heap_id_slot = inner.compile_to_bytecode(false, state).unwrap();
-          let index_slot = index_exp.compile_to_bytecode(false, state).unwrap();
-          let src_slot = args[1].compile_to_bytecode(false, state).unwrap();
+          // copy-on-write. The inner expression compiles in REF position:
+          // when it's itself an element lookup (`(= ((g i) j) v)`), the
+          // loaded id is a COW share whose mutation must be written back
+          // to the parent container — value position would mutate a
+          // discarded clone and silently drop the store.
+          state.array_mut_ref_store_instructions.push(vec![]);
+          let heap_id_slot = inner
+            .compile_to_bytecode(CompilePosition::MutRef, state)
+            .unwrap();
+          let index_slot = index_exp
+            .compile_to_bytecode(CompilePosition::Value, state)
+            .unwrap();
+          let src_slot = args[1]
+            .compile_to_bytecode(CompilePosition::Value, state)
+            .unwrap();
           let element_type = element_type.unwrap_known();
           let stride = vm_stack_size(&element_type);
           if let Some(fixups) =
@@ -3370,6 +3499,7 @@ impl TypedExp {
               return_position: stride,
             });
           }
+          state.flush_pending_write_backs();
           Some(None)
         } else if let ExpKind::Name(name) = &args[0].kind
           && let Some((memory, _)) =
@@ -3395,7 +3525,9 @@ impl TypedExp {
           {
             panic!("load-wav is only available in the CPU runtime");
           }
-          let src_slot = args[1].compile_to_bytecode(false, state).unwrap();
+          let src_slot = args[1]
+            .compile_to_bytecode(CompilePosition::Value, state)
+            .unwrap();
           let embedding_fixups =
             BytecodeCompilationState::embedding_element_fixups(
               &element_type.unwrap_known(),
@@ -3465,12 +3597,15 @@ impl TypedExp {
           && &**inner_name == "zeroed-array"
         {
           // Print a runtime-sized zeroed array without materializing it.
-          let len_slot =
-            inner_args[0].compile_to_bytecode(false, state).unwrap();
+          let len_slot = inner_args[0]
+            .compile_to_bytecode(CompilePosition::Value, state)
+            .unwrap();
           let ty = state.host_type_index(&arg.data.unwrap_known());
           state.emit_host_op(HostOp::PrintZeroed { len_slot, ty });
         } else {
-          let slot = arg.compile_to_bytecode(false, state).unwrap();
+          let slot = arg
+            .compile_to_bytecode(CompilePosition::Value, state)
+            .unwrap();
           let ty = state.host_type_index(&arg.data.unwrap_known());
           state.emit_host_op(HostOp::Print { slot, ty });
         }
@@ -3478,7 +3613,9 @@ impl TypedExp {
       }
       "string" => {
         let arg = &args[0];
-        let slot = arg.compile_to_bytecode(false, state).unwrap();
+        let slot = arg
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .unwrap();
         let ty = state.host_type_index(&arg.data.unwrap_known());
         let dest = state.take_stack_slot(1);
         state.emit_host_op(HostOp::Stringify { slot, ty, dest });
@@ -3489,7 +3626,9 @@ impl TypedExp {
         let entry = state.host_string_index(&entry_name);
         let sets = state.host_dispatches.len() as u16;
         state.host_dispatches.push(HostDispatch { reads, writes });
-        let workgroup_slot = args[1].compile_to_bytecode(false, state).unwrap();
+        let workgroup_slot = args[1]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .unwrap();
         state.emit_host_op(HostOp::DispatchCompute {
           entry,
           sets,
@@ -3516,11 +3655,13 @@ impl TypedExp {
         let frag = state.host_string_index(&frag_name);
         let sets = state.host_dispatches.len() as u16;
         state.host_dispatches.push(HostDispatch { reads, writes });
-        let vert_count_slot =
-          args[2].compile_to_bytecode(false, state).unwrap();
-        let additive_slot = args
-          .get(3)
-          .map(|a| a.compile_to_bytecode(false, state).unwrap());
+        let vert_count_slot = args[2]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .unwrap();
+        let additive_slot = args.get(3).map(|a| {
+          a.compile_to_bytecode(CompilePosition::Value, state)
+            .unwrap()
+        });
         state.emit_host_op(HostOp::DispatchRender {
           vert,
           frag,
@@ -3571,8 +3712,9 @@ impl TypedExp {
             let scope_slot = state.take_stack_slot(scope_size);
             let mut offset = 0u16;
             for captured_value in captured {
-              let value_pos =
-                captured_value.compile_to_bytecode(false, state).unwrap();
+              let value_pos = captured_value
+                .compile_to_bytecode(CompilePosition::Value, state)
+                .unwrap();
               let value_size =
                 vm_stack_size(&captured_value.data.unwrap_known());
               if value_size > 0 {
@@ -3587,7 +3729,9 @@ impl TypedExp {
             scope_slot
           } else {
             // Closure referenced by name: its value slots are its scope.
-            args[0].compile_to_bytecode(true, state).unwrap()
+            args[0]
+              .compile_to_bytecode(CompilePosition::MutRef, state)
+              .unwrap()
           };
           let host_op_index = state.host_ops.len();
           state.emit_host_op(HostOp::SpawnWindow { frame_fn: 0 });
@@ -3637,7 +3781,9 @@ impl TypedExp {
         // re-execute; a `start-audio` called unconditionally every frame
         // with a closure resets its state every frame, by meaning.
         let entry_name: Arc<str> = if let Some(scope_struct) = &scope_struct {
-          let value_pos = args[0].compile_to_bytecode(false, state).unwrap();
+          let value_pos = args[0]
+            .compile_to_bytecode(CompilePosition::Value, state)
+            .unwrap();
           let mut seeded: Vec<Arc<str>> = vec![];
           let captures = state
             .lifted_audio_captures
@@ -3717,7 +3863,9 @@ impl TypedExp {
           // Runtime-computed key: a live query against the IO manager's
           // per-frame key state (CPU-only — GPU-reachable non-literal
           // keys are a `GpuKeyQueryRequiresLiteralString` compile error).
-          let key_slot = args[0].compile_to_bytecode(false, state).unwrap();
+          let key_slot = args[0]
+            .compile_to_bytecode(CompilePosition::Value, state)
+            .unwrap();
           state.emit_host_op(HostOp::KeyQueryDynamic {
             just,
             key_slot,
@@ -3786,8 +3934,9 @@ impl TypedExp {
           };
           match &**rhs_f_name {
             "zeroed-array" => {
-              let len_slot =
-                rhs_args[0].compile_to_bytecode(false, state).unwrap();
+              let len_slot = rhs_args[0]
+                .compile_to_bytecode(CompilePosition::Value, state)
+                .unwrap();
               state.push_instruction(Instruction {
                 op: Op::DynResize,
                 arg_positions: [memory, len_slot, 0],
@@ -3803,7 +3952,9 @@ impl TypedExp {
               let Some(count) = size.as_literal() else {
                 panic!("into-dynamic-array argument wasn't a sized array")
               };
-              let src_slot = source.compile_to_bytecode(false, state).unwrap();
+              let src_slot = source
+                .compile_to_bytecode(CompilePosition::Value, state)
+                .unwrap();
               state.push_instruction(Instruction {
                 op: Op::DynAssignFromSlots,
                 arg_positions: [memory, src_slot, count as u16],
@@ -3839,12 +3990,18 @@ impl TypedExp {
               // scalars are contiguous when compiled in sequence; a vec2u is
               // contiguous by construction.
               let size_slot = if rhs_args.len() == 2 {
-                let w = rhs_args[0].compile_to_bytecode(false, state).unwrap();
-                let h = rhs_args[1].compile_to_bytecode(false, state).unwrap();
+                let w = rhs_args[0]
+                  .compile_to_bytecode(CompilePosition::Value, state)
+                  .unwrap();
+                let h = rhs_args[1]
+                  .compile_to_bytecode(CompilePosition::Value, state)
+                  .unwrap();
                 debug_assert_eq!(h, w + 1);
                 w
               } else {
-                rhs_args[0].compile_to_bytecode(false, state).unwrap()
+                rhs_args[0]
+                  .compile_to_bytecode(CompilePosition::Value, state)
+                  .unwrap()
               };
               state.emit_host_op(HostOp::AssignTextureBlank {
                 binding,
@@ -3867,7 +4024,7 @@ impl TypedExp {
 
   pub fn compile_to_bytecode(
     &self,
-    is_ref_arg_position: bool,
+    position: CompilePosition,
     state: &mut BytecodeCompilationState,
   ) -> Option<u16> {
     use ExpKind::*;
@@ -3887,7 +4044,7 @@ impl TypedExp {
       BooleanLiteral(b) => Some(state.emit_u32_constant(*b as u32)),
       Block(exps) => exps
         .iter()
-        .map(|exp| exp.compile_to_bytecode(false, state))
+        .map(|exp| exp.compile_to_bytecode(CompilePosition::Value, state))
         .last()
         .unwrap_or(None),
       Application(f_exp, args) => {
@@ -3957,7 +4114,9 @@ impl TypedExp {
           let result = state.take_stack_slot(total);
           let mut offset = 0u16;
           for arg in args {
-            let arg_pos = arg.compile_to_bytecode(false, state).unwrap();
+            let arg_pos = arg
+              .compile_to_bytecode(CompilePosition::Value, state)
+              .unwrap();
             let arg_type = arg.data.unwrap_known();
             let size = vm_stack_size(&arg_type);
             state.emit_value_copy(arg_pos, size, result + offset, &arg_type);
@@ -3993,7 +4152,10 @@ impl TypedExp {
             } else {
               RefArgBinding::Slot(
                 arg
-                  .compile_to_bytecode(*ownership != Ownership::Owned, state)
+                  .compile_to_bytecode(
+                    CompilePosition::from_ownership(*ownership),
+                    state,
+                  )
                   .unwrap(),
               )
             }
@@ -4032,7 +4194,9 @@ impl TypedExp {
               state.take_stack_slot(vm_stack_size(&self.data.unwrap_known()));
             let mut offset = 0u16;
             for arg in args {
-              let arg_pos = arg.compile_to_bytecode(false, state).unwrap();
+              let arg_pos = arg
+                .compile_to_bytecode(CompilePosition::Value, state)
+                .unwrap();
               let arg_type = arg.data.unwrap_known();
               let arg_size = vm_stack_size(&arg_type);
               state.emit_value_copy(
@@ -4217,57 +4381,7 @@ impl TypedExp {
             }
           }
         };
-        let pending_write_backs =
-          state.array_mut_ref_store_instructions.pop().unwrap();
-        for write_back in pending_write_backs.into_iter().rev() {
-          match write_back {
-            PendingWriteBack::Raw(instruction) => {
-              state.push_instruction(instruction);
-            }
-            PendingWriteBack::Embedding {
-              container,
-              index_slot,
-              temp,
-              stride,
-              element_type,
-            } => {
-              state.emit_owned_element_write_back(
-                container,
-                index_slot,
-                temp,
-                stride,
-                &element_type,
-              );
-            }
-            PendingWriteBack::FixedArray {
-              base_slot,
-              index_slot,
-              temp,
-              element_size,
-              element_type,
-            } => {
-              let mut element_fixups = HeapFixups::default();
-              collect_heap_fixups(&element_type, 0, &mut element_fixups);
-              let old_scratch = state.take_stack_slot(element_size);
-              state.push_instruction(Instruction {
-                op: Op::ArrayLookup,
-                arg_positions: [base_slot, index_slot, element_size],
-                return_position: old_scratch,
-              });
-              state.emit_heap_fixups(
-                &element_fixups,
-                Op::HeapRelease,
-                old_scratch,
-                &mut None,
-              );
-              state.push_instruction(Instruction {
-                op: Op::ArrayStore,
-                arg_positions: [temp, index_slot, element_size],
-                return_position: base_slot,
-              });
-            }
-          }
-        }
+        state.flush_pending_write_backs();
         if let Some(writes) = &cpu_write_marks {
           state.emit_write_marks(writes);
         }
@@ -4379,7 +4493,8 @@ impl TypedExp {
             state.locals.insert(arg_name.clone(), *arg_position);
           }
         }
-        let body_result = exp.compile_to_bytecode(false, state);
+        let body_result =
+          exp.compile_to_bytecode(CompilePosition::Value, state);
         for region_param_name in region_param_names {
           state.dynamic_array_memory.remove(&region_param_name);
         }
@@ -4411,7 +4526,9 @@ impl TypedExp {
             let slot = state.take_stack_slot(size);
             state.locals.insert(name.clone(), slot);
           } else {
-            let value_pos = value.compile_to_bytecode(false, state).unwrap();
+            let value_pos = value
+              .compile_to_bytecode(CompilePosition::Value, state)
+              .unwrap();
             let t = value.data.unwrap_known();
             let size = vm_stack_size(&t);
             if aliases_variable_storage(value) && size > 0 {
@@ -4430,13 +4547,14 @@ impl TypedExp {
             }
           }
         }
-        body.compile_to_bytecode(false, state)
+        body.compile_to_bytecode(CompilePosition::Value, state)
       }
       Match(scrutinee, arms) => {
         let result_type = self.data.unwrap_known();
         let result_type_size = vm_stack_size(&result_type);
-        let scrutinee_pos =
-          scrutinee.compile_to_bytecode(false, state).unwrap();
+        let scrutinee_pos = scrutinee
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .unwrap();
         let scrutinee_type = scrutinee.data.unwrap_known();
         if scrutinee_type == Type::Bool
           && arms[0].0.kind == ExpKind::BooleanLiteral(true)
@@ -4456,9 +4574,10 @@ impl TypedExp {
           // type is zero-size; a `Some` arm result with no result slot is
           // simply discarded (e.g. a statement-position `if` whose arms
           // are compound assignments — those return their mutated slot).
-          if let (Some(false_branch_result_pos), Some(result_pos)) =
-            (arms[1].1.compile_to_bytecode(false, state), result_pos)
-          {
+          if let (Some(false_branch_result_pos), Some(result_pos)) = (
+            arms[1].1.compile_to_bytecode(CompilePosition::Value, state),
+            result_pos,
+          ) {
             state.push_instruction(Instruction {
               op: Op::Move,
               arg_positions: [false_branch_result_pos, result_type_size, 0],
@@ -4477,9 +4596,10 @@ impl TypedExp {
             [1] = (true_branch_start_instruction_pos >> 16) as u16;
           state.instructions[true_branch_jump_instruction_pos].arg_positions
             [2] = true_branch_start_instruction_pos as u16;
-          if let (Some(true_branch_result_pos), Some(result_pos)) =
-            (arms[0].1.compile_to_bytecode(false, state), result_pos)
-          {
+          if let (Some(true_branch_result_pos), Some(result_pos)) = (
+            arms[0].1.compile_to_bytecode(CompilePosition::Value, state),
+            result_pos,
+          ) {
             state.push_instruction(Instruction {
               op: Op::Move,
               arg_positions: [true_branch_result_pos, result_type_size, 0],
@@ -4504,8 +4624,9 @@ impl TypedExp {
               let last_arm_body = arms.pop().unwrap().1;
               let mut jump_into_block_instruction_positions = vec![];
               for (pattern, _) in arms.iter() {
-                let pattern_pos =
-                  pattern.compile_to_bytecode(false, state).unwrap();
+                let pattern_pos = pattern
+                  .compile_to_bytecode(CompilePosition::Value, state)
+                  .unwrap();
                 let equality_check_pos = state.take_stack_slot(1);
                 state.push_instruction(Instruction {
                   op: match scrutinee_type {
@@ -4525,9 +4646,11 @@ impl TypedExp {
                   return_position: 0,
                 });
               }
-              if let (Some(last_arm_result_pos), Some(result_pos)) =
-                (last_arm_body.compile_to_bytecode(false, state), result_pos)
-              {
+              if let (Some(last_arm_result_pos), Some(result_pos)) = (
+                last_arm_body
+                  .compile_to_bytecode(CompilePosition::Value, state),
+                result_pos,
+              ) {
                 state.push_instruction(Instruction {
                   op: Op::Move,
                   arg_positions: [last_arm_result_pos, result_type_size, 0],
@@ -4547,9 +4670,10 @@ impl TypedExp {
                   .arg_positions[1] = (start_pos >> 16) as u16;
                 state.instructions[jump_into_block_instruction_positions[i]]
                   .arg_positions[2] = start_pos as u16;
-                if let (Some(arm_result_pos), Some(result_pos)) =
-                  (body.compile_to_bytecode(false, state), result_pos)
-                {
+                if let (Some(arm_result_pos), Some(result_pos)) = (
+                  body.compile_to_bytecode(CompilePosition::Value, state),
+                  result_pos,
+                ) {
                   state.push_instruction(Instruction {
                     op: Op::Move,
                     arg_positions: [arm_result_pos, result_type_size, 0],
@@ -4616,9 +4740,11 @@ impl TypedExp {
                   return_position: 0,
                 });
               }
-              if let (Some(last_arm_result_pos), Some(result_pos)) =
-                (last_arm_body.compile_to_bytecode(false, state), result_pos)
-              {
+              if let (Some(last_arm_result_pos), Some(result_pos)) = (
+                last_arm_body
+                  .compile_to_bytecode(CompilePosition::Value, state),
+                result_pos,
+              ) {
                 state.push_instruction(Instruction {
                   op: Op::Move,
                   arg_positions: [last_arm_result_pos, result_type_size, 0],
@@ -4653,9 +4779,10 @@ impl TypedExp {
                     }
                   }
                 }
-                if let (Some(arm_result_pos), Some(result_pos)) =
-                  (body.compile_to_bytecode(false, state), result_pos)
-                {
+                if let (Some(arm_result_pos), Some(result_pos)) = (
+                  body.compile_to_bytecode(CompilePosition::Value, state),
+                  result_pos,
+                ) {
                   state.push_instruction(Instruction {
                     op: Op::Move,
                     arg_positions: [arm_result_pos, result_type_size, 0],
@@ -4695,7 +4822,7 @@ impl TypedExp {
         state.break_jump_instruction_positions.push(vec![]);
         state.continue_jump_instruction_positions.push(vec![]);
         let cond_pos = condition_expression
-          .compile_to_bytecode(false, state)
+          .compile_to_bytecode(CompilePosition::Value, state)
           .unwrap();
         let jump_out_instruction_pos = state.instructions.len();
         state.push_instruction(Instruction {
@@ -4703,7 +4830,7 @@ impl TypedExp {
           arg_positions: [cond_pos, 0, 0],
           return_position: 0,
         });
-        body_expression.compile_to_bytecode(false, state);
+        body_expression.compile_to_bytecode(CompilePosition::Value, state);
         state.push_instruction(Instruction {
           op: Op::Jump,
           arg_positions: [
@@ -4747,7 +4874,7 @@ impl TypedExp {
       } => {
         let increment_var_initial_value_pos =
           increment_variable_initial_value_expression
-            .compile_to_bytecode(false, state)
+            .compile_to_bytecode(CompilePosition::Value, state)
             .unwrap();
         let increment_var_size = increment_variable_type
           .unwrap_known()
@@ -4771,7 +4898,7 @@ impl TypedExp {
         state.break_jump_instruction_positions.push(vec![]);
         state.continue_jump_instruction_positions.push(vec![]);
         let cond_pos = continue_condition_expression
-          .compile_to_bytecode(false, state)
+          .compile_to_bytecode(CompilePosition::Value, state)
           .unwrap();
         let jump_out_instruction_pos = state.instructions.len();
         state.push_instruction(Instruction {
@@ -4779,10 +4906,10 @@ impl TypedExp {
           arg_positions: [cond_pos, 0, 0],
           return_position: 0,
         });
-        body_expression.compile_to_bytecode(false, state);
+        body_expression.compile_to_bytecode(CompilePosition::Value, state);
         let pre_update_pos = state.instructions.len();
         if let Some(update_expression) = update_expression {
-          update_expression.compile_to_bytecode(false, state);
+          update_expression.compile_to_bytecode(CompilePosition::Value, state);
         }
         state.push_instruction(Instruction {
           op: Op::Jump,
@@ -4846,7 +4973,9 @@ impl TypedExp {
         None
       }
       Return(exp) => {
-        if let Some(return_value_pos) = exp.compile_to_bytecode(false, state) {
+        if let Some(return_value_pos) =
+          exp.compile_to_bytecode(CompilePosition::Value, state)
+        {
           state.push_instruction(Instruction {
             op: Op::Move,
             arg_positions: [
@@ -4878,8 +5007,9 @@ impl TypedExp {
         let array_pos = state
           .take_stack_slot(inner_data_size * (inner_expressions.len() as u16));
         for (i, inner_exp) in inner_expressions.iter().enumerate() {
-          let inner_exp_pos =
-            inner_exp.compile_to_bytecode(false, state).unwrap();
+          let inner_exp_pos = inner_exp
+            .compile_to_bytecode(CompilePosition::Value, state)
+            .unwrap();
           // Ownership-correct element copy: a fixed array's slots OWN
           // their element heap ids (like dyn containers' words), so
           // heap-involving elements are promoted in (and the previous
@@ -4908,14 +5038,15 @@ impl TypedExp {
                 state.dynamic_array_memory.get(name).copied()
             {
               let dest = state.take_stack_slot(stride);
-              let index_slot =
-                index_exp.compile_to_bytecode(false, state).unwrap();
+              let index_slot = index_exp
+                .compile_to_bytecode(CompilePosition::Value, state)
+                .unwrap();
               state.push_instruction(Instruction {
                 op: Op::DynLoad,
                 arg_positions: [memory, index_slot, stride],
                 return_position: dest,
               });
-              if is_ref_arg_position {
+              if position != CompilePosition::Value {
                 let element_type = self.data.unwrap_known();
                 if let Some(fixups) =
                   BytecodeCompilationState::embedding_element_fixups(
@@ -4925,8 +5056,8 @@ impl TypedExp {
                   // The temp must OWN its snapshot: a borrowed id could
                   // be freed by a mutation of the container between this
                   // load and the enclosing call (strict left-to-right
-                  // argument evaluation makes that expressible), and the
-                  // write-back needs claims it can transfer.
+                  // argument evaluation makes that expressible), and a
+                  // mutable write-back needs claims it can transfer.
                   state.emit_heap_fixups(
                     &fixups,
                     Op::HeapPromote,
@@ -4937,14 +5068,21 @@ impl TypedExp {
                     .array_mut_ref_store_instructions
                     .last_mut()
                     .unwrap()
-                    .push(PendingWriteBack::Embedding {
-                      container: EmbeddingContainer::Region(memory),
-                      index_slot,
-                      temp: dest,
-                      stride,
-                      element_type,
+                    .push(if position == CompilePosition::MutRef {
+                      PendingWriteBack::Embedding {
+                        container: EmbeddingContainer::Region(memory),
+                        index_slot,
+                        temp: dest,
+                        stride,
+                        element_type,
+                      }
+                    } else {
+                      PendingWriteBack::ReleaseTemp {
+                        temp: dest,
+                        element_type,
+                      }
                     });
-                } else {
+                } else if position == CompilePosition::MutRef {
                   state
                     .array_mut_ref_store_instructions
                     .last_mut()
@@ -4963,18 +5101,24 @@ impl TypedExp {
               Type::Array(Some(ConcreteArraySize::Unsized), _)
             ) {
               // element read of a runtime-sized array *value* through its
-              // heap id
-              let heap_id_slot = exp.compile_to_bytecode(false, state).unwrap();
+              // heap id. The inner expression inherits ref position: in a
+              // mutable chain (`(+= ((g i) j) v)`), the inner lookup's
+              // loaded COW share must register its own write-back so the
+              // mutated child lands back in the parent — value position
+              // would mutate a discarded clone.
+              let heap_id_slot =
+                exp.compile_to_bytecode(position, state).unwrap();
               let stride = vm_stack_size(&self.data.unwrap_known());
               let dest = state.take_stack_slot(stride);
-              let index_slot =
-                index_exp.compile_to_bytecode(false, state).unwrap();
+              let index_slot = index_exp
+                .compile_to_bytecode(CompilePosition::Value, state)
+                .unwrap();
               state.push_instruction(Instruction {
                 op: Op::HeapLoad,
                 arg_positions: [heap_id_slot, index_slot, stride],
                 return_position: dest,
               });
-              if is_ref_arg_position {
+              if position != CompilePosition::Value {
                 let element_type = self.data.unwrap_known();
                 if let Some(fixups) =
                   BytecodeCompilationState::embedding_element_fixups(
@@ -4984,8 +5128,8 @@ impl TypedExp {
                   // The temp must OWN its snapshot ids (a borrow could be
                   // freed by an intervening mutation of the container —
                   // strict left-to-right argument evaluation makes that
-                  // expressible — and by-then-shared cells need claims
-                  // the write-back can transfer); uniqueness for the
+                  // expressible — and by-then-shared cells need claims a
+                  // mutable write-back can transfer); uniqueness for the
                   // mutation itself is established at the write-back
                   // flush, after every share-creating argument has been
                   // evaluated (see `emit_owned_element_write_back`).
@@ -4999,14 +5143,21 @@ impl TypedExp {
                     .array_mut_ref_store_instructions
                     .last_mut()
                     .unwrap()
-                    .push(PendingWriteBack::Embedding {
-                      container: EmbeddingContainer::Cell(heap_id_slot),
-                      index_slot,
-                      temp: dest,
-                      stride,
-                      element_type,
+                    .push(if position == CompilePosition::MutRef {
+                      PendingWriteBack::Embedding {
+                        container: EmbeddingContainer::Cell(heap_id_slot),
+                        index_slot,
+                        temp: dest,
+                        stride,
+                        element_type,
+                      }
+                    } else {
+                      PendingWriteBack::ReleaseTemp {
+                        temp: dest,
+                        element_type,
+                      }
                     });
-                } else {
+                } else if position == CompilePosition::MutRef {
                   state
                     .array_mut_ref_store_instructions
                     .last_mut()
@@ -5021,34 +5172,37 @@ impl TypedExp {
               return Some(dest);
             }
             let inner_exp_pos =
-              exp.compile_to_bytecode(is_ref_arg_position, state).unwrap();
+              exp.compile_to_bytecode(position, state).unwrap();
             let element_type = self.data.unwrap_known();
             let inner_data_size = vm_stack_size(&element_type);
             let result_position = state.take_stack_slot(inner_data_size);
-            let index_pos =
-              index_exp.compile_to_bytecode(false, state).unwrap();
+            let index_pos = index_exp
+              .compile_to_bytecode(CompilePosition::Value, state)
+              .unwrap();
             state.push_instruction(Instruction {
               op: Op::ArrayLookup,
               arg_positions: [inner_exp_pos, index_pos, inner_data_size],
               return_position: result_position,
             });
-            if is_ref_arg_position {
+            if position != CompilePosition::Value {
               let mut element_fixups = HeapFixups::default();
               collect_heap_fixups(&element_type, 0, &mut element_fixups);
               if element_fixups.is_empty() {
-                state
-                  .array_mut_ref_store_instructions
-                  .last_mut()
-                  .unwrap()
-                  .push(PendingWriteBack::Raw(Instruction {
-                    op: Op::ArrayStore,
-                    arg_positions: [
-                      result_position,
-                      index_pos,
-                      inner_data_size,
-                    ],
-                    return_position: inner_exp_pos,
-                  }));
+                if position == CompilePosition::MutRef {
+                  state
+                    .array_mut_ref_store_instructions
+                    .last_mut()
+                    .unwrap()
+                    .push(PendingWriteBack::Raw(Instruction {
+                      op: Op::ArrayStore,
+                      arg_positions: [
+                        result_position,
+                        index_pos,
+                        inner_data_size,
+                      ],
+                      return_position: inner_exp_pos,
+                    }));
+                }
               } else {
                 // The temp must OWN its snapshot ids — a borrow could be
                 // freed by a mutation of the array between this lookup
@@ -5064,12 +5218,19 @@ impl TypedExp {
                   .array_mut_ref_store_instructions
                   .last_mut()
                   .unwrap()
-                  .push(PendingWriteBack::FixedArray {
-                    base_slot: inner_exp_pos,
-                    index_slot: index_pos,
-                    temp: result_position,
-                    element_size: inner_data_size,
-                    element_type,
+                  .push(if position == CompilePosition::MutRef {
+                    PendingWriteBack::FixedArray {
+                      base_slot: inner_exp_pos,
+                      index_slot: index_pos,
+                      temp: result_position,
+                      element_size: inner_data_size,
+                      element_type,
+                    }
+                  } else {
+                    PendingWriteBack::ReleaseTemp {
+                      temp: result_position,
+                      element_type,
+                    }
                   });
               }
             }
@@ -5077,7 +5238,7 @@ impl TypedExp {
           }
           Accessor::Field(field_name) => {
             let inner_exp_pos =
-              exp.compile_to_bytecode(is_ref_arg_position, state).unwrap();
+              exp.compile_to_bytecode(position, state).unwrap();
             let Type::Struct(s) = exp.data.unwrap_known() else {
               panic!()
             };
@@ -5096,7 +5257,9 @@ impl TypedExp {
             // This would cause problems if there was any kind of assignment
             // into a swizzle, but that should have always been desugared away
             // by an earlier stage of the compiler
-            let inner_exp_pos = exp.compile_to_bytecode(false, state).unwrap();
+            let inner_exp_pos = exp
+              .compile_to_bytecode(CompilePosition::Value, state)
+              .unwrap();
             let inner_data_size = self
               .data
               .unwrap_known()

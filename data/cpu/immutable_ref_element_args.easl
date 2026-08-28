@@ -1,0 +1,35 @@
+; Immutable `@ref` element args: read-only refs to container elements
+; preload without registering write-backs (a store of the unchanged
+; temp would be pure waste — the granular-sampler hot path), while
+; keeping full snapshot semantics: the embedding-element ref still sees
+; the element as of its argument position even when a later argument
+; mutates the container, and repeated calls stay balanced (the temp's
+; snapshot claims are released at each flush). The absence of store ops
+; is pinned by the hand-written `immutable_ref_elements_emit_no_stores`
+; test in vm_tests.rs.
+(enum (Option T)
+  None
+  (Some T))
+
+(defn peek [@ref slot: (Option [f32])
+            bystander: f32]: f32
+  (match slot
+    (Some arr) (+ (arr 0u) bystander)
+    None bystander))
+
+(defn mutate [@var @ref xs: [(Option [f32])]]: f32
+  (= (xs 0u) (Some (into-dynamic-array [50.])))
+  0.)
+
+(defn read-grain [@ref g: f32]: f32
+  (* g 2.))
+
+@cpu
+(defn main []
+  (let [@var xs (into-dynamic-array [(Some (into-dynamic-array [1.]))])]
+    (print (peek (xs 0u) (mutate xs)))
+    (print (peek (xs 0u) 0.))
+    (print (peek (xs 0u) 0.))
+    (print (peek (xs 0u) 0.)))
+  (let [@var grains (into-dynamic-array [3. 4.])]
+    (print (read-grain (grains 1u)))))

@@ -1,0 +1,15 @@
+(struct Packet
+  gain: f32
+  body: [f32])
+
+(defn make-player []: (Fn [] f32)
+  (let [packets (into-dynamic-array [(Packet 0.5 (into-dynamic-array [0.25 0.75]))
+                                     (Packet 2. (into-dynamic-array [0.125]))])]
+    (fn []
+        (+ (* (.gain (packets 0u)) ((.body (packets 0u)) 1u))
+           (* (.gain (packets 1u)) ((.body (packets 1u)) 0u))))))
+
+@cpu
+(defn main []
+  (start-audio (make-player))
+  (spawn-window (fn [] ())))

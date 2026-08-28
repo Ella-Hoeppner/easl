@@ -489,6 +489,12 @@ macro_rules! thread_sync_test {
   };
 }
 
+thread_sync_test!(audio_nested_wavetable_bank, [Frame, AudioBatch(2)]);
+thread_sync_test!(audio_packet_bank, [Frame, AudioBatch(2)]);
+thread_sync_test!(
+  nested_bank_main_to_audio,
+  [Frame, AudioBatch(2), Frame, AudioBatch(2)]
+);
 thread_sync_test!(audio_rehandoff_two_sites, [Frame, AudioBatch(2)]);
 thread_sync_test!(
   audio_rehandoff_repeated_site,

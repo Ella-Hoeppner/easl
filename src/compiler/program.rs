@@ -18,8 +18,8 @@ use crate::parse::EaslMultiDocument;
 use crate::thread_sync::participant;
 use crate::vm::bytecode::{BytecodeProgram, Instruction, Op};
 use crate::vm::compile::{
-  BytecodeCompilationState, PendingFrameFnUsage, PendingRefFnUsage,
-  RefArgBinding, vm_stack_size,
+  BytecodeCompilationState, CompilePosition, PendingFrameFnUsage,
+  PendingRefFnUsage, RefArgBinding, vm_stack_size,
 };
 use crate::{
   Never,
@@ -543,6 +543,16 @@ impl ClosureLiftTarget {
         }
       }
       ClosureLiftTarget::Audio => {
+        // A capture that IS a runtime-sized array lifts to a dyn-region
+        // global and shares through the serialized wire encoding (see
+        // vm/shared_sync.rs) — nested arrays and dyn-field-struct
+        // elements included. String-containing captures stay rejected:
+        // the wire could carry them, but audio-mode compilation filters
+        // `CPUExclusiveType("String")` functions, so an audio body could
+        // never read them anyway (lifting that needs the String filter
+        // split by operation — `(string x)` is a host op, the rest are
+        // VM-native). Types that only EMBED heap values lift to
+        // slot-backed globals, which have no wire path yet.
         if field_type.involves_string() {
           errors.log(CompileError {
             kind: UnshareableAudioCapture("String".to_string()),
@@ -1606,7 +1616,7 @@ impl Program {
                             ));
                           }
                         }
-                        Ownership::Pointer(_) => {
+                        Ownership::Pointer(_, _) => {
                           unreachable!(
                             "unexpected Ownership::Pointer encountered"
                           )
@@ -7482,8 +7492,9 @@ impl Program {
         state.open_function("$init_globals".into(), 0);
         for v in self.top_level_vars.iter() {
           if let Some(value_exp) = &v.value {
-            let value_slot =
-              value_exp.compile_to_bytecode(false, &mut state).unwrap();
+            let value_slot = value_exp
+              .compile_to_bytecode(CompilePosition::Value, &mut state)
+              .unwrap();
             let var_size =
               v.var_type.flat_data_size_in_u32s(&v.source_trace).unwrap()
                 as u16;

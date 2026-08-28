@@ -1,0 +1,13 @@
+(defn make-player []: (Fn [] f32)
+  (let [@var bank (into-dynamic-array [(into-dynamic-array [0.125])])]
+    (fn [] ((bank 0u) 0u))))
+
+@local
+(var frame-count: u32)
+
+@cpu
+(defn main []
+  (let [player (make-player)]
+    (start-audio player)
+    (spawn-window (fn []
+                      (+= frame-count 1u)))))

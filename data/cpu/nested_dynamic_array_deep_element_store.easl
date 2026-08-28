@@ -1,0 +1,23 @@
+; Deep element stores through nested runtime-sized arrays —
+; `(= ((g i) j) v)` — on both a dynamic global (region `Cells` storage)
+; and a local (heap-cell storage). The inner lookup compiles in REF
+; position, so its loaded COW share registers a pending write-back that
+; ships the mutated child back into the parent; the special `=` arm
+; opens its own pending frame for exactly this chain (value position
+; would mutate a discarded clone and silently drop the store — a real
+; VM bug this pins; the tree-walker was always correct).
+@local
+(var g: [[f32]])
+
+@cpu
+(defn main []
+  (= g (into-dynamic-array [(into-dynamic-array [1. 2.])]))
+  (= ((g 0u) 1u) 9.)
+  (print ((g 0u) 1u))
+  (print ((g 0u) 0u))
+  (let [@var xs (into-dynamic-array [(into-dynamic-array [3. 4.])
+                                     (into-dynamic-array [5.])])]
+    (= ((xs 0u) 0u) 7.)
+    (print ((xs 0u) 0u))
+    (print ((xs 0u) 1u))
+    (print ((xs 1u) 0u))))

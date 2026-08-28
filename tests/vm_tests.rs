@@ -131,3 +131,66 @@ fn for_loop_repeated_execute() {
     );
   }
 }
+
+/// Immutable `@ref` element args emit no write-back stores: the preload
+/// temp is read-only, so storing it back would be pure waste (the
+/// granular-sampler hot path — one redundant store per grain per sample).
+/// The mutable variant of the same program must still contain a store,
+/// proving the assertion's sensitivity.
+#[test]
+fn immutable_ref_elements_emit_no_stores() {
+  use easl::compiler::core::load_easl_program_from_file_with_lookup_function;
+  use easl::compiler::program::CompilerTarget;
+  use easl::vm::bytecode::Op;
+  fn store_count(source: &str) -> usize {
+    let (_, program) = load_easl_program_from_file_with_lookup_function(
+      std::path::Path::new("./data/vm/let_binding.easl"),
+      |_| Ok(source.to_string()),
+    )
+    .unwrap()
+    .unwrap();
+    let mut program = program.unwrap();
+    let errors = program.validate_raw_program(CompilerTarget::WGSL);
+    assert!(errors.is_empty(), "compile errors: {errors:#?}");
+    let (compiled, _) = program.compile_to_bytecode_program_cpu();
+    compiled
+      .code
+      .function_instructions
+      .iter()
+      .filter(|instruction| {
+        matches!(
+          instruction.op,
+          Op::DynStore | Op::HeapStore | Op::ArrayStore
+        )
+      })
+      .count()
+  }
+  let immutable = "
+(defn get [@ref x: f32]: f32
+  (* x 2.))
+
+@cpu
+(defn main []
+  (let [xs (into-dynamic-array [1. 2.])]
+    (print (get (xs 0u)))))
+";
+  let mutable = "
+(defn bump [@var @ref x: f32]: f32
+  (+= x 1.)
+  x)
+
+@cpu
+(defn main []
+  (let [@var xs (into-dynamic-array [1. 2.])]
+    (print (bump (xs 0u)))))
+";
+  assert_eq!(
+    store_count(immutable),
+    0,
+    "immutable-ref element arg emitted a write-back store"
+  );
+  assert!(
+    store_count(mutable) > 0,
+    "mutable-ref contrast case emitted no store — assertion insensitive"
+  );
+}

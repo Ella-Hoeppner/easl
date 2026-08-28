@@ -1,0 +1,21 @@
+; Compound assignment through deep nested-element chains —
+; `(+= ((g i) j) v)` — on both a dynamic global and a local. Unlike
+; plain `=` (whose special VM arm opens its own pending-write-back
+; frame), compound ops route their MutableReference LHS through the
+; generic ref-position machinery: the Access arm propagates ref
+; position down the chain, registering one pending write-back per
+; level, flushed innermost-first by the enclosing application.
+@local
+(var g: [[f32]])
+
+@cpu
+(defn main []
+  (= g (into-dynamic-array [(into-dynamic-array [1. 2.])]))
+  (+= ((g 0u) 1u) 10.)
+  (print ((g 0u) 1u))
+  (*= ((g 0u) 0u) 3.)
+  (print ((g 0u) 0u))
+  (let [@var xs (into-dynamic-array [(into-dynamic-array [5. 6.])])]
+    (+= ((xs 0u) 0u) 0.5)
+    (print ((xs 0u) 0u))
+    (print ((xs 0u) 1u))))

@@ -20,7 +20,7 @@ use crate::compiler::{
   expression::{Accessor, Exp, ExpKind, Number, SwizzleField},
   functions::{
     AbstractFunctionSignature, FunctionImplementationKind, FunctionSignature,
-    Ownership,
+    Ownership, RefMutability,
   },
   program::{CompilerTarget, LiftedCapture, LiftedCaptures, Program},
   structs::AbstractStruct,
@@ -5479,18 +5479,25 @@ pub fn eval(
         let (read_global_variable_names, written_global_variable_names) =
           exp_effects.read_and_written_globals();
         env.check_cpu_readable(&read_global_variable_names);
-        // For args bound to a reference-typed parameter, save a clone of the
-        // callsite expression so we can write the (possibly mutated) post-
-        // call value back into its source location once the call returns.
-        // Owned args get `None` and skip write-back.
+        // For args bound to a MUTABLE reference parameter, save a clone of
+        // the callsite expression so we can write the (possibly mutated)
+        // post-call value back into its source location once the call
+        // returns. Owned args skip write-back, and so do immutable `@ref`
+        // args: writes through them are compile errors, so their value
+        // can't have changed — and writing the unchanged snapshot back
+        // would clobber a mutation another argument's evaluation made to
+        // the same location (a phantom write no reference performed).
         let ref_arg_lhs_exprs: Vec<Option<Exp<ExpTypeInfo>>> = args
           .iter()
           .zip(param_ownerships.iter())
           .map(|(arg, ownership)| match ownership {
-            Ownership::Reference
-            | Ownership::MutableReference
-            | Ownership::Pointer(_) => Some(arg.clone()),
-            Ownership::Owned => None,
+            Ownership::MutableReference
+            | Ownership::Pointer(_, RefMutability::Mutable) => {
+              Some(arg.clone())
+            }
+            Ownership::Owned
+            | Ownership::Reference
+            | Ownership::Pointer(_, RefMutability::Immutable) => None,
           })
           .collect();
         let arg_values: Vec<Value> = args
@@ -6428,6 +6435,32 @@ pub(crate) fn vm_words_of(t: &Type) -> usize {
 /// snapshots — arrays element-by-element (a `ZeroedArray` materializes as
 /// zero words), everything else via `to_vm_words`.
 pub(crate) fn value_to_shared_words(value: &Value, ty: &Type) -> Vec<u32> {
+  if crate::vm::shared_sync::needs_wire_encoding(ty) {
+    // heap-involving elements: the serialized wire format (see
+    // vm/shared_sync.rs) — must produce bytes identical to the VM
+    // runtime's serializer, since either runtime can sit on either side
+    let Type::Array(_, element_type) = ty else {
+      unreachable!()
+    };
+    let element_type = element_type.kind.unwrap_known();
+    let mut out = Vec::new();
+    match value {
+      Value::Array(items) => {
+        out.push(items.len() as u32);
+        for item in items {
+          encode_value_wire(item, &element_type, &mut out);
+        }
+      }
+      Value::ZeroedArray { length } => {
+        out.push(*length as u32);
+        for _ in 0..*length {
+          encode_zero_wire(&element_type, &mut out);
+        }
+      }
+      other => panic!("can't publish {other:?} as a shared array"),
+    }
+    return out;
+  }
   if let Type::Array(_, element_type) = ty {
     let element_type = element_type.kind.unwrap_known();
     let stride = vm_words_of(&element_type).max(1);
@@ -6446,6 +6479,20 @@ pub(crate) fn value_to_shared_words(value: &Value, ty: &Type) -> Vec<u32> {
 
 /// The reverse of `value_to_shared_words`.
 pub(crate) fn shared_words_to_value(words: &[u32], ty: &Type) -> Value {
+  if crate::vm::shared_sync::needs_wire_encoding(ty) {
+    let Type::Array(_, element_type) = ty else {
+      unreachable!()
+    };
+    let element_type = element_type.kind.unwrap_known();
+    let mut pos = 0usize;
+    let count = words[pos] as usize;
+    pos += 1;
+    return Value::Array(
+      (0..count)
+        .map(|_| decode_value_wire(&element_type, words, &mut pos))
+        .collect(),
+    );
+  }
   if let Type::Array(_, element_type) = ty {
     let element_type = element_type.kind.unwrap_known();
     let stride = vm_words_of(&element_type).max(1);
@@ -6457,6 +6504,180 @@ pub(crate) fn shared_words_to_value(words: &[u32], ty: &Type) -> Value {
     )
   } else {
     Value::from_vm_words(ty, words)
+  }
+}
+
+/// One value of the shared wire encoding (see vm/shared_sync.rs for the
+/// format): flat subvalues as raw VM words, heap values count-prefixed
+/// and inlined, aggregates field-by-field, heap-involving enums as
+/// discriminant + exact-variant payload (self-delimiting, unpadded).
+fn encode_value_wire(value: &Value, t: &Type, out: &mut Vec<u32>) {
+  if !(t.involves_runtime_sized_array() || t.involves_string()) {
+    if matches!(value, Value::Uninitialized) {
+      out.extend(std::iter::repeat(0).take(vm_words_of(t)));
+    } else {
+      out.extend(value.to_vm_words(t));
+    }
+    return;
+  }
+  match (value, t) {
+    (Value::String(s), Type::String) => {
+      let words = string_to_words(s);
+      out.push(words.len() as u32);
+      out.extend(words);
+    }
+    (Value::Uninitialized, Type::String) => out.push(0),
+    (value, Type::Array(Some(ConcreteArraySize::Unsized), element_type)) => {
+      let element_type = element_type.kind.unwrap_known();
+      match value {
+        Value::Array(items) => {
+          out.push(items.len() as u32);
+          for item in items {
+            encode_value_wire(item, &element_type, out);
+          }
+        }
+        Value::ZeroedArray { length } => {
+          out.push(*length as u32);
+          for _ in 0..*length {
+            encode_zero_wire(&element_type, out);
+          }
+        }
+        Value::Uninitialized => out.push(0),
+        other => panic!("can't encode {other:?} as a shared array"),
+      }
+    }
+    (Value::Struct(fields), Type::Struct(s)) => {
+      for field in s.fields.iter() {
+        let field_type = field.field_type.kind.unwrap_known();
+        encode_value_wire(&fields[&field.name], &field_type, out);
+      }
+    }
+    (Value::Enum(variant, inner), Type::Enum(e)) => {
+      let discriminant = e
+        .variants
+        .iter()
+        .position(|v| v.name == *variant)
+        .expect("enum variant not found") as u32;
+      out.push(discriminant);
+      let inner_type = e.variants[discriminant as usize]
+        .inner_type
+        .kind
+        .unwrap_known();
+      if inner_type != Type::Unit {
+        encode_value_wire(inner, &inner_type, out);
+      }
+    }
+    (Value::Array(items), Type::Array(Some(_), element_type)) => {
+      let element_type = element_type.kind.unwrap_known();
+      for item in items {
+        encode_value_wire(item, &element_type, out);
+      }
+    }
+    (value, t) => {
+      panic!("can't encode {value:?} as shared wire value of type {t:?}")
+    }
+  }
+}
+
+/// The wire encoding of a zero-initialized value of `t` — matching what
+/// the VM serializes for `DynMemory::Zeroed` elements (flat zeros;
+/// heap-value fields as the empty count; enums as variant 0's zero
+/// payload).
+fn encode_zero_wire(t: &Type, out: &mut Vec<u32>) {
+  if !(t.involves_runtime_sized_array() || t.involves_string()) {
+    out.extend(std::iter::repeat(0).take(vm_words_of(t)));
+    return;
+  }
+  match t {
+    Type::String | Type::Array(Some(ConcreteArraySize::Unsized), _) => {
+      out.push(0)
+    }
+    Type::Struct(s) => {
+      for field in s.fields.iter() {
+        encode_zero_wire(&field.field_type.kind.unwrap_known(), out);
+      }
+    }
+    Type::Enum(e) => {
+      out.push(0);
+      let inner_type = e.variants[0].inner_type.kind.unwrap_known();
+      if inner_type != Type::Unit {
+        encode_zero_wire(&inner_type, out);
+      }
+    }
+    Type::Array(Some(size), element_type) => {
+      let count = size
+        .as_literal()
+        .expect("non-literal fixed-array size in shared value");
+      let element_type = element_type.kind.unwrap_known();
+      for _ in 0..count {
+        encode_zero_wire(&element_type, out);
+      }
+    }
+    _ => panic!("unsupported type in shared wire encoding: {t:?}"),
+  }
+}
+
+/// The reverse of `encode_value_wire`, advancing `pos` through `words`.
+fn decode_value_wire(t: &Type, words: &[u32], pos: &mut usize) -> Value {
+  if !(t.involves_runtime_sized_array() || t.involves_string()) {
+    let n = vm_words_of(t);
+    let value = Value::from_vm_words(t, &words[*pos..*pos + n]);
+    *pos += n;
+    return value;
+  }
+  match t {
+    Type::String => {
+      let count = words[*pos] as usize;
+      *pos += 1;
+      let s = words_to_string(&words[*pos..*pos + count]);
+      *pos += count;
+      Value::String(s)
+    }
+    Type::Array(Some(ConcreteArraySize::Unsized), element_type) => {
+      let element_type = element_type.kind.unwrap_known();
+      let count = words[*pos] as usize;
+      *pos += 1;
+      Value::Array(
+        (0..count)
+          .map(|_| decode_value_wire(&element_type, words, pos))
+          .collect(),
+      )
+    }
+    Type::Struct(s) => {
+      let mut map = HashMap::new();
+      for field in s.fields.iter() {
+        let field_type = field.field_type.kind.unwrap_known();
+        map.insert(
+          field.name.clone(),
+          decode_value_wire(&field_type, words, pos),
+        );
+      }
+      Value::Struct(map)
+    }
+    Type::Enum(e) => {
+      let discriminant = words[*pos] as usize;
+      *pos += 1;
+      let variant = &e.variants[discriminant];
+      let inner_type = variant.inner_type.kind.unwrap_known();
+      let inner = if inner_type == Type::Unit {
+        Value::Unit
+      } else {
+        decode_value_wire(&inner_type, words, pos)
+      };
+      Value::Enum(variant.name.clone(), Box::new(inner))
+    }
+    Type::Array(Some(size), element_type) => {
+      let count = size
+        .as_literal()
+        .expect("non-literal fixed-array size in shared value");
+      let element_type = element_type.kind.unwrap_known();
+      Value::Array(
+        (0..count)
+          .map(|_| decode_value_wire(&element_type, words, pos))
+          .collect(),
+      )
+    }
+    _ => panic!("unsupported type in shared wire encoding: {t:?}"),
   }
 }
 
@@ -7041,6 +7262,7 @@ fn vm_host_call<IO: IOManager>(
           crate::vm::shared_sync::publish_shared(
             stack,
             dyn_memory,
+            heap,
             &mut shared,
             &code.shared_vars,
             &table,

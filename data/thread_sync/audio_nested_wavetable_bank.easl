@@ -1,0 +1,11 @@
+(defn make-player []: (Fn [] f32)
+  (let [tables (into-dynamic-array [(into-dynamic-array [0.125 0.25])
+                                    (into-dynamic-array [0.5])])]
+    (fn []
+        (+ ((tables 0u) 0u)
+           ((tables 1u) 0u)))))
+
+@cpu
+(defn main []
+  (start-audio (make-player))
+  (spawn-window (fn [] ())))

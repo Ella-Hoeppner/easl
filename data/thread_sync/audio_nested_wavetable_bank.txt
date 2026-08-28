@@ -1,0 +1,7 @@
+main-publish: <audio-scope>_tables
+start-audio: <audio-closure>
+spawn-window
+frame 0
+audio-batch 0 x2
+audio-adopt: <audio-scope>_tables
+samples: 0.625 0.625

@@ -1,0 +1,10 @@
+main-publish: <audio-scope>_bank
+start-audio: <audio-closure>
+spawn-window
+frame 0
+audio-batch 0 x2
+audio-adopt: <audio-scope>_bank
+samples: 0.125 0.125
+frame 1
+audio-batch 1 x2
+samples: 0.125 0.125

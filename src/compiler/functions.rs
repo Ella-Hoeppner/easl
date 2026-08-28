@@ -7,7 +7,9 @@ use take_mut::take;
 use crate::compiler::entry::BuiltinIOAttribute;
 use crate::compiler::expression::compile_typed_name;
 use crate::compiler::types::AbstractArraySize;
-use crate::vm::compile::{BytecodeCompilationState, RefArgBinding};
+use crate::vm::compile::{
+  BytecodeCompilationState, CompilePosition, RefArgBinding,
+};
 use crate::{
   Never,
   compiler::{
@@ -159,12 +161,22 @@ impl PartialEq for FunctionImplementationKind {
   }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefMutability {
+  Immutable,
+  Mutable,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Ownership {
   Owned,
   Reference,
   MutableReference,
-  Pointer(VariableAddressSpace),
+  /// A reference monomorphized to a concrete address space. The
+  /// mutability of the `@ref` it came from rides along — the runtimes
+  /// need it to decide write-back emission, and the pre-monomorphization
+  /// `Reference`/`MutableReference` distinction is otherwise erased.
+  Pointer(VariableAddressSpace, RefMutability),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1260,7 +1272,7 @@ impl TopLevelFunction {
       && signature.args.iter().any(|(arg, _)| {
         matches!(
           arg.var_type.ownership,
-          Ownership::Pointer(space)
+          Ownership::Pointer(space, _)
             if !matches!(
               space,
               VariableAddressSpace::Function | VariableAddressSpace::Local
@@ -1425,7 +1437,9 @@ impl TopLevelFunction {
       current_function.arg_positions.push(arg_slot);
       current_function.arg_sizes.push(arg_size);
     }
-    self.expression.compile_to_bytecode(false, state);
+    self
+      .expression
+      .compile_to_bytecode(CompilePosition::Value, state);
     state.close_function();
   }
 }

@@ -24,7 +24,8 @@ use crate::{
     error::{CompileError, CompileErrorKind::*, CompileResult, err},
     functions::{
       AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
-      FunctionTargetConfiguration, Ownership, SpecialCasedBuiltinFunction,
+      FunctionTargetConfiguration, Ownership, RefMutability,
+      SpecialCasedBuiltinFunction,
     },
     program::{CompilerTarget, NameContext, Program, TypeDefs},
     structs::{AbstractStruct, Struct},
@@ -569,7 +570,7 @@ pub fn compile_typed_name(
         compile_word(name),
         match ownership {
           Ownership::Owned => type_name,
-          Ownership::Pointer(address_space) => {
+          Ownership::Pointer(address_space, _) => {
             format!(
               "ptr<{}, {type_name}>",
               address_space
@@ -592,7 +593,7 @@ pub fn compile_typed_name(
         type_name,
         match ownership {
           Ownership::Owned => "",
-          Ownership::Pointer(_) => "*",
+          Ownership::Pointer(_, _) => "*",
           Ownership::Reference | Ownership::MutableReference => {
             panic!(
               "encountered raw reference in argument ownership, this \
@@ -4176,7 +4177,7 @@ impl TypedExp {
                       })
                       .or_else(|| {
                         if let Some((v, _)) = ctx.variables.get(name)
-                          && let Ownership::Pointer(address_space) =
+                          && let Ownership::Pointer(address_space, _) =
                             v.var_type.ownership
                         {
                           Some(address_space)
@@ -4185,18 +4186,29 @@ impl TypedExp {
                         }
                       })
                       .unwrap_or(VariableAddressSpace::Function);
+                    // Preserve the reference's mutability through the
+                    // pointer conversion — write-back emission depends
+                    // on it after the Reference/MutableReference
+                    // distinction is gone.
+                    let mutability = match new_abstract_ancestor.arg_types[i].1
+                    {
+                      Ownership::Reference => RefMutability::Immutable,
+                      Ownership::Pointer(_, m) => m,
+                      _ => RefMutability::Mutable,
+                    };
                     let TypeState::Known(Type::Function(new_signature)) =
                       &mut new_top_level_f.expression.data.kind
                     else {
                       panic!()
                     };
                     new_abstract_ancestor.arg_types[i].1 =
-                      Ownership::Pointer(address_space);
+                      Ownership::Pointer(address_space, mutability);
                     signature.args.get_mut(i).map(|x| {
-                      x.0.var_type.ownership = Ownership::Pointer(address_space)
+                      x.0.var_type.ownership =
+                        Ownership::Pointer(address_space, mutability)
                     });
                     new_signature.args[i].0.var_type.ownership =
-                      Ownership::Pointer(address_space);
+                      Ownership::Pointer(address_space, mutability);
                     address_space_names.push(address_space.name().into());
                   }
                   new_abstract_ancestor.implementation =

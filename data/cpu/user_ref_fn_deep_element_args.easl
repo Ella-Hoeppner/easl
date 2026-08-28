@@ -1,0 +1,53 @@
+; User-defined `@var @ref` functions receiving deeply-nested element
+; lvalues — `(bump ((g i) j))` — across all container shapes: nested
+; dyn global, nested dyn local, embedding-element container (the ref
+; param replacing a whole enum element), and a fixed array of dyn
+; arrays. The VM binds the specialized callee's ref param directly to
+; the innermost preload temp; the position propagation registers one
+; pending write-back per chain level, flushed after the call ships the
+; mutation back through every level.
+(enum (Option T)
+  None
+  (Some T))
+
+(defn bump [@var @ref x: f32
+            amount: f32]: f32
+  (+= x amount)
+  x)
+
+(defn swap-opt [@var @ref slot: (Option [f32])]: f32
+  (= slot (Some (into-dynamic-array [77.])))
+  0.)
+
+(defn swap-two [@var @ref a: f32
+                @var @ref b: f32]
+  (let [t a]
+    (= a b)
+    (= b t)))
+
+@local
+(var g: [[f32]])
+
+@cpu
+(defn main []
+  (= g (into-dynamic-array [(into-dynamic-array [1. 2.])]))
+  (bump ((g 0u) 1u) 10.)
+  (print ((g 0u) 1u))
+  (print ((g 0u) 0u))
+  (let [@var xs (into-dynamic-array [(into-dynamic-array [5.])])]
+    (bump ((xs 0u) 0u) 1.)
+    (print ((xs 0u) 0u)))
+  (let [@var opts (into-dynamic-array [(Some (into-dynamic-array [1.]))])]
+    (swap-opt (opts 0u))
+    (match (opts 0u)
+      (Some arr) (print (arr 0u))
+      None (print -1.)))
+  (let [@var fs [(into-dynamic-array [3.]) (into-dynamic-array [4.])]]
+    (bump ((fs 1u) 0u) 0.5)
+    (print ((fs 1u) 0u))
+    (print ((fs 0u) 0u)))
+  (let [@var a (into-dynamic-array [(into-dynamic-array [100.])])
+        @var b (into-dynamic-array [(into-dynamic-array [200.])])]
+    (swap-two ((a 0u) 0u) ((b 0u) 0u))
+    (print ((a 0u) 0u))
+    (print ((b 0u) 0u))))
