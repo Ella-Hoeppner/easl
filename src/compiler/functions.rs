@@ -750,7 +750,9 @@ impl AbstractFunctionSignature {
       .iter()
       .map(|(arg, generic_arg, _)| match generic_arg {
         GenericArgument::Type(bounds) => {
-          let generic_type = generic_type_bindings.get(arg).unwrap();
+          let Some(generic_type) = generic_type_bindings.get(arg) else {
+            return err(CouldntInferTypes, source_trace.clone());
+          };
           if let Some(unsatisfied_bound) = bounds
             .iter()
             .find(|constraint| !generic_type.satisfies_constraint(constraint))

@@ -1,0 +1,31 @@
+; A generic HoF whose type parameter appears only inside function types
+; (the callback's return and the returned closure's return), with the
+; returned closure consumed by a user overload: `T` then resolves
+; through unification against the overload's `(Fn [] f32)` param, so
+; the concrete signature view holds `UnificationVariable` nodes at the
+; `T` positions. Monomorphization's binding extraction must dereference
+; those (`try_unwrap_known` in `extract_skolem_bindings`) — matching
+; raw `Known` states silently skipped them, leaving `T` unbound (a
+; panic, from adsr-style audio graphs threading closures through
+; overloaded operators).
+(defn (with-counter T)
+      [f: (Fn [f32 u32] T)
+       increment: f32]: (Fn [] T)
+  (let [@var phase 0.
+        @var counter 0u]
+    (fn []
+        (= phase (+ phase increment))
+        (+= counter 1u)
+        (f phase counter))))
+
+(defn * [s: (Fn [] f32)
+         factor: f32]: (Fn [] f32)
+  (fn [] (* (s) factor)))
+
+@cpu
+(defn main []
+  (let [g (-> (fn [t i] (+ t (f32 i)))
+              (with-counter 0.5)
+              (* 2.))]
+    (print (g))
+    (print (g))))

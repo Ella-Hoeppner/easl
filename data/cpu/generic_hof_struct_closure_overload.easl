@@ -1,0 +1,36 @@
+; The sibling shape of `generic_hof_closure_overload` with a STRUCT-typed
+; generic binding: the generic HoF's returned closure is passed directly
+; to an overloaded user function whose overloads differ by
+; struct-value-vs-closure in that position (the biquad params-generator
+; pattern from real audio graphs), so `T = Params` resolves through
+; overload-mediated unification and sits behind a `UnificationVariable`
+; in the concrete signature view. The second call picks the plain-struct
+; overload, pinning disambiguation in both directions.
+(struct Params
+  cutoff: f32
+  q: f32)
+
+(defn (with-phase T)
+      [f: (Fn [f32] T)
+       increment: f32]: (Fn [] T)
+  (let [@var phase 0.]
+    (fn []
+        (= phase (+ phase increment))
+        (f phase))))
+
+(defn describe [signal: (Fn [] f32)
+                params: Params]: f32
+  (+ (signal) params.cutoff params.q))
+
+(defn describe [signal: (Fn [] f32)
+                params-generator: (Fn [] Params)]: f32
+  (let [p (params-generator)]
+    (+ (signal) p.cutoff p.q)))
+
+@cpu
+(defn main []
+  (print (describe (fn [] 1.)
+                   (-> (fn [t] (Params (* t 100.) 2.))
+                       (with-phase 0.5))))
+  (print (describe (fn [] 1.)
+                   (Params 5. 3.))))

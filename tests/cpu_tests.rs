@@ -195,6 +195,8 @@ cpu_test!(closure_seeded_capture_read);
 cpu_test!(ref_dyn_array_arg);
 cpu_test!(dyn_array_arg_scalar_return);
 cpu_test!(hof_shared_specialization);
+cpu_test!(generic_hof_closure_overload);
+cpu_test!(generic_hof_struct_closure_overload);
 cpu_test!(sibling_same_name_locals);
 cpu_test!(const_generic_chain);
 cpu_test!(const_generic_chain_three);

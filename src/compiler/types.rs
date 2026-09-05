@@ -1883,24 +1883,31 @@ impl Type {
         type_bindings.insert(name.clone(), concrete.clone());
       }
       (Type::Function(abstract_f), Type::Function(concrete_f)) => {
+        // `try_unwrap_known`, never a direct `TypeState::Known` match: a
+        // type resolved through unification (e.g. a generic HoF's return
+        // closure consumed by a user overload) sits behind a
+        // `UnificationVariable`, and matching the raw variant would
+        // silently skip it, leaving generics unbound at monomorphization.
         for (i, (abs_arg, _)) in abstract_f.args.iter().enumerate() {
           if let Some((conc_arg, _)) = concrete_f.args.get(i) {
-            if let (TypeState::Known(abs_t), TypeState::Known(conc_t)) =
-              (&abs_arg.var_type.kind, &conc_arg.var_type.kind)
-            {
+            if let (Some(abs_t), Some(conc_t)) = (
+              abs_arg.var_type.kind.try_unwrap_known(),
+              conc_arg.var_type.kind.try_unwrap_known(),
+            ) {
               abs_t.extract_skolem_bindings(
-                conc_t,
+                &conc_t,
                 type_bindings,
                 constant_bindings,
               );
             }
           }
         }
-        if let (TypeState::Known(abs_ret), TypeState::Known(conc_ret)) =
-          (&abstract_f.return_type.kind, &concrete_f.return_type.kind)
-        {
+        if let (Some(abs_ret), Some(conc_ret)) = (
+          abstract_f.return_type.kind.try_unwrap_known(),
+          concrete_f.return_type.kind.try_unwrap_known(),
+        ) {
           abs_ret.extract_skolem_bindings(
-            conc_ret,
+            &conc_ret,
             type_bindings,
             constant_bindings,
           );
@@ -1917,11 +1924,12 @@ impl Type {
             constant_bindings.insert(name.clone(), lit);
           }
         }
-        if let (TypeState::Known(abs_t), TypeState::Known(conc_t)) =
-          (&abs_inner.kind, &conc_inner.kind)
-        {
+        if let (Some(abs_t), Some(conc_t)) = (
+          abs_inner.kind.try_unwrap_known(),
+          conc_inner.kind.try_unwrap_known(),
+        ) {
           abs_t.extract_skolem_bindings(
-            conc_t,
+            &conc_t,
             type_bindings,
             constant_bindings,
           );
@@ -1931,11 +1939,12 @@ impl Type {
         for (abs_field, conc_field) in
           abs_s.fields.iter().zip(conc_s.fields.iter())
         {
-          if let (TypeState::Known(abs_t), TypeState::Known(conc_t)) =
-            (&abs_field.field_type.kind, &conc_field.field_type.kind)
-          {
+          if let (Some(abs_t), Some(conc_t)) = (
+            abs_field.field_type.kind.try_unwrap_known(),
+            conc_field.field_type.kind.try_unwrap_known(),
+          ) {
             abs_t.extract_skolem_bindings(
-              conc_t,
+              &conc_t,
               type_bindings,
               constant_bindings,
             );
@@ -1945,11 +1954,12 @@ impl Type {
       (Type::Enum(abs_e), Type::Enum(conc_e)) => {
         for (abs_v, conc_v) in abs_e.variants.iter().zip(conc_e.variants.iter())
         {
-          if let (TypeState::Known(abs_t), TypeState::Known(conc_t)) =
-            (&abs_v.inner_type.kind, &conc_v.inner_type.kind)
-          {
+          if let (Some(abs_t), Some(conc_t)) = (
+            abs_v.inner_type.kind.try_unwrap_known(),
+            conc_v.inner_type.kind.try_unwrap_known(),
+          ) {
             abs_t.extract_skolem_bindings(
-              conc_t,
+              &conc_t,
               type_bindings,
               constant_bindings,
             );
@@ -2752,6 +2762,15 @@ impl TypeState {
         t.clone()
       } else {
         panic!("unwrapped non-Known TypeState \"{typestate:?}\"")
+      }
+    })
+  }
+  pub fn try_unwrap_known(&self) -> Option<Type> {
+    self.with_dereferenced(|typestate| {
+      if let TypeState::Known(t) = typestate {
+        Some(t.clone())
+      } else {
+        None
       }
     })
   }
