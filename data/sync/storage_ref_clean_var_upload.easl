@@ -1,0 +1,27 @@
+; A CPU write through a `@var @ref` helper into an otherwise-untouched
+; GPU-read storage var: the write happens inside the inlined per-global
+; variant (the reference monomorphizer replaces the parameter with a
+; direct usage of `x`), so the variant's body effects mark the var
+; CPU-written. No direct assignment anywhere primes the dirty flag —
+; this pins that ref-mediated writes alone trigger the pre-dispatch
+; upload on both runtimes.
+@storage-write
+(var x: [1: f32])
+
+@storage-write
+(var out: [1: f32])
+
+(defn poke [@var @ref v: [1: f32]]
+  (= (v 0u) 7.))
+
+@compute
+(defn read-it []
+  (= (out 0u) (x 0u)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (poke x)
+                    (dispatch-compute-shader read-it (vec3u 1u))
+                    (print (out 0u))
+                    (close-window))))

@@ -1,11 +1,16 @@
-; A uniform-space var passed as a reference from GPU-reachable code:
-; rejected by the context-exclusivity pass (base WGSL only allows
-; function/private pointer params). Read-only `@ref`, so this pins the
-; reference rule itself — a mutable ref would trip the illegal-GPU-write
-; validation first. The same call in cpu/audio-only code is legal —
-; pinned by the `storage_ref_cpu` cpu test.
+; An element of a uniform-space var passed as a reference from
+; GPU-reachable code: rejected by the context-exclusivity pass. A
+; whole-global ref (a bare name) is legal everywhere — the reference
+; monomorphizer inlines the specific global in place of the parameter,
+; pinned by the `storage_ref_gpu` success test — but an accessor-chain
+; ref into a uniform/storage var becomes a real pointer parameter, which
+; base WGSL only allows in the function/private address spaces.
+; Read-only `@ref`, so this pins the reference rule itself — a mutable
+; ref would trip the illegal-GPU-write validation first. The same call
+; in cpu/audio-only code is legal — pinned by the `storage_ref_cpu` cpu
+; test.
 @uniform
-(var uniform-float: f32)
+(var uniform-floats: [4: f32])
 
 @storage-write
 (var out: [1: f32])
@@ -14,7 +19,7 @@
   x)
 
 (defn f []: f32
-  (get-it uniform-float))
+  (get-it (uniform-floats 0u)))
 
 @compute
 (defn entry []

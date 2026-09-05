@@ -2662,13 +2662,19 @@ impl Program {
                   }),
                 ));
               }
-              // Storage/uniform-space vars passed as references: legal
-              // in cpu/audio contexts (the VM binds regions/slots
-              // directly; the tree-walker copies + writes back), but
-              // base WGSL only permits function/private pointer params,
-              // so any context that can run on the GPU rejects the call
-              // site. (Workgroup/handle refs are rejected everywhere, in
-              // the ownership walk — they have no CPU storage at all.)
+              // Storage/uniform-space lvalues passed as references: a
+              // whole-global ref — a bare name — is legal in every
+              // context (the reference monomorphizer inlines a direct
+              // usage of the specific global in place of the parameter,
+              // so no pointer ever exists), but an accessor-chain ref
+              // into one of these spaces (an element or field ref)
+              // still becomes a real pointer parameter, which base WGSL
+              // only permits in the function/private address spaces —
+              // so those call sites are restricted to cpu/audio
+              // contexts (the VM binds regions/slots directly; the
+              // tree-walker copies + writes back). (Workgroup/handle
+              // refs are rejected everywhere, in the ownership walk —
+              // they have no CPU storage at all.)
               if let TypeState::Known(Type::Function(signature)) =
                 &applied_f.data.kind
                 && let Some(ancestor) = &signature.abstract_ancestor
@@ -2684,6 +2690,7 @@ impl Program {
                     ownership,
                     Ownership::Reference | Ownership::MutableReference
                   ) && let Some(arg) = args.get(i)
+                    && !matches!(arg.kind, ExpKind::Name(_))
                     && let Some(root) = arg.name_or_inner_accessed_name()
                     && let Some(TopLevelVar {
                       kind: TopLevelVariableKind::Var { address_space, .. },
@@ -5670,11 +5677,19 @@ impl Program {
           source_trace: source_trace.clone(),
         });
       }
+      // Only *owned* runtime-sized params are rejected: a `@ref`
+      // runtime-sized param never exists in the emitted GPU code — the
+      // only runtime-sized lvalues in GPU-reachable code are whole
+      // storage globals (locals, fields, and nested bindings are all
+      // rejected), and a whole-global ref arg is inlined away by the
+      // reference monomorphizer, which replaces the parameter with a
+      // direct usage of the specific global.
       if signature.args.iter().any(|(arg, _)| {
-        matches!(
-          arg.var_type.unwrap_known(),
-          Type::Array(Some(ConcreteArraySize::Unsized), _)
-        )
+        arg.var_type.ownership == Ownership::Owned
+          && matches!(
+            arg.var_type.unwrap_known(),
+            Type::Array(Some(ConcreteArraySize::Unsized), _)
+          )
       }) {
         errors.log(CompileError {
           kind: GpuFunctionAcceptsRuntimeSizedArray,

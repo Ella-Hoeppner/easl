@@ -1,0 +1,43 @@
+; Storage-ref inlining in vertex/fragment context, plus the GPU-emission
+; shapes `storage_ref_gpu` doesn't cover: a read-only `@storage` global
+; (vertex shaders can't touch storage-write), a struct-typed global read
+; by field through the inlined ref, a ref forwarded through a helper
+; chain (inlined across two fixpoint iterations), and two different
+; globals routed through one helper (two per-global variants emitted
+; side by side).
+(struct Params
+  gain: f32
+  offset: f32)
+
+@storage-write
+(var params: Params)
+
+@storage
+(var wave-a: [f32])
+
+(var wave-b: [f32])
+
+(defn param-gain [@ref p: Params]: f32
+  p.gain)
+
+(defn sample-at [@ref buf: [f32]
+                 i: u32]: f32
+  (buf (% i (length buf))))
+
+(defn sample-next [@ref buf: [f32]
+                   i: u32]: f32
+  (sample-at buf (+ i 1u)))
+
+(struct VertexOutput
+  @{builtin position} vertex-pos: vec4f)
+
+@vertex
+(defn vert [@{builtin vertex-index} idx: u32]: VertexOutput
+  (VertexOutput (vec4f (sample-at wave-a idx) 0. 0. 1.)))
+
+@fragment
+(defn frag [in: VertexOutput]: @{location 0} vec4f
+  (let [v (* (param-gain params)
+             (+ (sample-at wave-b 0u)
+                (sample-next wave-a 2u)))]
+    (vec4f v v v 1.)))

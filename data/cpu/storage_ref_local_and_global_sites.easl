@@ -1,0 +1,28 @@
+; One `@ref` helper called with a storage global at one site and a
+; local dyn array at another: the global site's variant inlines the
+; global (the param disappears), while the local site keeps a real
+; pointer param — two variants with different arities from one source
+; function, both correct.
+(defn total [@ref buf: [f32]]: f32
+  (let [@var sum 0.]
+    (for [i (length buf)]
+      (+= sum (buf i)))
+    sum))
+
+(defn scale-all [@var @ref buf: [f32]
+                 k: f32]
+  (for [i (length buf)]
+    (*= (buf i) k)))
+
+(var gs: [f32])
+
+@cpu
+(defn main []
+  (= gs (into-dynamic-array [1. 2. 3.]))
+  (let [@var ls (into-dynamic-array [10. 20.])]
+    (print (total gs))
+    (print (total ls))
+    (scale-all gs 2.)
+    (scale-all ls 3.)
+    (print (total gs))
+    (print (total ls))))

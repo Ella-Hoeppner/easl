@@ -1,10 +1,12 @@
 ; Storage-space vars passed as references in CPU code — the ring-buffer
 ; pattern from adsr_demo: generic `@ref`/`@var @ref` helpers reading and
-; mutating a storage-write dyn global and its u32 cursor directly, with
-; zero-copy region/slot bindings on the VM. Legal because the call sites
-; are CPU-only; the same calls in GPU-reachable code are rejected by the
-; context-exclusivity pass (`user_reference_failure_uniform` pins that
-; side).
+; mutating a storage-write dyn global and its u32 cursor. The reference
+; monomorphizer inlines the specific global in place of each whole-global
+; ref parameter (per-(function, global) variants), so the helpers' bodies
+; access `history`/`cursor` directly on both runtimes. The same calls
+; work in GPU-reachable code too — pinned by the `storage_ref_gpu` shader
+; test; only accessor-chain refs into these spaces stay CPU/audio-only
+; (`user_reference_failure_uniform` pins that side).
 (defn (get-ring T)
       [@ref buffer: [T]
        start: u32

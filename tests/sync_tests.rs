@@ -100,9 +100,16 @@ macro_rules! sync_test {
   };
 }
 
+// A CPU write through a `@var @ref` helper must upload before the
+// dispatch that reads it — passing storage vars by reference is
+// sync-transparent (the reference monomorphizer inlines the global into
+// the helper, so the variant's body effects carry the write).
+sync_test!(storage_ref_write_upload);
+// Same, but with no direct assignment to the var anywhere in the
+// program: the ref-mediated write alone must set the dirty flag.
+sync_test!(storage_ref_clean_var_upload);
 // Data flows GPU→GPU only (dispatch 2 reads what dispatch 1 wrote): the
 // array uploads exactly once and no GPU→CPU readback ever happens.
-sync_test!(storage_ref_write_upload);
 sync_test!(gpu_only_dataflow_no_readback);
 // Same, but with the dispatch wrapped in a higher-order helper and the
 // callback capturing a local — the realistic sketch shape. The captured

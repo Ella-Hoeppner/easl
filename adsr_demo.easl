@@ -1,0 +1,81 @@
+(defn uni->bi [x: f32]: f32
+  (-> x (* 2.) (- 1.)))
+
+(defn uni->bi [x: vec2f]: vec2f
+  (vec2f (uni->bi x.x) (uni->bi x.y)))
+
+(defn bi->uni [x: f32]: f32
+  (-> x (+ 1.) (* 0.5)))
+
+(defn bi->uni [x: vec2f]: vec2f
+  (vec2f (bi->uni x.x) (bi->uni x.y)))
+
+(defn (get-ring-buffer T)
+      [@ref buffer: [T]
+       start-index: u32
+       index: u32]: T
+      (-> index
+          (+ start-index)
+          (% (length buffer))
+          buffer))
+
+(defn (push-ring-buffer T)
+      [@ref @var buffer: [T]
+       @ref @var start-index: u32
+       value: T]
+      (= (buffer start-index) value)
+      (= start-index
+         (-> start-index
+             (+ 1)
+             (% (length buffer)))))
+
+(var envelope-history: [f32])
+
+(var envelope-history-start-index: u32)
+
+@cpu
+(defn main []
+  (= envelope-history
+     (zeroed-array 200))
+  (for [i 100u]
+    (= (envelope-history i) 0.5))
+  (spawn-window (fn []
+                    (push-ring-buffer envelope-history
+                                      envelope-history-start-index
+                                      0.25)
+                    (dispatch-render-shaders (fn []
+                                                 (vec4f (match (vertex-index)
+                                                          0 (vec2f -1.)
+                                                          1 (vec2f -1. 3.)
+                                                          _ (vec2f 3. -1.))
+                                                        0.
+                                                        1.))
+                                             (fn []
+                                                 (let [pos (-> (position)
+                                                               .xy
+                                                               (/ (vec2f (window-resolution)))
+                                                               uni->bi
+                                                               (* (vec2f 1. -1.))
+                                                               (* (/ (vec2f (window-resolution))
+                                                                     (f32 (min (.x (window-resolution))
+                                                                               (.y (window-resolution))))))
+                                                               bi->uni)]
+                                                   (vec4f (if (and (all (< pos (vec2f 1.)))
+                                                                   (all (> pos (vec2f 0.))))
+                                                            (let [x (-> pos
+                                                                        .x
+                                                                        (* (f32 (length envelope-history)))
+                                                                        u32)]
+                                                              (if (< pos.y
+                                                                     (envelope-history (-> x
+                                                                                           (+ envelope-history-start-index)
+                                                                                           (% (length envelope-history))))
+                                                                     #_(get-ring-buffer envelope-history
+                                                                                        envelope-history-start-index
+                                                                                        x))
+                                                                (vec3f 1. 0. 0.)
+                                                                (vec3f 0.)))
+                                                            (vec3f 0.))
+                                                          1.)))
+                                             3))))
+

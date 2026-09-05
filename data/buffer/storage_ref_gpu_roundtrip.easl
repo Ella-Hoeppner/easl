@@ -1,0 +1,40 @@
+; Runtime round-trip of GPU-side storage/uniform refs: the compute entry
+; mutates a storage array and reads a uniform + a storage history buffer
+; purely through `@ref` helper functions (inlined to per-global variants
+; by the reference monomorphizer), and the CPU reads the results back.
+(defn bump-slot [@var @ref arr: [4: f32]
+                 index: u32
+                 amount: f32]
+  (+= (arr index) amount))
+
+(defn read-at [@ref data: [f32]
+               index: u32]: f32
+  (data index))
+
+(defn scaled [@ref s: f32
+              x: f32]: f32
+  (* s x))
+
+(var history: [f32])
+
+@uniform
+(var scale: f32)
+
+@storage-write
+(var out: [4: f32])
+
+@compute
+(defn work []
+  (bump-slot out 0u (scaled scale (read-at history 2u)))
+  (bump-slot out 1u 1.)
+  (bump-slot out 1u 1.))
+
+@cpu
+(defn main []
+  (= scale 10.)
+  (= history (into-dynamic-array [1. 2. 3. 4.]))
+  (spawn-window (fn []
+                    (dispatch-compute-shader work (vec3u 1u))
+                    (print (out 0u))
+                    (print (out 1u))
+                    (close-window))))

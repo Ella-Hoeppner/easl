@@ -239,6 +239,8 @@ success_test!(complex_loops);
 success_test!(reserved_wgsl_names);
 success_test!(static_array_length);
 success_test!(length_alias_gpu);
+success_test!(storage_ref_gpu);
+success_test!(storage_ref_gpu_fragment);
 error_test!(
   into_dynamic_alias_gpu_failure,
   CompileErrorKind::RuntimeSizedLocalInGpuCode

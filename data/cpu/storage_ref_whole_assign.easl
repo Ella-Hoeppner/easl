@@ -1,0 +1,15 @@
+; Whole-value assignment through a `@var @ref` param bound to a storage
+; global: after inlining this is an ordinary whole-global assignment,
+; so a helper can resize a dyn global it received by reference.
+(defn reset [@var @ref buf: [f32]]
+  (= buf (zeroed-array 3))
+  (= (buf 1u) 5.))
+
+(var data: [f32])
+
+@cpu
+(defn main []
+  (= data (zeroed-array 1))
+  (reset data)
+  (print (length data))
+  (print (data 1u)))

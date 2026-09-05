@@ -4115,6 +4115,59 @@ impl TypedExp {
     })?;
     Ok(())
   }
+  /// Replaces every usage of the ref parameter `param_name` in this
+  /// (function) expression with a direct usage of the top-level variable
+  /// `global_name`, marking the rewritten nodes and every accessor/lookup
+  /// chain rooted at them globally bound — mirroring what inference
+  /// produces for expressions rooted at an ordinary global (the
+  /// mutable-ref effect derivation reads the *outer* node's flag, and a
+  /// stale local flag would turn writes through the inlined global into
+  /// `ModifiesLocalVar` — invisible to the sync and sharing machinery;
+  /// see `rewrite_dispatched_scope_body`).
+  fn inline_global_in_place_of_ref_param(
+    &mut self,
+    param_name: &Arc<str>,
+    global_name: &Arc<str>,
+  ) {
+    self
+      .walk_mut::<Never>(&mut |e| {
+        let param_rooted = |exp: &TypedExp| {
+          let mut root = exp;
+          loop {
+            match &root.kind {
+              ExpKind::Access(_, inner) => root = inner,
+              // An array-lookup application is rooted at its callee.
+              ExpKind::Application(callee, _) => root = callee,
+              ExpKind::Name(name) => {
+                break name == param_name || name == global_name;
+              }
+              _ => break false,
+            }
+          }
+        };
+        if let ExpKind::Name(name) = &mut e.kind {
+          if name == param_name {
+            *name = global_name.clone();
+            e.data.is_globally_bound = true;
+            e.data.ownership = Ownership::Owned;
+          }
+        } else if matches!(
+          e.kind,
+          ExpKind::Access(_, _) | ExpKind::Application(_, _)
+        ) && param_rooted(e)
+        {
+          e.data.is_globally_bound = true;
+          if matches!(
+            e.data.ownership,
+            Ownership::Reference | Ownership::MutableReference
+          ) {
+            e.data.ownership = Ownership::Owned;
+          }
+        }
+        Ok(true)
+      })
+      .unwrap();
+  }
   pub fn monomorphize_reference_address_spaces(
     &mut self,
     base_program: &Program,
@@ -4158,8 +4211,58 @@ impl TypedExp {
                   // space variants are excluded by the WGSL validity
                   // predicate's pointer-space check instead).
                   let mut new_top_level_f = top_level_f.read().unwrap().clone();
-                  let mut address_space_names = vec![];
+                  let mut variant_name_parts: Vec<Arc<str>> = vec![];
+                  // A ref arg that names a storage/uniform-space global
+                  // outright doesn't become a pointer at all: the variant
+                  // inlines a direct usage of that specific global in
+                  // place of the parameter, and the argument disappears
+                  // from the call. WGSL has no storage pointer
+                  // parameters, but a per-(function, global) variant
+                  // needs none — its body reads and writes the
+                  // module-scope variable itself, so whole-global storage
+                  // refs work in GPU code and behave identically on the
+                  // CPU (effects flow from the body's direct accesses).
+                  // Accessor-chain refs into these spaces (element or
+                  // field refs) can't be inlined this way and keep the
+                  // pointer path, which `validate_context_exclusivity`
+                  // restricts to cpu/audio contexts.
+                  let mut inlined_arg_positions: Vec<usize> = vec![];
                   for i in reference_arg_positions {
+                    let inlined_global: Option<Arc<str>> =
+                      if let ExpKind::Name(arg_name) = &args[i].kind {
+                        base_program.top_level_vars.iter().find_map(|v| {
+                          if v.name == *arg_name
+                            && let TopLevelVariableKind::Var {
+                              address_space,
+                              ..
+                            } = v.kind
+                            && matches!(
+                              address_space,
+                              VariableAddressSpace::Uniform
+                                | VariableAddressSpace::StorageRead
+                                | VariableAddressSpace::StorageReadWrite
+                            )
+                          {
+                            Some(v.name.clone())
+                          } else {
+                            None
+                          }
+                        })
+                      } else {
+                        None
+                      };
+                    if let Some(global_name) = inlined_global {
+                      let param_name = new_top_level_f.arg_names[i].0.clone();
+                      new_top_level_f
+                        .expression
+                        .inline_global_in_place_of_ref_param(
+                          &param_name,
+                          &global_name,
+                        );
+                      inlined_arg_positions.push(i);
+                      variant_name_parts.push(global_name);
+                      continue;
+                    }
                     let name = args[i].name_or_inner_accessed_name().unwrap();
                     let address_space = base_program
                       .top_level_vars
@@ -4209,17 +4312,42 @@ impl TypedExp {
                     });
                     new_signature.args[i].0.var_type.ownership =
                       Ownership::Pointer(address_space, mutability);
-                    address_space_names.push(address_space.name().into());
+                    variant_name_parts.push(address_space.name().into());
+                  }
+                  // Drop the inlined parameters from every parallel arg
+                  // list — the ancestor's arg_types, the variant's own
+                  // function type, expression arg names, and metadata,
+                  // and the call site's signature view and argument list.
+                  // Descending, so earlier indices stay valid.
+                  for i in inlined_arg_positions.into_iter().rev() {
+                    new_abstract_ancestor.arg_types.remove(i);
+                    new_top_level_f.expression.data.as_known_mut(|t| {
+                      if let Type::Function(function_signature) = t {
+                        function_signature.args.remove(i);
+                      }
+                    });
+                    let ExpKind::Function(expression_arg_names, _) =
+                      &mut new_top_level_f.expression.kind
+                    else {
+                      panic!()
+                    };
+                    expression_arg_names.remove(i);
+                    new_top_level_f.arg_names.remove(i);
+                    new_top_level_f.arg_annotations.remove(i);
+                    if i < signature.args.len() {
+                      signature.args.remove(i);
+                    }
+                    args.remove(i);
                   }
                   new_abstract_ancestor.implementation =
                     FunctionImplementationKind::Composite(Arc::new(
                       RwLock::new(new_top_level_f),
                     ));
-                  let new_name =
-                    new_program.names.write().unwrap().get_monomorphized_name(
-                      f_name.clone(),
-                      address_space_names,
-                    );
+                  let new_name = new_program
+                    .names
+                    .write()
+                    .unwrap()
+                    .get_monomorphized_name(f_name.clone(), variant_name_parts);
                   *f_name = new_name.clone();
                   new_abstract_ancestor.name = new_name;
                   *abstract_ancestor =

@@ -1,0 +1,43 @@
+; Storage/uniform-space globals passed as references from GPU code: the
+; reference monomorphizer resolves each whole-global ref arg to its
+; specific global and generates a per-(fn, global) variant with the
+; global inlined in place of the parameter — no pointer params in the
+; emitted WGSL, no extensions needed, indistinguishable from real
+; storage pointers. Covers read-only refs (storage + uniform), a
+; mutable ref writing through, and a generic ring-buffer read helper
+; (generic mono composing with the ref-inlining mono).
+(defn (get-ring T)
+      [@ref buffer: [T]
+       start: u32
+       index: u32]: T
+  (-> index
+      (+ start)
+      (% (length buffer))
+      buffer))
+
+(defn peek-scale [@ref s: f32]: f32
+  (* s 2.))
+
+(defn stamp [@var @ref out-arr: [4: f32]
+             index: u32
+             value: f32]
+  (= (out-arr index) value))
+
+(var history: [f32])
+
+@uniform
+(var scale: f32)
+
+@storage-write
+(var out: [4: f32])
+
+@compute
+(defn probe []
+  (stamp out 0u (* (peek-scale scale) (get-ring history 1u 2u)))
+  (stamp out 1u (f32 (length history))))
+
+@cpu
+(defn main []
+  (= history (zeroed-array 8))
+  (spawn-window (fn []
+                    (dispatch-compute-shader probe (vec3u 1u)))))

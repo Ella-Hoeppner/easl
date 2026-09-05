@@ -4137,14 +4137,17 @@ impl TypedExp {
           .iter()
           .zip(abstract_f.arg_types.iter())
           .map(|(arg, (_, ownership))| {
-            // A runtime-sized global passed by reference binds to its
-            // region directly — compiling it as a value would deep-copy
-            // the whole array at every call (and writes through the ref
-            // would mutate the copy). Reached by the audio closure
-            // lift's compiler-created ref passes and by user code
-            // passing storage-space vars by reference in cpu/audio
-            // contexts (context-gated: GPU-reachable call sites are
-            // rejected by `validate_context_exclusivity`).
+            // A runtime-sized region-backed value passed by reference
+            // binds to its region directly — compiling it as a value
+            // would deep-copy the whole array at every call (and writes
+            // through the ref would mutate the copy). Whole-global refs
+            // to storage/uniform-space vars never get here (the
+            // reference monomorphizer inlines the specific global in
+            // place of the parameter, so the argument is gone by VM
+            // compile time); what remains is refs to runtime-sized
+            // `@local` globals and region-registered ref *params*
+            // forwarded onward within a per-usage specialization's
+            // body.
             if *ownership != Ownership::Owned
               && let ExpKind::Name(arg_name) = &arg.kind
               && let Some((region, stride)) =

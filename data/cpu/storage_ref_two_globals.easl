@@ -1,0 +1,44 @@
+; Two distinct globals routed through ONE `@ref` helper family: the
+; reference monomorphizer mints a separate per-(function, global)
+; variant for each global, and each variant must touch ITS global — a
+; memoization keyed on the function alone would silently alias every
+; call site to the first global's variant. Scalar and dyn-array pairs,
+; reads and writes.
+(defn bump [@var @ref x: f32
+            amount: f32]
+  (+= x amount))
+
+(defn peek [@ref x: f32]: f32
+  x)
+
+(defn stash [@var @ref buf: [f32]
+             i: u32
+             v: f32]
+  (= (buf i) v))
+
+(defn fetch [@ref buf: [f32]
+             i: u32]: f32
+  (buf i))
+
+(var a: f32)
+
+(var b: f32)
+
+(var xs: [f32])
+
+(var ys: [f32])
+
+@cpu
+(defn main []
+  (= a 1.)
+  (= b 10.)
+  (bump a 2.)
+  (bump b 20.)
+  (print (peek a))
+  (print (peek b))
+  (= xs (zeroed-array 2))
+  (= ys (zeroed-array 2))
+  (stash xs 0u 5.)
+  (stash ys 0u 6.)
+  (print (fetch xs 0u))
+  (print (fetch ys 0u)))

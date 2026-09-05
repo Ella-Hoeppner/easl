@@ -1,0 +1,25 @@
+; A struct-typed storage global passed by ref, read and mutated by
+; FIELD through the inlined param: the body rewrite must mark the
+; field-Access chains over the inlined global globally bound, so the
+; compound field writes derive `ModifiesGlobalVar` like direct global
+; field writes do.
+(struct Accum
+  count: u32
+  total: f32)
+
+(defn add-sample [@var @ref acc: Accum
+                  v: f32]
+  (+= acc.count 1u)
+  (+= acc.total v))
+
+(defn mean [@ref acc: Accum]: f32
+  (/ acc.total (f32 acc.count)))
+
+(var stats: Accum)
+
+@cpu
+(defn main []
+  (add-sample stats 3.)
+  (add-sample stats 7.)
+  (print stats.count)
+  (print (mean stats)))

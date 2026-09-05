@@ -1,0 +1,31 @@
+; A ref param forwarded to another `@ref` function: after the outer
+; call site inlines the global, the variant's body holds a bare global
+; name in the inner ref position, which the next fixpoint iteration of
+; the reference monomorphizer inlines in turn — the chain resolves to
+; per-global variants at every level.
+(defn inner-write [@var @ref buf: [f32]
+                   i: u32
+                   v: f32]
+  (= (buf i) v))
+
+(defn outer-write [@var @ref buf: [f32]
+                   v: f32]
+  (inner-write buf 0u v)
+  (inner-write buf 1u (* v 2.)))
+
+(defn inner-read [@ref buf: [f32]
+                  i: u32]: f32
+  (buf i))
+
+(defn outer-read [@ref buf: [f32]]: f32
+  (+ (inner-read buf 0u) (inner-read buf 1u)))
+
+(var data: [f32])
+
+@cpu
+(defn main []
+  (= data (zeroed-array 2))
+  (outer-write data 3.)
+  (print (data 0u))
+  (print (data 1u))
+  (print (outer-read data)))

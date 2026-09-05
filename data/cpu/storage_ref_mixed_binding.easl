@@ -1,0 +1,30 @@
+; One call carrying both an INLINED ref arg (a bare storage-global
+; name, removed by the reference monomorphizer) and a POINTER-path ref
+; arg (a local), in both param orders, with an owned arg between them —
+; pinning the arg-index bookkeeping when the inlined param's removal
+; shifts the later params' positions (and, in the other order, when it
+; doesn't).
+(defn glob-then-local [@var @ref g: f32
+                       amount: f32
+                       @var @ref l: f32]
+  (+= g amount)
+  (+= l (* amount 10.)))
+
+(defn local-then-glob [@var @ref l: f32
+                       amount: f32
+                       @var @ref g: f32]
+  (+= l amount)
+  (+= g (* amount 10.)))
+
+(var s: f32)
+
+@cpu
+(defn main []
+  (let [@var loc 0.]
+    (= s 0.)
+    (glob-then-local s 1. loc)
+    (print s)
+    (print loc)
+    (local-then-glob loc 2. s)
+    (print loc)
+    (print s)))
