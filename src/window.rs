@@ -1,7 +1,7 @@
 use std::{
   collections::{HashMap, HashSet},
   sync::Arc,
-  time::Instant,
+  time::{Duration, Instant},
 };
 
 use std::sync::RwLock;
@@ -195,6 +195,8 @@ pub fn run_window_loop<D: FrameDriver>(
       closed: false,
       last_frame_time: None,
       window_start_time: None,
+      last_frame_presented: false,
+      observed_presented_interval: None,
       reload: false,
     };
     event_loop.run_app_on_demand(&mut app).unwrap();
@@ -223,8 +225,32 @@ struct App<'a, D: FrameDriver> {
   closed: bool,
   last_frame_time: Option<Instant>,
   window_start_time: Option<Instant>,
+  /// Whether the previous frame presented to the screen. Presented frames
+  /// are paced by drawable acquisition (vsync); unpresented frames must be
+  /// paced explicitly (see the RedrawRequested handler).
+  last_frame_presented: bool,
+  /// The inter-frame interval last observed between consecutive presented
+  /// frames — the display's real cadence, used to pace unpresented frames
+  /// when the monitor's refresh rate can't be queried.
+  observed_presented_interval: Option<Duration>,
   /// Set to true when the loop exits because a hot-reload was requested.
   reload: bool,
+}
+
+/// The interval at which to run frames that produce no present (occluded
+/// window, or a frame with no screen-targeted draws): the display's refresh
+/// rate when the monitor reports one, else the cadence observed while
+/// frames were presenting, else 60Hz.
+fn unpresented_frame_interval(
+  refresh_rate_millihertz: Option<u32>,
+  observed_presented_interval: Option<Duration>,
+) -> Duration {
+  match refresh_rate_millihertz {
+    Some(millihertz) if millihertz > 0 => {
+      Duration::from_secs_f64(1000. / millihertz as f64)
+    }
+    _ => observed_presented_interval.unwrap_or(Duration::from_micros(16_667)),
+  }
 }
 
 /// Metadata about a single GPU buffer binding, kept so we can recreate
@@ -2167,8 +2193,46 @@ impl<'a, D: FrameDriver> ApplicationHandler for App<'a, D> {
         }
         let draw_calls = self.driver.io_mut().take_frame_draw_calls();
         if let Some(state) = &mut self.state {
-          state.render(&draw_calls);
-          state.window.request_redraw();
+          let presented = state.render(&draw_calls);
+          if presented {
+            // A presented frame was paced by drawable acquisition (vsync
+            // blocks in get_current_texture once the swapchain's drawables
+            // are in flight), so the loop can rerun immediately.
+            if self.last_frame_presented
+              && window_delta_time > 0.002
+              && window_delta_time < 0.1
+            {
+              self.observed_presented_interval =
+                Some(Duration::from_secs_f32(window_delta_time));
+            }
+            event_loop.set_control_flow(ControlFlow::Poll);
+            state.window.request_redraw();
+          } else {
+            // Nothing paced this frame: the window is occluded (wgpu's
+            // Metal backend reports Occluded without touching
+            // nextDrawable), or the frame had no screen-targeted draws.
+            // Left unpaced, this loop spins at CPU speed, flooding the
+            // GPU queue with thousands of unpresented submissions per
+            // second — a standing multi-thousand command-buffer backlog
+            // that starves the compositor on refocus (whole-system
+            // watchdog crashes on macOS). Two explicit substitutes:
+            // backpressure — wait for this frame's GPU work so at most
+            // one unpresented frame is ever in flight — and cadence —
+            // schedule the next frame at the display's own rate, so
+            // background programs (e.g. frame loops feeding the audio
+            // thread) keep running exactly as they would when visible.
+            state.gpu.read().unwrap().wait_idle();
+            let interval = unpresented_frame_interval(
+              state
+                .window
+                .current_monitor()
+                .and_then(|m| m.refresh_rate_millihertz()),
+              self.observed_presented_interval,
+            );
+            event_loop.set_control_flow(ControlFlow::WaitUntil(now + interval));
+            state.window.request_redraw();
+          }
+          self.last_frame_presented = presented;
         }
         // Check for hot-reload after every successful frame.
         if self.driver.io_mut().reload_requested() {
@@ -2483,7 +2547,11 @@ impl RenderState {
     }
   }
 
-  fn render(&mut self, draw_calls: &[WindowEvent]) {
+  /// Executes a frame's GPU work. Returns whether the frame presented to
+  /// the screen — the caller uses this to decide pacing: a present means
+  /// drawable acquisition (vsync) throttled the loop, while an unpresented
+  /// frame has no natural backpressure and must be paced explicitly.
+  fn render(&mut self, draw_calls: &[WindowEvent]) -> bool {
     // Fast path: if flush_queued_compute already rendered to the real surface
     // mid-frame, just present that pre-rendered texture. Render events were
     // drained by flush_queued_compute so draw_calls should be empty here.
@@ -2492,7 +2560,7 @@ impl RenderState {
       if let Some(pending) = gpu.pending_present.take() {
         if draw_calls.is_empty() {
           pending.present();
-          return;
+          return true;
         }
         // New draw calls arrived after the flush (unusual). The first render's
         // storage writes are already committed; discard its visual output and
@@ -2502,7 +2570,7 @@ impl RenderState {
     }
 
     if draw_calls.is_empty() {
-      return;
+      return false;
     }
 
     let mut gpu = self.gpu.write().unwrap();
@@ -2533,7 +2601,7 @@ impl RenderState {
         wgpu::CurrentSurfaceTexture::Success(texture)
         | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Some(texture),
         wgpu::CurrentSurfaceTexture::Lost
-        | wgpu::CurrentSurfaceTexture::Outdated => return,
+        | wgpu::CurrentSurfaceTexture::Outdated => return false,
         wgpu::CurrentSurfaceTexture::Occluded => None,
         other => {
           eprintln!("Surface error: {other:?}");
@@ -2553,6 +2621,9 @@ impl RenderState {
 
     if let Some(output) = output {
       output.present();
+      true
+    } else {
+      false
     }
   }
 }
@@ -2571,6 +2642,33 @@ mod tests {
       let back = (f16_to_f32(half).clamp(0., 1.) * 255.).round() as u8;
       assert_eq!(back, byte);
     }
+  }
+
+  /// The unpresented-frame pacer prefers the monitor's reported refresh
+  /// rate, falls back to the cadence observed between presented frames,
+  /// then to 60Hz.
+  #[test]
+  fn unpresented_frame_interval_fallback_chain() {
+    assert_eq!(
+      unpresented_frame_interval(Some(120_000), None),
+      Duration::from_secs_f64(1000. / 120_000.)
+    );
+    assert_eq!(
+      unpresented_frame_interval(Some(60_000), Some(Duration::from_millis(4))),
+      Duration::from_secs_f64(1000. / 60_000.)
+    );
+    assert_eq!(
+      unpresented_frame_interval(Some(0), Some(Duration::from_millis(4))),
+      Duration::from_millis(4)
+    );
+    assert_eq!(
+      unpresented_frame_interval(None, Some(Duration::from_millis(4))),
+      Duration::from_millis(4)
+    );
+    assert_eq!(
+      unpresented_frame_interval(None, None),
+      Duration::from_micros(16_667)
+    );
   }
 
   /// Spot-check the f16 decoder against known bit patterns.
