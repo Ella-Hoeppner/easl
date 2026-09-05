@@ -15,8 +15,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use cpal::SampleRate;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, SampleRate, SizedSample};
 
 use crate::thread_sync::{ThreadSharedTable, participant};
 use crate::vm::bytecode::BytecodeProgram;
@@ -132,47 +132,158 @@ fn find_audio_fn_index(
     })
 }
 
+/// The sample formats the stream builder can emit: f32 natively, and
+/// every other cpal format by converting easl's f32 samples per callback
+/// (see `build_output_stream_in_format`, whose dispatch this must stay in
+/// sync with).
+fn supported_sample_format(format: cpal::SampleFormat) -> bool {
+  use cpal::SampleFormat::*;
+  matches!(
+    format,
+    F32 | F64 | I8 | I16 | I32 | I64 | U8 | U16 | U32 | U64
+  )
+}
+
+/// Picks the output device and stream config `start-audio` uses: the
+/// device's default config when its sample format is one we can emit,
+/// otherwise a supported config from the device's list (preferring f32,
+/// at a rate as close to 48kHz as that config allows). Devices differ
+/// widely — AirPods report 24kHz in hands-free mode, pro interfaces
+/// 96kHz, some hosts offer only integer formats — so nothing here may
+/// assume a fixed rate or format; programs learn the real rate through
+/// `(sample-rate)`.
+fn preferred_output_device_and_config()
+-> Result<(cpal::Device, cpal::SupportedStreamConfig), String> {
+  let host = cpal::default_host();
+  let device = host
+    .default_output_device()
+    .ok_or_else(|| "no audio output device".to_string())?;
+  if let Ok(config) = device.default_output_config()
+    && supported_sample_format(config.sample_format())
+  {
+    return Ok((device, config));
+  }
+  let supported: Vec<cpal::SupportedStreamConfigRange> = device
+    .supported_output_configs()
+    .map_err(|e| format!("query audio configs: {e}"))?
+    .filter(|c| supported_sample_format(c.sample_format()))
+    .collect();
+  let range = supported
+    .iter()
+    .find(|c| c.sample_format() == cpal::SampleFormat::F32)
+    .or_else(|| supported.first())
+    .ok_or_else(|| {
+      "no audio output config with a supported sample format".to_string()
+    })?;
+  let rate = SampleRate(
+    48_000u32.clamp(range.min_sample_rate().0, range.max_sample_rate().0),
+  );
+  Ok((device, range.clone().with_sample_rate(rate)))
+}
+
+/// The sample rate `start-audio` would open a stream at right now — the
+/// same device/config selection the stream builder makes. `None` when no
+/// output device or usable config exists. Queried fresh on every call:
+/// the default output device can change between program runs (e.g.
+/// connecting bluetooth headphones between `--watch` reloads).
+pub fn query_output_sample_rate() -> Option<f32> {
+  preferred_output_device_and_config()
+    .ok()
+    .map(|(_, config)| config.sample_rate().0 as f32)
+}
+
 /// Set up a cpal output stream whose callback hands the whole interleaved
-/// output buffer to `batch_fn` as `(output, channels, rate)`. Returns the
-/// `Stream` for storage in `AUDIO_STATE` (must be kept alive).
-fn build_audio_stream_batched<F>(
+/// output buffer to `batch_fn` as `(output, channels, rate)`, opened on
+/// the device's preferred config. Returns the `Stream` for storage in
+/// `AUDIO_STATE` (must be kept alive).
+fn build_audio_stream_batched<F>(batch_fn: F) -> Result<cpal::Stream, String>
+where
+  F: FnMut(&mut [f32], usize, f32) + Send + 'static,
+{
+  let (device, supported) = preferred_output_device_and_config()?;
+  let sample_format = supported.sample_format();
+  let channels = supported.channels() as usize;
+  let rate = supported.sample_rate().0 as f32;
+  let config: cpal::StreamConfig = supported.into();
+  let stream = build_output_stream_in_format(
+    &device,
+    &config,
+    sample_format,
+    channels,
+    rate,
+    batch_fn,
+  )?;
+  stream
+    .play()
+    .map_err(|e| format!("start audio playback: {e}"))?;
+  Ok(stream)
+}
+
+/// Builds the output stream in the device's sample format. f32 devices
+/// take easl's samples directly; any other format runs `batch_fn` into a
+/// reusable f32 scratch buffer and converts per sample (the scratch only
+/// ever grows, so steady-state callbacks allocate nothing).
+fn build_output_stream_in_format<F>(
+  device: &cpal::Device,
+  config: &cpal::StreamConfig,
+  format: cpal::SampleFormat,
+  channels: usize,
+  rate: f32,
   mut batch_fn: F,
 ) -> Result<cpal::Stream, String>
 where
   F: FnMut(&mut [f32], usize, f32) + Send + 'static,
 {
-  let host = cpal::default_host();
-  let device = host
-    .default_output_device()
-    .ok_or_else(|| "no audio output device".to_string())?;
-  let sample_rate = 44_100u32;
-  let config = device
-    .supported_output_configs()
-    .map_err(|e| format!("query audio configs: {e}"))?
-    .find(|c| {
-      c.sample_format() == cpal::SampleFormat::F32
-        && c.min_sample_rate() <= SampleRate(sample_rate)
-        && c.max_sample_rate() >= SampleRate(sample_rate)
-    })
-    .ok_or_else(|| "no suitable f32@44.1kHz config".to_string())?
-    .with_sample_rate(SampleRate(sample_rate));
-  let channels = config.channels() as usize;
-
-  let rate = sample_rate as f32;
-  let stream = device
-    .build_output_stream(
-      &config.into(),
-      move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
-        batch_fn(output, channels, rate);
-      },
-      |err| eprintln!("audio stream error: {err}"),
-      None,
-    )
-    .map_err(|e| format!("build audio stream: {e}"))?;
-  stream
-    .play()
-    .map_err(|e| format!("start audio playback: {e}"))?;
-  Ok(stream)
+  fn converting<T, F>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: usize,
+    rate: f32,
+    mut batch_fn: F,
+  ) -> Result<cpal::Stream, String>
+  where
+    T: SizedSample + FromSample<f32>,
+    F: FnMut(&mut [f32], usize, f32) + Send + 'static,
+  {
+    let mut scratch: Vec<f32> = vec![];
+    device
+      .build_output_stream(
+        config,
+        move |output: &mut [T], _: &cpal::OutputCallbackInfo| {
+          scratch.resize(output.len(), 0.);
+          batch_fn(&mut scratch, channels, rate);
+          for (out, sample) in output.iter_mut().zip(scratch.iter()) {
+            *out = T::from_sample(*sample);
+          }
+        },
+        |err| eprintln!("audio stream error: {err}"),
+        None,
+      )
+      .map_err(|e| format!("build audio stream: {e}"))
+  }
+  use cpal::SampleFormat::*;
+  match format {
+    F32 => device
+      .build_output_stream(
+        config,
+        move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
+          batch_fn(output, channels, rate);
+        },
+        |err| eprintln!("audio stream error: {err}"),
+        None,
+      )
+      .map_err(|e| format!("build audio stream: {e}")),
+    F64 => converting::<f64, F>(device, config, channels, rate, batch_fn),
+    I8 => converting::<i8, F>(device, config, channels, rate, batch_fn),
+    I16 => converting::<i16, F>(device, config, channels, rate, batch_fn),
+    I32 => converting::<i32, F>(device, config, channels, rate, batch_fn),
+    I64 => converting::<i64, F>(device, config, channels, rate, batch_fn),
+    U8 => converting::<u8, F>(device, config, channels, rate, batch_fn),
+    U16 => converting::<u16, F>(device, config, channels, rate, batch_fn),
+    U32 => converting::<u32, F>(device, config, channels, rate, batch_fn),
+    U64 => converting::<u64, F>(device, config, channels, rate, batch_fn),
+    other => Err(format!("unsupported audio sample format {other}")),
+  }
 }
 
 /// Per-sample wrapper over [`build_audio_stream_batched`], used by the C

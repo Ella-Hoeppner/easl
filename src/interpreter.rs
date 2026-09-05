@@ -3398,9 +3398,11 @@ pub trait IOManager: Sized {
   /// The sample rate the audio stream runs (or would run) at, readable
   /// before any stream exists — main-thread `(sample-rate)` calls report
   /// this (the audio thread's copy is written by the driver from the live
-  /// stream instead). The default matches the fixed rate
-  /// `build_audio_stream_batched` opens streams with; test managers
-  /// override it with their harness rate.
+  /// stream instead). `StdoutIO` queries the output device with the same
+  /// config selection the stream builder uses; this default is only a
+  /// no-device fallback. Test managers (`StringIO`, `ThreadSyncIO`, and
+  /// `CaptureIO` via this default) pin fixed rates instead, so goldens
+  /// stay machine-independent.
   fn sample_rate(&self) -> f32 {
     44_100.
   }
@@ -3453,6 +3455,15 @@ impl StdoutIO {
 impl IOManager for StdoutIO {
   fn println(&mut self, s: &str) {
     println!("{s}");
+  }
+
+  /// Reports the rate the stream would open at on the current default
+  /// output device, so `(sample-rate)` calls that run before
+  /// `start-audio` (e.g. closure constructors sizing delay buffers)
+  /// agree with the stream the handoff eventually opens.
+  #[cfg(feature = "window")]
+  fn sample_rate(&self) -> f32 {
+    crate::audio::query_output_sample_rate().unwrap_or(44_100.)
   }
 
   fn record_draw(
