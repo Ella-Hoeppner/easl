@@ -9,7 +9,9 @@ use std::sync::RwLock;
 use winit::{
   application::ApplicationHandler,
   dpi::{PhysicalPosition, PhysicalSize},
-  event::{ElementState, MouseButton, WindowEvent as WinitWindowEvent},
+  event::{
+    ElementState, MouseButton, StartCause, WindowEvent as WinitWindowEvent,
+  },
   event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
   keyboard::Key,
   window::{Window, WindowId},
@@ -2135,6 +2137,21 @@ impl<'a, D: FrameDriver> ApplicationHandler for App<'a, D> {
     }
   }
 
+  /// The wake half of unpresented-frame pacing: when the `WaitUntil`
+  /// deadline scheduled by an unpresented frame fires, request the next
+  /// redraw. This is the only place that may request it — see the
+  /// unpresented branch of the `RedrawRequested` handler for why
+  /// requesting at schedule time would defeat the pacing.
+  fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+    if matches!(cause, StartCause::ResumeTimeReached { .. })
+      && !self.closed
+      && !self.reload
+      && let Some(state) = &self.state
+    {
+      state.window.request_redraw();
+    }
+  }
+
   fn window_event(
     &mut self,
     event_loop: &ActiveEventLoop,
@@ -2221,6 +2238,14 @@ impl<'a, D: FrameDriver> ApplicationHandler for App<'a, D> {
             // schedule the next frame at the display's own rate, so
             // background programs (e.g. frame loops feeding the audio
             // thread) keep running exactly as they would when visible.
+            // The next redraw is requested from `new_events` when the
+            // deadline fires, NOT here: `request_redraw` latches a
+            // runloop wakeup (winit's `queue_redraw` calls
+            // `run_loop.wakeup()`), so requesting now would make the
+            // post-cycle sleep return immediately and deliver the
+            // redraw at spin rate, silently defeating `WaitUntil`
+            // (measured: ~90k redraws/sec vs the intended display
+            // cadence).
             state.gpu.read().unwrap().wait_idle();
             let interval = unpresented_frame_interval(
               state
@@ -2230,7 +2255,6 @@ impl<'a, D: FrameDriver> ApplicationHandler for App<'a, D> {
               self.observed_presented_interval,
             );
             event_loop.set_control_flow(ControlFlow::WaitUntil(now + interval));
-            state.window.request_redraw();
           }
           self.last_frame_presented = presented;
         }
