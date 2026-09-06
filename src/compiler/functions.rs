@@ -1105,15 +1105,16 @@ impl FunctionSignature {
     if self.args.len() != other.args.len() {
       return false;
     }
-    !self
-      .args
-      .iter()
-      .zip(other.args.iter())
-      .find(|((a_var, a_constraints), (b_var, b_constraints))| {
-        !TypeState::are_compatible(&a_var.var_type, &b_var.var_type)
-          || a_constraints != b_constraints
-      })
-      .is_some()
+    TypeState::are_compatible(&self.return_type, &other.return_type)
+      && !self
+        .args
+        .iter()
+        .zip(other.args.iter())
+        .find(|((a_var, a_constraints), (b_var, b_constraints))| {
+          !TypeState::are_compatible(&a_var.var_type, &b_var.var_type)
+            || a_constraints != b_constraints
+        })
+        .is_some()
   }
   pub fn are_args_compatible(&self, arg_types: &Vec<TypeState>) -> bool {
     if arg_types.len() != self.args.len() {

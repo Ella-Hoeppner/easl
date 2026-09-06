@@ -1,13 +1,11 @@
-; CURRENTLY FAILING — a pinned inference limitation, not a soundness
-; bug: overloads distinguished ONLY by a function-typed param's return
-; type can never be selected. Both calls below have fully decidable
-; argument types — `(fn [] 7.)` returns f32, the other returns Params —
-; but resolution reports CouldntInferTypes. It fails even with a single
-; call site in the whole program, and even with an explicit ascription
-; on the argument (`(fn [] 7.): (Fn [] f32)`). By contrast, overloads
-; distinguished by struct-value-vs-closure in a param position resolve
-; fine, including through (annotated or unannotated) let bindings —
-; that working side is pinned by `generic_hof_struct_closure_overload`.
+; Overloads distinguished ONLY by a function-typed param's return type:
+; candidate filtering compares function types through
+; `FunctionSignature::compatible`, whose return-type comparison is what
+; discriminates these (a return-blind comparison left both candidates
+; in the `OneOf` forever — `CouldntInferTypes` even with fully
+; decidable arguments). Pins all three call shapes that were broken:
+; a direct lambda argument, an unannotated let-bound closure, and an
+; explicitly ascribed lambda.
 (struct Params
   cutoff: f32
   q: f32)
@@ -22,4 +20,7 @@
 @cpu
 (defn main []
   (print (describe (fn [] 7.)))
-  (print (describe (fn [] (Params 5. 3.)))))
+  (print (describe (fn [] (Params 5. 3.))))
+  (let [gen (fn [] (Params 10. 4.))]
+    (print (describe gen)))
+  (print (describe (fn [] 9.): (Fn [] f32))))
