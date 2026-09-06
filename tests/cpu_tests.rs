@@ -167,6 +167,10 @@ cpu_test!(nested_associatives);
 cpu_test!(any_all);
 cpu_test!(early_return_unit);
 cpu_test!(disambiguated_overload);
+// CURRENTLY FAILING (CouldntInferTypes): overloads differing only in a
+// function-typed param's return type — see the .easl header for the
+// probed boundary of what does and doesn't resolve.
+cpu_test!(overload_fn_return_types);
 cpu_test!(disambiguated_into_overload);
 cpu_test!(audio_closure_entry);
 cpu_test!(audio_closure_entry_hofs);

@@ -1,0 +1,25 @@
+; CURRENTLY FAILING — a pinned inference limitation, not a soundness
+; bug: overloads distinguished ONLY by a function-typed param's return
+; type can never be selected. Both calls below have fully decidable
+; argument types — `(fn [] 7.)` returns f32, the other returns Params —
+; but resolution reports CouldntInferTypes. It fails even with a single
+; call site in the whole program, and even with an explicit ascription
+; on the argument (`(fn [] 7.): (Fn [] f32)`). By contrast, overloads
+; distinguished by struct-value-vs-closure in a param position resolve
+; fine, including through (annotated or unannotated) let bindings —
+; that working side is pinned by `generic_hof_struct_closure_overload`.
+(struct Params
+  cutoff: f32
+  q: f32)
+
+(defn describe [g: (Fn [] f32)]: f32
+  (g))
+
+(defn describe [g: (Fn [] Params)]: f32
+  (let [p (g)]
+    (+ p.cutoff p.q)))
+
+@cpu
+(defn main []
+  (print (describe (fn [] 7.)))
+  (print (describe (fn [] (Params 5. 3.)))))
