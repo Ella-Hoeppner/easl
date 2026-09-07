@@ -26,7 +26,7 @@ use crate::{
   compiler::{
     annotation::extract_annotation,
     builtins::built_in_functions,
-    effects::{Effect, WindowInfoBindingSource, WindowInfoKind},
+    effects::{Effect, EffectType, WindowInfoBindingSource, WindowInfoKind},
     entry::{
       BuiltinIOAttribute, EntryPoint, IOAttribute, IOAttributeKind,
       IOAttributes, InputOrOutput,
@@ -2872,16 +2872,28 @@ impl Program {
                       // dynamic-array constructor misuse on the GPU is
                       // already reported precisely by the runtime-sized
                       // validation; the generic complaint would be
-                      // redundant noise there (but audio context keeps
-                      // its error — that validation is GPU-only)
+                      // redundant noise there
                       let suppress_gpu = runtime_sized_error_present
                         && matches!(
                           &**fn_name,
                           "into-dynamic-array" | "zeroed-array"
                         );
+                      // The dynamic-array constructors are VM-native, so
+                      // audio code may call them (allocating on the audio
+                      // hot path is the user's tradeoff to make); the
+                      // rest of the CPU-exclusive family has no
+                      // audio-side implementation.
+                      let allowed =
+                        if EffectType::cpu_exclusive_function_allowed_in_audio(
+                          fn_name,
+                        ) {
+                          bit(CPU) | bit(AUDIO)
+                        } else {
+                          bit(CPU)
+                        };
                       violations.push((
                         exp.source_trace.clone(),
-                        bit(CPU),
+                        allowed,
                         std::array::from_fn(|context| {
                           if context == AUDIO {
                             Some(CPUExclusiveFunctionInAudioFunction(
@@ -7923,7 +7935,12 @@ impl Program {
             .map(|e| !e.should_compile_to_target(CompilerTarget::VM))
             .unwrap_or(false);
           let effects = implementation_read.effects();
-          let has_cpu_exclusive = !effects.cpu_exclusive_functions().is_empty()
+          let has_cpu_exclusive = effects
+            .cpu_exclusive_functions()
+            .iter()
+            .any(|name| {
+              !EffectType::cpu_exclusive_function_allowed_in_audio(name)
+            })
             || !effects.cpu_exclusive_types().is_empty()
             || !effects.window_info_kinds().is_empty()
             // `print` has no audio-target implementation; a printing

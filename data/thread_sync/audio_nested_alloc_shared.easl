@@ -1,0 +1,22 @@
+; The audio thread allocates a NESTED dyn array into its captured (and
+; therefore thread-shared) bank — the first audio-side producer of the
+; serialized wire encoding (previous nested-bank goldens all flowed
+; main→audio): sample 1 builds the [[f32]] rows in the audio replica's
+; heap, the batch-end publish serializes them, and main's next frame
+; boundary adopts and decodes into its own heap.
+(defn make-voice []: (Fn [] f32)
+  (let [@var bank: [[f32]] ~[]]
+    (fn []
+        (when (== (array-length bank) 0u)
+          (= bank (into-dynamic-array [(into-dynamic-array [0.125 0.25])
+                                       (into-dynamic-array [0.5])])))
+        ((bank 0u) 1u))))
+
+@local
+(var frame-count: u32)
+
+@cpu
+(defn main []
+  (start-audio (make-voice))
+  (spawn-window (fn []
+                    (+= frame-count 1u))))

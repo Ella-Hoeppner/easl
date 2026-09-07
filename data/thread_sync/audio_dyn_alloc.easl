@@ -1,0 +1,13 @@
+; Audio code may allocate: the dynamic-array constructors are VM-native
+; heap operations, so the audio thread runs them directly — here a
+; fresh conversion and a fresh zeroed array on every sample.
+@audio
+(defn voice []: f32
+  (let [xs (into-dynamic-array [0.25 0.5])
+        zs: [f32] (zeroed-array 3u)]
+    (+ (xs 1u) (zs 0u))))
+
+@cpu
+(defn main []
+  (start-audio voice)
+  (spawn-window (fn [] ())))

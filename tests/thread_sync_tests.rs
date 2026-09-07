@@ -686,3 +686,7 @@ fn midi_audio_down_notes() {
     Some(midi),
   );
 }
+
+thread_sync_test!(audio_dyn_alloc, [Frame, AudioBatch(2)]);
+thread_sync_test!(audio_realloc_shared, [Frame, AudioBatch(2), Frame]);
+thread_sync_test!(audio_nested_alloc_shared, [Frame, AudioBatch(2), Frame]);

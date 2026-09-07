@@ -1,0 +1,12 @@
+main-publish: buf
+start-audio: voice
+spawn-window
+frame 0
+print: -1.
+audio-batch 0 x2
+audio-adopt: buf
+samples: 0.25 0.25
+audio-publish: buf
+frame 1
+main-adopt: buf
+print: 0.25

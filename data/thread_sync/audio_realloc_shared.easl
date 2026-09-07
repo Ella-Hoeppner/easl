@@ -1,0 +1,20 @@
+; The audio thread REALLOCATES a thread-shared dyn global (the growing
+; voice-pool pattern): the first sample resizes the empty array and
+; writes into it, the batch-end publish carries the new length across,
+; and main's next frame adopts and reads the element.
+(var buf: [f32])
+
+@audio
+(defn voice []: f32
+  (when (== (array-length buf) 0u)
+    (= buf (zeroed-array 2u))
+    (= (buf 0u) 0.25))
+  (buf 0u))
+
+@cpu
+(defn main []
+  (start-audio voice)
+  (spawn-window (fn []
+                    (if (> (array-length buf) 0u)
+                      (print (buf 0u))
+                      (print -1.)))))

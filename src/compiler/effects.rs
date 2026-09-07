@@ -200,6 +200,16 @@ impl EffectType {
       })
       .collect()
   }
+  /// CPU-exclusive builtins that AUDIO code may nonetheless call: the
+  /// dynamic-array constructors are VM-native heap operations, so the
+  /// audio thread executes them directly — allocation on the audio hot
+  /// path is a tradeoff the user is allowed to make. Everything else in
+  /// the CPU-exclusive family stays main-thread-only (host ops — IO,
+  /// windowing, GPU dispatch — with no audio-side implementation).
+  /// Shader contexts reject all of them regardless.
+  pub fn cpu_exclusive_function_allowed_in_audio(name: &str) -> bool {
+    matches!(name, "into-dynamic-array" | "zeroed-array")
+  }
   pub fn cpu_exclusive_functions(&self) -> Vec<Arc<str>> {
     self
       .0
