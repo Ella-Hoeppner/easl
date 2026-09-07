@@ -244,6 +244,7 @@ success_test!(storage_ref_gpu_fragment);
 success_test!(midi_cpu_with_shader);
 success_test!(midi_in_shader);
 success_test!(midi_note_user_struct);
+success_test!(dispatch_captured_hof_closure);
 error_test!(
   into_dynamic_alias_gpu_failure,
   CompileErrorKind::RuntimeSizedLocalInGpuCode

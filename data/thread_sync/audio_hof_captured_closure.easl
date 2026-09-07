@@ -1,0 +1,19 @@
+; An audio entry closure capturing a closure that itself takes a
+; *function* argument: higher-order inlining specializes the capture's
+; call sites before the audio lift runs, so the lift's clone family must
+; cover the specialization, not just the original definition (which
+; retains a raw function-typed param and can no longer be called).
+(defn make-voice [increment: f32]: (Fn [] f32)
+  (let [shape (let [gain 0.5]
+                (fn [x: f32
+                     f: (Fn [f32] f32)]
+                    (* gain (f x))))
+        @var phase 0.]
+    (fn []
+        (= phase (% (+ phase increment) 1.))
+        (shape phase (fn [x] (* 2. x))))))
+
+@cpu
+(defn main []
+  (start-audio (make-voice 0.125))
+  (spawn-window (fn [] ())))

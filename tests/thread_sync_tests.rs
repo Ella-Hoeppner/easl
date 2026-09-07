@@ -640,6 +640,10 @@ thread_sync_test!(granular_engine, [Frame, AudioBatch(6), Frame]);
 thread_sync_test!(audio_two_combs, [Frame, AudioBatch(6)]);
 thread_sync_test!(capture_path_injectivity, [Frame, AudioBatch(4)]);
 thread_sync_test!(
+  audio_hof_captured_closure,
+  [Frame, AudioBatch(4), Frame, AudioBatch(4)]
+);
+thread_sync_test!(
   local_never_shared,
   [Frame, AudioBatch(2), Frame, AudioBatch(2)]
 );
