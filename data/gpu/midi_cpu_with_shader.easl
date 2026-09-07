@@ -1,0 +1,21 @@
+; MIDI queries in cpu code alongside a GPU entry the queries never
+; touch: the implicit `easl_midi_*` storage bindings emit valid WGSL
+; declarations (including the runtime-sized `easl_midi_down_notes` and
+; its `MidiNote` struct), but since no shader reads them they never
+; become runtime buffers — no uploads, no binding slots (see the
+; `cpu_scratch_var_no_upload` principle).
+@storage-write
+(var out: [4: f32])
+
+@compute
+(defn fill []
+  (= (out 0u) 1.))
+
+@cpu
+(defn main []
+  (print (midi-cc 1u))
+  (print (midi-aftertouch))
+  (print (midi-pitch-bend))
+  (print (length (down-midi-notes)))
+  (spawn-window (fn []
+                    (dispatch-compute-shader fill (vec3u 1u)))))

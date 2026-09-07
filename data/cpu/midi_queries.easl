@@ -1,0 +1,14 @@
+; The full MIDI query surface against spoofed input state (driven by the
+; hand-written `midi_queries_spoofed` test): CC values, channel
+; aftertouch, pitch bend, and the held-note list with per-note velocity
+; and aftertouch — identical on both runtimes.
+@cpu
+(defn main []
+  (print (midi-cc 1u))
+  (print (midi-aftertouch))
+  (print (midi-pitch-bend))
+  (let [notes (down-midi-notes)]
+    (print (length notes))
+    (print (.note (notes 0u)))
+    (print (.velocity (notes 1u)))
+    (print (.aftertouch (notes 1u)))))

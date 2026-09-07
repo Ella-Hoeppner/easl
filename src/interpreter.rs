@@ -2021,7 +2021,14 @@ fn apply_builtin_fn<IO: IOManager>(
       }
       Ok(Value::Unit)
     }
-    "into-dynamic-array" => Ok(args.remove(0).0),
+    "into-dynamic-array" => Ok(if args.is_empty() {
+      // A zero-length source array (`~[]`) is unitlike, so the argument
+      // was stripped from the call by `remove_unitlike_arguments` — the
+      // conversion still produces an empty runtime-sized array.
+      Value::Array(vec![])
+    } else {
+      args.remove(0).0
+    }),
     "load-wav" => {
       let Value::String(path) = args.remove(0).0 else {
         panic!("load-wav: expected string path argument")
@@ -2844,6 +2851,54 @@ pub enum IOEvent {
   CloseWindow,
 }
 
+/// Snapshot of merged MIDI input state, consumed by the per-frame
+/// (main thread) and per-batch (audio thread) refreshes of the implicit
+/// `easl_midi_*` globals backing the MIDI query builtins. Produced by the
+/// live listener (`crate::midi`) on `StdoutIO`, and by fixed spoofed
+/// values on the test IO managers (the trait default is silence, so test
+/// suites stay deterministic on machines with real MIDI devices).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MidiNoteState {
+  /// MIDI note number, 0-127.
+  pub note: u32,
+  /// Strike velocity, 0..1.
+  pub velocity: f32,
+  /// Polyphonic key pressure (poly aftertouch) on this note, 0..1;
+  /// starts at 0. on press, only moves on controllers with per-note
+  /// pressure — see `MidiState::channel_aftertouch` for the common
+  /// whole-keyboard flavor.
+  pub aftertouch: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MidiState {
+  /// Currently-held notes in press order.
+  pub down_notes: Vec<MidiNoteState>,
+  /// Last received value of each control-change controller (0-127),
+  /// normalized to 0..1.
+  pub cc: [f32; 128],
+  /// Channel pressure (channel aftertouch), 0..1 — the whole-keyboard
+  /// pressure most controllers send.
+  pub channel_aftertouch: f32,
+  /// Pitch-bend position, -1..1 with 0. at center.
+  pub pitch_bend: f32,
+  /// Bumped on every state change — refresh sites skip all work (and all
+  /// allocation) when it hasn't moved since their last refresh.
+  pub generation: u64,
+}
+
+impl Default for MidiState {
+  fn default() -> Self {
+    Self {
+      down_notes: vec![],
+      cc: [0.; 128],
+      channel_aftertouch: 0.,
+      pitch_bend: 0.,
+      generation: 0,
+    }
+  }
+}
+
 /// Spoofed ambient window/input values for tests: when set on an IO
 /// manager, its window-info accessors report these instead of real state,
 /// so tests can assert that values plumb through the runtime (including
@@ -2974,6 +3029,41 @@ impl DerivedGpuInterface {
   }
 }
 
+/// Pads a GPU buffer size to its binding kind's granularity. Storage
+/// buffers use word (4-byte) granularity with a one-word minimum: WGSL
+/// derives `arrayLength` from the buffer's byte size, so any extra
+/// padding on a runtime-sized storage binding reads back as phantom
+/// elements (empty arrays are the exception — see
+/// `unsized_array_min_bytes`). Uniform (and other) bindings keep the
+/// 16-byte padding WGSL uniform layouts expect.
+/// One element's stride in bytes for an unsized-array type — the
+/// minimum buffer size wgpu accepts for a storage binding of that type.
+/// An empty runtime-sized array therefore always occupies (and, via
+/// `arrayLength`, reports) exactly one phantom zeroed element on the
+/// GPU; non-empty arrays get exact sizes.
+fn unsized_array_min_bytes(ty: &Type) -> Option<u64> {
+  let Type::Array(
+    Some(crate::compiler::types::ConcreteArraySize::Unsized),
+    inner,
+  ) = ty
+  else {
+    return None;
+  };
+  let inner_ty = inner.unwrap_known();
+  let elem_size = inner_ty.wgsl_flat_data_size_in_u32s();
+  let align = inner_ty.wgsl_alignment_in_u32s();
+  let stride = ((elem_size + align - 1) / align) * align;
+  Some(stride as u64 * 4)
+}
+
+fn padded_buffer_bytes(raw_bytes: u64, storage: bool) -> u64 {
+  if storage {
+    ((raw_bytes + 3) / 4 * 4).max(4)
+  } else {
+    ((raw_bytes + 15) / 16 * 16).max(16)
+  }
+}
+
 fn gpu_binding_infos_from(
   binding_vars: &[(GroupAndBinding, Arc<str>, Type, VariableAddressSpace)],
   binding_stages: &HashMap<Arc<str>, BindingStages>,
@@ -2999,7 +3089,13 @@ fn gpu_binding_infos_from(
         if u32s == 0 {
           0
         } else {
-          ((u32s as u64 * 4).max(4) + 15) & !15
+          padded_buffer_bytes(
+            u32s as u64 * 4,
+            matches!(
+              kind,
+              GpuBufferKind::StorageReadOnly | GpuBufferKind::StorageReadWrite
+            ),
+          )
         }
       };
       GpuBindingInfo {
@@ -3178,6 +3274,7 @@ impl<IO: IOManager> FrameDriver for AstFrameDriver<'_, IO> {
   fn run_frame(&mut self) -> Result<(), EvalException> {
     self.env.adopt_shared_globals();
     self.env.refresh_window_info_bindings();
+    self.env.refresh_midi_state();
     let result = eval(self.body.clone(), self.env).map(|_| ());
     // Publish on success and on close-window (the frame's writes are still
     // real); genuine errors abort the run, so skip the publish.
@@ -3406,6 +3503,16 @@ pub trait IOManager: Sized {
   fn sample_rate(&self) -> f32 {
     44_100.
   }
+  /// The current MIDI input snapshot, read once per frame to refresh the
+  /// main thread's copies of the implicit `easl_midi_*` globals (the
+  /// audio thread refreshes its own copies per batch, directly from the
+  /// live listener). The default is silence, keeping test suites
+  /// deterministic on machines with connected MIDI devices; `StdoutIO`
+  /// overrides with the live listener, and the test managers override
+  /// with their spoofable state.
+  fn midi_state(&self) -> MidiState {
+    MidiState::default()
+  }
 }
 
 pub struct StdoutIO {
@@ -3464,6 +3571,11 @@ impl IOManager for StdoutIO {
   #[cfg(feature = "window")]
   fn sample_rate(&self) -> f32 {
     crate::audio::query_output_sample_rate().unwrap_or(44_100.)
+  }
+
+  #[cfg(feature = "window")]
+  fn midi_state(&self) -> MidiState {
+    crate::midi::current_midi_state().as_ref().clone()
   }
 
   fn record_draw(
@@ -3800,6 +3912,9 @@ pub struct StringIO {
   /// Tracks which frame is currently being evaluated (0-indexed). Used to
   /// return deterministic values from `window_time` and `window_delta_time`.
   pub frame_index: usize,
+  /// When set, `midi_state` reports this instead of the trait-default
+  /// silence, so tests can pin the MIDI query builtins deterministically.
+  pub spoofed_midi: Option<MidiState>,
 }
 
 impl Default for StringIO {
@@ -3808,6 +3923,7 @@ impl Default for StringIO {
       events: vec![],
       frame_count: 10,
       frame_index: 0,
+      spoofed_midi: None,
     }
   }
 }
@@ -3827,6 +3943,10 @@ impl IOManager for StringIO {
   /// rate-derived math stay exactly representable in goldens.
   fn sample_rate(&self) -> f32 {
     8.
+  }
+
+  fn midi_state(&self) -> MidiState {
+    self.spoofed_midi.clone().unwrap_or_default()
   }
 
   fn record_draw(
@@ -3952,6 +4072,10 @@ pub struct CaptureIO {
   /// on `StdoutIO` so production accessors stay branch-free — CaptureIO is
   /// the test/capture wrapper.
   pub spoofed_window_info: Option<SpoofedWindowInfo>,
+  /// When set, `midi_state` reports this instead of the trait-default
+  /// silence (never the live listener — capture runs must stay
+  /// deterministic on machines with connected MIDI devices).
+  pub spoofed_midi: Option<MidiState>,
 }
 
 impl CaptureIO {
@@ -3961,6 +4085,7 @@ impl CaptureIO {
       sync_trace: vec![],
       inner: StdoutIO::new(),
       spoofed_window_info: None,
+      spoofed_midi: None,
     }
   }
 }
@@ -3970,6 +4095,10 @@ impl IOManager for CaptureIO {
     self.prints.push(s.to_string());
     self.sync_trace.push(format!("print: {s}"));
     self.inner.println(s);
+  }
+
+  fn midi_state(&self) -> MidiState {
+    self.spoofed_midi.clone().unwrap_or_default()
   }
 
   fn record_gpu_to_cpu_sync(&mut self, name: &Arc<str>) {
@@ -4214,6 +4343,16 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   /// code is not GPU-used and so has no binding — its env value still
   /// needs the per-frame refresh.
   window_info_bindings: Vec<(WindowInfoBindingSource, Arc<str>, Type)>,
+  /// Generation of the MIDI snapshot the tree-walker's `easl_midi_*`
+  /// binding values were last refreshed from — refreshes are skipped
+  /// while it hasn't moved.
+  last_midi_generation: Option<u64>,
+  /// The VM runtime's own generation cache: its authoritative copies
+  /// live in VM slots/regions, not the env bindings, so it must track
+  /// freshness separately (env construction refreshes the bindings
+  /// unconditionally, which would otherwise mark the VM copies fresh
+  /// before they were ever written).
+  last_vm_midi_generation: Option<u64>,
   /// Sync state for each GPU-bound variable, keyed by name.
   buffer_states: HashMap<Arc<str>, SharedBufferState>,
   /// Directory of the source .easl file, used to resolve relative paths.
@@ -4346,6 +4485,8 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       binding_stages,
       gpu_entries,
       gpu_entry_ids,
+      last_midi_generation: None,
+      last_vm_midi_generation: None,
       window_info_bindings: program
         .window_info_bindings
         .iter()
@@ -4432,6 +4573,8 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     // Initial window-info values: dispatches that happen outside a frame
     // loop should see the IO manager's defaults rather than zeros.
     env.refresh_window_info_bindings();
+    // Initial MIDI values, so pre-frame code sees the live state.
+    env.refresh_midi_state();
     // Main's copy of the implicit `easl_sample_rate` local (see
     // `Program::extract_audio_info`): the stream rate is fixed and
     // knowable before any stream exists, so main-thread `(sample-rate)`
@@ -4458,6 +4601,82 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   /// the fresh values. Called at the start of every frame (and once at
   /// environment setup, so dispatches outside a frame loop see the IO
   /// manager's defaults rather than zeros).
+  /// Refreshes the main thread's copies of the implicit `easl_midi_*`
+  /// vars (see `Program::extract_audio_info`) from the IO manager's
+  /// MIDI snapshot, marking them CPU-written so the dirty-upload
+  /// machinery ships them to the GPU when shaders read them. Called at
+  /// env construction and once per frame; a no-op for programs that
+  /// never query MIDI (the vars only exist when used) and, via the
+  /// snapshot's generation counter, on frames where no MIDI events have
+  /// arrived — so idle MIDI state uploads exactly once. The audio
+  /// thread's copies are refreshed per batch by `VmAudioDriver`
+  /// instead, and the sharing analysis excludes the vars, so the
+  /// publish/adopt machinery never overwrites either side's refresh.
+  pub fn refresh_midi_state(&mut self) {
+    if !self.bindings.contains_key("easl_midi_cc")
+      && !self.bindings.contains_key("easl_midi_aftertouch")
+      && !self.bindings.contains_key("easl_midi_pitch_bend")
+      && !self.bindings.contains_key("easl_midi_down_notes")
+    {
+      return;
+    }
+    let midi = self.io.midi_state();
+    if self.last_midi_generation == Some(midi.generation) {
+      return;
+    }
+    self.last_midi_generation = Some(midi.generation);
+    let mut written: Vec<Arc<str>> = vec![];
+    let mut write = |name: &str, value: Value| {
+      if let Some(binding) =
+        self.bindings.get_mut(name).and_then(|v| v.last_mut())
+      {
+        binding.0 = value;
+        written.push(name.into());
+      }
+    };
+    write(
+      "easl_midi_cc",
+      Value::Array(
+        midi
+          .cc
+          .iter()
+          .map(|v| Value::Prim(Primitive::F32(*v)))
+          .collect(),
+      ),
+    );
+    write(
+      "easl_midi_aftertouch",
+      Value::Prim(Primitive::F32(midi.channel_aftertouch)),
+    );
+    write(
+      "easl_midi_pitch_bend",
+      Value::Prim(Primitive::F32(midi.pitch_bend)),
+    );
+    write(
+      "easl_midi_down_notes",
+      Value::Array(
+        midi
+          .down_notes
+          .iter()
+          .map(|n| {
+            Value::Struct(
+              [
+                ("note".into(), Value::Prim(Primitive::U32(n.note))),
+                ("velocity".into(), Value::Prim(Primitive::F32(n.velocity))),
+                (
+                  "aftertouch".into(),
+                  Value::Prim(Primitive::F32(n.aftertouch)),
+                ),
+              ]
+              .into_iter()
+              .collect(),
+            )
+          })
+          .collect(),
+      ),
+    );
+    self.mark_cpu_written(&written);
+  }
   pub fn refresh_window_info_bindings(&mut self) {
     if self.window_info_bindings.is_empty() {
       return;
@@ -4511,9 +4730,18 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             let elem_size = inner_ty.wgsl_flat_data_size_in_u32s();
             let align = inner_ty.wgsl_alignment_in_u32s();
             let stride = ((elem_size + align - 1) / align) * align;
+            // Minimum one element: wgpu rejects storage bindings
+            // smaller than the element stride.
             let raw_bytes =
               (*length as u64 * stride as u64 * 4).max(stride as u64 * 4);
-            let padded = ((raw_bytes + 15) / 16) * 16;
+            let padded = padded_buffer_bytes(
+              raw_bytes,
+              matches!(
+                addr,
+                VariableAddressSpace::StorageRead
+                  | VariableAddressSpace::StorageReadWrite
+              ),
+            );
             BufferUpload::Clear { byte_count: padded }
           }
           Some(Value::Texture {
@@ -4534,9 +4762,16 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             let mut bytes = value
               .map(|v| v.to_uniform_bytes(ty))
               .unwrap_or(vec![0u8; 4]);
-            while bytes.len() % 16 != 0 {
-              bytes.push(0);
-            }
+            let target = padded_buffer_bytes(
+              (bytes.len() as u64)
+                .max(unsized_array_min_bytes(ty).unwrap_or(0)),
+              matches!(
+                addr,
+                VariableAddressSpace::StorageRead
+                  | VariableAddressSpace::StorageReadWrite
+              ),
+            ) as usize;
+            bytes.resize(target, 0);
             BufferUpload::Data(bytes)
           }
         };
@@ -4744,9 +4979,18 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           let elem_size = inner_ty.wgsl_flat_data_size_in_u32s();
           let align = inner_ty.wgsl_alignment_in_u32s();
           let stride = ((elem_size + align - 1) / align) * align;
+          // Minimum one element: wgpu rejects storage bindings smaller
+          // than the element stride.
           let raw_bytes =
             (*length as u64 * stride as u64 * 4).max(stride as u64 * 4);
-          let padded = ((raw_bytes + 15) / 16) * 16;
+          let padded = padded_buffer_bytes(
+            raw_bytes,
+            matches!(
+              addr,
+              VariableAddressSpace::StorageRead
+                | VariableAddressSpace::StorageReadWrite
+            ),
+          );
           BufferUpload::Clear { byte_count: padded }
         }
         Some(Value::Texture {
@@ -4768,9 +5012,15 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           let mut bytes = value
             .map(|v| v.to_uniform_bytes(ty))
             .unwrap_or(vec![0u8; 4]);
-          while bytes.len() % 16 != 0 {
-            bytes.push(0);
-          }
+          let target = padded_buffer_bytes(
+            (bytes.len() as u64).max(unsized_array_min_bytes(ty).unwrap_or(0)),
+            matches!(
+              addr,
+              VariableAddressSpace::StorageRead
+                | VariableAddressSpace::StorageReadWrite
+            ),
+          ) as usize;
+          bytes.resize(target, 0);
           BufferUpload::Data(bytes)
         }
       };
@@ -5022,7 +5272,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   /// For any GPU-bound var in `names` that is CPUOutOfDate, reads the buffer
   /// back from GPU and updates the CPU-side binding.
   fn check_cpu_readable(&mut self, names: &[Arc<str>]) {
-    let vars: Vec<(GroupAndBinding, Arc<str>, Type)> = self
+    let vars: Vec<(GroupAndBinding, Arc<str>, Type, bool)> = self
       .binding_vars
       .iter()
       .filter(|(_, name, _, addr)| {
@@ -5033,24 +5283,34 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           && self.buffer_states.get(name)
             == Some(&SharedBufferState::CPUOutOfDate)
       })
-      .map(|(gb, name, ty, _)| (*gb, name.clone(), ty.clone()))
+      .map(|(gb, name, ty, addr)| {
+        (
+          *gb,
+          name.clone(),
+          ty.clone(),
+          matches!(
+            addr,
+            VariableAddressSpace::StorageRead
+              | VariableAddressSpace::StorageReadWrite
+          ),
+        )
+      })
       .collect();
     if !vars.is_empty() {
       // Flush any queued compute before reading back, so the GPU has actually
       // run and the buffers contain up-to-date values.
       self.io.flush_queued_compute();
     }
-    for (gb, name, ty) in vars {
+    for (gb, name, ty, storage) in vars {
       // For statically-sized types, derive the readback size from the type.
       // For dynamically-sized types (unsized arrays), compute from the
       // CPU-side element count rather than the padded GPU allocation size:
-      // the buffer is padded to a 16-byte multiple on upload, and using that
-      // padded size for readback would cause from_gpu_bytes to count the
-      // padding bytes as extra elements.
+      // using the padded size for readback would cause from_gpu_bytes to
+      // count any padding bytes as extra elements.
       let size = ty
         .flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
         .ok()
-        .map(|u32s| ((u32s as u64 * 4 + 15) & !15).max(16))
+        .map(|u32s| padded_buffer_bytes(u32s as u64 * 4, storage))
         .or_else(|| {
           if let Type::Array(
             Some(crate::compiler::types::ConcreteArraySize::Unsized),
@@ -5071,7 +5331,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
                 _ => 0,
               })
               .unwrap_or(0);
-            Some((count as u64 * stride as u64 * 4).max(16))
+            Some(padded_buffer_bytes(count as u64 * stride as u64 * 4, true))
           } else {
             self.io.get_buffer_byte_size(gb.group, gb.binding)
           }
@@ -7403,6 +7663,98 @@ fn refresh_vm_window_info<IO: IOManager>(
   }
 }
 
+/// VM-runtime counterpart of `refresh_midi_state`: writes the IO
+/// manager's MIDI snapshot into the VM's copies of the implicit
+/// `easl_midi_*` vars — stack slots for the fixed-size vars, the
+/// dynamic-memory region for `easl_midi_down_notes` — marking each
+/// GPU-bound one's env mirror stale and CPU-written so the next
+/// dispatch uploads it (vars no shader touches have no binding and skip
+/// that bookkeeping). A no-op for programs that never query MIDI and,
+/// via the generation counter, on frames where no MIDI events have
+/// arrived — so idle MIDI state uploads exactly once.
+fn refresh_vm_midi<IO: IOManager>(
+  program: &mut crate::vm::bytecode::BytecodeProgram,
+  env: &mut EvaluationEnvironment<IO>,
+  slots_dirty: &mut Vec<bool>,
+) {
+  let down_notes_region = program
+    .code
+    .dyn_memory_regions
+    .iter()
+    .find(|(name, _, _)| &**name == "easl_midi_down_notes")
+    .map(|(_, region, _)| *region);
+  if program
+    .get_global_slot("easl_midi_note_velocities")
+    .is_none()
+    && program.get_global_slot("easl_midi_cc").is_none()
+    && program.get_global_slot("easl_midi_pitch_bend").is_none()
+    && down_notes_region.is_none()
+  {
+    return;
+  }
+  let midi = env.io.midi_state();
+  if env.last_vm_midi_generation == Some(midi.generation) {
+    return;
+  }
+  env.last_vm_midi_generation = Some(midi.generation);
+  // Host-binding indices resolved up front (the writes below borrow the
+  // program mutably); vars no shader touches have no binding and only
+  // get their slots written.
+  let host_binding_index = |name: &str| {
+    program
+      .code
+      .host_bindings
+      .iter()
+      .position(|binding| &*binding.name == name)
+  };
+  let mut written: Vec<(Arc<str>, Option<usize>)> = vec![];
+  for name in [
+    "easl_midi_cc",
+    "easl_midi_aftertouch",
+    "easl_midi_pitch_bend",
+    "easl_midi_down_notes",
+  ] {
+    written.push((name.into(), host_binding_index(name)));
+  }
+  let wrote_cc = program
+    .write_global("easl_midi_cc", &midi.cc.map(f32::to_bits))
+    .is_some();
+  let wrote_aftertouch = program
+    .write_global("easl_midi_aftertouch", &[midi.channel_aftertouch.to_bits()])
+    .is_some();
+  let wrote_pitch_bend = program
+    .write_global("easl_midi_pitch_bend", &[midi.pitch_bend.to_bits()])
+    .is_some();
+  if let Some(region) = down_notes_region {
+    program.dyn_memory[region as usize] = crate::vm::bytecode::DynMemory::Words(
+      midi
+        .down_notes
+        .iter()
+        .flat_map(|n| [n.note, n.velocity.to_bits(), n.aftertouch.to_bits()])
+        .collect(),
+    );
+  }
+  let wrote = [
+    wrote_cc,
+    wrote_aftertouch,
+    wrote_pitch_bend,
+    down_notes_region.is_some(),
+  ];
+  let mut written_names: Vec<Arc<str>> = vec![];
+  for ((name, binding_index), wrote) in written.into_iter().zip(wrote) {
+    if !wrote {
+      continue;
+    }
+    if let Some(index) = binding_index
+      && let Some(flag) = slots_dirty.get_mut(index)
+    {
+      *flag = true;
+    }
+    written_names.push(name);
+  }
+  env.mark_cpu_written(&written_names);
+}
+
 struct VmFrameDriver<'a, IO: IOManager> {
   program: &'a mut crate::vm::bytecode::BytecodeProgram,
   env: &'a mut EvaluationEnvironment<IO>,
@@ -7555,6 +7907,7 @@ impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
     use crate::vm::bytecode::{HostSuspendReason, RunResult};
     vm_adopt_shared(self.program, self.env, self.slots_dirty);
     refresh_vm_window_info(self.program, self.env, self.slots_dirty);
+    refresh_vm_midi(self.program, self.env, self.slots_dirty);
     self.program.prepare_to_run_function(self.frame_fn);
     let mut host = VmHostView {
       env: self.env,
@@ -7709,6 +8062,7 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
       &mut self.env,
       &mut self.slots_dirty,
     );
+    refresh_vm_midi(&mut self.program, &mut self.env, &mut self.slots_dirty);
     self.program.prepare_to_run_function(entry_index);
     loop {
       let result = {

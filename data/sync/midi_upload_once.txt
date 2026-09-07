@@ -1,0 +1,6 @@
+upload: out
+upload: easl_midi_cc
+upload: easl_midi_aftertouch
+upload: easl_midi_pitch_bend
+readback: out
+print: 2.

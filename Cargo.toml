@@ -13,13 +13,14 @@ wgpu = { version = "29.0.3", optional = true }
 winit = { version = "0.30", optional = true }
 pollster = { version = "0.4", optional = true }
 cpal = { version = "0.15", optional = true }
+midir = { version = "0.10", optional = true }
 libloading = { version = "0.8", optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 hound = "3.5"
 arc-swap = "1.7"
 
 [features]
-window = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:cpal"]
+window = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:cpal", "dep:midir"]
 # `c_audio` swaps the audio thread's per-sample function from the bytecode VM
 # (the default, portable, no-external-deps path) to a JIT-compiled C dylib
 # loaded via `libloading`. Faster but requires `clang` on the host.

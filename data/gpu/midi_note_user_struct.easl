@@ -1,0 +1,10 @@
+; `MidiNote` used as an ordinary struct by user shader code, with no
+; MIDI queries anywhere: the declaration must still emit (it's gated on
+; reference, not on `down-midi-notes` use).
+@storage-write
+(var out: [1: f32])
+
+@compute
+(defn entry []
+  (let [n (MidiNote 60u 1. 0.5)]
+    (= (out 0u) (+ n.velocity n.aftertouch))))

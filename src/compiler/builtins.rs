@@ -489,18 +489,67 @@ pub fn matrix_constructors() -> Vec<AbstractFunctionSignature> {
     .collect()
 }
 
-pub fn built_in_structs() -> Vec<AbstractStruct> {
-  vec![vec2(), vec3(), vec4(), texture_2d(), sampler(), atomic()]
-    .into_iter()
-    .chain((2..=4).flat_map(|n| (2..=4).map(move |m| matrix(n, m))))
-    .collect()
+/// The element type of `down-midi-notes`: one currently-held MIDI note.
+pub fn midi_note() -> AbstractStruct {
+  AbstractStruct {
+    name: ("MidiNote".into(), SourceTrace::empty()),
+    fields: vec![
+      AbstractStructField {
+        attributes: IOAttributes::empty(SourceTrace::empty()),
+        name: "note".into(),
+        field_type: AbstractType::Type(Type::U32),
+        source_trace: SourceTrace::empty(),
+      },
+      AbstractStructField {
+        attributes: IOAttributes::empty(SourceTrace::empty()),
+        name: "velocity".into(),
+        field_type: AbstractType::Type(Type::F32),
+        source_trace: SourceTrace::empty(),
+      },
+      AbstractStructField {
+        attributes: IOAttributes::empty(SourceTrace::empty()),
+        name: "aftertouch".into(),
+        field_type: AbstractType::Type(Type::F32),
+        source_trace: SourceTrace::empty(),
+      },
+    ],
+    generic_args: vec![],
+    filled_generics: HashMap::new(),
+    abstract_ancestor: None,
+    source_trace: SourceTrace::empty(),
+    opaque: false,
+  }
 }
 
+pub fn built_in_structs() -> Vec<AbstractStruct> {
+  vec![
+    vec2(),
+    vec3(),
+    vec4(),
+    texture_2d(),
+    sampler(),
+    atomic(),
+    midi_note(),
+  ]
+  .into_iter()
+  .chain((2..=4).flat_map(|n| (2..=4).map(move |m| matrix(n, m))))
+  .collect()
+}
+
+/// The builtin structs `target` represents natively — struct emission
+/// skips these (no declaration needed). `MidiNote` is deliberately NOT
+/// in the WGSL list: unlike the vec/matrix/texture builtins it has no
+/// native WGSL form, so a program whose shaders read
+/// `easl_midi_down_notes` needs its declaration emitted like a user
+/// struct's.
 pub fn built_in_structs_for_target(
   target: CompilerTarget,
 ) -> Vec<AbstractStruct> {
   match target {
-    CompilerTarget::WGSL => built_in_structs(),
+    CompilerTarget::WGSL => built_in_structs()
+      .into_iter()
+      .filter(|s| &*s.name.0 != "MidiNote")
+      .collect(),
     CompilerTarget::C => vec![],
     CompilerTarget::VM => panic!(),
   }
@@ -2511,6 +2560,38 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         effect_type: EffectType::empty(),
         target_configuration: FunctionTargetConfiguration::Default,
         target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    // MIDI-info functions: like the audio-info functions above, these
+    // are rewritten by `extract_audio_info` into reads of fixed-name
+    // implicit `@local` globals (`easl_midi_*`) that each thread
+    // refreshes from the live MIDI listener — main per frame, the audio
+    // thread per callback batch — so no backend ever compiles the calls.
+    // `validate_context_exclusivity` restricts them to cpu/audio
+    // contexts.
+    AbstractFunctionSignature {
+      name: "midi-cc".into(),
+      arg_types: vec![(AbstractType::Type(Type::U32), Ownership::Owned)],
+      return_type: AbstractType::Type(Type::F32),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "midi-aftertouch".into(),
+      return_type: AbstractType::Type(Type::F32),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "midi-pitch-bend".into(),
+      return_type: AbstractType::Type(Type::F32),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "down-midi-notes".into(),
+      return_type: AbstractType::AbstractArray {
+        size: AbstractArraySize::Unsized,
+        inner_type: AbstractType::AbstractStruct(Arc::new(midi_note())).into(),
+        source_trace: SourceTrace::empty(),
       },
       ..Default::default()
     },

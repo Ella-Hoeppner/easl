@@ -726,7 +726,11 @@ impl GpuCore {
         }
         continue;
       }
-      let alloc_size = size.max(16);
+      // Minimum one word — wgpu forbids zero-size buffers. Never larger:
+      // WGSL derives `arrayLength` from the buffer's byte size, so
+      // over-allocating a runtime-sized storage binding fabricates
+      // phantom elements (uploads arrive pre-padded per binding kind).
+      let alloc_size = size.max(4);
       let old_size = self.binding_buffer_sizes.get(&key).copied().unwrap_or(0);
       if old_size == alloc_size {
         if let Some(buf) = self.binding_buffers.remove(&key) {
@@ -844,7 +848,10 @@ impl GpuCore {
               .unwrap_or(GpuBufferKind::Uniform);
             let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
               label: Some(&format!("binding g{group}b{binding}")),
-              size: incoming_size.max(16),
+              // Minimum one word, never more — see the comment on the
+              // initial allocations: extra bytes fabricate phantom
+              // `arrayLength` elements.
+              size: incoming_size.max(4),
               usage: gpu_buffer_usage(kind),
               mapped_at_creation: false,
             });
@@ -1636,7 +1643,11 @@ impl GpuCore {
         textures.insert(key, texture);
         texture_views.insert(key, view);
       } else {
-        let alloc_size = size.max(16);
+        // Minimum one word — wgpu forbids zero-size buffers. Never larger:
+        // WGSL derives `arrayLength` from the buffer's byte size, so
+        // over-allocating a runtime-sized storage binding fabricates
+        // phantom elements (uploads arrive pre-padded per binding kind).
+        let alloc_size = size.max(4);
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
           label: Some(&format!("binding g{group}b{binding}")),
           size: alloc_size,

@@ -1,0 +1,16 @@
+; MIDI state read by a shader uploads through the ordinary dirty-upload
+; machinery, and only when the snapshot's generation moves: with no MIDI
+; events arriving, the implicit vars upload before the FIRST dispatch
+; and never again — refreshes are generation-gated no-ops after that.
+@storage-write
+(var out: [1: f32])
+
+@compute
+(defn probe []
+  (+= (out 0u) (+ (midi-cc 1u) (midi-aftertouch) (midi-pitch-bend) 1.)))
+
+@cpu
+(defn main []
+  (dispatch-compute-shader probe (vec3u 1u))
+  (dispatch-compute-shader probe (vec3u 1u))
+  (print (out 0u)))

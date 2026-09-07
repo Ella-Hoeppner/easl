@@ -27,8 +27,8 @@ use easl::compiler::program::CompilerTarget;
 use easl::external::ExternalVars;
 use easl::interpreter::{
   BufferUpload, CpuRuntime, EvalError, EvalException, FrameDriver,
-  GpuBindingInfo, GpuEntryInfo, IOManager, StdoutIO, WindowEvent,
-  run_program_entry_with_io_runtime_and_external_from_path,
+  GpuBindingInfo, GpuEntryInfo, IOManager, MidiNoteState, MidiState, StdoutIO,
+  WindowEvent, run_program_entry_with_io_runtime_and_external_from_path,
 };
 use std::fs;
 use std::path::Path;
@@ -113,6 +113,9 @@ const TEST_SAMPLE_RATE: f32 = 8.0;
 struct ThreadSyncIO {
   schedule: Vec<Step>,
   trace: Vec<String>,
+  /// When set, both the main thread's per-frame MIDI refresh and the
+  /// stashed audio driver report this state instead of silence.
+  spoofed_midi: Option<MidiState>,
   /// Delegate for all GPU machinery (headless GpuCore, buffer readback,
   /// queued frame events). Its windowing loop is never used.
   inner: StdoutIO,
@@ -135,6 +138,7 @@ impl ThreadSyncIO {
     Self {
       schedule,
       trace: initial_trace,
+      spoofed_midi: None,
       inner: StdoutIO::new(),
       audio: None,
       audio_shared_names: Vec::new(),
@@ -197,6 +201,10 @@ impl IOManager for ThreadSyncIO {
 
   fn sample_rate(&self) -> f32 {
     TEST_SAMPLE_RATE
+  }
+
+  fn midi_state(&self) -> MidiState {
+    self.spoofed_midi.clone().unwrap_or_default()
   }
 
   fn record_draw(
@@ -379,15 +387,16 @@ impl IOManager for ThreadSyncIO {
           .iter()
           .map(|info| info.name.clone())
           .collect();
-        self.audio = Some(
-          VmAudioDriver::new(
-            entry_name,
-            program,
-            &function_names,
-            shared_table,
-          )
-          .expect("failed to build audio driver"),
-        );
+        let mut driver = VmAudioDriver::new(
+          entry_name,
+          program,
+          &function_names,
+          shared_table,
+        )
+        .expect("failed to build audio driver");
+        driver.midi_override =
+          Some(Arc::new(self.spoofed_midi.clone().unwrap_or_default()));
+        self.audio = Some(driver);
       }
       Some(AudioSource::C(_)) => {
         panic!("thread-sync harness only supports the VM audio backend")
@@ -401,6 +410,14 @@ impl IOManager for ThreadSyncIO {
 }
 
 fn run_thread_sync_test(name: &str, schedule: Vec<Step>) {
+  run_thread_sync_test_with_midi(name, schedule, None)
+}
+
+fn run_thread_sync_test_with_midi(
+  name: &str,
+  schedule: Vec<Step>,
+  spoofed_midi: Option<MidiState>,
+) {
   let expected = fs::read_to_string(format!("./data/thread_sync/{name}.txt"))
     .unwrap_or_else(|_| panic!("Unable to read data/thread_sync/{name}.txt"));
 
@@ -444,7 +461,15 @@ fn run_thread_sync_test(name: &str, schedule: Vec<Step>) {
     let (io, _) = run_program_entry_with_io_runtime_and_external_from_path(
       program.clone(),
       None,
-      ThreadSyncIO::new(loop_steps.to_vec(), external.clone(), initial_trace),
+      {
+        let mut io = ThreadSyncIO::new(
+          loop_steps.to_vec(),
+          external.clone(),
+          initial_trace,
+        );
+        io.spoofed_midi = spoofed_midi.clone();
+        io
+      },
       source_path,
       runtime,
       external,
@@ -620,3 +645,44 @@ thread_sync_test!(
 );
 thread_sync_test!(audio_info_fns, [Frame, AudioBatch(4)]);
 thread_sync_test!(audio_time_zero_arg, [Frame, AudioBatch(4)]);
+
+/// The audio thread reads MIDI directly: the driver refreshes the audio
+/// replica's `easl_midi_*` copies once per batch from the (spoofed)
+/// snapshot — no window frame or thread-sharing machinery involved.
+#[test]
+fn midi_audio_read() {
+  let mut midi = MidiState::default();
+  midi.channel_aftertouch = 0.5;
+  midi.generation = 1;
+  run_thread_sync_test_with_midi(
+    "midi_audio_read",
+    [Frame, AudioBatch(3)].to_vec(),
+    Some(midi),
+  );
+}
+
+/// The audio thread iterating `down-midi-notes` (the polyphonic-synth
+/// shape): length-bounded loop over the held-note list with per-element
+/// field reads, against spoofed held notes.
+#[test]
+fn midi_audio_down_notes() {
+  let mut midi = MidiState::default();
+  midi.down_notes = vec![
+    MidiNoteState {
+      note: 60,
+      velocity: 1.,
+      aftertouch: 0.,
+    },
+    MidiNoteState {
+      note: 64,
+      velocity: 0.5,
+      aftertouch: 0.,
+    },
+  ];
+  midi.generation = 1;
+  run_thread_sync_test_with_midi(
+    "midi_audio_down_notes",
+    [Frame, AudioBatch(2)].to_vec(),
+    Some(midi),
+  );
+}

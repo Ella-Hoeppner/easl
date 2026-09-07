@@ -2182,6 +2182,116 @@ impl Program {
   /// (or no legal) shader representation, and function-typed fields
   /// declare as their representative captured-scope structs, so the
   /// check recurses through those scopes' own fields.
+  /// Whether anything in the program references the `MidiNote` struct.
+  /// It's registered in every program's typedefs so the type name always
+  /// resolves, but only programs that actually use it — through
+  /// `down-midi-notes`' implicit var, or by naming the type/constructor
+  /// directly — should carry its declaration in emitted output: a plain
+  /// shader program must not ship audio-runtime types.
+  fn references_midi_note(&self) -> bool {
+    fn type_mentions(t: &Type) -> bool {
+      match t {
+        Type::Struct(s) => {
+          &*s.name == "MidiNote"
+            || s.fields.iter().any(|f| {
+              f.field_type
+                .kind
+                .try_unwrap_known()
+                .map(|t| type_mentions(&t))
+                .unwrap_or(false)
+            })
+        }
+        Type::Enum(e) => e.variants.iter().any(|v| {
+          v.inner_type
+            .kind
+            .try_unwrap_known()
+            .map(|t| type_mentions(&t))
+            .unwrap_or(false)
+        }),
+        Type::Array(_, inner) => inner
+          .kind
+          .try_unwrap_known()
+          .map(|t| type_mentions(&t))
+          .unwrap_or(false),
+        Type::Function(signature) => {
+          signature.args.iter().any(|(arg, _)| {
+            arg
+              .var_type
+              .kind
+              .try_unwrap_known()
+              .map(|t| type_mentions(&t))
+              .unwrap_or(false)
+          }) || signature
+            .return_type
+            .kind
+            .try_unwrap_known()
+            .map(|t| type_mentions(&t))
+            .unwrap_or(false)
+        }
+        _ => false,
+      }
+    }
+    fn abstract_type_mentions(t: &AbstractType) -> bool {
+      match t {
+        AbstractType::Type(t) => type_mentions(t),
+        AbstractType::AbstractStruct(s) => {
+          &*s.name.0 == "MidiNote"
+            || s
+              .fields
+              .iter()
+              .any(|f| abstract_type_mentions(&f.field_type))
+        }
+        AbstractType::AbstractArray { inner_type, .. } => {
+          abstract_type_mentions(inner_type)
+        }
+        _ => false,
+      }
+    }
+    if self
+      .top_level_vars
+      .iter()
+      .any(|v| type_mentions(&v.var_type))
+    {
+      return true;
+    }
+    // User struct/enum declarations embedding MidiNote emit references
+    // to it even when otherwise unused.
+    if self.typedefs.structs.iter().any(|s| {
+      &*s.name.0 != "MidiNote"
+        && s
+          .fields
+          .iter()
+          .any(|f| abstract_type_mentions(&f.field_type))
+    }) {
+      return true;
+    }
+    let mut found = false;
+    for f in self.abstract_functions_iter() {
+      let FunctionImplementationKind::Composite(implementation) =
+        f.read().unwrap().implementation.clone()
+      else {
+        continue;
+      };
+      implementation
+        .read()
+        .unwrap()
+        .expression
+        .walk(&mut |exp| {
+          if let Some(t) = exp.data.kind.try_unwrap_known()
+            && type_mentions(&t)
+          {
+            found = true;
+            return Ok::<bool, Never>(false);
+          }
+          Ok(true)
+        })
+        .unwrap();
+      if found {
+        return true;
+      }
+    }
+    false
+  }
   pub(crate) fn type_makes_struct_cpu_only(&self, t: &Type) -> bool {
     match t {
       Type::Function(signature) => {
@@ -2847,13 +2957,19 @@ impl Program {
       }
     }
   }
-  /// Rewrites every `sample-rate`/`audio-time` call into a read of a
-  /// fixed-name implicit `@local` f32 var (`easl_sample_rate` /
-  /// `easl_audio_time`, created on first use). The audio driver writes
-  /// the audio replica's copies directly — the rate once per batch, the
-  /// time before every sample (`VmAudioDriver::run_batch`; the C backend's
-  /// generated entry wrapper stores both) — so no backend ever compiles
-  /// the calls themselves. The names are deliberately fixed rather than
+  /// Rewrites every audio-info and MIDI-info call into a read of a
+  /// fixed-name implicit `@local` var, created on first use:
+  /// `sample-rate`/`audio-time`/`midi-aftertouch`/`midi-pitch-bend`
+  /// become bare reads of f32 vars, `midi-cc` an array lookup into a
+  /// `[128: f32]` var, and `down-midi-notes` a bare read of the
+  /// runtime-sized `easl_midi_down_notes`. Each
+  /// thread refreshes its own copies — the audio driver writes the rate
+  /// once per batch and the time before every sample
+  /// (`VmAudioDriver::run_batch`; the C backend's generated entry
+  /// wrapper stores both) and the MIDI vars once per batch from the live
+  /// listener, while main refreshes its MIDI copies once per frame
+  /// through `IOManager::midi_state` — so no backend ever compiles the
+  /// calls themselves. The names are deliberately fixed rather than
   /// gensym'd: the C audio wrapper is generated against a *separate*
   /// compilation of the same source, and gensym numbering isn't stable
   /// across compilations. `@local` keeps the vars out of the
@@ -2880,29 +2996,97 @@ impl Program {
           let ExpKind::Name(applied_name) = &applied_f.kind else {
             return Ok(true);
           };
-          if !args.is_empty() {
+          if args.is_empty() {
+            // Audio-info vars are `@local` (per-execution-context, driver-
+            // authoritative); MIDI vars are storage-read bindings with
+            // elided numbers, so shader code can read them too — the
+            // main thread's per-frame refresh marks them CPU-written and
+            // the ordinary dirty-upload machinery ships them to the GPU
+            // (they only become runtime bindings when a shader actually
+            // touches them, like any GPU-space var).
+            let (var_name, address_space, group_and_binding) =
+              match &**applied_name {
+                "sample-rate" => {
+                  ("easl_sample_rate", VariableAddressSpace::Local, None)
+                }
+                "audio-time" => {
+                  ("easl_audio_time", VariableAddressSpace::Local, None)
+                }
+                "midi-aftertouch" => (
+                  "easl_midi_aftertouch",
+                  VariableAddressSpace::StorageRead,
+                  Some(BindingSpec::Elided),
+                ),
+                "midi-pitch-bend" => (
+                  "easl_midi_pitch_bend",
+                  VariableAddressSpace::StorageRead,
+                  Some(BindingSpec::Elided),
+                ),
+                "down-midi-notes" => (
+                  "easl_midi_down_notes",
+                  VariableAddressSpace::StorageRead,
+                  Some(BindingSpec::Elided),
+                ),
+                _ => return Ok(true),
+              };
+            if created.insert(var_name) {
+              new_vars.push(TopLevelVar {
+                name: var_name.into(),
+                kind: TopLevelVariableKind::Var {
+                  address_space,
+                  group_and_binding,
+                },
+                // The call's inferred return type is exactly the var's
+                // type (f32, or `[MidiNote]` for `down-midi-notes`).
+                var_type: exp.data.unwrap_known(),
+                value: None,
+                source_trace: exp.source_trace.clone(),
+                external: false,
+              });
+            }
+            exp.kind = ExpKind::Name(var_name.into());
+            exp.data.is_globally_bound = true;
             return Ok(true);
           }
-          let var_name = match &**applied_name {
-            "sample-rate" => "easl_sample_rate",
-            "audio-time" => "easl_audio_time",
-            _ => return Ok(true),
-          };
-          if created.insert(var_name) {
-            new_vars.push(TopLevelVar {
-              name: var_name.into(),
-              kind: TopLevelVariableKind::Var {
-                address_space: VariableAddressSpace::Local,
-                group_and_binding: None,
-              },
-              var_type: Type::F32,
-              value: None,
-              source_trace: exp.source_trace.clone(),
-              external: false,
-            });
+          if args.len() == 1 && &**applied_name == "midi-cc" {
+            let var_name = "easl_midi_cc";
+            let array_type = Type::Array(
+              Some(ConcreteArraySize::Literal(128)),
+              Box::new(Type::F32.known().into()),
+            );
+            if created.insert(var_name) {
+              new_vars.push(TopLevelVar {
+                name: var_name.into(),
+                kind: TopLevelVariableKind::Var {
+                  address_space: VariableAddressSpace::StorageRead,
+                  group_and_binding: Some(BindingSpec::Elided),
+                },
+                var_type: array_type.clone(),
+                value: None,
+                source_trace: exp.source_trace.clone(),
+                external: false,
+              });
+            }
+            // The call becomes an ordinary array lookup on the global —
+            // the `Access` form the backends expect (array-lookup
+            // applications are normalized to `Access` before this pass),
+            // with both nodes marked globally bound, mirroring what
+            // inference produces for `(global i)`. Valid indices are
+            // 0-127, MIDI's own 7-bit range — out-of-range indices
+            // behave like any other out-of-range array access.
+            let old_kind =
+              std::mem::replace(&mut exp.kind, ExpKind::Name(var_name.into()));
+            let ExpKind::Application(mut accessed, mut args) = old_kind else {
+              unreachable!()
+            };
+            let index = args.remove(0);
+            accessed.kind = ExpKind::Name(var_name.into());
+            accessed.data.kind = TypeState::Known(array_type);
+            accessed.data.is_globally_bound = true;
+            exp.kind =
+              ExpKind::Access(Accessor::ArrayIndex(Box::new(index)), accessed);
+            exp.data.is_globally_bound = true;
           }
-          exp.kind = ExpKind::Name(var_name.into());
-          exp.data.is_globally_bound = true;
           Ok(true)
         })
         .unwrap();
@@ -4650,6 +4834,12 @@ impl Program {
         self.type_makes_struct_cpu_only(&t)
       });
       if cpu_only {
+        continue;
+      }
+      // `MidiNote` is registered in every program's typedefs so the
+      // type name always resolves, but its declaration only ships when
+      // the program actually references it.
+      if &*s.name.0 == "MidiNote" && !self.references_midi_note() {
         continue;
       }
       if !s.opaque
@@ -7366,6 +7556,18 @@ impl Program {
       .iter()
       .filter_map(|name| {
         if local_vars.contains(name) {
+          return None;
+        }
+        // The implicit MIDI vars are ambient per-replica state, not
+        // program state: every thread refreshes its own copy from the
+        // process-global listener (main per frame, audio per callback
+        // batch), so carrying them through the sharing system would only
+        // overwrite the audio replica's fresher per-batch values with
+        // main's older per-frame ones. They're storage-space (for GPU
+        // reads via the upload machinery) but excluded here like
+        // `@local` vars; the names are compiler-reserved, so user vars
+        // can never collide with this exclusion.
+        if name.starts_with("easl_midi_") {
           return None;
         }
         let audience = if main_globals.contains(name) {

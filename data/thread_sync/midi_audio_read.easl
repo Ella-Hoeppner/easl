@@ -1,0 +1,13 @@
+; The audio thread reads MIDI directly: `midi-aftertouch` inside the
+; audio function reads the audio replica's `easl_midi_aftertouch` copy,
+; refreshed once per callback batch from the (spoofed, in this harness)
+; listener snapshot — no window frame or thread-sharing machinery
+; involved.
+@audio
+(defn voice []: f32
+  (midi-aftertouch))
+
+@cpu
+(defn main []
+  (start-audio voice)
+  (spawn-window (fn [] ())))

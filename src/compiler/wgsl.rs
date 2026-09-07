@@ -196,8 +196,16 @@ pub fn is_wgsl_reserved_word(word: &str) -> bool {
 pub const EASL_RESERVED_WORDS: &[&'static str] = &[
   "easl_audio_time",
   "easl_sample_rate",
+  "easl_midi_cc",
+  "easl_midi_aftertouch",
+  "easl_midi_pitch_bend",
+  "easl_midi_down_notes",
   "easl-audio-time",
   "easl-sample-rate",
+  "easl-midi-cc",
+  "easl-midi-aftertouch",
+  "easl-midi-pitch-bend",
+  "easl-midi-down-notes",
 ];
 
 lazy_static! {

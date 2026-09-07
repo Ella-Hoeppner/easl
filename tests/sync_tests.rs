@@ -135,3 +135,6 @@ sync_test!(windowed_scope_upload_ordering);
 // usage-derived sharing analysis: address space alone creates no GPU
 // obligations).
 sync_test!(cpu_scratch_var_no_upload);
+// The implicit MIDI storage bindings upload before the first dispatch
+// and, while no MIDI events arrive, never again (generation-gated).
+sync_test!(midi_upload_once);

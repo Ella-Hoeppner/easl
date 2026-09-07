@@ -1,0 +1,19 @@
+; `~[]` — converting a zero-length array literal to a runtime-sized
+; array. The empty literal's type `[0: f32]` is unitlike, so
+; `remove_unitlike_arguments` strips the argument from the
+; `into-dynamic-array` call entirely — both runtimes must produce an
+; empty array from the now-argless call (locals, whole-global
+; assignment, and resizing back to empty) rather than crashing on the
+; missing argument.
+(var xs: [f32])
+
+@cpu
+(defn main []
+  (let [empty: [f32] ~[]]
+    (print (length empty)))
+  (= xs ~[])
+  (print (length xs))
+  (= xs (into-dynamic-array [1. 2.]))
+  (print (length xs))
+  (= xs ~[])
+  (print (length xs)))

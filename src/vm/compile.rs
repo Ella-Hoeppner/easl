@@ -1792,6 +1792,32 @@ impl BytecodeCompilationState {
           Type::Array(Some(ConcreteArraySize::Unsized), _)
         ) =>
       {
+        // A zero-length source array (`~[]`) is unitlike, so the
+        // argument was stripped from the call by
+        // `remove_unitlike_arguments` — the conversion still produces an
+        // empty runtime-sized array.
+        if args.is_empty() {
+          let Type::Array(_, element_type) = return_type else {
+            panic!("into-dynamic-array return type wasn't an array")
+          };
+          let element_type = element_type.unwrap_known();
+          let dest = self.take_stack_slot(1);
+          let length_slot = self.emit_u32_constant(0);
+          if is_heap_value_type(&element_type) {
+            self.push_instruction(Instruction {
+              op: Op::HeapZeroedCells,
+              arg_positions: [length_slot, 0, 0],
+              return_position: dest,
+            });
+          } else {
+            self.push_instruction(Instruction {
+              op: Op::HeapZeroed,
+              arg_positions: [length_slot, vm_stack_size(&element_type), 0],
+              return_position: dest,
+            });
+          }
+          return Some(dest);
+        }
         // use the argument expression's own type — it's concrete at the
         // call site, while the signature's is const-generic
         let Type::Array(Some(size), _) = args[0].data.unwrap_known() else {
@@ -3944,6 +3970,19 @@ impl TypedExp {
               });
             }
             "into-dynamic-array" => {
+              // A zero-length source array (`~[]`) is unitlike, so the
+              // argument was stripped from the call by
+              // `remove_unitlike_arguments` — assign the empty array by
+              // resizing the region to zero.
+              if rhs_args.is_empty() {
+                let len_slot = state.emit_u32_constant(0);
+                state.push_instruction(Instruction {
+                  op: Op::DynResize,
+                  arg_positions: [memory, len_slot, 0],
+                  return_position: 0,
+                });
+                return None;
+              }
               let source = &rhs_args[0];
               let Type::Array(Some(size), _) = source.data.unwrap_known()
               else {

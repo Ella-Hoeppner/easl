@@ -1,0 +1,24 @@
+; Spoofed MIDI values read INSIDE a compute shader and written to a
+; storage var the CPU reads back (driven by the hand-written
+; `midi_gpu_read_spoofed` test): pins the storage-binding uploads of
+; every implicit MIDI var, including element fields and arrayLength of
+; the held-note list, end-to-end on the real GPU.
+@storage-write
+(var out: [6: f32])
+
+@compute
+(defn probe []
+  (= (out 0u) (midi-cc 3u))
+  (= (out 1u) (midi-aftertouch))
+  (= (out 2u) (midi-pitch-bend))
+  (= (out 3u) (f32 (length (down-midi-notes))))
+  (let [n ((down-midi-notes) 1u)]
+    (= (out 4u) (f32 n.note))
+    (= (out 5u) (+ n.velocity n.aftertouch))))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-compute-shader probe (vec3u 1u))
+                    (print out)
+                    (close-window))))

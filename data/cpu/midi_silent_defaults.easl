@@ -1,0 +1,11 @@
+; MIDI queries with no input state: the implicit `easl_midi_*` locals
+; are created on first use and report silence — CC values 0., no
+; pressure, pitch bend centered, no held notes. (Test IO managers
+; default to a silent MIDI snapshot, so this also pins that the suites
+; never touch a real device.)
+@cpu
+(defn main []
+  (print (midi-cc 1u))
+  (print (midi-aftertouch))
+  (print (midi-pitch-bend))
+  (print (length (down-midi-notes))))

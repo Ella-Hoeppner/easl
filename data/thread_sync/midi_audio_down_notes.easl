@@ -1,0 +1,16 @@
+; The audio thread iterating `down-midi-notes` — the polyphonic-synth
+; shape: bind the held-note list, loop over it by length, read each
+; element's fields.
+@audio
+(defn voice []: f32
+  (let [@var sum 0.
+        notes (down-midi-notes)]
+    (for [i (length notes)]
+      (let [n (notes i)]
+        (+= sum (* n.velocity (f32 n.note)))))
+    sum))
+
+@cpu
+(defn main []
+  (start-audio voice)
+  (spawn-window (fn [] ())))

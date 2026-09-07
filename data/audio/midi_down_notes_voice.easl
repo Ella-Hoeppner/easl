@@ -1,0 +1,16 @@
+; Driven directly by the `midi_down_notes_state_changes` test: an audio
+; entry iterating the held-note list, exercised across batches whose
+; MIDI state changes (notes pressed, pressed-into, and released between
+; batches). Velocity and per-note aftertouch both feed the sum.
+@audio
+(defn voice []: f32
+  (let [@var sum 0.
+        notes (down-midi-notes)]
+    (for [i (length notes)]
+      (let [n (notes i)]
+        (+= sum (* (+ n.velocity n.aftertouch) 0.01 (f32 n.note)))))
+    sum))
+
+@cpu
+(defn main []
+  (start-audio voice))

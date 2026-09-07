@@ -1,0 +1,17 @@
+; A dispatched closure reading the LENGTH of its captured runtime-sized
+; array: `array-length` takes its argument by reference, and
+; deexpressionification's addressable-copy wrap must not fire for
+; runtime-sized values — it would emit an invalid runtime-sized WGSL
+; local copied from the lifted capture binding (and silently deep-copy
+; whole arrays on the CPU).
+@storage-write
+(var out: [1: f32])
+
+@cpu
+(defn main []
+  (let [weights (into-dynamic-array [1. 2. 3.])]
+    (dispatch-compute-shader (fn []
+                                 (= (out 0u)
+                                    (f32 (array-length weights))))
+                             (vec3u 1u))
+    (print (out 0u))))

@@ -1,7 +1,8 @@
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
 use easl::interpreter::{
-  CpuRuntime, run_program_capturing_output_with_runtime,
+  CpuRuntime, IOEvent, MidiNoteState, MidiState, StringIO,
+  run_program_capturing_output_with_runtime, run_program_with_runtime,
 };
 use std::fs;
 use std::path::Path;
@@ -158,6 +159,7 @@ cpu_test!(into_operator);
 cpu_test!(into_builtin_conversions);
 cpu_test!(length_aliases);
 cpu_test!(into_dynamic_array_alias);
+cpu_test!(empty_dynamic_array_conversion);
 cpu_test!(into_inference_contexts);
 cpu_test!(dynamic_zeroed_array);
 cpu_test!(static_zeroed_array);
@@ -206,6 +208,8 @@ cpu_test!(const_generic_chain);
 cpu_test!(const_generic_chain_three);
 cpu_test!(audio_time_through_hof_chain);
 cpu_test!(load_wav_local_binding);
+cpu_test!(midi_silent_defaults);
+cpu_test!(for_loop_zero_iterations_lifted_condition);
 cpu_test!(assign_field_in_dyn_array_element);
 cpu_test!(const_generic_zeroed_array);
 cpu_test!(const_generic_zeroed_array_map);
@@ -248,3 +252,63 @@ cpu_test!(unit_if_compound_assignment_arms);
 cpu_test!(unit_match_compound_assignment_arms);
 cpu_test!(local_ref_capture_helper);
 cpu_test!(ref_capture_hof_arg);
+
+/// The full MIDI query surface against spoofed input state, on both
+/// runtimes: per-note velocities, CC values, pitch bend, and the
+/// held-note list (`data/cpu/midi_queries.easl`). Spoofing goes through
+/// `StringIO::spoofed_midi` — the same `IOManager::midi_state` path the
+/// live listener feeds in production.
+#[test]
+fn midi_queries_spoofed() {
+  let expected = fs::read_to_string("./data/cpu/midi_queries.txt")
+    .expect("Unable to read data/cpu/midi_queries.txt");
+  let Ok(Ok((_, Ok(mut program)))) =
+    load_easl_program_from_file(Path::new("./data/cpu/midi_queries.easl"))
+  else {
+    panic!("midi_queries: failed to load program");
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(
+    errors.is_empty(),
+    "midi_queries: compile errors: {errors:#?}"
+  );
+  let mut midi = MidiState::default();
+  midi.cc[1] = 0.25;
+  midi.channel_aftertouch = 0.125;
+  midi.pitch_bend = -0.5;
+  midi.down_notes = vec![
+    MidiNoteState {
+      note: 60,
+      velocity: 1.,
+      aftertouch: 0.75,
+    },
+    MidiNoteState {
+      note: 64,
+      velocity: 0.5,
+      aftertouch: 0.25,
+    },
+  ];
+  midi.generation = 1;
+  for (runtime, label) in [
+    (CpuRuntime::TreeWalking, "tree-walking"),
+    (CpuRuntime::BytecodeVm, "bytecode VM"),
+  ] {
+    let io = StringIO {
+      spoofed_midi: Some(midi.clone()),
+      ..StringIO::default()
+    };
+    let (io, _) =
+      run_program_with_runtime(program.clone(), None, io, None, runtime)
+        .unwrap_or_else(|e| {
+          panic!("midi_queries: evaluation error ({label}): {e:#?}")
+        });
+    let mut output = String::new();
+    for event in &io.events {
+      if let IOEvent::Print(s) = event {
+        output.push_str(s);
+        output.push('\n');
+      }
+    }
+    assert_eq!(output, expected, "midi_queries: output mismatch ({label})");
+  }
+}

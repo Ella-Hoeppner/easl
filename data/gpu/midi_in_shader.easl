@@ -1,0 +1,28 @@
+; MIDI queries inside shader code: the implicit `easl_midi_*` vars are
+; storage-read bindings with elided numbers, refreshed and marked
+; CPU-written by the main thread's per-frame refresh, so shaders read
+; them like any storage var — including the runtime-sized held-note
+; list (its `MidiNote` element struct emits to WGSL) and its
+; arrayLength.
+@storage-write
+(var out: [4: f32])
+
+(defn brightest-held []: f32
+  (let [@var brightest 0.]
+    (for [i (length (down-midi-notes))]
+      (let [n ((down-midi-notes) i)]
+        (when (> (+ n.velocity n.aftertouch) brightest)
+          (= brightest (+ n.velocity n.aftertouch)))))
+    brightest))
+
+@compute
+(defn probe []
+  (= (out 0u) (midi-cc 1u))
+  (= (out 1u) (midi-aftertouch))
+  (= (out 2u) (midi-pitch-bend))
+  (= (out 3u) (brightest-held)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-compute-shader probe (vec3u 1u)))))

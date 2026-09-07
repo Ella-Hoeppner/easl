@@ -241,6 +241,9 @@ success_test!(static_array_length);
 success_test!(length_alias_gpu);
 success_test!(storage_ref_gpu);
 success_test!(storage_ref_gpu_fragment);
+success_test!(midi_cpu_with_shader);
+success_test!(midi_in_shader);
+success_test!(midi_note_user_struct);
 error_test!(
   into_dynamic_alias_gpu_failure,
   CompileErrorKind::RuntimeSizedLocalInGpuCode
@@ -1017,4 +1020,20 @@ fn describing_pathless_position_doesnt_panic() {
     fsexp::document::DocumentPosition::new(0..0, vec![]),
   );
   assert!(description.contains("[INTERNAL CODE]"));
+}
+
+/// The `MidiNote` declaration only ships in programs that reference it:
+/// a plain shader program carries no audio-runtime types, while MIDI
+/// queries and direct uses of the struct both pull it in.
+#[test]
+fn midi_note_struct_emission_scoped() {
+  let plain = compile_shader("simple_shader").unwrap();
+  assert!(
+    !plain.contains("MidiNote"),
+    "plain shader output must not contain MidiNote"
+  );
+  let midi = compile_shader("midi_in_shader").unwrap();
+  assert!(midi.contains("struct MidiNote"));
+  let direct = compile_shader("midi_note_user_struct").unwrap();
+  assert!(direct.contains("struct MidiNote"));
 }

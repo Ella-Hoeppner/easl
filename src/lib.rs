@@ -4,6 +4,8 @@ pub mod compiler;
 pub mod external;
 pub mod format;
 pub mod interpreter;
+#[cfg(feature = "window")]
+pub mod midi;
 pub mod parse;
 pub mod thread_sync;
 pub mod vm;

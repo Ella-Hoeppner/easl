@@ -5205,6 +5205,22 @@ impl TypedExp {
                       ctx.get_variable_kind(&original_name)
                     && let Some(NameDefinitionSource::LocalBinding(_)) =
                       ctx.get_name_definition_source(&original_name)
+                    // Runtime-sized values are never wrapped in an
+                    // addressable copy: the copy is the whole array, and
+                    // in WGSL a runtime-sized local is unrepresentable —
+                    // while every runtime-sized value that legally
+                    // reaches shader code (a storage global, or a
+                    // dispatched-closure capture lifted to one) is
+                    // already addressable. Without this exemption, a
+                    // captured dyn array passed to `array-length` inside
+                    // a dispatched closure emitted
+                    // `var x: array<f32> = <lifted global>;` — invalid
+                    // WGSL — and CPU-side calls paid a silent whole-array
+                    // copy.
+                    && !arg
+                      .data
+                      .unwrap_known()
+                      .involves_runtime_sized_array()
                   {
                     let new_name = names.gensym(&original_name);
                     let body_exp = Exp {
@@ -5840,6 +5856,15 @@ impl TypedExp {
                     false
                   };
                 if need_to_extract_condition_and_update {
+                  let update_needs_extraction =
+                    if let Some(update_expression) = &update_expression {
+                      matches!(
+                        &update_expression.kind,
+                        Block(_) | Match(_, _) | Let(_, _) | Return(_)
+                      )
+                    } else {
+                      false
+                    };
                   let condition_source =
                     continue_condition_expression.source_trace.clone();
                   let mut continue_condition_replacement_expression =
@@ -5852,56 +5877,71 @@ impl TypedExp {
                     continue_condition_expression.as_mut(),
                     &mut continue_condition_replacement_expression,
                   );
+                  // The update is only relocated into the body when the
+                  // update itself needs extraction: left in the loop's
+                  // own update slot it keeps running on `continue`,
+                  // which a body-resident copy wouldn't.
                   let mut update_replacement_expression = None;
-                  std::mem::swap(
-                    update_expression,
-                    &mut update_replacement_expression,
-                  );
+                  if update_needs_extraction {
+                    std::mem::swap(
+                      update_expression,
+                      &mut update_replacement_expression,
+                    );
+                  }
                   take(body_expression.as_mut(), |body_expression| TypedExp {
                     source_trace: body_expression.source_trace.clone(),
                     data: Type::Unit.known().into(),
                     kind: ExpKind::Block({
-                      let mut inner_expressions = vec![body_expression];
+                      // The condition check comes FIRST in the rebuilt
+                      // body: the loop's own condition is now the
+                      // constant `true`, so this check is all that
+                      // stands between an empty iteration space and the
+                      // body. Appended at the end instead, every
+                      // extracted for loop became a do-while — the body
+                      // ran once even when the condition was false on
+                      // entry (real crashes: iterating an empty
+                      // `down-midi-notes` indexed out of bounds).
+                      let mut inner_expressions = vec![
+                        TypedExp {
+                          source_trace: condition_source.clone(),
+                          data: Type::Unit.known().into(),
+                          kind: ExpKind::Match(
+                            continue_condition_replacement_expression.into(),
+                            vec![
+                              (
+                                TypedExp {
+                                  data: Type::Bool.known().into(),
+                                  kind: ExpKind::BooleanLiteral(true),
+                                  source_trace: condition_source.clone(),
+                                },
+                                TypedExp {
+                                  data: Type::Unit.known().into(),
+                                  kind: ExpKind::Unit,
+                                  source_trace: condition_source.clone(),
+                                },
+                              ),
+                              (
+                                TypedExp {
+                                  data: Type::Bool.known().into(),
+                                  kind: ExpKind::Wildcard,
+                                  source_trace: condition_source.clone(),
+                                },
+                                TypedExp {
+                                  data: Type::Unit.known().into(),
+                                  kind: ExpKind::Break,
+                                  source_trace: condition_source.clone(),
+                                },
+                              ),
+                            ],
+                          ),
+                        },
+                        body_expression,
+                      ];
                       if let Some(update_replacement_expression) =
                         update_replacement_expression
                       {
                         inner_expressions.push(*update_replacement_expression);
                       }
-                      inner_expressions.push(TypedExp {
-                        source_trace: continue_condition_replacement_expression
-                          .source_trace
-                          .clone(),
-                        data: Type::Unit.known().into(),
-                        kind: ExpKind::Match(
-                          continue_condition_replacement_expression.into(),
-                          vec![
-                            (
-                              TypedExp {
-                                data: Type::Bool.known().into(),
-                                kind: ExpKind::BooleanLiteral(true),
-                                source_trace: condition_source.clone(),
-                              },
-                              TypedExp {
-                                data: Type::Unit.known().into(),
-                                kind: ExpKind::Unit,
-                                source_trace: condition_source.clone(),
-                              },
-                            ),
-                            (
-                              TypedExp {
-                                data: Type::Bool.known().into(),
-                                kind: ExpKind::Wildcard,
-                                source_trace: condition_source.clone(),
-                              },
-                              TypedExp {
-                                data: Type::Unit.known().into(),
-                                kind: ExpKind::Break,
-                                source_trace: condition_source.clone(),
-                              },
-                            ),
-                          ],
-                        ),
-                      });
                       inner_expressions
                     }),
                   });

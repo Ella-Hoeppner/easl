@@ -83,6 +83,7 @@ macro_rules! buffer_test {
   };
 }
 
+buffer_test!(dispatch_capture_array_length);
 buffer_test!(storage_ref_gpu_roundtrip);
 buffer_test!(bidirectional_transfer);
 buffer_test!(bidirectional_transfer_windowless);
@@ -226,6 +227,56 @@ fn gpu_window_info_spoofed() {
     assert!(errors.is_empty(), "compile errors: {errors:#?}");
     let mut io = CaptureIO::new();
     io.spoofed_window_info = Some(spoof.clone());
+    let (io, _) = run_program_with_runtime(
+      program,
+      None,
+      io,
+      source_path.parent().map(|p| p.to_path_buf()),
+      runtime,
+    )
+    .unwrap();
+    assert_eq!(io.prints, vec![expected.clone()], "runtime {runtime:?}");
+  }
+}
+
+/// Spoofed MIDI values read inside a compute shader and printed back on
+/// the CPU (`data/buffer/midi_gpu_read.easl`): the implicit MIDI
+/// storage bindings upload through the ordinary dirty-upload machinery
+/// on both runtimes.
+#[test]
+fn midi_gpu_read_spoofed() {
+  use easl::interpreter::{
+    CaptureIO, MidiNoteState, MidiState, run_program_with_runtime,
+  };
+  let source_path_str = "./data/buffer/midi_gpu_read.easl";
+  let source_path = Path::new(&source_path_str);
+  let mut midi = MidiState::default();
+  midi.cc[3] = 0.25;
+  midi.channel_aftertouch = 0.125;
+  midi.pitch_bend = -0.5;
+  midi.down_notes = vec![
+    MidiNoteState {
+      note: 60,
+      velocity: 1.,
+      aftertouch: 0.,
+    },
+    MidiNoteState {
+      note: 64,
+      velocity: 0.5,
+      aftertouch: 0.25,
+    },
+  ];
+  midi.generation = 1;
+  let expected = "[0.25 0.125 -0.5 2. 64. 0.75]".to_string();
+  for runtime in [CpuRuntime::TreeWalking, CpuRuntime::BytecodeVm] {
+    let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
+    else {
+      panic!("failed to load program")
+    };
+    let errors = program.validate_raw_program(CompilerTarget::WGSL);
+    assert!(errors.is_empty(), "compile errors: {errors:#?}");
+    let mut io = CaptureIO::new();
+    io.spoofed_midi = Some(midi.clone());
     let (io, _) = run_program_with_runtime(
       program,
       None,

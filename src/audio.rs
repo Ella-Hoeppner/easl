@@ -331,6 +331,21 @@ pub struct VmAudioDriver {
   /// Slot of the implicit `easl_sample_rate` var, present iff the program
   /// calls `(sample-rate)`. Written once per batch.
   rate_slot: Option<usize>,
+  /// Slots/region of the implicit `easl_midi_*` vars, present iff the
+  /// program queries MIDI. Refreshed once per batch from the live
+  /// listener (or `midi_override`).
+  midi_cc_slot: Option<usize>,
+  midi_aftertouch_slot: Option<usize>,
+  midi_pitch_bend_slot: Option<usize>,
+  midi_down_notes_region: Option<usize>,
+  /// Generation of the MIDI snapshot last written into the replica —
+  /// batches where no MIDI events arrived skip all refresh work.
+  last_midi_generation: Option<u64>,
+  /// When set, MIDI refreshes read this instead of the live listener —
+  /// the deterministic path for tests (which must never touch real MIDI
+  /// devices; setting it also keeps the process-global listener from
+  /// ever starting).
+  pub midi_override: Option<Arc<crate::interpreter::MidiState>>,
   shared_table: Option<Arc<ThreadSharedTable>>,
   sample_index: u64,
 }
@@ -354,6 +369,21 @@ impl VmAudioDriver {
     let rate_slot = program
       .get_global_slot("easl_sample_rate")
       .map(|(slot, _)| slot as usize);
+    let midi_cc_slot = program
+      .get_global_slot("easl_midi_cc")
+      .map(|(slot, _)| slot as usize);
+    let midi_aftertouch_slot = program
+      .get_global_slot("easl_midi_aftertouch")
+      .map(|(slot, _)| slot as usize);
+    let midi_pitch_bend_slot = program
+      .get_global_slot("easl_midi_pitch_bend")
+      .map(|(slot, _)| slot as usize);
+    let midi_down_notes_region = program
+      .code
+      .dyn_memory_regions
+      .iter()
+      .find(|(name, _, _)| &**name == "easl_midi_down_notes")
+      .map(|(_, region, _)| *region as usize);
     Ok(Self {
       program,
       function_names: function_names.to_vec(),
@@ -363,9 +393,59 @@ impl VmAudioDriver {
       arg_position,
       time_slot,
       rate_slot,
+      midi_cc_slot,
+      midi_aftertouch_slot,
+      midi_pitch_bend_slot,
+      midi_down_notes_region,
+      last_midi_generation: None,
+      midi_override: None,
       shared_table,
       sample_index: 0,
     })
+  }
+
+  /// Refreshes the audio replica's copies of the implicit `easl_midi_*`
+  /// vars from the current MIDI snapshot, once per batch. Lock-free and
+  /// allocation-free in the steady state: the snapshot load is an
+  /// `arc_swap` read, and the generation check skips everything (including
+  /// the one allocation, the down-notes region rebuild) until a MIDI
+  /// event actually arrives.
+  fn refresh_midi(&mut self) {
+    if self.midi_cc_slot.is_none()
+      && self.midi_aftertouch_slot.is_none()
+      && self.midi_pitch_bend_slot.is_none()
+      && self.midi_down_notes_region.is_none()
+    {
+      return;
+    }
+    let midi = match &self.midi_override {
+      Some(state) => state.clone(),
+      None => crate::midi::current_midi_state(),
+    };
+    if self.last_midi_generation == Some(midi.generation) {
+      return;
+    }
+    self.last_midi_generation = Some(midi.generation);
+    if let Some(slot) = self.midi_cc_slot {
+      for (i, value) in midi.cc.iter().enumerate() {
+        self.program.stack[slot + i] = value.to_bits();
+      }
+    }
+    if let Some(slot) = self.midi_aftertouch_slot {
+      self.program.stack[slot] = midi.channel_aftertouch.to_bits();
+    }
+    if let Some(slot) = self.midi_pitch_bend_slot {
+      self.program.stack[slot] = midi.pitch_bend.to_bits();
+    }
+    if let Some(region) = self.midi_down_notes_region {
+      self.program.dyn_memory[region] = crate::vm::bytecode::DynMemory::Words(
+        midi
+          .down_notes
+          .iter()
+          .flat_map(|n| [n.note, n.velocity.to_bits(), n.aftertouch.to_bits()])
+          .collect(),
+      );
+    }
   }
 
   /// Re-points the driver at a different entry function in its program, by
@@ -419,6 +499,7 @@ impl VmAudioDriver {
     if let Some(slot) = self.rate_slot {
       self.program.stack[slot] = rate.to_bits();
     }
+    self.refresh_midi();
     for _ in 0..frames {
       // The audio entry takes at most one f32 arg, `t`, living just past
       // the reserved return slot at the frame start. Zero-arg entries

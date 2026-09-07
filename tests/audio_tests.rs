@@ -187,3 +187,69 @@ fn vm_audio_driver_entry_switch() {
 
   assert!(driver.switch_entry("no-such-entry").is_err());
 }
+
+/// The audio thread iterating `down-midi-notes` across batches whose
+/// MIDI state CHANGES — notes pressed and released between callbacks
+/// (each change bumps the snapshot generation, so the driver rewrites
+/// the down-notes region). Mimics a real controller session; drives
+/// `VmAudioDriver` directly rather than opening a cpal stream.
+#[test]
+fn midi_down_notes_state_changes() {
+  use easl::audio::VmAudioDriver;
+  use easl::interpreter::{MidiNoteState, MidiState};
+  use std::sync::Arc;
+  let source_path = Path::new("./data/audio/midi_down_notes_voice.easl");
+  let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
+  else {
+    panic!("failed to load program");
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  let (audio_program, audio_names) =
+    program.clone().compile_to_bytecode_program();
+  let mut driver =
+    VmAudioDriver::new("voice", audio_program, &audio_names, None)
+      .expect("failed to build audio driver");
+
+  let note = |note: u32, velocity: f32, aftertouch: f32| MidiNoteState {
+    note,
+    velocity,
+    aftertouch,
+  };
+  let mut midi = MidiState::default();
+  let mut generation = 0u64;
+  let mut states: Vec<Arc<MidiState>> = vec![];
+  // batch 1: silence; batch 2: two notes; batch 3: one released, the
+  // other gaining aftertouch; batch 4: all released; batch 5: a new note
+  states.push(Arc::new(midi.clone()));
+  midi.down_notes = vec![note(60, 1., 0.), note(64, 0.5, 0.)];
+  generation += 1;
+  midi.generation = generation;
+  states.push(Arc::new(midi.clone()));
+  midi.down_notes = vec![note(60, 1., 0.5)];
+  generation += 1;
+  midi.generation = generation;
+  states.push(Arc::new(midi.clone()));
+  midi.down_notes = vec![];
+  generation += 1;
+  midi.generation = generation;
+  states.push(Arc::new(midi.clone()));
+  midi.down_notes = vec![note(72, 1., 0.)];
+  generation += 1;
+  midi.generation = generation;
+  states.push(Arc::new(midi.clone()));
+
+  let expected_per_batch: Vec<f32> =
+    vec![0., 60. * 0.01 + 64. * 0.005, 1.5 * 60. * 0.01, 0., 0.72];
+  for (state, expected) in states.into_iter().zip(expected_per_batch) {
+    driver.midi_override = Some(state);
+    let mut samples: Vec<f32> = vec![];
+    driver.run_batch(4, 8., |s| samples.push(s), |_| {}, |_| {});
+    for sample in samples {
+      assert!(
+        (sample - expected).abs() < 1e-6,
+        "expected {expected}, got {sample}"
+      );
+    }
+  }
+}
