@@ -4531,6 +4531,35 @@ impl Program {
         }
         match &borrowed_f.implementation {
           FunctionImplementationKind::Composite(implementation) => {
+            // A lambda nested inside an already-extracted closure body
+            // refers to the enclosing closure's captures as fields of the
+            // enclosing scope param. Capturing that param *whole* would
+            // make the nested lambda's scope-construction site pass the
+            // bare scope value — a shape the dispatched/audio capture
+            // lifts can't express (the param is removed and its fields
+            // live in per-capture globals) — so such captures are split
+            // into the individual fields the lambda actually reads.
+            let enclosing_scope: Option<(Arc<str>, Type)> =
+              if let Some(scope_struct) = borrowed_f.captured_scope.as_ref() {
+                implementation.read().unwrap().arg_names.last().map(
+                  |(scope_param_name, _)| {
+                    (
+                      scope_param_name.clone(),
+                      AbstractType::AbstractStruct(Arc::new(
+                        scope_struct.clone(),
+                      ))
+                      .concretize(
+                        &vec![],
+                        &self.typedefs,
+                        scope_struct.source_trace.clone(),
+                      )
+                      .unwrap(),
+                    )
+                  },
+                )
+              } else {
+                None
+              };
             let mut root_encountered = false;
             implementation
               .write()
@@ -4559,6 +4588,34 @@ impl Program {
                     }) {
                       return Ok(true);
                     }
+                    // Fields of the enclosing closure's scope this lambda
+                    // reads (access chains rooted at the enclosing scope
+                    // param), captured individually in place of the whole
+                    // scope param.
+                    let mut scope_field_captures: Vec<(Arc<str>, Type)> =
+                      vec![];
+                    if let Some((scope_param_name, _)) = &enclosing_scope {
+                      body
+                        .walk(&mut |e| {
+                          if let ExpKind::Access(
+                            Accessor::Field(field_name),
+                            inner,
+                          ) = &e.kind
+                            && matches!(
+                              &inner.kind,
+                              ExpKind::Name(n) if n == scope_param_name
+                            )
+                            && !scope_field_captures
+                              .iter()
+                              .any(|(existing, _)| existing == field_name)
+                          {
+                            scope_field_captures
+                              .push((field_name.clone(), e.data.unwrap_known()));
+                          }
+                          Ok::<bool, Never>(true)
+                        })
+                        .unwrap();
+                    }
                     let name = self.names.write().unwrap().gensym("inner_fn");
                     let Type::Function(f_signature) = exp.data.unwrap_known()
                     else {
@@ -4568,13 +4625,32 @@ impl Program {
                       Arc<str>,
                       (Arc<str>, Arc<RwLock<AbstractFunctionSignature>>),
                     > = HashMap::new();
-                    let captured_vars: Vec<(&Arc<str>, Type, Ownership)> =
+                    let captured_vars: Vec<(Arc<str>, Type, Ownership)> =
                       effects
                         .0
                         .iter()
                         .map(|e| match e {
                           Effect::ReadsVar(var_name)
                           | Effect::ReadsArrayLength(var_name) => {
+                            if let Some((scope_param_name, _)) =
+                              &enclosing_scope
+                              && var_name == scope_param_name
+                            {
+                              // The scope param is compiler-minted, so
+                              // every reference to it is a field access;
+                              // a read effect with no field accesses
+                              // means some pass produced a bare scope
+                              // reference this splitting can't see.
+                              assert!(
+                                !scope_field_captures.is_empty(),
+                                "closure reads enclosing scope param \
+                                 `{var_name}` but its body contains no \
+                                 field accesses rooted at it — \
+                                 extraction's field-splitting invariant \
+                                 violated"
+                              );
+                              return Ok(None);
+                            }
                             Ok(match ctx.variables.get(var_name) {
                               Some((var, _)) => {
                                 let var_type = var.var_type.unwrap_known();
@@ -4598,7 +4674,7 @@ impl Program {
                                   None
                                 } else {
                                   Some((
-                                    var_name,
+                                    var_name.clone(),
                                     var.var_type.unwrap_known(),
                                     var.var_type.ownership,
                                   ))
@@ -4635,13 +4711,32 @@ impl Program {
                     // A variable read both by element access and by
                     // `array-length` contributes two effects — capture it
                     // only once.
-                    let mut seen_captured_names: HashSet<&Arc<str>> =
+                    let mut seen_captured_names: HashSet<Arc<str>> =
                       HashSet::new();
-                    let captured_vars: Vec<(&Arc<str>, Type, Ownership)> =
+                    let mut captured_vars: Vec<(Arc<str>, Type, Ownership)> =
                       captured_vars
                         .into_iter()
-                        .filter(|(name, _, _)| seen_captured_names.insert(name))
+                        .filter(|(name, _, _)| {
+                          seen_captured_names.insert(name.clone())
+                        })
                         .collect();
+                    // The split fields join the ordinary captures (their
+                    // names can't collide with locals — scope field names
+                    // are the enclosing closure's deshadowed local names).
+                    let scope_split_fields: HashSet<Arc<str>> =
+                      scope_field_captures
+                        .iter()
+                        .map(|(field_name, _)| field_name.clone())
+                        .collect();
+                    for (field_name, field_type) in scope_field_captures {
+                      if seen_captured_names.insert(field_name.clone()) {
+                        captured_vars.push((
+                          field_name,
+                          field_type,
+                          Ownership::Owned,
+                        ));
+                      }
+                    }
                     let captured_scope = if captured_vars.is_empty() {
                       None
                     } else {
@@ -4662,7 +4757,7 @@ impl Program {
                             attributes: IOAttributes::empty(
                               exp.source_trace.clone(),
                             ),
-                            name: (**name).clone(),
+                            name: (*name).clone(),
                             field_type: AbstractType::Type(t.clone()),
                             source_trace: exp.source_trace.clone(),
                           })
@@ -4795,10 +4890,32 @@ impl Program {
                               body
                                 .walk_mut(&mut |e| {
                                   if let ExpKind::Name(name) = &mut e.kind {
-                                    if let Some((_, captured_type, _)) =
+                                    if let Some((
+                                      enclosing_scope_param,
+                                      _,
+                                    )) = &enclosing_scope
+                                      && name == enclosing_scope_param
+                                      && !scope_split_fields.is_empty()
+                                    {
+                                      // Access chains rooted at the
+                                      // enclosing scope param survive as
+                                      // accesses of the same-named fields
+                                      // on this lambda's own scope.
+                                      *name = scope_name.clone();
+                                      e.data = {
+                                        let mut t: ExpTypeInfo =
+                                          concrete_captured_scope_type
+                                            .clone()
+                                            .known()
+                                            .into();
+                                        t.ownership =
+                                          Ownership::MutableReference;
+                                        t
+                                      };
+                                    } else if let Some((_, captured_type, _)) =
                                       captured_vars
                                         .iter()
-                                        .find(|(arg_name, _, _)| *arg_name == name)
+                                        .find(|(arg_name, _, _)| arg_name == name)
                                     {
                                       // The reference keeps the Name node's
                                       // own type, whose abstract ancestor
@@ -4936,9 +5053,32 @@ impl Program {
                             .map(|(name, t, ownership)| {
                               let mut data: ExpTypeInfo = t.known().into();
                               data.ownership = ownership;
+                              let kind = if scope_split_fields.contains(&name)
+                                && let Some((
+                                  enclosing_scope_param,
+                                  enclosing_scope_type,
+                                )) = &enclosing_scope
+                              {
+                                let mut scope_data: ExpTypeInfo =
+                                  enclosing_scope_type.clone().known().into();
+                                scope_data.ownership =
+                                  Ownership::MutableReference;
+                                ExpKind::Access(
+                                  Accessor::Field(name.clone()),
+                                  Box::new(Exp {
+                                    data: scope_data,
+                                    kind: ExpKind::Name(
+                                      enclosing_scope_param.clone(),
+                                    ),
+                                    source_trace: exp.source_trace.clone(),
+                                  }),
+                                )
+                              } else {
+                                ExpKind::Name(name.clone())
+                              };
                               Exp {
                                 data,
-                                kind: ExpKind::Name(name.clone()),
+                                kind,
                                 source_trace: exp.source_trace.clone(),
                               }
                             })

@@ -1,0 +1,17 @@
+; A lambda nested inside another closure's body, capturing both a local
+; of that body and a capture of the enclosing closure: the enclosing
+; scope param is captured field-split, and behavior is identical on both
+; runtimes.
+(defn apply-f [f: (Fn [f32] f32)
+               x: f32]: f32
+  (f x))
+
+@cpu
+(defn main []
+  (let [outer 2.
+        wrapper (fn []
+                    (let [local 3.]
+                      (apply-f (fn [x]
+                                   (* outer (+ local x)))
+                               1.)))]
+    (print (wrapper))))

@@ -1,0 +1,12 @@
+main-publish: <audio-scope>_gain
+main-publish: <audio-scope>_phase
+start-audio: <audio-closure>
+spawn-window
+frame 0
+audio-batch 0 x4
+audio-adopt: <audio-scope>_gain
+audio-adopt: <audio-scope>_phase
+samples: 0.0625 0.125 0.1875 0.25
+audio-publish: <audio-scope>_phase
+frame 1
+main-adopt: <audio-scope>_phase

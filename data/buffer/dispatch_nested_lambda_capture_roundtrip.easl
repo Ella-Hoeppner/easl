@@ -1,0 +1,21 @@
+; Runtime round trip of the nested-lambda-capturing-an-outer-capture
+; shape: the nested lambda's split capture of the dispatched closure's
+; scope reads the lifted binding on the GPU.
+(defn apply-f [f: (Fn [f32] f32)
+               x: f32]: f32
+  (f x))
+
+@storage-write
+(var out: [1: f32])
+
+@cpu
+(defn main []
+  (let [outer 2.]
+    (dispatch-compute-shader (fn []
+                                 (let [local 3.]
+                                   (= (out 0u)
+                                      (apply-f (fn [x]
+                                                   (* outer (+ local x)))
+                                               1.))))
+                             (vec3u 1u))
+    (print (out 0u))))

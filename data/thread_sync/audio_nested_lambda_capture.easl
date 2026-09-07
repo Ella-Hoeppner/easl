@@ -1,0 +1,18 @@
+; An audio entry closure whose body constructs a lambda capturing one of
+; the entry's own captures (a field-split capture of the enclosing scope
+; param) and passes it to a higher-order function per sample.
+(defn apply-f [f: (Fn [f32] f32)
+               x: f32]: f32
+  (f x))
+
+(defn make-voice [gain: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+        (= phase (+ phase 0.125))
+        (apply-f (fn [x] (* gain x))
+                 phase))))
+
+@cpu
+(defn main []
+  (start-audio (make-voice 0.5))
+  (spawn-window (fn [] ())))

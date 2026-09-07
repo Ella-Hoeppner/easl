@@ -1,0 +1,28 @@
+; A lambda nested inside a dispatched body capturing both a local of that
+; body AND a capture of the dispatched closure: the nested lambda's
+; capture of the enclosing scope param is split into the individual
+; fields it reads (extract_inner_functions), so its scope-construction
+; arg is an ordinary scope-field access the capture lift rewrites to a
+; lifted-global read.
+(defn apply-f [f: (Fn [f32] f32)
+               x: f32]: f32
+  (f x))
+
+(defn frag []: vec4f
+  (vec4f 1.))
+
+@cpu
+(defn main []
+  (spawn-window
+   (fn []
+       (let [outer 2.]
+         (dispatch-render-shaders
+          (fn []
+              (let [local (f32 (vertex-index))]
+                (vec4f (apply-f (fn [x] (* outer (+ local x)))
+                                1.)
+                       0.
+                       0.
+                       1.)))
+          frag
+          3)))))
