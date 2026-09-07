@@ -135,6 +135,7 @@ buffer_test!(offscreen_render_compute_order);
 buffer_test!(dispatch_from_scoped_frame_closure);
 buffer_test!(save_png_roundtrip);
 buffer_test!(save_png_render_target);
+buffer_test!(dispatch_captured_closure_hof);
 buffer_test!(dispatch_closure_captures_dynamic_array);
 buffer_test!(dispatch_closure_captures_two_dynamic_arrays);
 buffer_test!(dispatch_closure_captures_closure_with_dynamic_array);

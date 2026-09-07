@@ -1,0 +1,23 @@
+; Closures captured by other closures, passed onward as higher-order
+; arguments: the capture's scope-field reference carries the closure's
+; abstract ancestor (stamped at extraction), so higher-order inlining
+; specializes these calls like any others. The stateful shape pins the
+; mutable write-back through the receiver chain on both runtimes.
+(defn apply-twice [f: (Fn [f32] f32)
+                   x: f32]: f32
+  (f (f x)))
+
+@cpu
+(defn main []
+  (let [scale 2.
+        helper (fn [x: f32]
+                   (* scale x))
+        wrapper (fn [] (apply-twice helper 3.))]
+    (print (wrapper)))
+  (let [@var total 0.
+        accum (fn [x: f32]
+                  (+= total x)
+                  total)
+        wrapper (fn [] (apply-twice accum 3.))]
+    (print (wrapper))
+    (print (wrapper))))

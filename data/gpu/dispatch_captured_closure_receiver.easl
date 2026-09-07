@@ -1,0 +1,27 @@
+; A closure captured by a dispatched closure, passed *onward* as a
+; higher-order argument inside the dispatched body: the receiving
+; specialization gets a clone with the closure-valued param removed
+; (`cloneify_closure_receiver`), composing with the family clone that
+; reads the lifted capture binding.
+(defn frag []: vec4f
+  (vec4f 1.))
+
+(defn apply-twice [f: (Fn [f32] f32)
+                   x: f32]: f32
+  (f (f x)))
+
+@cpu
+(defn main []
+  (spawn-window
+   (fn []
+       (let [scale 2.
+             helper (fn [x: f32]
+                        (* scale x))]
+         (dispatch-render-shaders
+          (fn []
+              (vec4f (apply-twice helper (f32 (vertex-index)))
+                     0.
+                     0.
+                     1.))
+          frag
+          3)))))

@@ -245,6 +245,9 @@ success_test!(midi_cpu_with_shader);
 success_test!(midi_in_shader);
 success_test!(midi_note_user_struct);
 success_test!(dispatch_captured_hof_closure);
+success_test!(dispatch_captured_hof_scoped_lambda);
+success_test!(dispatch_captured_closure_receiver);
+success_test!(audio_captured_closure_receiver);
 error_test!(
   into_dynamic_alias_gpu_failure,
   CompileErrorKind::RuntimeSizedLocalInGpuCode

@@ -182,6 +182,7 @@ cpu_test!(cpu_only_bool_var);
 // boundaries, where the ids must be owned shares rather than borrows of
 // the allocation site (see `HeapCopyPlan`).
 cpu_test!(dyn_field_struct_across_calls);
+cpu_test!(closure_capture_hof);
 cpu_test!(closure_dyn_capture_across_calls);
 // Whole-enum copies of heap payloads: payload offsets depend on the
 // runtime discriminant, so the release/promote fixups are emitted as a

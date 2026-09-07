@@ -1,0 +1,15 @@
+; The audio-lift sibling of dispatch_captured_closure_receiver: a closure
+; captured by an audio entry closure, passed onward as a higher-order
+; argument inside the entry body.
+(defn apply-twice [f: (Fn [f32] f32)
+                   x: f32]: f32
+  (f (f x)))
+
+(defn make-voice [scale: f32]: (Fn [] f32)
+  (let [shape (fn [x: f32]
+                  (* scale x))]
+    (fn [] (apply-twice shape 0.25))))
+
+@cpu
+(defn main []
+  (start-audio (make-voice 2.)))

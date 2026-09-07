@@ -643,6 +643,7 @@ thread_sync_test!(
   audio_hof_captured_closure,
   [Frame, AudioBatch(4), Frame, AudioBatch(4)]
 );
+thread_sync_test!(audio_captured_closure_hof, [Frame, AudioBatch(4), Frame]);
 thread_sync_test!(
   local_never_shared,
   [Frame, AudioBatch(2), Frame, AudioBatch(2)]

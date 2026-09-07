@@ -1,0 +1,22 @@
+; A closure captured by a dispatched compute closure is passed *onward*
+; to a higher-order function inside the dispatched body: the receiving
+; specialization's clone (closure-valued param removed) composes with
+; the family clone reading the lifted capture binding, and the result
+; round-trips through a real GPU dispatch.
+(defn apply-twice [f: (Fn [f32] f32)
+                   x: f32]: f32
+  (f (f x)))
+
+@storage-write
+(var out: [1: f32])
+
+@cpu
+(defn main []
+  (let [scale 2.
+        helper (fn [x: f32]
+                   (* scale x))]
+    (dispatch-compute-shader (fn []
+                                 (= (out 0u)
+                                    (apply-twice helper 3.)))
+                             (vec3u 1u))
+    (print (out 0u))))

@@ -1,0 +1,12 @@
+main-publish: <audio-scope>_accum_total
+main-publish: <audio-scope>_increment
+start-audio: <audio-closure>
+spawn-window
+frame 0
+audio-batch 0 x4
+audio-adopt: <audio-scope>_accum_total
+audio-adopt: <audio-scope>_increment
+samples: 0.125 0.375 0.875 1
+audio-publish: <audio-scope>_accum_total
+frame 1
+main-adopt: <audio-scope>_accum_total

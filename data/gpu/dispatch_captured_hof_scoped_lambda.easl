@@ -1,0 +1,25 @@
+; A *scoped* lambda passed as the HoF arg to a captured closure inside a
+; dispatched body: the specialization keeps the lambda's scope param
+; (ordinary ptr<function> convention), composed with the capture-lift's
+; family clone reading the lifted globals.
+(defn frag []: vec4f
+  (vec4f 1.))
+
+@cpu
+(defn main []
+  (spawn-window
+   (fn []
+       (let [scale 2.
+             helper (fn [x: f32
+                         f: (Fn [f32] f32)]
+                        (* scale (f x)))]
+         (dispatch-render-shaders
+          (fn []
+              (let [offset 3.]
+                (vec4f (helper (f32 (vertex-index))
+                               (fn [x] (+ x offset)))
+                       0.
+                       0.
+                       1.)))
+          frag
+          3)))))

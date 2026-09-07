@@ -221,6 +221,14 @@ pub enum CompileErrorKind {
      the value"
   )]
   EscapingClosureCapturesRefArg(String),
+  #[error(
+    "the captured closure `{0}` can only be called or passed to a \
+     function here — inside a dispatched or audio closure, a captured \
+     closure's state is lifted into per-capture globals, so the closure \
+     no longer exists as a value that can be stored or built into a data \
+     structure"
+  )]
+  CapturedClosureUsedAsValue(String),
   #[error("Match expression missing scrutinee")]
   MatchMissingScrutinee,
   #[error("Match expression missing arms")]
@@ -688,6 +696,10 @@ impl PartialEq for CompileErrorKind {
       (
         Self::EscapingClosureCapturesRefArg(l0),
         Self::EscapingClosureCapturesRefArg(r0),
+      ) => l0 == r0,
+      (
+        Self::CapturedClosureUsedAsValue(l0),
+        Self::CapturedClosureUsedAsValue(r0),
       ) => l0 == r0,
       (
         Self::UnsatisfiedTypeConstraint(l0),

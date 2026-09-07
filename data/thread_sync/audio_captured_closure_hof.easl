@@ -1,0 +1,20 @@
+; An audio entry closure passing its captured *stateful* closure onward
+; to a higher-order function: the receiver clone composes with the
+; family clone, and the accumulator's captured state — lifted to a
+; shared global — mutates per sample through the receiver chain and
+; publishes at batch boundaries.
+(defn apply-twice [f: (Fn [f32] f32)
+                   x: f32]: f32
+  (f (f x)))
+
+(defn make-voice [increment: f32]: (Fn [] f32)
+  (let [@var total 0.
+        accum (fn [x: f32]
+                  (+= total x)
+                  total)]
+    (fn [] (apply-twice accum increment))))
+
+@cpu
+(defn main []
+  (start-audio (make-voice 0.0625))
+  (spawn-window (fn [] ())))
