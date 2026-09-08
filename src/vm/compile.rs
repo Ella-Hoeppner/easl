@@ -2172,6 +2172,40 @@ impl BytecodeCompilationState {
         }
         Some(dest)
       }
+      "reverse" => {
+        let Type::Array(_, element_type) = return_type else {
+          panic!("reverse return type wasn't an array")
+        };
+        let element_type = element_type.unwrap_known();
+        let dest = self.take_stack_slot(1);
+        let heap_element = is_heap_value_type(&element_type);
+        let stride_marker = if heap_element {
+          0
+        } else {
+          vm_stack_size(&element_type)
+        };
+        let fixups = if heap_element {
+          None
+        } else {
+          Self::embedding_element_fixups(&element_type)
+        };
+        if fixups.is_some() {
+          self.emit_container_dest_hygiene(dest, return_type);
+        }
+        self.push_instruction(Instruction {
+          op: Op::HeapReverse,
+          arg_positions: [arg_positions[0], 0, stride_marker],
+          return_position: dest,
+        });
+        if let Some(fixups) = fixups {
+          self.emit_reown_container_elements(
+            EmbeddingContainer::Cell(dest),
+            stride_marker,
+            &fixups,
+          );
+        }
+        Some(dest)
+      }
       "substr" => {
         let result = self.take_stack_slot(1);
         self.push_instruction(Instruction {

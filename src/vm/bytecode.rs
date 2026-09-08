@@ -238,6 +238,13 @@ pub enum Op {
   /// `HeapFromSlots`. Two flat `Zeroed` sources stay lazily zeroed: args
   /// [a_id_slot, b_id_slot, stride] → dest id slot
   HeapConcat,
+  /// `(reverse arr)` — a fresh cell with `arr`'s elements in reverse
+  /// order. `stride` 0 marks heap-backed elements (the new `Cells` own
+  /// `Arc` shares of the source's); flat embedded heap ids are borrowed
+  /// and the compiler follows with a whole-result re-own loop. A flat
+  /// `Zeroed` source stays lazily zeroed (reversal of zeros is a no-op):
+  /// args [arr_id_slot, _, stride] → dest id slot
+  HeapReverse,
   /// Fresh id sharing `src`'s payload (value-semantics copy; O(1)):
   /// args [src_id_slot, _, _] → dest id slot
   HeapCopy,
@@ -488,6 +495,7 @@ impl Instruction {
         .return_position
         .max(self.arg_positions[0])
         .max(self.arg_positions[1]),
+      Op::HeapReverse => self.return_position.max(self.arg_positions[0]),
       Op::HeapZeroed | Op::HeapZeroedCells => {
         self.return_position.max(self.arg_positions[0])
       }
@@ -1967,6 +1975,40 @@ impl BytecodeProgram {
               }
             }
             DynMemory::Words(words)
+          };
+          let cell = Arc::new(HeapCell {
+            memory,
+            stride: if cells_element { 1 } else { stride },
+          });
+          release_cell!(instruction.return_position);
+          stack[instruction.return_position as usize] = alloc_cell!(cell);
+        }
+        Op::HeapReverse => {
+          let [arr_slot, _, stride] = instruction.arg_positions;
+          let cells_element = stride == 0;
+          let flat_stride = (stride as usize).max(1);
+          let memory = match deref_cell!(arr_slot).map(|cell| &cell.memory) {
+            None => {
+              if cells_element {
+                DynMemory::Cells(vec![])
+              } else {
+                DynMemory::Words(vec![])
+              }
+            }
+            Some(DynMemory::Cells(cells)) => {
+              let mut cells = cells.clone();
+              cells.reverse();
+              DynMemory::Cells(cells)
+            }
+            // reversal of all-zeros is a no-op — keep it lazy
+            Some(zeroed @ DynMemory::Zeroed { .. }) => zeroed.clone(),
+            Some(DynMemory::Words(words)) => {
+              let mut reversed = Vec::with_capacity(words.len());
+              for block in words.chunks(flat_stride).rev() {
+                reversed.extend_from_slice(block);
+              }
+              DynMemory::Words(reversed)
+            }
           };
           let cell = Arc::new(HeapCell {
             memory,

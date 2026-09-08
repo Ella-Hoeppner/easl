@@ -3215,6 +3215,7 @@ impl Program {
                             | "insert"
                             | "remove"
                             | "concat"
+                            | "reverse"
                         );
                       // The dynamic-array constructors are VM-native, so
                       // audio code may call them (allocating on the audio

@@ -187,6 +187,7 @@ cpu_test!(dyn_array_push_insert_remove);
 cpu_test!(dyn_array_push_embedded_heap);
 cpu_test!(dyn_array_concat);
 cpu_test!(dyn_array_concat_embedded_heap);
+cpu_test!(dyn_array_reverse);
 cpu_test!(nested_closure_outer_capture);
 cpu_test!(closure_dyn_capture_across_calls);
 // Whole-enum copies of heap payloads: payload offsets depend on the

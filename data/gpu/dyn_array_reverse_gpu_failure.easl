@@ -1,0 +1,17 @@
+; array `reverse` in GPU code returns a runtime-sized array, which GPU
+; code can't hold as a local — rejected by the runtime-sized validation.
+@storage-write
+(var out: [1: f32])
+
+@storage
+(var src: [f32])
+
+@compute
+(defn bad []
+  (let [flipped: [f32] (reverse src)]
+    (= (out 0u) (flipped 0u))))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-compute-shader bad (vec3u 1u)))))

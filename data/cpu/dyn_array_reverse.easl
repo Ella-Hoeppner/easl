@@ -1,0 +1,36 @@
+; Array `reverse`: value-semantics (source untouched), covers flat,
+; lazily-zeroed (stays lazy — reversal of zeros is a no-op), empty,
+; nested Cells, struct elements, and enum-with-dyn-payload (embedded heap
+; ids, re-own loop + COW independence).
+(struct Pt
+  x: f32
+  y: f32)
+
+(enum (Option T)
+  (Some T)
+  None)
+
+(defn (print-opt-arrs) [arrs: [(Option [f32])]]
+  (for [i (array-length arrs)]
+    (match (arrs i)
+      (Some inner) (print inner)
+      None (print "none"))))
+
+@cpu
+(defn main []
+  (let [a ~[1. 2. 3. 4.]
+        r (reverse a)]
+    (print a)
+    (print r))
+  (print (reverse ~[7u]))
+  (let [e: [f32] ~[]]
+    (print (reverse e)))
+  (let [z (zeroed-array 3u): [f32]]
+    (print (reverse z)))
+  (print (reverse ~[~[1. 2.] ~[3.] ~[4. 5. 6.]]))
+  (print (reverse ~[(Pt 1. 2.) (Pt 3. 4.)]))
+  (let [oa ~[(Some ~[1. 2.]) None (Some ~[3.])]: [(Option [f32])]
+        rev (reverse oa)]
+    (print-opt-arrs rev)
+    (print "--")
+    (print-opt-arrs oa)))

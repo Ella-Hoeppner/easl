@@ -1765,6 +1765,17 @@ fn apply_builtin_fn<IO: IOManager>(
       elements.extend(materialize(args.remove(0).0)?);
       Ok(Value::Array(elements))
     }
+    "reverse" => {
+      // Reversal of all-zeros is a no-op — keep it lazy.
+      if let Value::ZeroedArray { length } = args[0].0 {
+        return Ok(Value::ZeroedArray { length });
+      }
+      let Value::Array(mut elements) = args.remove(0).0 else {
+        panic!("reverse argument wasn't an array")
+      };
+      elements.reverse();
+      Ok(Value::Array(elements))
+    }
     "substr" => {
       let Value::String(s) = &args[0].0 else {
         panic!()

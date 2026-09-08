@@ -2922,6 +2922,14 @@ fn dynamic_array_utility_functions() -> Vec<AbstractFunctionSignature> {
       associative: true,
       ..Default::default()
     },
+    AbstractFunctionSignature {
+      name: "reverse".into(),
+      generic_args: generic_t(),
+      arg_types: vec![unsized_array_of_t().owned()],
+      return_type: unsized_array_of_t(),
+      implementation: implementation("reverse"),
+      ..Default::default()
+    },
   ]
 }
 

@@ -261,6 +261,10 @@ error_test!(
   dyn_array_concat_gpu_failure,
   CompileErrorKind::RuntimeSizedLocalInGpuCode
 );
+error_test!(
+  dyn_array_reverse_gpu_failure,
+  CompileErrorKind::RuntimeSizedLocalInGpuCode
+);
 success_test!(def_sized_array);
 success_test!(closure);
 success_test!(return_fn);

@@ -216,6 +216,7 @@ impl EffectType {
         | "insert"
         | "remove"
         | "concat"
+        | "reverse"
     )
   }
   pub fn cpu_exclusive_functions(&self) -> Vec<Arc<str>> {
