@@ -645,6 +645,7 @@ thread_sync_test!(
 );
 thread_sync_test!(audio_captured_closure_hof, [Frame, AudioBatch(4), Frame]);
 thread_sync_test!(audio_nested_lambda_capture, [Frame, AudioBatch(4), Frame]);
+thread_sync_test!(audio_push_shared, [Frame, AudioBatch(2), Frame]);
 thread_sync_test!(
   local_never_shared,
   [Frame, AudioBatch(2), Frame, AudioBatch(2)]

@@ -75,7 +75,7 @@
                   alignment (-> (vec3f (rand) (rand) (rand))
                                 uni->bi
                                 normalize)
-                  push (-> (vec3f (rand) (rand) (rand))
+                  push-vec (-> (vec3f (rand) (rand) (rand))
                            uni->bi
                            normalize)
                   amp (amp p pos)
@@ -85,7 +85,7 @@
                           (dot alignment)
                           (* freq)
                           cos
-                          (* push)
+                          (* push-vec)
                           (* amp))]
               (+= off-sum off)
               (= seed-pos

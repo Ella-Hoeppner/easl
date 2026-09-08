@@ -3209,7 +3209,12 @@ impl Program {
                       let suppress_gpu = runtime_sized_error_present
                         && matches!(
                           &**fn_name,
-                          "into-dynamic-array" | "zeroed-array"
+                          "into-dynamic-array"
+                            | "zeroed-array"
+                            | "push"
+                            | "insert"
+                            | "remove"
+                            | "concat"
                         );
                       // The dynamic-array constructors are VM-native, so
                       // audio code may call them (allocating on the audio
@@ -8000,6 +8005,21 @@ impl Program {
         let f = f.read().unwrap();
         let effects = f.effects();
         let (reads, writes) = effects.read_and_written_globals();
+        // Length-only reads count as touches here, unlike in the GPU
+        // readback set they're excluded from: the GPU can never resize a
+        // buffer, but another *thread* can resize a shared array, so a
+        // length read is a genuine cross-thread read.
+        let length_reads: Vec<Arc<str>> = effects
+          .0
+          .iter()
+          .filter_map(|e| {
+            if let Effect::ReadsArrayLength(name) = e {
+              Some(name.clone())
+            } else {
+              None
+            }
+          })
+          .collect();
         // Seed writes (`Effect::SeedsGlobalVar`) count as touches here —
         // this is how the analysis sees the main thread writing the lifted
         // audio-closure capture globals inside `start-audio` — but stay
@@ -8009,6 +8029,7 @@ impl Program {
           reads
             .into_iter()
             .chain(writes.into_iter())
+            .chain(length_reads.into_iter())
             .chain(effects.seeded_globals().into_iter())
             .filter(|name| var_names.contains(name)),
         );

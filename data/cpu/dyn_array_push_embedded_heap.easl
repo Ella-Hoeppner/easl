@@ -1,0 +1,21 @@
+; push/insert/remove on a container whose flat element words *embed*
+; heap ids without being one (enum with a dyn-array payload): the new
+; cell's borrowed element ids get owned shares via the emitted re-own
+; loop, mirroring into-dynamic-array's ownership discipline.
+(enum (Option T)
+  (Some T)
+  None)
+
+(defn (print-opt-arrs) [arrs: [(Option [f32])]]
+  (for [i (array-length arrs)]
+    (match (arrs i)
+      (Some inner) (print inner)
+      None (print "none"))))
+
+@cpu
+(defn main []
+  (let [a ~[(Some ~[1. 2.]) None]: [(Option [f32])]
+        b (push a (Some ~[3.]))]
+    (print-opt-arrs b)
+    (print-opt-arrs (remove b 1u))
+    (print-opt-arrs (insert a 1u (Some ~[4. 5.])))))

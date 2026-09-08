@@ -1,0 +1,34 @@
+; The value-semantics dynamic-array utilities: push/insert/remove each
+; return a fresh array and leave the argument untouched (COW). Covers
+; flat elements, stride>1 struct elements, lazily-zeroed arrays (remove
+; stays lazy), nested arrays and strings (Cells storage), and
+; insert-at-end.
+(struct Pt
+  x: f32
+  y: f32)
+
+@cpu
+(defn main []
+  (let [a ~[1. 2. 3.]
+        b (push a 4.)
+        c (insert b 0u 0.5)
+        d (remove c 2u)]
+    (print a)
+    (print b)
+    (print c)
+    (print d)
+    (print (insert d 4u 9.)))
+  (let [e: [u32] ~[]]
+    (print (push (push e 1u) 2u)))
+  (let [z (zeroed-array 3u): [f32]]
+    (print (remove z 1u))
+    (print (push z 7.))
+    (print (insert z 0u 5.)))
+  (let [p (push ~[(Pt 1. 2.)] (Pt 3. 4.))]
+    (print p)
+    (print (remove p 0u)))
+  (let [n ~[~[1. 2.] ~[3.]]]
+    (print (push n ~[4. 5.]))
+    (print (remove n 0u)))
+  (let [s (push ~["hello"] "world")]
+    (print (insert s 1u "there"))))

@@ -1,0 +1,18 @@
+; `push` (a dynamic-array utility) in GPU code: it returns a runtime-sized
+; array, which GPU code can't hold as a local — rejected by the same
+; runtime-sized validation the constructors hit.
+@storage-write
+(var out: [1: f32])
+
+@storage
+(var src: [f32])
+
+@compute
+(defn bad []
+  (let [grown: [f32] (push src 1.)]
+    (= (out 0u) (grown 0u))))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-compute-shader bad (vec3u 1u)))))

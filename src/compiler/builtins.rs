@@ -2848,6 +2848,83 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
   ]
 }
 
+fn unsized_array_of_t() -> AbstractType {
+  AbstractType::AbstractArray {
+    size: AbstractArraySize::Unsized,
+    inner_type: AbstractType::Generic("T".into()).into(),
+    source_trace: SourceTrace::empty(),
+  }
+}
+
+/// The value-semantics dynamic-array utilities: each returns a fresh
+/// array (the argument is untouched), so `(= arr (push arr x))` is the
+/// idiomatic mutation shape. CPU-exclusive, but audio-callable like the
+/// dynamic-array constructors (VM-native heap ops).
+fn dynamic_array_utility_functions() -> Vec<AbstractFunctionSignature> {
+  let generic_t = || {
+    vec![(
+      "T".into(),
+      GenericArgument::Type(vec![]),
+      SourceTrace::empty(),
+    )]
+  };
+  let implementation = |name: &str| FunctionImplementationKind::Builtin {
+    effect_type: Effect::CPUExclusiveFunction(name.into()).into(),
+    target_configuration: FunctionTargetConfiguration::Default,
+    target_specific_emulations: HashSet::new(),
+  };
+  vec![
+    AbstractFunctionSignature {
+      name: "push".into(),
+      generic_args: generic_t(),
+      arg_types: vec![
+        unsized_array_of_t().owned(),
+        AbstractType::Generic("T".into()).owned(),
+      ],
+      return_type: unsized_array_of_t(),
+      implementation: implementation("push"),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "insert".into(),
+      generic_args: generic_t(),
+      arg_types: vec![
+        unsized_array_of_t().owned(),
+        AbstractType::Type(Type::U32).owned(),
+        AbstractType::Generic("T".into()).owned(),
+      ],
+      return_type: unsized_array_of_t(),
+      implementation: implementation("insert"),
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "remove".into(),
+      generic_args: generic_t(),
+      arg_types: vec![
+        unsized_array_of_t().owned(),
+        AbstractType::Type(Type::U32).owned(),
+      ],
+      return_type: unsized_array_of_t(),
+      implementation: implementation("remove"),
+      ..Default::default()
+    },
+    // Array `concat` — the runtime-sized-array overload of the string
+    // `concat`; associative, so n-ary like `+`.
+    AbstractFunctionSignature {
+      name: "concat".into(),
+      generic_args: generic_t(),
+      arg_types: vec![
+        unsized_array_of_t().owned(),
+        unsized_array_of_t().owned(),
+      ],
+      return_type: unsized_array_of_t(),
+      implementation: implementation("concat"),
+      associative: true,
+      ..Default::default()
+    },
+  ]
+}
+
 fn dynamic_array_functions() -> Vec<AbstractFunctionSignature> {
   vec![
     AbstractFunctionSignature {
@@ -3150,6 +3227,7 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
   signatures.append(&mut string_functions());
   signatures.append(&mut shader_dispatch_functions());
   signatures.append(&mut dynamic_array_functions());
+  signatures.append(&mut dynamic_array_utility_functions());
   signatures.append(&mut atomic_functions());
   signatures.append(&mut builtin_attribute_lookup_functions());
   signatures

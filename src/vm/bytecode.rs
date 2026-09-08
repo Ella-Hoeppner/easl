@@ -212,6 +212,32 @@ pub enum Op {
   /// `(zeroed-array n)` when the element type is heap-backed: a `Cells`
   /// payload of `n` empty (`None`) children: args [len_slot, _, _] → dest
   HeapZeroedCells,
+  /// `(push arr value)` — a fresh cell with `value` appended. `stride` 0
+  /// marks a heap-backed element type: the value slot holds a heap id
+  /// and the new cell owns an `Arc` share of its cell. Embedded heap ids
+  /// in flat element words are *borrowed* copies — the compiler follows
+  /// with a re-own loop, as after `HeapFromSlots`: args [arr_id_slot,
+  /// value_slot, stride] → dest id slot
+  HeapPush,
+  /// `(insert arr index value)` — a fresh cell with `value` inserted at
+  /// `index` (valid up to and including the length; out of range
+  /// panics). The compiler stages the index word and the value words
+  /// contiguously: args [arr_id_slot, block_slot, stride] where
+  /// `block_slot` holds the index followed by the value (one id word
+  /// when `stride` is 0, marking heap-backed elements) → dest id slot
+  HeapInsert,
+  /// `(remove arr index)` — a fresh cell with the element at `index`
+  /// removed (out of range panics). `stride` 0 marks heap-backed
+  /// elements: args [arr_id_slot, index_slot, stride] → dest id slot
+  HeapRemove,
+  /// `(concat a b)` — a fresh cell holding `a`'s elements followed by
+  /// `b`'s. `stride` 0 marks a heap-backed element type (the cells hold
+  /// heap ids and the new cell owns `Arc` shares of both sources');
+  /// embedded heap ids in flat element words are borrowed and the
+  /// compiler follows with a whole-result re-own loop, as after
+  /// `HeapFromSlots`. Two flat `Zeroed` sources stay lazily zeroed: args
+  /// [a_id_slot, b_id_slot, stride] → dest id slot
+  HeapConcat,
   /// Fresh id sharing `src`'s payload (value-semantics copy; O(1)):
   /// args [src_id_slot, _, _] → dest id slot
   HeapCopy,
@@ -446,6 +472,22 @@ impl Instruction {
             + (self.arg_positions[1] * self.arg_positions[2]).saturating_sub(1),
         )
       }
+      Op::HeapPush => self
+        .return_position
+        .max(self.arg_positions[0])
+        .max(self.arg_positions[1] + self.arg_positions[2].max(1) - 1),
+      Op::HeapInsert => self
+        .return_position
+        .max(self.arg_positions[0])
+        .max(self.arg_positions[1] + self.arg_positions[2].max(1)),
+      Op::HeapRemove => self
+        .return_position
+        .max(self.arg_positions[0])
+        .max(self.arg_positions[1]),
+      Op::HeapConcat => self
+        .return_position
+        .max(self.arg_positions[0])
+        .max(self.arg_positions[1]),
       Op::HeapZeroed | Op::HeapZeroedCells => {
         self.return_position.max(self.arg_positions[0])
       }
@@ -1782,6 +1824,153 @@ impl BytecodeProgram {
               elements: stack[len_slot as usize],
             },
             stride,
+          });
+          release_cell!(instruction.return_position);
+          stack[instruction.return_position as usize] = alloc_cell!(cell);
+        }
+        Op::HeapPush | Op::HeapInsert | Op::HeapRemove => {
+          let [arr_slot, block_slot, stride] = instruction.arg_positions;
+          let cells_element = stride == 0;
+          let flat_stride = (stride as usize).max(1);
+          let block = block_slot as usize;
+          let (index, value_slot) = match instruction.op {
+            // push appends; the block is just the value
+            Op::HeapPush => (u32::MAX, block),
+            Op::HeapInsert => (stack[block], block + 1),
+            Op::HeapRemove => (stack[block], block),
+            _ => unreachable!(),
+          };
+          // The value's owned share (heap-backed elements) is cloned out
+          // before borrowing the source cell.
+          let value_child = cells_element.then(|| {
+            heap_index(stack[value_slot]).and_then(|j| heap[j].clone())
+          });
+          let source = deref_cell!(arr_slot);
+          let elements = source
+            .map(|cell| cell.memory.len_elements(cell.stride as usize))
+            .unwrap_or(0);
+          let index = match instruction.op {
+            Op::HeapPush => elements,
+            Op::HeapInsert => {
+              if index > elements {
+                panic!(
+                  "insert index out of bounds: index {index}, length \
+                   {elements}"
+                );
+              }
+              index
+            }
+            Op::HeapRemove => {
+              if index >= elements {
+                panic!(
+                  "remove index out of bounds: index {index}, length \
+                   {elements}"
+                );
+              }
+              index
+            }
+            _ => unreachable!(),
+          } as usize;
+          let removing = matches!(instruction.op, Op::HeapRemove);
+          let memory = match source.map(|cell| &cell.memory) {
+            // removal's bounds check already rejected an empty source
+            None => {
+              if cells_element {
+                DynMemory::Cells(vec![value_child.clone().unwrap()])
+              } else {
+                DynMemory::Words(
+                  stack[value_slot..value_slot + flat_stride].to_vec(),
+                )
+              }
+            }
+            Some(DynMemory::Cells(cells)) => {
+              let mut cells = cells.clone();
+              if removing {
+                cells.remove(index);
+              } else {
+                cells.insert(index, value_child.clone().unwrap());
+              }
+              DynMemory::Cells(cells)
+            }
+            Some(DynMemory::Zeroed { elements }) if removing => {
+              DynMemory::Zeroed {
+                elements: elements - 1,
+              }
+            }
+            Some(flat) => {
+              let mut words = match flat {
+                DynMemory::Words(words) => words.clone(),
+                DynMemory::Zeroed { elements } => {
+                  vec![0u32; *elements as usize * flat_stride]
+                }
+                DynMemory::Cells(_) => unreachable!(),
+              };
+              if removing {
+                words.drain(index * flat_stride..(index + 1) * flat_stride);
+              } else {
+                words.splice(
+                  index * flat_stride..index * flat_stride,
+                  stack[value_slot..value_slot + flat_stride].iter().copied(),
+                );
+              }
+              DynMemory::Words(words)
+            }
+          };
+          let cell = Arc::new(HeapCell {
+            memory,
+            stride: if cells_element { 1 } else { stride },
+          });
+          release_cell!(instruction.return_position);
+          stack[instruction.return_position as usize] = alloc_cell!(cell);
+        }
+        Op::HeapConcat => {
+          let [a_slot, b_slot, stride] = instruction.arg_positions;
+          let cells_element = stride == 0;
+          let flat_stride = (stride as usize).max(1);
+          let a = deref_cell!(a_slot);
+          let b = deref_cell!(b_slot);
+          let memory = if cells_element {
+            let mut cells: Vec<Option<Arc<HeapCell>>> = vec![];
+            for cell in [a, b].into_iter().flatten() {
+              let DynMemory::Cells(children) = &cell.memory else {
+                unreachable!("heap-backed concat source wasn't Cells")
+              };
+              cells.extend(children.iter().cloned());
+            }
+            DynMemory::Cells(cells)
+          } else if let (
+            None | Some(&DynMemory::Zeroed { .. }),
+            None | Some(&DynMemory::Zeroed { .. }),
+          ) = (a.map(|c| &c.memory), b.map(|c| &c.memory))
+          {
+            // both sources lazily zeroed (or empty) — keep the result lazy
+            let count = |cell: Option<&Arc<HeapCell>>| {
+              cell
+                .map(|c| c.memory.len_elements(flat_stride))
+                .unwrap_or(0)
+            };
+            DynMemory::Zeroed {
+              elements: count(a) + count(b),
+            }
+          } else {
+            let mut words: Vec<u32> = vec![];
+            for cell in [a, b].into_iter().flatten() {
+              match &cell.memory {
+                DynMemory::Words(w) => words.extend_from_slice(w),
+                DynMemory::Zeroed { elements } => words.extend(
+                  std::iter::repeat(0u32)
+                    .take(*elements as usize * flat_stride),
+                ),
+                DynMemory::Cells(_) => {
+                  unreachable!("flat concat source was Cells")
+                }
+              }
+            }
+            DynMemory::Words(words)
+          };
+          let cell = Arc::new(HeapCell {
+            memory,
+            stride: if cells_element { 1 } else { stride },
           });
           release_cell!(instruction.return_position);
           stack[instruction.return_position as usize] = alloc_cell!(cell);

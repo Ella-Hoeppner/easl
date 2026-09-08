@@ -208,7 +208,15 @@ impl EffectType {
   /// windowing, GPU dispatch — with no audio-side implementation).
   /// Shader contexts reject all of them regardless.
   pub fn cpu_exclusive_function_allowed_in_audio(name: &str) -> bool {
-    matches!(name, "into-dynamic-array" | "zeroed-array")
+    matches!(
+      name,
+      "into-dynamic-array"
+        | "zeroed-array"
+        | "push"
+        | "insert"
+        | "remove"
+        | "concat"
+    )
   }
   pub fn cpu_exclusive_functions(&self) -> Vec<Arc<str>> {
     self

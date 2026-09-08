@@ -183,6 +183,10 @@ cpu_test!(cpu_only_bool_var);
 // the allocation site (see `HeapCopyPlan`).
 cpu_test!(dyn_field_struct_across_calls);
 cpu_test!(closure_capture_hof);
+cpu_test!(dyn_array_push_insert_remove);
+cpu_test!(dyn_array_push_embedded_heap);
+cpu_test!(dyn_array_concat);
+cpu_test!(dyn_array_concat_embedded_heap);
 cpu_test!(nested_closure_outer_capture);
 cpu_test!(closure_dyn_capture_across_calls);
 // Whole-enum copies of heap payloads: payload offsets depend on the

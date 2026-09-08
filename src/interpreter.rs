@@ -1733,12 +1733,37 @@ fn apply_builtin_fn<IO: IOManager>(
       let s = args[0].0.format_for_print(&args[0].1, env)?;
       Ok(Value::String(s))
     }
-    "concat" => {
+    "concat" if matches!(args[0].0, Value::String(_)) => {
       let (Value::String(a), Value::String(b)) = (&args[0].0, &args[1].0)
       else {
         panic!()
       };
       Ok(Value::String(format!("{a}{b}")))
+    }
+    "concat" => {
+      let Type::Array(_, element_type) = return_type else {
+        panic!("array concat return type wasn't an array")
+      };
+      // Two lazily-zeroed sources stay lazy; otherwise materialize.
+      if let (
+        Value::ZeroedArray { length: a },
+        Value::ZeroedArray { length: b },
+      ) = (&args[0].0, &args[1].0)
+      {
+        return Ok(Value::ZeroedArray { length: a + b });
+      }
+      let materialize = |value: Value| -> Result<Vec<Value>, EvalError> {
+        Ok(match value {
+          Value::Array(elements) => elements,
+          Value::ZeroedArray { length } => {
+            vec![Value::zeroed(element_type.kind.unwrap_known(), env)?; length]
+          }
+          _ => panic!("array concat argument wasn't an array"),
+        })
+      };
+      let mut elements = materialize(args.remove(0).0)?;
+      elements.extend(materialize(args.remove(0).0)?);
+      Ok(Value::Array(elements))
     }
     "substr" => {
       let Value::String(s) = &args[0].0 else {
@@ -2029,6 +2054,67 @@ fn apply_builtin_fn<IO: IOManager>(
     } else {
       args.remove(0).0
     }),
+    "push" | "insert" | "remove" => {
+      let Type::Array(_, element_type) = return_type else {
+        panic!("dynamic-array utility return type wasn't an array")
+      };
+      let removing = &*f_name == "remove";
+      // args: (arr, value) for push, (arr, index, value) for insert,
+      // (arr, index) for remove
+      let arr = args.remove(0).0;
+      let index = if &*f_name == "push" {
+        None
+      } else {
+        let Value::Prim(Primitive::U32(index)) = args.remove(0).0 else {
+          panic!("dynamic-array index wasn't a u32")
+        };
+        Some(index)
+      };
+      // `remove` keeps a lazily-zeroed array lazy; anything inserting a
+      // (generally nonzero) value materializes it.
+      let mut elements = match arr {
+        Value::Array(elements) => elements,
+        Value::ZeroedArray { length } => {
+          if removing {
+            let index = index.unwrap();
+            if index as usize >= length {
+              panic!(
+                "remove index out of bounds: index {index}, length {length}"
+              );
+            }
+            return Ok(Value::ZeroedArray { length: length - 1 });
+          }
+          let zero = Value::zeroed(element_type.kind.unwrap_known(), env)?;
+          vec![zero; length]
+        }
+        _ => panic!("dynamic-array utility argument wasn't an array"),
+      };
+      match &*f_name {
+        "push" => elements.push(args.remove(0).0),
+        "insert" => {
+          let index = index.unwrap();
+          if index as usize > elements.len() {
+            panic!(
+              "insert index out of bounds: index {index}, length {}",
+              elements.len()
+            );
+          }
+          elements.insert(index as usize, args.remove(0).0);
+        }
+        "remove" => {
+          let index = index.unwrap();
+          if index as usize >= elements.len() {
+            panic!(
+              "remove index out of bounds: index {index}, length {}",
+              elements.len()
+            );
+          }
+          elements.remove(index as usize);
+        }
+        _ => unreachable!(),
+      }
+      Ok(Value::Array(elements))
+    }
     "load-wav" => {
       let Value::String(path) = args.remove(0).0 else {
         panic!("load-wav: expected string path argument")

@@ -1863,6 +1863,71 @@ impl BytecodeCompilationState {
         }
         Some(dest)
       }
+      "push" | "insert" | "remove"
+        if matches!(
+          return_type,
+          Type::Array(Some(ConcreteArraySize::Unsized), _)
+        ) =>
+      {
+        let Type::Array(_, element_type) = return_type else {
+          panic!("dynamic-array utility return type wasn't an array")
+        };
+        let element_type = element_type.unwrap_known();
+        let dest = self.take_stack_slot(1);
+        let heap_element = is_heap_value_type(&element_type);
+        let stride_marker = if heap_element {
+          0
+        } else {
+          vm_stack_size(&element_type)
+        };
+        let value_words = stride_marker.max(1);
+        let (op, block_slot) = match f_name {
+          "push" => (Op::HeapPush, arg_positions[1]),
+          "remove" => (Op::HeapRemove, arg_positions[1]),
+          "insert" => {
+            // HeapInsert reads the index word and the value words from
+            // one contiguous block; the separately-compiled args are
+            // staged into a fresh one.
+            let block = self.take_stack_slot(1 + value_words);
+            self.push_instruction(Instruction {
+              op: Op::Move,
+              arg_positions: [arg_positions[1], 1, 0],
+              return_position: block,
+            });
+            self.push_instruction(Instruction {
+              op: Op::Move,
+              arg_positions: [arg_positions[2], value_words, 0],
+              return_position: block + 1,
+            });
+            (Op::HeapInsert, block)
+          }
+          _ => unreachable!(),
+        };
+        let fixups = if heap_element {
+          None
+        } else {
+          Self::embedding_element_fixups(&element_type)
+        };
+        if fixups.is_some() {
+          self.emit_container_dest_hygiene(dest, return_type);
+        }
+        self.push_instruction(Instruction {
+          op,
+          arg_positions: [arg_positions[0], block_slot, stride_marker],
+          return_position: dest,
+        });
+        // The new cell's flat words borrow their embedded ids from the
+        // source cell and the value slots; give it owned shares, as
+        // after `HeapFromSlots`.
+        if let Some(fixups) = fixups {
+          self.emit_reown_container_elements(
+            EmbeddingContainer::Cell(dest),
+            stride_marker,
+            &fixups,
+          );
+        }
+        Some(dest)
+      }
       "zeroed-array"
         if matches!(
           return_type,
@@ -2062,7 +2127,7 @@ impl BytecodeCompilationState {
         Some(self.emit_dot(&elem, count, arg_positions[0], arg_positions[1]))
       }
       // --- Strings ---
-      "concat" => {
+      "concat" if matches!(arg_types[0], Type::String) => {
         let result = self.take_stack_slot(1);
         self.push_instruction(Instruction {
           op: Op::StrConcat,
@@ -2070,6 +2135,42 @@ impl BytecodeCompilationState {
           return_position: result,
         });
         Some(result)
+      }
+      "concat" => {
+        let Type::Array(_, element_type) = return_type else {
+          panic!("array concat return type wasn't an array")
+        };
+        let element_type = element_type.unwrap_known();
+        let dest = self.take_stack_slot(1);
+        let heap_element = is_heap_value_type(&element_type);
+        let stride_marker = if heap_element {
+          0
+        } else {
+          vm_stack_size(&element_type)
+        };
+        let fixups = if heap_element {
+          None
+        } else {
+          Self::embedding_element_fixups(&element_type)
+        };
+        if fixups.is_some() {
+          self.emit_container_dest_hygiene(dest, return_type);
+        }
+        self.push_instruction(Instruction {
+          op: Op::HeapConcat,
+          arg_positions: [arg_positions[0], arg_positions[1], stride_marker],
+          return_position: dest,
+        });
+        // The new cell's flat words borrow their embedded ids from the
+        // source cells; give it owned shares, as after `HeapFromSlots`.
+        if let Some(fixups) = fixups {
+          self.emit_reown_container_elements(
+            EmbeddingContainer::Cell(dest),
+            stride_marker,
+            &fixups,
+          );
+        }
+        Some(dest)
       }
       "substr" => {
         let result = self.take_stack_slot(1);

@@ -1,0 +1,14 @@
+; Audio code growing a shared dynamic array with `push` (audio-callable
+; like the dynamic-array constructors): each sample appends its `t`, the
+; batch boundary publishes the reallocated array, and main adopts it.
+(var events: [f32])
+
+(defn voice [t: f32]: f32
+  (= events (push events t))
+  0.)
+
+@cpu
+(defn main []
+  (start-audio voice)
+  (spawn-window (fn []
+                    (print (array-length events)))))

@@ -1,0 +1,12 @@
+main-publish: events
+start-audio: voice
+spawn-window
+frame 0
+print: 0u
+audio-batch 0 x2
+audio-adopt: events
+samples: 0 0
+audio-publish: events
+frame 1
+main-adopt: events
+print: 2u

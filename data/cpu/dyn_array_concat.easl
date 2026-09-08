@@ -1,0 +1,27 @@
+; Array `concat`: the runtime-sized-array overload of string concat.
+; Associative (n-ary), value-semantics (sources untouched), and covers
+; flat, lazily-zeroed (stays lazy when both sides are), nested Cells, and
+; struct elements. The string overload still resolves by argument type.
+(struct Pt
+  x: f32
+  y: f32)
+
+@cpu
+(defn main []
+  (let [a ~[1. 2.]
+        b ~[3. 4. 5.]
+        c (concat a b)]
+    (print a)
+    (print b)
+    (print c)
+    (print (concat a b ~[6.])))
+  (let [e: [u32] ~[]]
+    (print (concat e ~[1u 2u]))
+    (print (concat ~[9u] e)))
+  (let [z (zeroed-array 2u): [f32]]
+    (print (concat z z))
+    (print (concat z ~[1.])))
+  (let [n (concat ~[~[1. 2.]] ~[~[3.] ~[4. 5.]])]
+    (print n))
+  (print (concat ~[(Pt 1. 2.)] ~[(Pt 3. 4.)]))
+  (print (concat "foo" "bar" "baz")))
