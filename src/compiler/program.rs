@@ -43,7 +43,7 @@ use crate::{
     structs::{AbstractStructField, UntypedStruct},
     types::{
       AbstractArraySize, AbstractType, ConcreteArraySize,
-      ConstGenericResolution, ImmutableProgramLocalContext,
+      ConstGenericResolution, GenericArgument, ImmutableProgramLocalContext,
       NameDefinitionSource, Type, TypeState, UntypedType, Variable,
       VariableKind, parse_generic_argument,
     },
@@ -5943,6 +5943,74 @@ impl Program {
       }
     }
   }
+  /// Rejects any generic parameter — type or const — a user function,
+  /// struct, or enum declares but never references in its type signature
+  /// (for a function: its argument and return types; for a struct/enum:
+  /// its fields/variant payloads). Such a generic can never be inferred
+  /// from a use site, so the definition is only ever usable if it's
+  /// never actually used — a latent error that otherwise surfaces as a
+  /// confusing inference failure at the first call. Runs before type
+  /// inference, so only the user's own definitions and builtins are
+  /// present; builtins are skipped (functions by their non-Composite
+  /// implementation, structs/enums by their positionless source trace).
+  fn validate_generic_usage(&self, errors: &mut ErrorLog) {
+    let report_unused =
+      |generic_args: &[(Arc<str>, GenericArgument, SourceTrace)],
+       used: &HashSet<Arc<str>>,
+       errors: &mut ErrorLog| {
+        for (name, _, source_trace) in generic_args.iter() {
+          if !used.contains(name) {
+            errors.log(CompileError {
+              kind: CompileErrorKind::UnusedGeneric(name.to_string()),
+              source_trace: source_trace.clone(),
+            });
+          }
+        }
+      };
+    for signature in self.abstract_functions_iter() {
+      let signature = signature.read().unwrap();
+      if signature.generic_args.is_empty()
+        || !matches!(
+          signature.implementation,
+          FunctionImplementationKind::Composite(_)
+        )
+      {
+        continue;
+      }
+      let mut used = vec![];
+      for (t, _) in signature.arg_types.iter() {
+        t.track_all_generic_names(&mut used);
+      }
+      signature.return_type.track_all_generic_names(&mut used);
+      report_unused(
+        &signature.generic_args,
+        &used.into_iter().collect(),
+        errors,
+      );
+    }
+    for s in self.typedefs.structs.iter() {
+      if s.generic_args.is_empty() || s.source_trace.primary_position.is_none()
+      {
+        continue;
+      }
+      let mut used = vec![];
+      for field in s.fields.iter() {
+        field.field_type.track_all_generic_names(&mut used);
+      }
+      report_unused(&s.generic_args, &used.into_iter().collect(), errors);
+    }
+    for e in self.typedefs.enums.iter() {
+      if e.generic_args.is_empty() || e.source_trace.primary_position.is_none()
+      {
+        continue;
+      }
+      let mut used = vec![];
+      for variant in e.variants.iter() {
+        variant.inner_type.track_all_generic_names(&mut used);
+      }
+      report_unused(&e.generic_args, &used.into_iter().collect(), errors);
+    }
+  }
   fn catch_duplicate_signatures(&self, errors: &mut ErrorLog) {
     for (name, signatures) in self.abstract_functions.iter() {
       let mut normalized_signatures: Vec<(Option<SourceTrace>, _)> = vec![];
@@ -7311,6 +7379,10 @@ impl Program {
       return errors;
     }
     self.validate_associative_signatures(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.validate_generic_usage(&mut errors);
     if !errors.is_empty() {
       return errors;
     }

@@ -81,9 +81,9 @@
                 alignment (-> (vec3f (rand) (rand) (rand))
                               uni->bi
                               normalize)
-                push (-> (vec3f (rand) (rand) (rand))
-                         uni->bi
-                         normalize)
+                offset (-> (vec3f (rand) (rand) (rand))
+                           uni->bi
+                           normalize)
                 amp (mix-exp (.x amp-range)
                              (.y amp-range)
                              p)
@@ -96,7 +96,7 @@
                         (dot alignment)
                         (* freq)
                         cos
-                        (* push)
+                        (* offset)
                         (* amp))]
             (+= off-sum off)
             (+= restricted-off-sum

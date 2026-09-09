@@ -1,0 +1,7 @@
+; An enum generic `B` used in no variant payload.
+(enum (Thing A B)
+  (Has A)
+  Nothing)
+
+@cpu
+(defn main [] ())

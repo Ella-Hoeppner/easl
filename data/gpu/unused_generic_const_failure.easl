@@ -1,0 +1,16 @@
+; A generic const parameter `C` declared but never used in the signature
+; (this `filter`-style function operates on unsized arrays, so it has no
+; use for an array-size generic): it could never be inferred, so it's a
+; compile error even though the function is never called.
+(defn (filter T
+              C: u32)
+      [arr: [T]
+       f: (Fn [T] bool)]: [T]
+      (let [@var out ~[]]
+        (for [i (array-length arr)]
+          (when (f (arr i))
+            (= out (push out (arr i)))))
+        out))
+
+@cpu
+(defn main [] ())

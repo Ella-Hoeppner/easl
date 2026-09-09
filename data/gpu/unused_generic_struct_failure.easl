@@ -1,0 +1,7 @@
+; A struct generic `B` used in no field type.
+(struct (Pair A B)
+  first: A
+  second: A)
+
+@cpu
+(defn main [] ())

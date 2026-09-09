@@ -265,6 +265,22 @@ error_test!(
   dyn_array_reverse_gpu_failure,
   CompileErrorKind::RuntimeSizedLocalInGpuCode
 );
+error_test!(
+  unused_generic_const_failure,
+  CompileErrorKind::UnusedGeneric("C".into())
+);
+error_test!(
+  unused_generic_type_failure,
+  CompileErrorKind::UnusedGeneric("U".into())
+);
+error_test!(
+  unused_generic_struct_failure,
+  CompileErrorKind::UnusedGeneric("B".into())
+);
+error_test!(
+  unused_generic_enum_failure,
+  CompileErrorKind::UnusedGeneric("B".into())
+);
 success_test!(def_sized_array);
 success_test!(closure);
 success_test!(return_fn);

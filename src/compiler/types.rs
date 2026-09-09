@@ -211,6 +211,40 @@ impl AbstractType {
       _ => {}
     }
   }
+  /// Collects the names of *every* generic parameter referenced anywhere
+  /// in this type — type generics (`AbstractType::Generic`, and `Skolem`s
+  /// inside concrete function/array/struct/enum types) and const generics
+  /// (`AbstractArraySize::Generic` and `ConcreteArraySize::Skolem` array
+  /// sizes). Unlike `track_generic_names` (type-generics only, for
+  /// signature normalization), this is exhaustive so a generic used only
+  /// inside a `(Fn ...)` arg, an enum payload, or an array size still
+  /// counts as used. Over-collecting is harmless for the unused-generic
+  /// check (only a missed name could falsely flag a used generic).
+  pub(crate) fn track_all_generic_names(&self, names: &mut Vec<Arc<str>>) {
+    match self {
+      AbstractType::Generic(name) => names.push(name.clone()),
+      AbstractType::AbstractArray {
+        size, inner_type, ..
+      } => {
+        if let AbstractArraySize::Generic(name) = size {
+          names.push(name.clone());
+        }
+        inner_type.track_all_generic_names(names);
+      }
+      AbstractType::AbstractStruct(abstract_struct) => {
+        for f in abstract_struct.fields.iter() {
+          f.field_type.track_all_generic_names(names);
+        }
+      }
+      AbstractType::AbstractEnum(abstract_enum) => {
+        for v in abstract_enum.variants.iter() {
+          v.inner_type.track_all_generic_names(names);
+        }
+      }
+      AbstractType::Type(t) => t.track_skolem_names(names),
+      AbstractType::Unit => {}
+    }
+  }
   pub fn walk_mut<E>(
     &mut self,
     prewalk_handler: &mut impl FnMut(&mut Self) -> Result<bool, E>,
@@ -1868,6 +1902,50 @@ impl Type {
         }
         Type::String => "String".into(),
       },
+    }
+  }
+  /// Collects the names of every `Skolem` (an unresolved generic
+  /// parameter) referenced anywhere in this type, including const-generic
+  /// array sizes (`ConcreteArraySize::Skolem`) and generics nested inside
+  /// function signatures, array elements, struct fields, and enum
+  /// payloads. Used by the unused-generic check to see generics that
+  /// appear only inside a concrete `Type` (e.g. a `(Fn [T] U)` argument).
+  pub(crate) fn track_skolem_names(&self, names: &mut Vec<Arc<str>>) {
+    match self {
+      Type::Skolem(name, _) => names.push(name.clone()),
+      Type::Function(f) => {
+        for (arg, _) in f.args.iter() {
+          if let Some(t) = arg.var_type.kind.try_unwrap_known() {
+            t.track_skolem_names(names);
+          }
+        }
+        if let Some(t) = f.return_type.kind.try_unwrap_known() {
+          t.track_skolem_names(names);
+        }
+      }
+      Type::Array(size, inner_type) => {
+        if let Some(ConcreteArraySize::Skolem(name)) = size {
+          names.push(name.clone());
+        }
+        if let Some(t) = inner_type.kind.try_unwrap_known() {
+          t.track_skolem_names(names);
+        }
+      }
+      Type::Struct(s) => {
+        for field in s.fields.iter() {
+          if let Some(t) = field.field_type.kind.try_unwrap_known() {
+            t.track_skolem_names(names);
+          }
+        }
+      }
+      Type::Enum(e) => {
+        for v in e.variants.iter() {
+          if let Some(t) = v.inner_type.kind.try_unwrap_known() {
+            t.track_skolem_names(names);
+          }
+        }
+      }
+      _ => {}
     }
   }
   /// Extract generic bindings from a Type that may contain Skolems, by

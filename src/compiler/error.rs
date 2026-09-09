@@ -470,6 +470,11 @@ pub enum CompileErrorKind {
   #[error("The name `{0}` is reserved by the easl compiler")]
   EaslReservedName(String),
   #[error(
+    "the generic parameter `{0}` is declared but never used in the type \
+     signature; it can never be inferred, so remove it"
+  )]
+  UnusedGeneric(String),
+  #[error(
     "`{0}` can only be used in CPU code, but this call can run on the \
      audio thread"
   )]
@@ -631,6 +636,7 @@ impl PartialEq for CompileErrorKind {
       (Self::UnrecognizedGeneric(l0), Self::UnrecognizedGeneric(r0)) => {
         l0 == r0
       }
+      (Self::UnusedGeneric(l0), Self::UnusedGeneric(r0)) => l0 == r0,
       (Self::InvalidToken(l0), Self::InvalidToken(r0)) => l0 == r0,
       (Self::InvalidTopLevelVar(l0), Self::InvalidTopLevelVar(r0)) => l0 == r0,
       (Self::InvalidDefn(l0), Self::InvalidDefn(r0)) => l0 == r0,

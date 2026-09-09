@@ -1,0 +1,6 @@
+; A generic type parameter `U` never referenced in arg or return types.
+(defn (identity T U) [x: T]: T
+  x)
+
+@cpu
+(defn main [] ())

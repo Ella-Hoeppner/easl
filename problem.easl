@@ -1,0 +1,160 @@
+(defn uni->bi [x: f32]: f32
+  (-> x (* 2.) (- 1.)))
+
+(defn uni->bi [x: vec2f]: vec2f
+  (vec2f (uni->bi x.x) (uni->bi x.y)))
+
+(defn bi->uni [x: f32]: f32
+  (-> x (+ 1.) (* 0.5)))
+
+(defn bi->uni [x: vec2f]: vec2f
+  (vec2f (bi->uni x.x) (bi->uni x.y)))
+
+(defn (get-ring-buffer T)
+      [@ref buffer: [T]
+       start-index: u32
+       index: u32]: T
+      (-> index
+          (+ start-index)
+          (% (length buffer))
+          buffer))
+
+(defn (push-ring-buffer T)
+      [@ref @var buffer: [T]
+       @ref @var start-index: u32
+       value: T]
+      (= (buffer start-index) value)
+      (= start-index
+         (-> start-index
+             (+ 1)
+             (% (length buffer)))))
+
+(var envelope-history: [f32])
+
+(var envelope-history-start-index: u32)
+
+(struct ADSRParams
+  attack: f32
+  decay: f32
+  sustain: f32
+  release: f32)
+
+(enum ADSRPhase
+  Attack
+  Decay
+  Sustain
+  Neutral)
+
+(struct ADSRState
+  level: f32
+  phase: ADSRPhase
+  gate-was-on: bool)
+
+(defn new []: ADSRState
+  (ADSRState 0. Neutral false))
+
+(defn update-adsr [@var state: ADSRState
+                   params: ADSRParams
+                   gate: bool
+                   dt: f32]: ADSRState
+  (let [old-phase state.phase]
+    (when (and gate (not state.gate-was-on))
+      (= state.phase Attack))
+    (match state.phase
+      Attack (let [new-level (+ state.level
+                                (/ dt params.attack))]
+               (= state.level
+                  (min 1. new-level))
+               (when (>= new-level 1.)
+                 (= state.phase Decay)))
+      Decay (let [new-level (- state.level
+                               (/ dt params.decay))]
+              (= state.level
+                 (max params.sustain new-level))
+              (when (<= new-level params.sustain)
+                (= state.phase
+                   (if gate
+                     Sustain
+                     Neutral))))
+      Sustain (if gate
+                (= state.level params.sustain)
+                (= state.phase Neutral))
+      Neutral (if gate
+                (= state.phase Attack)
+                (= state.level
+                   (max 0.
+                        (- state.level
+                           (/ dt params.release)))))))
+  (= state.gate-was-on gate)
+  state)
+
+(struct Voice
+  note: u32
+  down: bool
+  adsr-state: ADSRState
+  t: f32)
+
+(var voices: [Voice])
+
+(defn (filter T
+              C: u32)
+      [arr: [T]
+       f: (Fn [T] bool)]: [T]
+      (let [@var new-arr ~[]]
+        (for [i (array-length arr)]
+          (when (f (arr i))
+            (= new-arr
+               (push new-arr (arr i)))))
+        new-arr))
+
+@cpu
+(defn main []
+  (= voices ~[])
+  (start-audio (let [params (ADSRParams 0.5 0.5 0.25 1.)]
+                 (fn []
+                     (let [notes (down-midi-notes)]
+                       (for [i (array-length voices)]
+                         (= (.down (voices i)) false))
+                       (for [i (array-length notes)]
+                         (let [note (notes i)
+                               @var note-existed false]
+                           (for [i2 (array-length voices)]
+                             (let [voice (voices i2)]
+                               (when (== note.note voice.note)
+                                 (= (.down (voices i2)) true)
+                                 (= note-existed true))))
+                           (when (not note-existed)
+                             (let [old-voices voices
+                                   old-voice-count (array-length voices)]
+                               (= voices
+                                  (push voices
+                                        (Voice note.note true (new) 0.)))))))
+                       (for [i (array-length voices)]
+                         (= (.adsr-state (voices i))
+                            (update-adsr (.adsr-state (voices i))
+                                         params
+                                         (.down (voices i))
+                                         (/ (sample-rate)))))
+                       #_(= voices
+                            (filter voices
+                                    (fn [voice]
+                                        (and (not (.down voice))
+                                             (== 0.
+                                                 (.level (.adsr-state voice)))))))
+                       0.))))
+  (spawn-window (fn []
+                    (print (down-midi-notes))
+                    (print voices)
+                    (dispatch-render-shaders (fn []
+                                                 (vec4f (match (vertex-index)
+                                                          0 (vec2f -1.)
+                                                          1 (vec2f 3. -1.)
+                                                          _ (vec2f -1. 3.))
+                                                        0.
+                                                        1.))
+                                             (fn []
+                                                 (vec4f (vec3f (* (f32 (array-length (down-midi-notes)))
+                                                                  0.1))
+                                                        1.))
+                                             3))))
+
