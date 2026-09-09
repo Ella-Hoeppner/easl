@@ -2,9 +2,6 @@
 ; heap ids without being one (enum with a dyn-array payload): the new
 ; cell's borrowed element ids get owned shares via the emitted re-own
 ; loop, mirroring into-dynamic-array's ownership discipline.
-(enum (Option T)
-  (Some T)
-  None)
 
 (defn (print-opt-arrs) [arrs: [(Option [f32])]]
   (for [i (array-length arrs)]

@@ -2,9 +2,6 @@
 ; copy plan's enum region sits at a nonzero offset within the struct
 ; (id: f32 at 0, discriminant at 1, payload id at 2), exercising
 ; base-offset recursion in `collect_heap_fixups`.
-(enum (Option T)
-  (Some T)
-  None)
 
 (struct Slot
   id: f32

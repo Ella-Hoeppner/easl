@@ -1,0 +1,16 @@
+; `get-midi-note` looks up a note by MIDI number, returning the builtin
+; `(Option MidiNote)` — `Some` (with velocity/aftertouch) when held,
+; `None` otherwise. Uses `Option`/`MidiNote` without defining them.
+; Driven by the hand-written `get_midi_note_spoofed` test.
+(defn brightness [n: (Option MidiNote)]: f32
+  (match n
+    (Some note) (+ note.velocity note.aftertouch)
+    None -1.))
+
+@cpu
+(defn main []
+  (print (brightness (get-midi-note 60u)))
+  (print (brightness (get-midi-note 61u)))
+  (match (get-midi-note 64u)
+    (Some note) (print note.note)
+    None (print 999u)))

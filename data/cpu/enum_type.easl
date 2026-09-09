@@ -1,8 +1,8 @@
-(enum Option
-  None
-  (Some f32))
+(enum Maybe
+  Nothing
+  (Just f32))
 
 @cpu
 (defn main []
-  (print (Some 5.))
-  (print None))
+  (print (Just 5.))
+  (print Nothing))

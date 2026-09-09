@@ -6,9 +6,6 @@
 ; the innermost preload temp; the position propagation registers one
 ; pending write-back per chain level, flushed after the call ships the
 ; mutation back through every level.
-(enum (Option T)
-  None
-  (Some T))
 
 (defn bump [@var @ref x: f32
             amount: f32]: f32

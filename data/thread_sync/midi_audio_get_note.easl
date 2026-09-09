@@ -1,0 +1,15 @@
+; The audio thread using `get-midi-note`: look up specific notes by
+; number, summing the held ones' velocities via the builtin `Option`.
+@audio
+(defn voice []: f32
+  (let [@var sum 0.]
+    (for [i 128u]
+      (match (get-midi-note i)
+        (Some n) (+= sum n.velocity)
+        None ()))
+    sum))
+
+@cpu
+(defn main []
+  (start-audio voice)
+  (spawn-window (fn [] ())))

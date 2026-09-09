@@ -290,3 +290,50 @@ fn midi_gpu_read_spoofed() {
     assert_eq!(io.prints, vec![expected.clone()], "runtime {runtime:?}");
   }
 }
+
+/// `get-midi-note` read inside a compute shader against spoofed MIDI,
+/// round-tripped through the real GPU: pins the `easl_midi_notes` table
+/// upload and the monomorphized `Option<MidiNote>` layout end-to-end on
+/// both runtimes (note 60 held, 61 not, 64 held).
+#[test]
+fn get_midi_note_gpu_spoofed() {
+  use easl::interpreter::{
+    CaptureIO, MidiNoteState, MidiState, run_program_with_runtime,
+  };
+  let source_path_str = "./data/buffer/get_midi_note_gpu.easl";
+  let source_path = Path::new(&source_path_str);
+  let mut midi = MidiState::default();
+  midi.down_notes = vec![
+    MidiNoteState {
+      note: 60,
+      velocity: 1.,
+      aftertouch: 0.75,
+    },
+    MidiNoteState {
+      note: 64,
+      velocity: 0.5,
+      aftertouch: 0.25,
+    },
+  ];
+  midi.generation = 1;
+  let expected = "[1.75 -1. 64. 0.5]".to_string();
+  for runtime in [CpuRuntime::TreeWalking, CpuRuntime::BytecodeVm] {
+    let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
+    else {
+      panic!("failed to load program")
+    };
+    let errors = program.validate_raw_program(CompilerTarget::WGSL);
+    assert!(errors.is_empty(), "compile errors: {errors:#?}");
+    let mut io = CaptureIO::new();
+    io.spoofed_midi = Some(midi.clone());
+    let (io, _) = run_program_with_runtime(
+      program,
+      None,
+      io,
+      source_path.parent().map(|p| p.to_path_buf()),
+      runtime,
+    )
+    .unwrap();
+    assert_eq!(io.prints, vec![expected.clone()], "runtime {runtime:?}");
+  }
+}

@@ -21,10 +21,6 @@
   speed: f32
   pos: f32)
 
-(enum (Option T)
-  (Some T)
-  None)
-
 (defn (unwrap-or T)
       [o: (Option T)
        default: T]: T

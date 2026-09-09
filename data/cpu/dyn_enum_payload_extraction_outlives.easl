@@ -4,9 +4,6 @@
 ; `HeapCopy` (owned shares) since Arc-MM v1 — so this is a regression
 ; guard for the enum copy-dispatch work: extraction must keep its static
 ; (variant-known, dispatch-free) promotion behavior.
-(enum (Option T)
-  (Some T)
-  None)
 
 (defn make [n: u32]: (Option [f32])
   (Some (zeroed-array n)))

@@ -1,10 +1,9 @@
-(enum Option
-  None
-  (Some f32))
+(enum Maybe
+  Nothing
+  (Just f32))
 
-(defn returns-none []: Option
-  None)
+(defn returns-none []: Maybe
+  Nothing)
 
-(defn returns-some-of-one []: Option
-  (Some 1.))
-
+(defn returns-some-of-one []: Maybe
+  (Just 1.))

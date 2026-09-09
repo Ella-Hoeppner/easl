@@ -1,0 +1,19 @@
+; The builtin `Option` monomorphized and emitted into WGSL from shader
+; code, without the program defining `Option` itself.
+@storage-write
+(var out: [1: f32])
+
+(defn pick [cond: bool]: (Option f32)
+  (if cond (Some 3.) None))
+
+@compute
+(defn probe []
+  (= (out 0u)
+     (match (pick true)
+       (Some x) x
+       None 0.)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-compute-shader probe (vec3u 1u)))))

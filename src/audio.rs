@@ -338,6 +338,8 @@ pub struct VmAudioDriver {
   midi_aftertouch_slot: Option<usize>,
   midi_pitch_bend_slot: Option<usize>,
   midi_down_notes_region: Option<usize>,
+  /// Base slot of the `get-midi-note` table (`[128: (Option MidiNote)]`).
+  midi_notes_slot: Option<usize>,
   /// Generation of the MIDI snapshot last written into the replica —
   /// batches where no MIDI events arrived skip all refresh work.
   last_midi_generation: Option<u64>,
@@ -384,6 +386,9 @@ impl VmAudioDriver {
       .iter()
       .find(|(name, _, _)| &**name == "easl_midi_down_notes")
       .map(|(_, region, _)| *region as usize);
+    let midi_notes_slot = program
+      .get_global_slot("easl_midi_notes")
+      .map(|(slot, _)| slot as usize);
     Ok(Self {
       program,
       function_names: function_names.to_vec(),
@@ -397,6 +402,7 @@ impl VmAudioDriver {
       midi_aftertouch_slot,
       midi_pitch_bend_slot,
       midi_down_notes_region,
+      midi_notes_slot,
       last_midi_generation: None,
       midi_override: None,
       shared_table,
@@ -415,6 +421,7 @@ impl VmAudioDriver {
       && self.midi_aftertouch_slot.is_none()
       && self.midi_pitch_bend_slot.is_none()
       && self.midi_down_notes_region.is_none()
+      && self.midi_notes_slot.is_none()
     {
       return;
     }
@@ -445,6 +452,10 @@ impl VmAudioDriver {
           .flat_map(|n| [n.note, n.velocity.to_bits(), n.aftertouch.to_bits()])
           .collect(),
       );
+    }
+    if let Some(slot) = self.midi_notes_slot {
+      let words = midi.note_table_words();
+      self.program.stack[slot..slot + words.len()].copy_from_slice(&words);
     }
   }
 

@@ -27,6 +27,7 @@ use crate::{
 };
 
 use super::{
+  enums::{AbstractEnum, AbstractEnumVariant},
   functions::{AbstractFunctionSignature, FunctionImplementationKind},
   macros::Macro,
   structs::AbstractStruct,
@@ -534,6 +535,42 @@ pub fn built_in_structs() -> Vec<AbstractStruct> {
   .into_iter()
   .chain((2..=4).flat_map(|n| (2..=4).map(move |m| matrix(n, m))))
   .collect()
+}
+
+/// The generic `Option` sum type, always in scope (`(Some T)` / `None`).
+/// `get-midi-note` returns `(Option MidiNote)`, and it's a fundamental
+/// enough type to be a builtin. A user program redefining `Option` with
+/// the identical shape is a harmless no-op (deduped by name in
+/// `with_enum`), matching the many existing programs that declared their
+/// own before it became builtin.
+pub fn option_enum() -> AbstractEnum {
+  AbstractEnum {
+    name: ("Option".into(), SourceTrace::empty()),
+    filled_generics: HashMap::new(),
+    generic_args: vec![(
+      "T".into(),
+      GenericArgument::Type(vec![]),
+      SourceTrace::empty(),
+    )],
+    variants: vec![
+      AbstractEnumVariant {
+        name: "Some".into(),
+        source: SourceTrace::empty(),
+        inner_type: AbstractType::Generic("T".into()),
+      },
+      AbstractEnumVariant {
+        name: "None".into(),
+        source: SourceTrace::empty(),
+        inner_type: AbstractType::Type(Type::Unit),
+      },
+    ],
+    abstract_ancestor: None,
+    source_trace: SourceTrace::empty(),
+  }
+}
+
+pub fn built_in_enums() -> Vec<AbstractEnum> {
+  vec![option_enum()]
 }
 
 /// The builtin structs `target` represents natively — struct emission
@@ -2593,6 +2630,23 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
         inner_type: AbstractType::AbstractStruct(Arc::new(midi_note())).into(),
         source_trace: SourceTrace::empty(),
       },
+      ..Default::default()
+    },
+    // Look up a single note by MIDI note number (0-127): `(Some note)`
+    // when currently held, `None` otherwise. `MidiNote` can't carry a
+    // `down: bool` field (bool isn't host-shareable in WGSL storage, and
+    // the held-note list is GPU-readable), so held-ness rides on the
+    // `Option` instead. Rewritten in `extract_audio_info` to a lookup
+    // into the implicit `easl_midi_notes: [128: (Option MidiNote)]`
+    // table.
+    AbstractFunctionSignature {
+      name: "get-midi-note".into(),
+      arg_types: vec![(AbstractType::Type(Type::U32), Ownership::Owned)],
+      return_type: AbstractType::AbstractEnum(Arc::new(
+        option_enum().fill_abstract_generics(vec![
+          AbstractType::AbstractStruct(Arc::new(midi_note())),
+        ]),
+      )),
       ..Default::default()
     },
     AbstractFunctionSignature {

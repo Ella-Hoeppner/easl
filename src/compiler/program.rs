@@ -56,7 +56,8 @@ use crate::{
 
 use super::{
   builtins::{
-    ABNORMAL_CONSTRUCTOR_STRUCTS, built_in_structs, built_in_type_aliases,
+    ABNORMAL_CONSTRUCTOR_STRUCTS, built_in_enums, built_in_structs,
+    built_in_type_aliases,
   },
   error::{
     CompileErrorKind::{self, *},
@@ -195,6 +196,7 @@ thread_local! {
         .with_structs(
           built_in_structs().into_iter().map(|s| Arc::new(s)).collect(),
         )
+        .with_enums(built_in_enums())
         .with_type_aliases(built_in_type_aliases()));
 }
 
@@ -785,6 +787,9 @@ impl Program {
   }
   pub fn with_structs(self, structs: Vec<Arc<AbstractStruct>>) -> Self {
     structs.into_iter().fold(self, |ctx, s| ctx.with_struct(s))
+  }
+  pub fn with_enums(self, enums: Vec<AbstractEnum>) -> Self {
+    enums.into_iter().fold(self, |ctx, e| ctx.with_enum(e))
   }
   pub fn with_type_aliases(
     mut self,
@@ -3399,11 +3404,22 @@ impl Program {
             exp.data.is_globally_bound = true;
             return Ok(true);
           }
-          if args.len() == 1 && &**applied_name == "midi-cc" {
-            let var_name = "easl_midi_cc";
+          // `get-midi-note` and `midi-cc` both index a fixed 128-entry
+          // storage table by note/controller number: rewrite to an array
+          // lookup into the implicit global. `midi-cc`'s element is f32;
+          // `get-midi-note`'s is the call's inferred `(Option MidiNote)`
+          // (concrete here — this pass runs after monomorphization).
+          if args.len() == 1
+            && matches!(&**applied_name, "midi-cc" | "get-midi-note")
+          {
+            let (var_name, element_type) = if &**applied_name == "midi-cc" {
+              ("easl_midi_cc", Type::F32)
+            } else {
+              ("easl_midi_notes", exp.data.unwrap_known())
+            };
             let array_type = Type::Array(
               Some(ConcreteArraySize::Literal(128)),
-              Box::new(Type::F32.known().into()),
+              Box::new(element_type.known().into()),
             );
             if created.insert(var_name) {
               new_vars.push(TopLevelVar {
@@ -5386,6 +5402,14 @@ impl Program {
       }
     }
     for e in self.typedefs.enums.iter().cloned() {
+      // Still-generic enums never emit directly (only their
+      // monomorphized instances do, via `compile_if_non_generic`), and
+      // `flat_data_size_in_u32s` *panics* on a generic payload — so skip
+      // them before the runtime-sized check. The builtin generic
+      // `Option` is always present even in programs that never use it.
+      if !e.generic_args.is_empty() {
+        continue;
+      }
       // Enums with runtime-sized payloads are CPU-only (their variants
       // have no fixed GPU layout) — skip their WGSL emission entirely,
       // like unbound unsized-array globals. GPU code referencing one is

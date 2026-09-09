@@ -6,10 +6,6 @@
   x: f32
   y: f32)
 
-(enum (Option T)
-  (Some T)
-  None)
-
 (defn (print-opt-arrs) [arrs: [(Option [f32])]]
   (for [i (array-length arrs)]
     (match (arrs i)

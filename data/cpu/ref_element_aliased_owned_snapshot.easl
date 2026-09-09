@@ -7,9 +7,6 @@
 ; mutation (the flush, after all argument evaluation), not at the
 ; preload — the aliasing rule deliberately permits owned+ref mixes on
 ; exactly this snapshot promise.
-(enum (Option T)
-  None
-  (Some T))
 
 (defn poke [@var @ref slot: (Option [f32])
             snapshot: [(Option [f32])]]: f32

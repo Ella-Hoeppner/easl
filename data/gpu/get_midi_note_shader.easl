@@ -1,0 +1,17 @@
+; `get-midi-note` inside shader code: the implicit
+; `easl_midi_notes: [128: (Option MidiNote)]` storage binding and its
+; monomorphized `Option<MidiNote>` element emit to WGSL.
+@storage-write
+(var out: [1: f32])
+
+@compute
+(defn probe []
+  (= (out 0u)
+     (match (get-midi-note 60u)
+       (Some n) (+ n.velocity n.aftertouch)
+       None -1.)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-compute-shader probe (vec3u 1u)))))

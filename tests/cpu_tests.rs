@@ -320,3 +320,57 @@ fn midi_queries_spoofed() {
     assert_eq!(output, expected, "midi_queries: output mismatch ({label})");
   }
 }
+
+/// `get-midi-note` against spoofed input on both runtimes: a held note
+/// resolves to `Some` with its velocity/aftertouch, an unheld one to
+/// `None`. Uses the builtin `Option`, without the program defining it.
+#[test]
+fn get_midi_note_spoofed() {
+  let Ok(Ok((_, Ok(mut program)))) =
+    load_easl_program_from_file(Path::new("./data/cpu/get_midi_note.easl"))
+  else {
+    panic!("get_midi_note: failed to load program");
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(
+    errors.is_empty(),
+    "get_midi_note: compile errors: {errors:#?}"
+  );
+  let mut midi = MidiState::default();
+  midi.down_notes = vec![
+    MidiNoteState {
+      note: 60,
+      velocity: 1.,
+      aftertouch: 0.75,
+    },
+    MidiNoteState {
+      note: 64,
+      velocity: 0.5,
+      aftertouch: 0.25,
+    },
+  ];
+  midi.generation = 1;
+  let expected = "1.75\n-1.\n64u\n";
+  for (runtime, label) in [
+    (CpuRuntime::TreeWalking, "tree-walking"),
+    (CpuRuntime::BytecodeVm, "bytecode VM"),
+  ] {
+    let io = StringIO {
+      spoofed_midi: Some(midi.clone()),
+      ..StringIO::default()
+    };
+    let (io, _) =
+      run_program_with_runtime(program.clone(), None, io, None, runtime)
+        .unwrap_or_else(|e| {
+          panic!("get_midi_note: evaluation error ({label}): {e:#?}")
+        });
+    let mut output = String::new();
+    for event in &io.events {
+      if let IOEvent::Print(s) = event {
+        output.push_str(s);
+        output.push('\n');
+      }
+    }
+    assert_eq!(output, expected, "get_midi_note: output mismatch ({label})");
+  }
+}

@@ -1,0 +1,28 @@
+; Spoofed `get-midi-note` read INSIDE a compute shader and written to a
+; storage var the CPU reads back (driven by `get_midi_note_gpu_spoofed`):
+; pins the `easl_midi_notes` table upload and the monomorphized
+; `Option<MidiNote>` layout end-to-end on the real GPU.
+@storage-write
+(var out: [4: f32])
+
+@compute
+(defn probe []
+  (= (out 0u) (match (get-midi-note 60u)
+                (Some n) (+ n.velocity n.aftertouch)
+                None -1.))
+  (= (out 1u) (match (get-midi-note 61u)
+                (Some n) 1.
+                None -1.))
+  (= (out 2u) (match (get-midi-note 64u)
+                (Some n) (f32 n.note)
+                None -1.))
+  (= (out 3u) (match (get-midi-note 64u)
+                (Some n) n.velocity
+                None -1.)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-compute-shader probe (vec3u 1u))
+                    (print out)
+                    (close-window))))

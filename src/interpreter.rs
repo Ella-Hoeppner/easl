@@ -2996,6 +2996,64 @@ impl Default for MidiState {
   }
 }
 
+impl MidiState {
+  /// The flat VM/GPU words for the implicit `easl_midi_notes` table that
+  /// `get-midi-note` reads: 128 `Option<MidiNote>` entries in note-number
+  /// order, 4 words each — the enum discriminant (0 = `Some`, 1 = `None`,
+  /// matching the builtin `Option`'s variant order) then the `MidiNote`
+  /// payload (note, velocity bits, aftertouch bits), zero-padded for
+  /// `None`. Matches `Value::to_vm_words` for `[128: (Option MidiNote)]`,
+  /// so the tree-walker's value-built uploads and the VM's slot words
+  /// agree byte-for-byte (pinned by the `get_midi_note_gpu` round trip).
+  pub fn note_table_words(&self) -> Vec<u32> {
+    let mut words = Vec::with_capacity(128 * 4);
+    for note_num in 0..128u32 {
+      match self.down_notes.iter().find(|n| n.note == note_num) {
+        Some(n) => words.extend([
+          0,
+          n.note,
+          n.velocity.to_bits(),
+          n.aftertouch.to_bits(),
+        ]),
+        None => words.extend([1, 0, 0, 0]),
+      }
+    }
+    words
+  }
+
+  /// The `Value` form of `note_table_words` for the tree-walking
+  /// interpreter's `easl_midi_notes` binding — a 128-element array of
+  /// `Some`/`None` (built by variant name, so it's independent of the
+  /// enum's discriminant order; the GPU upload serializes it through the
+  /// binding's concrete type).
+  pub fn note_table_value(&self) -> Value {
+    Value::Array(
+      (0..128u32)
+        .map(|note_num| {
+          match self.down_notes.iter().find(|n| n.note == note_num) {
+            Some(n) => Value::Enum(
+              "Some".into(),
+              Box::new(Value::Struct(
+                [
+                  ("note".into(), Value::Prim(Primitive::U32(n.note))),
+                  ("velocity".into(), Value::Prim(Primitive::F32(n.velocity))),
+                  (
+                    "aftertouch".into(),
+                    Value::Prim(Primitive::F32(n.aftertouch)),
+                  ),
+                ]
+                .into_iter()
+                .collect(),
+              )),
+            ),
+            None => Value::Enum("None".into(), Box::new(Value::Unit)),
+          }
+        })
+        .collect(),
+    )
+  }
+}
+
 /// Spoofed ambient window/input values for tests: when set on an IO
 /// manager, its window-info accessors report these instead of real state,
 /// so tests can assert that values plumb through the runtime (including
@@ -4714,6 +4772,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       && !self.bindings.contains_key("easl_midi_aftertouch")
       && !self.bindings.contains_key("easl_midi_pitch_bend")
       && !self.bindings.contains_key("easl_midi_down_notes")
+      && !self.bindings.contains_key("easl_midi_notes")
     {
       return;
     }
@@ -4772,6 +4831,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           .collect(),
       ),
     );
+    write("easl_midi_notes", midi.note_table_value());
     self.mark_cpu_written(&written);
   }
   pub fn refresh_window_info_bindings(&mut self) {
@@ -7780,11 +7840,10 @@ fn refresh_vm_midi<IO: IOManager>(
     .iter()
     .find(|(name, _, _)| &**name == "easl_midi_down_notes")
     .map(|(_, region, _)| *region);
-  if program
-    .get_global_slot("easl_midi_note_velocities")
-    .is_none()
+  if program.get_global_slot("easl_midi_notes").is_none()
     && program.get_global_slot("easl_midi_cc").is_none()
     && program.get_global_slot("easl_midi_pitch_bend").is_none()
+    && program.get_global_slot("easl_midi_aftertouch").is_none()
     && down_notes_region.is_none()
   {
     return;
@@ -7810,6 +7869,7 @@ fn refresh_vm_midi<IO: IOManager>(
     "easl_midi_aftertouch",
     "easl_midi_pitch_bend",
     "easl_midi_down_notes",
+    "easl_midi_notes",
   ] {
     written.push((name.into(), host_binding_index(name)));
   }
@@ -7831,11 +7891,15 @@ fn refresh_vm_midi<IO: IOManager>(
         .collect(),
     );
   }
+  let wrote_notes = program
+    .write_global("easl_midi_notes", &midi.note_table_words())
+    .is_some();
   let wrote = [
     wrote_cc,
     wrote_aftertouch,
     wrote_pitch_bend,
     down_notes_region.is_some(),
+    wrote_notes,
   ];
   let mut written_names: Vec<Arc<str>> = vec![];
   for ((name, binding_index), wrote) in written.into_iter().zip(wrote) {

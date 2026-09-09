@@ -243,6 +243,8 @@ success_test!(storage_ref_gpu);
 success_test!(storage_ref_gpu_fragment);
 success_test!(midi_cpu_with_shader);
 success_test!(midi_in_shader);
+success_test!(builtin_option_in_shader);
+success_test!(get_midi_note_shader);
 success_test!(midi_note_user_struct);
 success_test!(dispatch_captured_hof_closure);
 success_test!(dispatch_captured_hof_scoped_lambda);

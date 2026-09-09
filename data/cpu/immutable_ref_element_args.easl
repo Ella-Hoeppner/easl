@@ -7,9 +7,6 @@
 ; snapshot claims are released at each flush). The absence of store ops
 ; is pinned by the hand-written `immutable_ref_elements_emit_no_stores`
 ; test in vm_tests.rs.
-(enum (Option T)
-  None
-  (Some T))
 
 (defn peek [@ref slot: (Option [f32])
             bystander: f32]: f32

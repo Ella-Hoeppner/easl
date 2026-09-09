@@ -8,9 +8,6 @@
 ; store and silently re-pointed at the reused cell, so the callee read
 ; the post-mutation value — a use-after-free violating evaluation
 ; order.
-(enum (Option T)
-  None
-  (Some T))
 
 (defn combine [@var @ref slot: (Option [f32])
                other: f32]: f32

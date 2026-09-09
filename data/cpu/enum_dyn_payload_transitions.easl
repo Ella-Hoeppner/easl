@@ -8,9 +8,6 @@
 ; two variants differ exactly here. Without it, y's id would stay a
 ; borrow of `boxed`'s construction site, freed and reused by the second
 ; `boxed` call.
-(enum (Option T)
-  (Some T)
-  None)
 
 (defn boxed [v: f32]: (Option [f32])
   (Some (into-dynamic-array [v v v])))

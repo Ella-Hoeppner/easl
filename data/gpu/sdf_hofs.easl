@@ -344,10 +344,6 @@
                         (vec3f 0. 0.)))
              1.))))
 
-(enum (Option T)
-  (Some T)
-  None)
-
 (defn mouse-pos []: vec2f
   (let [min-dim (-> (window-resolution)
                     (min (.x <>) (.y <>))

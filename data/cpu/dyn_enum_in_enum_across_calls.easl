@@ -2,9 +2,6 @@
 ; the runtime-sized payload (bytecode VM) — the outer variant's fixups
 ; contain the inner enum's own dispatch (a nested conditional region),
 ; the depth case of the recursion scheme.
-(enum (Option T)
-  (Some T)
-  None)
 
 (enum Outer
   (Wrapped (Option [f32]))

@@ -694,6 +694,31 @@ fn midi_audio_down_notes() {
   );
 }
 
+/// The audio thread using `get-midi-note` to look up notes by number
+/// (builtin `Option`): sums held velocities across all 128 numbers.
+#[test]
+fn midi_audio_get_note() {
+  let mut midi = MidiState::default();
+  midi.down_notes = vec![
+    MidiNoteState {
+      note: 60,
+      velocity: 1.,
+      aftertouch: 0.,
+    },
+    MidiNoteState {
+      note: 64,
+      velocity: 0.5,
+      aftertouch: 0.,
+    },
+  ];
+  midi.generation = 1;
+  run_thread_sync_test_with_midi(
+    "midi_audio_get_note",
+    [Frame, AudioBatch(2)].to_vec(),
+    Some(midi),
+  );
+}
+
 thread_sync_test!(audio_dyn_alloc, [Frame, AudioBatch(2)]);
 thread_sync_test!(audio_realloc_shared, [Frame, AudioBatch(2), Frame]);
 thread_sync_test!(audio_nested_alloc_shared, [Frame, AudioBatch(2), Frame]);

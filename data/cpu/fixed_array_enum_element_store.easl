@@ -5,9 +5,6 @@
 ; `ArrayLookup`/`ArrayStore` write-back (see
 ; fixed_array_dyn_element_store). Guards the dispatch machinery through
 ; the indexed-store path.
-(enum (Option T)
-  None
-  (Some T))
 
 (defn empty-pair []: [2: (Option [f32])]
   [None None])

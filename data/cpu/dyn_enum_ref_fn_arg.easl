@@ -5,9 +5,6 @@
 ; group's jump targets and condition/constant slots are final at
 ; emission, while the discriminant reads and fixup destinations are
 ; recorded as destination-relative patches (`PendingCopyGroup`).
-(enum (Option T)
-  (Some T)
-  None)
 
 (defn wrap [n: u32]: (Option [f32])
   (Some (zeroed-array n)))

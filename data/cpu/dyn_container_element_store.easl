@@ -6,9 +6,6 @@
 ; the container). Each loop iteration's payload then survives the next
 ; iteration's construction-site release. The `[String]`/`[[f32]]`
 ; `Cells` containers handle the same pattern via Arc children.
-(enum (Option T)
-  None
-  (Some T))
 
 (defn empty-pair []: [(Option [f32])]
   (zeroed-array 2u))

@@ -16,10 +16,6 @@
          0.
          1.))
 
-(enum (Option T)
-  None
-  (Some T))
-
 (struct Ray
   pos: vec3f
   dir: vec3f)
