@@ -1,0 +1,26 @@
+; An enum whose payload transitively contains a `bool` (`Voice.down`) is
+; GPU-valid: the WGSL constructor packs the bool into the `array<u32,N>`
+; payload with `u32(...)` (not `bitcast`, which can't target bool), and a
+; match unpacks it with `!= 0u`. `make-voice` (a library function that
+; constructs the enum) emits valid WGSL, and the fragment shader matches
+; on the result.
+(struct Voice
+  level: f32
+  down: bool)
+
+(defn make-voice [t: f32]: (Option Voice)
+  (Some (Voice t (> t 0.5))))
+
+@fragment
+(defn frag []: vec4f
+  (match (make-voice 0.75)
+    (Some v) (vec4f (if v.down v.level 0.) 0. 0. 1.)
+    None (vec4f 0.)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                    (dispatch-render-shaders
+                     (fn [] (vec4f (f32 (vertex-index)) 0. 0. 1.))
+                     frag
+                     3))))

@@ -1,0 +1,13 @@
+; Round-trips a `bool` through an enum payload (construct + match) on
+; every backend: WGSL packs the bool with `u32(...)` and unpacks with
+; `!= 0u`, C stores 0/1 directly, and the interpreter/VM handle it
+; natively. `f` returns 6. when the flag survives the round trip.
+(struct Flagged
+  value: f32
+  flag: bool)
+
+(defn f []: f32
+  (let [wrapped (Some (Flagged 3. true))]
+    (match wrapped
+      (Some fl) (if fl.flag (* fl.value 2.) fl.value)
+      None 0.)))

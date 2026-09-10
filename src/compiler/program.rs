@@ -5509,14 +5509,21 @@ impl Program {
                   .bitcastable_chunk_accessors("value".into())
                   .into_iter()
                   .map(|exp| {
-                    format!(
-                      "bitcast<u32>({})",
-                      exp.compile(
-                        ExpressionCompilationPosition::InnerExpression,
-                        &mut names,
-                        target
-                      )
-                    )
+                    // WGSL can't `bitcast` a `bool`, but it converts one
+                    // to `u32` (false → 0, true → 1) with `u32(...)`;
+                    // `bitcasted_from_enum_data_inner` unpacks it back
+                    // with `!= 0u`.
+                    let is_bool = matches!(exp.data.unwrap_known(), Type::Bool);
+                    let compiled = exp.compile(
+                      ExpressionCompilationPosition::InnerExpression,
+                      &mut names,
+                      target,
+                    );
+                    if is_bool {
+                      format!("u32({compiled})")
+                    } else {
+                      format!("bitcast<u32>({compiled})")
+                    }
                   })
                   .chain(std::iter::repeat("0u".into()))
                   .take(e.inner_flat_data_size_in_u32s()?)
@@ -5534,14 +5541,24 @@ impl Program {
                   .into_iter()
                   .enumerate()
                   .map(|(i, exp)| {
-                    format!(
-                      "memcpy(&result.data[{i}], &{}, sizeof(uint32_t));",
-                      exp.compile(
-                        ExpressionCompilationPosition::InnerExpression,
-                        &mut names,
-                        target
+                    let is_bool = matches!(exp.data.unwrap_known(), Type::Bool);
+                    let compiled = exp.compile(
+                      ExpressionCompilationPosition::InnerExpression,
+                      &mut names,
+                      target,
+                    );
+                    // A C `bool` is one byte, so a `sizeof(uint32_t)`
+                    // memcpy would over-read it; store 0/1 directly
+                    // (matching the WGSL `u32(bool)` pack and the
+                    // `!= 0u` unpack).
+                    if is_bool {
+                      format!("result.data[{i}] = ({compiled}) ? 1u : 0u;")
+                    } else {
+                      format!(
+                        "memcpy(&result.data[{i}], &{compiled}, \
+                         sizeof(uint32_t));"
                       )
-                    )
+                    }
                   })
                   .collect::<Vec<String>>()
                   .join("\n  ");

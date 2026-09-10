@@ -2270,7 +2270,57 @@ impl Type {
     };
     let (kind, consumed_indeces) = match self {
       Type::Unit => (ExpKind::Unit, 0),
-      Type::F32 | Type::I32 | Type::U32 | Type::Bool => (
+      // WGSL/C have no `bitcast` to `bool`; unpack via `data[i] != 0u`
+      // (0 = false, non-zero = true), the inverse of the constructor's
+      // `u32(bool)` pack. `!=` is an infix op, so this compiles to
+      // `(data[i] != 0u)` on both targets.
+      Type::Bool => (
+        ExpKind::Application(
+          TypedExp {
+            data: Type::Function(
+              FunctionSignature {
+                abstract_ancestor: Some(
+                  RwLock::new(AbstractFunctionSignature {
+                    name: "!=".into(),
+                    // The two operand ownerships must be present: the
+                    // compiler zips call args against the ancestor's
+                    // `arg_types` to decide ref/deref, so an empty list
+                    // would drop both args.
+                    arg_types: vec![
+                      (AbstractType::Type(Type::U32), Ownership::Owned),
+                      (AbstractType::Type(Type::U32), Ownership::Owned),
+                    ],
+                    return_type: AbstractType::Type(Type::Bool),
+                    ..Default::default()
+                  })
+                  .into(),
+                ),
+                args: vec![
+                  (Variable::immutable(Type::U32.known().into()), vec![]),
+                  (Variable::immutable(Type::U32.known().into()), vec![]),
+                ],
+                return_type: Type::Bool.known().into(),
+              }
+              .into(),
+            )
+            .known()
+            .into(),
+            kind: ExpKind::Name("!=".into()),
+            source_trace: SourceTrace::empty(),
+          }
+          .into(),
+          vec![
+            data_array_access(0),
+            TypedExp {
+              data: Type::U32.known().into(),
+              kind: ExpKind::NumberLiteral(Number::Int(0)),
+              source_trace: SourceTrace::empty(),
+            },
+          ],
+        ),
+        1,
+      ),
+      Type::F32 | Type::I32 | Type::U32 => (
         ExpKind::Application(
           TypedExp {
             data: Type::Function(

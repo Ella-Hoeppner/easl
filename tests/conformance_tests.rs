@@ -557,6 +557,7 @@ conformance_test!(match_int_default);
 conformance_test!(match_bool);
 conformance_test!(match_enum_unit);
 conformance_test!(match_enum_data);
+conformance_test!(enum_bool_payload);
 conformance_test!(match_enum_struct_data);
 conformance_test!(match_enum_nested_data);
 conformance_test!(generic_enum_unit_variant_value);

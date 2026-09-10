@@ -91,13 +91,11 @@
 (struct Voice
   note: u32
   down: bool
-  adsr-state: ADSRState
-  t: f32)
+  adsr-state: ADSRState)
 
 (var voices: [Voice])
 
-(defn (filter T
-              C: u32)
+(defn (filter T)
       [arr: [T]
        f: (Fn [T] bool)]: [T]
       (let [@var new-arr ~[]]
@@ -107,41 +105,178 @@
                (push new-arr (arr i)))))
         new-arr))
 
+(defn sympow [x: f32
+              p: f32]: f32
+  (-> x abs (pow p) (* (sign x))))
+
+(defn sigmoid [x: f32]: f32
+  (-> x - exp (+ 1) /))
+
+(struct (MidiVoice S)
+  note: u32
+  down: bool
+  state: S)
+
+(struct (StateAndSample T)
+  state: T
+  sample: f32)
+
+(defn (midi-polyphony S)
+      [initializer: (Fn [MidiNote] S)
+       updater: (Fn [S u32 (Option MidiNote)]
+             (Option (StateAndSample S)))]: (Fn [] f32)
+      (let [@var active-voices: [(MidiVoice S)] ~[]]
+        (fn []
+            (let [notes (down-midi-notes)]
+              (for [i
+                    (array-length active-voices)]
+                (= (.down (active-voices i))
+                   false))
+              (for [i (array-length notes)]
+                (let [note (notes i)
+                      @var note-existed false]
+                  (for [i2
+                        (array-length active-voices)]
+                    (let [voice (active-voices i2)]
+                      (when (== note.note voice.note)
+                        (= (.down (active-voices i2))
+                           true)
+                        (= note-existed true))))
+                  (when (not note-existed)
+                    (let [old-voices active-voices
+                          old-voice-count (array-length active-voices)]
+                      (= active-voices
+                         (push active-voices
+                               (MidiVoice note.note
+                                          true
+                                          (initializer note))))))))
+              (let [@var indeces-to-remove ~[]
+                    @var sum 0.]
+                (for [i
+                      (array-length active-voices)]
+                  (match (updater (.state (active-voices i))
+                                  (.note (active-voices i))
+                                  None
+                                  #_(get-midi-note (.note (active-voices i))))
+                    (Some state-and-sample) (do (= (.state (active-voices i))
+                                                   state-and-sample.state)
+                                                (+= sum state-and-sample.sample))
+                    None (= indeces-to-remove
+                            (push indeces-to-remove i))))
+                (for [i (length indeces-to-remove)]
+                  (= active-voices
+                     (remove active-voices
+                             (indeces-to-remove (- (length indeces-to-remove)
+                                                   (+ i 1))))))
+                sum)
+              #_(= active-voices
+                   (filter active-voices
+                           (fn [voice]
+                               (or (.down voice)
+                                   (> (.level (.adsr-state voice))
+                                      0.)))))
+              #_(let [@var sum 0.]
+                  (for [i (length active-voices)]
+                    (let [voice (active-voices i)]
+                      (+= sum
+                          (* voice.adsr-state.level
+                             (sympow (cos (* (-> voice.note
+                                                 f32
+                                                 (- 69)
+                                                 (/ 12)
+                                                 (pow 2 <>)
+                                                 (* 440))
+                                             (audio-time)))
+                                     (* 0.6
+                                        (pow 1.175
+                                             (cos (* (audio-time) 6.283 9)))))))))
+                  (sigmoid sum))))))
+
+(defn (is-some? T)
+      [o: (Option T)]: bool
+      (match o
+        (Some v) true
+        _ false))
+
+(defn (then T)
+      [b: bool
+       f: (Fn [] T)]: (Option T)
+      (if b
+        (Some (f))
+        None))
+
 @cpu
 (defn main []
   (= voices ~[])
-  (start-audio (let [params (ADSRParams 0.5 0.5 0.25 1.)]
-                 (fn []
-                     (let [notes (down-midi-notes)]
-                       (for [i (array-length voices)]
-                         (= (.down (voices i)) false))
-                       (for [i (array-length notes)]
-                         (let [note (notes i)
-                               @var note-existed false]
-                           (for [i2 (array-length voices)]
-                             (let [voice (voices i2)]
-                               (when (== note.note voice.note)
-                                 (= (.down (voices i2)) true)
-                                 (= note-existed true))))
-                           (when (not note-existed)
-                             (let [old-voices voices
-                                   old-voice-count (array-length voices)]
-                               (= voices
-                                  (push voices
-                                        (Voice note.note true (new) 0.)))))))
-                       (for [i (array-length voices)]
-                         (= (.adsr-state (voices i))
-                            (update-adsr (.adsr-state (voices i))
-                                         params
-                                         (.down (voices i))
-                                         (/ (sample-rate)))))
-                       #_(= voices
+  (start-audio (let [params (ADSRParams 0.01 0.1 0.2 0.5)]
+                 (midi-polyphony (fn [note] (new))
+                                 (fn [state idx note]
+                                     (let [new-state (update-adsr state
+                                                                  params
+                                                                  (is-some? note)
+                                                                  (/ (sample-rate)))]
+                                       (then (or (> new-state.level 0.)
+                                                 (is-some? note))
+                                             (fn []
+                                                 (StateAndSample new-state
+                                                                 (* new-state.level
+                                                                    (sympow (cos (* (-> idx
+                                                                                        f32
+                                                                                        (- 69)
+                                                                                        (/ 12)
+                                                                                        (pow 2 <>)
+                                                                                        (* 440))
+                                                                                    (audio-time)))
+                                                                            (* 0.6
+                                                                               (pow 1.175
+                                                                                    (cos (* (audio-time) 6.283 9))))))))))))))
+  #_(start-audio (let [params (ADSRParams 0.01 0.1 0.2 0.5)]
+                   (fn []
+                       (let [notes (down-midi-notes)]
+                         (for [i (array-length voices)]
+                           (= (.down (voices i)) false))
+                         (for [i (array-length notes)]
+                           (let [note (notes i)
+                                 @var note-existed false]
+                             (for [i2 (array-length voices)]
+                               (let [voice (voices i2)]
+                                 (when (== note.note voice.note)
+                                   (= (.down (voices i2)) true)
+                                   (= note-existed true))))
+                             (when (not note-existed)
+                               (let [old-voices voices
+                                     old-voice-count (array-length voices)]
+                                 (= voices
+                                    (push voices
+                                          (Voice note.note true (new))))))))
+                         (for [i (array-length voices)]
+                           (= (.adsr-state (voices i))
+                              (update-adsr (.adsr-state (voices i))
+                                           params
+                                           (.down (voices i))
+                                           (/ (sample-rate)))))
+                         (= voices
                             (filter voices
                                     (fn [voice]
-                                        (and (not (.down voice))
-                                             (== 0.
-                                                 (.level (.adsr-state voice)))))))
-                       0.))))
+                                        (or (.down voice)
+                                            (> (.level (.adsr-state voice))
+                                               0.)))))
+                         (let [@var sum 0.]
+                           (for [i (length voices)]
+                             (let [voice (voices i)]
+                               (+= sum
+                                   (* voice.adsr-state.level
+                                      (sympow (cos (* (-> voice.note
+                                                          f32
+                                                          (- 69)
+                                                          (/ 12)
+                                                          (pow 2 <>)
+                                                          (* 440))
+                                                      (audio-time)))
+                                              (* 0.6
+                                                 (pow 1.175
+                                                      (cos (* (audio-time) 6.283 9)))))))))
+                           (sigmoid sum))))))
   (spawn-window (fn []
                     (print (down-midi-notes))
                     (print voices)
@@ -157,3 +292,4 @@
                                                                   0.1))
                                                         1.))
                                              3))))
+
