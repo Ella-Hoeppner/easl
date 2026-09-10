@@ -1452,6 +1452,25 @@ impl Type {
     }
   }
 
+  /// Whether this type can be the element/whole type of a WGSL
+  /// storage/uniform binding: no `bool` or `String` (not host-shareable,
+  /// matching `validate_gpu_used_binding_types`), and no runtime-sized
+  /// array except as the outermost `array<sized>` — a struct/enum/fixed
+  /// array *embedding* one, or a nested `[[T]]`, has no binding layout
+  /// (WGSL allows a runtime-sized array only as a whole binding of `array<
+  /// fixed>`). A function reading such a global is CPU-only.
+  pub fn is_valid_wgsl_binding_layout(&self) -> bool {
+    if self.involves_bool() || self.involves_string() {
+      return false;
+    }
+    match self {
+      Type::Array(Some(ConcreteArraySize::Unsized), element_type) => {
+        !element_type.unwrap_known().involves_runtime_sized_array()
+      }
+      other => !other.involves_runtime_sized_array(),
+    }
+  }
+
   pub fn flat_data_size_in_u32s(
     &self,
     source_trace: &SourceTrace,

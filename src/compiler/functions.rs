@@ -1285,6 +1285,49 @@ impl TopLevelFunction {
     {
       return false;
     }
+    // A function that reads/writes a GPU-space global whose type can't be
+    // a WGSL binding is CPU-only, even when its *signature* is clean. This
+    // catches storage-ref-inlined variants (`sample_wavetable_<global>`),
+    // whose `@ref Wavetable` param was replaced by a read of a global that
+    // embeds a runtime-sized array — the signature loses the `Wavetable`
+    // but the body still references the un-emittable binding.
+    if target == CompilerTarget::WGSL {
+      use crate::compiler::expression::ExpKind;
+      let non_binding_legal: std::collections::HashSet<Arc<str>> = program
+        .top_level_vars
+        .iter()
+        .filter(|v| {
+          matches!(
+            v.kind,
+            crate::compiler::vars::TopLevelVariableKind::Var {
+              address_space: VariableAddressSpace::Uniform
+                | VariableAddressSpace::StorageRead
+                | VariableAddressSpace::StorageReadWrite,
+              ..
+            }
+          ) && !v.var_type.is_valid_wgsl_binding_layout()
+        })
+        .map(|v| v.name.clone())
+        .collect();
+      if !non_binding_legal.is_empty() {
+        let mut reads_bad_global = false;
+        self
+          .expression
+          .walk(&mut |exp| {
+            if let ExpKind::Name(name) = &exp.kind
+              && non_binding_legal.contains(name)
+            {
+              reads_bad_global = true;
+              return Ok::<bool, Never>(false);
+            }
+            Ok(true)
+          })
+          .unwrap();
+        if reads_bad_global {
+          return false;
+        }
+      }
+    }
     let effects = self.effects();
     effects.cpu_exclusive_functions().is_empty()
       && effects.cpu_exclusive_types().is_empty()

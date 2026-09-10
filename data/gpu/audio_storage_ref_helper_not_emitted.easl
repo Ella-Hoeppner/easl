@@ -1,0 +1,37 @@
+; A user helper takes a `@ref` to a struct that embeds a runtime-sized
+; array (`Wavetable`), and is called (on the audio thread) with a captured
+; global as that ref. Storage-ref inlining produces a variant whose
+; `@ref Wavetable` param is replaced by a read of the (audio-capture)
+; global — so its *signature* is `(f32) -> (Option f32)` (clean), but its
+; body reads a global whose `Wavetable` type has no WGSL binding layout.
+; That variant must NOT be emitted to WGSL (nor the global), even though
+; it's a rename-family variant of a user fn: reading a non-binding-legal
+; global makes it CPU-only. The shaders here never touch any of it.
+(struct Wavetable
+  samples: [f32]
+  rate: f32)
+
+(defn sample-wt [t: f32
+                 @ref w: Wavetable]: (Option f32)
+  (if (< (u32 (* t w.rate)) (length w.samples))
+    (Some (w.samples (u32 (* t w.rate))))
+    None))
+
+(defn make-voice [wt: Wavetable]: (Fn [] f32)
+  (fn []
+      (match (sample-wt (audio-time) wt)
+        (Some s) s
+        None 0.)))
+
+@fragment
+(defn frag []: vec4f
+  (vec4f 1.))
+
+@cpu
+(defn main []
+  (start-audio (make-voice (Wavetable ~[0.1 0.2] 2.)))
+  (spawn-window (fn []
+                    (dispatch-render-shaders
+                     (fn [] (vec4f (f32 (vertex-index)) 0. 0. 1.))
+                     frag
+                     3))))

@@ -5610,74 +5610,13 @@ impl Program {
       compiled_string += &chunk;
       compiled_string += "\n\n";
     }
-    // Closure-based emission: the output's function set is the transitive
-    // call-graph closure of a root set, so an emitted function can never
-    // reference an unemitted one. Roots are this target's entry points
-    // plus every directly-user-written function that is *transitively
-    // target-valid* (`is_valid_for_target` holding for it and every
-    // function it transitively calls) — the easl-as-a-library contract,
-    // stated precisely: a user-written function emits iff it could
-    // actually be called from the target's code. Compiler-generated
-    // functions emit exactly when something emitted needs them (a
-    // monomorphization or reference variant a user-written function
-    // calls), and audio clones / CPU-only specializations fall away by
-    // unreachability — no per-function context-mask heuristics.
-    let ordered_functions = self.composite_functions_in_usage_order();
-    let registry_names: HashSet<Arc<str>> = ordered_functions
-      .iter()
-      .map(|(name, _)| name.clone())
-      .collect();
-    let mut callees: HashMap<Arc<str>, Vec<Arc<str>>> = HashMap::new();
-    for (f_name, implementation) in ordered_functions.iter() {
-      let mut found: Vec<Arc<str>> = vec![];
-      implementation
-        .read()
-        .unwrap()
-        .expression
-        .walk(&mut |exp| {
-          if let ExpKind::Name(name) = &exp.kind
-            && registry_names.contains(name)
-            && name != f_name
-          {
-            found.push(name.clone());
-          }
-          Ok::<bool, Never>(true)
-        })
-        .unwrap();
-      callees.insert(f_name.clone(), found);
-    }
-    // `ordered_functions` is topological (callees first), so one pass
-    // suffices for the transitive-validity fixpoint.
-    let mut transitively_valid: HashMap<Arc<str>, bool> = HashMap::new();
-    for (f_name, implementation) in ordered_functions.iter() {
-      let valid = implementation
-        .read()
-        .unwrap()
-        .is_valid_for_target(&self, target)
-        && callees[f_name]
-          .iter()
-          .all(|callee| transitively_valid[callee]);
-      transitively_valid.insert(f_name.clone(), valid);
-    }
-    let mut emitted: HashSet<Arc<str>> = HashSet::new();
-    let mut queue: Vec<Arc<str>> = ordered_functions
-      .iter()
-      .filter(|(f_name, implementation)| {
-        let implementation = implementation.read().unwrap();
-        implementation
-          .entry_point
-          .map(|entry| entry.should_compile_to_target(target))
-          .unwrap_or(false)
-          || (implementation.directly_user_written
-            && transitively_valid[f_name])
-      })
-      .map(|(f_name, _)| f_name.clone())
-      .collect();
-    while let Some(f_name) = queue.pop() {
-      if emitted.insert(f_name.clone()) {
-        queue.extend(callees[&f_name].iter().cloned());
-      }
-    }
+    // Closure-based emission (see `emitted_function_closure`): the output's
+    // function set is the transitive call-graph closure of the root set, so
+    // an emitted function can never reference an unemitted one, and audio
+    // clones / CPU-only specializations fall away by unreachability. This is
+    // also the set `wgsl_referenced_globals` walks to decide which
+    // compiler-generated vars' declarations to emit.
+    let (ordered_functions, emitted) = self.emitted_function_closure(target);
     for (f_name, implementation) in ordered_functions {
       if !emitted.contains(&f_name) {
         continue;
@@ -8092,36 +8031,107 @@ impl Program {
     }));
     used
   }
+  /// The functions actually emitted to `target`, as
+  /// `(ordered_functions, emitted_names)`: the transitive call-graph
+  /// closure of the root set (this target's entry points plus every
+  /// directly-user-written, transitively-target-valid function — the
+  /// easl-as-a-library contract). `ordered_functions` is the full
+  /// callees-first list (for deterministic emission order); `emitted` is
+  /// the reachable subset. Shared by `compile_to_target`'s function
+  /// emission and `wgsl_referenced_globals`.
+  #[allow(clippy::type_complexity)]
+  fn emitted_function_closure(
+    &self,
+    target: CompilerTarget,
+  ) -> (
+    Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)>,
+    HashSet<Arc<str>>,
+  ) {
+    use crate::compiler::expression::ExpKind;
+    let ordered_functions = self.composite_functions_in_usage_order();
+    let registry_names: HashSet<Arc<str>> = ordered_functions
+      .iter()
+      .map(|(name, _)| name.clone())
+      .collect();
+    let mut callees: HashMap<Arc<str>, Vec<Arc<str>>> = HashMap::new();
+    for (f_name, implementation) in ordered_functions.iter() {
+      let mut found: Vec<Arc<str>> = vec![];
+      implementation
+        .read()
+        .unwrap()
+        .expression
+        .walk(&mut |exp| {
+          if let ExpKind::Name(name) = &exp.kind
+            && registry_names.contains(name)
+            && name != f_name
+          {
+            found.push(name.clone());
+          }
+          Ok::<bool, Never>(true)
+        })
+        .unwrap();
+      callees.insert(f_name.clone(), found);
+    }
+    // `ordered_functions` is topological (callees first), so one pass
+    // suffices for the transitive-validity fixpoint.
+    let mut transitively_valid: HashMap<Arc<str>, bool> = HashMap::new();
+    for (f_name, implementation) in ordered_functions.iter() {
+      let valid = implementation
+        .read()
+        .unwrap()
+        .is_valid_for_target(self, target)
+        && callees[f_name]
+          .iter()
+          .all(|callee| transitively_valid[callee]);
+      transitively_valid.insert(f_name.clone(), valid);
+    }
+    let mut emitted: HashSet<Arc<str>> = HashSet::new();
+    let mut queue: Vec<Arc<str>> = ordered_functions
+      .iter()
+      .filter(|(f_name, implementation)| {
+        let implementation = implementation.read().unwrap();
+        implementation
+          .entry_point
+          .map(|entry| entry.should_compile_to_target(target))
+          .unwrap_or(false)
+          || (implementation.directly_user_written
+            && transitively_valid[f_name])
+      })
+      .map(|(f_name, _)| f_name.clone())
+      .collect();
+    while let Some(f_name) = queue.pop() {
+      if emitted.insert(f_name.clone()) {
+        queue.extend(callees[&f_name].iter().cloned());
+      }
+    }
+    (ordered_functions, emitted)
+  }
   /// The top-level vars referenced by name anywhere in the WGSL output:
-  /// the union of `gpu_used_globals` (entry-point effect reads/writes,
-  /// textures) and every top-level-var `Name` appearing in a
-  /// WGSL-emittable function body. Used to decide whether a
-  /// compiler-generated GPU-space var's declaration emits: the narrower
-  /// `gpu_used_globals` misses vars read only by a library-root helper
-  /// (not entry-reachable) or by an emitted closure clone, which would
-  /// dangle if the var were skipped. `is_valid_for_target` over-
-  /// approximates the actual emission closure — emitting a var referenced
-  /// by an emittable-but-unreachable function is harmless (valid, dead),
-  /// whereas skipping a referenced one dangles; and a var referenced only
-  /// by a *non*-emittable function (e.g. `easl_midi_notes`, read just by
-  /// an audio clone whose `Option<MidiNote>` signature is CPU-only) is
-  /// correctly excluded.
+  /// `gpu_used_globals` (entry-point effect reads/writes, textures) plus
+  /// every top-level-var `Name` in an *actually-emitted* function body
+  /// (`emitted_function_closure`). Decides whether a compiler-generated
+  /// GPU-space var's declaration emits. `gpu_used_globals` alone misses a
+  /// var read only by a library-root helper (emitted but not
+  /// entry-reachable); the *emission closure* rather than the looser
+  /// "any target-valid function" is essential the other way — an audio
+  /// clone reading a capture global (e.g. a `Wavetable`) can pass the
+  /// signature-only `is_valid_for_target` yet never be emitted (audio
+  /// entries don't compile to WGSL), and counting it would emit a var
+  /// whose type isn't even in the typedefs → dangling reference.
   fn wgsl_referenced_globals(&self) -> HashSet<Arc<str>> {
     use crate::compiler::expression::ExpKind;
     let var_names: HashSet<Arc<str>> =
       self.top_level_vars.iter().map(|v| v.name.clone()).collect();
     let mut referenced = self.gpu_used_globals();
-    for f in self.abstract_functions_iter() {
-      let FunctionImplementationKind::Composite(implementation) =
-        &f.read().unwrap().implementation
-      else {
-        continue;
-      };
-      let implementation = implementation.read().unwrap();
-      if !implementation.is_valid_for_target(self, CompilerTarget::WGSL) {
+    let (ordered_functions, emitted) =
+      self.emitted_function_closure(CompilerTarget::WGSL);
+    for (f_name, implementation) in ordered_functions.iter() {
+      if !emitted.contains(f_name) {
         continue;
       }
       implementation
+        .read()
+        .unwrap()
         .expression
         .walk(&mut |exp| {
           if let ExpKind::Name(name) = &exp.kind

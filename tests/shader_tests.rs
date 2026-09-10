@@ -247,6 +247,7 @@ success_test!(builtin_option_in_shader);
 success_test!(get_midi_note_shader);
 success_test!(enum_bool_payload_gpu);
 success_test!(audio_only_midi_not_emitted_to_gpu);
+success_test!(audio_storage_ref_helper_not_emitted);
 success_test!(midi_note_user_struct);
 success_test!(dispatch_captured_hof_closure);
 success_test!(dispatch_captured_hof_scoped_lambda);
