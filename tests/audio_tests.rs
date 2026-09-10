@@ -78,6 +78,7 @@ macro_rules! audio_test {
 
 audio_test!(audio_entry_with_dynamic_global);
 audio_test!(load_wav);
+audio_test!(load_wav_dynamic_path);
 
 #[test]
 fn start_audio_bootstrap_publishes_current_globals() {

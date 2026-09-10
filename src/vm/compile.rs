@@ -3741,12 +3741,14 @@ impl TypedExp {
   ) -> Option<Option<u16>> {
     match f_name {
       "load-wav" => {
-        let ExpKind::StringLiteral(path) = &args[0].kind else {
-          panic!("load-wav argument must be a string literal")
-        };
-        let path = state.host_string_index(&path.to_string());
+        // The path is compiled as an ordinary runtime `String` value (a
+        // heap id), so a literal, a threaded-through `String` param, or
+        // any computed string all work — the host op decodes it.
+        let path_slot = args[0]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("load-wav path produced no value");
         let dest = state.take_stack_slot(1);
-        state.emit_host_op(HostOp::LoadWav { path, dest });
+        state.emit_host_op(HostOp::LoadWav { path_slot, dest });
         Some(Some(dest))
       }
       "print" => {

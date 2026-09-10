@@ -7687,8 +7687,9 @@ fn vm_host_call<IO: IOManager>(
         return Err(WindowFeatureNotEnabled.into());
       }
     }
-    HostOp::LoadWav { path, dest } => {
-      let path = code.host_strings[*path as usize].clone();
+    HostOp::LoadWav { path_slot, dest } => {
+      let path =
+        words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
       let samples = load_wav_samples(&path, &env.source_dir)?;
       let cell = Arc::new(HeapCell {
         memory: DynMemory::Words(

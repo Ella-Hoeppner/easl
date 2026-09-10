@@ -729,13 +729,16 @@ pub enum HostOp {
   StartAudio {
     entry: u16,
   },
-  /// `(load-wav "path")`: parse the WAV file and store its samples as a
-  /// fresh heap cell (f32 words, stride 1), writing the cell's id to
-  /// `dest` (releasing the slot's previous occupant). An ordinary value —
-  /// assignment to a dynamic global goes through the generic
-  /// `RegionFromHeap` path like any other runtime-sized value.
+  /// `(load-wav path)`: parse the WAV file at the runtime string in
+  /// `path_slot` (a heap-id slot — the argument is compiled as an
+  /// ordinary `String` value, so a literal, a `String` parameter threaded
+  /// through helpers, or any computed string all work) and store its
+  /// samples as a fresh heap cell (f32 words, stride 1), writing the
+  /// cell's id to `dest` (releasing the slot's previous occupant). An
+  /// ordinary value — assignment to a dynamic global goes through the
+  /// generic `RegionFromHeap` path like any other runtime-sized value.
   LoadWav {
-    path: u16,
+    path_slot: u16,
     dest: u16,
   },
   /// `(= texture-global (load-image "path"))`

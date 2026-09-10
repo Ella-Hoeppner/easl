@@ -1,0 +1,24 @@
+; `load-wav`'s path can be a runtime `String` threaded through a helper,
+; not just a literal — the VM compiles the argument as an ordinary
+; string value and the host op decodes it (the tree-walker already read
+; the arg as a value). Here `load-named` forwards its `String` parameter.
+@local
+(var sample: [f32])
+
+(defn load-named [name: String]: [f32]
+  (load-wav name))
+
+@audio
+(defn tone [t: f32]: f32
+  (let [i (u32 (* t (sample-rate)))]
+    (if (< i (array-length sample))
+      (sample i)
+      0.)))
+
+@cpu
+(defn main []
+  (= sample (load-named "test_sample.wav"))
+  (print (array-length sample))
+  (print (sample 1u))
+  (print (sample 2u))
+  (print (sample 3u)))
