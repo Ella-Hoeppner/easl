@@ -6864,29 +6864,14 @@ pub(crate) fn vm_words_of(t: &Type) -> usize {
 /// zero words), everything else via `to_vm_words`.
 pub(crate) fn value_to_shared_words(value: &Value, ty: &Type) -> Vec<u32> {
   if crate::vm::shared_sync::needs_wire_encoding(ty) {
-    // heap-involving elements: the serialized wire format (see
-    // vm/shared_sync.rs) — must produce bytes identical to the VM
-    // runtime's serializer, since either runtime can sit on either side
-    let Type::Array(_, element_type) = ty else {
-      unreachable!()
-    };
-    let element_type = element_type.kind.unwrap_known();
+    // A heap-embedding shared value (a dyn array of heap elements, or a
+    // slot-backed struct/enum/fixed-array embedding one): the serialized
+    // wire format. `encode_value_wire` handles both — a top-level dyn
+    // array is count-prefixed, a struct/enum walked field-by-field — and
+    // must produce bytes identical to the VM's `serialize_flat_value` /
+    // `serialize_dyn_memory`, since either runtime can sit on either side.
     let mut out = Vec::new();
-    match value {
-      Value::Array(items) => {
-        out.push(items.len() as u32);
-        for item in items {
-          encode_value_wire(item, &element_type, &mut out);
-        }
-      }
-      Value::ZeroedArray { length } => {
-        out.push(*length as u32);
-        for _ in 0..*length {
-          encode_zero_wire(&element_type, &mut out);
-        }
-      }
-      other => panic!("can't publish {other:?} as a shared array"),
-    }
+    encode_value_wire(value, ty, &mut out);
     return out;
   }
   if let Type::Array(_, element_type) = ty {
@@ -6908,18 +6893,8 @@ pub(crate) fn value_to_shared_words(value: &Value, ty: &Type) -> Vec<u32> {
 /// The reverse of `value_to_shared_words`.
 pub(crate) fn shared_words_to_value(words: &[u32], ty: &Type) -> Value {
   if crate::vm::shared_sync::needs_wire_encoding(ty) {
-    let Type::Array(_, element_type) = ty else {
-      unreachable!()
-    };
-    let element_type = element_type.kind.unwrap_known();
     let mut pos = 0usize;
-    let count = words[pos] as usize;
-    pos += 1;
-    return Value::Array(
-      (0..count)
-        .map(|_| decode_value_wire(&element_type, words, &mut pos))
-        .collect(),
-    );
+    return decode_value_wire(ty, words, &mut pos);
   }
   if let Type::Array(_, element_type) = ty {
     let element_type = element_type.kind.unwrap_known();

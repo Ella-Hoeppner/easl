@@ -2915,11 +2915,18 @@ impl BytecodeCompilationState {
           {
             let value_size = vm_stack_size(field_type);
             if value_size > 0 {
-              self.push_instruction(Instruction {
-                op: Op::Move,
-                arg_positions: [base_pos + offset, value_size, 0],
-                return_position: position,
-              });
+              // `emit_value_copy` keeps the single-`Move` fast path for
+              // flat captures; a capture that embeds heap ids (a
+              // struct/enum with a runtime-sized field) gets the
+              // release-Move-promote sequence so the global owns its own
+              // shares of the ids rather than borrowing the closure
+              // value's.
+              self.emit_value_copy(
+                base_pos + offset,
+                value_size,
+                position,
+                field_type,
+              );
             }
           } else {
             panic!(

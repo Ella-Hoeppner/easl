@@ -1,0 +1,10 @@
+main-publish: <audio-scope>_idx
+main-publish: <audio-scope>_wt
+start-audio: <audio-closure>
+spawn-window
+frame 0
+audio-batch 0 x6
+audio-adopt: <audio-scope>_idx
+audio-adopt: <audio-scope>_wt
+samples: 0.2 0.4 0.6 0.8 0 0
+audio-publish: <audio-scope>_idx

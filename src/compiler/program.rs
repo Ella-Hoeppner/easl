@@ -537,10 +537,14 @@ impl ClosureLiftTarget {
   /// Which capture types each target can carry: GPU capture bindings obey
   /// the same rule as explicit bindings (may involve a runtime-sized
   /// array only by *being* one — `validate_gpu_runtime_sized_use` runs
-  /// before the lift, so it can't see the bindings created here); audio
-  /// captures cross threads through the shared-snapshot system, which
-  /// speaks flat words per variable (no Strings — their words are heap
-  /// ids — and runtime-sized arrays only as whole variables).
+  /// before the lift, so it can't see the bindings created here). Audio
+  /// captures cross threads through the shared-snapshot system, whose
+  /// wire encoding handles any heap-embedding value (a runtime-sized
+  /// array, or a struct/enum/fixed-array embedding one) — see
+  /// `needs_wire_encoding` in vm/shared_sync.rs. Only Strings stay
+  /// rejected: the wire could carry them, but audio-mode compilation
+  /// filters `CPUExclusiveType("String")` functions, so an audio body
+  /// could never read a String capture anyway.
   fn validate_capture(
     &self,
     field_type: &Type,
@@ -563,25 +567,16 @@ impl ClosureLiftTarget {
       }
       ClosureLiftTarget::Audio => {
         // A capture that IS a runtime-sized array lifts to a dyn-region
-        // global and shares through the serialized wire encoding (see
-        // vm/shared_sync.rs) — nested arrays and dyn-field-struct
-        // elements included. String-containing captures stay rejected:
-        // the wire could carry them, but audio-mode compilation filters
-        // `CPUExclusiveType("String")` functions, so an audio body could
-        // never read them anyway (lifting that needs the String filter
-        // split by operation — `(string x)` is a host op, the rest are
-        // VM-native). Types that only EMBED heap values lift to
-        // slot-backed globals, which have no wire path yet.
+        // global; one that EMBEDS a runtime-sized array (a struct/enum/
+        // fixed-array field) lifts to a slot-backed global. Both share
+        // through the wire encoding (`needs_wire_encoding`), which
+        // dereferences embedded heap ids and inlines their contents, so
+        // no heap id crosses the thread boundary. String captures stay
+        // rejected — audio-mode compilation filters String-using
+        // functions, so an audio body could never read one.
         if field_type.involves_string() {
           errors.log(CompileError {
             kind: UnshareableAudioCapture("String".to_string()),
-            source_trace: source_trace.clone(),
-          });
-        } else if embeds_runtime_sized {
-          errors.log(CompileError {
-            kind: UnshareableAudioCapture(
-              "type embedding a runtime-sized array".to_string(),
-            ),
             source_trace: source_trace.clone(),
           });
         }
@@ -8477,8 +8472,12 @@ impl Program {
         continue;
       }
       let position = state.consumed_stack_space as u16;
-      let size =
-        v.var_type.flat_data_size_in_u32s(&v.source_trace).unwrap() as u16;
+      // `vm_stack_size`, not `flat_data_size_in_u32s`: a slot-backed
+      // global may embed a heap id (a struct/enum with a runtime-sized
+      // field lifted from an audio capture), for which the flat/GPU size
+      // errors — the two agree for every heap-free type (GPU bindings
+      // included, which are always heap-free).
+      let size = vm_stack_size(&v.var_type);
       state.globals.insert(v.name.clone(), position);
       state.global_slots.push((v.name.clone(), position, size));
       state.global_types.push(v.var_type.clone());

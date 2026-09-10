@@ -64,9 +64,15 @@ pub fn publish_shared(
     buffer.clear();
     match info.storage {
       SharedVarStorage::Slots { position, size } => {
-        buffer.extend_from_slice(
-          &stack[position as usize..(position + size) as usize],
-        );
+        let words = &stack[position as usize..(position + size) as usize];
+        if needs_wire_encoding(&info.ty) {
+          // slot-backed value embedding heap ids (a struct/enum/fixed-
+          // array with a runtime-sized field): serialize by dereferencing
+          // the ids so nothing heap-private crosses
+          serialize_flat_value(&info.ty, words, heap, &mut buffer);
+        } else {
+          buffer.extend_from_slice(words);
+        }
       }
       SharedVarStorage::DynMemory { region, stride } => {
         if needs_wire_encoding(&info.ty) {
@@ -137,9 +143,36 @@ pub fn adopt_shared(
     };
     match info.storage {
       SharedVarStorage::Slots { position, size } => {
-        let n = (size as usize).min(snapshot.words.len());
-        stack[position as usize..position as usize + n]
-          .copy_from_slice(&snapshot.words[..n]);
+        let range = position as usize..(position + size) as usize;
+        if needs_wire_encoding(&info.ty) {
+          // free the heap ids the slots currently hold (previous
+          // snapshot/seed), then rebuild the value, minting fresh cells
+          // in this replica's heap
+          release_flat_value_ids(
+            &info.ty,
+            &stack[range.clone()],
+            heap,
+            heap_free,
+          );
+          let mut reader = WireReader {
+            words: &snapshot.words,
+            pos: 0,
+          };
+          let mut words = Vec::with_capacity(size as usize);
+          deserialize_flat_value(
+            &info.ty,
+            &mut reader,
+            &mut words,
+            heap,
+            heap_free,
+          );
+          stack[position as usize..position as usize + words.len()]
+            .copy_from_slice(&words);
+        } else {
+          let n = (size as usize).min(snapshot.words.len());
+          stack[position as usize..position as usize + n]
+            .copy_from_slice(&snapshot.words[..n]);
+        }
       }
       SharedVarStorage::DynMemory { region, stride } => {
         let region = &mut dyn_memory[region as usize];
@@ -272,7 +305,13 @@ impl BytecodeProgram {
 // (and the allocation-free steady state) unchanged.
 
 /// Whether a shared variable of this type uses the serialized wire
-/// encoding rather than raw replica words.
+/// encoding rather than raw replica words: a value whose flat layout
+/// embeds heap ids (which are heap-local and meaningless on the other
+/// thread) must be serialized by dereferencing them. A dyn-array var
+/// (dyn-region storage) needs it only when its *elements* embed heap;
+/// any other (slot-backed) var needs it when the value itself embeds a
+/// runtime-sized array or String. Flat values — scalars, and structs/
+/// enums/arrays of only flat fields — keep the raw-words fast path.
 pub fn needs_wire_encoding(ty: &Type) -> bool {
   match ty {
     Type::Array(Some(ConcreteArraySize::Unsized), element_type) => {
@@ -280,7 +319,7 @@ pub fn needs_wire_encoding(ty: &Type) -> bool {
       element_type.involves_runtime_sized_array()
         || element_type.involves_string()
     }
-    _ => false,
+    _ => ty.involves_runtime_sized_array() || ty.involves_string(),
   }
 }
 

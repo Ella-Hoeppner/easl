@@ -1,0 +1,24 @@
+; An audio entry closure captures a struct that EMBEDS a runtime-sized
+; array (a `Wavetable`) — it lifts to a slot-backed thread-shared global
+; whose `samples` field is a heap id. Main seeds it at `start-audio` and
+; the audio thread reads it per sample; the cross-thread wire encoding
+; must serialize the embedded array's contents (not the raw heap id), or
+; the audio thread would read a garbage/foreign heap cell. Each sample is
+; `samples[idx] * rate`, walking the table: 0.2 0.4 0.6 0.8 then 0.
+(struct Wavetable
+  samples: [f32]
+  rate: f32)
+
+(defn make-osc [wt: Wavetable]: (Fn [] f32)
+  (let [@var idx 0u]
+    (fn []
+        (let [s (if (< idx (array-length wt.samples))
+                  (wt.samples idx)
+                  0.)]
+          (= idx (+ idx 1u))
+          (* s wt.rate)))))
+
+@cpu
+(defn main []
+  (start-audio (make-osc (Wavetable ~[0.1 0.2 0.3 0.4] 2.)))
+  (spawn-window (fn [] ())))
