@@ -2530,6 +2530,7 @@ impl Program {
           value: None,
           source_trace: source_trace.clone(),
           external: false,
+          directly_user_written: false,
         });
         lifted_fields.push(LiftedCapture::Global(global_name.clone()));
         rewrites
@@ -3398,6 +3399,7 @@ impl Program {
                 value: None,
                 source_trace: exp.source_trace.clone(),
                 external: false,
+                directly_user_written: false,
               });
             }
             exp.kind = ExpKind::Name(var_name.into());
@@ -3432,6 +3434,7 @@ impl Program {
                 value: None,
                 source_trace: exp.source_trace.clone(),
                 external: false,
+                directly_user_written: false,
               });
             }
             // The call becomes an ordinary array lookup on the global —
@@ -3706,6 +3709,7 @@ impl Program {
                 value: None,
                 source_trace: exp.source_trace.clone(),
                 external: false,
+                directly_user_written: false,
               });
               binding_name
             })
@@ -4196,6 +4200,7 @@ impl Program {
         value: None,
         source_trace: SourceTrace::empty(),
         external: false,
+        directly_user_written: false,
       })
     }
   }
@@ -5303,7 +5308,35 @@ impl Program {
   ) -> CompileResult<String> {
     let mut names = self.names.write().unwrap();
     let mut compiled_string = target.program_header();
+    // A compiler-generated GPU-space var (the implicit `easl_midi_*` /
+    // window-info query bindings) emits its WGSL declaration only when a
+    // shader actually uses it. Unlike a user var — whose unused
+    // declaration still ships for the easl-as-WGSL-library audience —
+    // nothing could reference one otherwise, and its type might not even
+    // be emitted (`easl_midi_notes`'s `Option<MidiNote>` is monomorphized
+    // into the typedefs only if the enum is actually constructed/matched,
+    // which audio-only `get-midi-note` use never does).
+    let wgsl_referenced_globals = if target == CompilerTarget::WGSL {
+      self.wgsl_referenced_globals()
+    } else {
+      HashSet::new()
+    };
     for v in self.top_level_vars.iter() {
+      if target == CompilerTarget::WGSL
+        && !v.directly_user_written
+        && matches!(
+          v.kind,
+          TopLevelVariableKind::Var {
+            address_space: VariableAddressSpace::Uniform
+              | VariableAddressSpace::StorageRead
+              | VariableAddressSpace::StorageReadWrite,
+            ..
+          }
+        )
+        && !wgsl_referenced_globals.contains(&v.name)
+      {
+        continue;
+      }
       // A runtime-sized array without a GPU binding is a CPU/audio-only
       // value (e.g. a `load-wav`ed sample buffer): WGSL has no
       // representation for an unsized array outside a storage binding, so
@@ -8063,6 +8096,49 @@ impl Program {
       .then(|| v.name.clone())
     }));
     used
+  }
+  /// The top-level vars referenced by name anywhere in the WGSL output:
+  /// the union of `gpu_used_globals` (entry-point effect reads/writes,
+  /// textures) and every top-level-var `Name` appearing in a
+  /// WGSL-emittable function body. Used to decide whether a
+  /// compiler-generated GPU-space var's declaration emits: the narrower
+  /// `gpu_used_globals` misses vars read only by a library-root helper
+  /// (not entry-reachable) or by an emitted closure clone, which would
+  /// dangle if the var were skipped. `is_valid_for_target` over-
+  /// approximates the actual emission closure — emitting a var referenced
+  /// by an emittable-but-unreachable function is harmless (valid, dead),
+  /// whereas skipping a referenced one dangles; and a var referenced only
+  /// by a *non*-emittable function (e.g. `easl_midi_notes`, read just by
+  /// an audio clone whose `Option<MidiNote>` signature is CPU-only) is
+  /// correctly excluded.
+  fn wgsl_referenced_globals(&self) -> HashSet<Arc<str>> {
+    use crate::compiler::expression::ExpKind;
+    let var_names: HashSet<Arc<str>> =
+      self.top_level_vars.iter().map(|v| v.name.clone()).collect();
+    let mut referenced = self.gpu_used_globals();
+    for f in self.abstract_functions_iter() {
+      let FunctionImplementationKind::Composite(implementation) =
+        &f.read().unwrap().implementation
+      else {
+        continue;
+      };
+      let implementation = implementation.read().unwrap();
+      if !implementation.is_valid_for_target(self, CompilerTarget::WGSL) {
+        continue;
+      }
+      implementation
+        .expression
+        .walk(&mut |exp| {
+          if let ExpKind::Name(name) = &exp.kind
+            && var_names.contains(name)
+          {
+            referenced.insert(name.clone());
+          }
+          Ok::<bool, Never>(true)
+        })
+        .unwrap();
+    }
+    referenced
   }
   /// Rejects GPU-space vars whose types can't be host-shared (bool- or
   /// String-containing) — but only when GPU code actually touches them. A

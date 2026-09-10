@@ -150,6 +150,16 @@ pub struct TopLevelVar {
   /// `ExternalVars` handle at any time, so it's unconditionally included in
   /// the thread-shared set (the static analysis can't see external access).
   pub external: bool,
+  /// True only for vars declared in the user's source. Compiler-generated
+  /// implicit vars (the `easl_midi_*`/window-info query bindings, dispatched-
+  /// closure capture globals, audio-info locals) set this false. Used by WGSL
+  /// emission: an unused GPU-space *user* var still emits its declaration for
+  /// the easl-as-WGSL-library audience, but a compiler-generated one emits
+  /// only when a shader actually uses it (nothing else could reference it,
+  /// and its type may not even be emitted — e.g. `easl_midi_notes`'s
+  /// `Option<MidiNote>`, which is only monomorphized when the enum is
+  /// actually constructed/matched).
+  pub directly_user_written: bool,
 }
 
 impl TopLevelVar {
@@ -338,6 +348,7 @@ impl TopLevelVar {
                     value,
                     source_trace: parens_source_trace.clone(),
                     external,
+                    directly_user_written: true,
                     kind: TopLevelVariableKind::Var {
                       address_space,
                       group_and_binding,
@@ -380,6 +391,7 @@ impl TopLevelVar {
                         value: Some(value_expression),
                         source_trace: parens_source_trace.clone(),
                         external: false,
+                        directly_user_written: true,
                         kind: if var_kind_name == "override" {
                           TopLevelVariableKind::Override
                         } else {

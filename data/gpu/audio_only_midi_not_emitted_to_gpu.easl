@@ -1,0 +1,25 @@
+; `get-midi-note` is called only on the audio thread, and the shaders
+; don't touch MIDI. The implicit `easl_midi_notes: [128: (Option MidiNote)]`
+; binding it creates must NOT be emitted to WGSL — its `Option<MidiNote>`
+; type is never monomorphized into the typedefs (the enum is only ever the
+; builtin's return, never constructed/matched), so emitting the unused
+; binding would dangle. A compiler-generated GPU-space var emits only when
+; a shader actually uses it.
+@audio
+(defn synth [t: f32]: f32
+  (match (get-midi-note 60u)
+    (Some n) n.velocity
+    None 0.))
+
+@fragment
+(defn frag []: vec4f
+  (vec4f 1.))
+
+@cpu
+(defn main []
+  (start-audio synth)
+  (spawn-window (fn []
+                    (dispatch-render-shaders
+                     (fn [] (vec4f (f32 (vertex-index)) 0. 0. 1.))
+                     frag
+                     3))))
