@@ -7,7 +7,8 @@
   (+ (f 0u) (f last)))
 
 (defn end-sum [@ref arr: [f32]]: f32
-  (apply-to-ends (fn [i: u32] (arr i))
+  (apply-to-ends (fn [i: u32]
+                   (arr i))
                  (- (array-length arr) 1u)))
 
 @cpu

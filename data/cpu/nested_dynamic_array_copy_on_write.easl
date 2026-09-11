@@ -5,6 +5,7 @@
   (let [@var a (into-dynamic-array [(into-dynamic-array [1. 2.])])
         @var b (into-dynamic-array [(into-dynamic-array [0.])])]
     (= b a)
-    (= (a 0u) (into-dynamic-array [9.]))
+    (= (a 0u)
+       (into-dynamic-array [9.]))
     (print (b 0u))
     (print (a 0u))))

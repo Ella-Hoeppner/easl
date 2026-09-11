@@ -5,7 +5,8 @@
   (let [raw (load-wav-raw "data/audio/test_sample.wav")
         norm (load-wav "data/audio/test_sample.wav")]
     (print (array-length raw))
-    (print (== (array-length raw) (array-length norm)))
+    (print (== (array-length raw)
+               (array-length norm)))
     (print (raw 0u))
     (print (raw 1u))
     (print (raw 2u))))

@@ -6,7 +6,8 @@
 ; and promotes each id to an owned share. Guards that the container
 ; soundness hole is specific to heap-backed (runtime-sized) containers.
 (defn build [v: f32]: [2: [f32]]
-  [(into-dynamic-array [v v]) (into-dynamic-array [v])])
+  [(into-dynamic-array [v v])
+   (into-dynamic-array [v])])
 
 @cpu
 (defn main []

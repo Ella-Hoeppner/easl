@@ -13,7 +13,8 @@
     (print (length empty)))
   (= xs ~[])
   (print (length xs))
-  (= xs (into-dynamic-array [1. 2.]))
+  (= xs
+     (into-dynamic-array [1. 2.]))
   (print (length xs))
   (= xs ~[])
   (print (length xs)))

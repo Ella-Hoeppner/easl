@@ -7,4 +7,5 @@
 
 @cpu
 (defn main []
-  (print (Samples (into-dynamic-array [1. 2.]) 0.5)))
+  (print (Samples (into-dynamic-array [1. 2.])
+                  0.5)))

@@ -4,14 +4,13 @@
 (defn create-osc [freq: f32]: (Fn [] f32)
   (let [@var phase 0.]
     (fn []
-        (= phase
-           (-> phase
-               (+ (/ (sample-rate)))
-               (% 1.)))
-        (* phase TAU freq))))
+      (= phase
+         (-> phase
+             (+ (/ (sample-rate)))
+             (% 1.)))
+      (* phase TAU freq))))
 
 @cpu
 (defn main []
   (start-audio (create-osc 440))
   (spawn-window (fn [] ())))
-

@@ -10,8 +10,7 @@
 (defn main []
   (let [outer 2.
         wrapper (fn []
-                    (let [local 3.]
-                      (apply-f (fn [x]
-                                   (* outer (+ local x)))
-                               1.)))]
+                  (let [local 3.]
+                    (apply-f (fn [x] (* outer (+ local x)))
+                             1.)))]
     (print (wrapper))))

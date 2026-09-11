@@ -8,17 +8,18 @@
 ; store and silently re-pointed at the reused cell, so the callee read
 ; the post-mutation value — a use-after-free violating evaluation
 ; order.
-
 (defn combine [@var @ref slot: (Option [f32])
                other: f32]: f32
   (let [result (match slot
                  (Some arr) (+ (arr 0u) other)
                  None other)]
-    (= slot (Some (into-dynamic-array [result])))
+    (= slot
+       (Some (into-dynamic-array [result])))
     result))
 
 (defn mutate [@var @ref xs: [(Option [f32])]]: f32
-  (= (xs 0u) (Some (into-dynamic-array [99.])))
+  (= (xs 0u)
+     (Some (into-dynamic-array [99.])))
   0.)
 
 @cpu

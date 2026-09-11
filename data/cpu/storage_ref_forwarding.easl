@@ -18,7 +18,8 @@
   (buf i))
 
 (defn outer-read [@ref buf: [f32]]: f32
-  (+ (inner-read buf 0u) (inner-read buf 1u)))
+  (+ (inner-read buf 0u)
+     (inner-read buf 1u)))
 
 (var data: [f32])
 

@@ -5,7 +5,6 @@
 ; `ArrayLookup`/`ArrayStore` write-back (see
 ; fixed_array_dyn_element_store). Guards the dispatch machinery through
 ; the indexed-store path.
-
 (defn empty-pair []: [2: (Option [f32])]
   [None None])
 
@@ -13,7 +12,8 @@
 (defn main []
   (let [@var xs (empty-pair)]
     (for [i 0u (< i 2u) (+= i 1u)]
-      (= (xs i) (Some (into-dynamic-array [(f32 i)]))))
+      (= (xs i)
+         (Some (into-dynamic-array [(f32 i)]))))
     (match (xs 0u)
       (Some arr) (print (arr 0u))
       None (print 99.))

@@ -5,14 +5,14 @@
 ; group's jump targets and condition/constant slots are final at
 ; emission, while the discriminant reads and fixup destinations are
 ; recorded as destination-relative patches (`PendingCopyGroup`).
-
 (defn wrap [n: u32]: (Option [f32])
   (Some (zeroed-array n)))
 
 (defn stash [@var @ref target: [f32]
              item: (Option [f32])]: f32
   (match item
-    (Some arr) (= (target 0u) (f32 (array-length arr)))
+    (Some arr) (= (target 0u)
+                  (f32 (array-length arr)))
     None (= (target 0u) 0.))
   (target 0u))
 

@@ -3,6 +3,7 @@
 @cpu
 (defn main []
   (let [buf (into-dynamic-array [1. 2. 3.])]
-    (let [pick (fn [i: u32] (buf i))]
+    (let [pick (fn [i: u32]
+                 (buf i))]
       (print (pick 0u))
       (print (pick 2u)))))

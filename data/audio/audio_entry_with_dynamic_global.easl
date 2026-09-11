@@ -4,7 +4,6 @@
 ; compile must tolerate runtime-sized globals rather than panicking on
 ; their unknowable slot size, even though the audio code never touches
 ; them.
-
 @local
 (var buf: [f32])
 

@@ -18,8 +18,8 @@
         @var idx 0u]
     (= (buf 0u) v)
     (fn []
-        (= idx (% (+ idx 1u) n))
-        (buf idx))))
+      (= idx (% (+ idx 1u) n))
+      (buf idx))))
 
 @cpu
 (defn main []

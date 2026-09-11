@@ -8,8 +8,10 @@
 @cpu
 (defn main []
   (let [@var v (load-video "data/video/scrub.mp4")]
-    (= tex (get-video-frame-texture v))
+    (= tex
+       (get-video-frame-texture v))
     (print (texture-dimensions tex))
     (progress-video-frame v)
-    (= tex (get-video-frame-texture v))
+    (= tex
+       (get-video-frame-texture v))
     (print (get-current-frame-index v))))

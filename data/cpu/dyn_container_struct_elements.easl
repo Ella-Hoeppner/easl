@@ -8,7 +8,9 @@
   body: [f32])
 
 (defn build [v: f32]: [Packet]
-  (into-dynamic-array [(Packet v (into-dynamic-array [v v v]))]))
+  (into-dynamic-array
+    [(Packet v
+             (into-dynamic-array [v v v]))]))
 
 @cpu
 (defn main []

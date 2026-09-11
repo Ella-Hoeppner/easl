@@ -11,7 +11,6 @@
 ; through the clip with the horizontal mouse position; release to resume
 ; playback. `Video` is an ordinary value captured by the frame closure, so its
 ; playhead persists across frames just like any other captured state.
-
 @handle
 (var frame-tex: (Texture2D f32))
 
@@ -28,24 +27,27 @@
 (defn frag []: vec4f
   (let [uv (/ (.xy (position))
               (vec2f (window-resolution)))
-        frame-pixel (vec2u (* uv (vec2f (texture-dimensions frame-tex))))]
+        frame-pixel (vec2u (* uv
+                              (vec2f (texture-dimensions frame-tex))))]
     (texture-load frame-tex frame-pixel 0u)))
 
 @cpu
 (defn main []
   (let [@var v (load-video "bunny.mp4")]
-    (spawn-window
-      (fn []
-        (let [scrubbing (mouse-down?)]
-          (when scrubbing
-            (let [frac (/ (f32 (.x (mouse-coords)))
-                          (f32 (.x (window-resolution))))]
-              (jump-to-video-frame v
-                                   (u32 (* frac
-                                           (f32 (get-video-length v)))))))
-          (when (! scrubbing)
-            (progress-video-frame v)
-            (when (>= (get-current-frame-index v) (get-video-length v))
-              (jump-to-video-frame v 0u))))
-        (= frame-tex (get-video-frame-texture v))
-        (dispatch-render-shaders vert frag 3)))))
+    (spawn-window (fn []
+                    (let [scrubbing (mouse-down?)]
+                      (when scrubbing
+                        (let [frac (/ (f32 (.x (mouse-coords)))
+                                      (f32 (.x (window-resolution))))]
+                          (jump-to-video-frame
+                            v
+                            (u32 (* frac
+                                    (f32 (get-video-length v)))))))
+                      (when (! scrubbing)
+                        (progress-video-frame v)
+                        (when (>= (get-current-frame-index v)
+                                  (get-video-length v))
+                          (jump-to-video-frame v 0u))))
+                    (= frame-tex
+                       (get-video-frame-texture v))
+                    (dispatch-render-shaders vert frag 3)))))

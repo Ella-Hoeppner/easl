@@ -11,7 +11,8 @@
 
 @cpu
 (defn main []
-  (= g (into-dynamic-array [1. 2.]))
+  (= g
+     (into-dynamic-array [1. 2.]))
   (let [b g]
     (= (g 0u) 5.)
     (print (b 0u))

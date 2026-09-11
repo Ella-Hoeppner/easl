@@ -8,4 +8,3 @@
     (print (arr 0u))
     (print (arr 1u))
     (print (arr 2u))))
-

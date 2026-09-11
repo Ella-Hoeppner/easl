@@ -2,13 +2,13 @@
 ; copy plan's enum region sits at a nonzero offset within the struct
 ; (id: f32 at 0, discriminant at 1, payload id at 2), exercising
 ; base-offset recursion in `collect_heap_fixups`.
-
 (struct Slot
   id: f32
   data: (Option [f32]))
 
 (defn make-slot [n: u32]: Slot
-  (Slot (f32 n) (Some (zeroed-array n))))
+  (Slot (f32 n)
+        (Some (zeroed-array n))))
 
 @cpu
 (defn main []

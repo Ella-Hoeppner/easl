@@ -12,9 +12,9 @@
   (let [@var buf (zeroed-array n): [f32]
         @var idx 0u]
     (fn []
-        (= idx (% (+ idx 1u) n))
-        (+ (f32 (array-length buf))
-           (buf idx)))))
+      (= idx (% (+ idx 1u) n))
+      (+ (f32 (array-length buf))
+         (buf idx)))))
 
 @cpu
 (defn main []

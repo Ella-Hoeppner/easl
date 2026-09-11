@@ -5,12 +5,14 @@
 ; ref mutation can never show through.
 (defn poke [@var @ref slot: [f32]
             snapshot: [2: [f32]]]: f32
-  (= slot (into-dynamic-array [5.]))
+  (= slot
+     (into-dynamic-array [5.]))
   ((snapshot 0u) 0u))
 
 @cpu
 (defn main []
-  (let [@var xs [(into-dynamic-array [1.]) (into-dynamic-array [2.])]]
+  (let [@var xs [(into-dynamic-array [1.])
+                 (into-dynamic-array [2.])]]
     (print (poke (xs 0u) xs))
     (print ((xs 0u) 0u))
     (print ((xs 1u) 0u))))

@@ -4,7 +4,8 @@
 (defn main []
   (let [@var xs (into-dynamic-array ["a" "b" "c"])]
     (for [i 0u (< i 3u) (+= i 1u)]
-      (= (xs i) (concat "s" (string i))))
+      (= (xs i)
+         (concat "s" (string i))))
     (print (xs 0u))
     (print (xs 1u))
     (print (xs 2u))))

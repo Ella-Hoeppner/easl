@@ -15,13 +15,16 @@
   ~x)
 
 @local
-(var accum: f32 0.)
+(var accum: f32
+     0.)
 
 @cpu
 (defn main []
   (print (plus-32 ~5u))
   (print (as-f32 9u))
-  (print (if true ~1u 2.5))
+  (print (if true
+           ~1u
+           2.5))
   (= accum ~3u)
   (print accum)
   (let [c ~7u: Celsius]

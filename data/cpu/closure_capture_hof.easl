@@ -11,13 +11,13 @@
 (defn main []
   (let [scale 2.
         helper (fn [x: f32]
-                   (* scale x))
+                 (* scale x))
         wrapper (fn [] (apply-twice helper 3.))]
     (print (wrapper)))
   (let [@var total 0.
         accum (fn [x: f32]
-                  (+= total x)
-                  total)
+                (+= total x)
+                total)
         wrapper (fn [] (apply-twice accum 3.))]
     (print (wrapper))
     (print (wrapper))))

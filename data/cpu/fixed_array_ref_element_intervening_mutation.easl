@@ -10,16 +10,19 @@
 (defn combine [@var @ref slot: [f32]
                other: f32]: f32
   (let [result (+ (slot 0u) other)]
-    (= slot (into-dynamic-array [result]))
+    (= slot
+       (into-dynamic-array [result]))
     result))
 
 (defn mutate [@var @ref xs: [2: [f32]]]: f32
-  (= (xs 0u) (into-dynamic-array [99.]))
+  (= (xs 0u)
+     (into-dynamic-array [99.]))
   0.)
 
 @cpu
 (defn main []
-  (let [@var xs [(into-dynamic-array [1.]) (into-dynamic-array [2.])]]
+  (let [@var xs [(into-dynamic-array [1.])
+                 (into-dynamic-array [2.])]]
     (print (combine (xs 0u) (mutate xs)))
     (print ((xs 0u) 0u))
     (print ((xs 1u) 0u))))

@@ -6,9 +6,9 @@
 @cpu
 (defn main []
   (let [@var v (load-video "data/video/scrub.mp4")]
-    (spawn-window
-      (fn []
-        (progress-video-frame v)
-        (when (>= (get-current-frame-index v) (get-video-length v))
-          (jump-to-video-frame v 0u))
-        (print (get-current-frame-index v))))))
+    (spawn-window (fn []
+                    (progress-video-frame v)
+                    (when (>= (get-current-frame-index v)
+                              (get-video-length v))
+                      (jump-to-video-frame v 0u))
+                    (print (get-current-frame-index v))))))

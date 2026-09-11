@@ -4,7 +4,8 @@
 ; indistinguishable from a live reference. Only *escaping* ref-capturing
 ; closures are rejected (`EscapingClosureCapturesRefArg`).
 (defn sum-of-all-even-elements [@ref arr: [f32]]: f32
-  (let [nth-even-element (fn [i: u32] (arr (* i 2u)))
+  (let [nth-even-element (fn [i: u32]
+                           (arr (* i 2u)))
         @var sum 0.]
     (for [i (/ (array-length arr) 2u)]
       (+= sum (nth-even-element i)))

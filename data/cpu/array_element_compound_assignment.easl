@@ -1,5 +1,4 @@
 ; Compound assignment to fixed-size array elements.
-
 @cpu
 (defn main []
   (let [@var arr [1. 2. 3.]]

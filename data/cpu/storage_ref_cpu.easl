@@ -11,17 +11,18 @@
       [@ref buffer: [T]
        start: u32
        index: u32]: T
-  (-> index
-      (+ start)
-      (% (length buffer))
-      buffer))
+      (-> index
+          (+ start)
+          (% (length buffer))
+          buffer))
 
 (defn (push-ring T)
       [@var @ref buffer: [T]
        @var @ref start: u32
        value: T]
-  (= (buffer start) value)
-  (= start (% (+ start 1u) (length buffer))))
+      (= (buffer start) value)
+      (= start
+         (% (+ start 1u) (length buffer))))
 
 (var history: [f32])
 

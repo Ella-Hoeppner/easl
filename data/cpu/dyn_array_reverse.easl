@@ -6,11 +6,12 @@
   x: f32
   y: f32)
 
-(defn (print-opt-arrs) [arrs: [(Option [f32])]]
-  (for [i (array-length arrs)]
-    (match (arrs i)
-      (Some inner) (print inner)
-      None (print "none"))))
+(defn (print-opt-arrs)
+      [arrs: [(Option [f32])]]
+      (for [i (array-length arrs)]
+        (match (arrs i)
+          (Some inner) (print inner)
+          None (print "none"))))
 
 @cpu
 (defn main []
@@ -25,7 +26,9 @@
     (print (reverse z)))
   (print (reverse ~[~[1. 2.] ~[3.] ~[4. 5. 6.]]))
   (print (reverse ~[(Pt 1. 2.) (Pt 3. 4.)]))
-  (let [oa ~[(Some ~[1. 2.]) None (Some ~[3.])]: [(Option [f32])]
+  (let [oa ~[(Some ~[1. 2.])
+             None
+             (Some ~[3.])]: [(Option [f32])]
         rev (reverse oa)]
     (print-opt-arrs rev)
     (print "--")

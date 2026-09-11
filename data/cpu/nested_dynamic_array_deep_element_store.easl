@@ -11,12 +11,14 @@
 
 @cpu
 (defn main []
-  (= g (into-dynamic-array [(into-dynamic-array [1. 2.])]))
+  (= g
+     (into-dynamic-array [(into-dynamic-array [1. 2.])]))
   (= ((g 0u) 1u) 9.)
   (print ((g 0u) 1u))
   (print ((g 0u) 0u))
-  (let [@var xs (into-dynamic-array [(into-dynamic-array [3. 4.])
-                                     (into-dynamic-array [5.])])]
+  (let [@var xs (into-dynamic-array
+                  [(into-dynamic-array [3. 4.])
+                   (into-dynamic-array [5.])])]
     (= ((xs 0u) 0u) 7.)
     (print ((xs 0u) 0u))
     (print ((xs 0u) 1u))

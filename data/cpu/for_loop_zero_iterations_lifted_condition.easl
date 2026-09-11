@@ -13,7 +13,8 @@
   (let [notes xs]
     (for [i (length notes)]
       (print (notes i))))
-  (= xs (into-dynamic-array [7. 8.]))
+  (= xs
+     (into-dynamic-array [7. 8.]))
   (let [notes xs]
     (for [i (length notes)]
       (print (notes i))))

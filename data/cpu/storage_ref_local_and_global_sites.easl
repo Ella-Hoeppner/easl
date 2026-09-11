@@ -18,7 +18,8 @@
 
 @cpu
 (defn main []
-  (= gs (into-dynamic-array [1. 2. 3.]))
+  (= gs
+     (into-dynamic-array [1. 2. 3.]))
   (let [@var ls (into-dynamic-array [10. 20.])]
     (print (total gs))
     (print (total ls))

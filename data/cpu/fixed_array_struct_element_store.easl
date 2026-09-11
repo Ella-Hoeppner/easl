@@ -16,7 +16,9 @@
 (defn main []
   (let [@var xs (empty-pair)]
     (for [i 0u (< i 2u) (+= i 1u)]
-      (= (xs i) (Packet (f32 i) (into-dynamic-array [(f32 i) (f32 i)]))))
+      (= (xs i)
+         (Packet (f32 i)
+                 (into-dynamic-array [(f32 i) (f32 i)]))))
     (let [p (xs 0u)
           q (xs 1u)]
       (print p.tag)

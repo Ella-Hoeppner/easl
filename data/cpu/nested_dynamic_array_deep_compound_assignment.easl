@@ -10,7 +10,8 @@
 
 @cpu
 (defn main []
-  (= g (into-dynamic-array [(into-dynamic-array [1. 2.])]))
+  (= g
+     (into-dynamic-array [(into-dynamic-array [1. 2.])]))
   (+= ((g 0u) 1u) 10.)
   (print ((g 0u) 1u))
   (*= ((g 0u) 0u) 3.)

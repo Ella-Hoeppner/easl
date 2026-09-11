@@ -5,7 +5,8 @@
   gain: f32)
 
 (defn build-samples []: Samples
-  (Samples (into-dynamic-array [1. 2. 3.]) 2.))
+  (Samples (into-dynamic-array [1. 2. 3.])
+           2.))
 
 @cpu
 (defn main []

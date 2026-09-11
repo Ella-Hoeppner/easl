@@ -6,7 +6,8 @@
   id: f32
   name: String)
 
-(defn build [id: f32 name: String]: [Named]
+(defn build [id: f32
+             name: String]: [Named]
   (into-dynamic-array [(Named id name)]))
 
 @cpu

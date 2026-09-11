@@ -7,8 +7,7 @@
 @cpu
 (defn main []
   (let [do-twice (fn [f: (Fn [] ())]
-                     (f)
-                     (f))]
+                   (f)
+                   (f))]
     (do-twice print-1)
     (do-twice print-2)))
-

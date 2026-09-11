@@ -1,7 +1,6 @@
 ; `load-wav` reads a .wav file as mono f32 samples at its native sample
 ; rate, into a runtime-sized global that audio code can index. The @audio
 ; entry ensures the eager audio-mode compile also handles the program.
-
 @local
 (var sample: [f32])
 
@@ -14,7 +13,8 @@
 
 @cpu
 (defn main []
-  (= sample (load-wav "test_sample.wav"))
+  (= sample
+     (load-wav "test_sample.wav"))
   (print (array-length sample))
   (print (sample 1u))
   (print (sample 2u))

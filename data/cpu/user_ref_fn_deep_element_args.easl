@@ -6,14 +6,14 @@
 ; the innermost preload temp; the position propagation registers one
 ; pending write-back per chain level, flushed after the call ships the
 ; mutation back through every level.
-
 (defn bump [@var @ref x: f32
             amount: f32]: f32
   (+= x amount)
   x)
 
 (defn swap-opt [@var @ref slot: (Option [f32])]: f32
-  (= slot (Some (into-dynamic-array [77.])))
+  (= slot
+     (Some (into-dynamic-array [77.])))
   0.)
 
 (defn swap-two [@var @ref a: f32
@@ -27,7 +27,8 @@
 
 @cpu
 (defn main []
-  (= g (into-dynamic-array [(into-dynamic-array [1. 2.])]))
+  (= g
+     (into-dynamic-array [(into-dynamic-array [1. 2.])]))
   (bump ((g 0u) 1u) 10.)
   (print ((g 0u) 1u))
   (print ((g 0u) 0u))
@@ -39,7 +40,8 @@
     (match (opts 0u)
       (Some arr) (print (arr 0u))
       None (print -1.)))
-  (let [@var fs [(into-dynamic-array [3.]) (into-dynamic-array [4.])]]
+  (let [@var fs [(into-dynamic-array [3.])
+                 (into-dynamic-array [4.])]]
     (bump ((fs 1u) 0u) 0.5)
     (print ((fs 1u) 0u))
     (print ((fs 0u) 0u)))

@@ -6,7 +6,6 @@
 ; the container). Each loop iteration's payload then survives the next
 ; iteration's construction-site release. The `[String]`/`[[f32]]`
 ; `Cells` containers handle the same pattern via Arc children.
-
 (defn empty-pair []: [(Option [f32])]
   (zeroed-array 2u))
 
@@ -14,7 +13,8 @@
 (defn main []
   (let [@var xs (empty-pair)]
     (for [i 0u (< i 2u) (+= i 1u)]
-      (= (xs i) (Some (into-dynamic-array [(f32 i) (f32 i)]))))
+      (= (xs i)
+         (Some (into-dynamic-array [(f32 i) (f32 i)]))))
     (match (xs 0u)
       (Some arr) (print (arr 0u))
       None (print 99.))

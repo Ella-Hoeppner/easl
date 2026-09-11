@@ -11,12 +11,12 @@
 (defn (with-counter T)
       [f: (Fn [f32 u32] T)
        increment: f32]: (Fn [] T)
-  (let [@var phase 0.
-        @var counter 0u]
-    (fn []
-        (= phase (+ phase increment))
-        (+= counter 1u)
-        (f phase counter))))
+      (let [@var phase 0.
+            @var counter 0u]
+        (fn []
+          (= phase (+ phase increment))
+          (+= counter 1u)
+          (f phase counter))))
 
 (defn * [s: (Fn [] f32)
          factor: f32]: (Fn [] f32)

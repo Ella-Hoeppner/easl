@@ -2,6 +2,7 @@
 ; GPU entry point touches it — it's an ordinary CPU value (and is
 ; skipped from WGSL emission).
 (var flag: bool)
+
 (var count: u32)
 
 @cpu

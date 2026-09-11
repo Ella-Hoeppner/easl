@@ -4,9 +4,11 @@
 ; must keep their own values.
 @cpu
 (defn main []
-  (let [@var xs (into-dynamic-array [(into-dynamic-array [9.])
-                                     (into-dynamic-array [9.])])]
+  (let [@var xs (into-dynamic-array
+                  [(into-dynamic-array [9.])
+                   (into-dynamic-array [9.])])]
     (for [i 0u (< i 2u) (+= i 1u)]
-      (= (xs i) (into-dynamic-array [(f32 i) (f32 i)])))
+      (= (xs i)
+         (into-dynamic-array [(f32 i) (f32 i)])))
     (print (xs 0u))
     (print (xs 1u))))

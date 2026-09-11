@@ -4,7 +4,6 @@
 ; words (`emit_release/reown_container_elements` around the op) — the
 ; region owns its elements' ids, so the builder's later releases can't
 ; dangle them.
-
 @local
 (var g: [(Option [f32])])
 

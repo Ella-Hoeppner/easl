@@ -5,10 +5,12 @@
 ; scope-bound param, and the scope write-back re-wraps the mutated
 ; state, so mutations persist across calls.
 (defn make-swapper []: (Fn [u32] f32)
-  (let [@var buf [(into-dynamic-array [1.]) (into-dynamic-array [2.])]]
+  (let [@var buf [(into-dynamic-array [1.])
+                  (into-dynamic-array [2.])]]
     (fn [i: u32]
-        (= (buf i) (into-dynamic-array [7.]))
-        ((buf i) 0u))))
+      (= (buf i)
+         (into-dynamic-array [7.]))
+      ((buf i) 0u))))
 
 @cpu
 (defn main []

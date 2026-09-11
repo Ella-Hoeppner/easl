@@ -8,4 +8,3 @@
 (defn main []
   (print (convert 5u): f32)
   (print (convert 5u): i32))
-

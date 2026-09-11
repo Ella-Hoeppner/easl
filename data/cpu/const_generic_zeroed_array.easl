@@ -3,10 +3,11 @@
 ; the sizing arms must unwrap via `ConcreteArraySize::as_literal` rather
 ; than matching `Literal` directly. Generic-element sibling:
 ; `const_generic_zeroed_array_map`.
-(defn (pass C: u32) [arr: [C: u32]]: [C: u32]
-  (let [@var out (zeroed-array)]
-    (= (out 0u) (arr 0u))
-    out))
+(defn (pass C: u32)
+      [arr: [C: u32]]: [C: u32]
+      (let [@var out (zeroed-array)]
+        (= (out 0u) (arr 0u))
+        out))
 
 @cpu
 (defn main []

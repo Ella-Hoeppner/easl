@@ -5,10 +5,10 @@
 ; giving each element's payload id an owned share, with the per-variant
 ; discriminant dispatch selecting which offsets hold ids. The second
 ; `build` call's slot releases then can't touch `a`'s payloads.
-
 (defn build [v: f32]: [(Option [f32])]
-  (into-dynamic-array [(Some (into-dynamic-array [v v]))
-                       None]))
+  (into-dynamic-array
+    [(Some (into-dynamic-array [v v]))
+     None]))
 
 @cpu
 (defn main []

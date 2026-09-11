@@ -7,13 +7,20 @@
 @cpu
 (defn main []
   (let [@var v (load-video "data/video/scrub.mp4")]
-    (print (get-video-length v))         ; 3u
-    (print (get-current-frame-index v))  ; 0u
+    (print (get-video-length v))
+    ; 3u
+    (print (get-current-frame-index v))
+    ; 0u
     (progress-video-frame v)
-    (print (get-current-frame-index v))  ; 1u
+    (print (get-current-frame-index v))
+    ; 1u
     (let [@var w v]
       (progress-video-frame w)
-      (print (get-current-frame-index v))  ; 1u — original unaffected
-      (print (get-current-frame-index w))) ; 2u
+      (print (get-current-frame-index v))
+      ; 1u — original unaffected
+      (print (get-current-frame-index w)))
+    ; 2u
     (jump-to-video-frame v 0u)
-    (print (get-current-frame-index v))))  ; 0u
+    (print (get-current-frame-index v))))
+
+; 0u

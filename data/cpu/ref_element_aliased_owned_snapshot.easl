@@ -7,10 +7,10 @@
 ; mutation (the flush, after all argument evaluation), not at the
 ; preload — the aliasing rule deliberately permits owned+ref mixes on
 ; exactly this snapshot promise.
-
 (defn poke [@var @ref slot: (Option [f32])
             snapshot: [(Option [f32])]]: f32
-  (= slot (Some (into-dynamic-array [5.])))
+  (= slot
+     (Some (into-dynamic-array [5.])))
   (match (snapshot 0u)
     (Some arr) (arr 0u)
     None -1.))

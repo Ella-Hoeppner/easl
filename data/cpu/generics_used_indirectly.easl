@@ -7,17 +7,25 @@
        x: T]: U
       (f x))
 
-(defn (make-zeros C: u32) []: [C: f32]
-  (zeroed-array))
+(defn (make-zeros C: u32)
+      []: [C: f32]
+      (zeroed-array))
 
-(enum (Box V) (Full V) Empty)
+(enum (Box V)
+  (Full V)
+  Empty)
 
-(defn (unbox V) [b: (Box V) fallback: V]: V
-  (match b (Full v) v Empty fallback))
+(defn (unbox V)
+      [b: (Box V)
+       fallback: V]: V
+      (match b
+        (Full v) v
+        Empty fallback))
 
 @cpu
 (defn main []
   (print (mapper (fn [x] (> x 0.5)) 1.))
   (print (make-zeros): [3: f32])
   (print (unbox (Full 7.) 0.))
-  (print (unbox Empty: (Box f32) 9.)))
+  (print (unbox Empty: (Box f32)
+                9.)))
