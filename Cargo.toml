@@ -18,6 +18,7 @@ libloading = { version = "0.8", optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 hound = "3.5"
 arc-swap = "1.7"
+ffmpeg-sidecar = { version = "2", optional = true }
 
 [features]
 window = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:cpal", "dep:midir"]
@@ -25,6 +26,10 @@ window = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:cpal", "dep:midir"]
 # (the default, portable, no-external-deps path) to a JIT-compiled C dylib
 # loaded via `libloading`. Faster but requires `clang` on the host.
 c_audio = ["window", "dep:libloading"]
+# `video` adds MP4/etc video-frame decoding via the `ffmpeg` binary
+# (subprocess, `ffmpeg-sidecar`) — no linking, needs `ffmpeg` on PATH at
+# runtime.
+video = ["window", "dep:ffmpeg-sidecar"]
 
 [dev-dependencies]
 naga = { version = "29.0.3", features = ["wgsl-in"] }

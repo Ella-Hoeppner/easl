@@ -1,0 +1,51 @@
+; Video playback demo — showcases the video-input builtins.
+;
+;   • `load-video`               opens the clip (an opaque `Video` value)
+;   • `progress-video-frame`     advances one frame per window frame
+;   • `jump-to-video-frame`      scrubs / loops back to the start
+;   • `get-current-frame-index`  / `get-video-length`  read the playhead
+;   • `get-video-frame-texture`  decodes the current frame into a texture
+;
+; The frame texture is drawn to a fullscreen triangle and read per-pixel with
+; `texture-load` (no sampler needed). Hold the left mouse button to scrub
+; through the clip with the horizontal mouse position; release to resume
+; playback. `Video` is an ordinary value captured by the frame closure, so its
+; playhead persists across frames just like any other captured state.
+
+@handle
+(var frame-tex: (Texture2D f32))
+
+@vertex
+(defn vert []: vec4f
+  (vec4f (match (vertex-index)
+           0 (vec2f -1.)
+           1 (vec2f -1. 3.)
+           _ (vec2f 3. -1.))
+         0.
+         1.))
+
+@fragment
+(defn frag []: vec4f
+  (let [uv (/ (.xy (position))
+              (vec2f (window-resolution)))
+        frame-pixel (vec2u (* uv (vec2f (texture-dimensions frame-tex))))]
+    (texture-load frame-tex frame-pixel 0u)))
+
+@cpu
+(defn main []
+  (let [@var v (load-video "bunny.mp4")]
+    (spawn-window
+      (fn []
+        (let [scrubbing (mouse-down?)]
+          (when scrubbing
+            (let [frac (/ (f32 (.x (mouse-coords)))
+                          (f32 (.x (window-resolution))))]
+              (jump-to-video-frame v
+                                   (u32 (* frac
+                                           (f32 (get-video-length v)))))))
+          (when (! scrubbing)
+            (progress-video-frame v)
+            (when (>= (get-current-frame-index v) (get-video-length v))
+              (jump-to-video-frame v 0u))))
+        (= frame-tex (get-video-frame-texture v))
+        (dispatch-render-shaders vert frag 3)))))

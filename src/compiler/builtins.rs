@@ -57,6 +57,12 @@ pub trait ArgumentTypeHelpers: Sized {
   fn owned(self) -> (Self, Ownership) {
     (self, Ownership::Owned)
   }
+  fn reference(self) -> (Self, Ownership) {
+    (self, Ownership::Reference)
+  }
+  fn mutable_reference(self) -> (Self, Ownership) {
+    (self, Ownership::MutableReference)
+  }
 }
 
 impl ArgumentTypeHelpers for AbstractType {}
@@ -522,6 +528,47 @@ pub fn midi_note() -> AbstractStruct {
   }
 }
 
+/// The opaque `Video` handle returned by `load-video`. It's a plain value —
+/// `(source-index, current-frame, frame-count)`, three `u32` slots — so it
+/// gets ordinary value semantics for free (a copy is a flat slot copy). The
+/// heavy, non-copyable ffmpeg decoder lives host-side in a `VideoRegistry`
+/// keyed by `_source`; the struct itself carries only the semantic state
+/// (which frame you're on). Opacity is by convention: it has no constructor
+/// (`ABNORMAL_CONSTRUCTOR_STRUCTS`), so it can only be produced by
+/// `load-video`, and its fields are `_`-prefixed to signal "internal". It's
+/// CPU-only in practice — every operation on it is `CPUExclusiveFunction`,
+/// so it can never reach shader or audio code.
+pub fn video_struct() -> AbstractStruct {
+  AbstractStruct {
+    name: ("Video".into(), SourceTrace::empty()),
+    fields: vec![
+      AbstractStructField {
+        attributes: IOAttributes::empty(SourceTrace::empty()),
+        name: "_source".into(),
+        field_type: AbstractType::Type(Type::U32),
+        source_trace: SourceTrace::empty(),
+      },
+      AbstractStructField {
+        attributes: IOAttributes::empty(SourceTrace::empty()),
+        name: "_frame".into(),
+        field_type: AbstractType::Type(Type::U32),
+        source_trace: SourceTrace::empty(),
+      },
+      AbstractStructField {
+        attributes: IOAttributes::empty(SourceTrace::empty()),
+        name: "_length".into(),
+        field_type: AbstractType::Type(Type::U32),
+        source_trace: SourceTrace::empty(),
+      },
+    ],
+    generic_args: vec![],
+    filled_generics: HashMap::new(),
+    abstract_ancestor: None,
+    source_trace: SourceTrace::empty(),
+    opaque: true,
+  }
+}
+
 pub fn built_in_structs() -> Vec<AbstractStruct> {
   vec![
     vec2(),
@@ -531,6 +578,7 @@ pub fn built_in_structs() -> Vec<AbstractStruct> {
     sampler(),
     atomic(),
     midi_note(),
+    video_struct(),
   ]
   .into_iter()
   .chain((2..=4).flat_map(|n| (2..=4).map(move |m| matrix(n, m))))
@@ -2820,6 +2868,103 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
+    // Video decoding. `load-video` opens a source and `get-video-frame-
+    // texture` decodes the current frame into a texture global (host ops
+    // touching the `VideoRegistry`); the scrubbing ops are pure slot
+    // arithmetic on the `Video` value's `_frame`/`_length` fields. All are
+    // `CPUExclusiveFunction` — `Video` never reaches shader or audio code.
+    AbstractFunctionSignature {
+      name: "load-video".into(),
+      arg_types: vec![AbstractType::Type(Type::String).owned()],
+      return_type: AbstractType::AbstractStruct(video_struct().into()),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("load-video".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "progress-video-frame".into(),
+      arg_types: vec![
+        AbstractType::AbstractStruct(video_struct().into()).mutable_reference(),
+      ],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction(
+          "progress-video-frame".into(),
+        )
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "jump-to-video-frame".into(),
+      arg_types: vec![
+        AbstractType::AbstractStruct(video_struct().into()).mutable_reference(),
+        AbstractType::Type(Type::U32).owned(),
+      ],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("jump-to-video-frame".into())
+          .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "get-video-frame-texture".into(),
+      arg_types: vec![
+        AbstractType::AbstractStruct(video_struct().into()).reference(),
+      ],
+      return_type: AbstractType::AbstractStruct(
+        texture_2d()
+          .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+          .into(),
+      ),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction(
+          "get-video-frame-texture".into(),
+        )
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "get-current-frame-index".into(),
+      arg_types: vec![
+        AbstractType::AbstractStruct(video_struct().into()).reference(),
+      ],
+      return_type: AbstractType::Type(Type::U32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction(
+          "get-current-frame-index".into(),
+        )
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "get-video-length".into(),
+      arg_types: vec![
+        AbstractType::AbstractStruct(video_struct().into()).reference(),
+      ],
+      return_type: AbstractType::Type(Type::U32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("get-video-length".into())
+          .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
     AbstractFunctionSignature {
       name: "blank-texture".into(),
       arg_types: vec![
@@ -3320,7 +3465,7 @@ lazy_static! {
   .into_iter()
   .collect();
   pub static ref ABNORMAL_CONSTRUCTOR_STRUCTS: HashSet<&'static str> =
-    ["vec2", "vec3", "vec4"].into_iter().collect();
+    ["vec2", "vec3", "vec4", "Video"].into_iter().collect();
 }
 
 pub fn built_in_macros() -> Vec<Macro> {

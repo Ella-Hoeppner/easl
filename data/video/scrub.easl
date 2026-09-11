@@ -1,0 +1,19 @@
+; Video frame scrubbing + value semantics. The scrubbing ops
+; (`progress-video-frame`, `jump-to-video-frame`, `get-current-frame-index`,
+; `get-video-length`) are pure operations on the `Video` value's frame/length
+; fields — no decoding — so they're deterministic and don't depend on the
+; video's pixels. Because `Video` is a plain value, copying it (`let w v`)
+; and scrubbing the copy must leave the original untouched.
+@cpu
+(defn main []
+  (let [@var v (load-video "data/video/scrub.mp4")]
+    (print (get-video-length v))         ; 3u
+    (print (get-current-frame-index v))  ; 0u
+    (progress-video-frame v)
+    (print (get-current-frame-index v))  ; 1u
+    (let [@var w v]
+      (progress-video-frame w)
+      (print (get-current-frame-index v))  ; 1u — original unaffected
+      (print (get-current-frame-index w))) ; 2u
+    (jump-to-video-frame v 0u)
+    (print (get-current-frame-index v))))  ; 0u

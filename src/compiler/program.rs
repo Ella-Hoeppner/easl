@@ -2447,7 +2447,11 @@ impl Program {
           self.type_makes_struct_cpu_only(&field_type)
         })
       }
-      other => other.involves_string() || other.involves_runtime_sized_array(),
+      other => {
+        other.involves_string()
+          || other.involves_runtime_sized_array()
+          || other.involves_video()
+      }
     }
   }
   /// Lifts every capture of a closure-entry scope struct (see

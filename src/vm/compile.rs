@@ -3751,6 +3751,56 @@ impl TypedExp {
         state.emit_host_op(HostOp::LoadWav { path_slot, dest });
         Some(Some(dest))
       }
+      // Video decoding + scrubbing. `Video` is a flat 3-slot struct
+      // (`_source`, `_frame`, `_length`); `load-video` fills those slots
+      // via a host op, while the scrubbing/query ops are pure slot
+      // arithmetic — no host op, no clamp (clamping happens at decode).
+      "load-video" => {
+        let path_slot = args[0]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("load-video path produced no value");
+        let dest = state.take_stack_slot(3);
+        state.emit_host_op(HostOp::LoadVideo { path_slot, dest });
+        Some(Some(dest))
+      }
+      "progress-video-frame" => {
+        let base = args[0]
+          .compile_to_bytecode(CompilePosition::MutRef, state)
+          .expect("progress-video-frame argument produced no place");
+        let one = state.emit_u32_constant(1);
+        state.push_instruction(Instruction {
+          op: Op::PlusU32,
+          arg_positions: [base + 1, one, 0],
+          return_position: base + 1,
+        });
+        Some(None)
+      }
+      "jump-to-video-frame" => {
+        let base = args[0]
+          .compile_to_bytecode(CompilePosition::MutRef, state)
+          .expect("jump-to-video-frame argument produced no place");
+        let target = args[1]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("jump-to-video-frame target produced no value");
+        state.push_instruction(Instruction {
+          op: Op::Move,
+          arg_positions: [target, 1, 0],
+          return_position: base + 1,
+        });
+        Some(None)
+      }
+      "get-current-frame-index" => {
+        let base = args[0]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("get-current-frame-index argument produced no value");
+        Some(Some(base + 1))
+      }
+      "get-video-length" => {
+        let base = args[0]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("get-video-length argument produced no value");
+        Some(Some(base + 2))
+      }
       "print" => {
         let arg = &args[0];
         if let ExpKind::StringLiteral(text) = &arg.kind {
@@ -4167,6 +4217,18 @@ impl TypedExp {
               let path = state.host_string_index(&path.to_string());
               state
                 .emit_host_op(HostOp::AssignTextureFromImage { binding, path });
+            }
+            "get-video-frame-texture" => {
+              // The `Video` arg's `_source`/`_frame` fields are at
+              // `video_slot + 0`/`+ 1`; the host op decodes that frame and
+              // uploads it to the texture binding.
+              let video_slot = rhs_args[0]
+                .compile_to_bytecode(CompilePosition::Value, state)
+                .expect("get-video-frame-texture argument produced no value");
+              state.emit_host_op(HostOp::AssignTextureFromVideoFrame {
+                binding,
+                video_slot,
+              });
             }
             "blank-texture" => {
               // Both arg shapes compile to two consecutive u32 slots: (w h)

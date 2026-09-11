@@ -1452,6 +1452,29 @@ impl Type {
     }
   }
 
+  /// Whether this type embeds a `Video` (directly or nested). `Video` is
+  /// CPU-only (opaque, never emitted to WGSL, all its ops are
+  /// CPU-exclusive), so any struct/enum/array embedding one is CPU-only for
+  /// emission purposes — like `String` — and must be skipped from WGSL
+  /// struct emission so it doesn't dangle on the unemitted `Video` type.
+  pub fn involves_video(&self) -> bool {
+    match self {
+      Type::Struct(s) => {
+        &*s.name == "Video"
+          || s
+            .fields
+            .iter()
+            .any(|f| f.field_type.unwrap_known().involves_video())
+      }
+      Type::Array(_, inner) => inner.kind.unwrap_known().involves_video(),
+      Type::Enum(e) => e
+        .variants
+        .iter()
+        .any(|v| v.inner_type.unwrap_known().involves_video()),
+      _ => false,
+    }
+  }
+
   /// Whether this type can be the element/whole type of a WGSL
   /// storage/uniform binding: no `bool` or `String` (not host-shareable,
   /// matching `validate_gpu_used_binding_types`), and no runtime-sized

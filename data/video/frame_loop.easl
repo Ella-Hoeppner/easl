@@ -1,0 +1,14 @@
+; Frame advancing across a `spawn-window` loop: the `@var Video` is captured
+; by the frame closure, so `progress-video-frame` must persist across frames
+; (closure-scope write-back), and `jump-to-video-frame` loops back at the end.
+; StringIO simulates 10 frames; scrub.mp4 has 3, so the playhead cycles
+; 1,2,0,1,2,0,... proving both the persistence and the loop.
+@cpu
+(defn main []
+  (let [@var v (load-video "data/video/scrub.mp4")]
+    (spawn-window
+      (fn []
+        (progress-video-frame v)
+        (when (>= (get-current-frame-index v) (get-video-length v))
+          (jump-to-video-frame v 0u))
+        (print (get-current-frame-index v))))))

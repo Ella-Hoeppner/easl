@@ -1,0 +1,15 @@
+; Decoding a frame into a texture. `get-video-frame-texture` only appears as
+; the RHS of an assignment to a `@handle` texture global (the same shape as
+; `load-image`), which both runtimes intercept as a host op. Decoding the
+; 8x8 test video yields an 8x8 texture regardless of which frame is current.
+@handle
+(var tex: (Texture2D f32))
+
+@cpu
+(defn main []
+  (let [@var v (load-video "data/video/scrub.mp4")]
+    (= tex (get-video-frame-texture v))
+    (print (texture-dimensions tex))
+    (progress-video-frame v)
+    (= tex (get-video-frame-texture v))
+    (print (get-current-frame-index v))))

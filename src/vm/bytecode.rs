@@ -741,6 +741,24 @@ pub enum HostOp {
     path_slot: u16,
     dest: u16,
   },
+  /// `(load-video path)`: open the video source at the runtime string in
+  /// `path_slot` (a heap-id slot, like `LoadWav`), registering a host-side
+  /// decoder, and write the resulting `Video` struct's three `u32` fields
+  /// into the slots at `dest` (`+0` = `_source` registry index, `+1` =
+  /// `_frame` = 0, `+2` = `_length` frame count). The struct is plain flat
+  /// data, so it copies by value like any other struct.
+  LoadVideo {
+    path_slot: u16,
+    dest: u16,
+  },
+  /// `(= texture-global (get-video-frame-texture v))`: decode the current
+  /// frame of the `Video` whose `_source`/`_frame` fields sit at
+  /// `video_slot` (`+0` and `+1`) and upload the pixels to the texture
+  /// binding. Frame index is clamped to the source's range at decode time.
+  AssignTextureFromVideoFrame {
+    binding: u16,
+    video_slot: u16,
+  },
   /// `(= texture-global (load-image "path"))`
   AssignTextureFromImage {
     binding: u16,

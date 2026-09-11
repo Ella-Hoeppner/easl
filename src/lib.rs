@@ -8,6 +8,7 @@ pub mod interpreter;
 pub mod midi;
 pub mod parse;
 pub mod thread_sync;
+pub mod video;
 pub mod vm;
 #[cfg(feature = "window")]
 pub mod window;

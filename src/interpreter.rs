@@ -32,6 +32,7 @@ use crate::compiler::{
 };
 use crate::external::ExternalVars;
 use crate::thread_sync::participant;
+use crate::video::VideoRegistry;
 use crate::vm::bytecode::{
   DynMemory, HeapCell, alloc_heap_cell, heap_string_words, release_heap_id,
   string_to_words, words_to_string,
@@ -2142,6 +2143,71 @@ fn apply_builtin_fn<IO: IOManager>(
         panic!("load-image: expected string path argument")
       };
       Ok(load_image_value(&path, &env.source_dir)?)
+    }
+    "load-video" => {
+      let Value::String(path) = args.remove(0).0 else {
+        panic!("load-video: expected string path argument")
+      };
+      let resolved = resolve_source_path(&path, &env.source_dir);
+      let (source_index, info) =
+        env.video.open(&resolved.to_string_lossy()).map_err(|e| {
+          UserspaceEvalError::RuntimeError(format!(
+            "load-video: failed to open \"{path}\": {e}"
+          ))
+        })?;
+      Ok(make_video_value(source_index, 0, info.frame_count))
+    }
+    "get-video-frame-texture" => {
+      let (source, frame) = video_source_and_frame(&args[0].0);
+      let decoded = env.video.decode_frame(source, frame).map_err(|e| {
+        UserspaceEvalError::RuntimeError(format!(
+          "get-video-frame-texture: {e}"
+        ))
+      })?;
+      Ok(Value::Texture {
+        width: decoded.width,
+        height: decoded.height,
+        data: decoded.rgba,
+        binding: None,
+      })
+    }
+    "get-current-frame-index" => {
+      let (_, frame) = video_source_and_frame(&args[0].0);
+      Ok(Value::Prim(Primitive::U32(frame)))
+    }
+    "get-video-length" => {
+      let Value::Struct(fields) = &args[0].0 else {
+        panic!("get-video-length: expected Video argument")
+      };
+      let Value::Prim(Primitive::U32(length)) = fields["_length"] else {
+        panic!("get-video-length: malformed Video")
+      };
+      Ok(Value::Prim(Primitive::U32(length)))
+    }
+    // `progress-video-frame` / `jump-to-video-frame` return the mutated
+    // `Video`; the Application arm writes it back through the `@var @ref`
+    // argument. Frame indices are unclamped here — clamping happens at
+    // decode time in `get-video-frame-texture` — so the ops stay pure slot
+    // arithmetic that never needs the registry.
+    "progress-video-frame" => {
+      let Value::Struct(mut fields) = args.remove(0).0 else {
+        panic!("progress-video-frame: expected Video argument")
+      };
+      let Value::Prim(Primitive::U32(frame)) = fields["_frame"] else {
+        panic!("progress-video-frame: malformed Video")
+      };
+      fields.insert("_frame".into(), Value::Prim(Primitive::U32(frame + 1)));
+      Ok(Value::Struct(fields))
+    }
+    "jump-to-video-frame" => {
+      let Value::Struct(mut fields) = args.remove(0).0 else {
+        panic!("jump-to-video-frame: expected Video argument")
+      };
+      let Value::Prim(Primitive::U32(target)) = args.remove(0).0 else {
+        panic!("jump-to-video-frame: expected u32 frame index")
+      };
+      fields.insert("_frame".into(), Value::Prim(Primitive::U32(target)));
+      Ok(Value::Struct(fields))
     }
     "blank-texture" => {
       let (width, height) = if args.len() == 2 {
@@ -4516,6 +4582,10 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   /// render to the screen. Set by `set-render-target`, cleared by
   /// `clear-render-target`.
   current_render_target: Option<GroupAndBinding>,
+  /// Host-side video decoders, keyed by the `_source` index in a `Video`
+  /// value (see `video::VideoRegistry`). Main-thread only — a decoder can't
+  /// cross to the audio thread, and `Video` is CPU-exclusive.
+  video: VideoRegistry,
   /// Pre-compiled audio source for `start-audio`. Required for the
   /// `start-audio` builtin to actually start a stream; `None` means the run
   /// was started without audio support. Consumed (via `take`) on first
@@ -4658,6 +4728,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       buffer_states,
       source_dir,
       current_render_target: None,
+      video: VideoRegistry::new(),
       #[cfg(feature = "window")]
       audio_source,
       #[cfg(feature = "window")]
@@ -5767,6 +5838,23 @@ fn write_back_through_lhs<IO: IOManager>(
   Ok(())
 }
 
+/// Writes a video-scrub op's mutated `Video` (returned by `apply_builtin_fn`)
+/// back through its `@var @ref` argument. Kept out of `eval`'s giant match so
+/// its locals don't inflate that already-large stack frame (`eval` recurses
+/// deeply).
+fn finish_video_mutation<IO: IOManager>(
+  env: &mut EvaluationEnvironment<IO>,
+  ref_arg_lhs_exprs: Vec<Option<Exp<ExpTypeInfo>>>,
+  mutated_video: Value,
+) -> Result<(), EvalException> {
+  let lhs = ref_arg_lhs_exprs
+    .into_iter()
+    .flatten()
+    .next()
+    .expect("video-frame mutation op requires a mutable-reference argument");
+  write_back_through_lhs(env, lhs, mutated_video)
+}
+
 pub fn eval(
   exp: Exp<ExpTypeInfo>,
   env: &mut EvaluationEnvironment<impl IOManager>,
@@ -5954,12 +6042,25 @@ pub fn eval(
           })
           .collect::<Result<_, _>>()?;
         let mut return_value = match f {
-          Function::Builtin(name) => apply_builtin_fn(
-            name,
-            arg_values.into_iter().zip(arg_types.into_iter()).collect(),
-            return_type,
-            env,
-          )?,
+          Function::Builtin(name) => {
+            // `progress-video-frame` / `jump-to-video-frame` take a `@var
+            // @ref Video`: `apply_builtin_fn` returns the mutated `Video`,
+            // which we write back through the reference and yield Unit.
+            let is_video_mutation =
+              matches!(&*name, "progress-video-frame" | "jump-to-video-frame");
+            let result = apply_builtin_fn(
+              name,
+              arg_values.into_iter().zip(arg_types.into_iter()).collect(),
+              return_type,
+              env,
+            )?;
+            if is_video_mutation {
+              finish_video_mutation(env, ref_arg_lhs_exprs, result)?;
+              Value::Unit
+            } else {
+              result
+            }
+          }
           Function::StructConstructor(field_names) => Value::Struct(
             field_names
               .into_iter()
@@ -6738,6 +6839,48 @@ impl<IO: IOManager> crate::vm::bytecode::VmHost for VmHostView<'_, IO> {
   }
 }
 
+/// Builds a `Video` struct value (`_source`/`_frame`/`_length`) — the opaque
+/// handle returned by `load-video`.
+fn make_video_value(source: u32, frame: u32, length: u32) -> Value {
+  Value::Struct(
+    [
+      ("_source".into(), Value::Prim(Primitive::U32(source))),
+      ("_frame".into(), Value::Prim(Primitive::U32(frame))),
+      ("_length".into(), Value::Prim(Primitive::U32(length))),
+    ]
+    .into_iter()
+    .collect(),
+  )
+}
+
+/// Reads the `(_source, _frame)` pair out of a `Video` struct value.
+fn video_source_and_frame(video: &Value) -> (u32, u32) {
+  let Value::Struct(fields) = video else {
+    panic!("expected Video argument")
+  };
+  let Value::Prim(Primitive::U32(source)) = fields["_source"] else {
+    panic!("malformed Video")
+  };
+  let Value::Prim(Primitive::U32(frame)) = fields["_frame"] else {
+    panic!("malformed Video")
+  };
+  (source, frame)
+}
+
+/// Resolves a user-supplied path against the source .easl file's directory:
+/// absolute paths are used as-is, relative ones are joined onto `source_dir`
+/// when known. Shared by every path-taking builtin — `load-image`,
+/// `load-video`, `load-wav`, and `save-png`.
+fn resolve_source_path(path: &str, source_dir: &Option<PathBuf>) -> PathBuf {
+  if std::path::Path::new(path).is_absolute() {
+    PathBuf::from(path)
+  } else if let Some(dir) = source_dir {
+    dir.join(path)
+  } else {
+    PathBuf::from(path)
+  }
+}
+
 /// Loads an image file into a `Value::Texture`, resolving relative paths
 /// against `source_dir`. Shared by the `load-image` builtin and the VM
 /// runtime's `AssignTextureFromImage` host op.
@@ -6745,13 +6888,7 @@ fn load_image_value(
   path: &str,
   source_dir: &Option<PathBuf>,
 ) -> Result<Value, EvalError> {
-  let resolved = if std::path::Path::new(path).is_absolute() {
-    std::path::PathBuf::from(path)
-  } else if let Some(dir) = source_dir {
-    dir.join(path)
-  } else {
-    std::path::PathBuf::from(path)
-  };
+  let resolved = resolve_source_path(path, source_dir);
   let img = image::open(&resolved)
     .map_err(|e| {
       UserspaceEvalError::RuntimeError(format!(
@@ -6780,13 +6917,7 @@ fn save_png_file(
   data: &[u8],
   source_dir: &Option<PathBuf>,
 ) -> Result<(), EvalError> {
-  let resolved = if std::path::Path::new(path).is_absolute() {
-    std::path::PathBuf::from(path)
-  } else if let Some(dir) = source_dir {
-    dir.join(path)
-  } else {
-    std::path::PathBuf::from(path)
-  };
+  let resolved = resolve_source_path(path, source_dir);
   if let Some(parent) = resolved.parent()
     && !parent.as_os_str().is_empty()
   {
@@ -6816,13 +6947,7 @@ fn load_wav_samples(
   path: &str,
   source_dir: &Option<PathBuf>,
 ) -> Result<Vec<f32>, EvalError> {
-  let resolved = if std::path::Path::new(path).is_absolute() {
-    std::path::PathBuf::from(path)
-  } else if let Some(dir) = source_dir {
-    dir.join(path)
-  } else {
-    std::path::PathBuf::from(path)
-  };
+  let resolved = resolve_source_path(path, source_dir);
   let wav_error = |e: hound::Error| {
     EvalError::from(UserspaceEvalError::RuntimeError(format!(
       "load-wav: failed to read \"{path}\": {e}"
@@ -7699,6 +7824,44 @@ fn vm_host_call<IO: IOManager>(
       });
       release_heap_id(heap, heap_free, stack[*dest as usize]);
       stack[*dest as usize] = alloc_heap_cell(heap, heap_free, cell);
+    }
+    HostOp::LoadVideo { path_slot, dest } => {
+      let path =
+        words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
+      let resolved = resolve_source_path(&path, &env.source_dir);
+      let (source_index, info) =
+        env.video.open(&resolved.to_string_lossy()).map_err(|e| {
+          UserspaceEvalError::RuntimeError(format!(
+            "load-video: failed to open \"{path}\": {e}"
+          ))
+        })?;
+      stack[*dest as usize] = source_index;
+      stack[*dest as usize + 1] = 0;
+      stack[*dest as usize + 2] = info.frame_count;
+    }
+    HostOp::AssignTextureFromVideoFrame {
+      binding,
+      video_slot,
+    } => {
+      let source = stack[*video_slot as usize];
+      let frame = stack[*video_slot as usize + 1];
+      let decoded = env.video.decode_frame(source, frame).map_err(|e| {
+        UserspaceEvalError::RuntimeError(format!(
+          "get-video-frame-texture: {e}"
+        ))
+      })?;
+      let name = code.host_bindings[*binding as usize].name.clone();
+      let value = Value::Texture {
+        width: decoded.width,
+        height: decoded.height,
+        data: decoded.rgba,
+        binding: None,
+      };
+      if let Some(stack_entry) = env.bindings.get_mut(&name)
+        && let Some(slot) = stack_entry.last_mut()
+      {
+        slot.0 = value;
+      }
     }
     HostOp::AssignTextureFromImage { binding, path } => {
       let b = &code.host_bindings[*binding as usize];
