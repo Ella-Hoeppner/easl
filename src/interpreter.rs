@@ -34,8 +34,8 @@ use crate::external::ExternalVars;
 use crate::thread_sync::participant;
 use crate::video::VideoRegistry;
 use crate::vm::bytecode::{
-  DynMemory, HeapCell, alloc_heap_cell, heap_string_words, release_heap_id,
-  string_to_words, words_to_string,
+  DynMemory, HeapCell, alloc_heap_cell, heap_index, heap_string_words,
+  release_heap_id, string_to_words, words_to_string,
 };
 use crate::vm::compile::vm_stack_size;
 
@@ -353,6 +353,53 @@ fn primitive_arithmetic(
       Value::Prim(Primitive::U32(u32_op(a, b)))
     }
     _ => panic!(),
+  }
+}
+
+/// Handles the file-I/O wav builtins (`load-wav-raw`, `get-wav-sample-rate`,
+/// `save-wav`). Split out of `apply_builtin_fn` so their `Value` locals don't
+/// enlarge that function's already-large debug stack frame — deeply-recursive
+/// programs share it on the way down to a leaf builtin call, so a few extra
+/// slots there can overflow the 8MB thread stack (as it did for the
+/// `windowed_scope_upload_ordering` sync test).
+fn apply_wav_builtin<IO: IOManager>(
+  f_name: &str,
+  args: &mut Vec<(Value, Type)>,
+  env: &mut EvaluationEnvironment<IO>,
+) -> Result<Value, EvalException> {
+  match f_name {
+    "load-wav-raw" => {
+      let Value::String(path) = args.remove(0).0 else {
+        panic!("load-wav-raw: expected string path argument")
+      };
+      Ok(Value::Array(
+        load_wav_samples_raw(&path, &env.source_dir)?
+          .into_iter()
+          .map(|sample| Value::Prim(Primitive::I32(sample)))
+          .collect(),
+      ))
+    }
+    "get-wav-sample-rate" => {
+      let Value::String(path) = args.remove(0).0 else {
+        panic!("get-wav-sample-rate: expected string path argument")
+      };
+      Ok(Value::Prim(Primitive::F32(load_wav_sample_rate(
+        &path,
+        &env.source_dir,
+      )? as f32)))
+    }
+    "save-wav" => {
+      let Value::String(path) = args.remove(0).0 else {
+        panic!("save-wav: expected string path argument")
+      };
+      let samples = f32_samples_from_value(args.remove(0).0);
+      let Value::Prim(Primitive::F32(sample_rate)) = args.remove(0).0 else {
+        panic!("save-wav: expected f32 sample rate")
+      };
+      save_wav_file(&path, &samples, sample_rate, &env.source_dir)?;
+      Ok(Value::Unit)
+    }
+    _ => unreachable!("apply_wav_builtin called with non-wav builtin {f_name}"),
   }
 }
 
@@ -2137,6 +2184,9 @@ fn apply_builtin_fn<IO: IOManager>(
           .map(|sample| Value::Prim(Primitive::F32(sample)))
           .collect(),
       ))
+    }
+    "load-wav-raw" | "get-wav-sample-rate" | "save-wav" => {
+      apply_wav_builtin(&f_name, &mut args, env)
     }
     "load-image" => {
       let Value::String(path) = args.remove(0).0 else {
@@ -6978,6 +7028,140 @@ fn load_wav_samples(
   )
 }
 
+/// Reads a `.wav` file's sample rate (Hz) without decoding its samples.
+/// Shared by the `get-wav-sample-rate` builtin's tree-walker arm and the VM
+/// runtime's `GetWavSampleRate` host op.
+fn load_wav_sample_rate(
+  path: &str,
+  source_dir: &Option<PathBuf>,
+) -> Result<u32, EvalError> {
+  let resolved = resolve_source_path(path, source_dir);
+  let reader = hound::WavReader::open(&resolved).map_err(|e| {
+    EvalError::from(UserspaceEvalError::RuntimeError(format!(
+      "get-wav-sample-rate: failed to read \"{path}\": {e}"
+    )))
+  })?;
+  Ok(reader.spec().sample_rate)
+}
+
+/// Loads a `.wav` file's raw integer samples over their natural range (no
+/// normalization — 16-bit files yield [-32768, 32767]), averaging
+/// multi-channel frames to mono like `load_wav_samples`. Float-format files
+/// are scaled to the 16-bit integer range. Shared by the `load-wav-raw`
+/// builtin's tree-walker arm and the VM runtime's `LoadWavRaw` host op.
+fn load_wav_samples_raw(
+  path: &str,
+  source_dir: &Option<PathBuf>,
+) -> Result<Vec<i32>, EvalError> {
+  let resolved = resolve_source_path(path, source_dir);
+  let wav_error = |e: hound::Error| {
+    EvalError::from(UserspaceEvalError::RuntimeError(format!(
+      "load-wav-raw: failed to read \"{path}\": {e}"
+    )))
+  };
+  let mut reader = hound::WavReader::open(&resolved).map_err(wav_error)?;
+  let spec = reader.spec();
+  let channels = (spec.channels as usize).max(1);
+  let interleaved: Vec<i32> = match spec.sample_format {
+    hound::SampleFormat::Int => reader
+      .samples::<i32>()
+      .collect::<Result<_, _>>()
+      .map_err(wav_error)?,
+    hound::SampleFormat::Float => reader
+      .samples::<f32>()
+      .map(|s| s.map(|v| (v * 32768.0).round() as i32))
+      .collect::<Result<_, _>>()
+      .map_err(wav_error)?,
+  };
+  Ok(
+    interleaved
+      .chunks(channels)
+      .map(|frame| {
+        (frame.iter().map(|&s| s as i64).sum::<i64>() / channels as i64) as i32
+      })
+      .collect(),
+  )
+}
+
+/// Writes mono `f32` samples (nominally [-1, 1]) to `path` as a 16-bit PCM
+/// WAV at `sample_rate` Hz. Samples are scaled by 32768 and clamped to the
+/// `i16` range — the inverse of `load_wav_samples`' divide-by-32768, so
+/// representable values (e.g. 0.5, 0.25) round-trip exactly, and
+/// out-of-range inputs clip rather than wrap. Resolves relative paths
+/// against `source_dir` and creates missing parent directories, like
+/// `save_png_file`. Shared by the `save-wav` builtin's tree-walker arm and
+/// the VM runtime's `SaveWav` host op.
+fn save_wav_file(
+  path: &str,
+  samples: &[f32],
+  sample_rate: f32,
+  source_dir: &Option<PathBuf>,
+) -> Result<(), EvalError> {
+  let resolved = resolve_source_path(path, source_dir);
+  if let Some(parent) = resolved.parent()
+    && !parent.as_os_str().is_empty()
+  {
+    std::fs::create_dir_all(parent).map_err(|e| {
+      UserspaceEvalError::RuntimeError(format!(
+        "save-wav: failed to create directory for \"{path}\": {e}"
+      ))
+    })?;
+  }
+  let spec = hound::WavSpec {
+    channels: 1,
+    sample_rate: sample_rate.round().max(1.0) as u32,
+    bits_per_sample: 16,
+    sample_format: hound::SampleFormat::Int,
+  };
+  let write_error = |e: hound::Error| {
+    EvalError::from(UserspaceEvalError::RuntimeError(format!(
+      "save-wav: failed to write \"{path}\": {e}"
+    )))
+  };
+  let mut writer =
+    hound::WavWriter::create(&resolved, spec).map_err(&write_error)?;
+  for &sample in samples {
+    let quantized = (sample * 32768.0).round().clamp(-32768.0, 32767.0) as i16;
+    writer.write_sample(quantized).map_err(&write_error)?;
+  }
+  writer.finalize().map_err(&write_error)?;
+  Ok(())
+}
+
+/// Extracts a runtime `[f32]` value (`Array` of `f32` prims, or a lazily
+/// `ZeroedArray`) into a flat `Vec<f32>` for `save-wav`.
+fn f32_samples_from_value(value: Value) -> Vec<f32> {
+  match value {
+    Value::Array(elements) => elements
+      .into_iter()
+      .map(|v| {
+        let Value::Prim(Primitive::F32(f)) = v else {
+          panic!("save-wav: expected an f32 array")
+        };
+        f
+      })
+      .collect(),
+    Value::ZeroedArray { length } => vec![0.0; length],
+    _ => panic!("save-wav: expected an f32 array"),
+  }
+}
+
+/// Reads a VM `[f32]` heap value (the id in `slot`) into a flat `Vec<f32>`
+/// for the `SaveWav` host op. `[f32]` is flat, so its cell is `Words` (f32
+/// bits, stride 1) or a lazily-`Zeroed` run.
+fn vm_heap_f32_samples(heap: &[Option<Arc<HeapCell>>], id: u32) -> Vec<f32> {
+  match heap_index(id).and_then(|i| heap[i].as_ref()) {
+    Some(cell) => match &cell.memory {
+      DynMemory::Words(words) => {
+        words.iter().map(|&w| f32::from_bits(w)).collect()
+      }
+      DynMemory::Zeroed { elements } => vec![0.0; *elements as usize],
+      DynMemory::Cells(_) => vec![],
+    },
+    None => vec![],
+  }
+}
+
 /// Number of u32 words a type occupies in the VM's flat layout.
 pub(crate) fn vm_words_of(t: &Type) -> usize {
   t.flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
@@ -7824,6 +8008,36 @@ fn vm_host_call<IO: IOManager>(
       });
       release_heap_id(heap, heap_free, stack[*dest as usize]);
       stack[*dest as usize] = alloc_heap_cell(heap, heap_free, cell);
+    }
+    HostOp::LoadWavRaw { path_slot, dest } => {
+      let path =
+        words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
+      let samples = load_wav_samples_raw(&path, &env.source_dir)?;
+      let cell = Arc::new(HeapCell {
+        memory: DynMemory::Words(
+          samples.into_iter().map(|s| s as u32).collect(),
+        ),
+        stride: 1,
+      });
+      release_heap_id(heap, heap_free, stack[*dest as usize]);
+      stack[*dest as usize] = alloc_heap_cell(heap, heap_free, cell);
+    }
+    HostOp::GetWavSampleRate { path_slot, dest } => {
+      let path =
+        words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
+      let rate = load_wav_sample_rate(&path, &env.source_dir)?;
+      stack[*dest as usize] = (rate as f32).to_bits();
+    }
+    HostOp::SaveWav {
+      path_slot,
+      samples_slot,
+      rate_slot,
+    } => {
+      let path =
+        words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
+      let samples = vm_heap_f32_samples(heap, stack[*samples_slot as usize]);
+      let sample_rate = f32::from_bits(stack[*rate_slot as usize]);
+      save_wav_file(&path, &samples, sample_rate, &env.source_dir)?;
     }
     HostOp::LoadVideo { path_slot, dest } => {
       let path =

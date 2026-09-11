@@ -3751,6 +3751,39 @@ impl TypedExp {
         state.emit_host_op(HostOp::LoadWav { path_slot, dest });
         Some(Some(dest))
       }
+      "load-wav-raw" => {
+        let path_slot = args[0]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("load-wav-raw path produced no value");
+        let dest = state.take_stack_slot(1);
+        state.emit_host_op(HostOp::LoadWavRaw { path_slot, dest });
+        Some(Some(dest))
+      }
+      "get-wav-sample-rate" => {
+        let path_slot = args[0]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("get-wav-sample-rate path produced no value");
+        let dest = state.take_stack_slot(1);
+        state.emit_host_op(HostOp::GetWavSampleRate { path_slot, dest });
+        Some(Some(dest))
+      }
+      "save-wav" => {
+        let path_slot = args[0]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("save-wav path produced no value");
+        let samples_slot = args[1]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("save-wav samples produced no value");
+        let rate_slot = args[2]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("save-wav sample rate produced no value");
+        state.emit_host_op(HostOp::SaveWav {
+          path_slot,
+          samples_slot,
+          rate_slot,
+        });
+        Some(None)
+      }
       // Video decoding + scrubbing. `Video` is a flat 3-slot struct
       // (`_source`, `_frame`, `_length`); `load-video` fills those slots
       // via a host op, while the scrubbing/query ops are pure slot

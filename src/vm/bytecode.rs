@@ -741,6 +741,26 @@ pub enum HostOp {
     path_slot: u16,
     dest: u16,
   },
+  /// `(load-wav-raw path)`: like `LoadWav`, but stores the file's raw integer
+  /// samples (as `i32` bits) instead of normalized f32s.
+  LoadWavRaw {
+    path_slot: u16,
+    dest: u16,
+  },
+  /// `(get-wav-sample-rate path)`: read the WAV file's sample rate and write
+  /// it (as `f32` bits) to the single slot `dest`. No heap allocation.
+  GetWavSampleRate {
+    path_slot: u16,
+    dest: u16,
+  },
+  /// `(save-wav path samples rate)`: write the `[f32]` heap value at
+  /// `samples_slot` to the WAV file at the runtime string in `path_slot`, at
+  /// the sample rate in `rate_slot` (an `f32` slot).
+  SaveWav {
+    path_slot: u16,
+    samples_slot: u16,
+    rate_slot: u16,
+  },
   /// `(load-video path)`: open the video source at the runtime string in
   /// `path_slot` (a heap-id slot, like `LoadWav`), registering a host-side
   /// decoder, and write the resulting `Video` struct's three `u32` fields

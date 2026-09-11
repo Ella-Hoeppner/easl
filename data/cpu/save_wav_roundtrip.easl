@@ -1,0 +1,13 @@
+; `save-wav` writes mono f32 samples as 32-bit-float WAV — a lossless
+; round-trip with `load-wav`, and the sample rate reads back exactly.
+@cpu
+(defn main []
+  (save-wav "out/save_wav_roundtrip.wav"
+            (into-dynamic-array [0.5 -0.5 0.25])
+            44100.)
+  (let [reloaded (load-wav "out/save_wav_roundtrip.wav")]
+    (print (array-length reloaded))
+    (print (reloaded 0u))
+    (print (reloaded 1u))
+    (print (reloaded 2u)))
+  (print (get-wav-sample-rate "out/save_wav_roundtrip.wav")))

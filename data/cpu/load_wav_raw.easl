@@ -1,0 +1,11 @@
+; `load-wav-raw` returns raw integer samples (16-bit: [-32768, 32767]) rather
+; than normalizing to [-1, 1]. Same length as `load-wav`.
+@cpu
+(defn main []
+  (let [raw (load-wav-raw "data/audio/test_sample.wav")
+        norm (load-wav "data/audio/test_sample.wav")]
+    (print (array-length raw))
+    (print (== (array-length raw) (array-length norm)))
+    (print (raw 0u))
+    (print (raw 1u))
+    (print (raw 2u))))

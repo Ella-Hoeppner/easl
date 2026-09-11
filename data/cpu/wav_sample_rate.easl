@@ -1,0 +1,5 @@
+; `get-wav-sample-rate` reads a WAV file's rate without decoding it.
+; test_sample.wav is 44100 Hz.
+@cpu
+(defn main []
+  (print (get-wav-sample-rate "data/audio/test_sample.wav")))

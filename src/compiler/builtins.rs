@@ -2830,6 +2830,68 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
+    // Reads a WAV file's sample rate without decoding its samples — call it
+    // once at startup to size buffers / drive resampling, rather than
+    // hard-coding the file's rate. Does file I/O on every call (no caching);
+    // not for hot loops.
+    AbstractFunctionSignature {
+      name: "get-wav-sample-rate".into(),
+      arg_types: vec![AbstractType::Type(Type::String).owned()],
+      return_type: AbstractType::Type(Type::F32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("get-wav-sample-rate".into())
+          .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    // Like `load-wav`, but returns the raw integer samples over their natural
+    // range (16-bit files: [-32768, 32767]) instead of normalizing to
+    // [-1, 1]. Multi-channel files are averaged to mono, matching `load-wav`.
+    AbstractFunctionSignature {
+      name: "load-wav-raw".into(),
+      arg_types: vec![AbstractType::Type(Type::String).owned()],
+      return_type: AbstractType::AbstractArray {
+        size: AbstractArraySize::Unsized,
+        inner_type: AbstractType::Type(Type::I32).into(),
+        source_trace: SourceTrace::empty(),
+      },
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("load-wav-raw".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    // Writes mono `f32` samples (nominally [-1, 1]) to a WAV file at the given
+    // path and sample rate, as 16-bit PCM (scaled by 32768 and clamped, the
+    // inverse of `load-wav`'s normalization). Carries `FileWrite` so
+    // statement-position calls aren't pruned as dead code.
+    AbstractFunctionSignature {
+      name: "save-wav".into(),
+      arg_types: vec![
+        AbstractType::Type(Type::String).owned(),
+        AbstractType::AbstractArray {
+          size: AbstractArraySize::Unsized,
+          inner_type: AbstractType::Type(Type::F32).into(),
+          source_trace: SourceTrace::empty(),
+        }
+        .owned(),
+        AbstractType::Type(Type::F32).owned(),
+      ],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::FileWrite,
+          Effect::CPUExclusiveFunction("save-wav".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
     AbstractFunctionSignature {
       name: "save-png".into(),
       arg_types: vec![
