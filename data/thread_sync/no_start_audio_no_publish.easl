@@ -13,6 +13,5 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (= gain (+ gain 0.25))
-                    (print gain))))
-
+                  (= gain (+ gain 0.25))
+                  (print gain))))

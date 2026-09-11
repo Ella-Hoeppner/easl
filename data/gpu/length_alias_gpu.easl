@@ -11,9 +11,10 @@
 @compute
 (defn count-them []
   (= (out 0u) (f32 (length data)))
-  (= (out 1u) (f32 (length [1. 2. 3.]))))
+  (= (out 1u)
+     (f32 (length [1. 2. 3.]))))
 
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (dispatch-compute-shader count-them (vec3u 1u)))))
+                  (dispatch-compute-shader count-them (vec3u 1u)))))

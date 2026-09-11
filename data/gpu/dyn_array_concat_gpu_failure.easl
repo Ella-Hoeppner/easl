@@ -14,4 +14,4 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (dispatch-compute-shader bad (vec3u 1u)))))
+                  (dispatch-compute-shader bad (vec3u 1u)))))

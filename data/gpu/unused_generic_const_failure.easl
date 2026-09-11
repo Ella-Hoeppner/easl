@@ -13,4 +13,5 @@
         out))
 
 @cpu
-(defn main [] ())
+(defn main []
+  ())

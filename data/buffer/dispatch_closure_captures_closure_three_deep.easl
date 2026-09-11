@@ -8,10 +8,14 @@
 @cpu
 (defn main []
   (let [samples (into-dynamic-array [5. 6. 7.])
-        pick (fn [i: u32] (samples i))
+        pick (fn [i: u32]
+               (samples i))
         gain 2.
-        amp (fn [i: u32] (* gain (pick i)))]
-    (dispatch-compute-shader (fn []
-                                 (= (out 0u) (+ (amp 0u) (amp 2u))))
-                             (vec3u 1u))
+        amp (fn [i: u32]
+              (* gain (pick i)))]
+    (dispatch-compute-shader
+      (fn []
+        (= (out 0u)
+           (+ (amp 0u) (amp 2u))))
+      (vec3u 1u))
     (print (out 0u))))

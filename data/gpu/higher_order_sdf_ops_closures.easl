@@ -57,7 +57,7 @@
 (defn union [sdf-a: (Fn [vec3f] f32)
              sdf-b: (Fn [vec3f] f32)]: (Fn [vec3f] f32)
   (fn [pos: vec3f]
-      (min (sdf-a pos) (sdf-b pos))))
+    (min (sdf-a pos) (sdf-b pos))))
 
 @fragment
 (defn fragment []: vec4f
@@ -69,11 +69,11 @@
                              (min dimensions.x dimensions.y))))
         sphere-radius 0.5
         surface-normal (raymarch (union (fn [pos]
-                                            (sd-sphere (- pos (vec3f 0. 0. 2.5))
-                                                       sphere-radius))
+                                          (sd-sphere (- pos (vec3f 0. 0. 2.5))
+                                                     sphere-radius))
                                         (fn [pos]
-                                            (sd-box (- pos (vec3f 0. 0. 2.5))
-                                                    (vec3f 0.4))))
+                                          (sd-box (- pos (vec3f 0. 0. 2.5))
+                                                  (vec3f 0.4))))
                                  (Ray (vec3f 0.)
                                       (normalize (vec3f screen-pos 1.))))]
     (match surface-normal
@@ -85,8 +85,7 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (= dimensions
-                       (vec2f (window-resolution)))
-                    (= time (+ time (/ 120.)))
-                    (dispatch-render-shaders vertex fragment 3))))
-
+                  (= dimensions
+                     (vec2f (window-resolution)))
+                  (= time (+ time (/ 120.)))
+                  (dispatch-render-shaders vertex fragment 3))))

@@ -7,8 +7,9 @@
 (defn create-counter [increment: f32]: (Fn [] f32)
   (let [@var phase 0.]
     (fn []
-        (= phase (% (+ phase increment) 1.))
-        phase)))
+      (= phase
+         (% (+ phase increment) 1.))
+      phase)))
 
 @cpu
 (defn main []

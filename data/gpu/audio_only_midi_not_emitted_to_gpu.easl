@@ -19,7 +19,8 @@
 (defn main []
   (start-audio synth)
   (spawn-window (fn []
-                    (dispatch-render-shaders
-                     (fn [] (vec4f (f32 (vertex-index)) 0. 0. 1.))
-                     frag
-                     3))))
+                  (dispatch-render-shaders
+                    (fn []
+                      (vec4f (f32 (vertex-index)) 0. 0. 1.))
+                    frag
+                    3))))

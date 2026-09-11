@@ -7,11 +7,12 @@
   (let [shape (let [gain 0.5]
                 (fn [x: f32
                      f: (Fn [f32] f32)]
-                    (* gain (f x))))
+                  (* gain (f x))))
         @var phase 0.]
     (fn []
-        (= phase (% (+ phase increment) 1.))
-        (shape phase (fn [x] (* 2. x))))))
+      (= phase
+         (% (+ phase increment) 1.))
+      (shape phase (fn [x] (* 2. x))))))
 
 @cpu
 (defn main []

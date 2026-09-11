@@ -5,8 +5,7 @@
 ; body runs on the audio thread), so exactly one error is expected.
 (defn make-osc []: (Fn [] f32)
   (let [t0 (audio-time)]
-    (fn []
-        (- (audio-time) t0))))
+    (fn [] (- (audio-time) t0))))
 
 @cpu
 (defn main []

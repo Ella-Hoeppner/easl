@@ -9,9 +9,8 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (= arr (zeroed-array 4))
-                    (print arr)
-                    (dispatch-compute-shader c (vec3u 1u))
-                    (print arr)
-                    (close-window))))
-
+                  (= arr (zeroed-array 4))
+                  (print arr)
+                  (dispatch-compute-shader c (vec3u 1u))
+                  (print arr)
+                  (close-window))))

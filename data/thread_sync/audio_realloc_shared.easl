@@ -15,6 +15,6 @@
 (defn main []
   (start-audio voice)
   (spawn-window (fn []
-                    (if (> (array-length buf) 0u)
-                      (print (buf 0u))
-                      (print -1.)))))
+                  (if (> (array-length buf) 0u)
+                    (print (buf 0u))
+                    (print -1.)))))

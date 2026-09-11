@@ -8,9 +8,9 @@
 (defn main []
   (= tex
      (load-image "red_pixel.png"))
-  (dispatch-compute-shader (fn []
-                               (= value
-                                  (texture-load tex (vec2u 0u) 0u)))
-                           (vec3u 1u))
+  (dispatch-compute-shader
+    (fn []
+      (= value
+         (texture-load tex (vec2u 0u) 0u)))
+    (vec3u 1u))
   (print value))
-

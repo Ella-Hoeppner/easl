@@ -16,4 +16,3 @@
 (defn main []
   (dispatch-compute-shader f (vec3u 1u))
   (print x))
-

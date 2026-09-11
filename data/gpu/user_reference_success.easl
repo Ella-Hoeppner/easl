@@ -1,5 +1,6 @@
 @local
-(var private-float: f32 0.)
+(var private-float: f32
+     0.)
 
 @workgroup
 (var workgroup-float: f32)
@@ -13,8 +14,9 @@
 (defn increment [@var @ref x: f32]
   (+= x 1.))
 
-(defn (print-ref T) [@ref x: T]
-  (print x))
+(defn (print-ref T)
+      [@ref x: T]
+      (print x))
 
 (defn f []
   (increment private-float)

@@ -4,4 +4,3 @@
 (defn generate-identity-2 []: (Fn [vec3f] vec3f)
   (let [identity (generate-identity)]
     (fn [pos] (identity pos))))
-

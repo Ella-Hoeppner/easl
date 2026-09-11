@@ -6,6 +6,6 @@
   (let [@var buf (into-dynamic-array [0. 0. 0.])
         @var i 0u]
     (spawn-window (fn []
-                      (= (buf (% i 3u)) (f32 i))
-                      (print (buf 0u))
-                      (+= i 1u)))))
+                    (= (buf (% i 3u)) (f32 i))
+                    (print (buf 0u))
+                    (+= i 1u)))))

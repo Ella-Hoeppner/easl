@@ -7,4 +7,5 @@
 @compute
 (defn entry []
   (let [n (MidiNote 60u 1. 0.5)]
-    (= (out 0u) (+ n.velocity n.aftertouch))))
+    (= (out 0u)
+       (+ n.velocity n.aftertouch))))

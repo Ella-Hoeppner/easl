@@ -9,5 +9,7 @@
 (defn f []: f32
   (let [wrapped (Some (Flagged 3. true))]
     (match wrapped
-      (Some fl) (if fl.flag (* fl.value 2.) fl.value)
+      (Some fl) (if fl.flag
+                  (* fl.value 2.)
+                  fl.value)
       None 0.)))

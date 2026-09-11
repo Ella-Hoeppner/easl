@@ -12,20 +12,17 @@
 ; by v, counter two by 2v, so the sums are 3v 6v 9v 12v.
 (defn make-inner-c [v: f32]: (Fn [] f32)
   (let [@var c 0.]
-    (fn []
-        (= c (+ c v))
-        c)))
+    (fn [] (= c (+ c v)) c)))
 
 (defn make-inner-bc [v: f32]: (Fn [] f32)
   (let [@var b_c 0.]
     (fn []
-        (= b_c (+ b_c (* 2. v)))
-        b_c)))
+      (= b_c (+ b_c (* 2. v)))
+      b_c)))
 
 @cpu
 (defn main []
   (let [a_b (make-inner-c 0.0625)
         a (make-inner-bc 0.0625)]
-    (start-audio (fn []
-                     (+ (a_b) (a)))))
+    (start-audio (fn [] (+ (a_b) (a)))))
   (spawn-window (fn [] ())))

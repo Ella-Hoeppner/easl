@@ -38,9 +38,9 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (draw-line (vec2f 0.)
-                               (-> frame-index
-                                   f32
-                                   (* 0.01)
-                                   (vec2f (cos <>) (sin <>))))
-                    (+= frame-index 1))))
+                  (draw-line (vec2f 0.)
+                             (-> frame-index
+                                 f32
+                                 (* 0.01)
+                                 (vec2f (cos <>) (sin <>))))
+                  (+= frame-index 1))))

@@ -6,7 +6,6 @@
 ; prints the value. If the end-of-frame path respects program order, the
 ; compute sees the freshly-rendered red pixel; if it runs compute before
 ; renders, the compute reads the still-blank texture and this prints zeros.
-
 @handle
 (var tex: (Texture2D f32))
 
@@ -26,20 +25,22 @@
 
 @cpu
 (defn main []
-  (= tex (blank-texture (vec2u 2u)))
+  (= tex
+     (blank-texture (vec2u 2u)))
   (= frame 0u)
-  (spawn-window
-    (fn []
-      (+= frame 1u)
-      (when (== frame 2u)
-        (print value)
-        (close-window))
-      (set-render-target tex)
-      (dispatch-render-shaders fullscreen-triangle
-                               (fn [] (vec4f 1. 0. 0. 1.))
-                               3)
-      (clear-render-target)
-      (dispatch-compute-shader (fn []
-                                   (= value
-                                      (texture-load tex (vec2u 1u) 0u)))
-                               (vec3u 1u)))))
+  (spawn-window (fn []
+                  (+= frame 1u)
+                  (when (== frame 2u)
+                    (print value)
+                    (close-window))
+                  (set-render-target tex)
+                  (dispatch-render-shaders
+                    fullscreen-triangle
+                    (fn [] (vec4f 1. 0. 0. 1.))
+                    3)
+                  (clear-render-target)
+                  (dispatch-compute-shader
+                    (fn []
+                      (= value
+                         (texture-load tex (vec2u 1u) 0u)))
+                    (vec3u 1u)))))

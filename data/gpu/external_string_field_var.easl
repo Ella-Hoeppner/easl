@@ -2,7 +2,8 @@
   label: String
   gain: f32)
 
-@external (var w: Labeled)
+@external
+(var w: Labeled)
 
 @cpu
 (defn main []

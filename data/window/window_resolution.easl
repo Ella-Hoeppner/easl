@@ -17,12 +17,12 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (print (window-resolution))
-                    (= color
-                       (-> (window-resolution)
-                           (* (.x <>) (.y <>))
-                           f32
-                           (* 0.0000001)
-                           vec3f
-                           (vec4f 1.)))
-                    (dispatch-render-shaders v f 3))))
+                  (print (window-resolution))
+                  (= color
+                     (-> (window-resolution)
+                         (* (.x <>) (.y <>))
+                         f32
+                         (* 0.0000001)
+                         vec3f
+                         (vec4f 1.)))
+                  (dispatch-render-shaders v f 3))))

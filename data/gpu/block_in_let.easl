@@ -1,6 +1,5 @@
 (defn f []: u32
   (let [a 1u
         @var b 2u
-        c (do (+= b 1u)
-                 3u)]
+        c (do (+= b 1u) 3u)]
     (+ a b c)))

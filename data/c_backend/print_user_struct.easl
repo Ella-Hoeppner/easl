@@ -5,4 +5,3 @@
 (defn main []: i32
   (print (MyStruct (vec2f 5. 1.) 4))
   0)
-

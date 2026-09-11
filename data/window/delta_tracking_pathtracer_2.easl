@@ -71,43 +71,43 @@
              freq-range: vec2f
              feedback: vec2f]: (Fn [vec3f] vec3f)
   (fn [pos]
-      (set-rand-seed (vec2f 0.5))
-      (let [@var seed-pos pos
-            @var off-sum (vec3f 0.)
-            @var restricted-off-sum (vec3f 0.)
-            height-restriction-range (vec2f 0.7250441 0.8507471)]
-        (for [i 0u (< i n) (+= i 1)]
-          (let [p (/ (f32 i) (- (f32 n) 1.))
-                alignment (-> (vec3f (rand) (rand) (rand))
-                              uni->bi
-                              normalize)
-                offset (-> (vec3f (rand) (rand) (rand))
-                           uni->bi
-                           normalize)
-                amp (mix-exp (.x amp-range)
-                             (.y amp-range)
-                             p)
-                freq (mix-exp (.x freq-range)
-                              (.y freq-range)
-                              p)
-                phase (* TAU (rand))
-                feedback (mix (.x feedback) (.y feedback) p)
-                off (-> seed-pos
-                        (dot alignment)
-                        (* freq)
-                        cos
-                        (* offset)
-                        (* amp))]
-            (+= off-sum off)
-            (+= restricted-off-sum
-                (* off
-                   (smoothstep (.y height-restriction-range)
-                               (.x height-restriction-range)
-                               p)))
-            (= seed-pos
-               (+ seed-pos (* off feedback)))))
-        (vec3f (.xy off-sum)
-               (.z restricted-off-sum)))))
+    (set-rand-seed (vec2f 0.5))
+    (let [@var seed-pos pos
+          @var off-sum (vec3f 0.)
+          @var restricted-off-sum (vec3f 0.)
+          height-restriction-range (vec2f 0.7250441 0.8507471)]
+      (for [i 0u (< i n) (+= i 1)]
+        (let [p (/ (f32 i) (- (f32 n) 1.))
+              alignment (-> (vec3f (rand) (rand) (rand))
+                            uni->bi
+                            normalize)
+              offset (-> (vec3f (rand) (rand) (rand))
+                         uni->bi
+                         normalize)
+              amp (mix-exp (.x amp-range)
+                           (.y amp-range)
+                           p)
+              freq (mix-exp (.x freq-range)
+                            (.y freq-range)
+                            p)
+              phase (* TAU (rand))
+              feedback (mix (.x feedback) (.y feedback) p)
+              off (-> seed-pos
+                      (dot alignment)
+                      (* freq)
+                      cos
+                      (* offset)
+                      (* amp))]
+          (+= off-sum off)
+          (+= restricted-off-sum
+              (* off
+                 (smoothstep (.y height-restriction-range)
+                             (.x height-restriction-range)
+                             p)))
+          (= seed-pos
+             (+ seed-pos (* off feedback)))))
+      (vec3f (.xy off-sum)
+             (.z restricted-off-sum)))))
 
 (defn sd-line [pos: vec3f
                a: vec3f
@@ -179,9 +179,9 @@
         stretch-along (fn [p: vec3f
                            dir: vec3f
                            factor: f32]
-                          (let [proj (* dir (dot p dir))
-                                rej (- p proj)]
-                            (+ rej (/ proj factor))))
+                        (let [proj (* dir (dot p dir))
+                              rej (- p proj)]
+                          (+ rej (/ proj factor))))
         surface-shape-big-distortion ((noise 4
                                              (vec2f 0.1 0.025)
                                              (vec2f 2.6 15.)
@@ -319,23 +319,23 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (let [new-resolution (/ (window-resolution)
-                                            (vec2u resolution-division))]
-                      (= screenspace-scale
-                         (/ (vec2f resolution)
-                            (f32 (min resolution.x resolution.y))))
-                      (when (! (and (== resolution.x new-resolution.x)
-                                    (== resolution.y new-resolution.y)))
-                        (= resolution new-resolution)
-                        (= accumulated-colors
-                           (zeroed-array (* resolution.x resolution.y)))
-                        (= frame-index 0u)
-                        (print new-resolution)))
-                    (+= frame-index 1u)
-                    (dispatch-compute-shader c
-                                             (vec3u (u32 (ceil (/ (f32 (* resolution.x resolution.y))
-                                                                  256)))
-                                                    1u
-                                                    1u))
-                    (dispatch-render-shaders v f 3))))
-
+                  (let [new-resolution (/ (window-resolution)
+                                          (vec2u resolution-division))]
+                    (= screenspace-scale
+                       (/ (vec2f resolution)
+                          (f32 (min resolution.x resolution.y))))
+                    (when (! (and (== resolution.x new-resolution.x)
+                                  (== resolution.y new-resolution.y)))
+                      (= resolution new-resolution)
+                      (= accumulated-colors
+                         (zeroed-array (* resolution.x resolution.y)))
+                      (= frame-index 0u)
+                      (print new-resolution)))
+                  (+= frame-index 1u)
+                  (dispatch-compute-shader
+                    c
+                    (vec3u (u32 (ceil (/ (f32 (* resolution.x resolution.y))
+                                         256)))
+                           1u
+                           1u))
+                  (dispatch-render-shaders v f 3))))

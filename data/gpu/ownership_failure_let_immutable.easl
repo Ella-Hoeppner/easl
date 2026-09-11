@@ -1,5 +1,6 @@
-(defn (print-mut-ref T) [@var @ref x: T]
-  (print x))
+(defn (print-mut-ref T)
+      [@var @ref x: T]
+      (print x))
 
 (defn f []
   (let [x 3.]

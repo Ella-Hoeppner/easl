@@ -10,8 +10,9 @@
 @cpu
 (defn main []
   (let [weights (into-dynamic-array [1. 2. 3.])]
-    (dispatch-compute-shader (fn []
-                                 (= (out 0u)
-                                    (f32 (array-length weights))))
-                             (vec3u 1u))
+    (dispatch-compute-shader
+      (fn []
+        (= (out 0u)
+           (f32 (array-length weights))))
+      (vec3u 1u))
     (print (out 0u))))

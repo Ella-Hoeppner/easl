@@ -7,19 +7,18 @@
 
 @cpu
 (defn main []
-  (spawn-window
-   (fn []
-       (let [scale 2.
-             helper (fn [x: f32
-                         f: (Fn [f32] f32)]
-                        (* scale (f x)))]
-         (dispatch-render-shaders
-          (fn []
-              (let [offset 3.]
-                (vec4f (helper (f32 (vertex-index))
-                               (fn [x] (+ x offset)))
-                       0.
-                       0.
-                       1.)))
-          frag
-          3)))))
+  (spawn-window (fn []
+                  (let [scale 2.
+                        helper (fn [x: f32
+                                    f: (Fn [f32] f32)]
+                                 (* scale (f x)))]
+                    (dispatch-render-shaders
+                      (fn []
+                        (let [offset 3.]
+                          (vec4f (helper (f32 (vertex-index))
+                                         (fn [x] (+ x offset)))
+                                 0.
+                                 0.
+                                 1.)))
+                      frag
+                      3)))))

@@ -23,7 +23,6 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (start-audio f)
-                    (dispatch-compute-shader copy-level (vec3u 1u))
-                    (print (out 0u)))))
-
+                  (start-audio f)
+                  (dispatch-compute-shader copy-level (vec3u 1u))
+                  (print (out 0u)))))

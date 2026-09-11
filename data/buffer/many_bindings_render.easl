@@ -3,7 +3,6 @@
 ; reserves one for the buffer-sizes table); storage-write bindings that no
 ; vertex shader uses must not count against that budget, since read-write
 ; storage isn't vertex-accessible in the first place.
-
 @[uniform 0 0]
 (var frame: u32)
 
@@ -52,7 +51,6 @@
 @[storage-write 0 15]
 (var buf-15: [4: f32])
 
-
 @vertex
 (defn vert [@{builtin vertex-index} i: u32]: @{builtin position} vec4f
   (vec4f (match i
@@ -74,9 +72,9 @@
 (defn main []
   (= frame 0u)
   (spawn-window (fn []
-                    (+= frame 1u)
-                    (dispatch-compute-shader bump (vec3u 1u 1u 1u))
-                    (dispatch-render-shaders vert frag 3)
-                    (when (== frame 2u)
-                      (print (buf-1 0u))
-                      (close-window)))))
+                  (+= frame 1u)
+                  (dispatch-compute-shader bump (vec3u 1u 1u 1u))
+                  (dispatch-render-shaders vert frag 3)
+                  (when (== frame 2u)
+                    (print (buf-1 0u))
+                    (close-window)))))

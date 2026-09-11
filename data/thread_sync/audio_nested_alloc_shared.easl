@@ -7,10 +7,12 @@
 (defn make-voice []: (Fn [] f32)
   (let [@var bank: [[f32]] ~[]]
     (fn []
-        (when (== (array-length bank) 0u)
-          (= bank (into-dynamic-array [(into-dynamic-array [0.125 0.25])
-                                       (into-dynamic-array [0.5])])))
-        ((bank 0u) 1u))))
+      (when (== (array-length bank) 0u)
+        (= bank
+           (into-dynamic-array
+             [(into-dynamic-array [0.125 0.25])
+              (into-dynamic-array [0.5])])))
+      ((bank 0u) 1u))))
 
 @local
 (var frame-count: u32)
@@ -18,5 +20,4 @@
 @cpu
 (defn main []
   (start-audio (make-voice))
-  (spawn-window (fn []
-                    (+= frame-count 1u))))
+  (spawn-window (fn [] (+= frame-count 1u))))

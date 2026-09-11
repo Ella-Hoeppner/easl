@@ -17,5 +17,4 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (run-purefrag-shader my-fragment))))
-
+                  (run-purefrag-shader my-fragment))))

@@ -6,5 +6,4 @@
 
 @cpu
 (defn main []
-  (spawn-window (fn []
-                    (print params))))
+  (spawn-window (fn [] (print params))))

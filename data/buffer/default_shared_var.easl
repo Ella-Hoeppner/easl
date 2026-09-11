@@ -6,7 +6,8 @@
 @{workgroup-size 1}
 @compute
 (defn run []
-  (= acc (+ acc (vec4f 1. 2. 3. 4.))))
+  (= acc
+     (+ acc (vec4f 1. 2. 3. 4.))))
 
 @cpu
 (defn main []

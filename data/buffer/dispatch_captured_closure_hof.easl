@@ -14,9 +14,10 @@
 (defn main []
   (let [scale 2.
         helper (fn [x: f32]
-                   (* scale x))]
-    (dispatch-compute-shader (fn []
-                                 (= (out 0u)
-                                    (apply-twice helper 3.)))
-                             (vec3u 1u))
+                 (* scale x))]
+    (dispatch-compute-shader
+      (fn []
+        (= (out 0u)
+           (apply-twice helper 3.)))
+      (vec3u 1u))
     (print (out 0u))))

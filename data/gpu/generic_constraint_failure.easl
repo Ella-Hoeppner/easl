@@ -8,4 +8,4 @@
         two))
 
 (defn make-two-bools [a: bool]: (TwoOf bool)
-    (make-two-of a))
+  (make-two-of a))

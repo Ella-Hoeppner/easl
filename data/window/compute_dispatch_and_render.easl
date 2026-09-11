@@ -31,6 +31,6 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (+= frame-index 1u)
-                    (dispatch-compute-shader c (vec3u 1u 1u 1u))
-                    (dispatch-render-shaders v f 3))))
+                  (+= frame-index 1u)
+                  (dispatch-compute-shader c (vec3u 1u 1u 1u))
+                  (dispatch-render-shaders v f 3))))

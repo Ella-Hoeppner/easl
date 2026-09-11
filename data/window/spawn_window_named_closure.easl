@@ -4,5 +4,6 @@
         f (fn []
             (+= count 1.)
             (print count)
-            (when (>= count 3.) (close-window)))]
+            (when (>= count 3.)
+              (close-window)))]
     (spawn-window f)))

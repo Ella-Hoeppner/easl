@@ -9,7 +9,6 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (start-audio f)
-                    (= offset
-                       (+ offset (vec2f 0.25 0.5))))))
-
+                  (start-audio f)
+                  (= offset
+                     (+ offset (vec2f 0.25 0.5))))))

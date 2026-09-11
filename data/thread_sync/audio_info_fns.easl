@@ -12,5 +12,5 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (start-audio f)
-                    (print (sample-rate)))))
+                  (start-audio f)
+                  (print (sample-rate)))))

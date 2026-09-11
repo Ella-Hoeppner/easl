@@ -9,5 +9,4 @@
 (defn main []
   (let [player (make-player)]
     (start-audio player)
-    (spawn-window (fn []
-                      (+= frame-count 1u)))))
+    (spawn-window (fn [] (+= frame-count 1u)))))

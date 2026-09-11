@@ -1,4 +1,7 @@
-@external @local (var gain: f32 0.)
+@external
+@local
+(var gain: f32
+     0.)
 
 @cpu
 (defn main []

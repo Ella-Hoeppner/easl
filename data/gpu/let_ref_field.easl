@@ -36,4 +36,3 @@
 (defn f []
   (let [@var state (empty-program-state (-> (position) .xy (/ 500.)))]
     (apply Abs state)))
-

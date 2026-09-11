@@ -11,8 +11,10 @@
   (let [@var brightest 0.]
     (for [i (length (down-midi-notes))]
       (let [n ((down-midi-notes) i)]
-        (when (> (+ n.velocity n.aftertouch) brightest)
-          (= brightest (+ n.velocity n.aftertouch)))))
+        (when (> (+ n.velocity n.aftertouch)
+                 brightest)
+          (= brightest
+             (+ n.velocity n.aftertouch)))))
     brightest))
 
 @compute
@@ -25,4 +27,4 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (dispatch-compute-shader probe (vec3u 1u)))))
+                  (dispatch-compute-shader probe (vec3u 1u)))))

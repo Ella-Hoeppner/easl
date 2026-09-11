@@ -24,11 +24,12 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (+= frame-index 1)
-                    (let [t (f32 frame-index)]
-                      (= color
-                         (into-dynamic-array [(vec4f (* t 0.001))
-                                              (vec4f (* t 0.0017))
-                                              (vec4f (* t 0.0013))
-                                              (vec4f 0.)])))
-                    (dispatch-render-shaders trivial-vertex my-fragment 3))))
+                  (+= frame-index 1)
+                  (let [t (f32 frame-index)]
+                    (= color
+                       (into-dynamic-array
+                         [(vec4f (* t 0.001))
+                          (vec4f (* t 0.0017))
+                          (vec4f (* t 0.0013))
+                          (vec4f 0.)])))
+                  (dispatch-render-shaders trivial-vertex my-fragment 3))))

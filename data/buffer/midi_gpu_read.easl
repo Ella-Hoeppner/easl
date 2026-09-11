@@ -11,14 +11,16 @@
   (= (out 0u) (midi-cc 3u))
   (= (out 1u) (midi-aftertouch))
   (= (out 2u) (midi-pitch-bend))
-  (= (out 3u) (f32 (length (down-midi-notes))))
+  (= (out 3u)
+     (f32 (length (down-midi-notes))))
   (let [n ((down-midi-notes) 1u)]
     (= (out 4u) (f32 n.note))
-    (= (out 5u) (+ n.velocity n.aftertouch))))
+    (= (out 5u)
+       (+ n.velocity n.aftertouch))))
 
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (dispatch-compute-shader probe (vec3u 1u))
-                    (print out)
-                    (close-window))))
+                  (dispatch-compute-shader probe (vec3u 1u))
+                  (print out)
+                  (close-window))))

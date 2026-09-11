@@ -9,4 +9,3 @@
 (defn main []: u32
   (let [inc (partial add 1)]
     (inc 2)))
-

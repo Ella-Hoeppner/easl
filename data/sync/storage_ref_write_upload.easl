@@ -19,7 +19,7 @@
 (defn main []
   (= wave (zeroed-array 4))
   (spawn-window (fn []
-                    (poke wave)
-                    (dispatch-compute-shader read-it (vec3u 1u))
-                    (print (out 0u))
-                    (close-window))))
+                  (poke wave)
+                  (dispatch-compute-shader read-it (vec3u 1u))
+                  (print (out 0u))
+                  (close-window))))

@@ -12,16 +12,15 @@
 
 @cpu
 (defn main []
-  (spawn-window
-   (fn []
-       (let [scale 2.
-             helper (fn [x: f32]
-                        (* scale x))]
-         (dispatch-render-shaders
-          (fn []
-              (vec4f (apply-twice helper (f32 (vertex-index)))
-                     0.
-                     0.
-                     1.))
-          frag
-          3)))))
+  (spawn-window (fn []
+                  (let [scale 2.
+                        helper (fn [x: f32]
+                                 (* scale x))]
+                    (dispatch-render-shaders
+                      (fn []
+                        (vec4f (apply-twice helper (f32 (vertex-index)))
+                               0.
+                               0.
+                               1.))
+                      frag
+                      3)))))

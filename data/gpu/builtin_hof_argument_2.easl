@@ -7,4 +7,3 @@
 
 (defn b []: f32
   (do-twice sqrt 5.))
-

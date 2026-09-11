@@ -7,7 +7,11 @@
 
 @compute
 (defn probe []
-  (+= (out 0u) (+ (midi-cc 1u) (midi-aftertouch) (midi-pitch-bend) 1.)))
+  (+= (out 0u)
+      (+ (midi-cc 1u)
+         (midi-aftertouch)
+         (midi-pitch-bend)
+         1.)))
 
 @cpu
 (defn main []

@@ -4,4 +4,3 @@
 (defn f []: u32
   (let [x (arr 0u)]
     (atomic-load x)))
-

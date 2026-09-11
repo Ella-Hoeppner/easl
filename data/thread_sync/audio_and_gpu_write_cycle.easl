@@ -20,6 +20,5 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (start-audio f)
-                    (dispatch-compute-shader bump (vec3u 1u)))))
-
+                  (start-audio f)
+                  (dispatch-compute-shader bump (vec3u 1u)))))

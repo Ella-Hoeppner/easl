@@ -5,7 +5,8 @@
 ; function passes an owned local by reference and returns the result,
 ; which is fine at its level.
 (defn sampler [@ref wavetable: [f32]]: (Fn [u32] f32)
-  (fn [i: u32] (wavetable i)))
+  (fn [i: u32]
+    (wavetable i)))
 
 (defn make-vocal-sampler []: (Fn [u32] f32)
   (let [vocals (into-dynamic-array [1. 2. 3.])]

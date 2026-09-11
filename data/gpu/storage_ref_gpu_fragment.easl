@@ -33,7 +33,10 @@
 
 @vertex
 (defn vert [@{builtin vertex-index} idx: u32]: VertexOutput
-  (VertexOutput (vec4f (sample-at wave-a idx) 0. 0. 1.)))
+  (VertexOutput (vec4f (sample-at wave-a idx)
+                       0.
+                       0.
+                       1.)))
 
 @fragment
 (defn frag [in: VertexOutput]: @{location 0} vec4f

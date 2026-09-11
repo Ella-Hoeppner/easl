@@ -68,9 +68,7 @@
 (defn compute-max-saturation [a: f32
                               b: f32]: f32
   ;; Select coefficients based on which RGB component hits zero first
-
   ;; Using vec4f to pack: (k0, k1, k2, k3) and (k4, wl, wm, ws)
-
   (let [cond-red (> (+ (* -1.88170328 a)
                        (* -0.80936493 b))
                     1.0)
@@ -114,14 +112,12 @@
         wm coeffs2.z
         ws coeffs2.w
         ;; Approximate max saturation using polynomial
-
         S (+ k0
              (* k1 a)
              (* k2 b)
              (* k3 (* a a))
              (* k4 (* a b)))
         ;; One step of Halley's method
-
         k_l (+ (* 0.3963377774 a)
                (* 0.2158037573 b))
         k_m (+ (* -0.1055613458 a)
@@ -171,12 +167,10 @@
              (* (- cusp.x L0) C1))
           0.0)
     ;; Lower half
-
     (/ (* cusp.y L0)
        (+ (* C1 cusp.x)
           (* cusp.y (- L0 L1))))
     ;; Upper half
-
     (let [t_initial (/ (* cusp.y (- L0 1.0))
                        (+ (* C1 (- cusp.x 1.0))
                           (* cusp.y (- L0 L1))))
@@ -192,7 +186,6 @@
           m_dt (+ dL (* dC k_m))
           s_dt (+ dL (* dC k_s))
           ;; Halley iteration
-
           L (+ (* L0 (- 1.0 t_initial))
                (* t_initial L1))
           C (* t_initial C1)
@@ -288,9 +281,10 @@
           t (find-gamut-intersection a_ b_ L C L0)
           L_clipped (+ (* L0 (- 1.0 t)) (* t L))
           C_clipped (* t C)]
-      (oklab-to-linear-srgb (vec3f L_clipped
-                                   (* C_clipped a_)
-                                   (* C_clipped b_))))))
+      (oklab-to-linear-srgb
+        (vec3f L_clipped
+               (* C_clipped a_)
+               (* C_clipped b_))))))
 
 (defn gamut-clip-project-to-0-5 [rgb: vec3f]: vec3f
   (if (and (< rgb.x 1.0)
@@ -312,9 +306,10 @@
           t (find-gamut-intersection a_ b_ L C L0)
           L_clipped (+ (* L0 (- 1.0 t)) (* t L))
           C_clipped (* t C)]
-      (oklab-to-linear-srgb (vec3f L_clipped
-                                   (* C_clipped a_)
-                                   (* C_clipped b_))))))
+      (oklab-to-linear-srgb
+        (vec3f L_clipped
+               (* C_clipped a_)
+               (* C_clipped b_))))))
 
 (defn gamut-clip-project-to-L-cusp [rgb: vec3f]: vec3f
   (if (and (< rgb.x 1.0)
@@ -337,9 +332,10 @@
           t (find-gamut-intersection a_ b_ L C L0)
           L_clipped (+ (* L0 (- 1.0 t)) (* t L))
           C_clipped (* t C)]
-      (oklab-to-linear-srgb (vec3f L_clipped
-                                   (* C_clipped a_)
-                                   (* C_clipped b_))))))
+      (oklab-to-linear-srgb
+        (vec3f L_clipped
+               (* C_clipped a_)
+               (* C_clipped b_))))))
 
 (defn gamut-clip-adaptive-L0-0-5 [rgb: vec3f
                                   alpha: f32]: vec3f
@@ -368,9 +364,10 @@
           t (find-gamut-intersection a_ b_ L C L0)
           L_clipped (+ (* L0 (- 1.0 t)) (* t L))
           C_clipped (* t C)]
-      (oklab-to-linear-srgb (vec3f L_clipped
-                                   (* C_clipped a_)
-                                   (* C_clipped b_))))))
+      (oklab-to-linear-srgb
+        (vec3f L_clipped
+               (* C_clipped a_)
+               (* C_clipped b_))))))
 
 (defn gamut-clip-adaptive-L0-L-cusp [rgb: vec3f
                                      alpha: f32]: vec3f
@@ -407,9 +404,10 @@
           t (find-gamut-intersection a_ b_ L C L0)
           L_clipped (+ (* L0 (- 1.0 t)) (* t L))
           C_clipped (* t C)]
-      (oklab-to-linear-srgb (vec3f L_clipped
-                                   (* C_clipped a_)
-                                   (* C_clipped b_))))))
+      (oklab-to-linear-srgb
+        (vec3f L_clipped
+               (* C_clipped a_)
+               (* C_clipped b_))))))
 
 (defn toe [x: f32]: f32
   (let [k_1 0.206
@@ -527,9 +525,10 @@
                  (srgb-transfer-function rgb.z)))))))
 
 (defn srgb-to-okhsl [rgb: vec3f]: vec3f
-  (let [lab (linear-srgb-to-oklab (vec3f (srgb-transfer-function-inv rgb.x)
-                                         (srgb-transfer-function-inv rgb.y)
-                                         (srgb-transfer-function-inv rgb.z)))
+  (let [lab (linear-srgb-to-oklab
+              (vec3f (srgb-transfer-function-inv rgb.x)
+                     (srgb-transfer-function-inv rgb.y)
+                     (srgb-transfer-function-inv rgb.z)))
         C (sqrt (+ (* lab.y lab.y)
                    (* lab.z lab.z)))
         a_ (/ lab.y C)
@@ -593,17 +592,19 @@
                               (max rgb_scale.z 0.0))))
         L_final (* L_new scale_L)
         C_final (* C_new scale_L)
-        rgb (oklab-to-linear-srgb (vec3f L_final
-                                         (* C_final a_)
-                                         (* C_final b_)))]
+        rgb (oklab-to-linear-srgb
+              (vec3f L_final
+                     (* C_final a_)
+                     (* C_final b_)))]
     (vec3f (srgb-transfer-function rgb.x)
            (srgb-transfer-function rgb.y)
            (srgb-transfer-function rgb.z))))
 
 (defn srgb-to-okhsv [rgb: vec3f]: vec3f
-  (let [lab (linear-srgb-to-oklab (vec3f (srgb-transfer-function-inv rgb.x)
-                                         (srgb-transfer-function-inv rgb.y)
-                                         (srgb-transfer-function-inv rgb.z)))
+  (let [lab (linear-srgb-to-oklab
+              (vec3f (srgb-transfer-function-inv rgb.x)
+                     (srgb-transfer-function-inv rgb.y)
+                     (srgb-transfer-function-inv rgb.z)))
         C (sqrt (+ (* lab.y lab.y)
                    (* lab.z lab.z)))
         a_ (/ lab.y C)

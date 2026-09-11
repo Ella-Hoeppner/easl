@@ -1,5 +1,6 @@
 @cpu
 (defn main []
   (let [x 1.]
-    (spawn-window (fn [] (print x) (close-window)))))
-
+    (spawn-window (fn []
+                    (print x)
+                    (close-window)))))

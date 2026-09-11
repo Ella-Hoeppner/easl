@@ -12,4 +12,3 @@
   (let [my-arr: [3: u32] [0u 1u 2u]]
     (map (fn [x] (* 2. (f32 x)))
          my-arr)))
-

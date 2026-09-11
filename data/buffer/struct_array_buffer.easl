@@ -27,9 +27,8 @@
 (defn main []
   (= paths (zeroed-array 10))
   (spawn-window (fn []
-                    (dispatch-render-shaders path-vertex path-frag 6)
-                    (dispatch-compute-shader progress-paths (vec3u 1u))
-                    (when (> frame-index 0u)
-                      (close-window))
-                    (+= frame-index 1u))))
-
+                  (dispatch-render-shaders path-vertex path-frag 6)
+                  (dispatch-compute-shader progress-paths (vec3u 1u))
+                  (when (> frame-index 0u)
+                    (close-window))
+                  (+= frame-index 1u))))

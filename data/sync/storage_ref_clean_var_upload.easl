@@ -21,7 +21,7 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (poke x)
-                    (dispatch-compute-shader read-it (vec3u 1u))
-                    (print (out 0u))
-                    (close-window))))
+                  (poke x)
+                  (dispatch-compute-shader read-it (vec3u 1u))
+                  (print (out 0u))
+                  (close-window))))

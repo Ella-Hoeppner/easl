@@ -14,4 +14,4 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (dispatch-compute-shader probe (vec3u 1u)))))
+                  (dispatch-compute-shader probe (vec3u 1u)))))

@@ -60,13 +60,12 @@
 (defn main []
   (let [@var my-wave: [f32] (zeroed-array 4)]
     (for [i (array-length my-wave)]
-      (= (my-wave i)
-         (/ (f32 i) 4.)))
+      (= (my-wave i) (/ (f32 i) 4.)))
     (let [@var grains: [Grain] (zeroed-array 1)]
       (= (grains 0u)
          (Grain 0. 0.5 1. 0.))
       (start-audio (fn []
-                       (= grains
-                          (update-grainbank grains))
-                       (sample-grainbank grains my-wave))))
+                     (= grains
+                        (update-grainbank grains))
+                     (sample-grainbank grains my-wave))))
     (spawn-window (fn [] ()))))

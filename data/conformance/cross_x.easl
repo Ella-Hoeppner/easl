@@ -1,3 +1,4 @@
 (defn f []: f32
-  (let [v (cross (vec3f 0. 1. 0.) (vec3f 0. 0. 1.))]
+  (let [v (cross (vec3f 0. 1. 0.)
+                 (vec3f 0. 0. 1.))]
     (.x v)))

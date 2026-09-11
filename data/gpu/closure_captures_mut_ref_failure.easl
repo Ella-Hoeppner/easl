@@ -5,7 +5,7 @@
 ; and dropped the mutation).
 (defn sneaky-add [@var @ref out: [f32]]: f32
   (let [add (fn [v: f32]
-                (= (out 0u) v))]
+              (= (out 0u) v))]
     (add 5.)
     0.))
 

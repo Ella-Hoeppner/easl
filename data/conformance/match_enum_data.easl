@@ -1,6 +1,9 @@
-(enum Maybe Nothing (Just f32))
+(enum Maybe
+  Nothing
+  (Just f32))
 
-(defn unwrap-or [o: Maybe default-value: f32]: f32
+(defn unwrap-or [o: Maybe
+                 default-value: f32]: f32
   (match o
     (Just x) x
     Nothing default-value))

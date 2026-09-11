@@ -12,11 +12,11 @@
 (defn make-osc [wt: Wavetable]: (Fn [] f32)
   (let [@var idx 0u]
     (fn []
-        (let [s (if (< idx (array-length wt.samples))
-                  (wt.samples idx)
-                  0.)]
-          (= idx (+ idx 1u))
-          (* s wt.rate)))))
+      (let [s (if (< idx (array-length wt.samples))
+                (wt.samples idx)
+                0.)]
+        (= idx (+ idx 1u))
+        (* s wt.rate)))))
 
 @cpu
 (defn main []

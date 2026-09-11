@@ -10,9 +10,10 @@
   (let [weights (into-dynamic-array [1. 2. 3.])
         offsets (into-dynamic-array [10. 20.])
         scale 2.]
-    (dispatch-compute-shader (fn []
-                                 (= (out 0u)
-                                    (* scale
-                                       (+ (weights 1u) (offsets 0u)))))
-                             (vec3u 1u))
+    (dispatch-compute-shader
+      (fn []
+        (= (out 0u)
+           (* scale
+              (+ (weights 1u) (offsets 0u)))))
+      (vec3u 1u))
     (print (out 0u))))

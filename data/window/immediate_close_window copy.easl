@@ -1,3 +1,5 @@
 @cpu
 (defn main []
-  (spawn-window (fn [] (print 0u) (close-window))))
+  (spawn-window (fn []
+                  (print 0u)
+                  (close-window))))

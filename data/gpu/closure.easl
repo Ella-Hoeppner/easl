@@ -4,5 +4,5 @@
 (defn main []: f32
   (let [local-factor 2.
         multiply-by-factors (fn [x]
-                                (* x local-factor global-factor))]
+                              (* x local-factor global-factor))]
     (multiply-by-factors 5.)))

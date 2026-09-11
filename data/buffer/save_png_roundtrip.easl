@@ -2,7 +2,6 @@
 ; red test pixel, save it out, load the saved file into a second texture,
 ; and read the texel back through the GPU. No readback is involved — the
 ; CPU copy is the newest, so the save uses it directly.
-
 @handle
 (var tex: (Texture2D f32))
 
@@ -16,11 +15,13 @@
 (defn main []
   (= tex
      (load-image "red_pixel.png"))
-  (save-png tex "../../out/buffer/save_png_roundtrip.png")
+  (save-png tex
+            "../../out/buffer/save_png_roundtrip.png")
   (= tex2
      (load-image "../../out/buffer/save_png_roundtrip.png"))
-  (dispatch-compute-shader (fn []
-                               (= value
-                                  (texture-load tex2 (vec2u 0u) 0u)))
-                           (vec3u 1u))
+  (dispatch-compute-shader
+    (fn []
+      (= value
+         (texture-load tex2 (vec2u 0u) 0u)))
+    (vec3u 1u))
   (print value))

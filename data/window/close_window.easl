@@ -24,8 +24,8 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (print frame-index)
-                    (dispatch-render-shaders v f 3)
-                    (+= frame-index 1)
-                    (when (> frame-index total-frame-count)
-                      (close-window)))))
+                  (print frame-index)
+                  (dispatch-render-shaders v f 3)
+                  (+= frame-index 1)
+                  (when (> frame-index total-frame-count)
+                    (close-window)))))

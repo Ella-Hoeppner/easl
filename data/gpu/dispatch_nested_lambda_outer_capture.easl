@@ -13,16 +13,15 @@
 
 @cpu
 (defn main []
-  (spawn-window
-   (fn []
-       (let [outer 2.]
-         (dispatch-render-shaders
-          (fn []
-              (let [local (f32 (vertex-index))]
-                (vec4f (apply-f (fn [x] (* outer (+ local x)))
-                                1.)
-                       0.
-                       0.
-                       1.)))
-          frag
-          3)))))
+  (spawn-window (fn []
+                  (let [outer 2.]
+                    (dispatch-render-shaders
+                      (fn []
+                        (let [local (f32 (vertex-index))]
+                          (vec4f (apply-f (fn [x] (* outer (+ local x)))
+                                          1.)
+                                 0.
+                                 0.
+                                 1.)))
+                      frag
+                      3)))))

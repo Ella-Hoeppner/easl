@@ -4,4 +4,3 @@
         inc-x-2 (fn [] (+= x 1u))]
     (inc-x)
     (inc-x-2)))
-

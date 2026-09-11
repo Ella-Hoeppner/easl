@@ -5,5 +5,5 @@
 (defn main []
   (= frame-index 0u)
   (spawn-window (fn []
-                    (= frame-index (+ frame-index 1))
-                    (print frame-index))))
+                  (= frame-index (+ frame-index 1))
+                  (print frame-index))))

@@ -17,7 +17,8 @@
 
 @cpu
 (defn main []
-  (= sample (load-named "test_sample.wav"))
+  (= sample
+     (load-named "test_sample.wav"))
   (print (array-length sample))
   (print (sample 1u))
   (print (sample 2u))

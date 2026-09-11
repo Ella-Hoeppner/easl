@@ -1,9 +1,7 @@
 (struct (TwoOf T)
-        first: T
-        second: T)
+  first: T
+  second: T)
 
 (defn f [a: f32]: vec2f
   (let [two (TwoOf a a)]
-    (vec2 (.first two)
-          (.second two))))
-
+    (vec2 (.first two) (.second two))))

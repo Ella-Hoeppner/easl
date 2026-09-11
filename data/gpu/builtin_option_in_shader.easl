@@ -4,7 +4,9 @@
 (var out: [1: f32])
 
 (defn pick [cond: bool]: (Option f32)
-  (if cond (Some 3.) None))
+  (if cond
+    (Some 3.)
+    None))
 
 @compute
 (defn probe []
@@ -16,4 +18,4 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (dispatch-compute-shader probe (vec3u 1u)))))
+                  (dispatch-compute-shader probe (vec3u 1u)))))

@@ -24,4 +24,3 @@
 (defn f2 []: f32
   (let [arr [0.]]
     (arr 0i)))
-

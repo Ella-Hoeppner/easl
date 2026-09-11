@@ -6,4 +6,3 @@
 (defn f []: f32
   (+ (if-zero-five-else-three 0.)
      (if-zero-five-else-three 1.)))
-

@@ -23,11 +23,11 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (+= frame-index 1)
-                    (let [t (f32 frame-index)]
-                      (= my-array
-                         (match (% (/ frame-index 60) 3)
-                           0 (into-dynamic-array [(vec4f 0.) (vec4f 0.)])
-                           1 (into-dynamic-array [(vec4f 1. 0. 0. 0.)])
-                           _ (into-dynamic-array [(vec4f 1.)]))))
-                    (dispatch-render-shaders trivial-vertex my-fragment 3))))
+                  (+= frame-index 1)
+                  (let [t (f32 frame-index)]
+                    (= my-array
+                       (match (% (/ frame-index 60) 3)
+                         0 (into-dynamic-array [(vec4f 0.) (vec4f 0.)])
+                         1 (into-dynamic-array [(vec4f 1. 0. 0. 0.)])
+                         _ (into-dynamic-array [(vec4f 1.)]))))
+                  (dispatch-render-shaders trivial-vertex my-fragment 3))))

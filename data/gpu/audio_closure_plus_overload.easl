@@ -10,9 +10,9 @@
   (let [@var buf (zeroed-array 8u): [f32]
         @var i 0u]
     (fn []
-        (= (buf i) (s))
-        (= i (% (+ i 1u) 8u))
-        (buf i))))
+      (= (buf i) (s))
+      (= i (% (+ i 1u) 8u))
+      (buf i))))
 
 @associative
 (defn + [a: (Fn [] f32)

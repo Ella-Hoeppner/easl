@@ -11,8 +11,8 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (= x 5)
-                    (print x)
-                    (dispatch-compute-shader square-x (vec3u 1u))
-                    (print x)
-                    (close-window))))
+                  (= x 5)
+                  (print x)
+                  (dispatch-compute-shader square-x (vec3u 1u))
+                  (print x)
+                  (close-window))))

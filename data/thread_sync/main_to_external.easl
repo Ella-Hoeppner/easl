@@ -9,4 +9,4 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (= level (+ level 0.25)))))
+                  (= level (+ level 0.25)))))

@@ -12,11 +12,10 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (when (== (window-frame-index) 0u)
-                      (= sample
-                         (into-dynamic-array [0.1 0.2 0.3])))
-                    (start-audio f)
-                    (when (== (window-frame-index) 2u)
-                      (= sample
-                         (into-dynamic-array [0.4 0.5 0.6]))))))
-
+                  (when (== (window-frame-index) 0u)
+                    (= sample
+                       (into-dynamic-array [0.1 0.2 0.3])))
+                  (start-audio f)
+                  (when (== (window-frame-index) 2u)
+                    (= sample
+                       (into-dynamic-array [0.4 0.5 0.6]))))))

@@ -1,9 +1,9 @@
-
 (defn f []: f32
   (+ 1. 2. 3.))
 
 @associative
-(defn abstracted-+ [a: f32 b:f32]: f32
+(defn abstracted-+ [a: f32
+                    b: f32]: f32
   (let [x (+ 1. 2.)]
     (+ a b)))
 

@@ -12,5 +12,5 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (+= count 0.25)
-                    (start-audio (osc count)))))
+                  (+= count 0.25)
+                  (start-audio (osc count)))))

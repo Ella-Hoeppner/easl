@@ -14,7 +14,6 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (start-audio f)
-                    (= x (+ x 10.))
-                    (print x))))
-
+                  (start-audio f)
+                  (= x (+ x 10.))
+                  (print x))))

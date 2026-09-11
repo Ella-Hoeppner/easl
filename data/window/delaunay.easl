@@ -92,36 +92,39 @@
   (= line-offset (- b a))
   (= solid-color color)
   (= line-width width)
-  (dispatch-render-shaders line-vertex
-                           solid-color-frag
-                           6))
+  (dispatch-render-shaders
+    line-vertex
+    solid-color-frag
+    6))
 
 (defn draw-particles [radius: f32
                       color: vec3f]
   (= solid-color color)
   (= line-width radius)
-  (dispatch-render-shaders particle-dots-vertex
-                           dot-frag
-                           (* 6 particle-count)))
+  (dispatch-render-shaders
+    particle-dots-vertex
+    dot-frag
+    (* 6 particle-count)))
 
 @cpu
 (defn main []
   (= particles
      (zeroed-array particle-count))
-  (dispatch-compute-shader randomize-particles
-                           (vec3u particle-count 0u 0u))
+  (dispatch-compute-shader
+    randomize-particles
+    (vec3u particle-count 0u 0u))
   (print particles)
   #_(spawn-window (fn []
-                      (let [resolution (window-resolution)]
-                        (= screenspace-scale
-                           (/ (f32 (min resolution.x resolution.y))
-                              (vec2f resolution))))
-                      (draw-line (vec2f 0.)
-                                 (-> frame-index
-                                     f32
-                                     (* 0.01)
-                                     (vec2f (cos <>) (sin <>)))
-                                 0.003
-                                 (vec3f 1. 0. 1.))
-                      (draw-particles 0.1 (vec3f 1.))
-                      (+= frame-index 1))))
+                    (let [resolution (window-resolution)]
+                      (= screenspace-scale
+                         (/ (f32 (min resolution.x resolution.y))
+                            (vec2f resolution))))
+                    (draw-line (vec2f 0.)
+                               (-> frame-index
+                                   f32
+                                   (* 0.01)
+                                   (vec2f (cos <>) (sin <>)))
+                               0.003
+                               (vec3f 1. 0. 1.))
+                    (draw-particles 0.1 (vec3f 1.))
+                    (+= frame-index 1))))

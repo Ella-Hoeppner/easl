@@ -10,10 +10,10 @@
       [@ref buffer: [T]
        start: u32
        index: u32]: T
-  (-> index
-      (+ start)
-      (% (length buffer))
-      buffer))
+      (-> index
+          (+ start)
+          (% (length buffer))
+          buffer))
 
 (defn peek-scale [@ref s: f32]: f32
   (* s 2.))
@@ -33,11 +33,14 @@
 
 @compute
 (defn probe []
-  (stamp out 0u (* (peek-scale scale) (get-ring history 1u 2u)))
+  (stamp out
+         0u
+         (* (peek-scale scale)
+            (get-ring history 1u 2u)))
   (stamp out 1u (f32 (length history))))
 
 @cpu
 (defn main []
   (= history (zeroed-array 8))
   (spawn-window (fn []
-                    (dispatch-compute-shader probe (vec3u 1u)))))
+                  (dispatch-compute-shader probe (vec3u 1u)))))

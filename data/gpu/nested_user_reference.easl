@@ -13,4 +13,3 @@
   (increment-twice private-float)
   (let [@var x: f32 0.]
     (increment-twice x)))
-

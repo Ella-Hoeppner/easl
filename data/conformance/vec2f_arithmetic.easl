@@ -4,4 +4,3 @@
         v3 (vec2f 2. 3.)
         final-v (/ (- (* v1 v2) v3) 2.)]
     (+ final-v.x final-v.y)))
-

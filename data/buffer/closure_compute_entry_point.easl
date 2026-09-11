@@ -5,7 +5,7 @@
 (defn main []
   (= x 5)
   (print x)
-  (dispatch-compute-shader (fn [] (= x (* x x)))
-                           (vec3u 1u))
+  (dispatch-compute-shader
+    (fn [] (= x (* x x)))
+    (vec3u 1u))
   (print x))
-

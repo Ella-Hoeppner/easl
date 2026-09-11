@@ -10,7 +10,7 @@
   (= nearest-particle-connections
      (zeroed-array 10))
   (print (array-length nearest-particle-connections))
-  (dispatch-compute-shader update-particle-nearest-connection
-                           (vec3u 10u 1u 1u))
+  (dispatch-compute-shader
+    update-particle-nearest-connection
+    (vec3u 10u 1u 1u))
   (print (array-length nearest-particle-connections)))
-

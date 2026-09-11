@@ -5,4 +5,3 @@
     (when false
       (+= x 4.))
     x))
-

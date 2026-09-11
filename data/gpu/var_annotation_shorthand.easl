@@ -6,4 +6,3 @@
 
 @[0 2]
 (var tex: (Texture2D f32))
-

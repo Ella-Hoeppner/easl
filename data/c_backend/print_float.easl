@@ -1,4 +1,3 @@
 (defn main []: i32
   (print 5.)
   0)
-

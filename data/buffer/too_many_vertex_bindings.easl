@@ -2,7 +2,6 @@
 ; slot wgpu reserves internally — exceeds Metal's 16-buffer vertex-stage
 ; budget. easl's pre-flight validation must reject this with a clear error
 ; naming the bindings, before any wgpu object creation.
-
 @[uniform 0 0]
 (var u-0: vec4f)
 
@@ -56,7 +55,22 @@
 
 @vertex
 (defn vert [@{builtin vertex-index} i: u32]: @{builtin position} vec4f
-  (vec4f (+ (.x u-0) (.x u-1) (.x u-2) (.x u-3) (.x u-4) (.x u-5) (.x u-6) (.x u-7) (.x u-8) (.x u-9) (.x u-10) (.x u-11) (.x u-12) (.x u-13) (.x u-14) (.x u-15))
+  (vec4f (+ (.x u-0)
+            (.x u-1)
+            (.x u-2)
+            (.x u-3)
+            (.x u-4)
+            (.x u-5)
+            (.x u-6)
+            (.x u-7)
+            (.x u-8)
+            (.x u-9)
+            (.x u-10)
+            (.x u-11)
+            (.x u-12)
+            (.x u-13)
+            (.x u-14)
+            (.x u-15))
          0.
          0.
          1.))
@@ -67,12 +81,13 @@
 
 @compute
 (defn bump []
-  (= (out-buf 0u) (+ (out-buf 0u) 1.)))
+  (= (out-buf 0u)
+     (+ (out-buf 0u) 1.)))
 
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (dispatch-compute-shader bump (vec3u 1u 1u 1u))
-                    (dispatch-render-shaders vert frag 3)
-                    (print (out-buf 0u))
-                    (close-window))))
+                  (dispatch-compute-shader bump (vec3u 1u 1u 1u))
+                  (dispatch-render-shaders vert frag 3)
+                  (print (out-buf 0u))
+                  (close-window))))

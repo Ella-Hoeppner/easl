@@ -1,5 +1,3 @@
 (defn f []: f32
   (let [@var a 0.]
-    (+ a
-       (do (= a 1.)
-              a))))
+    (+ a (do (= a 1.) a))))

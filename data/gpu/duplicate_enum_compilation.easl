@@ -4,4 +4,3 @@
 (defn b []: (Option vec3f)
   (let [x (Some (vec3f 1. 0. 0.))]
     None))
-

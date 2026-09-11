@@ -1,5 +1,4 @@
 ; Early return from a unit-typed function via `(return ())`.
-
 @storage-write
 (var out: [4: f32])
 

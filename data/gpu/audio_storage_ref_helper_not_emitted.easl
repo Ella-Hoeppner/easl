@@ -13,15 +13,16 @@
 
 (defn sample-wt [t: f32
                  @ref w: Wavetable]: (Option f32)
-  (if (< (u32 (* t w.rate)) (length w.samples))
+  (if (< (u32 (* t w.rate))
+         (length w.samples))
     (Some (w.samples (u32 (* t w.rate))))
     None))
 
 (defn make-voice [wt: Wavetable]: (Fn [] f32)
   (fn []
-      (match (sample-wt (audio-time) wt)
-        (Some s) s
-        None 0.)))
+    (match (sample-wt (audio-time) wt)
+      (Some s) s
+      None 0.)))
 
 @fragment
 (defn frag []: vec4f
@@ -31,7 +32,8 @@
 (defn main []
   (start-audio (make-voice (Wavetable ~[0.1 0.2] 2.)))
   (spawn-window (fn []
-                    (dispatch-render-shaders
-                     (fn [] (vec4f (f32 (vertex-index)) 0. 0. 1.))
-                     frag
-                     3))))
+                  (dispatch-render-shaders
+                    (fn []
+                      (vec4f (f32 (vertex-index)) 0. 0. 1.))
+                    frag
+                    3))))

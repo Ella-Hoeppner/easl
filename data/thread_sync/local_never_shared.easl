@@ -4,7 +4,8 @@
 ; may ever appear, even though both threads touch it every iteration.
 ; (To share, use the default storage-write space instead.)
 @local
-(var phase: f32 0.5)
+(var phase: f32
+     0.5)
 
 @audio
 (defn f [t: f32]: f32
@@ -14,6 +15,6 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (start-audio f)
-                    (= phase 100.)
-                    (print phase))))
+                  (start-audio f)
+                  (= phase 100.)
+                  (print phase))))

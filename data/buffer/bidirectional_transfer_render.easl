@@ -17,9 +17,8 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (= x 5)
-                    (print x)
-                    (dispatch-render-shaders vert square-x 3)
-                    (print x)
-                    (close-window))))
-
+                  (= x 5)
+                  (print x)
+                  (dispatch-render-shaders vert square-x 3)
+                  (print x)
+                  (close-window))))

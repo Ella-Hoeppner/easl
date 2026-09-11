@@ -6,5 +6,5 @@
   (let [@var counter 0.
         offset (vec3f 1. 2. 3.)]
     (call-twice (fn []
-                    (+= counter offset.z)
-                    counter))))
+                  (+= counter offset.z)
+                  counter))))

@@ -7,7 +7,8 @@
         notes (down-midi-notes)]
     (for [i (length notes)]
       (let [n (notes i)]
-        (+= sum (* n.velocity (f32 n.note)))))
+        (+= sum
+            (* n.velocity (f32 n.note)))))
     sum))
 
 @cpu

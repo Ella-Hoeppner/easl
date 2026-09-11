@@ -19,8 +19,7 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (when (== (window-frame-index) 0u)
-                      (dispatch-compute-shader rise (vec3u 1u)))
-                    (when (== (window-frame-index) 1u)
-                      (start-audio f)))))
-
+                  (when (== (window-frame-index) 0u)
+                    (dispatch-compute-shader rise (vec3u 1u)))
+                  (when (== (window-frame-index) 1u)
+                    (start-audio f)))))

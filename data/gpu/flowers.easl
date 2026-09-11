@@ -91,10 +91,11 @@
         angle (+ (* TAU -0.25)
                  (atan2 diff.y diff.x))
         offset (- p center-1)]
-    (sd-uneven-capsule-up (rotate offset angle)
-                          radius-1
-                          radius-2
-                          (length diff))))
+    (sd-uneven-capsule-up
+      (rotate offset angle)
+      radius-1
+      radius-2
+      (length diff))))
 
 (defn hash [p: vec2f]: vec2f
   (let [p2 (vec2f (dot p (vec2 127.1 311.7))
@@ -154,17 +155,18 @@
         (= d
            (min d
                 #_(sd-uneven-capsule-up (- pos center) 0.1 0.025 0.2)
-                (sd-uneven-capsule (+ pos
-                                      (+ (* 0.075
-                                            (vec2f (noise (+ (* 2. pos) (vec2f 0.)))
-                                                   (noise (+ (* 2. pos) (vec2f 100.)))))
-                                         (* 0.015
-                                            (vec2f (noise (+ (* 10. pos) (vec2f 0.)))
-                                                   (noise (+ (* 10. pos) (vec2f 100.)))))))
-                                   center
-                                   0.125
-                                   (* center 0.05)
-                                   0.005)))))
+                (sd-uneven-capsule
+                  (+ pos
+                     (+ (* 0.075
+                           (vec2f (noise (+ (* 2. pos) (vec2f 0.)))
+                                  (noise (+ (* 2. pos) (vec2f 100.)))))
+                        (* 0.015
+                           (vec2f (noise (+ (* 10. pos) (vec2f 0.)))
+                                  (noise (+ (* 10. pos) (vec2f 100.)))))))
+                  center
+                  0.125
+                  (* center 0.05)
+                  0.005)))))
     #_(vec4f (vec3f (-> (noise (* 20. pos))
                         (+ 1)
                         (* 0.5)))

@@ -1,12 +1,11 @@
 (struct (TwoOf T)
-        first: T
-        second: T)
+  first: T
+  second: T)
 
 (defn f [a: f32]: vec4f
   (let [two (TwoOf a a)
         four (TwoOf two (TwoOf a 1.))]
     (vec4 (.first (.first four))
-            (.second (.first four))
-            (.first (.second four))
-            (.second (.second four)))))
-
+          (.second (.first four))
+          (.first (.second four))
+          (.second (.second four)))))

@@ -7,4 +7,4 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (dispatch-compute-shader c (vec3u 1u 1u 1u)))))
+                  (dispatch-compute-shader c (vec3u 1u 1u 1u)))))

@@ -5,5 +5,5 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (start-audio my-audio)
-                    (close-window))))
+                  (start-audio my-audio)
+                  (close-window))))

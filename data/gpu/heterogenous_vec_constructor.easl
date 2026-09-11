@@ -2,4 +2,5 @@
   (vec4 x 1u 1i 1f))
 
 (defn g [x: f32]: vec4f
-  (vec4 (vec3 x 1u 1i): vec3f 1f))
+  (vec4 (vec3 x 1u 1i): vec3f
+        1f))

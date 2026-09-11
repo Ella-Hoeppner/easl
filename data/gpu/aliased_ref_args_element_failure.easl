@@ -13,7 +13,8 @@
 
 @cpu
 (defn main []
-  (let [@var xs [(into-dynamic-array [1.]) (into-dynamic-array [2.])]
+  (let [@var xs [(into-dynamic-array [1.])
+                 (into-dynamic-array [2.])]
         @var i 0u]
     (print (clobber-read (xs i) (xs 0u)))
     (print ((xs 0u) 0u))))

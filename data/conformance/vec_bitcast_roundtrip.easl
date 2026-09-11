@@ -3,4 +3,3 @@
         v2: vec4u (bitcast v)
         v3: vec4f (bitcast v2)]
     (+ v3.x v3.y v3.z v3.w)))
-

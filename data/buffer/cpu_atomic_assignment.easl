@@ -9,4 +9,3 @@
   (= my-atomic (Atomic 1u))
   (= my-value (vec2f 0.))
   (print my-atomic))
-

@@ -9,4 +9,3 @@
 
 (defn main []: f32
   (f my-arr))
-

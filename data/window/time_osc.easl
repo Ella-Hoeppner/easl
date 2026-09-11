@@ -29,7 +29,7 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (+= red-phase 0.01)
-                    (+= green-phase 0.017)
-                    (+= blue-phase 0.13)
-                    (dispatch-render-shaders trivial-vertex my-fragment 3))))
+                  (+= red-phase 0.01)
+                  (+= green-phase 0.017)
+                  (+= blue-phase 0.13)
+                  (dispatch-render-shaders trivial-vertex my-fragment 3))))

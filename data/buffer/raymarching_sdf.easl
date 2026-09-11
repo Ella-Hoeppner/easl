@@ -65,7 +65,7 @@
                        (* (/ dimensions
                              (min dimensions.x dimensions.y))))
         base-scene-sdf (fn [pos: vec3f]: f32
-                           (sd-torus pos.xzy (vec2f 0.5 0.2)))
+                         (sd-torus pos.xzy (vec2f 0.5 0.2)))
         camera-ray (Ray (vec3f 0. 0. -1.)
                         (normalize (vec3f screen-pos 1.)))
         surface-dist (raymarch base-scene-sdf camera-ray)]
@@ -87,8 +87,7 @@
   (= dimensions
      (vec2f (window-resolution)))
   (spawn-window (fn []
-                    (= dimensions
-                       (vec2f (window-resolution)))
-                    (dispatch-render-shaders vertex fragment 3)
-                    (close-window))))
-
+                  (= dimensions
+                     (vec2f (window-resolution)))
+                  (dispatch-render-shaders vertex fragment 3)
+                  (close-window))))

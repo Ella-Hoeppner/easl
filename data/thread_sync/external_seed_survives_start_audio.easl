@@ -16,5 +16,4 @@
 
 @cpu
 (defn main []
-  (spawn-window (fn []
-                    (start-audio f))))
+  (spawn-window (fn [] (start-audio f))))

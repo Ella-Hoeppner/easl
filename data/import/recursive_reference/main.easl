@@ -6,4 +6,3 @@
 @fragment
 (defn f []: vec4f
   (vec4f (get-color) 1.))
-

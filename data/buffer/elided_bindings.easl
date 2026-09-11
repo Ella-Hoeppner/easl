@@ -17,10 +17,12 @@
 
 @{workgroup-size 4}
 @compute
-(defn run [@{builtin global-invocation-id} id: vec3u]
+(defn run [@{builtin global-invocation-id}
+           id: vec3u]
   (let [i (.x id)]
     (when (< i 4u)
-      (= (results i) (+ offset (* scale (weights i)))))))
+      (= (results i)
+         (+ offset (* scale (weights i)))))))
 
 @cpu
 (defn main []

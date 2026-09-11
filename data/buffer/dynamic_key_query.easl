@@ -8,11 +8,11 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (for [i 0u (< i 10u) (+= i 1u)]
-                      (when (key-down? (string i))
-                        (print i)))
-                    (when (key-just-down? (concat "f" (string 1u)))
-                      (print 99u))
-                    (when (key-down? "a")
-                      (print 100u))
-                    (close-window))))
+                  (for [i 0u (< i 10u) (+= i 1u)]
+                    (when (key-down? (string i))
+                      (print i)))
+                  (when (key-just-down? (concat "f" (string 1u)))
+                    (print 99u))
+                  (when (key-down? "a")
+                    (print 100u))
+                  (close-window))))

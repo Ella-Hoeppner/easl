@@ -10,9 +10,10 @@
 (defn make-voice [increment: f32]: (Fn [] f32)
   (let [@var total 0.
         accum (fn [x: f32]
-                  (+= total x)
-                  total)]
-    (fn [] (apply-twice accum increment))))
+                (+= total x)
+                total)]
+    (fn []
+      (apply-twice accum increment))))
 
 @cpu
 (defn main []

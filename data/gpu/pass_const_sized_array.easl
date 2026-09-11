@@ -12,4 +12,3 @@
     (= (my-array 0u) 1)
     (= (my-array 1u) 2)
     (sum-array my-array)))
-

@@ -8,9 +8,8 @@
 (defn make-voice [gain: f32]: (Fn [] f32)
   (let [@var phase 0.]
     (fn []
-        (= phase (+ phase 0.125))
-        (apply-f (fn [x] (* gain x))
-                 phase))))
+      (= phase (+ phase 0.125))
+      (apply-f (fn [x] (* gain x)) phase))))
 
 @cpu
 (defn main []

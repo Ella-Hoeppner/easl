@@ -1,4 +1,5 @@
-(defn add [@var @ref x: f32 amount: f32]
+(defn add [@var @ref x: f32
+           amount: f32]
   (+= x amount))
 
 (defn f []: f32

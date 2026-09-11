@@ -105,15 +105,18 @@
 (defn main []
   (= particles
      (zeroed-array particle-count))
-  (dispatch-compute-shader randomize-particles
-                           (vec3u particle-count 1u 1u))
+  (dispatch-compute-shader
+    randomize-particles
+    (vec3u particle-count 1u 1u))
   (spawn-window (fn []
-                    (let [resolution (window-resolution)]
-                      (= screenspace-scale
-                         (/ (f32 (min resolution.x resolution.y))
-                            (vec2f resolution))))
-                    (dispatch-compute-shader clifford-update
-                                             (vec3u particle-count 1u 1u))
-                    (dispatch-render-shaders particle-dots-vertex
-                                             dot-frag
-                                             (* 6 particle-count)))))
+                  (let [resolution (window-resolution)]
+                    (= screenspace-scale
+                       (/ (f32 (min resolution.x resolution.y))
+                          (vec2f resolution))))
+                  (dispatch-compute-shader
+                    clifford-update
+                    (vec3u particle-count 1u 1u))
+                  (dispatch-render-shaders
+                    particle-dots-vertex
+                    dot-frag
+                    (* 6 particle-count)))))

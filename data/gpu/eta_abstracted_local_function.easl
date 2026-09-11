@@ -65,7 +65,7 @@
         sphere-radius 0.5
         box-side-length 0.4
         my-torus-sdf (fn [pos: vec3f]: f32
-                         (sd-torus pos.xzy (vec2f 0.5 0.2)))
+                       (sd-torus pos.xzy (vec2f 0.5 0.2)))
         camera-ray (Ray (vec3f 0. 0. -1.)
                         (normalize (vec3f screen-pos 1.)))
         surface-dist (raymarch (fn [pos] (my-torus-sdf pos))
@@ -86,8 +86,7 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (= dimensions
-                       (vec2f (window-resolution)))
-                    (= time (+ time (/ 120.)))
-                    (dispatch-render-shaders vertex fragment 3))))
-
+                  (= dimensions
+                     (vec2f (window-resolution)))
+                  (= time (+ time (/ 120.)))
+                  (dispatch-render-shaders vertex fragment 3))))

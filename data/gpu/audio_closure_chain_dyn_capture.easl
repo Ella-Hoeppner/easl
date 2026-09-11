@@ -8,24 +8,26 @@
 (defn with-phase [f: (Fn [f32] f32)]: (Fn [] f32)
   (let [@var phase 0.]
     (fn []
-        (= phase (+ phase (/ (sample-rate))))
-        (f phase))))
+      (= phase
+         (+ phase (/ (sample-rate))))
+      (f phase))))
 
 (defn echoish [s: (Fn [] f32)]: (Fn [] f32)
   (let [@var buf (zeroed-array 8u): [f32]
         @var i 0u]
     (fn []
-        (= (buf i) (s))
-        (= i (% (+ i 1u) 8u))
-        (buf i))))
+      (= (buf i) (s))
+      (= i (% (+ i 1u) 8u))
+      (buf i))))
 
 @cpu
 (defn main []
   (let [samples (load-wav "test_sample.wav")]
     (start-audio (-> (fn [t]
-                         (if (< (u32 t) (array-length samples))
-                           (samples (u32 t))
-                           0.))
+                       (if (< (u32 t)
+                              (array-length samples))
+                         (samples (u32 t))
+                         0.))
                      (with-phase)
                      (echoish)))
     (spawn-window (fn [] ()))))

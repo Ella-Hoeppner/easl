@@ -3,7 +3,6 @@
 ; Rgba16Float texture back as RGBA8), then load the saved file into a
 ; second texture and read a texel back through the GPU. Green pins the
 ; channel order end-to-end.
-
 @handle
 (var tex: (Texture2D f32))
 
@@ -26,15 +25,18 @@
   (= tex
      (blank-texture (vec2u 2u)))
   (set-render-target tex)
-  (dispatch-render-shaders fullscreen-triangle
-                           (fn [] (vec4f 0. 1. 0. 1.))
-                           3)
+  (dispatch-render-shaders
+    fullscreen-triangle
+    (fn [] (vec4f 0. 1. 0. 1.))
+    3)
   (clear-render-target)
-  (save-png tex "../../out/buffer/save_png_render_target.png")
+  (save-png tex
+            "../../out/buffer/save_png_render_target.png")
   (= tex2
      (load-image "../../out/buffer/save_png_render_target.png"))
-  (dispatch-compute-shader (fn []
-                               (= value
-                                  (texture-load tex2 (vec2u 1u) 0u)))
-                           (vec3u 1u))
+  (dispatch-compute-shader
+    (fn []
+      (= value
+         (texture-load tex2 (vec2u 1u) 0u)))
+    (vec3u 1u))
   (print value))

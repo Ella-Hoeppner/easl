@@ -1,7 +1,18 @@
 @fragment
 (defn f []: vec4f
   (let [@var m (mat2x2f 1. 2. 3. 4.)
-        @var m34 (mat3x4f 1. 0. 0. 0. 0. 1. 0. 0. 0. 0. 1. 0.)
+        @var m34 (mat3x4f 1.
+                          0.
+                          0.
+                          0.
+                          0.
+                          1.
+                          0.
+                          0.
+                          0.
+                          0.
+                          1.
+                          0.)
         @var v (vec2f 1. 2.)
         @var w (vec4f 1. 2. 3. 4.)]
     (+= m (mat2x2f 1. 0. 0. 1.))
@@ -12,4 +23,5 @@
     (+= m34 m34)
     (*= v m)
     (*= w.xy m)
-    (vec4f (+ v (* (m 0u) (determinant m))) w.xy)))
+    (vec4f (+ v (* (m 0u) (determinant m)))
+           w.xy)))

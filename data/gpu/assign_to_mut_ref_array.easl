@@ -7,4 +7,3 @@
 (defn f []
   (let [@var arr [0u 1u]]
     (set-second-element-to-five arr)))
-

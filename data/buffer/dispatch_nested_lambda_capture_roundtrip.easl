@@ -11,11 +11,11 @@
 @cpu
 (defn main []
   (let [outer 2.]
-    (dispatch-compute-shader (fn []
-                                 (let [local 3.]
-                                   (= (out 0u)
-                                      (apply-f (fn [x]
-                                                   (* outer (+ local x)))
-                                               1.))))
-                             (vec3u 1u))
+    (dispatch-compute-shader
+      (fn []
+        (let [local 3.]
+          (= (out 0u)
+             (apply-f (fn [x] (* outer (+ local x)))
+                      1.))))
+      (vec3u 1u))
     (print (out 0u))))

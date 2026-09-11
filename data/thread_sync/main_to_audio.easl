@@ -12,6 +12,5 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (start-audio f)
-                    (= gain (+ gain 0.25)))))
-
+                  (start-audio f)
+                  (= gain (+ gain 0.25)))))

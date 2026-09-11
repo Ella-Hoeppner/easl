@@ -70,7 +70,7 @@
 (defn sd-torus [radius: f32
                 thickness: f32]: (Fn [vec3f] f32)
   (fn [pos]
-      (sd-torus radius thickness pos)))
+    (sd-torus radius thickness pos)))
 
 (defn sd-box [size: vec3f
               pos: vec3f]: f32
@@ -86,14 +86,16 @@
   (- (length pos) radius))
 
 (defn sd-sphere [radius: f32]: (Fn [vec3f] f32)
-  (fn [pos] (sd-sphere radius pos)))
+  (fn [pos]
+    (sd-sphere radius pos)))
 
 (defn sd-circle [radius: f32
                  pos: vec2f]: f32
   (- (length pos) radius))
 
 (defn sd-circle [radius: f32]: (Fn [vec2f] f32)
-  (fn [pos] (sd-circle radius pos)))
+  (fn [pos]
+    (sd-circle radius pos)))
 
 (defn sd-cylinder [start: vec3f
                    end: vec3f
@@ -124,7 +126,7 @@
                    end: vec3f
                    radius: f32]: (Fn [vec3f] f32)
   (fn [pos]
-      (sd-cylinder start end radius pos)))
+    (sd-cylinder start end radius pos)))
 
 (defn sd-plane [normal: vec3f]: (Fn [vec3f] f32)
   (fn [pos] (dot pos normal)))
@@ -141,12 +143,12 @@
 (defn rotate-axis-angle [axis: vec3f
                          angle: f32]: (Fn [vec3f] vec3f)
   (fn [pos]
-      (let [c (cos angle)
-            s (sin angle)]
-        (+ (* pos c)
-           (* (cross axis pos) s)
-           (* axis
-              (* (dot axis pos) (- 1. c)))))))
+    (let [c (cos angle)
+          s (sin angle)]
+      (+ (* pos c)
+         (* (cross axis pos) s)
+         (* axis
+            (* (dot axis pos) (- 1. c)))))))
 
 @vertex
 (defn vertex []: vec4f
@@ -164,7 +166,7 @@
 (defn transform [sdf: (Fn [vec3f] f32)
                  transformation: (Fn [vec3f] vec3f)]: (Fn [vec3f] f32)
   (fn [pos]
-      (sdf (transformation pos))))
+    (sdf (transformation pos))))
 
 (defn translate [sdf: (Fn [vec3f] f32)
                  offset: vec3f]: (Fn [vec3f] f32)
@@ -178,56 +180,58 @@
              twist-magnitude: f32]: (Fn [vec3f] f32)
   (transform sdf
              (fn [pos]
-                 (let [c (cos (* twist-magnitude pos.y))
-                       s (sin (* twist-magnitude pos.y))]
-                   (.xzy (vec3f (* (mat2x2 c (- s) s c) pos.xz)
-                                pos.y))))))
+               (let [c (cos (* twist-magnitude pos.y))
+                     s (sin (* twist-magnitude pos.y))]
+                 (.xzy (vec3f (* (mat2x2 c (- s) s c) pos.xz)
+                              pos.y))))))
 
 (defn union [sdf-1: (Fn [vec3f] f32)
              sdf-2: (Fn [vec3f] f32)]: (Fn [vec3f] f32)
   (fn [pos]
-      (min (sdf-1 pos) (sdf-2 pos))))
+    (min (sdf-1 pos) (sdf-2 pos))))
 
 (defn union [sdf-1: (Fn [vec2f] f32)
              sdf-2: (Fn [vec2f] f32)]: (Fn [vec2f] f32)
   (fn [pos]
-      (min (sdf-1 pos) (sdf-2 pos))))
+    (min (sdf-1 pos) (sdf-2 pos))))
 
 (defn extrude [sdf: (Fn [vec2f] f32)
                height: f32]: (Fn [vec3f] f32)
   (fn [pos]
-      (let [d (sdf pos.xy)
-            w (vec2f d (- (abs pos.z) height))]
-        (+ (min (max w.x w.y) 0.)
-           (length (max w (vec2f 0.)))))))
+    (let [d (sdf pos.xy)
+          w (vec2f d (- (abs pos.z) height))]
+      (+ (min (max w.x w.y) 0.)
+         (length (max w (vec2f 0.)))))))
 
 (defn intersection [sdf-1: (Fn [vec3f] f32)
                     sdf-2: (Fn [vec3f] f32)]: (Fn [vec3f] f32)
   (fn [pos]
-      (max (sdf-1 pos) (sdf-2 pos))))
+    (max (sdf-1 pos) (sdf-2 pos))))
 
 (defn difference [sdf-1: (Fn [vec3f] f32)
                   sdf-2: (Fn [vec3f] f32)]: (Fn [vec3f] f32)
   (fn [pos]
-      (max (sdf-1 pos) (- (sdf-2 pos)))))
+    (max (sdf-1 pos) (- (sdf-2 pos)))))
 
 (defn difference [sdf-1: (Fn [vec2f] f32)
                   sdf-2: (Fn [vec2f] f32)]: (Fn [vec2f] f32)
   (fn [pos]
-      (max (sdf-1 pos) (- (sdf-2 pos)))))
+    (max (sdf-1 pos) (- (sdf-2 pos)))))
 
 (defn round [sdf: (Fn [vec3f] f32)
              rounding: f32]: (Fn [vec3f] f32)
-  (fn [pos] (- (sdf pos) rounding)))
+  (fn [pos]
+    (- (sdf pos) rounding)))
 
 (defn round [sdf: (Fn [vec2f] f32)
              rounding: f32]: (Fn [vec2f] f32)
-  (fn [pos] (- (sdf pos) rounding)))
+  (fn [pos]
+    (- (sdf pos) rounding)))
 
 (defn onion [sdf: (Fn [vec3f] f32)
              rounding: f32]: (Fn [vec3f] f32)
   (fn [pos]
-      (- (abs (sdf pos)) rounding)))
+    (- (abs (sdf pos)) rounding)))
 
 (defn invert [sdf: (Fn [vec3f] f32)]: (Fn [vec3f] f32)
   (fn [pos] (- (sdf pos))))
@@ -245,7 +249,7 @@
 (defn sd-segment [start: vec2f
                   end: vec2f]: (Fn [vec2f] f32)
   (fn [pos]
-      (sd-segment start end pos)))
+    (sd-segment start end pos)))
 
 (defn sd-segment [start: vec3f
                   end: vec3f
@@ -260,7 +264,7 @@
 (defn sd-segment [start: vec3f
                   end: vec3f]: (Fn [vec3f] f32)
   (fn [pos]
-      (sd-segment start end pos)))
+    (sd-segment start end pos)))
 
 (def inner-radius: f32
      16.5)
@@ -276,39 +280,41 @@
      (-> (sd-cylinder (vec3f 0. 0. base-thickness)
                       (vec3f 0. 0. (- inner-depth))
                       (+ wall-thickness inner-radius))
-         (union (let [line-radius (+ inner-radius
-                                     wall-thickness
-                                     holding-plate-radius)]
-                  (-> (sd-segment (vec2f 0.)
+         (union
+           (let [line-radius (+ inner-radius
+                                wall-thickness
+                                holding-plate-radius)]
+             (-> (sd-segment (vec2f 0.)
+                             (* line-radius (cis 0.)))
+                 (union (sd-segment (vec2f 0.)
+                                    (* line-radius (cis (/ TAU 3)))))
+                 (union (sd-segment (vec2f 0.)
+                                    (* line-radius
+                                       (cis (/ (* 2. TAU) 3)))))
+                 (round holding-plate-radius)
+                 (difference
+                   (-> (translate (sd-circle holding-plate-hole-radius)
                                   (* line-radius (cis 0.)))
-                      (union (sd-segment (vec2f 0.)
+                       (union (translate (sd-circle holding-plate-hole-radius)
                                          (* line-radius (cis (/ TAU 3)))))
-                      (union (sd-segment (vec2f 0.)
+                       (union (translate (sd-circle holding-plate-hole-radius)
                                          (* line-radius
-                                            (cis (/ (* 2. TAU) 3)))))
-                      (round holding-plate-radius)
-                      (difference (-> (translate (sd-circle holding-plate-hole-radius)
-                                                 (* line-radius (cis 0.)))
-                                      (union (translate (sd-circle holding-plate-hole-radius)
-                                                        (* line-radius (cis (/ TAU 3)))))
-                                      (union (translate (sd-circle holding-plate-hole-radius)
-                                                        (* line-radius
-                                                           (cis (/ (* 2. TAU) 3)))))))
-                      (extrude (* holding-plate-thickness 0.5))
-                      (translate (vec3f 0.
-                                        0.
-                                        (- base-thickness
-                                           (* 0.5 holding-plate-thickness)))))))
+                                            (cis (/ (* 2. TAU) 3)))))))
+                 (extrude (* holding-plate-thickness 0.5))
+                 (translate (vec3f 0.
+                                   0.
+                                   (- base-thickness
+                                      (* 0.5 holding-plate-thickness)))))))
          (difference (-> (sd-sphere inner-radius)
                          (transform (fn [pos]
-                                        (vec3f pos.xy
-                                               (-> pos.z
-                                                   (+ inner-depth)
-                                                   (/ inner-depth)
-                                                   (if (> <> 0.)
-                                                     (pow <> 1.2)
-                                                     <>)
-                                                   (* inner-radius)))))
+                                      (vec3f pos.xy
+                                             (-> pos.z
+                                                 (+ inner-depth)
+                                                 (/ inner-depth)
+                                                 (if (> <> 0.)
+                                                   (pow <> 1.2)
+                                                   <>)
+                                                 (* inner-radius)))))
                          (scale-distance 0.2)))
          #_(difference (sd-plane (vec3f (cis (* TAU 0.25)) 0.)))))
    pos))
@@ -322,10 +328,12 @@
                        (* (/ dimensions
                              (min dimensions.x dimensions.y))))
         scene (-> sd-cup
-                  (transform (rotate-axis-angle (vec3f 1. 0. 0.)
-                                                (* 3. (- mouse.y))))
-                  (transform (rotate-axis-angle (vec3f 0. 1. 0.)
-                                                (* 3. mouse.x)))
+                  (transform (rotate-axis-angle
+                               (vec3f 1. 0. 0.)
+                               (* 3. (- mouse.y))))
+                  (transform (rotate-axis-angle
+                               (vec3f 0. 1. 0.)
+                               (* 3. mouse.x)))
                   (scale-distance 1.))
         camera-dist (* inner-radius 3)
         camera-ray (Ray (vec3f 0. 0. (- camera-dist))
@@ -360,9 +368,8 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (= t (window-time))
-                    (= dimensions
-                       (vec2f (window-resolution)))
-                    (= mouse (mouse-pos))
-                    (dispatch-render-shaders vertex fragment 3))))
-
+                  (= t (window-time))
+                  (= dimensions
+                     (vec2f (window-resolution)))
+                  (= mouse (mouse-pos))
+                  (dispatch-render-shaders vertex fragment 3))))

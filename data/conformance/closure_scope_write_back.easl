@@ -4,6 +4,4 @@
 
 (defn f []: f32
   (let [@var counter 0.]
-    (call-twice (fn []
-                    (+= counter 1.)
-                    counter))))
+    (call-twice (fn [] (+= counter 1.) counter))))

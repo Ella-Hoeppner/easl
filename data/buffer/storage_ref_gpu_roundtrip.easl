@@ -25,16 +25,19 @@
 
 @compute
 (defn work []
-  (bump-slot out 0u (scaled scale (read-at history 2u)))
+  (bump-slot out
+             0u
+             (scaled scale (read-at history 2u)))
   (bump-slot out 1u 1.)
   (bump-slot out 1u 1.))
 
 @cpu
 (defn main []
   (= scale 10.)
-  (= history (into-dynamic-array [1. 2. 3. 4.]))
+  (= history
+     (into-dynamic-array [1. 2. 3. 4.]))
   (spawn-window (fn []
-                    (dispatch-compute-shader work (vec3u 1u))
-                    (print (out 0u))
-                    (print (out 1u))
-                    (close-window))))
+                  (dispatch-compute-shader work (vec3u 1u))
+                  (print (out 0u))
+                  (print (out 1u))
+                  (close-window))))

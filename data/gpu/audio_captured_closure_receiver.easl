@@ -7,8 +7,9 @@
 
 (defn make-voice [scale: f32]: (Fn [] f32)
   (let [shape (fn [x: f32]
-                  (* scale x))]
-    (fn [] (apply-twice shape 0.25))))
+                (* scale x))]
+    (fn []
+      (apply-twice shape 0.25))))
 
 @cpu
 (defn main []

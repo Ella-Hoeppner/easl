@@ -3,7 +3,6 @@
 ; array, both also written by the main entry — which is what makes them
 ; thread-shared, so the `start-audio` bootstrap publish carries the main
 ; side's current values into the audio replica.
-
 (var sample: [f32])
 
 (var gain: f32)
@@ -14,5 +13,6 @@
 
 @cpu
 (defn main []
-  (= sample (into-dynamic-array [1. 2. 3. 4.]))
+  (= sample
+     (into-dynamic-array [1. 2. 3. 4.]))
   (= gain 0.75))

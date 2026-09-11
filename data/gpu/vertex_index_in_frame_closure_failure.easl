@@ -4,5 +4,4 @@
 ; be.
 @cpu
 (defn main []
-  (spawn-window (fn []
-                    (print (vertex-index)))))
+  (spawn-window (fn [] (print (vertex-index)))))

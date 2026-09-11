@@ -3,7 +3,6 @@
 ; an implicit binding read; the CPU calls then read the same binding, which
 ; the runtime refreshes at each frame start — so both sides see the same
 ; per-frame snapshot.
-
 @storage-write
 (var buf: [4: f32])
 
@@ -12,12 +11,13 @@
 
 @compute
 (defn write-frame []
-  (= (buf 0u) (f32 (current-frame))))
+  (= (buf 0u)
+     (f32 (current-frame))))
 
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (dispatch-compute-shader write-frame (vec3u 1u))
-                    (print (current-frame))
-                    (when (== (current-frame) 2u)
-                      (close-window)))))
+                  (dispatch-compute-shader write-frame (vec3u 1u))
+                  (print (current-frame))
+                  (when (== (current-frame) 2u)
+                    (close-window)))))

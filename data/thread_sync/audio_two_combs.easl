@@ -14,15 +14,15 @@
   (let [@var buf (zeroed-array delay): [f32]
         @var idx 0u]
     (fn [x]
-        (let [out (buf idx)]
-          (= (buf idx) (+ x (* feedback out)))
-          (= idx (% (+ idx 1u) delay))
-          out))))
+      (let [out (buf idx)]
+        (= (buf idx)
+           (+ x (* feedback out)))
+        (= idx (% (+ idx 1u) delay))
+        out))))
 
 @cpu
 (defn main []
   (let [c1 (make-comb 2u 0.5)
         c2 (make-comb 3u 0.5)]
-    (start-audio (fn []
-                     (+ (c1 0.25) (c2 0.25)))))
+    (start-audio (fn [] (+ (c1 0.25) (c2 0.25)))))
   (spawn-window (fn [] ())))

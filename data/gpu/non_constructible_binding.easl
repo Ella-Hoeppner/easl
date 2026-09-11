@@ -37,4 +37,3 @@
     (+= particle.pos particle.vel)
     (= (particles particle-index)
        particle)))
-

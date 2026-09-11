@@ -8,8 +8,9 @@
 @cpu
 (defn main []
   (let [weights (into-dynamic-array [1. 2. 3.])]
-    (dispatch-compute-shader (fn []
-                                 (= (out 0u)
-                                    (+ (weights 0u) (weights 2u))))
-                             (vec3u 1u))
+    (dispatch-compute-shader
+      (fn []
+        (= (out 0u)
+           (+ (weights 0u) (weights 2u))))
+      (vec3u 1u))
     (print (out 0u))))

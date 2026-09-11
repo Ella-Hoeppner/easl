@@ -5,12 +5,12 @@
                        phase: f32
                        amplitude: f32]: (Fn [f32] f32)
   (let [f (fn [x]
-              (-> x
-                  (* frequency)
-                  (+ phase)
-                  (* TAU)
-                  cos
-                  (* amplitude)))]
+            (-> x
+                (* frequency)
+                (+ phase)
+                (* TAU)
+                cos
+                (* amplitude)))]
     f))
 
 (defn distort [x: f32]: f32

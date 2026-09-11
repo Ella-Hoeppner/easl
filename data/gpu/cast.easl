@@ -51,8 +51,9 @@
                               (vec2f -1. -1.)))
                           0.
                           1.)]
-    (BackgroundVertexOutput vertex-pos
-                            (* vertex-pos.xy dimensions))))
+    (BackgroundVertexOutput
+      vertex-pos
+      (* vertex-pos.xy dimensions))))
 
 @fragment
 (defn background-fragment [in: BackgroundVertexOutput]: @{location 0} vec4f

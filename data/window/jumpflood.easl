@@ -126,7 +126,7 @@
                        (/ (f32 grid-size))
                        uni->bi)
           distance-to-seed (fn [index: u32]: f32
-                               (distance (.xy (seeds index)) cell-pos))
+                             (distance (.xy (seeds index)) cell-pos))
           @var current-distances (vec4f (distance-to-seed current-indeces.x)
                                         (distance-to-seed current-indeces.y)
                                         (distance-to-seed current-indeces.z)
@@ -180,11 +180,12 @@
 (defn seed-dot-vertex [@{builtin vertex-index} i: u32]: SquarePosVertOutput
   (let [square-pos (vert-index-square-pos (% i 6))
         seed (seeds (/ i 6))]
-    (SquarePosVertOutput (vec4f (* screenspace-scale
-                                   (+ seed.xy (* 0.002 square-pos)))
-                                0.
-                                1.)
-                         square-pos)))
+    (SquarePosVertOutput
+      (vec4f (* screenspace-scale
+                (+ seed.xy (* 0.002 square-pos)))
+             0.
+             1.)
+      square-pos)))
 
 @fragment
 (defn seed-dot-frag [in: SquarePosVertOutput]: @{location 0} vec4f
@@ -195,10 +196,11 @@
 @vertex
 (defn grid-vertex [@{builtin vertex-index} i: u32]: SquarePosVertOutput
   (let [square-pos (vert-index-square-pos (vertex-index))]
-    (SquarePosVertOutput (vec4f (* screenspace-scale square-pos)
-                                0.
-                                1.)
-                         square-pos)))
+    (SquarePosVertOutput
+      (vec4f (* screenspace-scale square-pos)
+             0.
+             1.)
+      square-pos)))
 
 @fragment
 (defn grid-frag [in: SquarePosVertOutput]: @{location 0} vec4f
@@ -216,8 +218,9 @@
 
 (defn run-jumpflood-step [d: u32]
   (= jumpflood-distance d)
-  (dispatch-compute-shader jumpflood-grid-update
-                           (vec3u grid-size grid-size 1u)))
+  (dispatch-compute-shader
+    jumpflood-grid-update
+    (vec3u grid-size grid-size 1u)))
 
 @cpu
 (defn main []
@@ -225,28 +228,31 @@
      (zeroed-array seed-count))
   (= grid
      (zeroed-array (* grid-size grid-size)))
-  (dispatch-compute-shader position-seeds
-                           (vec3u seed-count 1u 1u))
+  (dispatch-compute-shader
+    position-seeds
+    (vec3u seed-count 1u 1u))
   (let [@var d (/ grid-size 2)]
     (while (>= d 1)
       (run-jumpflood-step d)
       (/= d 2))
     (run-jumpflood-step 1))
   (spawn-window (fn []
-                    (let [resolution (window-resolution)]
-                      (= screenspace-scale
-                         (/ (f32 (min resolution.x resolution.y))
-                            (vec2f resolution))))
-                    (dispatch-compute-shader position-seeds
-                                             (vec3u seed-count 1u 1u))
-                    (let [distances [4u 2u 1u]]
-                      (for [i
-                            0u
-                            (< i (array-length distances))
-                            (+= i 1)]
-                        (run-jumpflood-step (distances i))))
-                    (dispatch-render-shaders grid-vertex grid-frag 6)
-                    (dispatch-render-shaders seed-dot-vertex
-                                             seed-dot-frag
-                                             (* 6 seed-count))
-                    (+= frame-index 1))))
+                  (let [resolution (window-resolution)]
+                    (= screenspace-scale
+                       (/ (f32 (min resolution.x resolution.y))
+                          (vec2f resolution))))
+                  (dispatch-compute-shader
+                    position-seeds
+                    (vec3u seed-count 1u 1u))
+                  (let [distances [4u 2u 1u]]
+                    (for [i
+                          0u
+                          (< i (array-length distances))
+                          (+= i 1)]
+                      (run-jumpflood-step (distances i))))
+                  (dispatch-render-shaders grid-vertex grid-frag 6)
+                  (dispatch-render-shaders
+                    seed-dot-vertex
+                    seed-dot-frag
+                    (* 6 seed-count))
+                  (+= frame-index 1))))

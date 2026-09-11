@@ -14,13 +14,19 @@
 @fragment
 (defn frag []: vec4f
   (match (make-voice 0.75)
-    (Some v) (vec4f (if v.down v.level 0.) 0. 0. 1.)
+    (Some v) (vec4f (if v.down
+                      v.level
+                      0.)
+                    0.
+                    0.
+                    1.)
     None (vec4f 0.)))
 
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (dispatch-render-shaders
-                     (fn [] (vec4f (f32 (vertex-index)) 0. 0. 1.))
-                     frag
-                     3))))
+                  (dispatch-render-shaders
+                    (fn []
+                      (vec4f (f32 (vertex-index)) 0. 0. 1.))
+                    frag
+                    3))))

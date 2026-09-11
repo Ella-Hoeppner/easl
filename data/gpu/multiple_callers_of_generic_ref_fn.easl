@@ -21,7 +21,6 @@
 
 (defn rand []: f32
   ; based on https://amindforeverprogramming.blogspot.com/2013/07/random-floats-in-glsl-330.html
-
   (= rand-state
      (+ rand-state 0.025))
   (let [mantissa-mask 8388607u
@@ -292,15 +291,16 @@
 @cpu
 (defn main []: ()
   (spawn-window (fn []
-                    (dispatch-render-shaders (fn []
-                                                 (vec4f (match (vertex-index)
-                                                          0u (vec2f -1.)
-                                                          1u (vec2f -1. 3.)
-                                                          _ (vec2f 3. -1.))
-                                                        0.
-                                                        1.))
-                                             (fn [] (vec4f 1. 0. 1. 1.))
-                                             3u))))
+                  (dispatch-render-shaders
+                    (fn []
+                      (vec4f (match (vertex-index)
+                               0u (vec2f -1.)
+                               1u (vec2f -1. 3.)
+                               _ (vec2f 3. -1.))
+                             0.
+                             1.))
+                    (fn [] (vec4f 1. 0. 1. 1.))
+                    3u))))
 
 ; LLM-written code, be careful
 (defn bessel-i0 [z: f32]: f32
@@ -328,4 +328,3 @@
                               (if (== i 0)
                                 t
                                 (state (- i 1)))))))))))
-

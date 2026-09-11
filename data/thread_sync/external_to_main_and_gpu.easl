@@ -14,10 +14,11 @@
 @{workgroup-size 1}
 @compute
 (defn scale []
-  (= (out 0u) (* 2. (.x (sliders 0u)))))
+  (= (out 0u)
+     (* 2. (.x (sliders 0u)))))
 
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (dispatch-compute-shader scale (vec3u 1u))
-                    (print (out 0u)))))
+                  (dispatch-compute-shader scale (vec3u 1u))
+                  (print (out 0u)))))

@@ -10,4 +10,3 @@
   (print A)
   (dispatch-compute-shader (fn [] (= x A)) (vec3u 1u))
   (print x))
-

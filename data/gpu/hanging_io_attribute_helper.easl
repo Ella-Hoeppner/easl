@@ -1,3 +1,2 @@
 (defn helper []: u32
   (.x (global-invocation-id)))
-

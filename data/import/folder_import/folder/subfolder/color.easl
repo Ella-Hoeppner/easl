@@ -1,3 +1,2 @@
 (def color: vec3f
      (vec3f 1. 0. 0.))
-

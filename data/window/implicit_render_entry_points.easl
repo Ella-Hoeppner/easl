@@ -12,4 +12,4 @@
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (dispatch-render-shaders trivial-vertex my-fragment 3))))
+                  (dispatch-render-shaders trivial-vertex my-fragment 3))))

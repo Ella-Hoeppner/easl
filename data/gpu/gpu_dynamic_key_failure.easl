@@ -13,10 +13,12 @@
 @compute
 (defn probe []
   (= (out 0u)
-     (if (key-down? (string 3u)) 1. 0.)))
+     (if (key-down? (string 3u))
+       1.
+       0.)))
 
 @cpu
 (defn main []
   (spawn-window (fn []
-                    (dispatch-compute-shader probe (vec3u 1u))
-                    (close-window))))
+                  (dispatch-compute-shader probe (vec3u 1u))
+                  (close-window))))

@@ -11,4 +11,4 @@
 (defn main []
   (start-audio voice)
   (spawn-window (fn []
-                    (print (array-length events)))))
+                  (print (array-length events)))))

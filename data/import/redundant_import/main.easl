@@ -5,4 +5,3 @@
 @fragment
 (defn f []: vec4f
   (vec4f color 1.))
-

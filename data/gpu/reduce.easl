@@ -18,4 +18,3 @@
 (defn main []: f32
   (let [my-arr: [3: f32] [0. 1. 2.]]
     (sum my-arr)))
-

@@ -1,5 +1,6 @@
 @cpu
 (defn main []: ()
   (let [@var acc 0.]
-    (dispatch-compute-shader (fn [] (+= acc 1.))
-                             (vec3u 1u))))
+    (dispatch-compute-shader
+      (fn [] (+= acc 1.))
+      (vec3u 1u))))

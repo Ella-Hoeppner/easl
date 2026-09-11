@@ -13,6 +13,7 @@
 @cpu
 (defn main []
   (= arr (zeroed-array array-size))
-  (dispatch-compute-shader fill-array-with-ones
-                           (vec3u array-size 1u 1u))
+  (dispatch-compute-shader
+    fill-array-with-ones
+    (vec3u array-size 1u 1u))
   (print arr))

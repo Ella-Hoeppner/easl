@@ -5,4 +5,3 @@
 (defn c []
   (= (arr (.x (global-invocation-id)))
      1u))
-

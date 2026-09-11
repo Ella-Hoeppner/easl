@@ -4,4 +4,3 @@
 (defn main []
   (let [f (fn [x] (* x 2.))]
     (= v f)))
-

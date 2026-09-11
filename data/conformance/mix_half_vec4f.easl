@@ -3,4 +3,3 @@
                (vec4f 10.)
                (vec4f 0.5))]
     (+ v.x v.y v.z v.w)))
-
