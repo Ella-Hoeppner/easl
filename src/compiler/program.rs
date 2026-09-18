@@ -4246,6 +4246,15 @@ impl Program {
                             && let Some(signatures) =
                               self.abstract_functions.get(applied_f_name)
                             && let Some(signature) = signatures.get(0)
+                            // Skip when the applied function is the one we're
+                            // currently walking (which we hold write-locked):
+                            // higher-order-argument inlining of mutually
+                            // delegating overloads can produce a specialization
+                            // whose body names itself, and `signature.read()`
+                            // on our own already-write-locked lock would
+                            // deadlock. Reading our own return-type ancestor
+                            // mid-mutation would be meaningless anyway.
+                            && !Arc::ptr_eq(top_level_f, signature)
                             && let AbstractType::Type(Type::Function(
                               returned_f,
                             )) = &signature.read().unwrap().return_type

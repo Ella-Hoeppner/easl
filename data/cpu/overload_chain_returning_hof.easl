@@ -1,0 +1,31 @@
+; Three overloads of `blend` that delegate to each other by filling in
+; default arguments (2 -> 3 -> 5 args), all returning higher-order
+; functions. Higher-order-argument inlining specializes the delegating
+; chain, and a naming artifact of that inlining makes a specialization
+; reference itself by name. The abstract-signature propagation pass walks
+; each function while holding its write lock; before the fix, reaching a
+; self-referencing call made it read its own already-write-locked
+; signature and deadlock (the compiler hung forever). Two delegation
+; layers are required to trigger it — a single layer never self-references.
+(defn blend [a: (Fn [] f32)
+             b: (Fn [] f32)
+             mix-factor: (Fn [f32] f32)
+             scale: f32
+             offset: f32]: (Fn [] f32)
+  (fn []
+    (+ offset
+       (* scale (+ (a) (mix-factor (b)))))))
+
+(defn blend [a: (Fn [] f32)
+             b: (Fn [] f32)
+             mix-factor: (Fn [f32] f32)]: (Fn [] f32)
+  (blend a b mix-factor 2. 1.))
+
+(defn blend [a: (Fn [] f32)
+             b: (Fn [] f32)]: (Fn [] f32)
+  (blend a b (fn [x] (* 0.5 x))))
+
+@cpu
+(defn main []
+  (let [f (blend (fn [] 3.) (fn [] 4.))]
+    (print (f))))
