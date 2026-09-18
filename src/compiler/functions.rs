@@ -1072,13 +1072,15 @@ impl AbstractFunctionSignature {
       AbstractType::Unit => TypeState::Known(Type::Unit).into(),
     };
     for (v, _) in args.iter_mut() {
-      v.var_type
-        .kind
-        .replace_skolems_with_unification_variables(&generic_variables);
+      v.var_type.kind.replace_skolems_with_unification_variables(
+        &generic_variables,
+        &generic_constants,
+      );
     }
-    return_type
-      .kind
-      .replace_skolems_with_unification_variables(&generic_variables);
+    return_type.kind.replace_skolems_with_unification_variables(
+      &generic_variables,
+      &generic_constants,
+    );
     Ok(FunctionSignature {
       args,
       return_type,

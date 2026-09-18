@@ -3751,6 +3751,26 @@ impl TypedExp {
         state.emit_host_op(HostOp::LoadWav { path_slot, dest });
         Some(Some(dest))
       }
+      "start-listening" => {
+        state.emit_host_op(HostOp::StartListening { device_slot: None });
+        Some(None)
+      }
+      "start-listening-from" => {
+        // The device name is a runtime `String` (a heap id), like
+        // `load-wav`'s path — the host op decodes it.
+        let device_slot = args[0]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("start-listening-from device name produced no value");
+        state.emit_host_op(HostOp::StartListening {
+          device_slot: Some(device_slot),
+        });
+        Some(None)
+      }
+      "listenable-sources" => {
+        let dest = state.take_stack_slot(1);
+        state.emit_host_op(HostOp::ListenableSources { dest });
+        Some(Some(dest))
+      }
       "load-wav-raw" => {
         let path_slot = args[0]
           .compile_to_bytecode(CompilePosition::Value, state)

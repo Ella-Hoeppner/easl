@@ -116,6 +116,10 @@ struct ThreadSyncIO {
   /// When set, both the main thread's per-frame MIDI refresh and the
   /// stashed audio driver report this state instead of silence.
   spoofed_midi: Option<MidiState>,
+  /// When set, the stashed audio driver reads `(audio-input)` samples from
+  /// this instead of a real capture device — the deterministic input for
+  /// `audio-input` tests.
+  spoofed_audio_input: Option<std::collections::VecDeque<f32>>,
   /// Delegate for all GPU machinery (headless GpuCore, buffer readback,
   /// queued frame events). Its windowing loop is never used.
   inner: StdoutIO,
@@ -139,6 +143,7 @@ impl ThreadSyncIO {
       schedule,
       trace: initial_trace,
       spoofed_midi: None,
+      spoofed_audio_input: None,
       inner: StdoutIO::new(),
       audio: None,
       audio_shared_names: Vec::new(),
@@ -396,6 +401,7 @@ impl IOManager for ThreadSyncIO {
         .expect("failed to build audio driver");
         driver.midi_override =
           Some(Arc::new(self.spoofed_midi.clone().unwrap_or_default()));
+        driver.audio_input_override = self.spoofed_audio_input.clone();
         self.audio = Some(driver);
       }
       Some(AudioSource::C(_)) => {
@@ -410,13 +416,30 @@ impl IOManager for ThreadSyncIO {
 }
 
 fn run_thread_sync_test(name: &str, schedule: Vec<Step>) {
-  run_thread_sync_test_with_midi(name, schedule, None)
+  run_thread_sync_test_inner(name, schedule, None, None)
 }
 
 fn run_thread_sync_test_with_midi(
   name: &str,
   schedule: Vec<Step>,
   spoofed_midi: Option<MidiState>,
+) {
+  run_thread_sync_test_inner(name, schedule, spoofed_midi, None)
+}
+
+fn run_thread_sync_test_with_audio_input(
+  name: &str,
+  schedule: Vec<Step>,
+  spoofed_audio_input: std::collections::VecDeque<f32>,
+) {
+  run_thread_sync_test_inner(name, schedule, None, Some(spoofed_audio_input))
+}
+
+fn run_thread_sync_test_inner(
+  name: &str,
+  schedule: Vec<Step>,
+  spoofed_midi: Option<MidiState>,
+  spoofed_audio_input: Option<std::collections::VecDeque<f32>>,
 ) {
   let expected = fs::read_to_string(format!("./data/thread_sync/{name}.txt"))
     .unwrap_or_else(|_| panic!("Unable to read data/thread_sync/{name}.txt"));
@@ -468,6 +491,7 @@ fn run_thread_sync_test_with_midi(
           initial_trace,
         );
         io.spoofed_midi = spoofed_midi.clone();
+        io.spoofed_audio_input = spoofed_audio_input.clone();
         io
       },
       source_path,
@@ -723,3 +747,15 @@ thread_sync_test!(audio_struct_dyn_capture, [Frame, AudioBatch(6)]);
 thread_sync_test!(audio_dyn_alloc, [Frame, AudioBatch(2)]);
 thread_sync_test!(audio_realloc_shared, [Frame, AudioBatch(2), Frame]);
 thread_sync_test!(audio_nested_alloc_shared, [Frame, AudioBatch(2), Frame]);
+
+/// Real-time audio input: a passthrough audio entry reads `(audio-input)`,
+/// so the emitted samples equal the (deterministically spoofed) captured
+/// input. Exercises the driver's per-sample `easl_audio_input` refresh.
+#[test]
+fn audio_input_passthrough() {
+  run_thread_sync_test_with_audio_input(
+    "audio_input_passthrough",
+    [Frame, AudioBatch(3)].to_vec(),
+    std::collections::VecDeque::from([0.5f32, -0.25, 0.75]),
+  );
+}

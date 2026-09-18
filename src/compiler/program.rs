@@ -3099,14 +3099,14 @@ impl Program {
             }
             ExpKind::Application(applied_f, args) => {
               if let ExpKind::Name(applied_name) = &applied_f.kind
-                && &**applied_name == "audio-time"
+                && matches!(&**applied_name, "audio-time" | "audio-input")
                 && args.is_empty()
               {
                 violations.push((
                   exp.source_trace.clone(),
                   bit(AUDIO),
                   std::array::from_fn(|_| {
-                    Some(AudioInfoOutsideAudio("audio-time".to_string()))
+                    Some(AudioInfoOutsideAudio(applied_name.to_string()))
                   }),
                 ));
               }
@@ -3367,6 +3367,9 @@ impl Program {
                 }
                 "audio-time" => {
                   ("easl_audio_time", VariableAddressSpace::Local, None)
+                }
+                "audio-input" => {
+                  ("easl_audio_input", VariableAddressSpace::Local, None)
                 }
                 "midi-aftertouch" => (
                   "easl_midi_aftertouch",

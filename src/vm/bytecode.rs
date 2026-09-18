@@ -729,6 +729,17 @@ pub enum HostOp {
   StartAudio {
     entry: u16,
   },
+  /// `(start-listening)` / `(start-listening-from device)`: begin real-time
+  /// audio capture. `device_slot` is `None` for the default input device,
+  /// or `Some(slot)` where `slot` holds a device-name string's heap id.
+  StartListening {
+    device_slot: Option<u16>,
+  },
+  /// `(listenable-sources)`: build a `[String]` of the available input
+  /// device names (sorted) as a fresh heap cell, writing its id to `dest`.
+  ListenableSources {
+    dest: u16,
+  },
   /// `(load-wav path)`: parse the WAV file at the runtime string in
   /// `path_slot` (a heap-id slot — the argument is compiled as an
   /// ordinary `String` value, so a literal, a `String` parameter threaded

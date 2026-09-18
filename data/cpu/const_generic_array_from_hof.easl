@@ -1,0 +1,20 @@
+; A const-generic function whose higher-order argument RETURNS a
+; const-generic sized array `[C: T]`. The size `C` must be inferred from
+; the array the passed closure returns — which lives inside a function
+; type, where the size is baked as a skolem. Two call sites with
+; different lengths prove per-call-site inference of `C` (3, then 2).
+(struct P
+  v: f32)
+
+(defn (sum-gen C: u32)
+      [gen: (Fn [] [C: P])]: f32
+  (let [arr (gen)
+        @var total 0.]
+    (for [i (array-length arr)]
+      (+= total (.v (arr i))))
+    total))
+
+@cpu
+(defn main []
+  (print (sum-gen (fn [] [(P 1.) (P 2.) (P 3.)])))
+  (print (sum-gen (fn [] [(P 10.) (P 20.)]))))

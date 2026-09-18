@@ -1771,14 +1771,16 @@ fn apply_builtin_fn<IO: IOManager>(
     // todo!() texture functions, for now I guess these should just error
     "print" => {
       if let Some(arg) = args.get(0) {
-        env.io.println(&arg.0.format_for_print(&args[0].1, env)?);
+        env
+          .io
+          .println(&arg.0.format_for_print(&args[0].1, env, true)?);
       } else {
         env.io.println("()");
       }
       Ok(Value::Unit)
     }
     "string" => {
-      let s = args[0].0.format_for_print(&args[0].1, env)?;
+      let s = args[0].0.format_for_print(&args[0].1, env, false)?;
       Ok(Value::String(s))
     }
     "concat" if matches!(args[0].0, Value::String(_)) => {
@@ -2320,6 +2322,25 @@ fn apply_builtin_fn<IO: IOManager>(
       env.current_render_target = None;
       Ok(Value::Unit)
     }
+    "start-listening" => {
+      env.io.start_audio_input(None)?;
+      Ok(Value::Unit)
+    }
+    "start-listening-from" => {
+      let Value::String(device) = &args[0].0 else {
+        panic!("start-listening-from: expected string device name")
+      };
+      env.io.start_audio_input(Some(device.as_str()))?;
+      Ok(Value::Unit)
+    }
+    "listenable-sources" => Ok(Value::Array(
+      env
+        .io
+        .listenable_sources()
+        .into_iter()
+        .map(Value::String)
+        .collect(),
+    )),
     "save-png" => {
       let texture = args.remove(0).0;
       let Value::String(path) = args.remove(0).0 else {
@@ -2456,10 +2477,16 @@ fn apply_builtin_fn<IO: IOManager>(
 }
 
 impl Value {
+  /// Formats a value for display. `quote_strings` wraps every `String`
+  /// (including ones nested in arrays/structs/enums) in double quotes —
+  /// `print` sets it so string boundaries are visible (especially in
+  /// arrays of strings), while `(string x)`, the string-building
+  /// conversion, leaves it unset so it produces the raw text.
   fn format_for_print(
     &self,
     t: &Type,
     env: &EvaluationEnvironment<impl IOManager>,
+    quote_strings: bool,
   ) -> Result<String, EvalError> {
     Ok(match (self, t) {
       (Value::Prim(Primitive::F32(f)), _) => {
@@ -2485,7 +2512,7 @@ impl Value {
             let formatted: Vec<String> = ["x", "y", "z", "w"]
               .iter()
               .filter_map(|f| fields.get(*f))
-              .map(|v| v.format_for_print(&scalar_type, env))
+              .map(|v| v.format_for_print(&scalar_type, env, quote_strings))
               .collect::<Result<_, EvalError>>()?;
             Ok(format!(
               "(vec{}{suffix} {})",
@@ -2503,7 +2530,7 @@ impl Value {
           .map(|field| {
             let value = &fields[&field.name];
             let field_type = field.field_type.kind.unwrap_known();
-            value.format_for_print(&field_type, env)
+            value.format_for_print(&field_type, env, quote_strings)
           })
           .collect::<Result<_, _>>()?;
         let name = match &*s.name {
@@ -2530,28 +2557,41 @@ impl Value {
           .unwrap_or(Type::Unit);
         match &variant_type {
           Type::Unit => variant.to_string(),
-          t => format!("({} {})", variant, inner.format_for_print(t, env)?),
+          t => format!(
+            "({} {})",
+            variant,
+            inner.format_for_print(t, env, quote_strings)?
+          ),
         }
       }
       (Value::Array(items), Type::Array(_, inner_type)) => {
         let inner = inner_type.kind.unwrap_known();
         let formatted: Vec<String> = items
           .iter()
-          .map(|item| item.format_for_print(&inner, env))
+          .map(|item| item.format_for_print(&inner, env, quote_strings))
           .collect::<Result<_, _>>()?;
         format!("[{}]", formatted.join(" "))
       }
       (Value::ZeroedArray { length }, Type::Array(_, inner_type)) => {
         let inner = inner_type.kind.unwrap_known();
         let zero_val = Value::zeroed(inner.clone(), env)?;
-        let items: Vec<String> =
-          std::iter::repeat(zero_val.format_for_print(&inner, env))
-            .take(*length)
-            .collect::<Result<_, _>>()?;
+        let items: Vec<String> = std::iter::repeat(zero_val.format_for_print(
+          &inner,
+          env,
+          quote_strings,
+        ))
+        .take(*length)
+        .collect::<Result<_, _>>()?;
         format!("[{}]", items.join(" "))
       }
       (Value::Unit, _) => "()".to_string(),
-      (Value::String(s), _) => s.clone(),
+      (Value::String(s), _) => {
+        if quote_strings {
+          format!("\"{s}\"")
+        } else {
+          s.clone()
+        }
+      }
       _ => format!("{:?}", self),
     })
   }
@@ -3763,6 +3803,24 @@ pub trait IOManager: Sized {
   fn start_audio(&mut self, _entry_name: &str) -> Result<(), EvalError> {
     Err(WindowFeatureNotEnabled.into())
   }
+  /// Begins real-time audio-input capture, `None` selecting the default
+  /// input device and `Some(name)` a device by name substring (see
+  /// `start-listening` / `start-listening-from`). Default: a no-op — only
+  /// IO managers that actually link an audio backend (`StdoutIO`) open a
+  /// real capture stream, so test managers never touch an input device.
+  fn start_audio_input(
+    &mut self,
+    _device: Option<&str>,
+  ) -> Result<(), EvalError> {
+    Ok(())
+  }
+  /// The names of the available audio input devices (sorted), backing the
+  /// `listenable-sources` builtin. Default: empty — only IO managers that
+  /// link an audio backend enumerate real devices, keeping test output
+  /// deterministic rather than dependent on the host's hardware.
+  fn listenable_sources(&self) -> Vec<String> {
+    vec![]
+  }
   /// The sample rate the audio stream runs (or would run) at, readable
   /// before any stream exists — main-thread `(sample-rate)` calls report
   /// this (the audio thread's copy is written by the driver from the live
@@ -4172,6 +4230,18 @@ impl IOManager for StdoutIO {
   #[cfg(not(feature = "window"))]
   fn start_audio(&mut self, _entry_name: &str) -> Result<(), EvalError> {
     Err(WindowFeatureNotEnabled.into())
+  }
+  #[cfg(feature = "window")]
+  fn start_audio_input(
+    &mut self,
+    device: Option<&str>,
+  ) -> Result<(), EvalError> {
+    crate::audio::start_audio_input(device)
+      .map_err(|e| UserspaceEvalError::AudioRuntimeError(e).into())
+  }
+  #[cfg(feature = "window")]
+  fn listenable_sources(&self) -> Vec<String> {
+    crate::audio::listenable_sources()
   }
 }
 
@@ -7694,7 +7764,7 @@ fn vm_host_call<IO: IOManager>(
         &stack[*slot as usize..*slot as usize + n],
         heap,
       );
-      let formatted = value.format_for_print(t, env)?;
+      let formatted = value.format_for_print(t, env, true)?;
       env.io.println(&formatted);
     }
     HostOp::Stringify { slot, ty, dest } => {
@@ -7705,7 +7775,7 @@ fn vm_host_call<IO: IOManager>(
         &stack[*slot as usize..*slot as usize + n],
         heap,
       );
-      let formatted = value.format_for_print(t, env)?;
+      let formatted = value.format_for_print(t, env, false)?;
       let cell = Arc::new(HeapCell {
         memory: DynMemory::Words(string_to_words(&formatted)),
         stride: 1,
@@ -7721,19 +7791,19 @@ fn vm_host_call<IO: IOManager>(
         }
         _ => env.lookup(&b.name)?.clone(),
       };
-      let formatted = value.format_for_print(&b.ty, env)?;
+      let formatted = value.format_for_print(&b.ty, env, true)?;
       env.io.println(&formatted);
     }
     HostOp::PrintString { string } => {
-      let text = code.host_strings[*string as usize].clone();
-      env.io.println(&text);
+      let text = &code.host_strings[*string as usize];
+      env.io.println(&format!("\"{text}\""));
     }
     HostOp::PrintZeroed { len_slot, ty } => {
       let t = &code.host_types[*ty as usize];
       let value = Value::ZeroedArray {
         length: stack[*len_slot as usize] as usize,
       };
-      let formatted = value.format_for_print(t, env)?;
+      let formatted = value.format_for_print(t, env, true)?;
       env.io.println(&formatted);
     }
     HostOp::CheckGpuToCpu { binding } => {
@@ -7995,6 +8065,34 @@ fn vm_host_call<IO: IOManager>(
         let _ = entry_name;
         return Err(WindowFeatureNotEnabled.into());
       }
+    }
+    HostOp::StartListening { device_slot } => {
+      let device = device_slot.map(|slot| {
+        words_to_string(heap_string_words(heap, stack[slot as usize]))
+      });
+      env.io.start_audio_input(device.as_deref())?;
+    }
+    HostOp::ListenableSources { dest } => {
+      // Build a `[String]` heap value: a `Cells` container whose children
+      // are string cells (one codepoint per word), mirroring how the VM
+      // represents any `[String]`.
+      let children: Vec<Option<Arc<HeapCell>>> = env
+        .io
+        .listenable_sources()
+        .iter()
+        .map(|name| {
+          Some(Arc::new(HeapCell {
+            memory: DynMemory::Words(string_to_words(name)),
+            stride: 1,
+          }))
+        })
+        .collect();
+      let cell = Arc::new(HeapCell {
+        memory: DynMemory::Cells(children),
+        stride: 1,
+      });
+      release_heap_id(heap, heap_free, stack[*dest as usize]);
+      stack[*dest as usize] = alloc_heap_cell(heap, heap_free, cell);
     }
     HostOp::LoadWav { path_slot, dest } => {
       let path =

@@ -219,11 +219,13 @@ cpu_test!(load_wav_local_binding);
 cpu_test!(load_wav_raw);
 cpu_test!(wav_sample_rate);
 cpu_test!(save_wav_roundtrip);
+cpu_test!(listenable_sources);
 cpu_test!(midi_silent_defaults);
 cpu_test!(for_loop_zero_iterations_lifted_condition);
 cpu_test!(assign_field_in_dyn_array_element);
 cpu_test!(const_generic_zeroed_array);
 cpu_test!(const_generic_zeroed_array_map);
+cpu_test!(const_generic_array_from_hof);
 // The embedding-element container pins: RUNTIME-SIZED containers whose
 // element type *embeds* heap ids without being one (`[(Option [f32])]`,
 // `[Packet]`-with-dyn-field) store flat words (`DynMemory::Words`), and

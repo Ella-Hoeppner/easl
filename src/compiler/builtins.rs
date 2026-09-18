@@ -2589,6 +2589,62 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
+    // Begin real-time audio capture. `start-listening` uses the system
+    // default input device (usually the microphone); `start-listening-from`
+    // selects a device by name substring (e.g. a line-in / audio jack).
+    // The captured samples feed `(audio-input)`. Both are CPU-only host ops
+    // that carry `Window` (an externally-observable effect, so a
+    // statement-position call isn't pruned).
+    AbstractFunctionSignature {
+      name: "start-listening".into(),
+      arg_types: vec![],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("start-listening".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "start-listening-from".into(),
+      arg_types: vec![AbstractType::Type(Type::String).owned()],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("start-listening-from".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    // The names of the available audio input devices, sorted (so an index
+    // into the list is stable within a session, absent device changes).
+    // Pair with `start-listening-from` to pick one by index instead of
+    // guessing its exact name. CPU-only host query.
+    AbstractFunctionSignature {
+      name: "listenable-sources".into(),
+      arg_types: vec![],
+      return_type: AbstractType::AbstractArray {
+        size: AbstractArraySize::Unsized,
+        inner_type: AbstractType::Type(Type::String).into(),
+        source_trace: SourceTrace::empty(),
+      },
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("listenable-sources".into())
+          .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
     AbstractFunctionSignature {
       name: "window-resolution".into(),
       return_type: AbstractType::AbstractStruct(
@@ -2640,6 +2696,22 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
     },
     AbstractFunctionSignature {
       name: "sample-rate".into(),
+      return_type: AbstractType::Type(Type::F32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: EffectType::empty(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    // The current real-time audio-input sample (mono, roughly [-1, 1]),
+    // captured from the device selected by `start-listening`. Like
+    // `audio-time`, it's audio-context only and rewritten by
+    // `extract_audio_info` into a read of the implicit `@local`
+    // `easl_audio_input` var the audio driver writes each sample. Reads 0
+    // when nothing is listening.
+    AbstractFunctionSignature {
+      name: "audio-input".into(),
       return_type: AbstractType::Type(Type::F32),
       implementation: FunctionImplementationKind::Builtin {
         effect_type: EffectType::empty(),

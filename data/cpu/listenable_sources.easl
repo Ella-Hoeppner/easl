@@ -1,0 +1,10 @@
+; `listenable-sources` returns the (sorted) available input-device names as
+; a `[String]`, so you can `start-listening-from` a device by index rather
+; than spelling its name. Test IO managers report no devices, so the list
+; is empty here — this pins the plumbing (building the `[String]`,
+; array-length, printing) on both runtimes.
+@cpu
+(defn main []
+  (let [sources (listenable-sources)]
+    (print (array-length sources))
+    (print sources)))

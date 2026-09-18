@@ -13,7 +13,8 @@
 //!   `libloading`, and the cpal callback calls the loaded function pointer
 //!   directly. Faster but requires `clang` on the host.
 
-use std::sync::{Arc, Mutex};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleRate, SizedSample};
@@ -286,6 +287,194 @@ where
   }
 }
 
+// ===================== Real-time audio input =====================
+//
+// A process-global capture stream (started by `start-listening`) pushes
+// incoming samples — downmixed to mono — into a bounded FIFO. The output
+// audio driver drains one sample per output sample into the implicit
+// `easl_audio_input` var that `(audio-input)` reads (see
+// `Program::extract_audio_info`). This mirrors the MIDI listener: a
+// device-owned callback thread produces, the real-time output callback
+// consumes, and they meet only through a lock-guarded shared buffer.
+//
+// Input and output are independent devices at possibly different rates; no
+// resampling is done, so a mismatch shows up as pitch/latency drift. The
+// common case (both on the default device at 48kHz) lines up.
+
+/// Max samples buffered before the input callback drops the oldest — caps
+/// latency and prevents unbounded growth when nothing is consuming (e.g.
+/// `start-listening` called without any `start-audio` output stream).
+const AUDIO_INPUT_RING_CAPACITY: usize = 16384;
+
+/// FIFO of captured mono input samples. Created on the first
+/// `start-listening`; shared (via `Arc`) with the input stream's callback.
+static AUDIO_INPUT_RING: OnceLock<Arc<Mutex<VecDeque<f32>>>> = OnceLock::new();
+
+fn audio_input_ring() -> &'static Arc<Mutex<VecDeque<f32>>> {
+  AUDIO_INPUT_RING.get_or_init(|| Arc::new(Mutex::new(VecDeque::new())))
+}
+
+/// The live capture stream, kept alive here (it's `!Send`, so — like
+/// `AudioState` — it's only ever stashed on the thread that built it).
+/// Replacing it (selecting a different device) drops the old one.
+struct AudioInputState {
+  _stream: cpal::Stream,
+}
+// SAFETY: only stashed in this Mutex on the creating thread; never moved
+// across threads.
+unsafe impl Send for AudioInputState {}
+static AUDIO_INPUT_STREAM: Mutex<Option<AudioInputState>> = Mutex::new(None);
+
+/// Fills `buf` with the next `frames` captured input samples (mono),
+/// padding with silence on underrun and yielding all-silence when nothing
+/// is listening. Called once per output batch by the audio driver, so the
+/// ring is locked once per batch rather than once per sample.
+pub fn drain_audio_input(buf: &mut Vec<f32>, frames: usize) {
+  buf.clear();
+  buf.resize(frames, 0.0);
+  if let Some(ring) = AUDIO_INPUT_RING.get() {
+    let mut ring = ring.lock().unwrap();
+    for slot in buf.iter_mut() {
+      match ring.pop_front() {
+        Some(sample) => *slot = sample,
+        None => break,
+      }
+    }
+  }
+}
+
+/// The names of the available audio input devices, sorted alphabetically
+/// so a caller can index into the list deterministically within a session
+/// (absent device plug/unplug). Empty when enumeration fails or no input
+/// devices exist. Backs the `listenable-sources` builtin.
+pub fn listenable_sources() -> Vec<String> {
+  let host = cpal::default_host();
+  let mut names: Vec<String> = match host.input_devices() {
+    Ok(devices) => devices.filter_map(|device| device.name().ok()).collect(),
+    Err(_) => vec![],
+  };
+  names.sort();
+  names
+}
+
+/// Resolves an input device: the default when `name` is `None`, else the
+/// first whose name contains `name` (a substring match, so partial names
+/// work). A miss lists the available devices to make selection easy.
+fn resolve_input_device(name: Option<&str>) -> Result<cpal::Device, String> {
+  let host = cpal::default_host();
+  match name {
+    None => host
+      .default_input_device()
+      .ok_or_else(|| "no audio input device available".to_string()),
+    Some(name) => {
+      let devices = host
+        .input_devices()
+        .map_err(|e| format!("enumerate audio input devices: {e}"))?;
+      let mut available = vec![];
+      for device in devices {
+        match device.name() {
+          Ok(device_name) if device_name.contains(name) => return Ok(device),
+          Ok(device_name) => available.push(device_name),
+          Err(_) => {}
+        }
+      }
+      Err(format!(
+        "no audio input device matching \"{name}\". Available input \
+         devices: {}",
+        if available.is_empty() {
+          "(none)".to_string()
+        } else {
+          available.join(", ")
+        }
+      ))
+    }
+  }
+}
+
+/// Starts (or replaces) the real-time audio-input capture stream. `None`
+/// uses the system default input device (typically the microphone); a name
+/// selects a specific device by substring (e.g. a line-in / audio jack).
+/// Incoming frames are downmixed to mono and pushed into the shared ring
+/// that `(audio-input)` reads.
+pub fn start_audio_input(device_name: Option<&str>) -> Result<(), String> {
+  let device = resolve_input_device(device_name)?;
+  let supported = device
+    .default_input_config()
+    .map_err(|e| format!("query default audio input config: {e}"))?;
+  let sample_format = supported.sample_format();
+  let channels = supported.channels() as usize;
+  let config: cpal::StreamConfig = supported.into();
+  let ring = audio_input_ring().clone();
+  let stream = build_input_stream_in_format(
+    &device,
+    &config,
+    sample_format,
+    channels,
+    ring,
+  )?;
+  stream
+    .play()
+    .map_err(|e| format!("start audio input capture: {e}"))?;
+  *AUDIO_INPUT_STREAM.lock().unwrap() =
+    Some(AudioInputState { _stream: stream });
+  Ok(())
+}
+
+/// Builds the capture stream in the device's sample format, converting each
+/// frame to a single mono `f32` and pushing it into `ring` (dropping the
+/// oldest samples past the capacity bound).
+fn build_input_stream_in_format(
+  device: &cpal::Device,
+  config: &cpal::StreamConfig,
+  format: cpal::SampleFormat,
+  channels: usize,
+  ring: Arc<Mutex<VecDeque<f32>>>,
+) -> Result<cpal::Stream, String> {
+  fn typed<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: usize,
+    ring: Arc<Mutex<VecDeque<f32>>>,
+  ) -> Result<cpal::Stream, String>
+  where
+    T: SizedSample,
+    f32: FromSample<T>,
+  {
+    let channel_divisor = channels.max(1) as f32;
+    device
+      .build_input_stream(
+        config,
+        move |input: &[T], _: &cpal::InputCallbackInfo| {
+          let mut ring = ring.lock().unwrap();
+          for frame in input.chunks(channels.max(1)) {
+            let sum: f32 = frame.iter().map(|&s| f32::from_sample_(s)).sum();
+            ring.push_back(sum / channel_divisor);
+          }
+          while ring.len() > AUDIO_INPUT_RING_CAPACITY {
+            ring.pop_front();
+          }
+        },
+        |err| eprintln!("audio input stream error: {err}"),
+        None,
+      )
+      .map_err(|e| format!("build audio input stream: {e}"))
+  }
+  use cpal::SampleFormat::*;
+  match format {
+    F32 => typed::<f32>(device, config, channels, ring),
+    F64 => typed::<f64>(device, config, channels, ring),
+    I8 => typed::<i8>(device, config, channels, ring),
+    I16 => typed::<i16>(device, config, channels, ring),
+    I32 => typed::<i32>(device, config, channels, ring),
+    I64 => typed::<i64>(device, config, channels, ring),
+    U8 => typed::<u8>(device, config, channels, ring),
+    U16 => typed::<u16>(device, config, channels, ring),
+    U32 => typed::<u32>(device, config, channels, ring),
+    U64 => typed::<u64>(device, config, channels, ring),
+    other => Err(format!("unsupported audio input sample format {other}")),
+  }
+}
+
 /// Per-sample wrapper over [`build_audio_stream_batched`], used by the C
 /// audio path (whose unit of execution is a single function-pointer call).
 #[cfg(feature = "c_audio")]
@@ -340,6 +529,17 @@ pub struct VmAudioDriver {
   midi_down_notes_region: Option<usize>,
   /// Base slot of the `get-midi-note` table (`[128: (Option MidiNote)]`).
   midi_notes_slot: Option<usize>,
+  /// Slot of the implicit `easl_audio_input` var, present iff the program
+  /// calls `(audio-input)`. Written every sample from the captured input
+  /// (one sample per output sample).
+  audio_input_slot: Option<usize>,
+  /// Reusable per-batch buffer the captured input samples are drained into
+  /// (so the input ring is locked once per batch, not once per sample).
+  audio_input_scratch: Vec<f32>,
+  /// When set, per-sample input reads pop from this instead of the live
+  /// capture ring — the deterministic path for tests (which must never
+  /// open a real input device). Padded with silence when exhausted.
+  pub audio_input_override: Option<VecDeque<f32>>,
   /// Generation of the MIDI snapshot last written into the replica —
   /// batches where no MIDI events arrived skip all refresh work.
   last_midi_generation: Option<u64>,
@@ -389,6 +589,9 @@ impl VmAudioDriver {
     let midi_notes_slot = program
       .get_global_slot("easl_midi_notes")
       .map(|(slot, _)| slot as usize);
+    let audio_input_slot = program
+      .get_global_slot("easl_audio_input")
+      .map(|(slot, _)| slot as usize);
     Ok(Self {
       program,
       function_names: function_names.to_vec(),
@@ -403,6 +606,9 @@ impl VmAudioDriver {
       midi_pitch_bend_slot,
       midi_down_notes_region,
       midi_notes_slot,
+      audio_input_slot,
+      audio_input_scratch: vec![],
+      audio_input_override: None,
       last_midi_generation: None,
       midi_override: None,
       shared_table,
@@ -511,7 +717,23 @@ impl VmAudioDriver {
       self.program.stack[slot] = rate.to_bits();
     }
     self.refresh_midi();
-    for _ in 0..frames {
+    // Pull this batch's captured input samples up front (one ring lock per
+    // batch), so the per-sample loop just reads from the scratch buffer.
+    if self.audio_input_slot.is_some() {
+      self.audio_input_scratch.clear();
+      self.audio_input_scratch.resize(frames, 0.0);
+      if let Some(override_samples) = self.audio_input_override.as_mut() {
+        for slot in self.audio_input_scratch.iter_mut() {
+          match override_samples.pop_front() {
+            Some(sample) => *slot = sample,
+            None => break,
+          }
+        }
+      } else {
+        drain_audio_input(&mut self.audio_input_scratch, frames);
+      }
+    }
+    for i in 0..frames {
       // The audio entry takes at most one f32 arg, `t`, living just past
       // the reserved return slot at the frame start. Zero-arg entries
       // (e.g. stateful closures) receive nothing and can read
@@ -523,6 +745,9 @@ impl VmAudioDriver {
       }
       if let Some(slot) = self.time_slot {
         self.program.stack[slot] = t.to_bits();
+      }
+      if let Some(slot) = self.audio_input_slot {
+        self.program.stack[slot] = self.audio_input_scratch[i].to_bits();
       }
       self.program.prepare_to_run_function(self.fn_index);
       self.program.execute();

@@ -2587,31 +2587,52 @@ impl Type {
   pub fn replace_skolems_with_unification_variables(
     &mut self,
     replacements: &HashMap<Arc<str>, ExpTypeInfo>,
+    const_replacements: &HashMap<Arc<str>, ConstGenericValue>,
   ) {
     match self {
       Type::Struct(s) => {
         for f in s.fields.iter_mut() {
-          f.field_type
-            .replace_skolems_with_unification_variables(replacements);
+          f.field_type.replace_skolems_with_unification_variables(
+            replacements,
+            const_replacements,
+          );
         }
       }
       Type::Enum(e) => {
         for v in e.variants.iter_mut() {
-          v.inner_type
-            .replace_skolems_with_unification_variables(replacements);
+          v.inner_type.replace_skolems_with_unification_variables(
+            replacements,
+            const_replacements,
+          );
         }
       }
       Type::Function(f) => {
         for (arg, _) in f.args.iter_mut() {
-          arg
-            .var_type
-            .replace_skolems_with_unification_variables(replacements);
+          arg.var_type.replace_skolems_with_unification_variables(
+            replacements,
+            const_replacements,
+          );
         }
-        f.return_type
-          .replace_skolems_with_unification_variables(replacements);
+        f.return_type.replace_skolems_with_unification_variables(
+          replacements,
+          const_replacements,
+        );
       }
-      Type::Array(_, t) => {
-        t.replace_skolems_with_unification_variables(replacements)
+      Type::Array(size, t) => {
+        // A const-generic array size is baked as a `ConcreteArraySize::Skolem`
+        // when it appears inside a function-typed argument (which is stored as
+        // a concrete `Type::Function`). At a call site those skolems must
+        // become the same fresh unification variables the outer signature
+        // uses, so the size can be inferred from the actual argument.
+        if let Some(ConcreteArraySize::Skolem(name)) = size
+          && let Some(value) = const_replacements.get(name)
+        {
+          *size = Some(ConcreteArraySize::UnificationVariable(value.clone()));
+        }
+        t.replace_skolems_with_unification_variables(
+          replacements,
+          const_replacements,
+        )
       }
       _ => {}
     }
@@ -3382,12 +3403,16 @@ impl TypeState {
   pub fn replace_skolems_with_unification_variables(
     &mut self,
     replacements: &HashMap<Arc<str>, ExpTypeInfo>,
+    const_replacements: &HashMap<Arc<str>, ConstGenericValue>,
   ) {
     if let Some(replacement) =
       self.with_dereferenced_mut(|typestate| match typestate {
         TypeState::OneOf(types) => {
           for t in types.iter_mut() {
-            t.replace_skolems_with_unification_variables(replacements);
+            t.replace_skolems_with_unification_variables(
+              replacements,
+              const_replacements,
+            );
           }
           None
         }
@@ -3397,7 +3422,10 @@ impl TypeState {
           {
             Some(replacement.kind.clone())
           } else {
-            t.replace_skolems_with_unification_variables(replacements);
+            t.replace_skolems_with_unification_variables(
+              replacements,
+              const_replacements,
+            );
             None
           }
         }
