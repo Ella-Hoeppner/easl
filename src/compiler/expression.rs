@@ -3862,10 +3862,11 @@ impl TypedExp {
                 .clone(),
             )?;
             *name = monomorphized.name.clone();
-            let monomorphized_rc = Arc::new(RwLock::new(monomorphized));
             drop(signature);
-            f.abstract_ancestor = Some(monomorphized_rc.clone());
-            new_program.add_abstract_function(monomorphized_rc);
+            f.abstract_ancestor = Some(
+              new_program
+                .add_abstract_function(Arc::new(RwLock::new(monomorphized))),
+            );
           }
         }
         Application(f, args) => {
@@ -4080,7 +4081,9 @@ impl TypedExp {
                           .clone(),
                       )?;
                     std::mem::swap(f_name, &mut monomorphized.name.clone());
-                    let monomorphized = Arc::new(RwLock::new(monomorphized));
+                    let monomorphized = new_program.add_abstract_function(
+                      Arc::new(RwLock::new(monomorphized)),
+                    );
                     std::mem::swap(
                       &mut f.data.kind,
                       &mut Type::Function(
@@ -4094,7 +4097,6 @@ impl TypedExp {
                       )
                       .known(),
                     );
-                    new_program.add_abstract_function(monomorphized);
                   }
                 }
               }
@@ -4342,11 +4344,9 @@ impl TypedExp {
                     .get_monomorphized_name(f_name.clone(), variant_name_parts);
                   *f_name = new_name.clone();
                   new_abstract_ancestor.name = new_name;
-                  *abstract_ancestor =
-                    Arc::new(RwLock::new(new_abstract_ancestor.clone()));
-                  new_program.add_abstract_function(Arc::new(RwLock::new(
-                    new_abstract_ancestor,
-                  )));
+                  *abstract_ancestor = new_program.add_abstract_function(
+                    Arc::new(RwLock::new(new_abstract_ancestor)),
+                  );
                   changed = true;
                 }
               };

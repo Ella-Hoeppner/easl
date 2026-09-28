@@ -684,10 +684,13 @@ impl Program {
     self.names.write().unwrap().track_user_name(&var.name);
     self.top_level_vars.push(var);
   }
+  /// Registers `signature`, returning the registered Arc: the existing one
+  /// when an equal signature is already registered under the same name, so
+  /// callers can point references at the registry's copy.
   pub fn add_abstract_function(
     &mut self,
     signature: Arc<RwLock<AbstractFunctionSignature>>,
-  ) {
+  ) -> Arc<RwLock<AbstractFunctionSignature>> {
     let name = Arc::clone(&signature.read().unwrap().name);
     self.names.write().unwrap().track_user_name(&name);
     if let FunctionImplementationKind::Composite(f) =
@@ -706,20 +709,15 @@ impl Program {
         })
         .unwrap();
     }
-    if let Some(bucket) = self.abstract_functions.get_mut(&name) {
-      let mut novel = true;
-      for existing_signature in bucket.iter() {
-        if *existing_signature.read().unwrap() == *signature.read().unwrap() {
-          novel = false;
-          break;
-        }
-      }
-      if novel {
-        bucket.push(signature.into());
-      }
-    } else {
-      self.abstract_functions.insert(name, vec![signature.into()]);
+    let bucket = self.abstract_functions.entry(name).or_default();
+    if let Some(existing) = bucket
+      .iter()
+      .find(|existing| *existing.read().unwrap() == *signature.read().unwrap())
+    {
+      return existing.clone();
     }
+    bucket.push(signature.clone());
+    signature
   }
   pub fn with_functions(
     mut self,

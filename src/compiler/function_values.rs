@@ -1809,19 +1809,20 @@ impl Program {
       .unwrap()
       .gensym(&format!("{}_fnvalarg", original.name));
     let implementation = Arc::new(RwLock::new(implementation));
-    let signature = Arc::new(RwLock::new(AbstractFunctionSignature {
-      name,
-      generic_args: original.generic_args.clone(),
-      arg_types,
-      return_type,
-      implementation: FunctionImplementationKind::Composite(
-        implementation.clone(),
-      ),
-      associative: original.associative,
-      captured_scope: None,
-      entry_point: None,
-    }));
-    self.add_abstract_function(signature.clone());
+    let signature = self.add_abstract_function(Arc::new(RwLock::new(
+      AbstractFunctionSignature {
+        name,
+        generic_args: original.generic_args.clone(),
+        arg_types,
+        return_type,
+        implementation: FunctionImplementationKind::Composite(
+          implementation.clone(),
+        ),
+        associative: original.associative,
+        captured_scope: None,
+        entry_point: None,
+      },
+    )));
     (signature, implementation)
   }
 }
@@ -1898,35 +1899,31 @@ struct ApplySite {
   linked: BTreeMap<String, Option<usize>>,
 }
 
+/// A composite callee's registered signature. Every reference to a composite
+/// function shares its implementation Arc with exactly one registered
+/// signature (inference and monomorphization attach signature copies, which
+/// share the implementation; monomorphization repoints each reference at the
+/// registered specialization), so the implementation is the lookup key. Names
+/// can't be: overload separation renames registered signatures, not copies.
 fn resolve_in_registry(
   function: &Arc<RwLock<AbstractFunctionSignature>>,
-  program: &Program,
+  registry_by_implementation: &HashMap<
+    usize,
+    Arc<RwLock<AbstractFunctionSignature>>,
+  >,
 ) -> Arc<RwLock<AbstractFunctionSignature>> {
-  let (name, key) = {
-    let f = function.read().unwrap();
-    if !matches!(f.implementation, FunctionImplementationKind::Composite(_)) {
-      return function.clone();
-    }
-    (f.name.clone(), implementation_key(function))
-  };
-  let Some(candidates) = program.abstract_functions.get(&name) else {
+  let Some(key) = implementation_key(function) else {
     return function.clone();
   };
-  let composites: Vec<&Arc<RwLock<AbstractFunctionSignature>>> = candidates
-    .iter()
-    .filter(|c| {
-      matches!(
-        c.read().unwrap().implementation,
-        FunctionImplementationKind::Composite(_)
+  registry_by_implementation
+    .get(&key)
+    .unwrap_or_else(|| {
+      panic!(
+        "function reference `{}` shares no implementation with a registered function",
+        function.read().unwrap().name
       )
     })
-    .collect();
-  composites
-    .iter()
-    .find(|c| implementation_key(c) == key)
-    .or_else(|| composites.first())
-    .map(|c| (*c).clone())
-    .unwrap_or_else(|| function.clone())
+    .clone()
 }
 
 fn member_key(
@@ -1996,6 +1993,9 @@ struct Analysis<'p> {
   sites: Vec<ApplySite>,
   pending: Vec<(usize, String)>,
   roots: HashMap<usize, usize>,
+  /// Registered composite signatures by implementation key.
+  registry_by_implementation:
+    HashMap<usize, Arc<RwLock<AbstractFunctionSignature>>>,
   globals: HashMap<Arc<str>, Skel>,
   global_vars: HashMap<Arc<str>, Type>,
   /// Sets found to (transitively) contain a closure capturing a value of
@@ -2004,15 +2004,11 @@ struct Analysis<'p> {
 }
 
 impl<'p> Analysis<'p> {
-  /// The registry's version of a composite function. References can carry
-  /// stale copies of a signature (monomorphization attaches a fresh copy per
-  /// reference, and only the registered one goes through closure extraction
-  /// and higher-order inlining), so callees are always resolved by name.
   fn resolve(
     &self,
     function: &Arc<RwLock<AbstractFunctionSignature>>,
   ) -> Arc<RwLock<AbstractFunctionSignature>> {
-    resolve_in_registry(function, self.program)
+    resolve_in_registry(function, &self.registry_by_implementation)
   }
   fn new_node(&mut self) -> NodeId {
     self.parent.push(self.parent.len());
@@ -5218,6 +5214,10 @@ impl Program {
       sites: vec![],
       pending: vec![],
       roots: HashMap::new(),
+      registry_by_implementation: self
+        .abstract_functions_iter()
+        .filter_map(|f| implementation_key(f).map(|key| (key, f.clone())))
+        .collect(),
       globals: HashMap::new(),
       global_vars: self
         .top_level_vars

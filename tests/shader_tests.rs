@@ -1012,6 +1012,7 @@ error_test!(
 );
 success_test!(const_generic_map_specialization);
 success_test!(hof_closure_factory_arg_gpu);
+success_test!(fn_value_overloaded_callee);
 error_test!(
   compound_mat_divide_invalid,
   CompileErrorKind::FunctionArgumentTypesIncompatible {

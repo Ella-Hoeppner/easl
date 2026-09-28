@@ -1,0 +1,35 @@
+; A function holding function values calls several overloaded functions.
+; Overload separation renames the registered signatures, while references
+; keep copies carrying the original base name; defunctionalization must
+; resolve each callee to its renamed signature regardless of the order it
+; visits functions in, or the emitted WGSL calls an undefined base name.
+(defn sq [x: f32]: f32 (* x x))
+(defn sq [x: vec3f]: vec3f (* x x))
+(defn neg [x: f32]: f32 (- 0. x))
+(defn neg [x: vec3f]: vec3f (- (vec3f 0.) x))
+(defn half [x: f32]: f32 (* x 0.5))
+(defn half [x: vec3f]: vec3f (* x 0.5))
+(defn twice [x: f32]: f32 (* x 2.))
+(defn twice [x: vec3f]: vec3f (* x 2.))
+(defn inc [x: f32]: f32 (+ x 1.))
+(defn inc [x: vec3f]: vec3f (+ x 1.))
+
+(defn (merge C: u32) [layers: [C: (Fn [vec3f] vec3f)]]: (Fn [vec3f] vec3f)
+  (fn [pos]
+    (let [@var pos pos]
+      (for [i (array-length layers)]
+        (+= pos ((layers i) pos)))
+      pos)))
+
+(defn shape [pos: vec3f]: vec3f
+  (let [a (fn [p: vec3f] (sq p))
+        b (fn [p: vec3f] (neg p))
+        merged (merge [a b])]
+    (-> pos merged half twice inc)))
+
+@storage-write
+(var out: vec3f)
+
+@compute
+(defn main []
+  (= out (shape (vec3f 1.))))
