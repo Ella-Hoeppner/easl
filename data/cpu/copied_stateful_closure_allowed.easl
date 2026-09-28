@@ -1,0 +1,38 @@
+; Stateful closures used without duplication are all accepted: passed to
+; function parameters (lent), built fresh into arrays and combinators,
+; captured by a returned closure when the original isn't used again, moved
+; into an array that's overwritten with a grown copy, and lent to
+; `@var @ref` parameters.
+(defn make-counter [amount: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n amount)
+      n)))
+
+(defn mix [oscs: [2: (Fn [] f32)]]: (Fn [] f32)
+  (fn [] (+ ((oscs 0u)) ((oscs 1u)))))
+
+(defn wrap [g: (Fn [] f32)]: (Fn [] f32)
+  (fn [] (* 2. (g))))
+
+(defn call-twice [g: (Fn [] f32)]: f32
+  (g)
+  (g))
+
+@cpu
+(defn main []
+  (let [c (make-counter 1.)]
+    (print (call-twice c))
+    (print (c)))
+  (let [m (mix [(make-counter 1.) (make-counter 10.)])]
+    (print (m))
+    (print (m)))
+  (let [c (make-counter 1.)
+        w (wrap c)]
+    (print (w))
+    (print (w)))
+  (let [@var fs: [(Fn [] f32)] ~[]]
+    (for [i 0u (< i 3u) (+= i 1u)]
+      (= fs (push fs (make-counter 1.))))
+    (print ((fs 0u)))
+    (print ((fs 0u)))))

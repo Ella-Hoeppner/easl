@@ -43,7 +43,7 @@ use take_mut::take;
 
 use crate::Never;
 use crate::compiler::{
-  builtins::ASSIGNMENT_OPS,
+  builtins::{ASSIGNMENT_OPS, ATOMIC_MUTATION_OPS},
   effects::Effect,
   enums::{AbstractEnum, AbstractEnumVariant, Enum, EnumVariant},
   error::{CompileError, CompileErrorKind, ErrorLog, SourceTrace},
@@ -5189,6 +5189,7 @@ impl Program {
   /// that sizes or emits types.
   pub fn defunctionalize_boxed_functions(&mut self, errors: &mut ErrorLog) {
     if !program_has_boxed_functions(self) {
+      self.validate_copied_stateful_closures(None, errors);
       return;
     }
     // Generic templates and functions still awaiting higher-order inlining
@@ -5277,6 +5278,7 @@ impl Program {
       }
       return;
     }
+    self.validate_copied_stateful_closures(Some(&analysis), errors);
     let mut lowering = Lowering {
       analysis,
       errors: vec![],
@@ -5597,6 +5599,779 @@ impl Program {
         }
         Ok::<bool, Never>(true)
       });
+    }
+  }
+}
+
+// ===========================================================================
+// Copied stateful closures
+// ===========================================================================
+
+/// The builtins that take a function to run later (keeping a copy of it).
+const HOST_BUILTINS: [&str; 4] = [
+  "start-audio",
+  "spawn-window",
+  "dispatch-compute-shader",
+  "dispatch-render-shaders",
+];
+
+/// A body the copy check walks: its function's name, the function (for its
+/// declared parameter ownerships), the body, and — when function values are
+/// being lowered — the analysis instance whose slots describe its boxed
+/// positions.
+struct CheckedBody<'a> {
+  name: Arc<str>,
+  function: Arc<RwLock<AbstractFunctionSignature>>,
+  body: &'a TopLevelFunction,
+  instance: Option<usize>,
+}
+
+/// Rejects copying a value holding a closure that mutates its captured
+/// variables while the original stays usable (see
+/// `Program::validate_copied_stateful_closures`).
+struct CopyCheck<'a, 'p> {
+  program: &'p Program,
+  analysis: Option<&'a Analysis<'p>>,
+  /// Closure scope struct name -> whether its closure's own body writes one
+  /// of its captured variables.
+  scope_writes: HashMap<Arc<str>, bool>,
+  /// Function name -> its by-reference parameters whose value it copies out
+  /// (captures, stores, or returns).
+  escapes: HashMap<Arc<str>, BTreeSet<usize>>,
+  report: bool,
+  reported: HashSet<(String, Arc<str>)>,
+  errors: Vec<CompileError>,
+}
+
+/// Per-body state of the copy check's walk.
+struct CopyWalk<'b> {
+  function_name: Arc<str>,
+  /// Parameter index of each by-reference parameter (lent to this function).
+  reference_params: HashMap<Arc<str>, usize>,
+  /// Match payload bindings on place scrutinees -> the scrutinee's root.
+  aliases: HashMap<Arc<str>, Arc<str>>,
+  /// The body's local variables (parameters and bindings).
+  variables: HashSet<Arc<str>>,
+  /// Names declared inside each enclosing loop, innermost last.
+  loops: Vec<HashSet<Arc<str>>>,
+  instance: Option<usize>,
+  slots: Option<&'b [Skel]>,
+  changed: bool,
+}
+
+/// Every variable name read in `exp` (the target of a whole-variable
+/// assignment is written, not read).
+fn names_read(exp: &TypedExp, out: &mut HashSet<Arc<str>>) {
+  match &exp.kind {
+    ExpKind::Name(n) => {
+      out.insert(n.clone());
+    }
+    ExpKind::Application(f, args)
+      if is_assignment(f)
+        && args.len() == 2
+        && matches!(args[0].kind, ExpKind::Name(_)) =>
+    {
+      names_read(&args[1], out);
+    }
+    _ => for_each_child(exp, &mut |child| names_read(child, out)),
+  }
+}
+
+/// Calls `f` on each direct child of `exp`.
+fn for_each_child(exp: &TypedExp, f: &mut impl FnMut(&TypedExp)) {
+  let mut is_root = true;
+  let _ = exp.walk(&mut |e| {
+    if is_root {
+      is_root = false;
+      return Ok::<bool, Never>(true);
+    }
+    f(e);
+    Ok(false)
+  });
+}
+
+fn reads_of(exps: &[&TypedExp]) -> HashSet<Arc<str>> {
+  let mut out = HashSet::new();
+  for e in exps {
+    names_read(e, &mut out);
+  }
+  out
+}
+
+fn is_assignment(f: &TypedExp) -> bool {
+  matches!(&f.kind, ExpKind::Name(n) if ASSIGNMENT_OPS.contains(&**n))
+}
+
+/// Whether `body` writes through a place rooted at `name`: assigns to it,
+/// applies an atomic operation to it, or lends plain data rooted at it to a
+/// mutable reference parameter. (Lending a function value doesn't count: a
+/// closure's state is judged by its own definition.)
+fn writes_through(body: &TypedExp, name: &Arc<str>) -> bool {
+  let mut found = false;
+  let _ = body.walk(&mut |e| {
+    if let ExpKind::Application(f, args) = &e.kind {
+      let rooted = |a: &TypedExp| place_root(a).as_ref() == Some(name);
+      let callee_writes = matches!(&f.kind, ExpKind::Name(c)
+        if ASSIGNMENT_OPS.contains(&**c) || ATOMIC_MUTATION_OPS.contains(&**c));
+      if callee_writes && args.first().is_some_and(rooted) {
+        found = true;
+      }
+      if let Some(Type::Function(sig)) = known_type(&f.data) {
+        for ((param, _), a) in sig.args.iter().zip(args.iter()) {
+          if param.var_type.ownership == Ownership::MutableReference
+            && rooted(a)
+            && !known_type(&a.data).is_some_and(|t| holds_function(&t))
+          {
+            found = true;
+          }
+        }
+      }
+    }
+    Ok::<bool, Never>(!found)
+  });
+  found
+}
+
+/// The variable a place expression (a name, or field / element accesses of
+/// one) is rooted at.
+fn place_root(exp: &TypedExp) -> Option<Arc<str>> {
+  match &exp.kind {
+    ExpKind::Name(n) => Some(n.clone()),
+    ExpKind::Access(Accessor::Field(_) | Accessor::ArrayIndex(_), inner) => {
+      place_root(inner)
+    }
+    ExpKind::Application(f, _)
+      if matches!(known_type(&f.data), Some(Type::Array(_, _))) =>
+    {
+      place_root(f)
+    }
+    _ => None,
+  }
+}
+
+impl<'a, 'p> CopyCheck<'a, 'p> {
+  /// Whether a value of type `t` (with skeleton `skel`, when boxed positions
+  /// have one) holds a stateful closure: one whose body writes a captured
+  /// variable, or that captures a stateful value.
+  fn holds_stateful(&self, t: &Type, skel: Option<&Skel>) -> bool {
+    let child_skel = |i: usize| match skel {
+      Some(Skel::Struct(fs) | Skel::Enum(fs)) => fs.get(i),
+      _ => None,
+    };
+    let writes =
+      |scope: &Arc<str>| self.scope_writes.get(scope).copied().unwrap_or(false);
+    match t {
+      Type::Function(sig) => {
+        let Some(scope) = sig
+          .abstract_ancestor
+          .as_ref()
+          .and_then(|a| a.read().unwrap().captured_scope.clone())
+        else {
+          return false;
+        };
+        writes(&scope.name.0)
+          || scope_struct_type(&scope, self.program)
+            .is_some_and(|t| self.holds_stateful(&t, skel))
+      }
+      Type::BoxedFunction(_) => {
+        let (Some(analysis), Some(Skel::Box(n))) = (self.analysis, skel) else {
+          return false;
+        };
+        let mut n = *n;
+        while analysis.parent[n] != n {
+          n = analysis.parent[n];
+        }
+        analysis.nodes[n].members.values().any(|m| {
+          let Some(payload) = &m.payload else {
+            return false;
+          };
+          let Some(scope) = m.function.read().unwrap().captured_scope.clone()
+          else {
+            return false;
+          };
+          writes(&scope.name.0)
+            || scope_struct_type(&scope, self.program)
+              .is_some_and(|t| self.holds_stateful(&t, Some(payload)))
+        })
+      }
+      Type::Struct(s) => {
+        writes(&s.name)
+          || s.fields.iter().enumerate().any(|(i, f)| {
+            f.field_type
+              .kind
+              .try_unwrap_known()
+              .is_some_and(|t| self.holds_stateful(&t, child_skel(i)))
+          })
+      }
+      Type::Enum(e) => e.variants.iter().enumerate().any(|(i, v)| {
+        v.inner_type
+          .kind
+          .try_unwrap_known()
+          .is_some_and(|t| self.holds_stateful(&t, child_skel(i)))
+      }),
+      Type::Array(_, inner) => {
+        let element = match skel {
+          Some(Skel::Array(e)) => Some(&**e),
+          _ => None,
+        };
+        inner
+          .kind
+          .try_unwrap_known()
+          .is_some_and(|t| self.holds_stateful(&t, element))
+      }
+      _ => false,
+    }
+  }
+  fn exp_holds_stateful(&self, exp: &TypedExp, walk: &CopyWalk) -> bool {
+    let skel = walk
+      .slots
+      .zip(exp.data.defun_slot)
+      .and_then(|(slots, slot)| slots.get(slot as usize));
+    known_type(&exp.data).is_some_and(|t| self.holds_stateful(&t, skel))
+  }
+  /// `exp` (a place holding a stateful closure) is copied: an error when its
+  /// source stays usable afterwards, and an escape of a lent parameter.
+  fn copied(
+    &mut self,
+    exp: &TypedExp,
+    later: &HashSet<Arc<str>>,
+    overwritten: Option<&Arc<str>>,
+    walk: &mut CopyWalk,
+  ) {
+    // A closure lent to a stored function's call is the place it borrows.
+    let exp = match &exp.kind {
+      ExpKind::Application(_, args) if is_function_value_borrow(exp) => {
+        &args[0]
+      }
+      _ => exp,
+    };
+    let Some(name) = place_root(exp) else {
+      return;
+    };
+    if !self.exp_holds_stateful(exp, walk) {
+      return;
+    }
+    let root = walk.aliases.get(&name).cloned().unwrap_or(name.clone());
+    if overwritten == Some(&root) {
+      return;
+    }
+    let is_global = self.program.top_level_vars.iter().any(|v| v.name == root);
+    if !is_global && !walk.variables.contains(&root) {
+      // Not a variable (an enum's unit variant, a function name).
+      return;
+    }
+    let lent = walk.reference_params.get(&root).copied();
+    if let Some(i) = lent {
+      let escapes = self.escapes.entry(walk.function_name.clone()).or_default();
+      walk.changed |= escapes.insert(i);
+    }
+    let repeated = walk
+      .loops
+      .last()
+      .is_some_and(|declared| !declared.contains(&root));
+    let still_used =
+      later.contains(&root) || later.contains(&name) || repeated || is_global;
+    if still_used {
+      self.error(&name, exp);
+    }
+  }
+  fn error(&mut self, name: &Arc<str>, exp: &TypedExp) {
+    if !self.report {
+      return;
+    }
+    let key = (format!("{:?}", exp.source_trace), name.clone());
+    if self.reported.insert(key) {
+      self.errors.push(CompileError::new(
+        CompileErrorKind::CopiedStatefulClosure(name.to_string()),
+        exp.source_trace.clone(),
+      ));
+    }
+  }
+  /// Whether argument `i` of a call to `callee` is lent to a parameter the
+  /// callee copies out.
+  fn escapes_through(
+    &self,
+    exp: &TypedExp,
+    callee_name: &Arc<str>,
+    i: usize,
+    walk: &CopyWalk,
+  ) -> bool {
+    if &**callee_name == FNBOX_APPLY {
+      // A stored function's call: any member copying the parameter.
+      let (Some(analysis), Some(instance), Some(slot)) =
+        (self.analysis, walk.instance, exp.data.defun_slot)
+      else {
+        return false;
+      };
+      let Some(site) = analysis.instances[instance].applies.get(&slot) else {
+        return false;
+      };
+      let mut n = analysis.sites[*site].node;
+      while analysis.parent[n] != n {
+        n = analysis.parent[n];
+      }
+      return i > 0
+        && analysis.nodes[n].members.values().any(|m| {
+          let member = m.function.read().unwrap().name.clone();
+          self
+            .escapes
+            .get(&member)
+            .is_some_and(|e| e.contains(&(i - 1)))
+        });
+    }
+    self
+      .escapes
+      .get(callee_name)
+      .is_some_and(|e| e.contains(&i))
+  }
+  /// Walks `exp`, where `later` holds the names read after it.
+  fn visit(
+    &mut self,
+    exp: &TypedExp,
+    later: &HashSet<Arc<str>>,
+    overwritten: Option<&Arc<str>>,
+    walk: &mut CopyWalk,
+  ) {
+    match &exp.kind {
+      ExpKind::Let(bindings, body) => {
+        for (i, (name, _, _, value)) in bindings.iter().enumerate() {
+          let mut after: Vec<&TypedExp> =
+            bindings[i + 1..].iter().map(|(_, _, _, v)| v).collect();
+          after.push(body);
+          let mut value_later = reads_of(&after);
+          value_later.extend(later.iter().cloned());
+          self.copied(value, &value_later, overwritten, walk);
+          self.visit(value, &value_later, overwritten, walk);
+          walk.variables.insert(name.clone());
+          if let Some(declared) = walk.loops.last_mut() {
+            declared.insert(name.clone());
+          }
+        }
+        self.visit(body, later, overwritten, walk);
+      }
+      ExpKind::Block(exps) => {
+        for (i, e) in exps.iter().enumerate() {
+          let after: Vec<&TypedExp> = exps[i + 1..].iter().collect();
+          let mut e_later = reads_of(&after);
+          e_later.extend(later.iter().cloned());
+          self.visit(e, &e_later, overwritten, walk);
+        }
+      }
+      ExpKind::ArrayLiteral(elements) => {
+        for (i, e) in elements.iter().enumerate() {
+          let after: Vec<&TypedExp> = elements[i + 1..].iter().collect();
+          let mut e_later = reads_of(&after);
+          e_later.extend(later.iter().cloned());
+          self.copied(e, &e_later, overwritten, walk);
+          self.visit(e, &e_later, overwritten, walk);
+        }
+      }
+      ExpKind::Application(f, args) if is_assignment(f) && args.len() == 2 => {
+        // The value is computed before the target is written; a target
+        // that's a whole variable is overwritten, which ends its old value.
+        let target_root = match &args[0].kind {
+          ExpKind::Name(n) => Some(n.clone()),
+          _ => None,
+        };
+        let mut value_later = reads_of(&[&args[0]]);
+        if let Some(root) = &target_root {
+          value_later.remove(root);
+        }
+        value_later.extend(later.iter().cloned());
+        let overwrite = target_root.as_ref().or(overwritten);
+        self.copied(&args[1], &value_later, overwrite, walk);
+        self.visit(&args[1], &value_later, overwrite, walk);
+        self.visit(&args[0], later, overwritten, walk);
+      }
+      ExpKind::Application(f, args) => {
+        self.visit(f, later, overwritten, walk);
+        let (callee_name, ownerships) = match known_type(&f.data) {
+          Some(Type::Function(sig)) => {
+            // A boxed parameter of a (boxed-parameter clone) function is
+            // lent, though it's declared owned until lowering; a
+            // constructor's boxed field is stored.
+            let composite = sig.abstract_ancestor.as_ref().is_some_and(|a| {
+              matches!(
+                a.read().unwrap().implementation,
+                FunctionImplementationKind::Composite(_)
+              )
+            });
+            let declared: Vec<Ownership> = sig
+              .abstract_ancestor
+              .as_ref()
+              .map(|a| {
+                a.read()
+                  .unwrap()
+                  .arg_types
+                  .iter()
+                  .map(|(_, o)| *o)
+                  .collect()
+              })
+              .unwrap_or_default();
+            let ownerships: Vec<Ownership> = sig
+              .args
+              .iter()
+              .enumerate()
+              .map(|(i, (param, _))| {
+                let boxed_param = composite
+                  && matches!(
+                    known_type(&param.var_type),
+                    Some(Type::BoxedFunction(_))
+                  );
+                match declared.get(i) {
+                  _ if boxed_param => Ownership::MutableReference,
+                  Some(Ownership::MutableReference) => {
+                    Ownership::MutableReference
+                  }
+                  Some(Ownership::Reference) => Ownership::Reference,
+                  _ => param.var_type.ownership,
+                }
+              })
+              .collect();
+            let name = sig
+              .abstract_ancestor
+              .as_ref()
+              .map(|a| a.read().unwrap().name.clone());
+            (name, ownerships)
+          }
+          _ => (None, vec![]),
+        };
+        // A builtin keeps an owned argument only when it can return it (an
+        // array utility, boxing) or is a host taking a function to run.
+        let is_builtin = matches!(known_type(&f.data), Some(Type::Function(sig))
+          if sig.abstract_ancestor.as_ref().is_some_and(|a| matches!(
+            a.read().unwrap().implementation,
+            FunctionImplementationKind::Builtin { .. })));
+        let builtin_keeps_arguments = !is_builtin
+          || callee_name
+            .as_ref()
+            .is_some_and(|n| HOST_BUILTINS.contains(&&**n))
+          || self.exp_holds_stateful(exp, walk);
+        for (i, a) in args.iter().enumerate() {
+          let after: Vec<&TypedExp> = args[i + 1..].iter().collect();
+          let mut a_later = reads_of(&after);
+          a_later.extend(later.iter().cloned());
+          let lent = matches!(
+            ownerships.get(i),
+            Some(Ownership::MutableReference | Ownership::Reference)
+          );
+          let copied_out = callee_name
+            .as_ref()
+            .is_some_and(|n| self.escapes_through(exp, n, i, walk));
+          if (!lent && builtin_keeps_arguments) || copied_out {
+            self.copied(a, &a_later, overwritten, walk);
+          }
+          self.visit(a, &a_later, overwritten, walk);
+        }
+      }
+      ExpKind::Match(scrutinee, arms) => {
+        let arm_values: Vec<&TypedExp> = arms.iter().map(|(_, v)| v).collect();
+        let mut scrutinee_later = reads_of(&arm_values);
+        scrutinee_later.extend(later.iter().cloned());
+        self.visit(scrutinee, &scrutinee_later, overwritten, walk);
+        let scrutinee_root = place_root(scrutinee)
+          .map(|r| walk.aliases.get(&r).cloned().unwrap_or(r));
+        for (pattern, value) in arms.iter() {
+          if let ExpKind::Application(_, bound) = &pattern.kind {
+            for b in bound {
+              if let ExpKind::Name(n) = &b.kind {
+                walk.variables.insert(n.clone());
+                match &scrutinee_root {
+                  Some(root) => {
+                    walk.aliases.insert(n.clone(), root.clone());
+                  }
+                  None => {
+                    if let Some(declared) = walk.loops.last_mut() {
+                      declared.insert(n.clone());
+                    }
+                  }
+                }
+              }
+            }
+          }
+          self.visit(value, later, overwritten, walk);
+        }
+      }
+      ExpKind::ForLoop {
+        increment_variable_name,
+        increment_variable_initial_value_expression,
+        continue_condition_expression,
+        update_expression,
+        body_expression,
+        ..
+      } => {
+        self.visit(
+          increment_variable_initial_value_expression,
+          later,
+          overwritten,
+          walk,
+        );
+        let mut parts: Vec<&TypedExp> =
+          vec![continue_condition_expression, body_expression];
+        if let Some(u) = update_expression {
+          parts.push(u);
+        }
+        let mut loop_later = reads_of(&parts);
+        loop_later.extend(later.iter().cloned());
+        walk.variables.insert(increment_variable_name.0.clone());
+        walk
+          .loops
+          .push(std::iter::once(increment_variable_name.0.clone()).collect());
+        for part in parts {
+          self.visit(part, &loop_later, overwritten, walk);
+        }
+        walk.loops.pop();
+      }
+      ExpKind::WhileLoop {
+        condition_expression,
+        body_expression,
+      } => {
+        let mut loop_later = reads_of(&[condition_expression, body_expression]);
+        loop_later.extend(later.iter().cloned());
+        walk.loops.push(HashSet::new());
+        self.visit(condition_expression, &loop_later, overwritten, walk);
+        self.visit(body_expression, &loop_later, overwritten, walk);
+        walk.loops.pop();
+      }
+      ExpKind::Return(value) => {
+        // Returning a lent parameter's value copies it out to the caller.
+        self.copied(value, &HashSet::new(), overwritten, walk);
+        self.visit(value, &HashSet::new(), overwritten, walk);
+      }
+      _ => for_each_child(exp, &mut |child| {
+        self.visit(child, later, overwritten, walk)
+      }),
+    }
+  }
+}
+
+/// Every name bound in `exp` (let bindings, match pattern bindings, loop
+/// variables), with repeats.
+#[cfg(debug_assertions)]
+fn bound_names(exp: &TypedExp, out: &mut Vec<Arc<str>>) {
+  let _ = exp.walk(&mut |e| {
+    match &e.kind {
+      ExpKind::Let(bindings, _) => {
+        out.extend(bindings.iter().map(|(n, _, _, _)| n.clone()))
+      }
+      ExpKind::Match(_, arms) => {
+        for (pattern, _) in arms {
+          if let ExpKind::Application(_, bound) = &pattern.kind {
+            for b in bound {
+              if let ExpKind::Name(n) = &b.kind {
+                out.push(n.clone());
+              }
+            }
+          }
+        }
+      }
+      ExpKind::ForLoop {
+        increment_variable_name,
+        ..
+      } => out.push(increment_variable_name.0.clone()),
+      _ => {}
+    }
+    Ok::<bool, Never>(true)
+  });
+}
+
+impl<'a, 'p> CopyCheck<'a, 'p> {
+  /// Checks one body; returns whether its escape summary grew.
+  fn check(&mut self, checked: &CheckedBody) -> bool {
+    let ExpKind::Function(arg_names, body) = &checked.body.expression.kind
+    else {
+      return false;
+    };
+    // The walk tracks variables by name, relying on deshadowing's invariant
+    // (every local name bound once per function) surviving the passes since.
+    #[cfg(debug_assertions)]
+    {
+      let mut names: Vec<Arc<str>> =
+        arg_names.iter().map(|(n, _)| n.clone()).collect();
+      bound_names(body, &mut names);
+      let mut seen = HashSet::new();
+      for n in names {
+        debug_assert!(
+          seen.insert(n.clone()),
+          "`{n}` is bound twice in `{}`; deshadowing's one-binding-per-name \
+           invariant must hold for the copied-stateful-closure check",
+          checked.name
+        );
+      }
+    }
+    let Some(Type::Function(sig)) = known_type(&checked.body.expression.data)
+    else {
+      return false;
+    };
+    let declared: Vec<Ownership> = checked
+      .function
+      .read()
+      .unwrap()
+      .arg_types
+      .iter()
+      .map(|(_, o)| *o)
+      .collect();
+    let reference_params = arg_names
+      .iter()
+      .enumerate()
+      .filter(|(i, _)| {
+        let boxed = sig.args.get(*i).is_some_and(|(a, _)| {
+          matches!(known_type(&a.var_type), Some(Type::BoxedFunction(_)))
+        });
+        boxed
+          || matches!(
+            declared.get(*i),
+            Some(Ownership::MutableReference | Ownership::Reference)
+          )
+      })
+      .map(|(i, (n, _))| (n.clone(), i))
+      .collect();
+    let slots = checked
+      .instance
+      .and_then(|i| self.analysis.map(|a| a.instances[i].slots.as_slice()));
+    let mut walk = CopyWalk {
+      function_name: checked.name.clone(),
+      reference_params,
+      aliases: HashMap::new(),
+      variables: arg_names.iter().map(|(n, _)| n.clone()).collect(),
+      loops: vec![],
+      instance: checked.instance,
+      slots,
+      changed: false,
+    };
+    self.visit(body, &HashSet::new(), None, &mut walk);
+    // The body's value is returned.
+    let mut tail = &**body;
+    loop {
+      match &tail.kind {
+        ExpKind::Let(_, b) => tail = b,
+        ExpKind::Block(es) if !es.is_empty() => tail = es.last().unwrap(),
+        _ => break,
+      }
+    }
+    self.copied(tail, &HashSet::new(), None, &mut walk);
+    walk.changed
+  }
+}
+
+impl Program {
+  /// Rejects copying a value that holds a closure mutating its captured
+  /// variables while the original stays usable — binding it to a second
+  /// name, storing it in an array / struct / global, capturing it in another
+  /// closure, or passing it by value, when the original (or, for a function
+  /// parameter it was lent through, the caller's value) is used again. Such
+  /// copies would advance separately, and a closure's captured variables
+  /// are meant to be shared by every reference to the closure (not yet
+  /// implemented), so the copy is an error rather than a silent divergence.
+  /// Programs this accepts behave the same under both readings.
+  ///
+  /// Runs on the post-inlining bodies (where each closure has one static
+  /// identity and a function's closure parameters are its callers' specific
+  /// closures), with `analysis` supplying boxed positions' member sets when
+  /// function values are being lowered. Passing a closure to a function
+  /// parameter lends it; a parameter the callee copies out (captures,
+  /// stores, or returns) is summarized per function and treated as a copy at
+  /// its call sites.
+  fn validate_copied_stateful_closures(
+    &self,
+    analysis: Option<&Analysis>,
+    errors: &mut ErrorLog,
+  ) {
+    let mut scope_writes: HashMap<Arc<str>, bool> = HashMap::new();
+    for f in self.abstract_functions_iter() {
+      let f = f.read().unwrap();
+      let (Some(scope), FunctionImplementationKind::Composite(implementation)) =
+        (&f.captured_scope, &f.implementation)
+      else {
+        continue;
+      };
+      let implementation = implementation.read().unwrap();
+      let ExpKind::Function(arg_names, body) = &implementation.expression.kind
+      else {
+        continue;
+      };
+      let writes = arg_names
+        .last()
+        .is_some_and(|(scope_name, _)| writes_through(body, scope_name));
+      *scope_writes.entry(scope.name.0.clone()).or_insert(false) |= writes;
+    }
+    if !scope_writes.values().any(|w| *w) {
+      return;
+    }
+    let registry: Vec<(
+      Arc<RwLock<AbstractFunctionSignature>>,
+      Arc<RwLock<TopLevelFunction>>,
+    )> = self
+      .abstract_functions_iter()
+      .filter_map(|f| {
+        let r = f.read().unwrap();
+        match &r.implementation {
+          FunctionImplementationKind::Composite(i)
+            if r.generic_args.is_empty()
+              && !r.has_uninlined_higher_order_arguments() =>
+          {
+            Some((f.clone(), i.clone()))
+          }
+          _ => None,
+        }
+      })
+      .collect();
+    let registry_guards: Vec<_> =
+      registry.iter().map(|(_, i)| i.read().unwrap()).collect();
+    let bodies: Vec<CheckedBody> = match analysis {
+      Some(analysis) => analysis
+        .instances
+        .iter()
+        .enumerate()
+        .filter_map(|(i, instance)| match &instance.body {
+          InstanceBody::Function(body) => {
+            let function = instance.function.clone()?;
+            let name = function.read().unwrap().name.clone();
+            Some(CheckedBody {
+              name,
+              function,
+              body,
+              instance: Some(i),
+            })
+          }
+          _ => None,
+        })
+        .collect(),
+      None => registry
+        .iter()
+        .zip(registry_guards.iter())
+        .map(|((f, _), body)| CheckedBody {
+          name: f.read().unwrap().name.clone(),
+          function: f.clone(),
+          body,
+          instance: None,
+        })
+        .collect(),
+    };
+    let mut check = CopyCheck {
+      program: self,
+      analysis,
+      scope_writes,
+      escapes: HashMap::new(),
+      report: false,
+      reported: HashSet::new(),
+      errors: vec![],
+    };
+    loop {
+      let mut changed = false;
+      for body in bodies.iter() {
+        changed |= check.check(body);
+      }
+      if !changed {
+        break;
+      }
+    }
+    check.report = true;
+    for body in bodies.iter() {
+      check.check(body);
+    }
+    for e in check.errors {
+      errors.log(e);
     }
   }
 }

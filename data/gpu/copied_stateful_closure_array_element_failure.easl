@@ -1,0 +1,13 @@
+; Copying a stateful closure out of an array whose element stays in use.
+(defn make-counter [amount: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n amount)
+      n)))
+
+@cpu
+(defn main []
+  (let [cs [(make-counter 1.) (make-counter 10.)]]
+    (let [d (cs 0u)]
+      (print (d)))
+    (print ((cs 0u)))))

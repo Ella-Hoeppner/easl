@@ -1,0 +1,16 @@
+; Passing an array of stateful closures by value while it stays in use (an
+; `@var @ref` parameter would lend it instead).
+(defn make-counter [amount: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n amount)
+      n)))
+
+(defn sum-bank [oscs: [2: (Fn [] f32)]]: f32
+  (+ ((oscs 0u)) ((oscs 1u))))
+
+@cpu
+(defn main []
+  (let [bank [(make-counter 1.) (make-counter 10.)]]
+    (print (sum-bank bank))
+    (print ((bank 0u)))))

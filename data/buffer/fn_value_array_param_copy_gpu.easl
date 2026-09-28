@@ -1,11 +1,11 @@
-; A by-value array-of-closures parameter in shader code is a copy: calls
-; through it don't advance the caller's closures.
+; An array of stateful closures passed to an `@var @ref` parameter in shader
+; code is lent: the callee's calls advance the caller's closures in place.
 (defn make-counter [inc: f32]: (Fn [] f32)
   (let [@var n 0.]
     (fn []
       (+= n inc)
       n)))
-(defn sum-bank [oscs: [2: (Fn [] f32)]]: f32
+(defn step-bank [@var @ref oscs: [2: (Fn [] f32)]]: f32
   (+ ((oscs 0u)) ((oscs 1u))))
 @storage-write
 (var out: [2: f32])
@@ -13,8 +13,8 @@
 (defn main []
   (dispatch-compute-shader
     (fn []
-      (let [bank [(make-counter 1.) (make-counter 10.)]]
-        (= (out 0u) (sum-bank bank))
-        (= (out 1u) (sum-bank bank))))
+      (let [@var bank [(make-counter 1.) (make-counter 10.)]]
+        (= (out 0u) (step-bank bank))
+        (= (out 1u) (step-bank bank))))
     (vec3u 1u))
   (print out))

@@ -943,6 +943,42 @@ error_test!(
   CompileErrorKind::StoredFunctionToHigherOrderParameter
 );
 error_test!(
+  copied_stateful_closure_let_failure,
+  CompileErrorKind::CopiedStatefulClosure("f".into())
+);
+error_test!(
+  copied_stateful_closure_array_element_failure,
+  CompileErrorKind::CopiedStatefulClosure("cs".into())
+);
+error_test!(
+  copied_stateful_closure_hof_param_failure,
+  CompileErrorKind::CopiedStatefulClosure("f".into())
+);
+error_test!(
+  copied_stateful_closure_captured_failure,
+  CompileErrorKind::CopiedStatefulClosure("c".into())
+);
+error_test!(
+  copied_stateful_closure_stored_call_failure,
+  CompileErrorKind::CopiedStatefulClosure("c".into())
+);
+error_test!(
+  copied_stateful_closure_by_value_failure,
+  CompileErrorKind::CopiedStatefulClosure("bank".into())
+);
+error_test!(
+  copied_stateful_closure_struct_failure,
+  CompileErrorKind::CopiedStatefulClosure("h".into())
+);
+error_test!(
+  copied_stateful_closure_match_payload_failure,
+  CompileErrorKind::CopiedStatefulClosure("f".into())
+);
+error_test!(
+  copied_stateful_closure_loop_failure,
+  CompileErrorKind::CopiedStatefulClosure("c".into())
+);
+error_test!(
   fn_value_dynamic_start_audio_failure,
   CompileErrorKind::DynamicFunctionValueNotAllowedHere("start-audio".into())
 );

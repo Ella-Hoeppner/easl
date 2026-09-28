@@ -1,11 +1,11 @@
-; A stored factory given a stateful closure captures a copy of it, exactly as
-; the same factory called statically does (first block); the original is
-; untouched.
+; The same through a stored function: the stored factory captures the lent
+; closure while the caller keeps using it.
 (defn make-counter [amount: f32]: (Fn [] f32)
   (let [@var n 0.]
     (fn []
       (+= n amount)
       n)))
+
 (defn twice-each [g: (Fn [] f32)]: (Fn [] f32)
   (fn []
     (g)
@@ -15,14 +15,8 @@
 
 @cpu
 (defn main []
-  (let [c (make-counter 1.)
-        w (twice-each c)]
-    (print (w))
-    (print (w))
-    (print (c)))
   (let [ws [twice-each once-each]
         c (make-counter 1.)
         w ((ws 0u) c)]
-    (print (w))
     (print (w))
     (print (c))))

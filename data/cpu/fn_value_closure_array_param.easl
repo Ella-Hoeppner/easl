@@ -1,20 +1,15 @@
-; An array of stateful closures passed by value is copied (the callee's
-; calls don't advance the caller's closures); passed by `@var @ref`, it
-; advances in place.
+; An array of stateful closures passed to an `@var @ref` parameter is lent:
+; the callee's calls advance the caller's closures in place.
 (defn make-counter [inc: f32]: (Fn [] f32)
   (let [@var n 0.]
     (fn []
       (+= n inc)
       n)))
-(defn sum-bank [oscs: [2: (Fn [] f32)]]: f32
-  (+ ((oscs 0u)) ((oscs 1u))))
 (defn step-bank [@var @ref oscs: [2: (Fn [] f32)]]: f32
   (+ ((oscs 0u)) ((oscs 1u))))
 @cpu
 (defn main []
   (let [@var bank [(make-counter 1.) (make-counter 10.)]]
-    (print (sum-bank bank))
-    (print (sum-bank bank))
     (print (step-bank bank))
     (print (step-bank bank))
-    (print (sum-bank bank))))
+    (print (step-bank bank))))

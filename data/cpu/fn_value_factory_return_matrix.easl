@@ -1,6 +1,6 @@
 ; Stored factories returning: a top-level function, a stored function, a
 ; stateful closure, a higher-order function chosen by an `if`, and a closure
-; capturing a lent stateful closure (a copy, as with a static call).
+; capturing a stateful closure.
 (defn make-counter [amount: f32]: (Fn [f32] f32)
   (let [@var n 0.]
     (fn [x]
@@ -35,5 +35,4 @@
     (print (((gs 1u) 0.) dbl 1.))
     (let [w ((ws 0u) c)]
       (print (w 0.))
-      (print (w 0.))
-      (print (c 0.)))))
+      (print (w 0.)))))

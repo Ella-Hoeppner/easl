@@ -1,5 +1,5 @@
 ; A match arm's payload binding is the closure stored in the enum: calling it
-; advances that closure, and binding it to a new name copies it.
+; advances that closure.
 (defn make-counter [inc: f32]: (Fn [] f32)
   (let [@var n 0.]
     (fn []
@@ -29,9 +29,4 @@
       (Playing f) (print (f))
       Silent (print 0.))
     (print (step v))
-    (match v
-      (Playing f) (let [g f]
-                    (print (g))
-                    (print (g)))
-      Silent ())
     (print (step v))))

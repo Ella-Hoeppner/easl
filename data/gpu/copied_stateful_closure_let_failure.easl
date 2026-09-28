@@ -1,0 +1,14 @@
+; Binding a stateful closure to a second name while the first stays in use:
+; the two names would advance separately.
+(defn make-counter [amount: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n amount)
+      n)))
+
+@cpu
+(defn main []
+  (let [f (make-counter 1.)
+        g f]
+    (print (f))
+    (print (g))))

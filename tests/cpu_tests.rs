@@ -310,7 +310,6 @@ cpu_test!(fn_value_closure_loop_state);
 cpu_test!(fn_value_struct_field_closure_state);
 cpu_test!(fn_value_struct_field_lambda_state);
 cpu_test!(fn_value_closure_merge_state);
-cpu_test!(fn_value_closure_copy_out_of_array);
 cpu_test!(fn_value_stored_closure_hof_arg);
 cpu_test!(fn_value_closure_array_param);
 cpu_test!(fn_value_struct_field_closure_copy);
@@ -347,7 +346,6 @@ cpu_test!(fn_value_hof_loop_state);
 cpu_test!(fn_value_hof_global);
 cpu_test!(fn_value_if_selected_hof);
 cpu_test!(fn_value_unit_scope_union);
-cpu_test!(fn_value_factory_stateful_arg);
 cpu_test!(fn_value_lent_closure_pure_twice);
 cpu_test!(fn_value_lent_closure_union_copy_back);
 cpu_test!(fn_value_local_hof_stored_args);
@@ -359,7 +357,6 @@ cpu_test!(fn_value_factory_return_matrix);
 // values, but broken by the same change).
 cpu_test!(single_variant_enum_layout);
 // Binding a closure to a new name copies its captured state.
-cpu_test!(closure_copy_semantics);
 
 /// The full MIDI query surface against spoofed input state, on both
 /// runtimes: per-note velocities, CC values, pitch bend, and the
@@ -475,3 +472,4 @@ fn get_midi_note_spoofed() {
   }
 }
 cpu_test!(hof_closure_factory_arg);
+cpu_test!(copied_stateful_closure_allowed);

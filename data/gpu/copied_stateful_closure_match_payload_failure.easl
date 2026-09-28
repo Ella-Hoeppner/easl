@@ -1,0 +1,21 @@
+; Binding a match payload holding a stateful closure to a new name while the
+; enum it lives in stays in use.
+(defn make-counter [amount: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n amount)
+      n)))
+
+(enum Voice
+  (Playing (Fn [] f32))
+  Silent)
+
+@cpu
+(defn main []
+  (let [@var v (Playing (make-counter 1.))]
+    (match v
+      (Playing f) (let [g f] (print (g)))
+      Silent ())
+    (match v
+      (Playing f) (print (f))
+      Silent ())))

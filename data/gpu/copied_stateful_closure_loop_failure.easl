@@ -1,0 +1,13 @@
+; Copying a stateful closure in a loop: every iteration makes another copy.
+(defn make-counter [amount: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n amount)
+      n)))
+
+@cpu
+(defn main []
+  (let [c (make-counter 1.)]
+    (for [i 0u (< i 3u) (+= i 1u)]
+      (let [g c]
+        (print (g))))))

@@ -580,6 +580,15 @@ pub enum CompileErrorKind {
   )]
   ClosureMutationThroughImmutableRef(String),
   #[error(
+    "`{0}` holds a closure that changes its own captured variables, and it's \
+     copied here while it's still in use elsewhere, so the copies would \
+     advance separately. Copying a stateful closure that stays in use isn't \
+     supported yet: use it in only one place, pass it to a function \
+     parameter instead (which shares it), or create a separate closure \
+     (e.g. by calling the function that made it again)"
+  )]
+  CopiedStatefulClosure(String),
+  #[error(
     "GPU entry point wrote to variable \"{0}\" in illegal address space \"{1}\""
   )]
   IllegalAddressSpaceGpuWrite(String, VariableAddressSpace),
@@ -727,6 +736,9 @@ impl PartialEq for CompileErrorKind {
         Self::ClosureMutationThroughImmutableRef(l0),
         Self::ClosureMutationThroughImmutableRef(r0),
       ) => l0 == r0,
+      (Self::CopiedStatefulClosure(l0), Self::CopiedStatefulClosure(r0)) => {
+        l0 == r0
+      }
       (
         Self::ClosureCapturesMutableRefArg(l0),
         Self::ClosureCapturesMutableRefArg(r0),

@@ -1,0 +1,16 @@
+; Binding a struct holding a stateful closure to a second name while the
+; first stays in use.
+(defn make-counter [amount: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n amount)
+      n)))
+
+(struct Holder f: (Fn [] f32))
+
+@cpu
+(defn main []
+  (let [h (Holder (make-counter 1.))
+        h2 h]
+    (print (h2.f))
+    (print (h.f))))

@@ -1,6 +1,5 @@
 ; A lambda capturing a local `@var`, stored in a struct field and called through
-; the field accessor, advances the closure held in the struct. Constructing the
-; struct copies the closure, so the original closure binding is untouched.
+; the field accessor, advances the closure held in the struct.
 (struct FnContainer
   f: (Fn [] f32))
 
@@ -10,5 +9,4 @@
         f (fn [] () (+= x 1) x)
         container (FnContainer f)]
     (print (container.f))
-    (print (container.f))
-    (print (f))))
+    (print (container.f))))

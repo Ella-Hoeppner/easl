@@ -1,0 +1,16 @@
+; A higher-order function copying the closure it was lent while it stays in
+; use (here, by the function itself; its caller holds it too).
+(defn make-counter [amount: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n amount)
+      n)))
+
+(defn my-hof [f: (Fn [] f32)]
+  (let [f2 f]
+    (print (f))
+    (print (f2))))
+
+@cpu
+(defn main []
+  (my-hof (make-counter 1.)))
