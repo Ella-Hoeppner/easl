@@ -6,6 +6,7 @@ pub mod entry;
 pub mod enums;
 pub mod error;
 pub mod expression;
+pub mod function_values;
 pub mod functions;
 pub mod info;
 pub mod macros;

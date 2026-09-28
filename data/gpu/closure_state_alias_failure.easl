@@ -1,0 +1,14 @@
+; Passing one stateful closure to two function parameters of the same call
+; would give the callee two mutable references to its state.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+(defn call-both [f: (Fn [] f32) g: (Fn [] f32)]: f32
+  (+ (* 10. (f)) (g)))
+@cpu
+(defn main []
+  (let [c (make-counter 1.)]
+    (print (call-both c c))
+    (print (c))))

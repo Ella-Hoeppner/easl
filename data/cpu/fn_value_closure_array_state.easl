@@ -1,0 +1,23 @@
+; SEMANTIC REQUIREMENT: calling a stateful closure through an array element must
+; mutate that element's captured state, exactly like calling it directly does.
+; A union dispatcher must not operate on a throwaway copy of the scope.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+
+@cpu
+(defn main []
+  (let [c (make-counter 1.)]
+    (print (c))
+    (print (c)))
+  (let [cs [(make-counter 1.) (make-counter 10.)]]
+    (print ((cs 0u)))
+    (print ((cs 0u)))
+    (print ((cs 1u)))
+    (print ((cs 0u)))
+    (print ((cs 1u))))
+  (let [single [(make-counter 1.)]]
+    (print ((single 0u)))
+    (print ((single 0u)))))

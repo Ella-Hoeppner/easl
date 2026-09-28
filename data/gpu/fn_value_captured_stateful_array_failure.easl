@@ -1,0 +1,25 @@
+; A dispatched closure can't mutate its captures — including the scopes of
+; stateful closures in a captured array (calling them would mutate them).
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+(defn adder [k: f32]: (Fn [f32] f32) (fn [x] (+ x k)))
+(defn scaler [k: f32]: (Fn [f32] f32) (fn [x] (* x k)))
+@storage-write
+(var out: [2: f32])
+@cpu
+(defn main []
+  (let [cs [(make-counter 1.) (make-doubler 1.)]]
+    (dispatch-compute-shader
+      (fn []
+        (= (out 0u) ((cs 0u)))
+        (= (out 1u) ((cs 1u))))
+      (vec3u 1u))
+    (print out)))

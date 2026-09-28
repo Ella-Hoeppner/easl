@@ -1,0 +1,5 @@
+; An enum with a function-typed payload is a valid definition.
+(enum MyEnum
+  A
+  (B f32)
+  (C (Fn [f32] f32)))

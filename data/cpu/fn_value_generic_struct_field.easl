@@ -1,0 +1,15 @@
+; A generic struct with a function-typed field, instantiated at two types.
+(defn double [x: f32]: f32 (* x 2.))
+(defn idouble [x: i32]: i32 (* x 2))
+
+(struct (Holder T)
+  f: (Fn [T] T))
+
+(defn (run T) [h: (Holder T)
+               x: T]: T
+  (h.f x))
+
+@cpu
+(defn main []
+  (print (run (Holder double) 5.))
+  (print (run (Holder idouble) 5i)))

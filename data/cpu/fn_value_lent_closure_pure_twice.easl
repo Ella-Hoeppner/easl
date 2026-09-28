@@ -1,0 +1,14 @@
+; A pure closure may be lent to two function parameters of one stored call,
+; as it may be passed twice to a statically-known higher-order function.
+(defn both [f: (Fn [f32] f32) g: (Fn [f32] f32) x: f32]: f32
+  (+ (f x) (g x)))
+(defn first-only [f: (Fn [f32] f32) g: (Fn [f32] f32) x: f32]: f32
+  (f x))
+
+@cpu
+(defn main []
+  (let [hs [both first-only]
+        k 3.
+        add-k (fn [x] (+ x k))]
+    (print ((hs 0u) add-k add-k 1.))
+    (print ((hs 1u) add-k add-k 1.))))

@@ -6,6 +6,9 @@ use std::sync::{Arc, RwLock};
 use take_mut::take;
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::compiler::function_values::{
+  holds_boxed_function, is_function_value_borrow, is_pure_place,
+};
 use crate::compiler::structs::{
   indexable_vec_and_mat_types, make_concrete_vec_type,
 };
@@ -2931,29 +2934,6 @@ impl TypedExp {
       })
       .unwrap();
   }
-  pub fn catch_illegal_function_type_expressions(
-    &mut self,
-    errors: &mut ErrorLog,
-  ) {
-    self
-      .walk_mut(&mut |exp| {
-        if let Type::Function(_) = exp.data.unwrap_known() {
-          match &mut exp.kind {
-            Match(_, _) => errors.log(CompileError::new(
-              CantYieldFunctionFromMatch,
-              exp.source_trace.clone(),
-            )),
-            Uninitialized | Access(_, _) => errors.log(CompileError::new(
-              IllegalFunctionTypeExpressionKind,
-              exp.source_trace.clone(),
-            )),
-            _ => {}
-          }
-        }
-        Ok::<_, Never>(true)
-      })
-      .unwrap();
-  }
   fn try_deconstruct_untyped_enum_pattern<'a>(
     f: &'a mut Box<TypedExp>,
     args: &'a mut Vec<TypedExp>,
@@ -3792,6 +3772,20 @@ impl TypedExp {
         if let Known(t) = &mut exp.data.kind {
           t.replace_skolems(skolems);
         }
+        Ok(true)
+      })
+      .unwrap()
+  }
+  /// Collapses every node's type-state (and its nested types) into owned values,
+  /// following any shared `UnificationVariable`. Run on a freshly cloned
+  /// monomorphization body before `replace_skolems`, so per-specialization
+  /// substitutions don't leak through unification-variable Arcs shared with the
+  /// generic template or sibling specializations (see
+  /// `TypeState::snapshot_owned`).
+  pub fn snapshot_types(&mut self) {
+    self
+      .walk_mut::<()>(&mut |exp| {
+        exp.data.kind.snapshot_owned();
         Ok(true)
       })
       .unwrap()
@@ -4848,8 +4842,19 @@ impl TypedExp {
               continue;
             }
             effects.merge(arg.effects());
+            // A mutable `@ref` parameter writes through its argument — also
+            // after reference-address-space monomorphization has turned it
+            // into a pointer (a storage-global element passed by reference
+            // on the CPU / audio thread takes that path).
             if let Some(arg_var) = arg_var
-              && arg_var.var_type.ownership == Ownership::MutableReference
+              && matches!(
+                arg_var.var_type.ownership,
+                Ownership::MutableReference
+                  | Ownership::Pointer(_, RefMutability::Mutable)
+              )
+              // A lent closure's write is its borrow's own (by-reference)
+              // argument, already merged above.
+              && !is_function_value_borrow(arg)
             {
               let name = arg
                 .name_or_inner_accessed_name()
@@ -5311,6 +5316,16 @@ impl TypedExp {
             if let Match(scrutinee, arms) = &mut exp.kind {
               match &scrutinee.kind {
                 Name(_) | NumberLiteral(_) | BooleanLiteral(_) => {}
+                // A place holding function values stays the scrutinee, so
+                // match arms can mutate the closures stored in it
+                // (`defunctionalize_boxed_functions` binds it to a
+                // temporary once it has aliased the payload bindings).
+                _ if is_pure_place(scrutinee)
+                  && scrutinee
+                    .data
+                    .kind
+                    .try_unwrap_known()
+                    .is_some_and(|t| holds_boxed_function(&t)) => {}
                 _ => {
                   let scrutinee_gensym = names.gensym("scrutinee");
                   let mut scrutinee_name_exp = TypedExp {

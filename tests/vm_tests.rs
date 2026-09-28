@@ -97,6 +97,11 @@ vm_test!(early_return);
 vm_test!(array_access);
 vm_test!(struct_access);
 vm_test!(generic_enum_match);
+vm_test!(const_generic_map_specialization);
+vm_test!(fn_value_union_signature_collision);
+vm_test!(fn_value_multi_member_set);
+vm_test!(fn_value_const_generic_array);
+vm_test!(returned_closure_hof);
 
 /// Loops must behave identically on repeated `execute` calls. The stack
 /// persists between calls (as in the per-sample audio path), so a loop
@@ -194,3 +199,9 @@ fn immutable_ref_elements_emit_no_stores() {
     "mutable-ref contrast case emitted no store — assertion insensitive"
   );
 }
+
+// One merge's returned closure fed back in as a member of a second,
+// same-signature merge: `[a b]` and `[m1 c]` have distinct representations,
+// so the outer union's `merge` member dispatches over the inner union — a
+// DAG, never a self-referential type.
+vm_test!(fn_value_nested_union_recursion);

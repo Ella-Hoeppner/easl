@@ -1,0 +1,32 @@
+; Matching a temporary: calling the payload closure advances the temporary.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+
+(enum Voice
+  (Playing (Fn [] f32))
+  Silent)
+
+(defn step [@var @ref v: Voice]: f32
+  (match v
+    (Playing f) (f)
+    Silent 0.))
+(defn make-voice []: Voice
+  (Playing (make-counter 1.)))
+
+@cpu
+(defn main []
+  (match (make-voice)
+    (Playing f) (print (f))
+    Silent ())
+  (match (make-voice)
+    (Playing f) (print (f))
+    Silent ()))

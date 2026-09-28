@@ -1,0 +1,25 @@
+; A synth voice enum holding a stateful oscillator, captured by the audio
+; entry and matched every sample: the payload binding is the oscillator
+; stored in the voice, so it advances on every sample and the voice's state
+; publishes at batch boundaries like any other captured state.
+(defn create-counter [increment: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (= phase
+         (% (+ phase increment) 1.))
+      phase)))
+
+(enum Voice
+  (Playing (Fn [] f32))
+  Silent)
+
+(defn synth [voice: Voice]: (Fn [] f32)
+  (fn []
+    (match voice
+      (Playing osc) (osc)
+      Silent 0.)))
+
+@cpu
+(defn main []
+  (start-audio (synth (Playing (create-counter 0.125))))
+  (spawn-window (fn [] ())))

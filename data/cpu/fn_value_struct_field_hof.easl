@@ -1,0 +1,14 @@
+; A higher-order function stored in a struct field, then reassigned to a
+; higher-order lambda.
+(defn inc [x: f32]: f32 (+ x 1.))
+(defn twice [f: (Fn [f32] f32) x: f32]: f32 (f (f x)))
+(struct H
+  f: (Fn [(Fn [f32] f32) f32] f32)
+  k: f32)
+
+@cpu
+(defn main []
+  (let [@var h (H twice 3.)]
+    (print (h.f inc h.k))
+    (= h.f (fn [g x] (* 10. (g x))))
+    (print (h.f inc h.k))))

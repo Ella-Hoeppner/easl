@@ -36,6 +36,7 @@ use crate::{
     expression::{
       Accessor, Exp, ExpKind, ExpressionCompilationPosition, Number,
     },
+    function_values::holds_function,
     functions::{
       AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
       FunctionTargetConfiguration, Ownership, TopLevelFunction,
@@ -1206,60 +1207,6 @@ impl Program {
       }
     }
   }
-  pub fn catch_illegal_function_type_expressions(&self, errors: &mut ErrorLog) {
-    for abstract_function in self.abstract_functions_iter() {
-      if let FunctionImplementationKind::Composite(implementation) =
-        &abstract_function.read().unwrap().implementation
-      {
-        (**implementation)
-          .write()
-          .unwrap()
-          .expression
-          .catch_illegal_function_type_expressions(errors);
-      }
-    }
-  }
-  pub fn catch_illegal_function_type_user_type_fields(
-    &self,
-    errors: &mut ErrorLog,
-  ) {
-    for s in self.typedefs.structs.iter() {
-      for f in s.fields.iter() {
-        match f.field_type {
-          AbstractType::Type(Type::Function(_)) => {
-            errors.log(CompileError::new(
-              CantStoreFunctionInDataStructure,
-              f.source_trace.clone(),
-            ))
-          }
-          _ => {}
-        }
-      }
-    }
-    for e in self.typedefs.enums.iter() {
-      for v in e.variants.iter() {
-        match v.inner_type {
-          AbstractType::Type(Type::Function(_)) => {
-            errors.log(CompileError::new(
-              CantStoreFunctionInDataStructure,
-              v.source.clone(),
-            ))
-          }
-          _ => {}
-        }
-      }
-    }
-  }
-  pub fn catch_illegal_function_type_variables(&self, errors: &mut ErrorLog) {
-    for v in self.top_level_vars.iter() {
-      if matches!(v.var_type, Type::Function(_)) {
-        errors.log(CompileError::new(
-          CantHaveFunctionTypeVariable,
-          v.source_trace.clone(),
-        ));
-      }
-    }
-  }
   pub fn fully_infer_types(&mut self, errors: &mut ErrorLog) {
     loop {
       let did_type_states_change = self.propagate_types(errors);
@@ -1400,13 +1347,14 @@ impl Program {
   /// (`start-audio`/`spawn-window`) — because the reference does not
   /// outlive the call: the escaped closure would hold a copy, making the
   /// `@ref` annotation a no-op the user should remove. Escape tracking
-  /// is a purely local taint walk (closures can't be stored in
-  /// data structures or globals, and closure arguments are compile-time
-  /// inlined, so a ref-capturing closure can only leave through this
-  /// function's own return positions and sink calls); taint propagates
-  /// through let bindings, assignments, and calls whose result type
-  /// involves a function type. Runs after deshadowing, so any name
-  /// inside a lambda that matches a param name *is* that param.
+  /// is a purely local taint walk: a ref-capturing closure can only leave
+  /// through this function's return positions, sink calls, and stores into
+  /// globals (closure arguments are compile-time inlined, and one held in a
+  /// local array / struct / enum taints that local); taint propagates
+  /// through let bindings, assignments (including into elements and
+  /// fields), and calls whose result type can hold a function value. Runs
+  /// after deshadowing, so any name inside a lambda that matches a param
+  /// name *is* that param.
   pub fn validate_ref_captures(&self, errors: &mut ErrorLog) {
     for abstract_f in self.abstract_functions_iter() {
       let abstract_f = abstract_f.read().unwrap();
@@ -1716,6 +1664,15 @@ impl Program {
                         abstract_compute_fn.entry_point =
                           Some(EntryPoint::Compute(1))
                       }
+                      // The held signature may itself be the registry's (the
+                      // loop below can't re-lock it), so mark its
+                      // implementation directly.
+                      if let FunctionImplementationKind::Composite(f) =
+                        &abstract_compute_fn.implementation
+                      {
+                        f.write().unwrap().entry_point =
+                          abstract_compute_fn.entry_point;
+                      }
                       for other_abstract_f in self.abstract_functions_iter() {
                         if let Ok(mut other_abstract_f) =
                           other_abstract_f.try_write()
@@ -1759,6 +1716,12 @@ impl Program {
                       } else {
                         abstract_vertex_fn.entry_point =
                           Some(EntryPoint::Vertex);
+                        if let FunctionImplementationKind::Composite(f) =
+                          &abstract_vertex_fn.implementation
+                        {
+                          f.write().unwrap().entry_point =
+                            Some(EntryPoint::Vertex);
+                        }
                         for other_abstract_f in self.abstract_functions_iter() {
                           if let Ok(mut other_abstract_f) =
                             other_abstract_f.try_write()
@@ -1792,6 +1755,12 @@ impl Program {
                       } else {
                         abstract_fragment_fn.entry_point =
                           Some(EntryPoint::Fragment);
+                        if let FunctionImplementationKind::Composite(f) =
+                          &abstract_fragment_fn.implementation
+                        {
+                          f.write().unwrap().entry_point =
+                            Some(EntryPoint::Fragment);
+                        }
                         for other_abstract_f in self.abstract_functions_iter() {
                           if let Ok(mut other_abstract_f) =
                             other_abstract_f.try_write()
@@ -2426,6 +2395,19 @@ impl Program {
     false
   }
   pub(crate) fn type_makes_struct_cpu_only(&self, t: &Type) -> bool {
+    t.involves_string()
+      || t.involves_runtime_sized_array()
+      || t.involves_video()
+      || self.type_embeds_cpu_only_function(t)
+  }
+  /// Whether `t` embeds a function type with no emittable WGSL/C
+  /// representation: a `(Fn ...)` with no abstract ancestor (an uncalled
+  /// higher-order function's function-typed parameter), a scope-less
+  /// closure, or a closure whose own captured scope is itself CPU-only. The
+  /// check recurses through arrays, structs, and enums, so a scope struct
+  /// capturing a `[N: (Fn ...)]` is filtered from emission the same as one
+  /// capturing a bare `(Fn ...)`.
+  fn type_embeds_cpu_only_function(&self, t: &Type) -> bool {
     match t {
       Type::Function(signature) => {
         let Some(ancestor) = &signature.abstract_ancestor else {
@@ -2447,11 +2429,16 @@ impl Program {
           self.type_makes_struct_cpu_only(&field_type)
         })
       }
-      other => {
-        other.involves_string()
-          || other.involves_runtime_sized_array()
-          || other.involves_video()
+      Type::Array(_, inner) => {
+        self.type_embeds_cpu_only_function(&inner.kind.unwrap_known())
       }
+      Type::Struct(s) => s.fields.iter().any(|f| {
+        self.type_embeds_cpu_only_function(&f.field_type.unwrap_known())
+      }),
+      Type::Enum(e) => e.variants.iter().any(|v| {
+        self.type_embeds_cpu_only_function(&v.inner_type.unwrap_known())
+      }),
+      _ => false,
     }
   }
   /// Lifts every capture of a closure-entry scope struct (see
@@ -4206,6 +4193,109 @@ impl Program {
       })
     }
   }
+  /// Set each closure-returning function's declared return type from the
+  /// scope struct its body's tail actually constructs. The scope-struct
+  /// constructor is the one ancestor no later pass rewrites, so it is the
+  /// unambiguous identity of the returned closure — unlike a construction
+  /// node's own function-type ancestor, which the signature-propagation
+  /// fixpoint can collapse between two structurally-identical sibling closures
+  /// (e.g. a higher-order function returning a closure that captures its
+  /// function argument, instantiated at two different arguments). Run right
+  /// after extraction so the correct `Some` return type is in place before
+  /// propagation's `is_none` fills — which would otherwise lock a
+  /// specialization's return type onto its sibling's closure — get a chance to
+  /// guess wrong. Deterministic and single-pass: it reads the construction's
+  /// scope struct, never a churning inferred ancestor.
+  pub fn stamp_returned_closure_return_types(&mut self) {
+    let mut scope_to_dispatch: HashMap<
+      Arc<str>,
+      Arc<RwLock<AbstractFunctionSignature>>,
+    > = HashMap::new();
+    let mut fn_by_name: HashMap<
+      Arc<str>,
+      Arc<RwLock<AbstractFunctionSignature>>,
+    > = HashMap::new();
+    for f in self.abstract_functions_iter() {
+      let bf = f.read().unwrap();
+      if let Some(scope) = &bf.captured_scope {
+        scope_to_dispatch.insert(scope.name.0.clone(), Arc::clone(f));
+      }
+      fn_by_name.insert(bf.name.clone(), Arc::clone(f));
+    }
+    // The dispatch function a body's tail returns, drilling through
+    // `let`/block wrappers to the tail. Two shapes: a scope-struct
+    // construction (a closure WITH captured data) — keyed off the constructed
+    // scope struct; or a bare name (a SCOPE-LESS closure, e.g. one capturing
+    // only other scope-less closures) — keyed off the name itself. In both
+    // cases the anchor (the scope struct name / the callee name) is what
+    // extraction stamped and no later pass rewrites, unlike the node's own
+    // function-type ancestor which propagation can collapse between two
+    // structurally-identical sibling closures.
+    let tail_dispatch = |body: &TypedExp| {
+      let mut cur = body;
+      loop {
+        match &cur.kind {
+          ExpKind::Block(exps) => match exps.last() {
+            Some(l) => cur = l,
+            None => return None,
+          },
+          ExpKind::Let(_, b) => cur = b,
+          _ => break,
+        }
+      }
+      match &cur.kind {
+        ExpKind::Application(callee, _)
+          if let Type::Function(callee_sig) = callee.data.unwrap_known()
+            && let Some(callee_ancestor) = &callee_sig.abstract_ancestor =>
+        {
+          let scope_name = callee_ancestor.read().unwrap().name.clone();
+          scope_to_dispatch.get(&scope_name).cloned()
+        }
+        ExpKind::Name(n)
+          if matches!(cur.data.unwrap_known(), Type::Function(_)) =>
+        {
+          fn_by_name.get(n).cloned()
+        }
+        _ => None,
+      }
+    };
+    for f in self.abstract_functions_iter() {
+      let implementation = {
+        let bf = f.read().unwrap();
+        match &bf.implementation {
+          FunctionImplementationKind::Composite(impl_arc) => impl_arc.clone(),
+          _ => continue,
+        }
+      };
+      let mut impl_w = implementation.write().unwrap();
+      let dispatch = if let ExpKind::Function(_, body) = &impl_w.expression.kind
+      {
+        tail_dispatch(body)
+      } else {
+        None
+      };
+      let Some(dispatch) = dispatch else {
+        continue;
+      };
+      // The implementation's own function-type return signature (what the
+      // emitter and dispatch-baking read).
+      impl_w.expression.data.with_dereferenced_mut(|ts| {
+        if let TypeState::Known(Type::Function(sig)) = ts {
+          sig.return_type.with_dereferenced_mut(|rt| {
+            if let TypeState::Known(Type::Function(return_signature)) = rt {
+              return_signature.abstract_ancestor = Some(dispatch.clone());
+            }
+          });
+        }
+      });
+      drop(impl_w);
+      if let AbstractType::Type(Type::Function(rf)) =
+        &mut f.write().unwrap().return_type
+      {
+        rf.abstract_ancestor = Some(dispatch);
+      }
+    }
+  }
   pub fn propagate_abstract_function_signatures(&mut self) {
     loop {
       let mut changed = false;
@@ -5218,7 +5308,19 @@ impl Program {
     take(&mut self.typedefs.structs, |structs| {
       structs
         .into_iter()
-        .filter(|s| !s.is_unitlike(&mut names))
+        .filter_map(|mut s| {
+          if s.is_unitlike(&mut names) {
+            // a wholly-unitlike struct is dropped entirely
+            None
+          } else {
+            // prune unitlike FIELDS from a struct that survives, keeping the
+            // definition consistent with the constructor-argument removal
+            // below (which drops the matching unitlike args). Field ACCESSES of
+            // these fields are rewritten to Unit in the body walk.
+            s.fields.retain(|f| !f.field_type.is_unitlike(&mut names));
+            Some(s)
+          }
+        })
         .collect()
     });
     for f in self.abstract_functions_iter_mut() {
@@ -5234,6 +5336,14 @@ impl Program {
               if exp.data.unwrap_known() == Type::Unit {
                 exp.kind = ExpKind::Unit;
               }
+              Ok(true)
+            }
+            // A field access whose result is unitlike reads a field that was
+            // pruned from the struct definition above — it yields Unit.
+            ExpKind::Access(Accessor::Field(_), _)
+              if exp.data.unwrap_known().is_unitlike(&mut names) =>
+            {
+              exp.kind = ExpKind::Unit;
               Ok(true)
             }
             ExpKind::Application(applied_f, args) => {
@@ -5310,6 +5420,12 @@ impl Program {
           })
           .unwrap();
       }
+    }
+    // The registry's own signatures lose their unitlike parameters too
+    // (calls only strip their own signature copies), so no pass mistakes a
+    // stripped parameter for a live one.
+    for f in self.abstract_functions_iter() {
+      f.write().unwrap().remove_unitlike_arguments(&mut names);
     }
     std::mem::swap(&mut names, &mut self.names.write().unwrap());
   }
@@ -6223,21 +6339,19 @@ impl Program {
           } else {
             continue;
           };
-          let suffix_types: Vec<&Type> = if type_signature
-            .iter()
-            .any(|t| matches!(t, Type::Function(_)))
-          {
-            let non_fn: Vec<&Type> = type_signature
-              .iter()
-              .filter(|t| !matches!(t, Type::Function(_)))
-              .collect();
-            if non_fn.is_empty() {
-              continue;
-            }
-            non_fn
-          } else {
-            type_signature.iter().collect()
-          };
+          let suffix_types: Vec<&Type> =
+            if type_signature.iter().any(|t| t.involves_function()) {
+              let non_fn: Vec<&Type> = type_signature
+                .iter()
+                .filter(|t| !t.involves_function())
+                .collect();
+              if non_fn.is_empty() {
+                continue;
+              }
+              non_fn
+            } else {
+              type_signature.iter().collect()
+            };
           let new_name = base_name.to_string()
             + "_"
             + &suffix_types
@@ -7437,6 +7551,10 @@ impl Program {
       return errors;
     }
     self.rewrite_aliased_builtin_calls();
+    self.box_function_values(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     self.validate_control_flow(&mut errors);
     if !errors.is_empty() {
       return errors;
@@ -7455,12 +7573,6 @@ impl Program {
       return errors;
     }
     self.validate_match_blocks(&mut errors);
-    if !errors.is_empty() {
-      return errors;
-    }
-    self.catch_illegal_function_type_expressions(&mut errors);
-    self.catch_illegal_function_type_user_type_fields(&mut errors);
-    self.catch_illegal_function_type_variables(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
@@ -7493,6 +7605,16 @@ impl Program {
       if !errors.is_empty() {
         return errors;
       }
+      // Stamp each closure-returning function's declared return type from the
+      // scope struct its body actually constructs — the one anchor extraction
+      // leaves unambiguous — BEFORE signature propagation runs. Two
+      // higher-order specializations that return structurally-identical
+      // sibling closures (`distortionify` applied to two different layers) are
+      // indistinguishable to propagation's `is_none` ancestor fills, which
+      // then lock one spec's return type onto the other's closure; stamping
+      // the correct `Some` here makes those fills skip it, so each spec stays
+      // its own directly-dispatched closure.
+      self.stamp_returned_closure_return_types();
       self.propagate_abstract_function_signatures();
       self.inline_local_bound_function_applications();
       let inlined = self.inline_all_higher_order_arguments(&mut errors);
@@ -7502,6 +7624,14 @@ impl Program {
       if !extracted && !inlined {
         break;
       }
+    }
+    self.defunctionalize_boxed_functions(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
+    self.validate_closure_state_aliasing(&mut errors);
+    if !errors.is_empty() {
+      return errors;
     }
     self.remove_unitlike_values();
     self.extract_non_bound_mutable_references();
@@ -8558,73 +8688,89 @@ impl Program {
       };
     let ordered_functions =
       self.composite_functions_in_usage_order_with_discovery(cpu_mode);
-    // CPU mode compiles only functions actually reachable from `@cpu`
-    // entries. Anything referenced solely from GPU entry points (e.g. the
-    // callbacks a compute shader invokes) must not be compiled for the CPU —
-    // it may legally do GPU-only things like passing storage-array elements
-    // by reference to atomics.
-    let cpu_reachable: Option<HashSet<Arc<str>>> = if cpu_mode {
+    // Both modes compile only the functions reachable from their own entry
+    // points (`@cpu` for the CPU runtime, `@audio` for the audio runtime),
+    // mirroring the closure-based emission the WGSL/C backends use: an
+    // unreachable helper (say, a never-called higher-order function returning
+    // a closure that isn't in the compiled set) must not be compiled, and
+    // neither may anything reached solely from a wrong-target entry (e.g. a
+    // GPU callback while compiling for the CPU).
+    //
+    // Audio mode is also used by the VM test harnesses (the conformance and
+    // vm suites) to compile a bare `f` in a program with no `@audio` entry at
+    // all; with no entry to seed reachability from, the whole program is
+    // compiled.
+    let reachable: Option<HashSet<Arc<str>>> = {
+      let is_target_entry = |e: EntryPoint| {
+        if cpu_mode {
+          matches!(e, EntryPoint::Cpu)
+        } else {
+          matches!(e, EntryPoint::Audio)
+        }
+      };
       let by_name: HashMap<Arc<str>, Arc<RwLock<TopLevelFunction>>> =
         ordered_functions
           .iter()
           .map(|(n, f)| (n.clone(), f.clone()))
           .collect();
-      let is_cpu_compilable = |f: &Arc<RwLock<TopLevelFunction>>| {
+      let is_target_compilable = |f: &Arc<RwLock<TopLevelFunction>>| {
         f.read()
           .unwrap()
           .entry_point
-          .map(|e| matches!(e, EntryPoint::Cpu))
+          .map(|e| is_target_entry(e))
           .unwrap_or(true)
       };
       let mut reachable: HashSet<Arc<str>> = HashSet::new();
       let mut queue: Vec<Arc<RwLock<TopLevelFunction>>> = vec![];
       for (name, f) in &ordered_functions {
-        let is_cpu_entry = f
+        let is_entry = f
           .read()
           .unwrap()
           .entry_point
-          .map(|e| matches!(e, EntryPoint::Cpu))
+          .map(|e| is_target_entry(e))
           .unwrap_or(false);
-        if is_cpu_entry && reachable.insert(name.clone()) {
+        if is_entry && reachable.insert(name.clone()) {
           queue.push(f.clone());
         }
       }
-      while let Some(f) = queue.pop() {
-        let mut found: Vec<Arc<str>> = vec![];
-        f.read()
-          .unwrap()
-          .expression
-          .walk(&mut |exp| {
-            if let ExpKind::Name(name) = &exp.kind
-              && by_name.contains_key(name)
+      if !cpu_mode && reachable.is_empty() {
+        None
+      } else {
+        while let Some(f) = queue.pop() {
+          let mut found: Vec<Arc<str>> = vec![];
+          f.read()
+            .unwrap()
+            .expression
+            .walk(&mut |exp| {
+              if let ExpKind::Name(name) = &exp.kind
+                && by_name.contains_key(name)
+              {
+                found.push(name.clone());
+              }
+              if let ExpKind::Application(_, _) = &exp.kind
+                && let TypeState::Known(Type::Function(signature)) =
+                  &exp.data.kind
+                && let Some(ancestor) = &signature.abstract_ancestor
+              {
+                found.push(ancestor.read().unwrap().name.clone());
+              }
+              Ok::<bool, Never>(true)
+            })
+            .unwrap();
+          for name in found {
+            if let Some(target) = by_name.get(&name)
+              && is_target_compilable(target)
+              && reachable.insert(name)
             {
-              found.push(name.clone());
+              queue.push(target.clone());
             }
-            if let ExpKind::Application(_, _) = &exp.kind
-              && let TypeState::Known(Type::Function(signature)) =
-                &exp.data.kind
-              && let Some(ancestor) = &signature.abstract_ancestor
-            {
-              found.push(ancestor.read().unwrap().name.clone());
-            }
-            Ok::<bool, Never>(true)
-          })
-          .unwrap();
-        for name in found {
-          if let Some(target) = by_name.get(&name)
-            && is_cpu_compilable(target)
-            && reachable.insert(name)
-          {
-            queue.push(target.clone());
           }
         }
+        Some(reachable)
       }
-      Some(reachable)
-    } else {
-      None
     };
     for (f_name, implementation) in ordered_functions {
-      if let Some(reachable) = &cpu_reachable
+      if let Some(reachable) = &reachable
         && !reachable.contains(&f_name)
       {
         continue;
@@ -8793,7 +8939,7 @@ impl Program {
 /// by `Program::validate_ref_arg_aliasing`. `Opaque` covers anything the
 /// check can't statically distinguish (runtime indices, swizzles) and is
 /// never provably disjoint from any other step.
-enum RefArgPathStep {
+pub(crate) enum RefArgPathStep {
   Field(Arc<str>),
   LiteralIndex(i64),
   Opaque,
@@ -8802,7 +8948,7 @@ enum RefArgPathStep {
 /// Peels an lvalue expression to its root variable and accessor path
 /// (root-outward). Returns None for non-lvalues, which can never alias —
 /// a reference to a temporary is the only holder of its storage.
-fn ref_arg_lvalue_path(
+pub(crate) fn ref_arg_lvalue_path(
   exp: &TypedExp,
 ) -> Option<(Arc<str>, Vec<RefArgPathStep>)> {
   match &exp.kind {
@@ -8830,7 +8976,7 @@ fn ref_arg_lvalue_path(
 /// steps (different fields, different literal indices). Equal prefixes
 /// that run out (one path extends the other) overlap, and `Opaque` steps
 /// can never establish divergence.
-fn ref_paths_provably_disjoint(
+pub(crate) fn ref_paths_provably_disjoint(
   a: &[RefArgPathStep],
   b: &[RefArgPathStep],
 ) -> bool {
@@ -8899,10 +9045,20 @@ impl RefCaptureAnalyzer<'_, '_> {
             }
             "=" => {
               let taint = self.taint_of(&args[1]);
-              if let ExpKind::Name(target) = &args[0].kind
-                && let Some(param) = taint
-              {
-                self.tainted.insert(target.clone(), param);
+              if let Some(param) = taint {
+                if args[0].data.is_globally_bound {
+                  // Stored in a global, the closure outlives the call.
+                  self.errors.log(CompileError::new(
+                    EscapingClosureCapturesRefArg(param.to_string()),
+                    exp.source_trace.clone(),
+                  ));
+                } else if let Some(target) =
+                  args[0].name_or_inner_accessed_name()
+                {
+                  // Storing into a local — or an element / field of one —
+                  // makes the whole local carry the closure.
+                  self.tainted.insert(target.clone(), param);
+                }
               }
               return None;
             }
@@ -8919,7 +9075,7 @@ impl RefCaptureAnalyzer<'_, '_> {
         // value doesn't propagate.
         taint.filter(|_| {
           exp.data.with_dereferenced(|state| match state {
-            TypeState::Known(t) => type_involves_function(t),
+            TypeState::Known(t) => holds_function(t),
             _ => false,
           })
         })
@@ -9043,22 +9199,6 @@ fn abstract_type_shallow_matches(
     },
     (AbstractType::AbstractArray { .. }, _) => false,
     _ => true,
-  }
-}
-
-/// Whether a value of this type can hold a closure — used by the
-/// ref-capture escape walk to decide if a call result can carry taint.
-/// Function-typed struct/enum fields and globals are rejected elsewhere
-/// (`CantStoreFunctionInDataStructure`), so functions and arrays are the
-/// only containers to consider.
-fn type_involves_function(t: &Type) -> bool {
-  match t {
-    Type::Function(_) => true,
-    Type::Array(_, inner) => inner.with_dereferenced(|state| match state {
-      TypeState::Known(inner) => type_involves_function(inner),
-      _ => false,
-    }),
-    _ => false,
   }
 }
 

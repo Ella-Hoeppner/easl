@@ -1,0 +1,19 @@
+; A stateful closure in a struct field: calling through the field advances
+; it in place; passing or binding the struct copies it.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+(struct Holder f: (Fn [] f32))
+(defn use-holder [h: Holder]: f32 (h.f))
+@cpu
+(defn main []
+  (let [h (Holder (make-counter 1.))]
+    (print (use-holder h))
+    (print (use-holder h))
+    (print (h.f))
+    (print (h.f))
+    (let [h2 h]
+      (print (h2.f))
+      (print (h.f)))))

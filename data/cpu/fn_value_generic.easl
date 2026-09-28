@@ -1,0 +1,13 @@
+; Union + generics: apply-first is generic
+; in T and must monomorphize over both T=f32 and the union {double,increment}.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+
+(defn (apply-first T)
+      [fns: [2: (Fn [T] T)]
+       x: T]: T
+  ((fns 0u) x))
+
+@cpu
+(defn main []
+  (print (apply-first [double increment] 5.)))

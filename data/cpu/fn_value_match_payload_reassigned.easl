@@ -1,0 +1,34 @@
+; If a match arm reassigns the scrutinee to another variant, calling the
+; payload binding afterwards does nothing and yields a zero value.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+
+(enum Voice
+  (Playing (Fn [] f32))
+  Silent)
+
+(defn step [@var @ref v: Voice]: f32
+  (match v
+    (Playing f) (f)
+    Silent 0.))
+@cpu
+(defn main []
+  (let [@var v (Playing (make-counter 1.))]
+    (print (step v))
+    (match v
+      (Playing f) (do
+                    (= v Silent)
+                    (print (f)))
+      Silent ())
+    (print (match v
+             (Playing f) 1.
+             Silent 2.))))

@@ -1,0 +1,49 @@
+; Functions that take or return functions, stored as values inside a GPU
+; dispatch: stored higher-order functions (top-level and lambda), stored
+; factories (including one taking a function), and a stateful closure lent
+; to a stored higher-order function, which advances in place.
+(defn make-counter [amount: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n amount)
+      n)))
+
+(defn inc [x: f32]: f32 (+ x 1.))
+
+(defn twice [f: (Fn [f32] f32)
+             x: f32]: f32
+  (f (f x)))
+
+(defn make-adder [k: f32]: (Fn [f32] f32)
+  (fn [x] (+ x k)))
+
+(defn doubled [g: (Fn [f32] f32)]: (Fn [f32] f32)
+  (fn [x] (g (g x))))
+
+(defn once [g: (Fn [f32] f32)]: (Fn [f32] f32)
+  (fn [x] (g x)))
+
+(defn call-twice [g: (Fn [] f32)]: f32
+  (g)
+  (g))
+
+@storage-write
+(var out: [6: f32])
+
+@cpu
+(defn main []
+  (dispatch-compute-shader
+    (fn []
+      (let [hs [twice (fn [f x] (f x))]
+            fs [make-adder (fn [k] (fn [x] (* x k)))]
+            cs [doubled once]
+            cts [call-twice call-twice]
+            @var c (make-counter 1.)]
+        (= (out 0u) ((hs 0u) inc 5.))
+        (= (out 1u) (((fs 1u) 3.) 5.))
+        (= (out 2u) ((cts 0u) c))
+        (= (out 3u) (c))
+        (= (out 4u) (((cs 0u) inc) 1.))
+        (= (out 5u) (((cs 1u) inc) 1.))))
+    (vec3u 1u))
+  (print out))

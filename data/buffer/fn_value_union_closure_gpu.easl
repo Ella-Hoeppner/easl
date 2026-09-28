@@ -1,0 +1,35 @@
+; GPU round-trip of a captured function-union dispatch: a compute shader
+; folds a `vec3f` through a union of two lambda "layers" pulled from an array
+; captured by the closure `apply-layers` returns, and also calls one layer
+; directly. `combine` shares the layers' signature but is a plain function —
+; it must stay a direct call, not be hijacked into the dispatcher. The result
+; is written to a storage global, read back, and printed.
+;
+;   merged (1,1,1): scale -> combine(2,2,2)=(1.5,1.5,1.5);
+;                   shift -> combine(2.5,2.5,2.5)=(2,2,2) -> .x = 2
+;   scale (3,3,3):  combine(6,6,6)=(5.5,5.5,5.5) -> .x = 5.5
+; 2 + 5.5 = 7.5
+(defn combine [p: vec3f]: vec3f
+  (- p (vec3f 0.5)))
+
+(defn apply-layers [fns: [2: (Fn [vec3f] vec3f)]]: (Fn [vec3f] vec3f)
+  (fn [pos]
+    (let [@var q pos]
+      (for [i (array-length fns)]
+        (= q ((fns i) q)))
+      q)))
+
+@storage-write
+(var outp: f32)
+
+@cpu
+(defn main []
+  (dispatch-compute-shader
+    (fn []
+      (let [scale (fn [p] (combine (* p 2.)))
+            shift (fn [p] (combine (+ p (vec3f 1.))))
+            merged (apply-layers [scale shift])]
+        (= outp (+ (.x (merged (vec3f 1.)))
+                   (.x (scale (vec3f 3.)))))))
+    (vec3u 1u))
+  (print outp))

@@ -1,0 +1,15 @@
+; An array literal whose element is itself a merge.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+(defn negate [x: f32]: f32 (- 0. x))
+
+(defn run [fns: [2: (Fn [f32] f32)]
+           i: u32
+           x: f32]: f32
+  ((fns i) x))
+
+@cpu
+(defn main []
+  (let [c false]
+    (print (run [(if c double increment) negate] 0u 5.))
+    (print (run [(if c double increment) negate] 1u 5.))))

@@ -1,0 +1,26 @@
+; Shader form of two DISTINCT closure-union member-sets sharing the signature
+; `(Fn [f32] f32)` — `[double inc]` and `[negate square]` — both folded through
+; `apply-layers` and their results written to a storage global. Pins that the
+; late reification emits valid WGSL when several member-sets of one signature
+; coexist (the global-by-signature keying merges them into one enum today; a
+; per-usage rebuild would give each its own).
+(defn apply-layers [fns: [2: (Fn [f32] f32)]]: (Fn [f32] f32)
+  (fn [x]
+    (let [@var q x]
+      (for [i (array-length fns)]
+        (= q ((fns i) q)))
+      q)))
+
+@storage-write
+(var outp: f32)
+
+@compute
+@{workgroup-size 1}
+(defn main []
+  (let [double (fn [x] (* x 2.))
+        inc (fn [x] (+ x 1.))
+        negate (fn [x] (- 0. x))
+        square (fn [x] (* x x))
+        m1 (apply-layers [double inc])
+        m2 (apply-layers [negate square])]
+    (= outp (+ (m1 3.) (m2 3.)))))

@@ -16,7 +16,13 @@ const BOILERPLATE: &str = "
   (print internal-return-value))
 ";
 
-fn run_conformance_test(name: &str, tolerance: f64) {
+/// `skip_c` omits the C backend from the comparison. The tree C backend can't
+/// pass a fixed-size array by value (arrays decay to pointers as C parameters),
+/// so the merge / function-array pattern — a HoF taking `[N: (Fn ...)]` — has no
+/// valid C lowering yet. Such tests still pin the interpreter, WGSL (GPU) and VM
+/// backends against each other; C support waits on the planned bytecode→C
+/// overhaul rather than array-in-struct wrapping in the tree backend.
+fn run_conformance_test(name: &str, tolerance: f64, skip_c: bool) {
   let source_path_str = format!("./data/conformance/{name}.easl");
   let source_path = Path::new(&source_path_str);
 
@@ -47,15 +53,21 @@ fn run_conformance_test(name: &str, tolerance: f64) {
     BackendResult::Both { cpu, .. } => Ok(cpu),
     BackendResult::Failed { reason } => Err(reason),
   };
-  let c_result = run_c_backend(name, source_path, &user_source);
+  let c_result = if skip_c {
+    None
+  } else {
+    Some(run_c_backend(name, source_path, &user_source))
+  };
   let vm_result = run_vm_backend(name, source_path, &user_source);
 
-  let labels_and_results: [(&str, &Result<f64, String>); 4] = [
+  let mut labels_and_results: Vec<(&str, &Result<f64, String>)> = vec![
     ("interpreter", &interpreter_result),
     ("WGSL (GPU)", &gpu_result),
-    ("C", &c_result),
-    ("VM", &vm_result),
   ];
+  if let Some(c_result) = &c_result {
+    labels_and_results.push(("C", c_result));
+  }
+  labels_and_results.push(("VM", &vm_result));
 
   let format_results = || -> String {
     labels_and_results
@@ -334,14 +346,51 @@ fn run_vm_backend(
   }
 }
 
+/// The tree-walking interpreter reference has a very large per-`eval` stack
+/// frame (its giant match), so deeply-nested closure dispatch — a merge of
+/// merges reaches ~30 frames — overflows the Rust test harness's 2 MB per-test
+/// thread even though it runs comfortably on the production main thread (8 MB on
+/// macOS). Run each conformance case on a generous stack so the test measures
+/// backend agreement rather than the tree walker's frame size (the frame bloat
+/// is a separate, tracked concern). The VM and C backends use their own flat
+/// stacks and don't need this, but running the whole case on one thread keeps it
+/// simple.
+fn run_conformance_test_on_ample_stack(
+  name: &'static str,
+  tolerance: f64,
+  skip_c: bool,
+) {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(move || run_conformance_test(name, tolerance, skip_c))
+    .unwrap()
+    .join()
+    .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
+}
+
 macro_rules! conformance_test {
   ($name:ident) => {
     conformance_test!($name, 0.0);
   };
+  // `skip_c` (with or without a tolerance) excludes the C backend — see
+  // `run_conformance_test`. These arms precede the `$tolerance:expr` arm so the
+  // literal `skip_c` token matches before it is parsed as an expression.
+  ($name:ident, skip_c) => {
+    #[test]
+    fn $name() {
+      run_conformance_test_on_ample_stack(stringify!($name), 0.0, true);
+    }
+  };
+  ($name:ident, $tolerance:expr, skip_c) => {
+    #[test]
+    fn $name() {
+      run_conformance_test_on_ample_stack(stringify!($name), $tolerance, true);
+    }
+  };
   ($name:ident, $tolerance:expr) => {
     #[test]
     fn $name() {
-      run_conformance_test(stringify!($name), $tolerance);
+      run_conformance_test_on_ample_stack(stringify!($name), $tolerance, false);
     }
   };
 }
@@ -608,3 +657,9 @@ conformance_test!(compound_mat_plus_mat);
 conformance_test!(compound_mat_minus_mat);
 conformance_test!(compound_swizzle_vec_times_mat);
 conformance_test!(into_conversions);
+conformance_test!(returned_closure_hof);
+// First-class function values (see CLAUDE.md).
+conformance_test!(fn_value_dispatch);
+// C is skipped: the merge HoF takes `[N: (Fn ...)]`, a fixed array by value,
+// which the tree C backend can't express (see `run_conformance_test`).
+conformance_test!(fn_value_nested_single_variant_union, skip_c);

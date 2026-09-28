@@ -1,0 +1,22 @@
+; A fn-union lives inside an enum payload.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+
+(enum Op
+  (Apply (Fn [f32] f32))
+  Identity)
+
+(defn make [flag: bool]: Op
+  (if flag (Apply double) (Apply increment)))
+
+(defn run [o: Op
+           x: f32]: f32
+  (match o
+    (Apply f) (f x)
+    Identity x))
+
+@cpu
+(defn main []
+  (print (run (make true) 5.))
+  (print (run (make false) 5.))
+  (print (run Identity 5.)))

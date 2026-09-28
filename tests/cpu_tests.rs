@@ -267,6 +267,100 @@ cpu_test!(unit_match_compound_assignment_arms);
 cpu_test!(local_ref_capture_helper);
 cpu_test!(ref_capture_hof_arg);
 
+// First-class function values: functions and closures stored in arrays,
+// struct fields, enum payloads, and globals, or chosen by `if`/`match` (see
+// "First-class function values" in CLAUDE.md).
+cpu_test!(fn_value_array_basic);
+cpu_test!(fn_value_runtime_index);
+cpu_test!(fn_value_closure_array);
+cpu_test!(fn_value_if_merge);
+cpu_test!(fn_value_struct_field);
+cpu_test!(fn_value_struct_field_union);
+cpu_test!(fn_value_enum_payload);
+cpu_test!(fn_value_multi_layer);
+cpu_test!(fn_value_closure_captures_array);
+cpu_test!(fn_value_generic);
+cpu_test!(fn_value_unsized_array);
+cpu_test!(fn_value_global);
+cpu_test!(fn_value_global_state);
+
+// Function-value shapes that were a wrong result, a runtime crash, or a panic
+// on at least one runtime in an earlier implementation.
+cpu_test!(fn_value_nested_merge);
+cpu_test!(fn_value_return_let_merge);
+cpu_test!(fn_value_return_indexed);
+cpu_test!(fn_value_array_containing_merge);
+cpu_test!(fn_value_let_merge_into_array);
+cpu_test!(fn_value_array_element_assign);
+cpu_test!(fn_value_struct_array);
+cpu_test!(fn_value_struct_field_from_union_elem);
+cpu_test!(fn_value_enum_payload_from_union_elem);
+cpu_test!(fn_value_overloaded_receiver);
+cpu_test!(fn_value_named_and_lambda_receiver);
+cpu_test!(fn_value_generic_struct_field);
+cpu_test!(fn_value_struct_field_lambda);
+cpu_test!(fn_value_struct_field_closure_capture);
+// Stateful closures stored in arrays, struct fields, and merges must keep
+// their captured state exactly as a directly-called closure does. This is a
+// language requirement, not an optional improvement: never weaken, ignore, or
+// delete these to get a green suite.
+cpu_test!(fn_value_closure_array_state);
+cpu_test!(fn_value_closure_bank_state);
+cpu_test!(fn_value_closure_loop_state);
+cpu_test!(fn_value_struct_field_closure_state);
+cpu_test!(fn_value_struct_field_lambda_state);
+cpu_test!(fn_value_closure_merge_state);
+cpu_test!(fn_value_closure_copy_out_of_array);
+cpu_test!(fn_value_stored_closure_hof_arg);
+cpu_test!(fn_value_closure_array_param);
+cpu_test!(fn_value_struct_field_closure_copy);
+cpu_test!(fn_value_struct_layer_composition);
+cpu_test!(fn_value_ref_capture_local);
+cpu_test!(closure_pure_alias);
+cpu_test!(fn_value_dynamic_array_push);
+cpu_test!(fn_value_merge_hof_params);
+cpu_test!(fn_value_enum_payload_alias);
+cpu_test!(fn_value_match_payload_alias);
+cpu_test!(fn_value_match_payload_alias_let);
+cpu_test!(fn_value_match_payload_reassigned);
+cpu_test!(fn_value_match_payload_early_exit);
+cpu_test!(fn_value_match_payload_places);
+cpu_test!(fn_value_match_payload_temporary);
+cpu_test!(fn_value_match_payload_pure_ref);
+cpu_test!(fn_value_match_payload_struct);
+cpu_test!(fn_value_match_payload_hof_and_loop);
+cpu_test!(fn_value_match_payload_heap_return);
+cpu_test!(fn_value_generic_producer);
+cpu_test!(fn_value_frame_closure_bank);
+// Functions that take or return functions, stored as values.
+cpu_test!(fn_value_hof_members);
+cpu_test!(fn_value_hof_lambda_members);
+cpu_test!(fn_value_hof_stateful_args);
+cpu_test!(fn_value_factories);
+cpu_test!(fn_value_stateful_factories);
+cpu_test!(fn_value_hof_param_through_stored_hof);
+cpu_test!(fn_value_generic_hof_member);
+cpu_test!(fn_value_struct_field_hof);
+cpu_test!(fn_value_fn_taking_factory);
+cpu_test!(fn_value_factory_bank);
+cpu_test!(fn_value_hof_loop_state);
+cpu_test!(fn_value_hof_global);
+cpu_test!(fn_value_if_selected_hof);
+cpu_test!(fn_value_unit_scope_union);
+cpu_test!(fn_value_factory_stateful_arg);
+cpu_test!(fn_value_lent_closure_pure_twice);
+cpu_test!(fn_value_lent_closure_union_copy_back);
+cpu_test!(fn_value_local_hof_stored_args);
+cpu_test!(fn_value_local_hof_pure_union_arg);
+cpu_test!(fn_value_hof_pure_union_arg);
+cpu_test!(fn_value_hof_arg_matrix);
+cpu_test!(fn_value_factory_return_matrix);
+// Single-variant user enums must keep their VM layout (unrelated to function
+// values, but broken by the same change).
+cpu_test!(single_variant_enum_layout);
+// Binding a closure to a new name copies its captured state.
+cpu_test!(closure_copy_semantics);
+
 /// The full MIDI query surface against spoofed input state, on both
 /// runtimes: per-note velocities, CC values, pitch bend, and the
 /// held-note list (`data/cpu/midi_queries.easl`). Spoofing goes through

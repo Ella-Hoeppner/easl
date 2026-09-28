@@ -1,0 +1,39 @@
+; Match-arm payload closures advance in place inside a compute shader.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+
+(enum Voice
+  (Playing (Fn [] f32))
+  Silent)
+
+(defn step [@var @ref v: Voice]: f32
+  (match v
+    (Playing f) (f)
+    Silent 0.))
+@storage-write
+(var out: [4: f32])
+
+@cpu
+(defn main []
+  (dispatch-compute-shader
+    (fn []
+      (let [@var vs [(Playing (make-counter 1.)) (Playing (make-doubler 1.))]]
+        (= (out 0u) (step (vs 0u)))
+        (= (out 1u) (step (vs 0u)))
+        (match (vs 1u)
+          (Playing f) (= (out 2u) (f))
+          Silent ())
+        (match (vs 1u)
+          (Playing f) (= (out 3u) (f))
+          Silent ())))
+    (vec3u 1u))
+  (print out))

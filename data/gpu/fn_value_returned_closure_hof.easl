@@ -1,0 +1,22 @@
+; A higher-order function returning a closure that captures its function
+; argument, applied to two structurally-identical-but-distinct closures in a
+; shader — the `distortionify` shape from a real fragment shader. Each returned
+; closure must emit as its own directly-dispatched function with a matching
+; scope-struct return type (the sibling closures previously collapsed onto one
+; identity, producing invalid WGSL).
+(defn cgl [pos: vec3f x: f32]: vec3f
+  (* pos x))
+
+@fragment
+(defn frag []: vec4f
+  (let [pos (vec3f 1.)
+        a 0.5
+        b 0.25
+        distortionify (fn [f: (Fn [vec3f] vec3f)]
+                        (fn [pos] (+ pos (f pos))))
+        main-layer (fn [pos] (cgl pos a))
+        secondary-layer (fn [pos] (cgl pos b))]
+    (vec4f (-> pos
+               ((distortionify main-layer))
+               ((distortionify secondary-layer)))
+           1.)))

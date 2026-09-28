@@ -1,0 +1,28 @@
+; Value-correctness pin for the per-usage late (closure) function-union
+; reification. The union members are LAMBDAS (so the late pass handles them);
+; `combine` is a plain function they call that shares their signature
+; `(Fn [vec3f] vec3f)`. A global-by-signature match once rewrote `combine`'s
+; calls into the union dispatcher — a self-referential call graph that
+; overflowed the compiler — so the members must stay per-usage: only a value
+; pulled from the union array dispatches.
+;
+;   merged (1,1,1): scale  -> combine(2,2,2)   = (1.5,1.5,1.5)
+;                   shift  -> combine(2.5,2.5,2.5) = (2,2,2) -> .x = 2
+;   scale (3,3,3) directly: combine(6,6,6)     = (5.5,5.5,5.5) -> .x = 5.5
+; 2 + 5.5 = 7.5
+(defn combine [p: vec3f]: vec3f
+  (- p (vec3f 0.5)))
+
+(defn apply-layers [fns: [2: (Fn [vec3f] vec3f)]]: (Fn [vec3f] vec3f)
+  (fn [pos]
+    (let [@var q pos]
+      (for [i (array-length fns)]
+        (= q ((fns i) q)))
+      q)))
+
+(defn f []: f32
+  (let [scale (fn [p] (combine (* p 2.)))
+        shift (fn [p] (combine (+ p (vec3f 1.))))
+        merged (apply-layers [scale shift])]
+    (+ (.x (merged (vec3f 1.)))
+       (.x (scale (vec3f 3.))))))

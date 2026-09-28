@@ -2644,7 +2644,9 @@ impl Value {
           })
           .collect(),
       ),
-      Type::Function(_) => return Err(CantCreateZeroedFunction.into()),
+      Type::Function(_) | Type::BoxedFunction(_) => {
+        return Err(CantCreateZeroedFunction.into());
+      }
       Type::Skolem(_, _) => return Err(CantCreateZeroedSkolem.into()),
       Type::Enum(e) => {
         let first_variant = &e.variants[0];
@@ -4861,6 +4863,41 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       shared_table,
       shared_indices,
     };
+    // Enum unit-variant names are bound before global initializers are
+    // evaluated, since an initializer may reference one (a function-union
+    // member constant, say).
+    {
+      let mut unit_variant_names: HashSet<Arc<str>> = HashSet::new();
+      for e in program.typedefs.enums.iter() {
+        for v in e.variants.iter() {
+          if v.inner_type == AbstractType::Type(Type::Unit) {
+            unit_variant_names.insert(v.name.clone());
+            env.bind(
+              v.name.clone(),
+              Value::Enum(v.name.clone(), Value::Unit.into()),
+              Type::Unit, // enum unit constructors are never ZeroedArray
+            );
+          }
+        }
+      }
+      // Generic enums' unit variants are referenced by monomorphized constant
+      // names (e.g. `None_Option_f32`) — bind each such alias to the same
+      // base-named value, so both value uses and match-pattern comparisons
+      // (which evaluate the pattern name) resolve. The value keeps the base
+      // variant name, matching how data-variant patterns compare via their
+      // `EnumConstructor` ancestors' base names.
+      for (monomorphized, base) in
+        program.names.read().unwrap().monomorphized_to_base_names()
+      {
+        if unit_variant_names.contains(&base) {
+          env.bind(
+            monomorphized,
+            Value::Enum(base, Value::Unit.into()),
+            Type::Unit,
+          );
+        }
+      }
+    }
     for var in program.top_level_vars.iter() {
       let value = match &var.value {
         Some(exp) => eval(exp.clone(), &mut env)?,
@@ -4885,36 +4922,6 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         }
       };
       env.bind(var.name.clone(), value, var.var_type.clone());
-    }
-    let mut unit_variant_names: HashSet<Arc<str>> = HashSet::new();
-    for e in program.typedefs.enums.iter() {
-      for v in e.variants.iter() {
-        if v.inner_type == AbstractType::Type(Type::Unit) {
-          unit_variant_names.insert(v.name.clone());
-          env.bind(
-            v.name.clone(),
-            Value::Enum(v.name.clone(), Value::Unit.into()),
-            Type::Unit, // enum unit constructors are never ZeroedArray
-          );
-        }
-      }
-    }
-    // Generic enums' unit variants are referenced by monomorphized constant
-    // names (e.g. `None_Option_f32`) — bind each such alias to the same
-    // base-named value, so both value uses and match-pattern comparisons
-    // (which evaluate the pattern name) resolve. The value keeps the base
-    // variant name, matching how data-variant patterns compare via their
-    // `EnumConstructor` ancestors' base names.
-    for (monomorphized, base) in
-      program.names.read().unwrap().monomorphized_to_base_names()
-    {
-      if unit_variant_names.contains(&base) {
-        env.bind(
-          monomorphized,
-          Value::Enum(base, Value::Unit.into()),
-          Type::Unit,
-        );
-      }
     }
     // Initial window-info values: dispatches that happen outside a frame
     // loop should see the IO manager's defaults rather than zeros.
@@ -5837,6 +5844,289 @@ impl From<EvalException> for EvalError {
   }
 }
 
+/// A closure whose value is used as its scope struct (a function value
+/// lowered to its closure's scope — stored in an array, a struct field, or a
+/// union payload) is represented by that scope.
+fn closure_as_scope(value: Value, data: &ExpTypeInfo) -> Value {
+  match value {
+    Value::Fun(Function::Scoped { scope, .. })
+      if matches!(data.kind.try_unwrap_known(), Some(Type::Struct(_))) =>
+    {
+      *scope
+    }
+    value => value,
+  }
+}
+
+/// Performs an assignment-op call (`=`, `+=`, swizzle-assign, …): resolves the
+/// LHS place expression to a mutable slot in `env` and writes `new_value` there,
+/// returning `Value::Unit`. Split out of `eval` so its `AccessKind` enum, access
+/// vector, and traversal locals stay out of `eval`'s giant stack frame (the
+/// recurring bloat that overflows deeply-recursive programs).
+fn eval_assignment_op<IO: IOManager>(
+  env: &mut EvaluationEnvironment<IO>,
+  mut accessed_expression: Exp<ExpTypeInfo>,
+  new_value: Value,
+) -> Result<Value, EvalException> {
+  enum AccessKind {
+    Index(i64),
+    Field(Arc<str>),
+    Swizzle(Vec<SwizzleField>),
+  }
+  let mut accesses: Vec<AccessKind> = vec![];
+  let accessed_name = loop {
+    match accessed_expression.kind {
+      ExpKind::Name(name) => break name,
+      ExpKind::Application(exp, mut index) => {
+        let Value::Prim(index) = eval(index.remove(0), env)? else {
+          panic!()
+        };
+        let index = match index {
+          Primitive::U32(u) => u as i64,
+          Primitive::I32(i) => i as i64,
+          _ => panic!(),
+        };
+        accesses.push(AccessKind::Index(index));
+        accessed_expression = *exp;
+      }
+      ExpKind::Access(accessor, exp) => {
+        match accessor {
+          Accessor::Field(field_name) => {
+            accesses.push(AccessKind::Field(field_name))
+          }
+          Accessor::Swizzle(swizzle_fields) => {
+            accesses.push(AccessKind::Swizzle(swizzle_fields))
+          }
+          Accessor::ArrayIndex(index_exp) => {
+            let Value::Prim(index) = eval(*index_exp, env)? else {
+              panic!()
+            };
+            let index = match index {
+              Primitive::U32(u) => u as i64,
+              Primitive::I32(i) => i as i64,
+              _ => panic!(),
+            };
+            accesses.push(AccessKind::Index(index));
+          }
+        }
+        accessed_expression = *exp;
+      }
+      _ => panic!(),
+    }
+  };
+  // Pre-expand any ZeroedArray at the top-level binding before taking a
+  // mutable reference. Value::zeroed needs an immutable &env borrow,
+  // which would conflict with &mut env.bindings during traversal.
+  if let Some((Value::ZeroedArray { length }, Type::Array(_, inner))) =
+    env.bindings.get(&*accessed_name).and_then(|s| s.last())
+  {
+    let length = *length;
+    let elem_ty = inner.unwrap_known();
+    let zero_val = Value::zeroed(elem_ty, env)?;
+    take(
+      &mut env
+        .bindings
+        .get_mut(&*accessed_name)
+        .unwrap()
+        .last_mut()
+        .unwrap()
+        .0,
+      |_| Value::Array(vec![zero_val; length]),
+    );
+  }
+  let mut accessed_value = &mut env
+    .bindings
+    .get_mut(&*accessed_name)
+    .unwrap()
+    .last_mut()
+    .unwrap()
+    .0;
+  let mut active_swizzle_fields: Option<Vec<usize>> = None;
+  for access in accesses.into_iter().rev() {
+    match access {
+      AccessKind::Index(i) => match accessed_value {
+        Value::Array(a) => {
+          let length = a.len() as i64;
+          accessed_value = &mut a[(((i % length) + length) % length) as usize];
+        }
+        Value::Struct(s) => {
+          // Vector stored as Struct with x/y/z/w fields.
+          let field_name = ["x", "y", "z", "w"][i as usize];
+          accessed_value = s.get_mut(field_name).unwrap();
+        }
+        _ => panic!(),
+      },
+      AccessKind::Field(name) => {
+        if let Some(previous_swizzle_fields) = active_swizzle_fields {
+          active_swizzle_fields = Some(vec![
+            previous_swizzle_fields[SwizzleField::from_name(&*name).index()],
+          ]);
+        } else {
+          let Value::Struct(s) = accessed_value else {
+            panic!()
+          };
+          accessed_value = s.get_mut(&name).unwrap();
+        }
+      }
+      AccessKind::Swizzle(swizzle_fields) => {
+        if let Some(previous_swizzle_fields) = active_swizzle_fields {
+          active_swizzle_fields = Some(
+            swizzle_fields
+              .into_iter()
+              .map(|f| previous_swizzle_fields[f.index()])
+              .collect(),
+          );
+        } else {
+          active_swizzle_fields =
+            Some(swizzle_fields.into_iter().map(|f| f.index()).collect());
+        }
+      }
+    }
+  }
+  if let Some(active_swizzle_fields) = active_swizzle_fields {
+    if active_swizzle_fields.len() == 1 {
+      let Value::Struct(s) = accessed_value else {
+        panic!()
+      };
+      *s.get_mut(SwizzleField::from_index(active_swizzle_fields[0]).name())
+        .unwrap() = new_value;
+    } else {
+      let Value::Struct(s) = accessed_value else {
+        panic!()
+      };
+      let Value::Struct(mut return_s) = new_value else {
+        panic!()
+      };
+      for (target_field, source_field) in
+        active_swizzle_fields.into_iter().zip(["x", "y", "z", "w"])
+      {
+        *s.get_mut(SwizzleField::from_index(target_field).name())
+          .unwrap() = return_s.remove(source_field).unwrap();
+      }
+    }
+  } else {
+    *accessed_value = new_value;
+  }
+  Ok(Value::Unit)
+}
+
+/// Performs an atomic mutation op (`atomic-store`, `atomic-add`, …): resolves
+/// the atomic value's place, swaps in `new_value`, and returns the previous
+/// inner value (or `Value::Unit` for `atomic-store`). Split out of `eval` for
+/// the same stack-frame reason as `eval_assignment_op`.
+fn eval_atomic_op<IO: IOManager>(
+  env: &mut EvaluationEnvironment<IO>,
+  mut accessed_expression: Exp<ExpTypeInfo>,
+  op_name: &str,
+  new_value: Value,
+) -> Result<Value, EvalException> {
+  enum AccessKind {
+    Index(i64),
+    Field(Arc<str>),
+  }
+  let mut accesses: Vec<AccessKind> = vec![];
+  let accessed_name = loop {
+    match accessed_expression.kind {
+      ExpKind::Name(name) => break name,
+      ExpKind::Application(exp, mut index) => {
+        let Ok(Value::Prim(index)) = eval(index.remove(0), env) else {
+          panic!()
+        };
+        let index = match index {
+          Primitive::U32(u) => u as i64,
+          Primitive::I32(i) => i as i64,
+          _ => panic!(),
+        };
+        accesses.push(AccessKind::Index(index));
+        accessed_expression = *exp;
+      }
+      ExpKind::Access(accessor, exp) => {
+        match accessor {
+          Accessor::Field(field_name) => {
+            accesses.push(AccessKind::Field(field_name));
+          }
+          Accessor::ArrayIndex(index_exp) => {
+            let Ok(Value::Prim(index)) = eval(*index_exp, env) else {
+              panic!()
+            };
+            let index = match index {
+              Primitive::U32(u) => u as i64,
+              Primitive::I32(i) => i as i64,
+              _ => panic!(),
+            };
+            accesses.push(AccessKind::Index(index));
+          }
+          Accessor::Swizzle(_) => panic!(),
+        }
+        accessed_expression = *exp;
+      }
+      _ => panic!(),
+    }
+  };
+  let mut accessed_value = &mut env
+    .bindings
+    .get_mut(&*accessed_name)
+    .unwrap()
+    .last_mut()
+    .unwrap()
+    .0;
+  for access in accesses.into_iter().rev() {
+    match access {
+      AccessKind::Index(i) => {
+        let Value::Array(a) = accessed_value else {
+          panic!()
+        };
+        let length = a.len() as i64;
+        accessed_value = &mut a[(((i % length) + length) % length) as usize];
+      }
+      AccessKind::Field(field_name) => {
+        let Value::Struct(s) = accessed_value else {
+          panic!()
+        };
+        accessed_value = s.get_mut(&field_name).unwrap();
+      }
+    }
+  }
+  let old_inner = match &*accessed_value {
+    Value::Struct(fields) => fields["_"].clone(),
+    _ => panic!("atomic op applied to non-atomic value"),
+  };
+  *accessed_value = new_value;
+  if op_name == "atomic-store" {
+    Ok(Value::Unit)
+  } else {
+    Ok(old_inner)
+  }
+}
+
+/// The parameter types of a composite function's own implementation signature
+/// (each `None` when not yet a known type). This is the authoritative view of
+/// what each parameter expects — in particular a closure's trailing scope
+/// parameter is typed here as its scope struct. Returns an empty vec for
+/// non-composite callees (builtins, constructors). Kept a free function so its
+/// locals stay out of `eval`'s giant stack frame.
+fn composite_impl_param_types(
+  f_arc: &Arc<std::sync::RwLock<AbstractFunctionSignature>>,
+) -> Vec<Option<Type>> {
+  if let FunctionImplementationKind::Composite(implementation) =
+    &f_arc.read().unwrap().implementation
+    && let Type::Function(impl_signature) = implementation
+      .read()
+      .unwrap()
+      .expression
+      .data
+      .unwrap_known()
+  {
+    impl_signature
+      .args
+      .iter()
+      .map(|(v, _)| v.var_type.kind.try_unwrap_known())
+      .collect()
+  } else {
+    vec![]
+  }
+}
+
 /// Write `new_value` back into the env at the location described by `lhs`.
 /// Used to propagate mutations through a function's mutable-reference args
 /// after the call returns: the callee mutates a *copy* of the value during
@@ -5980,7 +6270,7 @@ pub fn eval(
   env: &mut EvaluationEnvironment<impl IOManager>,
 ) -> Result<Value, EvalException> {
   let exp_effects = exp.effects();
-  Ok(match exp.kind {
+  let value = match exp.kind {
     ExpKind::Wildcard => return Err(EncounteredWildcard.into()),
     ExpKind::Unit => Value::Unit,
     ExpKind::Name(name) => env.lookup(&name)?.clone(),
@@ -6103,6 +6393,15 @@ pub fn eval(
           } else {
             param_ownerships
           };
+        // The callee implementation's own parameter types — the authoritative
+        // view of what each parameter expects. A closure's trailing scope
+        // parameter is typed here as the scope struct even when the call site
+        // types the argument as the closure's function type (as for `(m1 x)`
+        // lowered to `inner_fn(x, m1)`), so it is what decides whether a
+        // `Scoped` argument is unwrapped to its scope struct below. Derived in a helper
+        // so its locals don't enlarge `eval`'s already-large stack frame — the
+        // recurring hazard that overflows deeply-recursive programs.
+        let impl_param_types = composite_impl_param_types(&f_arc);
         let arg_types: Vec<Type> =
           args.iter().map(|a| a.data.kind.unwrap_known()).collect();
         let return_type = exp.data.unwrap_known();
@@ -6208,22 +6507,37 @@ pub fn eval(
                `{name}`'s parameters — a silent zip truncation here drops \
                reference write-backs and leaks bindings"
             );
-            for (name, (value, ty)) in arg_names
+            for (i, (name, (value, ty))) in arg_names
               .iter()
               .zip(arg_values.into_iter().zip(arg_types.into_iter()))
+              .enumerate()
             {
               // A closure value (Function::Scoped) arriving at a parameter
-              // that statically expects the scope struct itself — the
-              // trailing scope arg added by higher-order inlining — binds
+              // that expects the scope struct itself — the trailing scope arg
+              // added by higher-order inlining, or a closure calling its OWN
+              // inner function (`(m1 x)` lowered to `inner_fn(x, m1)`) — binds
               // the bare scope struct; write_back_through_lhs re-wraps the
-              // mutated struct into the closure at the source binding.
-              let value = match value {
+              // mutated struct into the closure at the source binding. The call
+              // site types this arg either as the scope struct or as the
+              // closure's function type, so the decision follows the callee
+              // implementation's own parameter type, which is always the scope
+              // struct here — falling back to the argument's type when the
+              // implementation view is unavailable (builtins, etc.).
+              let expects_scope_struct = match impl_param_types.get(i) {
+                Some(Some(t)) => !matches!(t, Type::Function(_)),
+                _ => !matches!(ty, Type::Function(_)),
+              };
+              let (value, ty) = match value {
                 Value::Fun(Function::Scoped { scope, .. })
-                  if !matches!(ty, Type::Function(_)) =>
+                  if expects_scope_struct =>
                 {
-                  *scope
+                  let scope_ty = match impl_param_types.get(i) {
+                    Some(Some(t)) => t.clone(),
+                    _ => ty,
+                  };
+                  (*scope, scope_ty)
                 }
-                other => other,
+                other => (other, ty),
               };
               env.bind(name.clone(), value, ty);
             }
@@ -6291,232 +6605,14 @@ pub fn eval(
           }
         };
         return_value = if is_assignment_op {
-          enum AccessKind {
-            Index(i64),
-            Field(Arc<str>),
-            Swizzle(Vec<SwizzleField>),
-          }
-          let mut accesses: Vec<AccessKind> = vec![];
-          let mut accessed_expression = accessed_expression.unwrap();
-          let accessed_name = loop {
-            match accessed_expression.kind {
-              ExpKind::Name(name) => break name,
-              ExpKind::Application(exp, mut index) => {
-                let Value::Prim(index) = eval(index.remove(0), env)? else {
-                  panic!()
-                };
-                let index = match index {
-                  Primitive::U32(u) => u as i64,
-                  Primitive::I32(i) => i as i64,
-                  _ => panic!(),
-                };
-                accesses.push(AccessKind::Index(index));
-                accessed_expression = *exp;
-              }
-              ExpKind::Access(accessor, exp) => {
-                match accessor {
-                  Accessor::Field(field_name) => {
-                    accesses.push(AccessKind::Field(field_name))
-                  }
-                  Accessor::Swizzle(swizzle_fields) => {
-                    accesses.push(AccessKind::Swizzle(swizzle_fields))
-                  }
-                  Accessor::ArrayIndex(index_exp) => {
-                    let Value::Prim(index) = eval(*index_exp, env)? else {
-                      panic!()
-                    };
-                    let index = match index {
-                      Primitive::U32(u) => u as i64,
-                      Primitive::I32(i) => i as i64,
-                      _ => panic!(),
-                    };
-                    accesses.push(AccessKind::Index(index));
-                  }
-                }
-                accessed_expression = *exp;
-              }
-              _ => panic!(),
-            }
-          };
-          // Pre-expand any ZeroedArray at the top-level binding before taking a
-          // mutable reference. Value::zeroed needs an immutable &env borrow,
-          // which would conflict with &mut env.bindings during traversal.
-          if let Some((Value::ZeroedArray { length }, Type::Array(_, inner))) =
-            env.bindings.get(&*accessed_name).and_then(|s| s.last())
-          {
-            let length = *length;
-            let elem_ty = inner.unwrap_known();
-            let zero_val = Value::zeroed(elem_ty, env)?;
-            take(
-              &mut env
-                .bindings
-                .get_mut(&*accessed_name)
-                .unwrap()
-                .last_mut()
-                .unwrap()
-                .0,
-              |_| Value::Array(vec![zero_val; length]),
-            );
-          }
-          let mut accessed_value = &mut env
-            .bindings
-            .get_mut(&*accessed_name)
-            .unwrap()
-            .last_mut()
-            .unwrap()
-            .0;
-          let mut active_swizzle_fields: Option<Vec<usize>> = None;
-          for access in accesses.into_iter().rev() {
-            match access {
-              AccessKind::Index(i) => match accessed_value {
-                Value::Array(a) => {
-                  let length = a.len() as i64;
-                  accessed_value =
-                    &mut a[(((i % length) + length) % length) as usize];
-                }
-                Value::Struct(s) => {
-                  // Vector stored as Struct with x/y/z/w fields.
-                  let field_name = ["x", "y", "z", "w"][i as usize];
-                  accessed_value = s.get_mut(field_name).unwrap();
-                }
-                _ => panic!(),
-              },
-              AccessKind::Field(name) => {
-                if let Some(previous_swizzle_fields) = active_swizzle_fields {
-                  active_swizzle_fields = Some(vec![
-                    previous_swizzle_fields
-                      [SwizzleField::from_name(&*name).index()],
-                  ]);
-                } else {
-                  let Value::Struct(s) = accessed_value else {
-                    panic!()
-                  };
-                  accessed_value = s.get_mut(&name).unwrap();
-                }
-              }
-              AccessKind::Swizzle(swizzle_fields) => {
-                if let Some(previous_swizzle_fields) = active_swizzle_fields {
-                  active_swizzle_fields = Some(
-                    swizzle_fields
-                      .into_iter()
-                      .map(|f| previous_swizzle_fields[f.index()])
-                      .collect(),
-                  );
-                } else {
-                  active_swizzle_fields = Some(
-                    swizzle_fields.into_iter().map(|f| f.index()).collect(),
-                  );
-                }
-              }
-            }
-          }
-          if let Some(active_swizzle_fields) = active_swizzle_fields {
-            if active_swizzle_fields.len() == 1 {
-              let Value::Struct(s) = accessed_value else {
-                panic!()
-              };
-              *s.get_mut(
-                SwizzleField::from_index(active_swizzle_fields[0]).name(),
-              )
-              .unwrap() = return_value;
-            } else {
-              let Value::Struct(s) = accessed_value else {
-                panic!()
-              };
-              let Value::Struct(mut return_s) = return_value else {
-                panic!()
-              };
-              for (target_field, source_field) in
-                active_swizzle_fields.into_iter().zip(["x", "y", "z", "w"])
-              {
-                *s.get_mut(SwizzleField::from_index(target_field).name())
-                  .unwrap() = return_s.remove(source_field).unwrap();
-              }
-            }
-          } else {
-            *accessed_value = return_value;
-          }
-          Value::Unit
+          eval_assignment_op(env, accessed_expression.unwrap(), return_value)?
         } else if is_atomic_op {
-          enum AccessKind {
-            Index(i64),
-            Field(Arc<str>),
-          }
-          let mut accesses: Vec<AccessKind> = vec![];
-          let mut accessed_expression = accessed_expression.unwrap();
-          let accessed_name = loop {
-            match accessed_expression.kind {
-              ExpKind::Name(name) => break name,
-              ExpKind::Application(exp, mut index) => {
-                let Ok(Value::Prim(index)) = eval(index.remove(0), env) else {
-                  panic!()
-                };
-                let index = match index {
-                  Primitive::U32(u) => u as i64,
-                  Primitive::I32(i) => i as i64,
-                  _ => panic!(),
-                };
-                accesses.push(AccessKind::Index(index));
-                accessed_expression = *exp;
-              }
-              ExpKind::Access(accessor, exp) => {
-                match accessor {
-                  Accessor::Field(field_name) => {
-                    accesses.push(AccessKind::Field(field_name));
-                  }
-                  Accessor::ArrayIndex(index_exp) => {
-                    let Ok(Value::Prim(index)) = eval(*index_exp, env) else {
-                      panic!()
-                    };
-                    let index = match index {
-                      Primitive::U32(u) => u as i64,
-                      Primitive::I32(i) => i as i64,
-                      _ => panic!(),
-                    };
-                    accesses.push(AccessKind::Index(index));
-                  }
-                  Accessor::Swizzle(_) => panic!(),
-                }
-                accessed_expression = *exp;
-              }
-              _ => panic!(),
-            }
-          };
-          let mut accessed_value = &mut env
-            .bindings
-            .get_mut(&*accessed_name)
-            .unwrap()
-            .last_mut()
-            .unwrap()
-            .0;
-          for access in accesses.into_iter().rev() {
-            match access {
-              AccessKind::Index(i) => {
-                let Value::Array(a) = accessed_value else {
-                  panic!()
-                };
-                let length = a.len() as i64;
-                accessed_value =
-                  &mut a[(((i % length) + length) % length) as usize];
-              }
-              AccessKind::Field(field_name) => {
-                let Value::Struct(s) = accessed_value else {
-                  panic!()
-                };
-                accessed_value = s.get_mut(&field_name).unwrap();
-              }
-            }
-          }
-          let old_inner = match &*accessed_value {
-            Value::Struct(fields) => fields["_"].clone(),
-            _ => panic!("atomic op applied to non-atomic value"),
-          };
-          *accessed_value = return_value;
-          if &*name == "atomic-store" {
-            Value::Unit
-          } else {
-            old_inner
-          }
+          eval_atomic_op(
+            env,
+            accessed_expression.unwrap(),
+            &name,
+            return_value,
+          )?
         } else {
           return_value
         };
@@ -6801,7 +6897,8 @@ pub fn eval(
         .collect::<Result<_, _>>()?,
     ),
     ExpKind::Uninitialized => Value::zeroed(exp.data.unwrap_known(), env)?,
-  })
+  };
+  Ok(closure_as_scope(value, &exp.data))
 }
 
 fn run_program_with<IO: IOManager>(

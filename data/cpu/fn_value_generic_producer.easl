@@ -1,0 +1,9 @@
+; Closures from a generic producer, instantiated at two types, stored in
+; arrays.
+(defn (constant T) [v: T]: (Fn [] T) (fn [] v))
+@cpu
+(defn main []
+  (let [fs [(constant 1.) (constant 2.)]
+        gs [(constant 3u) (constant 4u)]]
+    (print ((fs 1u)))
+    (print ((gs 0u)))))

@@ -1,0 +1,10 @@
+; A closure capturing a bare `@ref` parameter may not escape the call inside a
+; struct field.
+(struct Holder f: (Fn [] f32))
+(defn make [@ref x: f32]: Holder
+  (Holder (fn [] x)))
+@cpu
+(defn main []
+  (let [v 1.
+        h (make v)]
+    (print (h.f))))

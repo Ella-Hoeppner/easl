@@ -1,0 +1,16 @@
+; A dispatched closure with a scalar capture that builds and calls a local
+; function array.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+@storage-write
+(var out: [2: f32])
+@cpu
+(defn main []
+  (let [k 3.]
+    (dispatch-compute-shader
+      (fn []
+        (let [fs [double increment]]
+          (= (out 0u) ((fs 0u) k))
+          (= (out 1u) ((fs 1u) k))))
+      (vec3u 1u))
+    (print out)))

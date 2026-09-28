@@ -388,10 +388,7 @@ success_test!(negate_negative_literal);
 
 // --- Error tests ---
 
-error_test!(
-  illegal_fn_type_struct,
-  CompileErrorKind::CantStoreFunctionInDataStructure
-);
+success_test!(fn_value_struct_definition);
 error_test!(
   gpu_dyn_array_return_failure,
   CompileErrorKind::GpuFunctionReturnsRuntimeSizedArray
@@ -454,14 +451,10 @@ error_test!(
   CompileErrorKind::WildcardOutsidePattern
 );
 error_test!(vec_match_failure, CompileErrorKind::InvalidMatchPattern);
-error_test!(
-  illegal_fn_type_match_failure,
-  CompileErrorKind::CantYieldFunctionFromMatch
-);
-error_test!(
-  global_var_fn_failure,
-  CompileErrorKind::CantHaveFunctionTypeVariable
-);
+// A `match` choosing between two builtins (`+` / `-`) is a function value
+// dispatched at runtime; both branches must survive.
+success_test!(fn_value_builtin_merge);
+success_test!(fn_value_global_var);
 error_test!(
   attributes_failure_group_only,
   CompileErrorKind::GroupMissingBinding
@@ -774,10 +767,7 @@ error_test!(
   duplicate_variant_with_data,
   CompileErrorKind::DuplicateEnumVariantName
 );
-error_test!(
-  illegal_fn_type_enum,
-  CompileErrorKind::CantStoreFunctionInDataStructure
-);
+success_test!(fn_value_enum_definition);
 
 error_test!(reserved_name_struct_struct, CompileErrorKind::InvalidName);
 error_test!(reserved_name_struct_defn, CompileErrorKind::InvalidName);
@@ -924,6 +914,67 @@ error_test!(
 success_test!(gpu_window_info);
 success_test!(early_return_unit);
 success_test!(elided_bindings);
+// First-class function values (see CLAUDE.md).
+success_test!(fn_value_compute);
+success_test!(fn_value_uncalled_array_hof);
+success_test!(fn_value_union_signature_collision);
+success_test!(fn_value_multi_member_set);
+success_test!(fn_value_const_generic_array);
+success_test!(fn_value_scoped_member_gpu);
+success_test!(fn_value_nested_union_gpu);
+success_test!(fn_value_returned_closure_hof);
+success_test!(fn_value_nested_single_variant_union);
+success_test!(fn_value_overloaded_array_hof);
+success_test!(fn_value_nested_merge);
+error_test!(
+  fn_value_recursive_failure,
+  CompileErrorKind::RecursiveFunctionValue
+);
+error_test!(
+  fn_value_local_higher_order_member_failure,
+  CompileErrorKind::UnsupportedFunctionValueSignature
+);
+error_test!(
+  fn_value_lent_closure_alias_failure,
+  CompileErrorKind::AliasedRefArgs("c".into())
+);
+error_test!(
+  fn_value_stored_fn_to_hof_param_failure,
+  CompileErrorKind::StoredFunctionToHigherOrderParameter
+);
+error_test!(
+  fn_value_dynamic_start_audio_failure,
+  CompileErrorKind::DynamicFunctionValueNotAllowedHere("start-audio".into())
+);
+error_test!(
+  fn_value_captured_stateful_array_failure,
+  CompileErrorKind::CantMutateDispatchedClosureCapture("cs".into())
+);
+error_test!(
+  fn_value_ref_capture_escape_struct_failure,
+  CompileErrorKind::EscapingClosureCapturesRefArg("x".into())
+);
+error_test!(
+  fn_value_ref_capture_escape_array_failure,
+  CompileErrorKind::EscapingClosureCapturesRefArg("x".into())
+);
+error_test!(
+  fn_value_ref_capture_escape_global_failure,
+  CompileErrorKind::EscapingClosureCapturesRefArg("x".into())
+);
+error_test!(
+  closure_state_alias_failure,
+  CompileErrorKind::AliasedRefArgs("c".into())
+);
+error_test!(
+  fn_value_closure_state_alias_failure,
+  CompileErrorKind::AliasedRefArgs("cs".into())
+);
+error_test!(
+  fn_value_match_payload_immutable_ref_failure,
+  CompileErrorKind::ClosureMutationThroughImmutableRef("v".into())
+);
+success_test!(const_generic_map_specialization);
 error_test!(
   compound_mat_divide_invalid,
   CompileErrorKind::FunctionArgumentTypesIncompatible {

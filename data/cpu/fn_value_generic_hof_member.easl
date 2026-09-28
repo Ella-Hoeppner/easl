@@ -1,0 +1,10 @@
+; Generic higher-order functions stored as values.
+(defn inc [x: f32]: f32 (+ x 1.))
+(defn (app T) [f: (Fn [T] T) x: T]: T (f x))
+(defn (app2 T) [f: (Fn [T] T) x: T]: T (f (f x)))
+
+@cpu
+(defn main []
+  (let [hs [app app2]]
+    (print ((hs 0u) inc 1.))
+    (print ((hs 1u) inc 1.))))

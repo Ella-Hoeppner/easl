@@ -1,0 +1,10 @@
+; A let-bound higher-order lambda receiving a function chosen from an array
+; of pure functions (a union no member of which has state).
+(defn inc [x: f32]: f32 (+ x 1.))
+(defn dbl [x: f32]: f32 (* x 2.))
+
+@cpu
+(defn main []
+  (let [fs [inc dbl]
+        tw (fn [f x] (f (f x)))]
+    (print (tw (fs 1u) 5.))))

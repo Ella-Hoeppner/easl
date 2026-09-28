@@ -1,3 +1,4 @@
+; A top-level variable can hold a function value.
 @local
 (var v: (Fn [f32] f32))
 

@@ -1,0 +1,39 @@
+; Stored factories returning: a top-level function, a stored function, a
+; stateful closure, a higher-order function chosen by an `if`, and a closure
+; capturing a lent stateful closure (a copy, as with a static call).
+(defn make-counter [amount: f32]: (Fn [f32] f32)
+  (let [@var n 0.]
+    (fn [x]
+      (+= n amount)
+      (+ x n))))
+(defn inc [x: f32]: f32 (+ x 1.))
+(defn dbl [x: f32]: f32 (* x 2.))
+(defn twice [f: (Fn [f32] f32) x: f32]: f32 (f (f x)))
+(defn once [f: (Fn [f32] f32) x: f32]: f32 (f x))
+
+(defn pick-inc [k: f32]: (Fn [f32] f32) inc)
+(defn pick-stored [k: f32]: (Fn [f32] f32)
+  (let [fs [inc dbl]]
+    (fs (u32 k))))
+(defn get-applier [k: f32]: (Fn [(Fn [f32] f32) f32] f32)
+  (if (> k 0.) twice once))
+(defn wrap [g: (Fn [f32] f32)]: (Fn [f32] f32)
+  (fn [x] (* 10. (g x))))
+
+@cpu
+(defn main []
+  (let [fs [pick-inc pick-stored make-counter]
+        gs [get-applier get-applier]
+        ws [wrap wrap]
+        c (make-counter 1.)]
+    (print (((fs 0u) 0.) 5.))
+    (print (((fs 1u) 1.) 5.))
+    (let [@var k ((fs 2u) 3.)]
+      (print (k 0.))
+      (print (k 0.)))
+    (print (((gs 0u) 1.) dbl 1.))
+    (print (((gs 1u) 0.) dbl 1.))
+    (let [w ((ws 0u) c)]
+      (print (w 0.))
+      (print (w 0.))
+      (print (c 0.)))))

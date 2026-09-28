@@ -1,0 +1,44 @@
+; Matching a struct field or an array element holding a stateful closure
+; advances the closure stored there (both a single closure kind and a union
+; of two kinds).
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+
+(enum Voice
+  (Playing (Fn [] f32))
+  Silent)
+
+(defn step [@var @ref v: Voice]: f32
+  (match v
+    (Playing f) (f)
+    Silent 0.))
+(struct Synth
+  voice: Voice)
+
+@cpu
+(defn main []
+  (let [@var s (Synth (Playing (make-counter 1.)))
+        @var vs [(Playing (make-counter 1.)) (Playing (make-doubler 10.))]]
+    (match s.voice
+      (Playing f) (print (f))
+      Silent ())
+    (match s.voice
+      (Playing f) (print (f))
+      Silent ())
+    (match (vs 1u)
+      (Playing f) (print (f))
+      Silent ())
+    (match (vs 1u)
+      (Playing f) (print (f))
+      Silent ())
+    (print (step (vs 0u)))
+    (print (step (vs 1u)))))

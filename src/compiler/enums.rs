@@ -607,6 +607,9 @@ impl AbstractEnum {
                 AbstractType::Type(concrete_type.clone());
             }
           }
+          new_variant
+            .inner_type
+            .replace_bound_skolems(&generic_arg_type_map);
           if !generic_arg_constant_map.is_empty() {
             new_variant.inner_type = new_variant
               .inner_type
@@ -704,6 +707,9 @@ impl Enum {
     )
   }
   pub fn inner_flat_data_size_in_u32s(&self) -> CompileResult<usize> {
+    // The tagged-union `data` array holds only the active variant's payload, so
+    // it's sized to the largest variant, matching the struct-declaration path
+    // (`AbstractEnum::inner_flat_data_size_in_u32s`) and `vm_stack_size`.
     Ok(
       self
         .variants
@@ -715,7 +721,8 @@ impl Enum {
         })
         .collect::<CompileResult<Vec<usize>>>()?
         .into_iter()
-        .sum::<usize>(),
+        .max()
+        .unwrap_or(0),
     )
   }
 }

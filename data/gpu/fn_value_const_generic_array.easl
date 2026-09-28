@@ -1,0 +1,22 @@
+; Shader form: a const-generic higher-order function over an array of function
+; values returning a closure that dispatches the captured array. The generic
+; original of `merge` (kept after monomorphization, its returned closure not
+; extracted) must not have its lambda-literal return type hijacked into the
+; union enum by the late reification's structural match — that produced an
+; invalid AST that crashed validation. This must emit valid WGSL.
+(defn (merge C: u32) [fns: [C: (Fn [f32] f32)]]: (Fn [f32] f32)
+  (fn [x]
+    (let [@var q x]
+      (for [i (array-length fns)]
+        (= q ((fns i) q)))
+      q)))
+
+@storage-write
+(var outp: f32)
+
+@compute
+@{workgroup-size 1}
+(defn main []
+  (let [m (merge [(fn [x] (* x 2.))
+                  (fn [x] (+ x 1.))])]
+    (= outp (m 3.))))

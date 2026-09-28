@@ -1,0 +1,15 @@
+; Two calls to apply-both with two DIFFERENT 2-fn arrays: each call must get
+; its own N=2 union representation (not one merged N=4).
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+(defn negate [x: f32]: f32 (- 0. x))
+(defn square [x: f32]: f32 (* x x))
+
+(defn apply-both [x: f32
+                  fns: [2: (Fn [f32] f32)]]: f32
+  ((fns 1u) ((fns 0u) x)))
+
+@cpu
+(defn main []
+  (print (apply-both 3. [double increment]))
+  (print (apply-both 3. [negate square])))

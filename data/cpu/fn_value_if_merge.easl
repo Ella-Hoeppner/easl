@@ -1,0 +1,12 @@
+; An `if` whose branches are different
+; functions produces one value that is a union {double, increment}.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+
+(defn pick [flag: bool]: (Fn [f32] f32)
+  (if flag double increment))
+
+@cpu
+(defn main []
+  (print ((pick true) 5.))
+  (print ((pick false) 5.)))

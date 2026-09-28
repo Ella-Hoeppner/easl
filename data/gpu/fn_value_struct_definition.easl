@@ -1,0 +1,4 @@
+; A struct with a function-typed field is a valid definition.
+(struct MyStruct
+  x: f32
+  f: (Fn [f32] f32))

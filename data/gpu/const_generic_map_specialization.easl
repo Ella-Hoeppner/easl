@@ -1,0 +1,44 @@
+; REGRESSION (const-generic monomorphization). Two specializations of the same
+; const-generic `map` at the SAME `C` but DIFFERENT element types must not leak
+; each other's element type: `prange` uses `map` at {u32 -> f32}, while the outer
+; call uses it at {f32 -> P}. The `(zeroed-array)` local's context-inferred type
+; is a unification variable that a shallow monomorphization clone once shared
+; across specializations, so the inner map emitted `[C: P]` where `[C: f32]` was
+; required — invalid WGSL.
+(defn (range C: u32) []: [C: u32]
+  (let [@var arr (zeroed-array)]
+    (for [i (array-length arr)]
+      (= (arr i) i))
+    arr))
+
+(defn (map T U C: u32) [arr: [C: T]
+                        g: (Fn [T] U)]: [C: U]
+  (let [@var new-arr (zeroed-array)]
+    (for [i (array-length arr)]
+      (= (new-arr i) (g (arr i))))
+    new-arr))
+
+(defn (prange C: u32) []: [C: f32]
+  (let [r (range)]
+    (map r
+         (fn [i]
+           (/ (f32 i) (- (f32 (array-length r)) 1.))))))
+
+(struct P
+  a: f32
+  b: f32)
+
+(defn (sum-p C: u32) [xs: [C: P]]: f32
+  (let [@var s 0.]
+    (for [i (array-length xs)]
+      (+= s (+ (.a (xs i)) (.b (xs i)))))
+    s))
+
+@storage-write
+(var outp: f32)
+
+@compute
+(defn main []
+  (= outp (sum-p (map (prange)
+                      (fn [p]
+                        (P p (* p 2.)))): [3: P])))

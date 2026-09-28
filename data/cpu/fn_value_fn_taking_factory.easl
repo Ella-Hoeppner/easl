@@ -1,0 +1,18 @@
+; Stored factories that take a function and return a closure capturing it:
+; both parameter and return are boxed, and the returned closures (whose
+; captures lower to nothing) form a union.
+(defn inc [x: f32]: f32 (+ x 1.))
+(defn dbl [x: f32]: f32 (* x 2.))
+(defn doubled [g: (Fn [f32] f32)]: (Fn [f32] f32)
+  (fn [x] (g (g x))))
+(defn once [g: (Fn [f32] f32)]: (Fn [f32] f32)
+  (fn [x] (g x)))
+
+@cpu
+(defn main []
+  (let [cs [doubled once]
+        a ((cs 0u) inc)
+        b ((cs 1u) dbl)]
+    (print (a 1.))
+    (print (b 1.))
+    (print (((cs 0u) dbl) 3.))))

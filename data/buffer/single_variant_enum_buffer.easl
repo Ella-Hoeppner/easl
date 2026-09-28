@@ -1,0 +1,15 @@
+; REGRESSION (function-values WIP): a single-variant user enum in a storage
+; buffer must round-trip GPU -> CPU with the same layout the WGSL declares.
+(enum Wrap (W f32))
+
+@storage-write
+(var out: [2: Wrap])
+
+@cpu
+(defn main []
+  (dispatch-compute-shader
+    (fn []
+      (= (out 0u) (W 1.))
+      (= (out 1u) (W 2.)))
+    (vec3u 1u))
+  (print out))

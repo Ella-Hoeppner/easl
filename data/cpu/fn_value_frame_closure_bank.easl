@@ -1,0 +1,15 @@
+; A frame closure capturing an array of stateful closures: they advance on
+; every frame.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+@cpu
+(defn main []
+  (let [cs [(make-counter 1.) (make-counter 10.)]]
+    (spawn-window
+      (fn []
+        (print (+ ((cs 0u)) ((cs 1u))))
+        (when (>= (window-frame-index) 2u)
+          (close-window))))))

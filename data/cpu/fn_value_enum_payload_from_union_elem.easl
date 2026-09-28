@@ -1,0 +1,22 @@
+; An enum payload filled both from an element of a union array and from a plain
+; function.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+(defn negate [x: f32]: f32 (- 0. x))
+
+(enum Op
+  (Apply (Fn [f32] f32))
+  Skip)
+
+(defn run [o: Op
+           x: f32]: f32
+  (match o
+    (Apply f) (f x)
+    Skip x))
+
+@cpu
+(defn main []
+  (let [fns [double increment]
+        i 1u]
+    (print (run (Apply (fns i)) 5.))
+    (print (run (Apply negate) 5.))))

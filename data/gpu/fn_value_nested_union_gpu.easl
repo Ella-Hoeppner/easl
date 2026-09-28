@@ -1,0 +1,27 @@
+; Shader form of the nested / self-referential function-union case (the vm-only
+; `fn_value_nested_union_recursion` flag test never exercised WGSL emission). A
+; merge-output `m1` (a scoped closure whose scope captures the scopeless `{a,b}`
+; union array) is fed back as a MEMBER of a second merge and dispatched. This
+; pins two emission bugs: (1) reconstructing a 0-payload enum inside a nested
+; scope-struct payload must NOT emit `array<u32, 0>()` (illegal WGSL), and (2) a
+; dispatcher passing its `@var` scope local to a member's reference parameter
+; must emit `&fnv_s2`, not `&(*fnv_s2)` (a deref of a non-pointer).
+(defn merge [fns: [2: (Fn [f32] f32)]]: (Fn [f32] f32)
+  (fn [x]
+    (let [@var q x]
+      (for [i (array-length fns)]
+        (= q ((fns i) q)))
+      q)))
+
+@storage-write
+(var outp: f32)
+
+@compute
+@{workgroup-size 1}
+(defn main []
+  (let [a (fn [x] (* x 2.))
+        b (fn [x] (+ x 1.))
+        m1 (merge [a b])
+        c (fn [x] (- x 1.))
+        m2 (merge [m1 c])]
+    (= outp (m2 3.))))

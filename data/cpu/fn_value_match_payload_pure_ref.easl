@@ -1,0 +1,20 @@
+; A payload closure that never mutates its state can be called through a
+; read-only `@ref`.
+(defn adder [k: f32]: (Fn [f32] f32)
+  (fn [x] (+ x k)))
+
+(enum Op
+  (Apply (Fn [f32] f32))
+  Skip)
+
+(defn run [@ref o: Op
+           x: f32]: f32
+  (match o
+    (Apply f) (f x)
+    Skip x))
+
+@cpu
+(defn main []
+  (let [o (Apply (adder 1.))]
+    (print (run o 5.))
+    (print (run o 5.))))

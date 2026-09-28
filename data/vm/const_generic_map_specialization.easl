@@ -1,0 +1,40 @@
+; VALUE-CORRECTNESS pin for the const-generic double-`map` pattern: `map` is
+; specialized twice at the same `C` but different element types ({u32 -> f32}
+; inside `prange`, {f32 -> P} in the outer call). `f` returns the sum of both
+; fields across the mapped array (0+0.5+1.0 plus 0+1+2 = 4.5). The invalid-WGSL
+; leak this pattern exposed (a shared `(zeroed-array)` unification-variable type
+; across specializations) is guarded by the shader test of the same name — the
+; VM sizes the accumulator independently, so this pins the computed value.
+(defn (range C: u32) []: [C: u32]
+  (let [@var arr (zeroed-array)]
+    (for [i (array-length arr)]
+      (= (arr i) i))
+    arr))
+
+(defn (map T U C: u32) [arr: [C: T]
+                        g: (Fn [T] U)]: [C: U]
+  (let [@var new-arr (zeroed-array)]
+    (for [i (array-length arr)]
+      (= (new-arr i) (g (arr i))))
+    new-arr))
+
+(defn (prange C: u32) []: [C: f32]
+  (let [r (range)]
+    (map r
+         (fn [i]
+           (/ (f32 i) (- (f32 (array-length r)) 1.))))))
+
+(struct P
+  a: f32
+  b: f32)
+
+(defn (sum-p C: u32) [xs: [C: P]]: f32
+  (let [@var s 0.]
+    (for [i (array-length xs)]
+      (+= s (+ (.a (xs i)) (.b (xs i)))))
+    s))
+
+(defn f []: f32
+  (sum-p (map (prange)
+              (fn [p]
+                (P p (* p 2.)))): [3: P]))

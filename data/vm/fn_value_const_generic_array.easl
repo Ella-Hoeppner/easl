@@ -1,0 +1,21 @@
+; A CONST-GENERIC higher-order function over an array of function values,
+; returning a closure that dispatches over the captured array. Monomorphizing
+; `merge` (to C=2) runs before closure extraction, so the generic ORIGINAL
+; `merge` is left with its returned closure still an inline lambda (never
+; extracted — extraction ran on the mono clone). The late function-union
+; reification must not coerce that lambda literal's `(Fn [f32] f32)` return
+; type into the union enum via the structural signature match — doing so left
+; a lambda AST node carrying an enum type, which later validation rejected.
+;
+;   m(3): 3 -> double 6 -> inc 7
+(defn (merge C: u32) [fns: [C: (Fn [f32] f32)]]: (Fn [f32] f32)
+  (fn [x]
+    (let [@var q x]
+      (for [i (array-length fns)]
+        (= q ((fns i) q)))
+      q)))
+
+(defn f []: f32
+  (let [m (merge [(fn [x] (* x 2.))
+                  (fn [x] (+ x 1.))])]
+    (m 3.)))

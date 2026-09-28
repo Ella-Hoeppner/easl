@@ -1,0 +1,41 @@
+; The argument-kind matrix of `fn_value_hof_arg_matrix` inside a GPU
+; dispatch.
+(defn make-counter [amount: f32]: (Fn [f32] f32)
+  (let [@var n 0.]
+    (fn [x]
+      (+= n amount)
+      (+ x n))))
+(defn inc [x: f32]: f32 (+ x 1.))
+(defn dbl [x: f32]: f32 (* x 2.))
+(defn twice [f: (Fn [f32] f32) x: f32]: f32 (f (f x)))
+(defn once [f: (Fn [f32] f32) x: f32]: f32 (f x))
+
+@storage-write
+(var out: [15: f32])
+
+@cpu
+(defn main []
+  (dispatch-compute-shader
+    (fn []
+      (let [hs [twice once]
+            pure [inc dbl]
+            @var stateful [(make-counter 1.) (make-counter 10.)]
+            @var c (make-counter 100.)
+            local-twice (fn [f x] (f (f x)))]
+        (= (out 0u) ((hs 0u) inc 0.))
+        (= (out 1u) ((hs 0u) (pure 1u) 1.))
+        (= (out 2u) ((hs 0u) (stateful 0u) 0.))
+        (= (out 3u) ((hs 0u) c 0.))
+        (= (out 4u) ((hs 1u) (fn [y] (- y 1.)) 0.))
+        (= (out 5u) ((hs 0u) (make-counter 1000.) 0.))
+        (= (out 6u) (local-twice inc 0.))
+        (= (out 7u) (local-twice (pure 1u) 1.))
+        (= (out 8u) (local-twice (stateful 1u) 0.))
+        (= (out 9u) (local-twice c 0.))
+        (= (out 10u) (local-twice (fn [y] (- y 1.)) 0.))
+        (= (out 11u) (local-twice (make-counter 1000.) 0.))
+        (= (out 12u) ((stateful 0u) 0.))
+        (= (out 13u) ((stateful 1u) 0.))
+        (= (out 14u) (c 0.))))
+    (vec3u 1u))
+  (print out))

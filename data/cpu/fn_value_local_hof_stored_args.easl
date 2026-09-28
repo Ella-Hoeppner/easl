@@ -1,0 +1,25 @@
+; A let-bound higher-order lambda receiving stored closures: its function
+; parameter is boxed for every call, and each argument (a stored closure,
+; then a closure local lent to it) advances in place.
+(defn make-counter [amount: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n amount)
+      n)))
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+
+@cpu
+(defn main []
+  (let [@var cs [(make-counter 1.) (make-doubler 1.)]
+        c (make-counter 10.)
+        call-twice (fn [g] (g) (g))]
+    (print (call-twice (cs 0u)))
+    (print (call-twice (cs 1u)))
+    (print (call-twice c))
+    (print ((cs 0u)))
+    (print ((cs 1u)))
+    (print (c))))

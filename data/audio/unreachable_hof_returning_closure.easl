@@ -1,0 +1,26 @@
+; A higher-order helper that takes an array of functions and RETURNS a
+; closure, and is never called from anywhere. Its mere presence once crashed
+; audio-mode bytecode compilation.
+;
+; An `@audio` entry triggers eager compilation of the whole program's audio
+; source. Unlike the WGSL/C backends' closure-based emission — and unlike
+; CPU-mode compilation — audio mode used to compile every non-CPU-exclusive
+; function whether or not it was reachable from an audio entry. Compiling
+; this unreachable helper reached its returned closure `(fn [pos] pos)` —
+; extracted to a top-level function that audio-mode discovery never added to
+; the compiled set — and aborted with "Name ... not found in scope".
+;
+; Audio mode now reachability-filters from its own `@audio` entries (like the
+; CPU runtime filters from `@cpu` entries), so an unreachable helper is never
+; compiled. Both runtimes must compile and run this.
+(defn merge-distortion-layers
+  [layers: [(Fn [vec3f] vec3f)]]: (Fn [vec3f] vec3f)
+  (fn [pos] pos))
+
+@audio
+(defn tone [t: f32]: f32
+  (sin (* 440. t)))
+
+@cpu
+(defn main []
+  (print 1u))

@@ -1,0 +1,27 @@
+; An effect chain as the audio entry: a closure capturing an array of stored
+; higher-order effects and a stateful source oscillator. Each effect is
+; called with the oscillator, which advances IN PLACE through the stored
+; call (twice per sample: once per effect), exactly as it would when passed
+; to a statically-known higher-order function.
+(defn create-counter [increment: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (= phase
+         (% (+ phase increment) 1.))
+      phase)))
+
+(defn pass [src: (Fn [] f32)]: f32
+  (src))
+
+(defn halve [src: (Fn [] f32)]: f32
+  (* 0.5 (src)))
+
+(defn chain [fx: [2: (Fn [(Fn [] f32)] f32)]
+             src: (Fn [] f32)]: (Fn [] f32)
+  (fn []
+    (+ ((fx 0u) src) ((fx 1u) src))))
+
+@cpu
+(defn main []
+  (start-audio (chain [pass halve] (create-counter 0.09375)))
+  (spawn-window (fn [] ())))

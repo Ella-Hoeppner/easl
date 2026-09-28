@@ -1,0 +1,19 @@
+; A struct field filled both from an element of a union array and from a plain
+; function: the array's union value must be converted into the field's union.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+(defn negate [x: f32]: f32 (- 0. x))
+
+(struct Holder
+  f: (Fn [f32] f32))
+
+(defn run [h: Holder
+           x: f32]: f32
+  (h.f x))
+
+@cpu
+(defn main []
+  (let [fns [double increment]
+        i 1u]
+    (print (run (Holder (fns i)) 5.))
+    (print (run (Holder negate) 5.))))

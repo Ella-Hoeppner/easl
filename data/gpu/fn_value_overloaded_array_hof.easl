@@ -1,0 +1,36 @@
+; Overload separation must not choke on a function type NESTED inside an
+; aggregate parameter. `combine` is overloaded (a const-generic version and an
+; unsized version), so `separate_overloaded_fns` runs and mangles a name suffix
+; from each overload's argument types. The unsized overload's parameter is
+; `[(Fn [f32] f32)]` — an array whose ELEMENT is a function type — which passed
+; the old top-level `matches!(t, Type::Function)` filter and drove
+; `monomorphized_name` into the ancestorless function element, panicking
+; ("compile ConcreteFunction type with no abstract ancestor"). The fix excludes
+; any type that *involves* a function type (recursively) from the suffix. This
+; is the reduced shape of problem.easl's `merge-distortion-layers` pair.
+(defn scale [m: f32]: (Fn [f32] f32)
+  (fn [x] (* x m)))
+
+(defn (combine C: u32)
+      [fns: [C: (Fn [f32] f32)]]: (Fn [f32] f32)
+  (fn [x]
+    (let [@var acc x]
+      (for [i (array-length fns)]
+        (= acc ((fns i) acc)))
+      acc)))
+
+; The unused unsized overload — never called, but its mere presence triggers
+; overload separation over the `[(Fn ...)]` parameter shape.
+(defn combine [fns: [(Fn [f32] f32)]]: (Fn [f32] f32)
+  (fn [x]
+    (let [@var acc x]
+      (for [i (array-length fns)]
+        (= acc ((fns i) acc)))
+      acc)))
+
+@fragment
+(defn frag []: vec4f
+  (let [a (scale 1.1)
+        b (scale 1.2)
+        m (combine [a b])]
+    (vec4f (m 1.) 0. 0. 1.)))

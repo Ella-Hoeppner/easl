@@ -1,0 +1,19 @@
+; Closure factories stored as values (top-level and lambda-literal): their
+; returned closures are boxed, and can be called directly or bound first.
+(defn make-adder [k: f32]: (Fn [f32] f32)
+  (fn [x] (+ x k)))
+
+(defn make-multiplier [k: f32]: (Fn [f32] f32)
+  (fn [x] (* x k)))
+
+@cpu
+(defn main []
+  (let [fs [make-adder make-multiplier]
+        lfs [(fn [k] (fn [x] (- x k)))
+             make-adder]]
+    (print (((fs 0u) 3.) 5.))
+    (print (((fs 1u) 3.) 5.))
+    (let [f ((fs 1u) 10.)]
+      (print (f 2.)))
+    (print (((lfs 0u) 1.) 5.))
+    (print (((lfs 1u) 1.) 5.))))

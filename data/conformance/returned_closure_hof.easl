@@ -1,0 +1,20 @@
+; A higher-order function that RETURNS a closure capturing its function
+; argument, applied to two structurally-identical-but-distinct closures. Each
+; returned closure must stay its own directly-dispatched function — if the two
+; got confused (both dispatching one layer), the result would differ. Pins that
+; the sibling closures are kept distinct AND correct across every backend
+; (interpreter, WGSL, C, and the bytecode VM) — no union, no discriminant.
+;
+; 1 -> (distortionify double): 1 + (1*2) = 3
+;   -> (distortionify triple): 3 + (3*3) = 12
+(defn scale [x: f32 m: f32]: f32
+  (* x m))
+
+(defn f []: f32
+  (let [distortionify (fn [g: (Fn [f32] f32)]
+                        (fn [x] (+ x (g x))))
+        double (fn [x] (scale x 2.))
+        triple (fn [x] (scale x 3.))]
+    (-> 1.
+        ((distortionify double))
+        ((distortionify triple)))))

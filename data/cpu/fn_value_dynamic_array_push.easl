@@ -1,0 +1,14 @@
+; A runtime-sized array of stateful closures, grown with `push`.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+@cpu
+(defn main []
+  (let [@var fs (into-dynamic-array [(make-counter 1.)])]
+    (= fs (push fs (make-counter 10.)))
+    (print ((fs 1u)))
+    (print ((fs 1u)))
+    (print ((fs 0u)))
+    (print (array-length fs))))

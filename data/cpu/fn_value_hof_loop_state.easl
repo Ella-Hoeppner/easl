@@ -1,0 +1,20 @@
+; A stateful closure lent to stored higher-order functions chosen per loop
+; iteration keeps advancing across iterations.
+(defn make-counter [amount: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n amount)
+      n)))
+(defn call-twice [g: (Fn [] f32)]: f32
+  (g)
+  (g))
+(defn call-once [g: (Fn [] f32)]: f32
+  (g))
+
+@cpu
+(defn main []
+  (let [hs [call-once call-twice]
+        @var c (make-counter 1.)]
+    (for [i 0u (< i 4u) (+= i 1u)]
+      (print ((hs (% i 2u)) c)))
+    (print (c))))

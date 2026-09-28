@@ -1,0 +1,10 @@
+; Folding compositions into one `@var` in a loop would need a closure that
+; captures a value of its own kind — an infinitely nested representation.
+(defn compose [a: (Fn [f32] f32) b: (Fn [f32] f32)]: (Fn [f32] f32)
+  (fn [x] (a (b x))))
+@cpu
+(defn main []
+  (let [@var acc (fn [x] x)]
+    (for [i 0u (< i 3u) (+= i 1u)]
+      (= acc (compose acc (fn [x] (+ x 1.)))))
+    (print (acc 0.))))

@@ -1,0 +1,29 @@
+; Nested single-variant function-union. `[a b]` holds two `scale-layer`
+; closures — the SAME closure type, differing only in the captured factor — so
+; its function-union has a single member and must collapse to a raw array of
+; scope structs (no enum, no discriminant), exactly like an un-unioned closure.
+; `m1` (the returned merge closure) is then fed back in beside `c`, a different
+; closure type, forming a genuine two-member union whose `m1` variant embeds
+; that raw scope-struct array. Undersizing the single-member case (dropping a
+; phantom discriminant it never had) produced an out-of-bounds index on the GPU
+; and a wrong result on the VM; this pins all backends agreeing.
+;   m1(x) = fold [a b] = x*1*2 = 2x
+;   m2(x) = fold [m1 c] = (2x)*3 = 6x   ⇒   m2(1) = 6
+(defn scale-layer [m: f32]: (Fn [f32] f32)
+  (fn [x] (* x m)))
+
+(defn (merge-layers C: u32)
+      [layers: [C: (Fn [f32] f32)]]: (Fn [f32] f32)
+  (fn [x]
+    (let [@var acc x]
+      (for [i (array-length layers)]
+        (= acc ((layers i) acc)))
+      acc)))
+
+(defn f []: f32
+  (let [a (scale-layer 1.)
+        b (scale-layer 2.)
+        m1 (merge-layers [a b])
+        c (scale-layer 3.)
+        m2 (merge-layers [m1 c])]
+    (m2 1.)))

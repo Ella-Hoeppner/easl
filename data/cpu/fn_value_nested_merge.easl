@@ -1,0 +1,15 @@
+; A merge whose arm is itself a merge: the outer union must contain all three
+; members, and the inner union's value must be converted into the outer one.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+(defn negate [x: f32]: f32 (- 0. x))
+
+(defn pick [a: bool
+            b: bool]: (Fn [f32] f32)
+  (if a (if b double increment) negate))
+
+@cpu
+(defn main []
+  (print ((pick true true) 5.))
+  (print ((pick true false) 5.))
+  (print ((pick false false) 5.)))

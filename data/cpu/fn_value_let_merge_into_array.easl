@@ -1,0 +1,16 @@
+; A let-bound merge used both as an array element and called directly.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+(defn negate [x: f32]: f32 (- 0. x))
+
+(defn run [fns: [2: (Fn [f32] f32)]
+           i: u32
+           x: f32]: f32
+  ((fns i) x))
+
+@cpu
+(defn main []
+  (let [c false
+        f (if c double increment)]
+    (print (run [f negate] 0u 5.))
+    (print (f 5.))))

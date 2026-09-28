@@ -1,0 +1,16 @@
+; SEMANTIC REQUIREMENT: stateful closures in an array, called under a runtime
+; index in a loop, keep their state across iterations.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+
+@cpu
+(defn main []
+  (let [cs [(make-counter 1.) (make-counter 10.)]
+        @var total 0.]
+    (for [pass 0u (< pass 3u) (+= pass 1u)]
+      (for [i 0u (< i 2u) (+= i 1u)]
+        (+= total ((cs i)))))
+    (print total)))

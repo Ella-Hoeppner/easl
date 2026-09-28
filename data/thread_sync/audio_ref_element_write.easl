@@ -1,0 +1,18 @@
+; Audio code writing an element of a captured (lifted, thread-shared) array
+; through a `@var @ref` parameter must mark the array shared-dirty, so it
+; publishes at the batch boundary like any other write. The element is
+; passed as a storage pointer after reference-address-space
+; monomorphization; that write must still count as one.
+(defn bump [@var @ref x: f32]
+  (+= x 0.25))
+
+(defn make-stepper []: (Fn [] f32)
+  (let [@var levels [0. 0.5]]
+    (fn []
+      (bump (levels 0u))
+      (+ (levels 0u) (levels 1u)))))
+
+@cpu
+(defn main []
+  (start-audio (make-stepper))
+  (spawn-window (fn [] ())))

@@ -1,0 +1,22 @@
+; An oscillator bank as the audio entry: a closure capturing an ARRAY of
+; stateful closures. Every oscillator must advance on every sample — each
+; array element's captured state is mutated in place through the call, and
+; the bank's captured array is shared across batches like any other
+; captured state. (Both oscillators are the same closure kind, so the array
+; is just an array of their scope structs, called directly.)
+(defn create-counter [increment: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (= phase
+         (% (+ phase increment) 1.))
+      phase)))
+
+(defn mix [oscs: [2: (Fn [] f32)]]: (Fn [] f32)
+  (fn []
+    (* 0.5
+       (+ ((oscs 0u)) ((oscs 1u))))))
+
+@cpu
+(defn main []
+  (start-audio (mix [(create-counter 0.125) (create-counter 0.25)]))
+  (spawn-window (fn [] ())))

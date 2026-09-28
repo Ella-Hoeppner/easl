@@ -804,6 +804,12 @@ impl AbstractFunctionSignature {
       &mut monomorphized.implementation
     {
       let mut new_fn = monomorphized_fn.read().unwrap().derived_from();
+      // `derived_from` shares unification-variable Arcs with the generic
+      // template; snapshot them into owned types first so `replace_skolems`
+      // doesn't rewrite a skolem through an Arc shared with the template or a
+      // sibling specialization (which leaked one specialization's element type
+      // into another — see `TypeState::snapshot_owned`).
+      new_fn.expression.snapshot_types();
       let replacement_pairs: HashMap<Arc<str>, Type> = generic_type_bindings
         .iter()
         .map(|(x, y)| (x.clone(), y.clone()))
@@ -1390,7 +1396,42 @@ impl TopLevelFunction {
         })
         .collect::<Vec<String>>()
         .join(", ");
-      let return_type_name = return_type.monomorphized_name(names, target);
+      // A function that returns a scoped closure emits its return type as the
+      // scope struct its body actually constructs — read straight from the tail
+      // construction, the one closure-identity anchor no upstream pass can
+      // collapse between two structurally-identical sibling closures (a
+      // higher-order function returning a closure that captures its function
+      // argument, applied to two different arguments, produces exactly such
+      // siblings). Every other return falls back to the declared return type.
+      let return_type_name = {
+        let mut ctor_scope_name = None;
+        if matches!(return_type.kind.unwrap_known(), Type::Function(_)) {
+          let mut cur = &body;
+          loop {
+            match &cur.kind {
+              ExpKind::Block(exps) => match exps.last() {
+                Some(l) => cur = l,
+                None => break,
+              },
+              ExpKind::Let(_, b) => cur = b.as_ref(),
+              _ => break,
+            }
+          }
+          if let ExpKind::Application(callee, _) = &cur.kind
+            && let TypeState::Known(Type::Function(cs)) = &callee.data.kind
+            && let Some(ca) = &cs.abstract_ancestor
+            && matches!(
+              ca.read().unwrap().implementation,
+              FunctionImplementationKind::StructConstructor
+            )
+          {
+            ctor_scope_name =
+              Some(compile_word(ca.read().unwrap().name.clone()));
+          }
+        }
+        ctor_scope_name
+          .unwrap_or_else(|| return_type.monomorphized_name(names, target))
+      };
       let fn_name = compile_word(name.into());
       let body = indent(body.compile(
         if return_type.kind.unwrap_known() == Type::Unit {

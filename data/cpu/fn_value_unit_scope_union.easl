@@ -1,0 +1,13 @@
+; A union of closures whose captures all lower to nothing: their variants
+; carry no payload (the unit-like scope structs are dropped from the
+; program), and the dispatcher passes an empty scope.
+(defn inc [x: f32]: f32 (+ x 1.))
+
+@cpu
+(defn main []
+  (let [gs [inc inc]
+        g (gs 0u)
+        h (gs 1u)
+        fs [(fn [x] (g (g x))) (fn [x] (h x))]]
+    (print ((fs 0u) 1.))
+    (print ((fs 1u) 1.))))

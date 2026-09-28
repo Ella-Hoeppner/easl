@@ -1,0 +1,38 @@
+; A closure lent to a stored call whose parameter's set is a union (the
+; callee stashes it in a global alongside another closure kind): it's copied
+; into the union for the call and its advanced state copied back, so it still
+; advances in place. The global holds a copy taken mid-call.
+(defn make-counter [amount: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n amount)
+      n)))
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+(defn zero []: f32 0.)
+
+@local
+(var last: (Fn [] f32) zero)
+
+(defn remember [g: (Fn [] f32)]: f32
+  (= last g)
+  (g))
+(defn plain [g: (Fn [] f32)]: f32
+  (g))
+
+@cpu
+(defn main []
+  (let [hs [remember plain]
+        c (make-counter 1.)
+        d (make-doubler 1.)]
+    (print ((hs 0u) c))
+    (print ((hs 0u) d))
+    (print ((hs 0u) c))
+    (print ((hs 1u) c))
+    (print (c))
+    (print (d))
+    (print (last))
+    (print (last))))

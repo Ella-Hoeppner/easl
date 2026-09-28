@@ -1,0 +1,12 @@
+; Assigning a function that isn't in the array literal into an element: the
+; array's member set must include every function that can flow into it.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+(defn negate [x: f32]: f32 (- 0. x))
+
+@cpu
+(defn main []
+  (let [@var fns [double increment]]
+    (= (fns 0u) negate)
+    (print ((fns 0u) 5.))
+    (print ((fns 1u) 5.))))

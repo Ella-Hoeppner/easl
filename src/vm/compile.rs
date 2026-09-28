@@ -1818,19 +1818,19 @@ impl BytecodeCompilationState {
           }
           return Some(dest);
         }
-        // use the argument expression's own type — it's concrete at the
-        // call site, while the signature's is const-generic
-        let Type::Array(Some(size), _) = args[0].data.unwrap_known() else {
+        // Use the argument expression's own type for both count and element
+        // type: it's concrete at the call site (the signature's is
+        // const-generic), and its element type is exactly what the new cell
+        // holds.
+        let Type::Array(Some(size), arg_element) = args[0].data.unwrap_known()
+        else {
           panic!("into-dynamic-array argument wasn't a sized array")
         };
         let Some(count) = size.as_literal() else {
           panic!("into-dynamic-array argument wasn't a sized array")
         };
         let count = &count;
-        let Type::Array(_, element_type) = return_type else {
-          panic!("into-dynamic-array return type wasn't an array")
-        };
-        let element_type = element_type.unwrap_known();
+        let element_type = arg_element.unwrap_known();
         let dest = self.take_stack_slot(1);
         if is_heap_value_type(&element_type) {
           // The source slots hold heap ids; the new cell owns Arc shares
@@ -4761,6 +4761,18 @@ impl TypedExp {
           });
           return Some(result);
         }
+        // A bare reference to a scope-less closure value (a returned closure
+        // whose captures are all themselves scope-less, so it carries no
+        // captured data). Its VM representation is its scope data — here
+        // empty — so it occupies zero slots; the dispatch function is resolved
+        // statically from the type's abstract ancestor at the call site. (A
+        // closure WITH captured data appears as a scope-struct construction,
+        // handled by the Application arm, never as a bare Name.)
+        if let Type::Function(_) = self.data.unwrap_known() {
+          return Some(
+            state.take_stack_slot(vm_stack_size(&self.data.unwrap_known())),
+          );
+        }
         panic!("Name {name:?} not found in scope")
       }
       Function(args, exp) => {
@@ -5110,7 +5122,7 @@ impl TypedExp {
             }
             Type::String => todo!(),
             Type::Struct(_) => todo!(),
-            Type::Function(_) => todo!(),
+            Type::Function(_) | Type::BoxedFunction(_) => todo!(),
             Type::Array(_, _) => todo!(),
             Type::Skolem(_, _) | Type::Unit => panic!(),
           }

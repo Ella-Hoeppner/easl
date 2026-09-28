@@ -1,0 +1,20 @@
+; REGRESSION (function-values WIP): a plain single-variant user enum must keep
+; working on the VM when nested in a struct / array and printed.
+(enum Wrap (W f32))
+
+(struct Pair
+  a: Wrap
+  b: f32)
+
+(defn unwrap [w: Wrap]: f32
+  (match w (W x) x))
+
+@cpu
+(defn main []
+  (let [p (Pair (W 1.) 7.)
+        arr [(W 2.) (W 3.)]]
+    (print (unwrap p.a))
+    (print p.b)
+    (print (unwrap (arr 1u)))
+    (print p)
+    (print arr)))

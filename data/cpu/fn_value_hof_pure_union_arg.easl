@@ -1,0 +1,14 @@
+; A stored higher-order function receiving a function chosen from an array
+; of pure functions: the member's boxed parameter is a reference, so the
+; union is dispatched by reference even though nothing mutates.
+(defn inc [x: f32]: f32 (+ x 1.))
+(defn dbl [x: f32]: f32 (* x 2.))
+(defn twice [f: (Fn [f32] f32) x: f32]: f32 (f (f x)))
+(defn once [f: (Fn [f32] f32) x: f32]: f32 (f x))
+
+@cpu
+(defn main []
+  (let [hs [twice once]
+        fs [inc dbl]]
+    (print ((hs 0u) (fs 1u) 5.))
+    (print ((hs 1u) (fs 0u) 5.))))

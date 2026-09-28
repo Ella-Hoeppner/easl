@@ -1,0 +1,38 @@
+; Payload closures advanced right before a `return` or `break` out of the
+; match arm keep their state.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+
+(enum Voice
+  (Playing (Fn [] f32))
+  Silent)
+
+(defn step [@var @ref v: Voice]: f32
+  (match v
+    (Playing f) (f)
+    Silent 0.))
+(defn step-scaled [@var @ref v: Voice]: f32
+  (match v
+    (Playing f) (return (* 10. (f)))
+    Silent 0.))
+
+@cpu
+(defn main []
+  (let [@var v (Playing (make-counter 1.))]
+    (print (step-scaled v))
+    (print (step-scaled v))
+    (for [i 0u (< i 5u) (+= i 1u)]
+      (match v
+        (Playing f) (when (> (f) 4.)
+                      (break))
+        Silent ()))
+    (print (step v))))

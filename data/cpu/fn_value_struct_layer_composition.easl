@@ -1,0 +1,16 @@
+; Structs holding closures, composed into structs holding closures that
+; capture them (the layering pattern): each composition level gets its own
+; representation, so this never forms a recursive type.
+(struct Layer f: (Fn [f32] f32))
+(defn scale [k: f32]: Layer (Layer (fn [x] (* x k))))
+(defn shift [k: f32]: Layer (Layer (fn [x] (+ x k))))
+(defn compose [a: Layer b: Layer]: Layer
+  (Layer (fn [x] (b.f (a.f x)))))
+(defn run [l: Layer x: f32]: f32 (l.f x))
+@cpu
+(defn main []
+  (let [l (compose (scale 2.) (shift 1.))
+        l2 (compose l (scale 10.))]
+    (print (run l 5.))
+    (print (run l2 5.))
+    (print (run (scale 3.) 5.))))

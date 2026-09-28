@@ -1,0 +1,13 @@
+; Closures that never mutate their captured state may be passed to several
+; function parameters of one call (e.g. composed with themselves).
+(defn adder [k: f32]: (Fn [f32] f32) (fn [x] (+ x k)))
+(defn compose [a: (Fn [f32] f32) b: (Fn [f32] f32)]: (Fn [f32] f32)
+  (fn [x] (a (b x))))
+(defn apply-both [f: (Fn [f32] f32) g: (Fn [f32] f32) x: f32]: f32 (f (g x)))
+@cpu
+(defn main []
+  (let [f (adder 1.)
+        fs [(adder 10.) (adder 100.)]]
+    (print ((compose f f) 0.))
+    (print (apply-both f f 0.))
+    (print (apply-both (fs 0u) (fs 0u) 0.))))

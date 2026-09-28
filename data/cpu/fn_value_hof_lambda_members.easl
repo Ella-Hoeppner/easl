@@ -1,0 +1,12 @@
+; Higher-order lambdas written directly where they're stored are retyped in
+; place (their function parameters boxed); one captures a local.
+(defn inc [x: f32]: f32 (+ x 1.))
+
+@cpu
+(defn main []
+  (let [k 10.
+        hs [(fn [f x] (f (f x)))
+            (fn [f x] (+ k (f x)))]]
+    (print ((hs 0u) inc 5.))
+    (print ((hs 1u) inc 5.))
+    (print ((hs 1u) (fn [y] (* y 3.)) 5.))))

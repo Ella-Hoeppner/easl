@@ -1,0 +1,10 @@
+main-publish: <audio-scope>_levels
+start-audio: <audio-closure>
+spawn-window
+frame 0
+audio-batch 0 x4
+audio-adopt: <audio-scope>_levels
+samples: 0.75 1 1 1
+audio-publish: <audio-scope>_levels
+frame 1
+main-adopt: <audio-scope>_levels

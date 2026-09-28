@@ -1,0 +1,29 @@
+; A top-level variable holding a function value: assigned, called, reassigned.
+; A stateful closure stored in the global advances in place across calls.
+(defn double [x: f32]: f32 (* x 2.))
+
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+
+@local
+(var transform: (Fn [f32] f32))
+
+@local
+(var counter: (Fn [] f32))
+
+(defn tick []: f32
+  (counter))
+
+@cpu
+(defn main []
+  (= transform double)
+  (print (transform 5.))
+  (= transform (fn [x] (+ x 100.)))
+  (print (transform 5.))
+  (= counter (make-counter 1.))
+  (print (tick))
+  (print (tick))
+  (print (counter)))

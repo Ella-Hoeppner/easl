@@ -1,0 +1,41 @@
+; A payload binding passed to a higher-order function advances the closure
+; stored in the enum; matching an array element chosen by a loop variable
+; advances that element's closure.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+
+(enum Voice
+  (Playing (Fn [] f32))
+  Silent)
+
+(defn step [@var @ref v: Voice]: f32
+  (match v
+    (Playing f) (f)
+    Silent 0.))
+(defn call-twice [g: (Fn [] f32)]: f32
+  (g)
+  (g))
+
+@cpu
+(defn main []
+  (let [@var v (Playing (make-counter 1.))
+        @var vs [(Playing (make-counter 1.)) (Playing (make-counter 10.))]]
+    (match v
+      (Playing f) (print (call-twice f))
+      Silent ())
+    (print (step v))
+    (for [i 0u (< i 2u) (+= i 1u)]
+      (match (vs i)
+        (Playing f) (print (f))
+        Silent ()))
+    (print (step (vs 0u)))
+    (print (step (vs 1u)))))

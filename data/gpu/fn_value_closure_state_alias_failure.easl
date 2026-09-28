@@ -1,0 +1,13 @@
+; As `closure_state_alias_failure`, with the closure read out of an array.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+(defn call-both [f: (Fn [] f32) g: (Fn [] f32)]: f32
+  (+ (* 10. (f)) (g)))
+@cpu
+(defn main []
+  (let [cs [(make-counter 1.) (make-counter 100.)]]
+    (print (call-both (cs 0u) (cs 0u)))
+    (print ((cs 0u)))))

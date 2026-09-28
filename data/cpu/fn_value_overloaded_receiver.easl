@@ -1,0 +1,23 @@
+; Two overloads of one receiver, each taking a function array of a different
+; signature: each must be specialized from its own overload.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+(defn negate [x: f32]: f32 (- 0. x))
+
+(defn idouble [x: i32]: i32 (* x 2))
+(defn iinc [x: i32]: i32 (+ x 1))
+
+(defn run [fns: [2: (Fn [f32] f32)]
+           i: u32
+           x: f32]: f32
+  ((fns i) x))
+
+(defn run [fns: [2: (Fn [i32] i32)]
+           i: u32
+           x: i32]: i32
+  ((fns i) x))
+
+@cpu
+(defn main []
+  (print (run [double increment] 1u 5.))
+  (print (run [idouble iinc] 0u 5i)))

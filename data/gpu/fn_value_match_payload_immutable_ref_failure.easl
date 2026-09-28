@@ -1,0 +1,31 @@
+; Calling a stateful payload closure through a read-only `@ref` would mutate
+; what the `@ref` only lends.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+
+(enum Voice
+  (Playing (Fn [] f32))
+  Silent)
+
+(defn step [@var @ref v: Voice]: f32
+  (match v
+    (Playing f) (f)
+    Silent 0.))
+(defn peek [@ref v: Voice]: f32
+  (match v
+    (Playing f) (f)
+    Silent 0.))
+
+@cpu
+(defn main []
+  (let [v (Playing (make-counter 1.))]
+    (print (peek v))))

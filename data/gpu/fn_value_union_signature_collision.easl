@@ -1,0 +1,27 @@
+; Shader form of the per-usage late (closure) function-union regression. The
+; union members are LAMBDAS (handled by the late reification pass); `combine`
+; is a plain function they call that shares their signature
+; `(Fn [vec3f] vec3f)`. The late pass must not hijack `combine`'s calls (nor a
+; member's direct call) into the union dispatcher via a global-by-signature
+; match — that built a self-referential call graph that crashed the compiler.
+; This must emit valid WGSL.
+(defn combine [p: vec3f]: vec3f
+  (- p (vec3f 0.5)))
+
+(defn apply-layers [fns: [2: (Fn [vec3f] vec3f)]]: (Fn [vec3f] vec3f)
+  (fn [pos]
+    (let [@var q pos]
+      (for [i (array-length fns)]
+        (= q ((fns i) q)))
+      q)))
+
+@storage-write
+(var outp: [1: vec3f])
+
+@compute
+@{workgroup-size 1}
+(defn main []
+  (let [scale (fn [p] (combine (* p 2.)))
+        shift (fn [p] (combine (+ p (vec3f 1.))))
+        merged (apply-layers [scale shift])]
+    (= (outp 0u) (+ (merged (vec3f 1.)) (scale (vec3f 3.))))))

@@ -1,0 +1,24 @@
+; A CPU-built array of (pure) closures captured by a dispatched shader.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+(defn adder [k: f32]: (Fn [f32] f32) (fn [x] (+ x k)))
+(defn scaler [k: f32]: (Fn [f32] f32) (fn [x] (* x k)))
+@storage-write
+(var out: [2: f32])
+@cpu
+(defn main []
+  (let [fs [(adder 1.) (scaler 3.)]]
+    (dispatch-compute-shader
+      (fn []
+        (= (out 0u) ((fs 0u) 5.))
+        (= (out 1u) ((fs 1u) 5.)))
+      (vec3u 1u))
+    (print out)))

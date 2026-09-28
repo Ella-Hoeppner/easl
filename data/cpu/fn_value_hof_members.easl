@@ -1,0 +1,20 @@
+; Top-level higher-order functions stored as values: each member is called
+; through a boxed-parameter clone whose function parameter is boxed.
+(defn inc [x: f32]: f32 (+ x 1.))
+(defn dbl [x: f32]: f32 (* x 2.))
+
+(defn twice [f: (Fn [f32] f32)
+             x: f32]: f32
+  (f (f x)))
+
+(defn thrice [f: (Fn [f32] f32)
+              x: f32]: f32
+  (f (f (f x))))
+
+@cpu
+(defn main []
+  (let [hs [twice thrice]]
+    (print ((hs 0u) inc 5.))
+    (print ((hs 1u) inc 5.))
+    (print ((hs 1u) dbl 1.))
+    (print (twice dbl 1.))))

@@ -1,0 +1,29 @@
+; A static higher-order parameter lent to a stored higher-order function:
+; the caller's closure advances through both levels.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+(defn call-twice [g: (Fn [] f32)]: f32
+  (g)
+  (g))
+
+(defn call-once [g: (Fn [] f32)]: f32
+  (g))
+
+(defn run-first [hs: [2: (Fn [(Fn [] f32)] f32)]
+                 g: (Fn [] f32)]: f32
+  ((hs 0u) g))
+
+@cpu
+(defn main []
+  (let [c (make-counter 1.)]
+    (print (run-first [call-twice call-once] c))
+    (print (c))))

@@ -1,0 +1,10 @@
+; An `if` choosing between two higher-order parameters returns a function
+; value; each call site's arguments are inlined as usual.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+(defn pick [c: bool f: (Fn [f32] f32) g: (Fn [f32] f32)]: (Fn [f32] f32)
+  (if c f g))
+@cpu
+(defn main []
+  (print ((pick true double increment) 5.))
+  (print ((pick false double increment) 5.)))

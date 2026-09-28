@@ -1,0 +1,15 @@
+; Binding a stateful closure read out of an array copies it: the copy
+; advances independently, and the array element keeps its own state.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+@cpu
+(defn main []
+  (let [cs [(make-counter 1.) (make-counter 10.)]]
+    (print ((cs 0u)))
+    (let [d (cs 0u)]
+      (print (d))
+      (print (d)))
+    (print ((cs 0u)))))

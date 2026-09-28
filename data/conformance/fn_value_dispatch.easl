@@ -1,0 +1,9 @@
+; A fn-union used to produce one f32 that
+; must agree across the interpreter, WGSL, C, and VM backends.
+(defn twice [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+
+(defn f []: f32
+  (let [fns [twice increment]]
+    (+ ((fns 0u) 3.)
+       ((fns 1u) 3.))))

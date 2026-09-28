@@ -1,0 +1,40 @@
+; Every kind of function argument to a stored higher-order function and to
+; a let-bound higher-order lambda: a top-level function, a pure stored
+; function, a stateful stored closure, a closure local (lent, advancing in
+; place), a lambda, and a temporary. The stateful ones' state is checked
+; afterwards.
+(defn make-counter [amount: f32]: (Fn [f32] f32)
+  (let [@var n 0.]
+    (fn [x]
+      (+= n amount)
+      (+ x n))))
+(defn inc [x: f32]: f32 (+ x 1.))
+(defn dbl [x: f32]: f32 (* x 2.))
+(defn twice [f: (Fn [f32] f32) x: f32]: f32 (f (f x)))
+(defn once [f: (Fn [f32] f32) x: f32]: f32 (f x))
+
+@cpu
+(defn main []
+  (let [hs [twice once]
+        pure [inc dbl]
+        @var stateful [(make-counter 1.) (make-counter 10.)]
+        c (make-counter 100.)
+        local-twice (fn [f x] (f (f x)))]
+    ; top-level fn, pure element, stateful element, lent local, lambda, temp
+    (print ((hs 0u) inc 0.))
+    (print ((hs 0u) (pure 1u) 1.))
+    (print ((hs 0u) (stateful 0u) 0.))
+    (print ((hs 0u) c 0.))
+    (print ((hs 1u) (fn [y] (- y 1.)) 0.))
+    (print ((hs 0u) (make-counter 1000.) 0.))
+    ; the same through a local higher-order lambda
+    (print (local-twice inc 0.))
+    (print (local-twice (pure 1u) 1.))
+    (print (local-twice (stateful 1u) 0.))
+    (print (local-twice c 0.))
+    (print (local-twice (fn [y] (- y 1.)) 0.))
+    (print (local-twice (make-counter 1000.) 0.))
+    ; state after
+    (print ((stateful 0u) 0.))
+    (print ((stateful 1u) 0.))
+    (print (c 0.))))

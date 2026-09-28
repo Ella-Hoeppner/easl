@@ -1,0 +1,33 @@
+; A stateful closure passed to a stored higher-order function advances in
+; place, exactly as when passed to a statically-known one: a closure local is
+; lent to the call, a stored closure is passed by reference, and a temporary
+; closes over nothing observable.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+(defn call-twice [g: (Fn [] f32)]: f32
+  (g)
+  (g))
+
+(defn call-once [g: (Fn [] f32)]: f32
+  (g))
+
+@cpu
+(defn main []
+  (let [hs [call-twice call-once]
+        c (make-counter 1.)
+        @var cs [(make-counter 10.) (make-doubler 1.)]]
+    (print ((hs 0u) c))
+    (print (c))
+    (print ((hs 1u) c))
+    (print ((hs 0u) (cs 1u)))
+    (print ((cs 1u)))
+    (print ((hs 0u) (make-counter 100.)))))

@@ -1,0 +1,11 @@
+; A local (let-bound) higher-order lambda can't be stored as a value: its
+; definition is shared by every use, so its function parameters can't be
+; boxed for just the stored uses. (Top-level ones and lambdas written where
+; they're stored can.)
+(defn inc [x: f32]: f32 (+ x 1.))
+
+@cpu
+(defn main []
+  (let [tw (fn [f x] (f (f x)))
+        hs [tw tw]]
+    (print ((hs 0u) inc 5.))))

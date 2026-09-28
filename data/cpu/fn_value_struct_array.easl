@@ -1,0 +1,17 @@
+; An array of structs whose function field holds different members per element.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+(defn negate [x: f32]: f32 (- 0. x))
+
+(struct Holder
+  f: (Fn [f32] f32))
+
+(defn run [h: Holder
+           x: f32]: f32
+  (h.f x))
+
+@cpu
+(defn main []
+  (let [hs [(Holder double) (Holder increment)]]
+    (print (run (hs 0u) 5.))
+    (print (run (hs 1u) 5.))))

@@ -697,6 +697,19 @@ impl AbstractType {
       AbstractType::Unit => {}
     }
   }
+  /// Substitutes the generics bound in `bindings` wherever they appear as
+  /// skolems inside a concrete type (a generic nested in a function type,
+  /// say). Skolems without a binding are left alone.
+  pub fn replace_bound_skolems(&mut self, bindings: &HashMap<Arc<str>, Type>) {
+    if let AbstractType::Type(t) = self {
+      let mut skolems = vec![];
+      t.track_skolem_names(&mut skolems);
+      if !skolems.is_empty() && skolems.iter().all(|n| bindings.contains_key(n))
+      {
+        t.replace_skolems(bindings);
+      }
+    }
+  }
   pub fn rename_generic(self, old_name: &str, new_name: &str) -> Self {
     match self {
       AbstractType::Generic(name) => {
@@ -754,7 +767,13 @@ impl AbstractType {
         .collect::<CompileResult<Vec<usize>>>()?
         .into_iter()
         .sum::<usize>(),
-      AbstractType::AbstractEnum(e) => e.inner_flat_data_size_in_u32s()? + 1,
+      AbstractType::AbstractEnum(e) => {
+        // The GPU/C backing struct always carries a discriminant word (see the
+        // `Type::Enum` arm of `Type::flat_data_size_in_u32s`), so the flat
+        // layout always includes it — even for a single-variant enum.
+        let discriminant = if e.variants.is_empty() { 0 } else { 1 };
+        e.inner_flat_data_size_in_u32s()? + discriminant
+      }
       AbstractType::AbstractArray {
         size,
         inner_type,
@@ -1238,6 +1257,16 @@ pub enum Type {
   Struct(Struct),
   Enum(Enum),
   Function(Box<FunctionSignature>),
+  /// A function VALUE whose identity isn't statically known: a function
+  /// stored in an array / struct field / enum payload / global, merged by an
+  /// `if`/`match`, or held in a `@var`. Introduced right after type inference
+  /// by `box_function_values` (so the higher-order-inlining machinery, which
+  /// requires every `Function` to carry one static ancestor, treats these as
+  /// opaque data), and eliminated by `defunctionalize_boxed_functions`, which
+  /// lowers each occurrence to its per-usage representation (unit, a closure
+  /// scope struct, or a tagged-union enum). The signature's ancestor is always
+  /// `None`. No backend ever sees this variant.
+  BoxedFunction(Box<FunctionSignature>),
   Skolem(Arc<str>, Vec<TypeConstraint>),
   Array(Option<ConcreteArraySize>, Box<ExpTypeInfo>),
 }
@@ -1270,7 +1299,7 @@ impl Type {
         output
       }
       Type::Enum(_) => todo!(),
-      Type::Function(_) => format!("<fn>"),
+      Type::Function(_) | Type::BoxedFunction(_) => format!("<fn>"),
       Type::Array(_, _) => todo!(),
       Type::Skolem(_, _) => panic!(),
     }
@@ -1292,9 +1321,11 @@ impl Type {
       Type::Array(size, inner) => {
         size.is_some() && inner.unwrap_known().is_constructible()
       }
-      Type::Unit | Type::Function(_) | Type::String | Type::Skolem(_, _) => {
-        true
-      }
+      Type::Unit
+      | Type::Function(_)
+      | Type::BoxedFunction(_)
+      | Type::String
+      | Type::Skolem(_, _) => true,
     }
   }
   pub fn gather_location_annotations(
@@ -1321,6 +1352,7 @@ impl Type {
       Type::Struct(_) => "Struct",
       Type::Enum(_) => "Enum",
       Type::Function(_) => "Function",
+      Type::BoxedFunction(_) => "BoxedFunction",
       Type::Skolem(_, _) => "Skolem",
       Type::Array(_, _) => "Array",
     }
@@ -1414,6 +1446,27 @@ impl Type {
         .variants
         .iter()
         .any(|v| v.inner_type.unwrap_known().involves_runtime_sized_array()),
+      _ => false,
+    }
+  }
+  /// Whether this type is, or contains anywhere in its structure, a function
+  /// type. A function type has no static name (its `monomorphized_name` needs
+  /// an abstract ancestor), so overload separation must exclude any type
+  /// involving one from the name-mangling suffix — including a function type
+  /// nested inside an array/struct/enum (`[(Fn ...)]`), not just a top-level
+  /// one.
+  pub fn involves_function(&self) -> bool {
+    match self {
+      Type::Function(_) => true,
+      Type::Array(_, inner) => inner.kind.unwrap_known().involves_function(),
+      Type::Struct(s) => s
+        .fields
+        .iter()
+        .any(|f| f.field_type.unwrap_known().involves_function()),
+      Type::Enum(e) => e
+        .variants
+        .iter()
+        .any(|v| v.inner_type.unwrap_known().involves_function()),
       _ => false,
     }
   }
@@ -1523,9 +1576,20 @@ impl Type {
             .sum::<usize>()
         }
       }
-      Type::Enum(e) => e.inner_flat_data_size_in_u32s()? + 1,
+      Type::Enum(e) => {
+        // Every enum's GPU/C backing struct carries a `discriminant: u32` word
+        // (see `AbstractEnum::compile_if_non_generic`), and the bitcast
+        // packing/unpacking (`push_bitcastable_chunks` /
+        // `bitcasted_from_enum_data_inner`) always includes it — even for a
+        // single-variant enum.
+        let discriminant = if e.variants.is_empty() { 0 } else { 1 };
+        e.inner_flat_data_size_in_u32s()? + discriminant
+      }
       Type::Function(_) => {
         return err(UninlinableHigherOrderFunction, source_trace.clone());
+      }
+      Type::BoxedFunction(_) => {
+        panic!("tried to calculate size of an un-lowered boxed function")
       }
       Type::Skolem(_, _) => panic!("tried to calculate size of skolem"),
       Type::Array(size, inner_type) => {
@@ -1754,6 +1818,7 @@ impl Type {
   pub fn compatible(&self, other: &Self) -> bool {
     let b = match (self, other) {
       (Type::Function(a), Type::Function(b)) => a.compatible(b),
+      (Type::BoxedFunction(a), Type::BoxedFunction(b)) => a.compatible(b),
       (Type::Struct(a), Type::Struct(b)) => a.compatible(b),
       (Type::Enum(a), Type::Enum(b)) => a.compatible(b),
       (Type::Array(size_a, a), Type::Array(size_b, b)) => {
@@ -1886,6 +1951,7 @@ impl Type {
             .0
             .to_string()
         }
+        Type::BoxedFunction(f) => boxed_function_name(f, names, target),
         Type::Skolem(name, _) => {
           panic!("Attempted to compile Skolem \"{name}\"")
         }
@@ -1939,6 +2005,7 @@ impl Type {
             .0
             .to_string()
         }
+        Type::BoxedFunction(f) => boxed_function_name(f, names, target),
         Type::Skolem(name, _) => {
           panic!("Attempted to compile Skolem \"{name}\"")
         }
@@ -1955,7 +2022,7 @@ impl Type {
   pub(crate) fn track_skolem_names(&self, names: &mut Vec<Arc<str>>) {
     match self {
       Type::Skolem(name, _) => names.push(name.clone()),
-      Type::Function(f) => {
+      Type::Function(f) | Type::BoxedFunction(f) => {
         for (arg, _) in f.args.iter() {
           if let Some(t) = arg.var_type.kind.try_unwrap_known() {
             t.track_skolem_names(names);
@@ -2002,7 +2069,8 @@ impl Type {
       (Type::Skolem(name, _), _) => {
         type_bindings.insert(name.clone(), concrete.clone());
       }
-      (Type::Function(abstract_f), Type::Function(concrete_f)) => {
+      (Type::Function(abstract_f), Type::Function(concrete_f))
+      | (Type::BoxedFunction(abstract_f), Type::BoxedFunction(concrete_f)) => {
         // `try_unwrap_known`, never a direct `TypeState::Known` match: a
         // type resolved through unification (e.g. a generic HoF's return
         // closure consumed by a user overload) sits behind a
@@ -2108,7 +2176,7 @@ impl Type {
               .as_known_mut(|t| t.replace_skolems(skolems));
           }
         }
-        Type::Function(f) => {
+        Type::Function(f) | Type::BoxedFunction(f) => {
           f.return_type.as_known_mut(|t| t.replace_skolems(skolems));
           for (arg, _) in f.args.iter_mut() {
             arg.var_type.as_known_mut(|t| t.replace_skolems(skolems))
@@ -2119,6 +2187,32 @@ impl Type {
         }
         _ => {}
       }
+    }
+  }
+  /// Snapshots the type-states nested inside this type (array element, struct
+  /// fields, enum payloads, function args/return) into owned values, following
+  /// and collapsing any shared `UnificationVariable`. See
+  /// `TypeState::snapshot_owned`.
+  pub fn snapshot_nested_type_states(&mut self) {
+    match self {
+      Type::Struct(s) => {
+        for field in s.fields.iter_mut() {
+          field.field_type.kind.snapshot_owned();
+        }
+      }
+      Type::Enum(e) => {
+        for variant in e.variants.iter_mut() {
+          variant.inner_type.kind.snapshot_owned();
+        }
+      }
+      Type::Function(f) | Type::BoxedFunction(f) => {
+        f.return_type.kind.snapshot_owned();
+        for (arg, _) in f.args.iter_mut() {
+          arg.var_type.kind.snapshot_owned();
+        }
+      }
+      Type::Array(_, inner_type) => inner_type.kind.snapshot_owned(),
+      _ => {}
     }
   }
   pub fn replace_const_generic_skolems(
@@ -2166,7 +2260,7 @@ impl Type {
             .as_known_mut(|t| t.replace_const_generic_skolems(bindings));
         }
       }
-      Type::Function(f) => {
+      Type::Function(f) | Type::BoxedFunction(f) => {
         f.return_type
           .as_known_mut(|t| t.replace_const_generic_skolems(bindings));
         for (arg, _) in f.args.iter_mut() {
@@ -2182,31 +2276,60 @@ impl Type {
     &self,
     value_name: Arc<str>,
   ) -> Vec<TypedExp> {
-    match self {
-      Type::Unit => vec![],
-      Type::F32 | Type::I32 | Type::U32 | Type::Bool => vec![TypedExp {
+    let mut chunks = vec![];
+    self.push_bitcastable_chunks(
+      TypedExp {
         data: self.clone().known().into(),
         kind: ExpKind::Name(value_name),
         source_trace: SourceTrace::empty(),
-      }],
-      Type::Struct(s) => s.bitcastable_chunk_accessors(value_name),
+      },
+      &mut chunks,
+    );
+    chunks
+  }
+  /// Appends the u32-bitcastable leaf accessors of `base` (an expression of
+  /// this type), recursing through structs, fixed arrays, and nested enums: an
+  /// enum contributes its `discriminant` word plus each of its flat `data`
+  /// words, a struct/array recurses into every field/element. This is what
+  /// packs a value into an enum variant's flat `data: array<u32, N>` payload
+  /// (and, inverted, reads it back) — array elements and struct fields that are
+  /// themselves aggregates (e.g. a captured-scope struct holding an
+  /// `array<FnUnion, N>`) must be flattened to their scalar leaves, since no
+  /// backend can bitcast a whole struct/enum to `u32`.
+  fn push_bitcastable_chunks(
+    &self,
+    base: TypedExp,
+    chunks: &mut Vec<TypedExp>,
+  ) {
+    match self {
+      Type::Unit => {}
+      Type::F32 | Type::I32 | Type::U32 | Type::Bool => chunks.push(base),
+      Type::Struct(s) => {
+        for f in s.fields.iter() {
+          let field_type = f.field_type.unwrap_known();
+          let access = TypedExp {
+            data: field_type.clone().known().into(),
+            kind: ExpKind::Access(
+              Accessor::Field(Arc::clone(&f.name)),
+              base.clone().into(),
+            ),
+            source_trace: SourceTrace::empty(),
+          };
+          field_type.push_bitcastable_chunks(access, chunks);
+        }
+      }
       Type::Enum(e) => {
         let data_array_length = e.inner_flat_data_size_in_u32s().unwrap();
-        std::iter::once(TypedExp {
+        chunks.push(TypedExp {
           data: Type::U32.known().into(),
           kind: ExpKind::Access(
             Accessor::Field("discriminant".into()),
-            TypedExp {
-              data: self.clone().known().into(),
-              kind: ExpKind::Name(value_name.clone()),
-              source_trace: SourceTrace::empty(),
-            }
-            .into(),
+            base.clone().into(),
           ),
           source_trace: SourceTrace::empty(),
-        })
-        .chain((0..data_array_length).map(|i| {
-          TypedExp {
+        });
+        for i in 0..data_array_length {
+          chunks.push(TypedExp {
             data: Type::U32.known().into(),
             kind: ExpKind::Application(
               TypedExp {
@@ -2218,12 +2341,7 @@ impl Type {
                 .into(),
                 kind: ExpKind::Access(
                   Accessor::Field("data".into()),
-                  TypedExp {
-                    data: self.clone().known().into(),
-                    kind: ExpKind::Name(value_name.clone()),
-                    source_trace: SourceTrace::empty(),
-                  }
-                  .into(),
+                  base.clone().into(),
                 ),
                 source_trace: SourceTrace::empty(),
               }
@@ -2235,21 +2353,16 @@ impl Type {
               }],
             ),
             source_trace: SourceTrace::empty(),
-          }
-        }))
-        .collect()
+          });
+        }
       }
-      Type::Array(array_size, inner_type) => match array_size {
-        Some(ConcreteArraySize::Literal(n)) => (0..*n)
-          .map(|i| TypedExp {
-            data: *inner_type.clone(),
+      Type::Array(Some(ConcreteArraySize::Literal(n)), inner_type) => {
+        let inner = inner_type.unwrap_known();
+        for i in 0..*n {
+          let elem = TypedExp {
+            data: inner.clone().known().into(),
             kind: ExpKind::Application(
-              TypedExp {
-                data: self.clone().known().into(),
-                kind: ExpKind::Name(value_name.clone()),
-                source_trace: SourceTrace::empty(),
-              }
-              .into(),
+              base.clone().into(),
               vec![TypedExp {
                 data: Type::U32.known().into(),
                 kind: ExpKind::NumberLiteral(Number::Int(i as i64)),
@@ -2257,12 +2370,13 @@ impl Type {
               }],
             ),
             source_trace: SourceTrace::empty(),
-          })
-          .collect(),
-        Some(_) | None => {
-          panic!("called bitcastable_chunk_accessors on unsized Array")
+          };
+          inner.push_bitcastable_chunks(elem, chunks);
         }
-      },
+      }
+      Type::Array(_, _) => {
+        panic!("called bitcastable_chunk_accessors on unsized Array")
+      }
       _ => {
         panic!("called bitcastable_chunk_accessors on invalid type")
       }
@@ -2391,61 +2505,38 @@ impl Type {
       ),
       Type::Enum(e) => {
         let name = e.monomorphized_name(names, target);
-        let inner_data_array_type: ExpTypeInfo = Type::Array(
-          Some(ConcreteArraySize::Literal(
-            e.inner_flat_data_size_in_u32s().unwrap() as u32,
-          )),
-          Box::new(Type::U32.known().into()),
-        )
-        .known()
-        .into();
         let inner_data_size = e.inner_flat_data_size_in_u32s().unwrap();
-        (
-          ExpKind::Application(
-            TypedExp {
-              data: Type::Function(
-                FunctionSignature {
-                  // A nested enum value is reconstructed by calling its
-                  // WGSL backing struct's constructor (discriminant +
-                  // data array).
-                  abstract_ancestor: Some(Arc::new(RwLock::new(
-                    AbstractFunctionSignature {
-                      name: name.clone().into(),
-                      generic_args: vec![],
-                      arg_types: vec![
-                        (AbstractType::Type(Type::U32), Ownership::Owned),
-                        (
-                          AbstractType::Type(
-                            inner_data_array_type.unwrap_known(),
-                          ),
-                          Ownership::Owned,
-                        ),
-                      ],
-                      return_type: AbstractType::Type(Type::Enum(e.clone())),
-                      implementation:
-                        FunctionImplementationKind::StructConstructor,
-                      associative: false,
-                      captured_scope: None,
-                      entry_point: None,
-                    },
-                  ))),
-                  args: vec![
-                    (Variable::immutable(Type::U32.known().into()), vec![]),
-                    (
-                      Variable::immutable(inner_data_array_type.clone()),
-                      vec![],
-                    ),
-                  ],
-                  return_type: Type::Enum(e.clone()).known().into(),
-                }
-                .into(),
-              )
-              .known()
-              .into(),
-              kind: ExpKind::Name(name.into()),
-              source_trace: SourceTrace::empty(),
-            }
-            .into(),
+        // A nested enum value is reconstructed by calling its WGSL backing
+        // struct's constructor. A 0-payload enum (all unit variants) is emitted
+        // as `struct { discriminant: u32 }` with NO `data` field — WGSL forbids
+        // `array<u32, 0>` — so its constructor takes only the discriminant.
+        // Matching that here is what keeps the reconstruction from emitting a
+        // spurious `array<u32, 0>()` argument.
+        let (ctor_arg_types, ctor_args, call_args) = if inner_data_size == 0 {
+          (
+            vec![(AbstractType::Type(Type::U32), Ownership::Owned)],
+            vec![(Variable::immutable(Type::U32.known().into()), vec![])],
+            vec![data_array_access(0)],
+          )
+        } else {
+          let inner_data_array_type: ExpTypeInfo = Type::Array(
+            Some(ConcreteArraySize::Literal(inner_data_size as u32)),
+            Box::new(Type::U32.known().into()),
+          )
+          .known()
+          .into();
+          (
+            vec![
+              (AbstractType::Type(Type::U32), Ownership::Owned),
+              (
+                AbstractType::Type(inner_data_array_type.unwrap_known()),
+                Ownership::Owned,
+              ),
+            ],
+            vec![
+              (Variable::immutable(Type::U32.known().into()), vec![]),
+              (Variable::immutable(inner_data_array_type.clone()), vec![]),
+            ],
             vec![
               data_array_access(0),
               TypedExp {
@@ -2458,6 +2549,38 @@ impl Type {
                 source_trace: SourceTrace::empty(),
               },
             ],
+          )
+        };
+        (
+          ExpKind::Application(
+            TypedExp {
+              data: Type::Function(
+                FunctionSignature {
+                  abstract_ancestor: Some(Arc::new(RwLock::new(
+                    AbstractFunctionSignature {
+                      name: name.clone().into(),
+                      generic_args: vec![],
+                      arg_types: ctor_arg_types,
+                      return_type: AbstractType::Type(Type::Enum(e.clone())),
+                      implementation:
+                        FunctionImplementationKind::StructConstructor,
+                      associative: false,
+                      captured_scope: None,
+                      entry_point: None,
+                    },
+                  ))),
+                  args: ctor_args,
+                  return_type: Type::Enum(e.clone()).known().into(),
+                }
+                .into(),
+              )
+              .known()
+              .into(),
+              kind: ExpKind::Name(name.into()),
+              source_trace: SourceTrace::empty(),
+            }
+            .into(),
+            call_args,
           ),
           inner_data_size + 1,
         )
@@ -2606,7 +2729,7 @@ impl Type {
           );
         }
       }
-      Type::Function(f) => {
+      Type::Function(f) | Type::BoxedFunction(f) => {
         for (arg, _) in f.args.iter_mut() {
           arg.var_type.replace_skolems_with_unification_variables(
             replacements,
@@ -2661,7 +2784,8 @@ impl Type {
         .iter()
         .find(|variant| !variant.inner_type.check_is_fully_known())
         .is_some(),
-      Type::Function(function_signature) => {
+      Type::Function(function_signature)
+      | Type::BoxedFunction(function_signature) => {
         function_signature.args.iter().fold(
           function_signature.return_type.check_is_fully_known(),
           |typed_so_far, (arg_var, _)| {
@@ -2789,7 +2913,7 @@ impl Type {
           variant.inner_type.try_as_known_mut(|t| t.walk_mut(f));
         }
       }
-      Type::Function(signature) => {
+      Type::Function(signature) | Type::BoxedFunction(signature) => {
         signature.return_type.try_as_known_mut(|t| t.walk_mut(f));
         for (arg, _) in signature.args.iter_mut() {
           arg.var_type.try_as_known_mut(|t| t.walk_mut(f));
@@ -2801,6 +2925,31 @@ impl Type {
       _ => {}
     }
   }
+}
+
+/// A readable, identifier-safe name for a boxed function type, from its
+/// signature (`fnval_f32_to_f32`). Only used for names minted between boxing
+/// and defunctionalization (monomorphization / overload-separation suffixes);
+/// no emitted code ever contains it.
+fn boxed_function_name(
+  f: &FunctionSignature,
+  names: &mut NameContext,
+  target: CompilerTarget,
+) -> String {
+  let mut name = "fnval".to_string();
+  for (arg, _) in f.args.iter() {
+    name += "_";
+    name += &arg
+      .var_type
+      .unwrap_known()
+      .monomorphized_name(names, target);
+  }
+  name += "_to_";
+  name += &f
+    .return_type
+    .unwrap_known()
+    .monomorphized_name(names, target);
+  compile_word(name.into())
 }
 
 pub fn extract_type_annotation_ast(
@@ -2840,6 +2989,10 @@ pub struct ExpTypeInfo {
   pub fully_known_cached: bool,
   pub already_constrained_against_signatures: bool,
   pub already_match_breaks_extracted: bool,
+  /// Scratch index used by `defunctionalize_boxed_functions` to associate
+  /// flow-analysis data with each node of a function instance's body. Not
+  /// identity (excluded from `PartialEq`) and meaningless outside that pass.
+  pub defun_slot: Option<u32>,
 }
 
 impl PartialEq for ExpTypeInfo {
@@ -2878,6 +3031,7 @@ impl From<TypeState> for ExpTypeInfo {
       errored: false,
       already_constrained_against_signatures: false,
       already_match_breaks_extracted: false,
+      defun_slot: None,
     }
   }
 }
@@ -3023,6 +3177,31 @@ impl TypeState {
       }
       other => f(other),
     }
+  }
+  /// Replaces this type-state — and every type-state nested inside it — with an
+  /// owned copy that follows and collapses each `UnificationVariable`, so no
+  /// `Arc<RwLock<TypeState>>` remains shared with any other value.
+  ///
+  /// Monomorphization clones a generic function body with `derived_from` (a
+  /// shallow clone that shares unification-variable Arcs). Without this,
+  /// `replace_skolems`' `with_dereferenced_mut` rewrites a skolem *through* a
+  /// shared Arc, so one specialization's substitution leaks into another that
+  /// shares the same lingering inferred type — e.g. the `(zeroed-array)` local
+  /// in a generic `map` body, whose element type is a unification variable
+  /// resolved to the element generic. Snapshotting each clone before
+  /// substitution gives it independent types.
+  pub fn snapshot_owned(&mut self) {
+    let mut resolved = self.with_dereferenced(|ts| ts.clone());
+    match &mut resolved {
+      TypeState::Known(t) => t.snapshot_nested_type_states(),
+      TypeState::OneOf(ts) => {
+        for t in ts.iter_mut() {
+          t.snapshot_nested_type_states();
+        }
+      }
+      TypeState::Unknown | TypeState::UnificationVariable(_) => {}
+    }
+    *self = resolved;
   }
   pub fn are_compatible<'a>(a: &'a Self, b: &'a Self) -> bool {
     use TypeState::*;
@@ -3962,7 +4141,7 @@ impl From<Type> for TypeDescription {
           // Texture2D, using a kind of type-level function application syntax
         }
       }),
-      Type::Function(f) => Self::Function {
+      Type::Function(f) | Type::BoxedFunction(f) => Self::Function {
         arg_types: f
           .args
           .into_iter()

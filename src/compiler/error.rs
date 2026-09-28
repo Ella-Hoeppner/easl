@@ -547,14 +547,38 @@ pub enum CompileErrorKind {
   IllegalEffectsInClosure(String),
   #[error("Can't modify local variable \"{0}\" inside a closure")]
   CantModifyLocalVarInClosure(String),
-  #[error("`match` expression may not yield a function-typed value")]
-  CantYieldFunctionFromMatch,
-  #[error("Illegal function-typed value")]
-  IllegalFunctionTypeExpressionKind,
-  #[error("Can't store functions in a data structure")]
-  CantStoreFunctionInDataStructure,
-  #[error("Top-level variables may not have a function type")]
-  CantHaveFunctionTypeVariable,
+  #[error(
+    "`{0}` needs a statically-known function here, but this function value \
+     is only known at runtime (it comes from an array, struct field, enum \
+     payload, variable, or `if`/`match`)"
+  )]
+  DynamicFunctionValueNotAllowedHere(String),
+  #[error(
+    "a local function that takes or returns other functions can't be \
+     stored or selected as a runtime value; define it at top level with \
+     `defn`, or write the `fn` directly where it's stored"
+  )]
+  UnsupportedFunctionValueSignature,
+  #[error(
+    "a stored function can't be passed to a function that is itself a \
+     higher-order parameter; pass it to a top-level function or a \
+     let-bound `fn` instead"
+  )]
+  StoredFunctionToHigherOrderParameter,
+  #[error(
+    "this function value's representation would contain itself (a closure \
+     capturing a value of its own kind), which can't be laid out in memory"
+  )]
+  RecursiveFunctionValue,
+  #[error(
+    "this function value is called, but no function is ever stored in it"
+  )]
+  CallOfEmptyFunctionValue,
+  #[error(
+    "this call mutates a closure stored in `{0}`, which is a read-only `@ref` \
+     — make it `@var @ref`, or copy the closure first"
+  )]
+  ClosureMutationThroughImmutableRef(String),
   #[error(
     "GPU entry point wrote to variable \"{0}\" in illegal address space \"{1}\""
   )]
@@ -695,6 +719,14 @@ impl PartialEq for CompileErrorKind {
         Self::AssignmentTargetMustBeVariable(r0),
       ) => l0 == r0,
       (Self::AliasedRefArgs(l0), Self::AliasedRefArgs(r0)) => l0 == r0,
+      (
+        Self::DynamicFunctionValueNotAllowedHere(l0),
+        Self::DynamicFunctionValueNotAllowedHere(r0),
+      ) => l0 == r0,
+      (
+        Self::ClosureMutationThroughImmutableRef(l0),
+        Self::ClosureMutationThroughImmutableRef(r0),
+      ) => l0 == r0,
       (
         Self::ClosureCapturesMutableRefArg(l0),
         Self::ClosureCapturesMutableRefArg(r0),

@@ -1,0 +1,19 @@
+; SEMANTIC REQUIREMENT: a stateful closure selected by an if-merge keeps its
+; state across calls, whichever branch produced it.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+
+(defn pick-counter [flag: bool]: (Fn [] f32)
+  (if flag (make-counter 1.) (make-counter 10.)))
+
+@cpu
+(defn main []
+  (let [a (pick-counter true)
+        b (pick-counter false)]
+    (print (a))
+    (print (a))
+    (print (b))
+    (print (b))))

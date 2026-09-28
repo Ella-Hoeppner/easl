@@ -1,0 +1,12 @@
+; A global var holding a fn-union array.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+
+@local
+(var handlers: [2: (Fn [f32] f32)]
+  [double increment])
+
+@cpu
+(defn main []
+  (print ((handlers 0u) 5.))
+  (print ((handlers 1u) 5.)))

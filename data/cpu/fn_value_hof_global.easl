@@ -1,0 +1,15 @@
+; Higher-order functions stored in a global's initializer, then reassigned.
+(defn inc [x: f32]: f32 (+ x 1.))
+(defn dbl [x: f32]: f32 (* x 2.))
+(defn twice [f: (Fn [f32] f32) x: f32]: f32 (f (f x)))
+(defn once [f: (Fn [f32] f32) x: f32]: f32 (f x))
+
+@local
+(var hofs: [2: (Fn [(Fn [f32] f32) f32] f32)] [twice once])
+
+@cpu
+(defn main []
+  (print ((hofs 0u) dbl 3.))
+  (print ((hofs 1u) inc 3.))
+  (= (hofs 1u) twice)
+  (print ((hofs 1u) inc 3.)))

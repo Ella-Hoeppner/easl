@@ -1,0 +1,16 @@
+main-publish: <audio-scope>_oscs
+start-audio: <audio-closure>
+spawn-window
+frame 0
+audio-batch 0 x4
+audio-adopt: <audio-scope>_oscs
+samples: 0.1875 0.375 0.5625 0.25
+audio-publish: <audio-scope>_oscs
+audio-batch 1 x4
+samples: 0.4375 0.625 0.8125 0
+audio-publish: <audio-scope>_oscs
+frame 1
+main-adopt: <audio-scope>_oscs
+audio-batch 2 x4
+samples: 0.1875 0.375 0.5625 0.25
+audio-publish: <audio-scope>_oscs

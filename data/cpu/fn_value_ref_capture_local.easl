@@ -1,0 +1,9 @@
+; Closures capturing a bare `@ref` parameter may be stored in an array and
+; called within the call.
+(defn use-locally [@ref x: f32]: f32
+  (let [fs [(fn [] x) (fn [] (* x 2.))]]
+    (+ ((fs 0u)) ((fs 1u)))))
+@cpu
+(defn main []
+  (let [v 1.]
+    (print (use-locally v))))

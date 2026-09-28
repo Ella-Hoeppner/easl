@@ -1,0 +1,20 @@
+; A function union whose members are SCOPED closures (each `make-adder` result
+; captures its `n`), dispatched in a shader. The dispatcher passes its decoded
+; `@var` scope local to each member's reference scope parameter — that must emit
+; `&fnv_s2`, not `&(*fnv_s2)` (illegal deref of a non-pointer value). Scoped-
+; member unions were previously only VM/audio-tested, so this WGSL path was
+; unpinned.
+(defn make-adder [n: f32]: (Fn [f32] f32)
+  (fn [x] (+ x n)))
+
+(defn apply2 [fns: [2: (Fn [f32] f32)]
+              x: f32]: f32
+  (+ ((fns 0u) x) ((fns 1u) x)))
+
+@storage-write
+(var outp: f32)
+
+@compute
+@{workgroup-size 1}
+(defn main []
+  (= outp (apply2 [(make-adder 1.) (make-adder 2.)] 5.)))

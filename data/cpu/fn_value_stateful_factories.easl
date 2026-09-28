@@ -1,0 +1,22 @@
+; Stateful closures produced by stored factories keep their state across
+; calls.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+@cpu
+(defn main []
+  (let [fs [make-counter make-doubler]
+        c ((fs 0u) 1.)
+        d ((fs 1u) 3.)]
+    (print (c))
+    (print (c))
+    (print (d))
+    (print (d))))

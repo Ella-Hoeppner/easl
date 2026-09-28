@@ -8,13 +8,11 @@ use crate::{
     annotation::extract_annotation,
     entry::IOAttributes,
     error::err,
-    expression::{Accessor, ExpKind, Number, TypedExp},
     functions::is_vec_name,
     program::{NameContext, TypeDefs},
     types::{
-      ConcreteArraySize, ConstGenericValue, GenericArgument,
-      GenericArgumentValue, TypeConstraint, contains_name_leaf,
-      extract_type_annotation_ast,
+      ConstGenericValue, GenericArgument, GenericArgumentValue, TypeConstraint,
+      contains_name_leaf, extract_type_annotation_ast,
     },
     util::{compile_word, read_leaf},
   },
@@ -519,6 +517,11 @@ impl AbstractStruct {
               new_field.field_type = AbstractType::Type(concrete_type.clone());
             }
           }
+          // A generic nested inside a concrete type (`(Fn [T] T)`) is a
+          // skolem there.
+          new_field
+            .field_type
+            .replace_bound_skolems(&generic_type_bindings);
           if !generic_constant_bindings.is_empty() {
             new_field.field_type = new_field
               .field_type
@@ -808,106 +811,5 @@ impl Struct {
       names,
       target,
     )
-  }
-  fn bitcastable_chunk_accessors_inner(
-    &self,
-    value: TypedExp,
-    chunks: &mut Vec<TypedExp>,
-  ) {
-    for f in self.fields.iter() {
-      let access = TypedExp {
-        data: f.field_type.clone(),
-        kind: ExpKind::Access(
-          Accessor::Field(Arc::clone(&f.name)),
-          value.clone().into(),
-        ),
-        source_trace: SourceTrace::empty(),
-      };
-      match f.field_type.unwrap_known() {
-        Type::F32 | Type::I32 | Type::U32 | Type::Bool => chunks.push(access),
-        Type::Struct(s) => s.bitcastable_chunk_accessors_inner(access, chunks),
-        Type::Array(array_size, inner_type) => match array_size {
-          Some(ConcreteArraySize::Literal(n)) => {
-            for i in 0..n {
-              chunks.push(TypedExp {
-                data: *inner_type.clone(),
-                kind: ExpKind::Application(
-                  access.clone().into(),
-                  vec![TypedExp {
-                    data: Type::U32.known().into(),
-                    kind: ExpKind::NumberLiteral(Number::Int(i as i64)),
-                    source_trace: SourceTrace::empty(),
-                  }],
-                ),
-                source_trace: SourceTrace::empty(),
-              });
-            }
-          }
-          Some(_) | None => {
-            panic!("called bitcastable_chunk_accessors on unsized Array")
-          }
-        },
-        Type::Unit => {}
-        Type::Enum(e) => {
-          let data_array_size = e.inner_flat_data_size_in_u32s().unwrap();
-          chunks.append(
-            &mut std::iter::once(TypedExp {
-              data: Type::U32.known().into(),
-              kind: ExpKind::Access(
-                Accessor::Field("discriminant".into()),
-                access.clone().into(),
-              ),
-              source_trace: SourceTrace::empty(),
-            })
-            .chain((0..data_array_size).map(|i| {
-              TypedExp {
-                data: Type::U32.known().into(),
-                kind: ExpKind::Application(
-                  TypedExp {
-                    data: Type::Array(
-                      Some(ConcreteArraySize::Literal(data_array_size as u32)),
-                      Box::new(Type::U32.known().into()),
-                    )
-                    .known()
-                    .into(),
-                    kind: ExpKind::Access(
-                      Accessor::Field("data".into()),
-                      access.clone().into(),
-                    ),
-                    source_trace: SourceTrace::empty(),
-                  }
-                  .into(),
-                  vec![TypedExp {
-                    data: Type::U32.known().into(),
-                    kind: ExpKind::NumberLiteral(Number::Int(i as i64)),
-                    source_trace: SourceTrace::empty(),
-                  }],
-                ),
-                source_trace: SourceTrace::empty(),
-              }
-            }))
-            .collect(),
-          )
-        }
-        _ => {
-          panic!("called bitcastable_chunk_accessors on invalid type")
-        }
-      }
-    }
-  }
-  pub fn bitcastable_chunk_accessors(
-    &self,
-    value_name: Arc<str>,
-  ) -> Vec<TypedExp> {
-    let mut chunks = vec![];
-    self.bitcastable_chunk_accessors_inner(
-      TypedExp {
-        data: Type::Struct(self.clone()).known().into(),
-        kind: ExpKind::Name(value_name.clone()),
-        source_trace: SourceTrace::empty(),
-      },
-      &mut chunks,
-    );
-    chunks
   }
 }

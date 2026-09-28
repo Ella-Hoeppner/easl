@@ -1,0 +1,11 @@
+; A closure capturing a bare `@ref` parameter may not escape the call by being
+; stored in a global.
+@local
+(var g: (Fn [] f32))
+(defn stash [@ref x: f32]
+  (= g (fn [] x)))
+@cpu
+(defn main []
+  (let [v 1.]
+    (stash v)
+    (print (g))))

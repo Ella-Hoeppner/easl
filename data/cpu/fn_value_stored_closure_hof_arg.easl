@@ -1,0 +1,18 @@
+; A stateful closure read out of an array and passed to a higher-order
+; function advances in place — exactly like a closure local passed directly.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+(defn call-twice [g: (Fn [] f32)]: f32
+  (g)
+  (g))
+@cpu
+(defn main []
+  (let [cs [(make-counter 1.) (make-counter 10.)]]
+    (print (call-twice (cs 0u)))
+    (print ((cs 0u)))
+    (let [c (make-counter 5.)]
+      (print (call-twice c))
+      (print (c)))))

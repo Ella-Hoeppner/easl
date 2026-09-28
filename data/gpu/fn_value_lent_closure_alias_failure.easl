@@ -1,0 +1,17 @@
+; A mutating closure lent to two function parameters of one stored call is
+; rejected, exactly as passing it twice to a static higher-order function is.
+(defn make-counter [amount: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n amount)
+      n)))
+(defn both [f: (Fn [] f32) g: (Fn [] f32)]: f32
+  (+ (f) (g)))
+(defn first-only [f: (Fn [] f32) g: (Fn [] f32)]: f32
+  (f))
+
+@cpu
+(defn main []
+  (let [hs [both first-only]
+        c (make-counter 1.)]
+    (print ((hs 0u) c c))))

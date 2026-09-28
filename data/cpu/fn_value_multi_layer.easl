@@ -1,0 +1,16 @@
+; A union array threaded through two layers.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+
+(defn first-of [fns: [2: (Fn [f32] f32)]
+                x: f32]: f32
+  ((fns 0u) x))
+
+(defn both [fns: [2: (Fn [f32] f32)]
+            x: f32]: f32
+  (+ (first-of fns x)
+     ((fns 1u) x)))
+
+@cpu
+(defn main []
+  (print (both [double increment] 10.)))

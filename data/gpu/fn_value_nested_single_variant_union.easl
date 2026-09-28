@@ -1,0 +1,28 @@
+; A `merge` over closures that are all the SAME type (here all from
+; `scale-layer`, differing only in the captured factor) collapses to a
+; single-variant function-union — one dispatch fn, but still carrying a
+; discriminant word in its GPU backing struct. Nesting that single-variant
+; union's array inside ANOTHER merge previously undersized the outer union's
+; flat `data` array (the single-variant union's discriminant was dropped from
+; the size but kept by the constructor and dispatcher), producing an
+; out-of-bounds index in the generated WGSL. Pins that the flat sizing counts
+; the discriminant unconditionally, matching the emitted struct.
+(defn scale-layer [m: f32]: (Fn [vec3f] vec3f)
+  (fn [pos] (* pos m)))
+
+(defn (merge-layers C: u32)
+      [layers: [C: (Fn [vec3f] vec3f)]]: (Fn [vec3f] vec3f)
+  (fn [pos]
+    (let [@var acc pos]
+      (for [i (array-length layers)]
+        (= acc ((layers i) acc)))
+      acc)))
+
+@fragment
+(defn frag []: vec4f
+  (let [a (scale-layer 1.1)
+        b (scale-layer 1.2)
+        m1 (merge-layers [a b])
+        c (scale-layer 1.3)
+        m2 (merge-layers [m1 c])]
+    (vec4f (m2 (vec3f 1.)) 1.)))

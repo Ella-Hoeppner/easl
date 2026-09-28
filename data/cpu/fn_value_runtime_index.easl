@@ -1,0 +1,16 @@
+; Runtime index forces real dispatch.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+(defn negate [x: f32]: f32 (- 0. x))
+
+(defn apply-nth [x: f32
+                 i: u32
+                 fns: [3: (Fn [f32] f32)]]: f32
+  ((fns i) x))
+
+@cpu
+(defn main []
+  (let [fns [double increment negate]]
+    (print (apply-nth 10. 0u fns))
+    (print (apply-nth 10. 1u fns))
+    (print (apply-nth 10. 2u fns))))

@@ -1,3 +1,0 @@
-(struct MyStruct
-  x: f32
-  f: (Fn [f32] f32))

@@ -1,0 +1,27 @@
+; Two DISTINCT closure-union member-sets that share the signature
+; `(Fn [f32] f32)`: `[double inc]` and `[negate square]`, both folded through
+; the same higher-order `apply-layers`. This is the exact scenario the late
+; (closure) reification's global-by-signature keying handles by merging both
+; member-sets into one shared enum — correct, but coupled (a per-usage rebuild
+; would give each its own enum). This pins that the RESULT stays correct
+; whichever way the union is keyed, so the eventual per-usage rebuild has a
+; correctness target.
+;
+;   m1(3): 3 -> double 6 -> inc 7
+;   m2(3): 3 -> negate -3 -> square 9
+;   7 + 9 = 16
+(defn apply-layers [fns: [2: (Fn [f32] f32)]]: (Fn [f32] f32)
+  (fn [x]
+    (let [@var q x]
+      (for [i (array-length fns)]
+        (= q ((fns i) q)))
+      q)))
+
+(defn f []: f32
+  (let [double (fn [x] (* x 2.))
+        inc (fn [x] (+ x 1.))
+        negate (fn [x] (- 0. x))
+        square (fn [x] (* x x))
+        m1 (apply-layers [double inc])
+        m2 (apply-layers [negate square])]
+    (+ (m1 3.) (m2 3.))))

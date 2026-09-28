@@ -1,0 +1,20 @@
+; A bank of stateful closures built by stored factories, each advancing
+; independently in place.
+(defn make-counter [amount: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n amount)
+      n)))
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+
+@cpu
+(defn main []
+  (let [fs [make-counter make-doubler]
+        @var bank [((fs 0u) 1.) ((fs 1u) 1.) ((fs 0u) 10.)]]
+    (for [i 0u (< i 3u) (+= i 1u)]
+      (for [j 0u (< j 3u) (+= j 1u)]
+        (print ((bank j)))))))

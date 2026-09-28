@@ -1,0 +1,18 @@
+; A merge whose arm is itself a merge, used from a compute shader: the emitted
+; WGSL must convert the inner union's value into the outer union's type.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+(defn negate [x: f32]: f32 (- 0. x))
+
+(defn pick [a: bool
+            b: bool]: (Fn [f32] f32)
+  (if a (if b double increment) negate))
+
+@storage-write
+(var out: [3: f32])
+
+@compute @{workgroup-size 1}
+(defn cs []
+  (= (out 0u) ((pick true true) 5.))
+  (= (out 1u) ((pick true false) 5.))
+  (= (out 2u) ((pick false false) 5.)))

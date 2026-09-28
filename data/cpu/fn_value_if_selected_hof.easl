@@ -1,0 +1,13 @@
+; A higher-order function chosen by an `if` (bound locally, and returned
+; from a function).
+(defn inc [x: f32]: f32 (+ x 1.))
+(defn twice [f: (Fn [f32] f32) x: f32]: f32 (f (f x)))
+(defn once [f: (Fn [f32] f32) x: f32]: f32 (f x))
+(defn pick [b: bool]: (Fn [(Fn [f32] f32) f32] f32)
+  (if b twice once))
+
+@cpu
+(defn main []
+  (let [h (if true twice once)]
+    (print (h inc 1.)))
+  (print ((pick false) inc 1.)))

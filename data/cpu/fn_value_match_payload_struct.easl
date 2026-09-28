@@ -1,0 +1,38 @@
+; A payload holding a struct with a stateful closure field: calling through
+; the field of the payload binding advances the closure stored in the enum.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+
+(enum Voice
+  (Playing (Fn [] f32))
+  Silent)
+
+(defn step [@var @ref v: Voice]: f32
+  (match v
+    (Playing f) (f)
+    Silent 0.))
+(struct Holder
+  f: (Fn [] f32))
+
+(enum Slot
+  (Filled Holder)
+  Empty)
+
+@cpu
+(defn main []
+  (let [@var slot (Filled (Holder (make-counter 1.)))]
+    (match slot
+      (Filled h) (print (h.f))
+      Empty ())
+    (match slot
+      (Filled h) (print (h.f))
+      Empty ())))

@@ -1,0 +1,20 @@
+main-publish: <audio-scope>_fx
+main-publish: <audio-scope>_src_increment
+main-publish: <audio-scope>_src_phase
+start-audio: <audio-closure>
+spawn-window
+frame 0
+audio-batch 0 x4
+audio-adopt: <audio-scope>_fx
+audio-adopt: <audio-scope>_src_increment
+audio-adopt: <audio-scope>_src_phase
+samples: 0.1875 0.46875 0.75 1
+audio-publish: <audio-scope>_src_phase
+audio-batch 1 x4
+samples: 1 0.09375 0.375 0.65625
+audio-publish: <audio-scope>_src_phase
+frame 1
+main-adopt: <audio-scope>_src_phase
+audio-batch 2 x4
+samples: 0.9375 1 1 0.28125
+audio-publish: <audio-scope>_src_phase

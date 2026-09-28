@@ -1,0 +1,13 @@
+; A stored function can't be passed to a function that is itself a
+; higher-order parameter (`h` here): which function `h` is only becomes
+; known when `run` is specialized, after function values are boxed.
+(defn inc [x: f32]: f32 (+ x 1.))
+(defn dbl [x: f32]: f32 (* x 2.))
+(defn twice [f: (Fn [f32] f32) x: f32]: f32 (f (f x)))
+(defn run [h: (Fn [(Fn [f32] f32) f32] f32)]: f32
+  (let [fs [inc dbl]]
+    (h (fs 1u) 5.)))
+
+@cpu
+(defn main []
+  (print (run twice)))

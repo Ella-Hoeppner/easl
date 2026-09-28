@@ -662,6 +662,24 @@ thread_sync_test!(audio_entry_one_arg, [Frame, AudioBatch(4)]);
 thread_sync_test!(ref_wavetable, [Frame, AudioBatch(8)]);
 thread_sync_test!(granular_engine, [Frame, AudioBatch(6), Frame]);
 thread_sync_test!(audio_two_combs, [Frame, AudioBatch(6)]);
+// Stateful closures stored in an array, driven by the audio thread.
+thread_sync_test!(
+  audio_closure_bank,
+  [Frame, AudioBatch(4), AudioBatch(4), Frame, AudioBatch(4)]
+);
+thread_sync_test!(
+  audio_mixed_closure_bank,
+  [Frame, AudioBatch(4), AudioBatch(4), Frame, AudioBatch(4)]
+);
+thread_sync_test!(audio_ref_element_write, [Frame, AudioBatch(4), Frame]);
+thread_sync_test!(
+  audio_match_voice,
+  [Frame, AudioBatch(4), AudioBatch(4), Frame, AudioBatch(4)]
+);
+thread_sync_test!(
+  audio_hof_effect_chain,
+  [Frame, AudioBatch(4), AudioBatch(4), Frame, AudioBatch(4)]
+);
 thread_sync_test!(capture_path_injectivity, [Frame, AudioBatch(4)]);
 thread_sync_test!(
   audio_hof_captured_closure,

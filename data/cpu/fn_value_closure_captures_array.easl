@@ -1,0 +1,22 @@
+; A higher-order function that takes a fixed array of functions and RETURNS
+; a closure capturing that array, then folds the array over the closure's
+; argument. Exercises per-usage union reification where the reified array of
+; functions is captured into the returned closure's scope and indexed at
+; runtime — the shape of a real distortion-layer merge.
+;
+; acc starts at 10; layer 0 (double) makes it 30, layer 1 (increment) makes
+; it 61.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+
+(defn merge [fns: [2: (Fn [f32] f32)]]: (Fn [f32] f32)
+  (fn [x]
+    (let [@var acc x]
+      (for [i (array-length fns)]
+        (+= acc ((fns i) acc)))
+      acc)))
+
+@cpu
+(defn main []
+  (let [merged (merge [double increment])]
+    (print (merged 10.))))

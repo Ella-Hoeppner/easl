@@ -1,0 +1,11 @@
+(defn scale [x: f32 m: f32]: f32
+  (* x m))
+
+(defn f []: f32
+  (let [distortionify (fn [g: (Fn [f32] f32)]
+                        (fn [x] (+ x (g x))))
+        double (fn [x] (scale x 2.))
+        triple (fn [x] (scale x 3.))]
+    (-> 1.
+        ((distortionify double))
+        ((distortionify triple)))))

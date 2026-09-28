@@ -1,0 +1,22 @@
+; A stateful closure in an enum payload: a match binding is the payload
+; stored in the enum, so calling it advances the closure in the enum —
+; whether through a `@var @ref` parameter or the variable itself.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+(enum Voice (Playing (Fn [] f32)) Silent)
+(defn step [@var @ref v: Voice]: f32
+  (match v
+    (Playing f) (f)
+    Silent 0.))
+@cpu
+(defn main []
+  (let [@var v (Playing (make-counter 1.))]
+    (print (step v))
+    (print (step v))
+    (match v
+      (Playing f) (print (f))
+      Silent (print 0.))
+    (print (step v))))

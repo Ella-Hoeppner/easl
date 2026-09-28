@@ -1,0 +1,27 @@
+; Two different stateful closure kinds in one array (a tagged union) inside
+; a compute shader: the dispatcher writes each advanced scope back.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+(defn make-doubler [start: f32]: (Fn [] f32)
+  (let [@var v start]
+    (fn []
+      (*= v 2.)
+      v)))
+(defn adder [k: f32]: (Fn [f32] f32) (fn [x] (+ x k)))
+(defn scaler [k: f32]: (Fn [f32] f32) (fn [x] (* x k)))
+@storage-write
+(var out: [4: f32])
+@cpu
+(defn main []
+  (dispatch-compute-shader
+    (fn []
+      (let [@var cs [(make-counter 1.) (make-doubler 1.)]]
+        (= (out 0u) ((cs 0u)))
+        (= (out 1u) ((cs 1u)))
+        (= (out 2u) ((cs 1u)))
+        (= (out 3u) ((cs 0u)))))
+    (vec3u 1u))
+  (print out))

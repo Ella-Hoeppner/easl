@@ -1,0 +1,13 @@
+; N=1: only `double` ever fills the field,
+; so the field should be zero-sized and the call a direct (inlined) call.
+(defn double [x: f32]: f32 (* x 2.))
+
+(struct Processor
+  transform: (Fn [f32] f32)
+  label: u32)
+
+@cpu
+(defn main []
+  (let [p (Processor double 7u)]
+    (print (p.transform 5.))
+    (print p.label)))

@@ -1,0 +1,12 @@
+; A lambda stored in a struct field, read back out with a field access, and
+; called (formalized from tmp.easl).
+(struct EnhancedDistortionLayer
+  distortion: (Fn [vec3f] vec3f))
+
+@cpu
+(defn main []
+  (let [d (EnhancedDistortionLayer
+            (fn [pos]
+              (+ pos (vec3f 1. 0. 0.))))
+        f d.distortion]
+    (print (f (vec3f 1.)))))

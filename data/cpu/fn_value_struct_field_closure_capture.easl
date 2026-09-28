@@ -1,0 +1,19 @@
+; Closures with captured values stored in a struct field, from two different
+; constructions, called through the field directly.
+(struct Layer
+  distortion: (Fn [vec3f] vec3f))
+
+(defn shift-layer [amount: f32]: Layer
+  (Layer (fn [pos] (+ pos (vec3f amount 0. 0.)))))
+
+(defn scale-layer [amount: f32]: Layer
+  (Layer (fn [pos] (* pos amount))))
+
+(defn apply-layer [l: Layer
+                   p: vec3f]: vec3f
+  (l.distortion p))
+
+@cpu
+(defn main []
+  (print (apply-layer (shift-layer 2.) (vec3f 1.)))
+  (print (apply-layer (scale-layer 3.) (vec3f 1.))))

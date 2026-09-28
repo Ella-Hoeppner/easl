@@ -1,0 +1,39 @@
+; A stored closure returning a heap value (a runtime-sized array, a String),
+; called through a match payload binding. After the arm reassigns the
+; scrutinee to another variant, the call does nothing and yields the zero
+; value: an empty array / empty string.
+(defn make-buf [k: f32]: (Fn [] [f32])
+  (let [@var n 0.]
+    (fn []
+      (+= n k)
+      ~[n n])))
+
+(defn make-name [k: f32]: (Fn [] String)
+  (let [@var n 0.]
+    (fn []
+      (+= n k)
+      (string n))))
+
+(enum Voice
+  (Playing (Fn [] [f32]))
+  Silent)
+
+(enum Namer
+  (Naming (Fn [] String))
+  Quiet)
+
+@cpu
+(defn main []
+  (let [@var v (Playing (make-buf 1.))
+        @var w (Naming (make-name 1.))]
+    (match v
+      (Playing f) (do (print (f))
+                      (= v Silent)
+                      (print (f))
+                      (print (length (f))))
+      Silent ())
+    (match w
+      (Naming g) (do (print (g))
+                     (= w Quiet)
+                     (print (g)))
+      Quiet ())))

@@ -1,0 +1,8 @@
+; A closure capturing a bare `@ref` parameter may not escape the call inside an
+; array.
+(defn make [@ref x: f32]: [1: (Fn [] f32)]
+  [(fn [] x)])
+@cpu
+(defn main []
+  (let [v 1.]
+    (print (((make v) 0u)))))

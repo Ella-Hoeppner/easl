@@ -1,0 +1,14 @@
+; A function returning an element indexed out of a function array: its result
+; is a union value, dispatched by the caller.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+(defn negate [x: f32]: f32 (- 0. x))
+
+(defn pick [fns: [2: (Fn [f32] f32)]
+            i: u32]: (Fn [f32] f32)
+  (fns i))
+
+@cpu
+(defn main []
+  (print ((pick [double increment] 0u) 5.))
+  (print ((pick [double increment] 1u) 5.)))

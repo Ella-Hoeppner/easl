@@ -1,0 +1,15 @@
+; A fn-union array dispatched by a runtime
+; index inside a compute shader — the GPU path. Scopeless members => unit-payload
+; union enum, GPU-valid.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+
+(var out: [4: f32])
+
+@compute
+@{workgroup-size 1}
+(defn cs [@{builtin global-invocation-id} id: vec3u]
+  (let [fns [double increment]
+        i (% id.x 2u)]
+    (= (out id.x)
+       ((fns i) (f32 id.x)))))

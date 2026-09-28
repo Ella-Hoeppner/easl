@@ -1,0 +1,12 @@
+; Closures with captured state stored in
+; an array: the two variants have distinct scope payloads.
+(defn adder [n: f32]: (Fn [f32] f32)
+  (fn [x] (+ x n)))
+(defn multiplier [n: f32]: (Fn [f32] f32)
+  (fn [x] (* x n)))
+
+@cpu
+(defn main []
+  (let [fns [(adder 5.) (multiplier 3.)]]
+    (print ((fns 0u) 10.))
+    (print ((fns 1u) 10.))))

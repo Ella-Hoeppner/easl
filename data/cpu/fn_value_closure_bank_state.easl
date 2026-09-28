@@ -1,0 +1,18 @@
+; SEMANTIC REQUIREMENT: the synth-graph pattern. A closure that captures an array
+; of stateful closures (an oscillator bank) must advance each member's state on
+; every call.
+(defn make-osc [inc: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (+= phase inc)
+      phase)))
+
+(defn make-mix [oscs: [2: (Fn [] f32)]]: (Fn [] f32)
+  (fn [] (+ ((oscs 0u)) ((oscs 1u)))))
+
+@cpu
+(defn main []
+  (let [mixer (make-mix [(make-osc 1.) (make-osc 10.)])]
+    (print (mixer))
+    (print (mixer))
+    (print (mixer))))

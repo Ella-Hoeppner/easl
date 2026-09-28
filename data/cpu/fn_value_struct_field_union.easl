@@ -1,0 +1,19 @@
+; The transform field is a union
+; {double, increment} because `make` builds it from an if-merge.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+
+(struct Processor
+  transform: (Fn [f32] f32))
+
+(defn make [flag: bool]: Processor
+  (Processor (if flag double increment)))
+
+(defn run [p: Processor
+           x: f32]: f32
+  (p.transform x))
+
+@cpu
+(defn main []
+  (print (run (make true) 5.))
+  (print (run (make false) 5.)))

@@ -1,0 +1,17 @@
+; SEMANTIC REQUIREMENT: a stateful closure stored in a struct field keeps its
+; state when called through the field.
+(defn make-counter [inc: f32]: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n inc)
+      n)))
+
+(struct Holder
+  f: (Fn [] f32))
+
+@cpu
+(defn main []
+  (let [h (Holder (make-counter 1.))]
+    (print (h.f))
+    (print (h.f))
+    (print (h.f))))

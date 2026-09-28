@@ -1,0 +1,26 @@
+; Regression: an uncalled higher-order function whose parameter is a
+; fixed-size ARRAY of functions, and which returns a closure that captures
+; that array and indexes it. `extract_inner_functions` gives the returned
+; closure a scope struct with a `[N: (Fn ...)]` field; because the helper is
+; never called, the function union is never reified at a construction site,
+; so that field stays a raw, ancestor-less `(Fn ...)`.
+;
+; The helper is dead, but `extract_inner_functions` still runs on it and its
+; scope struct still reaches the typedefs — so WGSL struct emission walks it.
+; That emission must recognize the scope struct as CPU-only and skip it (a
+; `(Fn ...)` nested inside an array counts the same as a bare one), rather
+; than crashing on the un-emittable ancestor-less function type.
+(defn merge [fns: [2: (Fn [f32] f32)]]: (Fn [f32] f32)
+  (fn [x]
+    (let [@var acc x]
+      (for [i (array-length fns)]
+        (+= acc ((fns i) acc)))
+      acc)))
+
+@storage-write
+(var outp: [1: f32])
+
+@compute
+@{workgroup-size 1}
+(defn main []
+  (= (outp 0u) 1.))

@@ -1,0 +1,16 @@
+; One receiver called with a named-function array and with an array holding a
+; lambda: both specializations must survive.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+(defn negate [x: f32]: f32 (- 0. x))
+
+(defn apply-nth [x: f32
+                 i: u32
+                 fns: [2: (Fn [f32] f32)]]: f32
+  ((fns i) x))
+
+@cpu
+(defn main []
+  (print (apply-nth 10. 1u [double increment]))
+  (let [k 3.]
+    (print (apply-nth 10. 0u [(fn [y] (+ y k)) negate]))))

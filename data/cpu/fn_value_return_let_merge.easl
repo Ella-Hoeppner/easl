@@ -1,0 +1,13 @@
+; A merge bound to a local and then returned: the function's result is a union.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+(defn negate [x: f32]: f32 (- 0. x))
+
+(defn pick [flag: bool]: (Fn [f32] f32)
+  (let [f (if flag double increment)]
+    f))
+
+@cpu
+(defn main []
+  (print ((pick true) 5.))
+  (print ((pick false) 5.)))

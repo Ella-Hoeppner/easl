@@ -1,0 +1,16 @@
+; Runtime-sized [T] of functions.
+(defn double [x: f32]: f32 (* x 2.))
+(defn increment [x: f32]: f32 (+ x 1.))
+(defn negate [x: f32]: f32 (- 0. x))
+
+(defn apply-nth [fns: [(Fn [f32] f32)]
+                 i: u32
+                 x: f32]: f32
+  ((fns i) x))
+
+@cpu
+(defn main []
+  (let [fns (into-dynamic-array [double increment negate])]
+    (print (apply-nth fns 0u 10.))
+    (print (apply-nth fns 1u 10.))
+    (print (apply-nth fns 2u 10.))))

@@ -1,0 +1,15 @@
+; A `match` choosing between two builtins (`+` / `-`), dispatched in a shader:
+; a two-member function value; both branches must survive (no collapse to `+`).
+(defn f2 [a: f32]: f32
+  (let [f (match a
+            0. +
+            _ -)]
+    (f a a)))
+
+@storage-write
+(var outp: [2: f32])
+
+@compute
+(defn main []
+  (= (outp 0u) (f2 0.))
+  (= (outp 1u) (f2 3.)))
