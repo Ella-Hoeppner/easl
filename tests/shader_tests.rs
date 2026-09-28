@@ -975,6 +975,7 @@ error_test!(
   CompileErrorKind::ClosureMutationThroughImmutableRef("v".into())
 );
 success_test!(const_generic_map_specialization);
+success_test!(hof_closure_factory_arg_gpu);
 error_test!(
   compound_mat_divide_invalid,
   CompileErrorKind::FunctionArgumentTypesIncompatible {

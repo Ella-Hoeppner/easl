@@ -474,3 +474,4 @@ fn get_midi_note_spoofed() {
     assert_eq!(output, expected, "get_midi_note: output mismatch ({label})");
   }
 }
+cpu_test!(hof_closure_factory_arg);

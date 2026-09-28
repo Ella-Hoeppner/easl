@@ -1,0 +1,24 @@
+; Shader form of `hof_closure_factory_arg` (cpu): a higher-order function
+; calls its closure-factory parameter to build closures and returns a lambda
+; capturing them. The lambda's extraction waits on the captured closures'
+; identities; the emitted WGSL must contain it as an ordinary function.
+(defn make-scaler []: (Fn [f32] f32)
+  (let [@var n 1.]
+    (fn [x]
+      (+= n 1.)
+      (* x n))))
+
+(defn doubled [generator: (Fn [] (Fn [f32] f32))]: (Fn [f32] f32)
+  (let [first (generator)
+        second (generator)]
+    (fn [x]
+      (+ (first x) (second x)))))
+
+@storage-write
+(var out: [2: f32])
+
+@compute
+(defn main []
+  (let [f (doubled make-scaler)]
+    (= (out 0u) (f 1.))
+    (= (out 1u) (f 1.))))

@@ -1,0 +1,35 @@
+; A higher-order function taking a closure *factory* (`saw-osc`, a function
+; returning a stateful closure), calling it several times to build independent
+; closures, and returning a closure that captures them all (a supersaw built
+; from three detuned saw oscillators). The returned lambda captures closures
+; produced by calling the factory parameter, so its extraction waits until
+; their identities are resolved (the extraction loop must keep going until
+; that happens). Three samples at the 8 Hz harness rate: each oscillator
+; keeps its own advancing phase.
+(defn saw-osc []: (Fn [f32] f32)
+  (let [@var phase 0.]
+    (fn [frequency]
+      (= phase
+         (% (+ phase
+               (/ frequency (sample-rate)))
+            1))
+      (-> phase (* 2.) (- 1.)))))
+
+(defn super-osc [osc-generator: (Fn [] (Fn [f32] f32))]: (Fn [f32] f32)
+  (let [low-copy (osc-generator)
+        main-copy (osc-generator)
+        high-copy (osc-generator)]
+    (fn [fundamental]
+      (+ (low-copy (* fundamental 0.99))
+         (main-copy fundamental)
+         (high-copy (* fundamental 1.01))))))
+
+@cpu
+(defn main []
+  (let [saw (saw-osc)
+        supersaw (super-osc saw-osc)]
+    (print (supersaw 1.))
+    (print (supersaw 1.))
+    (print (supersaw 1.)))
+  (spawn-window (fn [] ())))
+

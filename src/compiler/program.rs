@@ -4251,7 +4251,9 @@ impl Program {
       }
     }
   }
-  pub fn propagate_abstract_function_signatures(&mut self) {
+  /// Returns whether any signature changed.
+  pub fn propagate_abstract_function_signatures(&mut self) -> bool {
+    let mut any_changed = false;
     loop {
       let mut changed = false;
       let copy_program = self.clone();
@@ -4386,9 +4388,13 @@ impl Program {
       if !changed {
         break;
       }
+      any_changed = true;
     }
+    any_changed
   }
-  pub fn inline_local_bound_function_applications(&mut self) {
+  /// Returns whether any application was rewritten.
+  pub fn inline_local_bound_function_applications(&mut self) -> bool {
+    let mut changed = false;
     let mut representative_structs = vec![];
     for f in self.abstract_functions_iter() {
       let borrowed_f = f.read().unwrap();
@@ -4490,6 +4496,7 @@ impl Program {
                       {
                         sig.abstract_ancestor = Some(ancestor);
                       }
+                      changed |= f.kind != ExpKind::Name(new_name.clone());
                       f.kind = ExpKind::Name(new_name);
                     }
                     return Ok(true);
@@ -4560,6 +4567,7 @@ impl Program {
                             }
                             representative_structs.push(captured_scope.clone());
                           }
+                          changed |= f.kind != ExpKind::Name(new_name.clone());
                           f.kind = ExpKind::Name(new_name);
                         }
                       }
@@ -4581,6 +4589,7 @@ impl Program {
     for s in representative_structs {
       self.add_monomorphized_struct(s);
     }
+    changed
   }
   pub fn catch_duplicate_closures_capturing_mutable_variables(
     &mut self,
@@ -7516,13 +7525,16 @@ impl Program {
       // the correct `Some` here makes those fills skip it, so each spec stays
       // its own directly-dispatched closure.
       self.stamp_returned_closure_return_types();
-      self.propagate_abstract_function_signatures();
-      self.inline_local_bound_function_applications();
+      // Extraction defers a lambda capturing a function whose ancestor isn't
+      // resolved yet; propagation and local inlining are what resolve (or
+      // remove) such captures, so their progress keeps the loop going too.
+      let propagated = self.propagate_abstract_function_signatures();
+      let locally_inlined = self.inline_local_bound_function_applications();
       let inlined = self.inline_all_higher_order_arguments(&mut errors);
       if !errors.is_empty() {
         return errors;
       }
-      if !extracted && !inlined {
+      if !extracted && !inlined && !propagated && !locally_inlined {
         break;
       }
     }
