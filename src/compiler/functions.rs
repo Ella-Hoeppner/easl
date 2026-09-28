@@ -1109,6 +1109,18 @@ impl PartialEq for FunctionSignature {
 }
 
 impl FunctionSignature {
+  /// The scope struct a closure value of this type carries: the captured
+  /// scope of the function it denotes. `None` for a function without
+  /// captures, or one not yet resolved to a function.
+  pub fn closure_scope(&self) -> Option<AbstractStruct> {
+    self
+      .abstract_ancestor
+      .as_ref()?
+      .read()
+      .unwrap()
+      .captured_scope
+      .clone()
+  }
   pub fn compatible(&self, other: &Self) -> bool {
     if self.args.len() != other.args.len() {
       return false;

@@ -1,0 +1,14 @@
+; Integer arithmetic wraps on overflow, as in WGSL, on both CPU runtimes.
+@cpu
+(defn main []
+  (let [@var x 4000000000u]
+    (+= x 500000000u)
+    (print x)
+    (print (- 0u 1u))
+    (print (* 65536u 65536u))
+    (print (+ 2147483647i 1i))
+    (print (* 2147483647i 2i))
+    (let [@var m -2147483647i]
+      (-= m 1i)
+      (print (- m))
+      (print (- m 1i)))))

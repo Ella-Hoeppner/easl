@@ -1,0 +1,36 @@
+; A generic `map` builds its result in a `zeroed-array` whose elements hold
+; closures that capture other closures, and an early `return` hands back a
+; closure: both size closure values by their captured scopes.
+(defn scaler [k: f32]: (Fn [f32] f32)
+  (fn [x] (* x k)))
+
+(defn make-layer [offset: f32
+                  shaper: (Fn [f32] f32)]: (Fn [f32] f32)
+  (fn [x] (+ (shaper x) offset)))
+
+(struct Layer
+  f: (Fn [f32] f32)
+  weight: f32)
+
+(defn (map T U C: u32) [arr: [C: T]
+                        f: (Fn [T] U)]: [C: U]
+  (let [@var new-arr (zeroed-array)]
+    (for [i (array-length arr)]
+      (= (new-arr i) (f (arr i))))
+    new-arr))
+
+(defn pick [first?: bool]: (Fn [f32] f32)
+  (when first?
+    (return (make-layer 100. (scaler 10.))))
+  (make-layer 200. (scaler 20.)))
+
+@cpu
+(defn main []
+  (let [layers (map [1. 2. 3.]
+                    (fn [p]
+                      (Layer (make-layer p (scaler (* p 2.))) (* p 3.))))]
+    (for [i 3u]
+      (let [layer (layers i)]
+        (print (* layer.weight (layer.f 1.))))))
+  (print ((pick true) 1.))
+  (print ((pick false) 1.)))

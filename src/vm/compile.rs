@@ -2407,13 +2407,11 @@ impl BytecodeCompilationState {
         Some(result)
       }
       "zeroed-array" => {
-        // Statically-sized zeroed array: allocate and zero-fill. (The
-        // runtime-sized form only appears in positions the CPU-mode
-        // interceptions handle.)
-        let total = return_type
-          .flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
-          .expect("zeroed-array of runtime-sized type outside an intercepted position")
-          as u16;
+        // Statically-sized zeroed array: allocate and zero-fill its slots —
+        // zero is also the null heap id and the zero value of every closure
+        // scope, so elements of any type start zeroed. (The runtime-sized
+        // form only appears in positions the CPU-mode interceptions handle.)
+        let total = vm_stack_size(return_type);
         let result = self.take_stack_slot(total);
         for i in 0..total {
           self.push_instruction(Instruction {
@@ -2838,9 +2836,7 @@ impl BytecodeCompilationState {
               panic!("closure capture record on a non-function field")
             };
             let nested_struct = signature
-              .abstract_ancestor
-              .as_ref()
-              .and_then(|a| a.read().unwrap().captured_scope.clone())
+              .closure_scope()
               .expect("captured closure without a scope struct");
             self.emit_scope_capture_writes(
               &nested_struct,
@@ -2889,9 +2885,7 @@ impl BytecodeCompilationState {
             panic!("closure capture record on a non-function field")
           };
           let nested_struct = signature
-            .abstract_ancestor
-            .as_ref()
-            .and_then(|a| a.read().unwrap().captured_scope.clone())
+            .closure_scope()
             .expect("captured closure without a scope struct");
           self.emit_audio_scope_seed_writes(
             &nested_struct,
@@ -2968,9 +2962,7 @@ impl BytecodeCompilationState {
             panic!("closure capture record on a non-function field")
           };
           let nested_struct = signature
-            .abstract_ancestor
-            .as_ref()
-            .and_then(|a| a.read().unwrap().captured_scope.clone())
+            .closure_scope()
             .expect("captured closure without a scope struct");
           self.emit_scope_capture_writes(
             &nested_struct,
@@ -3068,35 +3060,20 @@ pub fn vm_stack_size(t: &Type) -> u16 {
         .max()
         .unwrap_or(0)
     }
-    Type::Function(f) => {
-      if let Some(ancestor) = &f.abstract_ancestor
-        && let Some(scope) = &ancestor.read().unwrap().captured_scope
-      {
-        scope
-          .fields
-          .iter()
-          .map(|field| {
-            let crate::compiler::types::AbstractType::Type(field_type) =
-              &field.field_type
-            else {
-              panic!("captured scope field with non-concrete type")
-            };
-            vm_stack_size(field_type)
-          })
-          .sum()
-      } else {
-        0
-      }
+    // A closure value occupies its captured scope's slots.
+    Type::Function(_) => {
+      t.closure_data_type().map_or(0, |data| vm_stack_size(&data))
     }
     _ => {
       match t
         .flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
       {
         Ok(size) => size as u16,
-        // flat_data_size_in_u32s errors on nested function types — a scope
-        // struct capturing a closure. Recurse per-field so function-typed
-        // fields size as their own captured scope's data. (Not the default
-        // path: flat_data_size_in_u32s special-cases matNxM sizing.)
+        // flat_data_size_in_u32s errors on heap values nested in a struct —
+        // e.g. a scope struct capturing a closure that captures a
+        // runtime-sized array. Recurse per-field so each field sizes by
+        // stack layout. (Not the default path: flat_data_size_in_u32s
+        // special-cases matNxM sizing.)
         Err(e) => {
           if let Type::Struct(s) = t {
             s.fields
@@ -3226,20 +3203,9 @@ fn involves_heap_values(t: &Type) -> bool {
       .fields
       .iter()
       .any(|field| involves_heap_values(&field.field_type.unwrap_known())),
-    Type::Function(f) => {
-      if let Some(ancestor) = &f.abstract_ancestor
-        && let Some(scope) = &ancestor.read().unwrap().captured_scope
-      {
-        scope.fields.iter().any(|field| match &field.field_type {
-          crate::compiler::types::AbstractType::Type(field_type) => {
-            involves_heap_values(field_type)
-          }
-          _ => false,
-        })
-      } else {
-        false
-      }
-    }
+    Type::Function(_) => t
+      .closure_data_type()
+      .is_some_and(|data| involves_heap_values(&data)),
     Type::Array(_, inner) => involves_heap_values(&inner.unwrap_known()),
     Type::Enum(e) => e.variants.iter().any(|variant| {
       variant.inner_type.with_dereferenced(|state| match state {
@@ -3279,20 +3245,9 @@ fn collect_heap_fixups(t: &Type, base: u16, out: &mut HeapFixups) {
         offset += vm_stack_size(&field_type);
       }
     }
-    Type::Function(f) => {
-      if let Some(ancestor) = &f.abstract_ancestor
-        && let Some(scope) = &ancestor.read().unwrap().captured_scope
-      {
-        let mut offset = base;
-        for field in scope.fields.iter() {
-          let crate::compiler::types::AbstractType::Type(field_type) =
-            &field.field_type
-          else {
-            panic!("captured scope field with non-concrete type")
-          };
-          collect_heap_fixups(field_type, offset, out);
-          offset += vm_stack_size(field_type);
-        }
+    Type::Function(_) => {
+      if let Some(data) = t.closure_data_type() {
+        collect_heap_fixups(&data, base, out);
       }
     }
     Type::Array(Some(size), inner) => {
@@ -5295,11 +5250,7 @@ impl TypedExp {
             op: Op::Move,
             arg_positions: [
               return_value_pos,
-              exp
-                .data
-                .unwrap_known()
-                .flat_data_size_in_u32s(&exp.source_trace)
-                .unwrap() as u16,
+              vm_stack_size(&exp.data.unwrap_known()),
               0,
             ],
             return_position: state

@@ -103,6 +103,7 @@ buffer_test!(fn_value_captured_array_gpu);
 buffer_test!(fn_value_dispatched_local_array_gpu);
 buffer_test!(fn_value_match_payload_gpu);
 buffer_test!(fn_value_hof_gpu);
+buffer_test!(fn_value_captured_nested_closure_gpu);
 buffer_test!(fn_value_hof_arg_matrix_gpu);
 buffer_test!(single_variant_enum_buffer);
 buffer_test!(load_red_pixel);

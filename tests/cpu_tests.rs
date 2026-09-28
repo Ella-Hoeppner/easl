@@ -473,3 +473,5 @@ fn get_midi_note_spoofed() {
 }
 cpu_test!(hof_closure_factory_arg);
 cpu_test!(copied_stateful_closure_allowed);
+cpu_test!(integer_wraparound);
+cpu_test!(zeroed_array_of_nested_closures);

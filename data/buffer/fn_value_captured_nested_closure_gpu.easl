@@ -1,0 +1,31 @@
+; A CPU-built array of structs holding closures that capture other closures
+; (and vector data around them), captured by a dispatched shader. The inner
+; closure's scope is part of the outer closure's data, so the upload layout
+; must match the WGSL scope structs field for field.
+(defn scaler [k: f32]: (Fn [f32] f32)
+  (fn [x] (* x k)))
+
+(defn make-layer [dir: vec3f
+                  offset: f32
+                  shaper: (Fn [f32] f32)]: (Fn [vec3f] f32)
+  (fn [pos]
+    (+ (shaper (dot pos dir)) offset)))
+
+(struct Layer
+  f: (Fn [vec3f] f32)
+  weight: f32)
+
+@storage-write
+(var out: [2: f32])
+
+@cpu
+(defn main []
+  (let [layers [(Layer (make-layer (vec3f 1. 0. 0.) 10. (scaler 2.)) 1.)
+                (Layer (make-layer (vec3f 0. 1. 0.) 20. (scaler 3.)) 2.)]]
+    (dispatch-compute-shader
+      (fn []
+        (for [i 2u]
+          (let [layer (layers i)]
+            (= (out i) (* layer.weight (layer.f (vec3f 1. 2. 3.)))))))
+      (vec3u 1u))
+    (print out)))

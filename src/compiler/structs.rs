@@ -325,6 +325,13 @@ pub struct AbstractStruct {
 }
 
 impl AbstractStruct {
+  /// This struct as a concrete type, when it has no generics (e.g. a
+  /// closure's captured scope, whose fields are all concrete).
+  pub fn concrete_type(&self) -> Option<Type> {
+    AbstractType::AbstractStruct(Arc::new(self.clone()))
+      .concretize(&vec![], &TypeDefs::empty(), SourceTrace::empty())
+      .ok()
+  }
   pub fn original_ancestor(&self) -> &Self {
     &self
       .abstract_ancestor

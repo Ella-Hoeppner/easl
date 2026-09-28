@@ -533,7 +533,7 @@ fn apply_builtin_fn<IO: IOManager>(
         .0
         .map_primitive_or_vec_components(|p| match p {
           Primitive::F32(f) => Primitive::F32(-f),
-          Primitive::I32(i) => Primitive::I32(-i),
+          Primitive::I32(i) => Primitive::I32(i.wrapping_neg()),
           _ => panic!(),
         }),
     ),
@@ -562,22 +562,23 @@ fn apply_builtin_fn<IO: IOManager>(
             "max" => |a: f32, b: f32| a.max(b),
             _ => unreachable!(),
           },
+          // Integer arithmetic wraps, as in WGSL and the VM.
           match &*f_name {
-            "+" | "+=" => |a, b| a + b,
-            "-" | "-=" => |a, b| a - b,
-            "*" | "*=" => |a, b| a * b,
-            "/" | "/=" => |a, b| a / b,
-            "%" | "%=" => |a, b| a % b,
+            "+" | "+=" => |a: i32, b: i32| a.wrapping_add(b),
+            "-" | "-=" => |a: i32, b: i32| a.wrapping_sub(b),
+            "*" | "*=" => |a: i32, b: i32| a.wrapping_mul(b),
+            "/" | "/=" => |a: i32, b: i32| a.wrapping_div(b),
+            "%" | "%=" => |a: i32, b: i32| a.wrapping_rem(b),
             "min" => |a: i32, b: i32| a.min(b),
             "max" => |a: i32, b: i32| a.max(b),
             _ => unreachable!(),
           },
           match &*f_name {
-            "+" | "+=" => |a, b| a + b,
-            "-" | "-=" => |a, b| a - b,
-            "*" | "*=" => |a, b| a * b,
-            "/" | "/=" => |a, b| a / b,
-            "%" | "%=" => |a, b| a % b,
+            "+" | "+=" => |a: u32, b: u32| a.wrapping_add(b),
+            "-" | "-=" => |a: u32, b: u32| a.wrapping_sub(b),
+            "*" | "*=" => |a: u32, b: u32| a.wrapping_mul(b),
+            "/" | "/=" => |a: u32, b: u32| a / b,
+            "%" | "%=" => |a: u32, b: u32| a % b,
             "min" => |a: u32, b: u32| a.min(b),
             "max" => |a: u32, b: u32| a.max(b),
             _ => unreachable!(),
@@ -2600,6 +2601,29 @@ impl Value {
     t: Type,
     env: &EvaluationEnvironment<impl IOManager>,
   ) -> Result<Self, EvalError> {
+    // A static closure's zero value is the closure itself over a zeroed
+    // scope — the value the VM's zero-filled slots denote.
+    if let Type::Function(f) = &t
+      && let Some(ancestor) = &f.abstract_ancestor
+      && let Some(data_type) = t.closure_data_type()
+    {
+      let inner = {
+        let signature = ancestor.read().unwrap();
+        Function::from_abstract_signature(
+          &signature,
+          &signature.name.clone(),
+          env,
+        )?
+      };
+      return Ok(Value::Fun(if data_type == Type::Unit {
+        inner
+      } else {
+        Function::Scoped {
+          inner: Box::new(inner),
+          scope: Box::new(Value::zeroed(data_type, env)?),
+        }
+      }));
+    }
     Ok(match t {
       Type::Unit => Value::Unit,
       Type::F32 => Primitive::F32(0.).into(),
@@ -2671,9 +2695,28 @@ impl Value {
     }
   }
 
+  /// A closure value's data, as laid out by `Type::closure_data_type`: a
+  /// scoped closure's scope struct (the tree-walker's `Function::Scoped`),
+  /// `Unit` for a function without captures; values decoded from VM words
+  /// already are that data.
+  fn closure_data(&self) -> &Value {
+    match self {
+      Value::Fun(Function::Scoped { scope, .. }) => scope,
+      Value::Fun(_) => &Value::Unit,
+      data => data,
+    }
+  }
   /// Serializes this value to raw bytes for uploading to a uniform buffer.
   /// The `ty` parameter is used to determine field ordering for struct types.
   pub fn to_uniform_bytes(&self, ty: &Type) -> Vec<u8> {
+    // A closure is laid out as its scope data, whether typed as a function
+    // or as the scope struct its stored position lowered to.
+    if let Some(data_type) = ty.closure_data_type() {
+      return self.closure_data().to_uniform_bytes(&data_type);
+    }
+    if let Value::Fun(_) = self {
+      return self.closure_data().to_uniform_bytes(ty);
+    }
     match self {
       Value::Prim(Primitive::F32(f)) => f.to_bits().to_ne_bytes().to_vec(),
       Value::Prim(Primitive::U32(u)) => u.to_ne_bytes().to_vec(),
@@ -2754,11 +2797,6 @@ impl Value {
         }
         bytes
       }
-      // A captured closure inside a dispatched-closure scope: the function
-      // part is static, so only its captured scope is data. `ty` is the
-      // representative scope-struct type (see
-      // `Program::substitute_scope_representative_types`).
-      Value::Fun(Function::Scoped { scope, .. }) => scope.to_uniform_bytes(ty),
       _ => vec![],
     }
   }
@@ -2772,6 +2810,9 @@ impl Value {
     fn words_of(t: &Type) -> usize {
       t.flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
         .unwrap() as usize
+    }
+    if let Some(data_type) = t.closure_data_type() {
+      return Value::from_vm_words(&data_type, words);
     }
     match t {
       Type::F32 => Primitive::F32(f32::from_bits(words[0])).into(),
@@ -2854,6 +2895,12 @@ impl Value {
     fn words_of(t: &Type) -> usize {
       t.flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
         .unwrap() as usize
+    }
+    if let Some(data_type) = t.closure_data_type() {
+      return self.closure_data().to_vm_words(&data_type);
+    }
+    if let Value::Fun(_) = self {
+      return self.closure_data().to_vm_words(t);
     }
     match (self, t) {
       (Value::Prim(Primitive::F32(f)), _) => vec![f.to_bits()],
@@ -5216,9 +5263,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             panic!("closure capture record on a non-function field")
           };
           let nested_struct = signature
-            .abstract_ancestor
-            .as_ref()
-            .and_then(|a| a.read().unwrap().captured_scope.clone())
+            .closure_scope()
             .expect("captured closure without a scope struct");
           // A captured closure's value is its own scope data.
           let inner = match field_value {
@@ -5272,9 +5317,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             panic!("closure capture record on a non-function field")
           };
           let nested_struct = signature
-            .abstract_ancestor
-            .as_ref()
-            .and_then(|a| a.read().unwrap().captured_scope.clone())
+            .closure_scope()
             .expect("captured closure without a scope struct");
           // A captured closure's value is its own scope data.
           let inner = match field_value {

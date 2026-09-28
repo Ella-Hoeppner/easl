@@ -1547,6 +1547,23 @@ impl Type {
     }
   }
 
+  /// The data a static closure value carries: its captured scope struct
+  /// (`Some(Unit)` for a function without captures). Every backend lays a
+  /// closure value out as exactly this — WGSL declares a function-typed
+  /// field as its scope struct, the VM gives it the scope's slots — so
+  /// host-side layout code sizes and (de)serializes function types through
+  /// it. `None` for a non-function type or one whose function isn't resolved
+  /// yet.
+  pub fn closure_data_type(&self) -> Option<Type> {
+    let Type::Function(f) = self else {
+      return None;
+    };
+    f.abstract_ancestor.as_ref()?;
+    match f.closure_scope() {
+      Some(scope) => scope.concrete_type(),
+      None => Some(Type::Unit),
+    }
+  }
   pub fn flat_data_size_in_u32s(
     &self,
     source_trace: &SourceTrace,
@@ -1585,9 +1602,12 @@ impl Type {
         let discriminant = if e.variants.is_empty() { 0 } else { 1 };
         e.inner_flat_data_size_in_u32s()? + discriminant
       }
-      Type::Function(_) => {
-        return err(UninlinableHigherOrderFunction, source_trace.clone());
-      }
+      Type::Function(_) => match self.closure_data_type() {
+        Some(data) => data.flat_data_size_in_u32s(source_trace)?,
+        None => {
+          return err(UninlinableHigherOrderFunction, source_trace.clone());
+        }
+      },
       Type::BoxedFunction(_) => {
         panic!("tried to calculate size of an un-lowered boxed function")
       }
@@ -1627,6 +1647,9 @@ impl Type {
           .unwrap_or(1),
       },
       Type::Array(_, inner) => inner.unwrap_known().wgsl_alignment_in_u32s(),
+      Type::Function(_) => self
+        .closure_data_type()
+        .map_or(1, |data| data.wgsl_alignment_in_u32s()),
       _ => 1,
     }
   }
@@ -1676,6 +1699,9 @@ impl Type {
           None => 0,
         }
       }
+      Type::Function(_) => self
+        .closure_data_type()
+        .map_or(0, |data| data.wgsl_flat_data_size_in_u32s()),
       _ => 0,
     }
   }

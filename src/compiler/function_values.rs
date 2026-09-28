@@ -1936,33 +1936,17 @@ fn member_key(
   }
 }
 
-fn scope_struct_type(
-  scope: &AbstractStruct,
-  program: &Program,
-) -> Option<Type> {
-  AbstractType::AbstractStruct(Arc::new(scope.clone()))
-    .concretize(&vec![], &program.typedefs, SourceTrace::empty())
-    .ok()
-}
-
 /// Whether values of type `t` carry boxed positions: a boxed function, an
 /// aggregate containing one, or a static closure whose scope does.
 fn type_involves_box(t: &Type, program: &Program) -> bool {
   match t {
     Type::BoxedFunction(_) => true,
-    Type::Function(sig) => closure_scope_type(sig, program)
+    Type::Function(sig) => sig
+      .closure_scope()
+      .and_then(|scope| scope.concrete_type())
       .is_some_and(|scope| type_involves_box(&scope, program)),
     _ => any_child(t, &|child| type_involves_box(child, program)),
   }
-}
-
-fn closure_scope_type(
-  sig: &FunctionSignature,
-  program: &Program,
-) -> Option<Type> {
-  let ancestor = sig.abstract_ancestor.as_ref()?;
-  let scope = ancestor.read().unwrap().captured_scope.clone()?;
-  scope_struct_type(&scope, program)
 }
 
 fn function_involves_box(
@@ -2043,10 +2027,12 @@ impl<'p> Analysis<'p> {
           .map(|v| self.fresh(&v.inner_type.unwrap_known()))
           .collect(),
       ),
-      Type::Function(sig) => match closure_scope_type(sig, self.program) {
-        Some(scope) => self.fresh(&scope),
-        None => Skel::Leaf,
-      },
+      Type::Function(sig) => {
+        match sig.closure_scope().and_then(|scope| scope.concrete_type()) {
+          Some(scope) => self.fresh(&scope),
+          None => Skel::Leaf,
+        }
+      }
       _ => Skel::Leaf,
     }
   }
@@ -2423,8 +2409,10 @@ impl<'p> Analysis<'p> {
             let payload = if has_scope {
               Some(match &arg_skels[0] {
                 Skel::Leaf => {
-                  let scope =
-                    closure_scope_type(member_sig, self.program).unwrap();
+                  let scope = member_sig
+                    .closure_scope()
+                    .and_then(|scope| scope.concrete_type())
+                    .unwrap();
                   self.fresh(&scope)
                 }
                 s => s.clone(),
@@ -2979,7 +2967,7 @@ impl<'p> Lowering<'p> {
       .captured_scope
       .clone()
       .unwrap();
-    let scope_type = scope_struct_type(&scope, self.program()).unwrap();
+    let scope_type = scope.concrete_type().unwrap();
     self.rep(&scope_type, member.payload.as_ref().unwrap(), source)
   }
   fn union_key(
@@ -3280,7 +3268,10 @@ impl<'p> Lowering<'p> {
     source: &SourceTrace,
   ) -> Type {
     let ancestor = sig.abstract_ancestor.clone().unwrap();
-    let scope_type = closure_scope_type(sig, self.program()).unwrap();
+    let scope_type = sig
+      .closure_scope()
+      .and_then(|scope| scope.concrete_type())
+      .unwrap();
     let scope_rep =
       self.rep(&scope_type, &Skel::Struct(fields.to_vec()), source);
     let signature = self.closure_signature(&ancestor, &scope_rep);
@@ -4614,11 +4605,9 @@ impl<'p> Lowering<'p> {
           return;
         }
         let struct_type = match &new_type {
-          Type::Function(sig) => sig
-            .abstract_ancestor
-            .as_ref()
-            .and_then(|a| a.read().unwrap().captured_scope.clone())
-            .and_then(|scope| scope_struct_type(&scope, self.program())),
+          Type::Function(sig) => {
+            sig.closure_scope().and_then(|scope| scope.concrete_type())
+          }
           t @ Type::Struct(_) => Some(t.clone()),
           _ => None,
         };
@@ -5762,15 +5751,12 @@ impl<'a, 'p> CopyCheck<'a, 'p> {
       |scope: &Arc<str>| self.scope_writes.get(scope).copied().unwrap_or(false);
     match t {
       Type::Function(sig) => {
-        let Some(scope) = sig
-          .abstract_ancestor
-          .as_ref()
-          .and_then(|a| a.read().unwrap().captured_scope.clone())
-        else {
+        let Some(scope) = sig.closure_scope() else {
           return false;
         };
         writes(&scope.name.0)
-          || scope_struct_type(&scope, self.program)
+          || scope
+            .concrete_type()
             .is_some_and(|t| self.holds_stateful(&t, skel))
       }
       Type::BoxedFunction(_) => {
@@ -5790,7 +5776,8 @@ impl<'a, 'p> CopyCheck<'a, 'p> {
             return false;
           };
           writes(&scope.name.0)
-            || scope_struct_type(&scope, self.program)
+            || scope
+              .concrete_type()
               .is_some_and(|t| self.holds_stateful(&t, Some(payload)))
         })
       }
