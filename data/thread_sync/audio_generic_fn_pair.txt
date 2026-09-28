@@ -1,0 +1,8 @@
+main-publish: <audio-scope>_fs
+start-audio: <audio-closure>
+spawn-window
+frame 0
+audio-batch 0 x4
+audio-adopt: <audio-scope>_fs
+samples: 0 0.078125 0.15625 0.234375
+frame 1

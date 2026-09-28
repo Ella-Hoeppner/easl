@@ -1,0 +1,36 @@
+; The layered-distortion shape on the audio thread: a generic `map` builds
+; one merge closure per element, each merging structs holding closures that
+; capture the mapped lambda's parameter; the audio entry calls the stored
+; merges by index.
+(defn (map T U C: u32)
+      [arr: [C: T]
+       f: (Fn [T] U)]: [C: U]
+      (let [@var new-arr (zeroed-array)]
+        (for [i (array-length arr)]
+          (= (new-arr i) (f (arr i))))
+        new-arr))
+
+(struct Layer
+  f: (Fn [f32] f32)
+  weight: f32)
+
+(defn (merge C: u32) [layers: [C: Layer]]: (Fn [f32] f32)
+  (fn [x]
+    (let [@var sum 0.]
+      (for [i (array-length layers)]
+        (let [layer (layers i)]
+          (+= sum (* layer.weight (layer.f x)))))
+      sum)))
+
+(defn voice [merges: [2: (Fn [f32] f32)]]: (Fn [f32] f32)
+  (fn [t]
+    (* 0.5 (+ ((merges 0u) t) ((merges 1u) t)))))
+
+@cpu
+(defn main []
+  (start-audio
+    (voice (map [1. 2.]
+                (fn [i]
+                  (merge [(Layer (fn [x] (* x i)) 0.25)
+                          (Layer (fn [x] (* x (* 4. i))) 0.25)])))))
+  (spawn-window (fn [] ())))

@@ -1,0 +1,31 @@
+; A lambda passed to a higher-order function builds structs holding
+; closures, each made by passing an inline lambda — capturing both the outer
+; lambda's parameter and an enclosing one — to another higher-order function.
+; That inner lambda's scope is built as a temporary for the specialization's
+; scope parameter, which the effect analysis must accept before it's bound.
+(defn (map T U C: u32)
+      [arr: [C: T]
+       f: (Fn [T] U)]: [C: U]
+      (let [@var new-arr (zeroed-array)]
+        (for [i (array-length arr)]
+          (= (new-arr i) (f (arr i))))
+        new-arr))
+
+(defn make-layer [k: f32
+                  shape: (Fn [f32] f32)]: (Fn [f32] f32)
+  (fn [x] (* k (shape x))))
+
+(struct Layer
+  f: (Fn [f32] f32)
+  weight: f32)
+
+(defn build [i: f32]: [2: Layer]
+  (map [1. 2.]
+       (fn [p]
+         (Layer (make-layer p (fn [x] (* x (* p i)))) 1.))))
+
+@cpu
+(defn main []
+  (let [layers (build 3.)]
+    (print ((.f (layers 0u)) 1.))
+    (print ((.f (layers 1u)) 1.))))

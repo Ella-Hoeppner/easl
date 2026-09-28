@@ -519,6 +519,119 @@ fn is_host_function_param(
   }
 }
 
+/// Visits every position of a call site's view of a callee's signature
+/// where a type generic of the callee appears outside any aggregate — a whole
+/// parameter or return, or (recursively) a function type's parameter or
+/// return — passing the generic's name and the view's type there. Positions
+/// inside arrays, structs, and enums are skipped: those are always boxed.
+fn visit_generic_positions(
+  abstract_type: &AbstractType,
+  view: &mut TypeState,
+  visit: &mut dyn FnMut(&Arc<str>, &mut TypeState),
+) {
+  match abstract_type {
+    AbstractType::Generic(name) => visit(name, view),
+    AbstractType::Type(t) => visit_skolem_positions(t, view, visit),
+    _ => {}
+  }
+}
+
+fn visit_skolem_positions(
+  t: &Type,
+  view: &mut TypeState,
+  visit: &mut dyn FnMut(&Arc<str>, &mut TypeState),
+) {
+  match t {
+    Type::Skolem(name, _) => visit(name, view),
+    Type::Function(sig) => view.with_dereferenced_mut(|ts| {
+      if let TypeState::Known(Type::Function(view_sig)) = ts {
+        for ((arg, _), (view_arg, _)) in
+          sig.args.iter().zip(view_sig.args.iter_mut())
+        {
+          if let Some(arg_type) = known_type(&arg.var_type) {
+            visit_skolem_positions(
+              &arg_type,
+              &mut view_arg.var_type.kind,
+              visit,
+            );
+          }
+        }
+        if let Some(return_type) = known_type(&sig.return_type) {
+          visit_skolem_positions(
+            &return_type,
+            &mut view_sig.return_type.kind,
+            visit,
+          );
+        }
+      }
+    }),
+    _ => {}
+  }
+}
+
+/// Visits every generic position (see [`visit_generic_positions`]) of a
+/// call site's view `view` of `callee`'s parameters and return.
+fn visit_signature_generic_positions(
+  callee: &AbstractFunctionSignature,
+  view: &mut FunctionSignature,
+  visit: &mut dyn FnMut(&Arc<str>, &mut TypeState),
+) {
+  for ((abstract_type, _), (arg, _)) in
+    callee.arg_types.iter().zip(view.args.iter_mut())
+  {
+    visit_generic_positions(abstract_type, &mut arg.var_type.kind, visit);
+  }
+  visit_generic_positions(
+    &callee.return_type,
+    &mut view.return_type.kind,
+    visit,
+  );
+}
+
+/// The type generics of a composite `callee` that the call site `view`
+/// instantiates at a function type. User generics can't be constrained to
+/// functions, so a generic body can only store, move, or return such a
+/// value as opaque data: every position of the generic is a storage
+/// position, boxed like a generic builtin's.
+fn function_instantiated_generics(
+  callee: &AbstractFunctionSignature,
+  view: &FunctionSignature,
+) -> HashSet<Arc<str>> {
+  let mut generics = HashSet::new();
+  if callee.generic_args.is_empty() {
+    return generics;
+  }
+  visit_signature_generic_positions(
+    callee,
+    &mut view.clone(),
+    &mut |name, ts| {
+      if matches!(
+        ts.try_unwrap_known(),
+        Some(Type::Function(_) | Type::BoxedFunction(_))
+      ) {
+        generics.insert(name.clone());
+      }
+    },
+  );
+  generics
+}
+
+/// Whether `callee` is a composite function called with one of its type
+/// generics instantiated at a function type.
+fn instantiates_generic_at_function(callee: &TypedExp) -> bool {
+  let Some(Type::Function(sig)) = known_type(&callee.data) else {
+    return false;
+  };
+  let Some(ancestor) = &sig.abstract_ancestor else {
+    return false;
+  };
+  let ancestor = ancestor.read().unwrap();
+  matches!(
+    ancestor.implementation,
+    FunctionImplementationKind::Composite(_)
+  ) && !function_instantiated_generics(&ancestor, &sig).is_empty()
+}
+
 /// Per-function boxing state shared by the dry-run classification walks and
 /// the final rewriting walk.
 struct Boxer<'a> {
@@ -676,6 +789,74 @@ impl<'a> Boxer<'a> {
         true
       }
       _ => false,
+    }
+  }
+  /// Boxes every position of the generics in `generics` (instantiated at a
+  /// function type, see [`function_instantiated_generics`]) in the call
+  /// site's view `callee` of `ancestor`, so monomorphization instantiates
+  /// them at the boxed type. A static function argument whose parameter now
+  /// takes or returns boxed values (`f: (Fn [T] U)` in a generic `map`) is
+  /// made to box them too; top-level boxed parameters are coerced by the
+  /// caller like any other.
+  fn box_generic_instantiations(
+    &mut self,
+    callee: &mut TypedExp,
+    args: &mut [TypedExp],
+    arg_kinds: &[Kind],
+    ancestor: &Arc<RwLock<AbstractFunctionSignature>>,
+    generics: &HashSet<Arc<str>>,
+  ) {
+    let types = self.types;
+    callee.data.kind.with_dereferenced_mut(|ts| {
+      if let TypeState::Known(Type::Function(view)) = ts {
+        visit_signature_generic_positions(
+          &ancestor.read().unwrap(),
+          view,
+          &mut |name, ts| {
+            if generics.contains(name) {
+              types.ts_top(ts);
+            }
+          },
+        );
+      }
+    });
+    let Some(Type::Function(view)) = known_type(&callee.data) else {
+      return;
+    };
+    for (i, arg) in args.iter_mut().enumerate() {
+      if arg_kinds.get(i) != Some(&Kind::Static) {
+        continue;
+      }
+      let (Some(Some(Type::Function(param))), Some(Type::Function(arg_sig))) = (
+        view.args.get(i).map(|(a, _)| known_type(&a.var_type)),
+        known_type(&arg.data),
+      ) else {
+        continue;
+      };
+      let newly_boxed = |param_type: &TypeState, arg_type: &TypeState| {
+        matches!(param_type.try_unwrap_known(), Some(Type::BoxedFunction(_)))
+          && matches!(arg_type.try_unwrap_known(), Some(Type::Function(_)))
+      };
+      let params: Vec<usize> = param
+        .args
+        .iter()
+        .zip(arg_sig.args.iter())
+        .enumerate()
+        .filter(|(_, ((p, _), (a, _)))| {
+          newly_boxed(&p.var_type.kind, &a.var_type.kind)
+        })
+        .map(|(j, _)| j)
+        .collect();
+      let box_return =
+        newly_boxed(&param.return_type.kind, &arg_sig.return_type.kind);
+      if (!params.is_empty() || box_return)
+        && !self.box_static_positions(arg, &params, box_return)
+      {
+        self.error(
+          CompileErrorKind::UnsupportedFunctionValueSignature,
+          &arg.source_trace,
+        );
+      }
     }
   }
   /// Prepares an argument for a boxed function parameter (passed by mutable
@@ -1042,6 +1223,36 @@ impl<'a> Boxer<'a> {
         match implementation_kind {
           Some(FunctionImplementationKind::Composite(_)) => {
             let ancestor = ancestor.unwrap();
+            let generics =
+              function_instantiated_generics(&ancestor.read().unwrap(), &sig);
+            if !generics.is_empty() {
+              self.box_generic_instantiations(
+                f, args, &arg_kinds, &ancestor, &generics,
+              );
+            }
+            let unboxed_sig = sig;
+            let sig = match known_type(&f.data) {
+              Some(Type::Function(boxed_sig)) => boxed_sig,
+              _ => unboxed_sig.clone(),
+            };
+            // Parameters boxed by the generic instantiation, which (like a
+            // clone's boxed parameters) lower to references.
+            let generic_boxed_params: Vec<usize> = sig
+              .args
+              .iter()
+              .zip(unboxed_sig.args.iter())
+              .enumerate()
+              .filter(|(_, ((boxed, _), (unboxed, _)))| {
+                matches!(
+                  known_type(&boxed.var_type),
+                  Some(Type::BoxedFunction(_))
+                ) && !matches!(
+                  known_type(&unboxed.var_type),
+                  Some(Type::BoxedFunction(_))
+                )
+              })
+              .map(|(i, _)| i)
+              .collect();
             // Static higher-order parameters receiving a boxed value need a
             // clone of the callee with those parameters boxed.
             let boxed_params: Vec<usize> = sig
@@ -1116,7 +1327,9 @@ impl<'a> Boxer<'a> {
                 if arg_kinds[i] == Kind::Static {
                   self.coerce_to_box(a);
                 }
-                if boxed_params.contains(&i) {
+                if boxed_params.contains(&i)
+                  || generic_boxed_params.contains(&i)
+                {
                   if let Some(temp) = self.ensure_place(a) {
                     temps.push(temp);
                   }
@@ -1344,7 +1557,9 @@ fn program_has_function_values(program: &Program) -> bool {
           if bindings.iter().any(|(_, _, kind, value)| {
             *kind == VariableKind::Var
               && matches!(known_type(&value.data), Some(Type::Function(_)))
-          }));
+          }))
+          || matches!(&exp.kind, ExpKind::Application(f, _)
+            if instantiates_generic_at_function(f));
         Ok::<bool, Never>(!found)
       })
       .unwrap();
@@ -2904,6 +3119,13 @@ struct Lowering<'p> {
   /// Whether each generated dispatcher takes its union by reference (some
   /// member mutates its scope), by dispatcher name.
   dispatcher_by_reference: HashMap<Arc<str>, bool>,
+  /// By-value twins of lowered closures that don't mutate their scope, by
+  /// the lowered closure's name (see `by_value_twin`).
+  by_value_twins: HashMap<Arc<str>, Arc<RwLock<AbstractFunctionSignature>>>,
+  /// The twins' signatures and bodies, added to the program with the
+  /// lowered clones.
+  by_value_twin_outputs:
+    Vec<(Arc<RwLock<AbstractFunctionSignature>>, TopLevelFunction)>,
   /// The instance each lowered function name was produced from.
   instance_by_name: HashMap<Arc<str>, usize>,
   /// Payload getters, by (enum name, variant name, whether the scrutinee is
@@ -4528,9 +4750,27 @@ impl<'p> Lowering<'p> {
             if member.payload.is_some() {
               value.data.kind =
                 TypeState::Known(params.last().cloned().unwrap());
-              call_args.push(value);
+              // A value that's itself a reference (a boxed reference
+              // parameter) can only be passed on by reference.
+              let value_is_reference = value.data.ownership != Ownership::Owned
+                || self.is_reference_param(instance, &value);
+              if !value_is_reference
+                && self.may_be_gpu_storage(instance, &value)
+                && !self.instance_mutates_scope(member_instance)
+              {
+                // Read the stored closure by value, like a dispatcher whose
+                // members don't mutate: no reference into the value's
+                // place, which may be read-only GPU storage.
+                let twin = self.by_value_twin(member_instance);
+                call_args.push(value);
+                b.callee(&twin, &params, &member_ret)
+              } else {
+                call_args.push(value);
+                b.callee(&signature, &params, &member_ret)
+              }
+            } else {
+              b.callee(&signature, &params, &member_ret)
             }
-            b.callee(&signature, &params, &member_ret)
           }
         };
         *exp = b.apply(callee, call_args, &ret);
@@ -4759,6 +4999,31 @@ impl<'p> Lowering<'p> {
   }
   /// Whether `exp` names one of the instance's by-reference boxed
   /// parameters.
+  /// Whether `place` may be GPU storage, which can't be referenced: a place
+  /// rooted at a global, or at a closure's captured scope (a dispatched
+  /// closure's captures become storage bindings). Locals and parameters are
+  /// function-space everywhere.
+  fn may_be_gpu_storage(&self, instance: usize, place: &TypedExp) -> bool {
+    let Some(root) = place.name_or_inner_accessed_name() else {
+      return false;
+    };
+    if self
+      .program()
+      .top_level_vars
+      .iter()
+      .any(|v| v.name == *root)
+    {
+      return true;
+    }
+    let (InstanceBody::Function(body), Some(function)) = (
+      &self.analysis.instances[instance].body,
+      &self.analysis.instances[instance].function,
+    ) else {
+      return false;
+    };
+    function.read().unwrap().captured_scope.is_some()
+      && body.arg_names.last().is_some_and(|(n, _)| n == root)
+  }
   fn is_reference_param(&mut self, instance: usize, exp: &TypedExp) -> bool {
     let ExpKind::Name(name) = &exp.kind else {
       return false;
@@ -5054,6 +5319,45 @@ impl<'p> Lowering<'p> {
     self.dispatcher_by_reference.insert(name, by_ref);
     signature
   }
+  /// A twin of a lowered closure instance that doesn't mutate its scope,
+  /// taking the scope by value instead of by reference: calls through it
+  /// read a stored closure without referencing its place.
+  fn by_value_twin(
+    &mut self,
+    instance: usize,
+  ) -> Arc<RwLock<AbstractFunctionSignature>> {
+    let (signature, params, ret) = self.lowered_function(instance);
+    let name = signature.read().unwrap().name.clone();
+    if let Some(twin) = self.by_value_twins.get(&name) {
+      return twin.clone();
+    }
+    let scope_index = params.len() - 1;
+    let twin_name = self.gensym(&format!("{name}_by_value"));
+    let twin = {
+      let mut twin = signature.read().unwrap().clone();
+      twin.name = twin_name;
+      twin.arg_types[scope_index].1 = Ownership::Owned;
+      Arc::new(RwLock::new(twin))
+    };
+    let mut body = self.lower_instance(instance).derived_from();
+    body.entry_point = None;
+    let reference_params = self.boxed_reference_params(instance);
+    mark_reference_param_uses(&mut body, &reference_params);
+    let scope_name = body.arg_names[scope_index].0.clone();
+    let _ = body.expression.walk_mut::<()>(&mut |e| {
+      if let ExpKind::Name(n) = &e.kind
+        && *n == scope_name
+      {
+        e.data.ownership = Ownership::Owned;
+      }
+      Ok(true)
+    });
+    body.expression.data.kind =
+      TypeState::Known(function_type(&twin, &params, &ret));
+    self.by_value_twin_outputs.push((twin.clone(), body));
+    self.by_value_twins.insert(name, twin.clone());
+    twin
+  }
 }
 
 /// Makes owned parameters that a lowered body passes by mutable reference
@@ -5286,6 +5590,8 @@ impl Program {
       used_function_names: HashSet::new(),
       dispatchers: HashMap::new(),
       dispatcher_by_reference: HashMap::new(),
+      by_value_twins: HashMap::new(),
+      by_value_twin_outputs: vec![],
       instance_by_name: HashMap::new(),
       payload_getters: HashMap::new(),
       lowered_bodies: HashMap::new(),
@@ -5383,6 +5689,7 @@ impl Program {
       new_enums,
       new_functions,
       union_enums,
+      by_value_twin_outputs,
       ..
     } = lowering;
     for e in lowering_errors {
@@ -5421,7 +5728,9 @@ impl Program {
       });
     }
     self.abstract_functions.retain(|_, sigs| !sigs.is_empty());
-    for (signature, mut body) in clone_outputs {
+    for (signature, mut body) in
+      clone_outputs.into_iter().chain(by_value_twin_outputs)
+    {
       make_mutably_referenced_params_addressable(&mut body, &self.names);
       signature.write().unwrap().implementation =
         FunctionImplementationKind::Composite(Arc::new(RwLock::new(body)));

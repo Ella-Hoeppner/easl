@@ -1,0 +1,38 @@
+; Function values through generic functions: identity (nested), two
+; different closure definitions through one generic (a union), a generic
+; calling a generic, a higher-order generic whose parameter returns a
+; function, and stateful closures produced through a generic, which keep
+; advancing in place.
+(defn (id U) [x: U]: U x)
+(defn (pair U) [a: U b: U]: [2: U] [a b])
+(defn (first U) [xs: [2: U]]: U (xs 0u))
+(defn (swap U) [xs: [2: U]]: [2: U] (pair (xs 1u) (xs 0u)))
+(defn (apply-to T U) [f: (Fn [T] U) x: T]: U (f x))
+(defn scale [k: f32]: (Fn [f32] f32) (fn [x] (* x k)))
+(defn shift [k: f32]: (Fn [f32] f32) (fn [x] (+ x k)))
+(defn double [x: f32]: f32 (* x 2.))
+(defn make-counter [amount: f32]: (Fn [] f32)
+  (let [@var n 0.] (fn [] (+= n amount) n)))
+@cpu
+(defn main []
+  ; identity on closures and top-level functions, nested
+  (print ((id (scale 2.)) 3.))
+  (print ((id (id (shift 1.))) 3.))
+  (print ((id double) 3.))
+  ; two different closure definitions through one generic
+  (let [fs (pair (scale 2.) (shift 10.))]
+    (print ((fs 0u) 3.))
+    (print ((fs 1u) 3.)))
+  ; a generic calling a generic
+  (let [fs (swap (pair (scale 2.) (shift 10.)))]
+    (print ((fs 0u) 3.))
+    (print ((first fs) 3.)))
+  ; higher-order generic whose parameter returns a function
+  (print ((apply-to scale 4.) 3.))
+  (print ((apply-to (fn [k] (fn [x] (- x k))) 1.) 3.))
+  ; stateful closures produced through a generic keep advancing in place
+  (let [@var cs (pair (make-counter 1.) (make-counter 10.))]
+    (print ((cs 0u)))
+    (print ((cs 0u)))
+    (print ((cs 1u)))
+    (print ((cs 0u)))))

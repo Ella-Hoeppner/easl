@@ -1,0 +1,11 @@
+; The same by-value path from a fragment shader.
+(defn tint [c: vec3f]: (Fn [vec2f] vec4f) (fn [uv] (vec4f (* c uv.x) 1.)))
+@cpu
+(defn main []
+  (let [tints [(tint (vec3f 1. 0. 0.)) (tint (vec3f 0. 1. 0.))]]
+    (spawn-window
+      (fn []
+        (dispatch-render-shaders
+          (fn [] (vec4f (match (vertex-index) 0 (vec2f -1.) 1 (vec2f -1. 3.) _ (vec2f 3. -1.)) 0. 1.))
+          (fn [] ((tints 1u) (.xy (position))))
+          3)))))

@@ -1,0 +1,19 @@
+; An array of closures that are all instances of one definition lowers to
+; that closure's scope struct; a dispatched shader calls elements of it. The
+; closure never mutates its scope, so the call reads the stored scope by
+; value — the array lives in read-only storage, which can't be referenced.
+(defn adder [k: f32]: (Fn [f32] f32)
+  (fn [x] (+ x k)))
+
+@storage-write
+(var out: [2: f32])
+
+@cpu
+(defn main []
+  (let [fs [(adder 1.) (adder 2.)]]
+    (dispatch-compute-shader
+      (fn []
+        (= (out 0u) ((fs 0u) 5.))
+        (= (out 1u) ((fs 1u) 5.)))
+      (vec3u 1u))
+    (print out)))

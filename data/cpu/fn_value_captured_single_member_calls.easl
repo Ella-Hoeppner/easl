@@ -1,0 +1,10 @@
+; CPU: a closure capturing an array of same-definition closures, calling
+; elements directly (the by-value path, since the array is a capture).
+(defn adder [k: f32]: (Fn [f32] f32) (fn [x] (+ x k)))
+(defn sum-with [fs: [3: (Fn [f32] f32)]]: (Fn [f32] f32)
+  (fn [x] (+ ((fs 0u) x) ((fs 1u) x) ((fs 2u) x))))
+@cpu
+(defn main []
+  (let [f (sum-with [(adder 1.) (adder 2.) (adder 3.)])]
+    (print (f 10.))
+    (print (f 0.))))

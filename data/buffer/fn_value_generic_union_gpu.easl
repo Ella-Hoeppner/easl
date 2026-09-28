@@ -1,0 +1,16 @@
+; Two different closure definitions stored through a generic function (a
+; union), called from a dispatched shader.
+(defn (pair U) [a: U b: U]: [2: U] [a b])
+(defn scale [k: f32]: (Fn [f32] f32) (fn [x] (* x k)))
+(defn shift [k: f32]: (Fn [f32] f32) (fn [x] (+ x k)))
+@storage-write
+(var out: [2: f32])
+@cpu
+(defn main []
+  (let [fs (pair (scale 2.) (shift 10.))]
+    (dispatch-compute-shader
+      (fn []
+        (= (out 0u) ((fs 0u) 3.))
+        (= (out 1u) ((fs 1u) 3.)))
+      (vec3u 1u))
+    (print out)))

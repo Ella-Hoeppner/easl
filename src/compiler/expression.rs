@@ -4853,14 +4853,12 @@ impl TypedExp {
               // A lent closure's write is its borrow's own (by-reference)
               // argument, already merged above.
               && !is_function_value_borrow(arg)
+              // A temporary in this position (a closure scope built for a
+              // higher-order specialization's scope parameter, before
+              // `extract_non_bound_mutable_references` binds it) is
+              // unobservable once written: it modifies nothing named.
+              && let Some(name) = arg.name_or_inner_accessed_name().cloned()
             {
-              let name = arg
-                .name_or_inner_accessed_name()
-                .expect(
-                  "No name found in mutated argument position. This should \
-                    never happen if validate_assignments has passed.",
-                )
-                .clone();
               effects.merge(if arg.data.is_globally_bound {
                 Effect::ModifiesGlobalVar(name)
               } else {

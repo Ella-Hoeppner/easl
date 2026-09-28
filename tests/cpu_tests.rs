@@ -353,6 +353,7 @@ cpu_test!(fn_value_local_hof_pure_union_arg);
 cpu_test!(fn_value_hof_pure_union_arg);
 cpu_test!(fn_value_hof_arg_matrix);
 cpu_test!(fn_value_factory_return_matrix);
+cpu_test!(fn_value_generic_instantiated_at_function);
 // Single-variant user enums must keep their VM layout (unrelated to function
 // values, but broken by the same change).
 cpu_test!(single_variant_enum_layout);
@@ -475,3 +476,6 @@ cpu_test!(hof_closure_factory_arg);
 cpu_test!(copied_stateful_closure_allowed);
 cpu_test!(integer_wraparound);
 cpu_test!(zeroed_array_of_nested_closures);
+cpu_test!(nested_lambda_scope_temporary);
+cpu_test!(fn_value_generic_passthrough);
+cpu_test!(fn_value_captured_single_member_calls);

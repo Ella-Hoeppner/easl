@@ -1,0 +1,44 @@
+; Function values flowing through a bare type generic (`U` instantiated at a
+; function type), which the generic body stores, moves, or returns as opaque
+; data.
+(defn (map T U C: u32)
+      [arr: [C: T]
+       f: (Fn [T] U)]: [C: U]
+      (let [@var new-arr (zeroed-array)]
+        (for [i (array-length arr)]
+          (= (new-arr i) (f (arr i))))
+        new-arr))
+
+(defn (pair U) [a: U b: U]: [2: U] [a b])
+
+(struct (Holder U)
+  value: U)
+
+(defn (hold U) [x: U]: (Holder U) (Holder x))
+
+(defn (first U) [xs: [2: U]]: U (xs 0u))
+
+(defn scale [k: f32]: (Fn [f32] f32) (fn [x] (* x k)))
+
+(defn double [x: f32]: f32 (* x 2.))
+
+(defn triple [x: f32]: f32 (* x 3.))
+
+@cpu
+(defn main []: ()
+  ; closures returned by a lambda passed to a generic higher-order function
+  (let [fs (map [1. 2.] (fn [k] (fn [x] (* x k))))]
+    (print ((fs 1u) 3.)))
+  ; a named factory passed to a generic higher-order function
+  (let [fs (map [2. 5.] scale)]
+    (print ((fs 1u) 3.)))
+  ; top-level functions stored by a generic function
+  (let [fs (pair double triple)]
+    (print ((fs 0u) 3.))
+    (print ((fs 1u) 3.)))
+  ; a closure stored in a generic struct by a generic function
+  (let [h (hold (scale 4.))]
+    (print (h.value 3.)))
+  ; a closure read back out of an array by a generic function
+  (let [f (first [(scale 5.) (scale 6.)])]
+    (print (f 3.))))

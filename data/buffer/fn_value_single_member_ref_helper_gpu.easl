@@ -1,0 +1,16 @@
+; A stored closure whose body lends a captured array to an immutable @ref
+; helper, called from a shader through the by-value path.
+(defn total [@ref xs: [3: f32]]: f32 (+ (xs 0u) (xs 1u) (xs 2u)))
+(defn weighted [w: [3: f32]]: (Fn [f32] f32)
+  (fn [x] (* x (total w))))
+@storage-write
+(var out: [2: f32])
+@cpu
+(defn main []
+  (let [fs [(weighted [1. 2. 3.]) (weighted [4. 5. 6.])]]
+    (dispatch-compute-shader
+      (fn []
+        (= (out 0u) ((fs 0u) 2.))
+        (= (out 1u) ((fs 1u) 2.)))
+      (vec3u 1u))
+    (print out)))

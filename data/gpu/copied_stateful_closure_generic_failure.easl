@@ -1,0 +1,11 @@
+; A stateful closure copied into a generic function's array while it stays
+; in use: the generic stores its argument, so the call copies it.
+(defn (pair U) [a: U b: U]: [2: U] [a b])
+(defn make-counter [amount: f32]: (Fn [] f32)
+  (let [@var n 0.] (fn [] (+= n amount) n)))
+@cpu
+(defn main []
+  (let [c (make-counter 1.)
+        fs (pair c (make-counter 2.))]
+    (print ((fs 0u)))
+    (print (c))))

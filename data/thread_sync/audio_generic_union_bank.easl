@@ -1,0 +1,26 @@
+; Two different stateful closure definitions stored through a generic
+; function (a union), each advancing on every sample on the audio thread.
+(defn (pair U) [a: U b: U]: [2: U] [a b])
+
+(defn create-counter [increment: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (= phase
+         (% (+ phase increment) 1.))
+      phase)))
+
+(defn create-decay []: (Fn [] f32)
+  (let [@var level 1.]
+    (fn []
+      (*= level 0.5)
+      level)))
+
+(defn mix [voices: [2: (Fn [] f32)]]: (Fn [] f32)
+  (fn []
+    (* 0.5
+       (+ ((voices 0u)) ((voices 1u))))))
+
+@cpu
+(defn main []
+  (start-audio (mix (pair (create-counter 0.25) (create-decay))))
+  (spawn-window (fn [] ())))

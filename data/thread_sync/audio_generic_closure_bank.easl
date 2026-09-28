@@ -1,0 +1,27 @@
+; `audio_closure_bank` with the oscillators built by a generic `map` (its
+; result type instantiated at a closure type): every oscillator still
+; advances in place on every sample.
+(defn (map T U C: u32)
+      [arr: [C: T]
+       f: (Fn [T] U)]: [C: U]
+      (let [@var new-arr (zeroed-array)]
+        (for [i (array-length arr)]
+          (= (new-arr i) (f (arr i))))
+        new-arr))
+
+(defn create-counter [increment: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (= phase
+         (% (+ phase increment) 1.))
+      phase)))
+
+(defn mix [oscs: [2: (Fn [] f32)]]: (Fn [] f32)
+  (fn []
+    (* 0.5
+       (+ ((oscs 0u)) ((oscs 1u))))))
+
+@cpu
+(defn main []
+  (start-audio (mix (map [0.125 0.25] create-counter)))
+  (spawn-window (fn [] ())))

@@ -1,0 +1,16 @@
+; The temporary-scope shape inside shader code.
+(defn (map T U C: u32) [arr: [C: T] f: (Fn [T] U)]: [C: U]
+  (let [@var new-arr (zeroed-array)]
+    (for [i (array-length arr)] (= (new-arr i) (f (arr i))))
+    new-arr))
+(defn make-layer [k: f32 shape: (Fn [f32] f32)]: (Fn [f32] f32)
+  (fn [x] (* k (shape x))))
+(struct Layer f: (Fn [f32] f32) weight: f32)
+@storage-write
+(var out: [2: f32])
+@compute
+(defn main []
+  (let [i 3.
+        layers (map [1. 2.] (fn [p] (Layer (make-layer p (fn [x] (* x (* p i)))) 1.)))]
+    (= (out 0u) ((.f (layers 0u)) 1.))
+    (= (out 1u) ((.f (layers 1u)) 1.))))

@@ -1,0 +1,16 @@
+; Top-level functions stored through a generic function, called on every
+; sample on the audio thread.
+(defn (pair U) [a: U b: U]: [2: U] [a b])
+
+(defn double [x: f32]: f32 (* x 2.))
+
+(defn triple [x: f32]: f32 (* x 3.))
+
+(defn voice [fs: [2: (Fn [f32] f32)]]: (Fn [f32] f32)
+  (fn [t]
+    (* 0.125 (+ ((fs 0u) t) ((fs 1u) t)))))
+
+@cpu
+(defn main []
+  (start-audio (voice (pair double triple)))
+  (spawn-window (fn [] ())))

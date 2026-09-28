@@ -1,0 +1,8 @@
+main-publish: <audio-scope>_merges
+start-audio: <audio-closure>
+spawn-window
+frame 0
+audio-batch 0 x4
+audio-adopt: <audio-scope>_merges
+samples: 0 0.234375 0.46875 0.703125
+frame 1

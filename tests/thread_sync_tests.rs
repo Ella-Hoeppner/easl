@@ -676,6 +676,18 @@ thread_sync_test!(
   audio_match_voice,
   [Frame, AudioBatch(4), AudioBatch(4), Frame, AudioBatch(4)]
 );
+// Function values built through generic functions, driven by the audio
+// thread.
+thread_sync_test!(
+  audio_generic_closure_bank,
+  [Frame, AudioBatch(4), AudioBatch(4), Frame, AudioBatch(4)]
+);
+thread_sync_test!(
+  audio_generic_union_bank,
+  [Frame, AudioBatch(4), AudioBatch(4), Frame, AudioBatch(4)]
+);
+thread_sync_test!(audio_generic_layer_merge, [Frame, AudioBatch(4), Frame]);
+thread_sync_test!(audio_generic_fn_pair, [Frame, AudioBatch(4), Frame]);
 thread_sync_test!(
   audio_hof_effect_chain,
   [Frame, AudioBatch(4), AudioBatch(4), Frame, AudioBatch(4)]

@@ -1,0 +1,22 @@
+; Closures built by a lambda passed to a generic `map` (its result type
+; instantiated at a function type) and called from a shader.
+(defn (map T U C: u32)
+      [arr: [C: T]
+       f: (Fn [T] U)]: [C: U]
+      (let [@var new-arr (zeroed-array)]
+        (for [i (array-length arr)]
+          (= (new-arr i) (f (arr i))))
+        new-arr))
+
+@storage-write
+(var out: [2: f32])
+
+@cpu
+(defn main []
+  (let [fs (map [2. 3.] (fn [k] (fn [x] (* x k))))]
+    (dispatch-compute-shader
+      (fn []
+        (= (out 0u) ((fs 0u) 5.))
+        (= (out 1u) ((fs 1u) 5.)))
+      (vec3u 1u))
+    (print out)))
