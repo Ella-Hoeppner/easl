@@ -2784,15 +2784,19 @@ impl Value {
         let max_inner_size = e.inner_flat_data_size_in_u32s().unwrap_or(0);
         let mut bytes = discriminant.to_ne_bytes().to_vec();
         if max_inner_size > 0 {
+          // The payload is the enum's `data: array<u32, N>`, which shaders
+          // pack and unpack word by word with no alignment padding — the
+          // flat VM word layout, not the payload type's own WGSL layout.
           if let Some(variant_def) =
             e.variants.iter().find(|v| v.name == *variant)
           {
             let inner_ty = variant_def.inner_type.unwrap_known();
             if inner_ty != Type::Unit {
-              bytes.extend(inner.to_uniform_bytes(&inner_ty));
+              for word in inner.to_vm_words(&inner_ty) {
+                bytes.extend(word.to_ne_bytes());
+              }
             }
           }
-          // Pad inner data to max_inner_size u32s
           bytes.resize((1 + max_inner_size) * 4, 0);
         }
         bytes
@@ -3061,11 +3065,17 @@ impl Value {
         *offset += inner_size * 4;
         if let Some(variant) = e.variants.get(discriminant) {
           let inner_ty = variant.inner_type.unwrap_known();
+          // The payload words are flat (see `to_uniform_bytes`).
           let inner_value = if inner_ty == Type::Unit {
             Value::Unit
           } else {
-            let mut inner_offset = inner_data_start;
-            Self::from_gpu_bytes_at(bytes, &inner_ty, &mut inner_offset)
+            let words: Vec<u32> = (0..inner_size)
+              .map(|i| {
+                let mut word_offset = inner_data_start + i * 4;
+                read_u32(bytes, &mut word_offset)
+              })
+              .collect();
+            Value::from_vm_words(&inner_ty, &words)
           };
           Value::Enum(variant.name.clone(), inner_value.into())
         } else {

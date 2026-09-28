@@ -1,0 +1,33 @@
+; An enum whose payload struct has WGSL alignment padding (a vec3f after an
+; f32). The enum's `data: array<u32, N>` holds the payload unpadded, so CPU
+; uploads and GPU readbacks must use that flat layout, not the payload
+; struct's own padded one.
+(struct Payload
+  k: f32
+  dir: vec3f)
+
+(enum Shape
+  (Aligned Payload)
+  (Flat f32))
+
+@storage-write
+(var out: [2: f32])
+
+@storage-write
+(var written: [2: Shape])
+
+@cpu
+(defn main []
+  (let [shapes [(Aligned (Payload 2. (vec3f 1. 0. 0.))) (Flat 7.)]]
+    (dispatch-compute-shader
+      (fn []
+        (for [i 2u]
+          (= (out i)
+             (match (shapes i)
+               (Aligned p) (* p.k (dot p.dir (vec3f 1. 2. 3.)))
+               (Flat v) v)))
+        (= (written 0u) (Aligned (Payload 3. (vec3f 4. 5. 6.))))
+        (= (written 1u) (Flat 8.)))
+      (vec3u 1u))
+    (print out)
+    (print written)))

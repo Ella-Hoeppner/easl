@@ -2359,6 +2359,14 @@ impl Type {
       Type::Array(_, _) => {
         panic!("called bitcastable_chunk_accessors on unsized Array")
       }
+      // A closure's value is its captured scope data, which every backend
+      // lays out as the scope struct.
+      Type::Function(_) => {
+        let data = self
+          .closure_data_type()
+          .expect("packed an unresolved function value into an enum");
+        data.push_bitcastable_chunks(base, chunks);
+      }
       _ => {
         panic!("called bitcastable_chunk_accessors on invalid type")
       }
@@ -2392,6 +2400,22 @@ impl Type {
     };
     match self {
       Type::Unit => (b.unit(), 0),
+      // A closure is rebuilt as a construction of its scope struct typed as
+      // the closure — the scope-construction shape backends recognize.
+      Type::Function(_) => {
+        let data = self
+          .closure_data_type()
+          .expect("unpacked an unresolved function value from an enum");
+        let (mut value, consumed) = data.bitcasted_from_enum_data_inner(
+          enum_value_name,
+          enum_type,
+          current_index,
+          names,
+          target,
+        );
+        value.data = self.clone().known().into();
+        (value, consumed)
+      }
       // WGSL/C have no `bitcast` to `bool`; unpack via `data[i] != 0u`
       // (0 = false, non-zero = true), the inverse of the constructor's
       // `u32(bool)` pack. `!=` is an infix op, so this compiles to

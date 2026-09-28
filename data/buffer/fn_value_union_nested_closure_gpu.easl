@@ -1,0 +1,38 @@
+; A struct field holding one of two closures chosen at runtime (a function
+; union), where a member captures another closure beside vector data. The
+; union's payload packs the captured closure's scope; a dispatched shader
+; reads the array and must unpack each member's scope field for field.
+(defn scaler [k: f32]: (Fn [f32] f32)
+  (fn [x] (* x k)))
+
+(defn make-shaped [dir: vec3f
+                   offset: f32
+                   shaper: (Fn [f32] f32)]: (Fn [vec3f] f32)
+  (fn [pos]
+    (+ (shaper (dot pos dir)) offset)))
+
+(defn make-flat [value: f32]: (Fn [vec3f] f32)
+  (fn [pos] value))
+
+(struct Layer
+  f: (Fn [vec3f] f32)
+  weight: f32)
+
+(defn make-layer [i: u32]: Layer
+  (let [shaped (make-shaped (vec3f 1. 0. 0.) 10. (scaler (f32 (+ i 2u))))
+        flat (make-flat (f32 (* i 100u)))]
+    (Layer (if (== (% i 2u) 0u) shaped flat) (f32 (+ i 1u)))))
+
+@storage-write
+(var out: [3: f32])
+
+@cpu
+(defn main []
+  (let [layers [(make-layer 0u) (make-layer 1u) (make-layer 2u)]]
+    (dispatch-compute-shader
+      (fn []
+        (for [i 3u]
+          (let [layer (layers i)]
+            (= (out i) (* layer.weight (layer.f (vec3f 1. 2. 3.)))))))
+      (vec3u 1u))
+    (print out)))
