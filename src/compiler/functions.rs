@@ -5,6 +5,7 @@ use std::sync::{Arc, RwLock};
 use take_mut::take;
 
 use crate::compiler::entry::BuiltinIOAttribute;
+use crate::compiler::exp_builder::ExpBuilder;
 use crate::compiler::expression::compile_typed_name;
 use crate::compiler::types::AbstractArraySize;
 use crate::vm::compile::{
@@ -17,7 +18,7 @@ use crate::{
     effects::{Effect, EffectType},
     entry::{EntryPoint, IOAttributes},
     enums::AbstractEnum,
-    expression::{Exp, arg_list_and_return_type_from_easl_tree},
+    expression::arg_list_and_return_type_from_easl_tree,
     program::{CompilerTarget, NameContext, TypeDefs},
     structs::AbstractStructField,
     types::{
@@ -873,11 +874,10 @@ impl AbstractFunctionSignature {
                 ))
                 .concretize(&vec![], &ctx.typedefs, f_name.source_trace.clone())
                 .unwrap();
-                args.push(Exp {
-                  data: new_arg_type.clone().known().into(),
-                  kind: ExpKind::Name(name.clone()),
-                  source_trace: f_name.source_trace.clone(),
-                });
+                args.push(
+                  ExpBuilder::at(&f_name.source_trace)
+                    .name(name, &new_arg_type),
+                );
                 *name = inlined_fn_name.clone();
                 f.args.push((
                   Variable {

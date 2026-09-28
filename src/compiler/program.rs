@@ -33,6 +33,7 @@ use crate::{
     },
     enums::{AbstractEnum, UntypedEnum},
     error::{CompileError, SourceTrace, err},
+    exp_builder::{ExpBuilder, struct_constructor},
     expression::{
       Accessor, Exp, ExpKind, ExpressionCompilationPosition, Number,
     },
@@ -1477,10 +1478,10 @@ impl Program {
           };
           let pending = body.extract_non_bound_mutable_references(&self.names);
           if !pending.is_empty() {
-            take(&mut **body, |old_body| TypedExp {
-              data: old_body.data.clone(),
-              source_trace: old_body.source_trace.clone(),
-              kind: ExpKind::Let(pending, Box::new(old_body)),
+            take(&mut **body, |old_body| {
+              let data = old_body.data.clone();
+              ExpBuilder::at(&old_body.source_trace)
+                .with_data(ExpKind::Let(pending, Box::new(old_body)), data)
             });
           }
         }
@@ -3706,36 +3707,16 @@ impl Program {
           if kind.is_boolean() {
             // Bools aren't host-shareable in WGSL uniforms: the binding is
             // a u32 and the query becomes `(!= binding 0u)`.
-            let u32_type: ExpTypeInfo = Type::U32.known().into();
-            let mut binding_read_type = u32_type.clone();
-            binding_read_type.is_globally_bound = true;
+            let b = ExpBuilder::at(&exp.source_trace);
+            let mut binding_read = b.name(&binding_name, &Type::U32);
+            binding_read.data.is_globally_bound = true;
             exp.kind = ExpKind::Application(
-              Box::new(Exp {
-                data: Type::Function(Box::new(FunctionSignature {
-                  abstract_ancestor: Some(not_equal_ancestor.clone()),
-                  args: vec![
-                    (Variable::immutable(u32_type.clone()), vec![]),
-                    (Variable::immutable(u32_type.clone()), vec![]),
-                  ],
-                  return_type: Type::Bool.known().into(),
-                }))
-                .known()
-                .into(),
-                kind: ExpKind::Name("!=".into()),
-                source_trace: exp.source_trace.clone(),
-              }),
-              vec![
-                Exp {
-                  data: binding_read_type,
-                  kind: ExpKind::Name(binding_name),
-                  source_trace: exp.source_trace.clone(),
-                },
-                Exp {
-                  data: u32_type,
-                  kind: ExpKind::NumberLiteral(Number::Int(0)),
-                  source_trace: exp.source_trace.clone(),
-                },
-              ],
+              Box::new(b.callee(
+                &not_equal_ancestor,
+                &[Type::U32, Type::U32],
+                &Type::Bool,
+              )),
+              vec![binding_read, b.u32(0)],
             );
           } else {
             exp.kind = ExpKind::Name(binding_name);
@@ -4056,8 +4037,8 @@ impl Program {
             // (stage validity of the lookup was already checked by
             // `validate_context_exclusivity`; this pass only rewrites)
             let global_var_name = attribute.compiled_name();
-            let value_type_info: ExpTypeInfo =
-              attribute.value_type().known().into();
+            let value_type = attribute.value_type();
+            let b = ExpBuilder::at(&SourceTrace::empty());
             let assignment_value = if let Some(arg_name) = implementation
               .arg_annotations
               .iter()
@@ -4069,11 +4050,7 @@ impl Program {
                   None
                 }
               }) {
-              Exp {
-                data: value_type_info.clone(),
-                kind: ExpKind::Name(arg_name),
-                source_trace: SourceTrace::empty(),
-              }
+              b.name(&arg_name, &value_type)
             } else if let Some((struct_type, arg_name, field_name)) = signature
               .args
               .iter()
@@ -4092,19 +4069,11 @@ impl Program {
                 }
               })
             {
-              Exp {
-                data: value_type_info.clone(),
-                kind: ExpKind::Access(
-                  Accessor::Field(field_name),
-                  Exp {
-                    data: Type::Struct(struct_type).known().into(),
-                    kind: ExpKind::Name(arg_name),
-                    source_trace: SourceTrace::empty(),
-                  }
-                  .into(),
-                ),
-                source_trace: SourceTrace::empty(),
-              }
+              b.field(
+                b.name(&arg_name, &Type::Struct(struct_type)),
+                &field_name,
+                value_type.clone(),
+              )
             } else {
               let arg_name =
                 self.names.write().unwrap().gensym(&global_var_name);
@@ -4139,41 +4108,27 @@ impl Program {
                   vec![],
                 ));
               });
-              Exp {
-                data: value_type_info.clone(),
-                kind: ExpKind::Name(arg_name),
-                source_trace: SourceTrace::empty(),
-              }
+              b.name(&arg_name, &value_type)
             };
             let ExpKind::Function(_, body) =
               &mut implementation.expression.kind
             else {
               panic!()
             };
-            *body = Exp {
-              data: body.data.clone(),
-              kind: ExpKind::Block(vec![
-                Exp {
-                  data: Type::Unit.known().into(),
-                  kind: ExpKind::Application(
-                    TypedExp::assignment_function(value_type_info.clone())
-                      .into(),
-                    vec![
-                      Exp {
-                        data: value_type_info.clone(),
-                        kind: ExpKind::Name(global_var_name.into()),
-                        source_trace: SourceTrace::empty(),
-                      },
-                      assignment_value,
-                    ],
-                  ),
-                  source_trace: SourceTrace::empty(),
-                },
-                *body.clone(),
-              ]),
-              source_trace: body.source_trace.clone(),
-            }
-            .into();
+            let assignment = b.apply(
+              TypedExp::assignment_function(value_type.clone().known().into()),
+              vec![
+                b.name(&global_var_name.into(), &value_type),
+                assignment_value,
+              ],
+              &Type::Unit,
+            );
+            *body = ExpBuilder::at(&body.source_trace)
+              .with_data(
+                ExpKind::Block(vec![assignment, *body.clone()]),
+                body.data.clone(),
+              )
+              .into();
           }
         }
       }
@@ -4576,11 +4531,10 @@ impl Program {
                               )
                               .unwrap(),
                             );
-                            args.push(Exp {
-                              data: scope_type.clone().known().into(),
-                              kind: ExpKind::Name(original_name.clone()),
-                              source_trace: f.source_trace.clone(),
-                            });
+                            args.push(
+                              ExpBuilder::at(&f.source_trace)
+                                .name(&original_name, &scope_type),
+                            );
                             // As in the Access-callee arm above: the
                             // callee's own function-type view gains the
                             // scope param, so downstream consumers of
@@ -4737,8 +4691,10 @@ impl Program {
                               .iter()
                               .any(|(existing, _)| existing == field_name)
                           {
-                            scope_field_captures
-                              .push((field_name.clone(), e.data.unwrap_known()));
+                            scope_field_captures.push((
+                              field_name.clone(),
+                              e.data.unwrap_known(),
+                            ));
                           }
                           Ok::<bool, Never>(true)
                         })
@@ -5018,10 +4974,8 @@ impl Program {
                               body
                                 .walk_mut(&mut |e| {
                                   if let ExpKind::Name(name) = &mut e.kind {
-                                    if let Some((
-                                      enclosing_scope_param,
-                                      _,
-                                    )) = &enclosing_scope
+                                    if let Some((enclosing_scope_param, _)) =
+                                      &enclosing_scope
                                       && name == enclosing_scope_param
                                       && !scope_split_fields.is_empty()
                                     {
@@ -5041,9 +4995,9 @@ impl Program {
                                         t
                                       };
                                     } else if let Some((_, captured_type, _)) =
-                                      captured_vars
-                                        .iter()
-                                        .find(|(arg_name, _, _)| arg_name == name)
+                                      captured_vars.iter().find(
+                                        |(arg_name, _, _)| arg_name == name,
+                                      )
                                     {
                                       // The reference keeps the Name node's
                                       // own type, whose abstract ancestor
@@ -5071,23 +5025,16 @@ impl Program {
                                           Some(ancestor.clone());
                                       }
                                       let name = name.clone();
-                                      let mut t: ExpTypeInfo =
-                                        concrete_captured_scope_type
-                                          .clone()
-                                          .known()
-                                          .into();
-                                      t.ownership = Ownership::MutableReference;
                                       e.kind = ExpKind::Access(
                                         Accessor::Field(name.clone()),
-                                        Box::new(Exp {
-                                          data: t,
-                                          kind: ExpKind::Name(
-                                            scope_name.clone(),
-                                          ),
-                                          source_trace: exp
-                                            .source_trace
-                                            .clone(),
-                                        }),
+                                        Box::new(
+                                          ExpBuilder::at(&exp.source_trace)
+                                            .name_with(
+                                              scope_name,
+                                              concrete_captured_scope_type,
+                                              Ownership::MutableReference,
+                                            ),
+                                        ),
                                       );
                                     }
                                   }
@@ -5107,115 +5054,82 @@ impl Program {
                     if let Some((s, _, _)) = &captured_scope {
                       new_structs.push(s.clone());
                     }
-                    *exp = Exp {
-                      data: Type::Function(Box::new(FunctionSignature {
+                    let b = ExpBuilder::at(&exp.source_trace);
+                    let closure_type =
+                      Type::Function(Box::new(FunctionSignature {
                         abstract_ancestor: Some(Arc::new(RwLock::new(
                           signature,
                         ))),
                         args: f_signature.args,
                         return_type: f_signature.return_type,
-                      }))
-                      .known()
-                      .into(),
-                      kind: if let Some((
-                        captured_scope,
-                        concrete_captured_scope_type,
-                        _,
-                      )) = captured_scope
-                      {
-                        ExpKind::Application(
-                          Box::new(Exp {
-                            data: Type::Function(Box::new(FunctionSignature {
-                              // The scope construction is, at the value
-                              // level, a construction of the scope struct —
-                              // its callee gets the struct's constructor as
-                              // an explicit ancestor, exactly like any other
-                              // struct-constructor application. (The
-                              // closure-ness of the node lives in the
-                              // expression's own type: a function type whose
-                              // ancestor is the extracted inner fn.)
-                              abstract_ancestor: Some(Arc::new(RwLock::new(
-                                AbstractFunctionSignature {
-                                  name: captured_scope.name.0.clone(),
-                                  generic_args: vec![],
-                                  arg_types: captured_vars
-                                    .iter()
-                                    .map(|(_, t, _)| {
-                                      (
-                                        AbstractType::Type(t.clone()),
-                                        Ownership::Owned,
-                                      )
-                                    })
-                                    .collect(),
-                                  return_type: AbstractType::Type(
-                                    concrete_captured_scope_type.clone(),
-                                  ),
-                                  implementation:
-                                    FunctionImplementationKind::StructConstructor,
-                                  associative: false,
-                                  captured_scope: None,
-                                  entry_point: None,
-                                },
-                              ))),
-                              args: captured_vars
-                                .iter()
-                                .map(|(_, t, _)| {
-                                  (
-                                    Variable {
-                                      kind: VariableKind::Let,
-                                      var_type: t.clone().known().into(),
-                                    },
-                                    vec![],
-                                  )
-                                })
-                                .collect(),
-                              return_type: exp.data.clone(),
-                            }))
-                            .known()
-                            .into(),
-                            kind: ExpKind::Name(captured_scope.name.0.clone()),
-                            source_trace: exp.source_trace.clone(),
-                          }),
-                          captured_vars
-                            .into_iter()
-                            .map(|(name, t, ownership)| {
-                              let mut data: ExpTypeInfo = t.known().into();
-                              data.ownership = ownership;
-                              let kind = if scope_split_fields.contains(&name)
-                                && let Some((
-                                  enclosing_scope_param,
-                                  enclosing_scope_type,
-                                )) = &enclosing_scope
-                              {
-                                let mut scope_data: ExpTypeInfo =
-                                  enclosing_scope_type.clone().known().into();
-                                scope_data.ownership =
-                                  Ownership::MutableReference;
-                                ExpKind::Access(
-                                  Accessor::Field(name.clone()),
-                                  Box::new(Exp {
-                                    data: scope_data,
-                                    kind: ExpKind::Name(
-                                      enclosing_scope_param.clone(),
-                                    ),
-                                    source_trace: exp.source_trace.clone(),
-                                  }),
-                                )
-                              } else {
-                                ExpKind::Name(name.clone())
-                              };
-                              Exp {
-                                data,
-                                kind,
-                                source_trace: exp.source_trace.clone(),
-                              }
+                      }));
+                    *exp = if let Some((
+                      captured_scope,
+                      concrete_captured_scope_type,
+                      _,
+                    )) = captured_scope
+                    {
+                      let capture_types: Vec<Type> = captured_vars
+                        .iter()
+                        .map(|(_, t, _)| t.clone())
+                        .collect();
+                      let callee_type =
+                        Type::Function(Box::new(FunctionSignature {
+                          // The scope construction is, at the value level, a
+                          // construction of the scope struct — its callee gets
+                          // the struct's constructor as an explicit ancestor,
+                          // exactly like any other struct-constructor
+                          // application. (The closure-ness of the node lives in
+                          // the expression's own type: a function type whose
+                          // ancestor is the extracted inner fn.)
+                          abstract_ancestor: Some(struct_constructor(
+                            &captured_scope.name.0,
+                            &capture_types,
+                            &concrete_captured_scope_type,
+                          )),
+                          args: capture_types
+                            .iter()
+                            .map(|t| {
+                              (
+                                Variable::immutable(t.clone().known().into()),
+                                vec![],
+                              )
                             })
                             .collect(),
-                        )
-                      } else {
-                        ExpKind::Name(name)
-                      },
-                      source_trace: exp.source_trace.clone(),
+                          return_type: exp.data.clone(),
+                        }));
+                      let args = captured_vars
+                        .into_iter()
+                        .map(|(name, t, ownership)| {
+                          let mut arg = if scope_split_fields.contains(&name)
+                            && let Some((
+                              enclosing_scope_param,
+                              enclosing_scope_type,
+                            )) = &enclosing_scope
+                          {
+                            b.field(
+                              b.name_with(
+                                enclosing_scope_param,
+                                enclosing_scope_type,
+                                Ownership::MutableReference,
+                              ),
+                              &name,
+                              t,
+                            )
+                          } else {
+                            b.name(&name, &t)
+                          };
+                          arg.data.ownership = ownership;
+                          arg
+                        })
+                        .collect();
+                      b.apply(
+                        b.name(&captured_scope.name.0, &callee_type),
+                        args,
+                        &closure_type,
+                      )
+                    } else {
+                      b.name(&name, &closure_type)
                     };
 
                     Ok(true)
@@ -5888,29 +5802,20 @@ impl Program {
             .collect();
           if mutable_args.len() > 0 {
             take(body, |body| {
-              TypedExp {
-                data: body.data.clone(),
-                source_trace: body.source_trace.clone(),
-                kind: ExpKind::Let(
-                  mutable_args
-                    .into_iter()
-                    .map(|((arg_name, _), arg_type)| {
-                      (
-                        arg_name.clone(),
-                        SourceTrace::empty(),
-                        VariableKind::Var,
-                        TypedExp {
-                          data: arg_type.clone(),
-                          kind: ExpKind::Name(arg_name),
-                          source_trace: body.source_trace.clone(),
-                        },
-                      )
-                    })
-                    .collect(),
-                  body,
-                ),
-              }
-              .into()
+              let b = ExpBuilder::at(&body.source_trace);
+              let data = body.data.clone();
+              let bindings = mutable_args
+                .into_iter()
+                .map(|((arg_name, _), arg_type)| {
+                  (
+                    arg_name.clone(),
+                    SourceTrace::empty(),
+                    VariableKind::Var,
+                    b.with_data(ExpKind::Name(arg_name), arg_type),
+                  )
+                })
+                .collect();
+              b.with_data(ExpKind::Let(bindings, body), data).into()
             });
           }
         }
@@ -6495,11 +6400,7 @@ impl Program {
                 _ => panic!("can't handle this kind of ConcreteArraySize here"),
               };
               if let Some(size) = size {
-                *exp = TypedExp {
-                  data: Type::U32.known().into(),
-                  kind: ExpKind::NumberLiteral(Number::Int(size as i64)),
-                  source_trace: exp.source_trace.clone(),
-                }
+                *exp = ExpBuilder::at(&exp.source_trace).u32(size);
               }
             }
             Ok::<bool, Never>(true)

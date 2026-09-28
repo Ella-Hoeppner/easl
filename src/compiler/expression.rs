@@ -6,6 +6,7 @@ use std::sync::{Arc, RwLock};
 use take_mut::take;
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::compiler::exp_builder::{ExpBuilder, let_around};
 use crate::compiler::function_values::{
   holds_boxed_function, is_function_value_borrow, is_pure_place,
 };
@@ -665,11 +666,8 @@ impl TypedExp {
         for i in args_to_lift {
           let gensym: Arc<str> = names.write().unwrap().gensym("scope_arg");
           let old_arg = args[i].clone();
-          args[i] = TypedExp {
-            data: old_arg.data.clone(),
-            kind: ExpKind::Name(gensym.clone()),
-            source_trace: old_arg.source_trace.clone(),
-          };
+          args[i] = ExpBuilder::at(&old_arg.source_trace)
+            .with_data(ExpKind::Name(gensym.clone()), old_arg.data.clone());
           let mut value = old_arg;
           pending.extend(value.extract_non_bound_mutable_references(names));
           pending.push((
@@ -5082,6 +5080,7 @@ impl TypedExp {
   }
   pub fn deexpressionify(&mut self, program: &Program, target: CompilerTarget) {
     let mut names = program.names.write().unwrap();
+    let untraced = ExpBuilder::at(&SourceTrace::empty());
     loop {
       let mut changed = false;
       let placeholder_exp_kind = ExpKind::Wildcard;
@@ -5111,11 +5110,12 @@ impl TypedExp {
                     let result_name =
                       names.gensym("extracted_swizzle_ref_result");
                     let arg = arg.clone();
-                    let mut let_body_expressions = vec![TypedExp {
-                      data: exp.data.clone(),
-                      kind: ExpKind::Name(result_name.clone()),
-                      source_trace: exp.source_trace.clone(),
-                    }];
+                    let exp_builder = ExpBuilder::at(&exp.source_trace);
+                    let arg_builder = ExpBuilder::at(&arg.source_trace);
+                    let mut let_body_expressions = vec![exp_builder.with_data(
+                      ExpKind::Name(result_name.clone()),
+                      exp.data.clone(),
+                    )];
                     if Ownership::MutableReference == f_param.var_type.ownership
                     {
                       let Type::Struct(arg_accessed_struct) =
@@ -5128,42 +5128,28 @@ impl TypedExp {
                       let_body_expressions = swizzle_fields
                         .iter()
                         .enumerate()
-                        .map(|(i, swizzle_field)| TypedExp {
-                          data: Type::Unit.known().into(),
-                          source_trace: arg.source_trace.clone(),
-                          kind: ExpKind::Application(
+                        .map(|(i, swizzle_field)| {
+                          arg_builder.apply(
                             Self::assignment_function(
                               Type::Bool.known().into(),
-                            )
-                            .into(),
+                            ),
                             vec![
-                              TypedExp {
-                                data: inner_scalar_type.clone().known().into(),
-                                source_trace: arg.source_trace.clone(),
-                                kind: ExpKind::Access(
-                                  Accessor::Field(swizzle_field.name().into()),
-                                  arg_accessed_value.clone(),
+                              arg_builder.field(
+                                (**arg_accessed_value).clone(),
+                                swizzle_field.name(),
+                                inner_scalar_type.clone(),
+                              ),
+                              arg_builder.field(
+                                arg_builder.with_data(
+                                  ExpKind::Name(swizzle_vec_name.clone()),
+                                  arg_accessed_value.data.clone(),
                                 ),
-                              },
-                              TypedExp {
-                                data: inner_scalar_type.clone().known().into(),
-                                source_trace: arg.source_trace.clone(),
-                                kind: ExpKind::Access(
-                                  Accessor::Field(
-                                    ["x", "y", "z", "w"][i].into(),
-                                  ),
-                                  TypedExp {
-                                    data: arg_accessed_value.data.clone(),
-                                    kind: ExpKind::Name(
-                                      swizzle_vec_name.clone(),
-                                    ),
-                                    source_trace: arg.source_trace.clone(),
-                                  }
-                                  .into(),
-                                ),
-                              },
+                                ["x", "y", "z", "w"][i],
+                                inner_scalar_type.clone(),
+                              ),
                             ],
-                          ),
+                            &Type::Unit,
+                          )
                         })
                         .chain(let_body_expressions)
                         .collect();
@@ -5180,25 +5166,23 @@ impl TypedExp {
                           result_name.clone(),
                           exp.source_trace.clone(),
                           VariableKind::Let,
-                          TypedExp {
-                            data: exp.data.clone(),
-                            source_trace: exp.source_trace.clone(),
-                            kind: ExpKind::Application(f.clone(), {
+                          exp_builder.with_data(
+                            ExpKind::Application(f.clone(), {
                               let mut new_args = args.clone();
                               new_args[i].kind =
                                 ExpKind::Name(swizzle_vec_name);
                               new_args
-                            })
-                            .into(),
-                          },
+                            }),
+                            exp.data.clone(),
+                          ),
                         ),
                       ],
-                      TypedExp {
-                        data: exp.data.clone(),
-                        kind: ExpKind::Block(let_body_expressions),
-                        source_trace: exp.source_trace.clone(),
-                      }
-                      .into(),
+                      exp_builder
+                        .with_data(
+                          ExpKind::Block(let_body_expressions),
+                          exp.data.clone(),
+                        )
+                        .into(),
                     );
                     changed = true;
                     return Ok(true);
@@ -5228,11 +5212,10 @@ impl TypedExp {
                       .involves_runtime_sized_array()
                   {
                     let new_name = names.gensym(&original_name);
-                    let body_exp = Exp {
-                      data: arg.data.clone(),
-                      source_trace: arg.source_trace.clone(),
-                      kind: ExpKind::Name(new_name.clone()),
-                    };
+                    let body_exp = ExpBuilder::at(&arg.source_trace).with_data(
+                      ExpKind::Name(new_name.clone()),
+                      arg.data.clone(),
+                    );
                     take(arg, |arg| Exp {
                       data: arg.data.clone(),
                       source_trace: arg.source_trace.clone(),
@@ -5259,11 +5242,11 @@ impl TypedExp {
                       if !matches!(args[0].kind, ExpKind::Name(_)) {
                         take(&mut args[0], |arg| {
                           let name = names.gensym("print_arg");
-                          let new_arg = TypedExp {
-                            data: arg.data.clone(),
-                            kind: ExpKind::Name(name.clone()),
-                            source_trace: arg.source_trace.clone(),
-                          };
+                          let new_arg = ExpBuilder::at(&arg.source_trace)
+                            .with_data(
+                              ExpKind::Name(name.clone()),
+                              arg.data.clone(),
+                            );
                           inserted_bindings.push((
                             name,
                             arg.source_trace.clone(),
@@ -5275,11 +5258,7 @@ impl TypedExp {
                       }
                     }
                     if !inserted_bindings.is_empty() {
-                      take(exp, |exp| TypedExp {
-                        data: exp.data.clone(),
-                        source_trace: exp.source_trace.clone(),
-                        kind: ExpKind::Let(inserted_bindings, exp.into()),
-                      });
+                      take(exp, |exp| let_around(inserted_bindings, exp));
                     }
                   }
                 } else {
@@ -5287,27 +5266,20 @@ impl TypedExp {
                   // expression in the place of the function, rather than any
                   // kind of compound expression. The following ensures this.
                   let f_name = names.gensym("f_binding");
-                  let mut name_exp = Exp {
-                    kind: ExpKind::Name(f_name.clone()),
-                    data: f.data.clone(),
-                    source_trace: f.source_trace.clone(),
-                  };
+                  let mut name_exp = ExpBuilder::at(&f.source_trace)
+                    .with_data(ExpKind::Name(f_name.clone()), f.data.clone());
                   std::mem::swap(f.as_mut(), &mut name_exp);
                   let mut temp = placeholder_exp.clone();
                   std::mem::swap(exp, &mut temp);
-                  temp = Exp {
-                    data: temp.data.clone(),
-                    source_trace: temp.source_trace.clone(),
-                    kind: ExpKind::Let(
-                      vec![(
-                        f_name,
-                        temp.source_trace.clone(),
-                        VariableKind::Let,
-                        name_exp,
-                      )],
-                      Box::new(temp),
-                    ),
-                  };
+                  temp = let_around(
+                    vec![(
+                      f_name,
+                      temp.source_trace.clone(),
+                      VariableKind::Let,
+                      name_exp,
+                    )],
+                    temp,
+                  );
                   std::mem::swap(exp, &mut temp);
                   changed = true;
                 }
@@ -5328,27 +5300,23 @@ impl TypedExp {
                     .is_some_and(|t| holds_boxed_function(&t)) => {}
                 _ => {
                   let scrutinee_gensym = names.gensym("scrutinee");
-                  let mut scrutinee_name_exp = TypedExp {
-                    data: scrutinee.data.clone(),
-                    kind: ExpKind::Name(scrutinee_gensym.clone()),
-                    source_trace: scrutinee.source_trace.clone(),
-                  };
+                  let mut scrutinee_name_exp =
+                    ExpBuilder::at(&scrutinee.source_trace).with_data(
+                      ExpKind::Name(scrutinee_gensym.clone()),
+                      scrutinee.data.clone(),
+                    );
                   std::mem::swap(&mut scrutinee_name_exp, scrutinee);
                   let mut temp = placeholder_exp.clone();
                   std::mem::swap(exp, &mut temp);
-                  temp = Exp {
-                    data: temp.data.clone(),
-                    source_trace: temp.source_trace.clone(),
-                    kind: ExpKind::Let(
-                      vec![(
-                        scrutinee_gensym,
-                        temp.source_trace.clone(),
-                        VariableKind::Let,
-                        scrutinee_name_exp,
-                      )],
-                      Box::new(temp),
-                    ),
-                  };
+                  temp = let_around(
+                    vec![(
+                      scrutinee_gensym,
+                      temp.source_trace.clone(),
+                      VariableKind::Let,
+                      scrutinee_name_exp,
+                    )],
+                    temp,
+                  );
                   std::mem::swap(exp, &mut temp);
                   changed = true;
                   return Ok(true);
@@ -5371,34 +5339,23 @@ impl TypedExp {
                         Ok(true)
                       }
                       Break => {
-                        take(arm_exp, |arm_exp| Exp {
-                          data: arm_exp.data.clone(),
-                          source_trace: arm_exp.source_trace.clone(),
-                          kind: ExpKind::Block(vec![
-                            Exp {
-                              data: Type::Unit.known().into(),
-                              source_trace: arm_exp.source_trace.clone(),
-                              kind: ExpKind::Application(
-                                Self::assignment_function(
-                                  Type::Bool.known().into(),
-                                )
-                                .into(),
-                                vec![
-                                  Exp {
-                                    data: Type::Bool.known().into(),
-                                    source_trace: arm_exp.source_trace.clone(),
-                                    kind: ExpKind::Name(broke_gensym.clone()),
-                                  },
-                                  Exp {
-                                    data: Type::Bool.known().into(),
-                                    source_trace: arm_exp.source_trace.clone(),
-                                    kind: ExpKind::BooleanLiteral(true),
-                                  },
-                                ],
-                              ),
-                            },
-                            arm_exp,
-                          ]),
+                        take(arm_exp, |arm_exp| {
+                          let b = ExpBuilder::at(&arm_exp.source_trace);
+                          let data = arm_exp.data.clone();
+                          let set_broke = b.apply(
+                            Self::assignment_function(
+                              Type::Bool.known().into(),
+                            ),
+                            vec![
+                              b.name(&broke_gensym, &Type::Bool),
+                              b.bool(true),
+                            ],
+                            &Type::Unit,
+                          );
+                          b.with_data(
+                            ExpKind::Block(vec![set_broke, arm_exp]),
+                            data,
+                          )
                         });
                         Ok(false)
                       }
@@ -5409,153 +5366,55 @@ impl TypedExp {
                 let mut temp = placeholder_exp.clone();
                 std::mem::swap(exp, &mut temp);
 
-                let temp_source_trace = temp.source_trace.clone();
+                let b = ExpBuilder::at(&temp.source_trace);
+                let temp_data = temp.data.clone();
+                let mut check_broke = b.match_on(
+                  b.name(&broke_gensym, &Type::Bool),
+                  vec![
+                    (b.bool(true), b.typed(ExpKind::Break, Type::Unit)),
+                    (b.bool(false), b.unit()),
+                  ],
+                  &Type::Unit,
+                );
+                check_broke.data.already_match_breaks_extracted = true;
+                let broke_binding = (
+                  broke_gensym,
+                  temp.source_trace.clone(),
+                  VariableKind::Var,
+                  b.bool(false),
+                );
                 temp = if temp.data.unwrap_known() == Type::Unit {
-                  Exp {
-                    data: temp.data.clone(),
-                    source_trace: temp.source_trace.clone(),
-                    kind: ExpKind::Let(
-                      vec![(
-                        broke_gensym.clone(),
-                        temp.source_trace.clone(),
-                        VariableKind::Var,
-                        Exp {
-                          data: Type::Bool.known().into(),
-                          kind: ExpKind::BooleanLiteral(false),
-                          source_trace: temp.source_trace.clone(),
-                        },
-                      )],
-                      Box::new(Exp {
-                        data: Type::Unit.known().into(),
-                        source_trace: temp.source_trace.clone(),
-                        kind: ExpKind::Block(vec![
-                          temp,
-                          Exp {
-                            data: {
-                              let mut type_info: ExpTypeInfo =
-                                Type::Unit.known().into();
-                              type_info.already_match_breaks_extracted = true;
-                              type_info
-                            },
-                            source_trace: temp_source_trace.clone(),
-                            kind: ExpKind::Match(
-                              Box::new(Exp {
-                                data: Type::Bool.known().into(),
-                                source_trace: temp_source_trace.clone(),
-                                kind: ExpKind::Name(broke_gensym),
-                              }),
-                              vec![
-                                (
-                                  Exp {
-                                    data: Type::Bool.known().into(),
-                                    source_trace: temp_source_trace.clone(),
-                                    kind: ExpKind::BooleanLiteral(true),
-                                  },
-                                  Exp {
-                                    data: Type::Unit.known().into(),
-                                    source_trace: temp_source_trace.clone(),
-                                    kind: ExpKind::Break,
-                                  },
-                                ),
-                                (
-                                  Exp {
-                                    data: Type::Bool.known().into(),
-                                    source_trace: temp_source_trace.clone(),
-                                    kind: ExpKind::BooleanLiteral(false),
-                                  },
-                                  Exp {
-                                    data: Type::Unit.known().into(),
-                                    source_trace: temp_source_trace.clone(),
-                                    kind: ExpKind::Unit,
-                                  },
-                                ),
-                              ],
-                            ),
-                          },
-                        ]),
-                      }),
+                  b.with_data(
+                    ExpKind::Let(
+                      vec![broke_binding],
+                      Box::new(b.block(vec![temp, check_broke])),
                     ),
-                  }
+                    temp_data,
+                  )
                 } else {
                   let match_result_gensym = names.gensym("match_result_gensym");
-                  let value_type = temp.data.clone();
-                  Exp {
-                    data: temp.data.clone(),
-                    source_trace: temp.source_trace.clone(),
-                    kind: ExpKind::Let(
-                      vec![
-                        (
-                          broke_gensym.clone(),
-                          temp.source_trace.clone(),
-                          VariableKind::Var,
-                          Exp {
-                            data: Type::Bool.known().into(),
-                            kind: ExpKind::BooleanLiteral(false),
-                            source_trace: temp.source_trace.clone(),
-                          },
-                        ),
-                        (
-                          match_result_gensym.clone(),
-                          temp.source_trace.clone(),
-                          VariableKind::Let,
-                          temp,
-                        ),
-                      ],
-                      Box::new(Exp {
-                        data: Type::Unit.known().into(),
-                        source_trace: temp_source_trace.clone(),
-                        kind: ExpKind::Block(vec![
-                          Exp {
-                            data: {
-                              let mut type_info: ExpTypeInfo =
-                                Type::Unit.known().into();
-                              type_info.already_match_breaks_extracted = true;
-                              type_info
-                            },
-                            source_trace: temp_source_trace.clone(),
-                            kind: ExpKind::Match(
-                              Box::new(Exp {
-                                data: Type::Bool.known().into(),
-                                source_trace: temp_source_trace.clone(),
-                                kind: ExpKind::Name(broke_gensym),
-                              }),
-                              vec![
-                                (
-                                  Exp {
-                                    data: Type::Bool.known().into(),
-                                    source_trace: temp_source_trace.clone(),
-                                    kind: ExpKind::BooleanLiteral(true),
-                                  },
-                                  Exp {
-                                    data: Type::Unit.known().into(),
-                                    source_trace: temp_source_trace.clone(),
-                                    kind: ExpKind::Break,
-                                  },
-                                ),
-                                (
-                                  Exp {
-                                    data: Type::Bool.known().into(),
-                                    source_trace: temp_source_trace.clone(),
-                                    kind: ExpKind::BooleanLiteral(false),
-                                  },
-                                  Exp {
-                                    data: Type::Unit.known().into(),
-                                    source_trace: temp_source_trace.clone(),
-                                    kind: ExpKind::Unit,
-                                  },
-                                ),
-                              ],
-                            ),
-                          },
-                          Exp {
-                            data: value_type,
-                            source_trace: temp_source_trace.clone(),
-                            kind: ExpKind::Name(match_result_gensym),
-                          },
+                  let result_binding = (
+                    match_result_gensym.clone(),
+                    temp.source_trace.clone(),
+                    VariableKind::Let,
+                    temp,
+                  );
+                  b.with_data(
+                    ExpKind::Let(
+                      vec![broke_binding, result_binding],
+                      Box::new(b.typed(
+                        ExpKind::Block(vec![
+                          check_broke,
+                          b.with_data(
+                            ExpKind::Name(match_result_gensym),
+                            temp_data.clone(),
+                          ),
                         ]),
-                      }),
+                        Type::Unit,
+                      )),
                     ),
-                  }
+                    temp_data,
+                  )
                 };
                 std::mem::swap(exp, &mut temp);
                 changed = true;
@@ -5642,15 +5501,12 @@ impl TypedExp {
                                     new_name,
                                     exp.source_trace.clone(),
                                     VariableKind::Let,
-                                    TypedExp {
-                                      data: replacement_types
+                                    untraced.name(
+                                      &old_name,
+                                      &replacement_types
                                         .remove(&old_name)
-                                        .unwrap()
-                                        .known()
-                                        .into(),
-                                      kind: ExpKind::Name(old_name),
-                                      source_trace: SourceTrace::empty(),
-                                    },
+                                        .unwrap(),
+                                    ),
                                   )
                                 })
                                 .collect(),
@@ -5685,18 +5541,10 @@ impl TypedExp {
                           std::mem::swap(slots[i], &mut temp);
                           inner_expressions.push(temp);
                         }
-                        std::mem::swap(
-                          exp,
-                          &mut TypedExp {
-                            data: inner_expressions
-                              .last()
-                              .unwrap()
-                              .data
-                              .clone(),
-                            kind: ExpKind::Block(inner_expressions),
-                            source_trace: SourceTrace::empty(),
-                          },
-                        );
+                        let data =
+                          inner_expressions.last().unwrap().data.clone();
+                        *exp = untraced
+                          .with_data(ExpKind::Block(inner_expressions), data);
                       }
                       Block(_) => {
                         let mut prefix_statements = vec![];
@@ -5711,20 +5559,14 @@ impl TypedExp {
                         take(exp, |exp| {
                           let t = exp.data.clone();
                           prefix_statements.push(exp);
-                          TypedExp {
-                            kind: ExpKind::Block(prefix_statements),
-                            data: t,
-                            source_trace: SourceTrace::empty(),
-                          }
+                          untraced
+                            .with_data(ExpKind::Block(prefix_statements), t)
                         });
                       }
                       Match(_, _) => {
                         let name: Arc<str> = names.gensym("match_gensym");
-                        let mut match_exp = TypedExp {
-                          kind: Name(name.clone()),
-                          data: arg.data.clone(),
-                          source_trace: SourceTrace::empty(),
-                        };
+                        let mut match_exp = untraced
+                          .with_data(Name(name.clone()), arg.data.clone());
                         std::mem::swap(*arg, &mut match_exp);
                         take(exp, |exp| TypedExp {
                           data: exp.data.clone(),
@@ -5762,56 +5604,20 @@ impl TypedExp {
                 body_expression,
               } => match &condition_expression.kind {
                 Block(_) | Match(_, _) | Let(_, _) | Return(_) => {
-                  let condition_source =
-                    condition_expression.source_trace.clone();
-                  let mut condition_replacement_expression = TypedExp {
-                    data: Type::Bool.known().into(),
-                    kind: ExpKind::BooleanLiteral(true),
-                    source_trace: condition_source.clone(),
-                  };
-                  std::mem::swap(
+                  let b = ExpBuilder::at(&condition_expression.source_trace);
+                  let condition = std::mem::replace(
                     condition_expression.as_mut(),
-                    &mut condition_replacement_expression,
+                    b.bool(true),
                   );
-                  take(body_expression.as_mut(), |body_expression| TypedExp {
-                    source_trace: body_expression.source_trace.clone(),
-                    data: body_expression.data.clone(),
-                    kind: ExpKind::Block(vec![
-                      TypedExp {
-                        data: Type::Unit.known().into(),
-                        source_trace: condition_source.clone(),
-                        kind: ExpKind::Match(
-                          condition_replacement_expression.into(),
-                          vec![
-                            (
-                              TypedExp {
-                                data: Type::Bool.known().into(),
-                                kind: ExpKind::BooleanLiteral(true),
-                                source_trace: condition_source.clone(),
-                              },
-                              TypedExp {
-                                data: Type::Unit.known().into(),
-                                kind: ExpKind::Unit,
-                                source_trace: condition_source.clone(),
-                              },
-                            ),
-                            (
-                              TypedExp {
-                                data: Type::Bool.known().into(),
-                                kind: ExpKind::Wildcard,
-                                source_trace: condition_source.clone(),
-                              },
-                              TypedExp {
-                                data: Type::Unit.known().into(),
-                                kind: ExpKind::Break,
-                                source_trace: condition_source.clone(),
-                              },
-                            ),
-                          ],
-                        ),
-                      },
-                      body_expression,
-                    ]),
+                  take(body_expression.as_mut(), |body_expression| {
+                    let data = body_expression.data.clone();
+                    ExpBuilder::at(&body_expression.source_trace).with_data(
+                      ExpKind::Block(vec![
+                        b.break_unless(condition),
+                        body_expression,
+                      ]),
+                      data,
+                    )
                   });
                   changed = true;
                 }
@@ -5827,31 +5633,27 @@ impl TypedExp {
                 match &increment_variable_initial_value_expression.kind {
                   Block(_) | Match(_, _) | Let(_, _) | Return(_) => {
                     let initial_value_name = names.gensym("initial_value");
-                    let mut replacement_initial_value_exp = TypedExp {
-                      data: increment_variable_initial_value_expression
-                        .data
-                        .clone(),
-                      kind: ExpKind::Name(initial_value_name.clone()),
-                      source_trace: increment_variable_initial_value_expression
-                        .source_trace
-                        .clone(),
-                    };
+                    let mut replacement_initial_value_exp = ExpBuilder::at(
+                      &increment_variable_initial_value_expression.source_trace,
+                    )
+                    .with_data(
+                      ExpKind::Name(initial_value_name.clone()),
+                      increment_variable_initial_value_expression.data.clone(),
+                    );
                     std::mem::swap(
                       &mut replacement_initial_value_exp,
                       increment_variable_initial_value_expression,
                     );
-                    take(exp, |exp| TypedExp {
-                      data: exp.data.clone(),
-                      source_trace: exp.source_trace.clone(),
-                      kind: ExpKind::Let(
+                    take(exp, |exp| {
+                      let_around(
                         vec![(
                           initial_value_name,
                           replacement_initial_value_exp.source_trace.clone(),
                           VariableKind::Let,
                           replacement_initial_value_exp,
                         )],
-                        exp.into(),
-                      ),
+                        exp,
+                      )
                     });
                     changed = true;
                     return Ok(true);
@@ -5880,17 +5682,11 @@ impl TypedExp {
                     } else {
                       false
                     };
-                  let condition_source =
-                    continue_condition_expression.source_trace.clone();
-                  let mut continue_condition_replacement_expression =
-                    TypedExp {
-                      data: Type::Bool.known().into(),
-                      kind: ExpKind::BooleanLiteral(true),
-                      source_trace: condition_source.clone(),
-                    };
-                  std::mem::swap(
+                  let b =
+                    ExpBuilder::at(&continue_condition_expression.source_trace);
+                  let condition = std::mem::replace(
                     continue_condition_expression.as_mut(),
-                    &mut continue_condition_replacement_expression,
+                    b.bool(true),
                   );
                   // The update is only relocated into the body when the
                   // update itself needs extraction: left in the loop's
@@ -5903,62 +5699,27 @@ impl TypedExp {
                       &mut update_replacement_expression,
                     );
                   }
-                  take(body_expression.as_mut(), |body_expression| TypedExp {
-                    source_trace: body_expression.source_trace.clone(),
-                    data: Type::Unit.known().into(),
-                    kind: ExpKind::Block({
-                      // The condition check comes FIRST in the rebuilt
-                      // body: the loop's own condition is now the
-                      // constant `true`, so this check is all that
-                      // stands between an empty iteration space and the
-                      // body. Appended at the end instead, every
-                      // extracted for loop became a do-while — the body
-                      // ran once even when the condition was false on
-                      // entry (real crashes: iterating an empty
-                      // `down-midi-notes` indexed out of bounds).
-                      let mut inner_expressions = vec![
-                        TypedExp {
-                          source_trace: condition_source.clone(),
-                          data: Type::Unit.known().into(),
-                          kind: ExpKind::Match(
-                            continue_condition_replacement_expression.into(),
-                            vec![
-                              (
-                                TypedExp {
-                                  data: Type::Bool.known().into(),
-                                  kind: ExpKind::BooleanLiteral(true),
-                                  source_trace: condition_source.clone(),
-                                },
-                                TypedExp {
-                                  data: Type::Unit.known().into(),
-                                  kind: ExpKind::Unit,
-                                  source_trace: condition_source.clone(),
-                                },
-                              ),
-                              (
-                                TypedExp {
-                                  data: Type::Bool.known().into(),
-                                  kind: ExpKind::Wildcard,
-                                  source_trace: condition_source.clone(),
-                                },
-                                TypedExp {
-                                  data: Type::Unit.known().into(),
-                                  kind: ExpKind::Break,
-                                  source_trace: condition_source.clone(),
-                                },
-                              ),
-                            ],
-                          ),
-                        },
-                        body_expression,
-                      ];
-                      if let Some(update_replacement_expression) =
-                        update_replacement_expression
-                      {
-                        inner_expressions.push(*update_replacement_expression);
-                      }
-                      inner_expressions
-                    }),
+                  take(body_expression.as_mut(), |body_expression| {
+                    let body_builder =
+                      ExpBuilder::at(&body_expression.source_trace);
+                    // The condition check comes FIRST in the rebuilt
+                    // body: the loop's own condition is now the
+                    // constant `true`, so this check is all that
+                    // stands between an empty iteration space and the
+                    // body. Appended at the end instead, every
+                    // extracted for loop became a do-while — the body
+                    // ran once even when the condition was false on
+                    // entry (real crashes: iterating an empty
+                    // `down-midi-notes` indexed out of bounds).
+                    let mut inner_expressions =
+                      vec![b.break_unless(condition), body_expression];
+                    if let Some(update_replacement_expression) =
+                      update_replacement_expression
+                    {
+                      inner_expressions.push(*update_replacement_expression);
+                    }
+                    body_builder
+                      .typed(ExpKind::Block(inner_expressions), Type::Unit)
                   });
                   changed = true;
                 }
@@ -6014,17 +5775,16 @@ impl TypedExp {
                               &mut inner_bindings.first_mut().unwrap().3,
                               &mut binding_value,
                             );
-                            inner_statements.push(TypedExp {
-                              kind: ExpKind::Let(inner_bindings, body.into()),
-                              data: body_type.clone(),
-                              source_trace: SourceTrace::empty(),
-                            });
-                            TypedExp {
-                              kind: ExpKind::Block(inner_statements),
-                              source_trace: SourceTrace::empty(),
-                              data: body_type,
-                            }
-                            .into()
+                            inner_statements.push(untraced.with_data(
+                              ExpKind::Let(inner_bindings, body.into()),
+                              body_type.clone(),
+                            ));
+                            untraced
+                              .with_data(
+                                ExpKind::Block(inner_statements),
+                                body_type,
+                              )
+                              .into()
                           });
                         }
                       }
@@ -6033,11 +5793,8 @@ impl TypedExp {
                     Match(_, _) => {
                       restructured = true;
                       *variable_kind = VariableKind::Var;
-                      let mut match_exp = TypedExp {
-                        kind: ExpKind::Uninitialized,
-                        data: value.data.clone(),
-                        source_trace: SourceTrace::empty(),
-                      };
+                      let mut match_exp = untraced
+                        .with_data(ExpKind::Uninitialized, value.data.clone());
                       std::mem::swap(&mut match_exp, value);
                       let binding_type = value.data.clone();
                       let binding_name = binding_name.clone();
@@ -6048,36 +5805,32 @@ impl TypedExp {
                           unreachable!()
                         };
                         for (_, arm_body) in arms.iter_mut() {
-                          take(arm_body, |arm_body| TypedExp {
-                            data: Type::Unit.known().into(),
-                            kind: ExpKind::Application(
-                              Self::assignment_function(binding_type.clone())
-                                .into(),
+                          take(arm_body, |arm_body| {
+                            untraced.apply(
+                              Self::assignment_function(binding_type.clone()),
                               vec![
-                                TypedExp {
-                                  data: binding_type.clone(),
-                                  kind: ExpKind::Name(binding_name.clone()),
-                                  source_trace: SourceTrace::empty(),
-                                },
+                                untraced.with_data(
+                                  ExpKind::Name(binding_name.clone()),
+                                  binding_type.clone(),
+                                ),
                                 arm_body,
                               ],
-                            ),
-                            source_trace: SourceTrace::empty(),
+                              &Type::Unit,
+                            )
                           });
                         }
-                        TypedExp {
-                          kind: ExpKind::Block(vec![
-                            match_exp,
-                            TypedExp {
-                              data: body_type.clone(),
-                              kind: ExpKind::Let(inner_bindings, body.into()),
-                              source_trace: SourceTrace::empty(),
-                            },
-                          ]),
-                          source_trace: SourceTrace::empty(),
-                          data: body_type,
-                        }
-                        .into()
+                        untraced
+                          .with_data(
+                            ExpKind::Block(vec![
+                              match_exp,
+                              untraced.with_data(
+                                ExpKind::Let(inner_bindings, body.into()),
+                                body_type.clone(),
+                              ),
+                            ]),
+                            body_type,
+                          )
+                          .into()
                       });
                       break;
                     }
@@ -6141,23 +5894,19 @@ impl TypedExp {
             if len > 1 {
               for inner_exp in inner_exps.iter_mut().take(len - 1) {
                 if inner_exp.data.unwrap_known() != Type::Unit {
-                  take(inner_exp, |inner_exp| TypedExp {
-                    data: TypeState::Known(Type::Unit).into(),
-                    source_trace: inner_exp.source_trace.clone(),
-                    kind: ExpKind::Let(
-                      vec![(
-                        program.names.write().unwrap().gensym("throwaway"),
-                        SourceTrace::empty(),
-                        VariableKind::Let,
-                        inner_exp,
-                      )],
-                      TypedExp {
-                        data: TypeState::Known(Type::Unit).into(),
-                        kind: ExpKind::Unit,
-                        source_trace: SourceTrace::empty(),
-                      }
-                      .into(),
-                    ),
+                  take(inner_exp, |inner_exp| {
+                    ExpBuilder::at(&inner_exp.source_trace).typed(
+                      ExpKind::Let(
+                        vec![(
+                          program.names.write().unwrap().gensym("throwaway"),
+                          SourceTrace::empty(),
+                          VariableKind::Let,
+                          inner_exp,
+                        )],
+                        Box::new(ExpBuilder::at(&SourceTrace::empty()).unit()),
+                      ),
+                      Type::Unit,
+                    )
                   });
                 }
               }
@@ -6179,84 +5928,60 @@ impl TypedExp {
       && let Accessor::Swizzle(fields) = accessor
     {
       let gensym_name: Arc<str> = names.gensym("swizzle_assignment");
-      std::mem::swap(
-        self,
-        &mut Exp {
-          kind: ExpKind::Let(
-            vec![(
-              gensym_name.clone(),
-              SourceTrace::empty(),
-              VariableKind::Let,
-              second_arg.clone(),
-            )],
-            Exp {
-              kind: ExpKind::Block(
-                fields
-                  .iter()
-                  .enumerate()
-                  .map(|(i, swizzle_field)| {
-                    let Type::Struct(s) = accessed.data.unwrap_known() else {
-                      unreachable!("swizzle on non-vector")
-                    };
-                    let field_name = swizzle_field.name();
-                    let field_type = s
-                      .fields
-                      .iter()
-                      .find_map(|struct_field| {
-                        (&*struct_field.name == field_name)
-                          .then(|| struct_field.field_type.clone())
-                      })
-                      .expect("couldn't find field when desugaring swizzle");
-                    Exp {
-                      kind: ExpKind::Application(f.clone(), {
-                        vec![
-                          Exp {
-                            kind: ExpKind::Access(
-                              Accessor::Field(field_name.into()),
-                              accessed.clone(),
-                            ),
-                            data: field_type.clone(),
-                            source_trace: self.source_trace.clone(),
-                          },
-                          Exp {
-                            kind: ExpKind::Access(
-                              Accessor::Field(
-                                match i {
-                                  0 => "x",
-                                  1 => "y",
-                                  2 => "z",
-                                  3 => "w",
-                                  _ => unreachable!(),
-                                }
-                                .into(),
-                              ),
-                              Exp {
-                                kind: ExpKind::Name(gensym_name.clone()),
-                                data: second_arg.data.clone(),
-                                source_trace: self.source_trace.clone(),
-                              }
-                              .into(),
-                            ),
-                            data: field_type.clone(),
-                            source_trace: self.source_trace.clone(),
-                          },
-                        ]
-                      }),
-                      data: Type::Unit.known().into(),
-                      source_trace: self.source_trace.clone(),
-                    }
-                  })
-                  .collect(),
+      let b = ExpBuilder::at(&self.source_trace);
+      let assignments = fields
+        .iter()
+        .enumerate()
+        .map(|(i, swizzle_field)| {
+          let Type::Struct(s) = accessed.data.unwrap_known() else {
+            unreachable!("swizzle on non-vector")
+          };
+          let field_name = swizzle_field.name();
+          let field_type = s
+            .fields
+            .iter()
+            .find_map(|struct_field| {
+              (&*struct_field.name == field_name)
+                .then(|| struct_field.field_type.clone())
+            })
+            .expect("couldn't find field when desugaring swizzle");
+          b.apply(
+            (**f).clone(),
+            vec![
+              b.with_data(
+                ExpKind::Access(
+                  Accessor::Field(field_name.into()),
+                  accessed.clone(),
+                ),
+                field_type.clone(),
               ),
-              data: self.data.clone(),
-              source_trace: self.source_trace.clone(),
-            }
-            .into(),
-          ),
-          data: self.data.clone(),
-          source_trace: self.source_trace.clone(),
-        },
-      )
+              b.with_data(
+                ExpKind::Access(
+                  Accessor::Field(["x", "y", "z", "w"][i].into()),
+                  Box::new(b.with_data(
+                    ExpKind::Name(gensym_name.clone()),
+                    second_arg.data.clone(),
+                  )),
+                ),
+                field_type,
+              ),
+            ],
+            &Type::Unit,
+          )
+        })
+        .collect();
+      *self = b.with_data(
+        ExpKind::Let(
+          vec![(
+            gensym_name,
+            SourceTrace::empty(),
+            VariableKind::Let,
+            second_arg.clone(),
+          )],
+          Box::new(b.with_data(ExpKind::Block(assignments), self.data.clone())),
+        ),
+        self.data.clone(),
+      );
     }
   }
   pub fn is_literal_struct_constructor(&self) -> bool {

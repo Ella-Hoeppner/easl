@@ -15,11 +15,11 @@ use crate::{
     builtins::scalar_bitcast,
     enums::{AbstractEnum, Enum, UntypedEnum},
     error::{CompileError, CompileErrorKind},
-    expression::{Accessor, ExpKind, Number, TypedExp},
-    functions::{
-      AbstractFunctionSignature, FunctionImplementationKind, Ownership,
-      extract_mat_size as extract_mat_size_from_name,
+    exp_builder::{
+      ExpBuilder, builtin_signature, function_type, struct_constructor,
     },
+    expression::TypedExp,
+    functions::{Ownership, extract_mat_size as extract_mat_size_from_name},
     program::{CompilerTarget, NameContext, TypeDefs},
     structs::UntypedStruct,
     vars::VariableAddressSpace,
@@ -2278,11 +2278,7 @@ impl Type {
   ) -> Vec<TypedExp> {
     let mut chunks = vec![];
     self.push_bitcastable_chunks(
-      TypedExp {
-        data: self.clone().known().into(),
-        kind: ExpKind::Name(value_name),
-        source_trace: SourceTrace::empty(),
-      },
+      ExpBuilder::at(&SourceTrace::empty()).name(&value_name, self),
       &mut chunks,
     );
     chunks
@@ -2301,76 +2297,36 @@ impl Type {
     base: TypedExp,
     chunks: &mut Vec<TypedExp>,
   ) {
+    let b = ExpBuilder::at(&SourceTrace::empty());
     match self {
       Type::Unit => {}
       Type::F32 | Type::I32 | Type::U32 | Type::Bool => chunks.push(base),
       Type::Struct(s) => {
         for f in s.fields.iter() {
           let field_type = f.field_type.unwrap_known();
-          let access = TypedExp {
-            data: field_type.clone().known().into(),
-            kind: ExpKind::Access(
-              Accessor::Field(Arc::clone(&f.name)),
-              base.clone().into(),
-            ),
-            source_trace: SourceTrace::empty(),
-          };
+          let access = b.field(base.clone(), &f.name, field_type.clone());
           field_type.push_bitcastable_chunks(access, chunks);
         }
       }
       Type::Enum(e) => {
         let data_array_length = e.inner_flat_data_size_in_u32s().unwrap();
-        chunks.push(TypedExp {
-          data: Type::U32.known().into(),
-          kind: ExpKind::Access(
-            Accessor::Field("discriminant".into()),
-            base.clone().into(),
-          ),
-          source_trace: SourceTrace::empty(),
-        });
+        chunks.push(b.field(base.clone(), "discriminant", Type::U32));
+        let data_array_type = Type::Array(
+          Some(ConcreteArraySize::Literal(data_array_length as u32)),
+          Box::new(Type::U32.known().into()),
+        );
         for i in 0..data_array_length {
-          chunks.push(TypedExp {
-            data: Type::U32.known().into(),
-            kind: ExpKind::Application(
-              TypedExp {
-                data: Type::Array(
-                  Some(ConcreteArraySize::Literal(data_array_length as u32)),
-                  Box::new(Type::U32.known().into()),
-                )
-                .known()
-                .into(),
-                kind: ExpKind::Access(
-                  Accessor::Field("data".into()),
-                  base.clone().into(),
-                ),
-                source_trace: SourceTrace::empty(),
-              }
-              .into(),
-              vec![TypedExp {
-                data: Type::U32.known().into(),
-                kind: ExpKind::NumberLiteral(Number::Int(i as i64)),
-                source_trace: SourceTrace::empty(),
-              }],
-            ),
-            source_trace: SourceTrace::empty(),
-          });
+          chunks.push(b.index(
+            b.field(base.clone(), "data", data_array_type.clone()),
+            b.u32(i as u32),
+            Type::U32,
+          ));
         }
       }
       Type::Array(Some(ConcreteArraySize::Literal(n)), inner_type) => {
         let inner = inner_type.unwrap_known();
         for i in 0..*n {
-          let elem = TypedExp {
-            data: inner.clone().known().into(),
-            kind: ExpKind::Application(
-              base.clone().into(),
-              vec![TypedExp {
-                data: Type::U32.known().into(),
-                kind: ExpKind::NumberLiteral(Number::Int(i as i64)),
-                source_trace: SourceTrace::empty(),
-              }],
-            ),
-            source_trace: SourceTrace::empty(),
-          };
+          let elem = b.index(base.clone(), b.u32(i), inner.clone());
           inner.push_bitcastable_chunks(elem, chunks);
         }
       }
@@ -2390,119 +2346,66 @@ impl Type {
     names: &mut NameContext,
     target: CompilerTarget,
   ) -> (TypedExp, usize) {
-    let data_array_access = |offset: usize| TypedExp {
-      data: Type::U32.known().into(),
-      kind: ExpKind::Application(
-        TypedExp {
-          data: Type::Array(
-            Some(ConcreteArraySize::Literal(
-              enum_type.inner_flat_data_size_in_u32s().unwrap() as u32,
-            )),
-            Box::new(Type::U32.known().into()),
-          )
-          .known()
-          .into(),
-          kind: ExpKind::Access(
-            Accessor::Field("data".into()),
-            TypedExp {
-              data: Type::Enum(enum_type.clone()).known().into(),
-              kind: ExpKind::Name(enum_value_name.clone()),
-              source_trace: SourceTrace::empty(),
-            }
-            .into(),
-          ),
-          source_trace: SourceTrace::empty(),
-        }
-        .into(),
-        vec![TypedExp {
-          data: Type::U32.known().into(),
-          kind: ExpKind::NumberLiteral(Number::Int(
-            (current_index + offset) as i64,
-          )),
-          source_trace: SourceTrace::empty(),
-        }],
-      ),
-      source_trace: SourceTrace::empty(),
+    let b = ExpBuilder::at(&SourceTrace::empty());
+    let data_array_access = |offset: usize| {
+      let data_array_type = Type::Array(
+        Some(ConcreteArraySize::Literal(
+          enum_type.inner_flat_data_size_in_u32s().unwrap() as u32,
+        )),
+        Box::new(Type::U32.known().into()),
+      );
+      b.index(
+        b.field(
+          b.name(enum_value_name, &Type::Enum(enum_type.clone())),
+          "data",
+          data_array_type,
+        ),
+        b.u32((current_index + offset) as u32),
+        Type::U32,
+      )
     };
-    let (kind, consumed_indeces) = match self {
-      Type::Unit => (ExpKind::Unit, 0),
+    match self {
+      Type::Unit => (b.unit(), 0),
       // WGSL/C have no `bitcast` to `bool`; unpack via `data[i] != 0u`
       // (0 = false, non-zero = true), the inverse of the constructor's
       // `u32(bool)` pack. `!=` is an infix op, so this compiles to
       // `(data[i] != 0u)` on both targets.
-      Type::Bool => (
-        ExpKind::Application(
-          TypedExp {
-            data: Type::Function(
-              FunctionSignature {
-                abstract_ancestor: Some(
-                  RwLock::new(AbstractFunctionSignature {
-                    name: "!=".into(),
-                    // The two operand ownerships must be present: the
-                    // compiler zips call args against the ancestor's
-                    // `arg_types` to decide ref/deref, so an empty list
-                    // would drop both args.
-                    arg_types: vec![
-                      (AbstractType::Type(Type::U32), Ownership::Owned),
-                      (AbstractType::Type(Type::U32), Ownership::Owned),
-                    ],
-                    return_type: AbstractType::Type(Type::Bool),
-                    ..Default::default()
-                  })
-                  .into(),
-                ),
-                args: vec![
-                  (Variable::immutable(Type::U32.known().into()), vec![]),
-                  (Variable::immutable(Type::U32.known().into()), vec![]),
-                ],
-                return_type: Type::Bool.known().into(),
-              }
-              .into(),
-            )
-            .known()
-            .into(),
-            kind: ExpKind::Name("!=".into()),
-            source_trace: SourceTrace::empty(),
-          }
-          .into(),
-          vec![
-            data_array_access(0),
-            TypedExp {
-              data: Type::U32.known().into(),
-              kind: ExpKind::NumberLiteral(Number::Int(0)),
-              source_trace: SourceTrace::empty(),
-            },
-          ],
-        ),
-        1,
-      ),
-      Type::F32 | Type::I32 | Type::U32 => (
-        ExpKind::Application(
-          TypedExp {
-            data: Type::Function(
-              FunctionSignature {
-                abstract_ancestor: Some(RwLock::new(scalar_bitcast()).into()),
-                args: vec![(
-                  Variable::immutable(Type::U32.known().into()),
-                  vec![],
-                )],
-                return_type: self.clone().known().into(),
-              }
-              .into(),
-            )
-            .known()
-            .into(),
-            kind: ExpKind::Name(
-              format!("bitcast<{}>", self.monomorphized_name(names, target))
-                .into(),
-            ),
-            source_trace: SourceTrace::empty(),
-          }
-          .into(),
-          vec![data_array_access(0)],
-        ),
-        1,
-      ),
+      Type::Bool => {
+        // The two operand ownerships must be present: the compiler zips call
+        // args against the ancestor's `arg_types` to decide ref/deref, so an
+        // empty list would drop both args.
+        let not_equal = builtin_signature(
+          "!=",
+          vec![(Type::U32, Ownership::Owned), (Type::U32, Ownership::Owned)],
+          Type::Bool,
+          None,
+        );
+        (
+          b.call(
+            &not_equal,
+            vec![data_array_access(0), b.u32(0)],
+            &Type::Bool,
+          ),
+          1,
+        )
+      }
+      Type::F32 | Type::I32 | Type::U32 => {
+        let bitcast_type = function_type(
+          &Arc::new(RwLock::new(scalar_bitcast())),
+          &[Type::U32],
+          self,
+        );
+        let bitcast_name: Arc<str> =
+          format!("bitcast<{}>", self.monomorphized_name(names, target)).into();
+        (
+          b.apply(
+            b.name(&bitcast_name, &bitcast_type),
+            vec![data_array_access(0)],
+            self,
+          ),
+          1,
+        )
+      }
       Type::Enum(e) => {
         let name = e.monomorphized_name(names, target);
         let inner_data_size = e.inner_flat_data_size_in_u32s().unwrap();
@@ -2512,75 +2415,33 @@ impl Type {
         // `array<u32, 0>` — so its constructor takes only the discriminant.
         // Matching that here is what keeps the reconstruction from emitting a
         // spurious `array<u32, 0>()` argument.
-        let (ctor_arg_types, ctor_args, call_args) = if inner_data_size == 0 {
-          (
-            vec![(AbstractType::Type(Type::U32), Ownership::Owned)],
-            vec![(Variable::immutable(Type::U32.known().into()), vec![])],
-            vec![data_array_access(0)],
-          )
+        let (ctor_fields, call_args) = if inner_data_size == 0 {
+          (vec![Type::U32], vec![data_array_access(0)])
         } else {
-          let inner_data_array_type: ExpTypeInfo = Type::Array(
+          let inner_data_array_type = Type::Array(
             Some(ConcreteArraySize::Literal(inner_data_size as u32)),
             Box::new(Type::U32.known().into()),
-          )
-          .known()
-          .into();
+          );
           (
-            vec![
-              (AbstractType::Type(Type::U32), Ownership::Owned),
-              (
-                AbstractType::Type(inner_data_array_type.unwrap_known()),
-                Ownership::Owned,
-              ),
-            ],
-            vec![
-              (Variable::immutable(Type::U32.known().into()), vec![]),
-              (Variable::immutable(inner_data_array_type.clone()), vec![]),
-            ],
+            vec![Type::U32, inner_data_array_type.clone()],
             vec![
               data_array_access(0),
-              TypedExp {
-                data: inner_data_array_type,
-                kind: ExpKind::ArrayLiteral(
-                  (0..inner_data_size)
-                    .map(|i| data_array_access(i + 1))
-                    .collect(),
-                ),
-                source_trace: SourceTrace::empty(),
-              },
+              b.array(
+                (0..inner_data_size)
+                  .map(|i| data_array_access(i + 1))
+                  .collect(),
+                inner_data_array_type,
+              ),
             ],
           )
         };
+        let enum_t = Type::Enum(e.clone());
+        let constructor = struct_constructor(&name, &ctor_fields, &enum_t);
         (
-          ExpKind::Application(
-            TypedExp {
-              data: Type::Function(
-                FunctionSignature {
-                  abstract_ancestor: Some(Arc::new(RwLock::new(
-                    AbstractFunctionSignature {
-                      name: name.clone().into(),
-                      generic_args: vec![],
-                      arg_types: ctor_arg_types,
-                      return_type: AbstractType::Type(Type::Enum(e.clone())),
-                      implementation:
-                        FunctionImplementationKind::StructConstructor,
-                      associative: false,
-                      captured_scope: None,
-                      entry_point: None,
-                    },
-                  ))),
-                  args: ctor_args,
-                  return_type: Type::Enum(e.clone()).known().into(),
-                }
-                .into(),
-              )
-              .known()
-              .into(),
-              kind: ExpKind::Name(name.into()),
-              source_trace: SourceTrace::empty(),
-            }
-            .into(),
+          b.apply(
+            b.callee(&constructor, &ctor_fields, &enum_t),
             call_args,
+            &enum_t,
           ),
           inner_data_size + 1,
         )
@@ -2603,48 +2464,18 @@ impl Type {
             (constructor_args, consumed_indeces + arg_consumed_indeces)
           },
         );
+        let field_types: Vec<Type> = s
+          .fields
+          .iter()
+          .map(|field| field.field_type.unwrap_known())
+          .collect();
+        let struct_t = Type::Struct(s.clone());
+        let constructor = struct_constructor(&s.name, &field_types, &struct_t);
         (
-          ExpKind::Application(
-            TypedExp {
-              data: Type::Function(Box::new(FunctionSignature {
-                abstract_ancestor: Some(Arc::new(RwLock::new(
-                  AbstractFunctionSignature {
-                    name: s.name.clone(),
-                    generic_args: vec![],
-                    arg_types: s
-                      .fields
-                      .iter()
-                      .map(|field| {
-                        (
-                          AbstractType::Type(field.field_type.unwrap_known()),
-                          Ownership::Owned,
-                        )
-                      })
-                      .collect(),
-                    return_type: AbstractType::Type(Type::Struct(s.clone())),
-                    implementation:
-                      FunctionImplementationKind::StructConstructor,
-                    associative: false,
-                    captured_scope: None,
-                    entry_point: None,
-                  },
-                ))),
-                args: s
-                  .fields
-                  .iter()
-                  .map(|field| {
-                    (Variable::immutable(field.field_type.clone()), vec![])
-                  })
-                  .collect(),
-                return_type: Type::Struct(s.clone()).known().into(),
-              }))
-              .known()
-              .into(),
-              kind: ExpKind::Name(s.name.clone()),
-              source_trace: SourceTrace::empty(),
-            }
-            .into(),
+          b.apply(
+            b.callee(&constructor, &field_types, &struct_t),
             constructor_args,
+            &struct_t,
           ),
           consumed_indeces,
         )
@@ -2659,7 +2490,7 @@ impl Type {
           .flat_data_size_in_u32s(&SourceTrace::empty())
           .unwrap();
         (
-          ExpKind::ArrayLiteral(
+          b.array(
             (0..size)
               .map(|i| {
                 inner_type
@@ -2673,6 +2504,7 @@ impl Type {
                   .0
               })
               .collect(),
+            self.clone(),
           ),
           size * inner_type_size,
         )
@@ -2680,15 +2512,7 @@ impl Type {
       _ => {
         panic!("called bitcasted_from_enum_data_inner on invalid type")
       }
-    };
-    (
-      TypedExp {
-        data: self.clone().known().into(),
-        kind,
-        source_trace: SourceTrace::empty(),
-      },
-      consumed_indeces,
-    )
+    }
   }
   pub fn bitcasted_from_enum_data(
     &self,

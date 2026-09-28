@@ -44,14 +44,16 @@ use take_mut::take;
 use crate::Never;
 use crate::compiler::{
   builtins::ASSIGNMENT_OPS,
-  effects::{Effect, EffectType},
-  entry::IOAttributes,
+  effects::Effect,
   enums::{AbstractEnum, AbstractEnumVariant, Enum, EnumVariant},
   error::{CompileError, CompileErrorKind, ErrorLog, SourceTrace},
+  exp_builder::{
+    ExpBuilder, builtin_signature, enum_constructor, function_type,
+    generated_function, let_around, struct_constructor,
+  },
   expression::{Accessor, Exp, ExpKind, Number, TypedExp},
   functions::{
-    AbstractFunctionSignature, FunctionArgumentAnnotation,
-    FunctionImplementationKind, FunctionSignature, FunctionTargetConfiguration,
+    AbstractFunctionSignature, FunctionImplementationKind, FunctionSignature,
     Ownership, TopLevelFunction,
   },
   program::{
@@ -61,7 +63,7 @@ use crate::compiler::{
   structs::{AbstractStruct, AbstractStructField, Struct, StructField},
   types::{
     AbstractType, ConcreteArraySize, ExpTypeInfo, GenericArgument, Type,
-    TypeConstraint, TypeState, Variable, VariableKind,
+    TypeConstraint, TypeState, VariableKind,
   },
 };
 
@@ -89,16 +91,6 @@ fn implementation_key(
 
 fn known_type(data: &ExpTypeInfo) -> Option<Type> {
   data.kind.try_unwrap_known()
-}
-
-fn typed(kind: ExpKind<ExpTypeInfo>, t: Type, source: SourceTrace) -> TypedExp {
-  let mut data: ExpTypeInfo = TypeState::Known(t).into();
-  data.subtree_fully_typed = true;
-  Exp {
-    data,
-    kind,
-    source_trace: source,
-  }
 }
 
 // ===========================================================================
@@ -434,143 +426,66 @@ fn kind_of_type(t: &Type) -> Kind {
   }
 }
 
-fn builtin_signature(
-  name: &str,
-  arg_types: Vec<(Type, Ownership)>,
-  return_type: Type,
-  effect: Option<Effect>,
-) -> Arc<RwLock<AbstractFunctionSignature>> {
-  Arc::new(RwLock::new(AbstractFunctionSignature {
-    name: name.into(),
-    arg_types: arg_types
-      .into_iter()
-      .map(|(t, o)| (AbstractType::Type(t), o))
-      .collect(),
-    return_type: AbstractType::Type(return_type),
-    implementation: FunctionImplementationKind::Builtin {
-      effect_type: effect.map(|e| e.into()).unwrap_or_else(EffectType::empty),
-      target_configuration: FunctionTargetConfiguration::Default,
-      target_specific_emulations: HashSet::new(),
-    },
-    ..Default::default()
-  }))
-}
-
-fn variable(t: Type, ownership: Ownership, kind: VariableKind) -> Variable {
-  let mut var_type: ExpTypeInfo = TypeState::Known(t).into();
-  var_type.ownership = ownership;
-  Variable { kind, var_type }
-}
-
 /// `($fnbox-make value)`: wraps a statically-known function value into the
 /// boxed representation.
 fn wrap_in_box(exp: &mut TypedExp, boxed: FunctionSignature) {
-  take(exp, |value| {
-    let source = value.source_trace.clone();
-    let static_type = known_type(&value.data).unwrap();
-    let boxed_type = Type::BoxedFunction(Box::new(boxed));
-    let signature = builtin_signature(
-      FNBOX_MAKE,
-      vec![(static_type.clone(), Ownership::Owned)],
-      boxed_type.clone(),
-      None,
-    );
-    let callee = typed(
-      ExpKind::Name(FNBOX_MAKE.into()),
-      Type::Function(Box::new(FunctionSignature {
-        abstract_ancestor: Some(signature),
-        args: vec![(
-          variable(static_type, Ownership::Owned, VariableKind::Let),
-          vec![],
-        )],
-        return_type: TypeState::Known(boxed_type.clone()).into(),
-      })),
-      source.clone(),
-    );
-    typed(
-      ExpKind::Application(Box::new(callee), vec![value]),
-      boxed_type,
-      source,
-    )
-  });
+  box_through(exp, boxed, FNBOX_MAKE, Ownership::Owned);
 }
 
 /// `($fnbox-borrow place)`: lends the static closure held in a local place
 /// to a boxed function parameter, which advances it in place.
 fn borrow_into_box(exp: &mut TypedExp, boxed: FunctionSignature) {
-  take(exp, |place| {
-    let source = place.source_trace.clone();
-    let static_type = known_type(&place.data).unwrap();
+  box_through(exp, boxed, FNBOX_BORROW, Ownership::MutableReference);
+}
+
+/// `(builtin value)`, for the boxing builtin `builtin` taking the static
+/// function value with `ownership`.
+fn box_through(
+  exp: &mut TypedExp,
+  boxed: FunctionSignature,
+  builtin: &str,
+  ownership: Ownership,
+) {
+  take(exp, |value| {
+    let b = ExpBuilder::at(&value.source_trace);
+    let static_type = known_type(&value.data).unwrap();
     let boxed_type = Type::BoxedFunction(Box::new(boxed));
     let signature = builtin_signature(
-      FNBOX_BORROW,
-      vec![(static_type.clone(), Ownership::MutableReference)],
+      builtin,
+      vec![(static_type, ownership)],
       boxed_type.clone(),
       None,
     );
-    let callee = typed(
-      ExpKind::Name(FNBOX_BORROW.into()),
-      Type::Function(Box::new(FunctionSignature {
-        abstract_ancestor: Some(signature),
-        args: vec![(
-          variable(static_type, Ownership::MutableReference, VariableKind::Var),
-          vec![],
-        )],
-        return_type: TypeState::Known(boxed_type.clone()).into(),
-      })),
-      source.clone(),
-    );
-    typed(
-      ExpKind::Application(Box::new(callee), vec![place]),
-      boxed_type,
-      source,
-    )
+    b.call(&signature, vec![value], &boxed_type)
   });
 }
 
-/// The callee of `($fnbox-apply boxed args...)`.
+/// The callee of `($fnbox-apply boxed args...)`: boxed function arguments
+/// are passed by mutable reference.
 fn apply_callee(boxed: &FunctionSignature, source: &SourceTrace) -> TypedExp {
   let boxed_type = Type::BoxedFunction(Box::new(boxed.clone()));
-  let arg_types: Vec<Type> = boxed
-    .args
-    .iter()
-    .map(|(a, _)| a.var_type.unwrap_known())
+  let params: Vec<Type> = std::iter::once(boxed_type)
+    .chain(boxed.args.iter().map(|(a, _)| a.var_type.unwrap_known()))
     .collect();
   let return_type = boxed.return_type.unwrap_known();
-  let arg_ownership = |t: &Type| match t {
-    Type::BoxedFunction(_) => Ownership::MutableReference,
-    _ => Ownership::Owned,
-  };
   let signature = builtin_signature(
     FNBOX_APPLY,
-    std::iter::once((boxed_type.clone(), Ownership::MutableReference))
-      .chain(arg_types.iter().map(|t| (t.clone(), arg_ownership(t))))
+    params
+      .iter()
+      .enumerate()
+      .map(|(i, t)| {
+        let ownership = if i == 0 || matches!(t, Type::BoxedFunction(_)) {
+          Ownership::MutableReference
+        } else {
+          Ownership::Owned
+        };
+        (t.clone(), ownership)
+      })
       .collect(),
     return_type.clone(),
     Some(Effect::InvokesUnknownFunction),
   );
-  typed(
-    ExpKind::Name(FNBOX_APPLY.into()),
-    Type::Function(Box::new(FunctionSignature {
-      abstract_ancestor: Some(signature),
-      args: std::iter::once((
-        variable(boxed_type, Ownership::MutableReference, VariableKind::Var),
-        vec![],
-      ))
-      .chain(arg_types.into_iter().map(|t| {
-        let ownership = arg_ownership(&t);
-        let kind = if ownership == Ownership::MutableReference {
-          VariableKind::Var
-        } else {
-          VariableKind::Let
-        };
-        (variable(t, ownership, kind), vec![])
-      }))
-      .collect(),
-      return_type: TypeState::Known(return_type).into(),
-    })),
-    source.clone(),
-  )
+  ExpBuilder::at(source).callee(&signature, &params, &return_type)
 }
 
 fn is_lvalue(exp: &TypedExp) -> bool {
@@ -796,16 +711,14 @@ impl<'a> Boxer<'a> {
     if temps.is_empty() {
       return;
     }
-    take(exp, |application| Exp {
-      data: application.data.clone(),
-      kind: ExpKind::Let(
+    take(exp, |application| {
+      let_around(
         temps
           .into_iter()
           .map(|(n, v)| (n, source.clone(), VariableKind::Var, v))
           .collect(),
-        Box::new(application),
-      ),
-      source_trace: source.clone(),
+        application,
+      )
     });
   }
   /// Binds `exp` to a fresh `@var` local if it isn't already a place, so it
@@ -3141,18 +3054,11 @@ impl<'p> Lowering<'p> {
     });
     for (_, name, payload, ctor) in variants.iter_mut() {
       if *payload != Type::Unit {
-        let signature = Arc::new(RwLock::new(AbstractFunctionSignature {
-          name: name.clone(),
-          arg_types: vec![(
-            AbstractType::Type(payload.clone()),
-            Ownership::Owned,
-          )],
-          return_type: AbstractType::AbstractEnum(definition_arc.clone()),
-          implementation: FunctionImplementationKind::EnumConstructor(
-            name.clone(),
-          ),
-          ..Default::default()
-        }));
+        let signature = enum_constructor(
+          name,
+          payload,
+          AbstractType::AbstractEnum(definition_arc.clone()),
+        );
         self.new_functions.push(signature.clone());
         *ctor = Some(signature);
       }
@@ -3349,18 +3255,11 @@ impl<'p> Lowering<'p> {
         .zip(payload_reps.iter())
         .map(|(n, p)| {
           (*p != Type::Unit).then(|| {
-            let signature = Arc::new(RwLock::new(AbstractFunctionSignature {
-              name: n.clone(),
-              arg_types: vec![(
-                AbstractType::Type(p.clone()),
-                Ownership::Owned,
-              )],
-              return_type: AbstractType::AbstractEnum(definition_arc.clone()),
-              implementation: FunctionImplementationKind::EnumConstructor(
-                n.clone(),
-              ),
-              ..Default::default()
-            }));
+            let signature = enum_constructor(
+              n,
+              p,
+              AbstractType::AbstractEnum(definition_arc.clone()),
+            );
             self.new_functions.push(signature.clone());
             signature
           })
@@ -3687,31 +3586,38 @@ impl<'p> Lowering<'p> {
 
 /// A constant expression of type `t`, for code that provably never runs.
 fn zero_value(t: &Type, source: &SourceTrace) -> Option<TypedExp> {
+  let b = ExpBuilder::at(source);
   Some(match t {
-    Type::Unit => typed(ExpKind::Unit, Type::Unit, source.clone()),
-    Type::F32 => typed(
-      ExpKind::NumberLiteral(Number::Float(0.)),
-      Type::F32,
-      source.clone(),
-    ),
-    Type::I32 | Type::U32 => typed(
-      ExpKind::NumberLiteral(Number::Int(0)),
-      t.clone(),
-      source.clone(),
-    ),
-    Type::Bool => {
-      typed(ExpKind::BooleanLiteral(false), Type::Bool, source.clone())
+    Type::Unit => b.unit(),
+    Type::F32 => b.typed(ExpKind::NumberLiteral(Number::Float(0.)), Type::F32),
+    Type::I32 | Type::U32 => {
+      b.typed(ExpKind::NumberLiteral(Number::Int(0)), t.clone())
     }
+    Type::Bool => b.typed(ExpKind::BooleanLiteral(false), Type::Bool),
+    Type::String => b.typed(ExpKind::StringLiteral("".into()), Type::String),
     Type::Array(Some(ConcreteArraySize::Literal(n)), inner) => {
       let inner = inner.unwrap_known();
-      typed(
-        ExpKind::ArrayLiteral(
-          (0..*n)
-            .map(|_| zero_value(&inner, source))
-            .collect::<Option<Vec<_>>>()?,
-        ),
+      let elements = (0..*n)
+        .map(|_| zero_value(&inner, source))
+        .collect::<Option<Vec<_>>>()?;
+      b.typed(ExpKind::ArrayLiteral(elements), t.clone())
+    }
+    // An empty runtime-sized array: `(into-dynamic-array [])`.
+    Type::Array(Some(ConcreteArraySize::Unsized), inner) => {
+      let empty = Type::Array(
+        Some(ConcreteArraySize::Literal(0)),
+        Box::new(TypeState::Known(inner.unwrap_known()).into()),
+      );
+      let signature = builtin_signature(
+        "into-dynamic-array",
+        vec![(empty.clone(), Ownership::Owned)],
         t.clone(),
-        source.clone(),
+        None,
+      );
+      b.call(
+        &signature,
+        vec![b.typed(ExpKind::ArrayLiteral(vec![]), empty)],
+        t,
       )
     }
     Type::Struct(st) => {
@@ -3724,38 +3630,7 @@ fn zero_value(t: &Type, source: &SourceTrace) -> Option<TypedExp> {
         .iter()
         .map(|f| zero_value(f, source))
         .collect::<Option<Vec<_>>>()?;
-      let constructor = Arc::new(RwLock::new(AbstractFunctionSignature {
-        name: st.name.clone(),
-        arg_types: fields
-          .iter()
-          .map(|f| (AbstractType::Type(f.clone()), Ownership::Owned))
-          .collect(),
-        return_type: AbstractType::Type(t.clone()),
-        implementation: FunctionImplementationKind::StructConstructor,
-        ..Default::default()
-      }));
-      let callee = typed(
-        ExpKind::Name(st.name.clone()),
-        Type::Function(Box::new(FunctionSignature {
-          abstract_ancestor: Some(constructor),
-          args: fields
-            .iter()
-            .map(|f| {
-              (
-                variable(f.clone(), Ownership::Owned, VariableKind::Let),
-                vec![],
-              )
-            })
-            .collect(),
-          return_type: TypeState::Known(t.clone()).into(),
-        })),
-        source.clone(),
-      );
-      typed(
-        ExpKind::Application(Box::new(callee), args),
-        t.clone(),
-        source.clone(),
-      )
+      b.call(&struct_constructor(&st.name, &fields, t), args, t)
     }
     Type::Enum(e) => {
       // A unit variant if there is one, else the first variant around a
@@ -3765,80 +3640,18 @@ fn zero_value(t: &Type, source: &SourceTrace) -> Option<TypedExp> {
         .iter()
         .find(|v| v.inner_type.unwrap_known() == Type::Unit)
       {
-        typed(ExpKind::Name(v.name.clone()), t.clone(), source.clone())
+        b.name(&v.name, t)
       } else {
         let v = e.variants.first()?;
         let payload_type = v.inner_type.unwrap_known();
         let payload = zero_value(&payload_type, source)?;
-        let constructor = Arc::new(RwLock::new(AbstractFunctionSignature {
-          name: v.name.clone(),
-          arg_types: vec![(
-            AbstractType::Type(payload_type.clone()),
-            Ownership::Owned,
-          )],
-          return_type: AbstractType::Type(t.clone()),
-          implementation: FunctionImplementationKind::EnumConstructor(
-            v.name.clone(),
-          ),
-          ..Default::default()
-        }));
-        let callee = typed(
-          ExpKind::Name(v.name.clone()),
-          Type::Function(Box::new(FunctionSignature {
-            abstract_ancestor: Some(constructor),
-            args: vec![(
-              variable(payload_type, Ownership::Owned, VariableKind::Let),
-              vec![],
-            )],
-            return_type: TypeState::Known(t.clone()).into(),
-          })),
-          source.clone(),
+        let constructor = enum_constructor(
+          &v.name,
+          &payload_type,
+          AbstractType::Type(t.clone()),
         );
-        typed(
-          ExpKind::Application(Box::new(callee), vec![payload]),
-          t.clone(),
-          source.clone(),
-        )
+        b.call(&constructor, vec![payload], t)
       }
-    }
-    Type::String => typed(
-      ExpKind::StringLiteral("".into()),
-      Type::String,
-      source.clone(),
-    ),
-    // An empty runtime-sized array: `(into-dynamic-array [])`.
-    Type::Array(Some(ConcreteArraySize::Unsized), inner) => {
-      let inner = inner.unwrap_known();
-      let empty = Type::Array(
-        Some(ConcreteArraySize::Literal(0)),
-        Box::new(TypeState::Known(inner).into()),
-      );
-      let signature = builtin_signature(
-        "into-dynamic-array",
-        vec![(empty.clone(), Ownership::Owned)],
-        t.clone(),
-        None,
-      );
-      let callee = typed(
-        ExpKind::Name("into-dynamic-array".into()),
-        Type::Function(Box::new(FunctionSignature {
-          abstract_ancestor: Some(signature),
-          args: vec![(
-            variable(empty.clone(), Ownership::Owned, VariableKind::Let),
-            vec![],
-          )],
-          return_type: TypeState::Known(t.clone()).into(),
-        })),
-        source.clone(),
-      );
-      typed(
-        ExpKind::Application(
-          Box::new(callee),
-          vec![typed(ExpKind::ArrayLiteral(vec![]), empty, source.clone())],
-        ),
-        t.clone(),
-        source.clone(),
-      )
     }
     _ => return None,
   })
@@ -3921,35 +3734,6 @@ fn body_involves_box(exp: &TypedExp, program: &Program) -> bool {
   found
 }
 
-fn function_type(
-  signature: &Arc<RwLock<AbstractFunctionSignature>>,
-  params: &[Type],
-  ret: &Type,
-) -> Type {
-  let s = signature.read().unwrap();
-  Type::Function(Box::new(FunctionSignature {
-    abstract_ancestor: Some(signature.clone()),
-    args: params
-      .iter()
-      .enumerate()
-      .map(|(i, t)| {
-        let ownership = s
-          .arg_types
-          .get(i)
-          .map(|(_, o)| *o)
-          .unwrap_or(Ownership::Owned);
-        let kind = if ownership == Ownership::MutableReference {
-          VariableKind::Var
-        } else {
-          VariableKind::Let
-        };
-        (variable(t.clone(), ownership, kind), vec![])
-      })
-      .collect(),
-    return_type: TypeState::Known(ret.clone()).into(),
-  }))
-}
-
 impl<'p> Lowering<'p> {
   fn lower(&mut self, instance: usize, exp: &mut TypedExp) {
     let skel = self.slot_skel(instance, exp.data.defun_slot);
@@ -4017,13 +3801,8 @@ impl<'p> Lowering<'p> {
           };
           let place = std::mem::replace(scrutinee.as_mut(), temp_name);
           let source = exp.source_trace.clone();
-          take(exp, |exp| Exp {
-            data: exp.data.clone(),
-            kind: ExpKind::Let(
-              vec![(temp, source.clone(), VariableKind::Let, place)],
-              Box::new(exp),
-            ),
-            source_trace: source,
+          take(exp, |exp| {
+            let_around(vec![(temp, source, VariableKind::Let, place)], exp)
           });
           return;
         }
@@ -4104,20 +3883,15 @@ impl<'p> Lowering<'p> {
     bound.kind = ExpKind::Name(payload_name.clone());
     let source = value.source_trace.clone();
     take(value, |value| {
-      let value_type = value.data.clone();
-      Exp {
-        data: value_type,
-        kind: ExpKind::Let(
-          vec![(
-            name,
-            source.clone(),
-            VariableKind::Var,
-            typed(ExpKind::Name(payload_name), t, source.clone()),
-          )],
-          Box::new(value),
-        ),
-        source_trace: source,
-      }
+      let_around(
+        vec![(
+          name,
+          source.clone(),
+          VariableKind::Var,
+          ExpBuilder::at(&source).name(&payload_name, &t),
+        )],
+        value,
+      )
     });
   }
   /// Makes a match arm's payload binding `f` (on a place scrutinee `s`) an
@@ -4178,10 +3952,8 @@ impl<'p> Lowering<'p> {
           .map(|(i, _)| i)
           .collect();
         if !aliased.is_empty() {
-          let call = std::mem::replace(
-            e,
-            typed(ExpKind::Unit, Type::Unit, SourceTrace::empty()),
-          );
+          let call =
+            std::mem::replace(e, ExpBuilder::at(&SourceTrace::empty()).unit());
           *e = self.call_through_payload(&payload, call, &aliased);
           return Ok(true);
         }
@@ -4265,6 +4037,7 @@ impl<'p> Lowering<'p> {
     // Generated names share the helper's parameter list with user names.
     let s_name = self.gensym("fnv_s");
     let payload_name = self.gensym("fnv_p");
+    let b = ExpBuilder::at(&source);
     // Helper parameters: the scrutinee, then every non-aliased argument
     // (keeping its reference-ness), then the free names the aliased places
     // read (index variables, say).
@@ -4305,106 +4078,39 @@ impl<'p> Lowering<'p> {
           .unwrap_or(Ownership::Owned);
         let t = known_type(&a.data).unwrap_or(Type::Unit);
         let name = self.gensym(&format!("fnv_a{i}"));
-        let mut inner =
-          typed(ExpKind::Name(name.clone()), t.clone(), source.clone());
-        if ownership == Ownership::MutableReference {
-          inner.data.ownership = Ownership::MutableReference;
-        }
-        inner_args.push(inner);
+        let inner_ownership = if ownership == Ownership::MutableReference {
+          Ownership::MutableReference
+        } else {
+          Ownership::Owned
+        };
+        inner_args.push(b.name_with(&name, &t, inner_ownership));
         params.push((name, t, ownership));
         caller_args.push(a);
       }
     }
     for (n, t) in free_names.iter() {
       params.push((n.clone(), t.clone(), Ownership::Owned));
-      caller_args.push(typed(
-        ExpKind::Name(n.clone()),
-        t.clone(),
-        source.clone(),
-      ));
+      caller_args.push(b.name(n, t));
     }
-    let inner_call = typed(
-      ExpKind::Application(callee, inner_args),
-      ret.clone(),
-      source.clone(),
-    );
-    let mut arm_value = if writes_back {
-      let rebuilt = typed(
-        ExpKind::Application(
-          Box::new(payload.constructor.clone()),
-          vec![typed(
-            ExpKind::Name(payload.bound.clone()),
-            payload.payload_type.clone(),
-            source.clone(),
-          )],
-        ),
-        payload.enum_type.clone(),
-        source.clone(),
+    let inner_call = b.apply(*callee, inner_args, &ret);
+    let arm_value = if writes_back {
+      let rebuilt = b.apply(
+        payload.constructor.clone(),
+        vec![b.name(&payload.bound, &payload.payload_type)],
+        &payload.enum_type,
       );
-      let mut target = typed(
-        ExpKind::Name(s_name.clone()),
-        payload.enum_type.clone(),
-        source.clone(),
-      );
-      target.data.ownership = Ownership::MutableReference;
-      let write_back = typed(
-        ExpKind::Application(
-          Box::new(TypedExp::assignment_function(
-            TypeState::Known(payload.enum_type.clone()).into(),
-          )),
-          vec![target, rebuilt],
-        ),
-        Type::Unit,
-        source.clone(),
-      );
-      if ret == Type::Unit {
-        typed(
-          ExpKind::Block(vec![inner_call, write_back]),
-          Type::Unit,
-          source.clone(),
-        )
-      } else {
-        let result = self.gensym("fnv_r");
-        typed(
-          ExpKind::Let(
-            vec![(
-              result.clone(),
-              source.clone(),
-              VariableKind::Let,
-              inner_call,
-            )],
-            Box::new(typed(
-              ExpKind::Block(vec![
-                write_back,
-                typed(ExpKind::Name(result), ret.clone(), source.clone()),
-              ]),
-              ret.clone(),
-              source.clone(),
-            )),
-          ),
-          ret.clone(),
-          source.clone(),
-        )
-      }
+      let write_back = b.assign(b.name(&s_name, &payload.enum_type), rebuilt);
+      b.then_run(inner_call, self.gensym("fnv_r"), vec![write_back])
     } else {
       inner_call
     };
-    arm_value = typed(
-      ExpKind::Let(
-        vec![(
-          payload.bound.clone(),
-          source.clone(),
-          VariableKind::Var,
-          typed(
-            ExpKind::Name(payload_name.clone()),
-            payload.payload_type.clone(),
-            source.clone(),
-          ),
-        )],
-        Box::new(arm_value),
-      ),
-      ret.clone(),
-      source.clone(),
+    let arm_value = b.let_in(
+      vec![(
+        payload.bound.clone(),
+        VariableKind::Var,
+        b.name(&payload_name, &payload.payload_type),
+      )],
+      arm_value,
     );
     let name = self.gensym("call_through_payload");
     let signature = self.payload_match_function(
@@ -4418,18 +4124,7 @@ impl<'p> Lowering<'p> {
     );
     let param_types: Vec<Type> =
       params.iter().map(|(_, t, _)| t.clone()).collect();
-    typed(
-      ExpKind::Application(
-        Box::new(typed(
-          ExpKind::Name(name),
-          function_type(&signature, &param_types, &ret),
-          source.clone(),
-        )),
-        caller_args,
-      ),
-      ret,
-      source,
-    )
+    b.apply(b.callee(&signature, &param_types, &ret), caller_args, &ret)
   }
   /// `(getter s)`: the payload currently stored in the scrutinee.
   fn read_payload(
@@ -4442,6 +4137,7 @@ impl<'p> Lowering<'p> {
     else {
       unreachable!()
     };
+    let b = ExpBuilder::at(source);
     let ownership = payload.read_ownership();
     let key = (
       e.name.clone(),
@@ -4454,17 +4150,12 @@ impl<'p> Lowering<'p> {
         let name = self.gensym(&format!("payload_of_{variant}"));
         let s_name: Arc<str> = "fnv_s".into();
         let payload_name: Arc<str> = "fnv_p".into();
-        let arm_value = typed(
-          ExpKind::Name(payload_name.clone()),
-          payload.payload_type.clone(),
-          source.clone(),
-        );
         let signature = self.payload_match_function(
           &name,
           payload,
           &[(s_name, payload.enum_type.clone(), ownership)],
           &payload_name,
-          arm_value,
+          b.name(&payload_name, &payload.payload_type),
           &payload.payload_type,
           source,
         );
@@ -4472,22 +4163,14 @@ impl<'p> Lowering<'p> {
         signature
       }
     };
-    let name = signature.read().unwrap().name.clone();
-    typed(
-      ExpKind::Application(
-        Box::new(typed(
-          ExpKind::Name(name),
-          function_type(
-            &signature,
-            &[payload.enum_type.clone()],
-            &payload.payload_type,
-          ),
-          source.clone(),
-        )),
-        vec![payload.scrutinee.clone()],
+    b.apply(
+      b.callee(
+        &signature,
+        &[payload.enum_type.clone()],
+        &payload.payload_type,
       ),
-      payload.payload_type.clone(),
-      source.clone(),
+      vec![payload.scrutinee.clone()],
+      &payload.payload_type,
     )
   }
   /// A generated function `(fn [s rest...] (match s (V p) arm-value _ zero))`,
@@ -4502,88 +4185,29 @@ impl<'p> Lowering<'p> {
     ret: &Type,
     source: &SourceTrace,
   ) -> Arc<RwLock<AbstractFunctionSignature>> {
+    let b = ExpBuilder::at(source);
     let (s_name, _, s_ownership) = &params[0];
-    let mut scrutinee = typed(
-      ExpKind::Name(s_name.clone()),
-      payload.enum_type.clone(),
-      source.clone(),
-    );
-    scrutinee.data.ownership = *s_ownership;
-    let pattern = typed(
-      ExpKind::Application(
-        Box::new(payload.constructor.clone()),
-        vec![typed(
-          ExpKind::Name(payload_name.clone()),
-          payload.payload_type.clone(),
-          source.clone(),
-        )],
-      ),
-      payload.enum_type.clone(),
-      source.clone(),
+    let pattern = b.apply(
+      payload.constructor.clone(),
+      vec![b.name(payload_name, &payload.payload_type)],
+      &payload.enum_type,
     );
     let fallback = zero_value(ret, source).unwrap_or_else(|| {
       self.errors.push(CompileError::new(
         CompileErrorKind::UnsupportedFunctionValueSignature,
         source.clone(),
       ));
-      typed(ExpKind::Unit, Type::Unit, source.clone())
+      b.unit()
     });
-    let body = typed(
-      ExpKind::Match(
-        Box::new(scrutinee),
-        vec![
-          (pattern, arm_value),
-          (
-            typed(ExpKind::Wildcard, payload.enum_type.clone(), source.clone()),
-            fallback,
-          ),
-        ],
-      ),
-      ret.clone(),
-      source.clone(),
+    let body = b.match_on(
+      b.name_with(s_name, &payload.enum_type, *s_ownership),
+      vec![
+        (pattern, arm_value),
+        (b.wildcard(&payload.enum_type), fallback),
+      ],
+      ret,
     );
-    let arg_names: Vec<(Arc<str>, SourceTrace)> = params
-      .iter()
-      .map(|(n, _, _)| (n.clone(), source.clone()))
-      .collect();
-    let implementation = Arc::new(RwLock::new(TopLevelFunction {
-      name_source_trace: source.clone(),
-      arg_names: arg_names.clone(),
-      arg_annotations: params
-        .iter()
-        .map(|(_, _, ownership)| {
-          let mut a = FunctionArgumentAnnotation::empty(source.clone());
-          if *ownership == Ownership::MutableReference {
-            a.var = true;
-            a.ownership = Ownership::MutableReference;
-          }
-          a
-        })
-        .collect(),
-      return_attributes: IOAttributes::empty(source.clone()),
-      entry_point: None,
-      directly_user_written: false,
-      expression: typed(ExpKind::Unit, Type::Unit, source.clone()),
-    }));
-    let signature = Arc::new(RwLock::new(AbstractFunctionSignature {
-      name: name.clone(),
-      arg_types: params
-        .iter()
-        .map(|(_, t, o)| (AbstractType::Type(t.clone()), *o))
-        .collect(),
-      return_type: AbstractType::Type(ret.clone()),
-      implementation: FunctionImplementationKind::Composite(
-        implementation.clone(),
-      ),
-      ..Default::default()
-    }));
-    let param_types: Vec<Type> =
-      params.iter().map(|(_, t, _)| t.clone()).collect();
-    implementation.write().unwrap().expression = typed(
-      ExpKind::Function(arg_names, Box::new(body)),
-      function_type(&signature, &param_types, ret),
-      source.clone(),
-    );
+    let signature = generated_function(name, params, ret, body, source);
     self.new_functions.push(signature.clone());
     signature
   }
@@ -4647,15 +4271,11 @@ impl<'p> Lowering<'p> {
         }
         ctor.kind = ExpKind::Name(name);
         if let Some(constructor) = constructor {
-          ctor.data.kind =
-            TypeState::Known(Type::Function(Box::new(FunctionSignature {
-              abstract_ancestor: Some(constructor),
-              args: vec![(
-                variable(payload.clone(), Ownership::Owned, VariableKind::Let),
-                vec![],
-              )],
-              return_type: TypeState::Known(enum_type.clone()).into(),
-            })));
+          ctor.data.kind = TypeState::Known(function_type(
+            &constructor,
+            &[payload.clone()],
+            &enum_type,
+          ));
         }
         args[0].data.kind = TypeState::Known(payload);
         pattern.data.kind = TypeState::Known(enum_type);
@@ -4760,6 +4380,7 @@ impl<'p> Lowering<'p> {
     for a in args.iter_mut() {
       self.lower(instance, a);
     }
+    let b = ExpBuilder::at(&source);
     if &*name == FNBOX_MAKE || &*name == FNBOX_BORROW {
       let Skel::Box(n) = skel else { unreachable!() };
       let members = self.members_of(*n);
@@ -4767,7 +4388,7 @@ impl<'p> Lowering<'p> {
       let mut arg = args.remove(0);
       if members.len() == 1 {
         if members[0].1.payload.is_none() {
-          *exp = typed(ExpKind::Unit, Type::Unit, source);
+          *exp = b.unit();
         } else {
           let payload = self.payload_rep(&members[0].1, &source);
           arg.data.kind = TypeState::Known(payload);
@@ -4788,26 +4409,10 @@ impl<'p> Lowering<'p> {
       };
       *exp = match ctor {
         Some(ctor) => {
-          arg.data.kind = TypeState::Known(payload.clone());
-          let callee = typed(
-            ExpKind::Name(variant_name),
-            Type::Function(Box::new(FunctionSignature {
-              abstract_ancestor: Some(ctor),
-              args: vec![(
-                variable(payload, Ownership::Owned, VariableKind::Let),
-                vec![],
-              )],
-              return_type: TypeState::Known(enum_type.clone()).into(),
-            })),
-            source.clone(),
-          );
-          typed(
-            ExpKind::Application(Box::new(callee), vec![arg]),
-            enum_type,
-            source,
-          )
+          arg.data.kind = TypeState::Known(payload);
+          b.call(&ctor, vec![arg], &enum_type)
         }
-        None => typed(ExpKind::Name(variant_name), enum_type, source),
+        None => b.name(&variant_name, &enum_type),
       };
       return;
     }
@@ -4837,18 +4442,12 @@ impl<'p> Lowering<'p> {
       }
       let temp = self.gensym("fnval_lent");
       let temp_type = known_type(&args[i].data).unwrap();
-      let temp_name = |source: &SourceTrace| {
-        typed(
-          ExpKind::Name(temp.clone()),
-          temp_type.clone(),
-          source.clone(),
-        )
-      };
-      let value = std::mem::replace(&mut args[i], temp_name(&source));
+      let value = std::mem::replace(&mut args[i], b.name(&temp, &temp_type));
       let mut target = target;
       self.lower(instance, &mut target);
       copy_backs.push(self.lower_copy_back(
-        vec![target, temp_name(&source)],
+        target,
+        b.name(&temp, &temp_type),
         &box_skel,
         &key,
         source.clone(),
@@ -4872,36 +4471,14 @@ impl<'p> Lowering<'p> {
       );
     }
     if !lent_temps.is_empty() {
-      let t = known_type(&exp.data).unwrap_or(Type::Unit);
-      let call = std::mem::replace(
-        exp,
-        typed(ExpKind::Unit, Type::Unit, source.clone()),
-      );
-      let result = self.gensym("fnval_result");
-      let mut block = copy_backs;
-      block.push(typed(
-        ExpKind::Name(result.clone()),
-        t.clone(),
-        source.clone(),
-      ));
-      let body = typed(
-        ExpKind::Let(
-          vec![(result, source.clone(), VariableKind::Let, call)],
-          Box::new(typed(ExpKind::Block(block), t.clone(), source.clone())),
-        ),
-        t.clone(),
-        source.clone(),
-      );
-      *exp = typed(
-        ExpKind::Let(
-          lent_temps
-            .into_iter()
-            .map(|(n, v)| (n, source.clone(), VariableKind::Var, v))
-            .collect(),
-          Box::new(body),
-        ),
-        t,
-        source,
+      let call = std::mem::replace(exp, b.unit());
+      let body = b.then_run(call, self.gensym("fnval_result"), copy_backs);
+      *exp = b.let_in(
+        lent_temps
+          .into_iter()
+          .map(|(n, v)| (n, VariableKind::Var, v))
+          .collect(),
+        body,
       );
     }
   }
@@ -4928,6 +4505,7 @@ impl<'p> Lowering<'p> {
     let mut value = args.remove(0);
     let rest = std::mem::take(args);
     let ret = new_type.clone().unwrap_or(Type::Unit);
+    let b = ExpBuilder::at(&source);
     match members.len() {
       0 => {
         // No function ever reaches this position in this instance, so the
@@ -4941,7 +4519,7 @@ impl<'p> Lowering<'p> {
               CompileErrorKind::CallOfEmptyFunctionValue,
               source.clone(),
             ));
-            *exp = typed(ExpKind::Unit, Type::Unit, source);
+            *exp = b.unit();
           }
         }
       }
@@ -4954,11 +4532,9 @@ impl<'p> Lowering<'p> {
           .flatten();
         let mut call_args = rest;
         let callee = match linked {
-          None => typed(
-            ExpKind::Name(member.function.read().unwrap().name.clone()),
-            member.static_type.clone(),
-            source.clone(),
-          ),
+          None => {
+            b.name(&member.function.read().unwrap().name, &member.static_type)
+          }
           Some(member_instance) => {
             let (signature, params, member_ret) =
               self.lowered_function(member_instance);
@@ -4967,19 +4543,10 @@ impl<'p> Lowering<'p> {
                 TypeState::Known(params.last().cloned().unwrap());
               call_args.push(value);
             }
-            let callee_name = signature.read().unwrap().name.clone();
-            typed(
-              ExpKind::Name(callee_name),
-              function_type(&signature, &params, &member_ret),
-              source.clone(),
-            )
+            b.callee(&signature, &params, &member_ret)
           }
         };
-        *exp = typed(
-          ExpKind::Application(Box::new(callee), call_args),
-          ret,
-          source,
-        );
+        *exp = b.apply(callee, call_args, &ret);
       }
       _ => {
         let union_key = self.union_key(&members, &source);
@@ -5010,19 +4577,9 @@ impl<'p> Lowering<'p> {
         let enum_type = self.union_enums[&union_key].enum_type.clone();
         let mut params = vec![enum_type];
         params.extend(arg_types);
-        let callee_name = dispatcher.read().unwrap().name.clone();
-        let callee = typed(
-          ExpKind::Name(callee_name),
-          function_type(&dispatcher, &params, &ret),
-          source.clone(),
-        );
         let mut call_args = vec![value];
         call_args.extend(rest);
-        *exp = typed(
-          ExpKind::Application(Box::new(callee), call_args),
-          ret,
-          source,
-        );
+        *exp = b.apply(b.callee(&dispatcher, &params, &ret), call_args, &ret);
       }
     }
   }
@@ -5070,31 +4627,17 @@ impl<'p> Lowering<'p> {
           _ => None,
         };
         if let Some(Type::Struct(s)) = &struct_type {
-          let constructor = Arc::new(RwLock::new(AbstractFunctionSignature {
-            name: s.name.clone(),
-            arg_types: arg_types
-              .iter()
-              .map(|t| (AbstractType::Type(t.clone()), Ownership::Owned))
-              .collect(),
-            return_type: AbstractType::Type(struct_type.clone().unwrap()),
-            implementation: FunctionImplementationKind::StructConstructor,
-            ..Default::default()
-          }));
+          let constructor = struct_constructor(
+            &s.name,
+            &arg_types,
+            struct_type.as_ref().unwrap(),
+          );
           f.kind = ExpKind::Name(s.name.clone());
-          f.data.kind =
-            TypeState::Known(Type::Function(Box::new(FunctionSignature {
-              abstract_ancestor: Some(constructor),
-              args: arg_types
-                .iter()
-                .map(|t| {
-                  (
-                    variable(t.clone(), Ownership::Owned, VariableKind::Let),
-                    vec![],
-                  )
-                })
-                .collect(),
-              return_type: TypeState::Known(new_type.clone()).into(),
-            })));
+          f.data.kind = TypeState::Known(function_type(
+            &constructor,
+            &arg_types,
+            &new_type,
+          ));
         }
         exp.data.kind = TypeState::Known(new_type);
       }
@@ -5123,20 +4666,11 @@ impl<'p> Lowering<'p> {
           }
           if let Some(constructor) = constructor {
             f.kind = ExpKind::Name(variant_name);
-            f.data.kind =
-              TypeState::Known(Type::Function(Box::new(FunctionSignature {
-                abstract_ancestor: Some(constructor),
-                args: arg_types
-                  .iter()
-                  .map(|t| {
-                    (
-                      variable(t.clone(), Ownership::Owned, VariableKind::Let),
-                      vec![],
-                    )
-                  })
-                  .collect(),
-                return_type: TypeState::Known(new_type.clone()).into(),
-              })));
+            f.data.kind = TypeState::Known(function_type(
+              &constructor,
+              &arg_types,
+              &new_type,
+            ));
           }
         }
         exp.data.kind = TypeState::Known(new_type);
@@ -5280,39 +4814,28 @@ impl<'p> Lowering<'p> {
   /// or nothing for a scopeless function.
   fn lower_copy_back(
     &mut self,
-    mut args: Vec<TypedExp>,
+    target: TypedExp,
+    boxed: TypedExp,
     boxed_skel: &Skel,
     target_key: &str,
     source: SourceTrace,
   ) -> TypedExp {
-    let unit = typed(ExpKind::Unit, Type::Unit, source.clone());
+    let b = ExpBuilder::at(&source);
     let Skel::Box(n) = boxed_skel else {
-      return unit;
+      return b.unit();
     };
     let members = self.members_of(*n);
     let Some((_, member)) = members.iter().find(|(k, _)| k == target_key)
     else {
-      return unit;
+      return b.unit();
     };
     if member.payload.is_none() {
-      return unit;
+      return b.unit();
     }
-    let boxed = args.pop().unwrap();
-    let mut target = args.pop().unwrap();
-    target.data.ownership = Ownership::MutableReference;
-    let assign = |target: TypedExp, value: TypedExp, payload: &Type| {
-      let mut target = target;
+    // The target is the closure's scope, retyped as its representation.
+    let assign = |mut target: TypedExp, value: TypedExp, payload: &Type| {
       target.data.kind = TypeState::Known(payload.clone());
-      typed(
-        ExpKind::Application(
-          Box::new(TypedExp::assignment_function(
-            TypeState::Known(payload.clone()).into(),
-          )),
-          vec![target, value],
-        ),
-        Type::Unit,
-        source.clone(),
-      )
+      b.assign(target, value)
     };
     if members.len() == 1 {
       let payload = self.payload_rep(member, &source);
@@ -5323,45 +4846,22 @@ impl<'p> Lowering<'p> {
     let union_key = self.union_key(&members, &source);
     let union = &self.union_enums[&union_key];
     let enum_type = union.enum_type.clone();
-    let Some((_, variant, payload, Some(ctor))) = union
+    let Some((_, _, payload, Some(ctor))) = union
       .variants
       .iter()
       .find(|(k, _, _, _)| k == target_key)
       .cloned()
     else {
-      return unit;
+      return b.unit();
     };
     let scope_name = self.gensym("fnval_state");
-    let ctor_type = Type::Function(Box::new(FunctionSignature {
-      abstract_ancestor: Some(ctor),
-      args: vec![(
-        variable(payload.clone(), Ownership::Owned, VariableKind::Let),
-        vec![],
-      )],
-      return_type: TypeState::Known(enum_type.clone()).into(),
-    }));
-    let pattern = typed(
-      ExpKind::Application(
-        Box::new(typed(ExpKind::Name(variant), ctor_type, source.clone())),
-        vec![typed(
-          ExpKind::Name(scope_name.clone()),
-          payload.clone(),
-          source.clone(),
-        )],
-      ),
-      enum_type.clone(),
-      source.clone(),
-    );
-    let value =
-      typed(ExpKind::Name(scope_name), payload.clone(), source.clone());
-    let wildcard = typed(ExpKind::Wildcard, enum_type, source.clone());
-    typed(
-      ExpKind::Match(
-        Box::new(boxed),
-        vec![(pattern, assign(target, value, &payload)), (wildcard, unit)],
-      ),
-      Type::Unit,
-      source,
+    let pattern =
+      b.call(&ctor, vec![b.name(&scope_name, &payload)], &enum_type);
+    let write_back = assign(target, b.name(&scope_name, &payload), &payload);
+    b.match_on(
+      boxed,
+      vec![(pattern, write_back), (b.wildcard(&enum_type), b.unit())],
+      &Type::Unit,
     )
   }
   /// The lowered body of an instance (memoized).
@@ -5488,254 +4988,82 @@ impl<'p> Lowering<'p> {
     }
     let by_ref = force_by_ref || arms.iter().any(|a| a.mutates);
     let source = SourceTrace::empty();
+    let b = ExpBuilder::at(&source);
     let u_name: Arc<str> = "fnv_u".into();
-    let arg_names: Vec<Arc<str>> = (0..arg_types.len())
-      .map(|i| -> Arc<str> { format!("fnv_a{i}").into() })
-      .collect();
     let u_ownership = if by_ref {
       Ownership::MutableReference
     } else {
       Ownership::Owned
     };
-    let u_ref = || {
-      let mut u = typed(
-        ExpKind::Name(u_name.clone()),
-        enum_type.clone(),
-        source.clone(),
-      );
-      u.data.ownership = u_ownership;
-      u
-    };
+    // Parameters: the union, then the call's arguments.
+    let params: Vec<(Arc<str>, Type, Ownership)> =
+      std::iter::once((u_name.clone(), enum_type.clone(), u_ownership))
+        .chain(
+          arg_types
+            .iter()
+            .zip(arg_ownerships.iter())
+            .enumerate()
+            .map(|(i, (t, o))| (format!("fnv_a{i}").into(), t.clone(), *o)),
+        )
+        .collect();
     let arg_refs = || -> Vec<TypedExp> {
-      arg_names
+      params[1..]
         .iter()
-        .zip(arg_types.iter())
-        .zip(arg_ownerships.iter())
-        .map(|((n, t), o)| {
-          let mut a =
-            typed(ExpKind::Name(n.clone()), t.clone(), source.clone());
-          a.data.ownership = *o;
-          a
-        })
+        .map(|(n, t, o)| b.name_with(n, t, *o))
         .collect()
     };
     let match_arms: Vec<(TypedExp, TypedExp)> = arms
       .iter()
       .map(|arm| {
-        let callee = typed(
-          ExpKind::Name(arm.callee_name.clone()),
-          arm.callee_type.clone(),
-          source.clone(),
+        let callee = b.name(&arm.callee_name, &arm.callee_type);
+        let Some(ctor) = &arm.ctor else {
+          // A payload-less variant: call the member directly (with an empty
+          // scope for a closure whose captures lowered to nothing).
+          let mut call_args = arg_refs();
+          if let Some(scope) = &arm.empty_scope {
+            call_args.extend(zero_value(scope, &source));
+          }
+          return (
+            b.name(&arm.variant, &enum_type),
+            b.apply(callee, call_args, ret),
+          );
+        };
+        // (V_i fnv_s): the scope is copied into `@var fnv_s2` for the call.
+        let scope_name: Arc<str> = "fnv_s".into();
+        let copy_name: Arc<str> = "fnv_s2".into();
+        let pattern =
+          b.call(ctor, vec![b.name(&scope_name, &arm.payload)], &enum_type);
+        let mut call_args = arg_refs();
+        call_args.push(b.name(&copy_name, &arm.payload));
+        let call = b.apply(callee, call_args, ret);
+        let body = if arm.mutates {
+          // (= u (V_i fnv_s2)): write the advanced scope back.
+          let rebuilt =
+            b.call(ctor, vec![b.name(&copy_name, &arm.payload)], &enum_type);
+          let write_back =
+            b.assign(b.name_with(&u_name, &enum_type, u_ownership), rebuilt);
+          b.then_run(call, "fnv_r".into(), vec![write_back])
+        } else {
+          call
+        };
+        let value = b.let_in(
+          vec![(
+            copy_name,
+            VariableKind::Var,
+            b.name(&scope_name, &arm.payload),
+          )],
+          body,
         );
-        match &arm.ctor {
-          None => {
-            let pattern = typed(
-              ExpKind::Name(arm.variant.clone()),
-              enum_type.clone(),
-              source.clone(),
-            );
-            let mut call_args = arg_refs();
-            if let Some(scope) = &arm.empty_scope {
-              call_args.extend(zero_value(scope, &source));
-            }
-            let call = typed(
-              ExpKind::Application(Box::new(callee), call_args),
-              ret.clone(),
-              source.clone(),
-            );
-            (pattern, call)
-          }
-          Some(ctor) => {
-            let scope_name: Arc<str> = "fnv_s".into();
-            let copy_name: Arc<str> = "fnv_s2".into();
-            let ctor_type = Type::Function(Box::new(FunctionSignature {
-              abstract_ancestor: Some(ctor.clone()),
-              args: vec![(
-                variable(
-                  arm.payload.clone(),
-                  Ownership::Owned,
-                  VariableKind::Let,
-                ),
-                vec![],
-              )],
-              return_type: TypeState::Known(enum_type.clone()).into(),
-            }));
-            let pattern = typed(
-              ExpKind::Application(
-                Box::new(typed(
-                  ExpKind::Name(arm.variant.clone()),
-                  ctor_type.clone(),
-                  source.clone(),
-                )),
-                vec![typed(
-                  ExpKind::Name(scope_name.clone()),
-                  arm.payload.clone(),
-                  source.clone(),
-                )],
-              ),
-              enum_type.clone(),
-              source.clone(),
-            );
-            let mut call_args = arg_refs();
-            let scope_arg = typed(
-              ExpKind::Name(copy_name.clone()),
-              arm.payload.clone(),
-              source.clone(),
-            );
-            call_args.push(scope_arg);
-            let call = typed(
-              ExpKind::Application(Box::new(callee), call_args),
-              ret.clone(),
-              source.clone(),
-            );
-            let body = if arm.mutates {
-              // (= u (V_i fnv_s2)): write the advanced scope back.
-              let rebuilt = typed(
-                ExpKind::Application(
-                  Box::new(typed(
-                    ExpKind::Name(arm.variant.clone()),
-                    ctor_type,
-                    source.clone(),
-                  )),
-                  vec![typed(
-                    ExpKind::Name(copy_name.clone()),
-                    arm.payload.clone(),
-                    source.clone(),
-                  )],
-                ),
-                enum_type.clone(),
-                source.clone(),
-              );
-              let mut target = u_ref();
-              target.data.ownership = Ownership::MutableReference;
-              let write_back = typed(
-                ExpKind::Application(
-                  Box::new(TypedExp::assignment_function(
-                    TypeState::Known(enum_type.clone()).into(),
-                  )),
-                  vec![target, rebuilt],
-                ),
-                Type::Unit,
-                source.clone(),
-              );
-              if *ret == Type::Unit {
-                typed(
-                  ExpKind::Block(vec![call, write_back]),
-                  Type::Unit,
-                  source.clone(),
-                )
-              } else {
-                let result_name: Arc<str> = "fnv_r".into();
-                typed(
-                  ExpKind::Let(
-                    vec![(
-                      result_name.clone(),
-                      source.clone(),
-                      VariableKind::Let,
-                      call,
-                    )],
-                    Box::new(typed(
-                      ExpKind::Block(vec![
-                        write_back,
-                        typed(
-                          ExpKind::Name(result_name),
-                          ret.clone(),
-                          source.clone(),
-                        ),
-                      ]),
-                      ret.clone(),
-                      source.clone(),
-                    )),
-                  ),
-                  ret.clone(),
-                  source.clone(),
-                )
-              }
-            } else {
-              call
-            };
-            let value = typed(
-              ExpKind::Let(
-                vec![(
-                  copy_name,
-                  source.clone(),
-                  VariableKind::Var,
-                  typed(
-                    ExpKind::Name(scope_name),
-                    arm.payload.clone(),
-                    source.clone(),
-                  ),
-                )],
-                Box::new(body),
-              ),
-              ret.clone(),
-              source.clone(),
-            );
-            (pattern, value)
-          }
-        }
+        (pattern, value)
       })
       .collect();
-    let body = typed(
-      ExpKind::Match(Box::new(u_ref()), match_arms),
-      ret.clone(),
-      source.clone(),
+    let body = b.match_on(
+      b.name_with(&u_name, &enum_type, u_ownership),
+      match_arms,
+      ret,
     );
-    let mut params = vec![enum_type.clone()];
-    params.extend(arg_types.iter().cloned());
     let name = self.gensym(&format!("apply_{enum_name}"));
-    let mut abstract_args =
-      vec![(AbstractType::Type(enum_type.clone()), u_ownership)];
-    abstract_args.extend(
-      arg_types
-        .iter()
-        .zip(arg_ownerships.iter())
-        .map(|(t, o)| (AbstractType::Type(t.clone()), *o)),
-    );
-    let all_names: Vec<(Arc<str>, SourceTrace)> =
-      std::iter::once(u_name.clone())
-        .chain(arg_names.iter().cloned())
-        .map(|n| (n, source.clone()))
-        .collect();
-    let implementation = Arc::new(RwLock::new(TopLevelFunction {
-      name_source_trace: source.clone(),
-      arg_names: all_names.clone(),
-      arg_annotations: all_names
-        .iter()
-        .enumerate()
-        .map(|(i, _)| {
-          let mut a = FunctionArgumentAnnotation::empty(source.clone());
-          let ownership = if i == 0 {
-            u_ownership
-          } else {
-            arg_ownerships[i - 1]
-          };
-          if ownership == Ownership::MutableReference {
-            a.var = true;
-            a.ownership = Ownership::MutableReference;
-          }
-          a
-        })
-        .collect(),
-      return_attributes: IOAttributes::empty(source.clone()),
-      entry_point: None,
-      directly_user_written: false,
-      expression: typed(ExpKind::Unit, Type::Unit, source.clone()),
-    }));
-    let signature = Arc::new(RwLock::new(AbstractFunctionSignature {
-      name: name.clone(),
-      arg_types: abstract_args,
-      return_type: AbstractType::Type(ret.clone()),
-      implementation: FunctionImplementationKind::Composite(
-        implementation.clone(),
-      ),
-      ..Default::default()
-    }));
-    implementation.write().unwrap().expression = typed(
-      ExpKind::Function(all_names, Box::new(body)),
-      function_type(&signature, &params, ret),
-      source,
-    );
+    let signature = generated_function(&name, &params, ret, body, &source);
     self.new_functions.push(signature.clone());
     self.dispatchers.insert(key, signature.clone());
     self.dispatcher_by_reference.insert(name, by_ref);
@@ -5798,18 +5126,10 @@ fn make_mutably_referenced_params_addressable(
       name,
       source.clone(),
       VariableKind::Var,
-      typed(ExpKind::Name(incoming), t, source),
+      ExpBuilder::at(&source).name(&incoming, &t),
     ));
   }
-  take(body.as_mut(), |body| {
-    let data = body.data.clone();
-    let source = body.source_trace.clone();
-    Exp {
-      data,
-      kind: ExpKind::Let(bindings, Box::new(body)),
-      source_trace: source,
-    }
-  });
+  take(body.as_mut(), |body| let_around(bindings, body));
   let ExpKind::Function(expression_names, _) = &implementation.expression.kind
   else {
     unreachable!()
