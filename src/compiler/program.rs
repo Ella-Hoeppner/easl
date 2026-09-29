@@ -32,7 +32,7 @@ use crate::{
       IOAttributes, InputOrOutput,
     },
     enums::{AbstractEnum, UntypedEnum},
-    error::{CompileError, SourceTrace, err},
+    error::{CompileError, SourceTrace},
     exp_builder::{ExpBuilder, struct_constructor},
     expression::{
       Accessor, Exp, ExpKind, ExpressionCompilationPosition, Number,
@@ -4535,7 +4535,7 @@ impl Program {
       }
     }
   }
-  pub fn extract_inner_functions(&mut self, errors: &mut ErrorLog) -> bool {
+  pub fn extract_inner_functions(&mut self) -> bool {
     let mut any_extracted = false;
     loop {
       let mut new_signatures: Vec<AbstractFunctionSignature> = vec![];
@@ -4649,7 +4649,7 @@ impl Program {
                       effects
                         .0
                         .iter()
-                        .map(|e| match e {
+                        .filter_map(|e| match e {
                           Effect::ReadsVar(var_name)
                           | Effect::ReadsArrayLength(var_name) => {
                             if let Some((scope_param_name, _)) =
@@ -4669,9 +4669,9 @@ impl Program {
                                  extraction's field-splitting invariant \
                                  violated"
                               );
-                              return Ok(None);
+                              return None;
                             }
-                            Ok(match ctx.variables.get(var_name) {
+                            match ctx.variables.get(var_name) {
                               Some((var, _)) => {
                                 let var_type = var.var_type.unwrap_known();
                                 if matches!(var_type, Type::Function(_))
@@ -4701,32 +4701,33 @@ impl Program {
                                 }
                               }
                               None => None,
-                            })
+                            }
                           }
 
+                          // Control flow never crosses a function
+                          // boundary: a lambda's `return` exits the lambda
+                          // (removed from its effects), and a `break` or
+                          // `continue` escaping one is a control-flow error
+                          // reported before extraction.
+                          Effect::Break | Effect::Continue | Effect::Return => {
+                            unreachable!("{e:?} escaped a function boundary")
+                          }
+                          // Everything else a closure does is fine to do;
+                          // only reads can capture.
                           Effect::ModifiesLocalVar(_)
+                          | Effect::ModifiesGlobalVar(_)
+                          | Effect::SeedsGlobalVar(_)
+                          | Effect::Discard
+                          | Effect::FragmentExclusiveFunction(_)
                           | Effect::CPUExclusiveFunction(_)
                           | Effect::CPUExclusiveType(_)
                           | Effect::WindowInfo(_)
-                          | Effect::FragmentExclusiveFunction(_)
                           | Effect::Print
                           | Effect::FileWrite
-                          | Effect::ModifiesGlobalVar(_)
                           | Effect::Window
                           | Effect::LookupBuiltinAttribute(_)
-                          | Effect::InvokesUnknownFunction => Ok(None),
-                          _ => err(
-                            IllegalEffectsInClosure(format!("{e:?}")),
-                            body.source_trace.clone(),
-                          ),
+                          | Effect::InvokesUnknownFunction => None,
                         })
-                        .collect::<CompileResult<Vec<_>>>()
-                        .unwrap_or_else(|e| {
-                          errors.log(e);
-                          vec![]
-                        })
-                        .into_iter()
-                        .filter_map(|x| x)
                         .collect();
                     // A variable read both by element access and by
                     // `array-length` contributes two effects — capture it
@@ -7438,10 +7439,7 @@ impl Program {
       return errors;
     }
     loop {
-      let extracted = self.extract_inner_functions(&mut errors);
-      if !errors.is_empty() {
-        return errors;
-      }
+      let extracted = self.extract_inner_functions();
       // Stamp each closure-returning function's declared return type from the
       // scope struct its body actually constructs — the one anchor extraction
       // leaves unambiguous — BEFORE signature propagation runs. Two

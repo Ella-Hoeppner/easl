@@ -1,0 +1,15 @@
+; Lambdas using `return` inside a dispatched compute shader: let-bound and
+; immediately applied.
+@storage-write
+(var out: [3: f32])
+
+@cpu
+(defn main []
+  (dispatch-compute-shader
+    (fn []
+      (let [clamp-neg (fn [x] (when (< x 0.) (return 0.)) (* x 2.))]
+        (= (out 0u) (clamp-neg -3.))
+        (= (out 1u) (clamp-neg 4.))
+        (= (out 2u) ((fn [x] (when (> x 1.) (return 1.)) x) 5.))))
+    (vec3u 1u))
+  (print out))

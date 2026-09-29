@@ -109,6 +109,7 @@ buffer_test!(fn_value_single_member_array_gpu);
 buffer_test!(fn_value_generic_closure_array_gpu);
 buffer_test!(fn_value_single_member_ref_helper_gpu);
 buffer_test!(fn_value_generic_union_gpu);
+buffer_test!(lambda_return_gpu);
 buffer_test!(enum_padded_payload_gpu);
 buffer_test!(fn_value_hof_arg_matrix_gpu);
 buffer_test!(single_variant_enum_buffer);

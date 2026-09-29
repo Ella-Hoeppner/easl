@@ -1,0 +1,10 @@
+; A `break` inside a lambda can't target a loop enclosing the lambda.
+(defn (map T U C: u32) [arr: [C: T] f: (Fn [T] U)]: [C: U]
+  (let [@var new-arr (zeroed-array)]
+    (for [i (array-length arr)] (= (new-arr i) (f (arr i))))
+    new-arr))
+
+@cpu
+(defn main []
+  (for [j 3u]
+    (print (map [1. 2.] (fn [x] (when (> x 1.) (break)) x)))))

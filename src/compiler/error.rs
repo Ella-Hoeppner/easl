@@ -543,8 +543,6 @@ pub enum CompileErrorKind {
   TypeDependencyCycle(Vec<String>),
   #[error("Missing argument list in fn")]
   FnMissingArgumentList,
-  #[error("Closure has illegal effects: {0}")]
-  IllegalEffectsInClosure(String),
   #[error("Can't modify local variable \"{0}\" inside a closure")]
   CantModifyLocalVarInClosure(String),
   #[error(

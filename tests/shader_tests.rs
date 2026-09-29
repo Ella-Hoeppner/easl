@@ -947,6 +947,10 @@ error_test!(
   CompileErrorKind::CopiedStatefulClosure("f".into())
 );
 error_test!(
+  lambda_break_escapes_failure,
+  CompileErrorKind::BreakOutsideLoop
+);
+error_test!(
   copied_stateful_closure_generic_failure,
   CompileErrorKind::CopiedStatefulClosure("c".into())
 );
@@ -1019,6 +1023,8 @@ success_test!(hof_closure_factory_arg_gpu);
 success_test!(fn_value_overloaded_callee);
 success_test!(fn_value_single_member_fragment);
 success_test!(nested_lambda_scope_temporary_gpu);
+success_test!(lambda_return_fragment);
+success_test!(lambda_discard_fragment);
 error_test!(
   compound_mat_divide_invalid,
   CompileErrorKind::FunctionArgumentTypesIncompatible {

@@ -1,0 +1,39 @@
+; `return` inside a lambda exits only that lambda — passed to a generic or
+; plain higher-order function, let-bound and called directly, capturing a
+; variable, from inside a loop, stored in an array — and the enclosing
+; function carries on. A `break` in the lambda's own loop stays within it.
+(defn (map T U C: u32) [arr: [C: T] f: (Fn [T] U)]: [C: U]
+  (let [@var new-arr (zeroed-array)]
+    (for [i (array-length arr)] (= (new-arr i) (f (arr i))))
+    new-arr))
+
+(defn apply-twice [f: (Fn [f32] f32) x: f32]: f32 (f (f x)))
+
+@cpu
+(defn main []
+  (print (map [1. -2. 3.] (fn [x] (when (< x 0.) (return 0.)) (* x 10.))))
+  (print (apply-twice (fn [x] (when (> x 5.) (return 100.)) (* x 3.)) 2.))
+  (let [clamp-neg (fn [x] (when (< x 0.) (return 0.)) x)]
+    (print (clamp-neg -4.))
+    (print (clamp-neg 4.)))
+  (let [limit 2.
+        cap (fn [x] (when (> x limit) (return limit)) x)]
+    (print (cap 5.))
+    (print (cap 1.)))
+  (let [first-big (fn [xs: [3: f32]]
+                    (for [i 3u] (when (> (xs i) 1.) (return (xs i))))
+                    -1.)]
+    (print (first-big [0.5 2. 3.]))
+    (print (first-big [0. 0. 0.])))
+  (let [count-small (fn [xs: [3: f32]]
+                      (let [@var n 0u]
+                        (for [i 3u]
+                          (when (> (xs i) 1.) (break))
+                          (+= n 1u))
+                        n))]
+    (print (count-small [0. 0.5 2.]))
+    (print (count-small [3. 0. 0.])))
+  (let [fs [(fn [x] (when (< x 0.) (return 0.)) x) (fn [x] (* x 2.))]]
+    (print ((fs 0u) -3.))
+    (print ((fs 1u) 4.)))
+  (print 7u))

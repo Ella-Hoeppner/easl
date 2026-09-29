@@ -1,0 +1,28 @@
+; An inline fragment-shader lambda using `discard`, which closures may use
+; like any other effect.
+@cpu
+(defn main []: ()
+  (spawn-window (fn []
+                  (dispatch-render-shaders
+                    (fn []
+                      (vec4f (match (vertex-index)
+                               0 (vec2f -1.)
+                               1 (vec2f -1. 3.)
+                               _ (vec2f 3. -1.))
+                             0.
+                             1.))
+                    (fn []
+                      (let [screen-scale (-> (window-resolution)
+                                             vec2f
+                                             (/ <> (min (.x <>) (.y <>))))
+                            pos (-> (.xy (position))
+                                    (/ (vec2f (window-resolution)))
+                                    (* 2.)
+                                    (- 1.)
+                                    (* screen-scale))]
+                        (when (or (any (< pos ~-1.))
+                                  (any (> pos ~1.)))
+                          (discard))
+                        (vec4f pos 0. 1.)))
+                    3))))
+

@@ -4756,6 +4756,12 @@ impl TypedExp {
               .validate_control_flow(errors, enclosing_loop_count + 1);
             false
           }
+          // `break`/`continue` can't cross a function boundary: a lambda's
+          // body starts outside any loop, whatever loops enclose the lambda.
+          ExpKind::Function(_, body) => {
+            body.validate_control_flow(errors, 0);
+            false
+          }
           _ => true,
         })
       })
@@ -4934,12 +4940,18 @@ impl TypedExp {
         inner_effects.merge(Effect::Return);
         inner_effects
       }
+      // A function boundary contains what's local to the call, exactly as
+      // for a top-level function (`TopLevelFunction::effects`): reads and
+      // writes of its own parameters, and `return`, which exits this
+      // function rather than the enclosing one.
       Function(arg_names, body) => {
         let mut effects = body.effects();
         for (arg, _) in arg_names {
           effects.remove(&Effect::ReadsVar(arg.clone()));
           effects.remove(&Effect::ReadsArrayLength(arg.clone()));
+          effects.remove(&Effect::ModifiesLocalVar(arg.clone()));
         }
+        effects.remove(&Effect::Return);
         effects
       }
       Continue => Effect::Continue.into(),

@@ -1,0 +1,17 @@
+(enum EaslFormKind
+  Parens
+  Square
+  Curly
+  Quote
+  Annotation
+  TypeAscription
+  Into)
+
+(defn main []
+  (let []
+    (for [i 10u]
+      (when (== (% i 3) 2)
+        (break))
+      #_(break-when (== (% i 3) 2))
+      (print i))))
+
