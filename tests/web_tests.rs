@@ -126,10 +126,6 @@ mod harness {
       "its output depends on StringIO's 8 Hz sample rate and simulated \
        frames",
     ),
-    (
-      "buffer/gpu_read_outside_application",
-      "pins a known bug in every runtime, not yet fixed",
-    ),
   ];
 
   /// How long one test may run.

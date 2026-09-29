@@ -292,6 +292,17 @@ pub enum Op {
   /// hot path.
   MarkSharedDirty,
 
+  /// Marks host binding `arg_positions[0]` as possibly newer on the GPU
+  /// than on the CPU. Emitted after each dispatch for every binding it
+  /// writes (CPU-runtime mode only).
+  MarkGpuNewer,
+  /// Makes sure CPU code is about to read host binding `arg_positions[0]`'s
+  /// current value: when the binding is marked GPU-newer, clears the mark
+  /// and runs host op `arg_positions[1]` (its `CheckGpuToCpu`), which reads
+  /// it back. Unmarked, it's one load and branch, so it can guard every
+  /// read (CPU-runtime mode only).
+  CheckGpuRead,
+
   // Data packing (multi-slot operands start at arg_positions[0]; the slots
   // they span are covered by Code::min_stack_size)
   PackSnorm4x8,
@@ -455,7 +466,7 @@ impl Instruction {
           .max(self.arg_positions[1])
       }
       Op::DynResize => self.arg_positions[1],
-      Op::MarkSharedDirty => 0,
+      Op::MarkSharedDirty | Op::MarkGpuNewer | Op::CheckGpuRead => 0,
       Op::HeapLen | Op::HeapCopy => {
         self.return_position.max(self.arg_positions[0])
       }
@@ -1043,6 +1054,12 @@ pub struct BytecodeProgram {
   /// Per-shared-variable spare snapshot buffers, recycled between
   /// publications so steady-state publishing allocates nothing.
   pub shared_scratch: Vec<Option<Vec<u32>>>,
+  /// Per-host-binding "the GPU may have written this since the CPU last
+  /// read it back" flags, aligned with `Code::host_bindings`. Set by
+  /// `Op::MarkGpuNewer`, cleared by `Op::CheckGpuRead`; a flag may stay set
+  /// after the binding syncs some other way, which only costs the next
+  /// check a host call.
+  pub gpu_newer: Vec<bool>,
 }
 
 impl BytecodeProgram {
@@ -1066,6 +1083,7 @@ impl BytecodeProgram {
       shared_dirty: vec![false; code.shared_vars.len()],
       shared_adopted: vec![0; code.shared_vars.len()],
       shared_scratch: (0..code.shared_vars.len()).map(|_| None).collect(),
+      gpu_newer: vec![false; code.host_bindings.len()],
       code,
     };
     if let Some(init_idx) = program.code.init_function_index {
@@ -1132,6 +1150,7 @@ impl BytecodeProgram {
       shared_dirty,
       shared_adopted,
       shared_scratch,
+      gpu_newer,
     } = self;
     // Heap helpers for the `Heap*` ops. `release` implements
     // drop-on-overwrite: the previous occupant of a heap-id destination
@@ -1156,6 +1175,30 @@ impl BytecodeProgram {
     let Some(mut ip) = call_stack.pop() else {
       return Ok(RunResult::Finished);
     };
+    // Runs host op `$index`, suspending the run if the host asks to.
+    macro_rules! host_call {
+      ($index:expr) => {
+        if let Some(reason) = host.host_call(
+          &code.host_ops[$index as usize],
+          stack,
+          dyn_memory,
+          heap,
+          heap_free,
+          SharedStateParts {
+            dirty: shared_dirty,
+            adopted: shared_adopted,
+            scratch: shared_scratch,
+          },
+          code,
+        )? {
+          // Resume point: `ip` has already advanced past this instruction,
+          // so pushing it back means resuming continues with the next
+          // instruction.
+          call_stack.push(ip);
+          return Ok(RunResult::Suspended(reason));
+        }
+      };
+    }
     loop {
       let Some(instruction_index) = ip.next() else {
         let Some(return_ip) = call_stack.pop() else {
@@ -1320,25 +1363,16 @@ impl BytecodeProgram {
             acc as u32;
         },
         Op::HostCall => {
-          let op = &code.host_ops[instruction.arg_positions[0] as usize];
-          if let Some(reason) = host.host_call(
-            op,
-            stack,
-            dyn_memory,
-            heap,
-            heap_free,
-            SharedStateParts {
-              dirty: shared_dirty,
-              adopted: shared_adopted,
-              scratch: shared_scratch,
-            },
-            code,
-          )? {
-            // Resume point: `ip` has already advanced past this
-            // instruction, so pushing it back means resuming continues with
-            // the next instruction.
-            call_stack.push(ip);
-            return Ok(RunResult::Suspended(reason));
+          host_call!(instruction.arg_positions[0]);
+        }
+        Op::MarkGpuNewer => {
+          gpu_newer[instruction.arg_positions[0] as usize] = true;
+        }
+        Op::CheckGpuRead => {
+          let binding = instruction.arg_positions[0] as usize;
+          if gpu_newer[binding] {
+            gpu_newer[binding] = false;
+            host_call!(instruction.arg_positions[1]);
           }
         }
         Op::Move => unsafe {

@@ -1,7 +1,10 @@
 ; CPU reads of GPU-written data must see every dispatch before them, even
 ; when the read isn't inside a function call: a let-bound element read, a
 ; match scrutinee, a function's returned element, a bare scalar, a struct
-; field, and a whole array all follow a dispatch that wrote them.
+; field, and a whole array all follow a dispatch that wrote them. So must a
+; write to one element, whose right-hand side dispatches: the rest of the
+; array must be current before the write, or uploading it would undo the
+; GPU's write.
 (struct Particle
   pos: vec2f)
 
@@ -37,4 +40,6 @@
     (print p))
   (dispatch-compute-shader bump (vec3u 1u))
   (let [a counter]
-    (print a)))
+    (print a))
+  (= (counter 1u) (current))
+  (print counter))

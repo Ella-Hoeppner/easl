@@ -2726,14 +2726,44 @@ impl BytecodeCompilationState {
       (self.host_strings.len() - 1) as u16
     }
   }
-  /// Emits `CheckGpuToCpu` for each GPU-bound global in `names` — the VM
-  /// equivalent of the tree-walker's `check_cpu_readable` before an
+  /// Emits a GPU→CPU sync check for each GPU-bound global in `names` — the
+  /// VM equivalent of the tree-walker's `check_cpu_readable` before an
   /// application evaluates.
   pub fn emit_sync_checks(&mut self, names: &[Arc<str>]) {
     for name in names {
-      if let Some(binding) = self.binding_indices.get(name).copied() {
-        self.emit_host_op(HostOp::CheckGpuToCpu { binding });
-      }
+      self.emit_read_check(name);
+    }
+  }
+  /// Emits a GPU→CPU sync check before a read of `name`, when it's a
+  /// GPU-bound global (CPU-runtime mode only): a `CheckGpuRead`, which only
+  /// reaches the host's `CheckGpuToCpu` when a dispatch may have written
+  /// the binding since the CPU last read it. Every read of a GPU-bound
+  /// global gets one, since the GPU may have written it since whatever
+  /// check preceded the enclosing application.
+  pub fn emit_read_check(&mut self, name: &Arc<str>) {
+    if !self.cpu_mode {
+      return;
+    }
+    if let Some(binding) = self.binding_indices.get(name).copied() {
+      let check = self.host_ops.len() as u16;
+      self.host_ops.push(HostOp::CheckGpuToCpu { binding });
+      self.push_instruction(Instruction {
+        op: Op::CheckGpuRead,
+        arg_positions: [binding, check, 0],
+        return_position: 0,
+      });
+    }
+  }
+  /// Emits the host op dispatching GPU work, then marks every binding the
+  /// work writes as possibly GPU-newer.
+  fn emit_dispatch(&mut self, dispatch: HostOp, writes: &[u16]) {
+    self.emit_host_op(dispatch);
+    for &binding in writes {
+      self.push_instruction(Instruction {
+        op: Op::MarkGpuNewer,
+        arg_positions: [binding, 0, 0],
+        return_position: 0,
+      });
     }
   }
   /// Emits the post-write bookkeeping for each global in `names` — the VM
@@ -3558,6 +3588,8 @@ impl TypedExp {
           let src_slot = args[1]
             .compile_to_bytecode(CompilePosition::Value, state)
             .unwrap();
+          // A partial write: the rest of the array must be current first.
+          state.emit_read_check(name);
           if let Some(fixups) =
             BytecodeCompilationState::embedding_element_fixups(
               &element_type.unwrap_known(),
@@ -3853,15 +3885,21 @@ impl TypedExp {
         let (entry_name, reads, writes) = state.resolve_dispatched_fn(&args[0]);
         let entry = state.host_string_index(&entry_name);
         let sets = state.host_dispatches.len() as u16;
-        state.host_dispatches.push(HostDispatch { reads, writes });
+        state.host_dispatches.push(HostDispatch {
+          reads,
+          writes: writes.clone(),
+        });
         let workgroup_slot = args[1]
           .compile_to_bytecode(CompilePosition::Value, state)
           .unwrap();
-        state.emit_host_op(HostOp::DispatchCompute {
-          entry,
-          sets,
-          workgroup_slot,
-        });
+        state.emit_dispatch(
+          HostOp::DispatchCompute {
+            entry,
+            sets,
+            workgroup_slot,
+          },
+          &writes,
+        );
         Some(None)
       }
       "dispatch-render-shaders" => {
@@ -3882,7 +3920,10 @@ impl TypedExp {
         let vert = state.host_string_index(&vert_name);
         let frag = state.host_string_index(&frag_name);
         let sets = state.host_dispatches.len() as u16;
-        state.host_dispatches.push(HostDispatch { reads, writes });
+        state.host_dispatches.push(HostDispatch {
+          reads,
+          writes: writes.clone(),
+        });
         let vert_count_slot = args[2]
           .compile_to_bytecode(CompilePosition::Value, state)
           .unwrap();
@@ -3890,13 +3931,16 @@ impl TypedExp {
           a.compile_to_bytecode(CompilePosition::Value, state)
             .unwrap()
         });
-        state.emit_host_op(HostOp::DispatchRender {
-          vert,
-          frag,
-          sets,
-          vert_count_slot,
-          additive_slot,
-        });
+        state.emit_dispatch(
+          HostOp::DispatchRender {
+            vert,
+            frag,
+            sets,
+            vert_count_slot,
+            additive_slot,
+          },
+          &writes,
+        );
         Some(None)
       }
       "spawn-window" => {
@@ -4646,6 +4690,7 @@ impl TypedExp {
         result_pos
       }
       Name(name) => {
+        state.emit_read_check(name);
         if let Some((memory, stride)) =
           state.dynamic_array_memory.get(name).copied()
         {
@@ -5307,6 +5352,7 @@ impl TypedExp {
               let index_slot = index_exp
                 .compile_to_bytecode(CompilePosition::Value, state)
                 .unwrap();
+              state.emit_read_check(name);
               state.push_instruction(Instruction {
                 op: Op::DynLoad,
                 arg_positions: [memory, index_slot, stride],

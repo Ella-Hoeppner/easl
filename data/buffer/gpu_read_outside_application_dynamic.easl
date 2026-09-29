@@ -1,0 +1,25 @@
+; `gpu_read_outside_application` for a runtime-sized global, whose reads and
+; writes take their own paths: a let-bound element read, a whole-array read,
+; and an element write whose right-hand side dispatches, each after a
+; dispatch that wrote the array.
+(var data: [u32])
+
+@compute
+(defn bump []
+  (+= (data 0u) 1u))
+
+(defn current []: u32
+  (dispatch-compute-shader bump (vec3u 1u))
+  (data 0u))
+
+@cpu
+(defn main []
+  (= data (zeroed-array 2))
+  (dispatch-compute-shader bump (vec3u 1u))
+  (let [x (data 0u)]
+    (print x))
+  (dispatch-compute-shader bump (vec3u 1u))
+  (let [a data]
+    (print a))
+  (= (data 1u) (current))
+  (print data))

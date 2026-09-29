@@ -5724,6 +5724,14 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     }
   }
 
+  /// Reads back the GPU-bound global `name` before a CPU read of it, if the
+  /// GPU has written it since the CPU last had it.
+  fn check_global_readable(&mut self, name: &Arc<str>) {
+    if self.buffer_states.get(name) == Some(&SharedBufferState::CPUOutOfDate) {
+      self.check_cpu_readable(&[name.clone()]);
+    }
+  }
+
   /// The GPU-written bindings among `names` whose CPU copies are stale, each
   /// with the byte size of its readback.
   pub fn pending_readbacks(&self, names: &[Arc<str>]) -> Vec<PendingReadback> {
@@ -6385,7 +6393,12 @@ pub fn eval(
   let value = match exp.kind {
     ExpKind::Wildcard => return Err(EncounteredWildcard.into()),
     ExpKind::Unit => Value::Unit,
-    ExpKind::Name(name) => env.lookup(&name)?.clone(),
+    ExpKind::Name(name) => {
+      if exp.data.is_globally_bound {
+        env.check_global_readable(&name);
+      }
+      env.lookup(&name)?.clone()
+    }
     ExpKind::NumberLiteral(number) => match exp.data.kind.unwrap_known() {
       Type::F32 => Primitive::F32(match number {
         Number::Int(i) => i as f32,
@@ -6600,9 +6613,15 @@ fn eval_application<IO: IOManager>(
           | Ownership::Pointer(_, RefMutability::Immutable) => None,
         })
         .collect();
+      let is_array_length = &*f_arc.read().unwrap().name == "array-length";
       let arg_values: Vec<Value> = args
         .into_iter()
         .map(|arg| {
+          if is_array_length && let ExpKind::Name(array_name) = &arg.kind {
+            // A length-only read: the GPU can never resize an array, so
+            // this needs no readback.
+            return Ok(env.lookup(array_name)?.clone());
+          }
           if let Type::Function(f) = arg.data.unwrap_known()
             && let Some(f) = f.abstract_ancestor
             && let ExpKind::Name(f_name) = arg.kind
