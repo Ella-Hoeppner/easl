@@ -1,0 +1,14 @@
+; Every comment form: line comments, block comments spanning lines, and
+; expression comments.
+
+;* a block comment
+   spanning lines *;
+
+#_(this top-level expression is ignored)
+
+@cpu
+(defn main []
+  ;* inline
+     block *;
+  (print (+ 1u #_(ignored) 2u)) ; trailing line comment
+  (print ;* between arguments *; 3u))

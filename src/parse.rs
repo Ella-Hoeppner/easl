@@ -110,12 +110,14 @@ impl SSEOperator for Operator {
 static DEFAULT_CTX: LazyLock<SSEContext<Encloser, Operator>> =
   LazyLock::new(|| {
     SSEContext::new(
+      // Openers match in list order, so `;*` (block comment) must come
+      // before its prefix `;` (line comment).
       vec![
         Encloser::Parens,
         Encloser::Square,
         Encloser::Curly,
-        Encloser::LineComment,
         Encloser::BlockComment,
+        Encloser::LineComment,
         Encloser::Quote,
       ],
       vec![
