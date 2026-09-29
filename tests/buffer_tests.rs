@@ -115,6 +115,7 @@ buffer_test!(fn_value_generic_union_gpu);
 buffer_test!(lambda_return_gpu);
 buffer_test!(enum_padded_payload_gpu);
 buffer_test!(fn_value_hof_arg_matrix_gpu);
+buffer_test!(fn_value_mixed_signature_fields_gpu);
 buffer_test!(single_variant_enum_buffer);
 buffer_test!(load_red_pixel);
 buffer_test!(set_render_target);

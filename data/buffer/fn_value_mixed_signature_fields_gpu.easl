@@ -1,0 +1,32 @@
+; Function values of different signatures stored side by side in a struct —
+; a distortion `(Fn [vec3f] vec3f)` and a weight `(Fn [vec3f] f32)` — then
+; iterated with `array-length` inside a closure dispatched to the GPU. Each
+; field keeps its own member set: the distortions (one closure) stay a plain
+; scope and the weights form a union. `array-length` only reads the array,
+; so it relates none of the function values in it.
+(struct Layer
+  distortion: (Fn [vec3f] vec3f)
+  weight: (Fn [vec3f] f32))
+
+(var result: vec3f)
+
+(defn (merge C: u32) [layers: [C: Layer]]: (Fn [vec3f] vec3f)
+  (fn [pos]
+    (let [@var sum (vec3f 0.)]
+      (for [i (array-length layers)]
+        (let [layer (layers i)]
+          (+= sum (* (layer.distortion pos) (layer.weight pos)))))
+      sum)))
+
+(defn shift [c: f32]: (Fn [vec3f] vec3f)
+  (fn [p] (+ p (vec3f c))))
+
+@cpu
+(defn main []
+  (let [merged (merge [(Layer (shift 1.) (fn [x] 2.))
+                       (Layer (shift 2.) (fn [x] 0.5))])]
+    (print (merged (vec3f 1. 2. 3.)))
+    (dispatch-compute-shader
+      (fn [] (= result (merged (vec3f 1. 2. 3.))))
+      (vec3u 1u))
+    (print result)))

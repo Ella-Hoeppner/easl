@@ -2734,11 +2734,25 @@ impl<'p> Analysis<'p> {
                 }
               }
             }
-            let result = t.map(|t| self.fresh(&t)).unwrap_or(Skel::Leaf);
+            let result =
+              t.as_ref().map(|t| self.fresh(t)).unwrap_or(Skel::Leaf);
+            // A builtin can only move a function value into its result or
+            // through a mutable-reference parameter. One with neither
+            // (`array-length`, a comparison) only reads its operands, so it
+            // relates no boxed positions.
+            let moves_values = t
+              .as_ref()
+              .is_some_and(|t| type_involves_box(t, self.program))
+              || ancestor.read().unwrap().arg_types.iter().any(
+                |(_, ownership)| *ownership == Ownership::MutableReference,
+              );
+            if !moves_values {
+              return result;
+            }
             // Any other builtin moving boxed values (assignment, `push`,
             // `into-dynamic-array`, ...): conservatively unify every boxed
             // position of matching signature among its operands and result.
-            let mut boxes: Vec<(String, NodeId)> = vec![];
+            let mut boxes: Vec<(FunctionSignature, NodeId)> = vec![];
             let arg_types: Vec<Option<Type>> =
               args.iter().map(|a| known_type(&a.data)).collect();
             for (s, at) in arg_skels.iter().zip(arg_types.iter()) {
@@ -2749,16 +2763,16 @@ impl<'p> Analysis<'p> {
             if let Some(t) = known_type(&exp.data) {
               collect_boxes(&result, &t, &mut boxes);
             }
-            let mut by_signature: HashMap<String, NodeId> = HashMap::new();
+            let mut by_signature: Vec<(FunctionSignature, NodeId)> = vec![];
             for (signature, node) in boxes {
-              match by_signature.get(&signature) {
-                Some(existing) => {
+              match by_signature.iter().find(|(existing, _)| {
+                same_boxed_signature(existing, &signature)
+              }) {
+                Some((_, existing)) => {
                   let (a, b) = (Skel::Box(*existing), Skel::Box(node));
                   self.unify(&a, &b);
                 }
-                None => {
-                  by_signature.insert(signature, node);
-                }
+                None => by_signature.push((signature, node)),
               }
             }
             result
@@ -2865,11 +2879,15 @@ impl<'p> Analysis<'p> {
   }
 }
 
-/// Every boxed node in a skeleton, with its boxed signature's shape as a key.
-fn collect_boxes(s: &Skel, t: &Type, out: &mut Vec<(String, NodeId)>) {
+/// Every boxed node in a skeleton, with its boxed signature.
+fn collect_boxes(
+  s: &Skel,
+  t: &Type,
+  out: &mut Vec<(FunctionSignature, NodeId)>,
+) {
   match (s, t) {
-    (Skel::Box(n), Type::BoxedFunction(_)) => {
-      out.push((type_key(t), *n));
+    (Skel::Box(n), Type::BoxedFunction(sig)) => {
+      out.push(((**sig).clone(), *n));
     }
     (Skel::Array(e), Type::Array(_, inner)) => {
       collect_boxes(e, &inner.unwrap_known(), out)
@@ -2886,6 +2904,20 @@ fn collect_boxes(s: &Skel, t: &Type, out: &mut Vec<(String, NodeId)>) {
     }
     _ => {}
   }
+}
+
+/// Whether two boxed function values' signatures match: the same parameter
+/// ownerships and types, and the same return type. Only positions with
+/// matching signatures can hold the same functions. (`FunctionSignature`'s
+/// own equality also compares how each parameter was declared, which a
+/// caller can't observe.)
+fn same_boxed_signature(a: &FunctionSignature, b: &FunctionSignature) -> bool {
+  a.args.len() == b.args.len()
+    && a.args.iter().zip(&b.args).all(|((a, _), (b, _))| {
+      a.var_type.ownership == b.var_type.ownership
+        && a.var_type.kind == b.var_type.kind
+    })
+    && a.return_type.kind == b.return_type.kind
 }
 
 /// Makes sure a wrapped function value's static type names its function.

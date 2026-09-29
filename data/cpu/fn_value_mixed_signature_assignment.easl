@@ -1,0 +1,32 @@
+; `fn_value_mixed_signature_assignment` (shader suite) on the CPU: assigning
+; a struct whose function-valued fields have different signatures keeps each
+; field's functions apart.
+(struct Layer
+  distortion: (Fn [vec3f] vec3f)
+  weight: (Fn [vec3f] f32))
+
+(defn stretch [p: vec3f]: vec3f
+  (* p 2.))
+
+(defn shift [p: vec3f]: vec3f
+  (+ p 1.))
+
+(defn heavy [p: vec3f]: f32
+  (+ p.x 1.))
+
+(defn light [p: vec3f]: f32
+  0.5)
+
+(defn apply-layer [layer: Layer p: vec3f]: vec3f
+  (* (layer.distortion p) (layer.weight p)))
+
+(defn layer-for [second: bool]: Layer
+  (let [@var layer (Layer stretch heavy)]
+    (when second
+      (= layer (Layer shift light)))
+    layer))
+
+@cpu
+(defn main []
+  (print (apply-layer (layer-for false) (vec3f 1. 2. 3.)))
+  (print (apply-layer (layer-for true) (vec3f 1. 2. 3.))))

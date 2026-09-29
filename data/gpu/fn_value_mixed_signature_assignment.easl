@@ -1,0 +1,29 @@
+; Assigning a struct whose function-valued fields have different signatures
+; relates each field only to the same field of the value assigned: merging
+; the `vec3f`- and `f32`-returning fields into one union would produce a
+; dispatcher returning both.
+(struct Layer
+  distortion: (Fn [vec3f] vec3f)
+  weight: (Fn [vec3f] f32))
+
+(defn stretch [p: vec3f]: vec3f
+  (* p 2.))
+
+(defn shift [p: vec3f]: vec3f
+  (+ p 1.))
+
+(defn heavy [p: vec3f]: f32
+  (+ p.x 1.))
+
+(defn light [p: vec3f]: f32
+  0.5)
+
+(defn apply-layer [layer: Layer p: vec3f]: vec3f
+  (* (layer.distortion p) (layer.weight p)))
+
+@fragment
+(defn frag [@{builtin position} pos: vec4f]: @{location 0} vec4f
+  (let [@var layer (Layer stretch heavy)]
+    (when (> pos.x 10.)
+      (= layer (Layer shift light)))
+    (vec4f (apply-layer layer pos.xyz) 1.)))

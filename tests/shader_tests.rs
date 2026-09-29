@@ -1022,6 +1022,8 @@ success_test!(const_generic_map_specialization);
 success_test!(hof_closure_factory_arg_gpu);
 success_test!(fn_value_overloaded_callee);
 success_test!(fn_value_single_member_fragment);
+success_test!(fn_value_mixed_signature_fields);
+success_test!(fn_value_mixed_signature_assignment);
 success_test!(nested_lambda_scope_temporary_gpu);
 success_test!(lambda_return_fragment);
 success_test!(lambda_discard_fragment);

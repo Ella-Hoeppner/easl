@@ -1,0 +1,24 @@
+; Function values of different signatures stored side by side in a struct —
+; a distortion `(Fn [vec3f] vec3f)` and a weight `(Fn [vec3f] f32)` — then
+; iterated with `array-length`. Each field keeps its own member set, so each
+; field's union (if any) only holds functions of that field's signature.
+(struct Layer
+  distortion: (Fn [vec3f] vec3f)
+  weight: (Fn [vec3f] f32))
+
+(defn (merge C: u32) [layers: [C: Layer]]: (Fn [vec3f] vec3f)
+  (fn [pos]
+    (let [@var sum (vec3f 0.)]
+      (for [i (array-length layers)]
+        (let [layer (layers i)]
+          (+= sum (* (layer.distortion pos) (layer.weight pos)))))
+      sum)))
+
+(defn shift [c: f32]: (Fn [vec3f] vec3f)
+  (fn [p] (+ p (vec3f c))))
+
+@fragment
+(defn frag []: vec4f
+  (let [merged (merge [(Layer (shift 1.) (fn [x] 2.))
+                       (Layer (shift 2.) (fn [x] 0.5))])]
+    (vec4f (merged (.xyz (position))) 1.)))

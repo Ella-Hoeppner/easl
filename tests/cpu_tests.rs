@@ -479,5 +479,6 @@ cpu_test!(zeroed_array_of_nested_closures);
 cpu_test!(nested_lambda_scope_temporary);
 cpu_test!(fn_value_generic_passthrough);
 cpu_test!(fn_value_captured_single_member_calls);
+cpu_test!(fn_value_mixed_signature_assignment);
 cpu_test!(lambda_return);
 cpu_test!(comments);
