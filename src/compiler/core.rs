@@ -1,4 +1,7 @@
-use std::path::Path;
+use std::{
+  collections::HashMap,
+  path::{Path, PathBuf},
+};
 
 use fsexp::ParseError;
 
@@ -8,7 +11,8 @@ use crate::{
     program::{CompilerTarget, EaslDocument},
   },
   parse::{
-    EaslMultiDocument, load_and_parse_easl_multidocument_with_lookup_function,
+    EaslMultiDocument, load_and_parse_easl_multidocument_from_sources,
+    load_and_parse_easl_multidocument_with_lookup_function,
     parse_easl_without_comments,
   },
 };
@@ -95,24 +99,52 @@ pub fn load_easl_program_from_file_with_lookup_function(
 ) -> std::io::Result<
   Result<(EaslMultiDocument, Result<Program, ErrorLog>), EaslMultiDocument>,
 > {
-  match load_and_parse_easl_multidocument_with_lookup_function(
-    primary_easl_file_path,
-    lookup,
-  )? {
+  Ok(program_from_parsed_documents(
+    load_and_parse_easl_multidocument_with_lookup_function(
+      primary_easl_file_path,
+      lookup,
+    )?,
+  ))
+}
+
+/// Loads a program from in-memory sources keyed by path, for hosts without
+/// a filesystem (the web runtime). Imports resolve lexically against the
+/// importing file's path.
+pub fn load_easl_program_from_sources(
+  primary_easl_file_path: &Path,
+  sources: &HashMap<PathBuf, String>,
+) -> std::io::Result<
+  Result<(EaslMultiDocument, Result<Program, ErrorLog>), EaslMultiDocument>,
+> {
+  Ok(program_from_parsed_documents(
+    load_and_parse_easl_multidocument_from_sources(
+      primary_easl_file_path,
+      sources,
+    )?,
+  ))
+}
+
+fn program_from_parsed_documents(
+  parsed: Result<
+    Result<EaslMultiDocument, (EaslMultiDocument, ErrorLog)>,
+    EaslMultiDocument,
+  >,
+) -> Result<(EaslMultiDocument, Result<Program, ErrorLog>), EaslMultiDocument> {
+  match parsed {
     Ok(Ok(docs)) => {
       let (program, errors) =
         Program::from_easl_documents(&docs, built_in_macros());
-      Ok(Ok((
+      Ok((
         docs,
         if errors.is_empty() {
           Ok(program)
         } else {
           Err(errors)
         },
-      )))
+      ))
     }
-    Ok(Err((doc, e))) => Ok(Ok((doc, Err(e)))),
-    Err(e) => Ok(Err(e)),
+    Ok(Err((doc, e))) => Ok((doc, Err(e))),
+    Err(e) => Err(e),
   }
 }
 

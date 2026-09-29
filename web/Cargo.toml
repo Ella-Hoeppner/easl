@@ -1,0 +1,36 @@
+[package]
+name = "easl_web"
+version = "0.0.0"
+edition = "2024"
+
+# The easl web runtime: compiled once to WebAssembly, it compiles an easl
+# program in the browser and runs it on the bytecode VM, rendering through
+# WebGPU. Build with `web/build.sh`.
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+easl = { path = "..", features = ["window"] }
+wgpu = "29.0.3"
+wasm-bindgen = "=0.2.129"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  "console",
+  "Document",
+  "Element",
+  "EventTarget",
+  "HtmlCanvasElement",
+  "KeyboardEvent",
+  "MouseEvent",
+  "PointerEvent",
+  "Window",
+]
+
+[profile.release]
+opt-level = 3

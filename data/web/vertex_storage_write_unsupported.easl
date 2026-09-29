@@ -1,0 +1,23 @@
+; Browsers can't write (or read) storage-write variables from vertex
+; shaders, so the web runtime rejects the program with an error naming the
+; variable, rather than running it with the writes silently dropped.
+@storage-write
+(var x: u32)
+
+@vertex
+(defn vert [@{builtin vertex-index} i: u32]: vec4f
+  (when (== i 0u)
+    (= x (* x x)))
+  (vec4f -1. -1. 0. 1.))
+
+@fragment
+(defn frag []: vec4f
+  (vec4f 0.))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                  (= x 5)
+                  (dispatch-render-shaders vert frag 3)
+                  (print x)
+                  (close-window))))

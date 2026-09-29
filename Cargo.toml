@@ -13,12 +13,15 @@ wgpu = { version = "29.0.3", optional = true }
 winit = { version = "0.30", optional = true }
 pollster = { version = "0.4", optional = true }
 cpal = { version = "0.15", optional = true }
-midir = { version = "0.10", optional = true }
 libloading = { version = "0.8", optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 hound = "3.5"
 arc-swap = "1.7"
 ffmpeg-sidecar = { version = "2", optional = true }
+
+# MIDI input is native-only; the web runtime reads silence.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+midir = { version = "0.10", optional = true }
 
 [features]
 window = ["dep:wgpu", "dep:winit", "dep:pollster", "dep:cpal", "dep:midir"]
@@ -33,7 +36,16 @@ video = ["window", "dep:ffmpeg-sidecar"]
 
 [dev-dependencies]
 naga = { version = "29.0.3", features = ["wgsl-in"] }
+# For `web_tests`: building the web runtime (must match the `wasm-bindgen`
+# version `web/` pins) and driving Chrome over the DevTools protocol.
+wasm-bindgen-cli-support = "=0.2.129"
+tungstenite = "0.30"
+serde_json = "1"
 
 [[test]]
 name = "full_tests"
+harness = false
+
+[[test]]
+name = "web_tests"
 harness = false

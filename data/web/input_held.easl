@@ -1,0 +1,23 @@
+; Held input state, printed whenever it changes: whether the mouse is over
+; the canvas, the left button, a literal key, and a runtime-computed key.
+; Also the main-thread info builtins with no web source: the fallback sample
+; rate and an empty input-device list.
+@local (var last: vec4u (vec4u 9u))
+
+(defn flag [b: bool]: u32
+  (if b 1u 0u))
+
+@cpu
+(defn main []
+  (print (sample-rate))
+  (print (listenable-sources))
+  (spawn-window
+    (fn []
+      (let [state (vec4u (flag (mouse-present?))
+                         (flag (mouse-down?))
+                         (flag (key-down? "a"))
+                         (flag (key-down? (string "b"))))]
+        (when (any (!= state last))
+          (print state)
+          (= last state)))
+      (when (key-just-down? "q") (close-window)))))

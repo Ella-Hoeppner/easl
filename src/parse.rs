@@ -1,6 +1,7 @@
 use std::{
-  collections::HashSet,
-  path::{Path, PathBuf},
+  collections::{HashMap, HashSet},
+  io,
+  path::{Component, Path, PathBuf},
   sync::LazyLock,
 };
 
@@ -238,6 +239,20 @@ impl EaslMultiDocument {
       format!("{}\n{}", source_path, inner_pos_string)
     }
   }
+  /// Describes every parse failure across the documents.
+  pub fn describe_parse_failures(&self) -> String {
+    self
+      .sources
+      .iter()
+      .flat_map(|(document, _, source)| {
+        document
+          .parsing_failures
+          .iter()
+          .map(|err| err.describe(document, source))
+      })
+      .collect::<Vec<_>>()
+      .join("\n\n")
+  }
   pub fn describe_parse_error(&self, err: ParseError) -> String {
     let (source_document, _, source_text) = self.sources.last().unwrap();
     err.describe(source_document, source_text)
@@ -246,14 +261,83 @@ impl EaslMultiDocument {
 
 pub fn load_and_parse_easl_multidocument_with_lookup_function(
   primary_easl_file_path: &Path,
-  mut lookup: impl FnMut(&Path) -> std::io::Result<String>,
+  lookup: impl FnMut(&Path) -> std::io::Result<String>,
 ) -> std::io::Result<
   Result<
     Result<EaslMultiDocument, (EaslMultiDocument, ErrorLog)>,
     EaslMultiDocument,
   >,
 > {
-  let primary_easl_file_path = primary_easl_file_path.canonicalize()?;
+  load_and_parse_easl_multidocument_with_resolution(
+    primary_easl_file_path,
+    lookup,
+    Path::canonicalize,
+  )
+}
+
+/// Parses a program from in-memory sources keyed by path, for hosts without
+/// a filesystem (the web runtime). Paths, including imports, resolve
+/// lexically: `.` and `..` components are folded away, and relative imports
+/// join the importing file's directory.
+pub fn load_and_parse_easl_multidocument_from_sources(
+  primary_easl_file_path: &Path,
+  sources: &HashMap<PathBuf, String>,
+) -> std::io::Result<
+  Result<
+    Result<EaslMultiDocument, (EaslMultiDocument, ErrorLog)>,
+    EaslMultiDocument,
+  >,
+> {
+  let sources: HashMap<PathBuf, &String> = sources
+    .iter()
+    .map(|(path, source)| (normalize_path_lexically(path), source))
+    .collect();
+  load_and_parse_easl_multidocument_with_resolution(
+    primary_easl_file_path,
+    |path| {
+      sources
+        .get(path)
+        .map(|source| (*source).clone())
+        .ok_or_else(|| {
+          io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no source file at {}", path.display()),
+          )
+        })
+    },
+    |path| Ok(normalize_path_lexically(path)),
+  )
+}
+
+/// Folds away `.` and `..` components without touching a filesystem.
+fn normalize_path_lexically(path: &Path) -> PathBuf {
+  let mut normalized = PathBuf::new();
+  for component in path.components() {
+    match component {
+      Component::CurDir => {}
+      Component::ParentDir => {
+        normalized.pop();
+      }
+      other => normalized.push(other),
+    }
+  }
+  normalized
+}
+
+/// Parses a program and everything it imports, identifying each file by the
+/// path `resolve` gives it: the lookup key, and the key that deduplicates
+/// repeated imports.
+fn load_and_parse_easl_multidocument_with_resolution(
+  primary_easl_file_path: &Path,
+  mut lookup: impl FnMut(&Path) -> std::io::Result<String>,
+  resolve: impl Fn(&Path) -> std::io::Result<PathBuf>,
+) -> std::io::Result<
+  Result<
+    Result<EaslMultiDocument, (EaslMultiDocument, ErrorLog)>,
+    EaslMultiDocument,
+  >,
+> {
+  let primary_easl_file_path = resolve(primary_easl_file_path)?;
   let easl_source = lookup(&primary_easl_file_path)?;
   let document = parse_easl_without_comments(&easl_source);
   let mut documents = EaslMultiDocument::from_singular_document(
@@ -298,13 +382,11 @@ pub fn load_and_parse_easl_multidocument_with_lookup_function(
       {
         let canonicalized_import_path_string =
           if import_path_string.starts_with("/") {
-            PathBuf::from(import_path_string).canonicalize()?
+            resolve(&PathBuf::from(import_path_string))?
           } else {
-            current_file_path
-              .parent()
-              .unwrap()
-              .join(import_path_string)
-              .canonicalize()?
+            resolve(
+              &current_file_path.parent().unwrap().join(import_path_string),
+            )?
           };
 
         if !encountered_imports.contains(&canonicalized_import_path_string) {

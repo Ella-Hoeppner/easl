@@ -1,11 +1,18 @@
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
 use std::{
   collections::{HashMap, HashSet},
-  sync::Arc,
-  time::{Duration, Instant},
+  future::Future,
+  pin::Pin,
+  sync::{Arc, Mutex},
+  task::{Context, Poll, Waker},
 };
 
 use std::sync::RwLock;
 
+// The winit window loop is native-only: in a browser, the web runtime drives
+// frames from `requestAnimationFrame` and renders to a canvas it provides.
+#[cfg(not(target_arch = "wasm32"))]
 use winit::{
   application::ApplicationHandler,
   dpi::{PhysicalPosition, PhysicalSize},
@@ -17,17 +24,20 @@ use winit::{
   window::{Window, WindowId},
 };
 // winit only supports run-on-demand event loops on desktop platforms
-#[cfg(not(target_os = "ios"))]
+#[cfg(not(any(target_os = "ios", target_arch = "wasm32")))]
 use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 
 use crate::interpreter::{
-  BufferUpload, EvalError, EvalException, FrameDriver, GpuBindingInfo,
-  GpuBufferKind, GpuEntryInfo, IOManager, WindowEvent,
+  BufferUpload, EvalError, FrameDriver, GpuBindingInfo, GpuBufferKind,
+  GpuEntryInfo, WindowEvent,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::interpreter::{EvalException, IOManager};
 
 // winit forbids creating more than one EventLoop per process. We keep one alive
 // in a thread-local and reuse it across multiple spawn-window calls via
 // run_app_on_demand, which takes &mut self instead of consuming the loop.
+#[cfg(not(target_arch = "wasm32"))]
 thread_local! {
   static EVENT_LOOP: RwLock<Option<EventLoop<()>>> = RwLock::new(None);
   /// On hot-reload, the RenderState (including the wgpu surface and window) is
@@ -45,18 +55,26 @@ thread_local! {
 
 /// Drop the persistent render state (if any). Called by the CLI watch loop
 /// when the reloaded program exits without opening a window.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn close_persistent_window() {
   PERSISTENT_RELOAD_STATE.with(|cell| cell.borrow_mut().take());
 }
+#[cfg(target_arch = "wasm32")]
+pub fn close_persistent_window() {}
 
 /// Returns the GPU core from the persistent reload state (if any), without
 /// consuming it. Used by `ensure_gpu_ready` so that pre-spawn-window compute
 /// dispatches (e.g. one-shot initialisation shaders) run on the same GPU that
 /// the window will later reuse, rather than on a freshly-created headless GPU
 /// that gets thrown away when `setup_window` takes `PERSISTENT_RELOAD_STATE`.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn persistent_gpu() -> Option<Arc<RwLock<GpuCore>>> {
   PERSISTENT_RELOAD_STATE
     .with(|c| c.borrow().as_ref().map(|s| Arc::clone(&s.gpu)))
+}
+#[cfg(target_arch = "wasm32")]
+pub fn persistent_gpu() -> Option<Arc<RwLock<GpuCore>>> {
+  None
 }
 
 /// The texture format used for binding textures that can serve as render
@@ -169,20 +187,21 @@ fn create_texture_and_view(
   (texture, view)
 }
 
-/// iOS has no run-on-demand event loop (the OS owns the main loop), so the
-/// built-in window loop is unavailable there; embedding applications must
-/// drive rendering through their own `IOManager::run_spawn_window`.
-#[cfg(target_os = "ios")]
+/// iOS and the web have no run-on-demand event loop (the OS or browser owns
+/// the main loop), so the built-in window loop is unavailable there;
+/// embedding applications drive rendering themselves (the web runtime from
+/// `requestAnimationFrame`).
+#[cfg(any(target_os = "ios", target_arch = "wasm32"))]
 pub fn run_window_loop<D: FrameDriver>(
   _driver: &mut D,
 ) -> Result<bool, EvalError> {
   unimplemented!(
-    "easl's built-in window loop isn't supported on iOS; the embedding \
-     application must provide its own IOManager::run_spawn_window"
+    "easl's built-in window loop isn't supported on this platform; the \
+     embedding application must drive frames itself"
   )
 }
 
-#[cfg(not(target_os = "ios"))]
+#[cfg(not(any(target_os = "ios", target_arch = "wasm32")))]
 pub fn run_window_loop<D: FrameDriver>(
   driver: &mut D,
 ) -> Result<bool, EvalError> {
@@ -220,6 +239,7 @@ pub fn run_window_loop<D: FrameDriver>(
   })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct App<'a, D: FrameDriver> {
   driver: &'a mut D,
   state: Option<RenderState>,
@@ -243,6 +263,7 @@ struct App<'a, D: FrameDriver> {
 /// window, or a frame with no screen-targeted draws): the display's refresh
 /// rate when the monitor reports one, else the cadence observed while
 /// frames were presenting, else 60Hz.
+#[cfg(not(target_arch = "wasm32"))]
 fn unpresented_frame_interval(
   refresh_rate_millihertz: Option<u32>,
   observed_presented_interval: Option<Duration>,
@@ -1919,27 +1940,7 @@ impl GpuCore {
   }
 
   pub fn read_buffer(&self, group: u8, binding: u8, size: u64) -> Vec<u8> {
-    // eprintln!(
-    //   "[GPU-XFER] GPU→CPU readback: g{}b{}, {} bytes (BLOCKING)",
-    //   group, binding, size
-    // );
-    let source = &self.binding_buffers[&(group, binding)];
-    let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
-      label: Some("staging readback buffer"),
-      size,
-      usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-      mapped_at_creation: false,
-    });
-
-    let mut encoder =
-      self
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-          label: Some("readback encoder"),
-        });
-    encoder.copy_buffer_to_buffer(source, 0, &staging, 0, size);
-    self.queue.submit(std::iter::once(encoder.finish()));
-
+    let staging = self.copy_binding_to_staging(group, binding, size);
     let (sender, receiver) = std::sync::mpsc::channel();
     staging
       .slice(..)
@@ -1951,12 +1952,183 @@ impl GpuCore {
       .poll(wgpu::PollType::wait_indefinitely())
       .unwrap();
     receiver.recv().unwrap().unwrap();
+    read_mapped_staging(staging)
+  }
 
-    let data = staging.slice(..).get_mapped_range();
-    let bytes = data.to_vec();
-    drop(data);
-    staging.unmap();
-    bytes
+  /// [`Self::read_buffer`] without blocking, for platforms that can't wait
+  /// on the GPU (browsers). The returned future completes once the platform
+  /// runs the buffer-map callback, which a browser does on its own; native
+  /// callers would have to poll the device.
+  pub fn read_buffer_async(
+    &self,
+    group: u8,
+    binding: u8,
+    size: u64,
+  ) -> BufferRead {
+    let staging = self.copy_binding_to_staging(group, binding, size);
+    let state = Arc::new(Mutex::new(BufferReadState::default()));
+    let callback_state = Arc::clone(&state);
+    staging
+      .slice(..)
+      .map_async(wgpu::MapMode::Read, move |result| {
+        let mut state = callback_state.lock().unwrap();
+        state.result = Some(result);
+        if let Some(waker) = state.waker.take() {
+          waker.wake();
+        }
+      });
+    BufferRead {
+      staging: Some(staging),
+      state,
+    }
+  }
+
+  /// Copies `size` bytes of a binding's buffer into a fresh mappable
+  /// staging buffer.
+  fn copy_binding_to_staging(
+    &self,
+    group: u8,
+    binding: u8,
+    size: u64,
+  ) -> wgpu::Buffer {
+    let source = &self.binding_buffers[&(group, binding)];
+    let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+      label: Some("staging readback buffer"),
+      size,
+      usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+      mapped_at_creation: false,
+    });
+    let mut encoder =
+      self
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+          label: Some("readback encoder"),
+        });
+    encoder.copy_buffer_to_buffer(source, 0, &staging, 0, size);
+    self.queue.submit(std::iter::once(encoder.finish()));
+    staging
+  }
+
+  /// Executes a frame's GPU work and presents its screen-targeted draws to
+  /// the surface. Returns whether the frame presented: a present means
+  /// drawable acquisition (vsync) throttled the caller's loop, while an
+  /// unpresented frame has no natural backpressure and must be paced
+  /// explicitly.
+  pub fn render_frame(&mut self, draw_calls: &[WindowEvent]) -> bool {
+    // Fast path: if flush_queued_compute already rendered to the real surface
+    // mid-frame, just present that pre-rendered texture. Render events were
+    // drained by flush_queued_compute so draw_calls should be empty here.
+    if let Some(pending) = self.pending_present.take() {
+      if draw_calls.is_empty() {
+        pending.present();
+        return true;
+      }
+      // New draw calls arrived after the flush (unusual). The first render's
+      // storage writes are already committed; discard its visual output and
+      // fall through to re-render below.
+      drop(pending);
+    }
+
+    if draw_calls.is_empty() {
+      return false;
+    }
+
+    self.execute_frame_gpu_work(draw_calls);
+
+    let has_screen_render = draw_calls.iter().any(|c| {
+      matches!(
+        c,
+        WindowEvent::RenderShaders {
+          render_target: None,
+          ..
+        }
+      )
+    });
+
+    // Acquire the surface texture for screen renders.  This is done after
+    // uploads and compute so that Occluded (window minimised / covered on
+    // macOS) only skips the visual output — compute work still runs.
+    // Lost/Outdated require surface reconfiguration so we return early;
+    // Occluded is treated as "no screen output this frame" (None).
+    let output = if has_screen_render {
+      match self
+        .surface
+        .as_ref()
+        .expect("render_frame called without a surface")
+        .get_current_texture()
+      {
+        wgpu::CurrentSurfaceTexture::Success(texture)
+        | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Some(texture),
+        wgpu::CurrentSurfaceTexture::Lost
+        | wgpu::CurrentSurfaceTexture::Outdated => return false,
+        wgpu::CurrentSurfaceTexture::Occluded => None,
+        other => {
+          eprintln!("Surface error: {other:?}");
+          None
+        }
+      }
+    } else {
+      None
+    };
+
+    let screen_view = output.as_ref().map(|o| {
+      o.texture
+        .create_view(&wgpu::TextureViewDescriptor::default())
+    });
+
+    self.execute_frame_screen_renders(draw_calls, screen_view.as_ref());
+
+    if let Some(output) = output {
+      output.present();
+      true
+    } else {
+      false
+    }
+  }
+}
+
+/// Reads a mapped staging buffer's contents and unmaps it.
+fn read_mapped_staging(staging: wgpu::Buffer) -> Vec<u8> {
+  let data = staging.slice(..).get_mapped_range();
+  let bytes = data.to_vec();
+  drop(data);
+  staging.unmap();
+  bytes
+}
+
+/// A pending [`GpuCore::read_buffer_async`]: resolves to the buffer's bytes.
+pub struct BufferRead {
+  staging: Option<wgpu::Buffer>,
+  state: Arc<Mutex<BufferReadState>>,
+}
+
+#[derive(Default)]
+struct BufferReadState {
+  result: Option<Result<(), wgpu::BufferAsyncError>>,
+  waker: Option<Waker>,
+}
+
+impl Future for BufferRead {
+  type Output = Vec<u8>;
+
+  fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Vec<u8>> {
+    let mut state = self.state.lock().unwrap();
+    match state.result.take() {
+      Some(result) => {
+        drop(state);
+        result.expect("easl: mapping a GPU readback buffer failed");
+        Poll::Ready(read_mapped_staging(
+          self
+            .staging
+            .take()
+            .expect("BufferRead polled after completion"),
+        ))
+      }
+      None => {
+        state.waker = Some(cx.waker().clone());
+        Poll::Pending
+      }
+    }
   }
 }
 
@@ -2008,11 +2180,13 @@ pub fn create_headless_gpu_core(
   })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct RenderState {
   window: Arc<Window>,
   pub gpu: Arc<RwLock<GpuCore>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<'a, D: FrameDriver> App<'a, D> {
   /// Creates or reuses a window and builds the initial `RenderState`.
   ///
@@ -2126,6 +2300,7 @@ impl<'a, D: FrameDriver> App<'a, D> {
   }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<'a, D: FrameDriver> ApplicationHandler for App<'a, D> {
   fn resumed(&mut self, event_loop: &ActiveEventLoop) {
     // Only run setup if we haven't already (about_to_wait may have beaten us
@@ -2415,7 +2590,7 @@ fn validate_binding_limits(
 
 /// Installs a panic-with-context handler for GPU errors easl failed to
 /// pre-validate, so that nothing ever surfaces as a raw wgpu panic.
-fn install_gpu_error_handler(device: &wgpu::Device) {
+pub fn install_gpu_error_handler(device: &wgpu::Device) {
   device.on_uncaptured_error(std::sync::Arc::new(|error: wgpu::Error| {
     panic!(
       "easl: the GPU rejected an operation that easl did not pre-validate. \
@@ -2425,6 +2600,7 @@ fn install_gpu_error_handler(device: &wgpu::Device) {
   }));
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl RenderState {
   async fn new(
     window: Arc<Window>,
@@ -2582,88 +2758,13 @@ impl RenderState {
     }
   }
 
-  /// Executes a frame's GPU work. Returns whether the frame presented to
-  /// the screen — the caller uses this to decide pacing: a present means
-  /// drawable acquisition (vsync) throttled the loop, while an unpresented
-  /// frame has no natural backpressure and must be paced explicitly.
+  /// Executes a frame's GPU work; see [`GpuCore::render_frame`].
   fn render(&mut self, draw_calls: &[WindowEvent]) -> bool {
-    // Fast path: if flush_queued_compute already rendered to the real surface
-    // mid-frame, just present that pre-rendered texture. Render events were
-    // drained by flush_queued_compute so draw_calls should be empty here.
-    {
-      let mut gpu = self.gpu.write().unwrap();
-      if let Some(pending) = gpu.pending_present.take() {
-        if draw_calls.is_empty() {
-          pending.present();
-          return true;
-        }
-        // New draw calls arrived after the flush (unusual). The first render's
-        // storage writes are already committed; discard its visual output and
-        // fall through to re-render below.
-        drop(pending);
-      }
-    }
-
-    if draw_calls.is_empty() {
-      return false;
-    }
-
-    let mut gpu = self.gpu.write().unwrap();
-    gpu.execute_frame_gpu_work(draw_calls);
-
-    let has_screen_render = draw_calls.iter().any(|c| {
-      matches!(
-        c,
-        WindowEvent::RenderShaders {
-          render_target: None,
-          ..
-        }
-      )
-    });
-
-    // Acquire the surface texture for screen renders.  This is done after
-    // uploads and compute so that Occluded (window minimised / covered on
-    // macOS) only skips the visual output — compute work still runs.
-    // Lost/Outdated require surface reconfiguration so we return early;
-    // Occluded is treated as "no screen output this frame" (None).
-    let output = if has_screen_render {
-      match gpu
-        .surface
-        .as_ref()
-        .expect("RenderState has no surface")
-        .get_current_texture()
-      {
-        wgpu::CurrentSurfaceTexture::Success(texture)
-        | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Some(texture),
-        wgpu::CurrentSurfaceTexture::Lost
-        | wgpu::CurrentSurfaceTexture::Outdated => return false,
-        wgpu::CurrentSurfaceTexture::Occluded => None,
-        other => {
-          eprintln!("Surface error: {other:?}");
-          None
-        }
-      }
-    } else {
-      None
-    };
-
-    let screen_view = output.as_ref().map(|o| {
-      o.texture
-        .create_view(&wgpu::TextureViewDescriptor::default())
-    });
-
-    gpu.execute_frame_screen_renders(draw_calls, screen_view.as_ref());
-
-    if let Some(output) = output {
-      output.present();
-      true
-    } else {
-      false
-    }
+    self.gpu.write().unwrap().render_frame(draw_calls)
   }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
   use super::*;
 

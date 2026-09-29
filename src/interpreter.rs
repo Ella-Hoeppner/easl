@@ -1,5 +1,6 @@
 use std::{
   collections::{HashMap, HashSet},
+  ops::Range,
   path::PathBuf,
   vec,
 };
@@ -3820,6 +3821,13 @@ pub trait IOManager: Sized {
   /// Called before re-running the program after a reload. Resets transient
   /// state (GPU handle, reload flag) so the new run starts clean.
   fn reset_for_reload(&mut self) {}
+  /// Whether CPU reads of GPU-written data can block on the GPU. Hosts that
+  /// can't (browsers) return false: the bytecode VM then suspends at each
+  /// such read (`HostSuspendReason::GpuReadback`) for the host to read back
+  /// asynchronously and resume. Default: true.
+  fn can_block_on_gpu(&self) -> bool {
+    true
+  }
   /// Executes all queued compute events immediately, keeping render events
   /// deferred for end of frame. Called by `check_cpu_readable` when a
   /// CPU instruction needs to read a GPU-written variable mid-frame.
@@ -4726,6 +4734,18 @@ impl IOManager for CaptureIO {
   }
 }
 
+/// A GPU→CPU readback a CPU read is waiting on: the binding to copy back,
+/// and how to decode it.
+#[derive(Debug, Clone)]
+pub struct PendingReadback {
+  pub group: u8,
+  pub binding: u8,
+  /// Bytes to copy back.
+  pub size: u64,
+  name: Arc<str>,
+  ty: Type,
+}
+
 pub struct EvaluationEnvironment<IO: IOManager> {
   bindings: HashMap<Arc<str>, Vec<(Value, Type)>>,
   structs: HashMap<Arc<str>, AbstractStruct>,
@@ -5008,6 +5028,10 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   }
   pub fn wgsl(&self) -> &str {
     &self.wgsl
+  }
+  /// The dense GPU entry table (see `GpuEntryInfo`).
+  pub fn gpu_entries(&self) -> &[GpuEntryInfo] {
+    &self.gpu_entries
   }
   /// Refreshes the implicit window-info uniform bindings from the IO
   /// manager and marks them CPU-written, so the next GPU dispatch uploads
@@ -5683,7 +5707,27 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   /// For any GPU-bound var in `names` that is CPUOutOfDate, reads the buffer
   /// back from GPU and updates the CPU-side binding.
   fn check_cpu_readable(&mut self, names: &[Arc<str>]) {
-    let vars: Vec<(GroupAndBinding, Arc<str>, Type, bool)> = self
+    let readbacks = self.pending_readbacks(names);
+    if !readbacks.is_empty() {
+      // Flush any queued compute before reading back, so the GPU has actually
+      // run and the buffers contain up-to-date values.
+      self.io.flush_queued_compute();
+    }
+    for readback in readbacks {
+      if let Some(bytes) =
+        self
+          .io
+          .sync_gpu_to_cpu(readback.group, readback.binding, readback.size)
+      {
+        self.apply_readback(&readback, &bytes);
+      }
+    }
+  }
+
+  /// The GPU-written bindings among `names` whose CPU copies are stale, each
+  /// with the byte size of its readback.
+  pub fn pending_readbacks(&self, names: &[Arc<str>]) -> Vec<PendingReadback> {
+    self
       .binding_vars
       .iter()
       .filter(|(_, name, _, addr)| {
@@ -5695,72 +5739,78 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             == Some(&SharedBufferState::CPUOutOfDate)
       })
       .map(|(gb, name, ty, addr)| {
-        (
-          *gb,
-          name.clone(),
-          ty.clone(),
-          matches!(
-            addr,
-            VariableAddressSpace::StorageRead
-              | VariableAddressSpace::StorageReadWrite
-          ),
-        )
-      })
-      .collect();
-    if !vars.is_empty() {
-      // Flush any queued compute before reading back, so the GPU has actually
-      // run and the buffers contain up-to-date values.
-      self.io.flush_queued_compute();
-    }
-    for (gb, name, ty, storage) in vars {
-      // For statically-sized types, derive the readback size from the type.
-      // For dynamically-sized types (unsized arrays), compute from the
-      // CPU-side element count rather than the padded GPU allocation size:
-      // using the padded size for readback would cause from_gpu_bytes to
-      // count any padding bytes as extra elements.
-      let size = ty
-        .flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
-        .ok()
-        .map(|u32s| padded_buffer_bytes(u32s as u64 * 4, storage))
-        .or_else(|| {
-          if let Type::Array(
-            Some(crate::compiler::types::ConcreteArraySize::Unsized),
-            inner,
-          ) = &ty
-          {
-            let inner_ty = inner.unwrap_known();
-            let elem_size = inner_ty.wgsl_flat_data_size_in_u32s();
-            let align = inner_ty.wgsl_alignment_in_u32s();
-            let stride = ((elem_size + align - 1) / align) * align;
-            let count = self
-              .bindings
-              .get(&name)
-              .and_then(|v| v.last())
-              .map(|(v, _)| match v {
-                Value::ZeroedArray { length } => *length,
-                Value::Array(elems) => elems.len(),
-                _ => 0,
-              })
-              .unwrap_or(0);
-            Some(padded_buffer_bytes(count as u64 * stride as u64 * 4, true))
-          } else {
-            self.io.get_buffer_byte_size(gb.group, gb.binding)
-          }
-        })
-        .unwrap_or(16);
-      if let Some(bytes) = self.io.sync_gpu_to_cpu(gb.group, gb.binding, size) {
-        let value = Value::from_gpu_bytes(&bytes, &ty);
-        if let Some(stack) = self.bindings.get_mut(&name) {
-          if let Some(slot) = stack.last_mut() {
-            slot.0 = value;
-          }
+        let storage = matches!(
+          addr,
+          VariableAddressSpace::StorageRead
+            | VariableAddressSpace::StorageReadWrite
+        );
+        PendingReadback {
+          group: gb.group,
+          binding: gb.binding,
+          size: self.readback_size(*gb, name, ty, storage),
+          name: name.clone(),
+          ty: ty.clone(),
         }
-        self.io.record_gpu_to_cpu_sync(&name);
-        self
-          .buffer_states
-          .insert(name.clone(), SharedBufferState::Synced);
+      })
+      .collect()
+  }
+
+  /// The byte size of a binding's readback. For statically-sized types it
+  /// derives from the type. For dynamically-sized types (unsized arrays) it
+  /// comes from the CPU-side element count rather than the padded GPU
+  /// allocation size: reading back the padded size would make
+  /// `from_gpu_bytes` count any padding bytes as extra elements.
+  fn readback_size(
+    &self,
+    gb: GroupAndBinding,
+    name: &Arc<str>,
+    ty: &Type,
+    storage: bool,
+  ) -> u64 {
+    ty.flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
+      .ok()
+      .map(|u32s| padded_buffer_bytes(u32s as u64 * 4, storage))
+      .or_else(|| {
+        if let Type::Array(
+          Some(crate::compiler::types::ConcreteArraySize::Unsized),
+          inner,
+        ) = ty
+        {
+          let inner_ty = inner.unwrap_known();
+          let elem_size = inner_ty.wgsl_flat_data_size_in_u32s();
+          let align = inner_ty.wgsl_alignment_in_u32s();
+          let stride = ((elem_size + align - 1) / align) * align;
+          let count = self
+            .bindings
+            .get(name)
+            .and_then(|v| v.last())
+            .map(|(v, _)| match v {
+              Value::ZeroedArray { length } => *length,
+              Value::Array(elems) => elems.len(),
+              _ => 0,
+            })
+            .unwrap_or(0);
+          Some(padded_buffer_bytes(count as u64 * stride as u64 * 4, true))
+        } else {
+          self.io.get_buffer_byte_size(gb.group, gb.binding)
+        }
+      })
+      .unwrap_or(16)
+  }
+
+  /// Stores a readback's bytes as the binding's CPU-side value, marking it
+  /// synced.
+  pub fn apply_readback(&mut self, readback: &PendingReadback, bytes: &[u8]) {
+    let value = Value::from_gpu_bytes(bytes, &readback.ty);
+    if let Some(stack) = self.bindings.get_mut(&readback.name) {
+      if let Some(slot) = stack.last_mut() {
+        slot.0 = value;
       }
     }
+    self.io.record_gpu_to_cpu_sync(&readback.name);
+    self
+      .buffer_states
+      .insert(readback.name.clone(), SharedBufferState::Synced);
   }
 
   /// Overwrites the CPU-side value of the GPU-bound variable at
@@ -7101,7 +7151,7 @@ pub enum CpuRuntime {
 
 /// Resolve the `@cpu` entry point's *name* with the same selection rules as
 /// `pick_entry_point_body`.
-fn pick_entry_point_name(
+pub fn pick_entry_point_name(
   program: &Program,
   entry_point_name: Option<&str>,
 ) -> Result<Arc<str>, EvalError> {
@@ -7136,6 +7186,10 @@ pub struct VmCpuRuntime<IO: IOManager> {
   /// compiler-inserted `MarkCpuWritten` host ops.
   slots_dirty: Vec<bool>,
   function_names: Vec<Arc<str>>,
+  open_window: Option<OpenWindow>,
+  /// The suspended activity and host-binding index of a readback the run
+  /// is waiting on (see `HostSuspendReason::GpuReadback`).
+  awaiting_readback: Option<(Activity, u16)>,
 }
 
 struct VmHostView<'a, IO: IOManager> {
@@ -7825,27 +7879,47 @@ fn readback_binding_into_vm<IO: IOManager>(
   dyn_memory: &mut [crate::vm::bytecode::DynMemory],
   code: &crate::vm::bytecode::Code,
 ) -> Result<(), EvalError> {
-  use crate::vm::bytecode::HostBindingStorage;
   let b = &code.host_bindings[binding as usize];
   if env.buffer_states.get(&b.name) == Some(&SharedBufferState::CPUOutOfDate) {
     env.check_cpu_readable(&[b.name.clone()]);
-    // Readback landed in the env's Value; mirror it into the VM slots
-    // where CPU code actually reads it.
-    if env.buffer_states.get(&b.name) == Some(&SharedBufferState::Synced) {
-      match b.storage {
-        HostBindingStorage::Slots { position, size } => {
-          let words = env.lookup(&b.name)?.to_vm_words(&b.ty);
-          stack[position as usize..(position + size) as usize]
-            .copy_from_slice(&words[..size as usize]);
-          slots_dirty[binding as usize] = false;
-        }
-        HostBindingStorage::DynamicMemory { memory } => {
-          dyn_memory[memory as usize] =
-            value_into_dyn_memory(env.lookup(&b.name)?, &b.ty);
-          slots_dirty[binding as usize] = false;
-        }
-        HostBindingStorage::Dynamic => {}
+    mirror_readback_into_vm(
+      env,
+      slots_dirty,
+      binding,
+      stack,
+      dyn_memory,
+      code,
+    )?;
+  }
+  Ok(())
+}
+
+/// Copies a binding's freshly read-back env `Value` into the VM storage
+/// where CPU code actually reads it. No-op unless the readback landed.
+fn mirror_readback_into_vm<IO: IOManager>(
+  env: &mut EvaluationEnvironment<IO>,
+  slots_dirty: &mut [bool],
+  binding: u16,
+  stack: &mut [u32],
+  dyn_memory: &mut [crate::vm::bytecode::DynMemory],
+  code: &crate::vm::bytecode::Code,
+) -> Result<(), EvalError> {
+  use crate::vm::bytecode::HostBindingStorage;
+  let b = &code.host_bindings[binding as usize];
+  if env.buffer_states.get(&b.name) == Some(&SharedBufferState::Synced) {
+    match b.storage {
+      HostBindingStorage::Slots { position, size } => {
+        let words = env.lookup(&b.name)?.to_vm_words(&b.ty);
+        stack[position as usize..(position + size) as usize]
+          .copy_from_slice(&words[..size as usize]);
+        slots_dirty[binding as usize] = false;
       }
+      HostBindingStorage::DynamicMemory { memory } => {
+        dyn_memory[memory as usize] =
+          value_into_dyn_memory(env.lookup(&b.name)?, &b.ty);
+        slots_dirty[binding as usize] = false;
+      }
+      HostBindingStorage::Dynamic => {}
     }
   }
   Ok(())
@@ -8017,6 +8091,17 @@ fn vm_host_call<IO: IOManager>(
       env.io.println(&formatted);
     }
     HostOp::CheckGpuToCpu { binding } => {
+      // Textures never read back as buffers, so only a stale buffer binding
+      // suspends.
+      if !env.io.can_block_on_gpu()
+        && !env
+          .pending_readbacks(&[code.host_bindings[*binding as usize]
+            .name
+            .clone()])
+          .is_empty()
+      {
+        return Ok(Some(HostSuspendReason::GpuReadback { binding: *binding }));
+      }
       readback_binding_into_vm(
         env,
         slots_dirty,
@@ -8711,6 +8796,38 @@ fn vm_bootstrap_external<IO: IOManager>(
   Ok(())
 }
 
+/// Starts a frame: adopts newer cross-thread snapshots, refreshes the
+/// per-frame window-info and MIDI globals, and points the VM at the frame
+/// function.
+fn vm_begin_frame<IO: IOManager>(
+  program: &mut crate::vm::bytecode::BytecodeProgram,
+  env: &mut EvaluationEnvironment<IO>,
+  slots_dirty: &mut Vec<bool>,
+  frame_fn: usize,
+) {
+  vm_adopt_shared(program, env, slots_dirty);
+  refresh_vm_window_info(program, env, slots_dirty);
+  refresh_vm_midi(program, env, slots_dirty);
+  program.prepare_to_run_function(frame_fn);
+}
+
+/// Ends a frame that finished or closed its window (either way, its writes
+/// are real) by publishing them to the other threads.
+fn vm_end_frame<IO: IOManager>(
+  program: &mut crate::vm::bytecode::BytecodeProgram,
+  env: &mut EvaluationEnvironment<IO>,
+  slots_dirty: &mut Vec<bool>,
+) -> Result<(), EvalError> {
+  vm_publish_shared(program, env, slots_dirty, 0)
+}
+
+fn nested_spawn_window_error() -> EvalError {
+  UserspaceEvalError::RuntimeError(
+    "nested spawn-window is not supported".to_string(),
+  )
+  .into()
+}
+
 impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
   type IO = IO;
   fn io_mut(&mut self) -> &mut IO {
@@ -8727,10 +8844,7 @@ impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
   }
   fn run_frame(&mut self) -> Result<(), EvalException> {
     use crate::vm::bytecode::{HostSuspendReason, RunResult};
-    vm_adopt_shared(self.program, self.env, self.slots_dirty);
-    refresh_vm_window_info(self.program, self.env, self.slots_dirty);
-    refresh_vm_midi(self.program, self.env, self.slots_dirty);
-    self.program.prepare_to_run_function(self.frame_fn);
+    vm_begin_frame(self.program, self.env, self.slots_dirty, self.frame_fn);
     let mut host = VmHostView {
       env: self.env,
       slots_dirty: self.slots_dirty,
@@ -8741,20 +8855,20 @@ impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
         Err(EvalException::CloseWindow)
       }
       Ok(RunResult::Suspended(HostSuspendReason::SpawnWindow { .. })) => {
-        Err(EvalException::Error(
-          UserspaceEvalError::RuntimeError(
-            "nested spawn-window is not supported".to_string(),
-          )
-          .into(),
-        ))
+        Err(EvalException::Error(nested_spawn_window_error()))
+      }
+      Ok(RunResult::Suspended(HostSuspendReason::GpuReadback { .. })) => {
+        unreachable!(
+          "frame loops run by the IO manager are only used by IO managers \
+           that can block on the GPU"
+        )
       }
       Err(e) => Err(EvalException::Error(e)),
     };
     // Publish on success and on close-window (the frame's writes are still
     // real); genuine errors abort the run, so skip the publish.
     if matches!(result, Ok(()) | Err(EvalException::CloseWindow))
-      && let Err(e) =
-        vm_publish_shared(self.program, self.env, self.slots_dirty, 0)
+      && let Err(e) = vm_end_frame(self.program, self.env, self.slots_dirty)
     {
       return Err(EvalException::Error(e));
     }
@@ -8861,6 +8975,8 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
       env,
       slots_dirty,
       function_names,
+      open_window: None,
+      awaiting_readback: None,
     })
   }
 
@@ -8868,7 +8984,31 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
   /// including any `spawn-window` frame loops. Returns `true` if a
   /// hot-reload was requested.
   pub fn run(&mut self, entry_name: &str) -> Result<bool, EvalError> {
-    use crate::vm::bytecode::{HostSuspendReason, RunResult};
+    let mut state = self.start(entry_name)?;
+    loop {
+      match state {
+        VmRunState::Finished => return Ok(false),
+        VmRunState::WindowOpen => {
+          let reload = IO::run_spawn_window_driver(&mut self.window_driver())?;
+          if reload {
+            return Ok(true);
+          }
+          state = self.resume_after_window()?;
+        }
+        VmRunState::AwaitingReadback => unreachable!(
+          "IO managers that can't block on the GPU must drive the runtime \
+           with `start`/`run_frame`/`complete_readback`"
+        ),
+      }
+    }
+  }
+
+  /// Begins running the `@cpu` entry point named `entry_name`, returning
+  /// once it finishes, opens a window, or awaits a GPU readback. This and
+  /// [`Self::run_frame`] and [`Self::complete_readback`] let hosts that own
+  /// their frame loop (the browser's `requestAnimationFrame`) run programs;
+  /// [`Self::run`] instead hands the loop to the IO manager.
+  pub fn start(&mut self, entry_name: &str) -> Result<VmRunState, EvalError> {
     let entry_index = self
       .function_names
       .iter()
@@ -8886,42 +9026,150 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
     );
     refresh_vm_midi(&mut self.program, &mut self.env, &mut self.slots_dirty);
     self.program.prepare_to_run_function(entry_index);
-    loop {
-      let result = {
-        let mut host = VmHostView {
-          env: &mut self.env,
-          slots_dirty: &mut self.slots_dirty,
-        };
-        self.program.execute_with_host(&mut host)?
-      };
-      match result {
-        RunResult::Finished => return Ok(false),
-        RunResult::Suspended(HostSuspendReason::CloseWindow) => {
-          // close-window outside a window: nothing left to do.
-          return Ok(false);
-        }
-        RunResult::Suspended(HostSuspendReason::SpawnWindow { frame_fn }) => {
-          // Stash the suspended continuation of the entry function, run the
-          // window loop (each frame re-executes the frame function), then
-          // restore and resume.
-          let saved_continuation = std::mem::take(&mut self.program.call_stack);
-          let reload = {
-            let mut driver = VmFrameDriver {
-              program: &mut self.program,
-              env: &mut self.env,
-              slots_dirty: &mut self.slots_dirty,
-              frame_fn: frame_fn as usize,
-            };
-            IO::run_spawn_window_driver(&mut driver)?
-          };
-          self.program.call_stack = saved_continuation;
-          if reload {
-            return Ok(true);
-          }
-        }
-      }
+    self.execute(Activity::Entry)
+  }
+
+  /// Runs one frame of the open window. When the frame closes the window,
+  /// the entry function resumes after its `spawn-window` call, and the
+  /// returned state says what it did next.
+  pub fn run_frame(&mut self) -> Result<VmRunState, EvalError> {
+    let frame_fn = self
+      .open_window
+      .as_ref()
+      .expect("no window is open")
+      .frame_fn;
+    vm_begin_frame(
+      &mut self.program,
+      &mut self.env,
+      &mut self.slots_dirty,
+      frame_fn,
+    );
+    self.execute(Activity::Frame)
+  }
+
+  /// The readback the run is waiting on, while it's
+  /// [`VmRunState::AwaitingReadback`]. The host must execute the GPU work
+  /// queued so far before reading the binding back.
+  pub fn pending_readback(&self) -> Option<PendingReadback> {
+    let (_, binding) = self.awaiting_readback?;
+    let name = &self.program.code.host_bindings[binding as usize].name;
+    self.env.pending_readbacks(&[name.clone()]).pop()
+  }
+
+  /// Supplies the bytes of the pending readback and resumes the run.
+  pub fn complete_readback(
+    &mut self,
+    bytes: &[u8],
+  ) -> Result<VmRunState, EvalError> {
+    let readback = self.pending_readback().expect("no readback is pending");
+    let (activity, binding) = self.awaiting_readback.take().unwrap();
+    self.env.apply_readback(&readback, bytes);
+    mirror_readback_into_vm(
+      &mut self.env,
+      &mut self.slots_dirty,
+      binding,
+      &mut self.program.stack,
+      &mut self.program.dyn_memory,
+      &self.program.code,
+    )?;
+    self.execute(activity)
+  }
+
+  /// The frame driver for the open window.
+  fn window_driver(&mut self) -> VmFrameDriver<'_, IO> {
+    let frame_fn = self
+      .open_window
+      .as_ref()
+      .expect("no window is open")
+      .frame_fn;
+    VmFrameDriver {
+      program: &mut self.program,
+      env: &mut self.env,
+      slots_dirty: &mut self.slots_dirty,
+      frame_fn,
     }
   }
+
+  /// Restores the entry function's continuation after its window closes
+  /// and runs it onward.
+  fn resume_after_window(&mut self) -> Result<VmRunState, EvalError> {
+    let window = self.open_window.take().expect("no window is open");
+    self.program.call_stack = window.continuation;
+    self.execute(Activity::Entry)
+  }
+
+  /// Executes `activity` until it finishes or suspends. An opened window
+  /// stashes the entry function's continuation, since each frame runs the
+  /// frame function on the same call stack.
+  fn execute(&mut self, activity: Activity) -> Result<VmRunState, EvalError> {
+    use crate::vm::bytecode::{HostSuspendReason, RunResult};
+    let mut host = VmHostView {
+      env: &mut self.env,
+      slots_dirty: &mut self.slots_dirty,
+    };
+    let result = self.program.execute_with_host(&mut host)?;
+    match (activity, result) {
+      (_, RunResult::Suspended(HostSuspendReason::GpuReadback { binding })) => {
+        self.awaiting_readback = Some((activity, binding));
+        Ok(VmRunState::AwaitingReadback)
+      }
+      // close-window outside a window: nothing left to do.
+      (
+        Activity::Entry,
+        RunResult::Finished
+        | RunResult::Suspended(HostSuspendReason::CloseWindow),
+      ) => Ok(VmRunState::Finished),
+      (
+        Activity::Entry,
+        RunResult::Suspended(HostSuspendReason::SpawnWindow { frame_fn }),
+      ) => {
+        self.open_window = Some(OpenWindow {
+          frame_fn: frame_fn as usize,
+          continuation: std::mem::take(&mut self.program.call_stack),
+        });
+        Ok(VmRunState::WindowOpen)
+      }
+      (Activity::Frame, RunResult::Finished) => {
+        vm_end_frame(&mut self.program, &mut self.env, &mut self.slots_dirty)?;
+        Ok(VmRunState::WindowOpen)
+      }
+      (
+        Activity::Frame,
+        RunResult::Suspended(HostSuspendReason::CloseWindow),
+      ) => {
+        vm_end_frame(&mut self.program, &mut self.env, &mut self.slots_dirty)?;
+        self.resume_after_window()
+      }
+      (
+        Activity::Frame,
+        RunResult::Suspended(HostSuspendReason::SpawnWindow { .. }),
+      ) => Err(nested_spawn_window_error()),
+    }
+  }
+}
+
+/// Where a stepped [`VmCpuRuntime`] run stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmRunState {
+  Finished,
+  WindowOpen,
+  /// Suspended until the host supplies a GPU readback; see
+  /// [`VmCpuRuntime::pending_readback`].
+  AwaitingReadback,
+}
+
+/// What the VM is running: the entry function, or a frame of its window.
+#[derive(Debug, Clone, Copy)]
+enum Activity {
+  Entry,
+  Frame,
+}
+
+/// A window opened by `spawn-window`: the frame function to run each frame,
+/// and the entry function's continuation to resume once it closes.
+struct OpenWindow {
+  frame_fn: usize,
+  continuation: Vec<Range<u32>>,
 }
 
 /// Runs a validated program's `@cpu` entry on the bytecode VM. The

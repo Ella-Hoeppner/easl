@@ -1,0 +1,11 @@
+44100.
+[]
+(vec4u 0u 0u 0u 0u)
+(vec4u 1u 0u 0u 0u)
+(vec4u 1u 1u 0u 0u)
+(vec4u 1u 0u 0u 0u)
+(vec4u 1u 0u 1u 0u)
+(vec4u 1u 0u 1u 1u)
+(vec4u 1u 0u 0u 1u)
+(vec4u 1u 0u 0u 0u)
+(vec4u 0u 0u 0u 0u)

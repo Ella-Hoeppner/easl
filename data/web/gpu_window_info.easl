@@ -1,0 +1,17 @@
+; Window-info queries read inside a shader see the canvas's size and the
+; frame's index.
+(var info: [3: u32])
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (dispatch-compute-shader
+        (fn []
+          (= (info 0u) (.x (window-resolution)))
+          (= (info 1u) (.y (window-resolution)))
+          (= (info 2u) (window-frame-index)))
+        (vec3u 1u))
+      (when (== (window-frame-index) 2u)
+        (print info)
+        (close-window)))))

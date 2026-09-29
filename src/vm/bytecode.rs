@@ -829,8 +829,15 @@ pub enum HostOp {
 /// Why `execute_with_host` returned before running to completion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostSuspendReason {
-  SpawnWindow { frame_fn: u16 },
+  SpawnWindow {
+    frame_fn: u16,
+  },
   CloseWindow,
+  /// CPU code needs a GPU-written binding's value on a host that can't
+  /// block on the GPU: the host reads it back asynchronously, then resumes.
+  GpuReadback {
+    binding: u16,
+  },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

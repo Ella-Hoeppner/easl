@@ -1,0 +1,5 @@
+"ready"
+"a pressed"
+(vec2u 100u 50u)
+(vec2u 320u 240u)
+"after window"

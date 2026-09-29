@@ -1,0 +1,12 @@
+; A CPU read of GPU-written data before any window: the VM suspends for the
+; readback, which the browser can only do asynchronously.
+(var results: [4: f32])
+
+@compute
+(defn simulate []
+  (= (results (.x (global-invocation-id))) 1.))
+
+@cpu
+(defn main []
+  (dispatch-compute-shader simulate (vec3u 4u))
+  (print (results 0u)))

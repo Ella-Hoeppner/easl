@@ -1,0 +1,13 @@
+; Key and mouse presses show up for exactly one frame, with the mouse at its
+; canvas position.
+@cpu
+(defn main []
+  (print "ready")
+  (spawn-window
+    (fn []
+      (when (key-just-down? "a") (print "a pressed"))
+      (when (mouse-just-down?)
+        (print (mouse-coords))
+        (print (window-resolution)))
+      (when (key-just-down? "q") (close-window))))
+  (print "after window"))

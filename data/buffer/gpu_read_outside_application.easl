@@ -1,0 +1,40 @@
+; CPU reads of GPU-written data must see every dispatch before them, even
+; when the read isn't inside a function call: a let-bound element read, a
+; match scrutinee, a function's returned element, a bare scalar, a struct
+; field, and a whole array all follow a dispatch that wrote them.
+(struct Particle
+  pos: vec2f)
+
+(var counter: [2: u32])
+(var total: f32)
+(var state: Particle)
+
+@compute
+(defn bump []
+  (+= (counter 0u) 1u)
+  (+= total 1.)
+  (+= state.pos (vec2f 1.)))
+
+(defn current []: u32
+  (dispatch-compute-shader bump (vec3u 1u))
+  (counter 0u))
+
+@cpu
+(defn main []
+  (dispatch-compute-shader bump (vec3u 1u))
+  (let [c (counter 0u)]
+    (print c))
+  (dispatch-compute-shader bump (vec3u 1u))
+  (match (counter 0u)
+    2u (print "saw 2u")
+    _ (print "stale"))
+  (print (current))
+  (dispatch-compute-shader bump (vec3u 1u))
+  (let [t total]
+    (print t))
+  (dispatch-compute-shader bump (vec3u 1u))
+  (let [p state.pos]
+    (print p))
+  (dispatch-compute-shader bump (vec3u 1u))
+  (let [a counter]
+    (print a)))
