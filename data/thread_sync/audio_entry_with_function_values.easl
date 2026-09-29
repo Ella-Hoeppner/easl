@@ -1,0 +1,18 @@
+; A plain audio entry in a program that also stores a function value
+; elsewhere. Function values repoint references at the registered
+; signatures, so the audio entry marking must reach the registered function
+; itself.
+(struct Layer
+  f: (Fn [f32] f32))
+
+(defn scale [k: f32]: Layer
+  (Layer (fn [x] (* x k))))
+
+(defn quiet []: f32 0.25)
+
+@cpu
+(defn main []
+  (start-audio quiet)
+  (let [layer (scale 2.)]
+    (print (layer.f 3.)))
+  (spawn-window (fn [] ())))

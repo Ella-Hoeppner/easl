@@ -688,6 +688,7 @@ thread_sync_test!(
 );
 thread_sync_test!(audio_generic_layer_merge, [Frame, AudioBatch(4), Frame]);
 thread_sync_test!(audio_generic_fn_pair, [Frame, AudioBatch(4), Frame]);
+thread_sync_test!(audio_entry_with_function_values, [Frame, AudioBatch(2)]);
 thread_sync_test!(
   audio_hof_effect_chain,
   [Frame, AudioBatch(4), AudioBatch(4), Frame, AudioBatch(4)]

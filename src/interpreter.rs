@@ -16,7 +16,7 @@ use crate::compiler::effects::{
 use crate::compiler::entry::EntryPoint;
 use crate::compiler::{
   builtins::{ASSIGNMENT_OPS, ATOMIC_MUTATION_OPS},
-  error::CompileError,
+  error::{CompileError, SourceTrace},
   expression::{Accessor, Exp, ExpKind, Number, SwizzleField},
   functions::{
     AbstractFunctionSignature, FunctionImplementationKind, FunctionSignature,
@@ -26,7 +26,7 @@ use crate::compiler::{
   structs::AbstractStruct,
   types::{
     AbstractType, ConcreteArraySize, ConstGenericResolution, ExpTypeInfo, Type,
-    TypeState,
+    TypeState, VariableKind,
   },
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
@@ -119,7 +119,7 @@ pub enum InternalEvalError {
 #[derive(Clone, PartialEq, Debug, Error)]
 pub enum UserspaceEvalError {
   #[error("Compilation error: {0}")]
-  CompilationError(CompileError),
+  CompilationError(Box<CompileError>),
   #[error("Array index out of bounds: index {0} in array of size {1}")]
   ArrayIndexOutOfBounds(usize, usize),
   #[error("Negative array index: {0}")]
@@ -156,7 +156,7 @@ pub enum EvalError {
 
 impl From<CompileError> for EvalError {
   fn from(e: CompileError) -> Self {
-    Self::Userspace(UserspaceEvalError::CompilationError(e))
+    Self::Userspace(UserspaceEvalError::CompilationError(Box::new(e)))
   }
 }
 
@@ -194,7 +194,10 @@ pub enum Function {
   Builtin(Arc<str>),
   Composite {
     arg_names: Vec<Arc<str>>,
-    expression: Exp<ExpTypeInfo>,
+    // Boxed: an inline `Exp` would make every `Value` (and every
+    // `Result<Value, _>` temporary in the interpreter's frames) as large as
+    // an expression node.
+    expression: Box<Exp<ExpTypeInfo>>,
   },
   /// A closure with a captured scope struct. `inner` is the extracted composite
   /// function (which takes the scope struct as its first argument), and `scope`
@@ -235,7 +238,7 @@ impl Function {
             .iter()
             .map(|(arg_name, _)| arg_name.clone())
             .collect(),
-          expression: f.expression.clone(),
+          expression: Box::new(f.expression.clone()),
         })
       }
     }
@@ -6322,7 +6325,13 @@ pub fn eval(
   exp: Exp<ExpTypeInfo>,
   env: &mut EvaluationEnvironment<impl IOManager>,
 ) -> Result<Value, EvalException> {
-  let exp_effects = exp.effects();
+  // Each substantial arm runs in its own helper so the recursion pays only
+  // for the arm actually executing: in debug builds a function reserves
+  // stack for every arm's locals at once, and `eval` is on the stack once
+  // per level of every evaluated expression.
+  if matches!(exp.kind, ExpKind::Application(..)) {
+    return eval_application(exp, env);
+  }
   let value = match exp.kind {
     ExpKind::Wildcard => return Err(EncounteredWildcard.into()),
     ExpKind::Unit => Value::Unit,
@@ -6351,510 +6360,14 @@ pub fn eval(
           .iter()
           .map(|(arg_name, _)| arg_name.clone())
           .collect(),
-        expression: *expression,
+        expression,
       })
     }
-    ExpKind::Application(f, mut args) => match f.data.unwrap_known() {
-      Type::Function(f_signature) => {
-        // Capture per-parameter ownership before f_signature gets partially
-        // moved by the abstract_ancestor pattern below. Needed at the end of
-        // the Composite call path to decide which args want write-back.
-        let param_ownerships: Vec<Ownership> = f_signature
-          .args
-          .iter()
-          .map(|(v, _)| v.var_type.ownership)
-          .collect();
-        let name = match f.kind {
-          ExpKind::Name(name) => name,
-          _ => return Err(AppliedNonName.into()),
-        };
-        let f_arc = match f_signature.abstract_ancestor {
-          Some(arc) => arc,
-          None => panic!(
-            "application of \"{name}\" reached the interpreter with no \
-             abstract ancestor; every fully-lowered application callee must \
-             carry one (closure scope constructions get the scope struct's \
-             constructor attached in extract_inner_functions)"
-          ),
-        };
-        // A struct-constructor application whose own type is a function is a
-        // closure's scope construction (extract_inner_functions attaches the
-        // scope struct's constructor as the callee's ancestor, and the
-        // extracted inner fn as the expression type's ancestor). Evaluate the
-        // struct directly and wrap it as Function::Scoped.
-        if matches!(
-          f_arc.read().unwrap().implementation,
-          FunctionImplementationKind::StructConstructor
-        ) && matches!(exp.data.kind, TypeState::Known(Type::Function(_)))
-        {
-          let field_names: Vec<Arc<str>> = {
-            let s = env
-              .structs
-              .get(&name)
-              .unwrap_or_else(|| panic!("unknown struct: {name}"));
-            s.fields.iter().map(|f| f.name.clone()).collect()
-          };
-          let arg_values: Vec<Value> = args
-            .into_iter()
-            .map(|arg| eval(arg, env))
-            .collect::<Result<_, _>>()?;
-          let scope_struct =
-            Value::Struct(field_names.into_iter().zip(arg_values).collect());
-          if let Type::Function(outer_sig) = exp.data.unwrap_known()
-            && let Some(inner_fn_arc) = outer_sig.abstract_ancestor
-          {
-            let inner_fn = {
-              let sig = inner_fn_arc.read().unwrap();
-              Function::from_abstract_signature(&sig, &sig.name.clone(), env)?
-            };
-            return Ok(Value::Fun(Function::Scoped {
-              inner: Box::new(inner_fn),
-              scope: Box::new(scope_struct),
-            }));
-          }
-          return Ok(scope_struct);
-        }
-        let f = Function::from_abstract_signature(
-          &*f_arc.read().unwrap(),
-          &name,
-          env,
-        )?;
-        // For composite callees, re-derive the per-parameter ownerships
-        // from the *implementation's* own function type — the same
-        // signature-level source the VM's ref-arg detection uses — rather
-        // than trusting the call site's signature view captured above.
-        // The lowering passes that append trailing scope args are
-        // supposed to keep that view aligned (and now do), but
-        // bookkeeping driven by a stale view silently dropped the scope
-        // write-back and leaked the binding, so the runtime prefers the
-        // authoritative source (pinned by `closure_seeded_capture_read`).
-        let param_ownerships: Vec<Ownership> =
-          if let FunctionImplementationKind::Composite(implementation) =
-            &f_arc.read().unwrap().implementation
-            && let Type::Function(impl_signature) = implementation
-              .read()
-              .unwrap()
-              .expression
-              .data
-              .unwrap_known()
-          {
-            impl_signature
-              .args
-              .iter()
-              .map(|(v, _)| v.var_type.ownership)
-              .collect()
-          } else {
-            param_ownerships
-          };
-        // The callee implementation's own parameter types — the authoritative
-        // view of what each parameter expects. A closure's trailing scope
-        // parameter is typed here as the scope struct even when the call site
-        // types the argument as the closure's function type (as for `(m1 x)`
-        // lowered to `inner_fn(x, m1)`), so it is what decides whether a
-        // `Scoped` argument is unwrapped to its scope struct below. Derived in a helper
-        // so its locals don't enlarge `eval`'s already-large stack frame — the
-        // recurring hazard that overflows deeply-recursive programs.
-        let impl_param_types = composite_impl_param_types(&f_arc);
-        let arg_types: Vec<Type> =
-          args.iter().map(|a| a.data.kind.unwrap_known()).collect();
-        let return_type = exp.data.unwrap_known();
-        let is_assignment_op = ASSIGNMENT_OPS.contains(&*name);
-        let is_atomic_op = ATOMIC_MUTATION_OPS.contains(&*name);
-        let accessed_expression =
-          (is_assignment_op || is_atomic_op).then(|| args[0].clone());
-        // Sync any GPU-written globals before evaluating args so we see the
-        // updated values when the args are looked up.
-        let (read_global_variable_names, written_global_variable_names) =
-          exp_effects.read_and_written_globals();
-        env.check_cpu_readable(&read_global_variable_names);
-        // For args bound to a MUTABLE reference parameter, save a clone of
-        // the callsite expression so we can write the (possibly mutated)
-        // post-call value back into its source location once the call
-        // returns. Owned args skip write-back, and so do immutable `@ref`
-        // args: writes through them are compile errors, so their value
-        // can't have changed — and writing the unchanged snapshot back
-        // would clobber a mutation another argument's evaluation made to
-        // the same location (a phantom write no reference performed).
-        let ref_arg_lhs_exprs: Vec<Option<Exp<ExpTypeInfo>>> = args
-          .iter()
-          .zip(param_ownerships.iter())
-          .map(|(arg, ownership)| match ownership {
-            Ownership::MutableReference
-            | Ownership::Pointer(_, RefMutability::Mutable) => {
-              Some(arg.clone())
-            }
-            Ownership::Owned
-            | Ownership::Reference
-            | Ownership::Pointer(_, RefMutability::Immutable) => None,
-          })
-          .collect();
-        let arg_values: Vec<Value> = args
-          .into_iter()
-          .map(|arg| {
-            if let Type::Function(f) = arg.data.unwrap_known()
-              && let Some(f) = f.abstract_ancestor
-              && let ExpKind::Name(f_name) = arg.kind
-            {
-              // A local binding may hold a closure value carrying captured
-              // scope (Function::Scoped) — use it if present. Only rebuild
-              // from the signature when the name isn't bound in the env,
-              // i.e. it refers to a top-level function.
-              if let Ok(value) = env.lookup(&f_name) {
-                Ok(value.clone())
-              } else {
-                Ok(Value::Fun(Function::from_abstract_signature(
-                  &f.read().unwrap(),
-                  &f_name,
-                  env,
-                )?))
-              }
-            } else {
-              eval(arg, env)
-            }
-          })
-          .collect::<Result<_, _>>()?;
-        let mut return_value = match f {
-          Function::Builtin(name) => {
-            // `progress-video-frame` / `jump-to-video-frame` take a `@var
-            // @ref Video`: `apply_builtin_fn` returns the mutated `Video`,
-            // which we write back through the reference and yield Unit.
-            let is_video_mutation =
-              matches!(&*name, "progress-video-frame" | "jump-to-video-frame");
-            let result = apply_builtin_fn(
-              name,
-              arg_values.into_iter().zip(arg_types.into_iter()).collect(),
-              return_type,
-              env,
-            )?;
-            if is_video_mutation {
-              finish_video_mutation(env, ref_arg_lhs_exprs, result)?;
-              Value::Unit
-            } else {
-              result
-            }
-          }
-          Function::StructConstructor(field_names) => Value::Struct(
-            field_names
-              .into_iter()
-              .zip(arg_values.into_iter())
-              .collect(),
-          ),
-          Function::EnumConstructor(variant_name) => Value::Enum(
-            variant_name,
-            arg_values.into_iter().next().unwrap().into(),
-          ),
-          Function::Composite {
-            arg_names,
-            expression,
-          } => {
-            let ExpKind::Function(_, body) = expression.kind else {
-              panic!()
-            };
-            if arg_names.len() != arg_values.len() {
-              return Err(WrongArity(arg_names.len(), arg_values.len()).into());
-            }
-            assert_eq!(
-              arg_names.len(),
-              ref_arg_lhs_exprs.len(),
-              "compiler bug: call-site argument bookkeeping misaligned with \
-               `{name}`'s parameters — a silent zip truncation here drops \
-               reference write-backs and leaks bindings"
-            );
-            for (i, (name, (value, ty))) in arg_names
-              .iter()
-              .zip(arg_values.into_iter().zip(arg_types.into_iter()))
-              .enumerate()
-            {
-              // A closure value (Function::Scoped) arriving at a parameter
-              // that expects the scope struct itself — the trailing scope arg
-              // added by higher-order inlining, or a closure calling its OWN
-              // inner function (`(m1 x)` lowered to `inner_fn(x, m1)`) — binds
-              // the bare scope struct; write_back_through_lhs re-wraps the
-              // mutated struct into the closure at the source binding. The call
-              // site types this arg either as the scope struct or as the
-              // closure's function type, so the decision follows the callee
-              // implementation's own parameter type, which is always the scope
-              // struct here — falling back to the argument's type when the
-              // implementation view is unavailable (builtins, etc.).
-              let expects_scope_struct = match impl_param_types.get(i) {
-                Some(Some(t)) => !matches!(t, Type::Function(_)),
-                _ => !matches!(ty, Type::Function(_)),
-              };
-              let (value, ty) = match value {
-                Value::Fun(Function::Scoped { scope, .. })
-                  if expects_scope_struct =>
-                {
-                  let scope_ty = match impl_param_types.get(i) {
-                    Some(Some(t)) => t.clone(),
-                    _ => ty,
-                  };
-                  (*scope, scope_ty)
-                }
-                other => (other, ty),
-              };
-              env.bind(name.clone(), value, ty);
-            }
-            let value = match eval(*body, env) {
-              Ok(value) => Ok(value),
-              Err(exception) => match exception {
-                EvalException::Return(value) => Ok(value),
-                other => Err(other),
-              },
-            };
-            // Mutable-reference write-back. For each arg bound to a
-            // reference-typed parameter, pop its (possibly mutated) value
-            // off the env and copy it back to wherever it came from in
-            // the caller's environment, using the callsite LHS expression
-            // we saved before the call. Owned args just get unbound and
-            // the value dropped, same as before.
-            for (name, lhs) in
-              arg_names.iter().zip(ref_arg_lhs_exprs.into_iter()).rev()
-            {
-              let (binding_value, _) = env.unbind(name);
-              if let Some(lhs_exp) = lhs {
-                write_back_through_lhs(env, lhs_exp, binding_value)?;
-              }
-            }
-            value?
-          }
-          Function::Scoped { inner, scope } => {
-            // Call the inner function with scope prepended to args.
-            let scoped_values: Vec<Value> =
-              std::iter::once(*scope).chain(arg_values).collect();
-            let scoped_types: Vec<Type> =
-              std::iter::once(Type::Unit).chain(arg_types).collect();
-            let Function::Composite {
-              arg_names,
-              expression,
-            } = *inner
-            else {
-              panic!("Scoped inner must be Composite")
-            };
-            let ExpKind::Function(_, body) = expression.kind else {
-              panic!()
-            };
-            if arg_names.len() != scoped_values.len() {
-              return Err(
-                WrongArity(arg_names.len(), scoped_values.len()).into(),
-              );
-            }
-            for (name, (value, ty)) in arg_names
-              .iter()
-              .zip(scoped_values.into_iter().zip(scoped_types))
-            {
-              env.bind(name.clone(), value, ty);
-            }
-            let value = match eval(*body, env) {
-              Ok(value) => Ok(value),
-              Err(exception) => match exception {
-                EvalException::Return(value) => Ok(value),
-                other => Err(other),
-              },
-            };
-            for name in arg_names.iter() {
-              let _ = env.unbind(name);
-            }
-            value?
-          }
-        };
-        return_value = if is_assignment_op {
-          eval_assignment_op(env, accessed_expression.unwrap(), return_value)?
-        } else if is_atomic_op {
-          eval_atomic_op(
-            env,
-            accessed_expression.unwrap(),
-            &name,
-            return_value,
-          )?
-        } else {
-          return_value
-        };
-        env.mark_cpu_written(&written_global_variable_names);
-        return_value
-      }
-      Type::Array(_, inner_type) => {
-        if args.len() != 1 {
-          panic!();
-        }
-        let elem_type = inner_type.unwrap_known();
-        let array = eval(*f, env)?;
-        let index_value = eval(args.remove(0), env)?;
-        let Value::Prim(primitive) = index_value else {
-          panic!();
-        };
-        let u = match primitive {
-          Primitive::U32(u) => u as usize,
-          Primitive::I32(i) => {
-            if i < 0 {
-              return Err(NegativeArrayIndex(i as isize).into());
-            } else {
-              i as usize
-            }
-          }
-          _ => panic!(),
-        };
-        match array {
-          Value::Array(array_values) => {
-            if u < array_values.len() {
-              array_values[u].clone()
-            } else {
-              return Err(ArrayIndexOutOfBounds(u, array_values.len()).into());
-            }
-          }
-          Value::ZeroedArray { length } => {
-            if u < length {
-              Value::zeroed(elem_type, env)?
-            } else {
-              return Err(ArrayIndexOutOfBounds(u, length).into());
-            }
-          }
-          _ => panic!(),
-        }
-      }
-      _ => panic!(),
-    },
-    ExpKind::Access(accessor, exp) => {
-      let exp_type = exp.data.unwrap_known();
-      let value = eval(*exp, env)?;
-      match accessor {
-        Accessor::Field(field_name) => match value {
-          Value::Struct(s) => s
-            .get(&field_name)
-            .ok_or_else(|| NoSuchField(field_name.clone()))?
-            .clone(),
-          _ => return Err(AccessedFieldOnNonStruct(field_name.clone()).into()),
-        },
-        Accessor::Swizzle(swizzle_fields) => {
-          let map = match value {
-            Value::Struct(map) => map,
-            _ => {
-              return Err(
-                AccessedFieldOnNonStruct(
-                  swizzle_fields
-                    .iter()
-                    .map(|f| f.name())
-                    .fold(String::new(), |mut acc, name| {
-                      acc += name;
-                      acc
-                    })
-                    .into(),
-                )
-                .into(),
-              );
-            }
-          };
-          let values: Vec<Value> = swizzle_fields
-            .into_iter()
-            .map(|field| {
-              map
-                .get(match field {
-                  SwizzleField::X => "x",
-                  SwizzleField::Y => "y",
-                  SwizzleField::Z => "z",
-                  SwizzleField::W => "w",
-                } as &str)
-                .map(|v| v.clone())
-                .ok_or_else(|| NoSuchField(field.name().into()))
-            })
-            .collect::<Result<Vec<Value>, _>>()?;
-          Value::Struct(
-            ["x", "y", "z", "w"]
-              .into_iter()
-              .map(|n| n.into())
-              .zip(values.into_iter())
-              .collect(),
-          )
-        }
-        Accessor::ArrayIndex(exp) => {
-          let index = eval(*exp, env)?;
-          let u_index = |len: usize| match index.unwrap_primitive() {
-            Primitive::U32(u) => u as usize % len,
-            Primitive::I32(i) => i.rem_euclid(len as i32) as usize,
-            _ => panic!(),
-          };
-          match value {
-            Value::Array(values) => {
-              let i = u_index(values.len());
-              values[i].clone()
-            }
-            Value::ZeroedArray { .. } => {
-              let Type::Array(_, inner_type) = exp_type else {
-                panic!()
-              };
-              Value::zeroed(inner_type.unwrap_known(), env)?
-            }
-            // Vector indexing: stored as a Struct with x/y/z/w fields.
-            Value::Struct(fields) if exp_type.is_vector() => {
-              let len = fields.len();
-              let i = u_index(len);
-              fields
-                .get(["x", "y", "z", "w"][i])
-                .expect("vector index out of bounds")
-                .clone()
-            }
-            _ => panic!(),
-          }
-        }
-      }
-    }
-    ExpKind::Let(items, exp) => {
-      let names: Vec<Arc<str>> =
-        items.iter().map(|(name, _, _, _)| name.clone()).collect();
-      for (name, _, _, exp) in items {
-        let ty = exp.data.kind.unwrap_known();
-        let value = eval(exp, env)?;
-        env.bind(name, value, ty);
-      }
-      let value = eval(*exp, env)?;
-      for name in names {
-        let _ = env.unbind(&name);
-      }
-      value
-    }
+    ExpKind::Application(..) => unreachable!("dispatched above"),
+    ExpKind::Access(accessor, exp) => eval_access(accessor, *exp, env)?,
+    ExpKind::Let(items, exp) => eval_let(items, *exp, env)?,
     ExpKind::Match(scrutinee, arms) => {
-      let scrutinee = eval(*scrutinee, env)?;
-      for (match_exp, body_exp) in arms {
-        if match_exp.kind == ExpKind::Wildcard {
-          return eval(body_exp, env);
-        }
-        let enum_pattern_variant: Option<Arc<str>> = match &match_exp.kind {
-          ExpKind::Application(f, _) => {
-            if let Type::Function(f_sig) = f.data.unwrap_known()
-              && let Some(abstract_f) = f_sig.abstract_ancestor
-              && let FunctionImplementationKind::EnumConstructor(v) =
-                &abstract_f.read().unwrap().implementation
-            {
-              Some(v.clone())
-            } else {
-              None
-            }
-          }
-          _ => None,
-        };
-        if let Some(pattern_variant) = enum_pattern_variant {
-          let ExpKind::Application(_, args) = match_exp.kind else {
-            unreachable!()
-          };
-          if let Value::Enum(scrutinee_variant, inner_value) = &scrutinee
-            && pattern_variant == *scrutinee_variant
-          {
-            let inner_pattern = args.into_iter().next().unwrap();
-            let inner_ty = inner_pattern.data.kind.unwrap_known();
-            let ExpKind::Name(inner_name) = inner_pattern.kind else {
-              unreachable!()
-            };
-            env.bind(inner_name.clone(), (**inner_value).clone(), inner_ty);
-            let result = eval(body_exp, env);
-            let _ = env.unbind(&inner_name);
-            return result;
-          }
-          continue;
-        }
-        if eval(match_exp, env)? == scrutinee {
-          return eval(body_exp, env);
-        }
-      }
-      return Err(NoMatchingArm.into());
+      return eval_match(*scrutinee, arms, env);
     }
     ExpKind::Block(exps) => exps
       .into_iter()
@@ -6869,74 +6382,18 @@ pub fn eval(
       update_expression,
       body_expression,
       ..
-    } => {
-      let initial_ty = increment_variable_initial_value_expression
-        .data
-        .kind
-        .unwrap_known();
-      let initial_value =
-        eval(*increment_variable_initial_value_expression, env)?;
-      env.bind(increment_variable_name.0.clone(), initial_value, initial_ty);
-      loop {
-        let should_continue =
-          eval(*continue_condition_expression.clone(), env)?;
-        match should_continue {
-          Value::Prim(Primitive::Bool(b)) => {
-            if !b {
-              break;
-            }
-          }
-          _ => return Err(NonBooleanLoopCondition.into()),
-        }
-        let mut broke = false;
-        for maybe_exp in [
-          Some(*body_expression.clone()),
-          update_expression.as_ref().map(|x| (**x).clone()),
-        ] {
-          if let Some(exp) = maybe_exp {
-            match eval(exp, env) {
-              Ok(_) | Err(EvalException::Continue) => {}
-              Err(EvalException::Break) => {
-                broke = true;
-                break;
-              }
-              Err(e) => {
-                return Err(e);
-              }
-            }
-          }
-        }
-        if broke {
-          break;
-        }
-      }
-      let _ = env.unbind(&increment_variable_name.0);
-      Value::Unit
-    }
+    } => eval_for_loop(
+      increment_variable_name.0,
+      *increment_variable_initial_value_expression,
+      *continue_condition_expression,
+      update_expression.map(|x| *x),
+      *body_expression,
+      env,
+    )?,
     ExpKind::WhileLoop {
       condition_expression,
       body_expression,
-    } => {
-      loop {
-        let should_continue = eval(*condition_expression.clone(), env)?;
-        match should_continue {
-          Value::Prim(Primitive::Bool(b)) => {
-            if !b {
-              break;
-            }
-          }
-          _ => return Err(NonBooleanLoopCondition.into()),
-        }
-        match eval(*body_expression.clone(), env) {
-          Ok(_) | Err(EvalException::Continue) => {}
-          Err(EvalException::Break) => break,
-          Err(e) => {
-            return Err(e);
-          }
-        }
-      }
-      Value::Unit
-    }
+    } => eval_while_loop(*condition_expression, *body_expression, env)?,
     ExpKind::Break => return Err(EvalException::Break),
     ExpKind::Continue => return Err(EvalException::Continue),
     ExpKind::Return(exp) => {
@@ -6952,6 +6409,609 @@ pub fn eval(
     ExpKind::Uninitialized => Value::zeroed(exp.data.unwrap_known(), env)?,
   };
   Ok(closure_as_scope(value, &exp.data))
+}
+
+/// Evaluates an application: a call (builtin, constructor, composite, or
+/// closure) or an array lookup.
+fn eval_application<IO: IOManager>(
+  exp: Exp<ExpTypeInfo>,
+  env: &mut EvaluationEnvironment<IO>,
+) -> Result<Value, EvalException> {
+  let exp_effects = exp.effects();
+  let ExpKind::Application(f, mut args) = exp.kind else {
+    unreachable!()
+  };
+  let value = match f.data.unwrap_known() {
+    Type::Function(f_signature) => {
+      // Capture per-parameter ownership before f_signature gets partially
+      // moved by the abstract_ancestor pattern below. Needed at the end of
+      // the Composite call path to decide which args want write-back.
+      let param_ownerships: Vec<Ownership> = f_signature
+        .args
+        .iter()
+        .map(|(v, _)| v.var_type.ownership)
+        .collect();
+      let name = match f.kind {
+        ExpKind::Name(name) => name,
+        _ => return Err(AppliedNonName.into()),
+      };
+      let f_arc = match f_signature.abstract_ancestor {
+        Some(arc) => arc,
+        None => panic!(
+          "application of \"{name}\" reached the interpreter with no \
+           abstract ancestor; every fully-lowered application callee must \
+           carry one (closure scope constructions get the scope struct's \
+           constructor attached in extract_inner_functions)"
+        ),
+      };
+      // A struct-constructor application whose own type is a function is a
+      // closure's scope construction (extract_inner_functions attaches the
+      // scope struct's constructor as the callee's ancestor, and the
+      // extracted inner fn as the expression type's ancestor). Evaluate the
+      // struct directly and wrap it as Function::Scoped.
+      if matches!(
+        f_arc.read().unwrap().implementation,
+        FunctionImplementationKind::StructConstructor
+      ) && matches!(exp.data.kind, TypeState::Known(Type::Function(_)))
+      {
+        let field_names: Vec<Arc<str>> = {
+          let s = env
+            .structs
+            .get(&name)
+            .unwrap_or_else(|| panic!("unknown struct: {name}"));
+          s.fields.iter().map(|f| f.name.clone()).collect()
+        };
+        let arg_values: Vec<Value> = args
+          .into_iter()
+          .map(|arg| eval(arg, env))
+          .collect::<Result<_, _>>()?;
+        let scope_struct =
+          Value::Struct(field_names.into_iter().zip(arg_values).collect());
+        if let Type::Function(outer_sig) = exp.data.unwrap_known()
+          && let Some(inner_fn_arc) = outer_sig.abstract_ancestor
+        {
+          let inner_fn = {
+            let sig = inner_fn_arc.read().unwrap();
+            Function::from_abstract_signature(&sig, &sig.name.clone(), env)?
+          };
+          return Ok(Value::Fun(Function::Scoped {
+            inner: Box::new(inner_fn),
+            scope: Box::new(scope_struct),
+          }));
+        }
+        return Ok(scope_struct);
+      }
+      let f =
+        Function::from_abstract_signature(&*f_arc.read().unwrap(), &name, env)?;
+      // For composite callees, re-derive the per-parameter ownerships
+      // from the *implementation's* own function type — the same
+      // signature-level source the VM's ref-arg detection uses — rather
+      // than trusting the call site's signature view captured above.
+      // The lowering passes that append trailing scope args are
+      // supposed to keep that view aligned (and now do), but
+      // bookkeeping driven by a stale view silently dropped the scope
+      // write-back and leaked the binding, so the runtime prefers the
+      // authoritative source (pinned by `closure_seeded_capture_read`).
+      let param_ownerships: Vec<Ownership> =
+        if let FunctionImplementationKind::Composite(implementation) =
+          &f_arc.read().unwrap().implementation
+          && let Type::Function(impl_signature) = implementation
+            .read()
+            .unwrap()
+            .expression
+            .data
+            .unwrap_known()
+        {
+          impl_signature
+            .args
+            .iter()
+            .map(|(v, _)| v.var_type.ownership)
+            .collect()
+        } else {
+          param_ownerships
+        };
+      // The callee implementation's own parameter types — the authoritative
+      // view of what each parameter expects. A closure's trailing scope
+      // parameter is typed here as the scope struct even when the call site
+      // types the argument as the closure's function type (as for `(m1 x)`
+      // lowered to `inner_fn(x, m1)`), so it is what decides whether a
+      // `Scoped` argument is unwrapped to its scope struct below. Derived in a helper
+      // so its locals don't enlarge `eval`'s already-large stack frame — the
+      // recurring hazard that overflows deeply-recursive programs.
+      let impl_param_types = composite_impl_param_types(&f_arc);
+      let arg_types: Vec<Type> =
+        args.iter().map(|a| a.data.kind.unwrap_known()).collect();
+      let return_type = exp.data.unwrap_known();
+      let is_assignment_op = ASSIGNMENT_OPS.contains(&*name);
+      let is_atomic_op = ATOMIC_MUTATION_OPS.contains(&*name);
+      let accessed_expression =
+        (is_assignment_op || is_atomic_op).then(|| args[0].clone());
+      // Sync any GPU-written globals before evaluating args so we see the
+      // updated values when the args are looked up.
+      let (read_global_variable_names, written_global_variable_names) =
+        exp_effects.read_and_written_globals();
+      env.check_cpu_readable(&read_global_variable_names);
+      // For args bound to a MUTABLE reference parameter, save a clone of
+      // the callsite expression so we can write the (possibly mutated)
+      // post-call value back into its source location once the call
+      // returns. Owned args skip write-back, and so do immutable `@ref`
+      // args: writes through them are compile errors, so their value
+      // can't have changed — and writing the unchanged snapshot back
+      // would clobber a mutation another argument's evaluation made to
+      // the same location (a phantom write no reference performed).
+      let ref_arg_lhs_exprs: Vec<Option<Exp<ExpTypeInfo>>> = args
+        .iter()
+        .zip(param_ownerships.iter())
+        .map(|(arg, ownership)| match ownership {
+          Ownership::MutableReference
+          | Ownership::Pointer(_, RefMutability::Mutable) => Some(arg.clone()),
+          Ownership::Owned
+          | Ownership::Reference
+          | Ownership::Pointer(_, RefMutability::Immutable) => None,
+        })
+        .collect();
+      let arg_values: Vec<Value> = args
+        .into_iter()
+        .map(|arg| {
+          if let Type::Function(f) = arg.data.unwrap_known()
+            && let Some(f) = f.abstract_ancestor
+            && let ExpKind::Name(f_name) = arg.kind
+          {
+            // A local binding may hold a closure value carrying captured
+            // scope (Function::Scoped) — use it if present. Only rebuild
+            // from the signature when the name isn't bound in the env,
+            // i.e. it refers to a top-level function.
+            if let Ok(value) = env.lookup(&f_name) {
+              Ok(value.clone())
+            } else {
+              Ok(Value::Fun(Function::from_abstract_signature(
+                &f.read().unwrap(),
+                &f_name,
+                env,
+              )?))
+            }
+          } else {
+            eval(arg, env)
+          }
+        })
+        .collect::<Result<_, _>>()?;
+      let mut return_value = match f {
+        Function::Builtin(name) => {
+          // `progress-video-frame` / `jump-to-video-frame` take a `@var
+          // @ref Video`: `apply_builtin_fn` returns the mutated `Video`,
+          // which we write back through the reference and yield Unit.
+          let is_video_mutation =
+            matches!(&*name, "progress-video-frame" | "jump-to-video-frame");
+          let result = apply_builtin_fn(
+            name,
+            arg_values.into_iter().zip(arg_types.into_iter()).collect(),
+            return_type,
+            env,
+          )?;
+          if is_video_mutation {
+            finish_video_mutation(env, ref_arg_lhs_exprs, result)?;
+            Value::Unit
+          } else {
+            result
+          }
+        }
+        Function::StructConstructor(field_names) => Value::Struct(
+          field_names
+            .into_iter()
+            .zip(arg_values.into_iter())
+            .collect(),
+        ),
+        Function::EnumConstructor(variant_name) => Value::Enum(
+          variant_name,
+          arg_values.into_iter().next().unwrap().into(),
+        ),
+        Function::Composite {
+          arg_names,
+          expression,
+        } => {
+          let ExpKind::Function(_, body) = expression.kind else {
+            panic!()
+          };
+          if arg_names.len() != arg_values.len() {
+            return Err(WrongArity(arg_names.len(), arg_values.len()).into());
+          }
+          assert_eq!(
+            arg_names.len(),
+            ref_arg_lhs_exprs.len(),
+            "compiler bug: call-site argument bookkeeping misaligned with \
+             `{name}`'s parameters — a silent zip truncation here drops \
+             reference write-backs and leaks bindings"
+          );
+          for (i, (name, (value, ty))) in arg_names
+            .iter()
+            .zip(arg_values.into_iter().zip(arg_types.into_iter()))
+            .enumerate()
+          {
+            // A closure value (Function::Scoped) arriving at a parameter
+            // that expects the scope struct itself — the trailing scope arg
+            // added by higher-order inlining, or a closure calling its OWN
+            // inner function (`(m1 x)` lowered to `inner_fn(x, m1)`) — binds
+            // the bare scope struct; write_back_through_lhs re-wraps the
+            // mutated struct into the closure at the source binding. The call
+            // site types this arg either as the scope struct or as the
+            // closure's function type, so the decision follows the callee
+            // implementation's own parameter type, which is always the scope
+            // struct here — falling back to the argument's type when the
+            // implementation view is unavailable (builtins, etc.).
+            let expects_scope_struct = match impl_param_types.get(i) {
+              Some(Some(t)) => !matches!(t, Type::Function(_)),
+              _ => !matches!(ty, Type::Function(_)),
+            };
+            let (value, ty) = match value {
+              Value::Fun(Function::Scoped { scope, .. })
+                if expects_scope_struct =>
+              {
+                let scope_ty = match impl_param_types.get(i) {
+                  Some(Some(t)) => t.clone(),
+                  _ => ty,
+                };
+                (*scope, scope_ty)
+              }
+              other => (other, ty),
+            };
+            env.bind(name.clone(), value, ty);
+          }
+          let value = match eval(*body, env) {
+            Ok(value) => Ok(value),
+            Err(exception) => match exception {
+              EvalException::Return(value) => Ok(value),
+              other => Err(other),
+            },
+          };
+          // Mutable-reference write-back. For each arg bound to a
+          // reference-typed parameter, pop its (possibly mutated) value
+          // off the env and copy it back to wherever it came from in
+          // the caller's environment, using the callsite LHS expression
+          // we saved before the call. Owned args just get unbound and
+          // the value dropped, same as before.
+          for (name, lhs) in
+            arg_names.iter().zip(ref_arg_lhs_exprs.into_iter()).rev()
+          {
+            let (binding_value, _) = env.unbind(name);
+            if let Some(lhs_exp) = lhs {
+              write_back_through_lhs(env, lhs_exp, binding_value)?;
+            }
+          }
+          value?
+        }
+        Function::Scoped { inner, scope } => {
+          // Call the inner function with scope prepended to args.
+          let scoped_values: Vec<Value> =
+            std::iter::once(*scope).chain(arg_values).collect();
+          let scoped_types: Vec<Type> =
+            std::iter::once(Type::Unit).chain(arg_types).collect();
+          let Function::Composite {
+            arg_names,
+            expression,
+          } = *inner
+          else {
+            panic!("Scoped inner must be Composite")
+          };
+          let ExpKind::Function(_, body) = expression.kind else {
+            panic!()
+          };
+          if arg_names.len() != scoped_values.len() {
+            return Err(
+              WrongArity(arg_names.len(), scoped_values.len()).into(),
+            );
+          }
+          for (name, (value, ty)) in arg_names
+            .iter()
+            .zip(scoped_values.into_iter().zip(scoped_types))
+          {
+            env.bind(name.clone(), value, ty);
+          }
+          let value = match eval(*body, env) {
+            Ok(value) => Ok(value),
+            Err(exception) => match exception {
+              EvalException::Return(value) => Ok(value),
+              other => Err(other),
+            },
+          };
+          for name in arg_names.iter() {
+            let _ = env.unbind(name);
+          }
+          value?
+        }
+      };
+      return_value = if is_assignment_op {
+        eval_assignment_op(env, accessed_expression.unwrap(), return_value)?
+      } else if is_atomic_op {
+        eval_atomic_op(env, accessed_expression.unwrap(), &name, return_value)?
+      } else {
+        return_value
+      };
+      env.mark_cpu_written(&written_global_variable_names);
+      return_value
+    }
+    Type::Array(_, inner_type) => {
+      if args.len() != 1 {
+        panic!();
+      }
+      let elem_type = inner_type.unwrap_known();
+      let array = eval(*f, env)?;
+      let index_value = eval(args.remove(0), env)?;
+      let Value::Prim(primitive) = index_value else {
+        panic!();
+      };
+      let u = match primitive {
+        Primitive::U32(u) => u as usize,
+        Primitive::I32(i) => {
+          if i < 0 {
+            return Err(NegativeArrayIndex(i as isize).into());
+          } else {
+            i as usize
+          }
+        }
+        _ => panic!(),
+      };
+      match array {
+        Value::Array(array_values) => {
+          if u < array_values.len() {
+            array_values[u].clone()
+          } else {
+            return Err(ArrayIndexOutOfBounds(u, array_values.len()).into());
+          }
+        }
+        Value::ZeroedArray { length } => {
+          if u < length {
+            Value::zeroed(elem_type, env)?
+          } else {
+            return Err(ArrayIndexOutOfBounds(u, length).into());
+          }
+        }
+        _ => panic!(),
+      }
+    }
+    _ => panic!(),
+  };
+  Ok(closure_as_scope(value, &exp.data))
+}
+
+fn eval_access<IO: IOManager>(
+  accessor: Accessor,
+  exp: Exp<ExpTypeInfo>,
+  env: &mut EvaluationEnvironment<IO>,
+) -> Result<Value, EvalException> {
+  Ok({
+    let exp_type = exp.data.unwrap_known();
+    let value = eval(exp, env)?;
+    match accessor {
+      Accessor::Field(field_name) => match value {
+        Value::Struct(s) => s
+          .get(&field_name)
+          .ok_or_else(|| NoSuchField(field_name.clone()))?
+          .clone(),
+        _ => return Err(AccessedFieldOnNonStruct(field_name.clone()).into()),
+      },
+      Accessor::Swizzle(swizzle_fields) => {
+        let map = match value {
+          Value::Struct(map) => map,
+          _ => {
+            return Err(
+              AccessedFieldOnNonStruct(
+                swizzle_fields
+                  .iter()
+                  .map(|f| f.name())
+                  .fold(String::new(), |mut acc, name| {
+                    acc += name;
+                    acc
+                  })
+                  .into(),
+              )
+              .into(),
+            );
+          }
+        };
+        let values: Vec<Value> = swizzle_fields
+          .into_iter()
+          .map(|field| {
+            map
+              .get(match field {
+                SwizzleField::X => "x",
+                SwizzleField::Y => "y",
+                SwizzleField::Z => "z",
+                SwizzleField::W => "w",
+              } as &str)
+              .map(|v| v.clone())
+              .ok_or_else(|| NoSuchField(field.name().into()))
+          })
+          .collect::<Result<Vec<Value>, _>>()?;
+        Value::Struct(
+          ["x", "y", "z", "w"]
+            .into_iter()
+            .map(|n| n.into())
+            .zip(values.into_iter())
+            .collect(),
+        )
+      }
+      Accessor::ArrayIndex(exp) => {
+        let index = eval(*exp, env)?;
+        let u_index = |len: usize| match index.unwrap_primitive() {
+          Primitive::U32(u) => u as usize % len,
+          Primitive::I32(i) => i.rem_euclid(len as i32) as usize,
+          _ => panic!(),
+        };
+        match value {
+          Value::Array(values) => {
+            let i = u_index(values.len());
+            values[i].clone()
+          }
+          Value::ZeroedArray { .. } => {
+            let Type::Array(_, inner_type) = exp_type else {
+              panic!()
+            };
+            Value::zeroed(inner_type.unwrap_known(), env)?
+          }
+          // Vector indexing: stored as a Struct with x/y/z/w fields.
+          Value::Struct(fields) if exp_type.is_vector() => {
+            let len = fields.len();
+            let i = u_index(len);
+            fields
+              .get(["x", "y", "z", "w"][i])
+              .expect("vector index out of bounds")
+              .clone()
+          }
+          _ => panic!(),
+        }
+      }
+    }
+  })
+}
+
+fn eval_let<IO: IOManager>(
+  items: Vec<(Arc<str>, SourceTrace, VariableKind, Exp<ExpTypeInfo>)>,
+  exp: Exp<ExpTypeInfo>,
+  env: &mut EvaluationEnvironment<IO>,
+) -> Result<Value, EvalException> {
+  Ok({
+    let names: Vec<Arc<str>> =
+      items.iter().map(|(name, _, _, _)| name.clone()).collect();
+    for (name, _, _, exp) in items {
+      let ty = exp.data.kind.unwrap_known();
+      let value = eval(exp, env)?;
+      env.bind(name, value, ty);
+    }
+    let value = eval(exp, env)?;
+    for name in names {
+      let _ = env.unbind(&name);
+    }
+    value
+  })
+}
+
+fn eval_match<IO: IOManager>(
+  scrutinee: Exp<ExpTypeInfo>,
+  arms: Vec<(Exp<ExpTypeInfo>, Exp<ExpTypeInfo>)>,
+  env: &mut EvaluationEnvironment<IO>,
+) -> Result<Value, EvalException> {
+  let scrutinee = eval(scrutinee, env)?;
+  for (match_exp, body_exp) in arms {
+    if match_exp.kind == ExpKind::Wildcard {
+      return eval(body_exp, env);
+    }
+    let enum_pattern_variant: Option<Arc<str>> = match &match_exp.kind {
+      ExpKind::Application(f, _) => {
+        if let Type::Function(f_sig) = f.data.unwrap_known()
+          && let Some(abstract_f) = f_sig.abstract_ancestor
+          && let FunctionImplementationKind::EnumConstructor(v) =
+            &abstract_f.read().unwrap().implementation
+        {
+          Some(v.clone())
+        } else {
+          None
+        }
+      }
+      _ => None,
+    };
+    if let Some(pattern_variant) = enum_pattern_variant {
+      let ExpKind::Application(_, args) = match_exp.kind else {
+        unreachable!()
+      };
+      if let Value::Enum(scrutinee_variant, inner_value) = &scrutinee
+        && pattern_variant == *scrutinee_variant
+      {
+        let inner_pattern = args.into_iter().next().unwrap();
+        let inner_ty = inner_pattern.data.kind.unwrap_known();
+        let ExpKind::Name(inner_name) = inner_pattern.kind else {
+          unreachable!()
+        };
+        env.bind(inner_name.clone(), (**inner_value).clone(), inner_ty);
+        let result = eval(body_exp, env);
+        let _ = env.unbind(&inner_name);
+        return result;
+      }
+      continue;
+    }
+    if eval(match_exp, env)? == scrutinee {
+      return eval(body_exp, env);
+    }
+  }
+  return Err(NoMatchingArm.into());
+}
+
+fn eval_for_loop<IO: IOManager>(
+  increment_variable_name: Arc<str>,
+  increment_variable_initial_value_expression: Exp<ExpTypeInfo>,
+  continue_condition_expression: Exp<ExpTypeInfo>,
+  update_expression: Option<Exp<ExpTypeInfo>>,
+  body_expression: Exp<ExpTypeInfo>,
+  env: &mut EvaluationEnvironment<IO>,
+) -> Result<Value, EvalException> {
+  Ok({
+    let initial_ty = increment_variable_initial_value_expression
+      .data
+      .kind
+      .unwrap_known();
+    let initial_value = eval(increment_variable_initial_value_expression, env)?;
+    env.bind(increment_variable_name.clone(), initial_value, initial_ty);
+    loop {
+      let should_continue = eval(continue_condition_expression.clone(), env)?;
+      match should_continue {
+        Value::Prim(Primitive::Bool(b)) => {
+          if !b {
+            break;
+          }
+        }
+        _ => return Err(NonBooleanLoopCondition.into()),
+      }
+      let mut broke = false;
+      for maybe_exp in
+        [Some(body_expression.clone()), update_expression.clone()]
+      {
+        if let Some(exp) = maybe_exp {
+          match eval(exp, env) {
+            Ok(_) | Err(EvalException::Continue) => {}
+            Err(EvalException::Break) => {
+              broke = true;
+              break;
+            }
+            Err(e) => {
+              return Err(e);
+            }
+          }
+        }
+      }
+      if broke {
+        break;
+      }
+    }
+    let _ = env.unbind(&increment_variable_name);
+    Value::Unit
+  })
+}
+
+fn eval_while_loop<IO: IOManager>(
+  condition_expression: Exp<ExpTypeInfo>,
+  body_expression: Exp<ExpTypeInfo>,
+  env: &mut EvaluationEnvironment<IO>,
+) -> Result<Value, EvalException> {
+  Ok({
+    loop {
+      let should_continue = eval(condition_expression.clone(), env)?;
+      match should_continue {
+        Value::Prim(Primitive::Bool(b)) => {
+          if !b {
+            break;
+          }
+        }
+        _ => return Err(NonBooleanLoopCondition.into()),
+      }
+      match eval(body_expression.clone(), env) {
+        Ok(_) | Err(EvalException::Continue) => {}
+        Err(EvalException::Break) => break,
+        Err(e) => {
+          return Err(e);
+        }
+      }
+    }
+    Value::Unit
+  })
 }
 
 fn run_program_with<IO: IOManager>(

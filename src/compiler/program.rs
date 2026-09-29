@@ -1623,6 +1623,50 @@ impl Program {
       }
     }
   }
+  /// Marks `held` — the signature a host builtin's function argument holds —
+  /// as an entry point of kind `entry`, unless it already is one of that
+  /// kind (`is_same_kind`); another kind is `wrong_kind`. The mark goes on
+  /// the function's implementation, which every copy of its signature
+  /// shares, and on every registered signature sharing that implementation.
+  /// `held` may itself be the registered signature (function values repoint
+  /// references at it), so it's marked directly rather than found by
+  /// re-locking registry entries.
+  fn mark_implicit_entry_point(
+    &self,
+    held: &mut AbstractFunctionSignature,
+    entry: EntryPoint,
+    is_same_kind: impl Fn(EntryPoint) -> bool,
+    wrong_kind: impl FnOnce(String) -> CompileErrorKind,
+    source: &SourceTrace,
+    errors: &mut ErrorLog,
+  ) {
+    match held.entry_point {
+      Some(existing) if !is_same_kind(existing) => {
+        errors.log(CompileError::new(
+          wrong_kind(existing.name().into()),
+          source.clone(),
+        ));
+        return;
+      }
+      Some(_) => {}
+      None => held.entry_point = Some(entry),
+    }
+    let FunctionImplementationKind::Composite(implementation) =
+      &held.implementation
+    else {
+      return;
+    };
+    implementation.write().unwrap().entry_point = held.entry_point;
+    for other in self.abstract_functions_iter() {
+      if let Ok(mut other) = other.try_write()
+        && let FunctionImplementationKind::Composite(other_implementation) =
+          &other.implementation
+        && Arc::ptr_eq(other_implementation, implementation)
+      {
+        other.entry_point = held.entry_point;
+      }
+    }
+  }
   pub fn validate_dispatch_function_types_and_mark_implicit_entry_points(
     &mut self,
     errors: &mut ErrorLog,
@@ -1647,47 +1691,14 @@ impl Program {
                       && let Some(abstract_compute_fn) =
                         compute_fn.abstract_ancestor
                     {
-                      let mut abstract_compute_fn =
-                        abstract_compute_fn.write().unwrap();
-                      if let Some(entry_point) = abstract_compute_fn.entry_point
-                      {
-                        if !matches!(entry_point, EntryPoint::Compute(_)) {
-                          errors.log(CompileError::new(
-                            WrongEntryPointTypeForDispatchComputeShader(
-                              entry_point.name().into(),
-                            ),
-                            exp.source_trace.clone(),
-                          ))
-                        }
-                      } else {
-                        abstract_compute_fn.entry_point =
-                          Some(EntryPoint::Compute(1))
-                      }
-                      // The held signature may itself be the registry's (the
-                      // loop below can't re-lock it), so mark its
-                      // implementation directly.
-                      if let FunctionImplementationKind::Composite(f) =
-                        &abstract_compute_fn.implementation
-                      {
-                        f.write().unwrap().entry_point =
-                          abstract_compute_fn.entry_point;
-                      }
-                      for other_abstract_f in self.abstract_functions_iter() {
-                        if let Ok(mut other_abstract_f) =
-                          other_abstract_f.try_write()
-                        {
-                          if other_abstract_f.name == abstract_compute_fn.name
-                            && let FunctionImplementationKind::Composite(
-                              other_f,
-                            ) = &other_abstract_f.implementation
-                          {
-                            other_f.write().unwrap().entry_point =
-                              abstract_compute_fn.entry_point;
-                            other_abstract_f.entry_point =
-                              abstract_compute_fn.entry_point;
-                          }
-                        }
-                      }
+                      self.mark_implicit_entry_point(
+                        &mut abstract_compute_fn.write().unwrap(),
+                        EntryPoint::Compute(1),
+                        |e| matches!(e, EntryPoint::Compute(_)),
+                        WrongEntryPointTypeForDispatchComputeShader,
+                        &exp.source_trace,
+                        errors,
+                      );
                     }
                   }
                   "dispatch-render-shaders" => {
@@ -1700,84 +1711,24 @@ impl Program {
                       && let Some(abstract_fragment_fn) =
                         &fragment_fn.abstract_ancestor
                     {
-                      let mut abstract_vertex_fn =
-                        abstract_vertex_fn.write().unwrap();
-                      if let Some(entry_point) = abstract_vertex_fn.entry_point
-                      {
-                        if entry_point != EntryPoint::Vertex {
-                          errors.log(CompileError::new(
-                            WrongEntryPointTypeForDispatchVertexShader(
-                              entry_point.name().into(),
-                            ),
-                            exp.source_trace.clone(),
-                          ))
-                        }
-                      } else {
-                        abstract_vertex_fn.entry_point =
-                          Some(EntryPoint::Vertex);
-                        if let FunctionImplementationKind::Composite(f) =
-                          &abstract_vertex_fn.implementation
-                        {
-                          f.write().unwrap().entry_point =
-                            Some(EntryPoint::Vertex);
-                        }
-                        for other_abstract_f in self.abstract_functions_iter() {
-                          if let Ok(mut other_abstract_f) =
-                            other_abstract_f.try_write()
-                          {
-                            if other_abstract_f.name == abstract_vertex_fn.name
-                              && let FunctionImplementationKind::Composite(
-                                other_f,
-                              ) = &other_abstract_f.implementation
-                            {
-                              other_f.write().unwrap().entry_point =
-                                Some(EntryPoint::Vertex);
-                              other_abstract_f.entry_point =
-                                Some(EntryPoint::Vertex);
-                            }
-                          }
-                        }
-                      }
-                      let mut abstract_fragment_fn =
-                        abstract_fragment_fn.write().unwrap();
-                      if let Some(entry_point) =
-                        abstract_fragment_fn.entry_point
-                      {
-                        if entry_point != EntryPoint::Fragment {
-                          errors.log(CompileError::new(
-                            WrongEntryPointTypeForDispatchFragmentShader(
-                              entry_point.name().into(),
-                            ),
-                            exp.source_trace.clone(),
-                          ))
-                        }
-                      } else {
-                        abstract_fragment_fn.entry_point =
-                          Some(EntryPoint::Fragment);
-                        if let FunctionImplementationKind::Composite(f) =
-                          &abstract_fragment_fn.implementation
-                        {
-                          f.write().unwrap().entry_point =
-                            Some(EntryPoint::Fragment);
-                        }
-                        for other_abstract_f in self.abstract_functions_iter() {
-                          if let Ok(mut other_abstract_f) =
-                            other_abstract_f.try_write()
-                          {
-                            if other_abstract_f.name
-                              == abstract_fragment_fn.name
-                              && let FunctionImplementationKind::Composite(
-                                other_f,
-                              ) = &other_abstract_f.implementation
-                            {
-                              other_f.write().unwrap().entry_point =
-                                Some(EntryPoint::Fragment);
-                              other_abstract_f.entry_point =
-                                Some(EntryPoint::Fragment);
-                            }
-                          }
-                        }
-                      }
+                      self.mark_implicit_entry_point(
+                        &mut abstract_vertex_fn.write().unwrap(),
+                        EntryPoint::Vertex,
+                        |e| e == EntryPoint::Vertex,
+                        WrongEntryPointTypeForDispatchVertexShader,
+                        &exp.source_trace,
+                        errors,
+                      );
+                      self.mark_implicit_entry_point(
+                        &mut abstract_fragment_fn.write().unwrap(),
+                        EntryPoint::Fragment,
+                        |e| e == EntryPoint::Fragment,
+                        WrongEntryPointTypeForDispatchFragmentShader,
+                        &exp.source_trace,
+                        errors,
+                      );
+                      let abstract_fragment_fn =
+                        abstract_fragment_fn.read().unwrap();
 
                       let FunctionImplementationKind::Composite(
                         frag_implementation,
@@ -1827,7 +1778,7 @@ impl Program {
                       {
                         errors.log(CompileError::new(
                           IncompatibleRenderEntryPoints(
-                            abstract_vertex_fn.name.to_string(),
+                            abstract_vertex_fn.read().unwrap().name.to_string(),
                             abstract_fragment_fn.name.to_string(),
                           ),
                           exp.source_trace.clone(),
@@ -1841,36 +1792,14 @@ impl Program {
                       && let Some(abstract_audio_fn) =
                         audio_fn.abstract_ancestor
                     {
-                      let mut abstract_audio_fn =
-                        abstract_audio_fn.write().unwrap();
-                      if let Some(entry_point) = abstract_audio_fn.entry_point {
-                        if entry_point != EntryPoint::Audio {
-                          errors.log(CompileError::new(
-                            WrongEntryPointTypeForStartAudio(
-                              entry_point.name().into(),
-                            ),
-                            exp.source_trace.clone(),
-                          ))
-                        }
-                      } else {
-                        abstract_audio_fn.entry_point = Some(EntryPoint::Audio);
-                      }
-                      for other_abstract_f in self.abstract_functions_iter() {
-                        if let Ok(mut other_abstract_f) =
-                          other_abstract_f.try_write()
-                        {
-                          if other_abstract_f.name == abstract_audio_fn.name
-                            && let FunctionImplementationKind::Composite(
-                              other_f,
-                            ) = &other_abstract_f.implementation
-                          {
-                            other_f.write().unwrap().entry_point =
-                              abstract_audio_fn.entry_point;
-                            other_abstract_f.entry_point =
-                              abstract_audio_fn.entry_point;
-                          }
-                        }
-                      }
+                      self.mark_implicit_entry_point(
+                        &mut abstract_audio_fn.write().unwrap(),
+                        EntryPoint::Audio,
+                        |e| e == EntryPoint::Audio,
+                        WrongEntryPointTypeForStartAudio,
+                        &exp.source_trace,
+                        errors,
+                      );
                     }
                   }
                   _ => {}
