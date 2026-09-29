@@ -52,6 +52,19 @@ fn join_vertical(parts: Vec<String>, indentation: usize) -> String {
   result
 }
 
+/// The column the last line of `printed` starts at, for text that itself
+/// starts at `start_column` and ends with a line comment's newline.
+fn last_line_start_column(printed: &str, start_column: usize) -> usize {
+  let without_newline = &printed[..printed.len() - 1];
+  match without_newline.rfind('\n') {
+    Some(line_start) => without_newline[line_start + 1..]
+      .chars()
+      .take_while(|c| *c == ' ')
+      .count(),
+    None => start_column,
+  }
+}
+
 fn is_tree_comment(tree: &EaslTree) -> bool {
   match &tree {
     fsexp::Ast::Leaf(_, _) => false,
@@ -460,8 +473,18 @@ impl Block {
         indentation,
       ),
       Enclosed(encloser, inner) => {
+        let inner_indentation =
+          encloser.opening_encloser_str().len() + indentation;
+        let mut inner = inner.print(inner_indentation);
+        if inner.ends_with('\n') {
+          // The last line is a line comment, whose newline must stay: the
+          // closing encloser starts the next line, at the comment's column.
+          inner.push_str(
+            &" ".repeat(last_line_start_column(&inner, inner_indentation)),
+          );
+        }
         encloser.opening_encloser_str().to_string()
-          + &inner.print(encloser.opening_encloser_str().len() + indentation)
+          + &inner
           + encloser.closing_encloser_str()
       }
       Prefixed(operator, inner) => {

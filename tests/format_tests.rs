@@ -136,3 +136,26 @@ fn small_forms_stay_on_one_line() {
   assert_eq!(fmt("(var rand-state: f32)"), "(var rand-state: f32)\n");
   assert_eq!(fmt("(vec2f (cos x) (sin x))"), "(vec2f (cos x) (sin x))\n");
 }
+
+#[test]
+fn closing_paren_after_line_comment_keeps_alignment() {
+  // A line comment as a list's last element keeps its newline, so the
+  // closing parens start the next line, at the comment's column rather
+  // than the left margin.
+  let source = "(defn main []\n  (print 0.5\n         ; a note\n  ))";
+  let out = fmt(source);
+  assert_eq!(
+    out, "(defn main []\n  (print 0.5\n         ; a note\n         ))\n",
+    "closing parens should align with the comment:\n{out}"
+  );
+  assert_idempotent(source);
+  // The same when the comment trails the list's first line.
+  let trailing = "(defn main []\n  (print ; a note\n   0.5))";
+  assert_idempotent(trailing);
+  assert!(
+    !fmt(trailing).lines().any(|line| line.starts_with(')')),
+    "no closing paren should start at the left margin:\n{}",
+    fmt(trailing)
+  );
+}
+
