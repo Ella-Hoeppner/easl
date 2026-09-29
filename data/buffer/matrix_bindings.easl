@@ -1,0 +1,21 @@
+; Matrices crossing between CPU and GPU: a uniform the CPU writes, a matrix
+; a dispatched closure captures, and one the GPU writes for the CPU to read
+; back. WGSL pads each column of a mat3x3 to 16 bytes, while a mat2x2's
+; columns pack at 8.
+@uniform (var transform: mat3x3f)
+(var gpu-matrix: mat3x3f)
+(var results: [3: vec3f])
+
+@cpu
+(defn main []
+  (= transform (mat3x3f 1. 2. 3. 4. 5. 6. 7. 8. 9.))
+  (let [small (mat2x2f 1. 2. 3. 4.)]
+    (dispatch-compute-shader
+      (fn []
+        (= (results 0u) (* transform (vec3f 1. 0. 0.)))
+        (= (results 1u) (* transform (vec3f 0. 0. 1.)))
+        (= (results 2u) (vec3f (* small (vec2f 0. 1.)) 0.))
+        (= gpu-matrix (transpose transform)))
+      (vec3u 1u)))
+  (print results)
+  (print gpu-matrix))

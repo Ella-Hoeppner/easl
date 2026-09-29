@@ -87,6 +87,7 @@ buffer_test!(dispatch_capture_array_length);
 buffer_test!(storage_ref_gpu_roundtrip);
 buffer_test!(gpu_read_outside_application);
 buffer_test!(gpu_read_outside_application_dynamic);
+buffer_test!(matrix_bindings);
 buffer_test!(bidirectional_transfer);
 buffer_test!(bidirectional_transfer_windowless);
 buffer_test!(array_assignment);

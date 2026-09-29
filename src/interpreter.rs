@@ -27,7 +27,7 @@ use crate::compiler::{
   structs::AbstractStruct,
   types::{
     AbstractType, ConcreteArraySize, ConstGenericResolution, ExpTypeInfo, Type,
-    TypeState, VariableKind,
+    TypeState, VariableKind, wgsl_matrix_column_stride_in_u32s,
   },
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
@@ -2634,6 +2634,11 @@ impl Value {
       Type::I32 => Primitive::I32(0).into(),
       Type::U32 => Primitive::U32(0).into(),
       Type::Bool => Primitive::Bool(false).into(),
+      // Matrices are nominally one-field structs, but their values are
+      // arrays of column vectors.
+      Type::Struct(_) if let Some((cols, rows)) = t.matrix_dimensions() => {
+        Value::from_vm_words(&t, &vec![0; cols * rows])
+      }
       Type::Struct(s) => Value::Struct({
         let mut map = HashMap::new();
         for field in s.fields {
@@ -2720,6 +2725,9 @@ impl Value {
     }
     if let Value::Fun(_) = self {
       return self.closure_data().to_uniform_bytes(ty);
+    }
+    if let Some((_, rows)) = ty.matrix_dimensions() {
+      return matrix_to_uniform_bytes(self, ty, rows);
     }
     match self {
       Value::Prim(Primitive::F32(f)) => f.to_bits().to_ne_bytes().to_vec(),
@@ -3025,6 +3033,9 @@ impl Value {
         Value::Prim(Primitive::F32(f32::from_bits(read_u32(bytes, offset))))
       }
       Type::Bool => Value::Prim(Primitive::Bool(read_u32(bytes, offset) != 0)),
+      Type::Struct(_) if let Some((cols, rows)) = ty.matrix_dimensions() => {
+        matrix_from_gpu_bytes(bytes, ty, cols, rows, offset)
+      }
       Type::Struct(s) => {
         let struct_start = *offset;
         let struct_size_u32s = ty.wgsl_flat_data_size_in_u32s();
@@ -3401,6 +3412,65 @@ impl DerivedGpuInterface {
   pub fn binding_infos(&self) -> Vec<GpuBindingInfo> {
     gpu_binding_infos_from(&self.binding_vars, &self.binding_stages)
   }
+}
+
+/// The components of a matrix column (a vector struct value), in order.
+const VECTOR_COMPONENTS: [&str; 4] = ["x", "y", "z", "w"];
+
+/// A matrix value's GPU bytes: its columns (vector structs, the runtimes'
+/// matrix representation) laid out as WGSL's column vectors, each padded to
+/// the column stride.
+fn matrix_to_uniform_bytes(matrix: &Value, ty: &Type, rows: usize) -> Vec<u8> {
+  let Type::Struct(s) = ty else { unreachable!() };
+  let element = s.fields[0].field_type.unwrap_known();
+  let Value::Array(columns) = matrix else {
+    panic!("a matrix value wasn't an array of columns")
+  };
+  let padding = (wgsl_matrix_column_stride_in_u32s(rows) - rows) * 4;
+  let mut bytes = vec![];
+  for column in columns {
+    let Value::Struct(components) = column else {
+      panic!("a matrix column wasn't a vector")
+    };
+    for component in &VECTOR_COMPONENTS[..rows] {
+      bytes.extend(components[*component].to_uniform_bytes(&element));
+    }
+    bytes.extend(std::iter::repeat_n(0u8, padding));
+  }
+  bytes
+}
+
+/// Reads a matrix from GPU bytes at `offset`, the inverse of
+/// `matrix_to_uniform_bytes`.
+fn matrix_from_gpu_bytes(
+  bytes: &[u8],
+  ty: &Type,
+  cols: usize,
+  rows: usize,
+  offset: &mut usize,
+) -> Value {
+  let Type::Struct(s) = ty else { unreachable!() };
+  let element = s.fields[0].field_type.unwrap_known();
+  let stride = wgsl_matrix_column_stride_in_u32s(rows) * 4;
+  let start = *offset;
+  let columns = (0..cols)
+    .map(|col| {
+      *offset = start + col * stride;
+      Value::Struct(
+        VECTOR_COMPONENTS[..rows]
+          .iter()
+          .map(|component| {
+            (
+              Arc::<str>::from(*component),
+              Value::from_gpu_bytes_at(bytes, &element, offset),
+            )
+          })
+          .collect(),
+      )
+    })
+    .collect();
+  *offset = start + cols * stride;
+  Value::Array(columns)
 }
 
 /// Pads a GPU buffer size to its binding kind's granularity. Storage
@@ -5775,8 +5845,11 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     ty: &Type,
     storage: bool,
   ) -> u64 {
-    ty.flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
-      .ok()
+    // The binding's WGSL size, which is what its buffer holds; the flat
+    // size would leave out WGSL's padding (a `vec3`'s fourth word, a
+    // matrix's column padding).
+    Some(ty.wgsl_flat_data_size_in_u32s())
+      .filter(|&u32s| u32s > 0)
       .map(|u32s| padded_buffer_bytes(u32s as u64 * 4, storage))
       .or_else(|| {
         if let Type::Array(

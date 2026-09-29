@@ -35,6 +35,13 @@ use super::{
   util::compile_word,
 };
 
+/// The WGSL stride between a matrix's column vectors, in u32s, for a
+/// matrix of 32-bit elements with `rows` rows: a column is a `vec<rows>`,
+/// padded to its alignment.
+pub fn wgsl_matrix_column_stride_in_u32s(rows: usize) -> usize {
+  if rows == 2 { 2 } else { 4 }
+}
+
 pub fn contains_name_leaf(name: &Arc<str>, tree: &EaslTree) -> bool {
   match &tree {
     EaslTree::Leaf(_, leaf) => leaf == &**name,
@@ -1639,6 +1646,10 @@ impl Type {
       Type::Struct(s) => match &*s.name {
         "vec2" => 2,
         "vec3" | "vec4" => 4,
+        // A matrix aligns like its column vectors.
+        _ if let Some((_, rows)) = self.matrix_dimensions() => {
+          wgsl_matrix_column_stride_in_u32s(rows)
+        }
         _ => s
           .fields
           .iter()
@@ -1674,6 +1685,11 @@ impl Type {
         "vec2" => 2,
         "vec3" => 3,
         "vec4" => 4,
+        // Matrices are nominally one-field opaque structs; WGSL lays them
+        // out as their column vectors, each padded to its alignment.
+        _ if let Some((cols, rows)) = self.matrix_dimensions() => {
+          cols * wgsl_matrix_column_stride_in_u32s(rows)
+        }
         _ => {
           let mut offset = 0usize;
           for field in &s.fields {
