@@ -1,0 +1,10 @@
+; A swizzle of a parameter passed where a vector of another element type is
+; expected is a type error, just like any other mismatched argument. (The
+; swizzle's own type derives from its vector's, which a parameter only
+; supplies once it's been inferred.)
+(defn first-component [c: vec2u]: u32
+  c.x)
+
+@fragment
+(defn frag [v: vec4f]: @{location 0} vec4f
+  (vec4f (f32 (first-component (.xy v)))))

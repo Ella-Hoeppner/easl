@@ -427,6 +427,25 @@ error_test!(
   CompileErrorKind::NestedRuntimeSizedArrayBinding
 );
 error_test!(
+  swizzle_argument_type_mismatch_failure,
+  CompileErrorKind::IncompatibleTypes(
+    TypeStateDescription::Known(TypeDescription::Struct("vec2f".into())),
+    TypeStateDescription::Known(TypeDescription::Struct("vec2u".into())),
+  ),
+  CompileErrorKind::FunctionArgumentTypesIncompatible {
+    f: TypeStateDescription::Known(TypeDescription::Function {
+      arg_types: vec![(
+        TypeStateDescription::Known(TypeDescription::Struct("vec2u".into())),
+        vec![],
+      )],
+      return_type: Box::new(TypeStateDescription::Known(TypeDescription::U32)),
+    }),
+    args: vec![TypeStateDescription::Known(TypeDescription::Struct(
+      "vec2f".into()
+    ))],
+  }
+);
+error_test!(
   generic_constraint_failure,
   CompileErrorKind::FunctionArgumentTypesIncompatible {
     f: TypeStateDescription::Known(TypeDescription::Function {
@@ -1125,7 +1144,7 @@ error_test!(
       },
     ]),
     args: vec![
-      TypeStateDescription::Known(TypeDescription::Struct("mat2x2".into())),
+      TypeStateDescription::Known(TypeDescription::Struct("mat2x2f".into())),
       TypeStateDescription::Known(TypeDescription::F32),
     ],
   },

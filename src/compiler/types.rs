@@ -19,7 +19,10 @@ use crate::{
       ExpBuilder, builtin_signature, function_type, struct_constructor,
     },
     expression::TypedExp,
-    functions::{Ownership, extract_mat_size as extract_mat_size_from_name},
+    functions::{
+      Ownership, extract_mat_size as extract_mat_size_from_name,
+      extract_vec_size,
+    },
     program::{CompilerTarget, NameContext, TypeDefs},
     structs::UntypedStruct,
     vars::VariableAddressSpace,
@@ -34,6 +37,18 @@ use super::{
   structs::{AbstractStruct, Struct},
   util::compile_word,
 };
+
+/// The letter easl's vector and matrix shorthands use for a scalar
+/// element type (`f` in `vec2f`).
+fn scalar_suffix(element: &Type) -> Option<&'static str> {
+  match element {
+    Type::F32 => Some("f"),
+    Type::I32 => Some("i"),
+    Type::U32 => Some("u"),
+    Type::Bool => Some("b"),
+    _ => None,
+  }
+}
 
 /// The WGSL stride between a matrix's column vectors, in u32s, for a
 /// matrix of 32-bit elements with `rows` rows: a column is a `vec<rows>`,
@@ -4025,6 +4040,20 @@ impl From<Type> for TypeDescription {
           TypeStateDescription::from(s.fields[0].field_type.kind.clone())
             .to_string()
         ),
+        // A vector or matrix of a known scalar, in easl's shorthand
+        // (`vec2f`, `mat3x3u`), so types differing only in their element
+        // are distinguishable.
+        name
+          if (extract_vec_size(name).is_some()
+            || extract_mat_size_from_name(name).is_some())
+            && let Some(suffix) = s
+              .fields
+              .first()
+              .and_then(|field| field.field_type.kind.try_unwrap_known())
+              .and_then(|element| scalar_suffix(&element)) =>
+        {
+          format!("{name}{suffix}")
+        }
         _ => {
           compile_word(s.name)
           // todo! this should display a name more like the above one for

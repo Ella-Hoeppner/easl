@@ -3316,17 +3316,21 @@ impl TypedExp {
             anything_changed
           }
           Accessor::Swizzle(fields) => {
-            let mut anything_changed = self.data.constrain(
-              &swizzle_accessor_typestate(&subexp.data, fields).kind,
-              &self.source_trace,
-              errors,
-            );
+            // Type the swizzled vector first: its type is what this node's
+            // own type derives from, and once it's fully typed this node is
+            // too, so later passes won't revisit the derivation.
+            let mut anything_changed =
+              subexp.propagate_types_inner(ctx, errors);
             anything_changed |= subexp.data.constrain(
               &swizzle_accessed_possibilities(fields).kind,
               &self.source_trace,
               errors,
             );
-            anything_changed |= subexp.propagate_types_inner(ctx, errors);
+            anything_changed |= self.data.constrain(
+              &swizzle_accessor_typestate(&subexp.data, fields).kind,
+              &self.source_trace,
+              errors,
+            );
             self.data.subtree_fully_typed = subexp.data.subtree_fully_typed;
             anything_changed
           }
