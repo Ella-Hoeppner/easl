@@ -61,7 +61,7 @@ The main pipeline lives in `Program::validate_raw_program` (program.rs). The maj
 7. **Deexpressionification** — lifts expression-position let/match/if blocks into statements
 8. **Monomorphization** — replaces generic functions/structs/enums with concrete versions
 9. **Inner function extraction** — extracts closures/lambdas as top-level functions
-10. **Overloaded function separation** — renames overloaded functions with type suffixes
+10. **Overloaded function separation** — renames overloaded functions with type suffixes, then **`canonicalize_function_references`** repoints every function type's `abstract_ancestor` (in every body, signature, captured scope, and top-level var, via `for_each_function_signature_mut` on `Type`/`TypeState`/`AbstractType`) at the registered signature sharing its implementation. Separation renames only registered signatures, so without this a signature *copy*'s stale base name leaked into later passes as calls to functions that don't exist (three separate bugs: defunctionalization, HoF inlining, closure extraction — pinned by `fn_value_overloaded_callee` and `overloaded_fn_as_argument`). After this pass, reading a name off any function type's ancestor is safe
 11. **Higher-order argument inlining** — specializes HoF calls by inlining the function argument
 12. **Entry point & effect validation** — checks shader stage constraints
 13. **Ownership validation** — checks reference mutability rules

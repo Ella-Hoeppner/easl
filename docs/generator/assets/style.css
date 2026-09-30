@@ -1,0 +1,360 @@
+/* easl documentation site */
+
+:root {
+  --bg: #fdfcfa;
+  --bg-raised: #f4f1ec;
+  --bg-sidebar: #f7f5f1;
+  --text: #26282e;
+  --text-dim: #6d6f78;
+  --accent: #7048c8;
+  --accent-soft: #ede7fa;
+  --border: #e3dfd7;
+  --code-bg: #f0ebdf;
+  /* syntax colors */
+  --hl-comment: #969288;
+  --hl-string: #2f7a4d;
+  --hl-number: #a35b1e;
+  --hl-keyword: #7048c8;
+  --hl-type: #1d6d9c;
+  --hl-call: #45475a;
+  --hl-paren: #a5a199;
+  --hl-annotation: #b0388f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16171c;
+    --bg-raised: #1e2027;
+    --bg-sidebar: #1a1c22;
+    --text: #d7dae2;
+    --text-dim: #8a8e99;
+    --accent: #a98cf0;
+    --accent-soft: #2a2440;
+    --border: #2a2d36;
+    --code-bg: #232733;
+    --hl-comment: #6d7180;
+    --hl-string: #7fc79a;
+    --hl-number: #e0a06a;
+    --hl-keyword: #a98cf0;
+    --hl-type: #72b5dd;
+    --hl-call: #ccd0da;
+    --hl-paren: #5b5f6b;
+    --hl-annotation: #dd7ec1;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.65;
+}
+
+/* ---- sidebar ---- */
+
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 16.5rem;
+  overflow-y: auto;
+  padding: 1.4rem 1.2rem 2rem;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  font-size: 0.92rem;
+}
+
+.logo {
+  margin-bottom: 1.4rem;
+}
+
+.logo a {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 1.55rem;
+  font-weight: 700;
+  color: var(--accent);
+  text-decoration: none;
+  letter-spacing: 0.02em;
+}
+
+.logo .tagline {
+  display: block;
+  color: var(--text-dim);
+  font-size: 0.74rem;
+  margin-top: 0.15rem;
+}
+
+.nav-section {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--text-dim);
+  margin: 1.3rem 0 0.4rem;
+}
+
+.sidebar ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sidebar li {
+  margin: 0;
+}
+
+.sidebar li > a {
+  display: block;
+  padding: 0.22rem 0.55rem;
+  border-radius: 6px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.sidebar li > a:hover {
+  background: var(--accent-soft);
+}
+
+.sidebar li.current > a {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.sidebar ul.toc {
+  margin: 0.15rem 0 0.4rem;
+  padding-left: 0.9rem;
+  border-left: 2px solid var(--border);
+  margin-left: 0.55rem;
+}
+
+.sidebar ul.toc a {
+  padding: 0.12rem 0.45rem;
+  color: var(--text-dim);
+  font-size: 0.86rem;
+  font-weight: 400;
+}
+
+.sidebar ul.toc a:hover {
+  color: var(--accent);
+  background: none;
+}
+
+/* ---- main content ---- */
+
+main {
+  margin-left: 16.5rem;
+  padding: 2.4rem 2.6rem 5rem;
+}
+
+article {
+  max-width: 46rem;
+}
+
+h1, h2, h3 {
+  line-height: 1.25;
+  font-weight: 650;
+}
+
+h1 {
+  font-size: 1.9rem;
+  margin: 0 0 1.1rem;
+}
+
+h2 {
+  font-size: 1.35rem;
+  margin: 2.4rem 0 0.7rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--border);
+}
+
+h3 {
+  font-size: 1.05rem;
+  margin: 1.9rem 0 0.45rem;
+}
+
+h3 code {
+  font-size: 1rem;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+a.hlink {
+  margin-left: 0.45rem;
+  color: var(--border);
+  text-decoration: none;
+  font-weight: 400;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+h2:hover a.hlink,
+h3:hover a.hlink {
+  opacity: 1;
+  color: var(--accent);
+}
+
+p {
+  margin: 0.7rem 0;
+}
+
+a {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+strong {
+  font-weight: 650;
+}
+
+/* ---- code ---- */
+
+code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
+  font-size: 0.87em;
+  background: var(--code-bg);
+  padding: 0.1em 0.32em;
+  border-radius: 4px;
+}
+
+pre.code {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  overflow-x: auto;
+  line-height: 1.5;
+  margin: 0.8rem 0 1rem;
+}
+
+pre.code code {
+  background: none;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+/* easl syntax highlighting */
+.easl .c { color: var(--hl-comment); font-style: italic; }
+.easl .s { color: var(--hl-string); }
+.easl .n { color: var(--hl-number); }
+.easl .k { color: var(--hl-keyword); font-weight: 600; }
+.easl .t { color: var(--hl-type); }
+.easl .f { color: var(--hl-call); font-weight: 550; }
+.easl .p { color: var(--hl-paren); }
+.easl .a { color: var(--hl-annotation); }
+
+/* ---- tables ---- */
+
+table {
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 0.92rem;
+  width: 100%;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.42rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+th {
+  font-weight: 600;
+  border-bottom: 2px solid var(--border);
+}
+
+/* ---- lists ---- */
+
+article ul, article ol {
+  padding-left: 1.4rem;
+}
+
+article li {
+  margin: 0.25rem 0;
+}
+
+/* ---- function index ---- */
+
+#fn-filter {
+  width: 100%;
+  font-size: 1rem;
+  font-family: inherit;
+  padding: 0.55rem 0.8rem;
+  margin: 0.6rem 0 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  color: var(--text);
+}
+
+#fn-filter:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+ul.fn-index {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  columns: 2;
+  column-gap: 2.5rem;
+}
+
+ul.fn-index li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.8rem;
+  padding: 0.14rem 0;
+  break-inside: avoid;
+}
+
+ul.fn-index li[hidden] {
+  display: none;
+}
+
+ul.fn-index a {
+  text-decoration: none;
+}
+
+ul.fn-index a:hover code {
+  background: var(--accent-soft);
+}
+
+.fn-page {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+/* ---- narrow screens ---- */
+
+@media (max-width: 52rem) {
+  .sidebar {
+    position: static;
+    width: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  main {
+    margin-left: 0;
+    padding: 1.6rem 1.2rem 3rem;
+  }
+  ul.fn-index {
+    columns: 1;
+  }
+}

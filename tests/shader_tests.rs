@@ -133,6 +133,7 @@ macro_rules! error_test {
 // --- Success tests ---
 
 success_test!(render_located_varyings);
+success_test!(overloaded_fn_as_argument);
 
 success_test!(user_fn_calls_generic_helper);
 success_test!(inversion);

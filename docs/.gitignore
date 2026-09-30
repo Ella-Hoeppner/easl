@@ -1,0 +1,5 @@
+# Generator build artifacts
+/generator/target/
+
+# Generated site output (regenerate with `cargo run` in generator/)
+/site/

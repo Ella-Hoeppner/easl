@@ -1,0 +1,42 @@
+; The animation behind the front page. This file is compiled to WGSL by
+; the easl compiler every time the site is built, and the page runs the
+; result with WebGPU.
+
+@[uniform 0 0]
+(var info: vec4f) ; x: seconds since load, yz: resolution in pixels
+
+(struct VertexOutput
+  @{builtin position} pos: vec4f)
+
+@vertex
+(defn vert [@{builtin vertex-index} i: u32]: VertexOutput
+  (VertexOutput (vec4f (match i
+                         0 (vec2f -1.)
+                         1 (vec2f -1. 3.)
+                         _ (vec2f 3. -1.))
+                       0.
+                       1.)))
+
+(defn palette [t: f32]: vec3f
+  (+ (vec3f 0.20 0.10 0.40)
+     (* (vec3f 0.42 0.10 0.34)
+        (cos (* 6.28318
+                (+ (vec3f t)
+                   (vec3f 0. 0.3 0.15)))))))
+
+@fragment
+(defn frag [in: VertexOutput]: @{location 0} vec4f
+  (let [res info.yz
+        t (* 0.12 info.x)
+        uv0 (- (/ (- (* 2. in.pos.xy) res) (vec2f res.y))
+               (vec2f 0.45 0.06))
+        @var uv uv0
+        @var col (vec3f 0.)]
+    (for [i 4u]
+      (= uv (- (fract (* uv 1.5)) (vec2f 0.5)))
+      (let [d0 (* (length uv) (exp (- (length uv0))))
+            c (palette (+ (length uv0) (* 0.35 (f32 i)) t))
+            d1 (/ (sin (+ (* 8. d0) (* 4. t))) 8.)
+            glow (pow (/ 0.006 (abs d1)) 1.25)]
+        (= col (+ col (* c (vec3f glow))))))
+    (vec4f (* col (vec3f 0.6)) 1.)))

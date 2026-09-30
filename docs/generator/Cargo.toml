@@ -1,0 +1,15 @@
+[package]
+name = "easl_docs"
+version = "0.0.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+# The docs generator depends on the real compiler so the landing page is
+# self-verifying: every easl snippet shown on it is compiled at site-build
+# time, and the hero demo's WGSL is emitted by the actual easl compiler
+# (then naga-validated) rather than being a hand-maintained copy.
+easl = { path = "../.." }
+naga = { version = "29.0.3", features = ["wgsl-in"] }

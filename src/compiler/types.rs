@@ -219,6 +219,23 @@ pub enum AbstractType {
 }
 
 impl AbstractType {
+  /// `Type::for_each_function_signature_mut` over the concrete types within
+  /// this type.
+  pub fn for_each_function_signature_mut(
+    &mut self,
+    visit: &mut impl FnMut(&mut FunctionSignature),
+  ) {
+    match self {
+      AbstractType::Type(t) => t.for_each_function_signature_mut(visit),
+      AbstractType::AbstractArray { inner_type, .. } => {
+        inner_type.for_each_function_signature_mut(visit)
+      }
+      AbstractType::Unit
+      | AbstractType::Generic(_)
+      | AbstractType::AbstractStruct(_)
+      | AbstractType::AbstractEnum(_) => {}
+    }
+  }
   pub(crate) fn track_generic_names(&self, names: &mut Vec<Arc<str>>) {
     match self {
       AbstractType::Generic(name) => names.push(name.clone()),
@@ -1293,6 +1310,49 @@ pub enum Type {
   Array(Option<ConcreteArraySize>, Box<ExpTypeInfo>),
 }
 impl Type {
+  /// Calls `visit` on every function signature within this type: a function
+  /// type's own, and those nested in its parameter and return types, struct
+  /// fields, enum payloads, and array elements.
+  pub fn for_each_function_signature_mut(
+    &mut self,
+    visit: &mut impl FnMut(&mut FunctionSignature),
+  ) {
+    match self {
+      Type::Function(signature) | Type::BoxedFunction(signature) => {
+        visit(signature);
+        for (arg, _) in signature.args.iter_mut() {
+          arg.var_type.kind.for_each_function_signature_mut(visit);
+        }
+        signature
+          .return_type
+          .kind
+          .for_each_function_signature_mut(visit);
+      }
+      Type::Struct(s) => {
+        for field in s.fields.iter_mut() {
+          field.field_type.kind.for_each_function_signature_mut(visit);
+        }
+      }
+      Type::Enum(e) => {
+        for variant in e.variants.iter_mut() {
+          variant
+            .inner_type
+            .kind
+            .for_each_function_signature_mut(visit);
+        }
+      }
+      Type::Array(_, inner) => {
+        inner.kind.for_each_function_signature_mut(visit)
+      }
+      Type::Unit
+      | Type::F32
+      | Type::I32
+      | Type::U32
+      | Type::Bool
+      | Type::String
+      | Type::Skolem(_, _) => {}
+    }
+  }
   pub fn c_printf_statements(
     &self,
     arg_str: &str,
@@ -2983,6 +3043,26 @@ impl PartialEq for TypeState {
 }
 
 impl TypeState {
+  /// `Type::for_each_function_signature_mut` over every type this state
+  /// could be.
+  pub fn for_each_function_signature_mut(
+    &mut self,
+    visit: &mut impl FnMut(&mut FunctionSignature),
+  ) {
+    match self {
+      TypeState::Unknown => {}
+      TypeState::OneOf(types) => {
+        for t in types.iter_mut() {
+          t.for_each_function_signature_mut(visit);
+        }
+      }
+      TypeState::Known(t) => t.for_each_function_signature_mut(visit),
+      TypeState::UnificationVariable(variable) => variable
+        .write()
+        .unwrap()
+        .for_each_function_signature_mut(visit),
+    }
+  }
   pub fn as_fn_type_if_known(
     &mut self,
     err_fn: impl Fn() -> CompileError,

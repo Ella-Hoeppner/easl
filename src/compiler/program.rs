@@ -159,6 +159,28 @@ impl CompilerTarget {
   }
 }
 
+/// The registered signature a function reference denotes. References carry
+/// signature copies, which share the registered signature's implementation
+/// but not its name: overload separation renames only registered signatures.
+/// So a name read after separation must come from here, never the copy.
+pub(crate) fn registered_signature(
+  reference: &Arc<RwLock<AbstractFunctionSignature>>,
+  registered_by_implementation: &HashMap<
+    usize,
+    Arc<RwLock<AbstractFunctionSignature>>,
+  >,
+) -> Arc<RwLock<AbstractFunctionSignature>> {
+  match &reference.read().unwrap().implementation {
+    FunctionImplementationKind::Composite(implementation) => {
+      registered_by_implementation
+        .get(&(Arc::as_ptr(implementation) as usize))
+        .cloned()
+        .unwrap_or_else(|| reference.clone())
+    }
+    _ => reference.clone(),
+  }
+}
+
 pub trait EaslDocumentMethods {
   fn override_def(&mut self, def_name: &str, new_def_value: &str) -> bool;
 }
@@ -4535,6 +4557,111 @@ impl Program {
       }
     }
   }
+  /// Repoints every function type's ancestor at the registered signature
+  /// it denotes. Inference and monomorphization attach signature *copies*
+  /// to references, and overload separation renames only the registered
+  /// signatures, so after separation a copy's name no longer names any
+  /// function; any later pass reading it would emit a dangling call. Run
+  /// right after separation, this leaves no copies for later passes to
+  /// trip over: every function reference's ancestor is the registered
+  /// signature itself, current name included.
+  pub fn canonicalize_function_references(&mut self) {
+    let registered_by_implementation =
+      self.registered_signatures_by_implementation();
+    let mut canonicalize = |signature: &mut FunctionSignature| {
+      if let Some(ancestor) = &signature.abstract_ancestor {
+        signature.abstract_ancestor = Some(registered_signature(
+          ancestor,
+          &registered_by_implementation,
+        ));
+      }
+    };
+    for signature in self.abstract_functions_iter() {
+      // A signature's own types may refer to the signature itself, so
+      // they're canonicalized outside its lock.
+      let (mut arg_types, mut return_type, mut captured_scope, implementation) = {
+        let signature = signature.read().unwrap();
+        (
+          signature.arg_types.clone(),
+          signature.return_type.clone(),
+          signature.captured_scope.clone(),
+          match &signature.implementation {
+            FunctionImplementationKind::Composite(implementation) => {
+              Some(implementation.clone())
+            }
+            _ => None,
+          },
+        )
+      };
+      for (arg_type, _) in arg_types.iter_mut() {
+        arg_type.for_each_function_signature_mut(&mut canonicalize);
+      }
+      return_type.for_each_function_signature_mut(&mut canonicalize);
+      if let Some(scope) = &mut captured_scope {
+        for field in scope.fields.iter_mut() {
+          field
+            .field_type
+            .for_each_function_signature_mut(&mut canonicalize);
+        }
+      }
+      {
+        let mut signature = signature.write().unwrap();
+        signature.arg_types = arg_types;
+        signature.return_type = return_type;
+        signature.captured_scope = captured_scope;
+      }
+      if let Some(implementation) = implementation {
+        implementation
+          .write()
+          .unwrap()
+          .expression
+          .walk_mut(&mut |exp| {
+            exp
+              .data
+              .kind
+              .for_each_function_signature_mut(&mut canonicalize);
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
+      }
+    }
+    for var in self.top_level_vars.iter_mut() {
+      var
+        .var_type
+        .for_each_function_signature_mut(&mut canonicalize);
+      if let Some(value) = &mut var.value {
+        value
+          .walk_mut(&mut |exp| {
+            exp
+              .data
+              .kind
+              .for_each_function_signature_mut(&mut canonicalize);
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
+      }
+    }
+  }
+
+  /// Each registered composite function, keyed by its implementation's
+  /// identity. See `registered_signature`.
+  pub(crate) fn registered_signatures_by_implementation(
+    &self,
+  ) -> HashMap<usize, Arc<RwLock<AbstractFunctionSignature>>> {
+    self
+      .abstract_functions_iter()
+      .filter_map(|signature| {
+        let key = match &signature.read().unwrap().implementation {
+          FunctionImplementationKind::Composite(implementation) => {
+            Arc::as_ptr(implementation) as usize
+          }
+          _ => return None,
+        };
+        Some((key, signature.clone()))
+      })
+      .collect()
+  }
+
   pub fn extract_inner_functions(&mut self) -> bool {
     let mut any_extracted = false;
     loop {
@@ -7434,6 +7561,7 @@ impl Program {
       return errors;
     }
     self.separate_overloaded_fns(target);
+    self.canonicalize_function_references();
     self.catch_duplicate_closures_capturing_mutable_variables(&mut errors);
     if !errors.is_empty() {
       return errors;
