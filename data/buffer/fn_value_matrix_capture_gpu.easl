@@ -1,0 +1,32 @@
+; Closures stored in a runtime-sized array of structs, one capturing a
+; matrix: built on the CPU, uploaded as a tagged union whose payload holds
+; the matrix, and called on the GPU. The rotation permutes the axes, so a
+; transposed decode would give the box a different distance (3 not 7.5).
+(struct Shape
+  sdf: (Fn [vec3f] f32)
+  scale: f32)
+
+(defn sphere [radius: f32]: (Fn [vec3f] f32)
+  (fn [pos] (- (length pos) radius)))
+
+(defn rotated-box [size: vec3f
+                   rotation: mat3x3f]: (Fn [vec3f] f32)
+  (fn [pos]
+    (let [q (- (abs (* pos rotation)) size)]
+      (+ (length (max q (vec3f 0.)))
+         (min (max q.x (max q.y q.z)) 0.)))))
+
+(var out: [2: f32])
+
+@cpu
+(defn main []
+  (let [rotation (mat3x3f (vec3f 0. 1. 0.) (vec3f 0. 0. 1.) (vec3f 1. 0. 0.))
+        shapes ~[(Shape (sphere 0.5) 2.)
+                 (Shape (rotated-box (vec3f 1. 2. 0.5) rotation) 3.)]]
+    (dispatch-compute-shader
+      (fn []
+        (for [i (array-length shapes)]
+          (let [shape (shapes i)]
+            (= (out i) (* shape.scale (shape.sdf (vec3f 3. 0. 0.)))))))
+      (vec3u 1u))
+    (print out)))

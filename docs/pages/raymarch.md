@@ -272,7 +272,7 @@ For another example of how this ability to send functions across the CPU/GPU div
                 (- 1.)
                 (* (/ resolution
                       (f32 (min resolution.x resolution.y)))))]
-    (vec3f pos 1.)))
+    (normalize (vec3f pos 1.))))
 
 (defn fragment [sdf: (Fn [vec3f] f32)]: vec4f
   (let [camera-direction (camera-direction-from-pixel-coords (.xy (position)))
@@ -504,7 +504,7 @@ Our `sphere` and `box` functions are a bit inconsistent here though, in that the
   (sphere pos 1.))
 ```
 
-Now we have a base `sphere` overload that accepts an explicit radius argument, and a second overload that just accepts the radius and returns an SDF, like the `box` overload. But we also add a third overload, which simply takes a `pos` and no `radius`, and assumes a radius of 1, like before. With these three overloads present, our old `main` will still compile fine, since the third `sphere` overload has the same signature it expected before. But now it's easy to change the radius of the sphere by simply calling `sphere` as a fn and passing in the radius, e.g.:
+Now we have a base `sphere` overload that accepts an explicit radius argument, and a second overload that just accepts the radius and returns an SDF, just like the `box` overload. But we also add a third overload, which simply takes a `pos` and no `radius`, and assumes a radius of 1, like before. With these three overloads present, our old `main` will still compile fine, since the third `sphere` overload has the same signature it expected before. But now it's easy to change the radius of the sphere by simply calling `sphere` as a fn and passing in the radius, e.g.:
 
 ```
 @cpu
@@ -514,4 +514,107 @@ Now we have a base `sphere` overload that accepts an explicit radius argument, a
                                              (box (vec3f 0.7)))
                                       (vec3f 1.)
                                       (window-time))))))
+```
+
+## Final features
+
+So far we've just been coloring all of our geometry directly with the gradient, which is fine for debugging, but not what you'd want in a practical raymarching engine. Let's fix that:
+
+```
+(defn fragment [sdf: (Fn [vec3f] f32)
+                surface-color: (Fn [vec3f vec3f vec3f] vec3f)]: vec4f
+  (let [camera-direction (camera-direction-from-pixel-coords (.xy (position)))
+        raymarch-result (raymarch sdf
+                                  camera-origin
+                                  camera-direction)]
+    (vec4f (match raymarch-result
+             (Some surface-pos) (surface-color surface-pos
+                                               camera-direction
+                                               (gradient sdf surface-pos))
+             None (vec3f 0.))
+           1.)))
+
+(defn render-sdf [sdf: (Fn [vec3f] f32)
+                  surface-color: (Fn [vec3f vec3f vec3f] vec3f)]
+  (dispatch-render-shaders
+    vertex
+    (fn []
+      (fragment sdf surface-color))
+    3))
+
+(defn render-sdf [sdf: (Fn [vec3f] f32)]
+  (dispatch-render-shaders
+    vertex
+    (fn []
+      (fragment sdf
+                (fn [pos view-direction normal]
+                  (* 0.5 (+ 1. normal)))))
+    3))
+```
+
+Now `fragment` and `render-sdf` each take a new argument, `surface-color`, which is a function that is used to choose which color to display once a ray has hit the surface. The passed function needs to take three `vec3f` arguments, representing the surface position, view direction, and surface normal, respectively, all of which can be useful for different kinds of lighting calculations. `render-sdf` also has an overload that passes the simple gradient-based shading that we used before, so our old `main` function that didn't pass any value for this `surface-color` argument remains valid. But now we can modify our `main` to pass in arbitrary surface-coloring logic:
+
+```
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (render-sdf (rotate (union (sphere 0.9)
+                                 (box (vec3f 0.7)))
+                          (vec3f 1.)
+                          (window-time))
+                  (let [light-pos (vec3f 2. 2. -5.)]
+                    (fn [surface-pos
+                         view-direction
+                         surface-normal]
+                      (let [light-dir (normalize (- light-pos surface-pos))
+                            halfway-dir (normalize
+                                          (+ light-dir (- view-direction)))]
+                        (vec3f (+ (* 0.2
+                                     (max 0.
+                                          (dot surface-normal light-dir)))
+                                  (pow (max 0.
+                                            (dot surface-normal halfway-dir))
+                                       50.))))))))))
+```
+
+This example implements the simple [blinn-phone](https://en.wikipedia.org/wiki/Blinn%E2%80%93Phong_reflection_model) lighting model. To simplify our `main`, we could again abstract this out to a helper function:
+
+```
+(defn blinn-phong [surface-pos: vec3f
+                   view-direction: vec3f
+                   surface-normal: vec3f
+                   light-pos: vec3f
+                   diffuse-factor: f32
+                   specular-power: f32]: vec3f
+  (let [light-dir (normalize (- light-pos surface-pos))
+        halfway-dir (normalize (+ light-dir (- view-direction)))]
+    (vec3f (+ (* diffuse-factor
+                 (max 0.
+                      (dot surface-normal light-dir)))
+              (pow (max 0.
+                        (dot surface-normal halfway-dir))
+                   specular-power)))))
+
+(defn blinn-phong [light-pos: vec3f
+                   diffuse-factor: f32
+                   specular-power: f32]: (Fn [vec3f vec3f vec3f] vec3f)
+  (fn [surface-pos
+       view-direction
+       surface-normal]
+    (blinn-phong surface-pos
+                 view-direction
+                 surface-normal
+                 light-pos
+                 diffuse-factor
+                 specular-power)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                  (render-sdf (rotate (union (sphere 0.9)
+                                             (box (vec3f 0.7)))
+                                      (vec3f 1.)
+                                      (window-time))
+                              (blinn-phong (vec3f 2. 2. -5.) 0.2 50.)))))
 ```

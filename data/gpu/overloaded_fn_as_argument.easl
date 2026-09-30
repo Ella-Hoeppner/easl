@@ -1,0 +1,27 @@
+; An overloaded function used as a value must be called by the overload's
+; separated name (`sphere_vec3f`), never the shared base name, which no
+; longer names any function: passed as a function argument (inlined), passed
+; to a function returning a closure that captures it, and captured from a
+; `let` binding (substituted into the closure).
+(defn sphere [pos: vec3f
+              radius: f32]: f32
+  (- (length pos) radius))
+
+(defn sphere [pos: vec3f]: f32
+  (sphere pos 1.))
+
+(defn apply-sdf [sdf: (Fn [vec3f] f32)
+                 pos: vec3f]: f32
+  (sdf pos))
+
+(defn shifted [sdf: (Fn [vec3f] f32)]: (Fn [vec3f] f32)
+  (fn [pos] (sdf (+ pos 1.))))
+
+(defn let-bound-sdf []: (Fn [vec3f] f32)
+  (let [g sphere]
+    (fn [pos] (g (+ pos 2.)))))
+
+@fragment
+(defn frag [@{builtin position} frag-coord: vec4f]: @{location 0} vec4f
+  (let [p frag-coord.xyz]
+    (vec4f (apply-sdf sphere p) ((shifted sphere) p) ((let-bound-sdf) p) 1.)))

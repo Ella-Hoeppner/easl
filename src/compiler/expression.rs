@@ -2250,6 +2250,29 @@ impl TypedExp {
           );
           format!("{f_str}[{index_str}]")
         }
+        // A matrix indexed by column (emitted for enum payloads holding
+        // matrices). C matrices are structs of column fields, indexed through
+        // the prelude's `index_matNxM` helpers.
+        t @ Type::Struct(_) if t.is_matrix() => {
+          let f_str = f.compile(
+            ExpressionCompilationPosition::InnerExpression,
+            names,
+            target,
+          );
+          let index_str = args.remove(0).compile(
+            ExpressionCompilationPosition::InnerExpression,
+            names,
+            target,
+          );
+          if target == CompilerTarget::C {
+            format!(
+              "index_{}({f_str}, {index_str})",
+              t.monomorphized_name(names, target)
+            )
+          } else {
+            format!("{f_str}[{index_str}]")
+          }
+        }
         _ => panic!("tried to compile application of non-fn, non-array"),
       }),
       Access(accessor, subexp) => {

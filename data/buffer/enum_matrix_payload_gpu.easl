@@ -1,0 +1,23 @@
+; An enum payload holding a matrix (inside a struct), packed and unpacked
+; on the GPU: the matrix travels as its components, column-major.
+(struct MK
+  m: mat2x2f
+  k: f32)
+
+(enum E
+  (Mat MK)
+  Nope)
+
+(var out: f32)
+
+@compute
+(defn run []
+  (let [x (Mat (MK (mat2x2f (vec2f 1. 2.) (vec2f 3. 4.)) 100.))]
+    (match x
+      (Mat mk) (= out (+ mk.k (determinant mk.m)))
+      Nope (= out 0.))))
+
+@cpu
+(defn main []
+  (dispatch-compute-shader run (vec3u 1u))
+  (print out))

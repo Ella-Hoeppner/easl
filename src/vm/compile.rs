@@ -4645,7 +4645,9 @@ impl TypedExp {
                 .find_map(|(i, f)| {
                   (f.name == f_name).then(|| (i as u16, f.clone()))
                 })
-                .unwrap();
+                .unwrap_or_else(|| {
+                  panic!("`{f_name}` wasn't compiled before its caller")
+                });
 
               for ((arg_pos, arg), (fn_arg_pos, arg_size)) in
                 arg_positions.iter().copied().zip(args.iter()).zip(

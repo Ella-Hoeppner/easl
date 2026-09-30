@@ -1,0 +1,14 @@
+; A frame closure that captures a value is reachable only through its scope
+; construction, not the function registry, and so is `twice` specialized
+; with a capturing lambda (it takes the lambda's scope by reference). The
+; VM finds the frame closure, and must find what it calls too.
+(defn twice [f: (Fn [f32] f32)]: (Fn [f32] f32)
+  (fn [x] (f (f x))))
+
+@cpu
+(defn main []
+  (let [offset 1.5]
+    (spawn-window
+      (fn []
+        (print ((twice (fn [x] (+ x offset))) 1.))
+        (close-window)))))

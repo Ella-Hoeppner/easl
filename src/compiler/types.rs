@@ -12,7 +12,7 @@ use take_mut::take;
 
 use crate::{
   compiler::{
-    builtins::scalar_bitcast,
+    builtins::{get_builtin_struct, scalar_bitcast},
     enums::{AbstractEnum, Enum, UntypedEnum},
     error::{CompileError, CompileErrorKind},
     exp_builder::{
@@ -1310,6 +1310,18 @@ pub enum Type {
   Array(Option<ConcreteArraySize>, Box<ExpTypeInfo>),
 }
 impl Type {
+  /// The `size`-component vector of `element` (`vec3f` for 3 and `f32`).
+  pub fn vector_of(size: usize, element: Type) -> Type {
+    Type::Struct(
+      AbstractStruct::fill_generics_ordered(
+        get_builtin_struct(&format!("vec{size}")).into(),
+        vec![GenericArgumentValue::Type(element.known().into())],
+        &TypeDefs::empty(),
+        SourceTrace::empty(),
+      )
+      .unwrap(),
+    )
+  }
   /// Calls `visit` on every function signature within this type: a function
   /// type's own, and those nested in its parameter and return types, struct
   /// fields, enum payloads, and array elements.
@@ -2418,6 +2430,22 @@ impl Type {
     match self {
       Type::Unit => {}
       Type::F32 | Type::I32 | Type::U32 | Type::Bool => chunks.push(base),
+      // A matrix is nominally a one-field struct; its leaves are its
+      // columns' components, column-major (`m[0u].x`, `m[0u].y`, ...).
+      Type::Struct(s) if let Some((cols, rows)) = self.matrix_dimensions() => {
+        let element = s.fields[0].field_type.unwrap_known();
+        let column_type = Type::vector_of(rows, element.clone());
+        for col in 0..cols {
+          let column =
+            b.index(base.clone(), b.u32(col as u32), column_type.clone());
+          for component in ["x", "y", "z", "w"].into_iter().take(rows) {
+            element.push_bitcastable_chunks(
+              b.field(column.clone(), component, element.clone()),
+              chunks,
+            );
+          }
+        }
+      }
       Type::Struct(s) => {
         for f in s.fields.iter() {
           let field_type = f.field_type.unwrap_known();
@@ -2585,6 +2613,35 @@ impl Type {
             &enum_t,
           ),
           inner_data_size + 1,
+        )
+      }
+      // A matrix is rebuilt from its components, column-major, by the
+      // matrix constructor that takes all of them as scalars.
+      Type::Struct(s) if let Some((cols, rows)) = self.matrix_dimensions() => {
+        let element = s.fields[0].field_type.unwrap_known();
+        let component_count = cols * rows;
+        let components: Vec<TypedExp> = (0..component_count)
+          .map(|i| {
+            element
+              .bitcasted_from_enum_data_inner(
+                enum_value_name,
+                enum_type,
+                current_index + i,
+                names,
+                target,
+              )
+              .0
+          })
+          .collect();
+        let component_types = vec![element; component_count];
+        let constructor = struct_constructor(&s.name, &component_types, self);
+        (
+          b.apply(
+            b.callee(&constructor, &component_types, self),
+            components,
+            self,
+          ),
+          component_count,
         )
       }
       Type::Struct(s) => {

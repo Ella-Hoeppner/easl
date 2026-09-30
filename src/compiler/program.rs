@@ -7991,18 +7991,28 @@ impl Program {
           .unwrap()
           .expression
           .walk(&mut |exp| {
-            if let ExpKind::Application(_, _) = &exp.kind
-              && let TypeState::Known(Type::Function(signature)) =
-                &exp.data.kind
-              && let Some(ancestor) = &signature.abstract_ancestor
-            {
-              let ancestor = ancestor.read().unwrap();
-              if let FunctionImplementationKind::Composite(implementation) =
-                &ancestor.implementation
-                && !dependencies.contains_key(&ancestor.name)
-              {
-                discovered
-                  .push((ancestor.name.clone(), implementation.clone()));
+            // Both the closure a scope construction builds (its expression
+            // type's ancestor) and the function an application calls (its
+            // callee's): an unregistered closure's body can call functions
+            // that are themselves unregistered, like a higher-order
+            // specialization taking the closure's scope by reference.
+            if let ExpKind::Application(f, _) = &exp.kind {
+              for data in [&exp.data, &f.data] {
+                if let TypeState::Known(Type::Function(signature)) = &data.kind
+                  && let Some(ancestor) = &signature.abstract_ancestor
+                {
+                  let ancestor = ancestor.read().unwrap();
+                  if let FunctionImplementationKind::Composite(implementation) =
+                    &ancestor.implementation
+                    && !dependencies.contains_key(&ancestor.name)
+                    && !discovered
+                      .iter()
+                      .any(|(name, _)| *name == ancestor.name)
+                  {
+                    discovered
+                      .push((ancestor.name.clone(), implementation.clone()));
+                  }
+                }
               }
             }
             Ok::<bool, Never>(true)
