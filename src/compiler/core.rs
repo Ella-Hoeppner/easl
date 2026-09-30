@@ -167,7 +167,7 @@ pub fn get_easl_program_info(
   if !document.parsing_failures.is_empty() {
     return Err(document.parsing_failures);
   }
-  let (mut program, _) = Program::from_easl_documents(
+  let (mut program, errors) = Program::from_easl_documents(
     &EaslMultiDocument::from_singular_document(
       document,
       String::new(),
@@ -175,6 +175,9 @@ pub fn get_easl_program_info(
     ),
     built_in_macros(),
   );
+  if !errors.is_empty() {
+    return Ok(Err(errors));
+  }
   let errors = program.validate_raw_program(target);
   Ok(if errors.is_empty() {
     Ok(ProgramInfo::from(&program))

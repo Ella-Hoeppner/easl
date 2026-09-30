@@ -132,6 +132,8 @@ macro_rules! error_test {
 
 // --- Success tests ---
 
+success_test!(render_located_varyings);
+
 success_test!(user_fn_calls_generic_helper);
 success_test!(inversion);
 success_test!(associative);
@@ -254,6 +256,21 @@ success_test!(dispatch_captured_hof_scoped_lambda);
 success_test!(dispatch_captured_closure_receiver);
 success_test!(dispatch_nested_lambda_outer_capture);
 success_test!(audio_captured_closure_receiver);
+error_test!(
+  struct_field_invalid_annotation_failure,
+  CompileErrorKind::InvalidStructFieldAnnotation
+);
+error_test!(
+  struct_field_invalid_name_failure,
+  CompileErrorKind::ExpectedLeaf
+);
+error_test!(
+  render_located_varyings_mismatch_failure,
+  CompileErrorKind::IncompatibleRenderEntryPoints(
+    "vert".to_string(),
+    "frag".to_string()
+  )
+);
 error_test!(
   into_dynamic_alias_gpu_failure,
   CompileErrorKind::RuntimeSizedLocalInGpuCode

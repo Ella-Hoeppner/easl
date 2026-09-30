@@ -1,0 +1,9 @@
+; `round` breaks ties toward even and `fract` is `x - floor(x)`, so it's 0
+; at every integer, negative ones included. Each term gets its own digit.
+(defn f []: f32
+  (+ (round 2.5)
+     (* 10. (round -2.5))
+     (* 100. (round 0.5))
+     (* 1000. (fract 0.))
+     (* 10000. (fract -1.))
+     (* 100000. (fract -0.25))))

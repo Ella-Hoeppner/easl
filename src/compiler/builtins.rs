@@ -4012,10 +4012,13 @@ impl EmulatedFunctionRecord {
       return existing_name.clone();
     }
     let new_name = match name {
+      // C's `round` breaks ties away from zero; `rint` (in the default
+      // rounding mode) breaks them to even, like WGSL.
+      "round" => "rint".to_string(),
       "acos" | "cos" | "sin" | "tan" | "atan" | "asin" | "floor" | "ceil"
-      | "round" | "trunc" | "exp" | "exp2" | "log" | "log2" | "pow"
-      | "sinh" | "cosh" | "tanh" | "asinh" | "atanh" | "acosh" | "fma"
-      | "ldexp" | "sqrt" | "atan2" => name.to_string(),
+      | "trunc" | "exp" | "exp2" | "log" | "log2" | "pow" | "sinh" | "cosh"
+      | "tanh" | "asinh" | "atanh" | "acosh" | "fma" | "ldexp" | "sqrt"
+      | "atan2" => name.to_string(),
       "inverse-sqrt" => {
         let new_name = names.gensym("inverse_sqrt");
         self.helper_chunks.push(format!(

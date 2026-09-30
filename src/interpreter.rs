@@ -15,6 +15,7 @@ use crate::compiler::effects::{
   EffectType, WindowInfoBindingSource, WindowInfoKind,
 };
 use crate::compiler::entry::EntryPoint;
+use crate::compiler::util::compile_word;
 use crate::compiler::{
   builtins::{ASSIGNMENT_OPS, ATOMIC_MUTATION_OPS},
   error::{CompileError, SourceTrace},
@@ -1187,14 +1188,9 @@ fn apply_builtin_fn<IO: IOManager>(
         Primitive::F32(match &*f_name {
           "floor" => x.floor(),
           "ceil" => x.ceil(),
-          "round" => x.round(),
-          "fract" => {
-            if x > 0. {
-              x.fract()
-            } else {
-              1. + x.fract()
-            }
-          }
+          // WGSL rounds ties to even, and defines `fract` as `x - floor(x)`.
+          "round" => x.round_ties_even(),
+          "fract" => x - x.floor(),
           "sqrt" => x.sqrt(),
           "trunc" => x.trunc(),
           "saturate" => x.clamp(0., 1.),
@@ -3654,7 +3650,7 @@ pub fn derive_gpu_interface(program: &Program) -> DerivedGpuInterface {
     }
     gpu_entry_ids.insert(name.clone(), gpu_entries.len() as u16);
     gpu_entries.push(GpuEntryInfo {
-      name: name.replace('-', "_"),
+      name: compile_word(name.clone()),
       used_bindings,
     });
   }
@@ -5892,6 +5888,12 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     self
       .buffer_states
       .insert(readback.name.clone(), SharedBufferState::Synced);
+    // The readback brought the GPU's write into main's replica, which the
+    // other threads haven't seen: publish it like any other change.
+    if let Some(shared_index) = self.shared_indices.get(&readback.name).copied()
+    {
+      self.shared_dirty[shared_index] = true;
+    }
   }
 
   /// Overwrites the CPU-side value of the GPU-bound variable at
@@ -7172,24 +7174,23 @@ fn run_program_with<IO: IOManager>(
   }
 }
 
-#[cfg(feature = "window")]
 fn run_program_with_audio_source<IO: IOManager>(
   program: Program,
   entry_point_name: Option<&str>,
   io: IO,
   source_dir: Option<PathBuf>,
-  audio_source: Option<crate::audio::AudioSource>,
+  #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
   external_vars: Option<Arc<ExternalVars>>,
 ) -> Result<(IO, bool), EvalError> {
   let body = pick_entry_point_body(&program, entry_point_name)?;
-  let mut env =
-    EvaluationEnvironment::from_program_with_audio_source_and_external(
-      program,
-      io,
-      source_dir,
-      audio_source,
-      external_vars,
-    )?;
+  let mut env = EvaluationEnvironment::build_inner(
+    program,
+    io,
+    source_dir,
+    #[cfg(feature = "window")]
+    audio_source,
+    external_vars,
+  )?;
   env.bootstrap_external_globals();
   match eval(body, &mut env) {
     Ok(_) => Ok((env.io, false)),
@@ -7966,6 +7967,7 @@ fn refresh_dirty_slots<IO: IOManager>(
 fn readback_binding_into_vm<IO: IOManager>(
   env: &mut EvaluationEnvironment<IO>,
   slots_dirty: &mut [bool],
+  shared_dirty: &mut [bool],
   binding: u16,
   stack: &mut [u32],
   dyn_memory: &mut [crate::vm::bytecode::DynMemory],
@@ -7977,6 +7979,7 @@ fn readback_binding_into_vm<IO: IOManager>(
     mirror_readback_into_vm(
       env,
       slots_dirty,
+      shared_dirty,
       binding,
       stack,
       dyn_memory,
@@ -7991,6 +7994,7 @@ fn readback_binding_into_vm<IO: IOManager>(
 fn mirror_readback_into_vm<IO: IOManager>(
   env: &mut EvaluationEnvironment<IO>,
   slots_dirty: &mut [bool],
+  shared_dirty: &mut [bool],
   binding: u16,
   stack: &mut [u32],
   dyn_memory: &mut [crate::vm::bytecode::DynMemory],
@@ -8012,6 +8016,13 @@ fn mirror_readback_into_vm<IO: IOManager>(
         slots_dirty[binding as usize] = false;
       }
       HostBindingStorage::Dynamic => {}
+    }
+    // The readback brought the GPU's write into this replica, which the
+    // other threads haven't seen: publish it like any other change.
+    if let Some(shared_index) =
+      code.shared_vars.iter().position(|info| info.name == b.name)
+    {
+      shared_dirty[shared_index] = true;
     }
   }
   Ok(())
@@ -8197,6 +8208,7 @@ fn vm_host_call<IO: IOManager>(
       readback_binding_into_vm(
         env,
         slots_dirty,
+        shared.dirty,
         *binding,
         stack,
         dyn_memory,
@@ -8421,6 +8433,7 @@ fn vm_host_call<IO: IOManager>(
               readback_binding_into_vm(
                 env,
                 slots_dirty,
+                &mut *shared.dirty,
                 binding as u16,
                 stack,
                 dyn_memory,
@@ -8850,6 +8863,7 @@ fn vm_publish_shared<IO: IOManager>(
     readback_binding_into_vm(
       env,
       slots_dirty,
+      &mut program.shared_dirty,
       binding as u16,
       &mut program.stack,
       &mut program.dyn_memory,
@@ -9159,6 +9173,7 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
     mirror_readback_into_vm(
       &mut self.env,
       &mut self.slots_dirty,
+      &mut self.program.shared_dirty,
       binding,
       &mut self.program.stack,
       &mut self.program.dyn_memory,
@@ -9569,7 +9584,7 @@ fn append_c_audio_wrappers(program: &Program, c_source: &mut String) {
       .next()
       .map(|signature| signature.read().unwrap().arg_types.len())
       .unwrap_or(0);
-    let entry_c = name.replace('-', "_");
+    let entry_c = compile_word(name.as_str().into());
     let call = if arg_count > 0 {
       format!("{entry_c}(t)")
     } else {
@@ -9723,8 +9738,22 @@ pub fn run_program_entry_with_io_runtime_and_external_from_path<
   #[cfg(not(feature = "window"))]
   {
     let _ = source_path;
-    let _ = external_vars;
-    run_program_with_runtime(program, entry, io, source_dir, runtime)
+    match runtime {
+      CpuRuntime::TreeWalking => run_program_with_audio_source(
+        program,
+        entry,
+        io,
+        source_dir,
+        external_vars,
+      ),
+      CpuRuntime::BytecodeVm => run_program_vm_with_external(
+        program,
+        entry,
+        io,
+        source_dir,
+        external_vars,
+      ),
+    }
   }
 }
 

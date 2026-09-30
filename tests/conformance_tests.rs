@@ -88,12 +88,16 @@ fn run_conformance_test(name: &str, tolerance: f64, skip_c: bool) {
       .iter()
       .map(|(_, r)| *r.as_ref().unwrap())
       .collect();
-    let lo = values.iter().cloned().fold(f64::INFINITY, f64::min);
-    let hi = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    if tolerance == 0.0 {
-      lo == hi
-    } else {
-      (hi - lo).abs() <= tolerance
+    // `f64::min`/`max` skip NaN, so a NaN among otherwise agreeing
+    // backends would pass unnoticed.
+    values.iter().all(|value| value.is_finite()) && {
+      let lo = values.iter().cloned().fold(f64::INFINITY, f64::min);
+      let hi = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+      if tolerance == 0.0 {
+        lo == hi
+      } else {
+        (hi - lo).abs() <= tolerance
+      }
     }
   };
 
@@ -409,6 +413,7 @@ conformance_test!(division);
 conformance_test!(floor);
 conformance_test!(ceil);
 conformance_test!(round);
+conformance_test!(round_ties_fract_integers);
 conformance_test!(trunc);
 conformance_test!(fract);
 

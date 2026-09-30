@@ -1,0 +1,23 @@
+; `gpu_write_audio_read`, with main also reading `height` after each
+; dispatch. That CPU read is what reads the GPU's write back, so it must
+; also publish the new value: reading a value on the CPU mustn't stop it
+; from reaching the audio thread.
+@storage-write
+(var height: [1: f32])
+
+@audio
+(defn f [t: f32]: f32
+  (height 0u))
+
+@{workgroup-size 1}
+@compute
+(defn rise []
+  (= (height 0u)
+     (+ (height 0u) 0.25)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                  (start-audio f)
+                  (dispatch-compute-shader rise (vec3u 1u))
+                  (print (height 0u)))))

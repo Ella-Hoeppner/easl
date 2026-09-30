@@ -1,0 +1,8 @@
+; A struct field whose name isn't a plain name is an error, not a field
+; silently left out of the struct.
+(struct S
+  (a b): f32)
+
+@fragment
+(defn frag []: @{location 0} vec4f
+  (vec4f 1.))

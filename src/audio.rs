@@ -924,6 +924,7 @@ mod c_audio {
   use std::sync::{Arc, Mutex};
 
   use super::{AudioState, build_audio_stream};
+  use crate::compiler::util::compile_word;
 
   type AudioFn = unsafe extern "C" fn(f32, f32) -> f32;
 
@@ -934,7 +935,7 @@ mod c_audio {
   }
 
   fn easl_fn_name_to_c(name: &str) -> String {
-    name.replace('-', "_")
+    compile_word(name.into())
   }
 
   fn inject_forward_decls(c_code: &str) -> String {
@@ -1046,7 +1047,7 @@ mod c_audio {
         compile_c_to_dylib(&c_with_decls, &tmp_dir, generation + 1)?;
       let (lib, new_fn) = load_audio_fn(&dylib_path, &c_symbol)?;
       c_state._fn_ptr.store(new_fn as *mut (), Ordering::Release);
-      c_state._counter.store(0, Ordering::Relaxed);
+      c_state._counter.store(generation + 1, Ordering::Relaxed);
       // Leak the old library — code from it may be executing on the audio
       // thread; the stream's lifetime is the lifetime of the process.
       Box::leak(Box::new(lib));

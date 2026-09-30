@@ -1,0 +1,25 @@
+; A dispatch that reads a binding already resident on the GPU, followed in
+; the same batch by a dispatch whose upload overwrites it: the first must
+; still see the old value.
+(var x: f32)
+(var a: f32)
+(var b: f32)
+
+@compute
+(defn copy-a []
+  (= a x))
+
+@compute
+(defn copy-b []
+  (= b x))
+
+@cpu
+(defn main []
+  (= x 11.)
+  (dispatch-compute-shader copy-a (vec3u 1u))
+  (print a)
+  (dispatch-compute-shader copy-a (vec3u 1u))
+  (= x 23.)
+  (dispatch-compute-shader copy-b (vec3u 1u))
+  (print a)
+  (print b))

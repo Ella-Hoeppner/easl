@@ -834,8 +834,13 @@ impl GpuCore {
         BufferUpload::TextureData { width, height, .. } => {
           let incoming_size =
             *width as u64 * *height as u64 * BINDING_TEXTURE_BPP as u64;
-          let stored_size = *self.binding_buffer_sizes.get(&key).unwrap_or(&0);
-          if incoming_size != stored_size {
+          // Compare extents, not byte counts: a 1x4 and a 2x2 image are the
+          // same size but need different textures.
+          let stored_extent = self
+            .textures
+            .get(&key)
+            .map(|texture| (texture.width(), texture.height()));
+          if stored_extent != Some((*width, *height)) {
             let (texture, view) = create_texture_and_view(
               &self.device,
               &format!("texture g{group}b{binding}"),
@@ -1017,8 +1022,9 @@ impl GpuCore {
     &mut self,
     calls: Vec<(u16, (u32, u32, u32), Vec<((u8, u8), BufferUpload)>)>,
   ) {
-    // Tracks bindings uploaded for dispatches already encoded into the current
-    // encoder but not yet submitted.
+    // Tracks bindings the dispatches already encoded into the current
+    // encoder (not yet submitted) upload or access: a later upload of any of
+    // them must wait for that encoder's submit, or they'd see the new value.
     let mut pending_bindings: std::collections::HashSet<(u8, u8)> =
       std::collections::HashSet::new();
     let mut current_encoder: Option<wgpu::CommandEncoder> = None;
@@ -1041,6 +1047,12 @@ impl GpuCore {
       for (gb, _) in &pre_upload {
         pending_bindings.insert(*gb);
       }
+      pending_bindings.extend(
+        self.gpu_entries[entry as usize]
+          .used_bindings
+          .iter()
+          .copied(),
+      );
       self.get_or_create_compute_pipeline(entry);
 
       let encoder = current_encoder.get_or_insert_with(|| {

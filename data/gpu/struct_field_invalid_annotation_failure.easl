@@ -1,0 +1,8 @@
+; A struct field's annotation errors are reported, not dropped.
+(struct S
+  @{bogus 1} x: f32)
+
+@fragment
+(defn frag []: @{location 0} vec4f
+  (let [s (S 1.)]
+    (vec4f s.x)))

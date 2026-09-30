@@ -1,0 +1,19 @@
+; A vertex output and fragment input whose `@{location N}` varyings match
+; are compatible.
+(struct VOut
+  @{builtin position} pos: vec4f
+  @{location 0} col: vec3f)
+
+@vertex
+(defn vert [@{builtin vertex-index} i: u32]: VOut
+  (VOut (vec4f 0. 0. 0. 1.) (vec3f 1. 0. 0.)))
+
+@fragment
+(defn frag [in: VOut]: @{location 0} vec4f
+  (vec4 in.col 1.))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                  (dispatch-render-shaders vert frag 3)
+                  (close-window))))

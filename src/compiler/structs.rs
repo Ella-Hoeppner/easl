@@ -43,8 +43,7 @@ impl UntypedStructField {
       errors.log(CompileError::new(StructFieldMissingType, path.into()));
       return None;
     };
-    let mut errors = ErrorLog::new();
-    let (name_ast, annotation) = extract_annotation(inner_ast, &mut errors);
+    let (name_ast, annotation) = extract_annotation(inner_ast, errors);
     let name_source = name_ast.position().into();
     let name = match read_leaf(name_ast) {
       Ok(name) => name,
@@ -57,7 +56,7 @@ impl UntypedStructField {
       IOAttributes::parse_from_annotation(
         annotation,
         Some((name.clone(), name_source)),
-        &mut errors,
+        errors,
       )
     } else {
       (IOAttributes::empty(path.into()), vec![])

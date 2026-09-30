@@ -176,7 +176,7 @@ impl EaslDocumentMethods for EaslDocument {
           && let Some(Ast::Inner(
             (_, EncloserOrOperator::Operator(Operator::TypeAscription)),
             name_children,
-          )) = children.get(2)
+          )) = children.get(1)
           && let Some(Ast::Leaf(_, binding_name)) = name_children.first()
           && binding_name == def_name
           && let Some(value) = children.get_mut(2)
@@ -1770,7 +1770,7 @@ impl Program {
                       if input_locations.len() != output_locations.len()
                         || input_locations.iter().any(|(location, in_ty)| {
                           if let Some(out_ty) = output_locations.get(location) {
-                            in_ty.compatible(out_ty)
+                            !in_ty.compatible(out_ty)
                           } else {
                             true
                           }
@@ -9050,5 +9050,27 @@ fn tail_value_expression(exp: &TypedExp) -> &TypedExp {
       expressions.last().map(tail_value_expression).unwrap_or(exp)
     }
     _ => exp,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use fsexp::Ast;
+
+  use super::EaslDocumentMethods;
+  use crate::parse::parse_easl;
+
+  #[test]
+  fn override_def_replaces_the_value() {
+    let mut document = parse_easl("(def gain: f32 0.5)\n(def other: f32 1.)");
+    assert!(document.override_def("gain", "0.25"));
+    assert!(!document.override_def("missing", "0.25"));
+    let Ast::Inner(_, children) = &document.syntax_trees[0] else {
+      panic!("expected the def form")
+    };
+    let Ast::Leaf(_, value) = &children[2] else {
+      panic!("expected a leaf value")
+    };
+    assert_eq!(value, "0.25");
   }
 }

@@ -790,3 +790,41 @@ fn audio_input_passthrough() {
     std::collections::VecDeque::from([0.5f32, -0.25, 0.75]),
   );
 }
+thread_sync_test!(
+  gpu_write_cpu_read_audio_read,
+  [
+    Frame,
+    AudioBatch(2),
+    Frame,
+    AudioBatch(2),
+    Frame,
+    AudioBatch(2)
+  ]
+);
+
+/// Building the embedder handle for a program whose other thread-shared
+/// vars have no flat layout (a nested runtime-sized audio capture) lays out
+/// only the `@external` ones.
+#[test]
+fn external_with_nested_audio_capture() {
+  let Ok(Ok((_, Ok(mut program)))) =
+    load_easl_program_from_file(std::path::Path::new(
+      "./data/thread_sync/external_with_nested_audio_capture.easl",
+    ))
+  else {
+    panic!("failed to load program");
+  };
+  assert!(
+    program
+      .validate_raw_program(CompilerTarget::WGSL)
+      .is_empty()
+  );
+  let handle = ExternalVars::new(&program);
+  handle
+    .write_external_var_raw("gain", &[0.5f32.to_bits()])
+    .unwrap();
+  assert_eq!(
+    handle.read_external_var_raw("gain").unwrap(),
+    vec![0.5f32.to_bits()]
+  );
+}

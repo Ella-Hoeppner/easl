@@ -1,0 +1,21 @@
+; An `@external` var in a program whose audio closure captures a nested
+; runtime-sized array. That capture is thread-shared too, but has no flat
+; layout (it crosses threads wire-encoded) and isn't embedder-accessible,
+; so building the embedder handle must not try to lay it out.
+(defn make-voice []: (Fn [] f32)
+  (let [@var bank: [[f32]] ~[]]
+    (fn []
+      (when (== (array-length bank) 0u)
+        (= bank
+           (into-dynamic-array
+             [(into-dynamic-array [0.125 0.25])
+              (into-dynamic-array [0.5])])))
+      ((bank 0u) 1u))))
+
+@external
+(var gain: f32)
+
+@cpu
+(defn main []
+  (start-audio (make-voice))
+  (spawn-window (fn [] (print gain))))

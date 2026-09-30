@@ -1,0 +1,12 @@
+; An entry point whose name has punctuation other than `-` is found under
+; the name the compiler emits for it.
+(var out: f32)
+
+@compute
+(defn run? []
+  (= out 42.))
+
+@cpu
+(defn main []
+  (dispatch-compute-shader run? (vec3u 1u))
+  (print out))

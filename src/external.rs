@@ -149,7 +149,13 @@ impl ExternalVars {
           .expect("thread-shared global missing from top-level vars")
           .var_type
           .clone();
+        // Only `@external` vars are accessible through the handle (`lookup`
+        // rejects the rest), so only they need a layout. The others keep
+        // their slot, for index alignment with the program's shared vars,
+        // and may have no flat layout at all (a wire-encoded `[[f32]]`
+        // audio capture).
         let (element_stride, word_len) = match &ty {
+          _ if audience & participant::EXTERNAL == 0 => (None, None),
           Type::Array(size, element_type) => {
             let stride = vm_words_of(&element_type.kind.unwrap_known()).max(1);
             let len = match size {
