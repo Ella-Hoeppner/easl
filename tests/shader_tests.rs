@@ -247,6 +247,7 @@ success_test!(storage_ref_gpu_fragment);
 success_test!(midi_cpu_with_shader);
 success_test!(midi_in_shader);
 success_test!(builtin_option_in_shader);
+success_test!(declared_only_generic_instance);
 success_test!(get_midi_note_shader);
 success_test!(enum_bool_payload_gpu);
 success_test!(audio_only_midi_not_emitted_to_gpu);

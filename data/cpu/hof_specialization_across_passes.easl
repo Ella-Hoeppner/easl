@@ -1,0 +1,29 @@
+; Two passes of higher-order-argument inlining reach one specialization
+; (sample-grain with hann-window): from the delegating overload, and from
+; sample-grainbank's own specialization one pass later. A stored function
+; value turns on defunctionalization, which resolves every call.
+(defn hann-window [p: f32]: f32
+  (* p 0.5))
+
+(defn sample-grain [x: f32
+                    envelope: (Fn [f32] f32)]: f32
+  (envelope x))
+
+(defn sample-grain [x: f32]: f32
+  (sample-grain x hann-window))
+
+(defn sample-grainbank [x: f32
+                        envelope: (Fn [f32] f32)]: f32
+  (+ (sample-grain x envelope) 1.))
+
+(defn sample-grainbank [x: f32]: f32
+  (sample-grainbank x hann-window))
+
+(defn double [x: f32]: f32
+  (* x 2.))
+
+@cpu
+(defn main []
+  (let [fs [double hann-window]]
+    (print ((fs 1u) (sample-grainbank 2.)))
+    (print (sample-grain 3.))))

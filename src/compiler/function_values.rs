@@ -2036,6 +2036,7 @@ impl Program {
         associative: original.associative,
         captured_scope: None,
         entry_point: None,
+        specialized_from: None,
       },
     )));
     (signature, implementation)

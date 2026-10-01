@@ -359,6 +359,30 @@ cpu_test!(fn_value_generic_instantiated_at_function);
 cpu_test!(single_variant_enum_layout);
 // Binding a closure to a new name copies its captured state.
 
+cpu_test!(hof_specialization_across_passes);
+
+/// Compiling a program must not depend on hash-map iteration order. Each
+/// thread seeds its maps afresh, so this compiles the fixture under many
+/// orders: a higher-order specialization reached in two different inlining
+/// passes once registered a duplicate under some orders, orphaning the
+/// call sites that referenced the first copy.
+#[test]
+fn hof_specialization_across_passes_any_order() {
+  for _ in 0..24 {
+    std::thread::spawn(|| {
+      let path = Path::new("./data/cpu/hof_specialization_across_passes.easl");
+      let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(path)
+      else {
+        panic!("failed to load program");
+      };
+      let errors = program.validate_raw_program(CompilerTarget::WGSL);
+      assert!(errors.is_empty(), "compile errors: {errors:#?}");
+    })
+    .join()
+    .expect("compilation panicked");
+  }
+}
+
 /// The full MIDI query surface against spoofed input state, on both
 /// runtimes: per-note velocities, CC values, pitch bend, and the
 /// held-note list (`data/cpu/midi_queries.easl`). Spoofing goes through

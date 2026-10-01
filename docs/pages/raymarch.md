@@ -563,14 +563,16 @@ Now `fragment` and `render-sdf` each take a new argument, `surface-color`, which
                                  (box (vec3f 0.7)))
                           (vec3f 1.)
                           (window-time))
-                  (let [light-pos (vec3f 2. 2. -5.)]
+                  (let [light-pos (vec3f 2. 2. -5.)
+                        surface-color (vec3f 1. 0.5 0.5)]
                     (fn [surface-pos
                          view-direction
                          surface-normal]
                       (let [light-dir (normalize (- light-pos surface-pos))
                             halfway-dir (normalize
                                           (+ light-dir (- view-direction)))]
-                        (vec3f (+ (* 0.2
+                        (* surface-color
+                           (+ (* 0.2
                                      (max 0.
                                           (dot surface-normal light-dir)))
                                   (pow (max 0.
@@ -578,25 +580,28 @@ Now `fragment` and `render-sdf` each take a new argument, `surface-color`, which
                                        50.))))))))))
 ```
 
-This example implements the simple [blinn-phone](https://en.wikipedia.org/wiki/Blinn%E2%80%93Phong_reflection_model) lighting model. To simplify our `main`, we could again abstract this out to a helper function:
+This example implements the simple [blinn-phong](https://en.wikipedia.org/wiki/Blinn%E2%80%93Phong_reflection_model) lighting model. To simplify our `main`, we could again abstract this out to a helper function:
 
 ```
 (defn blinn-phong [surface-pos: vec3f
                    view-direction: vec3f
                    surface-normal: vec3f
+                   color: vec3f
                    light-pos: vec3f
                    diffuse-factor: f32
                    specular-power: f32]: vec3f
   (let [light-dir (normalize (- light-pos surface-pos))
         halfway-dir (normalize (+ light-dir (- view-direction)))]
-    (vec3f (+ (* diffuse-factor
-                 (max 0.
-                      (dot surface-normal light-dir)))
-              (pow (max 0.
-                        (dot surface-normal halfway-dir))
-                   specular-power)))))
+    (* color
+       (+ (* diffuse-factor
+             (max 0.
+                  (dot surface-normal light-dir)))
+          (pow (max 0.
+                    (dot surface-normal halfway-dir))
+               specular-power)))))
 
-(defn blinn-phong [light-pos: vec3f
+(defn blinn-phong [color: vec3f
+                   light-pos: vec3f
                    diffuse-factor: f32
                    specular-power: f32]: (Fn [vec3f vec3f vec3f] vec3f)
   (fn [surface-pos
@@ -605,6 +610,7 @@ This example implements the simple [blinn-phone](https://en.wikipedia.org/wiki/B
     (blinn-phong surface-pos
                  view-direction
                  surface-normal
+                 color
                  light-pos
                  diffuse-factor
                  specular-power)))
@@ -616,5 +622,55 @@ This example implements the simple [blinn-phone](https://en.wikipedia.org/wiki/B
                                              (box (vec3f 0.7)))
                                       (vec3f 1.)
                                       (window-time))
-                              (blinn-phong (vec3f 2. 2. -5.) 0.2 50.)))))
+                              (blinn-phong (vec3f 1. 0.5 0.5)
+                                           (vec3f 2. 2. -5.)
+                                           0.2
+                                           50.)))))
 ```
+
+There's one signficant problem with the approach we've taken so far, though. While we can render as many different objects as we want using the `union` function, every object has to be the exact same color, since we control the color globally through the a single argument that we pass to `blinn-phong`. What if we wanted different shapes to have different colors, or better yet, entirely different styles of lighting?
+
+Here's one way that we could accomplish that:
+
+```
+(struct Shape
+  sdf: (Fn [vec3f] f32)
+  material: (Fn [vec3f vec3f vec3f] vec3f))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                  (let [shapes [(Shape (sphere 0.9)
+                                       (blinn-phong (vec3f 1. 0.5 0.5)
+                                                    (vec3f 2. 2. -5.)
+                                                    0.2
+                                                    50.))
+                                (Shape (rotate (box (vec3f 0.7))
+                                               (vec3f 1.)
+                                               (window-time))
+                                       (blinn-phong (vec3f 0.5 1. 0.5)
+                                                    (vec3f 2. 2. -5.)
+                                                    0.2
+                                                    50.))]]
+                    (render-sdf (fn [pos]
+                                  (let [@var closest-dist 1000000.]
+                                    (for [i (array-length shapes)]
+                                      (= closest-dist
+                                         (min closest-dist
+                                              ((.sdf (shapes i)) pos))))
+                                    closest-dist))
+                                (fn [surface-pos
+                                     view-direction
+                                     surface-normal]
+                                  (let [@var closest-dist 1000000.
+                                        @var closest-index 0u]
+                                    (for [i (array-length shapes)]
+                                      (= closest-dist
+                                         (min closest-dist
+                                              ((.sdf (shapes i)) surface-pos))))
+                                    ((.material (shapes closest-index))
+                                     surface-pos
+                                     view-direction
+                                     surface-normal))))))))
+```
+

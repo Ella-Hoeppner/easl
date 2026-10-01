@@ -653,6 +653,7 @@ pub struct Program {
   /// As `lifted_audio_captures`, for dispatched GPU closure entries.
   pub lifted_gpu_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
 }
+
 impl Clone for Program {
   fn clone(&self) -> Self {
     Self {
@@ -767,6 +768,7 @@ impl Program {
             associative: false,
             captured_scope: None,
             entry_point: None,
+            specialized_from: None,
           },
         )));
       }
@@ -792,6 +794,7 @@ impl Program {
                 associative: false,
                 captured_scope: None,
                 entry_point: None,
+                specialized_from: None,
               },
             )));
           }
@@ -837,6 +840,63 @@ impl Program {
         && existing_enum.filled_generics == e.filled_generics
     }) {
       self.typedefs.enums.push(e);
+    }
+  }
+  /// Registers the monomorphized instance of every generic struct and enum
+  /// `t` mentions. Types still mentioning a generic (a signature not yet
+  /// specialized) have no instances.
+  fn add_type_instances(&mut self, t: &Type) {
+    let mut skolems = vec![];
+    t.track_skolem_names(&mut skolems);
+    if !skolems.is_empty() {
+      return;
+    }
+    let known = |info: &ExpTypeInfo| {
+      info.with_dereferenced(|typestate| match typestate {
+        TypeState::Known(t) => Some(t.clone()),
+        _ => None,
+      })
+    };
+    match t {
+      Type::Struct(s) => {
+        let field_types: Vec<Type> = s
+          .fields
+          .iter()
+          .filter_map(|f| known(&f.field_type))
+          .collect();
+        for field_type in &field_types {
+          self.add_type_instances(field_type);
+        }
+        // Builtin generic structs (vectors, matrices, atomics, textures)
+        // are target-native types, never emitted definitions.
+        let original = s.abstract_ancestor.original_ancestor();
+        if field_types.len() == s.fields.len()
+          && original.source_trace.primary_position.is_some()
+          && let Some(instance) = original.generate_monomorphized(field_types)
+        {
+          self.add_monomorphized_struct(instance);
+        }
+      }
+      Type::Enum(e) => {
+        for variant in &e.variants {
+          if let Some(inner_type) = known(&variant.inner_type) {
+            self.add_type_instances(&inner_type);
+          }
+        }
+        if let Some(instance) = e
+          .abstract_ancestor
+          .original_ancestor()
+          .generate_monomorphized(e.clone())
+        {
+          self.add_monomorphized_enum(instance);
+        }
+      }
+      Type::Array(_, inner) => {
+        if let Some(inner_type) = known(inner) {
+          self.add_type_instances(&inner_type);
+        }
+      }
+      _ => {}
     }
   }
   pub fn concrete_signatures(
@@ -1473,6 +1533,32 @@ impl Program {
       if e.generic_args.is_empty() {
         monomorphized_ctx.add_monomorphized_enum(e.clone());
       }
+    }
+    // Generic instances that are only ever declared, never constructed or
+    // matched (a var holding an `(Option (Step f32))` that CPU code merely
+    // prints), still need their definitions for the declarations naming
+    // them.
+    for v in self.top_level_vars.iter() {
+      monomorphized_ctx.add_type_instances(&v.var_type);
+    }
+    let signature_types: Vec<Type> = monomorphized_ctx
+      .abstract_functions_iter()
+      .filter(|f| f.read().unwrap().generic_args.is_empty())
+      .flat_map(|f| {
+        let f = f.read().unwrap();
+        f.arg_types
+          .iter()
+          .map(|(t, _)| t.clone())
+          .chain(std::iter::once(f.return_type.clone()))
+          .filter_map(|t| match t {
+            AbstractType::Type(t) => Some(t),
+            _ => None,
+          })
+          .collect::<Vec<_>>()
+      })
+      .collect();
+    for t in signature_types {
+      monomorphized_ctx.add_type_instances(&t);
     }
     take(self, |old_ctx| {
       monomorphized_ctx.top_level_vars = old_ctx.top_level_vars;
@@ -2704,6 +2790,7 @@ impl Program {
         associative: false,
         captured_scope: None,
         entry_point: None,
+        specialized_from: None,
       }))
     };
     state.new_functions.push(clone_signature.clone());
@@ -2815,6 +2902,7 @@ impl Program {
         // trailing scope was dropped by the family lift).
         captured_scope: None,
         entry_point: None,
+        specialized_from: None,
       }))
     };
     state.new_functions.push(clone_signature.clone());
@@ -4975,6 +5063,7 @@ impl Program {
                       generic_args: vec![],
                       associative: false,
                       entry_point: None,
+                      specialized_from: None,
                       arg_types,
                       return_type: AbstractType::Type(
                         f_signature.return_type.unwrap_known(),
@@ -5243,32 +5332,42 @@ impl Program {
     let mut inlined_ctx = Program::default();
     inlined_ctx.names = RwLock::new(self.names.read().unwrap().clone());
     inlined_ctx.typedefs = self.typedefs.clone();
+    // Every surviving function is registered before any body is rewritten,
+    // so a call site needing a specialization an earlier pass created finds
+    // it by name rather than creating a duplicate, whatever order the
+    // functions are visited in.
+    let mut implementations: Vec<Arc<RwLock<TopLevelFunction>>> = vec![];
     for f in self.abstract_functions_iter() {
       let borrowed_f = f.read().unwrap();
-      if !borrowed_f.has_uninlined_higher_order_arguments() {
-        match &borrowed_f.implementation {
-          FunctionImplementationKind::Composite(implementation) => {
-            let mut borrowed_implementation = implementation.write().unwrap();
-            match borrowed_implementation
-              .expression
-              .inline_higher_order_arguments(&mut inlined_ctx)
-            {
-              Ok(added_new_function) => {
-                changed |= added_new_function;
-                let mut new_f = borrowed_f.clone();
-                drop(borrowed_implementation);
-                new_f.implementation =
-                  FunctionImplementationKind::Composite(implementation.clone());
-                inlined_ctx.add_abstract_function(Arc::new(RwLock::new(new_f)));
-              }
-              Err(e) => errors.log(e),
-            }
+      if borrowed_f.has_uninlined_higher_order_arguments() {
+        continue;
+      }
+      match &borrowed_f.implementation {
+        FunctionImplementationKind::Composite(implementation) => {
+          if !implementations
+            .iter()
+            .any(|i| Arc::ptr_eq(i, implementation))
+          {
+            implementations.push(implementation.clone());
           }
-          FunctionImplementationKind::EnumConstructor(_) => {
-            inlined_ctx.add_abstract_function(Arc::clone(f));
-          }
-          _ => {}
+          inlined_ctx
+            .add_abstract_function(Arc::new(RwLock::new(borrowed_f.clone())));
         }
+        FunctionImplementationKind::EnumConstructor(_) => {
+          inlined_ctx.add_abstract_function(Arc::clone(f));
+        }
+        _ => {}
+      }
+    }
+    for implementation in implementations {
+      match implementation
+        .write()
+        .unwrap()
+        .expression
+        .inline_higher_order_arguments(&mut inlined_ctx)
+      {
+        Ok(added_new_function) => changed |= added_new_function,
+        Err(e) => errors.log(e),
       }
     }
     take(self, |old_ctx| {

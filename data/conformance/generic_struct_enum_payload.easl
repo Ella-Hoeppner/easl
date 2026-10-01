@@ -1,0 +1,14 @@
+; Matching an enum whose payload is a generic struct instance rebuilds the
+; payload with the instance's constructor.
+(struct (Step T)
+  time: T
+  value: T)
+
+(defn step-time [o: (Option (Step f32))]: f32
+  (match o
+    (Some s) (+ s.time s.value)
+    None 0.))
+
+(defn f []: f32
+  (+ (step-time (Some (Step 1.5 2.)))
+     (step-time None)))

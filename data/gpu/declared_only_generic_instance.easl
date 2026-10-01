@@ -1,0 +1,20 @@
+; Generic struct and enum instances that are only ever declared — a var's
+; type, a helper's signature — never constructed: their definitions must
+; still be emitted for the declarations naming them.
+(struct (Step T)
+  time: T
+  value: T)
+
+(var debug: (Option (Step f32)))
+
+(var steps: [4: (Step u32)])
+
+(defn step-time [o: (Option (Step f32))]: f32
+  (match o
+    (Some s) s.time
+    None 0.))
+
+@cpu
+(defn main []
+  (print debug)
+  (print steps))

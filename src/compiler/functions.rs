@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 
 use take_mut::take;
 
@@ -72,6 +72,59 @@ pub struct TopLevelFunction {
   pub expression: TypedExp,
 }
 
+/// What a higher-order specialization specializes: `callee` with its
+/// function-typed argument `argument_index` fixed to `inlined`. This, not
+/// the name, identifies a specialization: overload separation leaves
+/// function-typed arguments out of names, so distinct specializations can
+/// share one. Functions are held weakly (a specialization doesn't keep what
+/// it came from alive), which still pins their allocations, so identity
+/// comparisons can't be fooled by a reused address.
+#[derive(Debug, Clone)]
+pub struct SpecializationOrigin {
+  callee: Weak<RwLock<TopLevelFunction>>,
+  argument_index: usize,
+  inlined: InlinedFunction,
+}
+
+#[derive(Debug, Clone)]
+enum InlinedFunction {
+  Composite(Weak<RwLock<TopLevelFunction>>),
+  Builtin(Box<AbstractFunctionSignature>),
+}
+
+impl SpecializationOrigin {
+  pub fn new(
+    callee: &Arc<RwLock<TopLevelFunction>>,
+    argument_index: usize,
+    inlined: &AbstractFunctionSignature,
+  ) -> Self {
+    Self {
+      callee: Arc::downgrade(callee),
+      argument_index,
+      inlined: match &inlined.implementation {
+        FunctionImplementationKind::Composite(implementation) => {
+          InlinedFunction::Composite(Arc::downgrade(implementation))
+        }
+        _ => InlinedFunction::Builtin(Box::new(inlined.clone())),
+      },
+    }
+  }
+}
+
+impl PartialEq for SpecializationOrigin {
+  fn eq(&self, other: &Self) -> bool {
+    Weak::ptr_eq(&self.callee, &other.callee)
+      && self.argument_index == other.argument_index
+      && match (&self.inlined, &other.inlined) {
+        (InlinedFunction::Composite(a), InlinedFunction::Composite(b)) => {
+          Weak::ptr_eq(a, b)
+        }
+        (InlinedFunction::Builtin(a), InlinedFunction::Builtin(b)) => a == b,
+        _ => false,
+      }
+  }
+}
+
 impl TopLevelFunction {
   pub fn derived_from(&self) -> Self {
     let mut derived = self.clone();
@@ -84,7 +137,7 @@ impl TopLevelFunction {
   /// from the function type's own argument types. Idempotent: a second
   /// call finds no unitlike entries left and does nothing. That matters
   /// because several call sites' ancestor signatures can share one
-  /// implementation Arc (the HoF-inlining memo reuses specializations),
+  /// implementation Arc (HoF inlining reuses specializations),
   /// so this runs once per call site; a removal driven by a caller's
   /// indices instead of these lists' own contents over-removed here,
   /// nondeterministically with registry iteration order.
@@ -209,6 +262,9 @@ pub struct AbstractFunctionSignature {
   pub associative: bool,
   pub captured_scope: Option<AbstractStruct>,
   pub entry_point: Option<EntryPoint>,
+  /// For a higher-order specialization, what it specializes; call sites
+  /// needing the same specialization find it in the registry by this.
+  pub specialized_from: Option<SpecializationOrigin>,
 }
 
 impl Default for AbstractFunctionSignature {
@@ -226,6 +282,7 @@ impl Default for AbstractFunctionSignature {
       associative: false,
       captured_scope: None,
       entry_point: None,
+      specialized_from: None,
     }
   }
 }
@@ -605,6 +662,7 @@ impl AbstractFunctionSignature {
                     implementation,
                     associative: parsed_annotation.associative,
                     entry_point: parsed_annotation.entry,
+                    specialized_from: None,
                     captured_scope: None,
                   });
                 }
@@ -924,7 +982,7 @@ impl AbstractFunctionSignature {
         .names
         .write()
         .unwrap()
-        .get_monomorphized_name(f_name.clone(), vec![inlined_fn_name.clone()]),
+        .gensym(&format!("{f_name}_{inlined_fn_name}")),
       generic_args: self.generic_args.clone(),
       arg_types,
       return_type: self.return_type.clone(),
@@ -934,6 +992,7 @@ impl AbstractFunctionSignature {
       associative: self.associative,
       captured_scope: self.captured_scope.clone(),
       entry_point: self.entry_point,
+      specialized_from: None,
     })
   }
   pub fn concretize(

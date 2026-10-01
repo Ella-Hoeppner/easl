@@ -29,7 +29,7 @@ use crate::{
     functions::{
       AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
       FunctionTargetConfiguration, Ownership, RefMutability,
-      SpecialCasedBuiltinFunction,
+      SpecialCasedBuiltinFunction, SpecializationOrigin,
     },
     program::{CompilerTarget, NameContext, Program, TypeDefs},
     structs::{AbstractStruct, Struct},
@@ -4077,6 +4077,7 @@ impl TypedExp {
                           associative: false,
                           captured_scope: None,
                           entry_point: None,
+                          specialized_from: None,
                         },
                       )));
                       new_program.add_monomorphized_enum(Arc::unwrap_or_clone(
@@ -4435,33 +4436,45 @@ impl TypedExp {
                 .read()
                 .unwrap()
                 .representative_type(&mut new_ctx.names.write().unwrap());
-              let inlined_signature = abstract_signature
-                .read()
-                .unwrap()
-                .generate_higher_order_argument_inlined_version(
-                  f_name.clone(),
-                  inlinable_arg_index,
-                  inlinable_abstract_signature,
-                  new_ctx,
-                  &exp.source_trace,
-                )?;
-              let inlined_name = inlined_signature.name.clone();
-              *f_name = inlined_name.clone();
-              // Reuse existing specialization Arc if already present in
-              // new_ctx (by name), to prevent duplicate copies that would
-              // be extracted separately and accumulate as distinct functions.
+              let FunctionImplementationKind::Composite(callee) =
+                abstract_signature.read().unwrap().implementation.clone()
+              else {
+                unreachable!()
+              };
+              // One specialization per (callee, argument, inlined function),
+              // shared by every call site that needs it.
+              let origin = SpecializationOrigin::new(
+                &callee,
+                inlinable_arg_index,
+                &inlinable_abstract_signature.read().unwrap(),
+              );
               let existing_signature = new_ctx
-                .abstract_functions
-                .get(&inlined_name)
-                .and_then(|sigs| sigs.first())
+                .abstract_functions_iter()
+                .find(|f| {
+                  f.read().unwrap().specialized_from.as_ref() == Some(&origin)
+                })
                 .cloned();
-              if let Some(signature) = existing_signature {
-                *abstract_signature = signature;
-              } else {
-                let signature = Arc::new(RwLock::new(inlined_signature));
-                *abstract_signature = Arc::clone(&signature);
-                new_ctx.add_abstract_function(signature);
-              }
+              let signature = match existing_signature {
+                Some(signature) => signature,
+                None => {
+                  let mut specialization = abstract_signature
+                    .read()
+                    .unwrap()
+                    .generate_higher_order_argument_inlined_version(
+                    f_name.clone(),
+                    inlinable_arg_index,
+                    inlinable_abstract_signature,
+                    new_ctx,
+                    &exp.source_trace,
+                  )?;
+                  specialization.specialized_from = Some(origin);
+                  new_ctx.add_abstract_function(Arc::new(RwLock::new(
+                    specialization,
+                  )))
+                }
+              };
+              *f_name = signature.read().unwrap().name.clone();
+              *abstract_signature = signature;
               new_ctx.add_monomorphized_struct(representative_struct);
               changed = true;
             }

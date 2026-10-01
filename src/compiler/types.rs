@@ -2668,7 +2668,11 @@ impl Type {
           .map(|field| field.field_type.unwrap_known())
           .collect();
         let struct_t = Type::Struct(s.clone());
-        let constructor = struct_constructor(&s.name, &field_types, &struct_t);
+        let constructor = struct_constructor(
+          &s.monomorphized_name(names, target),
+          &field_types,
+          &struct_t,
+        );
         (
           b.apply(
             b.callee(&constructor, &field_types, &struct_t),
