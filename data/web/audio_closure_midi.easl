@@ -1,0 +1,24 @@
+; A stateful closure as the audio entry (its captured state is seeded on
+; the audio thread through the shared-variable exchange), reading MIDI on
+; the audio thread: the page's MIDI messages reach the worklet too.
+(var heard-cc: f32)
+(var peak: f32)
+
+(defn sine [freq: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (= phase (% (+ phase (/ freq (sample-rate))) 1.))
+      (= heard-cc (midi-cc 7u))
+      (let [sample (sin (* 6.283185 phase))]
+        (= peak (max peak sample))
+        sample))))
+
+@cpu
+(defn main []
+  (start-audio (sine 220.))
+  (print "started")
+  (spawn-window
+    (fn []
+      (when (&& (> peak 0.9) (== heard-cc 1.))
+        (print "audio closure ran and heard MIDI")
+        (close-window)))))

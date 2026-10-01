@@ -14,7 +14,7 @@ use crate::compiler::types::{ConcreteArraySize, Type};
 use crate::thread_sync::ThreadSharedTable;
 use crate::vm::bytecode::{
   BytecodeProgram, DynMemory, HeapCell, SharedStateParts, SharedVarInfo,
-  SharedVarStorage, alloc_heap_cell, heap_index, release_heap_id,
+  SharedVarStorage, ValueLayout, alloc_heap_cell, heap_index, release_heap_id,
 };
 use crate::vm::compile::vm_stack_size;
 
@@ -65,25 +65,25 @@ pub fn publish_shared(
     match info.storage {
       SharedVarStorage::Slots { position, size } => {
         let words = &stack[position as usize..(position + size) as usize];
-        if needs_wire_encoding(&info.ty) {
+        if info.layout.needs_wire_encoding() {
           // slot-backed value embedding heap ids (a struct/enum/fixed-
           // array with a runtime-sized field): serialize by dereferencing
           // the ids so nothing heap-private crosses
-          serialize_flat_value(&info.ty, words, heap, &mut buffer);
+          serialize_flat_value(&info.layout, words, heap, &mut buffer);
         } else {
           buffer.extend_from_slice(words);
         }
       }
       SharedVarStorage::DynMemory { region, stride } => {
-        if needs_wire_encoding(&info.ty) {
+        if info.layout.needs_wire_encoding() {
           // heap-involving elements: the serialized wire format (see the
           // module comment below) — ids are dereferenced and contents
           // inlined, so nothing heap-private crosses
-          let Type::Array(_, element_type) = &info.ty else {
+          let ValueLayout::DynArray(element) = &info.layout else {
             unreachable!()
           };
           serialize_dyn_memory(
-            &element_type.unwrap_known(),
+            element,
             &dyn_memory[region as usize],
             heap,
             &mut buffer,
@@ -144,12 +144,12 @@ pub fn adopt_shared(
     match info.storage {
       SharedVarStorage::Slots { position, size } => {
         let range = position as usize..(position + size) as usize;
-        if needs_wire_encoding(&info.ty) {
+        if info.layout.needs_wire_encoding() {
           // free the heap ids the slots currently hold (previous
           // snapshot/seed), then rebuild the value, minting fresh cells
           // in this replica's heap
           release_flat_value_ids(
-            &info.ty,
+            &info.layout,
             &stack[range.clone()],
             heap,
             heap_free,
@@ -160,7 +160,7 @@ pub fn adopt_shared(
           };
           let mut words = Vec::with_capacity(size as usize);
           deserialize_flat_value(
-            &info.ty,
+            &info.layout,
             &mut reader,
             &mut words,
             heap,
@@ -176,26 +176,20 @@ pub fn adopt_shared(
       }
       SharedVarStorage::DynMemory { region, stride } => {
         let region = &mut dyn_memory[region as usize];
-        if needs_wire_encoding(&info.ty) {
-          let Type::Array(_, element_type) = &info.ty else {
+        if info.layout.needs_wire_encoding() {
+          let ValueLayout::DynArray(element) = &info.layout else {
             unreachable!()
           };
-          let element_type = element_type.unwrap_known();
           // the region owns its embedded ids — release them before the
           // wholesale replacement (`Cells` children release via `Drop`)
-          release_embedded_region_ids(&element_type, region, heap, heap_free);
+          release_embedded_region_ids(element, region, heap, heap_free);
           let mut reader = WireReader {
             words: &snapshot.words,
             pos: 0,
           };
           let count = reader.read() as usize;
-          *region = deserialize_elements(
-            &element_type,
-            count,
-            &mut reader,
-            heap,
-            heap_free,
-          );
+          *region =
+            deserialize_elements(element, count, &mut reader, heap, heap_free);
         } else {
           let words = region.words_mut(stride as usize);
           words.clear();
@@ -304,44 +298,72 @@ impl BytecodeProgram {
 // checks gate adopts). Flat-element variables keep the raw-words format
 // (and the allocation-free steady state) unchanged.
 
-/// Whether a shared variable of this type uses the serialized wire
-/// encoding rather than raw replica words: a value whose flat layout
-/// embeds heap ids (which are heap-local and meaningless on the other
-/// thread) must be serialized by dereferencing them. A dyn-array var
-/// (dyn-region storage) needs it only when its *elements* embed heap;
-/// any other (slot-backed) var needs it when the value itself embeds a
-/// runtime-sized array or String. Flat values — scalars, and structs/
-/// enums/arrays of only flat fields — keep the raw-words fast path.
-pub fn needs_wire_encoding(ty: &Type) -> bool {
-  match ty {
-    Type::Array(Some(ConcreteArraySize::Unsized), element_type) => {
-      let element_type = element_type.unwrap_known();
-      element_type.involves_runtime_sized_array()
-        || element_type.involves_string()
+impl ValueLayout {
+  /// The layout of a value of type `t`.
+  pub fn of(t: &Type) -> Self {
+    if !(t.involves_runtime_sized_array() || t.involves_string()) {
+      return Self::Flat {
+        words: vm_stack_size(t).into(),
+      };
     }
-    _ => ty.involves_runtime_sized_array() || ty.involves_string(),
+    match t {
+      Type::String => Self::String,
+      Type::Array(Some(ConcreteArraySize::Unsized), element_type) => {
+        Self::DynArray(Box::new(Self::of(&element_type.unwrap_known())))
+      }
+      Type::Struct(s) => Self::Struct(
+        s.fields
+          .iter()
+          .map(|field| Self::of(&field.field_type.unwrap_known()))
+          .collect(),
+      ),
+      Type::Enum(e) => Self::Enum {
+        variants: e
+          .variants
+          .iter()
+          .map(|variant| Self::of(&variant.inner_type.unwrap_known()))
+          .collect(),
+        words: vm_stack_size(t).into(),
+      },
+      Type::Array(Some(size), element_type) => Self::FixedArray {
+        count: size
+          .as_literal()
+          .expect("non-literal fixed-array size in shared value"),
+        element: Box::new(Self::of(&element_type.unwrap_known())),
+      },
+      _ => panic!("unsupported type in shared wire encoding: {t:?}"),
+    }
+  }
+
+  /// Whether a shared variable with this layout uses the serialized wire
+  /// encoding rather than raw replica words: a value whose flat layout
+  /// embeds heap ids (which are heap-local and meaningless on the other
+  /// thread) must be serialized by dereferencing them. A dyn-array var
+  /// (dyn-region storage) needs it only when its *elements* embed heap;
+  /// any other (slot-backed) var needs it when the value itself embeds a
+  /// runtime-sized array or String. Flat values — scalars, and structs/
+  /// enums/arrays of only flat fields — keep the raw-words fast path.
+  pub fn needs_wire_encoding(&self) -> bool {
+    match self {
+      Self::DynArray(element) => element.involves_heap(),
+      layout => layout.involves_heap(),
+    }
   }
 }
 
-fn type_is_heap_value(t: &Type) -> bool {
-  matches!(
-    t,
-    Type::Array(Some(ConcreteArraySize::Unsized), _) | Type::String
-  )
-}
-
-fn type_involves_heap(t: &Type) -> bool {
-  t.involves_runtime_sized_array() || t.involves_string()
+/// [`ValueLayout::needs_wire_encoding`] for a value of type `ty`.
+pub fn needs_wire_encoding(ty: &Type) -> bool {
+  ValueLayout::of(ty).needs_wire_encoding()
 }
 
 fn serialize_cell(
-  t: &Type,
+  layout: &ValueLayout,
   cell: Option<&Arc<HeapCell>>,
   heap: &[Option<Arc<HeapCell>>],
   out: &mut Vec<u32>,
 ) {
-  match t {
-    Type::String => match cell {
+  match layout {
+    ValueLayout::String => match cell {
       Some(c) => {
         let words = match &c.memory {
           DynMemory::Words(words) => &words[..],
@@ -352,25 +374,22 @@ fn serialize_cell(
       }
       None => out.push(0),
     },
-    Type::Array(Some(ConcreteArraySize::Unsized), element_type) => {
-      let element_type = element_type.unwrap_known();
-      match cell {
-        None => out.push(0),
-        Some(c) => serialize_dyn_memory(&element_type, &c.memory, heap, out),
-      }
-    }
-    _ => panic!("serialize_cell on a non-heap-value type"),
+    ValueLayout::DynArray(element) => match cell {
+      None => out.push(0),
+      Some(c) => serialize_dyn_memory(element, &c.memory, heap, out),
+    },
+    _ => panic!("serialize_cell on a non-heap-value layout"),
   }
 }
 
 fn serialize_dyn_memory(
-  element_type: &Type,
+  element: &ValueLayout,
   memory: &DynMemory,
   heap: &[Option<Arc<HeapCell>>],
   out: &mut Vec<u32>,
 ) {
-  if !type_involves_heap(element_type) {
-    let stride = vm_stack_size(element_type).max(1) as usize;
+  if !element.involves_heap() {
+    let stride = element.words().max(1) as usize;
     match memory {
       DynMemory::Zeroed { elements } => {
         out.push(*elements);
@@ -384,18 +403,18 @@ fn serialize_dyn_memory(
         unreachable!("Cells storage with a flat element type")
       }
     }
-  } else if type_is_heap_value(element_type) {
+  } else if element.is_heap_value() {
     match memory {
       DynMemory::Cells(children) => {
         out.push(children.len() as u32);
         for child in children {
-          serialize_cell(element_type, child.as_ref(), heap, out);
+          serialize_cell(element, child.as_ref(), heap, out);
         }
       }
       DynMemory::Zeroed { elements } => {
         out.push(*elements);
         for _ in 0..*elements {
-          serialize_cell(element_type, None, heap, out);
+          serialize_cell(element, None, heap, out);
         }
       }
       DynMemory::Words(_) => {
@@ -404,19 +423,19 @@ fn serialize_dyn_memory(
     }
   } else {
     // elements EMBED heap ids in flat words
-    let stride = vm_stack_size(element_type).max(1) as usize;
+    let stride = element.words().max(1) as usize;
     match memory {
       DynMemory::Words(words) => {
         out.push((words.len() / stride) as u32);
         for chunk in words.chunks(stride) {
-          serialize_flat_value(element_type, chunk, heap, out);
+          serialize_flat_value(element, chunk, heap, out);
         }
       }
       DynMemory::Zeroed { elements } => {
         out.push(*elements);
         let zeros = vec![0u32; stride];
         for _ in 0..*elements {
-          serialize_flat_value(element_type, &zeros, heap, out);
+          serialize_flat_value(element, &zeros, heap, out);
         }
       }
       DynMemory::Cells(_) => {
@@ -427,65 +446,47 @@ fn serialize_dyn_memory(
 }
 
 fn serialize_flat_value(
-  t: &Type,
+  layout: &ValueLayout,
   words: &[u32],
   heap: &[Option<Arc<HeapCell>>],
   out: &mut Vec<u32>,
 ) {
-  if !type_involves_heap(t) {
-    out.extend_from_slice(words);
-    return;
-  }
-  match t {
-    Type::String | Type::Array(Some(ConcreteArraySize::Unsized), _) => {
+  match layout {
+    ValueLayout::Flat { .. } => out.extend_from_slice(words),
+    ValueLayout::String | ValueLayout::DynArray(_) => {
       serialize_cell(
-        t,
+        layout,
         heap_index(words[0]).and_then(|i| heap[i].as_ref()),
         heap,
         out,
       );
     }
-    Type::Struct(s) => {
+    ValueLayout::Struct(fields) => {
       let mut offset = 0usize;
-      for field in s.fields.iter() {
-        let field_type = field.field_type.unwrap_known();
-        let size = vm_stack_size(&field_type) as usize;
-        serialize_flat_value(
-          &field_type,
-          &words[offset..offset + size],
-          heap,
-          out,
-        );
+      for field in fields {
+        let size = field.words() as usize;
+        serialize_flat_value(field, &words[offset..offset + size], heap, out);
         offset += size;
       }
     }
-    Type::Enum(e) => {
+    ValueLayout::Enum { variants, .. } => {
       let discriminant = words[0];
       out.push(discriminant);
-      let variant = &e.variants[discriminant as usize];
-      let inner_type = variant.inner_type.unwrap_known();
-      if inner_type != Type::Unit {
-        let size = vm_stack_size(&inner_type) as usize;
-        serialize_flat_value(&inner_type, &words[1..1 + size], heap, out);
-      }
+      let payload = &variants[discriminant as usize];
+      let size = payload.words() as usize;
+      serialize_flat_value(payload, &words[1..1 + size], heap, out);
     }
-    Type::Array(Some(size), element_type) => {
-      let count = size
-        .as_literal()
-        .expect("non-literal fixed-array size in shared value")
-        as usize;
-      let element_type = element_type.unwrap_known();
-      let stride = vm_stack_size(&element_type) as usize;
-      for i in 0..count {
+    ValueLayout::FixedArray { count, element } => {
+      let stride = element.words() as usize;
+      for i in 0..*count as usize {
         serialize_flat_value(
-          &element_type,
+          element,
           &words[i * stride..(i + 1) * stride],
           heap,
           out,
         );
       }
     }
-    _ => panic!("unsupported type in shared wire encoding: {t:?}"),
   }
 }
 
@@ -508,13 +509,13 @@ impl<'a> WireReader<'a> {
 }
 
 fn deserialize_cell(
-  t: &Type,
+  layout: &ValueLayout,
   reader: &mut WireReader,
   heap: &mut Vec<Option<Arc<HeapCell>>>,
   heap_free: &mut Vec<u32>,
 ) -> Option<Arc<HeapCell>> {
-  match t {
-    Type::String => {
+  match layout {
+    ValueLayout::String => {
       let count = reader.read() as usize;
       (count > 0).then(|| {
         Arc::new(HeapCell {
@@ -523,103 +524,88 @@ fn deserialize_cell(
         })
       })
     }
-    Type::Array(Some(ConcreteArraySize::Unsized), element_type) => {
-      let element_type = element_type.unwrap_known();
+    ValueLayout::DynArray(element) => {
       let count = reader.read() as usize;
       if count == 0 {
         return None;
       }
-      let stride = vm_stack_size(&element_type).max(1);
+      let stride = element.words().max(1) as u16;
       let memory =
-        deserialize_elements(&element_type, count, reader, heap, heap_free);
+        deserialize_elements(element, count, reader, heap, heap_free);
       Some(Arc::new(HeapCell { memory, stride }))
     }
-    _ => panic!("deserialize_cell on a non-heap-value type"),
+    _ => panic!("deserialize_cell on a non-heap-value layout"),
   }
 }
 
 fn deserialize_elements(
-  element_type: &Type,
+  element: &ValueLayout,
   count: usize,
   reader: &mut WireReader,
   heap: &mut Vec<Option<Arc<HeapCell>>>,
   heap_free: &mut Vec<u32>,
 ) -> DynMemory {
-  if !type_involves_heap(element_type) {
-    let stride = vm_stack_size(element_type).max(1) as usize;
+  if !element.involves_heap() {
+    let stride = element.words().max(1) as usize;
     DynMemory::Words(reader.read_slice(count * stride).to_vec())
-  } else if type_is_heap_value(element_type) {
+  } else if element.is_heap_value() {
     DynMemory::Cells(
       (0..count)
-        .map(|_| deserialize_cell(element_type, reader, heap, heap_free))
+        .map(|_| deserialize_cell(element, reader, heap, heap_free))
         .collect(),
     )
   } else {
-    let stride = vm_stack_size(element_type) as usize;
+    let stride = element.words() as usize;
     let mut words = Vec::with_capacity(count * stride);
     for _ in 0..count {
-      deserialize_flat_value(element_type, reader, &mut words, heap, heap_free);
+      deserialize_flat_value(element, reader, &mut words, heap, heap_free);
     }
     DynMemory::Words(words)
   }
 }
 
 fn deserialize_flat_value(
-  t: &Type,
+  layout: &ValueLayout,
   reader: &mut WireReader,
   out_words: &mut Vec<u32>,
   heap: &mut Vec<Option<Arc<HeapCell>>>,
   heap_free: &mut Vec<u32>,
 ) {
-  if !type_involves_heap(t) {
-    let size = vm_stack_size(t) as usize;
-    out_words.extend_from_slice(reader.read_slice(size));
-    return;
-  }
-  match t {
-    Type::String | Type::Array(Some(ConcreteArraySize::Unsized), _) => {
-      let id = match deserialize_cell(t, reader, heap, heap_free) {
+  match layout {
+    ValueLayout::Flat { words } => {
+      out_words.extend_from_slice(reader.read_slice(*words as usize));
+    }
+    ValueLayout::String | ValueLayout::DynArray(_) => {
+      let id = match deserialize_cell(layout, reader, heap, heap_free) {
         Some(cell) => alloc_heap_cell(heap, heap_free, cell),
         None => 0,
       };
       out_words.push(id);
     }
-    Type::Struct(s) => {
-      for field in s.fields.iter() {
-        let field_type = field.field_type.unwrap_known();
-        deserialize_flat_value(&field_type, reader, out_words, heap, heap_free);
+    ValueLayout::Struct(fields) => {
+      for field in fields {
+        deserialize_flat_value(field, reader, out_words, heap, heap_free);
       }
     }
-    Type::Enum(e) => {
-      let total = vm_stack_size(t) as usize;
+    ValueLayout::Enum { variants, words } => {
       let start = out_words.len();
       let discriminant = reader.read();
       out_words.push(discriminant);
-      let variant = &e.variants[discriminant as usize];
-      let inner_type = variant.inner_type.unwrap_known();
-      if inner_type != Type::Unit {
-        deserialize_flat_value(&inner_type, reader, out_words, heap, heap_free);
-      }
+      deserialize_flat_value(
+        &variants[discriminant as usize],
+        reader,
+        out_words,
+        heap,
+        heap_free,
+      );
       // pad to the enum's full flat slot layout
-      out_words.resize(start + total, 0);
+      out_words.resize(start + *words as usize, 0);
     }
-    Type::Array(Some(size), element_type) => {
-      let count = size
-        .as_literal()
-        .expect("non-literal fixed-array size in shared value")
-        as usize;
-      let element_type = element_type.unwrap_known();
-      for _ in 0..count {
-        deserialize_flat_value(
-          &element_type,
-          reader,
-          out_words,
-          heap,
-          heap_free,
-        );
+    ValueLayout::FixedArray { count, element } => {
+      for _ in 0..*count {
+        deserialize_flat_value(element, reader, out_words, heap, heap_free);
       }
     }
-    _ => panic!("unsupported type in shared wire encoding: {t:?}"),
   }
 }
 
@@ -627,7 +613,7 @@ fn deserialize_flat_value(
 /// words — adoption replaces the region wholesale, and the region owns
 /// its ids (`Cells` regions release children via `Drop` instead).
 fn release_embedded_region_ids(
-  element_type: &Type,
+  element: &ValueLayout,
   memory: &DynMemory,
   heap: &mut Vec<Option<Arc<HeapCell>>>,
   heap_free: &mut Vec<u32>,
@@ -635,32 +621,29 @@ fn release_embedded_region_ids(
   let DynMemory::Words(words) = memory else {
     return;
   };
-  let stride = vm_stack_size(element_type).max(1) as usize;
+  let stride = element.words().max(1) as usize;
   for chunk in words.chunks(stride) {
-    release_flat_value_ids(element_type, chunk, heap, heap_free);
+    release_flat_value_ids(element, chunk, heap, heap_free);
   }
 }
 
 fn release_flat_value_ids(
-  t: &Type,
+  layout: &ValueLayout,
   words: &[u32],
   heap: &mut Vec<Option<Arc<HeapCell>>>,
   heap_free: &mut Vec<u32>,
 ) {
-  if !type_involves_heap(t) {
-    return;
-  }
-  match t {
-    Type::String | Type::Array(Some(ConcreteArraySize::Unsized), _) => {
+  match layout {
+    ValueLayout::Flat { .. } => {}
+    ValueLayout::String | ValueLayout::DynArray(_) => {
       release_heap_id(heap, heap_free, words[0]);
     }
-    Type::Struct(s) => {
+    ValueLayout::Struct(fields) => {
       let mut offset = 0usize;
-      for field in s.fields.iter() {
-        let field_type = field.field_type.unwrap_known();
-        let size = vm_stack_size(&field_type) as usize;
+      for field in fields {
+        let size = field.words() as usize;
         release_flat_value_ids(
-          &field_type,
+          field,
           &words[offset..offset + size],
           heap,
           heap_free,
@@ -668,35 +651,22 @@ fn release_flat_value_ids(
         offset += size;
       }
     }
-    Type::Enum(e) => {
-      let discriminant = words[0] as usize;
-      if let Some(variant) = e.variants.get(discriminant) {
-        let inner_type = variant.inner_type.unwrap_known();
-        if inner_type != Type::Unit {
-          let size = vm_stack_size(&inner_type) as usize;
-          release_flat_value_ids(
-            &inner_type,
-            &words[1..1 + size],
-            heap,
-            heap_free,
-          );
-        }
+    ValueLayout::Enum { variants, .. } => {
+      if let Some(payload) = variants.get(words[0] as usize) {
+        let size = payload.words() as usize;
+        release_flat_value_ids(payload, &words[1..1 + size], heap, heap_free);
       }
     }
-    Type::Array(Some(size), element_type) => {
-      if let Some(count) = size.as_literal() {
-        let element_type = element_type.unwrap_known();
-        let stride = vm_stack_size(&element_type) as usize;
-        for i in 0..count as usize {
-          release_flat_value_ids(
-            &element_type,
-            &words[i * stride..(i + 1) * stride],
-            heap,
-            heap_free,
-          );
-        }
+    ValueLayout::FixedArray { count, element } => {
+      let stride = element.words() as usize;
+      for i in 0..*count as usize {
+        release_flat_value_ids(
+          element,
+          &words[i * stride..(i + 1) * stride],
+          heap,
+          heap_free,
+        );
       }
     }
-    _ => {}
   }
 }

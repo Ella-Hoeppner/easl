@@ -1,0 +1,67 @@
+; A synth graph built from closures passed through higher-order functions
+; (an echo with a runtime-sized delay buffer, over an amplitude-modulated
+; oscillator), as the audio entry.
+(var rendered: u32)
+
+(def TAU: f32
+     6.28)
+
+(defn repeating-pulse-envelope [on-duration: f32
+                                repeat-duration: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (= phase
+         (-> phase
+             (+ (/ (sample-rate)))
+             (% repeat-duration)))
+      (if (< phase on-duration)
+        1.
+        0.))))
+
+(defn amplitude-modulate [s1: (Fn [] f32)
+                          s2: (Fn [] f32)]: (Fn [] f32)
+  (fn [] (* (s1) (s2))))
+
+(defn create-osc [freq: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (= phase
+         (-> phase
+             (+ (/ (sample-rate)))
+             (% 1.)))
+      (* phase TAU freq))))
+
+(defn echo [signal: (Fn [] f32)
+            delay-time: f32]: (Fn [] f32)
+  (let [delay-length (u32 (* (sample-rate) delay-time))
+        @var delay-buffer (zeroed-array delay-length): [f32]
+        @var delay-index 0u]
+    (fn []
+      (let [signal-value (signal)
+            new-value (+ signal-value
+                         (* 0.7
+                            (delay-buffer delay-index)))]
+        (= (delay-buffer delay-index)
+           new-value)
+        (= delay-index
+           (-> delay-index
+               (+ 1u)
+               (% delay-length)))
+        (delay-buffer delay-index)))))
+
+(defn counted [signal: (Fn [] f32)]: (Fn [] f32)
+  (fn []
+    (+= rendered 1u)
+    (signal)))
+
+@cpu
+(defn main []
+  (start-audio (counted (echo (amplitude-modulate
+                                (create-osc 440.)
+                                (repeating-pulse-envelope 0.025 1.))
+                              0.5)))
+  (spawn-window
+    (fn []
+      (when (> rendered 1000u)
+        (print "audio graph ran")
+        (close-window)))))

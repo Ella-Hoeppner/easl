@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use arc_swap::ArcSwap;
 use midir::{Ignore, MidiInput, MidiInputConnection};
 
-use crate::interpreter::{MidiNoteState, MidiState};
+use crate::interpreter::MidiState;
 
 static LISTENER: OnceLock<Arc<MidiListener>> = OnceLock::new();
 
@@ -100,62 +100,9 @@ fn own_connections(listener: Arc<MidiListener>) {
 
 impl MidiListener {
   fn handle_message(&self, message: &[u8]) {
-    if message.is_empty() {
-      return;
-    }
     let mut master = self.master.lock().unwrap();
-    // Channels are merged: only the message kind nibble matters.
-    match message[0] & 0xF0 {
-      0x90 | 0x80 if message.len() >= 3 => {
-        let note = (message[1] & 0x7F) as u32;
-        let velocity = (message[2] & 0x7F) as f32 / 127.;
-        // Note-on with velocity 0 is a note-off by convention.
-        let is_on = message[0] & 0xF0 == 0x90 && velocity > 0.;
-        if is_on {
-          if let Some(existing) =
-            master.down_notes.iter_mut().find(|n| n.note == note)
-          {
-            // A re-strike restarts the note: fresh velocity, and the
-            // pressure envelope starts over.
-            existing.velocity = velocity;
-            existing.aftertouch = 0.;
-          } else {
-            master.down_notes.push(MidiNoteState {
-              note,
-              velocity,
-              aftertouch: 0.,
-            });
-          }
-        } else {
-          master.down_notes.retain(|n| n.note != note);
-        }
-      }
-      0xB0 if message.len() >= 3 => {
-        master.cc[(message[1] & 0x7F) as usize] =
-          (message[2] & 0x7F) as f32 / 127.;
-      }
-      // Polyphonic key pressure (per-note aftertouch); pressure on a
-      // note that isn't held is meaningless, so it's dropped.
-      0xA0 if message.len() >= 3 => {
-        let note = (message[1] & 0x7F) as u32;
-        let Some(held) = master.down_notes.iter_mut().find(|n| n.note == note)
-        else {
-          return;
-        };
-        held.aftertouch = (message[2] & 0x7F) as f32 / 127.;
-      }
-      // Channel pressure (whole-keyboard aftertouch); one data byte.
-      0xD0 if message.len() >= 2 => {
-        master.channel_aftertouch = (message[1] & 0x7F) as f32 / 127.;
-      }
-      0xE0 if message.len() >= 3 => {
-        let raw =
-          ((message[2] & 0x7F) as i32) << 7 | (message[1] & 0x7F) as i32;
-        master.pitch_bend = (raw - 8192) as f32 / 8192.;
-      }
-      _ => return,
+    if master.apply_message(message) {
+      self.published.store(Arc::new(master.clone()));
     }
-    master.generation = master.generation.wrapping_add(1);
-    self.published.store(Arc::new(master.clone()));
   }
 }

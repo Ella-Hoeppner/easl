@@ -3,6 +3,8 @@
 //! rendering into a canvas through WebGPU. Frames come from
 //! `requestAnimationFrame` rather than a native window loop.
 
+mod audio;
+mod audio_engine;
 mod io;
 
 use std::{
@@ -11,9 +13,11 @@ use std::{
   sync::{Arc, RwLock},
 };
 
+use audio::AudioHost;
 use easl::{
   CompilerTarget,
-  compiler::program::Program,
+  audio::AudioSource,
+  compiler::{entry::EntryPoint, program::Program},
   interpreter::{
     EvalError, GpuBindingInfo, GpuBufferKind, IOManager, VmCpuRuntime,
     VmRunState, pick_entry_point_name,
@@ -22,35 +26,72 @@ use easl::{
   window::{BufferRead, GpuCore, install_gpu_error_handler},
 };
 use io::WebIO;
-use js_sys::Promise;
+use js_sys::{Function, Promise, Reflect};
 use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent};
 
 /// Compiles and runs an easl program, rendering into `canvas`. The program
 /// is given as parallel lists of file paths and sources, with `main_path`
-/// naming the file holding the `@cpu` entry point. Resolves once the program
-/// finishes; compile and runtime errors reject with their description.
+/// naming the file holding the `@cpu` entry point. `host` carries what the
+/// page provides: `module` (this runtime's compiled wasm module) and
+/// `workletUrl` (the audio worklet script) for programs that play audio,
+/// and `startMidi`, called if the program reads MIDI. Resolves once the
+/// program finishes; compile and runtime errors reject with their
+/// description.
 #[wasm_bindgen(js_name = runEaslProgram)]
 pub async fn run_easl_program(
   canvas: HtmlCanvasElement,
   main_path: String,
   paths: Vec<String>,
   sources: Vec<String>,
+  host: JsValue,
 ) -> Result<(), JsError> {
   console_error_panic_hook::set_once();
-  let sources: HashMap<PathBuf, String> =
+  let source_map: HashMap<PathBuf, String> =
     paths.into_iter().map(PathBuf::from).zip(sources).collect();
-  let program = compile_program(Path::new(&main_path), &sources)
+  let program = compile_program(Path::new(&main_path), &source_map)
     .map_err(|e| JsError::new(&e))?;
+  let audio_source = (!program
+    .find_fn_names_by_entry_point(|e| e == EntryPoint::Audio)
+    .is_empty())
+  .then(|| {
+    let (program, function_names) =
+      program.clone().compile_to_bytecode_program();
+    AudioSource::Bytecode {
+      program,
+      function_names,
+      shared_table: None,
+    }
+  });
   let entry_name =
     pick_entry_point_name(&program, None).map_err(describe_error)?;
+  if audio_source.is_some() {
+    audio::configure(AudioHost {
+      module: Reflect::get(&host, &"module".into()).unwrap_or_default(),
+      worklet_url: Reflect::get(&host, &"workletUrl".into())
+        .ok()
+        .and_then(|url| url.as_string())
+        .unwrap_or_default(),
+    })
+    .map_err(describe_error)?;
+  }
+  if program
+    .top_level_vars
+    .iter()
+    .any(|var| var.name.starts_with("easl_midi_"))
+    && let Ok(start_midi) = Reflect::get(&host, &"startMidi".into())
+    && let Some(start_midi) = start_midi.dyn_ref::<Function>()
+  {
+    let _ = start_midi.call0(&JsValue::NULL);
+  }
 
   let (surface, device, queue, surface_config) =
     create_surface_and_device(&canvas).await?;
 
-  let mut runtime = VmCpuRuntime::new(program, WebIO::new(), None, None)
-    .map_err(describe_error)?;
+  let mut runtime =
+    VmCpuRuntime::new(program, WebIO::new(), None, audio_source)
+      .map_err(describe_error)?;
   check_browser_support(&runtime.env.binding_infos())?;
   install_gpu_error_handler(&device);
   let gpu = GpuCore::new_from_parts(
@@ -86,6 +127,15 @@ pub async fn run_easl_program(
   }
   app.render_queued_work();
   Ok(())
+}
+
+/// Applies a raw MIDI message (status byte first) to the program's MIDI
+/// input, as if it came from a MIDI device: the page's Web MIDI listener
+/// calls this, and so can the page's own code (an on-screen keyboard, say).
+#[wasm_bindgen(js_name = sendMidiMessage)]
+pub fn send_midi_message(bytes: &[u8]) {
+  easl::midi::handle_message(bytes);
+  audio::forward_midi(bytes);
 }
 
 /// Parses and validates the program.

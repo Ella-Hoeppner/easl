@@ -12,12 +12,26 @@ use crate::{
 /// The page that runs the program on a full-window canvas.
 pub const INDEX_HTML: &str = include_str!("../web/templates/index.html");
 
+/// Files every web build includes alongside the runtime's `easl_web.js` and
+/// `easl_web_bg.wasm`, the same for every program: the audio worklet that
+/// runs a program's audio thread, and the text-encoding polyfill it needs.
+pub const RUNTIME_SUPPORT_FILES: &[(&str, &str)] = &[
+  (
+    "easl-audio-worklet.js",
+    include_str!("../web/templates/easl-audio-worklet.js"),
+  ),
+  (
+    "easl-text-polyfill.js",
+    include_str!("../web/templates/easl-text-polyfill.js"),
+  ),
+];
+
 const PROGRAM_JS_TEMPLATE: &str =
   include_str!("../web/templates/easl-program.js");
 
 /// The program-specific files of a web build. Alongside them go the
-/// runtime's `easl_web.js` and `easl_web_bg.wasm`, which are the same for
-/// every program.
+/// runtime's `easl_web.js` and `easl_web_bg.wasm` and the
+/// [`RUNTIME_SUPPORT_FILES`], which are the same for every program.
 pub struct WebBundle {
   /// `index.html`: see [`INDEX_HTML`].
   pub index_html: &'static str,

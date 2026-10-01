@@ -17,9 +17,11 @@ libloading = { version = "0.8", optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 hound = "3.5"
 arc-swap = "1.7"
+serde = { version = "1", features = ["derive", "rc"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 ffmpeg-sidecar = { version = "2", optional = true }
 
-# MIDI input is native-only; the web runtime reads silence.
+# The MIDI listener is native-only; the web runtime gets MIDI from Web MIDI.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 midir = { version = "0.10", optional = true }
 

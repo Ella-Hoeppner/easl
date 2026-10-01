@@ -243,9 +243,9 @@ pub struct BytecodeCompilationState {
   /// `BytecodeProgram::dyn_memory`, element stride in words). Element and
   /// length accesses compile to the direct `Dyn*` opcodes.
   pub dynamic_array_memory: HashMap<Arc<str>, (u16, u16)>,
-  /// Array type of each runtime-sized global, keyed by region index;
-  /// carried into `Code::dyn_memory_types`.
-  pub dynamic_array_types: HashMap<u16, Type>,
+  /// Regions of runtime-sized globals whose elements are heap values;
+  /// carried into `Code::cell_regions`.
+  pub cell_regions: Vec<u16>,
   /// Thread-shared globals: name → index into `shared_vars`. Populated for
   /// both compilation modes; drives `MarkSharedDirty` emission.
   pub shared_var_indices: HashMap<Arc<str>, u16>,
@@ -258,9 +258,6 @@ pub struct BytecodeCompilationState {
   /// declaration order. Carried into `Code::globals` by `finalize` so
   /// external integrations can locate globals in the running program.
   pub global_slots: Vec<(Arc<str>, u16, u16)>,
-  /// Type of each slot-backed global, aligned with `global_slots`; carried
-  /// into `Code::global_types`.
-  pub global_types: Vec<Type>,
   pub locals: HashMap<Arc<str>, u16>,
   /// Monomorphized name → base name, from the program's `NameContext`. Used
   /// to resolve monomorphized unit-variant constant names (e.g.
@@ -304,12 +301,11 @@ impl BytecodeCompilationState {
       binding_indices: HashMap::new(),
       dynamic_globals: HashMap::new(),
       dynamic_array_memory: HashMap::new(),
-      dynamic_array_types: HashMap::new(),
+      cell_regions: vec![],
       shared_var_indices: HashMap::new(),
       shared_vars: vec![],
       globals: HashMap::new(),
       global_slots: vec![],
-      global_types: vec![],
       locals: HashMap::new(),
       monomorphized_to_base_names: HashMap::new(),
       instructions: vec![],
@@ -2660,6 +2656,7 @@ impl BytecodeCompilationState {
       host_bindings: self.host_bindings,
       host_dispatches: self.host_dispatches,
       dyn_memory_count: self.dynamic_array_memory.len() as u16,
+      cell_regions: self.cell_regions,
       dyn_memory_regions: {
         let mut regions: Vec<(Arc<str>, u16, u16)> = self
           .dynamic_array_memory
@@ -2668,13 +2665,6 @@ impl BytecodeCompilationState {
           .collect();
         regions.sort_by_key(|(_, region, _)| *region);
         regions
-      },
-      global_types: self.global_types,
-      dyn_memory_types: {
-        let mut types: Vec<(u16, Type)> =
-          self.dynamic_array_types.into_iter().collect();
-        types.sort_by_key(|(region, _)| *region);
-        types.into_iter().map(|(_, t)| t).collect()
       },
       shared_vars: self
         .shared_vars
@@ -3154,7 +3144,7 @@ pub enum EmbeddingContainer {
 /// runtime-sized arrays and strings. Containers of such elements use
 /// `DynMemory::Cells` storage (owned `Arc` children) rather than flat
 /// words.
-fn is_heap_value_type(t: &Type) -> bool {
+pub(crate) fn is_heap_value_type(t: &Type) -> bool {
   matches!(
     t,
     Type::Array(Some(ConcreteArraySize::Unsized), _) | Type::String

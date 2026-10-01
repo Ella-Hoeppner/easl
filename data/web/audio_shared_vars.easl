@@ -1,0 +1,21 @@
+; An audio function runs on the browser's audio thread and exchanges shared
+; variables with the page both ways: the gain main sets reaches the audio
+; thread, which echoes it back, and its sample counter reaches main.
+(var gain: f32)
+(var heard-gain: f32)
+(var samples: u32)
+
+(defn tone [t: f32]: f32
+  (+= samples 1u)
+  (= heard-gain gain)
+  (* gain (sin (* 2764.6 t))))
+
+@cpu
+(defn main []
+  (= gain 0.25)
+  (start-audio tone)
+  (spawn-window
+    (fn []
+      (when (&& (> samples 1000u) (== heard-gain 0.25))
+        (print "audio thread saw the gain and ran")
+        (close-window)))))

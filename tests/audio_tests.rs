@@ -190,6 +190,77 @@ fn vm_audio_driver_entry_switch() {
   assert!(driver.switch_entry("no-such-entry").is_err());
 }
 
+/// An audio program round-tripped through `Code::to_bytes` /
+/// `from_bytes` (how the web runtime hands its page's compilation to the
+/// audio worklet) renders the same samples and publishes the same shared
+/// snapshots as the original, including a heap-involving shared var whose
+/// wire encoding walks the serialized value layouts.
+#[test]
+fn serialized_audio_program() {
+  use easl::audio::VmAudioDriver;
+  use easl::thread_sync::ThreadSharedTable;
+  use easl::vm::bytecode::{BytecodeProgram, Code};
+  use std::sync::Arc;
+  let source_path = Path::new("./data/audio/serialized_audio_program.easl");
+  let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
+  else {
+    panic!("failed to load program");
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  let (original, names) = program.compile_to_bytecode_program();
+  let entry = names
+    .iter()
+    .find(|name| name.ends_with("_audio"))
+    .expect("no audio clone of the closure entry")
+    .to_string();
+  let bytes = original.code.to_bytes();
+  let copy = BytecodeProgram::from_code(Code::from_bytes(&bytes).unwrap());
+  let shared_names = |program: &BytecodeProgram| -> Vec<Arc<str>> {
+    program
+      .code
+      .shared_vars
+      .iter()
+      .map(|v| v.name.clone())
+      .collect()
+  };
+  assert_eq!(shared_names(&original), shared_names(&copy));
+  assert!(!original.code.shared_vars.is_empty());
+
+  let run = |program: BytecodeProgram| {
+    let table =
+      Arc::new(ThreadSharedTable::new(program.code.shared_vars.len()));
+    table.join(participant::AUDIO);
+    let mut driver =
+      VmAudioDriver::new(&entry, program, &names, Some(table.clone())).unwrap();
+    let mut trace = vec![];
+    for _ in 0..3 {
+      let mut samples = vec![];
+      driver.run_batch(4, 8.0, |s| samples.push(s), |_| {}, |_| {});
+      let snapshots: Vec<Vec<u32>> = table
+        .slots
+        .iter()
+        .map(|slot| {
+          slot
+            .adopt_if_newer(0)
+            .map(|snapshot| snapshot.words.clone())
+            .unwrap_or_default()
+        })
+        .collect();
+      trace.push((samples, snapshots));
+    }
+    trace
+  };
+  let original_trace = run(original);
+  assert_eq!(original_trace, run(copy));
+  // the bank really went through the wire encoding: starting empty on the
+  // audio replica (nothing seeded it), 12 samples pushed arrays of 0..12
+  // zeroed elements, each count-prefixed, after the bank's own count
+  let bank_words = &original_trace[2].1[0];
+  assert_eq!(bank_words[0], 12);
+  assert_eq!(bank_words.len(), 1 + (0..12).map(|n| 1 + n).sum::<usize>());
+}
+
 /// The audio thread iterating `down-midi-notes` across batches whose
 /// MIDI state CHANGES — notes pressed and released between callbacks
 /// (each change bumps the snapshot generation, so the driver rewrites

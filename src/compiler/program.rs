@@ -19,7 +19,7 @@ use crate::thread_sync::participant;
 use crate::vm::bytecode::{BytecodeProgram, Instruction, Op};
 use crate::vm::compile::{
   BytecodeCompilationState, CompilePosition, PendingFrameFnUsage,
-  PendingRefFnUsage, RefArgBinding, vm_stack_size,
+  PendingRefFnUsage, RefArgBinding, is_heap_value_type, vm_stack_size,
 };
 use crate::{
   Never,
@@ -8475,6 +8475,7 @@ impl Program {
   ) -> (BytecodeProgram, Vec<Arc<str>>) {
     use crate::vm::bytecode::{
       HostBinding, HostBindingStorage, SharedVarInfo, SharedVarStorage,
+      ValueLayout,
     };
     let mut state = BytecodeCompilationState::new();
     state.cpu_mode = cpu_mode;
@@ -8548,19 +8549,22 @@ impl Program {
         // types (nested arrays, strings) size as one id word — their
         // regions use `DynMemory::Cells` storage, where the stride is
         // never consulted.
-        let element_stride = vm_stack_size(&element_type.unwrap_known());
+        let element_type = element_type.unwrap_known();
+        let element_stride = vm_stack_size(&element_type);
         let memory = dyn_memory_count;
         dyn_memory_count += 1;
+        if is_heap_value_type(&element_type) {
+          state.cell_regions.push(memory);
+        }
         state
           .dynamic_array_memory
           .insert(v.name.clone(), (memory, element_stride));
-        state.dynamic_array_types.insert(memory, v.var_type.clone());
         if let Some(shared_index) =
           state.shared_var_indices.get(&v.name).copied()
         {
           state.shared_vars[shared_index as usize] = Some(SharedVarInfo {
             name: v.name.clone(),
-            ty: v.var_type.clone(),
+            layout: ValueLayout::of(&v.var_type),
             audience: shared_var_audiences[&v.name],
             storage: SharedVarStorage::DynMemory {
               region: memory,
@@ -8612,12 +8616,11 @@ impl Program {
       let size = vm_stack_size(&v.var_type);
       state.globals.insert(v.name.clone(), position);
       state.global_slots.push((v.name.clone(), position, size));
-      state.global_types.push(v.var_type.clone());
       if let Some(shared_index) = state.shared_var_indices.get(&v.name).copied()
       {
         state.shared_vars[shared_index as usize] = Some(SharedVarInfo {
           name: v.name.clone(),
-          ty: v.var_type.clone(),
+          layout: ValueLayout::of(&v.var_type),
           audience: shared_var_audiences[&v.name],
           storage: SharedVarStorage::Slots { position, size },
         });

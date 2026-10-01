@@ -1,8 +1,10 @@
 use std::sync::{Arc, RwLock};
 
 use easl::{
+  audio::AudioSource,
   interpreter::{
-    BufferUpload, EvalError, FrameDriver, IOManager, StdoutIO, WindowEvent,
+    BufferUpload, EvalError, FrameDriver, IOManager, MidiState, StdoutIO,
+    UserspaceEvalError, WindowEvent,
   },
   window::GpuCore,
 };
@@ -186,5 +188,29 @@ impl IOManager for WebIO {
 
   fn get_buffer_byte_size(&self, group: u8, binding: u8) -> Option<u64> {
     self.inner.get_buffer_byte_size(group, binding)
+  }
+
+  fn midi_state(&self) -> MidiState {
+    easl::midi::current_midi_state().as_ref().clone()
+  }
+
+  /// The audio context's rate once audio is configured, so closure
+  /// constructors run before `start-audio` see the rate audio will use.
+  fn sample_rate(&self) -> f32 {
+    crate::audio::sample_rate().unwrap_or(44_100.)
+  }
+
+  fn start_audio(
+    &mut self,
+    entry_name: &str,
+    source: Option<AudioSource>,
+  ) -> Result<(), EvalError> {
+    crate::audio::start(entry_name, source)
+      .map_err(|e| UserspaceEvalError::AudioRuntimeError(e).into())
+  }
+
+  /// Every shared variable this side publishes goes to the audio worklet.
+  fn record_shared_publish(&mut self, name: &Arc<str>) {
+    crate::audio::forward_publish(name);
   }
 }

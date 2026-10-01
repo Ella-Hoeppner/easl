@@ -5,9 +5,11 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use crate::compiler::{types::Type, vars::VariableAddressSpace};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Op {
   // Control & memory
   Move,
@@ -328,7 +330,7 @@ pub enum Op {
   HostCall,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Instruction {
   pub op: Op,
   pub arg_positions: [u16; 3],
@@ -531,6 +533,7 @@ impl Instruction {
   }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Function {
   pub instructions: Range<u32>,
   pub return_position: u16,
@@ -562,26 +565,75 @@ pub enum HostBindingStorage {
 }
 
 /// Where a thread-shared global lives inside one compiled program.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum SharedVarStorage {
   Slots { position: u16, size: u16 },
   DynMemory { region: u16, stride: u16 },
 }
 
 /// Compile-time record of one thread-shared global (see
-/// `Program::thread_shared_globals`): its name, type, and storage location
-/// in this program. Index-aligned with the runtime `ThreadSharedTable`'s
+/// `Program::thread_shared_globals`): its name, value layout, and storage
+/// location in this program. Index-aligned with the runtime `ThreadSharedTable`'s
 /// slots — the list is derived from the program once and sorted by name, so
 /// indices agree across every compiled artifact.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SharedVarInfo {
   pub name: Arc<str>,
-  pub ty: Type,
+  /// How the var's value is laid out in VM words, for the shared-variable
+  /// wire encoding (see `vm::shared_sync`).
+  pub layout: ValueLayout,
   /// Which participants' code can touch this var (see
   /// `thread_sync::participant`); publish/adopt work is skipped for vars
   /// whose live audience (beyond the acting participant) is empty.
   pub audience: u32,
   pub storage: SharedVarStorage,
+}
+
+/// The layout of a value in VM words, as far as sharing it across threads
+/// needs: where heap ids sit, and what they point to. Derived from the
+/// value's type at compile time (`ValueLayout::of`), so compiled programs
+/// carry no compiler types and can be serialized.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ValueLayout {
+  /// Words holding no heap ids.
+  Flat { words: u32 },
+  /// A String: one heap-id word.
+  String,
+  /// A runtime-sized array of the given elements: one heap-id word.
+  DynArray(Box<ValueLayout>),
+  /// A struct (or closure scope) embedding heap ids, by field.
+  Struct(Vec<ValueLayout>),
+  /// An enum embedding heap ids: a discriminant word, then the variant's
+  /// payload, padded to `words` in total.
+  Enum {
+    variants: Vec<ValueLayout>,
+    words: u32,
+  },
+  /// A fixed-size array of elements embedding heap ids.
+  FixedArray {
+    count: u32,
+    element: Box<ValueLayout>,
+  },
+}
+
+impl ValueLayout {
+  /// Words the value occupies in VM slots.
+  pub fn words(&self) -> u32 {
+    match self {
+      Self::Flat { words } | Self::Enum { words, .. } => *words,
+      Self::String | Self::DynArray(_) => 1,
+      Self::Struct(fields) => fields.iter().map(Self::words).sum(),
+      Self::FixedArray { count, element } => count * element.words(),
+    }
+  }
+  /// Whether the value is or embeds a heap id.
+  pub fn involves_heap(&self) -> bool {
+    !matches!(self, Self::Flat { .. })
+  }
+  /// Whether the value is itself a heap id.
+  pub fn is_heap_value(&self) -> bool {
+    matches!(self, Self::String | Self::DynArray(_))
+  }
 }
 
 /// Backing store for one runtime-sized array: flat words in the VM's
@@ -903,6 +955,11 @@ impl VmHost for NoopHost {
   }
 }
 
+/// A compiled program. Audio-mode code (which never makes host calls)
+/// serializes with [`Code::to_bytes`], so another runtime instance can run
+/// the same program without compiling it again: the web runtime's audio
+/// worklet shares no memory with its page.
+#[derive(Serialize, Deserialize)]
 pub struct Code {
   pub function_instructions: Vec<Instruction>,
   pub functions: Vec<Function>,
@@ -925,30 +982,53 @@ pub struct Code {
   pub min_stack_size: usize,
   /// Cold metadata for `Op::HostCall` (CPU-runtime mode; all empty for
   /// audio-mode programs).
+  #[serde(skip)]
   pub host_ops: Vec<HostOp>,
+  #[serde(skip)]
   pub host_types: Vec<Type>,
+  #[serde(skip)]
   pub host_strings: Vec<Arc<str>>,
+  #[serde(skip)]
   pub host_bindings: Vec<HostBinding>,
+  #[serde(skip)]
   pub host_dispatches: Vec<HostDispatch>,
   /// Number of runtime-sized array globals; sizes
   /// `BytecodeProgram::dyn_memory`.
   pub dyn_memory_count: u16,
+  /// Regions whose elements are heap values (nested arrays, Strings),
+  /// which start as empty `DynMemory::Cells` rather than `Zeroed` —
+  /// zeroed storage only ever holds flat elements.
+  pub cell_regions: Vec<u16>,
   /// Name, region index, and element stride (in u32 words) of each
   /// runtime-sized array global — the dynamic-memory analog of `globals`,
   /// for locating regions by name (e.g. the one-time global copy into a
   /// starting audio program, or external hosts streaming sample data).
   pub dyn_memory_regions: Vec<(Arc<str>, u16, u16)>,
-  /// Type of each slot-backed global, aligned with `globals`. Used when
-  /// global values must cross between representations (e.g. serializing
-  /// tree-walker `Value`s into a starting audio program's slots).
-  pub global_types: Vec<Type>,
-  /// Array type of each runtime-sized global, aligned with
-  /// `dyn_memory_regions`.
-  pub dyn_memory_types: Vec<Type>,
   /// Thread-shared globals, sorted by name; empty when the program has no
   /// cross-thread sharing. `Op::MarkSharedDirty` indices and the runtime
   /// `ThreadSharedTable` slots address into this list.
   pub shared_vars: Vec<SharedVarInfo>,
+}
+
+impl Code {
+  /// This program's encoding, for [`Code::from_bytes`]. Only audio-mode
+  /// programs serialize: CPU-mode programs' host-call metadata refers to
+  /// compiler types.
+  pub fn to_bytes(&self) -> Vec<u8> {
+    assert!(
+      self.host_ops.is_empty()
+        && self.host_types.is_empty()
+        && self.host_strings.is_empty()
+        && self.host_bindings.is_empty()
+        && self.host_dispatches.is_empty(),
+      "only audio-mode programs can be serialized"
+    );
+    postcard::to_allocvec(self).expect("serializing bytecode failed")
+  }
+  pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+    postcard::from_bytes(bytes)
+      .map_err(|e| format!("invalid serialized bytecode: {e}"))
+  }
 }
 
 /// One heap-allocated dynamic-array value, referenced by heap-id words on
@@ -1074,10 +1154,15 @@ impl BytecodeProgram {
     let mut program = Self {
       stack: vec![0u32; max_stack_size],
       call_stack: Vec::with_capacity(code.functions.len()),
-      dyn_memory: vec![
-        DynMemory::Zeroed { elements: 0 };
-        code.dyn_memory_count as usize
-      ],
+      dyn_memory: (0..code.dyn_memory_count)
+        .map(|region| {
+          if code.cell_regions.contains(&region) {
+            DynMemory::Cells(vec![])
+          } else {
+            DynMemory::Zeroed { elements: 0 }
+          }
+        })
+        .collect(),
       heap: Vec::new(),
       heap_free: Vec::new(),
       shared_dirty: vec![false; code.shared_vars.len()],

@@ -3223,6 +3223,68 @@ impl Default for MidiState {
 }
 
 impl MidiState {
+  /// Applies one raw MIDI message (status byte first) to the state, merging
+  /// all channels, and bumps `generation` if it changed anything. Returns
+  /// whether it did: messages easl doesn't track (clock, sysex, program
+  /// change, pressure on a note that isn't held) leave the state untouched.
+  pub fn apply_message(&mut self, message: &[u8]) -> bool {
+    if message.is_empty() {
+      return false;
+    }
+    // Channels are merged: only the message kind nibble matters.
+    match message[0] & 0xF0 {
+      0x90 | 0x80 if message.len() >= 3 => {
+        let note = (message[1] & 0x7F) as u32;
+        let velocity = (message[2] & 0x7F) as f32 / 127.;
+        // Note-on with velocity 0 is a note-off by convention.
+        let is_on = message[0] & 0xF0 == 0x90 && velocity > 0.;
+        if is_on {
+          if let Some(existing) =
+            self.down_notes.iter_mut().find(|n| n.note == note)
+          {
+            // A re-strike restarts the note: fresh velocity, and the
+            // pressure envelope starts over.
+            existing.velocity = velocity;
+            existing.aftertouch = 0.;
+          } else {
+            self.down_notes.push(MidiNoteState {
+              note,
+              velocity,
+              aftertouch: 0.,
+            });
+          }
+        } else {
+          self.down_notes.retain(|n| n.note != note);
+        }
+      }
+      0xB0 if message.len() >= 3 => {
+        self.cc[(message[1] & 0x7F) as usize] =
+          (message[2] & 0x7F) as f32 / 127.;
+      }
+      // Polyphonic key pressure (per-note aftertouch); pressure on a note
+      // that isn't held is meaningless, so it's dropped.
+      0xA0 if message.len() >= 3 => {
+        let note = (message[1] & 0x7F) as u32;
+        let Some(held) = self.down_notes.iter_mut().find(|n| n.note == note)
+        else {
+          return false;
+        };
+        held.aftertouch = (message[2] & 0x7F) as f32 / 127.;
+      }
+      // Channel pressure (whole-keyboard aftertouch); one data byte.
+      0xD0 if message.len() >= 2 => {
+        self.channel_aftertouch = (message[1] & 0x7F) as f32 / 127.;
+      }
+      0xE0 if message.len() >= 3 => {
+        let raw =
+          ((message[2] & 0x7F) as i32) << 7 | (message[1] & 0x7F) as i32;
+        self.pitch_bend = (raw - 8192) as f32 / 8192.;
+      }
+      _ => return false,
+    }
+    self.generation = self.generation.wrapping_add(1);
+    true
+  }
   /// The flat VM/GPU words for the implicit `easl_midi_notes` table that
   /// `get-midi-note` reads: 128 `Option<MidiNote>` entries in note-number
   /// order, 4 words each — the enum discriminant (0 = `Some`, 1 = `None`,

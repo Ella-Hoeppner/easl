@@ -33,7 +33,7 @@ mod harness {
     time::{Duration, Instant},
   };
 
-  use easl::web_bundle::bundle_program;
+  use easl::web_bundle::{RUNTIME_SUPPORT_FILES, bundle_program};
   use serde_json::{Value, json};
   use tungstenite::{Message, WebSocket, stream::MaybeTlsStream};
   use wasm_bindgen_cli_support::Bindgen;
@@ -48,12 +48,34 @@ mod harness {
     MouseMove(f64, f64),
     MouseDown(f64, f64),
     MouseUp(f64, f64),
+    /// Sends a raw MIDI message through the runtime's `sendMidiMessage`.
+    Midi(&'static [u8]),
   }
   use Step::*;
 
   /// Input scripts for `data/web/` tests. The test page's canvas is 320x240
   /// in a 400x300 viewport, so (360, 280) is outside it.
   const SCRIPTS: &[(&str, &[Step])] = &[
+    (
+      "midi_input",
+      &[
+        AwaitPrint("(vec4f 0. 0. 0. 0.)"),
+        Midi(&[0x90, 60, 127]),
+        AwaitPrint("(vec4f 1. 60. 0. 0.)"),
+        Midi(&[0xB0, 1, 127]),
+        AwaitPrint("(vec4f 1. 60. 1. 0.)"),
+        Midi(&[0xE0, 0, 0]),
+        AwaitPrint("(vec4f 1. 60. 1. -1.)"),
+        Midi(&[0x80, 60, 0]),
+        AwaitPrint("(vec4f 0. 0. 1. -1.)"),
+        KeyDown("q"),
+        KeyUp("q"),
+      ],
+    ),
+    (
+      "audio_closure_midi",
+      &[AwaitPrint("\"started\""), Midi(&[0xB0, 7, 127])],
+    ),
     (
       "input_just_pressed",
       &[
@@ -104,9 +126,6 @@ mod harness {
     ("cpu/load_wav_raw", "reads a file"),
     ("cpu/wav_sample_rate", "reads a file"),
     ("cpu/save_wav_roundtrip", "writes a file"),
-    ("cpu/audio_closure_entry", "plays audio"),
-    ("cpu/audio_closure_entry_hofs", "plays audio"),
-    ("cpu/audio_time_through_hof_chain", "plays audio"),
     (
       "buffer/struct_array_buffer",
       "reads storage-write data in a vertex shader, which browsers don't \
@@ -116,6 +135,21 @@ mod harness {
       "buffer/bidirectional_transfer_render",
       "writes storage from a vertex shader, which browsers don't support \
        (web/vertex_storage_write_unsupported pins the error)",
+    ),
+    (
+      "cpu/audio_closure_entry",
+      "its window never closes (the native suite stops it after its \
+       simulated frames); web/audio_closure_hofs covers its audio graph",
+    ),
+    (
+      "cpu/audio_closure_entry_hofs",
+      "its window never closes (the native suite stops it after its \
+       simulated frames); web/audio_closure_hofs covers it",
+    ),
+    (
+      "cpu/audio_time_through_hof_chain",
+      "its window never closes (the native suite stops it after its \
+       simulated frames)",
     ),
     (
       "cpu/midi_queries",
@@ -353,7 +387,9 @@ mod harness {
       let id = self.next_id.fetch_add(1, Ordering::Relaxed);
       self.programs.lock().unwrap().insert(
         id,
-        program_js.replace("\"./easl_web.js\"", "\"/runtime/easl_web.js\""),
+        // Every runtime file the program refers to (`./easl_web.js`, the
+        // wasm, the audio worklet) is served once, from `/runtime/`.
+        program_js.replace("\"./", "\"/runtime/"),
       );
       (
         id,
@@ -380,6 +416,12 @@ mod harness {
     let (content_type, body): (&str, &[u8]) = match path {
       "/runtime/easl_web.js" => ("text/javascript", runtime_js),
       "/runtime/easl_web_bg.wasm" => ("application/wasm", runtime_wasm),
+      _ if let Some((_, contents)) = RUNTIME_SUPPORT_FILES
+        .iter()
+        .find(|(name, _)| path.strip_prefix("/runtime/") == Some(*name)) =>
+      {
+        ("text/javascript", contents.as_bytes())
+      }
       _ => {
         let mut parts = path.trim_start_matches("/t/").splitn(2, '/');
         let id: Option<usize> = parts.next().and_then(|id| id.parse().ok());
@@ -406,7 +448,8 @@ mod harness {
       write!(
         stream,
         "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n\
-         Content-Length: {}\r\nConnection: close\r\n\r\n",
+         Content-Length: {}\r\nCache-Control: no-store\r\n\
+         Connection: close\r\n\r\n",
         body.len()
       )?;
       stream.write_all(body)
@@ -433,6 +476,7 @@ mod harness {
           "--disable-background-timer-throttling",
           "--disable-backgrounding-occluded-windows",
           "--disable-renderer-backgrounding",
+          "--autoplay-policy=no-user-gesture-required",
           "--remote-debugging-port=0",
         ])
         .arg(format!("--user-data-dir={}", profile_dir.display()))
@@ -840,6 +884,12 @@ mod harness {
         MouseMove(x, y) => mouse_event(session, "mouseMoved", x, y)?,
         MouseDown(x, y) => mouse_event(session, "mousePressed", x, y)?,
         MouseUp(x, y) => mouse_event(session, "mouseReleased", x, y)?,
+        Midi(bytes) => {
+          session.evaluate(&format!(
+            "import(\"./easl-program.js\").then((program) => \
+             program.sendMidiMessage(new Uint8Array({bytes:?})))"
+          ))?;
+        }
       }
     }
     loop {

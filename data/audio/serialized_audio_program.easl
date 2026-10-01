@@ -1,0 +1,11 @@
+; A stateful closure entry that grows a captured nested array, so its
+; lifted capture is shared through the heap-aware wire encoding.
+(defn make-voice []: (Fn [] f32)
+  (let [@var bank (into-dynamic-array [(into-dynamic-array [0.])])]
+    (fn []
+      (= bank (push bank (zeroed-array (array-length bank))))
+      (* 0.1 (f32 (array-length bank))))))
+
+@cpu
+(defn main []
+  (start-audio (make-voice)))

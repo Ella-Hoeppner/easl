@@ -1,0 +1,19 @@
+; MIDI messages the page sends reach the program's MIDI queries: printed
+; whenever the summary changes (held-note count, the first note's number
+; and velocity, CC 1, and pitch bend).
+@local (var last: vec4f (vec4f -1.))
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (let [notes (down-midi-notes)
+            held (array-length notes)
+            summary (vec4f (f32 held)
+                           (if (> held 0u) (f32 (.note (notes 0u))) 0.)
+                           (midi-cc 1u)
+                           (midi-pitch-bend))]
+        (when (any (!= summary last))
+          (print summary)
+          (= last summary)))
+      (when (key-just-down? "q") (close-window)))))
