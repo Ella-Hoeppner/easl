@@ -1,0 +1,25 @@
+; Two closures capture the same array of stored closures and call them.
+; Calling a stored function passes it by reference (a stateful one would
+; advance in place), but these are pure, so neither capture mutates
+; `shapes` and capturing it twice is fine.
+(defn scale [k: f32]: (Fn [f32] f32)
+  (fn [x] (* k x)))
+
+(defn offset [k: f32]: (Fn [f32] f32)
+  (fn [x] (+ k x)))
+
+(defn apply-both [f: (Fn [f32] f32)
+                  g: (Fn [f32] f32)
+                  x: f32]: f32
+  (+ (f x) (g x)))
+
+@cpu
+(defn main []
+  (let [shapes [(scale 2.) (offset 10.)]]
+    (print (apply-both (fn [x]
+                         (let [@var total 0.]
+                           (for [i (array-length shapes)]
+                             (+= total ((shapes i) x)))
+                           total))
+                       (fn [x] ((shapes 1u) x))
+                       1.))))

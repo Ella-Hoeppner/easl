@@ -1001,6 +1001,10 @@ error_test!(
   CompileErrorKind::CopiedStatefulClosure("f".into())
 );
 error_test!(
+  stored_stateful_closures_captured_twice_failure,
+  CompileErrorKind::CopiedStatefulClosure("counters".into())
+);
+error_test!(
   copied_stateful_closure_captured_failure,
   CompileErrorKind::CopiedStatefulClosure("c".into())
 );

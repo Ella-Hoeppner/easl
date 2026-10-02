@@ -68,7 +68,7 @@ use crate::compiler::{
 };
 
 const FNBOX_MAKE: &str = "$fnbox-make";
-const FNBOX_APPLY: &str = "$fnbox-apply";
+pub(crate) const FNBOX_APPLY: &str = "$fnbox-apply";
 const FNBOX_BORROW: &str = "$fnbox-borrow";
 
 fn ptr_key<T: ?Sized>(arc: &Arc<T>) -> usize {

@@ -1,0 +1,19 @@
+; As stored_pure_closures_captured_twice (cpu suite), but the stored
+; closures are stateful: two captures are two copies of their state.
+(defn counter [k: f32]: (Fn [f32] f32)
+  (let [@var count 0.]
+    (fn [x]
+      (+= count k)
+      (* count x))))
+
+(defn apply-both [f: (Fn [f32] f32)
+                  g: (Fn [f32] f32)
+                  x: f32]: f32
+  (+ (f x) (g x)))
+
+@cpu
+(defn main []
+  (let [counters [(counter 1.) (counter 2.)]]
+    (print (apply-both (fn [x] ((counters 0u) x))
+                       (fn [x] ((counters 1u) x))
+                       1.))))

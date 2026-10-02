@@ -8,7 +8,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::compiler::exp_builder::{ExpBuilder, let_around};
 use crate::compiler::function_values::{
-  holds_boxed_function, is_function_value_borrow, is_pure_place,
+  FNBOX_APPLY, holds_boxed_function, is_function_value_borrow, is_pure_place,
 };
 use crate::compiler::structs::{
   indexable_vec_and_mat_types, make_concrete_vec_type,
@@ -5022,6 +5022,41 @@ impl TypedExp {
       })
       .unwrap()
   }
+  /// Variables this expression writes through a mutable-reference argument
+  /// of any call besides a stored-function call (`$fnbox-apply`). That
+  /// call takes the stored function by reference only so a stateful
+  /// closure can advance in place; whether it does depends on which
+  /// closures the value can hold, which `validate_copied_stateful_closures`
+  /// judges once those are known.
+  fn written_vars_besides_stored_function_calls(&self) -> HashSet<Arc<str>> {
+    let mut written = HashSet::new();
+    self
+      .walk(&mut |exp| {
+        if let Application(f, args) = &exp.kind
+          && let TypeState::Known(Type::Function(signature)) = &f.data.kind
+          && !signature
+            .abstract_ancestor
+            .as_ref()
+            .is_some_and(|ancestor| {
+              &*ancestor.read().unwrap().name == FNBOX_APPLY
+            })
+        {
+          for ((arg, _), arg_exp) in signature.args.iter().zip(args.iter()) {
+            if matches!(
+              arg.var_type.ownership,
+              Ownership::MutableReference
+                | Ownership::Pointer(_, RefMutability::Mutable)
+            ) && let Some(name) = arg_exp.name_or_inner_accessed_name()
+            {
+              written.insert(name.clone());
+            }
+          }
+        }
+        Ok::<bool, Never>(true)
+      })
+      .unwrap();
+    written
+  }
   pub fn catch_duplicate_closures_capturing_mutable_variables(
     &mut self,
     program: &Program,
@@ -5050,6 +5085,8 @@ impl TypedExp {
           let e = exp.effects();
           match &mut exp.kind {
             ExpKind::Function(_, body) => {
+              let real_writes =
+                body.written_vars_besides_stored_function_calls();
               let mut read_vars = HashSet::new();
               let mut written_vars = HashSet::new();
               for e in e.0.iter() {
@@ -5057,8 +5094,15 @@ impl TypedExp {
                   Effect::ReadsVar(var) | Effect::ReadsArrayLength(var) => {
                     read_vars.insert(var);
                   }
-                  Effect::ModifiesLocalVar(var) => {
+                  Effect::ModifiesLocalVar(var)
+                    if real_writes.contains(var) =>
+                  {
                     written_vars.insert(var);
+                  }
+                  // a stored-function call's by-reference argument is
+                  // still a read of the variable
+                  Effect::ModifiesLocalVar(var) => {
+                    read_vars.insert(var);
                   }
                   _ => {}
                 }
@@ -5094,7 +5138,11 @@ impl TypedExp {
               return Ok(false);
             }
             ExpKind::Application(f, args) => {
-              if let Type::Function(f) = f.data.unwrap_known() {
+              if let Type::Function(f) = f.data.unwrap_known()
+                && !f.abstract_ancestor.as_ref().is_some_and(|ancestor| {
+                  &*ancestor.read().unwrap().name == FNBOX_APPLY
+                })
+              {
                 for (i, (arg, _)) in f.args.iter().enumerate() {
                   if arg.var_type.ownership == Ownership::MutableReference {
                     if let Some(name) = args[i].name_or_inner_accessed_name()

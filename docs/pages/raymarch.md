@@ -639,38 +639,41 @@ Here's one way that we could accomplish that:
 
 @cpu
 (defn main []
-  (spawn-window (fn []
-                  (let [shapes [(Shape (sphere 0.9)
-                                       (blinn-phong (vec3f 1. 0.5 0.5)
-                                                    (vec3f 2. 2. -5.)
-                                                    0.2
-                                                    50.))
-                                (Shape (rotate (box (vec3f 0.7))
-                                               (vec3f 1.)
-                                               (window-time))
-                                       (blinn-phong (vec3f 0.5 1. 0.5)
-                                                    (vec3f 2. 2. -5.)
-                                                    0.2
-                                                    50.))]]
-                    (render-sdf (fn [pos]
-                                  (let [@var closest-dist 1000000.]
-                                    (for [i (array-length shapes)]
-                                      (= closest-dist
-                                         (min closest-dist
-                                              ((.sdf (shapes i)) pos))))
-                                    closest-dist))
-                                (fn [surface-pos
-                                     view-direction
-                                     surface-normal]
-                                  (let [@var closest-dist 1000000.
-                                        @var closest-index 0u]
-                                    (for [i (array-length shapes)]
-                                      (= closest-dist
-                                         (min closest-dist
-                                              ((.sdf (shapes i)) surface-pos))))
-                                    ((.material (shapes closest-index))
-                                     surface-pos
-                                     view-direction
-                                     surface-normal))))))))
+  (spawn-window
+    (fn []
+      (let [shapes [(Shape (sphere 0.9)
+                           (blinn-phong (vec3f 1. 0.5 0.5)
+                                        (vec3f 2. 2. -5.)
+                                        0.2
+                                        50.))
+                    (Shape (rotate (box (vec3f 0.7))
+                                   (vec3f 1.)
+                                   (window-time))
+                           (blinn-phong (vec3f 0.5 1. 1.)
+                                        (vec3f 2. 2. -5.)
+                                        0.2
+                                        50.))]
+            get-closest-shape (fn [pos]
+                                (let [@var closest-dist 1000000.
+                                      @var closest-shape (shapes 0u)]
+                                  (for [i (array-length shapes)]
+                                    (let [d ((.sdf (shapes i)) pos)]
+                                      (when (< d closest-dist)
+                                        (= closest-dist d)
+                                        (= closest-shape (shapes i)))))
+                                  closest-shape))]
+        (render-sdf (fn [pos]
+                      ((.sdf (get-closest-shape pos))
+                       pos))
+                    (fn [surface-pos
+                         view-direction
+                         surface-normal]
+                      ((.material (get-closest-shape surface-pos))
+                       surface-pos
+                       view-direction
+                       surface-normal)))))))
 ```
 
+Here we've defined a new struct type, `Shape`, which we use to bundle together an SDF and a lighting function (called "material" here) into a single object. Then, in our `main`, before we call `render-sdf`, we define an array containing two shapes. These two shapes are the same sphere and rotating box that we had before, but now each has it's own lighting bundled with it; the sphere has same light pink color that the whole scene did previously, while the box now has a separate `blinn-phong` call that uses a cyan color instead of pink.
+
+We also define `get-closest-shape`, a local helper function that takes a position and loops over the `shapes` array and finds the returns the closest shape to that position. And our arguments to `render-sdf` now each use this `get-closest-shape` to find the nearest shape, and return the distance and color of that shape, respectively.

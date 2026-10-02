@@ -360,6 +360,7 @@ cpu_test!(single_variant_enum_layout);
 // Binding a closure to a new name copies its captured state.
 
 cpu_test!(hof_specialization_across_passes);
+cpu_test!(stored_pure_closures_captured_twice);
 
 /// Compiling a program must not depend on hash-map iteration order. Each
 /// thread seeds its maps afresh, so this compiles the fixture under many
