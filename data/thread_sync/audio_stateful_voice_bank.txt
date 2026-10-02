@@ -1,0 +1,13 @@
+main-publish: <audio-scope>_voices
+start-audio: <audio-closure>
+spawn-window
+frame 0
+audio-batch 0 x3
+audio-adopt: <audio-scope>_voices
+samples: 0.125 0.375 0.625
+audio-publish: <audio-scope>_voices
+frame 1
+main-adopt: <audio-scope>_voices
+audio-batch 1 x3
+samples: 0.875 1 1
+audio-publish: <audio-scope>_voices

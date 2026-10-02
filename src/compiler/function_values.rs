@@ -5995,22 +5995,65 @@ struct CopyWalk<'b> {
   changed: bool,
 }
 
-/// Every variable name read in `exp` (the target of a whole-variable
-/// assignment is written, not read).
+/// Every variable read in `exp`, as a field path where a read only touches
+/// one field (`s.voices`; see `field_path`). The target of an assignment
+/// to a whole variable or field is written, not read.
 fn names_read(exp: &TypedExp, out: &mut HashSet<Arc<str>>) {
+  if let Some(path) = field_path(exp) {
+    out.insert(path);
+    return;
+  }
   match &exp.kind {
-    ExpKind::Name(n) => {
-      out.insert(n.clone());
-    }
     ExpKind::Application(f, args)
       if is_assignment(f)
         && args.len() == 2
-        && matches!(args[0].kind, ExpKind::Name(_)) =>
+        && field_path(&args[0]).is_some() =>
     {
       names_read(&args[1], out);
     }
     _ => for_each_child(exp, &mut |child| names_read(child, out)),
   }
+}
+
+/// A variable or a chain of field accesses of one, as a dotted path
+/// (`scope.voices`). A closure's captured variables are fields of its scope
+/// parameter, so this is how a captured variable is named.
+fn field_path(exp: &TypedExp) -> Option<Arc<str>> {
+  match &exp.kind {
+    ExpKind::Name(n) => Some(n.clone()),
+    ExpKind::Access(Accessor::Field(field), inner) => {
+      Some(format!("{}.{field}", field_path(inner)?).into())
+    }
+    _ => None,
+  }
+}
+
+/// The longest field path a place's value lives inside (elements collapse
+/// to their array): what reading or overwriting it is judged against.
+fn place_path(exp: &TypedExp) -> Option<Arc<str>> {
+  match &exp.kind {
+    ExpKind::Access(Accessor::ArrayIndex(_), inner) => place_path(inner),
+    ExpKind::Application(f, _)
+      if matches!(known_type(&f.data), Some(Type::Array(_, _))) =>
+    {
+      place_path(f)
+    }
+    _ => field_path(exp).or_else(|| match &exp.kind {
+      ExpKind::Access(_, inner) => place_path(inner),
+      _ => None,
+    }),
+  }
+}
+
+/// Whether reading `read` touches the value at `path`: the same path, one
+/// containing it (`s` contains `s.voices`), or one inside it.
+fn path_overlaps(read: &str, path: &str) -> bool {
+  let within = |inner: &str, outer: &str| {
+    inner.len() > outer.len()
+      && inner.starts_with(outer)
+      && inner.as_bytes()[outer.len()] == b'.'
+  };
+  read == path || within(path, read) || within(read, path)
 }
 
 /// Calls `f` on each direct child of `exp`.
@@ -6179,14 +6222,16 @@ impl<'a, 'p> CopyCheck<'a, 'p> {
       }
       _ => exp,
     };
-    let Some(name) = place_root(exp) else {
+    let (Some(name), Some(path)) = (place_root(exp), place_path(exp)) else {
       return;
     };
     if !self.exp_holds_stateful(exp, walk) {
       return;
     }
     let root = walk.aliases.get(&name).cloned().unwrap_or(name.clone());
-    if overwritten == Some(&root) {
+    // The path with its root resolved through aliases.
+    let path: Arc<str> = format!("{root}{}", &path[name.len()..]).into();
+    if overwritten == Some(&path) {
       return;
     }
     let is_global = self.program.top_level_vars.iter().any(|v| v.name == root);
@@ -6203,8 +6248,11 @@ impl<'a, 'p> CopyCheck<'a, 'p> {
       .loops
       .last()
       .is_some_and(|declared| !declared.contains(&root));
-    let still_used =
-      later.contains(&root) || later.contains(&name) || repeated || is_global;
+    let unaliased = format!("{name}{}", &path[root.len()..]);
+    let still_used = later.iter().any(|read| {
+      path_overlaps(read, &path) || path_overlaps(read, &unaliased)
+    }) || repeated
+      || is_global;
     if still_used {
       self.error(&name, exp);
     }
@@ -6302,11 +6350,13 @@ impl<'a, 'p> CopyCheck<'a, 'p> {
       }
       ExpKind::Application(f, args) if is_assignment(f) && args.len() == 2 => {
         // The value is computed before the target is written; a target
-        // that's a whole variable is overwritten, which ends its old value.
-        let target_root = match &args[0].kind {
-          ExpKind::Name(n) => Some(n.clone()),
-          _ => None,
-        };
+        // that's a whole variable or field is overwritten, which ends its
+        // old value.
+        let target_root = field_path(&args[0]).map(|path| {
+          let name = place_root(&args[0]).unwrap();
+          let root = walk.aliases.get(&name).cloned().unwrap_or(name.clone());
+          Arc::<str>::from(format!("{root}{}", &path[name.len()..]))
+        });
         let mut value_later = reads_of(&[&args[0]]);
         if let Some(root) = &target_root {
           value_later.remove(root);

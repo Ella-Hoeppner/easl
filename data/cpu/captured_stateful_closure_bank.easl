@@ -1,0 +1,29 @@
+; A closure growing and shrinking a captured array of stateful closures
+; with `(= fs (push fs ...))` / `(= fs (remove fs ...))`: each overwrite
+; ends the old array, so nothing is copied while in use, and every
+; counter advances in place, independently (the sequencer-of-voices
+; pattern).
+(defn counter []: (Fn [] f32)
+  (let [@var n 0.]
+    (fn []
+      (+= n 1.)
+      n)))
+
+(defn bank []: (Fn [] f32)
+  (let [@var fs ~[]: [(Fn [] f32)]]
+    (fn []
+      (when (> (array-length fs) 2u)
+        (= fs (remove fs 0u)))
+      (= fs (push fs (counter)))
+      (let [@var total 0.]
+        (for [i (array-length fs)]
+          (+= total ((fs i))))
+        total))))
+
+@cpu
+(defn main []
+  (let [b (bank)]
+    (print (b))
+    (print (b))
+    (print (b))
+    (print (b))))

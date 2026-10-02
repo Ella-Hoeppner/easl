@@ -363,6 +363,7 @@ cpu_test!(hof_specialization_across_passes);
 cpu_test!(stored_pure_closures_captured_twice);
 cpu_test!(unary_associative_in_boxed_walk);
 cpu_test!(diverging_statements);
+cpu_test!(captured_stateful_closure_bank);
 
 /// Compiling a program must not depend on hash-map iteration order. Each
 /// thread seeds its maps afresh, so this compiles the fixture under many

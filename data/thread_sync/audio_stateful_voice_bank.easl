@@ -1,0 +1,23 @@
+; The audio entry grows a captured array of stateful oscillators with
+; `(= voices (push voices ...))` (the sequencer-of-voices pattern): each
+; voice keeps advancing its own phase in place on the audio thread.
+(defn osc [increment: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (= phase (+ phase increment))
+      phase)))
+
+(defn bank []: (Fn [] f32)
+  (let [@var voices ~[]: [(Fn [] f32)]]
+    (fn []
+      (when (< (array-length voices) 2u)
+        (= voices (push voices (osc 0.125))))
+      (let [@var total 0.]
+        (for [i (array-length voices)]
+          (+= total ((voices i))))
+        total))))
+
+@cpu
+(defn main []
+  (start-audio (bank))
+  (spawn-window (fn [] ())))
