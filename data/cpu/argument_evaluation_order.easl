@@ -1,0 +1,39 @@
+; Arguments are evaluated left to right, whatever shape they have: an
+; earlier effectful argument runs before a later argument containing a
+; `let`/`match` (which gets lifted out of the call), and an effectful
+; unit-typed argument (whose value is erased) still runs, in its place.
+@local
+(var counter: i32)
+
+(defn mark [n: i32]: i32
+  (print n)
+  n)
+
+(defn combine [a: i32
+               b: i32]: i32
+  (+ (* 10i a) b))
+
+(defn bump []: i32
+  (= counter 2i)
+  3i)
+
+(defn keep [ignored: ()
+            value: i32]: i32
+  value)
+
+(defn three [a: i32
+             ignored: ()
+             c: i32]: i32
+  (+ a c))
+
+@cpu
+(defn main []
+  (print (keep (print 7i) 9i))
+  (print (combine (mark 1i) (let [x (mark 2i)] (+ x 1i))))
+  (= counter 1i)
+  (print (combine counter (let [y (bump)] y)))
+  (print (three (mark 4i)
+                (print 5i)
+                (match (mark 6i)
+                  6i 1i
+                  _ 0i))))

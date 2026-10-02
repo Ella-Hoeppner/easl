@@ -5481,7 +5481,7 @@ impl Program {
 
               Ok(true)
             }
-            ExpKind::Let(bindings, _) => {
+            ExpKind::Let(bindings, body) => {
               take(bindings, |bindings| {
                 bindings
                   .into_iter()
@@ -5491,6 +5491,25 @@ impl Program {
                   })
                   .collect()
               });
+              // A unit binding with effects has no value to bind, but it
+              // still runs: it becomes a statement between the bindings
+              // before and after it (which the walk then visits).
+              if let Some(i) = bindings.iter().position(|(_, _, _, value)| {
+                value.data.unwrap_known().is_unitlike(&mut names)
+              }) {
+                let rest = bindings.split_off(i + 1);
+                let (_, _, _, statement) = bindings.pop().unwrap();
+                take(body.as_mut(), |body| {
+                  let b = ExpBuilder::at(&body.source_trace);
+                  let data = body.data.clone();
+                  let rest = if rest.is_empty() {
+                    body
+                  } else {
+                    b.with_data(ExpKind::Let(rest, body.into()), data.clone())
+                  };
+                  b.with_data(ExpKind::Block(vec![statement, rest]), data)
+                });
+              }
               Ok(true)
             }
             _ => Ok::<bool, Never>(true),

@@ -1,0 +1,28 @@
+; Arguments evaluate left to right in shader code too, even when a later
+; argument's `let` is lifted out of the call: `order-log` records the order
+; the `note` calls ran in (12 in order, 21 reversed).
+@local
+(var order-log: f32)
+
+(defn note [d: f32]: f32
+  (= order-log (+ (* order-log 10.) d))
+  d)
+
+(defn pick [a: f32
+            b: f32]: f32
+  (+ a b))
+
+@storage-write
+(var out: [1: f32])
+
+@cpu
+(defn main []
+  (dispatch-compute-shader
+    (fn []
+      (= order-log 0.)
+      (pick (note 1.)
+            (let [x (note 2.)]
+              x))
+      (= (out 0u) order-log))
+    (vec3u 1u))
+  (print out))

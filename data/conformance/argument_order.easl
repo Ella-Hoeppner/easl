@@ -1,0 +1,22 @@
+; A later argument's `let` lifted out of a call, with an earlier effectful
+; argument bound to a temporary first: every backend agrees (`order-log`
+; records the order the `note` calls ran in: 12 in order, 21 reversed).
+; The order itself is pinned against expected output by the cpu
+; `argument_evaluation_order` and buffer `argument_order_gpu` tests.
+@local
+(var order-log: f32)
+
+(defn note [d: f32]: f32
+  (= order-log (+ (* order-log 10.) d))
+  d)
+
+(defn pick [a: f32
+            b: f32]: f32
+  (+ a b))
+
+(defn f []: f32
+  (= order-log 0.)
+  (pick (note 1.)
+        (let [x (note 2.)]
+          x))
+  order-log)

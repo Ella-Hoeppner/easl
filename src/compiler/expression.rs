@@ -5538,6 +5538,97 @@ impl TypedExp {
               | Return(_)
               | Access(_, _)
               | Match(_, _) => {
+                // Arguments are evaluated left to right. Lifting a later
+                // argument's statements out of the expression would run
+                // them before earlier arguments, so every earlier argument
+                // with effects is first bound to a temporary, in order.
+                // An effectful unit-typed argument is bound the same way:
+                // unit values are later erased, and its evaluation must
+                // stay, in its place in the order.
+                let by_reference: Vec<bool> = match &exp.kind {
+                  Application(f, _) => match f.data.kind.try_unwrap_known() {
+                    Some(Type::Function(signature)) => signature
+                      .args
+                      .iter()
+                      .map(|(a, _)| a.var_type.ownership != Ownership::Owned)
+                      .collect(),
+                    _ => vec![],
+                  },
+                  _ => vec![],
+                };
+                let is_application = matches!(exp.kind, Application(_, _));
+                let mut ordered_bindings = vec![];
+                {
+                  let mut slots: Vec<&mut TypedExp> = match &mut exp.kind {
+                    Application(_, args) | ArrayLiteral(args) => {
+                      args.iter_mut().collect()
+                    }
+                    Return(inner_exp) => vec![inner_exp],
+                    Access(_, inner_exp) => vec![inner_exp.as_mut()],
+                    Match(scrutinee, _) => vec![scrutinee],
+                    _ => unreachable!(),
+                  };
+                  let by_reference =
+                    |i: usize| by_reference.get(i).copied().unwrap_or(false);
+                  let effectful = |slot: &TypedExp| {
+                    !matches!(slot.kind, Name(_))
+                      && !matches!(
+                        slot.data.kind.try_unwrap_known(),
+                        Some(Type::Function(_))
+                      )
+                      && !slot.effects().is_side_effect_free()
+                  };
+                  let diverges = slots.iter().any(|slot| {
+                    matches!(slot.kind, Return(_) | Discard | Continue | Break)
+                  });
+                  let order_point = (!diverges)
+                    .then(|| {
+                      slots.iter().enumerate().find_map(|(i, slot)| {
+                        if matches!(
+                          slot.kind,
+                          Block(_) | Match(_, _) | Let(_, _)
+                        ) {
+                          Some(i)
+                        } else if is_application
+                          && !by_reference(i)
+                          && slot.data.kind.try_unwrap_known()
+                            == Some(Type::Unit)
+                          && effectful(slot)
+                        {
+                          Some(i + 1)
+                        } else {
+                          None
+                        }
+                      })
+                    })
+                    .flatten();
+                  if let Some(end) = order_point {
+                    for i in 0..end {
+                      if by_reference(i) || !effectful(slots[i]) {
+                        continue;
+                      }
+                      let name = names.gensym("arg");
+                      let slot = &mut slots[i];
+                      let name_exp = ExpBuilder::at(&slot.source_trace)
+                        .with_data(
+                          ExpKind::Name(name.clone()),
+                          slot.data.clone(),
+                        );
+                      let value = std::mem::replace(*slot, name_exp);
+                      ordered_bindings.push((
+                        name,
+                        value.source_trace.clone(),
+                        VariableKind::Let,
+                        value,
+                      ));
+                    }
+                  }
+                }
+                if !ordered_bindings.is_empty() {
+                  take(exp, |exp| let_around(ordered_bindings, exp));
+                  changed = true;
+                  return Ok(true);
+                }
                 let mut slots: Vec<&mut TypedExp> = match &mut exp.kind {
                   Application(_, args) | ArrayLiteral(args) => {
                     args.iter_mut().collect()
@@ -5577,10 +5668,13 @@ impl TypedExp {
                         let mut overridden_names: Vec<(Arc<str>, Type)> =
                           vec![];
                         for (name, t) in previously_referenced_names {
-                          if effects
+                          let modified = effects
                             .0
                             .contains(&Effect::ModifiesLocalVar(name.clone()))
-                          {
+                            || (effects.0.contains(
+                              &Effect::ModifiesGlobalVar(name.clone()),
+                            ) && !t.involves_runtime_sized_array());
+                          if modified {
                             overridden_names.push((name, t));
                           }
                         }
