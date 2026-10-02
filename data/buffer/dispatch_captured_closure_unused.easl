@@ -1,0 +1,21 @@
+; A dispatched closure captures a closure (itself capturing data) and
+; passes it to a function that never calls it: no shader reads that
+; closure's captures, so they get no GPU binding and nothing to upload.
+(defn tint [c: vec3f]: (Fn [f32] f32)
+  (fn [x] (* x c.x)))
+
+(defn shade [k: f32
+             unused: (Fn [f32] f32)]: f32
+  (* k 2.))
+
+@storage-write
+(var out: [1: f32])
+
+@cpu
+(defn main []
+  (let [t (tint (vec3f 3. 0. 0.))]
+    (dispatch-compute-shader
+      (fn []
+        (= (out 0u) (shade 5. t)))
+      (vec3u 1u))
+    (print out)))

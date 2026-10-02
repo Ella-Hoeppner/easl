@@ -3012,10 +3012,11 @@ impl BytecodeCompilationState {
     field_type: &Type,
     value_pos: u16,
   ) {
-    let binding = *self
-      .binding_indices
-      .get(global_name)
-      .expect("dispatched closure capture binding not found");
+    // A capture no shader reads (a captured closure the dispatched code
+    // never calls) isn't a GPU binding: there's nothing to upload.
+    let Some(&binding) = self.binding_indices.get(global_name) else {
+      return;
+    };
     match self.host_bindings[binding as usize].storage {
       HostBindingStorage::Slots { position, .. } => {
         let value_size = vm_stack_size(field_type);
