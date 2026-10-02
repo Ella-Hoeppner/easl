@@ -4848,17 +4848,20 @@ impl IOManager for CaptureIO {
     Ok(false)
   }
 
+  /// Never opens an output stream: capture runs are tests and tooling, which
+  /// must stay silent. Audio behavior is tested by driving `VmAudioDriver`
+  /// directly (see the thread-sync suite).
   #[cfg(feature = "window")]
   fn start_audio(
     &mut self,
-    entry_name: &str,
-    source: Option<crate::audio::AudioSource>,
+    _entry_name: &str,
+    _source: Option<crate::audio::AudioSource>,
   ) -> Result<(), EvalError> {
-    self.inner.start_audio(entry_name, source)
+    Ok(())
   }
   #[cfg(not(feature = "window"))]
-  fn start_audio(&mut self, entry_name: &str) -> Result<(), EvalError> {
-    self.inner.start_audio(entry_name)
+  fn start_audio(&mut self, _entry_name: &str) -> Result<(), EvalError> {
+    Ok(())
   }
 }
 

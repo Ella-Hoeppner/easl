@@ -477,6 +477,9 @@ mod harness {
           "--disable-backgrounding-occluded-windows",
           "--disable-renderer-backgrounding",
           "--autoplay-policy=no-user-gesture-required",
+          // Audio still renders (the tests observe it through shared
+          // variables) but never reaches the speakers.
+          "--mute-audio",
           "--remote-debugging-port=0",
         ])
         .arg(format!("--user-data-dir={}", profile_dir.display()))

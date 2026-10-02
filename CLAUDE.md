@@ -217,7 +217,7 @@ The interpreter evaluates `@cpu`-annotated easl code on the CPU, driving GPU wor
 Three implementations:
 - `StdoutIO` — real windowing via wgpu; opens a winit window, runs a real render loop
 - `StringIO` — test/debug, no GPU; simulates N frames (default 10), records all events to `events: Vec<IOEvent>`
-- `CaptureIO` — wraps `StdoutIO`, additionally captures `println` output to `prints: Vec<String>`; used by `run_program_capturing_output`
+- `CaptureIO` — wraps `StdoutIO`, additionally captures `println` output to `prints: Vec<String>`; used by `run_program_capturing_output`. Its `start-audio` never opens an output stream (test runs stay silent; audio behavior is tested by driving `VmAudioDriver` directly), and the web suite launches Chrome with `--mute-audio` for the same reason
 
 Key methods:
 - `println` — print output
