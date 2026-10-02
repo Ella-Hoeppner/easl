@@ -3004,6 +3004,21 @@ impl TypedExp {
     }
     None
   }
+  /// Whether evaluating this always leaves through `return`, `break`,
+  /// `continue` or `discard`, so it never produces a value: it is one of
+  /// those, or a `let`/block ending in one, or a `match` whose every arm
+  /// does.
+  fn always_diverges(&self) -> bool {
+    match &self.kind {
+      Break | Continue | Discard | Return(_) => true,
+      Let(_, body) => body.always_diverges(),
+      Block(children) => children.last().is_some_and(Self::always_diverges),
+      Match(_, arms) => {
+        !arms.is_empty() && arms.iter().all(|(_, arm)| arm.always_diverges())
+      }
+      _ => false,
+    }
+  }
   fn propagate_types_inner(
     &mut self,
     ctx: &mut MutableProgramLocalContext,
@@ -3462,17 +3477,15 @@ impl TypedExp {
         let mut anything_changed = false;
         let child_count = children.len();
         for (i, child) in children.iter_mut().enumerate() {
-          if i != child_count - 1 {
-            match &child.kind {
-              Break | Continue | Discard | Return(_) => {
-                anything_changed |= child.data.constrain(
-                  &TypeState::Known(Type::Unit),
-                  &child.source_trace,
-                  errors,
-                );
-              }
-              _ => {}
-            }
+          // A statement's value is discarded, and one that always leaves
+          // through `return`/`break`/`continue`/`discard` has no value
+          // anything else could constrain: give it unit.
+          if i != child_count - 1 && child.always_diverges() {
+            anything_changed |= child.data.constrain(
+              &TypeState::Known(Type::Unit),
+              &child.source_trace,
+              errors,
+            );
           }
           anything_changed |= child.propagate_types_inner(ctx, errors);
         }

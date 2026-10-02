@@ -1,0 +1,49 @@
+; A statement whose value is discarded and that always leaves through
+; `return`/`break`/... has nothing constraining its type, wherever the
+; divergence sits: directly, at the end of a `let` or block, or in every
+; arm of an `if`.
+(defn direct []: f32
+  (when true (return 1.))
+  0.)
+
+(defn in-let []: f32
+  (when true
+    (let [x 2.]
+      (return x)))
+  0.)
+
+(defn in-do []: f32
+  (do (let [] (return 3.)) ())
+  0.)
+
+(defn in-nested-do []: f32
+  (when true (do (return 4.)))
+  0.)
+
+(defn in-every-arm [c: bool]: f32
+  (when true (if c (return 5.) (return 6.)))
+  0.)
+
+(defn in-one-arm [c: bool]: f32
+  ; the other arm gives the statement its type
+  (if c (return 7.) 8.)
+  9.)
+
+(defn break-in-let []: u32
+  (let [@var n 0u]
+    (for [i 10u]
+      (when (== i 3u)
+        (let [] (break)))
+      (+= n 1u))
+    n))
+
+@cpu
+(defn main []
+  (print (direct))
+  (print (in-let))
+  (print (in-do))
+  (print (in-nested-do))
+  (print (in-every-arm false))
+  (print (in-one-arm true))
+  (print (in-one-arm false))
+  (print (break-in-let)))
