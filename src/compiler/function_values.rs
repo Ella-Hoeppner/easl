@@ -54,7 +54,7 @@ use crate::compiler::{
   expression::{Accessor, Exp, ExpKind, Number, TypedExp},
   functions::{
     AbstractFunctionSignature, FunctionImplementationKind, FunctionSignature,
-    Ownership, TopLevelFunction,
+    Ownership, RefMutability, TopLevelFunction,
   },
   program::{
     CompilerTarget, NameContext, Program, ref_arg_lvalue_path,
@@ -5174,16 +5174,41 @@ impl<'p> Lowering<'p> {
   /// Whether a closure instance's lowered body mutates its scope parameter.
   fn instance_mutates_scope(&mut self, instance: usize) -> bool {
     let body = self.lower_instance(instance);
+    self.body_mutates_scope(&body)
+  }
+  /// Whether a closure's body mutates its scope parameter: writes through
+  /// it, or passes it (or part of it) to a closure call whose closure
+  /// mutates its own scope.
+  fn body_mutates_scope(&mut self, body: &TopLevelFunction) -> bool {
     let ExpKind::Function(arg_names, fn_body) = &body.expression.kind else {
       return false;
     };
     let Some((scope_name, _)) = arg_names.last() else {
       return false;
     };
-    fn_body
-      .effects()
-      .0
-      .contains(&Effect::ModifiesLocalVar(scope_name.clone()))
+    let (direct, closure_calls) = scope_writes_in(fn_body, scope_name, true);
+    direct
+      || closure_calls
+        .iter()
+        .any(|closure| self.closure_mutates_scope(closure))
+  }
+  /// Whether `closure` (a closure's signature) mutates its scope: judged on
+  /// its lowered body when it's a lowered instance, its own body otherwise.
+  fn closure_mutates_scope(
+    &mut self,
+    closure: &Arc<RwLock<AbstractFunctionSignature>>,
+  ) -> bool {
+    let name = closure.read().unwrap().name.clone();
+    if let Some(&instance) = self.instance_by_name.get(&name) {
+      return self.instance_mutates_scope(instance);
+    }
+    let FunctionImplementationKind::Composite(implementation) =
+      closure.read().unwrap().implementation.clone()
+    else {
+      return false;
+    };
+    let body = implementation.read().unwrap().clone();
+    self.body_mutates_scope(&body)
   }
   /// The dispatcher applying union `union_key` at apply site `site`:
   /// `apply(u, args...) = (match u (V_i scope) (m_i args... scope) ...)`.
@@ -6083,32 +6108,67 @@ fn is_assignment(f: &TypedExp) -> bool {
 
 /// Whether `body` writes through a place rooted at `name`: assigns to it,
 /// applies an atomic operation to it, or lends plain data rooted at it to a
-/// mutable reference parameter. (Lending a function value doesn't count: a
-/// closure's state is judged by its own definition.)
+/// mutable reference parameter. (Lending a function value doesn't count,
+/// and neither does calling a captured closure: a closure's state is judged
+/// by its own definition.)
 fn writes_through(body: &TypedExp, name: &Arc<str>) -> bool {
-  let mut found = false;
+  scope_writes_in(body, name, false).0
+}
+
+/// How `body` writes through places rooted at `name`. First, whether it
+/// does directly: assigning or applying an atomic operation to one, or
+/// passing one to a mutable-reference parameter (a function value only when
+/// `function_values_write`). Second, the closures it passes one to as their
+/// scope argument, which write through it exactly when they mutate their
+/// own scope.
+fn scope_writes_in(
+  body: &TypedExp,
+  name: &Arc<str>,
+  function_values_write: bool,
+) -> (bool, Vec<Arc<RwLock<AbstractFunctionSignature>>>) {
+  let mut direct = false;
+  let mut closure_calls = vec![];
   let _ = body.walk(&mut |e| {
     if let ExpKind::Application(f, args) = &e.kind {
       let rooted = |a: &TypedExp| place_root(a).as_ref() == Some(name);
       let callee_writes = matches!(&f.kind, ExpKind::Name(c)
         if ASSIGNMENT_OPS.contains(&**c) || ATOMIC_MUTATION_OPS.contains(&**c));
       if callee_writes && args.first().is_some_and(rooted) {
-        found = true;
+        direct = true;
       }
       if let Some(Type::Function(sig)) = known_type(&f.data) {
-        for ((param, _), a) in sig.args.iter().zip(args.iter()) {
-          if param.var_type.ownership == Ownership::MutableReference
-            && rooted(a)
-            && !known_type(&a.data).is_some_and(|t| holds_function(&t))
+        let closure = sig
+          .abstract_ancestor
+          .as_ref()
+          .filter(|a| a.read().unwrap().captured_scope.is_some());
+        for (i, ((param, _), a)) in sig.args.iter().zip(args.iter()).enumerate()
+        {
+          if !matches!(
+            param.var_type.ownership,
+            Ownership::MutableReference
+              | Ownership::Pointer(_, RefMutability::Mutable)
+          ) || !rooted(a)
           {
-            found = true;
+            continue;
+          }
+          match closure {
+            Some(closure) if i + 1 == sig.args.len() => {
+              closure_calls.push(closure.clone());
+            }
+            _ => {
+              if function_values_write
+                || !known_type(&a.data).is_some_and(|t| holds_function(&t))
+              {
+                direct = true;
+              }
+            }
           }
         }
       }
     }
-    Ok::<bool, Never>(!found)
+    Ok::<bool, Never>(true)
   });
-  found
+  (direct, closure_calls)
 }
 
 /// The variable a place expression (a name, or field / element accesses of

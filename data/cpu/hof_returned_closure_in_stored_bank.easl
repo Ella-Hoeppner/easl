@@ -1,0 +1,31 @@
+; A closure returned by a higher-order function, capturing the stateful
+; closure passed to it (`apply`), stored in a captured array and called
+; from there: calling the captured closure advances its state, so the
+; stored closure mutates its scope and must be called in place.
+(defn create-osc [freq: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (= phase (+ phase freq))
+      phase)))
+
+(defn (apply T)
+      [signal: (Fn [] T)
+       effect: (Fn [T] f32)]: (Fn [] f32)
+      (fn [] (effect (signal))))
+
+(defn double [x: f32]: f32
+  (* x 2.))
+
+(defn bank [gen: (Fn [f32] (Fn [] f32))]: (Fn [] f32)
+  (let [@var voices ~[]: [(Fn [] f32)]]
+    (fn []
+      (when (< (array-length voices) 1u)
+        (= voices (push voices (gen 0.25))))
+      ((voices 0u)))))
+
+@cpu
+(defn main []
+  (let [b (bank (fn [freq] (let [o (create-osc freq)] (apply o double))))]
+    (print (b))
+    (print (b))
+    (print (b))))

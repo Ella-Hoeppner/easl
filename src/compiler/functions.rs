@@ -937,9 +937,13 @@ impl AbstractFunctionSignature {
                     .name(name, &new_arg_type),
                 );
                 *name = inlined_fn_name.clone();
+                // The scope is passed by mutable reference (a stateful
+                // closure advances it), as at every call that appends one.
+                let mut var_type: ExpTypeInfo = new_arg_type.known().into();
+                var_type.ownership = Ownership::MutableReference;
                 f.args.push((
                   Variable {
-                    var_type: new_arg_type.known().into(),
+                    var_type,
                     kind: VariableKind::Var,
                   },
                   vec![],
