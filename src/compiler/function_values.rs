@@ -1401,7 +1401,12 @@ impl<'a> Boxer<'a> {
             let mut boxed_positions = vec![];
             f.data.kind.with_dereferenced_mut(|ts| {
               if let TypeState::Known(Type::Function(s)) = ts {
-                for (i, (a, _)) in s.args.iter_mut().enumerate() {
+                // An associative builtin's signature is binary even where a
+                // call passes one argument (`(* x)`), so only the positions
+                // the call supplies are considered.
+                for (i, (a, _)) in
+                  s.args.iter_mut().enumerate().take(host_params.len())
+                {
                   if !host_params[i]
                     && matches!(
                       a.var_type.kind.try_unwrap_known(),

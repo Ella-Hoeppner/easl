@@ -1,0 +1,14 @@
+; A unary call to an associative builtin (`(* x)`, which is just `x`) in
+; code that also stores function values: boxing walks the call, whose
+; builtin signature is binary while the call has one argument.
+(defn double [x: f32]: f32
+  (* x 2.))
+
+(defn halve [x: f32]: f32
+  (/ x 2.))
+
+@cpu
+(defn main []
+  (let [fs [double halve]
+        melody [1. 1.5]]
+    (print ((fs 0u) (* (melody 1u))))))
