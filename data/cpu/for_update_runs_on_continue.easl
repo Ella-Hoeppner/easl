@@ -1,0 +1,19 @@
+; A `for` update needing statements of its own (here an `if`) still runs
+; when the body `continue`s, like any other update.
+@cpu
+(defn main []
+  (let [@var visits 0i]
+    (for [i 0i (< i 3i) (+= i (if (< visits 100i) 1i 2i))]
+      (+= visits 1i)
+      (when (< visits 10i) (continue)))
+    (print visits))
+  (let [@var total 0u
+        @var tries 0u]
+    (for [i 0u
+          (< i 6u)
+          (= i (let [stride (if (== (% i 2u) 0u) 1u 2u)]
+                 (+ i stride)))]
+      (+= tries 1u)
+      (when (&& (== i 1u) (< tries 20u)) (continue))
+      (+= total i))
+    (print total)))

@@ -86,6 +86,7 @@ macro_rules! buffer_test {
 buffer_test!(dispatch_capture_array_length);
 buffer_test!(dispatch_captured_closure_unused);
 buffer_test!(argument_order_gpu);
+buffer_test!(for_update_runs_on_continue_gpu);
 buffer_test!(storage_ref_gpu_roundtrip);
 buffer_test!(gpu_read_outside_application);
 buffer_test!(gpu_read_outside_application_dynamic);

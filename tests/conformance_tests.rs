@@ -613,6 +613,7 @@ conformance_test!(match_enum_unit);
 conformance_test!(match_enum_data);
 conformance_test!(enum_bool_payload);
 conformance_test!(argument_order);
+conformance_test!(for_update_continue);
 conformance_test!(generic_struct_enum_payload);
 conformance_test!(match_enum_struct_data);
 conformance_test!(match_enum_nested_data);

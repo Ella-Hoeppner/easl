@@ -1,0 +1,9 @@
+; A `for` update needing statements of its own, with a `continue` in the
+; body: every backend runs the update after `continue` (WGSL in a
+; `continuing` block, C in a statement expression).
+(defn f []: f32
+  (let [@var visits 0u]
+    (for [i 0u (< i 3u) (+= i (if (< visits 100u) 1u 2u))]
+      (+= visits 1u)
+      (when (< visits 10u) (continue)))
+    (f32 visits)))

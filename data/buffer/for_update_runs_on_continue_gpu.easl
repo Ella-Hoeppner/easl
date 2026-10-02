@@ -1,0 +1,26 @@
+; As the cpu `for_update_runs_on_continue` test, in a compute shader: a
+; `for` update needing statements of its own still runs on `continue`.
+@storage-write
+(var out: [2: u32])
+
+@cpu
+(defn main []
+  (dispatch-compute-shader
+    (fn []
+      (let [@var visits 0u]
+        (for [i 0u (< i 3u) (+= i (if (< visits 100u) 1u 2u))]
+          (+= visits 1u)
+          (when (< visits 10u) (continue)))
+        (= (out 0u) visits))
+      (let [@var total 0u
+            @var tries 0u]
+        (for [i 0u
+              (< i 6u)
+              (= i (let [stride (if (== (% i 2u) 0u) 1u 2u)]
+                     (+ i stride)))]
+          (+= tries 1u)
+          (when (&& (== i 1u) (< tries 20u)) (continue))
+          (+= total i))
+        (= (out 1u) total)))
+    (vec3u 1u))
+  (print out))

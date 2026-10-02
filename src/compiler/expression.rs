@@ -2694,6 +2694,63 @@ impl TypedExp {
         continue_condition_expression,
         update_expression,
         body_expression,
+      } if update_expression
+        .as_ref()
+        .is_some_and(|update| !matches!(update.kind, Application(_, _))) =>
+      {
+        // An update that needs statements of its own can't sit in a `for`
+        // header. WGSL runs it in a `continuing` block, which every
+        // iteration ends with, `continue` included; C (compiled by clang)
+        // keeps the header, wrapping the statements in a statement
+        // expression.
+        let variable = compile_word(increment_variable_name.0);
+        let variable_type =
+          increment_variable_type.monomorphized_name(names, target);
+        let initial_value = increment_variable_initial_value_expression
+          .compile(
+            ExpressionCompilationPosition::InnerExpression,
+            names,
+            target,
+          );
+        let condition = continue_condition_expression.compile(
+          ExpressionCompilationPosition::InnerExpression,
+          names,
+          target,
+        );
+        let update = update_expression.unwrap().compile(
+          ExpressionCompilationPosition::InnerLine,
+          names,
+          target,
+        );
+        let body = body_expression.compile(
+          ExpressionCompilationPosition::InnerLine,
+          names,
+          target,
+        );
+        match target {
+          CompilerTarget::WGSL => format!(
+            "\n{{\n  var {variable}: {variable_type} = {initial_value};\n  \
+             loop {{\n    if !({condition}) {{ break; }}{}\n    \
+             continuing {{{}\n    }}\n  }}\n}}",
+            indent(indent(body)),
+            indent(indent(indent(update)))
+          ),
+          CompilerTarget::C => format!(
+            "\nfor ({variable_type} {variable} = {initial_value}; {condition}; \
+             ({{{}\n}})) {{{}\n}}",
+            indent(update),
+            indent(body)
+          ),
+          CompilerTarget::VM => panic!(),
+        }
+      }
+      ForLoop {
+        increment_variable_name,
+        increment_variable_type,
+        increment_variable_initial_value_expression,
+        continue_condition_expression,
+        update_expression,
+        body_expression,
       } => format!(
         "\nfor ({} = {}; {}; {}) {{{}\n}}",
         match target {
@@ -5831,7 +5888,6 @@ impl TypedExp {
               ForLoop {
                 increment_variable_initial_value_expression,
                 continue_condition_expression,
-                update_expression,
                 body_expression,
                 ..
               } => {
@@ -5865,45 +5921,21 @@ impl TypedExp {
                   }
                   _ => {}
                 }
-                let need_to_extract_condition_and_update =
-                  match &continue_condition_expression.kind {
-                    Block(_) | Match(_, _) | Let(_, _) | Return(_) => true,
-                    _ => false,
-                  } || if let Some(update_expression) = update_expression {
-                    match &update_expression.kind {
-                      Block(_) | Match(_, _) | Let(_, _) | Return(_) => true,
-                      _ => false,
-                    }
-                  } else {
-                    false
-                  };
-                if need_to_extract_condition_and_update {
-                  let update_needs_extraction =
-                    if let Some(update_expression) = &update_expression {
-                      matches!(
-                        &update_expression.kind,
-                        Block(_) | Match(_, _) | Let(_, _) | Return(_)
-                      )
-                    } else {
-                      false
-                    };
+                // An update needing statements of its own stays in its slot,
+                // where it runs after every iteration, `continue` included;
+                // the backends emit such an update as statements (WGSL: a
+                // `loop` with a `continuing` block).
+                let condition_needs_extraction = matches!(
+                  &continue_condition_expression.kind,
+                  Block(_) | Match(_, _) | Let(_, _) | Return(_)
+                );
+                if condition_needs_extraction {
                   let b =
                     ExpBuilder::at(&continue_condition_expression.source_trace);
                   let condition = std::mem::replace(
                     continue_condition_expression.as_mut(),
                     b.bool(true),
                   );
-                  // The update is only relocated into the body when the
-                  // update itself needs extraction: left in the loop's
-                  // own update slot it keeps running on `continue`,
-                  // which a body-resident copy wouldn't.
-                  let mut update_replacement_expression = None;
-                  if update_needs_extraction {
-                    std::mem::swap(
-                      update_expression,
-                      &mut update_replacement_expression,
-                    );
-                  }
                   take(body_expression.as_mut(), |body_expression| {
                     let body_builder =
                       ExpBuilder::at(&body_expression.source_trace);
@@ -5916,13 +5948,8 @@ impl TypedExp {
                     // ran once even when the condition was false on
                     // entry (real crashes: iterating an empty
                     // `down-midi-notes` indexed out of bounds).
-                    let mut inner_expressions =
+                    let inner_expressions =
                       vec![b.break_unless(condition), body_expression];
-                    if let Some(update_replacement_expression) =
-                      update_replacement_expression
-                    {
-                      inner_expressions.push(*update_replacement_expression);
-                    }
                     body_builder
                       .typed(ExpKind::Block(inner_expressions), Type::Unit)
                   });
