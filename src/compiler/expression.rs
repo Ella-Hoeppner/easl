@@ -617,19 +617,80 @@ impl TypedExp {
     &mut self,
     names: &RwLock<NameContext>,
   ) -> Vec<(Arc<str>, SourceTrace, VariableKind, TypedExp)> {
+    // Each binding is made just before the statement needing it, so it's
+    // evaluated exactly where the argument was: after earlier statements,
+    // and once per loop iteration or `match` arm that reaches it.
+    let bind_locally = |exp: &mut TypedExp| {
+      let pending = exp.extract_non_bound_mutable_references(names);
+      if !pending.is_empty() {
+        take(exp, |exp| let_around(pending, exp));
+      }
+    };
     let mut pending = vec![];
     self
       .walk_mut(&mut |node: &mut TypedExp| -> Result<bool, Never> {
-        if let ExpKind::Let(bindings, body) = &mut node.kind {
-          let mut new_bindings = Vec::with_capacity(bindings.len());
-          for (name, st, kind, mut value) in bindings.drain(..) {
-            new_bindings
-              .extend(value.extract_non_bound_mutable_references(names));
-            new_bindings.push((name, st, kind, value));
+        match &mut node.kind {
+          ExpKind::Let(bindings, body) => {
+            let mut new_bindings = Vec::with_capacity(bindings.len());
+            for (name, st, kind, mut value) in bindings.drain(..) {
+              new_bindings
+                .extend(value.extract_non_bound_mutable_references(names));
+              new_bindings.push((name, st, kind, value));
+            }
+            *bindings = new_bindings;
+            bind_locally(body);
+            return Ok(false);
           }
-          new_bindings.extend(body.extract_non_bound_mutable_references(names));
-          *bindings = new_bindings;
-          return Ok(false);
+          ExpKind::Block(statements) => {
+            for statement in statements.iter_mut() {
+              bind_locally(statement);
+            }
+            return Ok(false);
+          }
+          ExpKind::Match(scrutinee, arms) => {
+            pending
+              .extend(scrutinee.extract_non_bound_mutable_references(names));
+            for (_, arm) in arms.iter_mut() {
+              bind_locally(arm);
+            }
+            return Ok(false);
+          }
+          ExpKind::ForLoop {
+            increment_variable_initial_value_expression,
+            continue_condition_expression,
+            update_expression,
+            body_expression,
+            ..
+          } => {
+            pending.extend(
+              increment_variable_initial_value_expression
+                .extract_non_bound_mutable_references(names),
+            );
+            pending.extend(
+              continue_condition_expression
+                .extract_non_bound_mutable_references(names),
+            );
+            if let Some(update) = update_expression {
+              bind_locally(update);
+            }
+            bind_locally(body_expression);
+            return Ok(false);
+          }
+          ExpKind::WhileLoop {
+            condition_expression,
+            body_expression,
+          } => {
+            pending.extend(
+              condition_expression.extract_non_bound_mutable_references(names),
+            );
+            bind_locally(body_expression);
+            return Ok(false);
+          }
+          ExpKind::Function(_, body) => {
+            bind_locally(body);
+            return Ok(false);
+          }
+          _ => {}
         }
         let ExpKind::Application(f_exp, args) = &mut node.kind else {
           return Ok(true);

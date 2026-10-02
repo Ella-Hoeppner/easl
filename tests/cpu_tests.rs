@@ -367,6 +367,7 @@ cpu_test!(captured_stateful_closure_bank);
 cpu_test!(hof_returned_closure_in_stored_bank);
 cpu_test!(argument_evaluation_order);
 cpu_test!(for_update_runs_on_continue);
+cpu_test!(closure_argument_statement_order);
 
 /// Compiling a program must not depend on hash-map iteration order. Each
 /// thread seeds its maps afresh, so this compiles the fixture under many

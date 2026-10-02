@@ -1,0 +1,20 @@
+; `start-audio` given a closure wrapping another (the `(+ silence signal)`
+; pattern), where the inner one is built from an array earlier statements
+; filled: its scope is built after those statements, so the audio thread
+; hears the full array (0.5 = 2 elements), not an empty one (silence).
+(defn + [a: (Fn [] f32)
+         b: (Fn [] f32)]: (Fn [] f32)
+  (fn [] (+ (a) (b))))
+
+(defn sizer [xs: [f32]]: (Fn [] f32)
+  (let [n (* 0.25 (f32 (array-length xs)))]
+    (fn [] n)))
+
+@cpu
+(defn main []
+  (start-audio (+ (fn [] 0.)
+                  (sizer (let [@var xs ~[]: [f32]]
+                           (= xs (push xs 1.))
+                           (= xs (push xs 2.))
+                           xs))))
+  (spawn-window (fn [] ())))

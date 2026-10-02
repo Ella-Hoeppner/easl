@@ -664,6 +664,10 @@ thread_sync_test!(granular_engine, [Frame, AudioBatch(6), Frame]);
 thread_sync_test!(audio_two_combs, [Frame, AudioBatch(6)]);
 // Stateful closures stored in an array, driven by the audio thread.
 thread_sync_test!(
+  audio_wrapped_closure_built_after_statements,
+  [Frame, AudioBatch(4)]
+);
+thread_sync_test!(
   audio_stateful_voice_bank,
   [Frame, AudioBatch(3), Frame, AudioBatch(3)]
 );
