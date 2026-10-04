@@ -315,8 +315,11 @@ pub enum CompileErrorKind {
   DuplicatePattern,
   #[error("`match` expression doesn't have exhaustive patterns")]
   NonexhaustiveMatch,
-  #[error("Can't match on this type")]
-  CantMatchOnType,
+  #[error(
+    "`match` can't be used on a value of type \"{0}\": only numbers, \
+    booleans, enums, and vectors can be matched"
+  )]
+  CantMatchOnType(String),
   #[error("Invalid enum variant")]
   InvalidEnumVariant,
   #[error("Cannot calculate size of type")]
@@ -660,6 +663,7 @@ impl PartialEq for CompileErrorKind {
       }
       (Self::InvalidAnnotation(l0), Self::InvalidAnnotation(r0)) => l0 == r0,
       (Self::NoTypeNamed(l0), Self::NoTypeNamed(r0)) => l0 == r0,
+      (Self::CantMatchOnType(l0), Self::CantMatchOnType(r0)) => l0 == r0,
       (
         Self::ArrayLookupInvalidArity(l0),
         Self::ArrayLookupInvalidArity(r0),

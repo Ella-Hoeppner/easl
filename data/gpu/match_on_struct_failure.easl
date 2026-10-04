@@ -1,0 +1,7 @@
+(struct P
+  a: f32)
+
+(defn f []: u32
+  (match (P 1.)
+    (P 1.) 1u
+    _ 0u))

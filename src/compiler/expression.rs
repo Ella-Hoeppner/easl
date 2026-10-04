@@ -396,7 +396,7 @@ use super::{
   structs::{compiled_vec_or_mat_name, vec_and_mat_compile_names},
   types::{
     AbstractType, ImmutableProgramLocalContext, LocalContext,
-    MutableProgramLocalContext, TypeConstraint,
+    MutableProgramLocalContext, TypeConstraint, TypeDescription,
   },
 };
 
@@ -2698,21 +2698,37 @@ impl TypedExp {
               let pattern_prefix = if i == (arm_count - 1) {
                 " else".to_string()
               } else {
-                let equality_expression = format!(
-                  "({} == {})",
-                  compiled_scrutinee.clone(),
-                  &pattern.compile(InnerExpression, names, target),
-                );
-                format!(
-                  "{} {}",
-                  if i == 0 { "\nif" } else { " else if" },
-                  if let Type::Struct(s) = &other_type
-                    && s.abstract_ancestor.is_vec()
+                let compiled_pattern =
+                  pattern.compile(InnerExpression, names, target);
+                let condition = match &other_type {
+                  // C has no vector `==`: compare component-wise.
+                  Type::Struct(s)
+                    if s.abstract_ancestor.is_vec()
+                      && target == CompilerTarget::C =>
                   {
-                    format!("all{equality_expression}")
-                  } else {
-                    equality_expression
+                    format!(
+                      "({})",
+                      s.fields
+                        .iter()
+                        .map(|field| {
+                          let field = compile_word(field.name.clone());
+                          format!(
+                            "({compiled_scrutinee}).{field} == \
+                             ({compiled_pattern}).{field}"
+                          )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" && ")
+                    )
                   }
+                  Type::Struct(s) if s.abstract_ancestor.is_vec() => {
+                    format!("all({compiled_scrutinee} == {compiled_pattern})")
+                  }
+                  _ => format!("({compiled_scrutinee} == {compiled_pattern})"),
+                };
+                format!(
+                  "{} {condition}",
+                  if i == 0 { "\nif" } else { " else if" }
                 )
               };
               format!(
@@ -2956,7 +2972,9 @@ impl TypedExp {
               };
               if !is_type_valid {
                 errors.log(CompileError {
-                  kind: CompileErrorKind::NonexhaustiveMatch,
+                  kind: CompileErrorKind::CantMatchOnType(
+                    TypeDescription::from(t.clone()).to_string(),
+                  ),
                   source_trace: scrutinee.source_trace.clone(),
                 });
                 return Ok(true);

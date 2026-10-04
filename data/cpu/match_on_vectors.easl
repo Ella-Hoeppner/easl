@@ -1,0 +1,22 @@
+; `match` on a vector compares it component-wise against vector-literal
+; patterns, falling through to `_`.
+(defn classify [v: vec2f]: u32
+  (match v
+    (vec2f 0. 0.) 0u
+    (vec2f 1. 0.) 1u
+    _ 2u))
+
+(defn classify3 [v: vec3u]: f32
+  (match v
+    (vec3u 1u 2u 3u) 1.
+    (vec3u 1u 2u 4u) 2.
+    _ 0.))
+
+@cpu
+(defn main []
+  (print (classify (vec2f 0. 0.)))
+  (print (classify (vec2f 1. 0.)))
+  (print (classify (vec2f 1. 1.)))
+  (print (classify3 (vec3u 1u 2u 4u)))
+  (print (classify3 (vec3u 1u 2u 3u)))
+  (print (classify3 (vec3u 0u 2u 3u))))

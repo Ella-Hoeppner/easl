@@ -1,0 +1,5 @@
+@cpu
+(defn main []
+  (print (match "a"
+           "a" 1u
+           _ 0u)))

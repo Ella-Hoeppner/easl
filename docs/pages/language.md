@@ -1,15 +1,13 @@
 # Language guide
 
-Easl has a lispy syntax, especially similar to Clojure.
-
 ## Expressions and calls
 
-A call is the function followed by its arguments, in parentheses, without commas. This same syntax is used even for arithmetic and assignment; Easl has no infix operators.
+Function calls are written by writing the name of the function within a pair of parentheses, followed by the arguments, each separated by whitespace (no commas needed). This same syntax is used even for arithmetic and assignment; Easl has no infix operators.
 
 ```easl
-(f a b)
-(+ 1 2)
-(= a 5.)
+(f a b)        ; f(a, b);
+(+ 1 2)        ; 1 + 2
+(= a 5.)       ; a = 5.;
 ```
 
 Since there are no infix operators, many special characters are free to be used in names, such as `-_!?*+><$%^&`. Functions and variables names in easl typically use **kebab-case** (`texture-sample`), while types use **PascalCase** (`Texture2D`).
@@ -146,7 +144,7 @@ Enums represent a union over several types, with a tag to differentiate between 
   (Box vec2f))
 ```
 
-You construct an enum value using it's name, applied as a function if the variant holds a name, or just referred to as a non-applied name if it's a unit-variant (i.e. no internal type). `match` expressions can be used to destructure an enum value
+You construct an enum value using it's name, applied as a function if the variant holds a name, or just referred to as a non-applied name if it's a unit-variant (i.e. no internal type). `match` expressions can be used to destructure an enum and access the values held inside:
 
 ```easl
 (defn area [s: Shape]: f32
@@ -182,6 +180,8 @@ Easl has a built-in enum called `Option`, with `(Some ...)` and `None` variants.
 ```
 
 The `_` character, when used in a match pattern, represents a wildcard, and matches any value that hasn't yet been matched by an earlier arm. All match blocks must be exhuastive, so a match block must list out every possible variant (in the case of an enum) or have a `_` as it's last pattern.
+
+`match` blocks can also match vector values against vector literals, but for the moment it isn't possbile to match other struct types.
 
 ## `if` and `when`
 

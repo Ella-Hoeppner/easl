@@ -1,0 +1,11 @@
+; `match` on a vector, against vector-literal patterns, on every backend.
+(defn classify [v: vec3u]: f32
+  (match v
+    (vec3u 1u 2u 3u) 1.
+    (vec3u 1u 2u 4u) 2.
+    _ 4.))
+
+(defn f []: f32
+  (+ (classify (vec3u 1u 2u 4u))
+     (* 10. (classify (vec3u 1u 2u 3u)))
+     (* 100. (classify (vec3u 0u 2u 3u)))))

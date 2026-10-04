@@ -1,0 +1,4 @@
+(defn f []: u32
+  (match [1u 2u]
+    [1u 2u] 1u
+    _ 0u))

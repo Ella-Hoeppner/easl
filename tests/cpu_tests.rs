@@ -369,6 +369,7 @@ cpu_test!(argument_evaluation_order);
 cpu_test!(for_update_runs_on_continue);
 cpu_test!(closure_argument_statement_order);
 cpu_test!(print_nested_heap_embedding);
+cpu_test!(match_on_vectors);
 
 /// Compiling a program must not depend on hash-map iteration order. Each
 /// thread seeds its maps afresh, so this compiles the fixture under many

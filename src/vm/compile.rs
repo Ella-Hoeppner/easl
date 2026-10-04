@@ -954,6 +954,26 @@ impl BytecodeCompilationState {
     result
   }
   /// Emit a u32 Constant into a fresh slot and return that slot.
+  /// A slot holding whether the value at `a` equals the one at `b`, for a
+  /// `match` arm: numbers and booleans directly, vectors component-wise.
+  pub fn emit_match_equality(&mut self, t: &Type, a: u16, b: u16) -> u16 {
+    let (count, element) = match t {
+      Type::F32 | Type::I32 | Type::U32 | Type::Bool => (1, t.clone()),
+      _ => vec_kind(t).expect("`match` on a non-vector struct"),
+    };
+    let op = match element {
+      Type::F32 => Op::IsEqualF32,
+      Type::I32 | Type::U32 => Op::IsEqualU32,
+      Type::Bool => Op::IsEqualBool,
+      _ => unreachable!("`match` on a vector of non-scalars"),
+    };
+    let mut result = self.emit_binary(op, a, b);
+    for i in 1..count {
+      let component = self.emit_binary(op, a + i, b + i);
+      result = self.emit_binary(Op::LogicalAnd, result, component);
+    }
+    result
+  }
   pub fn emit_u32_constant(&mut self, value: u32) -> u16 {
     let slot = self.take_stack_slot(1);
     self.push_instruction(Instruction {
@@ -3319,6 +3339,86 @@ fn assigns_special_dyn_rhs(rhs: &TypedExp) -> bool {
 
 /// Returns Some((element_count, element_type)) if `t` is a vec2/vec3/vec4 or
 /// matNxM, or None otherwise. For matrices the count is N*M flat scalars.
+/// Compiles a `match` whose arms compare the scrutinee for equality with
+/// each pattern in turn (numbers, booleans, and vectors, whose patterns
+/// are vector literals), the last arm being the default.
+fn compile_equality_match(
+  arms: &[(TypedExp, TypedExp)],
+  scrutinee_type: &Type,
+  scrutinee_pos: u16,
+  result_type_size: u16,
+  state: &mut BytecodeCompilationState,
+) -> Option<u16> {
+  let result_pos = if result_type_size > 0 {
+    Some(state.take_stack_slot(result_type_size))
+  } else {
+    None
+  };
+  let mut arms = arms.to_vec();
+  let last_arm_body = arms.pop().unwrap().1;
+  let mut jump_into_block_instruction_positions = vec![];
+  for (pattern, _) in arms.iter() {
+    let pattern_pos = pattern
+      .compile_to_bytecode(CompilePosition::Value, state)
+      .unwrap();
+    let equality_check_pos =
+      state.emit_match_equality(scrutinee_type, scrutinee_pos, pattern_pos);
+    jump_into_block_instruction_positions.push(state.instructions.len());
+    state.push_instruction(Instruction {
+      op: Op::JumpWhen,
+      arg_positions: [equality_check_pos, 0, 0],
+      return_position: 0,
+    });
+  }
+  if let (Some(last_arm_result_pos), Some(result_pos)) = (
+    last_arm_body.compile_to_bytecode(CompilePosition::Value, state),
+    result_pos,
+  ) {
+    state.push_instruction(Instruction {
+      op: Op::Move,
+      arg_positions: [last_arm_result_pos, result_type_size, 0],
+      return_position: result_pos,
+    });
+  }
+  let mut arm_end_instruction_positions = vec![state.instructions.len()];
+  state.push_instruction(Instruction {
+    op: Op::Jump,
+    arg_positions: [0, 0, 0],
+    return_position: 0,
+  });
+  for (i, (_, body)) in arms.into_iter().enumerate() {
+    let start_pos = state.instructions.len();
+    state.instructions[jump_into_block_instruction_positions[i]]
+      .arg_positions[1] = (start_pos >> 16) as u16;
+    state.instructions[jump_into_block_instruction_positions[i]]
+      .arg_positions[2] = start_pos as u16;
+    if let (Some(arm_result_pos), Some(result_pos)) = (
+      body.compile_to_bytecode(CompilePosition::Value, state),
+      result_pos,
+    ) {
+      state.push_instruction(Instruction {
+        op: Op::Move,
+        arg_positions: [arm_result_pos, result_type_size, 0],
+        return_position: result_pos,
+      });
+    }
+    arm_end_instruction_positions.push(state.instructions.len());
+    state.push_instruction(Instruction {
+      op: Op::Jump,
+      arg_positions: [0, 0, 0],
+      return_position: 0,
+    });
+  }
+  let match_block_end_pos = state.instructions.len();
+  for arm_end_pos in arm_end_instruction_positions {
+    state.instructions[arm_end_pos].arg_positions[0] =
+      (match_block_end_pos >> 16) as u16;
+    state.instructions[arm_end_pos].arg_positions[1] =
+      match_block_end_pos as u16;
+  }
+  result_pos
+}
+
 fn vec_kind(t: &Type) -> Option<(u16, Type)> {
   if let Type::Struct(s) = t {
     let n = &*s.name;
@@ -4922,87 +5022,19 @@ impl TypedExp {
           result_pos
         } else {
           match scrutinee_type {
-            Type::F32 | Type::I32 | Type::U32 | Type::Bool => {
-              let result_pos = if result_type_size > 0 {
-                Some(state.take_stack_slot(result_type_size))
-              } else {
-                None
-              };
-              let mut arms = arms.clone();
-              let last_arm_body = arms.pop().unwrap().1;
-              let mut jump_into_block_instruction_positions = vec![];
-              for (pattern, _) in arms.iter() {
-                let pattern_pos = pattern
-                  .compile_to_bytecode(CompilePosition::Value, state)
-                  .unwrap();
-                let equality_check_pos = state.take_stack_slot(1);
-                state.push_instruction(Instruction {
-                  op: match scrutinee_type {
-                    Type::F32 => Op::IsEqualF32,
-                    Type::I32 | Type::U32 => Op::IsEqualU32,
-                    Type::Bool => Op::IsEqualBool,
-                    _ => unreachable!(),
-                  },
-                  arg_positions: [scrutinee_pos, pattern_pos, 0],
-                  return_position: equality_check_pos,
-                });
-                jump_into_block_instruction_positions
-                  .push(state.instructions.len());
-                state.push_instruction(Instruction {
-                  op: Op::JumpWhen,
-                  arg_positions: [equality_check_pos, 0, 0],
-                  return_position: 0,
-                });
-              }
-              if let (Some(last_arm_result_pos), Some(result_pos)) = (
-                last_arm_body
-                  .compile_to_bytecode(CompilePosition::Value, state),
-                result_pos,
-              ) {
-                state.push_instruction(Instruction {
-                  op: Op::Move,
-                  arg_positions: [last_arm_result_pos, result_type_size, 0],
-                  return_position: result_pos,
-                });
-              }
-              let mut arm_end_instruction_positions =
-                vec![state.instructions.len()];
-              state.push_instruction(Instruction {
-                op: Op::Jump,
-                arg_positions: [0, 0, 0],
-                return_position: 0,
-              });
-              for (i, (_, body)) in arms.into_iter().enumerate() {
-                let start_pos = state.instructions.len();
-                state.instructions[jump_into_block_instruction_positions[i]]
-                  .arg_positions[1] = (start_pos >> 16) as u16;
-                state.instructions[jump_into_block_instruction_positions[i]]
-                  .arg_positions[2] = start_pos as u16;
-                if let (Some(arm_result_pos), Some(result_pos)) = (
-                  body.compile_to_bytecode(CompilePosition::Value, state),
-                  result_pos,
-                ) {
-                  state.push_instruction(Instruction {
-                    op: Op::Move,
-                    arg_positions: [arm_result_pos, result_type_size, 0],
-                    return_position: result_pos,
-                  });
-                }
-                arm_end_instruction_positions.push(state.instructions.len());
-                state.push_instruction(Instruction {
-                  op: Op::Jump,
-                  arg_positions: [0, 0, 0],
-                  return_position: 0,
-                });
-              }
-              let match_block_end_pos = state.instructions.len();
-              for arm_end_pos in arm_end_instruction_positions {
-                state.instructions[arm_end_pos].arg_positions[0] =
-                  (match_block_end_pos >> 16) as u16;
-                state.instructions[arm_end_pos].arg_positions[1] =
-                  match_block_end_pos as u16;
-              }
-              result_pos
+            ref t
+              if matches!(
+                t,
+                Type::F32 | Type::I32 | Type::U32 | Type::Bool
+              ) || (vec_kind(t).is_some() && mat_kind(t).is_none()) =>
+            {
+              compile_equality_match(
+                arms,
+                &scrutinee_type,
+                scrutinee_pos,
+                result_type_size,
+                state,
+              )
             }
             Type::Enum(ref enum_type) => {
               // Enum scrutinee layout: [discriminant, data...].
@@ -5113,11 +5145,10 @@ impl TypedExp {
               }
               result_pos
             }
-            Type::String => todo!(),
-            Type::Struct(_) => todo!(),
-            Type::Function(_) | Type::BoxedFunction(_) => todo!(),
-            Type::Array(_, _) => todo!(),
-            Type::Skolem(_, _) | Type::Unit => panic!(),
+            t => unreachable!(
+              "`match` on a value of type {t:?}, which match validation \
+               rejects (CantMatchOnType)"
+            ),
           }
         }
       }

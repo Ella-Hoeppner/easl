@@ -1005,6 +1005,18 @@ error_test!(
   CompileErrorKind::CopiedStatefulClosure("counters".into())
 );
 error_test!(
+  match_on_struct_failure,
+  CompileErrorKind::CantMatchOnType("P".into())
+);
+error_test!(
+  match_on_array_failure,
+  CompileErrorKind::CantMatchOnType("[2: u32]".into())
+);
+error_test!(
+  match_on_string_failure,
+  CompileErrorKind::CantMatchOnType("String".into())
+);
+error_test!(
   copied_stateful_closure_captured_failure,
   CompileErrorKind::CopiedStatefulClosure("c".into())
 );
