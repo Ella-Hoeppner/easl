@@ -7888,7 +7888,11 @@ fn decode_value_wire(t: &Type, words: &[u32], pos: &mut usize) -> Value {
 /// Decodes one heap cell (a runtime-sized array or String payload) into a
 /// `Value`. `Cells` children are self-contained `Arc`s, so no heap table
 /// is needed — this covers every embedded (container-element) shape.
-fn value_from_heap_cell(t: &Type, cell: Option<&Arc<HeapCell>>) -> Value {
+fn value_from_heap_cell(
+  t: &Type,
+  cell: Option<&Arc<HeapCell>>,
+  heap: &[Option<Arc<HeapCell>>],
+) -> Value {
   match t {
     Type::String => Value::String(match cell {
       Some(c) => match &c.memory {
@@ -7911,14 +7915,16 @@ fn value_from_heap_cell(t: &Type, cell: Option<&Arc<HeapCell>>) -> Value {
           Value::Array(
             words
               .chunks(stride)
-              .map(|chunk| Value::from_vm_words(&element_type, chunk))
+              .map(|chunk| value_from_vm_words_heap(&element_type, chunk, heap))
               .collect(),
           )
         }
         DynMemory::Cells(children) => Value::Array(
           children
             .iter()
-            .map(|child| value_from_heap_cell(&element_type, child.as_ref()))
+            .map(|child| {
+              value_from_heap_cell(&element_type, child.as_ref(), heap)
+            })
             .collect(),
         ),
       }
@@ -7933,6 +7939,7 @@ fn value_from_heap_cell(t: &Type, cell: Option<&Arc<HeapCell>>) -> Value {
 fn dyn_memory_value(
   memory: &crate::vm::bytecode::DynMemory,
   ty: &Type,
+  heap: &[Option<Arc<HeapCell>>],
 ) -> Value {
   use crate::vm::bytecode::DynMemory;
   let Type::Array(_, element_type) = ty else {
@@ -7944,18 +7951,18 @@ fn dyn_memory_value(
       length: *elements as usize,
     },
     DynMemory::Words(words) => {
-      let stride = vm_words_of(&element_type).max(1);
+      let stride = (vm_stack_size(&element_type) as usize).max(1);
       Value::Array(
         words
           .chunks(stride)
-          .map(|chunk| Value::from_vm_words(&element_type, chunk))
+          .map(|chunk| value_from_vm_words_heap(&element_type, chunk, heap))
           .collect(),
       )
     }
     DynMemory::Cells(children) => Value::Array(
       children
         .iter()
-        .map(|child| value_from_heap_cell(&element_type, child.as_ref()))
+        .map(|child| value_from_heap_cell(&element_type, child.as_ref(), heap))
         .collect(),
     ),
   }
@@ -7996,6 +8003,7 @@ fn refresh_dirty_slots<IO: IOManager>(
   bindings: &[u16],
   stack: &[u32],
   dyn_memory: &[crate::vm::bytecode::DynMemory],
+  heap: &[Option<Arc<HeapCell>>],
   code: &crate::vm::bytecode::Code,
 ) {
   use crate::vm::bytecode::HostBindingStorage;
@@ -8010,7 +8018,7 @@ fn refresh_dirty_slots<IO: IOManager>(
         &stack[position as usize..(position + size) as usize],
       ),
       HostBindingStorage::DynamicMemory { memory } => {
-        dyn_memory_value(&dyn_memory[memory as usize], &binding.ty)
+        dyn_memory_value(&dyn_memory[memory as usize], &binding.ty, heap)
       }
       HostBindingStorage::Dynamic => continue,
     };
@@ -8136,7 +8144,9 @@ fn value_from_vm_words_heap(
         DynMemory::Cells(children) => Value::Array(
           children
             .iter()
-            .map(|child| value_from_heap_cell(&element_type, child.as_ref()))
+            .map(|child| {
+              value_from_heap_cell(&element_type, child.as_ref(), heap)
+            })
             .collect(),
         ),
       }
@@ -8239,7 +8249,7 @@ fn vm_host_call<IO: IOManager>(
       let b = &code.host_bindings[*binding as usize];
       let value = match b.storage {
         HostBindingStorage::DynamicMemory { memory } => {
-          dyn_memory_value(&dyn_memory[memory as usize], &b.ty)
+          dyn_memory_value(&dyn_memory[memory as usize], &b.ty, heap)
         }
         _ => env.lookup(&b.name)?.clone(),
       };
@@ -8304,6 +8314,7 @@ fn vm_host_call<IO: IOManager>(
         &dispatch.reads,
         stack,
         dyn_memory,
+        heap,
         code,
       );
       let read_names: Vec<Arc<str>> = dispatch
@@ -8343,6 +8354,7 @@ fn vm_host_call<IO: IOManager>(
         &dispatch.reads,
         stack,
         dyn_memory,
+        heap,
         code,
       );
       let read_names: Vec<Arc<str>> = dispatch

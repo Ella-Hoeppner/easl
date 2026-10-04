@@ -1,0 +1,20 @@
+; Printing arrays whose elements embed runtime-sized arrays (a `Packet`
+; holds a `[f32]`), including inside an outer array and in a global: every
+; level decodes its elements' embedded arrays.
+(struct Packet
+  tag: u32
+  body: [f32])
+
+@local
+(var packets: [Packet])
+
+@cpu
+(defn main []
+  (let [root (into-dynamic-array [(Packet 1u (into-dynamic-array [1.5 2.5]))
+                                  (Packet 2u (into-dynamic-array [3.5]))])
+        nested (into-dynamic-array [root])]
+    (print root)
+    (print nested)
+    (= packets root)
+    (print packets)
+    (print (into-dynamic-array [packets packets]))))
