@@ -1,0 +1,18 @@
+; Swizzle assignment on every backend: each component written on its own,
+; and the target's index evaluated once.
+@local
+(var calls: f32)
+
+(defn next-index []: u32
+  (+= calls 1.)
+  0u)
+
+(defn f []: f32
+  (= calls 0.)
+  (let [@var arr [(vec3f 0.) (vec3f 0.)]
+        @var v (vec3f 0.)]
+    (= (.xy (arr (next-index))) (vec2f 5. 6.))
+    (= (.xz v) (vec2f 3. 4.))
+    (+ (dot (arr 0u) (vec3f 1. 10. 100.))
+       (* 1000. (dot v (vec3f 1. 10. 100.)))
+       (* 1000000. calls))))

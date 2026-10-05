@@ -5347,16 +5347,24 @@ impl TypedExp {
                   if matches!(
                     f_param.var_type.ownership,
                     Ownership::Reference | Ownership::MutableReference
-                  ) && let ExpKind::Access(
-                    Accessor::Swizzle(swizzle_fields),
-                    arg_accessed_value,
-                  ) = &arg.kind
+                  ) && let ExpKind::Access(Accessor::Swizzle(_), _) =
+                    &arg.kind
                   {
+                    // The place's indices are evaluated once, for both the
+                    // read and the per-component write-back.
+                    let mut arg = arg.clone();
+                    let index_bindings = arg.bind_place_indices(&mut names);
+                    let ExpKind::Access(
+                      Accessor::Swizzle(swizzle_fields),
+                      arg_accessed_value,
+                    ) = &arg.kind
+                    else {
+                      unreachable!()
+                    };
                     let swizzle_vec_name =
                       names.gensym("extracted_swizzle_vec");
                     let result_name =
                       names.gensym("extracted_swizzle_ref_result");
-                    let arg = arg.clone();
                     let exp_builder = ExpBuilder::at(&exp.source_trace);
                     let arg_builder = ExpBuilder::at(&arg.source_trace);
                     let mut let_body_expressions = vec![exp_builder.with_data(
@@ -5378,7 +5386,7 @@ impl TypedExp {
                         .map(|(i, swizzle_field)| {
                           arg_builder.apply(
                             Self::assignment_function(
-                              Type::Bool.known().into(),
+                              inner_scalar_type.clone().known().into(),
                             ),
                             vec![
                               arg_builder.field(
@@ -5402,28 +5410,31 @@ impl TypedExp {
                         .collect();
                     }
                     exp.kind = ExpKind::Let(
-                      vec![
-                        (
-                          swizzle_vec_name.clone(),
-                          arg.source_trace.clone(),
-                          VariableKind::Var,
-                          arg.clone(),
-                        ),
-                        (
-                          result_name.clone(),
-                          exp.source_trace.clone(),
-                          VariableKind::Let,
-                          exp_builder.with_data(
-                            ExpKind::Application(f.clone(), {
-                              let mut new_args = args.clone();
-                              new_args[i].kind =
-                                ExpKind::Name(swizzle_vec_name);
-                              new_args
-                            }),
-                            exp.data.clone(),
+                      index_bindings
+                        .into_iter()
+                        .chain([
+                          (
+                            swizzle_vec_name.clone(),
+                            arg.source_trace.clone(),
+                            VariableKind::Var,
+                            arg.clone(),
                           ),
-                        ),
-                      ],
+                          (
+                            result_name.clone(),
+                            exp.source_trace.clone(),
+                            VariableKind::Let,
+                            exp_builder.with_data(
+                              ExpKind::Application(f.clone(), {
+                                let mut new_args = args.clone();
+                                new_args[i].kind =
+                                  ExpKind::Name(swizzle_vec_name);
+                                new_args
+                              }),
+                              exp.data.clone(),
+                            ),
+                          ),
+                        ])
+                        .collect(),
                       exp_builder
                         .with_data(
                           ExpKind::Block(let_body_expressions),
@@ -6229,6 +6240,69 @@ impl TypedExp {
       })
       .unwrap()
   }
+  /// Binds each index expression inside the place `self` (the `(next-index)`
+  /// in `(arr (next-index))`) to a temporary, so the place can be written
+  /// once per vector component while its indices are evaluated exactly
+  /// once. Returns the bindings, in evaluation order.
+  pub fn bind_place_indices(
+    &mut self,
+    names: &mut NameContext,
+  ) -> Vec<(Arc<str>, SourceTrace, VariableKind, TypedExp)> {
+    let mut bindings = vec![];
+    let mut bind = |index: &mut TypedExp,
+                    bindings: &mut Vec<(
+      Arc<str>,
+      SourceTrace,
+      VariableKind,
+      TypedExp,
+    )>| {
+      if matches!(index.kind, NumberLiteral(_)) {
+        return;
+      }
+      let name = names.gensym("place_index");
+      let name_exp = ExpBuilder::at(&index.source_trace)
+        .with_data(Name(name.clone()), index.data.clone());
+      let value = std::mem::replace(index, name_exp);
+      bindings.push((
+        name,
+        value.source_trace.clone(),
+        VariableKind::Let,
+        value,
+      ));
+    };
+    fn walk(
+      place: &mut TypedExp,
+      bindings: &mut Vec<(Arc<str>, SourceTrace, VariableKind, TypedExp)>,
+      bind: &mut impl FnMut(
+        &mut TypedExp,
+        &mut Vec<(Arc<str>, SourceTrace, VariableKind, TypedExp)>,
+      ),
+    ) {
+      match &mut place.kind {
+        Access(Accessor::Field(_) | Accessor::Swizzle(_), inner) => {
+          walk(inner, bindings, bind)
+        }
+        Access(Accessor::ArrayIndex(index), inner) => {
+          walk(inner, bindings, bind);
+          bind(index, bindings);
+        }
+        Application(array, args)
+          if matches!(
+            array.data.kind.try_unwrap_known(),
+            Some(Type::Array(_, _))
+          ) =>
+        {
+          walk(array, bindings, bind);
+          for index in args.iter_mut() {
+            bind(index, bindings);
+          }
+        }
+        _ => {}
+      }
+    }
+    walk(self, &mut bindings, &mut bind);
+    bindings
+  }
   pub fn desugar_swizzle_assignments(&mut self, names: &mut NameContext) {
     if let ExpKind::Application(f, args) = &self.kind
       && let ExpKind::Name(f_name) = &f.kind
@@ -6238,6 +6312,9 @@ impl TypedExp {
       && let ExpKind::Access(accessor, accessed) = &first_arg.kind
       && let Accessor::Swizzle(fields) = accessor
     {
+      // The target's indices are evaluated once, before the value.
+      let mut accessed = accessed.clone();
+      let mut bindings = accessed.bind_place_indices(names);
       let gensym_name: Arc<str> = names.gensym("swizzle_assignment");
       let b = ExpBuilder::at(&self.source_trace);
       let assignments = fields
@@ -6256,8 +6333,10 @@ impl TypedExp {
                 .then(|| struct_field.field_type.clone())
             })
             .expect("couldn't find field when desugaring swizzle");
+          // A scalar assignment of its own: the original `=` is typed for
+          // the whole swizzle.
           b.apply(
-            (**f).clone(),
+            Self::assignment_function(field_type.clone()),
             vec![
               b.with_data(
                 ExpKind::Access(
@@ -6281,14 +6360,15 @@ impl TypedExp {
           )
         })
         .collect();
+      bindings.push((
+        gensym_name,
+        SourceTrace::empty(),
+        VariableKind::Let,
+        second_arg.clone(),
+      ));
       *self = b.with_data(
         ExpKind::Let(
-          vec![(
-            gensym_name,
-            SourceTrace::empty(),
-            VariableKind::Let,
-            second_arg.clone(),
-          )],
+          bindings,
           Box::new(b.with_data(ExpKind::Block(assignments), self.data.clone())),
         ),
         self.data.clone(),

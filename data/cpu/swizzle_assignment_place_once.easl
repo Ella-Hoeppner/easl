@@ -1,0 +1,37 @@
+; Assigning through a swizzle evaluates the target place's indices once (not
+; once per component), before the value; so does passing a swizzle of a
+; place by reference. Each component is written on its own (`.xz` leaves
+; `y` alone).
+@local
+(var calls: i32)
+
+(defn next-index []: u32
+  (+= calls 1i)
+  (if (== (% calls 2i) 1i) 0u 1u))
+
+(defn bump [@var @ref v: vec2f]
+  (+= v (vec2f 1.)))
+
+@cpu
+(defn main []
+  (let [@var arr [(vec3f 0.) (vec3f 0.)]]
+    (= (.xy (arr (next-index))) (vec2f 5. 6.))
+    (print arr)
+    (print calls))
+  (let [@var arr [(vec3f 0.) (vec3f 0.)]]
+    (bump (.xy (arr (next-index))))
+    (print arr)
+    (print calls))
+  (let [@var grid [[(vec2f 0.) (vec2f 0.)] [(vec2f 0.) (vec2f 0.)]]]
+    (= (.yx ((grid (next-index)) (next-index))) (vec2f 1. 2.))
+    (print grid)
+    (print calls))
+  (let [@var arr [(vec3f 0.) (vec3f 0.)]
+        @var i 0u]
+    (= (.xz (arr i))
+       (do (= i 1u)
+           (vec2f 3. 4.)))
+    (print arr))
+  (let [@var v (vec3f 0.)]
+    (= (.xz v) (vec2f 3. 4.))
+    (print v)))
