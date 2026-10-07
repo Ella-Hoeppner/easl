@@ -14,10 +14,12 @@
       (+= n k)
       (string n))))
 
+@unpack
 (enum Voice
   (Playing (Fn [] [f32]))
   Silent)
 
+@unpack
 (enum Namer
   (Naming (Fn [] String))
   Quiet)

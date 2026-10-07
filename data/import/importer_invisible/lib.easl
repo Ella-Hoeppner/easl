@@ -1,0 +1,2 @@
+(defn get-tint []: f32
+  (tint))

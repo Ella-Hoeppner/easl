@@ -1,0 +1,18 @@
+; A file is one module however many times it's imported: `a` and `b` share
+; `diamond_base`'s `hits`, and reaching the same definition through two
+; imports isn't a collision.
+(import a "modules/diamond_a.easl")
+(import b "modules/diamond_b.easl")
+(import "modules/diamond_base.easl")
+(import base "modules/diamond_base.easl")
+
+(use base)
+
+@cpu
+(defn main []
+  (print (a/from-a))
+  (print (b/from-b))
+  (print (shared 3.))
+  (print (base/shared 4.))
+  (print hits)
+  (print base/hits))

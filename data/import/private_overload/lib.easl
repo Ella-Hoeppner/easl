@@ -1,0 +1,6 @@
+@private
+(defn describe [x: u32]: f32
+  (f32 x))
+
+(defn describe [x: f32]: f32
+  (+ x (describe 1u)))

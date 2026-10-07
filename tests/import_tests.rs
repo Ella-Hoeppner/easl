@@ -1,5 +1,6 @@
 use easl::compiler::core::compile_easl_file_to_wgsl;
 use easl::compiler::error::CompileErrorKind;
+use easl::compiler::types::{TypeDescription, TypeStateDescription};
 use std::fs;
 use std::path::Path;
 
@@ -79,6 +80,26 @@ fn assert_compiles(name: &str) {
   validate_wgsl(name, &wgsl);
 }
 
+/// Assert that an import test fails to compile with exactly `expected`.
+fn assert_errors(name: &str, mut expected: Vec<CompileErrorKind>) {
+  match compile_import(name) {
+    Ok(_) => panic!(
+      "{name}/main.easl compiled successfully but was expected to fail.\n\
+       See out/import/{name}.wgsl for the produced WGSL."
+    ),
+    Err(mut errors) => {
+      let key = |e: &CompileErrorKind| format!("{e:?}");
+      errors.sort_by_key(key);
+      errors.dedup();
+      expected.sort_by_key(key);
+      assert_eq!(
+        errors, expected,
+        "See out/import/{name}.wgsl for the error description."
+      );
+    }
+  }
+}
+
 macro_rules! import_test {
   ($name:ident) => {
     #[test]
@@ -90,8 +111,107 @@ macro_rules! import_test {
 
 import_test!(simple);
 import_test!(dot_slash);
-import_test!(indirect);
 import_test!(redundant_import);
 import_test!(folder_import);
 import_test!(parent_import);
-import_test!(recursive_reference);
+
+macro_rules! import_error_test {
+  ($name:ident, $($error:expr),+ $(,)?) => {
+    #[test]
+    fn $name() {
+      assert_errors(stringify!($name), vec![$($error),+]);
+    }
+  };
+}
+
+// Imports don't re-export: `main` sees only what `intermediate` defines.
+import_error_test!(
+  indirect,
+  CompileErrorKind::UnboundName("color".into()),
+  CompileErrorKind::CouldntInferTypes,
+);
+import_error_test!(
+  recursive_reference,
+  CompileErrorKind::ImportCycle(vec![
+    "main.easl".into(),
+    "color.easl".into(),
+    "main.easl".into(),
+  ])
+);
+// A definition in an inline module overloads a same-named function of the
+// enclosing scope.
+import_test!(mod_defn_overloads_enclosing);
+// Entry points and types of an imported file emit under qualified names,
+// distinct from the main file's.
+import_test!(lib_entry_point);
+
+import_error_test!(
+  collision_two_imports,
+  CompileErrorKind::NameCollision("scale".into())
+);
+import_error_test!(
+  identical_signature_use,
+  CompileErrorKind::DuplicateFunctionSignature("double".into())
+);
+import_error_test!(
+  private_access,
+  CompileErrorKind::PrivateName("lib/hidden".into()),
+);
+import_error_test!(
+  private_use,
+  CompileErrorKind::PrivateName("lib/hidden".into())
+);
+import_error_test!(
+  unknown_member,
+  CompileErrorKind::UnknownModuleMember("lib".into(), "unknown".into()),
+);
+// An imported file can't see the file importing it.
+import_error_test!(
+  importer_invisible,
+  CompileErrorKind::UnboundName("tint".into()),
+  CompileErrorKind::CouldntInferTypes,
+);
+import_error_test!(
+  inline_mod_conflict,
+  CompileErrorKind::NameCollision("Foo".into())
+);
+import_error_test!(
+  module_as_value,
+  CompileErrorKind::ModuleUsedAsValue("lib".into())
+);
+import_error_test!(
+  use_non_namespace,
+  CompileErrorKind::NotANamespace("g".into())
+);
+import_error_test!(
+  local_shadows_import,
+  CompileErrorKind::CantShadowTopLevelBinding("scale".into())
+);
+// Variants are qualified by their enum unless it's `@unpack`.
+import_error_test!(
+  unqualified_variant,
+  CompileErrorKind::UnboundName("Dim".into()),
+);
+// A private overload isn't callable from outside its module, even through a
+// public overload's name.
+import_error_test!(
+  private_overload,
+  CompileErrorKind::FunctionArgumentTypesIncompatible {
+    f: TypeStateDescription::Known(TypeDescription::Function {
+      arg_types: vec![(
+        TypeStateDescription::Known(TypeDescription::F32),
+        vec![]
+      )],
+      return_type: Box::new(TypeStateDescription::Known(TypeDescription::F32)),
+    }),
+    args: vec![TypeStateDescription::Known(TypeDescription::U32)],
+  },
+  CompileErrorKind::IncompatibleTypes(
+    TypeStateDescription::Known(TypeDescription::U32),
+    TypeStateDescription::Known(TypeDescription::F32),
+  ),
+);
+import_error_test!(
+  builtin_type_in_module,
+  CompileErrorKind::BuiltinTypeRedefinition("MidiNote".into())
+);

@@ -696,11 +696,11 @@ error_test!(
 );
 error_test!(
   var_name_collision_failure_def,
-  CompileErrorKind::VariableNameCollision("a".into())
+  CompileErrorKind::NameCollision("a".into())
 );
 error_test!(
   var_name_collision_failure_defn,
-  CompileErrorKind::VariableFunctionNameCollision("a".into())
+  CompileErrorKind::NameCollision("a".into())
 );
 error_test!(
   compute_failure_workgroup_on_fragment,
@@ -1232,3 +1232,9 @@ fn midi_note_struct_emission_scoped() {
   let direct = compile_shader("midi_note_user_struct").unwrap();
   assert!(direct.contains("struct MidiNote"));
 }
+error_test!(
+  builtin_type_redefinition_failure,
+  CompileErrorKind::BuiltinTypeRedefinition("Option".into()),
+  CompileErrorKind::BuiltinTypeRedefinition("vec4f".into()),
+  CompileErrorKind::BuiltinTypeRedefinition("f32".into())
+);

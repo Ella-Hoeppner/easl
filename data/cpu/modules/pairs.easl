@@ -1,0 +1,18 @@
+(struct Pair
+  a: f32
+  b: f32)
+
+(defn describe [p: Pair]: f32
+  (+ p.a p.b))
+
+(defn into [x: f32]: Pair
+  (Pair x x))
+
+@associative
+(defn + [p: Pair
+         q: Pair]: Pair
+  (Pair (+ p.a q.a) (+ p.b q.b)))
+
+(defn sum [p: Pair
+           q: Pair]: Pair
+  (+ p q))

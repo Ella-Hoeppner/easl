@@ -1,0 +1,12 @@
+(enum Mode
+  Bright
+  Dim)
+
+(defn brightness [m: Mode]: f32
+  (match m
+    Mode/Bright 1.
+    Mode/Dim 0.5))
+
+@fragment
+(defn f []: vec4f
+  (vec4f (brightness Dim)))

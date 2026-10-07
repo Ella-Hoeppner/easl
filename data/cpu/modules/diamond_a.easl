@@ -1,0 +1,5 @@
+(import "diamond_base.easl")
+
+(defn from-a []: f32
+  (hit)
+  (shared 1.))

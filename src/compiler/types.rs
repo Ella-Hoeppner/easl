@@ -23,6 +23,7 @@ use crate::{
       Ownership, extract_mat_size as extract_mat_size_from_name,
       extract_vec_size,
     },
+    modules::display_name,
     program::{CompilerTarget, NameContext, TypeDefs},
     structs::UntypedStruct,
     vars::VariableAddressSpace,
@@ -1309,6 +1310,13 @@ pub enum Type {
   Skolem(Arc<str>, Vec<TypeConstraint>),
   Array(Option<ConcreteArraySize>, Box<ExpTypeInfo>),
 }
+/// Type names built into the language rather than defined as builtin
+/// structs or enums: the primitives `Type::from_name` recognizes, and `Fn`.
+pub const PRIMITIVE_TYPE_NAMES: &[&str] = &[
+  "None", "F32", "f32", "I32", "i32", "U32", "u32", "Bool", "bool", "String",
+  "Fn",
+];
+
 impl Type {
   /// The `size`-component vector of `element` (`vec3f` for 3 and `f32`).
   pub fn vector_of(size: usize, element: Type) -> Type {
@@ -3929,7 +3937,7 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
   pub fn is_bound(&self, name: &str) -> bool {
     let name_rc: Arc<str> = name.to_string().into();
     self.variables.contains_key(name)
-      || self.program.abstract_functions.contains_key(&name_rc)
+      || self.program.names_functions(&name_rc)
       || self
         .program
         .top_level_vars
@@ -3946,7 +3954,7 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
   }
   pub fn is_globally_bound(&self, name: &str) -> bool {
     let name_rc: Arc<str> = name.to_string().into();
-    self.program.abstract_functions.contains_key(&name_rc)
+    self.program.names_functions(&name_rc)
       || self
         .program
         .top_level_vars
@@ -4050,7 +4058,10 @@ impl<'p> MutableProgramLocalContext<'p> {
         .known(),
       ))
     } else {
-      Err(CompileError::new(UnboundName(name.into()), source_trace))
+      Err(CompileError::new(
+        UnboundName(display_name(name).into()),
+        source_trace,
+      ))
     }
   }
   pub fn constrain_name_type(
@@ -4060,7 +4071,7 @@ impl<'p> MutableProgramLocalContext<'p> {
     t: &mut ExpTypeInfo,
     errors: &mut ErrorLog,
   ) -> bool {
-    if self.program.abstract_functions.get(name).is_some() {
+    if self.program.names_functions(name) {
       if t.already_constrained_against_signatures {
         return false;
       }

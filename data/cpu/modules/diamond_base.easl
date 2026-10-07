@@ -1,0 +1,9 @@
+@local
+(var hits: u32
+     0u)
+
+(defn hit []
+  (+= hits 1u))
+
+(defn shared [x: f32]: f32
+  (+ x 0.5))

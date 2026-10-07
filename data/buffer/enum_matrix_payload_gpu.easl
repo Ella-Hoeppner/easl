@@ -4,6 +4,7 @@
   m: mat2x2f
   k: f32)
 
+@unpack
 (enum E
   (Mat MK)
   Nope)

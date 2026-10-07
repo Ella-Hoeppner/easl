@@ -1,3 +1,4 @@
+@unpack
 (enum MyEnum
   A
   B)

@@ -52,10 +52,10 @@ const SHOWCASES: &[Showcase] = &[
 
 (defn shade [hit: Trace]: vec3f
   (match hit
-    (Surface p) (* (vec3f 0.5)
-                   (+ (vec3f 1.)
-                      (gradient sphere p)))
-    Sky (vec3f 0.02 0.02 0.04)))"#,
+    (Trace/Surface p) (* (vec3f 0.5)
+                         (+ (vec3f 1.)
+                            (gradient sphere p)))
+    Trace/Sky (vec3f 0.02 0.02 0.04)))"#,
     caption: "Higher-order functions cost nothing: the compiler inlines \
               them, so this is as fast as writing the derivative out by \
               hand.",

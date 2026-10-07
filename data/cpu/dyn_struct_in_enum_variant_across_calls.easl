@@ -6,6 +6,7 @@
   tag: f32
   body: [f32])
 
+@unpack
 (enum Message
   (Data Packet)
   Quiet)

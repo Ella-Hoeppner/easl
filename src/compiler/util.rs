@@ -45,6 +45,7 @@ pub fn read_type_annotated_name(
 pub fn compile_word(word: Arc<str>) -> String {
   let compiled_word = match &*word {
     "!"
+    | "/"
     | "vec2<bool>"
     | "vec3<bool>"
     | "vec4<bool>"
@@ -72,7 +73,8 @@ pub fn compile_word(word: Arc<str>) -> String {
       .replace("<", "ABRACKET_LEFT")
       .replace("?", "QMARK")
       .replace("!", "EMARK")
-      .replace("=", "EQUAL_SIGN"),
+      .replace("=", "EQUAL_SIGN")
+      .replace("/", "_"),
   };
   // Note: easl's own reserved names (`is_easl_reserved_word`) are NOT
   // escaped here — user declarations of them are rejected outright in
@@ -84,6 +86,15 @@ pub fn compile_word(word: Arc<str>) -> String {
   } else {
     compiled_word
   }
+}
+
+/// Whether `word` is a valid internal name: module resolution qualifies
+/// names with `/`-separated module prefixes (`lib/sort`), whose segments
+/// must each be valid names.
+pub fn is_valid_qualified_name(word: &Arc<str>) -> bool {
+  word
+    .split('/')
+    .all(|segment| is_valid_name(&Arc::from(segment)))
 }
 
 pub fn is_valid_name(word: &Arc<str>) -> bool {

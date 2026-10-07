@@ -4,6 +4,7 @@
 (defn increment [x: f32]: f32 (+ x 1.))
 (defn negate [x: f32]: f32 (- 0. x))
 
+@unpack
 (enum Op
   (Apply (Fn [f32] f32))
   Skip)

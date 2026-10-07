@@ -6,6 +6,7 @@
     (fn []
       (+= n inc)
       n)))
+@unpack
 (enum Voice (Playing (Fn [] f32)) Silent)
 (defn step [@var @ref v: Voice]: f32
   (match v

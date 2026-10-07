@@ -1,0 +1,10 @@
+(struct Foo
+  x: f32)
+
+(mod m
+  (struct Foo
+    y: f32))
+
+@fragment
+(defn f []: vec4f
+  (vec4f 1.))

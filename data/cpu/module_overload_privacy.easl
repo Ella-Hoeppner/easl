@@ -1,0 +1,15 @@
+; Privacy is per overload: only the public `describe` is exported, so this
+; file's own `(describe u32)` doesn't conflict with the private one, while
+; inside the module both overloads are visible.
+(import lib "modules/overload_privacy.easl")
+
+(use lib)
+
+(defn describe [x: u32]: f32
+  100.)
+
+@cpu
+(defn main []
+  (print (lib/describe 2.))
+  (print (describe 2.))
+  (print (describe 2u)))

@@ -1,0 +1,6 @@
+(import "lib.easl")
+
+@fragment
+(defn f []: vec4f
+  (let [scale 1.]
+    (vec4f scale)))

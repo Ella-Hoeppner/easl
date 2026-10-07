@@ -1,4 +1,5 @@
 ; Enum variants may carry runtime-sized array payloads on the CPU.
+@unpack
 (enum MaybeSamples
   Nothing
   (Just [f32]))

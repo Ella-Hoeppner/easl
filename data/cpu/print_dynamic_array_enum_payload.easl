@@ -1,4 +1,5 @@
 ; `print` works on enum values carrying runtime-sized array payloads.
+@unpack
 (enum MaybeSamples
   Nothing
   (Just [f32]))

@@ -10,7 +10,7 @@ use crate::compiler::builtins::{
   EmulatedFunctionRecord, EmulatedFunctionSignature,
   built_in_structs_for_target,
 };
-use crate::compiler::types::ExpTypeInfo;
+use crate::compiler::types::{ExpTypeInfo, PRIMITIVE_TYPE_NAMES};
 use crate::compiler::vars::{
   BindingSpec, GroupAndBinding, VariableAddressSpace,
 };
@@ -49,7 +49,7 @@ use crate::{
       NameDefinitionSource, Type, TypeState, UntypedType, Variable,
       VariableKind, parse_generic_argument,
     },
-    util::{compile_word, is_valid_name},
+    util::{compile_word, is_valid_name, is_valid_qualified_name},
     vars::TopLevelVariableKind,
     wgsl::is_easl_reserved_word,
   },
@@ -68,6 +68,7 @@ use super::{
   expression::TypedExp,
   functions::FunctionImplementationKind,
   macros::{Macro, macroexpand},
+  modules::{display_name, resolve_modules},
   structs::AbstractStruct,
   vars::TopLevelVar,
 };
@@ -652,6 +653,12 @@ pub struct Program {
   pub lifted_audio_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
   /// As `lifted_audio_captures`, for dispatched GPU closure entries.
   pub lifted_gpu_captures: HashMap<Arc<str>, Arc<LiftedCaptures>>,
+  /// Overload groups created by module resolution (see
+  /// [`crate::compiler::modules`]): each group's name and the registry
+  /// buckets its candidates come from. References to a group are rewritten
+  /// to the chosen member by `resolve_overload_groups`, right after
+  /// inference.
+  pub overload_groups: HashMap<Arc<str>, Vec<Arc<str>>>,
 }
 
 impl Clone for Program {
@@ -666,6 +673,7 @@ impl Clone for Program {
       window_info_bindings: self.window_info_bindings.clone(),
       lifted_audio_captures: self.lifted_audio_captures.clone(),
       lifted_gpu_captures: self.lifted_gpu_captures.clone(),
+      overload_groups: self.overload_groups.clone(),
     }
   }
 }
@@ -688,22 +696,10 @@ impl Program {
       window_info_bindings: vec![],
       lifted_audio_captures: HashMap::new(),
       lifted_gpu_captures: HashMap::new(),
+      overload_groups: HashMap::new(),
     }
   }
-  pub fn add_top_level_var(&mut self, var: TopLevelVar, errors: &mut ErrorLog) {
-    if let Some(previous_var) = self
-      .top_level_vars
-      .iter()
-      .find(|old_var| old_var.name == var.name)
-    {
-      errors.log(CompileError {
-        kind: VariableNameCollision(var.name.to_string()),
-        source_trace: var
-          .source_trace
-          .clone()
-          .insert_as_secondary(previous_var.source_trace.clone()),
-      })
-    }
+  pub fn add_top_level_var(&mut self, var: TopLevelVar) {
     self.names.write().unwrap().track_user_name(&var.name);
     self.top_level_vars.push(var);
   }
@@ -904,7 +900,21 @@ impl Program {
     fn_name: &Arc<str>,
     source_trace: SourceTrace,
   ) -> CompileResult<Option<Vec<Type>>> {
-    if let Some(signatures) = self.abstract_functions.get(fn_name) {
+    let signatures: Vec<Arc<RwLock<AbstractFunctionSignature>>> =
+      if let Some(members) = self.overload_groups.get(fn_name) {
+        members
+          .iter()
+          .flat_map(|member| {
+            self.abstract_functions.get(member).into_iter().flatten()
+          })
+          .cloned()
+          .collect()
+      } else if let Some(signatures) = self.abstract_functions.get(fn_name) {
+        signatures.clone()
+      } else {
+        return Ok(None);
+      };
+    {
       signatures
         .into_iter()
         .map(|signature| {
@@ -918,9 +928,13 @@ impl Program {
         })
         .collect::<CompileResult<Vec<_>>>()
         .map(|x| Some(x))
-    } else {
-      Ok(None)
     }
+  }
+  /// Whether `name` names functions: a registry bucket or an overload
+  /// group.
+  pub fn names_functions(&self, name: &str) -> bool {
+    self.abstract_functions.contains_key(name)
+      || self.overload_groups.contains_key(name)
   }
   pub fn abstract_functions_iter(
     &self,
@@ -946,19 +960,49 @@ impl Program {
   ) -> (Self, ErrorLog) {
     let mut errors = ErrorLog::new();
     let mut names = NameContext::empty();
-    let all_syntax_trees: Vec<EaslTree> = documents
+    for (document, _, _) in documents.sources.iter() {
+      for tree in document.syntax_trees.iter() {
+        names.track_all_ast_names(tree);
+      }
+    }
+    let expanded_documents: Vec<Vec<EaslTree>> = documents
       .sources
       .iter()
-      .map(|(document, _, _)| document.syntax_trees.clone())
-      .flatten()
+      .map(|(document, _, _)| {
+        document
+          .syntax_trees
+          .iter()
+          .map(|tree| {
+            macroexpand(tree.clone(), &macros, &mut names, &mut errors)
+          })
+          .collect()
+      })
       .collect();
-    for tree in all_syntax_trees.iter() {
+    let builtins = Program::default();
+    let builtin_types = PRIMITIVE_TYPE_NAMES
+      .iter()
+      .map(|name| Arc::from(*name))
+      .chain(builtins.typedefs.structs.iter().map(|s| s.name.0.clone()))
+      .chain(builtins.typedefs.enums.iter().map(|e| e.name.0.clone()))
+      .chain(
+        builtins
+          .typedefs
+          .type_aliases
+          .iter()
+          .map(|(alias, _)| alias.clone()),
+      )
+      .collect();
+    let resolved = resolve_modules(
+      documents,
+      expanded_documents,
+      builtins.abstract_functions.into_keys().collect(),
+      builtin_types,
+      &mut errors,
+    );
+    for tree in resolved.trees.iter() {
       names.track_all_ast_names(tree);
     }
-    let trees = all_syntax_trees
-      .into_iter()
-      .map(|tree| macroexpand(tree, &macros, &mut names, &mut errors))
-      .collect::<Vec<EaslTree>>();
+    let trees = resolved.trees;
 
     let mut non_typedef_trees = vec![];
     let mut untyped_types = vec![];
@@ -1093,6 +1137,7 @@ impl Program {
     }
     let mut program = Program::default();
     program.names = names.into();
+    program.overload_groups = resolved.overload_groups;
     match UntypedType::sort_by_references(&untyped_types) {
       Ok(sorted_untyped_types) => {
         for name in macros.iter().flat_map(|m| m.reserved_names.iter().cloned())
@@ -1158,7 +1203,6 @@ impl Program {
           let first_child_source_trace: SourceTrace =
             first_child_position.clone().into();
           match first_child.as_str() {
-            "import" => {}
             "var" | "def" | "override" => {
               if let Some(var) = TopLevelVar::from_ast(
                 first_child.as_str(),
@@ -1168,7 +1212,7 @@ impl Program {
                 annotation,
                 &mut errors,
               ) {
-                program.add_top_level_var(var, &mut errors);
+                program.add_top_level_var(var);
               }
             }
             "defn" => {
@@ -5938,8 +5982,9 @@ impl Program {
       .chain(
         self
           .abstract_functions
-          .iter()
-          .map(|(name, _)| Arc::clone(name)),
+          .keys()
+          .chain(self.overload_groups.keys())
+          .cloned(),
       )
       .collect();
     for (_, signatures) in self.abstract_functions.iter_mut() {
@@ -6026,7 +6071,7 @@ impl Program {
         &signature.implementation
       {
         let implementation = implementation.read().unwrap();
-        if !is_valid_name(&signature.name) {
+        if !is_valid_qualified_name(&signature.name) {
           errors.log(CompileError::new(
             CompileErrorKind::InvalidName,
             implementation.name_source_trace.clone(),
@@ -6041,7 +6086,7 @@ impl Program {
           log_if_reserved(arg_name, arg_source, errors);
         }
         for (generic_name, _, source_trace) in signature.generic_args.iter() {
-          if !is_valid_name(generic_name) {
+          if !is_valid_qualified_name(generic_name) {
             errors.log(CompileError::new(
               CompileErrorKind::InvalidName,
               source_trace.clone(),
@@ -6084,7 +6129,7 @@ impl Program {
               _ => vec![],
             };
             for (name, source) in names {
-              if !is_valid_name(name) {
+              if !is_valid_qualified_name(name) {
                 errors.log(CompileError::new(
                   CompileErrorKind::InvalidName,
                   source.clone(),
@@ -6098,14 +6143,14 @@ impl Program {
       }
     }
     for e in self.typedefs.enums.iter() {
-      if !is_valid_name(&e.name.0) {
+      if !is_valid_qualified_name(&e.name.0) {
         errors.log(CompileError::new(
           CompileErrorKind::InvalidName,
           e.name.1.clone(),
         ));
       }
       for (name, _, source) in e.generic_args.iter() {
-        if !is_valid_name(name) {
+        if !is_valid_qualified_name(name) {
           errors.log(CompileError::new(
             CompileErrorKind::InvalidName,
             source.clone(),
@@ -6113,7 +6158,7 @@ impl Program {
         }
       }
       for variant in e.variants.iter() {
-        if !is_valid_name(&variant.name) {
+        if !is_valid_qualified_name(&variant.name) {
           errors.log(CompileError::new(
             CompileErrorKind::InvalidName,
             variant.source.clone(),
@@ -6122,14 +6167,14 @@ impl Program {
       }
     }
     for s in self.typedefs.structs.iter() {
-      if !is_valid_name(&s.name.0) {
+      if !is_valid_qualified_name(&s.name.0) {
         errors.log(CompileError::new(
           CompileErrorKind::InvalidName,
           s.name.1.clone(),
         ));
       }
       for (name, _, source) in s.generic_args.iter() {
-        if !is_valid_name(name) {
+        if !is_valid_qualified_name(name) {
           errors.log(CompileError::new(
             CompileErrorKind::InvalidName,
             source.clone(),
@@ -6240,6 +6285,33 @@ impl Program {
   }
   fn catch_duplicate_signatures(&self, errors: &mut ErrorLog) {
     for (name, signatures) in self.abstract_functions.iter() {
+      Self::catch_duplicates_among(name, signatures, errors);
+    }
+  }
+  /// Catches functions that meet in an overload group with signatures
+  /// identical to each other or to a builtin's.
+  fn catch_duplicate_overload_group_signatures(&self, errors: &mut ErrorLog) {
+    for (group, members) in self.overload_groups.iter() {
+      let signatures: Vec<Arc<RwLock<AbstractFunctionSignature>>> = members
+        .iter()
+        .flat_map(|member| {
+          self.abstract_functions.get(member).into_iter().flatten()
+        })
+        .cloned()
+        .collect();
+      Self::catch_duplicates_among(
+        &display_name(group).into(),
+        &signatures,
+        errors,
+      );
+    }
+  }
+  fn catch_duplicates_among(
+    name: &Arc<str>,
+    signatures: &Vec<Arc<RwLock<AbstractFunctionSignature>>>,
+    errors: &mut ErrorLog,
+  ) {
+    {
       let mut normalized_signatures: Vec<(Option<SourceTrace>, _)> = vec![];
       for signature in signatures {
         if let FunctionImplementationKind::Builtin { .. }
@@ -6292,7 +6364,7 @@ impl Program {
         {
           let f = f.read().unwrap();
           for (arg_name, _) in f.arg_names.iter() {
-            if self.abstract_functions.get(arg_name).is_some()
+            if self.names_functions(arg_name)
               || self
                 .top_level_vars
                 .iter()
@@ -6300,7 +6372,7 @@ impl Program {
                 .is_some()
             {
               errors.log(CompileError::new(
-                CantShadowTopLevelBinding(arg_name.to_string()),
+                CantShadowTopLevelBinding(display_name(arg_name).to_string()),
                 f.expression.source_trace.clone(),
               ))
             }
@@ -7327,6 +7399,52 @@ impl Program {
   }
   /// Rewrites one expression's aliased-builtin calls in place (see
   /// `rewrite_aliased_builtin_calls`).
+  /// Rewrites each reference to an overload group into a reference to the
+  /// member inference chose, whose name its function type's ancestor
+  /// carries.
+  pub fn resolve_overload_groups(&mut self) {
+    if self.overload_groups.is_empty() {
+      return;
+    }
+    let groups = std::mem::take(&mut self.overload_groups);
+    let resolve = |exp: &mut TypedExp| {
+      exp
+        .walk_mut(&mut |e| {
+          if let ExpKind::Name(name) = &e.kind
+            && groups.contains_key(name)
+          {
+            let TypeState::Known(Type::Function(signature)) = &e.data.kind
+            else {
+              panic!("overload group `{name}` resolved to a non-function")
+            };
+            let member = signature
+              .abstract_ancestor
+              .as_ref()
+              .expect("overload group reference without an ancestor")
+              .read()
+              .unwrap()
+              .name
+              .clone();
+            e.kind = ExpKind::Name(member);
+          }
+          Ok::<bool, Never>(true)
+        })
+        .unwrap();
+    };
+    for f in self.abstract_functions_iter() {
+      let FunctionImplementationKind::Composite(implementation) =
+        f.read().unwrap().implementation.clone()
+      else {
+        continue;
+      };
+      resolve(&mut implementation.write().unwrap().expression);
+    }
+    for var in self.top_level_vars.iter_mut() {
+      if let Some(value) = &mut var.value {
+        resolve(value);
+      }
+    }
+  }
   fn rewrite_aliased_builtin_calls_in_exp(&self, exp: &mut TypedExp) {
     exp
       .walk_mut(&mut |e| {
@@ -7628,11 +7746,16 @@ impl Program {
     if !errors.is_empty() {
       return errors;
     }
+    self.catch_duplicate_overload_group_signatures(&mut errors);
+    if !errors.is_empty() {
+      return errors;
+    }
     self.inline_def_array_sizes();
     self.fully_infer_types(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
+    self.resolve_overload_groups();
     self.rewrite_aliased_builtin_calls();
     self.box_function_values(&mut errors);
     if !errors.is_empty() {

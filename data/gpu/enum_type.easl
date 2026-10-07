@@ -1,3 +1,4 @@
+@unpack
 (enum TestEnum
   A
   (B f32)

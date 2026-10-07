@@ -2,6 +2,7 @@
 (defn double [x: f32]: f32 (* x 2.))
 (defn increment [x: f32]: f32 (+ x 1.))
 
+@unpack
 (enum Op
   (Apply (Fn [f32] f32))
   Identity)

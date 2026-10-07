@@ -1,5 +1,6 @@
 ; REGRESSION (function-values WIP): a plain single-variant user enum must keep
 ; working on the VM when nested in a struct / array and printed.
+@unpack
 (enum Wrap (W f32))
 
 (struct Pair

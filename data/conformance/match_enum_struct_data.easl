@@ -1,3 +1,4 @@
+@unpack
 (enum MaybeVec
   NoVec
   (SomeVec vec2f))

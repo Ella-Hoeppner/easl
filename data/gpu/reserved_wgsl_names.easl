@@ -13,6 +13,7 @@
                     y: f32]: virtual
   (virtual x y))
 
+@unpack
 (enum smooth
   (writeonly f32)
   varying)

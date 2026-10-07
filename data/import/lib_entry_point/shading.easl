@@ -1,0 +1,9 @@
+(struct Tint
+  amount: f32)
+
+(defn tinted [t: Tint]: vec4f
+  (vec4f t.amount))
+
+@fragment
+(defn frag []: vec4f
+  (tinted (Tint 0.5)))

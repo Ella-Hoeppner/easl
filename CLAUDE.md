@@ -41,6 +41,7 @@ Run `cargo fmt` before handing changes back (it reformats `tests/format_tests.rs
   - `effects.rs` — effect types (see below)
   - `entry.rs` — entry point kinds and `should_compile_to_target`
   - `exp_builder.rs` — `ExpBuilder` for building typed expressions in post-inference passes
+  - `modules.rs` — module resolution (`resolve_modules`): flattens files and `mod` forms into one namespace of internal names (see "Modules")
   - `error.rs`, `vars.rs`, `wgsl.rs`, `annotation.rs`, `macros.rs`, `info.rs`, `util.rs`, `core.rs`
 - `src/vm/`: `bytecode.rs` (the VM: `Op`, `Code`, `BytecodeProgram`, `execute`), `compile.rs` (bytecode compiler — keep bytecode-compile logic here, not in `expression.rs`), `shared_sync.rs` (VM side of cross-thread sharing)
 
@@ -60,18 +61,18 @@ Run `cargo fmt` before handing changes back (it reformats `tests/format_tests.rs
 
 **`is_globally_bound`**: any pass that rewrites a name into a reference to a global (storage-ref inlining, the GPU and audio capture lifts) must propagate `is_globally_bound` up the accessor/lookup chain above it. Mutable-ref effect derivation reads the *outer* node's flag; a stale flag silently drops writes from GPU sync and shared-dirty marking.
 
-**Program side tables** (`top_level_vars`, `window_info_bindings`, `lifted_audio_captures`, `lifted_gpu_captures`) must survive every pass that rebuilds the function registry (the `take()` closures).
+**Program side tables** (`top_level_vars`, `window_info_bindings`, `lifted_audio_captures`, `lifted_gpu_captures`; `overload_groups` is consumed right after inference) must survive every pass that rebuilds the function registry (the `take()` closures).
 
 **Hash order**: hash seeds are intentionally random — never fix them to paper over order-dependence; fix the order-dependence (dedupe by identity, not generated names; register before rewriting; sort address-keyed maps before iterating).
 
 ## Compilation Pipeline
 
-`Program::validate_raw_program` (program.rs), in order:
+Before it, `Program::from_easl_documents` macroexpands each document and runs **module resolution** (`resolve_modules`, modules.rs), which hands the rest of the compiler one flat list of definitions with every name rewritten to an internal name. Then `Program::validate_raw_program` (program.rs), in order:
 
 1. **Name validation** — reserved/invalid names (incl. the compiler's reserved `easl_*` names)
 2. **Mutable arg wrapping** — `@var` args
 3. **Deshadowing** — every local name is bound at most once per function (shadowing *and* sibling scopes); later passes key variables by name
-4. **Type inference** (`fully_infer_types`), then `rewrite_aliased_builtin_calls` (pure aliases like `into`/`length` become their targets), then `box_function_values`
+4. **Type inference** (`fully_infer_types`; overload groups' duplicate signatures are caught just before it), then `resolve_overload_groups` (group references become the chosen member's name), then `rewrite_aliased_builtin_calls` (pure aliases like `into`/`length` become their targets), then `box_function_values`
 5. **Control flow validation** — code after `break`/`return`, `match` exhaustiveness and matchable types
 6. **Associative expansion** — `(+ a b c)` → `(+ (+ a b) c)`
 7. **Deexpressionification** — lifts expression-position `let`/`match`/blocks into statements. Arguments keep left-to-right order: before a later argument is lifted, every earlier argument with effects is bound to a temporary (by-reference and function-valued ones stay in place); an effectful unit-typed argument is bound the same way, because unit values are erased later. A `for` update needing statements stays in the update slot so `continue` still runs it (WGSL: `loop { if !(cond) { break; } body continuing { update } }`; C: a `({ ... })` statement expression in the header)
@@ -96,6 +97,16 @@ The pipeline is **not idempotent** (a late pass turns `Reference` into `Pointer`
 - Easl uses kebab-case (`make-two-of` → WGSL `make_two_of`), PascalCase for types
 - Monomorphized names get type suffixes (`map_f32`); higher-order specializations append the inlined function's name (gensym'd on collision)
 
+### Modules (`modules.rs`)
+- Every file is a module (one per canonical path, however often imported); `(mod name …)` nests one. Forms: `(import "p")` (every public name, unqualified), `(import alias "p")` (namespace), `(use path)` / `(use path [a b])` (a module or an enum), `@private` (visible to the module and its nested `mod`s), `@unpack` on enums. User docs: `docs/pages/language.md` ("Modules")
+- **Internal names**: each definition is its module's prefix + its name. The main file's prefix is empty (single-file programs are unchanged); an imported file's is its stem (deduplicated against other files and the main file's top-level `mod`s, e.g. `geometry/`); a `mod`'s is its parent's + `name/`. Variants are `<enum>/<variant>` (`Shape/Circle`) unless `@unpack`. A main-file `defn` sharing a builtin's name gets the `root/` prefix so it overloads the builtin only where it's visible. `compile_word` turns `/` into `_`; printing shows a struct's or variant's last segment (`display_name`), as do `UnboundName`/`CantShadowTopLevelBinding`
+- **Scopes**: a module's own definitions + (for a `mod`) its enclosing scope + names from `import`/`use`, which act exactly as if defined there. Functions with the same bare name overload; any other repeat is `NameCollision`; the same definition reached twice is fine. No re-export: a module's *members* are only its own definitions
+- **Privacy is per overload**: a module's member table holds every overload of a name with its own privacy flag. When a name has both private and public overloads in one module, the private ones get the internal name `<name>/private` (a separate registry bucket), so importers reach only the public bucket while the module's own scope groups both. A name whose overloads are all private (or all public) keeps the plain internal name — entry points keep their names
+- **Overload groups**: wherever several functions share a bare name in a scope (or one shares a builtin's name), references resolve to a group name (`describe@0`) registered in `Program::overload_groups` → member registry buckets. Inference sees the union of the members' signatures (`concrete_signatures`, `names_functions`); `resolve_overload_groups` rewrites each reference to its ancestor's name right after inference. Groups are created eagerly per scope so `catch_duplicate_overload_group_signatures` sees conflicts even when nothing calls them
+- **Positions**: the resolver rewrites leaves by syntactic position — type positions (right of `:`, enum payloads, struct field types) skip function origins (so a `vec4f` constructor overload never hijacks the type `vec4f`); struct field names, annotation contents, comments, and strings are untouched; only the head of `a.b.c` is resolved; a definition's generic parameters are never resolved; `~x` becomes an explicit `(group x)` application when `into` resolves to a group
+- **File isolation**: in non-main files, a leaf matching one of the main file's unqualified names (which those files can't see) is renamed to `<module prefix><name>`, so a local there can't collide with, or resolve to, the main file's global
+- The loader records which document each `import` form loads in `EaslMultiDocument::imports` (keyed by the form's position). Pinned by the `module_*` cpu tests (`data/cpu/modules/` holds their library files) and the import suite
+
 ### Generics
 - `(defn (map T U) [...])`; monomorphized by `TypedExp::monomorphize` and `AbstractFunctionSignature::generate_monomorphized`
 - `AbstractStruct::opaque: true` marks WGSL-native types (`atomic`, textures, `sampler`, `Video`) that must never be emitted as struct definitions. New WGSL-primitive builtin types need it. (`MidiNote` is deliberately *not* opaque or skipped — it has no native WGSL form, so it emits like a user struct)
@@ -105,8 +116,9 @@ The pipeline is **not idempotent** (a late pass turns `Reference` into `Pointer`
 ### Enums
 - WGSL: a struct `{ discriminant: u32, data: array<u32, N> }`. Payload words are **flat** (leaves in declaration order, no padding; a closure contributes its scope's words), so host uploads/readbacks serialize payloads through `Value::to_vm_words`/`from_vm_words`, never the payload's padded WGSL layout
 - Constructors/matches `bitcast` to/from the words — except `bool` chunks (packed `u32(x)`, unpacked `x != 0u`; C stores `? 1u : 0u`) and matrices (packed column-major, unpacked through the scalar `matCxR(...)` constructor; matrix column indexing is `m[i]` in WGSL and the prelude's `index_matNxM` in C). String/runtime-sized payloads are CPU-only
+- Variant names are qualified by their enum (`Shape/Circle`, see "Modules"); `@unpack` makes them plain module members (the builtin `Option`'s `Some`/`None` behave so)
 - Unit variants become constants, data variants constructor functions. Enum constructors are synthesized directly in `compile_to_target` (they never pass through `TopLevelFunction::compile`), so that loop has its own target gate — a new "CPU-only type" condition must be added in both places
-- `Option` is a builtin enum, always registered. Programs must not redefine it — but redefining a builtin type name (`Option`, `vec4f`, …) isn't caught with a clean error yet (planned). Enum emission skips still-generic enums (`flat_data_size_in_u32s` panics on a generic payload)
+- `Option` is a builtin enum, always registered. Defining a struct or enum with any builtin type's name (primitives, builtin structs/enums, type aliases — `Option`, `vec4f`, `f32`, …) is `BuiltinTypeRedefinition`, in every module (checked by the resolver; `PRIMITIVE_TYPE_NAMES` lists the names that aren't typedefs). Enum emission skips still-generic enums (`flat_data_size_in_u32s` panics on a generic payload)
 - `match` works on numbers, bools, enums, and vectors (vector-literal patterns); anything else is `CantMatchOnType`
 
 ### Higher-Order Functions
@@ -320,7 +332,8 @@ A separate `easl_web` crate (wasm32) that embeds the compiler and the VM and run
 All suites run with `--features window`. Most CPU-side suites run every test on **both** CPU runtimes and require identical output. Suites: `shader_tests`, `cpu_tests`, `buffer_tests`, `window_tests`, `conformance_tests`, `vm_tests`, `sync_tests`, `audio_tests`, `thread_sync_tests`, `web_tests`, `full_tests`, `c_tests`, `import_tests`, `format_tests`, `video_tests`.
 
 - **Shader** (`data/gpu/`): `success_test!(name)` validates emitted WGSL with naga (written to `out/` for inspection); `error_test!(name, CompileErrorKind::X(...))` asserts the exact error set with `PartialEq` — payloads must match
-- **CPU** (`data/cpu/`): `cpu_test!(name)` compares printed output to `name.txt`
+- **CPU** (`data/cpu/`): `cpu_test!(name)` compares printed output to `name.txt`. Files under `data/cpu/modules/` are libraries imported by the `module_*` tests
+- **Import** (`data/import/<name>/main.easl` + its imported files): `import_test!` compiles to WGSL and naga-validates; `import_error_test!(name, errors…)` asserts the exact (deduplicated) error set
 - **Buffer** (`data/buffer/`): real GPU dispatch round trips, compared to `.txt`
 - **Window** (`data/window/`): `StringIO` event logs — lines `spawn-window`, `print: <msg>`, `dispatch-render-shaders <vert> <frag> <count>`, `dispatch-compute-shader <entry> (vec3u Xu Yu Zu)`
 - **Conformance** (`data/conformance/`): each file defines `f(): f32` (the harness injects the CPU/GPU boilerplate via `load_easl_program_from_file_with_lookup_function`); the interpreter+GPU, C (via clang — the slow part, ~0.5–1 s per test; while iterating on the VM you can temporarily wrap the C section in `if false {…}`, restoring it before committing), and VM must **agree** (optionally within a tolerance). It checks agreement, not correctness — pin correctness elsewhere too

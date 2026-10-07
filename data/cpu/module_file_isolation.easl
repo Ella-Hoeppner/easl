@@ -1,0 +1,11 @@
+; An imported file never sees its importer's names, so its local `helper`
+; is unrelated to this file's function `helper`.
+(import iso "modules/isolated.easl")
+
+(defn helper []: f32
+  100.)
+
+@cpu
+(defn main []
+  (print (iso/compute 1.))
+  (print (helper)))

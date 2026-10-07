@@ -1,0 +1,8 @@
+(defn g []: f32
+  1.)
+
+(use g)
+
+@fragment
+(defn f []: vec4f
+  (vec4f (g)))

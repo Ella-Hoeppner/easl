@@ -1,0 +1,22 @@
+; A namespaced import: everything the file defines is reached through
+; `geo/`, including enum variants (`geo/Shape/Circle`) and `@unpack`
+; variants (`geo/Vertical`). The file's private `square` doesn't collide
+; with this file's own `square`.
+(import geo "modules/geometry.easl")
+
+(defn square [x: u32]: u32
+  (* x x))
+
+@cpu
+(defn main []
+  (let [p (geo/Point 1. 2.)
+        shapes [(geo/Shape/Circle 1.) (geo/Shape/Square 2.) geo/Shape/Empty]]
+    (print p)
+    (print (geo/describe p))
+    (for [i 3u]
+      (print (geo/area (shapes i))))
+    (print shapes)
+    (print geo/scale)
+    (print (geo/axis-sign geo/Vertical))
+    (print (geo/axis-sign geo/Axis/Horizontal))
+    (print (square 3u))))

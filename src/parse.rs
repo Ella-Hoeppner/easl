@@ -187,11 +187,17 @@ pub type EaslTree = DocumentSyntaxTree<Encloser, Operator>;
 #[derive(Debug)]
 pub struct EaslMultiDocument {
   pub sources: Vec<(EaslDocument, String, String)>,
+  /// Which document each `import` form loads: the form's position (its
+  /// path naming its own document) to the imported document's index.
+  pub imports: HashMap<DocumentPosition, usize>,
 }
 
 impl EaslMultiDocument {
   fn empty() -> Self {
-    Self { sources: vec![] }
+    Self {
+      sources: vec![],
+      imports: HashMap::new(),
+    }
   }
   pub fn from_singular_document_sourceless(document: EaslDocument) -> Self {
     Self::from_singular_document(document, String::new(), String::new())
@@ -355,60 +361,93 @@ fn load_and_parse_easl_multidocument_with_resolution(
   let mut unprocessed_imports: Vec<PathBuf> = vec![];
   let mut encountered_imports: HashSet<PathBuf> = HashSet::new();
   encountered_imports.insert(primary_easl_file_path.clone());
-  let check_as_import_statement = |ast: &EaslTree,
-                                   current_file_path: &Path,
-                                   unprocessed_imports: &mut Vec<PathBuf>,
-                                   encountered_imports: &mut HashSet<
-    PathBuf,
-  >,
-                                   errors: &mut ErrorLog|
-   -> Result<(), std::io::Error> {
-    if let EaslTree::Inner(
+  // Each import form's position and the path it names, resolved to a
+  // document index once every document is loaded.
+  let mut import_forms: Vec<(DocumentPosition, PathBuf)> = vec![];
+  // `(import "path")` or `(import alias "path")`, at a file's top level or
+  // inside a `mod` form.
+  fn check_as_import_statement(
+    ast: &EaslTree,
+    current_file_path: &Path,
+    resolve: &impl Fn(&Path) -> std::io::Result<PathBuf>,
+    unprocessed_imports: &mut Vec<PathBuf>,
+    encountered_imports: &mut HashSet<PathBuf>,
+    import_forms: &mut Vec<(DocumentPosition, PathBuf)>,
+    errors: &mut ErrorLog,
+  ) -> Result<(), std::io::Error> {
+    let EaslTree::Inner(
       (_, EncloserOrOperator::Encloser(Encloser::Parens)),
       children,
     ) = ast
-      && let Some(first_child) = children.get(0)
-      && let EaslTree::Leaf(_, leaf) = first_child
-      && leaf == "import"
-    {
-      if children.len() == 2
-        && let EaslTree::Inner(
+    else {
+      return Ok(());
+    };
+    let Some(EaslTree::Leaf(_, leaf)) = children.get(0) else {
+      return Ok(());
+    };
+    match leaf.as_str() {
+      "mod" => {
+        for child in children.iter().skip(2) {
+          check_as_import_statement(
+            child,
+            current_file_path,
+            resolve,
+            unprocessed_imports,
+            encountered_imports,
+            import_forms,
+            errors,
+          )?;
+        }
+      }
+      "import" => {
+        let path_tree = match children.len() {
+          2 => Some(&children[1]),
+          3 if matches!(children[1], EaslTree::Leaf(_, _)) => {
+            Some(&children[2])
+          }
+          _ => None,
+        };
+        if let Some(EaslTree::Inner(
           (_, EncloserOrOperator::Encloser(Encloser::Quote)),
           string_children,
-        ) = &children[1]
-        && string_children.len() == 1
-        && let EaslTree::Leaf(_, import_path_string) =
-          string_children[0].clone()
-      {
-        let canonicalized_import_path_string =
-          if import_path_string.starts_with("/") {
+        )) = path_tree
+          && string_children.len() == 1
+          && let EaslTree::Leaf(_, import_path_string) = &string_children[0]
+        {
+          let canonicalized_import_path = if import_path_string.starts_with("/")
+          {
             resolve(&PathBuf::from(import_path_string))?
           } else {
             resolve(
               &current_file_path.parent().unwrap().join(import_path_string),
             )?
           };
-
-        if !encountered_imports.contains(&canonicalized_import_path_string) {
-          encountered_imports.insert(canonicalized_import_path_string.clone());
-          unprocessed_imports.push(canonicalized_import_path_string);
+          import_forms
+            .push((ast.position().clone(), canonicalized_import_path.clone()));
+          if !encountered_imports.contains(&canonicalized_import_path) {
+            encountered_imports.insert(canonicalized_import_path.clone());
+            unprocessed_imports.push(canonicalized_import_path);
+          }
+        } else {
+          errors.log(CompileError::new(
+            CompileErrorKind::InvalidImportStatement,
+            ast.position().into(),
+          ));
         }
-      } else {
-        errors.log(CompileError::new(
-          CompileErrorKind::InvalidImportStatement,
-          ast.position().into(),
-        ));
       }
+      _ => {}
     }
     Ok(())
-  };
+  }
   let mut errors = ErrorLog::new();
   for ast in documents.sources[0].0.syntax_trees.iter() {
     check_as_import_statement(
       ast,
       &primary_easl_file_path,
+      &resolve,
       &mut unprocessed_imports,
       &mut encountered_imports,
+      &mut import_forms,
       &mut errors,
     )?;
   }
@@ -435,8 +474,10 @@ fn load_and_parse_easl_multidocument_with_resolution(
       check_as_import_statement(
         ast,
         &import_path,
+        &resolve,
         &mut unprocessed_imports,
         &mut encountered_imports,
+        &mut import_forms,
         &mut errors,
       )?;
     }
@@ -447,6 +488,16 @@ fn load_and_parse_easl_multidocument_with_resolution(
       return Ok(Ok(Err((documents, errors))));
     }
   }
+  let document_indices: HashMap<PathBuf, usize> = documents
+    .sources
+    .iter()
+    .enumerate()
+    .map(|(i, (_, path, _))| (PathBuf::from(path), i))
+    .collect();
+  documents.imports = import_forms
+    .into_iter()
+    .map(|(position, path)| (position, document_indices[&path]))
+    .collect();
   Ok(Ok(Ok(documents)))
 }
 

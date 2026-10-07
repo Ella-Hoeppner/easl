@@ -1,0 +1,2 @@
+(struct MidiNote
+  pitch: f32)

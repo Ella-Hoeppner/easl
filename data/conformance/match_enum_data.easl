@@ -1,3 +1,4 @@
+@unpack
 (enum Maybe
   Nothing
   (Just f32))

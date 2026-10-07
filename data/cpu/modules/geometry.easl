@@ -1,0 +1,34 @@
+(struct Point
+  x: f32
+  y: f32)
+
+(enum Shape
+  (Circle f32)
+  (Square f32)
+  Empty)
+
+@unpack
+(enum Axis
+  Horizontal
+  Vertical)
+
+(def scale: f32
+     2.)
+
+@private
+(defn square [x: f32]: f32
+  (* x x))
+
+(defn area [s: Shape]: f32
+  (match s
+    (Shape/Circle r) (* 3. (square r))
+    (Shape/Square side) (square side)
+    Shape/Empty 0.))
+
+(defn describe [p: Point]: f32
+  (+ p.x p.y))
+
+(defn axis-sign [a: Axis]: f32
+  (match a
+    Horizontal 1.
+    Vertical -1.))

@@ -10,6 +10,7 @@ use crate::compiler::exp_builder::{ExpBuilder, let_around};
 use crate::compiler::function_values::{
   FNBOX_APPLY, holds_boxed_function, is_function_value_borrow, is_pure_place,
 };
+use crate::compiler::modules::display_name;
 use crate::compiler::structs::{
   indexable_vec_and_mat_types, make_concrete_vec_type,
 };
@@ -3188,7 +3189,7 @@ impl TypedExp {
         self.data.subtree_fully_typed = true;
         if !ctx.is_bound(name) {
           errors.log(CompileError::new(
-            UnboundName(name.to_string()),
+            UnboundName(display_name(name).to_string()),
             self.source_trace.clone(),
           ));
         }
@@ -4698,7 +4699,9 @@ impl TypedExp {
                 errors: &mut ErrorLog| {
       if globally_bound_names.contains(&name) {
         errors.log(CompileError::new(
-          CompileErrorKind::CantShadowTopLevelBinding(name.to_string()),
+          CompileErrorKind::CantShadowTopLevelBinding(
+            display_name(&name).to_string(),
+          ),
           source_trace.clone(),
         ));
       }

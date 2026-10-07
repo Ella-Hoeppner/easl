@@ -12,6 +12,7 @@
       (*= v 2.)
       v)))
 
+@unpack
 (enum Voice
   (Playing (Fn [] f32))
   Silent)
@@ -23,6 +24,7 @@
 (struct Holder
   f: (Fn [] f32))
 
+@unpack
 (enum Slot
   (Filled Holder)
   Empty)

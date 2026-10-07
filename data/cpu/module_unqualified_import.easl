@@ -1,0 +1,14 @@
+; An unqualified import pulls in every public name. Variants of an enum
+; stay qualified by the enum unless it's `@unpack`, and `use` on the enum
+; pulls them in.
+(import "modules/geometry.easl")
+
+(use Shape [Circle])
+
+@cpu
+(defn main []
+  (print (area (Shape/Square 3.)))
+  (print (area (Circle 2.)))
+  (print (describe (Point 3. 4.)))
+  (print (axis-sign Horizontal))
+  (print scale))

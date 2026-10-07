@@ -6,6 +6,7 @@
   k: f32
   dir: vec3f)
 
+@unpack
 (enum Shape
   (Aligned Payload)
   (Flat f32))

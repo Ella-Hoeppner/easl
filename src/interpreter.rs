@@ -15,6 +15,7 @@ use crate::compiler::effects::{
   EffectType, WindowInfoBindingSource, WindowInfoKind,
 };
 use crate::compiler::entry::EntryPoint;
+use crate::compiler::modules::display_name;
 use crate::compiler::util::compile_word;
 use crate::compiler::{
   builtins::{ASSIGNMENT_OPS, ATOMIC_MUTATION_OPS},
@@ -2545,7 +2546,7 @@ impl Value {
             };
             format!("{}{suffix}", s.name)
           }
-          _ => s.name.to_string(),
+          _ => display_name(&s.name).to_string(),
         };
         format!("({name} {})", formatted_fields.join(" "))
       }
@@ -2556,6 +2557,7 @@ impl Value {
           .find(|v| &*v.name == &**variant)
           .map(|v| v.inner_type.kind.unwrap_known())
           .unwrap_or(Type::Unit);
+        let variant = display_name(variant);
         match &variant_type {
           Type::Unit => variant.to_string(),
           t => format!(

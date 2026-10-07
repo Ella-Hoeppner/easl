@@ -1,0 +1,26 @@
+; `use` takes a path to any module or enum, and `@unpack` enums' variants
+; are module members.
+(import geo "modules/geometry.easl")
+
+(use geo/Shape [Circle])
+
+(mod noise
+  @private
+  (defn hash [x: u32]: u32
+    (* x 747796405u))
+  (defn value [x: u32]: f32
+    (/ (f32 (hash x)) 4294967295.))
+  @unpack
+  (enum Kind
+    Perlin
+    Simplex))
+
+(use noise [Perlin])
+
+@cpu
+(defn main []
+  (print (geo/area (Circle 1.)))
+  (print (noise/value 1u))
+  (print Perlin)
+  (print noise/Simplex)
+  (print noise/Kind/Simplex))

@@ -1,0 +1,5 @@
+(import shading "shading.easl")
+
+@fragment
+(defn frag []: vec4f
+  (shading/tinted (shading/Tint 1.)))

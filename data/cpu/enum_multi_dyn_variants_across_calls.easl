@@ -4,6 +4,7 @@
 ; Without per-variant selection, each variant's payload would alias the
 ; last value its construction site produced: `a` borrows the Ints site,
 ; which `d`'s construction re-executes.
+@unpack
 (enum Chunk
   (Ints [u32])
   (Floats [f32])

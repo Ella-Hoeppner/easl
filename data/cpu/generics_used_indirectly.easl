@@ -11,6 +11,7 @@
       []: [C: f32]
       (zeroed-array))
 
+@unpack
 (enum (Box V)
   (Full V)
   Empty)

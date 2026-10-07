@@ -11,6 +11,7 @@ pub mod function_values;
 pub mod functions;
 pub mod info;
 pub mod macros;
+pub mod modules;
 pub mod program;
 pub mod structs;
 pub mod types;

@@ -6,6 +6,7 @@
       (+= n amount)
       n)))
 
+@unpack
 (enum Voice
   (Playing (Fn [] f32))
   Silent)

@@ -3,6 +3,7 @@
 (defn adder [k: f32]: (Fn [f32] f32)
   (fn [x] (+ x k)))
 
+@unpack
 (enum Op
   (Apply (Fn [f32] f32))
   Skip)

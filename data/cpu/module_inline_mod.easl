@@ -1,0 +1,38 @@
+; Inline modules see their enclosing scope (`base`), and a module's private
+; names are visible to the modules nested in it (`offset` in `inner`).
+(def base: f32
+     10.)
+
+(mod math
+  @private
+  (def offset: f32
+       1.)
+  (defn add-base [x: f32]: f32
+    (+ (+ x base) offset))
+  (mod inner
+    (defn twice-offset []: f32
+      (* 2. offset)))
+  (enum Sign
+    Positive
+    Negative)
+  (defn sign-of [x: f32]: Sign
+    (if (< x 0.)
+      Sign/Negative
+      Sign/Positive)))
+
+(mod helpers
+  (use math [add-base])
+  (defn add-base-twice [x: f32]: f32
+    (add-base (add-base x))))
+
+(use helpers)
+
+@cpu
+(defn main []
+  (print (math/add-base 1.))
+  (print (math/inner/twice-offset))
+  (print (add-base-twice 0.))
+  (print (math/sign-of -2.))
+  (print (match (math/sign-of 3.)
+           math/Sign/Positive 1u
+           math/Sign/Negative 0u)))

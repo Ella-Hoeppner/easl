@@ -9,6 +9,7 @@
          (% (+ phase increment) 1.))
       phase)))
 
+@unpack
 (enum Voice
   (Playing (Fn [] f32))
   Silent)

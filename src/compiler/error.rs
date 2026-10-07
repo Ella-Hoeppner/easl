@@ -410,8 +410,6 @@ pub enum CompileErrorKind {
   RuntimeSizedFieldOnGpu,
   #[error("Nested runtime-sized arrays may not be bound to GPU buffers")]
   NestedRuntimeSizedArrayBinding,
-  #[error("The name `{0}` is used for more than one top-level variable")]
-  VariableNameCollision(String),
   #[error("The name `{0}` is used as both a variable name and a function name")]
   VariableFunctionNameCollision(String),
   #[error("Internal compiler error: Tried to compile Unit type")]
@@ -621,6 +619,26 @@ pub enum CompileErrorKind {
   CantComputeSizeOfString,
   #[error("Invalid `import` expression")]
   InvalidImportStatement,
+  #[error("Invalid `mod` form: expected `(mod name forms...)`")]
+  InvalidModuleForm,
+  #[error(
+    "Invalid `use` form: expected `(use module)` or `(use module [names...])`"
+  )]
+  InvalidUseStatement,
+  #[error("Import cycle: {}", .0.join(" -> "))]
+  ImportCycle(Vec<String>),
+  #[error("`{0}` is already defined or imported in this scope")]
+  NameCollision(String),
+  #[error("`{0}` is a builtin type and can't be redefined")]
+  BuiltinTypeRedefinition(String),
+  #[error("`{0}` has no member named `{1}`")]
+  UnknownModuleMember(String, String),
+  #[error("`{0}` is private to its module")]
+  PrivateName(String),
+  #[error("`{0}` is not a module or enum")]
+  NotANamespace(String),
+  #[error("Module `{0}` can't be used as a value or type")]
+  ModuleUsedAsValue(String),
   #[error(
     "Variable `{0}` cannot be captured: it is already mutably captured by \
     another closure"
@@ -706,6 +724,19 @@ impl PartialEq for CompileErrorKind {
         Self::FunctionExpressionHasNonFunctionType(r0),
       ) => l0 == r0,
       (Self::UnboundName(l0), Self::UnboundName(r0)) => l0 == r0,
+      (Self::ImportCycle(l0), Self::ImportCycle(r0)) => l0 == r0,
+      (Self::NameCollision(l0), Self::NameCollision(r0)) => l0 == r0,
+      (
+        Self::BuiltinTypeRedefinition(l0),
+        Self::BuiltinTypeRedefinition(r0),
+      ) => l0 == r0,
+      (
+        Self::UnknownModuleMember(l0, l1),
+        Self::UnknownModuleMember(r0, r1),
+      ) => l0 == r0 && l1 == r1,
+      (Self::PrivateName(l0), Self::PrivateName(r0)) => l0 == r0,
+      (Self::NotANamespace(l0), Self::NotANamespace(r0)) => l0 == r0,
+      (Self::ModuleUsedAsValue(l0), Self::ModuleUsedAsValue(r0)) => l0 == r0,
       (Self::WrongArity(l0), Self::WrongArity(r0)) => l0 == r0,
       (
         Self::NoSuchField {
@@ -784,9 +815,6 @@ impl PartialEq for CompileErrorKind {
         Self::DisallowedInitializationValue(l0),
         Self::DisallowedInitializationValue(r0),
       ) => l0 == r0,
-      (Self::VariableNameCollision(l0), Self::VariableNameCollision(r0)) => {
-        l0 == r0
-      }
       (
         Self::VariableFunctionNameCollision(l0),
         Self::VariableFunctionNameCollision(r0),

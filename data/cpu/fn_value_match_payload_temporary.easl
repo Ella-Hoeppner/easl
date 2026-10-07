@@ -11,6 +11,7 @@
       (*= v 2.)
       v)))
 
+@unpack
 (enum Voice
   (Playing (Fn [] f32))
   Silent)

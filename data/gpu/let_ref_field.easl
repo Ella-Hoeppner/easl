@@ -1,6 +1,7 @@
 (def stack-size: u32
      5)
 
+@unpack
 (enum Op
   Abs
   (Swap u32))

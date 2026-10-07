@@ -1,0 +1,13 @@
+(enum Option
+  Yes
+  No)
+
+(struct vec4f
+  x: f32)
+
+(struct f32
+  x: u32)
+
+@fragment
+(defn f []: vec4f
+  (vec4f 1.))

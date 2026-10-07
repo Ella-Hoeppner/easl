@@ -1,0 +1,24 @@
+; Functions pulled in by `use` overload with this file's own and with
+; builtins exactly as if they were defined here: `describe` has an
+; overload from each file, and `+`/`into` extend the builtins.
+(import p "modules/pairs.easl")
+
+(use p [Pair describe into +])
+
+(defn describe [x: u32]: u32
+  (* x 10u))
+
+(defn apply-to [f: (Fn [u32] u32)
+                x: u32]: u32
+  (f x))
+
+@cpu
+(defn main []
+  (print (describe 4u))
+  (print (describe (Pair 1. 2.)))
+  (let [q: Pair ~3.]
+    (print q))
+  (print (+ (Pair 1. 2.) (Pair 3. 4.) (Pair 5. 6.)))
+  (print (+ 1. 2.))
+  (print (p/sum (Pair 1. 1.) (Pair 2. 2.)))
+  (print (apply-to describe 7u)))

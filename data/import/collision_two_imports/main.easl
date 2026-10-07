@@ -1,0 +1,7 @@
+(import "a.easl")
+
+(import "b.easl")
+
+@fragment
+(defn f []: vec4f
+  (vec4f scale))

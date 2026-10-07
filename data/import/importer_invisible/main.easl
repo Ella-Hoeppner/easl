@@ -1,0 +1,8 @@
+(import lib "lib.easl")
+
+(defn tint []: f32
+  0.5)
+
+@fragment
+(defn f []: vec4f
+  (vec4f (lib/get-tint)))

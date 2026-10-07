@@ -1,0 +1,4 @@
+; `helper` here is a local: the importing file's `helper` is invisible.
+(defn compute [x: f32]: f32
+  (let [helper (* x 2.)]
+    (+ helper 1.)))

@@ -1,0 +1,5 @@
+(import lib "lib.easl")
+
+@fragment
+(defn f []: vec4f
+  (vec4f (lib/describe 2u)))

@@ -1,1 +1,4 @@
 (import "subfolder/color.easl")
+
+(defn get-color []: vec3f
+  color)

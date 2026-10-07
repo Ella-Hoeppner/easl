@@ -1,0 +1,12 @@
+(defn level [x: f32]: f32
+  x)
+
+(mod m
+  (defn level [x: u32]: f32
+    (f32 x))
+  (defn both []: f32
+    (+ (level 1.) (level 2u))))
+
+@fragment
+(defn f []: vec4f
+  (vec4f (m/both)))
