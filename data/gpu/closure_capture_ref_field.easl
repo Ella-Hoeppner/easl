@@ -1,0 +1,27 @@
+; A local bound from something read through a reference parameter (a
+; `let` of a field, or a `match` binding) is an ordinary value: a closure
+; capturing it copies the value into its scope.
+(struct Voice
+  age: f32)
+
+(defn voice-sample [@var @ref v: Voice]: f32
+  (let [t v.age
+        click (fn [start: f32]: f32
+                (- t start))]
+    (click 0.5)))
+
+(defn payload-sample [@ref o: (Option f32)]: f32
+  (match o
+    (Some x) (let [shifted (fn [d: f32]: f32
+                             (+ x d))]
+               (shifted 1.))
+    None 0.))
+
+(var out: [2: f32])
+
+@compute
+(defn main []
+  (let [@var v (Voice 2.)]
+    (= (out 0u) (voice-sample v)))
+  (let [@var o (Some 2.)]
+    (= (out 1u) (payload-sample o))))

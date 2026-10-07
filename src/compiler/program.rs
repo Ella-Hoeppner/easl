@@ -5615,11 +5615,20 @@ impl Program {
       {
         continue;
       }
-      // Strings exist only on the CPU runtimes' heaps — a String-involving
-      // global (a `def`, `@local` var, or GPU-space var) has no WGSL or C
-      // representation at all. Shader code can't reference one: every
-      // String-typed expression is CPU-exclusive.
-      if v.var_type.involves_string() {
+      // A global whose type has no WGSL or C form — by the same rule that
+      // leaves CPU-only structs out (Strings, videos, runtime-sized arrays
+      // embedded in a struct or enum, closures that can't be emitted) — is
+      // CPU-only; shader code can't reference one. A runtime-sized array
+      // itself has a form as a storage binding, handled below.
+      let is_runtime_sized_array = matches!(
+        &v.var_type,
+        Type::Array(
+          Some(crate::compiler::types::ConcreteArraySize::Unsized),
+          _
+        )
+      );
+      if !is_runtime_sized_array && self.type_makes_struct_cpu_only(&v.var_type)
+      {
         continue;
       }
       // A GPU-space var whose type isn't host-shareable because it involves

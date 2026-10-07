@@ -1,3 +1,5 @@
+mod common;
+
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
 use std::fs;
@@ -17,6 +19,7 @@ fn run_vm_test(name: &str) {
     Ok(Ok((_, Ok(mut program)))) => {
       let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
+      common::assert_valid_wgsl(&program);
 
       let (mut bytecode_program, function_names) =
         program.compile_to_bytecode_program();
@@ -117,6 +120,7 @@ fn for_loop_repeated_execute() {
   };
   let errors = program.validate_raw_program(CompilerTarget::WGSL);
   assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
   let (mut bytecode_program, function_names) =
     program.compile_to_bytecode_program();
   let function_index = function_names
@@ -157,6 +161,7 @@ fn immutable_ref_elements_emit_no_stores() {
     let mut program = program.unwrap();
     let errors = program.validate_raw_program(CompilerTarget::WGSL);
     assert!(errors.is_empty(), "compile errors: {errors:#?}");
+    common::assert_valid_wgsl(&program);
     let (compiled, _) = program.compile_to_bytecode_program_cpu();
     compiled
       .code

@@ -1,0 +1,17 @@
+; A closure capturing a local bound from a field of a `@var @ref`
+; parameter captures the value.
+(struct Voice
+  age: f32)
+
+(defn voice-sample [@var @ref v: Voice]: f32
+  (let [t v.age
+        click (fn [start: f32]: f32
+                (- t start))]
+    (= v.age 10.)
+    (click 0.5)))
+
+@cpu
+(defn main []
+  (let [@var v (Voice 2.)]
+    (print (voice-sample v))
+    (print v.age)))

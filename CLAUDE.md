@@ -336,6 +336,7 @@ A separate `easl_web` crate (wasm32) that embeds the compiler and the VM and run
 
 All suites run with `--features window`. Most CPU-side suites run every test on **both** CPU runtimes and require identical output. Suites: `shader_tests`, `cpu_tests`, `buffer_tests`, `window_tests`, `conformance_tests`, `vm_tests`, `sync_tests`, `audio_tests`, `thread_sync_tests`, `web_tests`, `full_tests`, `c_tests`, `import_tests`, `format_tests`, `video_tests`.
 
+- **Every suite that runs `.easl` programs also checks their WGSL**: after validating a program, the cpu, buffer, vm, sync, thread-sync, audio, window, and video harnesses call `common::assert_valid_wgsl` (`tests/common/mod.rs`), which emits it to WGSL and validates the output with naga. Every GPU-valid user function is emitted whether or not anything runs it on the GPU, so this is what catches WGSL emission bugs in CPU-oriented code. New harnesses should call it too
 - **Shader** (`data/gpu/`): `success_test!(name)` validates emitted WGSL with naga (written to `out/` for inspection); `error_test!(name, CompileErrorKind::X(...))` asserts the exact error set with `PartialEq` — payloads must match
 - **CPU** (`data/cpu/`): `cpu_test!(name)` compares printed output to `name.txt`. Files under `data/cpu/modules/` are libraries imported by the `module_*` tests
 - **Import** (`data/import/<name>/main.easl` + its imported files): `import_test!` compiles to WGSL and naga-validates; `import_error_test!(name, errors…)` asserts the exact (deduplicated) error set

@@ -1,3 +1,5 @@
+mod common;
+
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
 use easl::interpreter::{
@@ -74,6 +76,7 @@ fn run_window_test(name: &str) {
     Ok(Ok((_, Ok(mut program)))) => {
       let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
+      common::assert_valid_wgsl(&program);
 
       let expected = parse_events(&expected_txt, name);
       // Every test runs on both CPU runtimes and must produce an identical

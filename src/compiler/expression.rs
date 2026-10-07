@@ -1998,9 +1998,14 @@ impl TypedExp {
         Let(bindings, body) => {
           for (name, name_source_trace, kind, value) in bindings.iter_mut() {
             value.walk_mut_with_ctx(prewalk_handler, ctx)?;
+            // A `let` binds a copy of its value, even when the value is
+            // read through a reference (`(let [t v.age] ...)` with `v` a
+            // `@ref`), as in inference.
+            let mut binding_data = value.data.clone();
+            binding_data.ownership = Ownership::Owned;
             ctx.bind(
               name,
-              Variable::immutable(value.data.clone()).with_kind(kind.clone()),
+              Variable::immutable(binding_data).with_kind(kind.clone()),
               name_source_trace.clone(),
             );
           }
@@ -2097,6 +2102,27 @@ impl TypedExp {
     }
     Ok(())
   }
+  /// Compiles this expression where its value is read. A name of a
+  /// reference variable (a `@ref` parameter, or a closure's scope) is a
+  /// pointer in the output, so it's dereferenced.
+  fn compile_value(
+    self,
+    names: &mut NameContext,
+    target: CompilerTarget,
+  ) -> String {
+    let is_reference_name = matches!(self.kind, ExpKind::Name(_))
+      && self.data.ownership != Ownership::Owned;
+    let compiled = self.compile(
+      ExpressionCompilationPosition::InnerExpression,
+      names,
+      target,
+    );
+    if is_reference_name {
+      format!("(*{compiled})")
+    } else {
+      compiled
+    }
+  }
   fn compile_with_deref(
     self,
     names: &mut NameContext,
@@ -2143,7 +2169,16 @@ impl TypedExp {
         InnerExpression => panic!("compiling unit in inner position"),
       },
       Uninitialized => panic!("compiling Uninitialized"),
-      Name(name) => wrap(compile_word(name)),
+      // A returned name's value is read, so a reference variable is
+      // dereferenced (see `compile_value`).
+      Name(name) => wrap(
+        if matches!(position, Return) && self.data.ownership != Ownership::Owned
+        {
+          format!("(*{})", compile_word(name))
+        } else {
+          compile_word(name)
+        },
+      ),
       NumberLiteral(num) => wrap(match num {
         Number::Int(i) => match self.data.kind.unwrap_known() {
           Type::I32 => format!("{i}"),
@@ -2528,12 +2563,12 @@ impl TypedExp {
               ExpKind::Wildcard => compiled_case,
               ExpKind::BooleanLiteral(true) => format!(
                 "\nif ({}) {{{}\n}}",
-                scrutinee.compile(InnerExpression, names, target),
+                scrutinee.compile_value(names, target),
                 indent(compiled_case),
               ),
               ExpKind::BooleanLiteral(false) => format!(
                 "\nif (!{}) {{{}\n}}",
-                scrutinee.compile(InnerExpression, names, target),
+                scrutinee.compile_value(names, target),
                 indent(compiled_case),
               ),
               _ => unreachable!(),
@@ -2571,7 +2606,7 @@ impl TypedExp {
                 indent(false_case.compile(position, names, target))
               },
             );
-            let condition = scrutinee.compile(InnerExpression, names, target);
+            let condition = scrutinee.compile_value(names, target);
             if position == InnerExpression {
               format!("select({false_case}, {true_case}, {condition})")
             } else {
@@ -2587,7 +2622,7 @@ impl TypedExp {
           let arm_count = arms.len();
           format!(
             "\nswitch({}.discriminant) {{\n  {}\n}}",
-            scrutinee.clone().compile(InnerExpression, names, target),
+            scrutinee.clone().compile_value(names, target),
             indent(
               arms
                 .into_iter()
@@ -2683,11 +2718,8 @@ impl TypedExp {
                         CompilerTarget::C => {
                           let type_name =
                             inner_type.monomorphized_name(names, target);
-                          let compiled_scrutinee = scrutinee.clone().compile(
-                            InnerExpression,
-                            names,
-                            target,
-                          );
+                          let compiled_scrutinee =
+                            scrutinee.clone().compile_value(names, target);
                           format!(
                             "{type_name} {compiled_inner_name};\n  \
                              memcpy(&{compiled_inner_name}, \
@@ -2733,7 +2765,7 @@ impl TypedExp {
         Type::I32 | Type::U32 => {
           format!(
             "\nswitch ({}) {{\n  {}\n}}",
-            scrutinee.compile(InnerExpression, names, target),
+            scrutinee.compile_value(names, target),
             indent(
               arms
                 .into_iter()
@@ -2763,8 +2795,7 @@ impl TypedExp {
         }
         other_type => {
           let arm_count = arms.len();
-          let compiled_scrutinee =
-            scrutinee.compile(InnerExpression, names, target);
+          let compiled_scrutinee = scrutinee.compile_value(names, target);
           arms
             .into_iter()
             .enumerate()
@@ -2975,14 +3006,7 @@ impl TypedExp {
             )
           )
         } else {
-          format!(
-            "\nreturn {};",
-            exp.compile(
-              ExpressionCompilationPosition::InnerExpression,
-              names,
-              target
-            )
-          )
+          format!("\nreturn {};", exp.compile_value(names, target))
         }
       }
       ArrayLiteral(children) => wrap(match target {
@@ -2991,11 +3015,7 @@ impl TypedExp {
             "{{{}}}",
             children
               .into_iter()
-              .map(|child| child.compile(
-                ExpressionCompilationPosition::InnerExpression,
-                names,
-                target
-              ))
+              .map(|child| child.compile_value(names, target))
               .collect::<Vec<String>>()
               .join(", ")
           )
@@ -3005,11 +3025,7 @@ impl TypedExp {
           self.data.monomorphized_name(names, target),
           children
             .into_iter()
-            .map(|child| child.compile(
-              ExpressionCompilationPosition::InnerExpression,
-              names,
-              target
-            ))
+            .map(|child| child.compile_value(names, target))
             .collect::<Vec<String>>()
             .join(", ")
         ),

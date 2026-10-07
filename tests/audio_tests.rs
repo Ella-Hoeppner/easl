@@ -1,3 +1,5 @@
+mod common;
+
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
 use easl::interpreter::{
@@ -28,6 +30,7 @@ fn run_audio_test(name: &str) {
     Ok(Ok((_, Ok(mut program)))) => {
       let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
+      common::assert_valid_wgsl(&program);
 
       // Every test runs on both CPU runtimes and must produce identical
       // output on each.
@@ -99,6 +102,7 @@ fn start_audio_bootstrap_publishes_current_globals() {
   };
   let errors = program.validate_raw_program(CompilerTarget::WGSL);
   assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
   let (mut audio_program, audio_names) =
     program.clone().compile_to_bytecode_program();
   let (mut main_program, _) = program.compile_to_bytecode_program_cpu();
@@ -167,6 +171,7 @@ fn vm_audio_driver_entry_switch() {
   };
   let errors = program.validate_raw_program(CompilerTarget::WGSL);
   assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
   let (program, names) = program.compile_to_bytecode_program();
 
   let mut driver = VmAudioDriver::new("f", program, &names, None).unwrap();
@@ -208,6 +213,7 @@ fn serialized_audio_program() {
   };
   let errors = program.validate_raw_program(CompilerTarget::WGSL);
   assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
   let (original, names) = program.compile_to_bytecode_program();
   let entry = names
     .iter()
@@ -278,6 +284,7 @@ fn midi_down_notes_state_changes() {
   };
   let errors = program.validate_raw_program(CompilerTarget::WGSL);
   assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
   let (audio_program, audio_names) =
     program.clone().compile_to_bytecode_program();
   let mut driver =

@@ -3,6 +3,8 @@
 //! suite. Sources + `.mp4` fixtures + expected output live in `data/video/`.
 #![cfg(feature = "video")]
 
+mod common;
+
 use easl::compiler::core::{
   compile_easl_file_to_wgsl, load_easl_program_from_file,
 };
@@ -24,6 +26,7 @@ fn run_video_test(name: &str) {
   };
   let errors = program.validate_raw_program(CompilerTarget::WGSL);
   assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
 
   let output = run_program_capturing_output_with_runtime(
     program.clone(),

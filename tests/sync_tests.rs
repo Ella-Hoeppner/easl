@@ -1,3 +1,5 @@
+mod common;
+
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
 use easl::interpreter::{
@@ -26,6 +28,7 @@ fn run_sync_test(name: &str) {
     Ok(Ok((_, Ok(mut program)))) => {
       let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
+      common::assert_valid_wgsl(&program);
       // Both CPU runtimes must produce the identical transfer trace.
       run_sync_test_on(
         name,

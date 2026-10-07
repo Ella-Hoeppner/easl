@@ -1,3 +1,5 @@
+mod common;
+
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
 use easl::interpreter::{
@@ -18,6 +20,7 @@ fn run_buffer_test(name: &str) {
     Ok(Ok((_, Ok(mut program)))) => {
       let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
+      common::assert_valid_wgsl(&program);
 
       // Every test runs on both CPU runtimes and must produce identical
       // output on each.
@@ -153,6 +156,7 @@ fn too_many_vertex_bindings() {
   };
   let errors = program.validate_raw_program(CompilerTarget::WGSL);
   assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
   let _ = run_program_with_capture_and_runtime_from_path(
     program,
     source_path,
@@ -219,6 +223,7 @@ fn dynamic_key_query_spoofed() {
     };
     let errors = program.validate_raw_program(CompilerTarget::WGSL);
     assert!(errors.is_empty(), "compile errors: {errors:#?}");
+    common::assert_valid_wgsl(&program);
     let mut io = CaptureIO::new();
     io.spoofed_window_info = Some(spoof.clone());
     let (io, _) = run_program_with_runtime(
@@ -265,6 +270,7 @@ fn gpu_window_info_spoofed() {
     };
     let errors = program.validate_raw_program(CompilerTarget::WGSL);
     assert!(errors.is_empty(), "compile errors: {errors:#?}");
+    common::assert_valid_wgsl(&program);
     let mut io = CaptureIO::new();
     io.spoofed_window_info = Some(spoof.clone());
     let (io, _) = run_program_with_runtime(
@@ -320,6 +326,7 @@ fn mouse_capture_spoofed() {
     };
     let errors = program.validate_raw_program(CompilerTarget::WGSL);
     assert!(errors.is_empty(), "compile errors: {errors:#?}");
+    common::assert_valid_wgsl(&program);
     let mut io = CaptureIO::new();
     io.spoofed_window_info = Some(spoof.clone());
     let (io, _) = run_program_with_runtime(
@@ -380,6 +387,7 @@ fn midi_gpu_read_spoofed() {
     };
     let errors = program.validate_raw_program(CompilerTarget::WGSL);
     assert!(errors.is_empty(), "compile errors: {errors:#?}");
+    common::assert_valid_wgsl(&program);
     let mut io = CaptureIO::new();
     io.spoofed_midi = Some(midi.clone());
     let (io, _) = run_program_with_runtime(
@@ -427,6 +435,7 @@ fn get_midi_note_gpu_spoofed() {
     };
     let errors = program.validate_raw_program(CompilerTarget::WGSL);
     assert!(errors.is_empty(), "compile errors: {errors:#?}");
+    common::assert_valid_wgsl(&program);
     let mut io = CaptureIO::new();
     io.spoofed_midi = Some(midi.clone());
     let (io, _) = run_program_with_runtime(

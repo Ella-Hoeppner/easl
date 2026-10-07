@@ -19,6 +19,8 @@
 //! enumerates precisely which variables the static analysis classified as
 //! shared.
 
+mod common;
+
 use std::sync::Arc;
 
 use easl::audio::{AudioSource, VmAudioDriver};
@@ -458,6 +460,7 @@ fn run_thread_sync_test_inner(
   };
   let errors = program.validate_raw_program(CompilerTarget::WGSL);
   assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
 
   // External steps before the first Frame/AudioBatch are the embedder's
   // seed-then-run pattern: they execute against the handle before the

@@ -1,0 +1,34 @@
+; Reading a `@var @ref` parameter's value outside argument position reads
+; the value it refers to: returned, in an array literal, as an `if`
+; branch's result, and as a `match` scrutinee.
+(var out: [4: f32])
+
+(defn one-pole [@var @ref state: f32
+                x: f32
+                cutoff: f32]: f32
+  (+= state (* cutoff (- x state)))
+  state)
+
+(defn pair [@var @ref state: f32]: [2: f32]
+  (+= state 1.)
+  [state state])
+
+(defn pick [@ref state: f32
+            flag: bool]: f32
+  (if flag
+    state
+    0.))
+
+(defn classify [@ref n: u32]: f32
+  (match n
+    0u 1.
+    _ 2.))
+
+@compute
+(defn main []
+  (let [@var s 0.]
+    (= (out 0u) (one-pole s 1. 0.5))
+    (= (out 1u) ((pair s) 1u))
+    (= (out 2u) (pick s true))
+    (let [@var n 3u]
+      (= (out 3u) (classify n)))))

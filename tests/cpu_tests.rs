@@ -1,3 +1,5 @@
+mod common;
+
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
 use easl::interpreter::{
@@ -16,6 +18,7 @@ fn run_cpu_test(name: &str) {
     Ok(Ok((_, Ok(mut program)))) => {
       let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
+      common::assert_valid_wgsl(&program);
 
       // Every test runs on both CPU runtimes and must produce identical
       // output on each.
@@ -388,6 +391,7 @@ fn hof_specialization_across_passes_any_order() {
       };
       let errors = program.validate_raw_program(CompilerTarget::WGSL);
       assert!(errors.is_empty(), "compile errors: {errors:#?}");
+      common::assert_valid_wgsl(&program);
     })
     .join()
     .expect("compilation panicked");
@@ -413,6 +417,7 @@ fn midi_queries_spoofed() {
     errors.is_empty(),
     "midi_queries: compile errors: {errors:#?}"
   );
+  common::assert_valid_wgsl(&program);
   let mut midi = MidiState::default();
   midi.cc[1] = 0.25;
   midi.channel_aftertouch = 0.125;
@@ -469,6 +474,7 @@ fn get_midi_note_spoofed() {
     errors.is_empty(),
     "get_midi_note: compile errors: {errors:#?}"
   );
+  common::assert_valid_wgsl(&program);
   let mut midi = MidiState::default();
   midi.down_notes = vec![
     MidiNoteState {
@@ -530,3 +536,4 @@ cpu_test!(def_nary_initializer);
 cpu_test!(bitwise_compound_assignment);
 cpu_test!(string_def);
 cpu_test!(heap_initializers);
+cpu_test!(closure_capture_ref_field);
