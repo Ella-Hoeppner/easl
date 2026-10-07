@@ -133,6 +133,8 @@ macro_rules! error_test {
 // --- Success tests ---
 
 success_test!(render_located_varyings);
+success_test!(bitwise_compound_assignment);
+success_test!(string_def);
 success_test!(overloaded_fn_as_argument);
 
 success_test!(user_fn_calls_generic_helper);
@@ -1243,4 +1245,8 @@ error_test!(
   CompileErrorKind::BuiltinTypeRedefinition("Option".into()),
   CompileErrorKind::BuiltinTypeRedefinition("vec4f".into()),
   CompileErrorKind::BuiltinTypeRedefinition("f32".into())
+);
+error_test!(
+  bitwise_assignment_immutable_failure,
+  CompileErrorKind::AssignmentTargetMustBeVariable("x".into())
 );

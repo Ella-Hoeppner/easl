@@ -16,7 +16,7 @@ use crate::compiler::vars::{
 };
 use crate::parse::EaslMultiDocument;
 use crate::thread_sync::participant;
-use crate::vm::bytecode::{BytecodeProgram, Instruction, Op};
+use crate::vm::bytecode::BytecodeProgram;
 use crate::vm::compile::{
   BytecodeCompilationState, CompilePosition, PendingFrameFnUsage,
   PendingRefFnUsage, RefArgBinding, is_heap_value_type, vm_stack_size,
@@ -34,9 +34,7 @@ use crate::{
     enums::{AbstractEnum, UntypedEnum},
     error::{CompileError, SourceTrace},
     exp_builder::{ExpBuilder, struct_constructor},
-    expression::{
-      Accessor, Exp, ExpKind, ExpressionCompilationPosition, Number,
-    },
+    expression::{Accessor, ExpKind, ExpressionCompilationPosition, Number},
     function_values::holds_function,
     functions::{
       AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
@@ -1370,27 +1368,12 @@ impl Program {
           .write()
           .unwrap()
           .expression
-          .walk_mut(&mut |exp| {
-            if let ExpKind::Application(f, _) = &exp.kind {
-              let f_type = f.data.unwrap_known();
-              let is_data_access = matches!(f_type, Type::Array(_, _))
-                || f_type.is_vector()
-                || f_type.is_matrix();
-              if is_data_access {
-                take(&mut exp.kind, |kind| {
-                  let ExpKind::Application(f, mut args) = kind else {
-                    panic!()
-                  };
-                  ExpKind::Access(
-                    Accessor::ArrayIndex(args.remove(0).into()),
-                    f.into(),
-                  )
-                });
-              }
-            }
-            Ok::<bool, Never>(true)
-          })
-          .unwrap();
+          .normalize_pseudoapplication_data_accesses();
+      }
+    }
+    for var in self.top_level_vars.iter_mut() {
+      if let Some(value) = &mut var.value {
+        value.normalize_pseudoapplication_data_accesses();
       }
     }
   }
@@ -5632,12 +5615,18 @@ impl Program {
       {
         continue;
       }
-      // A GPU-space var whose type isn't host-shareable (bool- or
-      // String-containing) is guaranteed GPU-unused by
-      // `validate_gpu_used_binding_types` — it's an ordinary CPU value
-      // with no legal WGSL declaration, so it's omitted from shader
-      // output. (`@local` bool vars stay: `var<private> b: bool` is
-      // valid WGSL.)
+      // Strings exist only on the CPU runtimes' heaps — a String-involving
+      // global (a `def`, `@local` var, or GPU-space var) has no WGSL or C
+      // representation at all. Shader code can't reference one: every
+      // String-typed expression is CPU-exclusive.
+      if v.var_type.involves_string() {
+        continue;
+      }
+      // A GPU-space var whose type isn't host-shareable because it involves
+      // a bool is guaranteed GPU-unused by `validate_gpu_used_binding_types`
+      // — it's an ordinary CPU value with no legal WGSL declaration, so it's
+      // omitted from shader output. (`@local` bool vars stay:
+      // `var<private> b: bool` is valid WGSL.)
       if target == CompilerTarget::WGSL
         && matches!(
           v.kind,
@@ -5648,13 +5637,8 @@ impl Program {
             ..
           }
         )
-        && (v.var_type.involves_bool() || v.var_type.involves_string())
+        && v.var_type.involves_bool()
       {
-        continue;
-      }
-      // Strings exist only on the CPU runtimes' heaps — a String-typed
-      // global has no C representation at all.
-      if target == CompilerTarget::C && v.var_type.involves_string() {
         continue;
       }
       compiled_string += &v.clone().compile(&mut names, target);
@@ -5921,61 +5905,23 @@ impl Program {
     }
     Ok(compiled_string)
   }
+  /// Expands n-ary applications of associative functions into nested
+  /// binary ones, `(+ a b c)` into `(+ (+ a b) c)`, in every function body
+  /// and top-level variable's value.
   pub fn expand_associative_applications(&mut self) {
-    for f in self
-      .abstract_functions
-      .iter_mut()
-      .map(|(_, fns)| fns.into_iter())
-      .flatten()
-    {
+    for f in self.abstract_functions_iter() {
       if let FunctionImplementationKind::Composite(f) =
         &f.read().unwrap().implementation
       {
         f.write()
           .unwrap()
           .expression
-          .walk_mut::<()>(&mut |exp| {
-            loop {
-              let mut needs_another_loop = false;
-              take(&mut exp.kind, |exp_kind| {
-                if let ExpKind::Application(f, args) = exp_kind {
-                  if let ExpKind::Name(_) = &f.kind
-                    && let Type::Function(x) = f.data.kind.unwrap_known()
-                    && let Some(abstract_ancestor) = &x.abstract_ancestor
-                    && abstract_ancestor.read().unwrap().associative
-                    && args.len() != 2
-                  {
-                    let mut args_iter = args.into_iter();
-                    let mut new_exp = args_iter.next().unwrap();
-                    if args_iter.len() == 0 {
-                      needs_another_loop = true;
-                    } else {
-                      while let Some(next_arg) = args_iter.next() {
-                        new_exp = Exp {
-                          kind: ExpKind::Application(
-                            f.clone(),
-                            vec![new_exp, next_arg],
-                          ),
-                          data: exp.data.clone(),
-                          source_trace: exp.source_trace.clone(),
-                        };
-                      }
-                    }
-                    new_exp.kind
-                  } else {
-                    ExpKind::Application(f, args)
-                  }
-                } else {
-                  exp_kind
-                }
-              });
-              if !needs_another_loop {
-                break;
-              }
-            }
-            Ok(true)
-          })
-          .unwrap();
+          .expand_associative_applications();
+      }
+    }
+    for var in self.top_level_vars.iter_mut() {
+      if let Some(value) = &mut var.value {
+        value.expand_associative_applications();
       }
     }
   }
@@ -8895,15 +8841,30 @@ impl Program {
             let value_slot = value_exp
               .compile_to_bytecode(CompilePosition::Value, &mut state)
               .unwrap();
-            let var_size =
-              v.var_type.flat_data_size_in_u32s(&v.source_trace).unwrap()
-                as u16;
-            let global_slot = *state.globals.get(&v.name).unwrap();
-            state.push_instruction(Instruction {
-              op: Op::Move,
-              arg_positions: [value_slot, var_size, 0],
-              return_position: global_slot,
-            });
+            if let Some((memory, _)) =
+              state.dynamic_array_memory.get(&v.name).copied()
+            {
+              // A runtime-sized global lives in its own region.
+              let Type::Array(_, element_type) = &v.var_type else {
+                unreachable!("a region-backed global is a runtime-sized array")
+              };
+              state.emit_region_assignment(
+                memory,
+                value_slot,
+                &element_type.unwrap_known(),
+              );
+            } else {
+              // Slot-sized like the global itself, and copied so the global
+              // owns any heap values (Strings, struct fields) it holds.
+              let var_size = vm_stack_size(&v.var_type) as u16;
+              let global_slot = *state.globals.get(&v.name).unwrap();
+              state.emit_value_copy(
+                value_slot,
+                var_size,
+                global_slot,
+                &v.var_type,
+              );
+            }
           }
         }
         state.close_function();

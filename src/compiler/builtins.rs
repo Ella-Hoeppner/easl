@@ -1077,13 +1077,19 @@ fn bitwise_functions(
           )],
           arg_types: arg_vecs_or_scalars
             .into_iter()
-            .map(|vec_or_scalar| {
-              if vec_or_scalar {
+            .enumerate()
+            .map(|(i, vec_or_scalar)| {
+              let arg_type = if vec_or_scalar {
                 AbstractType::AbstractStruct(vec.clone())
               } else {
                 AbstractType::Generic("T".into())
+              };
+              // An assignment's target is written through.
+              if assignment_fn && i == 0 {
+                (arg_type, Ownership::MutableReference)
+              } else {
+                arg_type.owned()
               }
-              .owned()
             })
             .collect(),
           return_type: if assignment_fn {
@@ -1532,11 +1538,30 @@ fn foreach_generic_scalar_or_vec_type(
 }
 
 fn vector_functions() -> Vec<AbstractFunctionSignature> {
-  foreach_vec_type(|vec| {
+  foreach_vec_type(|vec_struct| {
     let vec = AbstractType::AbstractStruct(
-      vec.generate_monomorphized(vec![Type::F32]).unwrap().into(),
+      vec_struct
+        .clone()
+        .generate_monomorphized(vec![Type::F32])
+        .unwrap()
+        .into(),
     );
     let float = AbstractType::Type(Type::F32);
+    // `dot` also takes integer vectors, giving an integer.
+    let integer_dots = [Type::I32, Type::U32].map(|scalar| {
+      let int_vec = AbstractType::AbstractStruct(
+        vec_struct
+          .clone()
+          .generate_monomorphized(vec![scalar.clone()])
+          .unwrap()
+          .into(),
+      );
+      (
+        "dot",
+        vec![int_vec.clone(), int_vec],
+        AbstractType::Type(scalar),
+      )
+    });
     [
       ("length", vec![vec.clone()], float.clone()),
       ("distance", vec![vec.clone(), vec.clone()], float.clone()),
@@ -1550,6 +1575,7 @@ fn vector_functions() -> Vec<AbstractFunctionSignature> {
       ),
     ]
     .into_iter()
+    .chain(integer_dots)
     .map(|(name, arg_types, return_type)| AbstractFunctionSignature {
       name: name.into(),
       arg_types: arg_types.into_iter().map(|t| t.owned()).collect(),
@@ -3575,10 +3601,11 @@ pub fn built_in_functions() -> Vec<AbstractFunctionSignature> {
 }
 
 lazy_static! {
-  pub static ref ASSIGNMENT_OPS: HashSet<&'static str> =
-    ["=", "+=", "-=", "*=", "/=", "%=", "^=", ">>=", "<<="]
-      .into_iter()
-      .collect();
+  pub static ref ASSIGNMENT_OPS: HashSet<&'static str> = [
+    "=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", ">>=", "<<=",
+  ]
+  .into_iter()
+  .collect();
   pub static ref ATOMIC_MUTATION_OPS: HashSet<&'static str> = [
     "atomic-store",
     "atomic-add",
@@ -4467,10 +4494,11 @@ impl EmulatedFunctionRecord {
         "dot" => {
           let new_name = names.gensym("dot");
           let vec_type_name = &signature.arg_types[0];
+          let scalar_type_name = &signature.return_type;
           let mut function_body = format!(
-            "float {new_name}({vec_type_name} a, {vec_type_name} b) \
-          {{\n  \
-            float sum = 0.;\n  \
+            "{scalar_type_name} {new_name}({vec_type_name} a, \
+             {vec_type_name} b) {{\n  \
+            {scalar_type_name} sum = 0;\n  \
           "
           );
           for field in ["x", "y", "z", "w"]

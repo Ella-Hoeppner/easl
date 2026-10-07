@@ -1,0 +1,7 @@
+; Indexing in a top-level initializer.
+(def table: [3: f32] [1. 2. 3.])
+
+(def picked: f32 (table 2u))
+
+(defn f []: f32
+  picked)

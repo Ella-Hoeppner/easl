@@ -1,0 +1,13 @@
+15u
+6u
+3u
+48u
+12u
+(vec2u 13u 11u)
+(vec2u 4u 3u)
+(vec2u 12u 11u)
+(vec2u 5u 2u)
+(vec2u 0u 1u)
+(vec3i 2 4 6)
+(vec3i 1 2 1)
+(vec2i -4 4)

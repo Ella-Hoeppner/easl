@@ -1,0 +1,17 @@
+; Top-level initializers are lowered like function bodies: n-ary associative
+; calls keep every argument, and indexing works.
+(def a: u32 (+ 1u 2u 3u))
+
+(def b: [2: u32] [(+ 1u 2u 3u) (* 2u 3u 4u)])
+
+@local
+(var c: i32 (+ 1i 2i 3i 4i))
+
+(def d: u32 (b 1u))
+
+@cpu
+(defn main []
+  (print a)
+  (print b)
+  (print c)
+  (print d))

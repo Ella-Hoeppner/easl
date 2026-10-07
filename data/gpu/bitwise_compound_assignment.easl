@@ -1,0 +1,13 @@
+; The bitwise compound assignments emit as WGSL assignments.
+(var data: [4: u32])
+
+@compute
+(defn main []
+  (let [@var x 12u]
+    (|= x 3u)
+    (&= x 6u)
+    (^= x 5u)
+    (<<= x 1u)
+    (>>= x 1u)
+    (|= (data 0u) x)
+    (&= (data 1u) x)))

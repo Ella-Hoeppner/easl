@@ -1,0 +1,21 @@
+; Top-level initializers holding heap values: runtime-sized arrays (flat and
+; heap-backed elements), and structs embedding them.
+(def nums: [f32] ~[1. 2. 3.])
+
+(def words: [String] ~["a" "b"])
+
+@local
+(var zeros: [f32] (zeroed-array 3u))
+
+(struct Bag
+  items: [f32])
+
+(def bag: Bag (Bag ~[4. 5.]))
+
+@cpu
+(defn main []
+  (print nums)
+  (print (array-length nums))
+  (print words)
+  (print zeros)
+  (print bag))

@@ -1,0 +1,5 @@
+; `mix` with a scalar blend factor blends every component by it.
+(defn f []: f32
+  (let [m (mix (vec3f 0.) (vec3f 2. 4. 8.) 0.25)
+        n (mix (vec2f 1.) (vec2f 3.) 0.5)]
+    (+ m.x (* 10. m.y) (* 100. m.z) (* 1000. n.x) (* 10000. n.y))))

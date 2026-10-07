@@ -64,6 +64,10 @@ Run `cargo fmt` before handing changes back (it reformats `tests/format_tests.rs
 
 **Program side tables** (`top_level_vars`, `window_info_bindings`, `lifted_audio_captures`, `lifted_gpu_captures`; `overload_groups` is consumed right after inference) must survive every pass that rebuilds the function registry (the `take()` closures).
 
+**Top-level initializers are bodies too**: a pass that lowers or rewrites function bodies must also cover `top_level_vars`' initializers (the VM runs them in `$init_globals`). Associative expansion and pseudo-application normalization once skipped them (n-ary `+` in a `def` silently kept two arguments; indexing in a `def` crashed the VM).
+
+**Assignment builtins**: every assignment-like builtin (`=`, the arithmetic and bitwise compound forms) must be in `ASSIGNMENT_OPS` — it drives WGSL emission as an assignment statement, mutability validation, and the tree-walker's write-back — and must declare its target `MutableReference`, or calls are pruned as side-effect-free.
+
 **Hash order**: hash seeds are intentionally random — never fix them to paper over order-dependence; fix the order-dependence (dedupe by identity, not generated names; register before rewriting; sort address-keyed maps before iterating).
 
 ## Compilation Pipeline

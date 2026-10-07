@@ -363,6 +363,41 @@ impl BytecodeCompilationState {
   /// (borrowed) ids to owned shares after it — O(1) per statically-placed
   /// heap field, plus a discriminant compare-and-skip per heap-bearing
   /// enum variant.
+  /// Replaces the contents of the runtime-sized global in region `memory`
+  /// with those of the heap value in `src_slot`, whose elements are of type
+  /// `element_type`.
+  pub fn emit_region_assignment(
+    &mut self,
+    memory: u16,
+    src_slot: u16,
+    element_type: &Type,
+  ) {
+    let embedding_fixups =
+      BytecodeCompilationState::embedding_element_fixups(element_type);
+    let stride = vm_stack_size(element_type);
+    // The region owns its elements' embedded ids: release the old contents
+    // before the wholesale replacement, and re-own the fresh words after
+    // (`RegionFromHeap`'s clone copies the cell's ids in as borrows).
+    if let Some(fixups) = &embedding_fixups {
+      self.emit_release_container_elements(
+        EmbeddingContainer::Region(memory),
+        stride,
+        fixups,
+      );
+    }
+    self.push_instruction(Instruction {
+      op: Op::RegionFromHeap,
+      arg_positions: [memory, src_slot, 0],
+      return_position: 0,
+    });
+    if let Some(fixups) = &embedding_fixups {
+      self.emit_reown_container_elements(
+        EmbeddingContainer::Region(memory),
+        stride,
+        fixups,
+      );
+    }
+  }
   pub fn emit_value_copy(&mut self, src: u16, size: u16, dest: u16, t: &Type) {
     if size == 0 {
       return;
@@ -1160,19 +1195,41 @@ impl BytecodeCompilationState {
 
   /// Compile an element-wise ternary op, scalar or vector. All args must have
   /// the same shape.
+  /// Compile an element-wise ternary op. The result has the shape of the
+  /// vector operands; a scalar operand alongside them (`mix`'s blend
+  /// factor, `extract-bits`'s offset and count) applies to every component.
   fn emit_elementwise_ternary(
     &mut self,
-    arg_type: &Type,
-    arg0: u16,
-    arg1: u16,
-    arg2: u16,
+    arg_types: &[Type],
+    arg_positions: &[u16],
     op_for_element: impl Fn(&Type) -> Op,
   ) -> u16 {
-    if let Some((count, elem)) = vec_kind(arg_type) {
-      self.emit_fanout_ternary(op_for_element(&elem), arg0, arg1, arg2, count)
-    } else {
-      self.emit_ternary(op_for_element(arg_type), arg0, arg1, arg2)
+    let Some((count, elem)) = arg_types.iter().find_map(vec_kind) else {
+      return self.emit_ternary(
+        op_for_element(&arg_types[0]),
+        arg_positions[0],
+        arg_positions[1],
+        arg_positions[2],
+      );
+    };
+    let op = op_for_element(&elem);
+    let component = |operand: usize, i: u16| {
+      arg_positions[operand]
+        + if vec_kind(&arg_types[operand]).is_some() {
+          i
+        } else {
+          0
+        }
+    };
+    let result = self.take_stack_slot(count);
+    for i in 0..count {
+      self.push_instruction(Instruction {
+        op,
+        arg_positions: [component(0, i), component(1, i), component(2, i)],
+        return_position: result + i,
+      });
     }
+    result
   }
 
   /// Compile an in-place element-wise binary op (e.g. `+=`): the result is
@@ -1519,27 +1576,21 @@ impl BytecodeCompilationState {
       )),
 
       // --- Ternary f32 math ---
-      "fma" => Some(self.emit_elementwise_ternary(
-        &arg_types[0],
-        arg_positions[0],
-        arg_positions[1],
-        arg_positions[2],
-        |_| Op::Fma,
-      )),
+      "fma" => {
+        Some(
+          self.emit_elementwise_ternary(arg_types, arg_positions, |_| Op::Fma),
+        )
+      }
       "smoothstep" => Some(self.emit_elementwise_ternary(
-        &arg_types[0],
-        arg_positions[0],
-        arg_positions[1],
-        arg_positions[2],
+        arg_types,
+        arg_positions,
         |_| Op::Smoothstep,
       )),
-      "mix" => Some(self.emit_elementwise_ternary(
-        &arg_types[0],
-        arg_positions[0],
-        arg_positions[1],
-        arg_positions[2],
-        |_| Op::Mix,
-      )),
+      "mix" => {
+        Some(
+          self.emit_elementwise_ternary(arg_types, arg_positions, |_| Op::Mix),
+        )
+      }
 
       // --- min / max / clamp ---
       "min" => Some(self.emit_elementwise_binary(
@@ -1555,10 +1606,8 @@ impl BytecodeCompilationState {
         max_op_for,
       )),
       "clamp" => Some(self.emit_elementwise_ternary(
-        &arg_types[0],
-        arg_positions[0],
-        arg_positions[1],
-        arg_positions[2],
+        arg_types,
+        arg_positions,
         clamp_op_for,
       )),
 
@@ -2035,27 +2084,34 @@ impl BytecodeCompilationState {
       "!" | "not" => Some(self.emit_unary(Op::LogicalNot, arg_positions[0])),
 
       // --- Bitwise ---
-      "bit-and" | "&" => {
-        Some(self.emit_binary(Op::BitAnd, arg_positions[0], arg_positions[1]))
+      "&" | "|" | "^" | "<<" | ">>" => {
+        Some(self.emit_mixed_shape_binary(arg_types, arg_positions, |e| {
+          bitwise_op_for(e, &f_name)
+        }))
       }
-      "bit-or" | "|" => {
-        Some(self.emit_binary(Op::BitOr, arg_positions[0], arg_positions[1]))
-      }
-      "bit-xor" | "^" => {
-        Some(self.emit_binary(Op::BitXor, arg_positions[0], arg_positions[1]))
-      }
-      "bit-not" | "~" => Some(self.emit_unary(Op::BitNot, arg_positions[0])),
-      "<<" => Some(self.emit_binary(
-        Op::ShiftLeft,
-        arg_positions[0],
-        arg_positions[1],
-      )),
-      ">>" => {
-        let op = match arg_types[0] {
-          Type::I32 => Op::ShiftRightI32,
-          _ => Op::ShiftRightU32,
-        };
-        Some(self.emit_binary(op, arg_positions[0], arg_positions[1]))
+      "&=" | "|=" | "^=" | "<<=" | ">>=" => {
+        let base = &f_name[..f_name.len() - 1];
+        if let Some((n, e)) = vec_kind(&arg_types[0])
+          && vec_kind(&arg_types[1]).is_none()
+        {
+          // `(op= vec scalar)` applies the scalar to every component
+          let op = bitwise_op_for(&e, base);
+          for i in 0..n {
+            self.push_instruction(Instruction {
+              op,
+              arg_positions: [arg_positions[0] + i, arg_positions[1], 0],
+              return_position: arg_positions[0] + i,
+            });
+          }
+          Some(arg_positions[0])
+        } else {
+          Some(self.emit_elementwise_binary_inplace(
+            &arg_types[0],
+            arg_positions[0],
+            arg_positions[1],
+            |e| bitwise_op_for(e, base),
+          ))
+        }
       }
       "count-one-bits" => Some(self.emit_elementwise_unary(
         &arg_types[0],
@@ -2091,10 +2147,8 @@ impl BytecodeCompilationState {
         |_| Op::FirstTrailingBit,
       )),
       "extract-bits" => Some(self.emit_elementwise_ternary(
-        &arg_types[0],
-        arg_positions[0],
-        arg_positions[1],
-        arg_positions[2],
+        arg_types,
+        arg_positions,
         |e| match e {
           Type::I32 => Op::ExtractBitsI32,
           _ => Op::ExtractBitsU32,
@@ -3446,6 +3500,22 @@ fn mat_kind(t: &Type) -> Option<(u16, u16, Type)> {
   None
 }
 
+/// The opcode for the bitwise operator `base` (`&`, `|`, `^`, `<<`, `>>`)
+/// on integers of type `elem`.
+fn bitwise_op_for(elem: &Type, base: &str) -> Op {
+  match base {
+    "&" => Op::BitAnd,
+    "|" => Op::BitOr,
+    "^" => Op::BitXor,
+    "<<" => Op::ShiftLeft,
+    ">>" => match elem {
+      Type::I32 => Op::ShiftRightI32,
+      _ => Op::ShiftRightU32,
+    },
+    _ => unreachable!("not a bitwise operator: {base}"),
+  }
+}
+
 fn arithmetic_op_for(elem: &Type, base: &str) -> Op {
   match (base, elem) {
     ("+", Type::F32) => Op::PlusF32,
@@ -3774,34 +3844,11 @@ impl TypedExp {
           let src_slot = args[1]
             .compile_to_bytecode(CompilePosition::Value, state)
             .unwrap();
-          let embedding_fixups =
-            BytecodeCompilationState::embedding_element_fixups(
-              &element_type.unwrap_known(),
-            );
-          let stride = vm_stack_size(&element_type.unwrap_known());
-          // The region owns its elements' embedded ids: release the old
-          // contents before the wholesale replacement, and re-own the
-          // fresh words after (`RegionFromHeap`'s clone copies the
-          // cell's ids in as borrows).
-          if let Some(fixups) = &embedding_fixups {
-            state.emit_release_container_elements(
-              EmbeddingContainer::Region(memory),
-              stride,
-              fixups,
-            );
-          }
-          state.push_instruction(Instruction {
-            op: Op::RegionFromHeap,
-            arg_positions: [memory, src_slot, 0],
-            return_position: 0,
-          });
-          if let Some(fixups) = &embedding_fixups {
-            state.emit_reown_container_elements(
-              EmbeddingContainer::Region(memory),
-              stride,
-              fixups,
-            );
-          }
+          state.emit_region_assignment(
+            memory,
+            src_slot,
+            &element_type.unwrap_known(),
+          );
           Some(None)
         } else {
           None

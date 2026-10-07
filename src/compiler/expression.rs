@@ -614,6 +614,79 @@ pub fn compile_typed_name(
 }
 
 impl TypedExp {
+  /// Expands n-ary applications of associative functions into nested
+  /// binary ones: `(+ a b c)` becomes `(+ (+ a b) c)`.
+  pub fn expand_associative_applications(&mut self) {
+    self
+      .walk_mut::<()>(&mut |exp| {
+        loop {
+          let mut needs_another_loop = false;
+          take(&mut exp.kind, |exp_kind| {
+            if let ExpKind::Application(f, args) = exp_kind {
+              if let ExpKind::Name(_) = &f.kind
+                && let Type::Function(x) = f.data.kind.unwrap_known()
+                && let Some(abstract_ancestor) = &x.abstract_ancestor
+                && abstract_ancestor.read().unwrap().associative
+                && args.len() != 2
+              {
+                let mut args_iter = args.into_iter();
+                let mut new_exp = args_iter.next().unwrap();
+                if args_iter.len() == 0 {
+                  needs_another_loop = true;
+                } else {
+                  while let Some(next_arg) = args_iter.next() {
+                    new_exp = Exp {
+                      kind: ExpKind::Application(
+                        f.clone(),
+                        vec![new_exp, next_arg],
+                      ),
+                      data: exp.data.clone(),
+                      source_trace: exp.source_trace.clone(),
+                    };
+                  }
+                }
+                new_exp.kind
+              } else {
+                ExpKind::Application(f, args)
+              }
+            } else {
+              exp_kind
+            }
+          });
+          if !needs_another_loop {
+            break;
+          }
+        }
+        Ok(true)
+      })
+      .unwrap();
+  }
+  /// Rewrites applications that index data (`(arr i)`, `(v i)`, `(m i)`)
+  /// into `Access(ArrayIndex(i), ...)` expressions.
+  pub fn normalize_pseudoapplication_data_accesses(&mut self) {
+    self
+      .walk_mut(&mut |exp| {
+        if let ExpKind::Application(f, _) = &exp.kind {
+          let f_type = f.data.unwrap_known();
+          let is_data_access = matches!(f_type, Type::Array(_, _))
+            || f_type.is_vector()
+            || f_type.is_matrix();
+          if is_data_access {
+            take(&mut exp.kind, |kind| {
+              let ExpKind::Application(f, mut args) = kind else {
+                panic!()
+              };
+              ExpKind::Access(
+                Accessor::ArrayIndex(args.remove(0).into()),
+                f.into(),
+              )
+            });
+          }
+        }
+        Ok::<bool, Never>(true)
+      })
+      .unwrap();
+  }
   pub fn extract_non_bound_mutable_references(
     &mut self,
     names: &RwLock<NameContext>,

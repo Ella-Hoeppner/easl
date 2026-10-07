@@ -1,0 +1,10 @@
+; A String constant is CPU-only, so it's left out of WGSL.
+(def greeting: String "hi")
+
+@cpu
+(defn main []
+  (print greeting))
+
+@fragment
+(defn frag []: vec4f
+  (vec4f 1.))

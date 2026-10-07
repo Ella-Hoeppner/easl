@@ -1,0 +1,4 @@
+@compute
+(defn main []
+  (let [x 12u]
+    (|= x 3u)))

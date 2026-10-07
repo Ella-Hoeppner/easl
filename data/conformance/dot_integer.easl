@@ -1,0 +1,4 @@
+; `dot` on integer vectors.
+(defn f []: f32
+  (+ (f32 (dot (vec3u 1u 2u 3u) (vec3u 4u 5u 6u)))
+     (* 100. (f32 (dot (vec2i -1i 2i) (vec2i 3i 4i))))))

@@ -1,0 +1,7 @@
+; n-ary associative calls in top-level initializers keep every argument.
+(def total: f32 (+ 1. 2. 3. 4.))
+
+(def product: f32 (* 2. 3. 4.))
+
+(defn f []: f32
+  (+ (* total 100.) product))

@@ -1,0 +1,29 @@
+; The bitwise operators and their compound assignments, on scalars and
+; vectors (including a scalar broadcast across a vector).
+@cpu
+(defn main []
+  (let [@var x 12u
+        @var v (vec2u 12u 10u)
+        @var w (vec3i 1i 2i 3i)]
+    (|= x 3u)
+    (print x)
+    (&= x 6u)
+    (print x)
+    (^= x 5u)
+    (print x)
+    (<<= x 4u)
+    (print x)
+    (>>= x 2u)
+    (print x)
+    (|= v 1u)
+    (print v)
+    (&= v (vec2u 6u 3u))
+    (print v)
+    (print (| v (vec2u 8u 8u)))
+    (print (^ 1u v))
+    (print (& v 1u))
+    (<<= w 1i)
+    (print w)
+    (>>= w (vec3i 1i 1i 2i))
+    (print w)
+    (print (>> (vec2i -8i 8i) 1i))))

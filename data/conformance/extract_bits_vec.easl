@@ -1,0 +1,5 @@
+; `extract-bits` on a vector applies the scalar offset and count to every
+; component.
+(defn f []: f32
+  (let [bits (extract-bits (vec3u 240u 15u 4080u) 4u 4u)]
+    (+ (f32 bits.x) (* 100. (f32 bits.y)) (* 10000. (f32 bits.z)))))

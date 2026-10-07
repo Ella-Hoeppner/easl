@@ -673,3 +673,9 @@ conformance_test!(fn_value_dispatch);
 // C is skipped: the merge HoF takes `[N: (Fn ...)]`, a fixed array by value,
 // which the tree C backend can't express (see `run_conformance_test`).
 conformance_test!(fn_value_nested_single_variant_union, skip_c);
+conformance_test!(def_nary_initializer);
+conformance_test!(mix_vec_scalar);
+conformance_test!(dot_integer);
+// The C backend can't emit array-typed globals.
+conformance_test!(def_indexed_initializer, skip_c);
+conformance_test!(extract_bits_vec);
