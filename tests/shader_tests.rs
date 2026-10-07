@@ -459,7 +459,7 @@ error_test!(
         }],
       )],
       return_type: Box::new(TypeStateDescription::Known(
-        TypeDescription::Struct("TwoOf".into())
+        TypeDescription::Struct("(TwoOf bool)".into())
       )),
     }),
     args: vec![TypeStateDescription::Known(TypeDescription::Bool)],
@@ -1109,7 +1109,9 @@ error_test!(
       TypeDescription::Function {
         arg_types: vec![
           (
-            TypeStateDescription::Known(TypeDescription::Struct("vec2".into())),
+            TypeStateDescription::Known(TypeDescription::Struct(
+              "(vec2 ?)".into()
+            )),
             vec![]
           ),
           (
@@ -1127,7 +1129,9 @@ error_test!(
       TypeDescription::Function {
         arg_types: vec![
           (
-            TypeStateDescription::Known(TypeDescription::Struct("vec3".into())),
+            TypeStateDescription::Known(TypeDescription::Struct(
+              "(vec3 ?)".into()
+            )),
             vec![]
           ),
           (
@@ -1145,7 +1149,9 @@ error_test!(
       TypeDescription::Function {
         arg_types: vec![
           (
-            TypeStateDescription::Known(TypeDescription::Struct("vec4".into())),
+            TypeStateDescription::Known(TypeDescription::Struct(
+              "(vec4 ?)".into()
+            )),
             vec![]
           ),
           (

@@ -220,6 +220,42 @@ pub enum AbstractType {
 }
 
 impl AbstractType {
+  /// This type as it would be written in easl: `(Pair T f32)`, `[N: T]`.
+  pub fn describe(&self) -> String {
+    match self {
+      AbstractType::Unit => "()".to_string(),
+      AbstractType::Generic(name) => name.to_string(),
+      AbstractType::Type(t) => TypeDescription::from(t.clone()).to_string(),
+      AbstractType::AbstractStruct(s) => {
+        let original = original_struct_definition(s);
+        describe_abstract_instance(
+          &original.name.0,
+          &original.generic_args,
+          &s.filled_generics,
+        )
+      }
+      AbstractType::AbstractEnum(e) => {
+        let original = original_enum_definition(e);
+        describe_abstract_instance(
+          &original.name.0,
+          &original.generic_args,
+          &e.filled_generics,
+        )
+      }
+      AbstractType::AbstractArray {
+        size, inner_type, ..
+      } => match size {
+        AbstractArraySize::Unsized => format!("[{}]", inner_type.describe()),
+        AbstractArraySize::Literal(n) => {
+          format!("[{n}: {}]", inner_type.describe())
+        }
+        AbstractArraySize::Constant(name)
+        | AbstractArraySize::Generic(name) => {
+          format!("[{name}: {}]", inner_type.describe())
+        }
+      },
+    }
+  }
   /// `Type::for_each_function_signature_mut` over the concrete types within
   /// this type.
   pub fn for_each_function_signature_mut(
@@ -4207,9 +4243,16 @@ impl From<Type> for TypeDescription {
           format!("{name}{suffix}")
         }
         _ => {
-          s.name.to_string()
-          // todo! this should display a name more like the above one for
-          // Texture2D, using a kind of type-level function application syntax
+          let original = original_struct_definition(&s.abstract_ancestor);
+          describe_generic_instance(
+            &original.name.0,
+            &original.generic_args,
+            original.fields.iter().zip(s.fields.iter()).map(
+              |(abstract_field, field)| {
+                (&abstract_field.field_type, &field.field_type.kind)
+              },
+            ),
+          )
         }
       }),
       Type::Function(f) | Type::BoxedFunction(f) => Self::Function {
@@ -4233,8 +4276,138 @@ impl From<Type> for TypeDescription {
         array_size.map(|size| size.into()),
         TypeStateDescription::from(t.kind).into(),
       ),
-      Type::Enum(e) => Self::Enum(e.name.to_string()),
+      Type::Enum(e) => Self::Enum({
+        let original = original_enum_definition(&e.abstract_ancestor);
+        describe_generic_instance(
+          &original.name.0,
+          &original.generic_args,
+          original.variants.iter().zip(e.variants.iter()).map(
+            |(abstract_variant, variant)| {
+              (&abstract_variant.inner_type, &variant.inner_type.kind)
+            },
+          ),
+        )
+      }),
     }
+  }
+}
+
+/// `name` applied to its generics as filled in `filled` (the generic's own
+/// name where unfilled), or just `name` for a type without generics.
+fn describe_abstract_instance(
+  name: &str,
+  generic_args: &[(Arc<str>, GenericArgument, SourceTrace)],
+  filled: &HashMap<Arc<str>, AbstractType>,
+) -> String {
+  if generic_args.is_empty() {
+    return name.to_string();
+  }
+  let args: Vec<String> = generic_args
+    .iter()
+    .map(|(generic, _, _)| {
+      filled
+        .get(generic)
+        .map_or_else(|| generic.to_string(), AbstractType::describe)
+    })
+    .collect();
+  format!("({name} {})", args.join(" "))
+}
+
+/// The definition a (possibly monomorphized or partially filled) struct comes
+/// from, which still has all its generic arguments.
+fn original_struct_definition(s: &AbstractStruct) -> &AbstractStruct {
+  match &s.abstract_ancestor {
+    Some(parent) => original_struct_definition(parent),
+    None => s,
+  }
+}
+
+fn original_enum_definition(e: &AbstractEnum) -> &AbstractEnum {
+  match &e.abstract_ancestor {
+    Some(parent) => original_enum_definition(parent),
+    None => e,
+  }
+}
+
+/// `name` applied to its generic arguments, `(Pair f32 u32)`, or just `name`
+/// for a type without generics. Each argument is read off a concrete part
+/// (`parts` pairs the definition's field or payload types with the
+/// instance's); one not yet known is `?`.
+fn describe_generic_instance<'a>(
+  name: &str,
+  generic_args: &[(Arc<str>, GenericArgument, SourceTrace)],
+  parts: impl Iterator<Item = (&'a AbstractType, &'a TypeState)>,
+) -> String {
+  if generic_args.is_empty() {
+    return name.to_string();
+  }
+  let mut bindings = HashMap::new();
+  for (abstract_type, concrete) in parts {
+    bind_generic_descriptions(abstract_type, concrete, &mut bindings);
+  }
+  let args: Vec<String> = generic_args
+    .iter()
+    .map(|(generic, _, _)| {
+      bindings.remove(generic).unwrap_or_else(|| "?".to_string())
+    })
+    .collect();
+  format!("({name} {})", args.join(" "))
+}
+
+/// Records how each generic in `abstract_type` is filled in `concrete`.
+/// Display-only: tolerates unknown and mismatched types.
+fn bind_generic_descriptions(
+  abstract_type: &AbstractType,
+  concrete: &TypeState,
+  bindings: &mut HashMap<Arc<str>, String>,
+) {
+  let Some(concrete) = concrete.try_unwrap_known() else {
+    return;
+  };
+  match (abstract_type, concrete) {
+    (AbstractType::Generic(generic), concrete) => {
+      bindings
+        .entry(generic.clone())
+        .or_insert_with(|| TypeDescription::from(concrete).to_string());
+    }
+    (AbstractType::AbstractStruct(abstract_struct), Type::Struct(s)) => {
+      for (abstract_field, field) in
+        abstract_struct.fields.iter().zip(&s.fields)
+      {
+        bind_generic_descriptions(
+          &abstract_field.field_type,
+          &field.field_type.kind,
+          bindings,
+        );
+      }
+    }
+    (AbstractType::AbstractEnum(abstract_enum), Type::Enum(e)) => {
+      for (abstract_variant, variant) in
+        abstract_enum.variants.iter().zip(&e.variants)
+      {
+        bind_generic_descriptions(
+          &abstract_variant.inner_type,
+          &variant.inner_type.kind,
+          bindings,
+        );
+      }
+    }
+    (
+      AbstractType::AbstractArray {
+        size, inner_type, ..
+      },
+      Type::Array(concrete_size, inner),
+    ) => {
+      if let AbstractArraySize::Generic(generic) = size
+        && let Some(size) = concrete_size.as_ref().and_then(|s| s.as_literal())
+      {
+        bindings
+          .entry(generic.clone())
+          .or_insert_with(|| size.to_string());
+      }
+      bind_generic_descriptions(inner_type, &inner.kind, bindings);
+    }
+    _ => {}
   }
 }
 impl Display for TypeDescription {

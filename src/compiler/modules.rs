@@ -45,12 +45,32 @@ pub struct ResolvedModules {
   /// Each overload group's name and the names of the function registry
   /// buckets it draws candidates from.
   pub overload_groups: HashMap<Arc<str>, Vec<Arc<str>>>,
+  pub main_file_index: MainFileIndex,
+}
+
+/// What the main file can refer to, and what its names refer to — for
+/// editor tooling.
+#[derive(Clone, Debug, Default)]
+pub struct MainFileIndex {
   /// Every name the main file can write that refers to a definition: the
   /// bare names in its scope, and paths through the modules and enums it
   /// can see (`geo/Point`, `geo/Shape/Circle`), with what each names.
   /// Sorted by name.
-  pub main_file_names: Vec<(Arc<str>, NameKind)>,
+  pub names: Vec<(Arc<str>, NameKind)>,
+  /// Each name written in the main file that refers to top-level
+  /// definitions, with the positions of those definitions' names (several
+  /// for an overloaded function; builtins have none).
+  pub references: Vec<(DocumentPosition, Vec<DocumentPosition>)>,
+  /// The position of the name of every definition written in the main file.
+  pub definitions: Vec<DocumentPosition>,
+  /// How the main file writes the definitions it can refer to whose
+  /// internal names differ (an imported `geometry/Point` imported as `geo`
+  /// is `geo/Point`): the shortest name it can write for each, by internal
+  /// name.
+  pub written_names: WrittenNames,
 }
+
+pub type WrittenNames = HashMap<Arc<str>, Arc<str>>;
 
 /// What kind of definition a name refers to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -199,6 +219,12 @@ struct Resolver<'a> {
   /// file can never refer to.
   root_names: HashSet<Arc<str>>,
   groups: HashMap<Vec<Arc<str>>, Arc<str>>,
+  /// Where each definition's name is written, by internal name (several for
+  /// overloads).
+  definition_sites: HashMap<Arc<str>, Vec<DocumentPosition>>,
+  /// The names written in the main file that refer to definitions, with
+  /// the internal names they refer to.
+  main_file_references: Vec<(DocumentPosition, Vec<Arc<str>>)>,
   errors: &'a mut ErrorLog,
 }
 
@@ -384,6 +410,8 @@ pub fn resolve_modules(
     root_builtin_prefix,
     root_names: HashSet::new(),
     groups: HashMap::new(),
+    definition_sites: HashMap::new(),
+    main_file_references: vec![],
     errors,
   };
   for (file, prefix) in file_prefixes.into_iter().enumerate() {
@@ -413,14 +441,15 @@ pub fn resolve_modules(
     let scope = resolver.build_scope(id);
     resolver.scopes.push(scope);
   }
-  let main_file_names = resolver.main_file_names();
+  let (names, written_names) = resolver.main_file_names();
   let mut output = vec![];
   for file in 0..documents.sources.len() {
     resolver.emit_module(file, &mut output);
   }
+  let main_file_index = resolver.main_file_index(names, written_names);
   ResolvedModules {
     trees: output,
-    main_file_names,
+    main_file_index,
     overload_groups: resolver
       .groups
       .into_iter()
@@ -445,6 +474,7 @@ impl<'a> Resolver<'a> {
       self.error(CompileErrorKind::InvalidName, origin.source);
       return;
     }
+    self.record_definition_site(&origin);
     let members = self.modules[module]
       .members
       .entry(name.clone())
@@ -605,6 +635,7 @@ impl<'a> Resolver<'a> {
                       kind: OriginKind::Variant,
                       source: variant_source,
                     };
+                    self.record_definition_site(&origin);
                     if unpack {
                       self.define(id, variant.clone(), origin.clone(), private);
                     }
@@ -935,33 +966,121 @@ impl<'a> Resolver<'a> {
     }
     scope
   }
-  /// See [`ResolvedModules::main_file_names`].
-  fn main_file_names(&self) -> Vec<(Arc<str>, NameKind)> {
+  fn record_definition_site(&mut self, origin: &Origin) {
+    if let Some(position) = &origin.source.primary_position {
+      let sites = self
+        .definition_sites
+        .entry(origin.internal.clone())
+        .or_default();
+      if !sites.contains(position) {
+        sites.push(position.clone());
+      }
+    }
+  }
+
+  /// Records that the name at `source`, written in module `id`, refers to
+  /// `origins`, when that's in the main file.
+  fn record_reference(
+    &mut self,
+    id: ModuleId,
+    source: &SourceTrace,
+    origins: &[Origin],
+  ) {
+    if self.modules[id].file == 0
+      && let Some(position) = &source.primary_position
+    {
+      self.main_file_references.push((
+        position.clone(),
+        origins
+          .iter()
+          .map(|origin| origin.internal.clone())
+          .collect(),
+      ));
+    }
+  }
+
+  fn main_file_index(
+    &self,
+    names: Vec<(Arc<str>, NameKind)>,
+    written_names: WrittenNames,
+  ) -> MainFileIndex {
+    let sites_of = |internal: &Arc<str>| {
+      self
+        .definition_sites
+        .get(internal)
+        .into_iter()
+        .flatten()
+        .cloned()
+    };
+    let mut definitions: Vec<DocumentPosition> = self
+      .definition_sites
+      .values()
+      .flatten()
+      .filter(|position| position.path.first() == Some(&0))
+      .cloned()
+      .collect();
+    definitions.sort_by_key(|position| position.span.start);
+    MainFileIndex {
+      names,
+      written_names,
+      references: self
+        .main_file_references
+        .iter()
+        .map(|(position, internals)| {
+          (
+            position.clone(),
+            internals.iter().flat_map(sites_of).collect(),
+          )
+        })
+        .collect(),
+      definitions,
+    }
+  }
+
+  /// See [`MainFileIndex::names`].
+  fn main_file_names(&self) -> (Vec<(Arc<str>, NameKind)>, WrittenNames) {
     fn add_members(
       resolver: &Resolver,
       namespace: Namespace,
       path: &str,
-      names: &mut Vec<(Arc<str>, NameKind)>,
+      found: &mut Vec<(Arc<str>, Origin)>,
     ) {
       for (member, origin) in resolver.visible_members(namespace, 0) {
         let member_path = format!("{path}/{member}");
-        names.push((member_path.as_str().into(), origin.name_kind()));
         if let Some(namespace) = origin.namespace() {
-          add_members(resolver, namespace, &member_path, names);
+          add_members(resolver, namespace, &member_path, found);
         }
+        found.push((member_path.as_str().into(), origin));
       }
     }
-    let mut names = vec![];
+    let mut found: Vec<(Arc<str>, Origin)> = vec![];
     for (name, origins) in self.scopes[0].iter() {
-      names.push((name.clone(), origins[0].name_kind()));
       if let Some(namespace) = origins.iter().find_map(Origin::namespace) {
-        add_members(self, namespace, name, &mut names);
+        add_members(self, namespace, name, &mut found);
+      }
+      for origin in origins {
+        found.push((name.clone(), origin.clone()));
       }
     }
+    let mut written_names = WrittenNames::new();
+    for (written, origin) in found.iter() {
+      let shortest = written_names
+        .entry(origin.internal.clone())
+        .or_insert_with(|| written.clone());
+      if (written.len(), written) < (shortest.len(), &*shortest) {
+        *shortest = written.clone();
+      }
+    }
+    written_names.retain(|internal, written| internal != written);
+    let mut names: Vec<(Arc<str>, NameKind)> = found
+      .into_iter()
+      .map(|(written, origin)| (written, origin.name_kind()))
+      .collect();
     names.sort_by(|(a, _), (b, _)| a.cmp(b));
     names.dedup_by(|(a, _), (b, _)| a == b);
-    names
+    (names, written_names)
   }
+
   /// The registry buckets a reference to `name` draws candidates from,
   /// when `name` refers to the functions `origins`.
   fn function_members(&self, name: &str, origins: &[Origin]) -> Vec<Arc<str>> {
@@ -1032,11 +1151,11 @@ impl<'a> Resolver<'a> {
             continue;
           };
           let selected_source: SourceTrace = position.into();
-          for origin in self
+          let origins = self
             .member(namespace, path, name, id, &selected_source)
-            .into_iter()
-            .flatten()
-          {
+            .unwrap_or_default();
+          self.record_reference(id, &selected_source, &origins);
+          for origin in origins {
             self.bind(scope, name.as_str().into(), origin, &selected_source);
           }
         }
@@ -1411,13 +1530,18 @@ impl<'a> Resolver<'a> {
           );
           name.to_string()
         }
-        Some([origin]) => origin.internal.to_string(),
-        Some(functions) => {
-          let members = functions
-            .iter()
-            .map(|origin| origin.internal.clone())
-            .collect();
-          self.overload_group(display_name(name), members)
+        Some(origins) => {
+          self.record_reference(id, source, origins);
+          match origins {
+            [origin] => origin.internal.to_string(),
+            functions => {
+              let members = functions
+                .iter()
+                .map(|origin| origin.internal.clone())
+                .collect();
+              self.overload_group(display_name(name), members)
+            }
+          }
         }
       };
     }
@@ -1445,8 +1569,12 @@ impl<'a> Resolver<'a> {
         );
         name.to_string()
       }
-      [origin] if !origin.is_function() => origin.internal.to_string(),
+      [origin] if !origin.is_function() => {
+        self.record_reference(id, source, &origins);
+        origin.internal.to_string()
+      }
       functions => {
+        self.record_reference(id, source, functions);
         let members = self.function_members(name, functions);
         self.overload_group(name, members)
       }
