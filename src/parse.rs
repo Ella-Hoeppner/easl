@@ -414,13 +414,19 @@ fn load_and_parse_easl_multidocument_with_resolution(
           && string_children.len() == 1
           && let EaslTree::Leaf(_, import_path_string) = &string_children[0]
         {
-          let canonicalized_import_path = if import_path_string.starts_with("/")
-          {
-            resolve(&PathBuf::from(import_path_string))?
+          let resolved = if import_path_string.starts_with("/") {
+            resolve(&PathBuf::from(import_path_string))
           } else {
             resolve(
               &current_file_path.parent().unwrap().join(import_path_string),
-            )?
+            )
+          };
+          let Ok(canonicalized_import_path) = resolved else {
+            errors.log(CompileError::new(
+              CompileErrorKind::ImportNotFound(import_path_string.clone()),
+              ast.position().into(),
+            ));
+            return Ok(());
           };
           import_forms
             .push((ast.position().clone(), canonicalized_import_path.clone()));
@@ -452,6 +458,7 @@ fn load_and_parse_easl_multidocument_with_resolution(
     )?;
   }
   if !errors.is_empty() {
+    record_imports(&mut documents, import_forms);
     return Ok(Ok(Err((documents, errors))));
   }
   while !unprocessed_imports.is_empty() {
@@ -482,12 +489,25 @@ fn load_and_parse_easl_multidocument_with_resolution(
       )?;
     }
     if !subdocument.parsing_failures.is_empty() {
+      record_imports(&mut documents, import_forms);
       return Ok(Err(documents));
     }
     if !errors.is_empty() {
+      record_imports(&mut documents, import_forms);
       return Ok(Ok(Err((documents, errors))));
     }
   }
+  record_imports(&mut documents, import_forms);
+  Ok(Ok(Ok(documents)))
+}
+
+/// Records which loaded document each import form loads, in
+/// `documents.imports`. Forms naming documents that weren't loaded (loading
+/// stopped at an error first) are left out.
+fn record_imports(
+  documents: &mut EaslMultiDocument,
+  import_forms: Vec<(DocumentPosition, PathBuf)>,
+) {
   let document_indices: HashMap<PathBuf, usize> = documents
     .sources
     .iter()
@@ -496,9 +516,10 @@ fn load_and_parse_easl_multidocument_with_resolution(
     .collect();
   documents.imports = import_forms
     .into_iter()
-    .map(|(position, path)| (position, document_indices[&path]))
+    .filter_map(|(position, path)| {
+      document_indices.get(&path).map(|index| (position, *index))
+    })
     .collect();
-  Ok(Ok(Ok(documents)))
 }
 
 pub fn load_and_parse_easl_multidocument(

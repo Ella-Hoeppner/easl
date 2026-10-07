@@ -619,6 +619,8 @@ pub enum CompileErrorKind {
   CantComputeSizeOfString,
   #[error("Invalid `import` expression")]
   InvalidImportStatement,
+  #[error("Couldn't find the imported file \"{0}\"")]
+  ImportNotFound(String),
   #[error("Invalid `mod` form: expected `(mod name forms...)`")]
   InvalidModuleForm,
   #[error(
@@ -725,6 +727,7 @@ impl PartialEq for CompileErrorKind {
       ) => l0 == r0,
       (Self::UnboundName(l0), Self::UnboundName(r0)) => l0 == r0,
       (Self::ImportCycle(l0), Self::ImportCycle(r0)) => l0 == r0,
+      (Self::ImportNotFound(l0), Self::ImportNotFound(r0)) => l0 == r0,
       (Self::NameCollision(l0), Self::NameCollision(r0)) => l0 == r0,
       (
         Self::BuiltinTypeRedefinition(l0),

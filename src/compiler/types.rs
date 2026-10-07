@@ -4207,7 +4207,7 @@ impl From<Type> for TypeDescription {
           format!("{name}{suffix}")
         }
         _ => {
-          compile_word(s.name)
+          s.name.to_string()
           // todo! this should display a name more like the above one for
           // Texture2D, using a kind of type-level function application syntax
         }

@@ -4,7 +4,6 @@
   m: mat2x2f
   k: f32)
 
-@unpack
 (enum E
   (Mat MK)
   Nope)
@@ -13,10 +12,14 @@
 
 @compute
 (defn run []
-  (let [x (Mat (MK (mat2x2f (vec2f 1. 2.) (vec2f 3. 4.)) 100.))]
+  (let [x (E/Mat (MK (mat2x2f (vec2f 1. 2.) (vec2f 3. 4.))
+                     100.))]
+    (let [hello 0.5
+          goodbye (+ hello 1.)])
     (match x
-      (Mat mk) (= out (+ mk.k (determinant mk.m)))
-      Nope (= out 0.))))
+      (E/Mat mk) (= out
+                    (+ mk.k (determinant mk.m)))
+      E/Nope (= out 0.))))
 
 @cpu
 (defn main []

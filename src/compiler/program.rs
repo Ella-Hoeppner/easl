@@ -68,7 +68,7 @@ use super::{
   expression::TypedExp,
   functions::FunctionImplementationKind,
   macros::{Macro, macroexpand},
-  modules::{display_name, resolve_modules},
+  modules::{NameKind, display_name, resolve_modules},
   structs::AbstractStruct,
   vars::TopLevelVar,
 };
@@ -659,6 +659,10 @@ pub struct Program {
   /// to the chosen member by `resolve_overload_groups`, right after
   /// inference.
   pub overload_groups: HashMap<Arc<str>, Vec<Arc<str>>>,
+  /// Every name the main file can write that refers to a definition (see
+  /// [`crate::compiler::modules::ResolvedModules::main_file_names`]), for
+  /// editor tooling.
+  pub main_file_names: Vec<(Arc<str>, NameKind)>,
 }
 
 impl Clone for Program {
@@ -674,6 +678,7 @@ impl Clone for Program {
       lifted_audio_captures: self.lifted_audio_captures.clone(),
       lifted_gpu_captures: self.lifted_gpu_captures.clone(),
       overload_groups: self.overload_groups.clone(),
+      main_file_names: self.main_file_names.clone(),
     }
   }
 }
@@ -697,6 +702,7 @@ impl Program {
       lifted_audio_captures: HashMap::new(),
       lifted_gpu_captures: HashMap::new(),
       overload_groups: HashMap::new(),
+      main_file_names: vec![],
     }
   }
   pub fn add_top_level_var(&mut self, var: TopLevelVar) {
@@ -1138,6 +1144,7 @@ impl Program {
     let mut program = Program::default();
     program.names = names.into();
     program.overload_groups = resolved.overload_groups;
+    program.main_file_names = resolved.main_file_names;
     match UntypedType::sort_by_references(&untyped_types) {
       Ok(sorted_untyped_types) => {
         for name in macros.iter().flat_map(|m| m.reserved_names.iter().cloned())

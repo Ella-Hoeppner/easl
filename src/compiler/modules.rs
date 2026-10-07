@@ -45,6 +45,23 @@ pub struct ResolvedModules {
   /// Each overload group's name and the names of the function registry
   /// buckets it draws candidates from.
   pub overload_groups: HashMap<Arc<str>, Vec<Arc<str>>>,
+  /// Every name the main file can write that refers to a definition: the
+  /// bare names in its scope, and paths through the modules and enums it
+  /// can see (`geo/Point`, `geo/Shape/Circle`), with what each names.
+  /// Sorted by name.
+  pub main_file_names: Vec<(Arc<str>, NameKind)>,
+}
+
+/// What kind of definition a name refers to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NameKind {
+  Function,
+  /// A top-level `var`, `def`, or `override`.
+  Variable,
+  Struct,
+  Enum,
+  Variant,
+  Module,
 }
 
 /// How a name written in source should be displayed to a user: an internal
@@ -87,6 +104,16 @@ struct Origin {
 }
 
 impl Origin {
+  fn name_kind(&self) -> NameKind {
+    match self.kind {
+      OriginKind::Function => NameKind::Function,
+      OriginKind::Value => NameKind::Variable,
+      OriginKind::Struct => NameKind::Struct,
+      OriginKind::Enum(_) => NameKind::Enum,
+      OriginKind::Variant => NameKind::Variant,
+      OriginKind::Module(_) => NameKind::Module,
+    }
+  }
   fn is_function(&self) -> bool {
     self.kind == OriginKind::Function
   }
@@ -386,12 +413,14 @@ pub fn resolve_modules(
     let scope = resolver.build_scope(id);
     resolver.scopes.push(scope);
   }
+  let main_file_names = resolver.main_file_names();
   let mut output = vec![];
   for file in 0..documents.sources.len() {
     resolver.emit_module(file, &mut output);
   }
   ResolvedModules {
     trees: output,
+    main_file_names,
     overload_groups: resolver
       .groups
       .into_iter()
@@ -905,6 +934,33 @@ impl<'a> Resolver<'a> {
       }
     }
     scope
+  }
+  /// See [`ResolvedModules::main_file_names`].
+  fn main_file_names(&self) -> Vec<(Arc<str>, NameKind)> {
+    fn add_members(
+      resolver: &Resolver,
+      namespace: Namespace,
+      path: &str,
+      names: &mut Vec<(Arc<str>, NameKind)>,
+    ) {
+      for (member, origin) in resolver.visible_members(namespace, 0) {
+        let member_path = format!("{path}/{member}");
+        names.push((member_path.as_str().into(), origin.name_kind()));
+        if let Some(namespace) = origin.namespace() {
+          add_members(resolver, namespace, &member_path, names);
+        }
+      }
+    }
+    let mut names = vec![];
+    for (name, origins) in self.scopes[0].iter() {
+      names.push((name.clone(), origins[0].name_kind()));
+      if let Some(namespace) = origins.iter().find_map(Origin::namespace) {
+        add_members(self, namespace, name, &mut names);
+      }
+    }
+    names.sort_by(|(a, _), (b, _)| a.cmp(b));
+    names.dedup_by(|(a, _), (b, _)| a == b);
+    names
   }
   /// The registry buckets a reference to `name` draws candidates from,
   /// when `name` refers to the functions `origins`.

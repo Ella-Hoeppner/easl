@@ -215,3 +215,7 @@ import_error_test!(
   builtin_type_in_module,
   CompileErrorKind::BuiltinTypeRedefinition("MidiNote".into())
 );
+import_error_test!(
+  missing_import,
+  CompileErrorKind::ImportNotFound("nowhere.easl".into())
+);

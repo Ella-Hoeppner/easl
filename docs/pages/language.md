@@ -144,14 +144,24 @@ Enums represent a union over several types, with a tag to differentiate between 
   (Box vec2f))
 ```
 
-You construct an enum value using it's name, applied as a function if the variant holds a name, or just referred to as a non-applied name if it's a unit-variant (i.e. no internal type). `match` expressions can be used to destructure an enum and access the values held inside:
+Each variant that you define inside an enum automatically gets an associated *constructor* that is used to refer to that variant. Here we end up with three constructors, `Shape/Empty`, `Shape/Circle`, and `Shape/Box`. Unit-like variants which don't contain any internal value, e.g. `Empty`, are used like constants, while variants like `Circle` and `Box` are applied like functions to construct a function:
+
+```
+(defn default-shape []: Shape
+  Shape/Empty)
+
+(defn create-unit-circle []: Shape
+  (Shape/Circle 1.))
+```
+
+`match` expressions can be used to destructure an enum and access the values held inside:
 
 ```easl
 (defn area [s: Shape]: f32
   (match s
-    (Circle r) (* 3.14159 r r)
-    (Box size) (* size.x size.y)
-    Empty 0.))
+    (Shape/Circle r) (* 3.14159 r r)
+    (Shape/Box size) (* size.x size.y)
+    Shape/Empty 0.))
 
 (defn sum-of-areas [shapes: [Shape]]: f32
   (let [@var sum 0.]
@@ -161,14 +171,32 @@ You construct an enum value using it's name, applied as a function if the varian
 
 @cpu
 (defn main []
-  (print (sum-of-areas [Empty
-                        (Circle 2.)
-                        (Box 3. 4.)
-                        Empty
-                        (Circle 0.5)])))
+  (print (sum-of-areas [Shape/Empty
+                        (Shape/Circle 2.)
+                        (Shape/Box (vec2f 3. 4.))
+                        Shape/Empty
+                        (Shape/Circle 0.5)])))
 ```
 
-Easl has a built-in enum called `Option`, with `(Some ...)` and `None` variants. This type is [generic](reference/language.md#Generics), so it can hold any kind of value in it's `Some` variant.
+Since it can be annoying to have to always qualify every variant name with the name of the enum itself, the `@unpack` annotation can be placed in front of an enum definition to make all of the variants available as top-level, unqualified definitions:
+
+```easl
+@unpack
+(enum Shape
+  Empty
+  (Circle f32)
+  (Box vec2f))
+
+(defn area [s: Shape]: f32
+  (match s
+    (Circle r) (* 3.14159 r r)
+    (Box size) (* size.x size.y)
+    Empty 0.))
+```
+
+(this `@unpack` annotation is essentially a syntactic shortcut for a `(use Shape)` declaration; see [Modules](#modules) for details)
+
+Easl has a built-in enum called `Option`, with `(Some ...)` and `None` variants. This type is [generic](reference/language.md#Generics), so it can hold any kind of value in its `Some` variant. `Option` is `@unpack`ed, so its variants are always available as simply `Some` and `None`.
 
 `match` blocks can also be used on primitive scalar types, not just enums.
 
@@ -520,14 +548,59 @@ Since this is a purely syntactic transformation, it works seamlessly with any ne
 
 See [`into`](reference/conversions.md#into).
 
-## Imports
+## Modules
 
-Easl supports a simple system for importing code from one file to another, via the top-level `import` statement:
+Easl code is organized into modules. Each easl file is treated as an implicit module, and you can also declare explicit modules inside other modules with the `mod` expression:
 
 ```easl
-(import "color.easl")
+(mod random
+  (defn hash [x: u32]: u32
+    (* x 747796405u))
+  (defn value [x: u32]: f32
+    (/ (f32 (hash x)) 4294967295.)))
+
+@cpu
+(defn main []
+  (print (randomhash 0u)))
 ```
 
-This effectively just brings in all of the code from the other file, as if it had been copy-pasted in place of the `import` statement. The path is expressed as a string, and is relative to the importing file.
+To access a value or function defined in a module, you have to qualify the name with the name of the module, such as `random/hash` in the above code.
 
-Easl's import system for now is very simplistic, and it'll probably be replaced with a more sophisticated module/namespace system in the near future.
+The `use` expression lets you unpack the names defined in a module into the top-level scope. For instance, we could add `(use random [hash])` to make `hash` available directly by that name, without the need for the `random/` prefix. You can also do simply `(use random)` to make all names in the module available.
+
+`import` is used to include code from other files:
+
+```easl
+random.easl
+
+(defn hash [x: u32]: u32
+  (* x 747796405u))
+(defn value [x: u32]: f32
+  (/ (f32 (hash x)) 4294967295.))
+```
+
+```easl
+main.easl
+
+(import random "random.easl")
+
+@cpu
+(defn main []
+  (print (random/value 1u)))
+```
+
+The `import` expression takes a name for the module and a path to it's source code. Paths are resolved relative to the file doing the importing. This makes the code defined in the specified file available under the module name you specify, e.g. `random` in the example above.
+
+As a shortcut, if you just want to import all of the names from the other file directly into the top-level scope, you can omit the name of the module and just specify the path, e.g.:
+
+```easl
+main.easl
+
+(import "random.easl")
+
+@cpu
+(defn main []
+  (print (value 1u)))
+```
+
+The `@private` annotation can be used on global vars, functions, and types to prevent them from being accessed by other modules.

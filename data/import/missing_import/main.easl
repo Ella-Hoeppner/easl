@@ -1,0 +1,5 @@
+(import "nowhere.easl")
+
+@fragment
+(defn f []: vec4f
+  (vec4f 1.))
