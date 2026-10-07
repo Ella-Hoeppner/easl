@@ -199,6 +199,10 @@ fn dynamic_key_query_spoofed() {
     mouse_present: false,
     mouse_down: false,
     mouse_just_down: false,
+    mouse_right_down: false,
+    mouse_right_just_down: false,
+    mouse_delta: (0., 0.),
+    mouse_captured: false,
     keys_down: vec!["3u".to_string(), "7u".to_string(), "a".to_string()],
     keys_just_down: vec!["f1u".to_string()],
   };
@@ -245,6 +249,10 @@ fn gpu_window_info_spoofed() {
     mouse_present: true,
     mouse_down: false,
     mouse_just_down: true,
+    mouse_right_down: false,
+    mouse_right_just_down: false,
+    mouse_delta: (0., 0.),
+    mouse_captured: false,
     keys_down: vec!["a".to_string()],
     keys_just_down: vec!["b".to_string()],
   };
@@ -268,6 +276,71 @@ fn gpu_window_info_spoofed() {
     )
     .unwrap();
     assert_eq!(io.prints, vec![expected.clone()], "runtime {runtime:?}");
+  }
+}
+
+/// `mouse-delta`, `mouse-captured?`, the right mouse button, and named keys
+/// reach both the GPU
+/// (implicit bindings) and the CPU, and `capture-mouse` / `release-mouse`
+/// reach the IO manager, identically on both CPU runtimes.
+#[test]
+fn mouse_capture_spoofed() {
+  use easl::interpreter::{
+    CaptureIO, SpoofedWindowInfo, run_program_with_runtime,
+  };
+  let source_path_str = "./data/buffer/mouse_capture.easl";
+  let source_path = Path::new(&source_path_str);
+  let spoof = SpoofedWindowInfo {
+    size: (320, 240),
+    time: 0.,
+    delta_time: 0.,
+    frame_index: 0,
+    mouse_coords: (0, 0),
+    mouse_present: true,
+    mouse_down: false,
+    mouse_just_down: false,
+    mouse_right_down: true,
+    mouse_right_just_down: false,
+    mouse_delta: (-3.5, 12.25),
+    mouse_captured: false,
+    keys_down: vec![" ".to_string(), "ctrl".to_string()],
+    keys_just_down: vec![],
+  };
+  let expected = vec![
+    "[-3.5 12.25 0. 1. 0. 1. 0.]".to_string(),
+    "(vec2f -3.5 12.25)".to_string(),
+    "true".to_string(),
+    "true".to_string(),
+    "false".to_string(),
+  ];
+  for runtime in [CpuRuntime::TreeWalking, CpuRuntime::BytecodeVm] {
+    let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
+    else {
+      panic!("failed to load program")
+    };
+    let errors = program.validate_raw_program(CompilerTarget::WGSL);
+    assert!(errors.is_empty(), "compile errors: {errors:#?}");
+    let mut io = CaptureIO::new();
+    io.spoofed_window_info = Some(spoof.clone());
+    let (io, _) = run_program_with_runtime(
+      program,
+      None,
+      io,
+      source_path.parent().map(|p| p.to_path_buf()),
+      runtime,
+    )
+    .unwrap();
+    assert_eq!(io.prints, expected, "runtime {runtime:?}");
+    let captures: Vec<&String> = io
+      .sync_trace
+      .iter()
+      .filter(|line| line.starts_with("mouse-capture"))
+      .collect();
+    assert_eq!(
+      captures,
+      vec!["mouse-capture: true", "mouse-capture: false"],
+      "runtime {runtime:?}"
+    );
   }
 }
 

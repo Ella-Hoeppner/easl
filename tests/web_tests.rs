@@ -45,17 +45,64 @@ mod harness {
     AwaitPrint(&'static str),
     KeyDown(&'static str),
     KeyUp(&'static str),
+    /// A key press with an explicit `KeyboardEvent.key`, `.code`, and
+    /// modifiers (`SHIFT`, or 0), like a real keyboard sends.
+    KeyPress(&'static str, &'static str, u32),
+    KeyRelease(&'static str, &'static str, u32),
     MouseMove(f64, f64),
     MouseDown(f64, f64),
     MouseUp(f64, f64),
+    RightMouseDown(f64, f64),
+    RightMouseUp(f64, f64),
     /// Sends a raw MIDI message through the runtime's `sendMidiMessage`.
     Midi(&'static [u8]),
   }
   use Step::*;
 
+  /// The DevTools protocol's modifier bit for shift.
+  const SHIFT: u32 = 8;
+
   /// Input scripts for `data/web/` tests. The test page's canvas is 320x240
   /// in a 400x300 viewport, so (360, 280) is outside it.
   const SCRIPTS: &[(&str, &[Step])] = &[
+    (
+      "input_named_keys",
+      &[
+        AwaitPrint("0u"),
+        KeyPress("Shift", "ShiftLeft", SHIFT),
+        AwaitPrint("2u"),
+        KeyPress("!", "Digit1", SHIFT),
+        AwaitPrint("3u"),
+        // Shift released first: the release of "1" must still clear it.
+        KeyRelease("Shift", "ShiftLeft", 0),
+        AwaitPrint("1u"),
+        KeyRelease("1", "Digit1", 0),
+        AwaitPrint("0u"),
+        KeyPress("Shift", "ShiftLeft", SHIFT),
+        AwaitPrint("2u"),
+        KeyPress("A", "KeyA", SHIFT),
+        AwaitPrint("18u"),
+        KeyRelease("A", "KeyA", SHIFT),
+        AwaitPrint("2u"),
+        KeyRelease("Shift", "ShiftLeft", 0),
+        AwaitPrint("0u"),
+        KeyPress(" ", "Space", 0),
+        AwaitPrint("4u"),
+        KeyRelease(" ", "Space", 0),
+        AwaitPrint("0u"),
+        KeyPress("ArrowUp", "ArrowUp", 0),
+        AwaitPrint("32u"),
+        KeyRelease("ArrowUp", "ArrowUp", 0),
+        AwaitPrint("0u"),
+        MouseMove(100., 50.),
+        RightMouseDown(100., 50.),
+        AwaitPrint("8u"),
+        RightMouseUp(100., 50.),
+        AwaitPrint("0u"),
+        KeyDown("q"),
+        KeyUp("q"),
+      ],
+    ),
     (
       "midi_input",
       &[
@@ -884,9 +931,21 @@ mod harness {
         },
         KeyDown(key) => key_event(session, "keyDown", key)?,
         KeyUp(key) => key_event(session, "keyUp", key)?,
-        MouseMove(x, y) => mouse_event(session, "mouseMoved", x, y)?,
-        MouseDown(x, y) => mouse_event(session, "mousePressed", x, y)?,
-        MouseUp(x, y) => mouse_event(session, "mouseReleased", x, y)?,
+        KeyPress(key, code, modifiers) => {
+          coded_key_event(session, "keyDown", key, code, modifiers)?
+        }
+        KeyRelease(key, code, modifiers) => {
+          coded_key_event(session, "keyUp", key, code, modifiers)?
+        }
+        MouseMove(x, y) => mouse_event(session, "mouseMoved", "left", x, y)?,
+        MouseDown(x, y) => mouse_event(session, "mousePressed", "left", x, y)?,
+        MouseUp(x, y) => mouse_event(session, "mouseReleased", "left", x, y)?,
+        RightMouseDown(x, y) => {
+          mouse_event(session, "mousePressed", "right", x, y)?
+        }
+        RightMouseUp(x, y) => {
+          mouse_event(session, "mouseReleased", "right", x, y)?
+        }
         Midi(bytes) => {
           session.evaluate(&format!(
             "import(\"./easl-program.js\").then((program) => \
@@ -925,9 +984,33 @@ mod harness {
     session.call("Input.dispatchKeyEvent", params).map(|_| ())
   }
 
+  /// A key event with an explicit code and modifiers. Only a character key
+  /// press carries text; named keys are sent as raw key downs.
+  fn coded_key_event(
+    session: &mut Session,
+    kind: &str,
+    key: &str,
+    code: &str,
+    modifiers: u32,
+  ) -> Result<(), String> {
+    let character = key.chars().count() == 1;
+    let kind = match kind {
+      "keyDown" if !character => "rawKeyDown",
+      kind => kind,
+    };
+    let mut params = json!({
+      "type": kind, "key": key, "code": code, "modifiers": modifiers
+    });
+    if kind == "keyDown" {
+      params["text"] = json!(key);
+    }
+    session.call("Input.dispatchKeyEvent", params).map(|_| ())
+  }
+
   fn mouse_event(
     session: &mut Session,
     kind: &str,
+    button: &str,
     x: f64,
     y: f64,
   ) -> Result<(), String> {
@@ -935,7 +1018,7 @@ mod harness {
       .call(
         "Input.dispatchMouseEvent",
         json!({
-          "type": kind, "x": x, "y": y, "button": "left", "clickCount": 1
+          "type": kind, "x": x, "y": y, "button": button, "clickCount": 1
         }),
       )
       .map(|_| ())

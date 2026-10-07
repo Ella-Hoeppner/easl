@@ -2408,6 +2408,34 @@ fn apply_builtin_fn<IO: IOManager>(
     "mouse-just-down?" => {
       Ok(Value::Prim(Primitive::Bool(env.io.mouse_just_down())))
     }
+    "mouse-right-down?" => {
+      Ok(Value::Prim(Primitive::Bool(env.io.mouse_right_down())))
+    }
+    "mouse-right-just-down?" => {
+      Ok(Value::Prim(Primitive::Bool(env.io.mouse_right_just_down())))
+    }
+    "mouse-delta" => {
+      let (x, y) = env.io.mouse_delta();
+      Ok(Value::Struct(
+        [
+          ("x".into(), Value::Prim(Primitive::F32(x))),
+          ("y".into(), Value::Prim(Primitive::F32(y))),
+        ]
+        .into_iter()
+        .collect(),
+      ))
+    }
+    "mouse-captured?" => {
+      Ok(Value::Prim(Primitive::Bool(env.io.mouse_captured())))
+    }
+    "capture-mouse" => {
+      env.io.set_mouse_capture(true);
+      Ok(Value::Unit)
+    }
+    "release-mouse" => {
+      env.io.set_mouse_capture(false);
+      Ok(Value::Unit)
+    }
     "zeroed-array" => {
       let Type::Array(size, _) = return_type else {
         panic!()
@@ -3358,6 +3386,10 @@ pub struct SpoofedWindowInfo {
   pub mouse_present: bool,
   pub mouse_down: bool,
   pub mouse_just_down: bool,
+  pub mouse_right_down: bool,
+  pub mouse_right_just_down: bool,
+  pub mouse_delta: (f32, f32),
+  pub mouse_captured: bool,
   /// Keys reported as currently held down.
   pub keys_down: Vec<String>,
   /// Keys reported as pressed this frame.
@@ -3387,6 +3419,15 @@ pub fn window_info_words<IO: IOManager>(
       WindowInfoKind::MousePresent => vec![io.mouse_present() as u32],
       WindowInfoKind::MouseDown => vec![io.mouse_down() as u32],
       WindowInfoKind::MouseJustDown => vec![io.mouse_just_down() as u32],
+      WindowInfoKind::MouseRightDown => vec![io.mouse_right_down() as u32],
+      WindowInfoKind::MouseRightJustDown => {
+        vec![io.mouse_right_just_down() as u32]
+      }
+      WindowInfoKind::MouseDelta => {
+        let (x, y) = io.mouse_delta();
+        vec![x.to_bits(), y.to_bits()]
+      }
+      WindowInfoKind::MouseCaptured => vec![io.mouse_captured() as u32],
       WindowInfoKind::KeyDown | WindowInfoKind::KeyJustDown => {
         unreachable!(
           "key queries are recorded as KeyDown/KeyJustDown sources, never \
@@ -3909,6 +3950,32 @@ pub trait IOManager: Sized {
   fn mouse_just_down(&self) -> bool {
     false
   }
+  /// Returns true if the right (secondary) mouse button is currently held
+  /// down. Always returns false outside of a real window.
+  fn mouse_right_down(&self) -> bool {
+    false
+  }
+  /// Returns true if the right mouse button was pressed this frame. Always
+  /// returns false outside of a real window.
+  fn mouse_right_just_down(&self) -> bool {
+    false
+  }
+  /// Returns the raw mouse motion accumulated since the previous frame, in
+  /// (unscaled) device units, with +y pointing down. Keeps reporting motion
+  /// while the cursor is captured and pinned in place. Always (0, 0) outside
+  /// of a real window.
+  fn mouse_delta(&self) -> (f32, f32) {
+    (0., 0.)
+  }
+  /// Returns true while `capture-mouse` holds the cursor (hidden and locked
+  /// to the window). Always false outside of a real window.
+  fn mouse_captured(&self) -> bool {
+    false
+  }
+  /// Requests that the cursor be captured (`true`) or released (`false`).
+  /// The window applies the request at the end of the current frame. A
+  /// no-op outside of a real window.
+  fn set_mouse_capture(&mut self, _captured: bool) {}
   /// Returns the current GPU, if any. Used by `App::resumed` to detect an
   /// existing headless GPU so it can be reused rather than replaced.
   /// Default returns `None`; overridden by IO managers with real GPU access.
@@ -4310,6 +4377,45 @@ impl IOManager for StdoutIO {
       return gpu.read().unwrap().mouse_just_down;
     }
     false
+  }
+
+  fn mouse_right_down(&self) -> bool {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return gpu.read().unwrap().mouse_right_down;
+    }
+    false
+  }
+
+  fn mouse_right_just_down(&self) -> bool {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return gpu.read().unwrap().mouse_right_just_down;
+    }
+    false
+  }
+
+  fn mouse_delta(&self) -> (f32, f32) {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return gpu.read().unwrap().mouse_delta;
+    }
+    (0., 0.)
+  }
+
+  fn mouse_captured(&self) -> bool {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return gpu.read().unwrap().mouse_captured;
+    }
+    false
+  }
+
+  fn set_mouse_capture(&mut self, _captured: bool) {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      gpu.write().unwrap().mouse_capture_request = Some(_captured);
+    }
   }
 
   fn reload_requested(&self) -> bool {
@@ -4810,6 +4916,44 @@ impl IOManager for CaptureIO {
       return spoof.mouse_just_down;
     }
     self.inner.mouse_just_down()
+  }
+
+  fn mouse_right_down(&self) -> bool {
+    if let Some(spoof) = &self.spoofed_window_info {
+      return spoof.mouse_right_down;
+    }
+    self.inner.mouse_right_down()
+  }
+
+  fn mouse_right_just_down(&self) -> bool {
+    if let Some(spoof) = &self.spoofed_window_info {
+      return spoof.mouse_right_just_down;
+    }
+    self.inner.mouse_right_just_down()
+  }
+
+  fn mouse_delta(&self) -> (f32, f32) {
+    if let Some(spoof) = &self.spoofed_window_info {
+      return spoof.mouse_delta;
+    }
+    self.inner.mouse_delta()
+  }
+
+  fn mouse_captured(&self) -> bool {
+    if let Some(spoof) = &self.spoofed_window_info {
+      return spoof.mouse_captured;
+    }
+    self.inner.mouse_captured()
+  }
+
+  fn set_mouse_capture(&mut self, captured: bool) {
+    // Spoofed runs pin `mouse_captured`, so they record the request (for
+    // tests to assert on) instead of touching the real window.
+    if self.spoofed_window_info.is_some() {
+      self.sync_trace.push(format!("mouse-capture: {captured}"));
+      return;
+    }
+    self.inner.set_mouse_capture(captured)
   }
 
   fn flush_queued_compute(&mut self) {
@@ -8447,6 +8591,20 @@ fn vm_host_call<IO: IOManager>(
         WindowQueryKind::MouseJustDown => {
           stack[d] = env.io.mouse_just_down() as u32
         }
+        WindowQueryKind::MouseRightDown => {
+          stack[d] = env.io.mouse_right_down() as u32
+        }
+        WindowQueryKind::MouseRightJustDown => {
+          stack[d] = env.io.mouse_right_just_down() as u32
+        }
+        WindowQueryKind::MouseDelta => {
+          let (x, y) = env.io.mouse_delta();
+          stack[d] = x.to_bits();
+          stack[d + 1] = y.to_bits();
+        }
+        WindowQueryKind::MouseCaptured => {
+          stack[d] = env.io.mouse_captured() as u32
+        }
       }
     }
     HostOp::KeyQuery { just, key, dest } => {
@@ -8697,6 +8855,9 @@ fn vm_host_call<IO: IOManager>(
     }
     HostOp::ClearRenderTarget => {
       env.current_render_target = None;
+    }
+    HostOp::SetMouseCapture { captured } => {
+      env.io.set_mouse_capture(*captured);
     }
     HostOp::SavePng { binding, path } => {
       let b = &code.host_bindings[*binding as usize];

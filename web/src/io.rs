@@ -178,6 +178,26 @@ impl IOManager for WebIO {
     self.inner.mouse_just_down()
   }
 
+  fn mouse_right_down(&self) -> bool {
+    self.inner.mouse_right_down()
+  }
+
+  fn mouse_right_just_down(&self) -> bool {
+    self.inner.mouse_right_just_down()
+  }
+
+  fn mouse_delta(&self) -> (f32, f32) {
+    self.inner.mouse_delta()
+  }
+
+  fn mouse_captured(&self) -> bool {
+    self.inner.mouse_captured()
+  }
+
+  fn set_mouse_capture(&mut self, captured: bool) {
+    self.inner.set_mouse_capture(captured)
+  }
+
   fn get_gpu(&self) -> Option<Arc<RwLock<GpuCore>>> {
     self.inner.get_gpu()
   }

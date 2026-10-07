@@ -17,11 +17,12 @@ use winit::{
   application::ApplicationHandler,
   dpi::{PhysicalPosition, PhysicalSize},
   event::{
-    ElementState, MouseButton, StartCause, WindowEvent as WinitWindowEvent,
+    DeviceEvent, DeviceId, ElementState, MouseButton, StartCause,
+    WindowEvent as WinitWindowEvent,
   },
   event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-  keyboard::Key,
-  window::{Window, WindowId},
+  keyboard::{Key, NamedKey},
+  window::{CursorGrabMode, Window, WindowId},
 };
 // winit only supports run-on-demand event loops on desktop platforms
 #[cfg(not(any(target_os = "ios", target_arch = "wasm32")))]
@@ -369,6 +370,20 @@ pub struct GpuCore {
   /// True if the left mouse button was pressed this frame (not held from a previous frame).
   /// Cleared after each frame's eval completes.
   pub mouse_just_down: bool,
+  /// True if the right mouse button is currently held down.
+  pub mouse_right_down: bool,
+  /// True if the right mouse button was pressed this frame. Cleared after
+  /// each frame's eval completes.
+  pub mouse_right_just_down: bool,
+  /// Raw mouse motion accumulated since the previous frame, in device units
+  /// (+y down). Cleared after each frame's eval completes.
+  pub mouse_delta: (f32, f32),
+  /// True while the cursor is captured (hidden and locked to the window).
+  pub mouse_captured: bool,
+  /// A pending `capture-mouse` (`Some(true)`) or `release-mouse`
+  /// (`Some(false)`) request, applied to the window at the end of the frame
+  /// that made it.
+  pub mouse_capture_request: Option<bool>,
   /// The window surface, if a window is open. Set by `RenderState::new` /
   /// `from_existing_gpu`. Used by `execute_render_batch` to render directly to
   /// the real surface instead of an offscreen texture.
@@ -1728,6 +1743,11 @@ impl GpuCore {
       mouse_present: false,
       mouse_down: false,
       mouse_just_down: false,
+      mouse_right_down: false,
+      mouse_right_just_down: false,
+      mouse_delta: (0., 0.),
+      mouse_captured: false,
+      mouse_capture_request: None,
       surface: None,
       surface_config: None,
       pending_present: None,
@@ -2251,6 +2271,14 @@ impl<'a, D: FrameDriver> App<'a, D> {
         gpu.mouse_present = false;
         gpu.mouse_down = false;
         gpu.mouse_just_down = false;
+        gpu.mouse_right_down = false;
+        gpu.mouse_right_just_down = false;
+        gpu.mouse_delta = (0., 0.);
+        gpu.mouse_capture_request = None;
+        if gpu.mouse_captured {
+          set_cursor_captured(&state.window, false);
+          gpu.mouse_captured = false;
+        }
       }
       // Re-show the window: macOS may have ordered it out during the
       // resign-active → become-active lifecycle that happens while the main
@@ -2405,6 +2433,11 @@ impl<'a, D: FrameDriver> ApplicationHandler for App<'a, D> {
           // Clear them now so only newly-triggered inputs show up next frame.
           gpu.keys_just_down.clear();
           gpu.mouse_just_down = false;
+          gpu.mouse_right_just_down = false;
+          gpu.mouse_delta = (0., 0.);
+          if let Some(captured) = gpu.mouse_capture_request.take() {
+            gpu.mouse_captured = set_cursor_captured(&state.window, captured);
+          }
         }
         let draw_calls = self.driver.io_mut().take_frame_draw_calls();
         if let Some(state) = &mut self.state {
@@ -2478,20 +2511,59 @@ impl<'a, D: FrameDriver> ApplicationHandler for App<'a, D> {
         }
       }
       WinitWindowEvent::KeyboardInput { event, .. } => {
-        if let Some(state) = &self.state
-          && let Key::Character(c) = &event.logical_key
-        {
-          let key = c.to_lowercase();
+        if let Some(state) = &self.state {
           let mut gpu = state.gpu.write().unwrap();
-          match event.state {
-            ElementState::Pressed if !event.repeat => {
-              gpu.keys_down.insert(key.clone());
-              gpu.keys_just_down.insert(key);
+          // Escape always releases a captured cursor (as browsers do for
+          // pointer lock), so a program can never trap the mouse.
+          if event.logical_key == Key::Named(NamedKey::Escape)
+            && event.state == ElementState::Pressed
+            && gpu.mouse_captured
+          {
+            gpu.mouse_captured = set_cursor_captured(&state.window, false);
+            gpu.mouse_capture_request = None;
+          }
+          for key in key_names(&event) {
+            match event.state {
+              ElementState::Pressed if !event.repeat => {
+                gpu.keys_down.insert(key.clone());
+                gpu.keys_just_down.insert(key);
+              }
+              ElementState::Released => {
+                gpu.keys_down.remove(&key);
+              }
+              _ => {}
             }
-            ElementState::Released => {
-              gpu.keys_down.remove(&key);
+          }
+        }
+      }
+      WinitWindowEvent::ModifiersChanged(modifiers) => {
+        // Modifier presses arrive as `KeyboardInput` events; this only
+        // catches releases that happened while another window had focus.
+        if let Some(state) = &self.state {
+          let modifiers = modifiers.state();
+          let mut gpu = state.gpu.write().unwrap();
+          for (held, name) in [
+            (modifiers.shift_key(), "shift"),
+            (modifiers.control_key(), "ctrl"),
+            (modifiers.alt_key(), "alt"),
+            (modifiers.super_key(), "super"),
+          ] {
+            if !held {
+              gpu.keys_down.remove(name);
             }
-            _ => {}
+          }
+        }
+      }
+      WinitWindowEvent::Focused(focused) => {
+        if !focused && let Some(state) = &self.state {
+          let mut gpu = state.gpu.write().unwrap();
+          // Key releases that happen while unfocused are never delivered,
+          // so drop held state rather than leave keys stuck down.
+          gpu.keys_down.clear();
+          gpu.mouse_down = false;
+          gpu.mouse_right_down = false;
+          if gpu.mouse_captured {
+            gpu.mouse_captured = set_cursor_captured(&state.window, false);
           }
         }
       }
@@ -2529,8 +2601,127 @@ impl<'a, D: FrameDriver> ApplicationHandler for App<'a, D> {
           }
         }
       }
+      WinitWindowEvent::MouseInput {
+        state: btn_state,
+        button: MouseButton::Right,
+        ..
+      } => {
+        if let Some(state) = &self.state {
+          let mut gpu = state.gpu.write().unwrap();
+          match btn_state {
+            ElementState::Pressed => {
+              gpu.mouse_right_down = true;
+              gpu.mouse_right_just_down = true;
+            }
+            ElementState::Released => {
+              gpu.mouse_right_down = false;
+            }
+          }
+        }
+      }
       _ => {}
     }
+  }
+
+  fn device_event(
+    &mut self,
+    _event_loop: &ActiveEventLoop,
+    _device_id: DeviceId,
+    event: DeviceEvent,
+  ) {
+    // Raw motion keeps arriving while the cursor is locked in place, which
+    // is what makes `mouse-delta` usable for first-person camera control.
+    if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event
+      && let Some(state) = &self.state
+      && state.window.has_focus()
+    {
+      let mut gpu = state.gpu.write().unwrap();
+      gpu.mouse_delta.0 += dx as f32;
+      gpu.mouse_delta.1 += dy as f32;
+    }
+  }
+}
+
+/// Hides the cursor and locks it in place (or confines it to the window on
+/// platforms without locking), or undoes that. Returns whether the cursor
+/// is now captured.
+#[cfg(not(target_arch = "wasm32"))]
+fn set_cursor_captured(window: &Window, captured: bool) -> bool {
+  if captured {
+    let grabbed = window
+      .set_cursor_grab(CursorGrabMode::Locked)
+      .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
+      .is_ok();
+    if grabbed {
+      window.set_cursor_visible(false);
+    }
+    grabbed
+  } else {
+    let _ = window.set_cursor_grab(CursorGrabMode::None);
+    window.set_cursor_visible(true);
+    false
+  }
+}
+
+/// The `key-down?` names a key event affects: the lowercase character for
+/// character keys (ignoring modifiers, so shift+1 is still `"1"`), and
+/// fixed names for the supported named keys.
+#[cfg(not(target_arch = "wasm32"))]
+fn key_names(event: &winit::event::KeyEvent) -> Vec<String> {
+  #[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly",
+  ))]
+  let key = {
+    use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+    event.key_without_modifiers()
+  };
+  #[cfg(not(any(
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly",
+  )))]
+  let key = event.logical_key.clone();
+  match key {
+    Key::Character(c) => vec![c.to_lowercase()],
+    Key::Named(named) => named_key_names(named)
+      .iter()
+      .map(|name| name.to_string())
+      .collect(),
+    _ => vec![],
+  }
+}
+
+/// The names a named (non-character) key answers to in `key-down?`. The
+/// web runtime's `KeyboardEvent.key` mapping (`web/src/lib.rs`) mirrors
+/// this, so both report the same names.
+#[cfg(not(target_arch = "wasm32"))]
+fn named_key_names(key: NamedKey) -> &'static [&'static str] {
+  match key {
+    NamedKey::Space => &[" ", "space"],
+    NamedKey::Shift => &["shift"],
+    NamedKey::Control => &["ctrl"],
+    NamedKey::Alt => &["alt"],
+    NamedKey::Super | NamedKey::Meta => &["super"],
+    NamedKey::Escape => &["escape"],
+    NamedKey::Enter => &["enter"],
+    NamedKey::Tab => &["tab"],
+    NamedKey::Backspace => &["backspace"],
+    NamedKey::Delete => &["delete"],
+    NamedKey::ArrowUp => &["up"],
+    NamedKey::ArrowDown => &["down"],
+    NamedKey::ArrowLeft => &["left"],
+    NamedKey::ArrowRight => &["right"],
+    _ => &[],
   }
 }
 

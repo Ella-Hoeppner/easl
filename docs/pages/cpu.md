@@ -47,7 +47,7 @@ The runtime tracks which side last wrote each variable. CPU writes are uploaded 
 
 ## Input
 
-Easl has several functions to get input about the state of the window, and for gathering user input, such as : `window-resolution`, `window-time`, `window-delta-time`, `window-frame-index`, `mouse-coords`, `mouse-present?`, `mouse-down?`, `mouse-just-down?`, `key-down?`, and `key-just-down?`. These functions can be called either on the CPU or GPU and work the same in both cases. work in both CPU and GPU code. See the [reference](reference/cpu-builtins.md#window-and-input-queries) for more details on these functions.
+Easl has several functions to get input about the state of the window, and for gathering user input, such as : `window-resolution`, `window-time`, `window-delta-time`, `window-frame-index`, `mouse-coords`, `mouse-delta`, `mouse-present?`, `mouse-down?`, `mouse-just-down?`, `mouse-right-down?`, `mouse-right-just-down?`, `mouse-captured?`, `key-down?`, and `key-just-down?`. `capture-mouse` and `release-mouse` hide and lock the cursor for first-person-style controls. These functions can be called either on the CPU or GPU and work the same in both cases. See the [reference](reference/cpu-builtins.md#window-and-input-queries) for more details on these functions.
 
 ## Textures and Render targets
 

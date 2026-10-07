@@ -1,0 +1,24 @@
+; Named keys, character keys pressed with modifiers (named by the key
+; without its modifiers, like the native runtime), and the right mouse
+; button. Held state is printed whenever it changes, as a bitmask: 1 = "1",
+; 2 = shift, 4 = space, 8 = the right button, 16 = "a", 32 = up.
+@local (var last: u32 999u)
+
+(defn flag [b: bool
+            bit: u32]: u32
+  (if b bit 0u))
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (let [state (+ (flag (key-down? "1") 1u)
+                     (flag (key-down? "shift") 2u)
+                     (flag (key-down? " ") 4u)
+                     (flag (mouse-right-down?) 8u)
+                     (flag (key-down? "a") 16u)
+                     (flag (key-down? "up") 32u))]
+        (when (!= state last)
+          (print state)
+          (= last state)))
+      (when (key-just-down? "q") (close-window)))))

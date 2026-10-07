@@ -713,6 +713,11 @@ pub enum WindowQueryKind {
   MousePresent,
   MouseDown,
   MouseJustDown,
+  MouseRightDown,
+  MouseRightJustDown,
+  /// vec2f, 2 slots.
+  MouseDelta,
+  MouseCaptured,
 }
 
 /// One entry in `Code::host_ops`. All `u16` fields are either VM stack slots
@@ -789,6 +794,10 @@ pub enum HostOp {
   },
   /// Suspends the current (frame) execution; the frame loop stops.
   CloseWindow,
+  /// `(capture-mouse)` / `(release-mouse)`.
+  SetMouseCapture {
+    captured: bool,
+  },
   StartAudio {
     entry: u16,
   },

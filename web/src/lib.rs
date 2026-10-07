@@ -8,8 +8,10 @@ mod audio_engine;
 mod io;
 
 use std::{
+  cell::RefCell,
   collections::HashMap,
   path::{Path, PathBuf},
+  rc::Rc,
   sync::{Arc, RwLock},
 };
 
@@ -288,6 +290,21 @@ impl WebApp {
       gpu.window_frame_index += 1;
       gpu.keys_just_down.clear();
       gpu.mouse_just_down = false;
+      gpu.mouse_right_just_down = false;
+      gpu.mouse_delta = (0., 0.);
+      match gpu.mouse_capture_request.take() {
+        // Browsers only grant pointer lock shortly after a user gesture,
+        // which is how programs normally request it (on a click).
+        Some(true) => self.canvas.request_pointer_lock(),
+        Some(false) => {
+          if let Some(document) =
+            web_sys::window().and_then(|window| window.document())
+          {
+            document.exit_pointer_lock();
+          }
+        }
+        None => {}
+      }
     }
     self.render_queued_work();
   }
@@ -374,35 +391,72 @@ fn install_input_listeners(
 ) {
   let window = web_sys::window().unwrap();
 
-  // Single-character keys, lowercased, matching the native window's
-  // `Key::Character` handling.
+  // Keys are named like the native window names them (`key_names`). A
+  // release clears the names its press recorded, by physical key: with
+  // modifiers changing in between (shift released before "1"), the release
+  // can carry a different `key` than the press did. Events without a
+  // physical key (some on-screen keyboards) are named by their own `key`.
+  let pressed: Rc<RefCell<HashMap<String, Vec<String>>>> = Rc::default();
   let key_gpu = Arc::clone(gpu);
+  let key_pressed = Rc::clone(&pressed);
   add_listener(&window, "keydown", move |event: KeyboardEvent| {
-    let key = event.key();
-    if event.repeat() || key.chars().count() != 1 {
+    if event.repeat() {
       return;
     }
-    let key = key.to_lowercase();
+    let names = key_names(&event);
+    if !event.code().is_empty() {
+      key_pressed.borrow_mut().insert(event.code(), names.clone());
+    }
     let mut gpu = key_gpu.write().unwrap();
-    gpu.keys_down.insert(key.clone());
-    gpu.keys_just_down.insert(key);
+    for key in names {
+      gpu.keys_down.insert(key.clone());
+      gpu.keys_just_down.insert(key);
+    }
   });
   let key_gpu = Arc::clone(gpu);
+  let key_pressed = Rc::clone(&pressed);
   add_listener(&window, "keyup", move |event: KeyboardEvent| {
-    key_gpu
-      .write()
-      .unwrap()
-      .keys_down
-      .remove(&event.key().to_lowercase());
+    let names = key_pressed
+      .borrow_mut()
+      .remove(&event.code())
+      .unwrap_or_else(|| key_names(&event));
+    let mut gpu = key_gpu.write().unwrap();
+    for key in names {
+      gpu.keys_down.remove(&key);
+    }
+  });
+  let key_gpu = Arc::clone(gpu);
+  add_listener(&window, "blur", move |_: web_sys::Event| {
+    pressed.borrow_mut().clear();
+    let mut gpu = key_gpu.write().unwrap();
+    gpu.keys_down.clear();
+    gpu.mouse_down = false;
+    gpu.mouse_right_down = false;
+  });
+
+  // Pointer lock backs `capture-mouse`: `end_frame` requests it, and the
+  // browser reports when it's granted or lost (Escape always exits it).
+  let lock_gpu = Arc::clone(gpu);
+  let lock_canvas = canvas.clone();
+  let document = window.document().unwrap();
+  add_listener(&document, "pointerlockchange", move |_: web_sys::Event| {
+    let locked = web_sys::window()
+      .and_then(|window| window.document())
+      .and_then(|document| document.pointer_lock_element())
+      .is_some_and(|element| element == *lock_canvas.as_ref());
+    lock_gpu.write().unwrap().mouse_captured = locked;
   });
 
   let pointer_gpu = Arc::clone(gpu);
   add_listener(canvas, "pointermove", move |event: PointerEvent| {
     let scale = device_pixel_ratio();
-    pointer_gpu.write().unwrap().mouse_coords = (
+    let mut gpu = pointer_gpu.write().unwrap();
+    gpu.mouse_coords = (
       (event.offset_x() as f64 * scale).max(0.) as u32,
       (event.offset_y() as f64 * scale).max(0.) as u32,
     );
+    gpu.mouse_delta.0 += event.movement_x() as f32;
+    gpu.mouse_delta.1 += event.movement_y() as f32;
   });
   let pointer_gpu = Arc::clone(gpu);
   add_listener(canvas, "pointerenter", move |_: PointerEvent| {
@@ -414,18 +468,105 @@ fn install_input_listeners(
   });
   let pointer_gpu = Arc::clone(gpu);
   add_listener(canvas, "pointerdown", move |event: PointerEvent| {
-    if event.button() == 0 {
-      let mut gpu = pointer_gpu.write().unwrap();
-      gpu.mouse_down = true;
-      gpu.mouse_just_down = true;
+    let mut gpu = pointer_gpu.write().unwrap();
+    match event.button() {
+      0 => {
+        gpu.mouse_down = true;
+        gpu.mouse_just_down = true;
+      }
+      2 => {
+        gpu.mouse_right_down = true;
+        gpu.mouse_right_just_down = true;
+      }
+      _ => {}
     }
   });
   let pointer_gpu = Arc::clone(gpu);
   add_listener(&window, "pointerup", move |event: PointerEvent| {
-    if event.button() == 0 {
-      pointer_gpu.write().unwrap().mouse_down = false;
+    let mut gpu = pointer_gpu.write().unwrap();
+    match event.button() {
+      0 => gpu.mouse_down = false,
+      2 => gpu.mouse_right_down = false,
+      _ => {}
     }
   });
+  // Right clicks are input, not a request for the context menu.
+  add_listener(canvas, "contextmenu", move |event: web_sys::Event| {
+    event.prevent_default();
+  });
+}
+
+/// The `key-down?` names a key event affects, mirroring the native
+/// window's: fixed names for the supported named keys (`named_key_names`
+/// in `src/window.rs`), and for character keys the lowercase character
+/// without modifiers, so shift+1 is still `"1"`.
+fn key_names(event: &KeyboardEvent) -> Vec<String> {
+  let key = event.key();
+  let names: &[&str] = match key.as_str() {
+    " " => &[" ", "space"],
+    "Shift" => &["shift"],
+    "Control" => &["ctrl"],
+    "Alt" => &["alt"],
+    "Meta" | "Super" => &["super"],
+    "Escape" => &["escape"],
+    "Enter" => &["enter"],
+    "Tab" => &["tab"],
+    "Backspace" => &["backspace"],
+    "Delete" => &["delete"],
+    "ArrowUp" => &["up"],
+    "ArrowDown" => &["down"],
+    "ArrowLeft" => &["left"],
+    "ArrowRight" => &["right"],
+    _ if key.chars().count() == 1 => {
+      return vec![unmodified_character(event, &key)];
+    }
+    _ => &[],
+  };
+  names.iter().map(|name| name.to_string()).collect()
+}
+
+/// The character a key produces without modifiers, lowercased. Browsers
+/// only report the modified character, so: without shift or alt that's
+/// the character itself (in the user's layout), shift leaves a letter a
+/// letter, and otherwise it's read off the physical key, assuming a US
+/// layout.
+fn unmodified_character(event: &KeyboardEvent, key: &str) -> String {
+  if !event.alt_key()
+    && (!event.shift_key() || key.chars().all(char::is_alphabetic))
+  {
+    return key.to_lowercase();
+  }
+  us_layout_character(&event.code()).unwrap_or_else(|| key.to_lowercase())
+}
+
+/// The unshifted character of a physical key (a `KeyboardEvent.code`) on a
+/// US layout.
+fn us_layout_character(code: &str) -> Option<String> {
+  if let Some(letter) = code.strip_prefix("Key") {
+    return Some(letter.to_lowercase());
+  }
+  if let Some(digit) = code
+    .strip_prefix("Digit")
+    .or_else(|| code.strip_prefix("Numpad"))
+    .filter(|digit| digit.len() == 1)
+  {
+    return Some(digit.to_string());
+  }
+  let character = match code {
+    "Minus" => "-",
+    "Equal" => "=",
+    "BracketLeft" => "[",
+    "BracketRight" => "]",
+    "Backslash" => "\\",
+    "Semicolon" => ";",
+    "Quote" => "'",
+    "Comma" => ",",
+    "Period" => ".",
+    "Slash" => "/",
+    "Backquote" => "`",
+    _ => return None,
+  };
+  Some(character.to_string())
 }
 
 /// Adds an event listener that lives as long as the page.

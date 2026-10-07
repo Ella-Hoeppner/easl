@@ -1,0 +1,46 @@
+; `mouse-delta`, `mouse-captured?`, the right mouse button, and named keys
+; on both sides: GPU and CPU code alike read the frame's snapshot through
+; implicit uniform bindings. `capture-mouse` / `release-mouse` requests are
+; recorded by the spoofing IO manager. Run by the hand-written `mouse_capture_spoofed` test
+; in buffer_tests.rs.
+@storage-write
+(var out: [7: f32])
+
+@compute
+(defn probe []
+  (= (out 0u) (.x (mouse-delta)))
+  (= (out 1u) (.y (mouse-delta)))
+  (= (out 2u)
+     (if (mouse-captured?)
+       1.
+       0.))
+  (= (out 3u)
+     (if (key-down? " ")
+       1.
+       0.))
+  (= (out 4u)
+     (if (key-down? "shift")
+       1.
+       0.))
+  (= (out 5u)
+     (if (mouse-right-down?)
+       1.
+       0.))
+  (= (out 6u)
+     (if (mouse-right-just-down?)
+       1.
+       0.)))
+
+@cpu
+(defn main []
+  (spawn-window (fn []
+                  (when (not (mouse-captured?))
+                    (capture-mouse))
+                  (dispatch-compute-shader probe (vec3u 1u))
+                  (print out)
+                  (print (mouse-delta))
+                  (print (key-down? "ctrl"))
+                  (print (mouse-right-down?))
+                  (print (mouse-right-just-down?))
+                  (release-mouse)
+                  (close-window))))

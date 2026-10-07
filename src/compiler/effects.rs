@@ -24,6 +24,13 @@ pub enum WindowInfoKind {
   MousePresent,
   MouseDown,
   MouseJustDown,
+  /// `mouse-right-down?` / `mouse-right-just-down?`: the secondary button.
+  MouseRightDown,
+  MouseRightJustDown,
+  /// `mouse-delta` — raw mouse motion accumulated since the previous frame.
+  MouseDelta,
+  /// `mouse-captured?` — whether `capture-mouse` currently holds the cursor.
+  MouseCaptured,
   /// `key-down?` — takes a compile-time string literal; each distinct key
   /// gets its own binding (see `WindowInfoBindingSource::KeyDown`).
   KeyDown,
@@ -42,7 +49,7 @@ pub enum WindowInfoBindingSource {
 }
 
 impl WindowInfoKind {
-  pub const ALL: [WindowInfoKind; 10] = [
+  pub const ALL: [WindowInfoKind; 14] = [
     WindowInfoKind::Resolution,
     WindowInfoKind::Time,
     WindowInfoKind::DeltaTime,
@@ -51,6 +58,10 @@ impl WindowInfoKind {
     WindowInfoKind::MousePresent,
     WindowInfoKind::MouseDown,
     WindowInfoKind::MouseJustDown,
+    WindowInfoKind::MouseRightDown,
+    WindowInfoKind::MouseRightJustDown,
+    WindowInfoKind::MouseDelta,
+    WindowInfoKind::MouseCaptured,
     WindowInfoKind::KeyDown,
     WindowInfoKind::KeyJustDown,
   ];
@@ -65,6 +76,10 @@ impl WindowInfoKind {
       WindowInfoKind::MousePresent => "mouse-present?",
       WindowInfoKind::MouseDown => "mouse-down?",
       WindowInfoKind::MouseJustDown => "mouse-just-down?",
+      WindowInfoKind::MouseRightDown => "mouse-right-down?",
+      WindowInfoKind::MouseRightJustDown => "mouse-right-just-down?",
+      WindowInfoKind::MouseDelta => "mouse-delta",
+      WindowInfoKind::MouseCaptured => "mouse-captured?",
       WindowInfoKind::KeyDown => "key-down?",
       WindowInfoKind::KeyJustDown => "key-just-down?",
     }
@@ -86,6 +101,10 @@ impl WindowInfoKind {
       WindowInfoKind::MousePresent => "mouse_present_info",
       WindowInfoKind::MouseDown => "mouse_down_info",
       WindowInfoKind::MouseJustDown => "mouse_just_down_info",
+      WindowInfoKind::MouseRightDown => "mouse_right_down_info",
+      WindowInfoKind::MouseRightJustDown => "mouse_right_just_down_info",
+      WindowInfoKind::MouseDelta => "mouse_delta_info",
+      WindowInfoKind::MouseCaptured => "mouse_captured_info",
       WindowInfoKind::KeyDown => "key_down_info",
       WindowInfoKind::KeyJustDown => "key_just_down_info",
     }
@@ -99,6 +118,9 @@ impl WindowInfoKind {
       WindowInfoKind::MousePresent
         | WindowInfoKind::MouseDown
         | WindowInfoKind::MouseJustDown
+        | WindowInfoKind::MouseRightDown
+        | WindowInfoKind::MouseRightJustDown
+        | WindowInfoKind::MouseCaptured
         | WindowInfoKind::KeyDown
         | WindowInfoKind::KeyJustDown
     )

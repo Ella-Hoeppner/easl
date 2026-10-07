@@ -148,13 +148,60 @@ Whether the primary mouse button is held.
 
 Whether the primary mouse button was pressed this frame.
 
+### `mouse-right-down?`
+
+```easl
+(mouse-right-down?): bool
+(mouse-right-just-down?): bool
+```
+
+Whether the right (secondary) mouse button is held, or was pressed this frame. In the browser, right clicks on the canvas don't open the context menu.
+<!-- index: mouse-right-just-down? -->
+
+### `mouse-delta`
+
+```easl
+(mouse-delta): vec2f
+```
+
+The raw mouse motion since the previous frame, in device units, with +y pointing down. Unlike `mouse-coords`, it keeps reporting motion while the cursor is captured and pinned in place, which makes it the right input for first-person camera controls.
+
+### `capture-mouse`
+
+```easl
+(capture-mouse): ()
+(release-mouse): ()
+```
+
+`capture-mouse` hides the cursor and locks it to the window (pointer lock), so the mouse can be moved indefinitely in any direction while `mouse-delta` reports the motion; `release-mouse` gives it back. Requests take effect at the end of the frame that makes them. Pressing Escape, or the window losing focus, always releases a captured cursor, so a program can never trap it; check `mouse-captured?` to see whether capture is currently active, e.g. to re-capture on the next click. In the browser, capture is only granted shortly after a click or key press, so request it in response to one. **CPU code only.**
+<!-- index: release-mouse -->
+
+```easl
+@cpu
+(defn main []
+  (let [@var yaw 0.]
+    (spawn-window (fn []
+                    (when (and (mouse-just-down?) (not (mouse-captured?)))
+                      (capture-mouse))
+                    (when (mouse-captured?)
+                      (+= yaw (* 0.002 (.x (mouse-delta)))))))))
+```
+
+### `mouse-captured?`
+
+```easl
+(mouse-captured?): bool
+```
+
+Whether `capture-mouse` currently holds the cursor. Like the other input queries, it reads the state at the start of the frame, so it doesn't change in the frame that calls `capture-mouse` or `release-mouse` — it reflects the request from the next frame on.
+
 ### `key-down?`
 
 ```easl
 (key-down? key: String): bool
 ```
 
-Whether the named key is held, e.g. `(key-down? "a")`: a lowercase character key (arrows, space, and modifiers aren't tracked yet). Shader code needs a string literal; CPU code can compute the name, e.g. `(key-down? (string i))`.
+Whether the named key is held, e.g. `(key-down? "a")`. Character keys are named by their lowercase character, ignoring modifiers (shift+1 is still `"1"`). Other keys use these names: `" "` (or `"space"`), `"shift"`, `"ctrl"`, `"alt"`, `"super"` (cmd / the Windows key), `"escape"`, `"enter"`, `"tab"`, `"backspace"`, `"delete"`, `"up"`, `"down"`, `"left"`, and `"right"`. Shader code needs a string literal; CPU code can compute the name, e.g. `(key-down? (string i))`.
 
 ### `key-just-down?`
 

@@ -4166,6 +4166,12 @@ impl TypedExp {
         state.emit_host_op(HostOp::CloseWindow);
         Some(None)
       }
+      "capture-mouse" | "release-mouse" => {
+        state.emit_host_op(HostOp::SetMouseCapture {
+          captured: f_name == "capture-mouse",
+        });
+        Some(None)
+      }
       "start-audio" => {
         let Type::Function(signature) = args[0].data.unwrap_known() else {
           panic!("start-audio argument had a non-function type")
@@ -4235,20 +4241,27 @@ impl TypedExp {
         state.emit_host_op(HostOp::StartAudio { entry });
         Some(None)
       }
-      "window-resolution" | "mouse-coords" => {
+      "window-resolution" | "mouse-coords" | "mouse-delta" => {
         let dest = state.take_stack_slot(2);
         state.emit_host_op(HostOp::WindowQuery {
-          kind: if f_name == "window-resolution" {
-            WindowQueryKind::Resolution
-          } else {
-            WindowQueryKind::MouseCoords
+          kind: match f_name {
+            "window-resolution" => WindowQueryKind::Resolution,
+            "mouse-coords" => WindowQueryKind::MouseCoords,
+            _ => WindowQueryKind::MouseDelta,
           },
           dest,
         });
         Some(Some(dest))
       }
-      "window-time" | "window-delta-time" | "window-frame-index"
-      | "mouse-present?" | "mouse-down?" | "mouse-just-down?" => {
+      "window-time"
+      | "window-delta-time"
+      | "window-frame-index"
+      | "mouse-present?"
+      | "mouse-down?"
+      | "mouse-just-down?"
+      | "mouse-captured?"
+      | "mouse-right-down?"
+      | "mouse-right-just-down?" => {
         let dest = state.take_stack_slot(1);
         state.emit_host_op(HostOp::WindowQuery {
           kind: match f_name {
@@ -4257,6 +4270,9 @@ impl TypedExp {
             "window-frame-index" => WindowQueryKind::FrameIndex,
             "mouse-present?" => WindowQueryKind::MousePresent,
             "mouse-down?" => WindowQueryKind::MouseDown,
+            "mouse-captured?" => WindowQueryKind::MouseCaptured,
+            "mouse-right-down?" => WindowQueryKind::MouseRightDown,
+            "mouse-right-just-down?" => WindowQueryKind::MouseRightJustDown,
             _ => WindowQueryKind::MouseJustDown,
           },
           dest,

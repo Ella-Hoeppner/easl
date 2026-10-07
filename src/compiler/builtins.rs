@@ -2884,6 +2884,96 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       ..Default::default()
     },
     AbstractFunctionSignature {
+      name: "mouse-right-down?".into(),
+      return_type: AbstractType::Type(Type::Bool),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::WindowInfo(WindowInfoKind::MouseRightDown),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "mouse-right-just-down?".into(),
+      return_type: AbstractType::Type(Type::Bool),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::WindowInfo(WindowInfoKind::MouseRightJustDown),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "mouse-delta".into(),
+      return_type: AbstractType::AbstractStruct(
+        vec2()
+          .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+          .into(),
+      ),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::WindowInfo(WindowInfoKind::MouseDelta),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "mouse-captured?".into(),
+      return_type: AbstractType::Type(Type::Bool),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::WindowInfo(WindowInfoKind::MouseCaptured),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "capture-mouse".into(),
+      arg_types: vec![],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("capture-mouse".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
+      name: "release-mouse".into(),
+      arg_types: vec![],
+      return_type: AbstractType::Unit,
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::CPUExclusiveFunction("release-mouse".into()),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
       name: "key-down?".into(),
       arg_types: vec![AbstractType::Type(Type::String).owned()],
       return_type: AbstractType::Type(Type::Bool),
