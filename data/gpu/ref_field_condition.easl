@@ -1,0 +1,31 @@
+; A field of a `@ref` parameter used directly as a condition or a `match`
+; subject is bound to a value temporary, which isn't dereferenced.
+(struct Settings
+  flag: bool
+  kind: u32
+  scale: f32)
+
+(defn pick [@ref s: Settings]: f32
+  (if s.flag
+    s.scale
+    0.))
+
+(defn classify [@ref s: Settings]: f32
+  (match s.kind
+    0u 1.
+    _ 2.))
+
+(defn guarded [@ref s: Settings]: f32
+  (let [@var total 0.]
+    (when s.flag
+      (+= total s.scale))
+    total))
+
+(var out: [3: f32])
+
+@compute
+(defn go []
+  (let [s (Settings true 1u 2.)]
+    (= (out 0u) (pick s))
+    (= (out 1u) (classify s))
+    (= (out 2u) (guarded s))))

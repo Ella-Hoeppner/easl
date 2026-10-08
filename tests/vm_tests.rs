@@ -210,3 +210,39 @@ fn immutable_ref_elements_emit_no_stores() {
 // so the outer union's `merge` member dispatches over the inner union — a
 // DAG, never a self-referential type.
 vm_test!(fn_value_nested_union_recursion);
+
+/// Passing a `let` to a `@ref` parameter copies nothing: the binding is made
+/// addressable once, and each call binds the parameter to it. A call taking
+/// a 1000-float struct by `@ref` must not add the struct's size to the
+/// stack (it once added a whole copy per call, so 70 such calls overflowed
+/// the 65536-slot stack).
+#[test]
+fn ref_args_reserve_no_copies() {
+  use easl::compiler::core::load_easl_program_from_file_with_lookup_function;
+  use easl::compiler::program::CompilerTarget;
+  fn stack_size(calls: usize) -> usize {
+    let mut source = String::from("(struct Big\n  data: [1000: f32])\n");
+    for i in 0..calls {
+      source += &format!("(defn f{i} [@ref b: Big]: f32\n  (b.data {i}u))\n");
+    }
+    let sum: String = (0..calls).map(|i| format!(" (f{i} big)")).collect();
+    source += &format!(
+      "@cpu\n(defn main []\n  (let [big (Big (zeroed-array))]\n    \
+       (print (+ 0.{sum}))))\n"
+    );
+    let (_, program) = load_easl_program_from_file_with_lookup_function(
+      std::path::Path::new("./data/vm/let_binding.easl"),
+      |_| Ok(source.clone()),
+    )
+    .unwrap()
+    .unwrap();
+    let mut program = program.unwrap();
+    let errors = program.validate_raw_program(CompilerTarget::WGSL);
+    assert!(errors.is_empty(), "compile errors: {errors:#?}");
+    common::assert_valid_wgsl(&program);
+    program.compile_to_bytecode_program_cpu().0.stack.len()
+  }
+  let per_call = (stack_size(8) - stack_size(4)) / 4;
+  assert!(per_call < 16, "each call adds {per_call} stack slots");
+  stack_size(70);
+}

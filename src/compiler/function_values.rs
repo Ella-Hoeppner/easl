@@ -5423,11 +5423,13 @@ impl<'p> Lowering<'p> {
   }
 }
 
-/// Makes owned parameters that a lowered body passes by mutable reference
-/// (a stateful function value read out of an array parameter, say)
-/// addressable, by shadowing each with a `@var` local copy — function
-/// parameters aren't addressable in WGSL.
-fn make_mutably_referenced_params_addressable(
+/// Makes owned parameters that a lowered body passes by reference (a
+/// stateful function value read out of an array parameter, or a by-value
+/// twin's scope lent to a `@ref` helper) addressable, by shadowing each with
+/// a `@var` local copy — function parameters aren't addressable in WGSL.
+/// The lowering-time counterpart of deexpressionification's parameter
+/// rebinding, for parameters lowering creates.
+fn make_referenced_params_addressable(
   implementation: &mut TopLevelFunction,
   names: &RwLock<NameContext>,
 ) {
@@ -5455,7 +5457,7 @@ fn make_mutably_referenced_params_addressable(
       && let Some(Type::Function(callee)) = known_type(&f.data)
     {
       for (a, (param, _)) in args.iter().zip(callee.args.iter()) {
-        if param.var_type.ownership == Ownership::MutableReference
+        if param.var_type.ownership != Ownership::Owned
           && let Some(root) = a.name_or_inner_accessed_name()
           && let Some(i) = owned_params.get(root)
         {
@@ -5761,7 +5763,7 @@ impl Program {
     // --- apply ---
     // A root's signature involves no boxed values, so only its body changes.
     for (function, mut body) in root_updates {
-      make_mutably_referenced_params_addressable(&mut body, &self.names);
+      make_referenced_params_addressable(&mut body, &self.names);
       if let FunctionImplementationKind::Composite(implementation) =
         &function.read().unwrap().implementation
       {
@@ -5794,7 +5796,7 @@ impl Program {
     for (signature, mut body) in
       clone_outputs.into_iter().chain(by_value_twin_outputs)
     {
-      make_mutably_referenced_params_addressable(&mut body, &self.names);
+      make_referenced_params_addressable(&mut body, &self.names);
       signature.write().unwrap().implementation =
         FunctionImplementationKind::Composite(Arc::new(RwLock::new(body)));
       self.add_abstract_function(signature);

@@ -135,6 +135,8 @@ macro_rules! error_test {
 success_test!(render_located_varyings);
 success_test!(return_mutable_ref_param);
 success_test!(closure_capture_ref_field);
+success_test!(ref_field_condition);
+success_test!(ref_arg_bindings);
 success_test!(bitwise_compound_assignment);
 success_test!(string_def);
 success_test!(overloaded_fn_as_argument);

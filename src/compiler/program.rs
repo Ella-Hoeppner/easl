@@ -6438,6 +6438,11 @@ impl Program {
         let mut f = f.write().unwrap();
         f.expression.throw_away_inner_values_in_blocks(self);
         f.expression.deexpressionify(self, target);
+        // Deexpressionification can rename parameters (to rebind them as
+        // addressable `var`s).
+        if let ExpKind::Function(arg_names, _) = &f.expression.kind {
+          f.arg_names = arg_names.clone();
+        }
       }
     }
   }
@@ -7885,9 +7890,26 @@ impl Program {
       return errors;
     }
     self.assign_elided_bindings();
+    self.mark_value_names_owned();
     self.track_emulated_builtins(target);
     self.has_been_validated = true;
     errors
+  }
+  /// Marks every name bound to a value as owned, in every function body and
+  /// top-level variable's value (see `TypedExp::mark_value_names_owned`).
+  fn mark_value_names_owned(&mut self) {
+    for f in self.abstract_functions_iter() {
+      if let FunctionImplementationKind::Composite(f) =
+        &f.read().unwrap().implementation
+      {
+        f.write().unwrap().expression.mark_value_names_owned();
+      }
+    }
+    for var in self.top_level_vars.iter_mut() {
+      if let Some(value) = &mut var.value {
+        value.mark_value_names_owned();
+      }
+    }
   }
   pub fn gather_type_annotations(&self) -> Vec<(SourceTrace, TypeState)> {
     let mut type_annotations = vec![];

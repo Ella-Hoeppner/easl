@@ -613,6 +613,20 @@ pub fn compile_typed_name(
   }
 }
 
+/// The names an expression binds, by what binds them (see
+/// `TypedExp::local_bindings`).
+#[derive(Default)]
+pub struct LocalBindings {
+  /// Names bound to values: `let` items, `match` payloads, `for` variables.
+  /// None of these is ever a reference.
+  pub values: HashSet<Arc<str>>,
+  /// `let` items that aren't `var`s.
+  pub immutable_lets: HashSet<Arc<str>>,
+  pub match_payloads: HashSet<Arc<str>>,
+  pub owned_params: HashSet<Arc<str>>,
+  pub reference_params: HashSet<Arc<str>>,
+}
+
 impl TypedExp {
   /// Expands n-ary applications of associative functions into nested
   /// binary ones: `(+ a b c)` becomes `(+ (+ a b) c)`.
@@ -2738,8 +2752,10 @@ impl TypedExp {
                               names,
                               target,
                             );
+                          // A `var`, so the payload is addressable when
+                          // it's passed to a `@ref` parameter.
                           format!(
-                            "let {compiled_inner_name} = {};",
+                            "var {compiled_inner_name} = {};",
                             bitcasted_value.compile(
                               ExpressionCompilationPosition::InnerExpression,
                               names,
@@ -5417,9 +5433,94 @@ impl TypedExp {
       )
       .unwrap()
   }
+  /// Marks every name bound to a value (a `let` item, `match` payload, or
+  /// `for` variable) as owned: only parameters are ever references. A pass
+  /// that binds a temporary builds its name from the bound value's data,
+  /// which carries the value's ownership — a field read through a `@ref`
+  /// is a reference, but the temporary holding it is a value. Emission
+  /// dereferences names by their ownership, so this is settled here, once,
+  /// from the bindings.
+  pub fn mark_value_names_owned(&mut self) {
+    let values = self.local_bindings().values;
+    self
+      .walk_mut(&mut |exp| {
+        if let Name(name) = &exp.kind
+          && values.contains(name)
+        {
+          exp.data.ownership = Ownership::Owned;
+        }
+        Ok::<bool, Never>(true)
+      })
+      .unwrap();
+  }
+  /// The names this expression's bindings introduce, by what binds them.
+  /// Names are deshadowed, so each names one binding.
+  pub fn local_bindings(&self) -> LocalBindings {
+    let mut bindings = LocalBindings::default();
+    self
+      .walk(&mut |exp| {
+        match &exp.kind {
+          Let(items, _) => {
+            for (name, _, kind, _) in items {
+              bindings.values.insert(name.clone());
+              if *kind == VariableKind::Let {
+                bindings.immutable_lets.insert(name.clone());
+              }
+            }
+          }
+          Match(_, arms) => {
+            for (pattern, _) in arms {
+              if let Application(_, args) = &pattern.kind {
+                for arg in args {
+                  if let Name(name) = &arg.kind {
+                    bindings.values.insert(name.clone());
+                    bindings.match_payloads.insert(name.clone());
+                  }
+                }
+              }
+            }
+          }
+          ForLoop {
+            increment_variable_name: (name, _),
+            ..
+          } => {
+            bindings.values.insert(name.clone());
+          }
+          Function(arg_names, _) => {
+            if let Some(Type::Function(signature)) =
+              exp.data.kind.try_unwrap_known()
+            {
+              for ((name, _), (arg, _)) in
+                arg_names.iter().zip(signature.args.iter())
+              {
+                if arg.var_type.ownership == Ownership::Owned {
+                  bindings.owned_params.insert(name.clone());
+                } else {
+                  bindings.reference_params.insert(name.clone());
+                }
+              }
+            }
+          }
+          _ => {}
+        }
+        Ok::<bool, Never>(true)
+      })
+      .unwrap();
+    bindings
+  }
   pub fn deexpressionify(&mut self, program: &Program, target: CompilerTarget) {
     let mut names = program.names.write().unwrap();
     let untraced = ExpBuilder::at(&SourceTrace::empty());
+    // A local passed to a `@ref` parameter must be addressable, which a
+    // WGSL `let` or parameter isn't. Rather than copying it at each call,
+    // its binding is made addressable once: a `let` becomes a `var` (it's
+    // never assigned, so only its addressability changes), and a parameter
+    // is rebound as a `var` at the top of its function. `match` payloads
+    // are always emitted as `var`s. (Names are deshadowed, so a name is one
+    // binding.)
+    let local_bindings = self.local_bindings();
+    let mut promoted_to_var: HashSet<Arc<str>> = HashSet::new();
+    let mut rebound_params: HashSet<Arc<str>> = HashSet::new();
     loop {
       let mut changed = false;
       let placeholder_exp_kind = ExpKind::Wildcard;
@@ -5538,47 +5639,41 @@ impl TypedExp {
                     return Ok(true);
                   }
                   if Ownership::Reference == f_param.var_type.ownership
-                    && Ownership::Owned == arg.data.ownership
                     && let ExpKind::Name(original_name) = &arg.kind
                     && let VariableKind::Let =
                       ctx.get_variable_kind(&original_name)
                     && let Some(NameDefinitionSource::LocalBinding(_)) =
                       ctx.get_name_definition_source(&original_name)
-                    // Runtime-sized values are never wrapped in an
-                    // addressable copy: the copy is the whole array, and
-                    // in WGSL a runtime-sized local is unrepresentable —
-                    // while every runtime-sized value that legally
-                    // reaches shader code (a storage global, or a
-                    // dispatched-closure capture lifted to one) is
-                    // already addressable. Without this exemption, a
-                    // captured dyn array passed to `array-length` inside
-                    // a dispatched closure emitted
-                    // `var x: array<f32> = <lifted global>;` — invalid
-                    // WGSL — and CPU-side calls paid a silent whole-array
-                    // copy.
+                    // Runtime-sized values are already addressable
+                    // wherever they can legally reach shader code (a
+                    // storage global, or a dispatched-closure capture
+                    // lifted to one), and a runtime-sized local can't be
+                    // represented in WGSL at all.
                     && !arg
                       .data
                       .unwrap_known()
                       .involves_runtime_sized_array()
                   {
-                    let new_name = names.gensym(&original_name);
-                    let body_exp = ExpBuilder::at(&arg.source_trace).with_data(
-                      ExpKind::Name(new_name.clone()),
-                      arg.data.clone(),
-                    );
-                    take(arg, |arg| Exp {
-                      data: arg.data.clone(),
-                      source_trace: arg.source_trace.clone(),
-                      kind: ExpKind::Let(
-                        vec![(
-                          new_name,
-                          arg.source_trace.clone(),
-                          VariableKind::Var,
-                          arg,
-                        )],
-                        body_exp.into(),
-                      ),
-                    })
+                    if local_bindings.immutable_lets.contains(original_name) {
+                      promoted_to_var.insert(original_name.clone());
+                    } else if local_bindings
+                      .owned_params
+                      .contains(original_name)
+                    {
+                      rebound_params.insert(original_name.clone());
+                    } else if !local_bindings
+                      .match_payloads
+                      .contains(original_name)
+                      && !local_bindings
+                        .reference_params
+                        .contains(original_name)
+                    {
+                      panic!(
+                        "`{original_name}` is passed by reference, but its \
+                         binding is neither a `let`, a parameter, nor a \
+                         `match` payload, so it can't be made addressable"
+                      )
+                    }
                   }
                 }
                 if let Name(name) = &f.kind {
@@ -6297,6 +6392,53 @@ impl TypedExp {
       if !changed {
         break;
       }
+    }
+    if !rebound_params.is_empty() {
+      self
+        .walk_mut(&mut |exp| {
+          let Some(Type::Function(signature)) =
+            exp.data.kind.try_unwrap_known()
+          else {
+            return Ok::<bool, Never>(true);
+          };
+          let ExpKind::Function(arg_names, body) = &mut exp.kind else {
+            return Ok(true);
+          };
+          let mut rebindings = vec![];
+          for ((arg_name, source), (arg, _)) in
+            arg_names.iter_mut().zip(signature.args.iter())
+          {
+            if rebound_params.contains(arg_name) {
+              let incoming = names.gensym(&format!("{arg_name}_in"));
+              rebindings.push((
+                std::mem::replace(arg_name, incoming.clone()),
+                source.clone(),
+                VariableKind::Var,
+                ExpBuilder::at(source)
+                  .name(&incoming, &arg.var_type.unwrap_known()),
+              ));
+            }
+          }
+          if !rebindings.is_empty() {
+            take(body.as_mut(), |body| let_around(rebindings, body));
+          }
+          Ok(true)
+        })
+        .unwrap();
+    }
+    if !promoted_to_var.is_empty() {
+      self
+        .walk_mut(&mut |exp| {
+          if let Let(bindings, _) = &mut exp.kind {
+            for (name, _, kind, _) in bindings.iter_mut() {
+              if promoted_to_var.contains(name) {
+                *kind = VariableKind::Var;
+              }
+            }
+          }
+          Ok::<bool, Never>(true)
+        })
+        .unwrap();
     }
   }
   pub fn throw_away_inner_values_in_blocks(&mut self, program: &Program) {

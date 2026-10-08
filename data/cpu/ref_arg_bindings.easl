@@ -1,0 +1,29 @@
+; Every kind of local binding passed to a `@ref` parameter: a `let` (made a
+; `var`), an owned parameter and a lambda parameter (rebound as `var`s), and
+; a `match` payload (emitted as a `var`).
+(defn twice [@ref x: f32]: f32
+  (* x 2.))
+
+(defn from-let []: f32
+  (let [a 3.]
+    (+ (twice a) (twice a))))
+
+(defn from-param [y: f32]: f32
+  (twice y))
+
+(defn from-lambda [z: f32]: f32
+  (let [f (fn [w: f32]: f32
+            (twice w))]
+    (f z)))
+
+(defn from-payload [o: (Option f32)]: f32
+  (match o
+    (Some v) (twice v)
+    None 0.))
+
+@cpu
+(defn main []
+  (print (from-let))
+  (print (from-param 4.))
+  (print (from-lambda 5.))
+  (print (from-payload (Some 6.))))
