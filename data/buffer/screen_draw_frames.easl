@@ -1,0 +1,36 @@
+; Each frame's screen starts cleared: the first screen draw of a frame
+; replaces the previous frame's image, and later draws in the frame add to
+; it.
+
+@local
+(var frame: u32 0u)
+
+@vertex
+(defn fullscreen [@{builtin vertex-index} i: u32]: vec4f
+  (match i
+    0u (vec4f -1. -1. 0. 1.)
+    1u (vec4f 3. -1. 0. 1.)
+    _ (vec4f -1. 3. 0. 1.)))
+
+@fragment
+(defn red []: vec4f
+  (vec4f 1. 0. 0. 1.))
+
+@fragment
+(defn green []: vec4f
+  (vec4f 0. 1. 0. 1.))
+
+@fragment
+(defn blue []: vec4f
+  (vec4f 0. 0. 1. 1.))
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (match frame
+        0u (dispatch-render-shaders fullscreen red 3u)
+        1u (do (dispatch-render-shaders fullscreen green 3u)
+               (dispatch-render-shaders fullscreen blue 3u true))
+        _ (close-window))
+      (= frame (+ frame 1u)))))

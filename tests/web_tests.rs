@@ -247,6 +247,11 @@ mod harness {
     /// Text the program's rejection must contain, from `<test>.error`
     /// (`data/web/` only).
     Error(String),
+    /// What the program prints, and the canvas's top-left pixel (RGBA8,
+    /// space-separated) once it has finished, from a buffer suite
+    /// `<test>.screen.txt`: its print lines, then a `frame <i>: <pixel>`
+    /// line per frame, of which the canvas shows the last.
+    Screen { output: String, pixel: String },
   }
 
   pub fn main() {
@@ -330,6 +335,21 @@ mod harness {
           fs::read_to_string(source.with_extension("txt"))
         {
           Expected::Output(output)
+        } else if let Ok(golden) =
+          fs::read_to_string(source.with_extension("screen.txt"))
+        {
+          let (frames, prints): (Vec<&str>, Vec<&str>) =
+            golden.lines().partition(|line| line.starts_with("frame "));
+          let pixel = frames
+            .last()
+            .and_then(|line| line.split_once(": "))
+            .unwrap_or_else(|| panic!("{name} has no frame lines"))
+            .1
+            .to_string();
+          Expected::Screen {
+            output: prints.iter().map(|line| format!("{line}\n")).collect(),
+            pixel,
+          }
         } else if suite == "web" {
           let error = fs::read_to_string(source.with_extension("error"))
             .unwrap_or_else(|_| panic!("{name} has no .txt or .error file"));
@@ -867,6 +887,10 @@ mod harness {
     let (id, url) = server.add_program(program_js);
     let mut tab = Tab::open(chrome, &url);
     let result = run_program(&mut tab.session, case.script);
+    let pixel = match &case.expected {
+      Expected::Screen { .. } => Some(canvas_pixel(&mut tab.session)),
+      _ => None,
+    };
     server.remove_program(id);
     let session = &tab.session;
     let output: String = session
@@ -876,7 +900,9 @@ mod harness {
       .collect();
     let mut failure = String::new();
     match (&case.expected, result) {
-      (Expected::Output(_), Err(error)) => failure += &format!("{error}\n"),
+      (Expected::Output(_) | Expected::Screen { .. }, Err(error)) => {
+        failure += &format!("{error}\n")
+      }
       (Expected::Error(expected), Ok(())) => {
         failure +=
           &format!("ran successfully; expected an error {expected:?}\n")
@@ -890,9 +916,31 @@ mod harness {
       failure += &format!("console error: {error}\n");
     }
     let expected_output = match &case.expected {
-      Expected::Output(output) => output.as_str(),
+      Expected::Output(output) | Expected::Screen { output, .. } => {
+        output.as_str()
+      }
       Expected::Error(_) => "",
     };
+    if let (
+      Expected::Screen {
+        pixel: expected, ..
+      },
+      Some(actual),
+    ) = (&case.expected, &pixel)
+    {
+      match actual {
+        Ok(actual) if actual == expected => {}
+        Ok(actual) => {
+          failure += &format!(
+            "screen mismatch\n  expected: {expected:?}\n    actual: \
+             {actual:?}\n"
+          )
+        }
+        Err(error) => {
+          failure += &format!("couldn't read the canvas: {error}\n")
+        }
+      }
+    }
     if output != expected_output {
       failure += &format!(
         "output mismatch\n  expected: {expected_output:?}\n    actual: \
@@ -904,6 +952,56 @@ mod harness {
     } else {
       Err(failure)
     }
+  }
+
+  /// The canvas's top-left pixel as space-separated RGBA8 channels, read
+  /// from a screenshot: what the page shows, which is the last presented
+  /// frame.
+  fn canvas_pixel(session: &mut Session) -> Result<String, String> {
+    let result = session.call(
+      "Page.captureScreenshot",
+      json!({
+        "format": "png",
+        "clip": { "x": 0, "y": 0, "width": 1, "height": 1, "scale": 1 }
+      }),
+    )?;
+    let data = result["data"]
+      .as_str()
+      .ok_or_else(|| format!("unexpected result {result}"))?;
+    let png = decode_base64(data)?;
+    let image = image::load_from_memory(&png)
+      .map_err(|e| e.to_string())?
+      .to_rgba8();
+    let channels: Vec<String> = image
+      .get_pixel(0, 0)
+      .0
+      .iter()
+      .map(|c| c.to_string())
+      .collect();
+    Ok(channels.join(" "))
+  }
+
+  fn decode_base64(text: &str) -> Result<Vec<u8>, String> {
+    let mut bytes = vec![];
+    let mut buffer = 0u32;
+    let mut bits = 0;
+    for c in text.bytes().filter(|&c| c != b'=') {
+      let value = match c {
+        b'A'..=b'Z' => c - b'A',
+        b'a'..=b'z' => c - b'a' + 26,
+        b'0'..=b'9' => c - b'0' + 52,
+        b'+' => 62,
+        b'/' => 63,
+        _ => return Err(format!("invalid base64 character {c}")),
+      };
+      buffer = (buffer << 6) | value as u32;
+      bits += 6;
+      if bits >= 8 {
+        bits -= 8;
+        bytes.push((buffer >> bits) as u8);
+      }
+    }
+    Ok(bytes)
   }
 
   /// Runs the page's program to completion, performing `script` meanwhile.

@@ -41,6 +41,8 @@ use crate::vm::bytecode::{
   release_heap_id, string_to_words, words_to_string,
 };
 use crate::vm::compile::vm_stack_size;
+#[cfg(feature = "window")]
+use crate::window::ScreenTarget;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Primitive {
@@ -4451,35 +4453,13 @@ impl IOManager for StdoutIO {
       if all.is_empty() {
         return;
       }
-      // Execute all queued texture-targeted work — compute dispatches and
-      // render-to-texture passes — in program order, through the same
+      // Execute all queued GPU work in program order, through the same
       // implementation the end-of-frame path uses, then block until it
-      // completes so the caller can read results back. Screen renders
-      // execute afterwards (nothing on the GPU can read the surface, so
-      // their placement is unobservable): on the real window path they
-      // render into the acquired surface texture, saved as
-      // `pending_present` so end-of-frame can just present it. Their
-      // pre_uploads were already applied by `execute_frame_gpu_work`, so
-      // they are passed along without uploads (re-applying would overwrite
-      // GPU output).
+      // completes so the caller can read results back. Screen draws go into
+      // the frame's screen image, which end-of-frame presents.
       let mut g = gpu.write().unwrap();
       g.execute_frame_gpu_work(&all);
       g.wait_idle();
-      let screen_renders: Vec<_> = all
-        .into_iter()
-        .filter_map(|event| match event {
-          WindowEvent::RenderShaders {
-            vert,
-            frag,
-            vert_count,
-            pre_upload: _,
-            additive,
-            render_target: None,
-          } => Some((vert, frag, vert_count, vec![], additive, None)),
-          _ => None,
-        })
-        .collect();
-      g.execute_render_batch(screen_renders);
     }
   }
 
@@ -4723,6 +4703,11 @@ pub struct CaptureIO {
   /// silence (never the live listener — capture runs must stay
   /// deterministic on machines with connected MIDI devices).
   pub spoofed_midi: Option<MidiState>,
+  /// Test hook: when set, the window is a texture of this size
+  /// (`ScreenTarget::Texture`), and its RGBA8 pixels are recorded in
+  /// `screens` after each frame.
+  pub screen_size: Option<(u32, u32)>,
+  pub screens: Vec<Vec<u8>>,
 }
 
 impl CaptureIO {
@@ -4733,6 +4718,8 @@ impl CaptureIO {
       inner: StdoutIO::new(),
       spoofed_window_info: None,
       spoofed_midi: None,
+      screen_size: None,
+      screens: vec![],
     }
   }
 }
@@ -4840,7 +4827,14 @@ impl IOManager for CaptureIO {
   ) {
     self
       .inner
-      .ensure_gpu_ready(wgsl, binding_infos, gpu_entries)
+      .ensure_gpu_ready(wgsl, binding_infos, gpu_entries);
+    if let Some(size) = self.screen_size
+      && let Some(gpu) = self.inner.get_gpu()
+    {
+      let mut gpu = gpu.write().unwrap();
+      gpu.screen_target = ScreenTarget::Texture;
+      gpu.window_size = size;
+    }
   }
 
   #[cfg(feature = "window")]
@@ -4969,20 +4963,22 @@ impl IOManager for CaptureIO {
         Err(EvalException::CloseWindow) => break,
         Err(e) => return Err(e.into()),
       }
-      // Execute the frame's remaining queued events through the same frame
-      // path the real winit loop uses (`GpuCore::execute_frame_gpu_work` +
-      // `execute_frame_screen_renders`), so that tests exercise production
-      // behavior. Screen-targeted renders are skipped — there's no surface
-      // in headless mode.
+      // Execute the frame's remaining queued events and end it through the
+      // same frame path the real winit loop uses (`GpuCore::render_frame`),
+      // so that tests exercise production behavior. Without a captured
+      // screen, screen draws run into a stand-in.
       #[cfg(feature = "window")]
       {
         let events = driver.io_mut().take_frame_draw_calls();
-        if !events.is_empty()
-          && let Some(gpu) = driver.io_mut().get_gpu()
-        {
+        if let Some(gpu) = driver.io_mut().get_gpu() {
           let mut gpu = gpu.write().unwrap();
-          gpu.execute_frame_gpu_work(&events);
-          gpu.execute_frame_screen_renders(&events, None);
+          gpu.render_frame(&events);
+          if driver.io_mut().screen_size.is_some() {
+            let (_, _, pixels) = gpu
+              .read_screen()
+              .expect("a captured screen is a screen texture");
+            driver.io_mut().screens.push(pixels);
+          }
         }
       }
       #[cfg(not(feature = "window"))]

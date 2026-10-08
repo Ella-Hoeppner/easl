@@ -3,7 +3,8 @@ mod common;
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
 use easl::interpreter::{
-  CpuRuntime, run_program_with_capture_and_runtime_from_path,
+  CaptureIO, CpuRuntime, run_program_with_capture_and_runtime_from_path,
+  run_program_with_runtime,
 };
 use std::fs;
 use std::path::Path;
@@ -76,6 +77,63 @@ fn run_buffer_test(name: &str) {
     Err(e) => panic!("IO error, couldn't load file {name}: \n{e:?}"),
   }
 }
+
+/// Runs a program whose window is a 1×1 texture on both CPU runtimes,
+/// comparing its prints followed by one `frame <i>: r g b a` line per frame
+/// (the screen's pixel after the frame, as RGBA8) against
+/// `<name>.screen.txt`. The web suite checks the same files against its
+/// canvas.
+fn run_screen_test(name: &str) {
+  let expected = fs::read_to_string(format!("./data/buffer/{name}.screen.txt"))
+    .unwrap_or_else(|_| panic!("Unable to read data/buffer/{name}.screen.txt"));
+  let source_path_str = format!("./data/buffer/{name}.easl");
+  let source_path = Path::new(&source_path_str);
+  for runtime in [CpuRuntime::TreeWalking, CpuRuntime::BytecodeVm] {
+    let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
+    else {
+      panic!("{name}: failed to load program")
+    };
+    let errors = program.validate_raw_program(CompilerTarget::WGSL);
+    assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
+    common::assert_valid_wgsl(&program);
+    let mut io = CaptureIO::new();
+    io.screen_size = Some((1, 1));
+    let (io, _) = run_program_with_runtime(
+      program,
+      None,
+      io,
+      source_path.parent().map(|p| p.to_path_buf()),
+      runtime,
+    )
+    .unwrap_or_else(|e| {
+      panic!("{name}: evaluation error ({runtime:?}): {e:#?}")
+    });
+    let output: String = io
+      .prints
+      .iter()
+      .map(|s| format!("{s}\n"))
+      .chain(io.screens.iter().enumerate().map(|(i, pixels)| {
+        let channels: Vec<String> =
+          pixels.iter().map(|c| c.to_string()).collect();
+        format!("frame {i}: {}\n", channels.join(" "))
+      }))
+      .collect();
+    assert_eq!(output, expected, "{name}: output mismatch ({runtime:?})");
+  }
+}
+
+macro_rules! screen_test {
+  ($name:ident) => {
+    #[test]
+    fn $name() {
+      run_screen_test(stringify!($name));
+    }
+  };
+}
+
+screen_test!(screen_draw_order);
+screen_test!(screen_draw_flushes);
+screen_test!(screen_draw_frames);
 
 macro_rules! buffer_test {
   ($name:ident) => {

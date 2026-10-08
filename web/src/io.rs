@@ -19,47 +19,25 @@ use easl::{
 /// (see `VmRunState::AwaitingReadback`).
 pub struct WebIO {
   inner: StdoutIO,
-  /// Screen draws queued before a readback's flush, already past their
-  /// uploads; they render with the rest of the frame's screen draws.
-  deferred_screen_draws: Vec<WindowEvent>,
 }
 
 impl WebIO {
   pub fn new() -> Self {
     Self {
       inner: StdoutIO::new(),
-      deferred_screen_draws: vec![],
     }
   }
 
   /// Executes the GPU work queued so far, so a readback sees its results.
-  /// Screen draws are deferred to the end of the frame: presenting happens
-  /// when the browser regains control, which awaiting the readback gives
-  /// it, so drawing them now would show a partial frame.
+  /// Screen draws go into the GPU core's screen texture
+  /// (`ScreenTarget::Texture`), which reaches the canvas when the frame
+  /// ends: presenting happens whenever the browser regains control, which
+  /// awaiting the readback gives it, so drawing into the canvas now would
+  /// show a partial frame.
   pub fn flush_queued_gpu_work(&mut self) {
     let events = self.inner.take_frame_draw_calls();
     let gpu = self.inner.get_gpu().expect("the web runtime has a GPU");
     gpu.write().unwrap().execute_frame_gpu_work(&events);
-    self
-      .deferred_screen_draws
-      .extend(events.into_iter().filter_map(|event| match event {
-        WindowEvent::RenderShaders {
-          vert,
-          frag,
-          vert_count,
-          additive,
-          render_target: None,
-          ..
-        } => Some(WindowEvent::RenderShaders {
-          vert,
-          frag,
-          vert_count,
-          pre_upload: vec![],
-          additive,
-          render_target: None,
-        }),
-        _ => None,
-      }));
   }
 }
 
@@ -108,9 +86,7 @@ impl IOManager for WebIO {
   }
 
   fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent> {
-    let mut calls = std::mem::take(&mut self.deferred_screen_draws);
-    calls.extend(self.inner.take_frame_draw_calls());
-    calls
+    self.inner.take_frame_draw_calls()
   }
 
   fn record_close_window(&mut self) {}

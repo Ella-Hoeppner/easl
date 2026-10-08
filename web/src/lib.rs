@@ -25,7 +25,7 @@ use easl::{
     VmRunState, pick_entry_point_name,
   },
   load_easl_program_from_sources,
-  window::{BufferRead, GpuCore, install_gpu_error_handler},
+  window::{BufferRead, GpuCore, ScreenTarget, install_gpu_error_handler},
 };
 use io::WebIO;
 use js_sys::{Function, Promise, Reflect};
@@ -103,12 +103,11 @@ pub async fn run_easl_program(
     &runtime.env.binding_infos(),
     runtime.env.gpu_entries(),
   );
-  {
-    let mut gpu = gpu.write().unwrap();
-    gpu.window_size = (surface_config.width, surface_config.height);
-    gpu.surface = Some(surface);
-    gpu.surface_config = Some(surface_config);
-  }
+  gpu.write().unwrap().attach_surface(
+    surface,
+    surface_config,
+    ScreenTarget::Texture,
+  );
   runtime.env.io.set_gpu(Arc::clone(&gpu));
   install_input_listeners(&gpu, &canvas);
 
@@ -230,8 +229,11 @@ async fn create_surface_and_device(
   let (width, height) = displayed_size(canvas);
   canvas.set_width(width);
   canvas.set_height(height);
+  // The canvas is filled by copying the screen texture into it
+  // (`ScreenTarget::Texture`).
   let surface_config = wgpu::SurfaceConfiguration {
-    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+      | wgpu::TextureUsages::COPY_DST,
     format: surface_caps.formats[0],
     width,
     height,
@@ -358,16 +360,7 @@ impl WebApp {
     }
     self.canvas.set_width(width);
     self.canvas.set_height(height);
-    gpu.pending_present = None;
-    gpu.window_size = (width, height);
-    let gpu = &mut *gpu;
-    if let (Some(surface), Some(config)) =
-      (&gpu.surface, &mut gpu.surface_config)
-    {
-      config.width = width;
-      config.height = height;
-      surface.configure(&gpu.device, config);
-    }
+    gpu.resize_surface(width, height);
   }
 }
 

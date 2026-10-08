@@ -26,6 +26,8 @@ Run it with the [easl CLI](https://github.com/Ella-Hoeppner/easl_cli): `easl run
 
 `spawn-window` opens a new window when called. `spawn-window` accepts a function as an argument, and calls that function once per frame to act as an update loop. Inside that function you do whatever you want to do: set GPU-bound variables, dispatch render and compute shaders, read user input, read GPU results, and end the loop with `close-window`. The function is a closure, so it can capture variables from the surrounding code, and changes to captured `@var`s persist between frames.
 
+Each frame's window image starts out black. Render dispatches draw into it in program order, each seeing the variables as they are at that point in the frame, and the image appears once the frame ends. The frame that calls `close-window` isn't shown.
+
 ## CPU and GPU see each other's writes
 
 **Writes on either side are visible to the other immediately**, with no synchronization calls. A compute shader can write a variable that the next line prints:

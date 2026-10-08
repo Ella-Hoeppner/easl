@@ -342,16 +342,12 @@ impl IOManager for ThreadSyncIO {
           driver.io_mut().trace.push(format!("frame {frame_index}"));
           frame_index += 1;
           let frame_result = driver.run_frame();
-          // Execute the frame's remaining queued GPU events through the
-          // same shared frame path the real winit loop and `CaptureIO` use,
-          // skipping only screen-targeted draws (no surface headlessly).
+          // Execute the frame's remaining queued GPU events and end it
+          // through the same shared frame path the real winit loop and
+          // `CaptureIO` use.
           let events = driver.io_mut().take_frame_draw_calls();
-          if !events.is_empty()
-            && let Some(gpu) = driver.io_mut().get_gpu()
-          {
-            let mut gpu = gpu.write().unwrap();
-            gpu.execute_frame_gpu_work(&events);
-            gpu.execute_frame_screen_renders(&events, None);
+          if let Some(gpu) = driver.io_mut().get_gpu() {
+            gpu.write().unwrap().render_frame(&events);
           }
           match frame_result {
             Ok(()) => {}

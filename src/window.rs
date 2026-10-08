@@ -288,8 +288,38 @@ pub struct BindingSlot {
   pub kind: GpuBufferKind,
 }
 
-/// All GPU resources needed for compute dispatch and buffer management.
-/// Shared between `RenderState` and `StdoutIO` via `Arc<RwLock<GpuCore>>`.
+/// Where a `GpuCore` renders screen-targeted draws. Every target runs them
+/// in program order with the frame's other GPU work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScreenTarget {
+  /// Directly into the surface's image for the frame, acquired at the
+  /// frame's first screen draw and presented by `finish_frame`. When the
+  /// surface has no image to give (occluded, lost), the frame's screen draws
+  /// run into a 1×1 stand-in, so their storage writes still happen.
+  Surface,
+  /// Into a window-sized texture, copied to the surface (when there is one)
+  /// and presented by `finish_frame`. The web runtime draws this way: a CPU
+  /// read of GPU results yields to the browser mid-frame, which would
+  /// present a canvas image that is still being drawn. Tests use it without
+  /// a surface to read the screen back (`read_screen`).
+  Texture,
+  /// No screen (headless): screen draws run into a 1×1 stand-in.
+  StandIn,
+  /// The embedder draws the screen itself (`execute_render_batch_to_view`),
+  /// so the frame path skips screen draws.
+  Embedder,
+}
+
+/// The screen image of a frame in progress.
+struct FrameScreen {
+  /// The surface image being drawn, under `ScreenTarget::Surface`.
+  surface_texture: Option<wgpu::SurfaceTexture>,
+  view: wgpu::TextureView,
+  /// Whether a pass has drawn into `view` yet this frame; the first one
+  /// clears it.
+  drawn: bool,
+}
+
 /// Identity of a cached render pipeline: (vert entry id, frag entry id,
 /// additive blending, target format).
 type RenderPipelineKey = (u16, u16, bool, wgpu::TextureFormat);
@@ -316,6 +346,8 @@ struct CachedRenderPipeline {
   bindings: PipelineBindings,
 }
 
+/// All GPU resources needed for compute dispatch and buffer management.
+/// Shared between `RenderState` and `StdoutIO` via `Arc<RwLock<GpuCore>>`.
 pub struct GpuCore {
   /// The wgpu instance this device was created from. Kept alive so that
   /// a window surface can be created on the same instance later (e.g. when
@@ -384,16 +416,17 @@ pub struct GpuCore {
   /// (`Some(false)`) request, applied to the window at the end of the frame
   /// that made it.
   pub mouse_capture_request: Option<bool>,
-  /// The window surface, if a window is open. Set by `RenderState::new` /
-  /// `from_existing_gpu`. Used by `execute_render_batch` to render directly to
-  /// the real surface instead of an offscreen texture.
+  /// The window surface, if a window is open (`attach_surface`).
   pub surface: Option<wgpu::Surface<'static>>,
   /// Surface configuration (format, size, present mode, …). Present iff `surface` is Some.
   pub surface_config: Option<wgpu::SurfaceConfiguration>,
-  /// A surface texture acquired mid-frame by `execute_render_batch`. At
-  /// end-of-frame `RenderState::render` calls `present()` on this rather than
-  /// re-rendering.
-  pub pending_present: Option<wgpu::SurfaceTexture>,
+  /// Where screen-targeted draws render.
+  pub screen_target: ScreenTarget,
+  /// The window-sized texture `ScreenTarget::Texture` draws into.
+  screen_texture: Option<wgpu::Texture>,
+  /// The screen image of the frame in progress, from the frame's first
+  /// screen draw until `finish_frame`.
+  frame_screen: Option<FrameScreen>,
   /// A 1×1 placeholder texture used as a stand-in in bind groups when a real
   /// texture is simultaneously the render target (COLOR_TARGET + RESOURCE is
   /// forbidden by wgpu within the same render pass).
@@ -1100,23 +1133,19 @@ impl GpuCore {
 
   /// Encodes and submits a sequence of render calls: one render pass per
   /// consecutive same-render-target group, all in one encoder/submit.
-  /// Screen-targeted calls draw into `screen_view`, or are skipped when it
-  /// is `None` (surface occluded, or headless test mode). Does NOT apply
-  /// pre_uploads or wait for completion — callers own upload ordering and
-  /// synchronization. Pipelines must already exist in the cache.
+  /// Screen-targeted calls draw into the frame's screen image
+  /// (`begin_screen_pass`), or are skipped under `ScreenTarget::Embedder`.
+  /// Does NOT apply pre_uploads or wait for completion — callers own upload
+  /// ordering and synchronization. Pipelines must already exist in the
+  /// cache.
   fn encode_render_groups(
     &mut self,
     calls: &[(u16, u16, u32, bool, Option<(u8, u8)>)],
-    screen_view: Option<&wgpu::TextureView>,
   ) {
     if calls.is_empty() {
       return;
     }
-    let screen_format = self
-      .surface_config
-      .as_ref()
-      .map(|c| c.format)
-      .unwrap_or(GpuCore::OFFSCREEN_FORMAT);
+    let screen_format = self.screen_format();
 
     let mut encoder =
       self
@@ -1136,24 +1165,20 @@ impl GpuCore {
         .map_or(calls.len(), |j| i + j);
       let group = &calls[i..end];
 
-      // Create a fresh view for texture render targets. The borrow of
-      // `self.textures` is released before the render pass scope.
-      let texture_target_view: Option<wgpu::TextureView> =
-        current_rt.map(|rt| {
+      // Texture targets are cleared by each pass; the screen only by the
+      // frame's first. The views are owned, so no borrow of `self` outlives
+      // this point.
+      let (view, load) = match current_rt {
+        Some(rt) => (
           self.textures[&rt]
-            .create_view(&wgpu::TextureViewDescriptor::default())
-        });
-      let view = match &texture_target_view {
-        Some(v) => v,
-        None => {
-          let Some(sv) = screen_view else {
-            // Surface unavailable this frame (e.g. Occluded, or headless
-            // test mode): skip screen renders.
-            i = end;
-            continue;
-          };
-          sv
+            .create_view(&wgpu::TextureViewDescriptor::default()),
+          wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+        ),
+        None if self.screen_target == ScreenTarget::Embedder => {
+          i = end;
+          continue;
         }
+        None => self.begin_screen_pass(),
       };
       let format = if current_rt.is_none() {
         screen_format
@@ -1192,11 +1217,11 @@ impl GpuCore {
           encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("render pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-              view,
+              view: &view,
               resolve_target: None,
               depth_slice: None,
               ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                load,
                 store: wgpu::StoreOp::Store,
               },
             })],
@@ -1229,30 +1254,25 @@ impl GpuCore {
     }
   }
 
-  /// Executes one frame's texture-targeted GPU work — compute dispatches
-  /// and texture-targeted render passes — strictly in program order, so
+  /// Executes a frame's queued GPU work — compute dispatches and render
+  /// passes, to textures and to the screen — strictly in program order, so
   /// GPU write→read dependencies hold regardless of the kinds involved: a
-  /// compute dispatched after a render-to-texture sees the rendered
-  /// texels, and vice versa. This is a hard language requirement, and the
-  /// same ordering the mid-frame `flush_queued_compute` path observes.
+  /// compute dispatched after a draw sees what it wrote, a draw dispatched
+  /// after a compute sees its results, and each call's pre_uploads (the CPU
+  /// writes made before it) apply at its place in the order. This is a hard
+  /// language requirement.
   ///
-  /// Screen-targeted renders are NOT executed here: nothing on the GPU can
-  /// read the surface, so deferring them to `execute_frame_screen_renders`
-  /// (after surface acquisition) is unobservable. Their pre_uploads ARE
-  /// applied, up front, since they may contain buffer initialisation
-  /// (e.g. sizing an unsized storage buffer) that earlier GPU work needs —
-  /// and they are not re-applied later, which would overwrite GPU output.
+  /// Screen draws go into the frame's screen image (see `ScreenTarget`),
+  /// which stays open across calls until `finish_frame` presents it, so a
+  /// mid-frame flush (`StdoutIO::flush_queued_compute`) can run the work
+  /// queued so far and later work still draws into the same frame.
   ///
-  /// Shared by the winit frame loop (`render`), the headless test frame
-  /// loop (`CaptureIO::run_spawn_window`), and the mid-frame flush path
-  /// (`StdoutIO::flush_queued_compute`), so all three exercise one ordering
+  /// Shared by the winit frame loop (`render_frame`), the headless test
+  /// frame loop (`CaptureIO::run_spawn_window`), the web runtime, and the
+  /// mid-frame flush path, so all of them exercise one ordering
   /// implementation rather than parallel ones.
   pub fn execute_frame_gpu_work(&mut self, draw_calls: &[WindowEvent]) {
-    let screen_format = self
-      .surface_config
-      .as_ref()
-      .map(|c| c.format)
-      .unwrap_or(GpuCore::OFFSCREEN_FORMAT);
+    let screen_format = self.screen_format();
 
     // Pre-pass: ensure all pipeline objects exist. No buffer uploads here —
     // uploads are applied below.
@@ -1278,27 +1298,12 @@ impl GpuCore {
       }
     }
 
-    // Screen renders' pre_uploads, applied before any GPU work (see above).
-    {
-      let screen_render_uploads: Vec<_> = draw_calls
-        .iter()
-        .flat_map(|c| match c {
-          WindowEvent::RenderShaders {
-            pre_upload,
-            render_target: None,
-            ..
-          } => pre_upload.iter().cloned().collect::<Vec<_>>(),
-          _ => vec![],
-        })
-        .collect();
-      self.upload_bindings(&screen_render_uploads);
-    }
-
     // Walk the events in program order, batching consecutive runs of the
     // same kind: compute runs go through the conflict-splitting compute
-    // encoder, texture-render runs through the render-pass grouper (which
-    // merges consecutive same-target draws into one pass). Each run's
-    // pre_uploads are applied at the run's position in the order.
+    // encoder, render runs through the render-pass grouper (which merges
+    // consecutive same-target draws into one pass). A render run's uploads
+    // are applied before it is encoded, so a draw with uploads starts a new
+    // run: they must not reach the draws before it.
     let mut pending_compute: Vec<(
       u16,
       (u32, u32, u32),
@@ -1315,8 +1320,7 @@ impl GpuCore {
         }
         if !pending_renders.is_empty() {
           $self.upload_bindings(&std::mem::take(&mut pending_render_uploads));
-          $self
-            .encode_render_groups(&std::mem::take(&mut pending_renders), None);
+          $self.encode_render_groups(&std::mem::take(&mut pending_renders));
         }
       };
     }
@@ -1339,9 +1343,11 @@ impl GpuCore {
           vert_count,
           pre_upload,
           additive,
-          render_target: Some(rt),
+          render_target,
         } => {
-          if !pending_compute.is_empty() {
+          if !pending_compute.is_empty()
+            || (!pending_renders.is_empty() && !pre_upload.is_empty())
+          {
             flush_runs!(self);
           }
           pending_render_uploads.extend(pre_upload.iter().cloned());
@@ -1350,147 +1356,210 @@ impl GpuCore {
             *frag,
             *vert_count,
             *additive,
-            Some(*rt),
+            *render_target,
           ));
-        }
-        WindowEvent::RenderShaders {
-          render_target: None,
-          ..
-        } => {
-          // Deferred to execute_frame_screen_renders; still delimits runs so
-          // pass grouping matches the event order.
-          flush_runs!(self);
         }
       }
     }
     flush_runs!(self);
   }
 
-  /// Executes the screen-targeted draws of one frame's queued events, in
-  /// order, as one render pass into `screen_view` (skipped entirely when it
-  /// is `None`: surface occluded, or headless test mode). Must run after
-  /// `execute_frame_gpu_work`, which has already applied these draws'
-  /// pre_uploads.
-  pub fn execute_frame_screen_renders(
-    &mut self,
-    draw_calls: &[WindowEvent],
-    screen_view: Option<&wgpu::TextureView>,
-  ) {
-    if screen_view.is_none() {
-      return;
-    }
-    let screen_calls: Vec<(u16, u16, u32, bool, Option<(u8, u8)>)> = draw_calls
-      .iter()
-      .filter_map(|c| match c {
-        WindowEvent::RenderShaders {
-          vert,
-          frag,
-          vert_count,
-          additive,
-          render_target: None,
-          ..
-        } => Some((*vert, *frag, *vert_count, *additive, None)),
-        _ => None,
-      })
-      .collect();
-    self.encode_render_groups(&screen_calls, screen_view);
+  /// The format screen-targeted pipelines render to: the surface's when
+  /// there is one.
+  fn screen_format(&self) -> wgpu::TextureFormat {
+    self
+      .surface_config
+      .as_ref()
+      .map(|c| c.format)
+      .unwrap_or(GpuCore::OFFSCREEN_FORMAT)
   }
 
-  pub fn execute_render_batch(
+  /// The view a screen render pass draws into, and how the pass loads it:
+  /// the frame's first screen pass acquires the frame's screen image and
+  /// clears it, later ones draw over what is there.
+  fn begin_screen_pass(
     &mut self,
-    calls: Vec<(
-      u16,
-      u16,
-      u32,
-      Vec<((u8, u8), BufferUpload)>,
-      bool,
-      Option<(u8, u8)>,
-    )>,
-  ) {
-    if calls.is_empty() {
-      return;
+  ) -> (wgpu::TextureView, wgpu::LoadOp<wgpu::Color>) {
+    if self.frame_screen.is_none() {
+      self.frame_screen = Some(self.acquire_frame_screen());
     }
-    let all_uploads: Vec<_> = calls
-      .iter()
-      .flat_map(|(_, _, _, u, _, _)| u.iter().cloned())
-      .collect();
-    self.upload_bindings(&all_uploads);
+    let screen = self.frame_screen.as_mut().unwrap();
+    let load = if screen.drawn {
+      wgpu::LoadOp::Load
+    } else {
+      wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+    };
+    screen.drawn = true;
+    (screen.view.clone(), load)
+  }
 
-    // Drop any stale pending texture before acquiring a new one — wgpu allows
-    // at most one live SurfaceTexture at a time.
-    self.pending_present = None;
+  fn acquire_frame_screen(&mut self) -> FrameScreen {
+    match self.screen_target {
+      ScreenTarget::Surface => {
+        match self
+          .surface
+          .as_ref()
+          .expect("ScreenTarget::Surface without a surface")
+          .get_current_texture()
+        {
+          wgpu::CurrentSurfaceTexture::Success(texture)
+          | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => FrameScreen {
+            view: texture
+              .texture
+              .create_view(&wgpu::TextureViewDescriptor::default()),
+            surface_texture: Some(texture),
+            drawn: false,
+          },
+          wgpu::CurrentSurfaceTexture::Occluded
+          | wgpu::CurrentSurfaceTexture::Lost
+          | wgpu::CurrentSurfaceTexture::Outdated => self.stand_in_screen(),
+          other => {
+            eprintln!("Surface error: {other:?}");
+            self.stand_in_screen()
+          }
+        }
+      }
+      ScreenTarget::Texture => {
+        let (width, height) = self.window_size;
+        let format = self.screen_format();
+        let current = self.screen_texture.as_ref().is_some_and(|texture| {
+          texture.width() == width
+            && texture.height() == height
+            && texture.format() == format
+        });
+        if !current {
+          let (texture, _) = create_texture_and_view(
+            &self.device,
+            "screen texture",
+            width,
+            height,
+            format,
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+              | wgpu::TextureUsages::COPY_SRC,
+          );
+          self.screen_texture = Some(texture);
+        }
+        FrameScreen {
+          surface_texture: None,
+          view: self
+            .screen_texture
+            .as_ref()
+            .unwrap()
+            .create_view(&wgpu::TextureViewDescriptor::default()),
+          drawn: false,
+        }
+      }
+      ScreenTarget::StandIn => self.stand_in_screen(),
+      ScreenTarget::Embedder => {
+        unreachable!("the frame path skips screen draws for embedders")
+      }
+    }
+  }
 
-    // Acquire the real surface texture if any call renders to screen
-    // (render_target == None).
-    let needs_screen = calls.iter().any(|(_, _, _, _, _, rt)| rt.is_none());
-    let surface_texture: Option<wgpu::SurfaceTexture> = if needs_screen {
+  /// A 1×1 screen image in the screen format, for frames whose screen draws
+  /// have nowhere visible to go.
+  fn stand_in_screen(&self) -> FrameScreen {
+    let (_, view) = create_texture_and_view(
+      &self.device,
+      "stand-in screen",
+      1,
+      1,
+      self.screen_format(),
+      wgpu::TextureUsages::RENDER_ATTACHMENT,
+    );
+    FrameScreen {
+      surface_texture: None,
+      view,
+      drawn: false,
+    }
+  }
+
+  /// Ends the frame: presents its screen image, if a screen draw opened one.
+  /// Returns whether the frame presented: a present means drawable
+  /// acquisition (vsync) throttled the caller's loop, while an unpresented
+  /// frame has no natural backpressure and must be paced explicitly.
+  pub fn finish_frame(&mut self) -> bool {
+    let Some(screen) = self.frame_screen.take() else {
+      return false;
+    };
+    if let Some(surface_texture) = screen.surface_texture {
+      surface_texture.present();
+      return true;
+    }
+    if self.screen_target != ScreenTarget::Texture {
+      return false;
+    }
+    let (Some(surface), Some(texture)) = (&self.surface, &self.screen_texture)
+    else {
+      return false;
+    };
+    let output = match surface.get_current_texture() {
+      wgpu::CurrentSurfaceTexture::Success(output)
+      | wgpu::CurrentSurfaceTexture::Suboptimal(output) => output,
+      _ => return false,
+    };
+    let mut encoder =
       self
-        .surface
-        .as_ref()
-        .and_then(|s| match s.get_current_texture() {
-          wgpu::CurrentSurfaceTexture::Success(t)
-          | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
-          _ => None,
-        })
-    } else {
-      None
-    };
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+          label: Some("screen present encoder"),
+        });
+    encoder.copy_texture_to_texture(
+      texture.as_image_copy(),
+      output.texture.as_image_copy(),
+      wgpu::Extent3d {
+        width: texture.width().min(output.texture.width()),
+        height: texture.height().min(output.texture.height()),
+        depth_or_array_layers: 1,
+      },
+    );
+    self.queue.submit(std::iter::once(encoder.finish()));
+    output.present();
+    true
+  }
 
-    let screen_format = if surface_texture.is_some() {
-      self.surface_config.as_ref().unwrap().format
-    } else {
-      Self::OFFSCREEN_FORMAT
-    };
+  /// Adds a window surface, rendering the screen to `target`.
+  pub fn attach_surface(
+    &mut self,
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    target: ScreenTarget,
+  ) {
+    self.window_size = (config.width, config.height);
+    self.surface = Some(surface);
+    self.surface_config = Some(config);
+    self.screen_target = target;
+  }
 
-    // Pre-create all pipelines before the render pass borrows begin.
-    for (vert, frag, _, _, additive, rt) in &calls {
-      let format = if rt.is_none() {
-        screen_format
-      } else {
-        Self::OFFSCREEN_FORMAT
-      };
-      self.get_or_create_render_pipeline(*vert, *frag, *additive, format);
+  /// Resizes the surface (and the window size the screen texture follows).
+  /// Ends any frame in progress unpresented: a surface can't be configured
+  /// while one of its images is held.
+  pub fn resize_surface(&mut self, width: u32, height: u32) {
+    self.frame_screen = None;
+    self.window_size = (width, height);
+    if let Some(config) = &mut self.surface_config {
+      config.width = width;
+      config.height = height;
     }
+    self.reconfigure_surface();
+  }
 
-    // Create the screen view: real surface or a throwaway 1×1 offscreen
-    // (screen draws can have storage side effects, so they still run even
-    // with no visible surface).
-    let _offscreen_texture;
-    let screen_view: Option<wgpu::TextureView> = if needs_screen {
-      Some(if let Some(st) = &surface_texture {
-        st.texture
-          .create_view(&wgpu::TextureViewDescriptor::default())
-      } else {
-        let (tex, view) = create_texture_and_view(
-          &self.device,
-          "offscreen render target",
-          1,
-          1,
-          Self::OFFSCREEN_FORMAT,
-          wgpu::TextureUsages::RENDER_ATTACHMENT,
-        );
-        _offscreen_texture = tex;
-        view
-      })
-    } else {
-      None
-    };
+  /// Reconfigures the surface with its current configuration, ending any
+  /// frame in progress unpresented.
+  pub fn reconfigure_surface(&mut self) {
+    self.frame_screen = None;
+    if let (Some(surface), Some(config)) = (&self.surface, &self.surface_config)
+    {
+      surface.configure(&self.device, config);
+    }
+  }
 
-    let stripped_calls: Vec<(u16, u16, u32, bool, Option<(u8, u8)>)> = calls
-      .into_iter()
-      .map(|(vert, frag, vert_count, _, additive, rt)| {
-        (vert, frag, vert_count, additive, rt)
-      })
-      .collect();
-    self.encode_render_groups(&stripped_calls, screen_view.as_ref());
-    self
-      .device
-      .poll(wgpu::PollType::wait_indefinitely())
-      .unwrap();
-
-    // If we rendered to the real surface, save the texture so end-of-frame
-    // can just call present() rather than re-rendering.
-    self.pending_present = surface_texture;
+  /// Reads the screen texture back as RGBA8 bytes, returning `(width,
+  /// height, pixels)` (`ScreenTarget::Texture` without a surface only).
+  pub fn read_screen(&self) -> Option<(u32, u32, Vec<u8>)> {
+    let texture = self.screen_texture.as_ref()?;
+    (texture.format() == BINDING_TEXTURE_FORMAT)
+      .then(|| self.read_texture_rgba8(texture))
   }
 
   /// Blocks until all submitted GPU work has completed.
@@ -1596,16 +1665,6 @@ impl GpuCore {
       .render_pipelines
       .push((key, CachedRenderPipeline { pipeline, bindings }));
   }
-
-  /// Executes a batch of render shader calls, blocking until the GPU finishes.
-  /// Used by `flush_queued_compute` so that CPU reads after
-  /// `dispatch-render-shaders` see the shader's storage writes.
-  ///
-  /// If `self.surface` is present (a window is open), renders to the real
-  /// surface texture and stores it in `self.pending_present` so that
-  /// `RenderState::render` can just call `present()` at end-of-frame without
-  /// re-running the shaders. Falls back to a 1×1 offscreen texture otherwise
-  /// (headless / test mode).
 
   /// Creates a new `GpuCore` from an existing wgpu device and queue.
   ///
@@ -1750,7 +1809,9 @@ impl GpuCore {
       mouse_capture_request: None,
       surface: None,
       surface_config: None,
-      pending_present: None,
+      screen_target: ScreenTarget::Embedder,
+      screen_texture: None,
+      frame_screen: None,
       placeholder_texture_view,
     }))
   }
@@ -1759,7 +1820,7 @@ impl GpuCore {
   /// (`render_target == None`) into the provided `screen_view` with
   /// `screen_format` instead of acquiring from `self.surface`.  Offscreen
   /// render targets (`render_target == Some(...)`) work as in
-  /// [`execute_render_batch`].  Blocks until the GPU finishes.
+  /// [`execute_frame_gpu_work`].  Blocks until the GPU finishes.
   pub fn execute_render_batch_to_view(
     &mut self,
     calls: Vec<(
@@ -1903,7 +1964,12 @@ impl GpuCore {
     group: u8,
     binding: u8,
   ) -> Option<(u32, u32, Vec<u8>)> {
-    let texture = self.textures.get(&(group, binding))?;
+    Some(self.read_texture_rgba8(self.textures.get(&(group, binding))?))
+  }
+
+  /// Reads a texture in `BINDING_TEXTURE_FORMAT` back as RGBA8 bytes,
+  /// returning `(width, height, pixels)`. Blocking.
+  fn read_texture_rgba8(&self, texture: &wgpu::Texture) -> (u32, u32, Vec<u8>) {
     let width = texture.width();
     let height = texture.height();
     // wgpu requires bytes_per_row aligned to 256 for texture→buffer copies.
@@ -1968,7 +2034,7 @@ impl GpuCore {
     }
     drop(data);
     staging.unmap();
-    Some((width, height, rgba16float_to_rgba8(&texel_bytes)))
+    (width, height, rgba16float_to_rgba8(&texel_bytes))
   }
 
   pub fn read_buffer(&self, group: u8, binding: u8, size: u64) -> Vec<u8> {
@@ -2041,81 +2107,11 @@ impl GpuCore {
     staging
   }
 
-  /// Executes a frame's GPU work and presents its screen-targeted draws to
-  /// the surface. Returns whether the frame presented: a present means
-  /// drawable acquisition (vsync) throttled the caller's loop, while an
-  /// unpresented frame has no natural backpressure and must be paced
-  /// explicitly.
+  /// Executes the rest of a frame's GPU work and ends the frame
+  /// (`finish_frame`), returning whether it presented.
   pub fn render_frame(&mut self, draw_calls: &[WindowEvent]) -> bool {
-    // Fast path: if flush_queued_compute already rendered to the real surface
-    // mid-frame, just present that pre-rendered texture. Render events were
-    // drained by flush_queued_compute so draw_calls should be empty here.
-    if let Some(pending) = self.pending_present.take() {
-      if draw_calls.is_empty() {
-        pending.present();
-        return true;
-      }
-      // New draw calls arrived after the flush (unusual). The first render's
-      // storage writes are already committed; discard its visual output and
-      // fall through to re-render below.
-      drop(pending);
-    }
-
-    if draw_calls.is_empty() {
-      return false;
-    }
-
     self.execute_frame_gpu_work(draw_calls);
-
-    let has_screen_render = draw_calls.iter().any(|c| {
-      matches!(
-        c,
-        WindowEvent::RenderShaders {
-          render_target: None,
-          ..
-        }
-      )
-    });
-
-    // Acquire the surface texture for screen renders.  This is done after
-    // uploads and compute so that Occluded (window minimised / covered on
-    // macOS) only skips the visual output — compute work still runs.
-    // Lost/Outdated require surface reconfiguration so we return early;
-    // Occluded is treated as "no screen output this frame" (None).
-    let output = if has_screen_render {
-      match self
-        .surface
-        .as_ref()
-        .expect("render_frame called without a surface")
-        .get_current_texture()
-      {
-        wgpu::CurrentSurfaceTexture::Success(texture)
-        | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => Some(texture),
-        wgpu::CurrentSurfaceTexture::Lost
-        | wgpu::CurrentSurfaceTexture::Outdated => return false,
-        wgpu::CurrentSurfaceTexture::Occluded => None,
-        other => {
-          eprintln!("Surface error: {other:?}");
-          None
-        }
-      }
-    } else {
-      None
-    };
-
-    let screen_view = output.as_ref().map(|o| {
-      o.texture
-        .create_view(&wgpu::TextureViewDescriptor::default())
-    });
-
-    self.execute_frame_screen_renders(draw_calls, screen_view.as_ref());
-
-    if let Some(output) = output {
-      output.present();
-      true
-    } else {
-      false
-    }
+    self.finish_frame()
   }
 }
 
@@ -2207,7 +2203,11 @@ pub fn create_headless_gpu_core(
       gpu_entries,
       backend,
     );
-    gpu.write().unwrap().instance = instance;
+    {
+      let mut gpu = gpu.write().unwrap();
+      gpu.instance = instance;
+      gpu.screen_target = ScreenTarget::StandIn;
+    }
     gpu
   })
 }
@@ -2251,16 +2251,7 @@ impl<'a, D: FrameDriver> App<'a, D> {
       // between event loop runs (e.g. the window was resized or the display
       // changed while the event loop was not active).
       // Render pipelines were already cleared by update_for_reload above.
-      {
-        let mut gpu = state.gpu.write().unwrap();
-        // Drop any stale surface texture before reconfiguring.
-        gpu.pending_present = None;
-        if let (Some(surface), Some(config)) =
-          (&gpu.surface, &gpu.surface_config)
-        {
-          surface.configure(&gpu.device, config);
-        }
-      }
+      state.gpu.write().unwrap().reconfigure_surface();
       // Reset per-run GPU state so the new program starts from a clean slate.
       {
         let mut gpu = state.gpu.write().unwrap();
@@ -2878,9 +2869,7 @@ impl RenderState {
     {
       let mut gpu = gpu.write().unwrap();
       gpu.instance = instance;
-      gpu.window_size = (surface_config.width, surface_config.height);
-      gpu.surface = Some(surface);
-      gpu.surface_config = Some(surface_config);
+      gpu.attach_surface(surface, surface_config, ScreenTarget::Surface);
     }
 
     Ok(Self { window, gpu })
@@ -2934,30 +2923,18 @@ impl RenderState {
     surface.configure(&gpu_read.device, &surface_config);
     drop(gpu_read);
 
-    {
-      let mut gpu_write = gpu.write().unwrap();
-      gpu_write.window_size = (surface_config.width, surface_config.height);
-      gpu_write.surface = Some(surface);
-      gpu_write.surface_config = Some(surface_config);
-    }
+    gpu.write().unwrap().attach_surface(
+      surface,
+      surface_config,
+      ScreenTarget::Surface,
+    );
 
     Ok(Self { window, gpu })
   }
 
   fn resize(&mut self, width: u32, height: u32) {
     if width > 0 && height > 0 {
-      let mut gpu = self.gpu.write().unwrap();
-      // wgpu requires no live SurfaceTexture when configure is called.
-      gpu.pending_present = None;
-      gpu.window_size = (width, height);
-      if let Some(config) = &mut gpu.surface_config {
-        config.width = width;
-        config.height = height;
-      }
-      if let (Some(surface), Some(config)) = (&gpu.surface, &gpu.surface_config)
-      {
-        surface.configure(&gpu.device, config);
-      }
+      self.gpu.write().unwrap().resize_surface(width, height);
     }
   }
 
