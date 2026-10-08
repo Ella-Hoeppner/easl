@@ -1,0 +1,25 @@
+; An element passed by `@ref` is read when the call is made, so it sees GPU
+; writes from before the call. It's a snapshot: GPU writes made during the
+; call don't show through it, even after the global itself has been read
+; again.
+
+(var results: [4: f32])
+
+@compute
+(defn bump []
+  (= (results 0u) (+ (results 0u) 1.)))
+
+(defn show [@ref c: f32]
+  (print c))
+
+(defn show-around-bump [@ref c: f32]
+  (dispatch-compute-shader bump (vec3u 1u))
+  (print c)
+  (print (results 0u))
+  (print c))
+
+@cpu
+(defn main []
+  (dispatch-compute-shader bump (vec3u 1u))
+  (show (results 0u))
+  (show-around-bump (results 0u)))

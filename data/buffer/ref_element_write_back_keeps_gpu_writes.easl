@@ -1,0 +1,30 @@
+; Writing one element of a GPU-bound global on the CPU changes only that
+; element: what the GPU wrote to the rest of the global before the write
+; lands survives it, even when the GPU work runs during the write itself
+; (inside a callee taking the element by `@var @ref`, or while evaluating
+; the assigned value).
+
+(var counts: [4: u32])
+
+@compute
+(defn bump-second []
+  (= (counts 1u) (+ (counts 1u) 1u)))
+
+(defn set-then-bump [@var @ref c: u32]
+  (= c 10u)
+  (dispatch-compute-shader bump-second (vec3u 1u)))
+
+(defn bump-then-seven []: u32
+  (dispatch-compute-shader bump-second (vec3u 1u))
+  7u)
+
+@cpu
+(defn main []
+  (set-then-bump (counts 0u))
+  (print counts)
+  (set-then-bump (counts 2u))
+  (print counts)
+  (= (counts 3u) (bump-then-seven))
+  (print counts)
+  (+= (counts 3u) (bump-then-seven))
+  (print counts))

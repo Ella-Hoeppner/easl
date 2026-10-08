@@ -2793,11 +2793,6 @@ impl BytecodeCompilationState {
   /// Emits a GPU→CPU sync check for each GPU-bound global in `names` — the
   /// VM equivalent of the tree-walker's `check_cpu_readable` before an
   /// application evaluates.
-  pub fn emit_sync_checks(&mut self, names: &[Arc<str>]) {
-    for name in names {
-      self.emit_read_check(name);
-    }
-  }
   /// Emits a GPU→CPU sync check before a read of `name`, when it's a
   /// GPU-bound global (CPU-runtime mode only): a `CheckGpuRead`, which only
   /// reaches the host's `CheckGpuToCpu` when a dispatch may have written
@@ -3987,6 +3982,9 @@ impl TypedExp {
         } else if let ExpKind::Name(name) = &arg.kind
           && let Some(binding) = state.dynamic_globals.get(name).copied()
         {
+          // Printed straight from its binding, so the read check the
+          // `Name` arm would emit goes here.
+          state.emit_read_check(name);
           state.emit_host_op(HostOp::PrintBinding { binding });
         } else if let Type::Array(Some(ConcreteArraySize::Unsized), _) =
           arg.data.unwrap_known()
@@ -4503,21 +4501,15 @@ impl TypedExp {
           panic!()
         };
         let f_name = f_name.clone();
-        // CPU-runtime mode: mirror the tree-walker's sync behavior at the
-        // same granularity — `check_cpu_readable` for the application's
-        // read set before it evaluates, `mark_cpu_written` for its write
-        // set after. All name resolution happens here at compile time.
-        let cpu_write_marks: Option<Vec<Arc<str>>> =
-          if state.cpu_mode || !state.shared_var_indices.is_empty() {
-            let effects = self.effects();
-            let (reads, writes) = effects.read_and_written_globals();
-            if state.cpu_mode {
-              state.emit_sync_checks(&reads);
-            }
-            Some(writes)
-          } else {
-            None
-          };
+        // Mirrors the tree-walker's sync behavior: reads sync at each read
+        // site (`emit_read_check`), and after the application, the globals
+        // it writes itself (through its mutable-reference arguments) are
+        // marked CPU-written / shared-dirty — writes inside a callee are
+        // marked where they happen. All name resolution happens here at
+        // compile time.
+        let cpu_write_marks: Option<Vec<Arc<str>>> = (state.cpu_mode
+          || !state.shared_var_indices.is_empty())
+        .then(|| self.argument_writes().read_and_written_globals().1);
         if let Some(result) =
           self.try_compile_dyn_array_builtin(&f_name, args, state)
         {
@@ -4637,6 +4629,15 @@ impl TypedExp {
           .iter()
           .map(|(arg, _)| arg.var_type.unwrap_known())
           .collect();
+        // A write to part of a GPU-bound global modifies the rest of it
+        // too, so the CPU copy must be current where the write lands: here
+        // (after the arguments, which can run GPU work) for a builtin's
+        // store, and again before the write-backs below for a callee that
+        // can itself run GPU work.
+        let partially_written_globals = self.partially_written_globals();
+        for name in &partially_written_globals {
+          state.emit_read_check(name);
+        }
         let result_pos = match &abstract_f.implementation {
           FunctionImplementationKind::Builtin { .. } => state.compile_builtin(
             &f_name,
@@ -4839,6 +4840,14 @@ impl TypedExp {
             }
           }
         };
+        if matches!(
+          abstract_f.implementation,
+          FunctionImplementationKind::Composite(_)
+        ) {
+          for name in &partially_written_globals {
+            state.emit_read_check(name);
+          }
+        }
         state.flush_pending_write_backs();
         if let Some(writes) = &cpu_write_marks {
           state.emit_write_marks(writes);

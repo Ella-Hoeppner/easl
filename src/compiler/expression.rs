@@ -5108,6 +5108,80 @@ impl TypedExp {
       .unwrap();
     name_type_pairs
   }
+  /// The variables an application writes through its mutable-reference
+  /// arguments: the writes the application itself performs, as opposed to
+  /// those of its callee's body or of its arguments' own subexpressions.
+  /// Empty for anything but a function application.
+  pub fn argument_writes(&self) -> EffectType {
+    self
+      .argument_write_targets()
+      .into_iter()
+      .map(|(_, effect)| effect)
+      .collect::<HashSet<Effect>>()
+      .into()
+  }
+
+  /// The globals an application writes only part of (an element or field)
+  /// through its mutable-reference arguments. Such a write modifies the rest
+  /// of the global too, so the CPU copy must be current when it lands.
+  pub fn partially_written_globals(&self) -> Vec<Arc<str>> {
+    self
+      .argument_write_targets()
+      .into_iter()
+      .filter_map(|(arg, effect)| match effect {
+        Effect::ModifiesGlobalVar(name) if !matches!(arg.kind, Name(_)) => {
+          Some(name)
+        }
+        _ => None,
+      })
+      .collect()
+  }
+
+  /// Each argument an application writes through, with the write's effect.
+  fn argument_write_targets(&self) -> Vec<(&Self, Effect)> {
+    let Application(f, args) = &self.kind else {
+      return vec![];
+    };
+    let Type::Function(function_signature) = f.data.kind.unwrap_known() else {
+      return vec![];
+    };
+    function_signature
+      .args
+      .iter()
+      .zip(args.iter())
+      .filter_map(|((arg_var, _), arg)| {
+        // A mutable `@ref` parameter writes through its argument — also
+        // after reference-address-space monomorphization has turned it into
+        // a pointer (a storage-global element passed by reference on the
+        // CPU / audio thread takes that path).
+        if !matches!(
+          arg_var.var_type.ownership,
+          Ownership::MutableReference
+            | Ownership::Pointer(_, RefMutability::Mutable)
+        )
+          // A lent closure's write is its borrow's own (by-reference)
+          // argument.
+          || is_function_value_borrow(arg)
+        {
+          return None;
+        }
+        // A temporary in this position (a closure scope built for a
+        // higher-order specialization's scope parameter, before
+        // `extract_non_bound_mutable_references` binds it) is unobservable
+        // once written: it modifies nothing named.
+        let name = arg.name_or_inner_accessed_name()?.clone();
+        Some((
+          arg,
+          if arg.data.is_globally_bound {
+            Effect::ModifiesGlobalVar(name)
+          } else {
+            Effect::ModifiesLocalVar(name)
+          },
+        ))
+      })
+      .collect()
+  }
+
   pub fn effects(&self) -> EffectType {
     let mut e = match &self.kind {
       Name(name) => Effect::ReadsVar(name.clone()).into(),
@@ -5156,45 +5230,14 @@ impl TypedExp {
             .as_ref()
             .map(|ancestor| &*ancestor.read().unwrap().name == "array-length")
             .unwrap_or(false);
-          for (arg_var, arg) in function_signature
-            .args
-            .iter()
-            .map(|(a, _)| Some(a))
-            .chain(std::iter::repeat(None))
-            .zip(args.iter())
-          {
+          for arg in args {
             if is_array_length && let ExpKind::Name(name) = &arg.kind {
               effects.merge(Effect::ReadsArrayLength(name.clone()));
               continue;
             }
             effects.merge(arg.effects());
-            // A mutable `@ref` parameter writes through its argument — also
-            // after reference-address-space monomorphization has turned it
-            // into a pointer (a storage-global element passed by reference
-            // on the CPU / audio thread takes that path).
-            if let Some(arg_var) = arg_var
-              && matches!(
-                arg_var.var_type.ownership,
-                Ownership::MutableReference
-                  | Ownership::Pointer(_, RefMutability::Mutable)
-              )
-              // A lent closure's write is its borrow's own (by-reference)
-              // argument, already merged above.
-              && !is_function_value_borrow(arg)
-              // A temporary in this position (a closure scope built for a
-              // higher-order specialization's scope parameter, before
-              // `extract_non_bound_mutable_references` binds it) is
-              // unobservable once written: it modifies nothing named.
-              && let Some(name) = arg.name_or_inner_accessed_name().cloned()
-            {
-              effects.merge(if arg.data.is_globally_bound {
-                Effect::ModifiesGlobalVar(name)
-              } else {
-                Effect::ModifiesLocalVar(name)
-              });
-            }
           }
-
+          effects.merge(self.argument_writes());
           effects
         }
         Type::Array(_, _) => {

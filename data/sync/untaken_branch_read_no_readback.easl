@@ -1,0 +1,26 @@
+; A call syncs a GPU-written global only if it actually reads it: a read
+; on a branch that isn't taken costs nothing.
+
+(var results: [4: f32])
+
+@compute
+(defn fill []
+  (= (results 0u) 1.))
+
+@local
+(var show: bool false)
+
+(defn maybe-report []
+  (when show
+    (print (results 0u))))
+
+(defn tick []
+  (maybe-report))
+
+@cpu
+(defn main []
+  (dispatch-compute-shader fill (vec3u 1u))
+  (tick)
+  (print 1u)
+  (= show true)
+  (tick))

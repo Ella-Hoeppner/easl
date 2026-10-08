@@ -121,6 +121,7 @@ sync_test!(gpu_only_dataflow_closure_no_readback);
 // Positive control: reading an element of a GPU-written array on the CPU
 // syncs exactly once, before the first print consumes the value.
 sync_test!(cpu_read_after_dispatch_syncs);
+sync_test!(untaken_branch_read_no_readback);
 // Positive control: the CPU read happening inside a called function (rather
 // than directly in the entry body) still triggers the sync.
 sync_test!(cpu_fn_read_after_dispatch_syncs);

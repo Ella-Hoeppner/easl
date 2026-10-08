@@ -6310,6 +6310,12 @@ fn eval_assignment_op<IO: IOManager>(
       _ => panic!(),
     }
   };
+  // A write to part of a GPU-bound global modifies the rest of it too, so
+  // the CPU copy must be current first: GPU work run while evaluating the
+  // assigned value or the indices can have updated it.
+  if !accesses.is_empty() {
+    env.check_global_readable(&accessed_name);
+  }
   // Pre-expand any ZeroedArray at the top-level binding before taking a
   // mutable reference. Value::zeroed needs an immutable &env borrow,
   // which would conflict with &mut env.bindings during traversal.
@@ -6601,6 +6607,12 @@ fn write_back_through_lhs<IO: IOManager>(
       }
     }
   };
+  // A write to part of a GPU-bound global modifies the rest of it too, so
+  // the CPU copy must be current first: the callee can have run GPU work
+  // that updated it.
+  if !accesses.is_empty() {
+    env.check_global_readable(&accessed_name);
+  }
   // Descend through the env's binding with &mut and overwrite at the end.
   let mut slot = &mut env
     .bindings
@@ -6762,7 +6774,8 @@ fn eval_application<IO: IOManager>(
   exp: Exp<ExpTypeInfo>,
   env: &mut EvaluationEnvironment<IO>,
 ) -> Result<Value, EvalException> {
-  let exp_effects = exp.effects();
+  let (_, written_global_variable_names) =
+    exp.argument_writes().read_and_written_globals();
   let ExpKind::Application(f, mut args) = exp.kind else {
     unreachable!()
   };
@@ -6871,11 +6884,14 @@ fn eval_application<IO: IOManager>(
       let is_atomic_op = ATOMIC_MUTATION_OPS.contains(&*name);
       let accessed_expression =
         (is_assignment_op || is_atomic_op).then(|| args[0].clone());
-      // Sync any GPU-written globals before evaluating args so we see the
-      // updated values when the args are looked up.
-      let (read_global_variable_names, written_global_variable_names) =
-        exp_effects.read_and_written_globals();
-      env.check_cpu_readable(&read_global_variable_names);
+      // GPU sync happens where it's needed, never for a callee's whole
+      // static effect set: reads of GPU-bound globals sync at each read
+      // (the `Name` arm; an element passed by reference is read as the
+      // argument is evaluated), and only the globals this application
+      // itself writes (through its mutable-reference arguments) are marked
+      // CPU-written after it. Writes inside the callee are marked where
+      // they happen, so a dispatch later in the callee that updates the
+      // same global stays authoritative.
       // For args bound to a MUTABLE reference parameter, save a clone of
       // the callsite expression so we can write the (possibly mutated)
       // post-call value back into its source location once the call

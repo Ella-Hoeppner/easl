@@ -145,6 +145,9 @@ macro_rules! buffer_test {
 }
 
 buffer_test!(dispatch_capture_array_length);
+buffer_test!(cpu_write_in_callee_keeps_gpu_writes);
+buffer_test!(ref_element_arg_reads_gpu_writes);
+buffer_test!(ref_element_write_back_keeps_gpu_writes);
 buffer_test!(overloaded_entry_ascription);
 buffer_test!(dispatch_captured_closure_unused);
 buffer_test!(argument_order_gpu);

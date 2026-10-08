@@ -1,0 +1,55 @@
+; A call marks a global CPU-written only where a write actually happens.
+; `setup` writes `things` on the CPU (through `reset`), then the GPU updates
+; it three times; those GPU writes must survive `setup` returning. The
+; second call to `reset` doesn't write at all, and must not discard the
+; GPU's later writes either.
+
+(struct Thing
+  pos: vec3f
+  n: u32)
+
+(var things: [Thing])
+
+(var readout: Thing)
+
+@uniform
+(var which: u32)
+
+@local
+(var ready: bool)
+
+@compute
+(defn advance []
+  (= (things 0u)
+     (Thing (+ (.pos (things 0u)) (vec3f 1.)) (+ (.n (things 0u)) 1u))))
+
+@compute
+(defn read-one []
+  (= readout (things which)))
+
+(defn read-thing [i: u32]: Thing
+  (= which i)
+  (dispatch-compute-shader read-one (vec3u 1u))
+  readout)
+
+(defn reset []
+  (when (not ready)
+    (= things (zeroed-array 4u))
+    (= ready true)))
+
+(defn setup []
+  (reset)
+  (for [k 3u]
+    (dispatch-compute-shader advance (vec3u 1u))
+    (print (.n (read-thing 0u)))))
+
+(defn advance-once []
+  (reset)
+  (dispatch-compute-shader advance (vec3u 1u)))
+
+@cpu
+(defn main []
+  (setup)
+  (print (.n (read-thing 0u)))
+  (advance-once)
+  (print (.n (read-thing 0u))))
