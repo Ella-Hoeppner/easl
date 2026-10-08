@@ -1442,6 +1442,26 @@ impl Type {
       Type::Skolem(_, _) => panic!(),
     }
   }
+  /// Whether this type is, or contains, a texture or sampler.
+  pub fn involves_texture_or_sampler(&self) -> bool {
+    match self {
+      Type::Struct(s) => {
+        matches!(&*s.name, "Texture2D" | "Sampler")
+          || s
+            .fields
+            .iter()
+            .any(|f| f.field_type.unwrap_known().involves_texture_or_sampler())
+      }
+      Type::Enum(e) => e
+        .variants
+        .iter()
+        .any(|v| v.inner_type.unwrap_known().involves_texture_or_sampler()),
+      Type::Array(_, inner) => {
+        inner.unwrap_known().involves_texture_or_sampler()
+      }
+      _ => false,
+    }
+  }
   pub fn is_constructible(&self) -> bool {
     match self {
       Type::F32 | Type::I32 | Type::U32 | Type::Bool => true,
@@ -3450,13 +3470,30 @@ impl TypeState {
             }
           }
           (TypeState::Known(t), TypeState::OneOf(possibilities)) => {
-            if !t.compatible_with_any(&possibilities) {
+            let compatible = t.filter_compatibles(&possibilities);
+            if compatible.is_empty() {
               errors.log(CompileError::new(
                 IncompatibleTypes(this.clone().into(), other.clone().into()),
                 source_trace.clone(),
               ));
+              false
+            } else if let Type::Function(signature) = t
+              && signature.abstract_ancestor.is_none()
+            {
+              // A function type with no definition behind it (from a type
+              // ascription) narrows the candidates rather than replacing
+              // them, so the chosen function keeps its definition.
+              let mut narrowed = TypeState::OneOf(compatible).simplified();
+              narrowed.constrain(
+                &TypeState::Known(t.clone()),
+                source_trace,
+                errors,
+              );
+              std::mem::swap(this, &mut narrowed);
+              true
+            } else {
+              false
             }
-            false
           }
         };
         this.simplify();

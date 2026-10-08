@@ -1,0 +1,5 @@
+; Textures must be globals, so binding one in a `let` is an error.
+@cpu
+(defn main []
+  (let [t (blank-texture 4u 4u)]
+    ()))

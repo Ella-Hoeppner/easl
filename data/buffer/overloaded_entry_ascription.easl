@@ -1,0 +1,13 @@
+; A compute entry named like the builtin `step` overloads it; a type
+; ascription picks it out when it's passed as a value. Inside, `step` called
+; with two floats is the builtin.
+(var out: [1: f32])
+
+@compute
+(defn step []
+  (= (out 0u) (step 0.5 1.)))
+
+@cpu
+(defn main []
+  (dispatch-compute-shader step: (Fn [] ()) (vec3u 1u))
+  (print out))

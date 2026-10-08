@@ -1,0 +1,11 @@
+; A compute entry named like the builtin `step` overloads it, so passing
+; `step` as a value is ambiguous without an ascription.
+(var out: [1: f32])
+
+@compute
+(defn step []
+  (= (out 0u) 1.))
+
+@cpu
+(defn main []
+  (dispatch-compute-shader step (vec3u 1u)))

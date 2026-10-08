@@ -3049,16 +3049,41 @@ impl TypedExp {
     }
   }
 
-  pub fn find_untyped(&mut self) -> Vec<SourceTrace> {
+  /// An error for each expression whose type inference couldn't settle:
+  /// `AmbiguousOverload` for a name still choosing between several function
+  /// overloads, `CouldntInferTypes` otherwise (unless there's an ambiguous
+  /// overload, which explains them).
+  pub fn find_untyped(&mut self) -> Vec<CompileError> {
     let mut untyped = vec![];
     self
       .walk_mut::<()>(&mut |exp| {
         if !exp.data.is_fully_known() {
-          untyped.push(exp.source_trace.clone());
+          let kind = match (&exp.kind, &exp.data.kind) {
+            (Name(name), TypeState::OneOf(candidates))
+              if candidates.len() > 1
+                && candidates
+                  .iter()
+                  .all(|candidate| matches!(candidate, Type::Function(_))) =>
+            {
+              CompileErrorKind::AmbiguousOverload(
+                display_name(name).to_string(),
+              )
+            }
+            _ => CompileErrorKind::CouldntInferTypes,
+          };
+          untyped.push(CompileError::new(kind, exp.source_trace.clone()));
         }
         Ok(true)
       })
       .unwrap();
+    // An ambiguous overload leaves the expressions around it unresolved
+    // too; reporting those as well would bury the actual cause.
+    if untyped
+      .iter()
+      .any(|e| matches!(e.kind, CompileErrorKind::AmbiguousOverload(_)))
+    {
+      untyped.retain(|e| e.kind != CompileErrorKind::CouldntInferTypes);
+    }
     untyped
   }
   pub fn validate_match_blocks(&mut self, errors: &mut ErrorLog) {

@@ -1,12 +1,6 @@
 # todo
 ## Highest priority
 ### necessary for wgsl feature parity + stuff I wanna get done before calling the language "production ready"
-* enable a syntax like `<>.x`
-
-* nested unsized array types seem to break the interpreter
-
-* when a match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
-
 * barrier functions
 * `workgroupUniformLoad`
 * subgroup functions
@@ -19,6 +13,8 @@
   * sampler_comparison
   * texture_storage
   * all the functions that use these
+
+* when a match pattern is just a name, make it act basically as a wildcard and just bind that name to whatever the value is in the body
 
 * `catch_duplicate_signatures` needs to be extended to catch partial overlaps in the type-domains of generic functions
   * like, right now you can implement `(defn + [a: f32 b:f32]: f32 ...)` without error, even though this conflicts with the builtin definition `(defn (+ T) [a: T b:T]: T)`. The two signatures aren't equal, so no error is detected, but it should be, since the `f32` implementation is just a special-case of the generic definition.
@@ -69,11 +65,9 @@
     * for instance, in the expression `(vec4f (vec3f 1. 1.) 1.)`, then inner application of `vec3f` is invalid since recieves 2 scalar args. However, if you try to compile this epxression, you'll also get an error on the `vec4f` saying "Couldn't infer types". But that shouldn't happen - regardless of what the input types to `vec3f` are, the return type will be `vec3f`, so it doesn't make sense for `vec4f` to not be able to converge
   * When there are multiple "couldn't infer types" errors, such that one is a subtree of another, only display the innermost one, I think? The outermost one usually won't be helpful.
 
-* special casing around `Texture2D` and `Sampler`
-  * right now I've made it so it has a field `_: T`, because monomorphization needs there to be at least one field, but this is kinda weird
-  * you definitely shouldn't be able to access the `_` field, and you shouldn't be allowed to construct it
-  * might need this for other types too? Maybe have a like `external_only` or `opaque` type that prevents it from being constructed or from having it's fields accessed 
-  * or maybe have something like rust's `PhantomData`?
+## Secondary priority
+### nice features to have once the language is at wgsl-parity
+* enable a syntax like `<>.x`
 
 * flesh out support for `break`
   * support a `breakable` construct, such that you can surround a block and then call `break` arbitrarily inside it
@@ -95,16 +89,6 @@
     * On the cpu side of things it would be fine to run code containing this and just crash if it's encountered, but can't really do that on the GPU
     * maybe allow compilation so long as it's a zeroable type? But still would need to prevent compilation if it's ever used as e.g. a texture
 
-* support builtin functions that don't just directly correspond to any wgsl functions
-  * current ones I can think of:
-    * `bi->uni`, `uni->bi`
-      * eventually these should be generic over some `T: |(Add f32) (Mul f32)|`, but for now can just do them over the vecf types
-    * `rot: (Fn [f32]: mat2x2f)` 
-  * these will need to be represented as `FunctionImplementationKind::Composite`s, but will just have their definitions builtin ratehr than being user-defined
-  * need to make sure these don't always get compiled to the output if they aren't used, though, unlike normal composite functions
-
-## Secondary priority
-### nice features to have once the language is at wgsl-parity
 * should make it possible to have the infix `.` syntax for accessing fields on the `<>` in thread expressions
   * just feels a lot cleaner to do e.g. `<>.x` than `(.x <>)`, and I think it's fine to special-case any token starting with `<>` tbh
 

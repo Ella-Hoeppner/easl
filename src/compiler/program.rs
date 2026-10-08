@@ -1291,7 +1291,7 @@ impl Program {
     }
     anything_changed
   }
-  fn find_untyped(&mut self) -> Vec<SourceTrace> {
+  fn find_untyped(&mut self) -> Vec<CompileError> {
     self
       .abstract_functions_iter()
       .map(|f| {
@@ -1314,7 +1314,9 @@ impl Program {
         .into_iter()
         .chain(
           (!v.var_type.check_is_fully_known())
-            .then(|| v.source_trace.clone())
+            .then(|| {
+              CompileError::new(CouldntInferTypes, v.source_trace.clone())
+            })
             .into_iter(),
         )
         .collect()
@@ -1339,15 +1341,19 @@ impl Program {
     loop {
       let did_type_states_change = self.propagate_types(errors);
       if !did_type_states_change {
-        let untyped_expressions = self.find_untyped();
-        return if untyped_expressions.is_empty() {
-          break;
-        } else {
-          for source_trace in untyped_expressions {
-            let source_trace = source_trace;
-            errors.log(CompileError::new(CouldntInferTypes, source_trace));
+        let untyped = self.find_untyped();
+        // After a type error, an overload left unresolved is likely just a
+        // consequence of it, so it isn't called ambiguous.
+        let inference_failed = !errors.is_empty();
+        errors.log_all(untyped.into_iter().map(|mut error| {
+          if inference_failed
+            && matches!(error.kind, CompileErrorKind::AmbiguousOverload(_))
+          {
+            error.kind = CouldntInferTypes;
           }
-        };
+          error
+        }));
+        return;
       }
     }
   }
@@ -7554,9 +7560,14 @@ impl Program {
             match &exp.kind {
               ExpKind::Let(bindings, _) => {
                 for (_, _, _, value) in bindings {
-                  if !value.data.unwrap_known().is_constructible() {
+                  let value_type = value.data.unwrap_known();
+                  if !value_type.is_constructible() {
                     errors.log(CompileError::new(
-                      CantBindNonConstructible,
+                      if value_type.involves_texture_or_sampler() {
+                        LocalTextureOrSampler
+                      } else {
+                        CantBindNonConstructible
+                      },
                       exp.source_trace.clone(),
                     ));
                   }

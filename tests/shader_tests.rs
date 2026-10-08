@@ -688,7 +688,10 @@ error_test!(
   discard_in_cpu_failure,
   CompileErrorKind::DiscardOutsideFragment
 );
-error_test!(into_ambiguous_failure, CompileErrorKind::CouldntInferTypes);
+error_test!(
+  into_ambiguous_failure,
+  CompileErrorKind::AmbiguousOverload("into".into())
+);
 error_test!(external_string_var, CompileErrorKind::ExternalStringVar);
 error_test!(
   external_string_field_var,
@@ -1253,4 +1256,9 @@ error_test!(
 error_test!(
   bitwise_assignment_immutable_failure,
   CompileErrorKind::AssignmentTargetMustBeVariable("x".into())
+);
+error_test!(texture_let_failure, CompileErrorKind::LocalTextureOrSampler);
+error_test!(
+  ambiguous_overload_failure,
+  CompileErrorKind::AmbiguousOverload("step".into())
 );

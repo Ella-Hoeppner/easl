@@ -87,6 +87,7 @@ macro_rules! buffer_test {
 }
 
 buffer_test!(dispatch_capture_array_length);
+buffer_test!(overloaded_entry_ascription);
 buffer_test!(dispatch_captured_closure_unused);
 buffer_test!(argument_order_gpu);
 buffer_test!(for_update_runs_on_continue_gpu);

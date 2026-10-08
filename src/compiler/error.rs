@@ -305,7 +305,9 @@ pub enum CompileErrorKind {
   ContinueOutsideLoop,
   #[error("`break` can only occur inside a loop")]
   BreakOutsideLoop,
-  #[error("Wildcard encountered outside of pattern")]
+  #[error(
+    "Wildcard encountered outside of pattern; `_` may not be used as a name"
+  )]
   WildcardOutsidePattern,
   #[error(
     "Can't have additional patterns in a match block after a wildcard pattern"
@@ -615,6 +617,16 @@ pub enum CompileErrorKind {
     "Can't create a binding to a non-constructible type (contains an atomic or unsized array)"
   )]
   CantBindNonConstructible,
+  #[error(
+    "Textures and samplers must be global variables; they can't be bound \
+    locally"
+  )]
+  LocalTextureOrSampler,
+  #[error(
+    "`{0}` is overloaded, and nothing here determines which overload is \
+    meant; add a type ascription to pick one"
+  )]
+  AmbiguousOverload(String),
   #[error("Can't compute the size of a value of type String")]
   CantComputeSizeOfString,
   #[error("Invalid `import` expression")]
@@ -729,6 +741,7 @@ impl PartialEq for CompileErrorKind {
       (Self::ImportCycle(l0), Self::ImportCycle(r0)) => l0 == r0,
       (Self::ImportNotFound(l0), Self::ImportNotFound(r0)) => l0 == r0,
       (Self::NameCollision(l0), Self::NameCollision(r0)) => l0 == r0,
+      (Self::AmbiguousOverload(l0), Self::AmbiguousOverload(r0)) => l0 == r0,
       (
         Self::BuiltinTypeRedefinition(l0),
         Self::BuiltinTypeRedefinition(r0),
