@@ -116,7 +116,7 @@ The pipeline is **not idempotent** (a late pass turns `Reference` into `Pointer`
 
 ### Generics
 - `(defn (map T U) [...])`; monomorphized by `TypedExp::monomorphize` and `AbstractFunctionSignature::generate_monomorphized`
-- `AbstractStruct::opaque: true` marks WGSL-native types (`atomic`, textures, `sampler`, `Video`) that must never be emitted as struct definitions. New WGSL-primitive builtin types need it. (`MidiNote` is deliberately *not* opaque or skipped — it has no native WGSL form, so it emits like a user struct)
+- `AbstractStruct::opaque: true` marks WGSL-native types (`Atomic`, `Texture2D`, `Sampler`, `Video`) that must never be emitted as struct definitions. New WGSL-primitive builtin types need it. `Texture2D`, `Sampler`, and `Video` are also in `ABNORMAL_CONSTRUCTOR_STRUCTS` (no field constructor; `Atomic` keeps its `(Atomic x)`). (`MidiNote` is deliberately *not* opaque or skipped — it has no native WGSL form, so it emits like a user struct)
 - Every declared generic must appear in the definition's signature (`validate_generic_usage` → `UnusedGeneric`): an unused one can never be inferred. The check collects names everywhere a generic can hide (function-typed args, const array sizes, nested skolems); over-collecting is safe, missing a name is not
 - Generic instances named only in declarations (a top-level var's type, a signature) are registered for emission too, so declarations never name undefined types
 
@@ -125,6 +125,7 @@ The pipeline is **not idempotent** (a late pass turns `Reference` into `Pointer`
 - Constructors/matches `bitcast` to/from the words — except `bool` chunks (packed `u32(x)`, unpacked `x != 0u`; C stores `? 1u : 0u`) and matrices (packed column-major, unpacked through the scalar `matCxR(...)` constructor; matrix column indexing is `m[i]` in WGSL and the prelude's `index_matNxM` in C). String/runtime-sized payloads are CPU-only
 - Variant names are qualified by their enum (`Shape/Circle`, see "Modules"); `@unpack` makes them plain module members (the builtin `Option`'s `Some`/`None` behave so)
 - Unit variants become constants, data variants constructor functions. Enum constructors are synthesized directly in `compile_to_target` (they never pass through `TopLevelFunction::compile`), so that loop has its own target gate — a new "CPU-only type" condition must be added in both places
+- Builtin enums: `Option` (unpacked variants `Some`/`None`), and `FilterMode`/`AddressMode` (qualified variants, e.g. `FilterMode/Linear`, for the `Sampler` constructor). The resolver passes a builtin enum's qualified variant through when the program doesn't bind its head (`builtin_variants`); `(use FilterMode)` isn't supported
 - `Option` is a builtin enum, always registered. Defining a struct or enum with any builtin type's name (primitives, builtin structs/enums, type aliases — `Option`, `vec4f`, `f32`, …) is `BuiltinTypeRedefinition`, in every module (checked by the resolver; `PRIMITIVE_TYPE_NAMES` lists the names that aren't typedefs). Enum emission skips still-generic enums (`flat_data_size_in_u32s` panics on a generic payload)
 - `match` works on numbers, bools, enums, and vectors (vector-literal patterns); anything else is `CantMatchOnType`
 
@@ -194,6 +195,9 @@ Readable/writable by an embedding host through `ExternalVars`. Must be in a GPU 
 
 ### Window-info queries
 `window-resolution`, `window-time`, `mouse-*`, `key-down?`, etc. work in CPU and GPU code and always read a **per-frame snapshot**: `extract_gpu_window_info` rewrites every query into a read of an implicit uniform binding (bools as `u32`), refreshed at frame start. The rewrite is unconditional — CPU uses too — **by design**: every query in a frame sees one value, and whether some other call site dispatches a helper to the GPU never changes what its CPU calls observe. Key queries with literal strings get bindings; runtime-computed key strings stay CPU-only live queries.
+
+### Samplers
+`Sampler` vars live in the `Handle` space like textures and are host-side on the CPU (`Value::Sampler(SamplerSettings)`, VM `dynamic_globals`). The `(Sampler filter address)` constructor is CPU-exclusive and only assigned to a `Sampler` var (VM: `HostOp::AssignSampler`; `CopyHostGlobal` copies one host-side global into another); an unassigned one holds `SamplerSettings::default()` (nearest, clamp-to-edge). They upload as `BufferUpload::Sampler`, and `GpuCore` keeps one `wgpu::Sampler` per `GpuBufferKind::Sampler` binding, recreated (with its bind groups) when the settings change. Pinned by `sampler_modes` and `sampler_usage` (expected values avoid GPU-dependent filtering precision: linear samples sit exactly between texels).
 
 ### Video input (`video` feature)
 `Video` is a builtin **value** struct (`_source`, `_frame`, `_length` u32s) with no constructor — produced only by `load-video`. Opacity is by convention (the `_` fields are technically accessible — a documented trade-off). The heavy decoder lives host-side in `VideoRegistry` as a transparent cache; decoding is a pure function of (source, frame). Scrub/query ops are pure slot arithmetic; `load-video` and `get-video-frame-texture` are host ops (the latter only as the RHS of assignment to a texture global). All ops are CPU-exclusive; any type embedding a `Video` is CPU-only for emission (`involves_video`).

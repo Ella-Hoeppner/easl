@@ -213,6 +213,8 @@ struct Resolver<'a> {
   scopes: Vec<Scope>,
   builtin_functions: HashSet<Arc<str>>,
   builtin_types: HashSet<Arc<str>>,
+  /// The qualified variant names of the builtin enums (`FilterMode/Linear`).
+  builtin_variants: HashSet<Arc<str>>,
   /// Qualifies main-file functions that share a builtin's name.
   root_builtin_prefix: String,
   /// The main file's unqualified internal names, which a name in another
@@ -359,6 +361,7 @@ pub fn resolve_modules(
   trees: Vec<Vec<EaslTree>>,
   builtin_functions: HashSet<Arc<str>>,
   builtin_types: HashSet<Arc<str>>,
+  builtin_variants: HashSet<Arc<str>>,
   errors: &mut ErrorLog,
 ) -> ResolvedModules {
   // Module prefixes share one namespace with the main file's inline
@@ -407,6 +410,7 @@ pub fn resolve_modules(
     scopes: vec![],
     builtin_functions,
     builtin_types,
+    builtin_variants,
     root_builtin_prefix,
     root_names: HashSet::new(),
     groups: HashMap::new(),
@@ -1512,6 +1516,14 @@ impl<'a> Resolver<'a> {
     {
       let head = self.resolve_leaf(head, position, id, generics, source);
       return format!("{head}.{fields}");
+    }
+    // A builtin enum's variants (`FilterMode/Linear`) are builtin names
+    // themselves, unless the program binds the head to something else.
+    if self.builtin_variants.contains(name)
+      && let Some((head, _)) = name.split_once('/')
+      && self.scopes[id].get(head).is_none()
+    {
+      return name.to_string();
     }
     if is_path(name) {
       let scope = std::mem::take(&mut self.scopes[id]);

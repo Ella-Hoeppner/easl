@@ -999,6 +999,13 @@ impl Program {
       expanded_documents,
       builtins.abstract_functions.into_keys().collect(),
       builtin_types,
+      builtins
+        .typedefs
+        .enums
+        .iter()
+        .flat_map(|e| e.variants.iter().map(|v| v.name.clone()))
+        .filter(|name| name.contains('/'))
+        .collect(),
       &mut errors,
     );
     for tree in resolved.trees.iter() {

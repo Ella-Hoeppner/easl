@@ -1,0 +1,57 @@
+; Samplers in the shapes shaders use them: sampled in a fragment shader
+; while drawing one texture into another, passed to a helper function, and
+; copied from one sampler var to another on the CPU.
+
+@handle
+(var tex: (Texture2D f32))
+
+@handle
+(var blended: (Texture2D f32))
+
+(var smooth: Sampler)
+(var pixelated: Sampler)
+(var copied: Sampler)
+
+(var results: [3: vec4f])
+
+@vertex
+(defn fullscreen [@{builtin vertex-index} i: u32]: vec4f
+  (match i
+    0u (vec4f -1. -1. 0. 1.)
+    1u (vec4f 3. -1. 0. 1.)
+    _ (vec4f -1. 3. 0. 1.)))
+
+@fragment
+(defn paint [@{builtin position} p: vec4f]: vec4f
+  (if (< p.x 1.)
+    (vec4f 1. 0. 0. 1.)
+    (vec4f 0. 0. 1. 1.)))
+
+@fragment
+(defn blend-middle []: vec4f
+  (texture-sample tex smooth (vec2f 0.5 0.5)))
+
+(defn sample-at [s: Sampler u: f32]: vec4f
+  (texture-sample-level tex s (vec2f u 0.5) 0.))
+
+@compute
+(defn read-back []
+  (= (results 0u) (texture-load blended (vec2u 0u) 0u))
+  (= (results 1u) (sample-at pixelated 0.45))
+  (= (results 2u) (sample-at copied 0.5)))
+
+@cpu
+(defn main []
+  (= tex (blank-texture (vec2u 2u 1u)))
+  (= blended (blank-texture (vec2u 1u)))
+  (set-render-target tex)
+  (dispatch-render-shaders fullscreen paint 3u)
+  (= smooth (Sampler FilterMode/Linear AddressMode/ClampToEdge))
+  (set-render-target blended)
+  (dispatch-render-shaders fullscreen blend-middle 3u)
+  (clear-render-target)
+  (= pixelated (Sampler FilterMode/Nearest AddressMode/ClampToEdge))
+  (= copied smooth)
+  (dispatch-compute-shader read-back (vec3u 1u))
+  (print copied)
+  (print results))

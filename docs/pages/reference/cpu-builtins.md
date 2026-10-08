@@ -230,6 +230,25 @@ Loads a PNG or JPEG into a texture. The path is relative to the source file.
 
 An empty texture of the given size, e.g. to render into.
 
+### `Sampler`
+
+```easl
+(Sampler filter: FilterMode address: AddressMode): Sampler
+```
+
+Constructs a sampler, to assign to a `Sampler` var. `filter` is how texture samples between texel centers are read:
+
+- `FilterMode/Nearest`: the nearest texel, for crisp, blocky scaling.
+- `FilterMode/Linear`: a blend of the surrounding texels, for smooth scaling.
+
+`address` is how coordinates outside `[0, 1]` are read, on both axes:
+
+- `AddressMode/ClampToEdge`: the texel at the nearest edge.
+- `AddressMode/Repeat`: the texture tiles.
+- `AddressMode/MirrorRepeat`: the texture tiles, flipping every other copy.
+
+A `Sampler` var that's never assigned is `(Sampler FilterMode/Nearest AddressMode/ClampToEdge)`.
+
 ### `set-render-target`
 
 ```easl

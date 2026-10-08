@@ -18,7 +18,10 @@ use crate::compiler::entry::EntryPoint;
 use crate::compiler::modules::display_name;
 use crate::compiler::util::compile_word;
 use crate::compiler::{
-  builtins::{ASSIGNMENT_OPS, ATOMIC_MUTATION_OPS},
+  builtins::{
+    ASSIGNMENT_OPS, ATOMIC_MUTATION_OPS, address_mode_enum, filter_mode_enum,
+  },
+  enums::AbstractEnum,
   error::{CompileError, SourceTrace},
   expression::{Accessor, Exp, ExpKind, Number, SwizzleField},
   functions::{
@@ -277,6 +280,69 @@ pub enum Value {
     data: Vec<u8>,
     binding: Option<GroupAndBinding>,
   },
+  /// A sampler's settings, created by the `Sampler` constructor. Uploaded to the GPU as a
+  /// `wgpu::Sampler`.
+  Sampler(SamplerSettings),
+}
+
+/// How a sampler reads between texel centers (the builtin `FilterMode`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SamplerFilter {
+  #[default]
+  Nearest,
+  Linear,
+}
+
+/// How a sampler reads coordinates outside `[0, 1]` (the builtin
+/// `AddressMode`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SamplerAddress {
+  #[default]
+  ClampToEdge,
+  Repeat,
+  MirrorRepeat,
+}
+
+/// A sampler's settings. The default (an unassigned `Sampler` var) is
+/// WebGPU's: nearest filtering, clamped to the edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct SamplerSettings {
+  pub filter: SamplerFilter,
+  pub address: SamplerAddress,
+}
+
+impl SamplerSettings {
+  /// The settings `(Sampler filter address)` makes, from the variants'
+  /// declaration-order indices (their discriminants).
+  pub fn from_discriminants(filter: u32, address: u32) -> Self {
+    Self {
+      filter: match filter {
+        0 => SamplerFilter::Nearest,
+        1 => SamplerFilter::Linear,
+        _ => unreachable!("FilterMode discriminant {filter}"),
+      },
+      address: match address {
+        0 => SamplerAddress::ClampToEdge,
+        1 => SamplerAddress::Repeat,
+        2 => SamplerAddress::MirrorRepeat,
+        _ => unreachable!("AddressMode discriminant {address}"),
+      },
+    }
+  }
+
+  /// Easl source that makes these settings.
+  fn describe(&self) -> String {
+    let filter = match self.filter {
+      SamplerFilter::Nearest => "Nearest",
+      SamplerFilter::Linear => "Linear",
+    };
+    let address = match self.address {
+      SamplerAddress::ClampToEdge => "ClampToEdge",
+      SamplerAddress::Repeat => "Repeat",
+      SamplerAddress::MirrorRepeat => "MirrorRepeat",
+    };
+    format!("(Sampler FilterMode/{filter} AddressMode/{address})")
+  }
 }
 
 impl Value {
@@ -2213,6 +2279,7 @@ fn apply_builtin_fn<IO: IOManager>(
         })?;
       Ok(make_video_value(source_index, 0, info.frame_count))
     }
+    "Sampler" => Ok(sampler_value(&args[0].0, &args[1].0)),
     "get-video-frame-texture" => {
       let (source, frame) = video_source_and_frame(&args[0].0);
       let decoded = env.video.decode_frame(source, frame).map_err(|e| {
@@ -2528,6 +2595,7 @@ impl Value {
       (Value::Prim(Primitive::I32(i)), _) => i.to_string(),
       (Value::Prim(Primitive::U32(u)), _) => format!("{u}u"),
       (Value::Prim(Primitive::Bool(b)), _) => b.to_string(),
+      (Value::Sampler(settings), _) => settings.describe(),
       (Value::Array(cols), Type::Struct(s)) if s.name.starts_with("mat") => {
         let scalar_type = s.fields[0].field_type.kind.unwrap_known();
         let suffix = match &scalar_type {
@@ -3149,6 +3217,8 @@ pub enum BufferUpload {
     height: u32,
     data: Vec<u8>,
   },
+  /// Set a sampler binding's settings.
+  Sampler(SamplerSettings),
 }
 
 /// Internal frame-level GPU command, used by StdoutIO to pass commands to
@@ -3483,6 +3553,9 @@ pub enum GpuBufferKind {
   /// A 2D texture bound via `@group/@binding` with `Handle` address space.
   /// Backed by a `wgpu::Texture` rather than a `wgpu::Buffer`.
   Texture2D,
+  /// A `Sampler` (also in the `Handle` address space), backed by a
+  /// `wgpu::Sampler`.
+  Sampler,
 }
 
 /// Tracks whether a GPU-bound buffer is in sync between CPU and GPU.
@@ -3624,27 +3697,33 @@ fn gpu_binding_infos_from(
         VariableAddressSpace::StorageReadWrite => {
           GpuBufferKind::StorageReadWrite
         }
+        VariableAddressSpace::Handle if ty.is_sampler() => {
+          GpuBufferKind::Sampler
+        }
         VariableAddressSpace::Handle => GpuBufferKind::Texture2D,
         _ => unreachable!(),
       };
-      // Textures have no buffer size (handled separately in window.rs).
-      // 0 for unsized arrays → size handled dynamically in window.rs.
-      let size = if kind == GpuBufferKind::Texture2D {
-        0
-      } else {
-        let u32s = ty.wgsl_flat_data_size_in_u32s();
-        if u32s == 0 {
+      // Textures and samplers have no buffer size (handled separately in
+      // window.rs). 0 for unsized arrays → size handled dynamically in
+      // window.rs.
+      let size =
+        if matches!(kind, GpuBufferKind::Texture2D | GpuBufferKind::Sampler) {
           0
         } else {
-          padded_buffer_bytes(
-            u32s as u64 * 4,
-            matches!(
-              kind,
-              GpuBufferKind::StorageReadOnly | GpuBufferKind::StorageReadWrite
-            ),
-          )
-        }
-      };
+          let u32s = ty.wgsl_flat_data_size_in_u32s();
+          if u32s == 0 {
+            0
+          } else {
+            padded_buffer_bytes(
+              u32s as u64 * 4,
+              matches!(
+                kind,
+                GpuBufferKind::StorageReadOnly
+                  | GpuBufferKind::StorageReadWrite
+              ),
+            )
+          }
+        };
       GpuBindingInfo {
         group: gb.group,
         binding: gb.binding,
@@ -5257,6 +5336,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         None => {
           // Texture (Handle) bindings must be loaded via load-image; start
           // Uninitialized so no spurious zeroed struct is created for them.
+          // A sampler starts with the default settings.
           let is_handle = matches!(
             var.kind,
             TopLevelVariableKind::Var {
@@ -5264,7 +5344,9 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
               ..
             }
           );
-          if is_handle {
+          if var.var_type.is_sampler() {
+            Value::Sampler(SamplerSettings::default())
+          } else if is_handle {
             Value::Uninitialized
           } else {
             // Unsized arrays and other unzeroable types fall back to
@@ -5466,6 +5548,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             height: *height,
             data: data.clone(),
           },
+          Some(Value::Sampler(settings)) => BufferUpload::Sampler(*settings),
           _ if *addr == VariableAddressSpace::Handle => {
             // Uninitialized texture — skip; placeholder texture is used on GPU.
             return None;
@@ -5711,6 +5794,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           height: *height,
           data: data.clone(),
         },
+        Some(Value::Sampler(settings)) => BufferUpload::Sampler(*settings),
         _ if *addr == VariableAddressSpace::Handle => {
           // Uninitialized texture — skip upload; the placeholder texture
           // created during GPU init remains bound.
@@ -6654,6 +6738,24 @@ fn write_back_through_lhs<IO: IOManager>(
     *slot = new_value;
   }
   Ok(())
+}
+
+/// The value `(Sampler filter address)` makes. Kept out of
+/// `apply_builtin_fn` so its locals don't grow that function's stack frame.
+fn sampler_value(filter: &Value, address: &Value) -> Value {
+  let discriminant = |value: &Value, e: AbstractEnum| -> u32 {
+    let Value::Enum(variant, _) = value else {
+      panic!("sampler: expected an enum argument")
+    };
+    e.variants
+      .iter()
+      .position(|v| v.name == *variant)
+      .expect("sampler: unknown variant") as u32
+  };
+  Value::Sampler(SamplerSettings::from_discriminants(
+    discriminant(filter, filter_mode_enum()),
+    discriminant(address, address_mode_enum()),
+  ))
 }
 
 /// Writes a video-scrub op's mutated `Video` (returned by `apply_builtin_fn`)
@@ -8834,6 +8936,33 @@ fn vm_host_call<IO: IOManager>(
         && let Some(slot) = stack_entry.last_mut()
       {
         slot.0 = value;
+      }
+    }
+    HostOp::CopyHostGlobal { binding, source } => {
+      let value = env
+        .lookup(&code.host_bindings[*source as usize].name)?
+        .clone();
+      let b = &code.host_bindings[*binding as usize];
+      if let Some(stack_entry) = env.bindings.get_mut(&b.name)
+        && let Some(slot) = stack_entry.last_mut()
+      {
+        slot.0 = value;
+      }
+    }
+    HostOp::AssignSampler {
+      binding,
+      filter_slot,
+      address_slot,
+    } => {
+      let b = &code.host_bindings[*binding as usize];
+      let settings = SamplerSettings::from_discriminants(
+        stack[*filter_slot as usize],
+        stack[*address_slot as usize],
+      );
+      if let Some(stack_entry) = env.bindings.get_mut(&b.name)
+        && let Some(slot) = stack_entry.last_mut()
+      {
+        slot.0 = Value::Sampler(settings);
       }
     }
     HostOp::AssignTextureBlank { binding, size_slot } => {

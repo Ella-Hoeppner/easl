@@ -1442,6 +1442,9 @@ impl Type {
       Type::Skolem(_, _) => panic!(),
     }
   }
+  pub fn is_sampler(&self) -> bool {
+    matches!(self, Type::Struct(s) if &*s.name == "Sampler")
+  }
   /// Whether this type is, or contains, a texture or sampler.
   pub fn involves_texture_or_sampler(&self) -> bool {
     match self {

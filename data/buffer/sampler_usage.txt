@@ -1,0 +1,2 @@
+(Sampler FilterMode/Linear AddressMode/ClampToEdge)
+[(vec4f 0.5 0. 0.5 1.) (vec4f 1. 0. 0. 1.) (vec4f 0.5 0. 0.5 1.)]

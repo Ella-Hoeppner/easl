@@ -1262,3 +1262,30 @@ error_test!(
   ambiguous_overload_failure,
   CompileErrorKind::AmbiguousOverload("step".into())
 );
+
+error_test!(
+  sampler_without_settings_failure,
+  CompileErrorKind::FunctionArgumentTypesIncompatible {
+    f: TypeStateDescription::Known(TypeDescription::Function {
+      arg_types: vec![
+        (
+          TypeStateDescription::Known(TypeDescription::Enum(
+            "FilterMode".into()
+          )),
+          vec![],
+        ),
+        (
+          TypeStateDescription::Known(TypeDescription::Enum(
+            "AddressMode".into()
+          )),
+          vec![],
+        ),
+      ],
+      return_type: Box::new(TypeStateDescription::Known(
+        TypeDescription::Struct("Sampler".into())
+      )),
+    }),
+    args: vec![],
+  },
+  CompileErrorKind::WrongArity(Some("Sampler".into()))
+);

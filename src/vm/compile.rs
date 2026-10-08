@@ -4406,6 +4406,15 @@ impl TypedExp {
         } else if let ExpKind::Name(name) = &lhs.kind
           && let Some(binding) = state.dynamic_globals.get(name).copied()
         {
+          // One host-side global copied into another (`(= copied smooth)`).
+          if let ExpKind::Name(source_name) = &rhs.kind
+            && let Some(source) =
+              state.dynamic_globals.get(source_name).copied()
+          {
+            state.emit_read_check(source_name);
+            state.emit_host_op(HostOp::CopyHostGlobal { binding, source });
+            return Some(None);
+          }
           let ExpKind::Application(rhs_f, rhs_args) = &rhs.kind else {
             panic!("unsupported assignment to dynamic global in VM CPU runtime")
           };
@@ -4455,6 +4464,19 @@ impl TypedExp {
               state.emit_host_op(HostOp::AssignTextureBlank {
                 binding,
                 size_slot,
+              });
+            }
+            "Sampler" => {
+              let filter_slot = rhs_args[0]
+                .compile_to_bytecode(CompilePosition::Value, state)
+                .unwrap();
+              let address_slot = rhs_args[1]
+                .compile_to_bytecode(CompilePosition::Value, state)
+                .unwrap();
+              state.emit_host_op(HostOp::AssignSampler {
+                binding,
+                filter_slot,
+                address_slot,
               });
             }
             other => panic!(

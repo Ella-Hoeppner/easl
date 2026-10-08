@@ -1,0 +1,5 @@
+(var s: Sampler)
+
+@cpu
+(defn main []
+  (= s (Sampler)))

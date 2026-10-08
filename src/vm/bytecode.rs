@@ -868,6 +868,19 @@ pub enum HostOp {
     binding: u16,
     path_slot: u16,
   },
+  /// `(= global source-global)` between host-side globals (textures and
+  /// samplers).
+  CopyHostGlobal {
+    binding: u16,
+    source: u16,
+  },
+  /// `(= sampler-global (Sampler filter address))`; the enum arguments'
+  /// first slots hold their discriminants.
+  AssignSampler {
+    binding: u16,
+    filter_slot: u16,
+    address_slot: u16,
+  },
   /// `(= texture-global (blank-texture w h))` — 2 u32 slots at `size_slot`.
   AssignTextureBlank {
     binding: u16,

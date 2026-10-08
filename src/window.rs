@@ -30,7 +30,7 @@ use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 
 use crate::interpreter::{
   BufferUpload, EvalError, FrameDriver, GpuBindingInfo, GpuBufferKind,
-  GpuEntryInfo, WindowEvent,
+  GpuEntryInfo, SamplerAddress, SamplerFilter, SamplerSettings, WindowEvent,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::interpreter::{EvalException, IOManager};
@@ -160,6 +160,32 @@ fn rgba8_to_rgba16float(data: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&f32_to_f16(f).to_le_bytes());
   }
   out
+}
+
+/// A sampler with `settings`, filtering and addressing the same way on both
+/// axes.
+fn create_sampler(
+  device: &wgpu::Device,
+  settings: SamplerSettings,
+) -> wgpu::Sampler {
+  let filter = match settings.filter {
+    SamplerFilter::Nearest => wgpu::FilterMode::Nearest,
+    SamplerFilter::Linear => wgpu::FilterMode::Linear,
+  };
+  let address = match settings.address {
+    SamplerAddress::ClampToEdge => wgpu::AddressMode::ClampToEdge,
+    SamplerAddress::Repeat => wgpu::AddressMode::Repeat,
+    SamplerAddress::MirrorRepeat => wgpu::AddressMode::MirrorRepeat,
+  };
+  device.create_sampler(&wgpu::SamplerDescriptor {
+    label: Some("sampler"),
+    address_mode_u: address,
+    address_mode_v: address,
+    address_mode_w: address,
+    mag_filter: filter,
+    min_filter: filter,
+    ..Default::default()
+  })
 }
 
 fn create_texture_and_view(
@@ -380,6 +406,8 @@ pub struct GpuCore {
   pub textures: HashMap<(u8, u8), wgpu::Texture>,
   /// Texture views for `Texture2D` bindings, used in bind groups.
   pub texture_views: HashMap<(u8, u8), wgpu::TextureView>,
+  /// Samplers for `Sampler` bindings, with the settings each was made from.
+  samplers: HashMap<(u8, u8), (SamplerSettings, wgpu::Sampler)>,
   /// Current window dimensions in pixels.
   pub window_size: (u32, u32),
   /// Time in seconds since the window was opened, updated at the start of each frame.
@@ -458,16 +486,18 @@ impl GpuCore {
         let key = (slot.group, slot.binding);
         wgpu::BindGroupEntry {
           binding: slot.binding as u32,
-          resource: if slot.kind == GpuBufferKind::Texture2D {
-            wgpu::BindingResource::TextureView(
+          resource: match slot.kind {
+            GpuBufferKind::Texture2D => wgpu::BindingResource::TextureView(
               if placeholder_for == Some(key) {
                 &self.placeholder_texture_view
               } else {
                 self.texture_views.get(&key).expect("texture view missing")
               },
-            )
-          } else {
-            self.binding_buffers[&key].as_entire_binding()
+            ),
+            GpuBufferKind::Sampler => {
+              wgpu::BindingResource::Sampler(&self.samplers[&key].1)
+            }
+            _ => self.binding_buffers[&key].as_entire_binding(),
           },
         }
       })
@@ -527,7 +557,8 @@ impl GpuCore {
       }
     }
     for slot in &self.binding_slots {
-      if slot.kind == GpuBufferKind::Texture2D {
+      if matches!(slot.kind, GpuBufferKind::Texture2D | GpuBufferKind::Sampler)
+      {
         *used
           .entry((slot.group, slot.binding))
           .or_insert(wgpu::ShaderStages::NONE) |= all_stages;
@@ -557,20 +588,22 @@ impl GpuCore {
           .map(|slot| wgpu::BindGroupLayoutEntry {
             binding: slot.binding as u32,
             visibility: used[&(slot.group, slot.binding)],
-            ty: if slot.kind == GpuBufferKind::Texture2D {
-              wgpu::BindingType::Texture {
+            ty: match slot.kind {
+              GpuBufferKind::Texture2D => wgpu::BindingType::Texture {
                 multisampled: false,
                 view_dimension: wgpu::TextureViewDimension::D2,
                 sample_type: wgpu::TextureSampleType::Float {
                   filterable: true,
                 },
+              },
+              GpuBufferKind::Sampler => {
+                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)
               }
-            } else {
-              wgpu::BindingType::Buffer {
+              _ => wgpu::BindingType::Buffer {
                 ty: gpu_binding_type(slot.kind),
                 has_dynamic_offset: false,
                 min_binding_size: None,
-              }
+              },
             },
             count: None,
           })
@@ -615,7 +648,9 @@ impl GpuCore {
         .iter()
         .find(|slot| (slot.group, slot.binding) == *key)
         .map(|slot| slot.kind)
-        .filter(|kind| *kind != GpuBufferKind::Texture2D)
+        .filter(|kind| {
+          !matches!(kind, GpuBufferKind::Texture2D | GpuBufferKind::Sampler)
+        })
     };
     for (stage_name, stage) in [
       ("vertex", wgpu::ShaderStages::VERTEX),
@@ -776,6 +811,16 @@ impl GpuCore {
       let (group, binding, kind, size) =
         (info.group, info.binding, info.kind, info.byte_size);
       let key = (group, binding);
+      if kind == GpuBufferKind::Sampler {
+        // Keep an existing sampler; a new one starts at the defaults.
+        if !self.samplers.contains_key(&key) {
+          let settings = SamplerSettings::default();
+          self
+            .samplers
+            .insert(key, (settings, create_sampler(&self.device, settings)));
+        }
+        continue;
+      }
       if kind == GpuBufferKind::Texture2D {
         // Keep existing texture if one exists; create a placeholder if not.
         if !self.textures.contains_key(&key) {
@@ -906,11 +951,23 @@ impl GpuCore {
             changed_keys.push(key);
           }
         }
+        BufferUpload::Sampler(settings) => {
+          if self.samplers.get(&key).map(|(stored, _)| stored) != Some(settings)
+          {
+            self.samplers.insert(
+              key,
+              (*settings, create_sampler(&self.device, *settings)),
+            );
+            changed_keys.push(key);
+          }
+        }
         _ => {
           let incoming_size = match upload {
             BufferUpload::Data(bytes) => bytes.len() as u64,
             BufferUpload::Clear { byte_count } => *byte_count,
-            BufferUpload::TextureData { .. } => unreachable!(),
+            BufferUpload::TextureData { .. } | BufferUpload::Sampler(_) => {
+              unreachable!()
+            }
           };
           let stored_size = *self.binding_buffer_sizes.get(&key).unwrap_or(&0);
           if incoming_size != stored_size {
@@ -942,10 +999,12 @@ impl GpuCore {
     }
 
     // Second pass: write data, issue GPU clears, or upload texture pixels.
+    // (Sampler settings are complete after the first pass.)
     let mut encoder: Option<wgpu::CommandEncoder> = None;
     for ((group, binding), upload) in data {
       let key = (*group, *binding);
       match upload {
+        BufferUpload::Sampler(_) => {}
         BufferUpload::Data(bytes) => {
           if let Some(buffer) = self.binding_buffers.get(&key) {
             self.queue.write_buffer(buffer, 0, bytes);
@@ -1731,11 +1790,16 @@ impl GpuCore {
     let mut textures: HashMap<(u8, u8), wgpu::Texture> = HashMap::new();
     let mut texture_views: HashMap<(u8, u8), wgpu::TextureView> =
       HashMap::new();
+    let mut samplers: HashMap<(u8, u8), (SamplerSettings, wgpu::Sampler)> =
+      HashMap::new();
     for info in binding_infos {
       let (group, binding, kind, size) =
         (info.group, info.binding, info.kind, info.byte_size);
       let key = (group, binding);
-      if kind == GpuBufferKind::Texture2D {
+      if kind == GpuBufferKind::Sampler {
+        let settings = SamplerSettings::default();
+        samplers.insert(key, (settings, create_sampler(&device, settings)));
+      } else if kind == GpuBufferKind::Texture2D {
         let (texture, view) = create_texture_and_view(
           &device,
           &format!("texture g{group}b{binding}"),
@@ -1792,6 +1856,7 @@ impl GpuCore {
       binding_buffer_sizes,
       textures,
       texture_views,
+      samplers,
       window_size: (1, 1),
       window_time: 0.0,
       window_delta_time: 0.0,
@@ -2727,8 +2792,8 @@ fn gpu_buffer_usage(kind: GpuBufferKind) -> wgpu::BufferUsages {
         | wgpu::BufferUsages::COPY_DST
         | wgpu::BufferUsages::COPY_SRC
     }
-    GpuBufferKind::Texture2D => {
-      unreachable!("gpu_buffer_usage called for Texture2D binding")
+    GpuBufferKind::Texture2D | GpuBufferKind::Sampler => {
+      unreachable!("gpu_buffer_usage called for a {kind:?} binding")
     }
   }
 }
@@ -2742,8 +2807,8 @@ fn gpu_binding_type(kind: GpuBufferKind) -> wgpu::BufferBindingType {
     GpuBufferKind::StorageReadWrite => {
       wgpu::BufferBindingType::Storage { read_only: false }
     }
-    GpuBufferKind::Texture2D => {
-      unreachable!("gpu_binding_type called for Texture2D binding")
+    GpuBufferKind::Texture2D | GpuBufferKind::Sampler => {
+      unreachable!("gpu_binding_type called for a {kind:?} binding")
     }
   }
 }

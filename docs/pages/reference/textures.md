@@ -9,6 +9,12 @@ Textures and samplers are declared as global `var`s:
 
 `(Texture2D T)` is a 2d texture with components of type `T` (wgsl `texture_2d<T>`), the only texture kind so far; `Sampler` is wgsl's `sampler`. CPU code can create textures with [`load-image`](cpu-builtins.md#load-image) and [`blank-texture`](cpu-builtins.md#blank-texture), and render into them with [`set-render-target`](cpu-builtins.md#set-render-target).
 
+A `Sampler` (wgsl's `sampler`) decides how `texture-sample` and its variants read a texture: how they filter between texel centers, and what they read outside `[0, 1]`. CPU code constructs one with [`Sampler`](cpu-builtins.md#sampler); a sampler that's never set uses nearest filtering and clamps to the edge.
+
+```easl
+(= tex-sampler (Sampler FilterMode/Linear AddressMode/Repeat))
+```
+
 ### `texture-sample`
 
 ```easl

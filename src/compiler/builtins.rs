@@ -617,8 +617,39 @@ pub fn option_enum() -> AbstractEnum {
   }
 }
 
+/// A builtin enum whose variants carry no data, qualified by the enum's
+/// name like a user enum's.
+fn unit_enum(name: &str, variants: &[&str]) -> AbstractEnum {
+  AbstractEnum {
+    name: (name.into(), SourceTrace::empty()),
+    filled_generics: HashMap::new(),
+    generic_args: vec![],
+    variants: variants
+      .iter()
+      .map(|variant| AbstractEnumVariant {
+        name: format!("{name}/{variant}").into(),
+        source: SourceTrace::empty(),
+        inner_type: AbstractType::Type(Type::Unit),
+      })
+      .collect(),
+    abstract_ancestor: None,
+    source_trace: SourceTrace::empty(),
+  }
+}
+
+/// How a `Sampler` reads between texel centers: the nearest texel, or a
+/// blend of the surrounding ones.
+pub fn filter_mode_enum() -> AbstractEnum {
+  unit_enum("FilterMode", &["Nearest", "Linear"])
+}
+
+/// How a `Sampler` reads coordinates outside `[0, 1]`.
+pub fn address_mode_enum() -> AbstractEnum {
+  unit_enum("AddressMode", &["ClampToEdge", "Repeat", "MirrorRepeat"])
+}
+
 pub fn built_in_enums() -> Vec<AbstractEnum> {
-  vec![option_enum()]
+  vec![option_enum(), filter_mode_enum(), address_mode_enum()]
 }
 
 /// The builtin structs `target` represents natively — struct emission
@@ -3104,6 +3135,20 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       ..Default::default()
     },
     AbstractFunctionSignature {
+      name: "Sampler".into(),
+      arg_types: vec![
+        AbstractType::AbstractEnum(filter_mode_enum().into()).owned(),
+        AbstractType::AbstractEnum(address_mode_enum().into()).owned(),
+      ],
+      return_type: AbstractType::AbstractStruct(sampler().into()),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("Sampler".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
       name: "load-image".into(),
       arg_types: vec![AbstractType::Type(Type::String).owned()],
       return_type: AbstractType::AbstractStruct(
@@ -3715,8 +3760,14 @@ lazy_static! {
   ]
   .into_iter()
   .collect();
+  /// Types that get no automatic field constructor: the vectors (their
+  /// constructors are builtins), and the handle types, whose fields aren't
+  /// real (`Texture2D` comes from `load-image`/`blank-texture`, `Sampler`
+  /// from its own builtin constructor, `Video` from `load-video`).
   pub static ref ABNORMAL_CONSTRUCTOR_STRUCTS: HashSet<&'static str> =
-    ["vec2", "vec3", "vec4", "Video"].into_iter().collect();
+    ["vec2", "vec3", "vec4", "Texture2D", "Sampler", "Video"]
+      .into_iter()
+      .collect();
 }
 
 pub fn built_in_macros() -> Vec<Macro> {
