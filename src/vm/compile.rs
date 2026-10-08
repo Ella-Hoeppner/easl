@@ -4333,11 +4333,10 @@ impl TypedExp {
           .dynamic_globals
           .get(name)
           .expect("save-png argument isn't a texture binding");
-        let ExpKind::StringLiteral(path) = &args[1].kind else {
-          panic!("save-png path must be a string literal")
-        };
-        let path = state.host_string_index(&path.to_string());
-        state.emit_host_op(HostOp::SavePng { binding, path });
+        let path_slot = args[1]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .expect("save-png path produced no value");
+        state.emit_host_op(HostOp::SavePng { binding, path_slot });
         Some(None)
       }
       "=" => {
@@ -4415,12 +4414,13 @@ impl TypedExp {
           };
           match &**rhs_f_name {
             "load-image" => {
-              let ExpKind::StringLiteral(path) = &rhs_args[0].kind else {
-                panic!("load-image argument must be a string literal")
-              };
-              let path = state.host_string_index(&path.to_string());
-              state
-                .emit_host_op(HostOp::AssignTextureFromImage { binding, path });
+              let path_slot = rhs_args[0]
+                .compile_to_bytecode(CompilePosition::Value, state)
+                .expect("load-image path produced no value");
+              state.emit_host_op(HostOp::AssignTextureFromImage {
+                binding,
+                path_slot,
+              });
             }
             "get-video-frame-texture" => {
               // The `Video` arg's `_source`/`_frame` fields are at

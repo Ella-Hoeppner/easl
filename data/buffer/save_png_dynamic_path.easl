@@ -1,0 +1,27 @@
+; `save-png` and `load-image` take paths computed at runtime.
+
+@handle
+(var tex: (Texture2D f32))
+
+@handle
+(var tex2: (Texture2D f32))
+
+@storage-write
+(var value: vec4f)
+
+(defn out-path [name: String]: String
+  (concat "../../out/buffer/" name ".png"))
+
+@cpu
+(defn main []
+  (let [source (concat "red" "_pixel.png")
+        saved (out-path "save_png_dynamic_path")]
+    (= tex (load-image source))
+    (save-png tex saved)
+    (= tex2 (load-image saved)))
+  (dispatch-compute-shader
+    (fn []
+      (= value
+         (texture-load tex2 (vec2u 0u) 0u)))
+    (vec3u 1u))
+  (print value))

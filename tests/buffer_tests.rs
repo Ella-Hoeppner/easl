@@ -230,6 +230,7 @@ buffer_test!(render_target_pingpong);
 buffer_test!(offscreen_render_compute_order);
 buffer_test!(dispatch_from_scoped_frame_closure);
 buffer_test!(save_png_roundtrip);
+buffer_test!(save_png_dynamic_path);
 buffer_test!(save_png_render_target);
 buffer_test!(dispatch_captured_closure_hof);
 buffer_test!(dispatch_nested_lambda_capture_roundtrip);

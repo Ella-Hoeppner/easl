@@ -8824,9 +8824,10 @@ fn vm_host_call<IO: IOManager>(
         slot.0 = value;
       }
     }
-    HostOp::AssignTextureFromImage { binding, path } => {
+    HostOp::AssignTextureFromImage { binding, path_slot } => {
       let b = &code.host_bindings[*binding as usize];
-      let path = code.host_strings[*path as usize].clone();
+      let path =
+        words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
       let value = load_image_value(&path, &env.source_dir)?;
       let name = b.name.clone();
       if let Some(stack_entry) = env.bindings.get_mut(&name)
@@ -8871,9 +8872,10 @@ fn vm_host_call<IO: IOManager>(
     HostOp::SetMouseCapture { captured } => {
       env.io.set_mouse_capture(*captured);
     }
-    HostOp::SavePng { binding, path } => {
+    HostOp::SavePng { binding, path_slot } => {
       let b = &code.host_bindings[*binding as usize];
-      let path = code.host_strings[*path as usize].clone();
+      let path =
+        words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
       let texture = env.lookup(&b.name)?.clone();
       let Value::Texture {
         width,

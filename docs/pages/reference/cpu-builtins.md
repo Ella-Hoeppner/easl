@@ -219,7 +219,7 @@ Whether the named key was pressed this frame. Same key-naming rules as `key-down
 (load-image path: String): (Texture2D f32)
 ```
 
-Loads a PNG or JPEG into a texture. The path must be a string literal, relative to the source file.
+Loads a PNG or JPEG into a texture. The path is relative to the source file.
 
 ### `blank-texture`
 
@@ -252,7 +252,7 @@ Sends later render dispatches back to the window.
 (save-png t: (Texture2D f32) path: String): ()
 ```
 
-Saves a texture as a PNG. The path must be a string literal, relative to the source file; missing directories are created. It works on textures the GPU just rendered into:
+Saves a texture as a PNG. The path is relative to the source file; missing directories are created. It works on textures the GPU just rendered into:
 
 ```easl
 (set-render-target tex)

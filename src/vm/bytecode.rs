@@ -862,10 +862,11 @@ pub enum HostOp {
     binding: u16,
     video_slot: u16,
   },
-  /// `(= texture-global (load-image "path"))`
+  /// `(= texture-global (load-image path))`, with the path a `String` at
+  /// `path_slot`.
   AssignTextureFromImage {
     binding: u16,
-    path: u16,
+    path_slot: u16,
   },
   /// `(= texture-global (blank-texture w h))` — 2 u32 slots at `size_slot`.
   AssignTextureBlank {
@@ -885,7 +886,7 @@ pub enum HostOp {
   /// it was rendered into.
   SavePng {
     binding: u16,
-    path: u16,
+    path_slot: u16,
   },
   ClearRenderTarget,
   /// `(string x)`: format the value at `slot` (of type `host_types[ty]`)
