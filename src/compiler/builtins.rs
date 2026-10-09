@@ -3134,6 +3134,39 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
+    // `(current-directory)`: the directory of the file the call is written
+    // in. The module resolver replaces each call with that directory as a
+    // string literal, so no call reaches a runtime.
+    AbstractFunctionSignature {
+      name: "current-directory".into(),
+      arg_types: vec![],
+      return_type: AbstractType::Type(Type::String),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("current-directory".into())
+          .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    // `(resolve-path dir path)`: `path` joined onto `dir`, unless it's
+    // absolute. The module resolver expands `(resolve-path path)` into
+    // `(resolve-path (current-directory) path)`, and wraps every file
+    // builtin's path argument the same way (`PATH_BUILTIN_ARGUMENTS`).
+    AbstractFunctionSignature {
+      name: "resolve-path".into(),
+      arg_types: vec![
+        AbstractType::Type(Type::String).owned(),
+        AbstractType::Type(Type::String).owned(),
+      ],
+      return_type: AbstractType::Type(Type::String),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("resolve-path".into()).into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
     AbstractFunctionSignature {
       name: "Sampler".into(),
       arg_types: vec![
@@ -3757,6 +3790,21 @@ lazy_static! {
   pub static ref INFIX_OPS: HashSet<&'static str> = [
     "==", "!=", ">=", ">", "<=", "<", "||", "&&", "+", "-", "*", "/", "%",
     ">>", "<<", "|", "&", "^",
+  ]
+  .into_iter()
+  .collect();
+  /// The builtins that take a file path, with the path's argument index. A
+  /// relative path is relative to the file the call is written in: the
+  /// module resolver wraps the argument in
+  /// `(resolve-path (current-directory) path)`.
+  pub static ref PATH_BUILTIN_ARGUMENTS: HashMap<&'static str, usize> = [
+    ("load-image", 0),
+    ("save-png", 1),
+    ("load-wav", 0),
+    ("load-wav-raw", 0),
+    ("get-wav-sample-rate", 0),
+    ("save-wav", 0),
+    ("load-video", 0),
   ]
   .into_iter()
   .collect();

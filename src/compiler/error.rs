@@ -623,6 +623,11 @@ pub enum CompileErrorKind {
   )]
   LocalTextureOrSampler,
   #[error(
+    "`current-directory` must be called directly, with no arguments: it \
+    gives the directory of the file the call is written in"
+  )]
+  CurrentDirectoryNotCalled,
+  #[error(
     "`{0}` is overloaded, and nothing here determines which overload is \
     meant; add a type ascription to pick one"
   )]

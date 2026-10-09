@@ -1,0 +1,23 @@
+; File builtins, and `(resolve-path path)`, resolve a relative path against
+; the file the call is written in: `modules/sounds.easl` loads `tone.wav`
+; from `modules/`.
+
+(import "modules/sounds.easl")
+
+@cpu
+(defn main []
+  (print (tone-length))
+  (print (named-length "tone"))
+  (print (tone-rate))
+  (print (save-and-reload))
+  ; a path resolved in the library names its file from here too
+  (print (array-length (load-wav (tone-path))))
+  ; the two-argument form resolves against any directory, and leaves an
+  ; absolute path alone
+  (print (resolve-path "/sounds" "tone.wav"))
+  (print (resolve-path "/sounds" "/elsewhere/tone.wav"))
+  ; `(current-directory)` is this file's directory: a library helper given
+  ; it resolves this file's relative path
+  (print (length-in (current-directory) "../audio/test_sample.wav"))
+  (print (== (resolve-path "tone.wav")
+             (resolve-path (current-directory) "tone.wav"))))

@@ -2,4 +2,4 @@
 ; test_sample.wav is 44100 Hz.
 @cpu
 (defn main []
-  (print (get-wav-sample-rate "data/audio/test_sample.wav")))
+  (print (get-wav-sample-rate "../audio/test_sample.wav")))

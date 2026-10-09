@@ -1,0 +1,4 @@
+@cpu
+(defn main []
+  (let [directory-of current-directory]
+    (print (directory-of))))

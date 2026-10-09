@@ -145,7 +145,6 @@ fn run_interpreter(
         program,
         None,
         CaptureIO::new(),
-        None,
         CpuRuntime::TreeWalking,
       )
       .map(|(io, _)| io.prints)

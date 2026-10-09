@@ -6,7 +6,7 @@
 ; and scrubbing the copy must leave the original untouched.
 @cpu
 (defn main []
-  (let [@var v (load-video "data/video/scrub.mp4")]
+  (let [@var v (load-video "scrub.mp4")]
     (print (get-video-length v))
     ; 3u
     (print (get-current-frame-index v))

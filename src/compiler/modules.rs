@@ -28,13 +28,18 @@
 //! can see it.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, absolute};
 use std::sync::Arc;
 
 use fsexp::{document::DocumentPosition, syntax::EncloserOrOperator};
 
+use take_mut::take;
+
 use crate::{
-  compiler::error::{CompileError, CompileErrorKind, ErrorLog, SourceTrace},
+  compiler::{
+    builtins::PATH_BUILTIN_ARGUMENTS,
+    error::{CompileError, CompileErrorKind, ErrorLog, SourceTrace},
+  },
   parse::{EaslMultiDocument, EaslTree, Encloser, Operator},
 };
 
@@ -220,6 +225,8 @@ struct Resolver<'a> {
   /// The main file's unqualified internal names, which a name in another
   /// file can never refer to.
   root_names: HashSet<Arc<str>>,
+  /// Each file's absolute directory: what `(current-directory)` gives there.
+  file_directories: Vec<Option<String>>,
   groups: HashMap<Vec<Arc<str>>, Arc<str>>,
   /// Where each definition's name is written, by internal name (several for
   /// overloads).
@@ -347,6 +354,25 @@ fn variant_name(variant: &EaslTree) -> Option<(Arc<str>, SourceTrace)> {
   }
 }
 
+/// Each document's absolute directory.
+fn file_directories(documents: &EaslMultiDocument) -> Vec<Option<String>> {
+  documents
+    .sources
+    .iter()
+    .map(|(_, path, _)| {
+      let parent = Path::new(path).parent().unwrap_or(Path::new(""));
+      let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+      } else {
+        parent
+      };
+      absolute(parent)
+        .ok()
+        .map(|dir| dir.to_string_lossy().into_owned())
+    })
+    .collect()
+}
+
 fn file_stem(path: &str) -> String {
   Path::new(path)
     .file_stem()
@@ -413,6 +439,7 @@ pub fn resolve_modules(
     builtin_variants,
     root_builtin_prefix,
     root_names: HashSet::new(),
+    file_directories: file_directories(documents),
     groups: HashMap::new(),
     definition_sites: HashMap::new(),
     main_file_references: vec![],
@@ -449,6 +476,9 @@ pub fn resolve_modules(
   let mut output = vec![];
   for file in 0..documents.sources.len() {
     resolver.emit_module(file, &mut output);
+  }
+  for tree in output.iter() {
+    resolver.check_current_directory_calls(tree);
   }
   let main_file_index = resolver.main_file_index(names, written_names);
   ResolvedModules {
@@ -1462,13 +1492,130 @@ impl<'a> Resolver<'a> {
           ),
         ),
         children,
-      ) => EaslTree::Inner(
-        (tree_position, EO::Encloser(encloser)),
-        children
+      ) => {
+        let children: Vec<EaslTree> = children
           .into_iter()
           .map(|child| self.rewrite(child, position, id, generics))
-          .collect(),
+          .collect();
+        let mut tree =
+          EaslTree::Inner((tree_position, EO::Encloser(encloser)), children);
+        if encloser == Encloser::Parens {
+          self.resolve_path_arguments(&mut tree, id);
+          self.expand_current_directory(&mut tree, id);
+        }
+        tree
+      }
+    }
+  }
+
+  /// Makes relative paths relative to the file a call is written in.
+  /// `tree` is an application, already resolved, so a head the module bound
+  /// to its own definition no longer reads as a builtin:
+  /// - `(resolve-path path)` becomes `(resolve-path (current-directory)
+  ///   path)`;
+  /// - a file builtin's path argument (`PATH_BUILTIN_ARGUMENTS`) is wrapped
+  ///   in `(resolve-path (current-directory) path)`.
+  fn resolve_path_arguments(&self, tree: &mut EaslTree, id: ModuleId) {
+    let EaslTree::Inner(_, children) = tree else {
+      return;
+    };
+    let Some(EaslTree::Leaf(head_position, head)) = children.first() else {
+      return;
+    };
+    let current_directory = |position: &DocumentPosition| {
+      let mut call = EaslTree::Inner(
+        (
+          position.clone(),
+          EncloserOrOperator::Encloser(Encloser::Parens),
+        ),
+        vec![EaslTree::Leaf(
+          position.clone(),
+          "current-directory".to_string(),
+        )],
+      );
+      self.expand_current_directory(&mut call, id);
+      call
+    };
+    if head == "resolve-path" && children.len() == 2 {
+      let call = current_directory(&head_position.clone());
+      children.insert(1, call);
+      return;
+    }
+    let Some(&index) = PATH_BUILTIN_ARGUMENTS.get(head.as_str()) else {
+      return;
+    };
+    let Some(path) = children.get_mut(index + 1) else {
+      return;
+    };
+    let position = path.position().clone();
+    let directory = current_directory(&position);
+    take(path, |path| {
+      EaslTree::Inner(
+        (
+          position.clone(),
+          EncloserOrOperator::Encloser(Encloser::Parens),
+        ),
+        vec![
+          EaslTree::Leaf(position.clone(), "resolve-path".to_string()),
+          directory,
+          path,
+        ],
+      )
+    });
+  }
+
+  /// Replaces a `(current-directory)` call with the directory of the file
+  /// it's written in, as a string literal. Every `current-directory` call
+  /// becomes one, whether written or made by `resolve_path_arguments`;
+  /// `check_current_directory_calls` reports any other use.
+  fn expand_current_directory(&self, tree: &mut EaslTree, id: ModuleId) {
+    let EaslTree::Inner((position, _), children) = &*tree else {
+      return;
+    };
+    if !matches!(
+      children.as_slice(),
+      [EaslTree::Leaf(_, head)] if head == "current-directory"
+    ) {
+      return;
+    }
+    let Some(directory) = &self.file_directories[self.modules[id].file] else {
+      return;
+    };
+    let position = position.clone();
+    *tree = EaslTree::Inner(
+      (
+        position.clone(),
+        EncloserOrOperator::Encloser(Encloser::Quote),
       ),
+      vec![EaslTree::Leaf(position, directory.clone())],
+    );
+  }
+
+  /// Reports each `current-directory` left in `tree` after expansion: used
+  /// as a value, or called with arguments. Its value depends on the file
+  /// the call is written in, so it only exists as a direct call.
+  fn check_current_directory_calls(&mut self, tree: &EaslTree) {
+    match tree {
+      EaslTree::Leaf(position, name) if name == "current-directory" => {
+        self
+          .error(CompileErrorKind::CurrentDirectoryNotCalled, position.into());
+      }
+      EaslTree::Leaf(_, _) => {}
+      EaslTree::Inner(
+        (
+          _,
+          EncloserOrOperator::Encloser(
+            Encloser::Quote | Encloser::LineComment | Encloser::BlockComment,
+          )
+          | EncloserOrOperator::Operator(Operator::ExpressionComment),
+        ),
+        _,
+      ) => {}
+      EaslTree::Inner(_, children) => {
+        for child in children {
+          self.check_current_directory_calls(child);
+        }
+      }
     }
   }
 

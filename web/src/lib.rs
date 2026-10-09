@@ -91,9 +91,8 @@ pub async fn run_easl_program(
   let (surface, device, queue, surface_config) =
     create_surface_and_device(&canvas).await?;
 
-  let mut runtime =
-    VmCpuRuntime::new(program, WebIO::new(), None, audio_source)
-      .map_err(describe_error)?;
+  let mut runtime = VmCpuRuntime::new(program, WebIO::new(), audio_source)
+    .map_err(describe_error)?;
   check_browser_support(&runtime.env.binding_infos())?;
   install_gpu_error_handler(&device);
   let gpu = GpuCore::new_from_parts(

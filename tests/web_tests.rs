@@ -173,6 +173,7 @@ mod harness {
     ("buffer/save_png_render_target", "writes a file"),
     ("cpu/load_wav_local_binding", "reads a file"),
     ("cpu/load_wav_raw", "reads a file"),
+    ("cpu/module_relative_paths", "reads and writes files"),
     ("cpu/wav_sample_rate", "reads a file"),
     ("cpu/save_wav_roundtrip", "writes a file"),
     (

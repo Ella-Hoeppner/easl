@@ -6,5 +6,5 @@
 ; outside of). The tree-walker binds a plain `Value::Array`.
 @cpu
 (defn main []
-  (let [samples (load-wav "data/audio/test_sample.wav")]
+  (let [samples (load-wav "../audio/test_sample.wav")]
     (print (array-length samples))))

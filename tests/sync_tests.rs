@@ -2,9 +2,7 @@ mod common;
 
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
-use easl::interpreter::{
-  CpuRuntime, run_program_capturing_io_with_runtime_from_path,
-};
+use easl::interpreter::{CpuRuntime, run_program_capturing_io_with_runtime};
 use std::fs;
 use std::path::Path;
 
@@ -33,17 +31,10 @@ fn run_sync_test(name: &str) {
       run_sync_test_on(
         name,
         program.clone(),
-        source_path,
         &expected,
         CpuRuntime::TreeWalking,
       );
-      run_sync_test_on(
-        name,
-        program,
-        source_path,
-        &expected,
-        CpuRuntime::BytecodeVm,
-      );
+      run_sync_test_on(name, program, &expected, CpuRuntime::BytecodeVm);
     }
     Ok(Ok((document, Err(errors)))) => {
       panic!("{name}: {}", errors.describe(&document));
@@ -55,20 +46,15 @@ fn run_sync_test(name: &str) {
 fn run_sync_test_on(
   name: &str,
   program: easl::compiler::program::Program,
-  source_path: &Path,
   expected: &str,
   runtime: CpuRuntime,
 ) {
   {
     {
-      let io = run_program_capturing_io_with_runtime_from_path(
-        program,
-        source_path,
-        runtime,
-      )
-      .unwrap_or_else(|e| {
-        panic!("{name}: evaluation error ({runtime:?}): {e:#?}")
-      });
+      let io = run_program_capturing_io_with_runtime(program, runtime)
+        .unwrap_or_else(|e| {
+          panic!("{name}: evaluation error ({runtime:?}): {e:#?}")
+        });
       // The per-capture bindings that `extract_dispatched_closure_scopes`
       // creates for dispatched closures (`<scope>_data_<capture>`) have
       // gensym'd scope names whose numbering isn't stable across runs —

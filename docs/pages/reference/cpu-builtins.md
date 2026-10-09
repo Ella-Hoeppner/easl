@@ -43,6 +43,31 @@ The characters from `start` up to (not including) `end`. Out-of-range indices cl
 
 `(length s)` gives a string's character count, and `==` / `!=` compare contents.
 
+## Files
+
+The builtins that read or write files (`load-image`, `save-png`, `load-wav`, `load-wav-raw`, `get-wav-sample-rate`, `save-wav`, `load-video`) take a path that, when relative, is relative to the file the call is written in, so a library loads its assets from its own directory wherever it's imported from.
+
+### `resolve-path`
+
+```easl
+(resolve-path path: String): String
+(resolve-path directory: String path: String): String
+```
+
+With one argument, the absolute path of `path`, relative to the file the call is written in: a library can hand its callers a path to one of its own files. With two, `path` relative to `directory`. Either way an absolute `path` comes back unchanged. File builtins treat their path argument as if it were wrapped in `(resolve-path …)`.
+
+The one-argument form only works when called directly, since it takes its directory from where the call is written; to pass `resolve-path` to a higher-order function, use the two-argument form.
+
+### `current-directory`
+
+```easl
+(current-directory): String
+```
+
+The absolute directory of the file the call is written in. A helper that wraps a file builtin, in a library, resolves paths against its own directory; to let callers pass paths relative to *their* files, have it take a directory too, and call it as `(save-filtered-png (current-directory) "frame.png")`, resolving with `(resolve-path directory path)` inside.
+
+Like `resolve-path`'s one-argument form, it has to be called directly: it's an error to use it as a value.
+
 ## Windowing
 
 ### `spawn-window`
@@ -219,7 +244,7 @@ Whether the named key was pressed this frame. Same key-naming rules as `key-down
 (load-image path: String): (Texture2D f32)
 ```
 
-Loads a PNG or JPEG into a texture. The path is relative to the source file.
+Loads a PNG or JPEG into a texture. A relative path is relative to the file the call is written in.
 
 ### `blank-texture`
 
@@ -271,7 +296,7 @@ Sends later render dispatches back to the window.
 (save-png t: (Texture2D f32) path: String): ()
 ```
 
-Saves a texture as a PNG. The path is relative to the source file; missing directories are created. It works on textures the GPU just rendered into:
+Saves a texture as a PNG. A relative path is relative to the file the call is written in; missing directories are created. It works on textures the GPU just rendered into:
 
 ```easl
 (set-render-target tex)
@@ -342,7 +367,7 @@ The available input device names, sorted.
 (load-wav-raw path: String): [i32]
 ```
 
-Loads a `.wav` file as mono samples (multi-channel files are averaged). `load-wav` gives floats in `[-1, 1]`; `load-wav-raw` gives the raw integers (16-bit range). The samples are at the file's own rate — see `get-wav-sample-rate`. Paths are resolved relative to the source file.
+Loads a `.wav` file as mono samples (multi-channel files are averaged). `load-wav` gives floats in `[-1, 1]`; `load-wav-raw` gives the raw integers (16-bit range). The samples are at the file's own rate — see `get-wav-sample-rate`. A relative path is relative to the file the call is written in.
 <!-- index: load-wav-raw -->
 
 ```easl

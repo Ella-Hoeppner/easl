@@ -1,0 +1,9 @@
+8u
+8u
+44100.
+8u
+8u
+"/sounds/tone.wav"
+"/elsewhere/tone.wav"
+8u
+true

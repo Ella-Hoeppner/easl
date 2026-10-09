@@ -1,0 +1,27 @@
+; Imported by `module_relative_paths`: file builtins called here, and
+; `(resolve-path path)`, resolve relative paths against this file's
+; directory.
+
+(defn tone-length []: u32
+  (array-length (load-wav "tone.wav")))
+
+(defn named-length [name: String]: u32
+  (array-length (load-wav-raw (concat name ".wav"))))
+
+(defn tone-rate []: f32
+  (get-wav-sample-rate "tone.wav"))
+
+(defn save-and-reload []: u32
+  (let [path "../../../out/cpu/module_relative_paths.wav"]
+    (save-wav path (load-wav "tone.wav") 44100.)
+    (array-length (load-wav path))))
+
+; `tone.wav` next to this file, as an absolute path a caller in another
+; directory can use
+(defn tone-path []: String
+  (resolve-path "tone.wav"))
+
+; A helper over a file builtin takes the caller's directory, so the caller's
+; relative path is relative to the caller.
+(defn length-in [directory: String path: String]: u32
+  (array-length (load-wav (resolve-path directory path))))

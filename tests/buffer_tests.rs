@@ -3,8 +3,8 @@ mod common;
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
 use easl::interpreter::{
-  CaptureIO, CpuRuntime, IOManager,
-  run_program_with_capture_and_runtime_from_path, run_program_with_runtime,
+  CaptureIO, CpuRuntime, IOManager, run_program_with_capture_and_runtime,
+  run_program_with_runtime,
 };
 use std::fs;
 use std::path::Path;
@@ -25,9 +25,8 @@ fn run_buffer_test(name: &str) {
 
       // Every test runs on both CPU runtimes and must produce identical
       // output on each.
-      let prints = run_program_with_capture_and_runtime_from_path(
+      let prints = run_program_with_capture_and_runtime(
         program.clone(),
-        source_path,
         CpuRuntime::TreeWalking,
       )
       .unwrap_or_else(|e| {
@@ -36,14 +35,11 @@ fn run_buffer_test(name: &str) {
       let output: String =
         prints.into_iter().map(|s| format!("{s}\n")).collect();
       assert_eq!(output, expected, "{name}: output mismatch (tree-walking)");
-      let vm_prints = run_program_with_capture_and_runtime_from_path(
-        program,
-        source_path,
-        CpuRuntime::BytecodeVm,
-      )
-      .unwrap_or_else(|e| {
-        panic!("{name}: evaluation error (bytecode VM): {e:#?}");
-      });
+      let vm_prints =
+        run_program_with_capture_and_runtime(program, CpuRuntime::BytecodeVm)
+          .unwrap_or_else(|e| {
+            panic!("{name}: evaluation error (bytecode VM): {e:#?}");
+          });
       let vm_output: String =
         vm_prints.into_iter().map(|s| format!("{s}\n")).collect();
       assert_eq!(vm_output, expected, "{name}: output mismatch (bytecode VM)");
@@ -98,16 +94,10 @@ fn run_screen_test(name: &str) {
     common::assert_valid_wgsl(&program);
     let mut io = CaptureIO::new();
     io.screen_size = Some((1, 1));
-    let (io, _) = run_program_with_runtime(
-      program,
-      None,
-      io,
-      source_path.parent().map(|p| p.to_path_buf()),
-      runtime,
-    )
-    .unwrap_or_else(|e| {
-      panic!("{name}: evaluation error ({runtime:?}): {e:#?}")
-    });
+    let (io, _) = run_program_with_runtime(program, None, io, runtime)
+      .unwrap_or_else(|e| {
+        panic!("{name}: evaluation error ({runtime:?}): {e:#?}")
+      });
     let output: String = io
       .prints
       .iter()
@@ -136,12 +126,9 @@ fn texture_parameter_holder() {
   let errors = program.validate_raw_program(CompilerTarget::WGSL);
   assert!(errors.is_empty(), "compile errors: {errors:#?}");
   common::assert_valid_wgsl(&program);
-  let prints = run_program_with_capture_and_runtime_from_path(
-    program,
-    source_path,
-    CpuRuntime::TreeWalking,
-  )
-  .unwrap();
+  let prints =
+    run_program_with_capture_and_runtime(program, CpuRuntime::TreeWalking)
+      .unwrap();
   assert_eq!(prints, vec!["[(vec4f 0. 0. 1. 1.) (vec4f 1. 0. 0. 1.)]"]);
 }
 
@@ -159,14 +146,9 @@ fn texture_reassigned_each_frame() {
     let errors = program.validate_raw_program(CompilerTarget::WGSL);
     assert!(errors.is_empty(), "compile errors: {errors:#?}");
     common::assert_valid_wgsl(&program);
-    let (io, _) = run_program_with_runtime(
-      program,
-      None,
-      CaptureIO::new(),
-      source_path.parent().map(|p| p.to_path_buf()),
-      runtime,
-    )
-    .unwrap();
+    let (io, _) =
+      run_program_with_runtime(program, None, CaptureIO::new(), runtime)
+        .unwrap();
     assert_eq!(io.prints, vec!["(vec4f 1. 0. 0. 1.)"], "{runtime:?}");
     let gpu = io.get_gpu().expect("the program used the GPU");
     // The variable's initial blank texture, rewritten every frame.
@@ -272,12 +254,9 @@ fn too_many_vertex_bindings() {
   let errors = program.validate_raw_program(CompilerTarget::WGSL);
   assert!(errors.is_empty(), "compile errors: {errors:#?}");
   common::assert_valid_wgsl(&program);
-  let _ = run_program_with_capture_and_runtime_from_path(
-    program,
-    source_path,
-    CpuRuntime::TreeWalking,
-  )
-  .unwrap();
+  let _ =
+    run_program_with_capture_and_runtime(program, CpuRuntime::TreeWalking)
+      .unwrap();
 }
 buffer_test!(render_target_pingpong);
 buffer_test!(offscreen_render_compute_order);
@@ -346,14 +325,7 @@ fn dynamic_key_query_spoofed() {
     common::assert_valid_wgsl(&program);
     let mut io = CaptureIO::new();
     io.spoofed_window_info = Some(spoof.clone());
-    let (io, _) = run_program_with_runtime(
-      program,
-      None,
-      io,
-      source_path.parent().map(|p| p.to_path_buf()),
-      runtime,
-    )
-    .unwrap();
+    let (io, _) = run_program_with_runtime(program, None, io, runtime).unwrap();
     assert_eq!(io.prints, expected, "runtime {runtime:?}");
   }
 }
@@ -393,14 +365,7 @@ fn gpu_window_info_spoofed() {
     common::assert_valid_wgsl(&program);
     let mut io = CaptureIO::new();
     io.spoofed_window_info = Some(spoof.clone());
-    let (io, _) = run_program_with_runtime(
-      program,
-      None,
-      io,
-      source_path.parent().map(|p| p.to_path_buf()),
-      runtime,
-    )
-    .unwrap();
+    let (io, _) = run_program_with_runtime(program, None, io, runtime).unwrap();
     assert_eq!(io.prints, vec![expected.clone()], "runtime {runtime:?}");
   }
 }
@@ -449,14 +414,7 @@ fn mouse_capture_spoofed() {
     common::assert_valid_wgsl(&program);
     let mut io = CaptureIO::new();
     io.spoofed_window_info = Some(spoof.clone());
-    let (io, _) = run_program_with_runtime(
-      program,
-      None,
-      io,
-      source_path.parent().map(|p| p.to_path_buf()),
-      runtime,
-    )
-    .unwrap();
+    let (io, _) = run_program_with_runtime(program, None, io, runtime).unwrap();
     assert_eq!(io.prints, expected, "runtime {runtime:?}");
     let captures: Vec<&String> = io
       .sync_trace
@@ -510,14 +468,7 @@ fn midi_gpu_read_spoofed() {
     common::assert_valid_wgsl(&program);
     let mut io = CaptureIO::new();
     io.spoofed_midi = Some(midi.clone());
-    let (io, _) = run_program_with_runtime(
-      program,
-      None,
-      io,
-      source_path.parent().map(|p| p.to_path_buf()),
-      runtime,
-    )
-    .unwrap();
+    let (io, _) = run_program_with_runtime(program, None, io, runtime).unwrap();
     assert_eq!(io.prints, vec![expected.clone()], "runtime {runtime:?}");
   }
 }
@@ -558,14 +509,7 @@ fn get_midi_note_gpu_spoofed() {
     common::assert_valid_wgsl(&program);
     let mut io = CaptureIO::new();
     io.spoofed_midi = Some(midi.clone());
-    let (io, _) = run_program_with_runtime(
-      program,
-      None,
-      io,
-      source_path.parent().map(|p| p.to_path_buf()),
-      runtime,
-    )
-    .unwrap();
+    let (io, _) = run_program_with_runtime(program, None, io, runtime).unwrap();
     assert_eq!(io.prints, vec![expected.clone()], "runtime {runtime:?}");
   }
 }

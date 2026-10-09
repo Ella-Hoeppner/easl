@@ -1289,3 +1289,8 @@ error_test!(
   },
   CompileErrorKind::WrongArity(Some("Sampler".into()))
 );
+
+error_test!(
+  current_directory_value_failure,
+  CompileErrorKind::CurrentDirectoryNotCalled
+);

@@ -1,7 +1,7 @@
 use std::{
   collections::{HashMap, HashSet},
   ops::Range,
-  path::PathBuf,
+  path::{Path, PathBuf},
   vec,
 };
 use take_mut::take;
@@ -569,10 +569,9 @@ fn primitive_arithmetic(
 /// programs share it on the way down to a leaf builtin call, so a few extra
 /// slots there can overflow the 8MB thread stack (as it did for the
 /// `windowed_scope_upload_ordering` sync test).
-fn apply_wav_builtin<IO: IOManager>(
+fn apply_wav_builtin(
   f_name: &str,
   args: &mut Vec<(Value, Type)>,
-  env: &mut EvaluationEnvironment<IO>,
 ) -> Result<Value, EvalException> {
   match f_name {
     "load-wav-raw" => {
@@ -580,7 +579,7 @@ fn apply_wav_builtin<IO: IOManager>(
         panic!("load-wav-raw: expected string path argument")
       };
       Ok(Value::Array(
-        load_wav_samples_raw(&path, &env.source_dir)?
+        load_wav_samples_raw(&path)?
           .into_iter()
           .map(|sample| Value::Prim(Primitive::I32(sample)))
           .collect(),
@@ -590,10 +589,9 @@ fn apply_wav_builtin<IO: IOManager>(
       let Value::String(path) = args.remove(0).0 else {
         panic!("get-wav-sample-rate: expected string path argument")
       };
-      Ok(Value::Prim(Primitive::F32(load_wav_sample_rate(
-        &path,
-        &env.source_dir,
-      )? as f32)))
+      Ok(Value::Prim(Primitive::F32(
+        load_wav_sample_rate(&path)? as f32
+      )))
     }
     "save-wav" => {
       let Value::String(path) = args.remove(0).0 else {
@@ -603,7 +601,7 @@ fn apply_wav_builtin<IO: IOManager>(
       let Value::Prim(Primitive::F32(sample_rate)) = args.remove(0).0 else {
         panic!("save-wav: expected f32 sample rate")
       };
-      save_wav_file(&path, &samples, sample_rate, &env.source_dir)?;
+      save_wav_file(&path, &samples, sample_rate)?;
       Ok(Value::Unit)
     }
     _ => unreachable!("apply_wav_builtin called with non-wav builtin {f_name}"),
@@ -2349,26 +2347,26 @@ fn apply_builtin_fn<IO: IOManager>(
         panic!("load-wav: expected string path argument")
       };
       Ok(Value::Array(
-        load_wav_samples(&path, &env.source_dir)?
+        load_wav_samples(&path)?
           .into_iter()
           .map(|sample| Value::Prim(Primitive::F32(sample)))
           .collect(),
       ))
     }
     "load-wav-raw" | "get-wav-sample-rate" | "save-wav" => {
-      apply_wav_builtin(&f_name, &mut args, env)
+      apply_wav_builtin(&f_name, &mut args)
     }
     "load-image" => {
       let Value::String(path) = args.remove(0).0 else {
         panic!("load-image: expected string path argument")
       };
-      Ok(load_image_value(&path, &env.source_dir)?)
+      Ok(load_image_value(&path)?)
     }
     "load-video" => {
       let Value::String(path) = args.remove(0).0 else {
         panic!("load-video: expected string path argument")
       };
-      let resolved = resolve_source_path(&path, &env.source_dir);
+      let resolved = PathBuf::from(&path);
       let (source_index, info) =
         env.video.open(&resolved.to_string_lossy()).map_err(|e| {
           UserspaceEvalError::RuntimeError(format!(
@@ -2378,6 +2376,14 @@ fn apply_builtin_fn<IO: IOManager>(
       Ok(make_video_value(source_index, 0, info.frame_count))
     }
     "Sampler" => Ok(sampler_value(&args[0].0, &args[1].0)),
+    "resolve-path" => {
+      let (Value::String(directory), Value::String(path)) =
+        (&args[0].0, &args[1].0)
+      else {
+        panic!("resolve-path: expected two strings")
+      };
+      Ok(Value::String(resolve_path(directory, path)))
+    }
     "get-video-frame-texture" => {
       let (source, frame) = video_source_and_frame(&args[0].0);
       let decoded = env.video.decode_frame(source, frame).map_err(|e| {
@@ -2503,7 +2509,7 @@ fn apply_builtin_fn<IO: IOManager>(
         panic!("save-png: expected Texture argument")
       };
       let (width, height, data) = env.read_texture(texture.handle())?;
-      save_png_file(&path, width, height, &data, &env.source_dir)?;
+      save_png_file(&path, width, height, &data)?;
       Ok(Value::Unit)
     }
     "window-resolution" => {
@@ -5236,8 +5242,6 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   last_vm_midi_generation: Option<u64>,
   /// Sync state for each GPU-bound variable, keyed by name.
   buffer_states: HashMap<Arc<str>, SharedBufferState>,
-  /// Directory of the source .easl file, used to resolve relative paths.
-  source_dir: Option<PathBuf>,
   /// Render target for subsequent `dispatch-render-shaders` calls. None means
   /// render to the screen. Set by `set-render-target`, cleared by
   /// `clear-render-target`.
@@ -5283,39 +5287,32 @@ pub struct EvaluationEnvironment<IO: IOManager> {
 }
 
 impl<IO: IOManager> EvaluationEnvironment<IO> {
-  pub fn from_program(
-    program: Program,
-    io: IO,
-    source_dir: Option<PathBuf>,
-  ) -> Result<Self, EvalError> {
+  pub fn from_program(program: Program, io: IO) -> Result<Self, EvalError> {
     #[cfg(feature = "window")]
-    return Self::from_program_with_audio_source(program, io, source_dir, None);
+    return Self::from_program_with_audio_source(program, io, None);
     #[cfg(not(feature = "window"))]
-    return Self::build_inner(program, io, source_dir, None);
+    return Self::build_inner(program, io, None);
   }
   #[cfg(feature = "window")]
   pub fn from_program_with_audio_source(
     program: Program,
     io: IO,
-    source_dir: Option<PathBuf>,
     audio_source: Option<crate::audio::AudioSource>,
   ) -> Result<Self, EvalError> {
-    Self::build_inner(program, io, source_dir, audio_source, None)
+    Self::build_inner(program, io, audio_source, None)
   }
   #[cfg(feature = "window")]
   pub fn from_program_with_audio_source_and_external(
     program: Program,
     io: IO,
-    source_dir: Option<PathBuf>,
     audio_source: Option<crate::audio::AudioSource>,
     external_vars: Option<Arc<ExternalVars>>,
   ) -> Result<Self, EvalError> {
-    Self::build_inner(program, io, source_dir, audio_source, external_vars)
+    Self::build_inner(program, io, audio_source, external_vars)
   }
   fn build_inner(
     program: Program,
     io: IO,
-    source_dir: Option<PathBuf>,
     #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
     external_vars: Option<Arc<ExternalVars>>,
   ) -> Result<Self, EvalError> {
@@ -5386,7 +5383,6 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         })
         .collect(),
       buffer_states,
-      source_dir,
       current_render_target: None,
       video: VideoRegistry::new(),
       #[cfg(feature = "window")]
@@ -7636,10 +7632,9 @@ fn run_program_with<IO: IOManager>(
   program: Program,
   entry_point_name: Option<&str>,
   io: IO,
-  source_dir: Option<PathBuf>,
 ) -> Result<(IO, bool), EvalError> {
   let body = pick_entry_point_body(&program, entry_point_name)?;
-  let mut env = EvaluationEnvironment::from_program(program, io, source_dir)?;
+  let mut env = EvaluationEnvironment::from_program(program, io)?;
   env.bootstrap_external_globals();
   match eval(body, &mut env) {
     Ok(_) => Ok((env.io, false)),
@@ -7652,7 +7647,6 @@ fn run_program_with_audio_source<IO: IOManager>(
   program: Program,
   entry_point_name: Option<&str>,
   io: IO,
-  source_dir: Option<PathBuf>,
   #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
   external_vars: Option<Arc<ExternalVars>>,
 ) -> Result<(IO, bool), EvalError> {
@@ -7660,7 +7654,6 @@ fn run_program_with_audio_source<IO: IOManager>(
   let mut env = EvaluationEnvironment::build_inner(
     program,
     io,
-    source_dir,
     #[cfg(feature = "window")]
     audio_source,
     external_vars,
@@ -7818,28 +7811,20 @@ fn video_source_and_frame(video: &Value) -> (u32, u32) {
   (source, frame)
 }
 
-/// Resolves a user-supplied path against the source .easl file's directory:
-/// absolute paths are used as-is, relative ones are joined onto `source_dir`
-/// when known. Shared by every path-taking builtin — `load-image`,
-/// `load-video`, `load-wav`, and `save-png`.
-fn resolve_source_path(path: &str, source_dir: &Option<PathBuf>) -> PathBuf {
-  if std::path::Path::new(path).is_absolute() {
-    PathBuf::from(path)
-  } else if let Some(dir) = source_dir {
-    dir.join(path)
-  } else {
-    PathBuf::from(path)
-  }
+/// `path` joined onto `directory`, unless it's absolute: what
+/// `(resolve-path directory path)` computes.
+fn resolve_path(directory: &str, path: &str) -> String {
+  Path::new(directory)
+    .join(path)
+    .to_string_lossy()
+    .into_owned()
 }
 
-/// Loads an image file into a `Value::Texture`, resolving relative paths
-/// against `source_dir`. Shared by the `load-image` builtin and the VM
+/// Loads an image file into a `Value::Texture` (the path is absolute: the
+/// module resolver resolves file builtins' paths). Shared by the `load-image` builtin and the VM
 /// runtime's `AssignTextureFromImage` host op.
-fn load_image_value(
-  path: &str,
-  source_dir: &Option<PathBuf>,
-) -> Result<Value, EvalError> {
-  let resolved = resolve_source_path(path, source_dir);
+fn load_image_value(path: &str) -> Result<Value, EvalError> {
+  let resolved = PathBuf::from(path);
   let img = image::open(&resolved)
     .map_err(|e| {
       UserspaceEvalError::RuntimeError(format!(
@@ -7856,8 +7841,7 @@ fn load_image_value(
 }
 
 /// Writes RGBA8 pixels to `path` as a PNG (always PNG, whatever the
-/// extension), resolving relative paths against `source_dir` like
-/// `load_image_value` and creating missing parent directories. Shared by
+/// extension), creating missing parent directories. Shared by
 /// the `save-png` builtin's tree-walker arm and the VM runtime's `SavePng`
 /// host op.
 fn save_png_file(
@@ -7865,9 +7849,8 @@ fn save_png_file(
   width: u32,
   height: u32,
   data: &[u8],
-  source_dir: &Option<PathBuf>,
 ) -> Result<(), EvalError> {
-  let resolved = resolve_source_path(path, source_dir);
+  let resolved = PathBuf::from(path);
   if let Some(parent) = resolved.parent()
     && !parent.as_os_str().is_empty()
   {
@@ -7890,14 +7873,10 @@ fn save_png_file(
 }
 
 /// Loads a `.wav` file as mono f32 samples at the file's native sample
-/// rate, resolving relative paths against `source_dir` (multi-channel files
-/// are mixed down by averaging). Shared by the `load-wav` builtin's
+/// rate (multi-channel files are mixed down by averaging). Shared by the `load-wav` builtin's
 /// tree-walker arm and the VM runtime's `LoadWav` host op.
-fn load_wav_samples(
-  path: &str,
-  source_dir: &Option<PathBuf>,
-) -> Result<Vec<f32>, EvalError> {
-  let resolved = resolve_source_path(path, source_dir);
+fn load_wav_samples(path: &str) -> Result<Vec<f32>, EvalError> {
+  let resolved = PathBuf::from(path);
   let wav_error = |e: hound::Error| {
     EvalError::from(UserspaceEvalError::RuntimeError(format!(
       "load-wav: failed to read \"{path}\": {e}"
@@ -7931,11 +7910,8 @@ fn load_wav_samples(
 /// Reads a `.wav` file's sample rate (Hz) without decoding its samples.
 /// Shared by the `get-wav-sample-rate` builtin's tree-walker arm and the VM
 /// runtime's `GetWavSampleRate` host op.
-fn load_wav_sample_rate(
-  path: &str,
-  source_dir: &Option<PathBuf>,
-) -> Result<u32, EvalError> {
-  let resolved = resolve_source_path(path, source_dir);
+fn load_wav_sample_rate(path: &str) -> Result<u32, EvalError> {
+  let resolved = PathBuf::from(path);
   let reader = hound::WavReader::open(&resolved).map_err(|e| {
     EvalError::from(UserspaceEvalError::RuntimeError(format!(
       "get-wav-sample-rate: failed to read \"{path}\": {e}"
@@ -7949,11 +7925,8 @@ fn load_wav_sample_rate(
 /// multi-channel frames to mono like `load_wav_samples`. Float-format files
 /// are scaled to the 16-bit integer range. Shared by the `load-wav-raw`
 /// builtin's tree-walker arm and the VM runtime's `LoadWavRaw` host op.
-fn load_wav_samples_raw(
-  path: &str,
-  source_dir: &Option<PathBuf>,
-) -> Result<Vec<i32>, EvalError> {
-  let resolved = resolve_source_path(path, source_dir);
+fn load_wav_samples_raw(path: &str) -> Result<Vec<i32>, EvalError> {
+  let resolved = PathBuf::from(path);
   let wav_error = |e: hound::Error| {
     EvalError::from(UserspaceEvalError::RuntimeError(format!(
       "load-wav-raw: failed to read \"{path}\": {e}"
@@ -7987,17 +7960,15 @@ fn load_wav_samples_raw(
 /// WAV at `sample_rate` Hz. Samples are scaled by 32768 and clamped to the
 /// `i16` range — the inverse of `load_wav_samples`' divide-by-32768, so
 /// representable values (e.g. 0.5, 0.25) round-trip exactly, and
-/// out-of-range inputs clip rather than wrap. Resolves relative paths
-/// against `source_dir` and creates missing parent directories, like
-/// `save_png_file`. Shared by the `save-wav` builtin's tree-walker arm and
+/// out-of-range inputs clip rather than wrap. Creates missing parent
+/// directories, like `save_png_file`. Shared by the `save-wav` builtin's tree-walker arm and
 /// the VM runtime's `SaveWav` host op.
 fn save_wav_file(
   path: &str,
   samples: &[f32],
   sample_rate: f32,
-  source_dir: &Option<PathBuf>,
 ) -> Result<(), EvalError> {
-  let resolved = resolve_source_path(path, source_dir);
+  let resolved = PathBuf::from(path);
   if let Some(parent) = resolved.parent()
     && !parent.as_os_str().is_empty()
   {
@@ -8637,6 +8608,25 @@ fn vm_host_call<IO: IOManager>(
       let formatted = value.format_for_print(t, env, true)?;
       env.io.println(&formatted);
     }
+    HostOp::ResolvePath {
+      directory_slot,
+      path_slot,
+      dest,
+    } => {
+      let joined = resolve_path(
+        &words_to_string(heap_string_words(
+          heap,
+          stack[*directory_slot as usize],
+        )),
+        &words_to_string(heap_string_words(heap, stack[*path_slot as usize])),
+      );
+      let cell = Arc::new(HeapCell {
+        memory: DynMemory::Words(string_to_words(&joined)),
+        stride: 1,
+      });
+      release_heap_id(heap, heap_free, stack[*dest as usize]);
+      stack[*dest as usize] = alloc_heap_cell(heap, heap_free, cell);
+    }
     HostOp::Stringify { slot, ty, dest } => {
       let t = &code.host_types[*ty as usize];
       let n = vm_stack_size(t) as usize;
@@ -8966,7 +8956,7 @@ fn vm_host_call<IO: IOManager>(
     HostOp::LoadWav { path_slot, dest } => {
       let path =
         words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
-      let samples = load_wav_samples(&path, &env.source_dir)?;
+      let samples = load_wav_samples(&path)?;
       let cell = Arc::new(HeapCell {
         memory: DynMemory::Words(
           samples.into_iter().map(f32::to_bits).collect(),
@@ -8979,7 +8969,7 @@ fn vm_host_call<IO: IOManager>(
     HostOp::LoadWavRaw { path_slot, dest } => {
       let path =
         words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
-      let samples = load_wav_samples_raw(&path, &env.source_dir)?;
+      let samples = load_wav_samples_raw(&path)?;
       let cell = Arc::new(HeapCell {
         memory: DynMemory::Words(
           samples.into_iter().map(|s| s as u32).collect(),
@@ -8992,7 +8982,7 @@ fn vm_host_call<IO: IOManager>(
     HostOp::GetWavSampleRate { path_slot, dest } => {
       let path =
         words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
-      let rate = load_wav_sample_rate(&path, &env.source_dir)?;
+      let rate = load_wav_sample_rate(&path)?;
       stack[*dest as usize] = (rate as f32).to_bits();
     }
     HostOp::SaveWav {
@@ -9004,12 +8994,12 @@ fn vm_host_call<IO: IOManager>(
         words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
       let samples = vm_heap_f32_samples(heap, stack[*samples_slot as usize]);
       let sample_rate = f32::from_bits(stack[*rate_slot as usize]);
-      save_wav_file(&path, &samples, sample_rate, &env.source_dir)?;
+      save_wav_file(&path, &samples, sample_rate)?;
     }
     HostOp::LoadVideo { path_slot, dest } => {
       let path =
         words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
-      let resolved = resolve_source_path(&path, &env.source_dir);
+      let resolved = PathBuf::from(&path);
       let (source_index, info) =
         env.video.open(&resolved.to_string_lossy()).map_err(|e| {
           UserspaceEvalError::RuntimeError(format!(
@@ -9045,8 +9035,7 @@ fn vm_host_call<IO: IOManager>(
       let b = &code.host_bindings[*binding as usize];
       let path =
         words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
-      let Value::Texture(texture) = load_image_value(&path, &env.source_dir)?
-      else {
+      let Value::Texture(texture) = load_image_value(&path)? else {
         unreachable!()
       };
       let name = b.name.clone();
@@ -9119,7 +9108,7 @@ fn vm_host_call<IO: IOManager>(
         panic!("save-png: expected Texture value")
       };
       let (width, height, data) = env.read_texture(texture.handle())?;
-      save_png_file(&path, width, height, &data, &env.source_dir)?;
+      save_png_file(&path, width, height, &data)?;
     }
   }
   Ok(None)
@@ -9516,13 +9505,11 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
   pub fn new(
     program: Program,
     io: IO,
-    source_dir: Option<PathBuf>,
     #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
   ) -> Result<Self, EvalError> {
     Self::new_with_external(
       program,
       io,
-      source_dir,
       #[cfg(feature = "window")]
       audio_source,
       None,
@@ -9534,7 +9521,6 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
   pub fn new_with_external(
     program: Program,
     io: IO,
-    source_dir: Option<PathBuf>,
     #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
     external_vars: Option<Arc<ExternalVars>>,
   ) -> Result<Self, EvalError> {
@@ -9544,17 +9530,12 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
       EvaluationEnvironment::from_program_with_audio_source_and_external(
         env_program,
         io,
-        source_dir,
         audio_source,
         external_vars,
       )?;
     #[cfg(not(feature = "window"))]
-    let env = EvaluationEnvironment::build_inner(
-      env_program,
-      io,
-      source_dir,
-      external_vars,
-    )?;
+    let env =
+      EvaluationEnvironment::build_inner(env_program, io, external_vars)?;
     let (mut vm_program, function_names) =
       program.compile_to_bytecode_program_cpu();
     // Main's copy of the implicit `easl_sample_rate` local (see
@@ -9772,14 +9753,12 @@ fn run_program_vm_with<IO: IOManager>(
   program: Program,
   entry_point_name: Option<&str>,
   io: IO,
-  source_dir: Option<PathBuf>,
   #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
 ) -> Result<(IO, bool), EvalError> {
   run_program_vm_with_external(
     program,
     entry_point_name,
     io,
-    source_dir,
     #[cfg(feature = "window")]
     audio_source,
     None,
@@ -9790,7 +9769,6 @@ fn run_program_vm_with_external<IO: IOManager>(
   program: Program,
   entry_point_name: Option<&str>,
   io: IO,
-  source_dir: Option<PathBuf>,
   #[cfg(feature = "window")] audio_source: Option<crate::audio::AudioSource>,
   external_vars: Option<Arc<ExternalVars>>,
 ) -> Result<(IO, bool), EvalError> {
@@ -9798,7 +9776,6 @@ fn run_program_vm_with_external<IO: IOManager>(
   let mut runtime = VmCpuRuntime::new_with_external(
     program,
     io,
-    source_dir,
     #[cfg(feature = "window")]
     audio_source,
     external_vars,
@@ -9812,18 +9789,14 @@ pub fn run_program_with_runtime<IO: IOManager>(
   program: Program,
   entry_point_name: Option<&str>,
   io: IO,
-  source_dir: Option<PathBuf>,
   runtime: CpuRuntime,
 ) -> Result<(IO, bool), EvalError> {
   match runtime {
-    CpuRuntime::TreeWalking => {
-      run_program_with(program, entry_point_name, io, source_dir)
-    }
+    CpuRuntime::TreeWalking => run_program_with(program, entry_point_name, io),
     CpuRuntime::BytecodeVm => run_program_vm_with(
       program,
       entry_point_name,
       io,
-      source_dir,
       #[cfg(feature = "window")]
       None,
     ),
@@ -9837,7 +9810,6 @@ fn run_program_default_runtime_with_audio<IO: IOManager>(
   program: Program,
   entry_point_name: Option<&str>,
   io: IO,
-  source_dir: Option<PathBuf>,
   audio_source: Option<crate::audio::AudioSource>,
 ) -> Result<(IO, bool), EvalError> {
   match CpuRuntime::default() {
@@ -9845,54 +9817,31 @@ fn run_program_default_runtime_with_audio<IO: IOManager>(
       program,
       entry_point_name,
       io,
-      source_dir,
       audio_source,
       None,
     ),
-    CpuRuntime::BytecodeVm => run_program_vm_with(
-      program,
-      entry_point_name,
-      io,
-      source_dir,
-      audio_source,
-    ),
+    CpuRuntime::BytecodeVm => {
+      run_program_vm_with(program, entry_point_name, io, audio_source)
+    }
   }
 }
 
-/// `run_program_with_capture_from_path` with an explicit runtime choice.
-pub fn run_program_with_capture_and_runtime_from_path(
+/// `run_program_with_capture` with an explicit runtime choice.
+pub fn run_program_with_capture_and_runtime(
   program: Program,
-  source_path: &std::path::Path,
   runtime: CpuRuntime,
 ) -> Result<Vec<String>, EvalError> {
-  let source_dir = source_path.parent().map(|p| p.to_path_buf());
-  let (io, _) = run_program_with_runtime(
-    program,
-    None,
-    CaptureIO::new(),
-    source_dir,
-    runtime,
-  )?;
+  let (io, _) =
+    run_program_with_runtime(program, None, CaptureIO::new(), runtime)?;
   Ok(io.prints)
 }
 
-/// `run_program_capturing_io_from_path` with an explicit runtime choice.
-pub fn run_program_capturing_io_with_runtime_from_path(
+/// Runs `program` on the chosen runtime, returning its `CaptureIO`.
+pub fn run_program_capturing_io_with_runtime(
   program: Program,
-  source_path: &std::path::Path,
   runtime: CpuRuntime,
 ) -> Result<CaptureIO, EvalError> {
-  let source_dir = source_path.parent().map(|p| p.to_path_buf());
-  Ok(
-    run_program_with_runtime(
-      program,
-      None,
-      CaptureIO::new(),
-      source_dir,
-      runtime,
-    )?
-    .0,
-  )
+  Ok(run_program_with_runtime(program, None, CaptureIO::new(), runtime)?.0)
 }
 
 /// `run_program_test_io` with an explicit runtime choice.
@@ -9900,7 +9849,7 @@ pub fn run_program_test_io_with_runtime(
   program: Program,
   runtime: CpuRuntime,
 ) -> Result<StringIO, EvalError> {
-  Ok(run_program_with_runtime(program, None, StringIO::new(), None, runtime)?.0)
+  Ok(run_program_with_runtime(program, None, StringIO::new(), runtime)?.0)
 }
 
 pub fn run_program(program: Program) -> Result<(), EvalError> {
@@ -9908,7 +9857,6 @@ pub fn run_program(program: Program) -> Result<(), EvalError> {
     program,
     None,
     StdoutIO::new(),
-    None,
     CpuRuntime::default(),
   )?;
   Ok(())
@@ -9922,7 +9870,6 @@ pub fn run_program_entry(
     program,
     entry,
     StdoutIO::new(),
-    None,
     CpuRuntime::default(),
   )?;
   Ok(())
@@ -9933,7 +9880,6 @@ pub fn run_program_entry_from_path(
   entry: Option<&str>,
   source_path: &std::path::Path,
 ) -> Result<(), EvalError> {
-  let source_dir = source_path.parent().map(|p| p.to_path_buf());
   #[cfg(feature = "window")]
   {
     let audio_source = try_compile_audio_source(
@@ -9945,7 +9891,6 @@ pub fn run_program_entry_from_path(
       program,
       entry,
       StdoutIO::new(),
-      source_dir,
       audio_source,
     )?;
   }
@@ -9956,7 +9901,6 @@ pub fn run_program_entry_from_path(
       program,
       entry,
       StdoutIO::new(),
-      source_dir,
       CpuRuntime::default(),
     )?;
   }
@@ -10122,7 +10066,7 @@ pub fn run_program_entry_with_io<IO: IOManager>(
   entry: Option<&str>,
   io: IO,
 ) -> Result<(IO, bool), EvalError> {
-  run_program_with(program, entry, io, None)
+  run_program_with(program, entry, io)
 }
 
 pub fn run_program_entry_with_io_from_path<IO: IOManager>(
@@ -10131,7 +10075,6 @@ pub fn run_program_entry_with_io_from_path<IO: IOManager>(
   io: IO,
   source_path: &std::path::Path,
 ) -> Result<(IO, bool), EvalError> {
-  let source_dir = source_path.parent().map(|p| p.to_path_buf());
   #[cfg(feature = "window")]
   {
     let audio_source = try_compile_audio_source(
@@ -10139,24 +10082,12 @@ pub fn run_program_entry_with_io_from_path<IO: IOManager>(
       source_path,
       crate::audio::AudioBackend::default(),
     );
-    run_program_default_runtime_with_audio(
-      program,
-      entry,
-      io,
-      source_dir,
-      audio_source,
-    )
+    run_program_default_runtime_with_audio(program, entry, io, audio_source)
   }
   #[cfg(not(feature = "window"))]
   {
     let _ = source_path;
-    run_program_with_runtime(
-      program,
-      entry,
-      io,
-      source_dir,
-      CpuRuntime::default(),
-    )
+    run_program_with_runtime(program, entry, io, CpuRuntime::default())
   }
 }
 
@@ -10195,7 +10126,6 @@ pub fn run_program_entry_with_io_runtime_and_external_from_path<
   runtime: CpuRuntime,
   external_vars: Option<Arc<ExternalVars>>,
 ) -> Result<(IO, bool), EvalError> {
-  let source_dir = source_path.parent().map(|p| p.to_path_buf());
   #[cfg(feature = "window")]
   {
     let audio_source = try_compile_audio_source(
@@ -10208,7 +10138,6 @@ pub fn run_program_entry_with_io_runtime_and_external_from_path<
         program,
         entry,
         io,
-        source_dir,
         audio_source,
         external_vars,
       ),
@@ -10216,7 +10145,6 @@ pub fn run_program_entry_with_io_runtime_and_external_from_path<
         program,
         entry,
         io,
-        source_dir,
         audio_source,
         external_vars,
       ),
@@ -10226,20 +10154,12 @@ pub fn run_program_entry_with_io_runtime_and_external_from_path<
   {
     let _ = source_path;
     match runtime {
-      CpuRuntime::TreeWalking => run_program_with_audio_source(
-        program,
-        entry,
-        io,
-        source_dir,
-        external_vars,
-      ),
-      CpuRuntime::BytecodeVm => run_program_vm_with_external(
-        program,
-        entry,
-        io,
-        source_dir,
-        external_vars,
-      ),
+      CpuRuntime::TreeWalking => {
+        run_program_with_audio_source(program, entry, io, external_vars)
+      }
+      CpuRuntime::BytecodeVm => {
+        run_program_vm_with_external(program, entry, io, external_vars)
+      }
     }
   }
 }
@@ -10256,16 +10176,9 @@ pub fn run_program_entry_with_io_and_audio_backend_from_path<IO: IOManager>(
   source_path: &std::path::Path,
   audio_backend: crate::audio::AudioBackend,
 ) -> Result<(IO, bool), EvalError> {
-  let source_dir = source_path.parent().map(|p| p.to_path_buf());
   let audio_source =
     try_compile_audio_source(&program, source_path, audio_backend);
-  run_program_default_runtime_with_audio(
-    program,
-    entry,
-    io,
-    source_dir,
-    audio_source,
-  )
+  run_program_default_runtime_with_audio(program, entry, io, audio_source)
 }
 
 pub fn run_program_capturing_output(
@@ -10279,7 +10192,7 @@ pub fn run_program_capturing_output_with_runtime(
   runtime: CpuRuntime,
 ) -> Result<String, EvalError> {
   let (io, _) =
-    run_program_with_runtime(program, None, StringIO::new(), None, runtime)?;
+    run_program_with_runtime(program, None, StringIO::new(), runtime)?;
   let mut output = String::new();
   for event in &io.events {
     if let IOEvent::Print(s) = event {
@@ -10301,37 +10214,9 @@ pub fn run_program_with_capture(
     program,
     None,
     CaptureIO::new(),
-    None,
     CpuRuntime::default(),
   )?;
   Ok(io.prints)
-}
-
-pub fn run_program_with_capture_from_path(
-  program: Program,
-  source_path: &std::path::Path,
-) -> Result<Vec<String>, EvalError> {
-  run_program_with_capture_and_runtime_from_path(
-    program,
-    source_path,
-    CpuRuntime::default(),
-  )
-}
-
-/// Like `run_program_with_capture_from_path`, but returns the whole
-/// `CaptureIO`, giving access to the captured prints alongside the ordered
-/// logs of implicit GPU→CPU readbacks and CPU→GPU uploads the run performed.
-/// Used by tests that assert exactly when the interpreter syncs — both that
-/// spurious syncs don't happen and that genuine ones still do.
-pub fn run_program_capturing_io_from_path(
-  program: Program,
-  source_path: &std::path::Path,
-) -> Result<CaptureIO, EvalError> {
-  run_program_capturing_io_with_runtime_from_path(
-    program,
-    source_path,
-    CpuRuntime::default(),
-  )
 }
 
 /// Re-export so downstream crates (e.g. `easl_cli`) can call this without

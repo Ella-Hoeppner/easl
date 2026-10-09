@@ -444,11 +444,10 @@ fn midi_queries_spoofed() {
       spoofed_midi: Some(midi.clone()),
       ..StringIO::default()
     };
-    let (io, _) =
-      run_program_with_runtime(program.clone(), None, io, None, runtime)
-        .unwrap_or_else(|e| {
-          panic!("midi_queries: evaluation error ({label}): {e:#?}")
-        });
+    let (io, _) = run_program_with_runtime(program.clone(), None, io, runtime)
+      .unwrap_or_else(|e| {
+        panic!("midi_queries: evaluation error ({label}): {e:#?}")
+      });
     let mut output = String::new();
     for event in &io.events {
       if let IOEvent::Print(s) = event {
@@ -499,11 +498,10 @@ fn get_midi_note_spoofed() {
       spoofed_midi: Some(midi.clone()),
       ..StringIO::default()
     };
-    let (io, _) =
-      run_program_with_runtime(program.clone(), None, io, None, runtime)
-        .unwrap_or_else(|e| {
-          panic!("get_midi_note: evaluation error ({label}): {e:#?}")
-        });
+    let (io, _) = run_program_with_runtime(program.clone(), None, io, runtime)
+      .unwrap_or_else(|e| {
+        panic!("get_midi_note: evaluation error ({label}): {e:#?}")
+      });
     let mut output = String::new();
     for event in &io.events {
       if let IOEvent::Print(s) = event {
@@ -526,6 +524,7 @@ cpu_test!(frame_closure_calls_unregistered_specialization);
 cpu_test!(lambda_return);
 cpu_test!(comments);
 cpu_test!(module_namespace_import);
+cpu_test!(module_relative_paths);
 cpu_test!(module_unqualified_import);
 cpu_test!(module_inline_mod);
 cpu_test!(module_overloads);

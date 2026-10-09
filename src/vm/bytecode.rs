@@ -874,6 +874,13 @@ pub enum HostOp {
     binding: u16,
     source: u16,
   },
+  /// `(resolve-path directory path)`: the `String`s at the slots joined as
+  /// paths, into a new `String` at `dest`.
+  ResolvePath {
+    directory_slot: u16,
+    path_slot: u16,
+    dest: u16,
+  },
   /// `(= sampler-global (Sampler filter address))`; the enum arguments'
   /// first slots hold their discriminants.
   AssignSampler {

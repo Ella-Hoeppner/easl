@@ -4007,6 +4007,21 @@ impl TypedExp {
         }
         Some(None)
       }
+      "resolve-path" => {
+        let directory_slot = args[0]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .unwrap();
+        let path_slot = args[1]
+          .compile_to_bytecode(CompilePosition::Value, state)
+          .unwrap();
+        let dest = state.take_stack_slot(1);
+        state.emit_host_op(HostOp::ResolvePath {
+          directory_slot,
+          path_slot,
+          dest,
+        });
+        Some(Some(dest))
+      }
       "string" => {
         let arg = &args[0];
         let slot = arg
