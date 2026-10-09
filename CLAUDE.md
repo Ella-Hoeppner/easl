@@ -285,6 +285,7 @@ let result = f32::from_bits(program.stack[program.get_function_return_position(f
 - **Every function's return slot is reserved separately from args and temps**: heap-id slots release on overwrite, so a scalar written over one would be misread as a heap id. Args start at `first_arg_position`
 - **`$init_globals`** (synthetic, unspeakable name) runs initializers once in `from_code`
 - **Global slot locations are public** (`Code::globals`, `get_global_slot`, `write_global`) — embedders stream values in between runs
+- **Only touched globals get slots**: a user-declared var that no compiled (reachable) function names — nor the initializer of a var that has slots — and that isn't shared or `@external` gets no VM slots (e.g. a large buffer only shaders use); a GPU binding of one gets a host binding with `HostBindingStorage::Dynamic`. Compiler-generated vars always get slots: the runtime writes window-info, MIDI, audio-info, and capture vars into them. Slot sizes are checked (`vm_stack_size` errors past 65535 words rather than truncating), and running out names the global or function (pinned by `gpu_only_global_no_vm_slots`)
 - Matrices are flat `cols*rows` scalars
 - Audio/CPU filtering mirrors emission: skip entries not for the target and functions with CPU-exclusive effects/types, window queries, or `Print` (except audio-allowed heap ops). Effects are transitive and callees come first, so skips never dangle
 - Vector/matrix ops are scalar fan-out, not new opcodes

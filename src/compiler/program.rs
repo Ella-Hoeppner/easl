@@ -8773,6 +8773,145 @@ impl Program {
     } else {
       HashSet::new()
     };
+    let ordered_functions =
+      self.composite_functions_in_usage_order_with_discovery(cpu_mode);
+    // Both modes compile only the functions reachable from their own entry
+    // points (`@cpu` for the CPU runtime, `@audio` for the audio runtime),
+    // mirroring the closure-based emission the WGSL/C backends use: an
+    // unreachable helper (say, a never-called higher-order function returning
+    // a closure that isn't in the compiled set) must not be compiled, and
+    // neither may anything reached solely from a wrong-target entry (e.g. a
+    // GPU callback while compiling for the CPU).
+    //
+    // Audio mode is also used by the VM test harnesses (the conformance and
+    // vm suites) to compile a bare `f` in a program with no `@audio` entry at
+    // all; with no entry to seed reachability from, the whole program is
+    // compiled.
+    let reachable: Option<HashSet<Arc<str>>> = {
+      let is_target_entry = |e: EntryPoint| {
+        if cpu_mode {
+          matches!(e, EntryPoint::Cpu)
+        } else {
+          matches!(e, EntryPoint::Audio)
+        }
+      };
+      let by_name: HashMap<Arc<str>, Arc<RwLock<TopLevelFunction>>> =
+        ordered_functions
+          .iter()
+          .map(|(n, f)| (n.clone(), f.clone()))
+          .collect();
+      let is_target_compilable = |f: &Arc<RwLock<TopLevelFunction>>| {
+        f.read()
+          .unwrap()
+          .entry_point
+          .map(|e| is_target_entry(e))
+          .unwrap_or(true)
+      };
+      let mut reachable: HashSet<Arc<str>> = HashSet::new();
+      let mut queue: Vec<Arc<RwLock<TopLevelFunction>>> = vec![];
+      for (name, f) in &ordered_functions {
+        let is_entry = f
+          .read()
+          .unwrap()
+          .entry_point
+          .map(|e| is_target_entry(e))
+          .unwrap_or(false);
+        if is_entry && reachable.insert(name.clone()) {
+          queue.push(f.clone());
+        }
+      }
+      if !cpu_mode && reachable.is_empty() {
+        None
+      } else {
+        while let Some(f) = queue.pop() {
+          let mut found: Vec<Arc<str>> = vec![];
+          f.read()
+            .unwrap()
+            .expression
+            .walk(&mut |exp| {
+              if let ExpKind::Name(name) = &exp.kind
+                && by_name.contains_key(name)
+              {
+                found.push(name.clone());
+              }
+              if let ExpKind::Application(_, _) = &exp.kind
+                && let TypeState::Known(Type::Function(signature)) =
+                  &exp.data.kind
+                && let Some(ancestor) = &signature.abstract_ancestor
+              {
+                found.push(ancestor.read().unwrap().name.clone());
+              }
+              Ok::<bool, Never>(true)
+            })
+            .unwrap();
+          for name in found {
+            if let Some(target) = by_name.get(&name)
+              && is_target_compilable(target)
+              && reachable.insert(name)
+            {
+              queue.push(target.clone());
+            }
+          }
+        }
+        Some(reachable)
+      }
+    };
+    // Which globals the compiled code can touch. A var the user declared
+    // that no compiled function (nor the initializer of a var that is
+    // touched) refers to — say, a large buffer only shaders use — gets no
+    // VM slots: the slot space is finite, and nothing on this side would
+    // read or write them. Compiler-generated vars are always touched (the
+    // runtime writes window-info, MIDI, audio-info, and capture vars into
+    // their slots), as are shared and `@external` vars.
+    let touched_globals: HashSet<Arc<str>> = {
+      let var_names: HashSet<Arc<str>> =
+        self.top_level_vars.iter().map(|v| v.name.clone()).collect();
+      let mut touched: HashSet<Arc<str>> = self
+        .top_level_vars
+        .iter()
+        .filter(|v| {
+          !v.directly_user_written
+            || v.external
+            || state.shared_var_indices.contains_key(&v.name)
+        })
+        .map(|v| v.name.clone())
+        .collect();
+      let collect_names = |exp: &TypedExp, touched: &mut HashSet<Arc<str>>| {
+        exp
+          .walk(&mut |exp| {
+            if let ExpKind::Name(name) = &exp.kind
+              && var_names.contains(name)
+            {
+              touched.insert(name.clone());
+            }
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
+      };
+      for (f_name, f) in &ordered_functions {
+        if reachable
+          .as_ref()
+          .is_none_or(|reachable| reachable.contains(f_name))
+        {
+          collect_names(&f.read().unwrap().expression, &mut touched);
+        }
+      }
+      // An initializer runs when its var has slots, reading what it names.
+      loop {
+        let before = touched.len();
+        for v in self.top_level_vars.iter() {
+          if touched.contains(&v.name)
+            && let Some(value) = &v.value
+          {
+            collect_names(value, &mut touched);
+          }
+        }
+        if touched.len() == before {
+          break;
+        }
+      }
+      touched
+    };
     let mut dyn_memory_count: u16 = 0;
     for v in self.top_level_vars.iter() {
       let is_dynamic_array = matches!(
@@ -8876,6 +9015,22 @@ impl Program {
         // code can never touch this global — skip it entirely
         continue;
       }
+      if !touched_globals.contains(&v.name) {
+        // No compiled code touches it: no slots. A GPU binding still gets
+        // a host binding (with its value host-side, like a texture's) so
+        // dispatches can account for it.
+        if let Some((gb, address_space)) = binding_info {
+          let index = state.host_bindings.len() as u16;
+          state.host_bindings.push(HostBinding {
+            name: v.name.clone(),
+            ty: v.var_type.clone(),
+            storage: HostBindingStorage::Dynamic,
+            gpu: Some((gb.group, gb.binding, address_space)),
+          });
+          state.binding_indices.insert(v.name.clone(), index);
+        }
+        continue;
+      }
       let position = state.consumed_stack_space as u16;
       // `vm_stack_size`, not `flat_data_size_in_u32s`: a slot-backed
       // global may embed a heap id (a struct/enum with a runtime-sized
@@ -8894,7 +9049,15 @@ impl Program {
           storage: SharedVarStorage::Slots { position, size },
         });
       }
-      state.consumed_stack_space += size;
+      state.consumed_stack_space = state
+        .consumed_stack_space
+        .checked_add(size)
+        .unwrap_or_else(|| {
+          panic!(
+            "global `{}` ({size} slots) doesn't fit in the VM's 65536 slots",
+            v.name
+          )
+        });
       if let Some((gb, address_space)) = binding_info {
         let index = state.host_bindings.len() as u16;
         state.host_bindings.push(HostBinding {
@@ -8914,7 +9077,9 @@ impl Program {
       if self.top_level_vars.iter().any(|v| v.value.is_some()) {
         state.open_function("$init_globals".into(), 0);
         for v in self.top_level_vars.iter() {
-          if let Some(value_exp) = &v.value {
+          if let Some(value_exp) = &v.value
+            && touched_globals.contains(&v.name)
+          {
             let value_slot = value_exp
               .compile_to_bytecode(CompilePosition::Value, &mut state)
               .unwrap();
@@ -8949,89 +9114,6 @@ impl Program {
       } else {
         None
       };
-    let ordered_functions =
-      self.composite_functions_in_usage_order_with_discovery(cpu_mode);
-    // Both modes compile only the functions reachable from their own entry
-    // points (`@cpu` for the CPU runtime, `@audio` for the audio runtime),
-    // mirroring the closure-based emission the WGSL/C backends use: an
-    // unreachable helper (say, a never-called higher-order function returning
-    // a closure that isn't in the compiled set) must not be compiled, and
-    // neither may anything reached solely from a wrong-target entry (e.g. a
-    // GPU callback while compiling for the CPU).
-    //
-    // Audio mode is also used by the VM test harnesses (the conformance and
-    // vm suites) to compile a bare `f` in a program with no `@audio` entry at
-    // all; with no entry to seed reachability from, the whole program is
-    // compiled.
-    let reachable: Option<HashSet<Arc<str>>> = {
-      let is_target_entry = |e: EntryPoint| {
-        if cpu_mode {
-          matches!(e, EntryPoint::Cpu)
-        } else {
-          matches!(e, EntryPoint::Audio)
-        }
-      };
-      let by_name: HashMap<Arc<str>, Arc<RwLock<TopLevelFunction>>> =
-        ordered_functions
-          .iter()
-          .map(|(n, f)| (n.clone(), f.clone()))
-          .collect();
-      let is_target_compilable = |f: &Arc<RwLock<TopLevelFunction>>| {
-        f.read()
-          .unwrap()
-          .entry_point
-          .map(|e| is_target_entry(e))
-          .unwrap_or(true)
-      };
-      let mut reachable: HashSet<Arc<str>> = HashSet::new();
-      let mut queue: Vec<Arc<RwLock<TopLevelFunction>>> = vec![];
-      for (name, f) in &ordered_functions {
-        let is_entry = f
-          .read()
-          .unwrap()
-          .entry_point
-          .map(|e| is_target_entry(e))
-          .unwrap_or(false);
-        if is_entry && reachable.insert(name.clone()) {
-          queue.push(f.clone());
-        }
-      }
-      if !cpu_mode && reachable.is_empty() {
-        None
-      } else {
-        while let Some(f) = queue.pop() {
-          let mut found: Vec<Arc<str>> = vec![];
-          f.read()
-            .unwrap()
-            .expression
-            .walk(&mut |exp| {
-              if let ExpKind::Name(name) = &exp.kind
-                && by_name.contains_key(name)
-              {
-                found.push(name.clone());
-              }
-              if let ExpKind::Application(_, _) = &exp.kind
-                && let TypeState::Known(Type::Function(signature)) =
-                  &exp.data.kind
-                && let Some(ancestor) = &signature.abstract_ancestor
-              {
-                found.push(ancestor.read().unwrap().name.clone());
-              }
-              Ok::<bool, Never>(true)
-            })
-            .unwrap();
-          for name in found {
-            if let Some(target) = by_name.get(&name)
-              && is_target_compilable(target)
-              && reachable.insert(name)
-            {
-              queue.push(target.clone());
-            }
-          }
-        }
-        Some(reachable)
-      }
-    };
     for (f_name, implementation) in ordered_functions {
       if let Some(reachable) = &reachable
         && !reachable.contains(&f_name)

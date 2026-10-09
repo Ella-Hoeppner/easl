@@ -15,7 +15,7 @@ use crate::compiler::functions::{
 use crate::compiler::program::{LiftedCapture, LiftedCaptures};
 use crate::compiler::structs::AbstractStruct;
 use crate::compiler::types::{
-  AbstractType, ConcreteArraySize, Type, TypeState,
+  AbstractType, ConcreteArraySize, Type, TypeDescription, TypeState,
 };
 use crate::vm::bytecode::{
   BytecodeProgram, Code, Function, HostBinding, HostBindingStorage,
@@ -328,7 +328,15 @@ impl BytecodeCompilationState {
     self.consumed_stack_space = self
       .consumed_stack_space
       .checked_add(size)
-      .expect("VM stack exceeded 65536 slots (u16 addressing limit)");
+      .unwrap_or_else(|| {
+        panic!(
+          "the VM's 65536 slots ran out compiling `{}`",
+          self
+            .current_function
+            .as_ref()
+            .map_or("the program's globals", |f| &*f.name)
+        )
+      });
     i as u16
   }
   pub fn open_function(&mut self, name: Arc<str>, return_size: u16) {
@@ -3120,7 +3128,20 @@ impl BytecodeCompilationState {
 /// represented by their captured scope's data (zero slots for scope-less
 /// closures) — the code part of a closure is static, so only its captured
 /// state occupies memory.
+/// How many VM slots a value of type `t` occupies. The VM addresses its
+/// slots with `u16`s, so a type needing more than that is a hard error,
+/// never a truncated size.
 pub fn vm_stack_size(t: &Type) -> u16 {
+  let words = vm_stack_words(t);
+  u16::try_from(words).unwrap_or_else(|_| {
+    panic!(
+      "a value of type {} needs {words} VM slots, more than the VM's 65536",
+      TypeDescription::from(t.clone())
+    )
+  })
+}
+
+fn vm_stack_words(t: &Type) -> usize {
   match t {
     // A runtime-sized array *value* is a one-word heap id (see the
     // `Heap*` opcodes); only dynamic globals get region storage.
@@ -3134,7 +3155,7 @@ pub fn vm_stack_size(t: &Type) -> u16 {
       let count = size.as_literal().unwrap_or_else(|| {
         panic!("vm_stack_size: non-literal array size in {t:?}")
       });
-      count as u16 * vm_stack_size(&inner.unwrap_known())
+      count as usize * vm_stack_words(&inner.unwrap_known())
     }
     // Enums may carry runtime-sized payloads on the CPU (as heap-id words),
     // which `flat_data_size_in_u32s` can't size — compute the layout
@@ -3145,20 +3166,20 @@ pub fn vm_stack_size(t: &Type) -> u16 {
         .iter()
         .map(|v| match v.inner_type.unwrap_known() {
           Type::Unit => 0,
-          inner => vm_stack_size(&inner),
+          inner => vm_stack_words(&inner),
         })
         .max()
         .unwrap_or(0)
     }
     // A closure value occupies its captured scope's slots.
-    Type::Function(_) => {
-      t.closure_data_type().map_or(0, |data| vm_stack_size(&data))
-    }
+    Type::Function(_) => t
+      .closure_data_type()
+      .map_or(0, |data| vm_stack_words(&data)),
     _ => {
       match t
         .flat_data_size_in_u32s(&crate::compiler::error::SourceTrace::empty())
       {
-        Ok(size) => size as u16,
+        Ok(size) => size as usize,
         // flat_data_size_in_u32s errors on heap values nested in a struct —
         // e.g. a scope struct capturing a closure that captures a
         // runtime-sized array. Recurse per-field so each field sizes by
@@ -3168,7 +3189,7 @@ pub fn vm_stack_size(t: &Type) -> u16 {
           if let Type::Struct(s) = t {
             s.fields
               .iter()
-              .map(|field| vm_stack_size(&field.field_type.unwrap_known()))
+              .map(|field| vm_stack_words(&field.field_type.unwrap_known()))
               .sum()
           } else {
             panic!("vm_stack_size: unsizable type {t:?}: {e:?}")

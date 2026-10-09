@@ -1,0 +1,27 @@
+; Globals only shaders touch take no space in the VM: `positions` and
+; `velocities` hold 40,000 floats each (together more than the VM's 65,536
+; slots), and only the CPU-read `total` needs any.
+
+(var positions: [40000: f32])
+(var velocities: [40000: f32])
+(var total: [1: f32])
+
+@compute
+@{workgroup-size 64}
+(defn fill [@{builtin global-invocation-id} id: vec3u]
+  (when (< id.x 40000u)
+    (= (positions id.x) 1.)
+    (= (velocities id.x) 2.)))
+
+@compute
+(defn sum-some []
+  (let [@var sum 0.]
+    (for [i 1000u]
+      (+= sum (+ (positions (* i 40u)) (velocities (* i 40u)))))
+    (= (total 0u) sum)))
+
+@cpu
+(defn main []
+  (dispatch-compute-shader fill (vec3u 625u 1u 1u))
+  (dispatch-compute-shader sum-some (vec3u 1u))
+  (print total))
