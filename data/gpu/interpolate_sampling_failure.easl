@@ -1,0 +1,7 @@
+(struct Varyings
+  @{builtin position} position: vec4f
+  @{location 0 interpolate flat-centroid} value: u32)
+
+@fragment
+(defn fragment [in: Varyings]: @{location 0} vec4f
+  (vec4f (f32 in.value)))

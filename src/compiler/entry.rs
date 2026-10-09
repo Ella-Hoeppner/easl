@@ -311,46 +311,54 @@ pub struct Interpolation {
 }
 
 impl Interpolation {
+  /// What integer values passed between stages always get.
+  const FLAT: Self = Self {
+    kind: Flat,
+    sampling: First,
+  };
+  pub fn is_flat(&self) -> bool {
+    self.kind == Flat
+  }
+  /// The setting as written in easl: `kind-sampling`.
+  pub fn describe(&self) -> String {
+    format!("{}-{}", self.kind.name(), self.sampling.name())
+  }
+  /// Parses an interpolation setting: a kind (`perspective`, `linear`,
+  /// `flat`), optionally followed by `-` and a sampling (`center`,
+  /// `centroid`, `sample` for the first two; `first`, `either` for `flat`).
   fn parse(s: &str, source_trace: SourceTrace) -> CompileResult<Self> {
-    let (kind, residual) = [Perspective, Linear, Flat]
+    let (kind_name, sampling_name) = match s.split_once('-') {
+      Some((kind_name, sampling_name)) => (kind_name, Some(sampling_name)),
+      None => (s, None),
+    };
+    let Some(kind) = [Perspective, Linear, Flat]
       .into_iter()
-      .find_map(|kind| {
-        let name = kind.name();
-        (s[0..name.len()] == *name).then(|| (kind, &s[name.len()..]))
-      })
-      .ok_or_else(|| CompileError {
-        kind: InvalidInterpolation,
-        source_trace: source_trace.clone(),
-      })?;
-    if residual.is_empty() {
-      Ok(Self {
+      .find(|kind| kind.name() == kind_name)
+    else {
+      return err(InvalidInterpolation, source_trace);
+    };
+    let Some(sampling_name) = sampling_name else {
+      return Ok(Self {
         sampling: kind.default_sampling(),
         kind,
-      })
-    } else {
-      if &residual[0..1] == "-" {
-        let Some(sampling) = [Center, Centroid, Sample, First, Either]
-          .into_iter()
-          .find_map(|sampling| {
-            (*sampling.name() == residual[1..]).then(|| sampling)
-          })
-        else {
-          return err(InvalidInterpolation, source_trace);
-        };
-        if !kind.is_sampling_allowed(sampling) {
-          return err(
-            InvalidInterpolationSampling(
-              kind.name().to_string(),
-              residual[1..].to_string(),
-            ),
-            source_trace,
-          );
-        }
-        Ok(Self { kind, sampling })
-      } else {
-        err(InvalidInterpolation, source_trace)
-      }
+      });
+    };
+    let Some(sampling) = [Center, Centroid, Sample, First, Either]
+      .into_iter()
+      .find(|sampling| sampling.name() == sampling_name)
+    else {
+      return err(InvalidInterpolation, source_trace);
+    };
+    if !kind.is_sampling_allowed(sampling) {
+      return err(
+        InvalidInterpolationSampling(
+          kind_name.to_string(),
+          sampling_name.to_string(),
+        ),
+        source_trace,
+      );
     }
+    Ok(Self { kind, sampling })
   }
 }
 
@@ -412,13 +420,15 @@ impl IOAttribute {
       _ => Ok(None),
     }
   }
+  /// Whether `self` and `other` can't be on the same value: each kind can
+  /// appear once, and a builtin takes no `location` or `interpolate` (those
+  /// are for user-defined values passed between stages).
   fn conflicts(&self, other: &Self) -> bool {
+    use IOAttributeKind::*;
     match (&self.kind, &other.kind) {
-      (IOAttributeKind::Builtin(_), IOAttributeKind::Builtin(_)) => true,
-      (IOAttributeKind::Location(_), IOAttributeKind::Location(_)) => true,
-      (IOAttributeKind::Interpolate(_), IOAttributeKind::Interpolate(_)) => {
-        true
-      }
+      (Builtin(_), _) | (_, Builtin(_)) => true,
+      (Location(_), Location(_)) => true,
+      (Interpolate(_), Interpolate(_)) => true,
       _ => false,
     }
   }
@@ -460,10 +470,22 @@ impl IOAttributes {
       None
     }
   }
-  pub fn compile(&self) -> String {
+  /// The WGSL attributes for a value of type `value_type`. An integer value
+  /// with a location and no interpolation gets `flat` (WGSL requires it for
+  /// integers passed between stages).
+  pub fn compile(&self, value_type: &Type) -> String {
+    let implicit_interpolation = (self.location().is_some()
+      && self.interpolation().is_none()
+      && value_type.is_integer_scalar_or_vector())
+    .then(|| IOAttributeKind::Interpolate(Interpolation::FLAT));
     let mut s = String::new();
-    for a in self.attributes.iter() {
-      let (name, value) = match &a.kind {
+    for kind in self
+      .attributes
+      .iter()
+      .map(|a| &a.kind)
+      .chain(implicit_interpolation.as_ref())
+    {
+      let (name, value) = match kind {
         IOAttributeKind::Builtin(builtin) => (
           "builtin",
           match builtin {
@@ -488,23 +510,13 @@ impl IOAttributes {
         IOAttributeKind::Interpolate(interpolation) => (
           "interpolate",
           format!(
-            "@interpolate({}, {}) ",
-            match interpolation.kind {
-              InterpolationKind::Perspective => "perspective",
-              InterpolationKind::Linear => "linear",
-              InterpolationKind::Flat => "flat",
-            },
-            match interpolation.sampling {
-              InterpolationSampling::Center => "center",
-              InterpolationSampling::Centroid => "centroid",
-              InterpolationSampling::Sample => "sample",
-              InterpolationSampling::First => "first",
-              InterpolationSampling::Either => "either",
-            }
+            "{}, {}",
+            interpolation.kind.name(),
+            interpolation.sampling.name()
           ),
         ),
       };
-      s += &format!("@{name}({value})");
+      s += &format!("@{name}({value}) ");
     }
     s
   }
@@ -559,6 +571,15 @@ impl IOAttributes {
     self.attributes.iter().find_map(|attribute| {
       if let IOAttributeKind::Builtin(b) = &attribute.kind {
         Some((b, &attribute.source_trace))
+      } else {
+        None
+      }
+    })
+  }
+  pub fn interpolation(&self) -> Option<(&Interpolation, &SourceTrace)> {
+    self.attributes.iter().find_map(|attribute| {
+      if let IOAttributeKind::Interpolate(i) = &attribute.kind {
+        Some((i, &attribute.source_trace))
       } else {
         None
       }

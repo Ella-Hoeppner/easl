@@ -2950,6 +2950,11 @@ impl Type {
       None
     }
   }
+  /// An integer scalar, or a vector of integers.
+  pub fn is_integer_scalar_or_vector(&self) -> bool {
+    matches!(self, Type::U32 | Type::I32)
+      || matches!(self.vector_element_type(), Some(Type::U32 | Type::I32))
+  }
   pub fn matrix_scalar_type(&self) -> Option<Type> {
     if let Type::Struct(s) = self
       && crate::compiler::functions::extract_mat_size(&s.name).is_some()

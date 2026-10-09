@@ -1450,7 +1450,7 @@ impl TopLevelFunction {
           CompilerTarget::WGSL => {
             format!(
               "{}{}",
-              annotation.attributes.compile(),
+              annotation.attributes.compile(&arg.var_type.unwrap_known()),
               compile_typed_name(
                 name,
                 arg.var_type.ownership,
@@ -1533,7 +1533,9 @@ impl TopLevelFunction {
           } else {
             format!(
               " -> {}{return_type_name}",
-              self.return_attributes.compile()
+              self
+                .return_attributes
+                .compile(&return_type.kind.unwrap_known())
             )
           },
         ),

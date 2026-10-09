@@ -7027,6 +7027,34 @@ impl Program {
                   Ok(a) => &*a,
                   Err((_, _, a)) => a,
                 };
+                // WGSL requires integer values passed between stages to be
+                // `flat` (emission adds it when nothing is written).
+                if let Some((interpolation, source)) =
+                  attributes.interpolation()
+                  && !interpolation.is_flat()
+                  && let Some(value_type) = match attributable {
+                    Ok(_) => Some(t.clone()),
+                    Err((s, field_name, _)) => {
+                      s.fields.iter().find(|f| f.name == *field_name).and_then(
+                        |f| {
+                          f.field_type
+                            .concretize(
+                              &vec![],
+                              &self.typedefs,
+                              SourceTrace::empty(),
+                            )
+                            .ok()
+                        },
+                      )
+                    }
+                  }
+                  && value_type.is_integer_scalar_or_vector()
+                {
+                  errors.log(CompileError::new(
+                    NonFlatIntegerInterpolation(interpolation.describe()),
+                    source.clone(),
+                  ));
+                }
                 if let Some((builtin, source)) = attributes.builtin() {
                   if match input_or_output {
                     InputOrOutput::Input => {

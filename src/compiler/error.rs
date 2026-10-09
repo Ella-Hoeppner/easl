@@ -438,8 +438,13 @@ pub enum CompileErrorKind {
   InvalidIOLocation,
   #[error("Invalid \"interpolate\" annotation")]
   InvalidInterpolation,
-  #[error("Sampling type \"{0}\" is not allowed for interpolation \"{1}\"")]
+  #[error("Sampling \"{1}\" is not allowed for interpolation \"{0}\"")]
   InvalidInterpolationSampling(String, String),
+  #[error(
+    "Integer values passed between shader stages are always interpolated \
+    `flat`; `{0}` isn't allowed"
+  )]
+  NonFlatIntegerInterpolation(String),
   #[error("Invalid annotation on return type, only \"location\" is allowed")]
   InvalidReturnTypeAnnotation,
   #[error("Invalid type for builtin \"{0}\"")]
@@ -450,7 +455,10 @@ pub enum CompileErrorKind {
   InvalidBuiltinStructFieldName(String),
   #[error("Invalid annotations on return type")]
   InvalidReturnAnnotations,
-  #[error("Conflicting attributes")]
+  #[error(
+    "Conflicting attributes: each can appear once, and a builtin can't also \
+    have a `location` or `interpolate`"
+  )]
   ConflictingAttributes,
   #[error("Attributes are not allowed on non-entry-point functions")]
   IOAttributesOnNonEntry,
@@ -856,6 +864,10 @@ impl PartialEq for CompileErrorKind {
         Self::InvalidInterpolationSampling(l0, l1),
         Self::InvalidInterpolationSampling(r0, r1),
       ) => l0 == r0 && l1 == r1,
+      (
+        Self::NonFlatIntegerInterpolation(l0),
+        Self::NonFlatIntegerInterpolation(r0),
+      ) => l0 == r0,
       (Self::InvalidBuiltinType(l0), Self::InvalidBuiltinType(r0)) => l0 == r0,
       (
         Self::InvalidBuiltinStructFieldName(l0),

@@ -1,0 +1,13 @@
+; Integer values passed between stages can only be `flat`.
+
+(struct Varyings
+  @{builtin position} position: vec4f
+  @{interpolate linear} id: u32)
+
+@vertex
+(defn vertex [@{builtin vertex-index} index: u32]: Varyings
+  (Varyings (vec4f 0. 0. 0. 1.) index))
+
+@fragment
+(defn fragment [@{location 0 interpolate perspective-sample} id: u32]: @{location 0} vec4f
+  (vec4f (f32 id)))

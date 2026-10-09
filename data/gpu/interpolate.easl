@@ -1,0 +1,59 @@
+; Every interpolation setting, on vertex output fields and on fragment
+; inputs, compiles to valid WGSL. Integer values without a setting are
+; `flat` (`interpolate_integers_default_to_flat` checks the emitted WGSL).
+
+(struct Varyings
+  @{builtin position} position: vec4f
+  @{location 0 interpolate perspective} a: vec4f
+  @{location 1 interpolate perspective-center} b: f32
+  @{location 2 interpolate perspective-centroid} c: f32
+  @{location 3 interpolate perspective-sample} d: f32
+  @{location 4 interpolate linear} e: f32
+  @{location 5 interpolate linear-center} f: f32
+  @{location 6 interpolate linear-centroid} g: vec2f
+  @{location 7 interpolate linear-sample} h: f32
+  @{location 8 interpolate flat} i: u32
+  @{location 9 interpolate flat-first} j: i32
+  @{location 10 interpolate flat-either} k: vec2u
+  @{location 11 interpolate flat} l: f32
+  @{location 12} m: u32
+  n: vec3i)
+
+@vertex
+(defn vertex [@{builtin vertex-index} index: u32]: Varyings
+  (Varyings (vec4f 0. 0. 0. 1.)
+            (vec4f 1.)
+            1.
+            1.
+            1.
+            1.
+            1.
+            (vec2f 1.)
+            1.
+            index
+            (i32 index)
+            (vec2u index)
+            1.
+            index
+            (vec3i 1i)))
+
+@fragment
+(defn fragment [in: Varyings]: @{location 0} vec4f
+  (vec4f (+ in.b in.l)
+         (f32 in.i)
+         (f32 in.j)
+         (f32 in.k.x)))
+
+(struct FlatOut
+  @{builtin position} position: vec4f
+  @{location 0 interpolate flat} id: u32
+  @{location 1 interpolate linear-sample} weight: f32)
+
+@vertex
+(defn flat-vertex [@{builtin vertex-index} index: u32]: FlatOut
+  (FlatOut (vec4f 0. 0. 0. 1.) index 0.5))
+
+@fragment
+(defn flat-fragment [@{location 0} id: u32
+                     @{location 1 interpolate linear-sample} weight: f32]: @{location 0} vec4f
+  (vec4f (f32 id) weight 0. 1.))

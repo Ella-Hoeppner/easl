@@ -47,6 +47,21 @@ Builtin inputs can be read by calling them like functions, anywhere in the right
 
 The explicit forms remain available when you want them: `@{builtin vertex-index}` on an argument, `@{location 0}` on a field or return type. Builtins use wgsl's names in kebab-case, with wgsl's rules about which stages they're valid in.
 
+A value passed from the vertex shader to the fragment shader is interpolated across each triangle. `@{interpolate …}` on the field or argument chooses how, like wgsl's `@interpolate`:
+
+- `perspective` (the default for floats): perspective-correct interpolation.
+- `linear`: interpolation in screen space.
+- `flat`: no interpolation; every fragment sees one vertex's value. Integer values (and vectors of them) are always flat: they get it without asking, and any other setting is an error.
+
+`perspective` and `linear` take a sampling, as `perspective-centroid` for example: `center` (the default), `centroid`, or `sample`. `flat` takes `first` (the default) or `either`. A builtin can't have an interpolation, since it isn't a value passed between stages:
+
+```easl
+(struct Varyings
+  @{builtin position} position: vec4f
+  @{interpolate flat} id: u32
+  @{interpolate linear-centroid} uv: vec2f)
+```
+
 ## GPU-bound variables
 
 A top-level `var` is a is shared by the CPU and GPU default, with the exact rules about when/where it can be written determined by it's *address space*.

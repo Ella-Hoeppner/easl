@@ -133,6 +133,7 @@ macro_rules! error_test {
 // --- Success tests ---
 
 success_test!(render_located_varyings);
+success_test!(interpolate);
 success_test!(return_mutable_ref_param);
 success_test!(closure_capture_ref_field);
 success_test!(ref_field_condition);
@@ -1294,3 +1295,43 @@ error_test!(
   current_directory_value_failure,
   CompileErrorKind::CurrentDirectoryNotCalled
 );
+
+error_test!(
+  interpolate_invalid_failure,
+  CompileErrorKind::InvalidInterpolation
+);
+error_test!(
+  interpolate_sampling_failure,
+  CompileErrorKind::InvalidInterpolationSampling(
+    "flat".into(),
+    "centroid".into()
+  )
+);
+error_test!(
+  interpolate_on_builtin_failure,
+  CompileErrorKind::ConflictingAttributes
+);
+error_test!(
+  location_on_builtin_failure,
+  CompileErrorKind::ConflictingAttributes
+);
+error_test!(
+  interpolate_integer_failure,
+  CompileErrorKind::NonFlatIntegerInterpolation("linear-center".into()),
+  CompileErrorKind::NonFlatIntegerInterpolation("perspective-sample".into())
+);
+
+/// An integer value passed between stages with no interpolation setting is
+/// emitted `flat`, as WGSL requires; other values keep the default.
+#[test]
+fn interpolate_integers_default_to_flat() {
+  let wgsl = compile_shader("interpolate").unwrap();
+  for expected in [
+    "@location(12) @interpolate(flat, first) m: u32",
+    "@location(13) @interpolate(flat, first) n: vec3i",
+    "@location(0) @interpolate(flat, first) id: u32",
+    "@location(0) @interpolate(perspective, center) a: vec4f",
+  ] {
+    assert!(wgsl.contains(expected), "missing `{expected}` in:\n{wgsl}");
+  }
+}

@@ -1,0 +1,7 @@
+(struct Varyings
+  @{builtin position} position: vec4f
+  @{location 0 interpolate wobbly} value: f32)
+
+@fragment
+(defn fragment [in: Varyings]: @{location 0} vec4f
+  (vec4f in.value))

@@ -287,7 +287,12 @@ impl AbstractStructField {
     names: &mut NameContext,
     target: CompilerTarget,
   ) -> CompileResult<String> {
-    let annotation = self.attributes.compile();
+    let annotation = self.attributes.compile(
+      &self
+        .field_type
+        .concretize(&vec![], typedefs, self.source_trace.clone())
+        .expect("an emitted struct's fields are concrete"),
+    );
     let name = compile_word(self.name);
     let field_type =
       self

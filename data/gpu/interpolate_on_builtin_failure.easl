@@ -1,0 +1,5 @@
+(struct Varyings
+  @{builtin position interpolate flat} position: vec4f)
+@vertex
+(defn vertex []: Varyings
+  (Varyings (vec4f 0. 0. 0. 1.)))
