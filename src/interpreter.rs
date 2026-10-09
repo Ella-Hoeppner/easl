@@ -7,7 +7,10 @@ use std::{
 use take_mut::take;
 use thiserror::Error;
 
-use std::sync::Arc;
+use std::sync::{
+  Arc, Mutex, Weak,
+  atomic::{AtomicU64, AtomicUsize, Ordering},
+};
 
 #[cfg(all(feature = "window", feature = "c_audio"))]
 use crate::compiler::core::compile_easl_file_to_target;
@@ -270,19 +273,149 @@ pub enum Value {
   },
   Uninitialized,
   String(String),
-  /// A CPU-loaded texture, created by `load-image` or `blank-texture`. Holds
-  /// RGBA8 pixel data. Uploaded to the GPU as a `wgpu::Texture` (not a
-  /// buffer) when needed. `binding` is set when the texture is assigned to a
-  /// GPU binding var, so `set-render-target` can identify the GPU slot.
-  Texture {
-    width: u32,
-    height: u32,
-    data: Vec<u8>,
-    binding: Option<GroupAndBinding>,
-  },
+  /// A texture: a reference to a GPU texture (see `TextureValue`).
+  Texture(TextureValue),
   /// A sampler's settings, created by the `Sampler` constructor. Uploaded to the GPU as a
   /// `wgpu::Sampler`.
   Sampler(SamplerSettings),
+}
+
+/// A reference to a GPU texture that doesn't count as a holder of its
+/// value: the GPU's own references (a binding, a queued upload, the source
+/// of a pending copy). Every change to a texture's contents is queued in GPU
+/// program order, so GPU work queued earlier can never observe a later
+/// change, and these references never need to block one. A value holds a
+/// `TextureValue` instead.
+#[derive(Clone, Debug)]
+pub struct TextureHandle(Arc<TextureInfo>);
+
+#[derive(Debug)]
+pub struct TextureInfo {
+  /// Unique per texture; the GPU's textures are keyed by it.
+  pub id: u64,
+  pub width: u32,
+  pub height: u32,
+  /// How the GPU texture gets its initial contents, taken when the GPU
+  /// creates it.
+  init: Mutex<Option<TextureInit>>,
+  /// How many `TextureValue`s refer to this texture.
+  value_refs: AtomicUsize,
+}
+
+#[derive(Debug)]
+pub enum TextureInit {
+  /// RGBA8 pixels (`load-image`, video frames).
+  Pixels(Vec<u8>),
+  /// All zeros (`blank-texture`, and an unassigned texture var).
+  Blank,
+  /// The contents of another texture, as of when the copy runs in the
+  /// GPU's program order.
+  CopyOf(TextureHandle),
+}
+
+impl TextureHandle {
+  pub fn id(&self) -> u64 {
+    self.0.id
+  }
+  pub fn width(&self) -> u32 {
+    self.0.width
+  }
+  pub fn height(&self) -> u32 {
+    self.0.height
+  }
+  /// Takes the initial contents; `None` once the GPU texture exists.
+  pub fn take_init(&self) -> Option<TextureInit> {
+    self.0.init.lock().unwrap().take()
+  }
+  /// `(width, height, rgba8_pixels)` of a texture the GPU hasn't created
+  /// yet, when its initial contents are known without one.
+  pub fn initial_pixels(&self) -> Option<(u32, u32, Vec<u8>)> {
+    let (width, height) = (self.width(), self.height());
+    match &*self.0.init.lock().unwrap() {
+      Some(TextureInit::Pixels(data)) => Some((width, height, data.clone())),
+      Some(TextureInit::Blank) => {
+        Some((width, height, vec![0; (width * height * 4) as usize]))
+      }
+      _ => None,
+    }
+  }
+  /// Takes the initial contents when they're pixels the GPU hasn't been
+  /// given yet.
+  pub fn take_initial_pixels(&self) -> Option<Vec<u8>> {
+    let mut init = self.0.init.lock().unwrap();
+    match init.take() {
+      Some(TextureInit::Pixels(data)) => Some(data),
+      other => {
+        *init = other;
+        None
+      }
+    }
+  }
+  /// Whether `other` refers to the same texture.
+  pub fn same_texture(&self, other: &Self) -> bool {
+    self.id() == other.id()
+  }
+  /// A weak reference, for a GPU store that frees a texture once no
+  /// reference to it is left.
+  pub fn downgrade(&self) -> Weak<TextureInfo> {
+    Arc::downgrade(&self.0)
+  }
+}
+
+impl PartialEq for TextureHandle {
+  fn eq(&self, other: &Self) -> bool {
+    self.same_texture(other)
+  }
+}
+
+/// A texture as a value holds it: a cheap, clonable reference to a texture
+/// that lives on the GPU, counted (`is_unique`). Copying a texture value
+/// shares the texture; a change to its contents happens in place only when
+/// no other value holds it, and otherwise goes to a copy (rendering:
+/// `EvaluationEnvironment::prepare_render_target`; new pixels:
+/// `assign_texture`), so textures keep value semantics.
+#[derive(Debug, PartialEq)]
+pub struct TextureValue(TextureHandle);
+
+impl TextureValue {
+  pub fn new(width: u32, height: u32, init: TextureInit) -> Self {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+    Self(TextureHandle(Arc::new(TextureInfo {
+      id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+      width,
+      height,
+      init: Mutex::new(Some(init)),
+      value_refs: AtomicUsize::new(1),
+    })))
+  }
+  /// The texture, as a reference that doesn't count as a holder.
+  pub fn handle(&self) -> &TextureHandle {
+    &self.0
+  }
+  pub fn width(&self) -> u32 {
+    self.0.width()
+  }
+  pub fn height(&self) -> u32 {
+    self.0.height()
+  }
+  /// Whether this is the only value holding the texture, so its contents
+  /// can change in place.
+  pub fn is_unique(&self) -> bool {
+    self.0.0.value_refs.load(Ordering::Acquire) == 1
+  }
+}
+
+impl Clone for TextureValue {
+  fn clone(&self) -> Self {
+    self.0.0.value_refs.fetch_add(1, Ordering::AcqRel);
+    Self(self.0.clone())
+  }
+}
+
+impl Drop for TextureValue {
+  fn drop(&mut self) {
+    self.0.0.value_refs.fetch_sub(1, Ordering::AcqRel);
+  }
 }
 
 /// How a sampler reads between texel centers (the builtin `FilterMode`).
@@ -1964,30 +2097,8 @@ fn apply_builtin_fn<IO: IOManager>(
       env.setup_gpu_if_needed();
       let mut pre_upload =
         env.collect_dirty_uploads(&read_global_variable_names);
-      let render_target =
-        env.current_render_target.map(|gb| (gb.group, gb.binding));
-      // If rendering to an offscreen texture, also upload it now (even though
-      // the shader doesn't read it) so the GPU has the correctly-sized texture
-      // to render into.  Collect its upload separately to avoid marking it
-      // Synced before the render has run.
-      if let Some((rt_group, rt_binding)) = render_target {
-        if let Some((_, name, _, _)) =
-          env.binding_vars.iter().find(|(gb, _, _, addr)| {
-            gb.group == rt_group
-              && gb.binding == rt_binding
-              && *addr == VariableAddressSpace::Handle
-          })
-        {
-          let name = name.clone();
-          // Only upload if the CPU has a value that the GPU doesn't know about yet.
-          if env.buffer_states.get(&name)
-            == Some(&SharedBufferState::GPUOutOfDate)
-          {
-            let extra = env.collect_dirty_uploads(&[name.clone()]);
-            pre_upload.extend(extra);
-          }
-        }
-      }
+      let (render_target, target_uploads) = env.prepare_render_target();
+      pre_upload.extend(target_uploads);
       env.io.record_draw(
         env.gpu_entry_id(&vert_f_name),
         env.gpu_entry_id(&frag_f_name),
@@ -1999,19 +2110,6 @@ fn apply_builtin_fn<IO: IOManager>(
         render_target,
       )?;
       env.mark_gpu_written(&written_global_variable_names);
-      // The render writes to the offscreen texture on the GPU, so the CPU's
-      // value is now stale.  Mark it CPUOutOfDate so subsequent compute
-      // dispatches don't re-upload the CPU value and overwrite the result.
-      if let Some((rt_group, rt_binding)) = render_target {
-        if let Some((_, name, _, _)) =
-          env.binding_vars.iter().find(|(gb, _, _, _)| {
-            gb.group == rt_group && gb.binding == rt_binding
-          })
-        {
-          let name = name.clone();
-          env.mark_gpu_written(&[name]);
-        }
-      }
       Ok(Value::Unit)
     }
     "dispatch-compute-shader" => {
@@ -2287,12 +2385,11 @@ fn apply_builtin_fn<IO: IOManager>(
           "get-video-frame-texture: {e}"
         ))
       })?;
-      Ok(Value::Texture {
-        width: decoded.width,
-        height: decoded.height,
-        data: decoded.rgba,
-        binding: None,
-      })
+      Ok(Value::Texture(TextureValue::new(
+        decoded.width,
+        decoded.height,
+        TextureInit::Pixels(decoded.rgba),
+      )))
     }
     "get-current-frame-index" => {
       let (_, frame) = video_source_and_frame(&args[0].0);
@@ -2353,41 +2450,26 @@ fn apply_builtin_fn<IO: IOManager>(
         };
         (w, h)
       };
-      let data = vec![0u8; (width * height * 4) as usize];
-      Ok(Value::Texture {
+      Ok(Value::Texture(TextureValue::new(
         width,
         height,
-        data,
-        binding: None,
-      })
+        TextureInit::Blank,
+      )))
     }
     "texture-dimensions" => {
-      // Both overloads: (tex) and (tex level). The mip level arg is ignored on
-      // CPU since Value::Texture always holds the base level.
-      let Value::Texture { width, height, .. } = args.remove(0).0 else {
+      // Both overloads: (tex) and (tex level). Textures have one level, so
+      // the level argument doesn't change the answer.
+      let Value::Texture(texture) = args.remove(0).0 else {
         panic!("texture-dimensions: expected Texture argument")
       };
       Ok(Value::Struct(
         [
-          ("x".into(), Value::Prim(Primitive::U32(width))),
-          ("y".into(), Value::Prim(Primitive::U32(height))),
+          ("x".into(), Value::Prim(Primitive::U32(texture.width()))),
+          ("y".into(), Value::Prim(Primitive::U32(texture.height()))),
         ]
         .into_iter()
         .collect(),
       ))
-    }
-    "set-render-target" => {
-      let Value::Texture {
-        binding: Some(gb), ..
-      } = args.remove(0).0
-      else {
-        panic!(
-          "set-render-target: texture must be assigned to a binding variable \
-           before it can be used as a render target"
-        )
-      };
-      env.current_render_target = Some(gb);
-      Ok(Value::Unit)
     }
     "clear-render-target" => {
       env.current_render_target = None;
@@ -2417,15 +2499,10 @@ fn apply_builtin_fn<IO: IOManager>(
       let Value::String(path) = args.remove(0).0 else {
         panic!("save-png: expected string path argument")
       };
-      let Value::Texture {
-        width,
-        height,
-        data,
-        ..
-      } = env.refresh_texture_from_gpu(texture)?
-      else {
+      let Value::Texture(texture) = texture else {
         panic!("save-png: expected Texture argument")
       };
+      let (width, height, data) = env.read_texture(texture.handle())?;
       save_png_file(&path, width, height, &data, &env.source_dir)?;
       Ok(Value::Unit)
     }
@@ -3211,12 +3288,8 @@ pub enum BufferUpload {
   Data(Vec<u8>),
   /// Zero-fill `byte_count` bytes on the GPU side (no CPU allocation needed).
   Clear { byte_count: u64 },
-  /// Upload RGBA8 pixel data to a texture binding.
-  TextureData {
-    width: u32,
-    height: u32,
-    data: Vec<u8>,
-  },
+  /// Bind a texture to a texture binding.
+  Texture(TextureHandle),
   /// Set a sampler binding's settings.
   Sampler(SamplerSettings),
 }
@@ -3240,6 +3313,11 @@ pub enum WindowEvent {
     entry: u16,
     workgroup_count: (u32, u32, u32),
     pre_upload: Vec<((u8, u8), BufferUpload)>,
+  },
+  /// Replaces a texture's contents with RGBA8 pixels, in place.
+  WriteTexture {
+    texture: TextureHandle,
+    pixels: Vec<u8>,
   },
 }
 
@@ -3938,6 +4016,16 @@ pub trait IOManager: Sized {
     workgroup_count: (u32, u32, u32),
     pre_upload: Vec<((u8, u8), BufferUpload)>,
   ) -> Result<(), EvalError>;
+  /// Queues replacing `texture`'s contents with `pixels`, in GPU program
+  /// order with the other recorded work. An IO manager that can't queue it
+  /// returns the pixels, and the texture is replaced by a new one instead.
+  fn record_texture_write(
+    &mut self,
+    _texture: &TextureHandle,
+    pixels: Vec<u8>,
+  ) -> Result<(), Vec<u8>> {
+    Err(pixels)
+  }
   fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent>;
   fn record_close_window(&mut self);
   /// Copy a GPU-written buffer back to CPU. Returns Some(bytes) on success,
@@ -3949,13 +4037,11 @@ pub trait IOManager: Sized {
     size: u64,
   ) -> Option<Vec<u8>>;
   /// Copy a GPU-written binding texture back to CPU as
-  /// `(width, height, rgba8_pixels)`. Returns None when GPU readback isn't
-  /// available or no texture exists at the binding. Used by `save-png` for
-  /// textures the GPU has rendered into.
-  fn sync_texture_to_cpu(
+  /// `(width, height, rgba8_pixels)`, after the GPU work queued before it.
+  /// Returns None when there's no GPU. Used by `save-png`.
+  fn read_texture(
     &mut self,
-    _group: u8,
-    _binding: u8,
+    _texture: &TextureHandle,
   ) -> Option<(u32, u32, Vec<u8>)> {
     None
   }
@@ -4292,6 +4378,18 @@ impl IOManager for StdoutIO {
     Ok(())
   }
 
+  fn record_texture_write(
+    &mut self,
+    texture: &TextureHandle,
+    pixels: Vec<u8>,
+  ) -> Result<(), Vec<u8>> {
+    self.frame_draw_calls.push(WindowEvent::WriteTexture {
+      texture: texture.clone(),
+      pixels,
+    });
+    Ok(())
+  }
+
   fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent> {
     std::mem::take(&mut self.frame_draw_calls)
   }
@@ -4311,14 +4409,15 @@ impl IOManager for StdoutIO {
     None
   }
 
-  fn sync_texture_to_cpu(
+  fn read_texture(
     &mut self,
-    #[allow(unused_variables)] group: u8,
-    #[allow(unused_variables)] binding: u8,
+    #[allow(unused_variables)] texture: &TextureHandle,
   ) -> Option<(u32, u32, Vec<u8>)> {
     #[cfg(feature = "window")]
-    if let Some(gpu) = &self.gpu {
-      return gpu.read().unwrap().read_texture(group, binding);
+    if let Some(gpu) = self.gpu.clone() {
+      // The render into this texture may still be queued.
+      self.flush_queued_compute();
+      return Some(gpu.write().unwrap().read_texture(texture));
     }
     None
   }
@@ -4502,7 +4601,7 @@ impl IOManager for StdoutIO {
   fn reload_requested(&self) -> bool {
     #[cfg(feature = "window")]
     if let Some(flag) = &self.reload_flag {
-      return flag.load(std::sync::atomic::Ordering::Relaxed);
+      return flag.load(Ordering::Relaxed);
     }
     false
   }
@@ -4516,7 +4615,7 @@ impl IOManager for StdoutIO {
     {
       self.gpu = None;
       if let Some(flag) = &self.reload_flag {
-        flag.store(false, std::sync::atomic::Ordering::Relaxed);
+        flag.store(false, Ordering::Relaxed);
       }
     }
   }
@@ -4857,6 +4956,14 @@ impl IOManager for CaptureIO {
       .record_compute(entry, entry_name, workgroup_count, pre_upload)
   }
 
+  fn record_texture_write(
+    &mut self,
+    texture: &TextureHandle,
+    pixels: Vec<u8>,
+  ) -> Result<(), Vec<u8>> {
+    self.inner.record_texture_write(texture, pixels)
+  }
+
   fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent> {
     self.inner.take_frame_draw_calls()
   }
@@ -4874,12 +4981,11 @@ impl IOManager for CaptureIO {
     self.inner.sync_gpu_to_cpu(group, binding, size)
   }
 
-  fn sync_texture_to_cpu(
+  fn read_texture(
     &mut self,
-    group: u8,
-    binding: u8,
+    texture: &TextureHandle,
   ) -> Option<(u32, u32, Vec<u8>)> {
-    self.inner.sync_texture_to_cpu(group, binding)
+    self.inner.read_texture(texture)
   }
 
   #[cfg(feature = "window")]
@@ -5334,9 +5440,8 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       let value = match &var.value {
         Some(exp) => eval(exp.clone(), &mut env)?,
         None => {
-          // Texture (Handle) bindings must be loaded via load-image; start
-          // Uninitialized so no spurious zeroed struct is created for them.
-          // A sampler starts with the default settings.
+          // A texture starts as its own blank 1×1 texture, and a sampler
+          // with the default settings.
           let is_handle = matches!(
             var.kind,
             TopLevelVariableKind::Var {
@@ -5347,7 +5452,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           if var.var_type.is_sampler() {
             Value::Sampler(SamplerSettings::default())
           } else if is_handle {
-            Value::Uninitialized
+            Value::Texture(TextureValue::new(1, 1, TextureInit::Blank))
           } else {
             // Unsized arrays and other unzeroable types fall back to
             // Uninitialized; the user must assign before use.
@@ -5538,16 +5643,9 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
             );
             BufferUpload::Clear { byte_count: padded }
           }
-          Some(Value::Texture {
-            width,
-            height,
-            data,
-            ..
-          }) => BufferUpload::TextureData {
-            width: *width,
-            height: *height,
-            data: data.clone(),
-          },
+          Some(Value::Texture(texture)) => {
+            BufferUpload::Texture(texture.handle().clone())
+          }
           Some(Value::Sampler(settings)) => BufferUpload::Sampler(*settings),
           _ if *addr == VariableAddressSpace::Handle => {
             // Uninitialized texture — skip; placeholder texture is used on GPU.
@@ -5784,16 +5882,9 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
           );
           BufferUpload::Clear { byte_count: padded }
         }
-        Some(Value::Texture {
-          width,
-          height,
-          data,
-          ..
-        }) => BufferUpload::TextureData {
-          width: *width,
-          height: *height,
-          data: data.clone(),
-        },
+        Some(Value::Texture(texture)) => {
+          BufferUpload::Texture(texture.handle().clone())
+        }
         Some(Value::Sampler(settings)) => BufferUpload::Sampler(*settings),
         _ if *addr == VariableAddressSpace::Handle => {
           // Uninitialized texture — skip upload; the placeholder texture
@@ -5837,8 +5928,6 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   }
 
   /// Marks GPU-bound vars in `names` as GPUOutOfDate (CPU wrote them).
-  /// Also tags any texture value with its binding location so that
-  /// `set-render-target` can later identify the GPU slot.
   fn mark_cpu_written(&mut self, names: &[Arc<str>]) {
     for name in names {
       if let Some(shared_index) = self.shared_indices.get(name).copied() {
@@ -5848,24 +5937,6 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         self
           .buffer_states
           .insert(name.clone(), SharedBufferState::GPUOutOfDate);
-        // Tag texture values with their binding so set-render-target can
-        // identify the GPU slot without scanning all binding vars.
-        let gb = self
-          .binding_vars
-          .iter()
-          .find(|(_, n, _, addr)| {
-            n == name && *addr == VariableAddressSpace::Handle
-          })
-          .map(|(gb, _, _, _)| *gb);
-        if let Some(gb) = gb {
-          if let Some(slot) =
-            self.bindings.get_mut(name).and_then(|s| s.last_mut())
-          {
-            if let Value::Texture { binding, .. } = &mut slot.0 {
-              *binding = Some(gb);
-            }
-          }
-        }
       }
     }
   }
@@ -6003,62 +6074,111 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     }
   }
 
-  /// If `texture` is bound to a GPU binding whose newest content lives on
-  /// the GPU (buffer state CPUOutOfDate — the texture was rendered into),
-  /// flushes queued GPU work, reads the texture back as RGBA8, updates the
-  /// CPU-side binding value, and returns the fresh texture. Otherwise
-  /// returns `texture` unchanged. The texture analog of
-  /// `check_cpu_readable`; used by `save-png`.
-  fn refresh_texture_from_gpu(
+  /// A texture's pixels as RGBA8, `(width, height, pixels)`. Pixels live on
+  /// the GPU, so this reads them back (after the GPU work queued so far,
+  /// which may include writes to this texture). Without a GPU, nothing can
+  /// have changed a texture, so it still has its initial contents.
+  fn read_texture(
     &mut self,
-    texture: Value,
-  ) -> Result<Value, EvalError> {
-    let Value::Texture {
-      binding: Some(gb), ..
-    } = &texture
-    else {
-      return Ok(texture);
+    texture: &TextureHandle,
+  ) -> Result<(u32, u32, Vec<u8>), EvalError> {
+    self.setup_gpu_if_needed();
+    if let Some(pixels) = self.io.read_texture(texture) {
+      return Ok(pixels);
+    }
+    texture.initial_pixels().ok_or_else(|| {
+      UserspaceEvalError::RuntimeError(
+        "reading a texture's pixels needs a GPU".to_string(),
+      )
+      .into()
+    })
+  }
+
+  /// Assigns `texture` to the texture variable `name`. When `texture` is
+  /// new pixels no other value holds, of the same size as the texture `name`
+  /// holds, and no other value holds that one either, the held texture's
+  /// contents are replaced in place instead (queued in GPU program order),
+  /// so no new GPU texture is made — e.g. a video frame variable updated
+  /// every frame.
+  fn assign_texture(&mut self, name: &Arc<str>, mut texture: TextureValue) {
+    let held = match self.lookup(name) {
+      Ok(Value::Texture(held))
+        if held.is_unique()
+          && texture.is_unique()
+          && !held.handle().same_texture(texture.handle())
+          && (held.width(), held.height())
+            == (texture.width(), texture.height()) =>
+      {
+        Some(held.handle().clone())
+      }
+      _ => None,
     };
-    let gb = *gb;
-    let Some(name) = self
+    if let Some(held) = held
+      && let Some(pixels) = texture.handle().take_initial_pixels()
+    {
+      match self.io.record_texture_write(&held, pixels) {
+        Ok(()) => return,
+        Err(pixels) => {
+          texture = TextureValue::new(
+            texture.width(),
+            texture.height(),
+            TextureInit::Pixels(pixels),
+          );
+        }
+      }
+    }
+    if let Some(slot) = self
+      .bindings
+      .get_mut(name)
+      .and_then(|stack| stack.last_mut())
+    {
+      slot.0 = Value::Texture(texture);
+    }
+  }
+
+  /// The render target of a draw being recorded, as its binding, with the
+  /// upload binding the target's texture to it (applied in program order,
+  /// with the draw). A texture another value also holds is replaced by a
+  /// GPU copy first, so the render changes only the target (textures have
+  /// value semantics); the copy runs in program order too, after the GPU
+  /// work queued before it.
+  fn prepare_render_target(
+    &mut self,
+  ) -> (Option<(u8, u8)>, Vec<((u8, u8), BufferUpload)>) {
+    let Some(gb) = self.current_render_target else {
+      return (None, vec![]);
+    };
+    let name = self
       .binding_vars
       .iter()
       .find(|(binding_gb, _, _, _)| *binding_gb == gb)
       .map(|(_, name, _, _)| name.clone())
-    else {
-      return Ok(texture);
+      .expect("render target isn't a texture binding");
+    let Ok(Value::Texture(texture)) = self.lookup(&name) else {
+      panic!("render target `{name}` doesn't hold a texture")
     };
-    if self.buffer_states.get(&name) != Some(&SharedBufferState::CPUOutOfDate) {
-      return Ok(texture);
+    let mut texture = texture.handle().clone();
+    let shared = !matches!(
+      self.lookup(&name),
+      Ok(Value::Texture(value)) if value.is_unique()
+    );
+    if shared {
+      let copy = TextureValue::new(
+        texture.width(),
+        texture.height(),
+        TextureInit::CopyOf(texture),
+      );
+      texture = copy.handle().clone();
+      if let Some(slot) = self
+        .bindings
+        .get_mut(&name)
+        .and_then(|stack| stack.last_mut())
+      {
+        slot.0 = Value::Texture(copy);
+      }
     }
-    // Run the frame's queued GPU work (the render into this texture may
-    // still be pending) before reading back.
-    self.io.flush_queued_compute();
-    let Some((width, height, data)) =
-      self.io.sync_texture_to_cpu(gb.group, gb.binding)
-    else {
-      // No GPU available (e.g. StringIO): the stale CPU copy is the best
-      // we have.
-      return Ok(texture);
-    };
-    let fresh = Value::Texture {
-      width,
-      height,
-      data,
-      binding: Some(gb),
-    };
-    if let Some(slot) = self
-      .bindings
-      .get_mut(&name)
-      .and_then(|stack| stack.last_mut())
-    {
-      slot.0 = fresh.clone();
-    }
-    self
-      .buffer_states
-      .insert(name.clone(), SharedBufferState::Synced);
-    self.io.record_gpu_to_cpu_sync(&name);
-    Ok(fresh)
+    let key = (gb.group, gb.binding);
+    (Some(key), vec![(key, BufferUpload::Texture(texture))])
   }
 
   /// For any GPU-bound var in `names` that is CPUOutOfDate, reads the buffer
@@ -6400,6 +6520,12 @@ fn eval_assignment_op<IO: IOManager>(
   if !accesses.is_empty() {
     env.check_global_readable(&accessed_name);
   }
+  if accesses.is_empty()
+    && let Value::Texture(texture) = new_value
+  {
+    env.assign_texture(&accessed_name, texture);
+    return Ok(Value::Unit);
+  }
   // Pre-expand any ZeroedArray at the top-level binding before taking a
   // mutable reference. Value::zeroed needs an immutable &env borrow,
   // which would conflict with &mut env.bindings during traversal.
@@ -6740,6 +6866,24 @@ fn write_back_through_lhs<IO: IOManager>(
   Ok(())
 }
 
+/// Makes the texture global `target` names the render target.
+fn set_render_target<IO: IOManager>(
+  env: &mut EvaluationEnvironment<IO>,
+  target: &Exp<ExpTypeInfo>,
+) -> Value {
+  let ExpKind::Name(name) = &target.kind else {
+    panic!("set-render-target argument must be a texture global")
+  };
+  let gb = env
+    .binding_vars
+    .iter()
+    .find(|(_, binding_name, _, _)| binding_name == name)
+    .map(|(gb, _, _, _)| *gb)
+    .expect("set-render-target argument isn't a texture binding");
+  env.current_render_target = Some(gb);
+  Value::Unit
+}
+
 /// The value `(Sampler filter address)` makes. Kept out of
 /// `apply_builtin_fn` so its locals don't grow that function's stack frame.
 fn sampler_value(filter: &Value, address: &Value) -> Value {
@@ -6895,6 +7039,11 @@ fn eval_application<IO: IOManager>(
         ExpKind::Name(name) => name,
         _ => return Err(AppliedNonName.into()),
       };
+      // `set-render-target` designates a texture *variable* (several can
+      // hold one texture), so it's resolved by name, not by value.
+      if &*name == "set-render-target" {
+        return Ok(set_render_target(env, &args[0]));
+      }
       let f_arc = match f_signature.abstract_ancestor {
         Some(arc) => arc,
         None => panic!(
@@ -7699,12 +7848,11 @@ fn load_image_value(
     })?
     .into_rgba8();
   let (width, height) = img.dimensions();
-  Ok(Value::Texture {
+  Ok(Value::Texture(TextureValue::new(
     width,
     height,
-    data: img.into_raw(),
-    binding: None,
-  })
+    TextureInit::Pixels(img.into_raw()),
+  )))
 }
 
 /// Writes RGBA8 pixels to `path` as a PNG (always PNG, whatever the
@@ -8633,28 +8781,8 @@ fn vm_host_call<IO: IOManager>(
         .unwrap_or(false);
       env.setup_gpu_if_needed();
       let mut pre_upload = env.collect_dirty_uploads(&read_names);
-      let render_target =
-        env.current_render_target.map(|gb| (gb.group, gb.binding));
-      // If rendering to an offscreen texture, also upload it now so the GPU
-      // has the correctly-sized texture to render into (mirrors the
-      // tree-walking handler).
-      if let Some((rt_group, rt_binding)) = render_target {
-        if let Some((_, name, _, _)) =
-          env.binding_vars.iter().find(|(gb, _, _, addr)| {
-            gb.group == rt_group
-              && gb.binding == rt_binding
-              && *addr == VariableAddressSpace::Handle
-          })
-        {
-          let name = name.clone();
-          if env.buffer_states.get(&name)
-            == Some(&SharedBufferState::GPUOutOfDate)
-          {
-            let extra = env.collect_dirty_uploads(&[name.clone()]);
-            pre_upload.extend(extra);
-          }
-        }
-      }
+      let (render_target, target_uploads) = env.prepare_render_target();
+      pre_upload.extend(target_uploads);
       let vert_name = &code.host_strings[*vert as usize];
       let frag_name = &code.host_strings[*frag as usize];
       env.io.record_draw(
@@ -8668,16 +8796,6 @@ fn vm_host_call<IO: IOManager>(
         render_target,
       )?;
       env.mark_gpu_written(&written_names);
-      if let Some((rt_group, rt_binding)) = render_target {
-        if let Some((_, name, _, _)) =
-          env.binding_vars.iter().find(|(gb, _, _, _)| {
-            gb.group == rt_group && gb.binding == rt_binding
-          })
-        {
-          let name = name.clone();
-          env.mark_gpu_written(&[name]);
-        }
-      }
     }
     HostOp::WindowQuery { kind, dest } => {
       use crate::vm::bytecode::WindowQueryKind;
@@ -8914,29 +9032,25 @@ fn vm_host_call<IO: IOManager>(
         ))
       })?;
       let name = code.host_bindings[*binding as usize].name.clone();
-      let value = Value::Texture {
-        width: decoded.width,
-        height: decoded.height,
-        data: decoded.rgba,
-        binding: None,
-      };
-      if let Some(stack_entry) = env.bindings.get_mut(&name)
-        && let Some(slot) = stack_entry.last_mut()
-      {
-        slot.0 = value;
-      }
+      env.assign_texture(
+        &name,
+        TextureValue::new(
+          decoded.width,
+          decoded.height,
+          TextureInit::Pixels(decoded.rgba),
+        ),
+      );
     }
     HostOp::AssignTextureFromImage { binding, path_slot } => {
       let b = &code.host_bindings[*binding as usize];
       let path =
         words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
-      let value = load_image_value(&path, &env.source_dir)?;
+      let Value::Texture(texture) = load_image_value(&path, &env.source_dir)?
+      else {
+        unreachable!()
+      };
       let name = b.name.clone();
-      if let Some(stack_entry) = env.bindings.get_mut(&name)
-        && let Some(slot) = stack_entry.last_mut()
-      {
-        slot.0 = value;
-      }
+      env.assign_texture(&name, texture);
     }
     HostOp::CopyHostGlobal { binding, source } => {
       let value = env
@@ -8973,21 +9087,17 @@ fn vm_host_call<IO: IOManager>(
       if let Some(stack_entry) = env.bindings.get_mut(&name)
         && let Some(slot) = stack_entry.last_mut()
       {
-        slot.0 = Value::Texture {
-          width,
-          height,
-          data: vec![0u8; (width * height * 4) as usize],
-          binding: None,
-        };
+        slot.0 =
+          Value::Texture(TextureValue::new(width, height, TextureInit::Blank));
       }
     }
     HostOp::TextureDims { binding, dest } => {
       let b = &code.host_bindings[*binding as usize];
-      let Value::Texture { width, height, .. } = env.lookup(&b.name)? else {
+      let Value::Texture(texture) = env.lookup(&b.name)? else {
         panic!("texture-dimensions: expected Texture value")
       };
-      stack[*dest as usize] = *width;
-      stack[*dest as usize + 1] = *height;
+      stack[*dest as usize] = texture.width();
+      stack[*dest as usize + 1] = texture.height();
     }
     HostOp::SetRenderTarget { binding } => {
       let b = &code.host_bindings[*binding as usize];
@@ -9005,16 +9115,10 @@ fn vm_host_call<IO: IOManager>(
       let b = &code.host_bindings[*binding as usize];
       let path =
         words_to_string(heap_string_words(heap, stack[*path_slot as usize]));
-      let texture = env.lookup(&b.name)?.clone();
-      let Value::Texture {
-        width,
-        height,
-        data,
-        ..
-      } = env.refresh_texture_from_gpu(texture)?
-      else {
+      let Value::Texture(texture) = env.lookup(&b.name)?.clone() else {
         panic!("save-png: expected Texture value")
       };
+      let (width, height, data) = env.read_texture(texture.handle())?;
       save_png_file(&path, width, height, &data, &env.source_dir)?;
     }
   }

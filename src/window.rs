@@ -4,7 +4,7 @@ use std::{
   collections::{HashMap, HashSet},
   future::Future,
   pin::Pin,
-  sync::{Arc, Mutex},
+  sync::{Arc, Mutex, Weak},
   task::{Context, Poll, Waker},
 };
 
@@ -30,7 +30,8 @@ use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 
 use crate::interpreter::{
   BufferUpload, EvalError, FrameDriver, GpuBindingInfo, GpuBufferKind,
-  GpuEntryInfo, SamplerAddress, SamplerFilter, SamplerSettings, WindowEvent,
+  GpuEntryInfo, SamplerAddress, SamplerFilter, SamplerSettings, TextureHandle,
+  TextureInfo, TextureInit, WindowEvent,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::interpreter::{EvalException, IOManager};
@@ -336,6 +337,13 @@ pub enum ScreenTarget {
   Embedder,
 }
 
+/// A GPU texture, kept while a handle to it is alive.
+struct StoredTexture {
+  owner: Weak<TextureInfo>,
+  texture: wgpu::Texture,
+  view: wgpu::TextureView,
+}
+
 /// The screen image of a frame in progress.
 struct FrameScreen {
   /// The surface image being drawn, under `ScreenTarget::Surface`.
@@ -402,10 +410,14 @@ pub struct GpuCore {
   /// Tracks the byte-length of each buffer (or width*height*4 for textures)
   /// so we can detect when a binding's size changes and needs to be recreated.
   pub binding_buffer_sizes: HashMap<(u8, u8), u64>,
-  /// GPU textures for `Texture2D` bindings (keyed by group, binding).
-  pub textures: HashMap<(u8, u8), wgpu::Texture>,
-  /// Texture views for `Texture2D` bindings, used in bind groups.
-  pub texture_views: HashMap<(u8, u8), wgpu::TextureView>,
+  /// The GPU textures, keyed by `TextureHandle::id`. An entry is freed once
+  /// no handle to its texture is left (`prune_textures`).
+  texture_store: HashMap<u64, StoredTexture>,
+  /// The texture each `Texture2D` binding holds. A binding with none yet
+  /// binds the placeholder.
+  slot_textures: HashMap<(u8, u8), TextureHandle>,
+  /// See `textures_created()`.
+  textures_created: u64,
   /// Samplers for `Sampler` bindings, with the settings each was made from.
   samplers: HashMap<(u8, u8), (SamplerSettings, wgpu::Sampler)>,
   /// Current window dimensions in pixels.
@@ -491,7 +503,7 @@ impl GpuCore {
               if placeholder_for == Some(key) {
                 &self.placeholder_texture_view
               } else {
-                self.texture_views.get(&key).expect("texture view missing")
+                self.slot_texture_view(key)
               },
             ),
             GpuBufferKind::Sampler => {
@@ -822,22 +834,7 @@ impl GpuCore {
         continue;
       }
       if kind == GpuBufferKind::Texture2D {
-        // Keep existing texture if one exists; create a placeholder if not.
-        if !self.textures.contains_key(&key) {
-          let (texture, view) = create_texture_and_view(
-            &self.device,
-            &format!("texture g{group}b{binding}"),
-            1,
-            1,
-            BINDING_TEXTURE_FORMAT,
-            wgpu::TextureUsages::TEXTURE_BINDING
-              | wgpu::TextureUsages::COPY_SRC
-              | wgpu::TextureUsages::COPY_DST
-              | wgpu::TextureUsages::RENDER_ATTACHMENT,
-          );
-          self.textures.insert(key, texture);
-          self.texture_views.insert(key, view);
-        }
+        // Keeps the texture it holds, if any.
         continue;
       }
       // Minimum one word — wgpu forbids zero-size buffers. Never larger:
@@ -924,30 +921,14 @@ impl GpuCore {
     for ((group, binding), upload) in data {
       let key = (*group, *binding);
       match upload {
-        BufferUpload::TextureData { width, height, .. } => {
-          let incoming_size =
-            *width as u64 * *height as u64 * BINDING_TEXTURE_BPP as u64;
-          // Compare extents, not byte counts: a 1x4 and a 2x2 image are the
-          // same size but need different textures.
-          let stored_extent = self
-            .textures
+        BufferUpload::Texture(texture) => {
+          self.ensure_texture(texture);
+          if self
+            .slot_textures
             .get(&key)
-            .map(|texture| (texture.width(), texture.height()));
-          if stored_extent != Some((*width, *height)) {
-            let (texture, view) = create_texture_and_view(
-              &self.device,
-              &format!("texture g{group}b{binding}"),
-              *width,
-              *height,
-              BINDING_TEXTURE_FORMAT,
-              wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            );
-            self.textures.insert(key, texture);
-            self.texture_views.insert(key, view);
-            self.binding_buffer_sizes.insert(key, incoming_size);
+            .is_none_or(|held| !held.same_texture(texture))
+          {
+            self.slot_textures.insert(key, texture.clone());
             changed_keys.push(key);
           }
         }
@@ -965,7 +946,7 @@ impl GpuCore {
           let incoming_size = match upload {
             BufferUpload::Data(bytes) => bytes.len() as u64,
             BufferUpload::Clear { byte_count } => *byte_count,
-            BufferUpload::TextureData { .. } | BufferUpload::Sampler(_) => {
+            BufferUpload::Texture(_) | BufferUpload::Sampler(_) => {
               unreachable!()
             }
           };
@@ -996,6 +977,9 @@ impl GpuCore {
 
     if !changed_keys.is_empty() {
       self.rebuild_bind_groups_for(&changed_keys);
+      // A binding that moved to another texture may have held the last
+      // handle to its old one.
+      self.prune_textures();
     }
 
     // Second pass: write data, issue GPU clears, or upload texture pixels.
@@ -1004,7 +988,7 @@ impl GpuCore {
     for ((group, binding), upload) in data {
       let key = (*group, *binding);
       match upload {
-        BufferUpload::Sampler(_) => {}
+        BufferUpload::Texture(_) | BufferUpload::Sampler(_) => {}
         BufferUpload::Data(bytes) => {
           if let Some(buffer) = self.binding_buffers.get(&key) {
             self.queue.write_buffer(buffer, 0, bytes);
@@ -1020,34 +1004,6 @@ impl GpuCore {
               )
             });
             enc.clear_buffer(buffer, 0, None);
-          }
-        }
-        BufferUpload::TextureData {
-          width,
-          height,
-          data,
-        } => {
-          if let Some(texture) = self.textures.get(&key) {
-            let f16_data = rgba8_to_rgba16float(data);
-            self.queue.write_texture(
-              wgpu::TexelCopyTextureInfo {
-                texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-              },
-              &f16_data,
-              wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(*width * BINDING_TEXTURE_BPP),
-                rows_per_image: Some(*height),
-              },
-              wgpu::Extent3d {
-                width: *width,
-                height: *height,
-                depth_or_array_layers: 1,
-              },
-            );
           }
         }
       }
@@ -1229,8 +1185,7 @@ impl GpuCore {
       // this point.
       let (view, load) = match current_rt {
         Some(rt) => (
-          self.textures[&rt]
-            .create_view(&wgpu::TextureViewDescriptor::default()),
+          self.render_target_view(rt),
           wgpu::LoadOp::Clear(wgpu::Color::BLACK),
         ),
         None if self.screen_target == ScreenTarget::Embedder => {
@@ -1354,6 +1309,7 @@ impl GpuCore {
         WindowEvent::ComputeShader { entry, .. } => {
           self.get_or_create_compute_pipeline(*entry);
         }
+        WindowEvent::WriteTexture { .. } => {}
       }
     }
 
@@ -1417,6 +1373,12 @@ impl GpuCore {
             *additive,
             *render_target,
           ));
+        }
+        WindowEvent::WriteTexture { texture, pixels } => {
+          // After everything recorded before it, so earlier work reads
+          // the old contents.
+          flush_runs!(self);
+          self.write_texture(texture, pixels);
         }
       }
     }
@@ -1787,9 +1749,6 @@ impl GpuCore {
 
     let mut binding_buffers: HashMap<(u8, u8), wgpu::Buffer> = HashMap::new();
     let mut binding_buffer_sizes: HashMap<(u8, u8), u64> = HashMap::new();
-    let mut textures: HashMap<(u8, u8), wgpu::Texture> = HashMap::new();
-    let mut texture_views: HashMap<(u8, u8), wgpu::TextureView> =
-      HashMap::new();
     let mut samplers: HashMap<(u8, u8), (SamplerSettings, wgpu::Sampler)> =
       HashMap::new();
     for info in binding_infos {
@@ -1800,19 +1759,7 @@ impl GpuCore {
         let settings = SamplerSettings::default();
         samplers.insert(key, (settings, create_sampler(&device, settings)));
       } else if kind == GpuBufferKind::Texture2D {
-        let (texture, view) = create_texture_and_view(
-          &device,
-          &format!("texture g{group}b{binding}"),
-          1,
-          1,
-          BINDING_TEXTURE_FORMAT,
-          wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_SRC
-            | wgpu::TextureUsages::COPY_DST
-            | wgpu::TextureUsages::RENDER_ATTACHMENT,
-        );
-        textures.insert(key, texture);
-        texture_views.insert(key, view);
+        // Holds no texture until one is uploaded.
       } else {
         // Minimum one word — wgpu forbids zero-size buffers. Never larger:
         // WGSL derives `arrayLength` from the buffer's byte size, so
@@ -1854,8 +1801,9 @@ impl GpuCore {
       binding_slots,
       binding_buffers,
       binding_buffer_sizes,
-      textures,
-      texture_views,
+      texture_store: HashMap::new(),
+      slot_textures: HashMap::new(),
+      textures_created: 0,
       samplers,
       window_size: (1, 1),
       window_time: 0.0,
@@ -1936,10 +1884,7 @@ impl GpuCore {
       let group = &calls[i..end];
 
       let texture_target_view: Option<wgpu::TextureView> =
-        current_rt.map(|rt| {
-          self.textures[&rt]
-            .create_view(&wgpu::TextureViewDescriptor::default())
-        });
+        current_rt.map(|rt| self.render_target_view(rt));
 
       let view = match &texture_target_view {
         Some(v) => v,
@@ -2020,16 +1965,125 @@ impl GpuCore {
   }
 
   /// Reads a GPU buffer back to CPU, blocking until done. Returns raw bytes.
-  /// Reads a binding texture back from the GPU as RGBA8 bytes, returning
-  /// `(width, height, pixels)`. Blocking, like `read_buffer`; used by the
-  /// `save-png` builtin for textures the GPU has rendered into. Returns
-  /// `None` when no texture exists at the binding.
+  /// Reads a texture back from the GPU as RGBA8 bytes, returning `(width,
+  /// height, pixels)`. Blocking, like `read_buffer`; used by `save-png`.
   pub fn read_texture(
-    &self,
-    group: u8,
-    binding: u8,
-  ) -> Option<(u32, u32, Vec<u8>)> {
-    Some(self.read_texture_rgba8(self.textures.get(&(group, binding))?))
+    &mut self,
+    texture: &TextureHandle,
+  ) -> (u32, u32, Vec<u8>) {
+    self.ensure_texture(texture);
+    self.read_texture_rgba8(&self.texture_store[&texture.id()].texture)
+  }
+
+  /// Creates `handle`'s GPU texture, with its initial contents, unless it
+  /// exists. A copy of another texture is submitted now, so it sees the GPU
+  /// work submitted before it.
+  fn ensure_texture(&mut self, handle: &TextureHandle) {
+    if self.texture_store.contains_key(&handle.id()) {
+      return;
+    }
+    let init = handle
+      .take_init()
+      .expect("a texture handle outlived its GPU texture");
+    self.textures_created += 1;
+    let (width, height) = (handle.width(), handle.height());
+    let (texture, view) = create_texture_and_view(
+      &self.device,
+      &format!("texture {}", handle.id()),
+      width,
+      height,
+      BINDING_TEXTURE_FORMAT,
+      wgpu::TextureUsages::TEXTURE_BINDING
+        | wgpu::TextureUsages::COPY_SRC
+        | wgpu::TextureUsages::COPY_DST
+        | wgpu::TextureUsages::RENDER_ATTACHMENT,
+    );
+    match init {
+      // New textures are zeroed.
+      TextureInit::Blank => {}
+      TextureInit::Pixels(data) => {
+        self.queue.write_texture(
+          texture.as_image_copy(),
+          &rgba8_to_rgba16float(&data),
+          wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * BINDING_TEXTURE_BPP),
+            rows_per_image: Some(height),
+          },
+          texture.size(),
+        );
+      }
+      TextureInit::CopyOf(source) => {
+        self.ensure_texture(&source);
+        let mut encoder =
+          self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+              label: Some("texture copy encoder"),
+            });
+        encoder.copy_texture_to_texture(
+          self.texture_store[&source.id()].texture.as_image_copy(),
+          texture.as_image_copy(),
+          texture.size(),
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+      }
+    }
+    self.texture_store.insert(
+      handle.id(),
+      StoredTexture {
+        owner: handle.downgrade(),
+        texture,
+        view,
+      },
+    );
+  }
+
+  /// Replaces a texture's contents with RGBA8 pixels. The write lands before
+  /// the next submit, after everything submitted so far.
+  fn write_texture(&mut self, texture: &TextureHandle, pixels: &[u8]) {
+    self.ensure_texture(texture);
+    let stored = &self.texture_store[&texture.id()].texture;
+    self.queue.write_texture(
+      stored.as_image_copy(),
+      &rgba8_to_rgba16float(pixels),
+      wgpu::TexelCopyBufferLayout {
+        offset: 0,
+        bytes_per_row: Some(texture.width() * BINDING_TEXTURE_BPP),
+        rows_per_image: Some(texture.height()),
+      },
+      stored.size(),
+    );
+  }
+
+  /// How many textures this core has created (not counting the screen or
+  /// placeholders), freed ones included.
+  pub fn textures_created(&self) -> u64 {
+    self.textures_created
+  }
+
+  /// Frees the textures no handle refers to anymore.
+  fn prune_textures(&mut self) {
+    self
+      .texture_store
+      .retain(|_, stored| stored.owner.strong_count() > 0);
+  }
+
+  /// The view a texture binding's bind group entry uses.
+  fn slot_texture_view(&self, key: (u8, u8)) -> &wgpu::TextureView {
+    match self.slot_textures.get(&key) {
+      Some(texture) => &self.texture_store[&texture.id()].view,
+      None => &self.placeholder_texture_view,
+    }
+  }
+
+  /// A view of the texture a render target binding holds.
+  fn render_target_view(&self, key: (u8, u8)) -> wgpu::TextureView {
+    let texture = self
+      .slot_textures
+      .get(&key)
+      .expect("a render target binding holds no texture");
+    self.texture_store[&texture.id()].view.clone()
   }
 
   /// Reads a texture in `BINDING_TEXTURE_FORMAT` back as RGBA8 bytes,

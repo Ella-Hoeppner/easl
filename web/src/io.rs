@@ -4,7 +4,7 @@ use easl::{
   audio::AudioSource,
   interpreter::{
     BufferUpload, EvalError, FrameDriver, IOManager, MidiState, StdoutIO,
-    UserspaceEvalError, WindowEvent,
+    TextureHandle, UserspaceEvalError, WindowEvent,
   },
   window::GpuCore,
 };
@@ -83,6 +83,14 @@ impl IOManager for WebIO {
     self
       .inner
       .record_compute(entry, entry_name, workgroup_count, pre_upload)
+  }
+
+  fn record_texture_write(
+    &mut self,
+    texture: &TextureHandle,
+    pixels: Vec<u8>,
+  ) -> Result<(), Vec<u8>> {
+    self.inner.record_texture_write(texture, pixels)
   }
 
   fn take_frame_draw_calls(&mut self) -> Vec<WindowEvent> {

@@ -1,0 +1,26 @@
+; A texture variable given new pixels every frame, with nothing else
+; holding its texture, is rewritten in place: the GPU keeps a fixed number
+; of textures however many frames run.
+
+@handle
+(var frame-texture: (Texture2D f32))
+
+(var value: vec4f)
+
+@local
+(var frame: u32 0u)
+
+@compute
+(defn read-frame []
+  (= value (texture-load frame-texture (vec2u 0u) 0u)))
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (= frame-texture (load-image "red_pixel.png"))
+      (dispatch-compute-shader read-frame (vec3u 1u))
+      (= frame (+ frame 1u))
+      (when (== frame 20u)
+        (print value)
+        (close-window)))))

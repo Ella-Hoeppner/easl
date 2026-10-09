@@ -169,6 +169,7 @@ mod harness {
     ("buffer/load_red_pixel", "reads a file"),
     ("buffer/save_png_roundtrip", "reads and writes files"),
     ("buffer/save_png_dynamic_path", "reads and writes files"),
+    ("buffer/texture_in_place_writes", "reads and writes files"),
     ("buffer/save_png_render_target", "writes a file"),
     ("cpu/load_wav_local_binding", "reads a file"),
     ("cpu/load_wav_raw", "reads a file"),

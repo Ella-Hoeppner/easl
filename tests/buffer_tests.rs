@@ -3,8 +3,8 @@ mod common;
 use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
 use easl::interpreter::{
-  CaptureIO, CpuRuntime, run_program_with_capture_and_runtime_from_path,
-  run_program_with_runtime,
+  CaptureIO, CpuRuntime, IOManager,
+  run_program_with_capture_and_runtime_from_path, run_program_with_runtime,
 };
 use std::fs;
 use std::path::Path;
@@ -122,6 +122,59 @@ fn run_screen_test(name: &str) {
   }
 }
 
+/// A texture held by a function parameter counts as a holder, so
+/// reassigning its global while the parameter holds it gives the global a
+/// new texture. Tree-walker only: the VM holds textures only in globals so
+/// far.
+#[test]
+fn texture_parameter_holder() {
+  let source_path = Path::new("./data/buffer/texture_parameter_holder.easl");
+  let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
+  else {
+    panic!("failed to load program")
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
+  let prints = run_program_with_capture_and_runtime_from_path(
+    program,
+    source_path,
+    CpuRuntime::TreeWalking,
+  )
+  .unwrap();
+  assert_eq!(prints, vec!["[(vec4f 0. 0. 1. 1.) (vec4f 1. 0. 0. 1.)]"]);
+}
+
+/// Rewriting a texture variable every frame (nothing else holding its
+/// texture) reuses its GPU texture instead of allocating one per frame.
+#[test]
+fn texture_reassigned_each_frame() {
+  let source_path =
+    Path::new("./data/buffer/texture_reassigned_each_frame.easl");
+  for runtime in [CpuRuntime::TreeWalking, CpuRuntime::BytecodeVm] {
+    let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
+    else {
+      panic!("failed to load program")
+    };
+    let errors = program.validate_raw_program(CompilerTarget::WGSL);
+    assert!(errors.is_empty(), "compile errors: {errors:#?}");
+    common::assert_valid_wgsl(&program);
+    let (io, _) = run_program_with_runtime(
+      program,
+      None,
+      CaptureIO::new(),
+      source_path.parent().map(|p| p.to_path_buf()),
+      runtime,
+    )
+    .unwrap();
+    assert_eq!(io.prints, vec!["(vec4f 1. 0. 0. 1.)"], "{runtime:?}");
+    let gpu = io.get_gpu().expect("the program used the GPU");
+    // The variable's initial blank texture, rewritten every frame.
+    let created = gpu.read().unwrap().textures_created();
+    assert_eq!(created, 1, "{runtime:?}: {created} GPU textures created");
+  }
+}
+
 macro_rules! screen_test {
   ($name:ident) => {
     #[test]
@@ -231,6 +284,8 @@ buffer_test!(offscreen_render_compute_order);
 buffer_test!(dispatch_from_scoped_frame_closure);
 buffer_test!(save_png_roundtrip);
 buffer_test!(sampler_modes);
+buffer_test!(texture_value_semantics);
+buffer_test!(texture_in_place_writes);
 buffer_test!(sampler_usage);
 buffer_test!(save_png_dynamic_path);
 buffer_test!(save_png_render_target);
