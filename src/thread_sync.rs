@@ -67,11 +67,8 @@ pub struct SharedSnapshot {
 /// The coordination slot for one shared variable.
 pub struct SharedVarSlot {
   published: ArcSwapOption<SharedSnapshot>,
-  /// Monotone version source. `fetch_add` gives every publisher a unique,
-  /// increasing version even under concurrent publication (in which case
-  /// swap order may invert version order: one of the writes is lost —
-  /// whole-variable last-writer-wins — but versions never repeat and the
-  /// slot can never get stuck behind a stale maximum).
+  /// Monotone version source: `fetch_add` gives every publisher a unique,
+  /// increasing version, even under concurrent publication.
   version_counter: AtomicU64,
 }
 
@@ -83,21 +80,38 @@ impl SharedVarSlot {
     }
   }
 
-  /// Publishes `words` as the newest version of this variable. Returns the
-  /// assigned version, plus the previous snapshot's buffer for reuse when
-  /// no adopter still holds it — in the steady state (adopters
-  /// copy-and-drop) publication allocates nothing.
+  /// Publishes `words` as a new version of this variable, unless a newer
+  /// version is already installed: concurrent publishers take versions in
+  /// one order but can finish installing in the other, and the older one
+  /// is then dropped rather than installed over the newer one (last writer
+  /// wins, by version). Either way, returns the version this publish took —
+  /// the publisher records it as adopted, so after a dropped publish it
+  /// adopts the newer version at its next boundary like everyone else —
+  /// plus a buffer for reuse when nothing else holds it: the replaced
+  /// snapshot's, or ours if it wasn't installed. In the steady state
+  /// (adopters copy-and-drop) publication allocates nothing.
   pub fn publish(&self, words: Vec<u32>) -> (u64, Option<Vec<u32>>) {
     let version = self.version_counter.fetch_add(1, Ordering::Relaxed) + 1;
-    let old = self
-      .published
-      .swap(Some(Arc::new(SharedSnapshot { version, words })));
-    (
-      version,
-      old
-        .and_then(|arc| Arc::try_unwrap(arc).ok())
-        .map(|snapshot| snapshot.words),
-    )
+    let snapshot = Arc::new(SharedSnapshot { version, words });
+    let mut installed = false;
+    // Lock-free conditional install: retries only when another publish
+    // lands between reading the slot and swapping it.
+    let previous = self.published.rcu(|current| match current {
+      Some(current) if current.version > version => {
+        installed = false;
+        Some(Arc::clone(current))
+      }
+      _ => {
+        installed = true;
+        Some(Arc::clone(&snapshot))
+      }
+    });
+    let reusable = if installed {
+      previous.and_then(|arc| Arc::try_unwrap(arc).ok())
+    } else {
+      Arc::try_unwrap(snapshot).ok()
+    };
+    (version, reusable.map(|snapshot| snapshot.words))
   }
 
   /// Returns the current published snapshot if its version is newer than
@@ -252,5 +266,71 @@ mod tests {
     let value = final_snapshot.words[0];
     assert!(value == 10_999 || value == 20_999);
     assert_eq!(final_snapshot.version, 2000);
+  }
+
+  /// A publish that took an older version than the one installed (it lost
+  /// a race to a concurrent publisher) leaves the newer one in place, and
+  /// hands its own buffer back for reuse.
+  #[test]
+  fn older_publish_is_dropped() {
+    let slot = SharedVarSlot::new();
+    // The interleaving a race produces: a publisher takes version 1, then
+    // another takes version 2 and installs it first.
+    slot.version_counter.store(1, Ordering::Relaxed);
+    assert_eq!(slot.publish(vec![2; 8]).0, 2);
+    slot.version_counter.store(0, Ordering::Relaxed);
+    let (version, reusable) = slot.publish(vec![1; 8]);
+    assert_eq!(version, 1);
+    assert_eq!(reusable, Some(vec![1; 8]));
+    let installed = slot.adopt_if_newer(0).unwrap();
+    assert_eq!((installed.version, installed.words[0]), (2, 2));
+    // the dropped publisher, having recorded version 1, adopts version 2
+    assert!(slot.adopt_if_newer(version).is_some());
+  }
+
+  /// Two threads publish to one slot at the same moment, round after
+  /// round. After each round, the slot must hold the newest version
+  /// published: an older snapshot installed over a newer one is skipped by
+  /// every participant that already adopted the newer one, so participants
+  /// would disagree about the variable until its next publish.
+  #[test]
+  fn older_version_never_replaces_newer() {
+    const ROUNDS: u64 = 200_000;
+    let slot = Arc::new(SharedVarSlot::new());
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let writers: Vec<_> = [1u32, 2u32]
+      .into_iter()
+      .map(|writer| {
+        let slot = Arc::clone(&slot);
+        let barrier = Arc::clone(&barrier);
+        std::thread::spawn(move || {
+          for _ in 0..ROUNDS {
+            barrier.wait();
+            slot.publish(vec![writer]);
+            barrier.wait();
+          }
+        })
+      })
+      .collect();
+    let mut stale_rounds = vec![];
+    for round in 1..=ROUNDS {
+      barrier.wait();
+      barrier.wait();
+      let newest_issued = round * 2;
+      let installed = slot.adopt_if_newer(0).unwrap().version;
+      if installed != newest_issued {
+        stale_rounds.push((round, installed, newest_issued));
+      }
+    }
+    for writer in writers {
+      writer.join().unwrap();
+    }
+    assert!(
+      stale_rounds.is_empty(),
+      "{} of {ROUNDS} rounds left an older version installed over a newer \
+       one, e.g. (round, installed version, newest version): {:?}",
+      stale_rounds.len(),
+      &stale_rounds[..stale_rounds.len().min(5)]
+    );
   }
 }

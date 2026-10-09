@@ -28,7 +28,7 @@ use easl::compiler::core::load_easl_program_from_file;
 use easl::compiler::program::CompilerTarget;
 use easl::external::ExternalVars;
 use easl::interpreter::{
-  BufferUpload, CpuRuntime, EvalError, EvalException, FrameDriver,
+  BufferUpload, CaptureIO, CpuRuntime, EvalError, EvalException, FrameDriver,
   GpuBindingInfo, GpuEntryInfo, IOManager, MidiNoteState, MidiState, StdoutIO,
   WindowEvent, run_program_entry_with_io_runtime_and_external_from_path,
 };
@@ -525,6 +525,70 @@ fn run_thread_sync_test_inner(
       .map(|line| format!("{}\n", normalize(line)))
       .collect();
     assert_eq!(trace, expected, "{name}: trace mismatch ({label})");
+  }
+}
+
+/// Real concurrency, unlike the scripted tests: the program's frames and an
+/// embedder thread write the same shared variable at the same time, then
+/// both must agree on its final value (`concurrent_external_writes.easl`).
+/// This exercises the whole publish/adopt cycle across real threads. It
+/// rarely hits the nanosecond-wide race in `SharedVarSlot::publish` itself
+/// (the unit tests in `thread_sync.rs` pin that), but it would catch a
+/// protocol mistake that leaves participants disagreeing.
+#[test]
+fn concurrent_external_writes() {
+  const RUNS: usize = 10;
+  const EMBEDDER_WRITES: u32 = 50_000;
+  let source_path =
+    Path::new("./data/thread_sync/concurrent_external_writes.easl");
+  let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
+  else {
+    panic!("failed to load program")
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
+  for run in 0..RUNS {
+    for runtime in [CpuRuntime::TreeWalking, CpuRuntime::BytecodeVm] {
+      let external = ExternalVars::new(&program);
+      let embedder = {
+        let external = Arc::clone(&external);
+        std::thread::spawn(move || {
+          for value in 1..=EMBEDDER_WRITES {
+            external.write_external_var_raw("shared", &[value]).unwrap();
+          }
+          external
+            .write_external_var_raw("embedder-done", &[1])
+            .unwrap();
+        })
+      };
+      let (io, _) = run_program_entry_with_io_runtime_and_external_from_path(
+        program.clone(),
+        None,
+        CaptureIO::new(),
+        source_path,
+        runtime,
+        Some(Arc::clone(&external)),
+      )
+      .unwrap_or_else(|e| panic!("evaluation error ({runtime:?}): {e:#?}"));
+      embedder.join().unwrap();
+      let [main_value] = io.prints.as_slice() else {
+        panic!("expected one print, got {:?}", io.prints)
+      };
+      let embedder_value = external.read_external_var_raw("shared").unwrap()[0];
+      assert_eq!(
+        *main_value,
+        format!("{embedder_value}u"),
+        "run {run} ({runtime:?}): the program and the embedder disagree \
+         about `shared`"
+      );
+      // the last writer's value: the embedder's last write, or one of the
+      // program's
+      assert!(
+        embedder_value == EMBEDDER_WRITES || embedder_value >= 1_000_000,
+        "run {run} ({runtime:?}): unexpected final value {embedder_value}"
+      );
+    }
   }
 }
 

@@ -1,0 +1,30 @@
+; Driven by `concurrent_external_writes` in thread_sync_tests.rs, with real
+; threads: this program's frames write `shared` while an embedder thread
+; writes it through an `ExternalVars` handle as fast as it can, then sets
+; `embedder-done`. Once the program sees that, it stops writing, runs a few
+; frames (each adopting the newest published value), and prints `shared`.
+; The embedder then reads `shared` too: both must see the same value.
+
+@external
+(var shared: u32)
+
+@external
+(var embedder-done: u32)
+
+@local
+(var frame: u32 0u)
+
+@local
+(var quiet-frames: u32 0u)
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (if (== embedder-done 0u)
+        (= shared (+ 1000000u frame))
+        (= quiet-frames (+ quiet-frames 1u)))
+      (= frame (+ frame 1u))
+      (when (== quiet-frames 3u)
+        (print shared)
+        (close-window)))))
