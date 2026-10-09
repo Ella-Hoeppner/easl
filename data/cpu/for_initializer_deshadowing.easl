@@ -1,0 +1,18 @@
+; A `for` loop's initializer sees the variables around the loop, including
+; ones renamed because a sibling loop reused their name, and not the loop's
+; own variable.
+
+@cpu
+(defn main []
+  (let [@var total 0u]
+    (for [i 3u]
+      (+= total i))
+    (for [i 3u]
+      (for [j (+ i 1u) (< j 3u) (+= j 1u)]
+        (+= total j)))
+    (print total)
+    (let [start 1u]
+      (for [i 2u]
+        (for [start (+ start i) (< start 4u) (+= start 1u)]
+          (+= total start))))
+    (print total)))

@@ -4913,11 +4913,22 @@ impl TypedExp {
           }
           ForLoop {
             increment_variable_name,
+            increment_variable_initial_value_expression,
             continue_condition_expression,
             update_expression,
             body_expression,
             ..
           } => {
+            // The initializer is evaluated outside the loop's scope: it sees
+            // the enclosing bindings, not the loop variable.
+            increment_variable_initial_value_expression.deshadow_inner(
+              globally_bound_names,
+              bindings,
+              reverse_bindings,
+              errors,
+              true,
+              names,
+            );
             bind(
               &mut increment_variable_name.0,
               &exp.source_trace,

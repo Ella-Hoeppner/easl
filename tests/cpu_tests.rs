@@ -80,6 +80,7 @@ macro_rules! cpu_test {
 }
 
 cpu_test!(print);
+cpu_test!(for_initializer_deshadowing);
 cpu_test!(def);
 cpu_test!(assignment);
 cpu_test!(field_assignment);
