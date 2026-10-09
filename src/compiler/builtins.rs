@@ -3293,6 +3293,24 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       },
       ..Default::default()
     },
+    // `(length video)`: a pure alias of `get-video-length`, like the array
+    // `length`s.
+    AbstractFunctionSignature {
+      name: "length".into(),
+      arg_types: vec![
+        AbstractType::AbstractStruct(video_struct().into()).reference(),
+      ],
+      return_type: AbstractType::Type(Type::U32),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: Effect::CPUExclusiveFunction("get-video-length".into())
+          .into(),
+        target_configuration: FunctionTargetConfiguration::AliasedBuiltin(
+          "get-video-length",
+        ),
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
     AbstractFunctionSignature {
       name: "blank-texture".into(),
       arg_types: vec![

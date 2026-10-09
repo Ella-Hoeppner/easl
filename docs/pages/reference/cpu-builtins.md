@@ -469,9 +469,10 @@ Advances `v` to its next frame, or to frame `frame`. `v` must be a mutable place
 ```easl
 (get-current-frame-index v: Video): u32
 (get-video-length v: Video): u32
+(length v: Video): u32
 ```
 
-The current frame index, and the number of frames.
+The current frame index, and the number of frames (`length` is the same as `get-video-length`).
 <!-- index: get-video-length -->
 
 ### `get-video-frame-texture`
