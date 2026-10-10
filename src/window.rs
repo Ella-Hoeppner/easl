@@ -2357,12 +2357,26 @@ struct RenderState {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<'a, D: FrameDriver> App<'a, D> {
-  /// Creates or reuses a window and builds the initial `RenderState`.
+  /// Creates or reuses a window, builds the initial `RenderState`, and
+  /// requests the first frame.
   ///
   /// On first run this always creates a fresh window. On hot-reload, the same
   /// `Arc<Window>` is taken from `PERSISTENT_WINDOW` so the OS window stays
   /// visible without flashing or focus changes.
+  ///
+  /// The first frame must be requested here rather than left to the OS: a
+  /// reused window that's hidden or covered by another window is never
+  /// drawn by the OS, and since every later frame is requested by the one
+  /// before it (and the reload flag is checked after each frame), a run
+  /// that never gets a first frame never does anything.
   fn setup_window(&mut self, event_loop: &ActiveEventLoop) {
+    self.create_or_reuse_window(event_loop);
+    if let Some(state) = &self.state {
+      state.window.request_redraw();
+    }
+  }
+
+  fn create_or_reuse_window(&mut self, event_loop: &ActiveEventLoop) {
     // Hot-reload path: reuse the existing render state (window + surface +
     // device) from the previous run, updating only the shader and pipelines.
     // This keeps the Metal layer alive so the window never flashes.
@@ -2485,9 +2499,6 @@ impl<'a, D: FrameDriver> ApplicationHandler for App<'a, D> {
   fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
     if self.state.is_none() && !self.closed && !self.reload {
       self.setup_window(event_loop);
-      if let Some(state) = &self.state {
-        state.window.request_redraw();
-      }
     }
   }
 
