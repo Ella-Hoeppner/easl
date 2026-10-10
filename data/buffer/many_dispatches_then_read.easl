@@ -1,0 +1,13 @@
+; Thousands of dispatches with no CPU read in between, then a read.
+
+(var counter: [1: u32])
+
+@compute
+(defn bump []
+  (= (counter 0u) (+ (counter 0u) 1u)))
+
+@cpu
+(defn main []
+  (for [i 5000u]
+    (dispatch-compute-shader bump (vec3u 1u)))
+  (print counter))

@@ -165,6 +165,14 @@ fn rgba8_to_rgba16float(data: &[u8]) -> Vec<u8> {
 
 /// A sampler with `settings`, filtering and addressing the same way on both
 /// axes.
+/// The most passes one command encoder gets before it's submitted. wgpu can
+/// record each pass (with its resource transitions) as several backend
+/// command buffers, and they all count against the backend's limit on
+/// command buffers created but not yet submitted (4096 on Metal, which
+/// treats exceeding it as a lost device) — so a long run of dispatches
+/// must not go into one encoder.
+const MAX_PASSES_PER_SUBMIT: usize = 512;
+
 fn create_sampler(
   device: &wgpu::Device,
   settings: SamplerSettings,
@@ -1091,8 +1099,16 @@ impl GpuCore {
     let mut pending_bindings: std::collections::HashSet<(u8, u8)> =
       std::collections::HashSet::new();
     let mut current_encoder: Option<wgpu::CommandEncoder> = None;
+    let mut encoded_passes = 0;
 
     for (entry, (x, y, z), pre_upload) in calls {
+      if encoded_passes == MAX_PASSES_PER_SUBMIT
+        && let Some(enc) = current_encoder.take()
+      {
+        self.queue.submit(std::iter::once(enc.finish()));
+        pending_bindings.clear();
+        encoded_passes = 0;
+      }
       // If this call would overwrite a binding already uploaded for the
       // current encoder's dispatches, submit that encoder first so those
       // dispatches see the old values, then start a fresh encoder.
@@ -1104,6 +1120,7 @@ impl GpuCore {
           self.queue.submit(std::iter::once(enc.finish()));
         }
         pending_bindings.clear();
+        encoded_passes = 0;
       }
 
       self.upload_bindings(&pre_upload);
@@ -1140,6 +1157,7 @@ impl GpuCore {
         compute_pass.set_pipeline(&cached.pipeline);
         compute_pass.dispatch_workgroups(x, y, z);
       }
+      encoded_passes += 1;
     }
     if let Some(enc) = current_encoder.take() {
       self.queue.submit(std::iter::once(enc.finish()));

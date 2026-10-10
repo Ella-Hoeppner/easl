@@ -263,6 +263,8 @@ buffer_test!(offscreen_render_compute_order);
 buffer_test!(dispatch_from_scoped_frame_closure);
 buffer_test!(save_png_roundtrip);
 buffer_test!(sampler_modes);
+buffer_test!(many_dispatches_then_read);
+buffer_test!(many_render_passes_then_read);
 buffer_test!(gpu_only_global_no_vm_slots);
 buffer_test!(texture_value_semantics);
 buffer_test!(texture_in_place_writes);
