@@ -1,0 +1,31 @@
+; A function named after a struct overloads its constructor: in the struct's
+; own module, from a library (whose private overload stays private), and in
+; a module importing the struct. In type positions the name is the struct.
+(import "modules/constructors.easl")
+(import "modules/geometry.easl")
+
+(struct Settings
+  gain: f32
+  harmonic: f32)
+
+(defn Settings [harmonic: f32]: Settings
+  (Settings 1. harmonic))
+
+(defn Point [v: f32]: Point
+  (Point v v))
+
+@cpu
+(defn main []
+  (let [settings: Settings (Settings 3.)
+        full (Settings 2. 5.)
+        pair (Pair 2.)
+        full-pair (Pair 1. 3.)
+        from-u32 (pair-from-u32 5u)]
+    (print settings.gain)
+    (print settings.harmonic)
+    (print full.gain)
+    (print pair.b)
+    (print full-pair.b)
+    (print from-u32.b)
+    (print (describe (Point 4.)))
+    (print (describe (Point 1. 2.)))))

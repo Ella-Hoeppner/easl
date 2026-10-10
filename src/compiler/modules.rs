@@ -144,6 +144,21 @@ impl Origin {
   fn is_function(&self) -> bool {
     self.kind == OriginKind::Function
   }
+  /// Whether this definition can share its name with `others`: functions
+  /// overload each other, and a struct's name called is its constructor,
+  /// so it overloads them too — but two structs can't share a name.
+  fn can_share_name_with(&self, others: &[Origin]) -> bool {
+    let callable = |origin: &Origin| {
+      matches!(origin.kind, OriginKind::Function | OriginKind::Struct)
+    };
+    let structs = others
+      .iter()
+      .chain([self])
+      .filter(|origin| origin.kind == OriginKind::Struct)
+      .count();
+    others.is_empty()
+      || (callable(self) && others.iter().all(callable) && structs <= 1)
+  }
   fn namespace(&self) -> Option<Namespace> {
     match self.kind {
       OriginKind::Module(id) => Some(Namespace::Module(id)),
@@ -515,10 +530,9 @@ impl<'a> Resolver<'a> {
       .members
       .entry(name.clone())
       .or_default();
-    if members.is_empty()
-      || (origin.is_function()
-        && members.iter().all(|member| member.origin.is_function()))
-    {
+    let existing: Vec<Origin> =
+      members.iter().map(|member| member.origin.clone()).collect();
+    if origin.can_share_name_with(&existing) {
       // Overloads with the same privacy share an internal name.
       if !members
         .iter()
@@ -814,9 +828,7 @@ impl<'a> Resolver<'a> {
     {
       return;
     }
-    if origins.is_empty()
-      || (origin.is_function() && origins.iter().all(Origin::is_function))
-    {
+    if origin.can_share_name_with(origins) {
       origins.push(origin);
     } else {
       let source = source

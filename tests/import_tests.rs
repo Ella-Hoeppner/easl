@@ -211,6 +211,35 @@ import_error_test!(
     TypeStateDescription::Known(TypeDescription::F32),
   ),
 );
+// A private overload of a struct's constructor isn't callable from outside
+// its module either.
+import_error_test!(
+  private_constructor_overload,
+  CompileErrorKind::CouldntInferTypes,
+  CompileErrorKind::FunctionArgumentTypesIncompatible {
+    f: TypeStateDescription::OneOf(vec![
+      TypeDescription::Function {
+        arg_types: vec![
+          (TypeStateDescription::Known(TypeDescription::F32), vec![]),
+          (TypeStateDescription::Known(TypeDescription::F32), vec![]),
+        ],
+        return_type: Box::new(TypeStateDescription::Known(
+          TypeDescription::Struct("lib/Pair".into())
+        )),
+      },
+      TypeDescription::Function {
+        arg_types: vec![(
+          TypeStateDescription::Known(TypeDescription::F32),
+          vec![]
+        )],
+        return_type: Box::new(TypeStateDescription::Known(
+          TypeDescription::Struct("lib/Pair".into())
+        )),
+      },
+    ]),
+    args: vec![TypeStateDescription::Known(TypeDescription::U32)],
+  },
+);
 import_error_test!(
   builtin_type_in_module,
   CompileErrorKind::BuiltinTypeRedefinition("MidiNote".into())

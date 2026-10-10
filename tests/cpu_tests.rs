@@ -533,6 +533,7 @@ cpu_test!(module_file_isolation);
 cpu_test!(module_diamond);
 cpu_test!(module_use_paths);
 cpu_test!(module_overload_privacy);
+cpu_test!(module_constructor_overloads);
 cpu_test!(def_nary_initializer);
 cpu_test!(bitwise_compound_assignment);
 cpu_test!(string_def);

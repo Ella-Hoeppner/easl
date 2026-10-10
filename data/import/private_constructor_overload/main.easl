@@ -1,0 +1,6 @@
+(import lib "lib.easl")
+
+@fragment
+(defn f []: vec4f
+  (let [p (lib/Pair 2u)]
+    (vec4f p.a)))

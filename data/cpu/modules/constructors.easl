@@ -1,0 +1,14 @@
+; A struct whose constructor the library overloads, publicly and privately.
+(struct Pair
+  a: f32
+  b: f32)
+
+(defn Pair [x: f32]: Pair
+  (Pair x x))
+
+@private
+(defn Pair [x: u32]: Pair
+  (Pair 0. 1.))
+
+(defn pair-from-u32 [x: u32]: Pair
+  (Pair x))

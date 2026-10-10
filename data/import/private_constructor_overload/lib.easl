@@ -1,0 +1,10 @@
+(struct Pair
+  a: f32
+  b: f32)
+
+(defn Pair [x: f32]: Pair
+  (Pair x x))
+
+@private
+(defn Pair [x: u32]: Pair
+  (Pair 0. 1.))
