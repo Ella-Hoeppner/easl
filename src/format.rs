@@ -65,6 +65,40 @@ fn last_line_start_column(printed: &str, start_column: usize) -> usize {
   }
 }
 
+/// A string literal's source `raw` (between the quotes) with the whitespace
+/// after each `\`-newline escape replaced by a newline and `column` spaces.
+/// That whitespace isn't part of the string, so this never changes it;
+/// everything else is copied as written.
+fn reindent_string_literal(raw: &str, column: usize) -> String {
+  let mut printed = String::with_capacity(raw.len());
+  let mut chars = raw.chars().peekable();
+  while let Some(c) = chars.next() {
+    printed.push(c);
+    if c != '\\' {
+      continue;
+    }
+    match chars.peek() {
+      Some('\n' | '\r') => {
+        while chars.next_if(|c| c.is_whitespace()).is_some() {}
+        printed.push_str(&indented_newline(column));
+      }
+      // The escaped character, copied so it can't start an escape itself.
+      Some(_) => printed.push(chars.next().unwrap()),
+      None => {}
+    }
+  }
+  printed
+}
+
+/// The width of each line a string literal block prints, from the block's
+/// start: the quotes count on the first and last lines, and lines after a
+/// `\`-newline escape start one past the opening quote. Lines continuing
+/// verbatim are measured as written.
+fn string_literal_line_widths(raw: &str) -> Vec<usize> {
+  let printed = format!("\"{}\"", reindent_string_literal(raw, 1));
+  printed.lines().map(|line| line.chars().count()).collect()
+}
+
 fn is_tree_comment(tree: &EaslTree) -> bool {
   match &tree {
     fsexp::Ast::Leaf(_, _) => false,
@@ -87,6 +121,10 @@ fn is_line_comment_block(block: &Block) -> bool {
 #[derive(Debug, Clone)]
 pub enum Block {
   Leaf(String),
+  /// A string literal: its source between the quotes. Printed verbatim,
+  /// except the whitespace after a `\`-newline escape (which the string
+  /// doesn't contain), re-indented to line up after the opening quote.
+  StringLiteral(String),
   Horizontal(Vec<Self>),
   Vertical(Vec<Self>),
   Enclosed(Encloser, Box<Self>),
@@ -172,12 +210,19 @@ impl Block {
           .unwrap_or(0)
           + 1
       }
+      StringLiteral(raw) => {
+        string_literal_line_widths(raw).last().copied().unwrap_or(0)
+      }
       _ => self.width(),
     }
   }
   fn width(&self) -> usize {
     match self {
       Leaf(s) => s.len(),
+      StringLiteral(raw) => string_literal_line_widths(raw)
+        .into_iter()
+        .max()
+        .unwrap_or(0),
       Horizontal(blocks) => {
         if blocks.is_empty() {
           0
@@ -245,6 +290,7 @@ impl Block {
   fn height(&self) -> usize {
     match self {
       Leaf(_) => 1,
+      StringLiteral(raw) => string_literal_line_widths(raw).len(),
       Horizontal(_) => 1,
       Lambda(_) => 1,
       Vertical(blocks) => blocks.iter().map(|block| block.height()).sum(),
@@ -283,6 +329,7 @@ impl Block {
   fn prints_multiline(&self) -> bool {
     match self {
       Leaf(_) | Lambda(_) | Horizontal(_) | AnnotationHorizontal(_, _) => false,
+      StringLiteral(raw) => raw.contains('\n'),
       Vertical(blocks) => {
         blocks.len() > 1 || blocks.iter().any(|b| b.prints_multiline())
       }
@@ -326,6 +373,7 @@ impl Block {
     }
     match self {
       Leaf(s) => Leaf(s),
+      StringLiteral(raw) => StringLiteral(raw),
       Horizontal(blocks) => Vertical(refine_vertical(blocks, indent, trailing)),
       Vertical(blocks) => Vertical(refine_vertical(blocks, indent, trailing)),
       Enclosed(encloser, inner) => {
@@ -460,6 +508,9 @@ impl Block {
   fn print(self, indentation: usize) -> String {
     match self {
       Leaf(s) => s,
+      StringLiteral(raw) => {
+        format!("\"{}\"", reindent_string_literal(&raw, indentation + 1))
+      }
       Horizontal(blocks) => blocks
         .into_iter()
         .map(|block| block.print(indentation))
@@ -804,6 +855,12 @@ impl Block {
           }
           EncloserOrOperator::Operator(operator) => {
             Prefixed(operator, Box::new(Self::from_trees(asts, false)))
+          }
+          EncloserOrOperator::Encloser(Encloser::Quote) => {
+            StringLiteral(match asts.pop() {
+              Some(EaslTree::Leaf(_, raw)) => raw,
+              _ => String::new(),
+            })
           }
           EncloserOrOperator::Encloser(encloser) => Enclosed(encloser, {
             Box::new(match encloser {

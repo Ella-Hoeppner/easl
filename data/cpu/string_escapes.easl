@@ -1,0 +1,15 @@
+; String escapes: `\n`, `\t`, `\r`, `\"`, `\\`, and `\` at the end of a
+; line, which drops the line break and the whitespace after it.
+
+@cpu
+(defn main []
+  (print (length "a\nb"))
+  (print (length "\t\r\"\\"))
+  (print "say \"hi\" \\ done")
+  (print "two\nlines")
+  (print "a long sentence that \
+          continues on the next line")
+  (print (== "ab" "a\
+                   b"))
+  (print (== "a\\
+b" (concat "a" "\\" "\n" "b"))))

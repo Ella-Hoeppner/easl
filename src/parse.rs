@@ -135,6 +135,59 @@ static DEFAULT_CTX: LazyLock<SSEContext<Encloser, Operator>> =
 static TRIVIAL_CTX: LazyLock<SSEContext<Encloser, Operator>> =
   LazyLock::new(|| SSEContext::trivial());
 
+/// Inside a string, `\` escapes the next character, so `\"` doesn't end
+/// the string. The escapes stay in the literal's text;
+/// `unescape_string_literal` gives what they mean.
+static STRING_CTX: LazyLock<SSEContext<Encloser, Operator>> =
+  LazyLock::new(|| SSEContext::new(vec![], vec![], Some("\\".into()), vec![]));
+
+/// The text a string literal's source `raw` (what's between the quotes)
+/// means: `\n`, `\t`, `\r`, `\"`, and `\\` stand for a newline, tab,
+/// carriage return, quote, and backslash, and a `\` at the end of a line
+/// drops the line break and all the whitespace after it (so a long string
+/// can continue on an indented next line). Any other escape is an error,
+/// returned as the escape sequence written.
+pub fn unescape_string_literal(raw: &str) -> Result<String, String> {
+  let mut text = String::with_capacity(raw.len());
+  let mut chars = raw.chars().peekable();
+  while let Some(c) = chars.next() {
+    if c != '\\' {
+      text.push(c);
+      continue;
+    }
+    match chars.next() {
+      Some('n') => text.push('\n'),
+      Some('t') => text.push('\t'),
+      Some('r') => text.push('\r'),
+      Some('"') => text.push('"'),
+      Some('\\') => text.push('\\'),
+      Some('\n' | '\r') => {
+        while chars.next_if(|c| c.is_whitespace()).is_some() {}
+      }
+      Some(other) => return Err(format!("\\{other}")),
+      None => return Err("\\".to_string()),
+    }
+  }
+  Ok(text)
+}
+
+/// Source text for a string literal meaning `text`: the inverse of
+/// `unescape_string_literal`.
+pub fn escape_string_literal(text: &str) -> String {
+  let mut raw = String::with_capacity(text.len());
+  for c in text.chars() {
+    match c {
+      '\\' => raw.push_str("\\\\"),
+      '"' => raw.push_str("\\\""),
+      '\n' => raw.push_str("\\n"),
+      '\t' => raw.push_str("\\t"),
+      '\r' => raw.push_str("\\r"),
+      c => raw.push(c),
+    }
+  }
+  raw
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EaslSyntax;
 
@@ -149,7 +202,8 @@ impl Syntax for EaslSyntax {
   fn context<'a>(&'a self, id: &Self::C) -> &'a SSEContext<Self::E, Self::O> {
     match id {
       Context::Default | Context::StructuredComment => &*DEFAULT_CTX,
-      Context::UnstructuredComment | Context::String => &*TRIVIAL_CTX,
+      Context::UnstructuredComment => &*TRIVIAL_CTX,
+      Context::String => &*STRING_CTX,
     }
   }
   fn encloser_context(&self, encloser: &Self::E) -> Option<Self::C> {
@@ -412,8 +466,19 @@ fn load_and_parse_easl_multidocument_with_resolution(
           string_children,
         )) = path_tree
           && string_children.len() == 1
-          && let EaslTree::Leaf(_, import_path_string) = &string_children[0]
+          && let EaslTree::Leaf(_, raw_import_path) = &string_children[0]
         {
+          let import_path_string =
+            &match unescape_string_literal(raw_import_path) {
+              Ok(path) => path,
+              Err(escape) => {
+                errors.log(CompileError::new(
+                  CompileErrorKind::InvalidStringEscape(escape),
+                  string_children[0].position().into(),
+                ));
+                return Ok(());
+              }
+            };
           let resolved = if import_path_string.starts_with("/") {
             resolve(&PathBuf::from(import_path_string))
           } else {

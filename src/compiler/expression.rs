@@ -44,7 +44,7 @@ use crate::{
     util::{compile_word, indent},
     vars::{TopLevelVariableKind, VariableAddressSpace},
   },
-  parse::EaslTree,
+  parse::{EaslTree, unescape_string_literal},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1632,10 +1632,18 @@ impl TypedExp {
             data: Type::String.known().into(),
             kind: ExpKind::StringLiteral(
               if let Some(child) = children_iter.next() {
-                let EaslTree::Leaf(_, text) = child else {
+                let EaslTree::Leaf(_, raw) = child else {
                   panic!("string literal somehow had an inner node inside")
                 };
-                text.into()
+                match unescape_string_literal(&raw) {
+                  Ok(text) => text.into(),
+                  Err(escape) => {
+                    return err(
+                      InvalidStringEscape(escape),
+                      encloser_or_operator_source_trace,
+                    );
+                  }
+                }
               } else {
                 "".into()
               },

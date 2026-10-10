@@ -636,6 +636,11 @@ pub enum CompileErrorKind {
   )]
   CurrentDirectoryNotCalled,
   #[error(
+    "Unknown escape `{0}` in a string: the escapes are `\\n`, `\\t`, `\\r`, \
+    `\\\"`, `\\\\`, and `\\` at the end of a line"
+  )]
+  InvalidStringEscape(String),
+  #[error(
     "`{0}` is overloaded, and nothing here determines which overload is \
     meant; add a type ascription to pick one"
   )]
@@ -868,6 +873,9 @@ impl PartialEq for CompileErrorKind {
         Self::NonFlatIntegerInterpolation(l0),
         Self::NonFlatIntegerInterpolation(r0),
       ) => l0 == r0,
+      (Self::InvalidStringEscape(l0), Self::InvalidStringEscape(r0)) => {
+        l0 == r0
+      }
       (Self::InvalidBuiltinType(l0), Self::InvalidBuiltinType(r0)) => l0 == r0,
       (
         Self::InvalidBuiltinStructFieldName(l0),

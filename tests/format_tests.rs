@@ -4,6 +4,8 @@
 //! pin specific layouts the changes were made to produce.
 
 use easl::format::format_easl_source;
+use easl::parse::{EaslTree, Encloser, parse_easl, unescape_string_literal};
+use fsexp::{Ast, EncloserOrOperator};
 
 const MAX_WIDTH: usize = 80;
 
@@ -159,3 +161,73 @@ fn closing_paren_after_line_comment_keeps_alignment() {
   );
 }
 
+/// What every string literal in `source` means, in order.
+fn string_values(source: &str) -> Vec<String> {
+  fn collect(tree: &EaslTree, values: &mut Vec<String>) {
+    match tree {
+      Ast::Inner((_, EncloserOrOperator::Encloser(Encloser::Quote)), inner) => {
+        let raw = match inner.first() {
+          Some(Ast::Leaf(_, raw)) => raw.as_str(),
+          _ => "",
+        };
+        values.push(unescape_string_literal(raw).unwrap());
+      }
+      Ast::Inner(_, children) => {
+        for child in children {
+          collect(child, values);
+        }
+      }
+      Ast::Leaf(_, _) => {}
+    }
+  }
+  let mut values = vec![];
+  for tree in &parse_easl(source).syntax_trees {
+    collect(tree, &mut values);
+  }
+  values
+}
+
+/// Formatting never changes what a string means, however the code around
+/// it is laid out.
+fn assert_strings_unchanged(source: &str) {
+  assert_eq!(
+    string_values(&fmt(source)),
+    string_values(source),
+    "formatting changed a string"
+  );
+}
+
+#[test]
+fn string_ending_in_a_newline_is_unchanged() {
+  let source = "(defn newline []: String\n  \"\n\")";
+  assert_eq!(fmt(source), "(defn newline []: String\n  \"\n\")\n");
+  assert_strings_unchanged(source);
+  assert_idempotent(source);
+}
+
+#[test]
+fn multi_line_strings_are_unchanged_when_their_layout_changes() {
+  for source in [
+    "(defn f [] (print (concat \"one\n  two\n\" (string 1u) \"three\n\")))",
+    "(defn f []\n  (let [text \"first\n   second\"\n        other \"x\"]\n    \
+     (print text)))",
+    "(defn f [] (some-very-long-function-name-here \"a\n\" \"b\"))",
+    "(defn f [] (print \"say \\\"hi\\\" \\\\ and\n  keep this indent\"))",
+  ] {
+    assert_strings_unchanged(source);
+    assert_idempotent(source);
+  }
+}
+
+#[test]
+fn line_continuations_line_up_after_the_quote() {
+  let source = "(defn f []: String\n  \"a long sentence that \\\n\
+                continues here \\\n      and ends here\")";
+  assert_eq!(
+    fmt(source),
+    "(defn f []: String\n  \"a long sentence that \\\n   continues here \\\n   \
+     and ends here\")\n"
+  );
+  assert_strings_unchanged(source);
+  assert_idempotent(source);
+}

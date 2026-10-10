@@ -317,7 +317,7 @@ Runtime-sized arrays are CPU values with **value semantics everywhere** (locals,
 - GPU boundary: GPU-reachable code may not take, return, or locally bind runtime-sized values or values containing them (`validate_gpu_runtime_sized_use`); a binding may involve one only by *being* one
 
 ### Runtime strings
-A `String` is one heap id whose cell holds one codepoint per word. API: `(string x)` (unquoted display text), `concat` (n-ary), `length` (chars), `substr` (char indices, exclusive end, clamping), `==`/`!=`. String-typed expressions carry `CPUExclusiveType("String")`, keeping them off GPU/C/audio. Strings never cross thread or GPU boundaries.
+String literals: the parser's string context has `\` as its escape character (so `\"` doesn't end a literal) and leaves escapes in the leaf's raw text; `parse::unescape_string_literal` gives the value (`\n`, `\t`, `\r`, `\"`, `\\`, and `\`-newline, which drops the newline and following whitespace; anything else is `InvalidStringEscape`), and `escape_string_literal` is its inverse — use it for any literal a pass synthesizes (the resolver's `current-directory` expansion does). The formatter prints a literal's raw text verbatim (`Block::StringLiteral`) except the whitespace after `\`-newline, which it re-indents to line up after the opening quote. A `String` is one heap id whose cell holds one codepoint per word. API: `(string x)` (unquoted display text), `concat` (n-ary), `length` (chars), `substr` (char indices, exclusive end, clamping), `==`/`!=`. String-typed expressions carry `CPUExclusiveType("String")`, keeping them off GPU/C/audio. Strings never cross thread or GPU boundaries.
 
 ## Cross-thread shared variables (`thread_sync.rs`, `vm/shared_sync.rs`)
 

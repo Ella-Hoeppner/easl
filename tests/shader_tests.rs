@@ -1335,3 +1335,8 @@ fn interpolate_integers_default_to_flat() {
     assert!(wgsl.contains(expected), "missing `{expected}` in:\n{wgsl}");
   }
 }
+
+error_test!(
+  string_escape_failure,
+  CompileErrorKind::InvalidStringEscape("\\q".into())
+);

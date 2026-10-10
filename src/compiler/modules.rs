@@ -40,7 +40,9 @@ use crate::{
     builtins::PATH_BUILTIN_ARGUMENTS,
     error::{CompileError, CompileErrorKind, ErrorLog, SourceTrace},
   },
-  parse::{EaslMultiDocument, EaslTree, Encloser, Operator},
+  parse::{
+    EaslMultiDocument, EaslTree, Encloser, Operator, escape_string_literal,
+  },
 };
 
 /// The resolved program: every definition from every module, with names
@@ -1587,7 +1589,7 @@ impl<'a> Resolver<'a> {
         position.clone(),
         EncloserOrOperator::Encloser(Encloser::Quote),
       ),
-      vec![EaslTree::Leaf(position, directory.clone())],
+      vec![EaslTree::Leaf(position, escape_string_literal(directory))],
     );
   }
 

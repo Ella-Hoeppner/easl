@@ -106,6 +106,13 @@ In CPU and audio code, runtime-sized arrays (`[f32]`, `[Material]`, `[[f32]]`) a
 
 `String`s work in CPU code only. `(string x)` turns any value into one, and [`concat`, `substr`, and `length`](reference/cpu-builtins.md#strings) work on them.
 
+String literals take the usual escapes: `\n` (newline), `\t` (tab), `\r`, `\"`, and `\\`. A `\` at the end of a line drops the line break and the whitespace that follows, so a long string can continue on the next line, indented to fit (the formatter lines such continuations up after the opening quote):
+
+```easl
+(print "a long message that \
+        continues here")   ; "a long message that continues here"
+```
+
 `(print x)` prints any value: `1u` for a `u32`, `1` for an `i32`, `2.` for a whole `f32`, and strings in double quotes.
 
 ## Embedding: `@external` variables

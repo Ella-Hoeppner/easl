@@ -14,7 +14,7 @@ Prints any value. `u32`s print as `1u`, `i32`s bare (`1`), whole `f32`s with a t
 
 ## Strings
 
-`String` values exist only in CPU code. Indices count characters.
+`String` values exist only in CPU code. Indices count characters. String literals take the escapes `\n`, `\t`, `\r`, `\"`, `\\`, and `\` at the end of a line (see [strings](../cpu.md#runtime-sized-arrays-and-strings)).
 
 ### `string`
 
