@@ -1,0 +1,16 @@
+; Main assigns an atomic the value it held when main last looked, after
+; audio changed it in between: the assignment still lands, because a write
+; is judged against the atomic's current words, not main's last view.
+(var flag: (Atomic u32))
+
+(defn voice []: f32
+  (atomic-store flag 7u)
+  0.)
+
+@cpu
+(defn main []
+  (print (atomic-load flag))
+  (start-audio voice)
+  (spawn-window (fn []
+                  (= flag (Atomic 0u))
+                  (print (atomic-load flag)))))

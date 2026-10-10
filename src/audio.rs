@@ -555,10 +555,13 @@ pub struct VmAudioDriver {
 impl VmAudioDriver {
   pub fn new(
     entry_name: &str,
-    program: BytecodeProgram,
+    mut program: BytecodeProgram,
     function_names: &[Arc<str>],
     shared_table: Option<Arc<ThreadSharedTable>>,
   ) -> Result<Self, String> {
+    if let Some(table) = &shared_table {
+      program.attach_shared_atomics(table);
+    }
     let fn_index = find_audio_fn_index(entry_name, function_names)?;
     let return_position =
       program.get_function_return_position(fn_index) as usize;

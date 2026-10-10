@@ -1,6 +1,6 @@
 # GPU builtins
 
-Shader-stage-specific builtins: builtin-attribute lookups, fragment derivatives, and atomics.
+Shader-stage-specific builtins (builtin-attribute lookups, fragment derivatives), and atomics, which also work on the CPU.
 
 ## Builtin attribute lookups
 
@@ -134,6 +134,10 @@ Derivatives computed with per-fragment (fine) precision.
 ```
 
 All atomic functions take the atomic by reference (automatically — pass the variable itself).
+
+Atomics work in CPU and audio code too. A CPU program can give an atomic a value (`(= counter (Atomic 5u))`) before a dispatch uploads it, and read back what the GPU did to it.
+
+An atomic used by both the main thread and the audio thread is shared between them directly. Each thread sees the other's atomic operations as soon as they happen, rather than at frame or audio-batch boundaries like other shared variables, and concurrent read-modify-write operations are never lost. This works for a variable of type `(Atomic T)` or `[N: (Atomic T)]`, used by the CPU only: an atomic shared between threads can't also be used by GPU code. On the web, atomics shared between threads need a cross-origin isolated page: serve it with the headers `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`.
 
 ### `atomic-load`
 

@@ -333,3 +333,62 @@ fn midi_down_notes_state_changes() {
     }
   }
 }
+
+/// Two audio drivers sharing atomics through one table, each running on
+/// its own real thread: every atomic op is a single atomic operation on
+/// the shared word, so no concurrent update is lost.
+#[test]
+fn shared_atomic_contention() {
+  use easl::audio::VmAudioDriver;
+  use easl::thread_sync::ThreadSharedTable;
+  use easl::vm::bytecode::{BytecodeProgram, Code};
+  use std::sync::Arc;
+  let source_path = Path::new("./data/audio/shared_atomic_contention.easl");
+  let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
+  else {
+    panic!("failed to load program");
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
+  let (audio_program, names) = program.compile_to_bytecode_program();
+  assert!(audio_program.code.shared_vars.iter().all(|v| v.atomic));
+  let table =
+    Arc::new(ThreadSharedTable::new(audio_program.code.shared_vars.len()));
+  table.join(participant::AUDIO);
+  const BATCHES: usize = 2000;
+  const FRAMES: usize = 64;
+  let threads: Vec<_> = ["up", "down"]
+    .into_iter()
+    .map(|entry| {
+      let copy = BytecodeProgram::from_code(
+        Code::from_bytes(&audio_program.code.to_bytes()).unwrap(),
+      );
+      let mut driver =
+        VmAudioDriver::new(entry, copy, &names, Some(table.clone())).unwrap();
+      std::thread::spawn(move || {
+        for _ in 0..BATCHES {
+          driver.run_batch(FRAMES, 44100.0, |_| {}, |_| {}, |_| {});
+        }
+      })
+    })
+    .collect();
+  for thread in threads {
+    thread.join().unwrap();
+  }
+  let samples = (BATCHES * FRAMES) as u32;
+  let words = |name: &str| -> Vec<u32> {
+    let index = audio_program
+      .code
+      .shared_vars
+      .iter()
+      .position(|v| &*v.name == name)
+      .unwrap();
+    let words = audio_program.code.shared_vars[index].layout.words() as usize;
+    let atomic_words = table.slots[index]
+      .atomic_words(words, || unreachable!("the drivers made the words"));
+    (0..words).map(|word| atomic_words.load(word)).collect()
+  };
+  assert_eq!(words("counter"), vec![3 * samples]);
+  assert_eq!(words("hits"), vec![3, (-(samples as i32)) as u32]);
+}

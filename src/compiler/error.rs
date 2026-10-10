@@ -385,6 +385,16 @@ pub enum CompileErrorKind {
   )]
   UnshareableAudioCapture(String),
   #[error(
+    "`{0}` holds atomics and is used by both the main thread and the audio \
+     thread, so it can't also be used by GPU code"
+  )]
+  GpuUsedThreadSharedAtomic(String),
+  #[error(
+    "`{0}` holds atomics and is shared between threads, so its type must be \
+     an atomic or a fixed-size array of atomics"
+  )]
+  UnsupportedThreadSharedAtomicType(String),
+  #[error(
     "A GPU binding's type may contain a runtime-sized array only when the \
      binding itself is one; bind the runtime-sized array as its own \
      variable instead of embedding it in a struct, enum, or fixed-size \

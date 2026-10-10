@@ -22,8 +22,8 @@
 //! a torn write, and publishers never block adopters (nor vice versa) —
 //! which is what makes adoption safe inside the real-time audio callback.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use arc_swap::ArcSwapOption;
 
@@ -70,6 +70,158 @@ pub struct SharedVarSlot {
   /// Monotone version source: `fetch_add` gives every publisher a unique,
   /// increasing version, even under concurrent publication.
   version_counter: AtomicU64,
+  /// For a var holding atomics: its one copy, which every participant
+  /// reads and writes directly (no snapshots), so atomic ops from
+  /// different threads never lose each other's updates.
+  atomic_words: OnceLock<Arc<dyn AtomicWords>>,
+}
+
+/// The words of a shared var holding atomics, which every participant
+/// operates on directly. Natively they're `AtomicU32`s
+/// ([`NativeAtomicWords`]); the web keeps them in a `SharedArrayBuffer`, the
+/// only memory its page and audio worklet share.
+pub trait AtomicWords: Send + Sync {
+  fn len(&self) -> usize;
+  fn load(&self, index: usize) -> u32;
+  fn store(&self, index: usize, value: u32);
+  /// Each read-modify-write returns the word's previous value.
+  fn swap(&self, index: usize, value: u32) -> u32;
+  fn fetch_add(&self, index: usize, value: u32) -> u32;
+  fn fetch_sub(&self, index: usize, value: u32) -> u32;
+  fn fetch_and(&self, index: usize, value: u32) -> u32;
+  fn fetch_or(&self, index: usize, value: u32) -> u32;
+  fn fetch_xor(&self, index: usize, value: u32) -> u32;
+  /// Replaces the word with `new` if it holds `current`.
+  fn compare_exchange(&self, index: usize, current: u32, new: u32) -> u32;
+}
+
+/// An atomic builtin, as applied to a shared word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AtomicOp {
+  Load,
+  Store,
+  Exchange,
+  Add,
+  Sub,
+  MaxU32,
+  MaxI32,
+  MinU32,
+  MinI32,
+  And,
+  Or,
+  Xor,
+}
+
+impl AtomicOp {
+  /// The op an atomic builtin performs; `signed` says whether its atomic
+  /// holds an `i32` (only asked for `atomic-max`/`atomic-min`).
+  pub fn of_builtin(name: &str, signed: impl FnOnce() -> bool) -> Option<Self> {
+    let signed = matches!(name, "atomic-max" | "atomic-min") && signed();
+    Some(match name {
+      "atomic-load" => Self::Load,
+      "atomic-store" => Self::Store,
+      "atomic-exchange" => Self::Exchange,
+      "atomic-add" => Self::Add,
+      "atomic-sub" => Self::Sub,
+      "atomic-max" if signed => Self::MaxI32,
+      "atomic-max" => Self::MaxU32,
+      "atomic-min" if signed => Self::MinI32,
+      "atomic-min" => Self::MinU32,
+      "atomic-and" => Self::And,
+      "atomic-or" => Self::Or,
+      "atomic-xor" => Self::Xor,
+      _ => return None,
+    })
+  }
+}
+
+impl dyn AtomicWords {
+  /// Applies `op` to word `index` (wrapped to the words' length) with
+  /// `operand`, returning the word's previous value (`Store` returns 0).
+  pub fn apply(&self, op: AtomicOp, index: usize, operand: u32) -> u32 {
+    let index = index % self.len();
+    match op {
+      AtomicOp::Load => self.load(index),
+      AtomicOp::Store => {
+        self.store(index, operand);
+        0
+      }
+      AtomicOp::Exchange => self.swap(index, operand),
+      AtomicOp::Add => self.fetch_add(index, operand),
+      AtomicOp::Sub => self.fetch_sub(index, operand),
+      AtomicOp::And => self.fetch_and(index, operand),
+      AtomicOp::Or => self.fetch_or(index, operand),
+      AtomicOp::Xor => self.fetch_xor(index, operand),
+      AtomicOp::MaxU32 => self.fetch_update(index, |word| word.max(operand)),
+      AtomicOp::MinU32 => self.fetch_update(index, |word| word.min(operand)),
+      AtomicOp::MaxI32 => self
+        .fetch_update(index, |word| (word as i32).max(operand as i32) as u32),
+      AtomicOp::MinI32 => self
+        .fetch_update(index, |word| (word as i32).min(operand as i32) as u32),
+    }
+  }
+
+  /// Replaces word `index` with `f` of its value, atomically, returning
+  /// its previous value.
+  fn fetch_update(&self, index: usize, f: impl Fn(u32) -> u32) -> u32 {
+    let mut current = self.load(index);
+    loop {
+      let previous = self.compare_exchange(index, current, f(current));
+      if previous == current {
+        return previous;
+      }
+      current = previous;
+    }
+  }
+}
+
+/// Atomic words in this process's memory.
+pub struct NativeAtomicWords(Box<[AtomicU32]>);
+
+impl NativeAtomicWords {
+  pub fn zeroed(words: usize) -> Arc<dyn AtomicWords> {
+    Arc::new(Self((0..words).map(|_| AtomicU32::new(0)).collect()))
+  }
+}
+
+impl AtomicWords for NativeAtomicWords {
+  fn len(&self) -> usize {
+    self.0.len()
+  }
+  fn load(&self, index: usize) -> u32 {
+    self.0[index].load(Ordering::Acquire)
+  }
+  fn store(&self, index: usize, value: u32) {
+    self.0[index].store(value, Ordering::Release)
+  }
+  fn swap(&self, index: usize, value: u32) -> u32 {
+    self.0[index].swap(value, Ordering::AcqRel)
+  }
+  fn fetch_add(&self, index: usize, value: u32) -> u32 {
+    self.0[index].fetch_add(value, Ordering::AcqRel)
+  }
+  fn fetch_sub(&self, index: usize, value: u32) -> u32 {
+    self.0[index].fetch_sub(value, Ordering::AcqRel)
+  }
+  fn fetch_and(&self, index: usize, value: u32) -> u32 {
+    self.0[index].fetch_and(value, Ordering::AcqRel)
+  }
+  fn fetch_or(&self, index: usize, value: u32) -> u32 {
+    self.0[index].fetch_or(value, Ordering::AcqRel)
+  }
+  fn fetch_xor(&self, index: usize, value: u32) -> u32 {
+    self.0[index].fetch_xor(value, Ordering::AcqRel)
+  }
+  fn compare_exchange(&self, index: usize, current: u32, new: u32) -> u32 {
+    match self.0[index].compare_exchange(
+      current,
+      new,
+      Ordering::AcqRel,
+      Ordering::Acquire,
+    ) {
+      Ok(previous) | Err(previous) => previous,
+    }
+  }
 }
 
 impl SharedVarSlot {
@@ -77,7 +229,22 @@ impl SharedVarSlot {
     Self {
       published: ArcSwapOption::const_empty(),
       version_counter: AtomicU64::new(0),
+      atomic_words: OnceLock::new(),
     }
+  }
+
+  /// The shared words of a var holding atomics, `words` long. The first
+  /// participant to ask makes them with `allocate` (zeroed); every
+  /// participant asks with the same length — it comes from the var's type
+  /// — and gets the same words.
+  pub fn atomic_words(
+    &self,
+    words: usize,
+    allocate: impl FnOnce() -> Arc<dyn AtomicWords>,
+  ) -> Arc<dyn AtomicWords> {
+    let shared = self.atomic_words.get_or_init(allocate);
+    assert_eq!(shared.len(), words, "participants disagree on a var's size");
+    Arc::clone(shared)
   }
 
   /// Publishes `words` as a new version of this variable, unless a newer

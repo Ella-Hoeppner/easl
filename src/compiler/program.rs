@@ -7932,6 +7932,7 @@ impl Program {
       return errors;
     }
     self.validate_gpu_used_binding_types(&mut errors);
+    self.validate_thread_shared_atomics(&mut errors);
     if !errors.is_empty() {
       return errors;
     }
@@ -8569,6 +8570,41 @@ impl Program {
       }
     }
   }
+  /// Atomics shared between threads live in words every thread operates on
+  /// directly, which only works for an atomic or a fixed-size array of
+  /// them, and only on the CPU: the GPU's copy is a separate buffer.
+  pub fn validate_thread_shared_atomics(&self, errors: &mut ErrorLog) {
+    let gpu_used = self.gpu_used_globals();
+    for (name, _) in self.thread_shared_globals() {
+      let v = self
+        .top_level_vars
+        .iter()
+        .find(|v| v.name == name)
+        .expect("thread-shared global missing from top-level vars");
+      if !v.var_type.involves_atomic() {
+        continue;
+      }
+      let display_name = compile_word(name.clone());
+      let supported_shape = match &v.var_type {
+        Type::Struct(s) => &*s.name == "Atomic",
+        Type::Array(Some(ConcreteArraySize::Literal(_)), inner) => {
+          matches!(inner.unwrap_known(), Type::Struct(s) if &*s.name == "Atomic")
+        }
+        _ => false,
+      };
+      if !supported_shape {
+        errors.log(CompileError::new(
+          UnsupportedThreadSharedAtomicType(display_name),
+          v.source_trace.clone(),
+        ));
+      } else if gpu_used.contains(&name) {
+        errors.log(CompileError::new(
+          GpuUsedThreadSharedAtomic(display_name),
+          v.source_trace.clone(),
+        ));
+      }
+    }
+  }
   pub fn thread_shared_globals(&self) -> Vec<(Arc<str>, u32)> {
     use crate::compiler::expression::ExpKind;
     let var_names: HashSet<Arc<str>> =
@@ -8974,6 +9010,7 @@ impl Program {
             name: v.name.clone(),
             layout: ValueLayout::of(&v.var_type),
             audience: shared_var_audiences[&v.name],
+            atomic: false,
             storage: SharedVarStorage::DynMemory {
               region: memory,
               stride: element_stride,
@@ -9047,6 +9084,7 @@ impl Program {
           layout: ValueLayout::of(&v.var_type),
           audience: shared_var_audiences[&v.name],
           storage: SharedVarStorage::Slots { position, size },
+          atomic: v.var_type.involves_atomic(),
         });
       }
       state.consumed_stack_space = state
@@ -9069,6 +9107,13 @@ impl Program {
         state.binding_indices.insert(v.name.clone(), index);
       }
     }
+    state.shared_atomics = state
+      .shared_vars
+      .iter()
+      .flatten()
+      .filter(|info| info.atomic)
+      .map(|info| info.name.clone())
+      .collect();
     // If any top-level var has an initializer expression, compile a
     // synthetic "$init_globals" function that computes each one and Moves it
     // into the corresponding global slot. `BytecodeProgram::from_code` runs

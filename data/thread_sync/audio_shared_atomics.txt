@@ -1,0 +1,16 @@
+start-audio: voice
+spawn-window
+frame 0
+print: 100u
+print: 110u
+print: 0
+print: 0
+print: [(Atomic 0u) (Atomic 0u) (Atomic 1u)]
+audio-batch 0 x2
+samples: 0 0
+frame 1
+print: 112u
+print: 122u
+print: -3
+print: -3
+print: [(Atomic 0u) (Atomic 4u) (Atomic 0u)]

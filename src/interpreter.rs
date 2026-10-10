@@ -40,11 +40,13 @@ use crate::compiler::{
   vars::{GroupAndBinding, TopLevelVariableKind, VariableAddressSpace},
 };
 use crate::external::ExternalVars;
-use crate::thread_sync::participant;
+use crate::thread_sync::{
+  AtomicOp, AtomicWords, NativeAtomicWords, participant,
+};
 use crate::video::VideoRegistry;
 use crate::vm::bytecode::{
-  DynMemory, HeapCell, alloc_heap_cell, heap_index, heap_string_words,
-  release_heap_id, string_to_words, words_to_string,
+  DynMemory, HeapCell, SharedAtomic, alloc_heap_cell, heap_index,
+  heap_string_words, release_heap_id, string_to_words, words_to_string,
 };
 use crate::vm::compile::vm_stack_size;
 #[cfg(feature = "window")]
@@ -4272,6 +4274,17 @@ pub trait IOManager: Sized {
   fn sample_rate(&self) -> f32 {
     44_100.
   }
+  /// Makes the shared words (zeroed, `words` long) of the shared var at
+  /// `index` holding atomics, which every participant operates on directly.
+  /// The web overrides this to keep them where its audio worklet can reach
+  /// them.
+  fn shared_atomic_words(
+    &mut self,
+    _index: usize,
+    words: usize,
+  ) -> Arc<dyn AtomicWords> {
+    NativeAtomicWords::zeroed(words)
+  }
   /// The current MIDI input snapshot, read once per frame to refresh the
   /// main thread's copies of the implicit `easl_midi_*` globals (the
   /// audio thread refreshes its own copies per batch, directly from the
@@ -5284,6 +5297,10 @@ pub struct EvaluationEnvironment<IO: IOManager> {
   shared_adopted: Vec<u64>,
   /// Name → shared index, for the write-marking hook.
   shared_indices: HashMap<Arc<str>, usize>,
+  /// The shared words of each shared global holding atomics (`None` for
+  /// the rest): such a var isn't replicated, every read loads it and every
+  /// write stores the words it changed.
+  shared_atomics: Vec<Option<SharedAtomic>>,
 }
 
 impl<IO: IOManager> EvaluationEnvironment<IO> {
@@ -5353,6 +5370,21 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       .iter()
       .map(|(_, name, _, _)| (name.clone(), SharedBufferState::GPUOutOfDate))
       .collect();
+    let mut io = io;
+    let shared_atomics = shared_globals
+      .iter()
+      .enumerate()
+      .map(|(index, (_, ty, _))| {
+        ty.involves_atomic().then(|| {
+          let words = vm_words_of(ty);
+          SharedAtomic {
+            words: shared_table.slots[index]
+              .atomic_words(words, || io.shared_atomic_words(index, words)),
+            shadow: vec![0; words],
+          }
+        })
+      })
+      .collect();
     let mut env = Self {
       wgsl: String::new(),
       bindings: HashMap::new(),
@@ -5393,6 +5425,7 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       lifted_gpu_captures: program.lifted_gpu_captures.clone(),
       shared_dirty: vec![false; shared_globals.len()],
       shared_adopted: vec![0; shared_globals.len()],
+      shared_atomics,
       shared_globals,
       shared_table,
       shared_indices,
@@ -5927,7 +5960,11 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   fn mark_cpu_written(&mut self, names: &[Arc<str>]) {
     for name in names {
       if let Some(shared_index) = self.shared_indices.get(name).copied() {
-        self.shared_dirty[shared_index] = true;
+        if self.shared_atomics[shared_index].is_some() {
+          self.store_shared_atomic(shared_index);
+        } else {
+          self.shared_dirty[shared_index] = true;
+        }
       }
       if self.is_binding_var(name) {
         self
@@ -5963,7 +6000,8 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
     }
     for index in 0..self.shared_globals.len() {
       let audience = self.shared_globals[index].2;
-      if audience & live_others == 0 {
+      // Atomics live in their shared words, never in snapshots.
+      if audience & live_others == 0 || self.shared_atomics[index].is_some() {
         continue;
       }
       let gpu_fresh = {
@@ -6042,7 +6080,9 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
       return;
     }
     for index in 0..self.shared_globals.len() {
-      if self.shared_globals[index].2 & participant::MAIN == 0 {
+      if self.shared_globals[index].2 & participant::MAIN == 0
+        || self.shared_atomics[index].is_some()
+      {
         continue;
       }
       let Some(snapshot) = self.shared_table.slots[index]
@@ -6202,6 +6242,80 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   fn check_global_readable(&mut self, name: &Arc<str>) {
     if self.buffer_states.get(name) == Some(&SharedBufferState::CPUOutOfDate) {
       self.check_cpu_readable(&[name.clone()]);
+    }
+    self.load_shared_atomic(name);
+  }
+
+  /// Loads the current shared words of `name`, if it's a cross-thread
+  /// atomic global, into its value.
+  fn load_shared_atomic(&mut self, name: &Arc<str>) {
+    let Some(index) = self.shared_indices.get(name).copied() else {
+      return;
+    };
+    let Some(atomic) = &mut self.shared_atomics[index] else {
+      return;
+    };
+    for (index, shadow) in atomic.shadow.iter_mut().enumerate() {
+      *shadow = atomic.words.load(index);
+    }
+    let value =
+      shared_words_to_value(&atomic.shadow, &self.shared_globals[index].1);
+    if let Some(slot) = self
+      .bindings
+      .get_mut(name)
+      .and_then(|stack| stack.last_mut())
+    {
+      slot.0 = value;
+    }
+  }
+
+  /// Stores the words of cross-thread atomic global `index` that changed
+  /// since it was last loaded, leaving the rest (another thread may have
+  /// changed them since) alone. A write's target is read as an argument
+  /// first, so that load is just before the write.
+  fn store_shared_atomic(&mut self, index: usize) {
+    let (name, ty, _) = &self.shared_globals[index];
+    let Some((value, _)) =
+      self.bindings.get(name).and_then(|stack| stack.last())
+    else {
+      return;
+    };
+    let words = value_to_shared_words(value, ty);
+    let atomic = self.shared_atomics[index].as_mut().unwrap();
+    for (index, (new, shadow)) in
+      words.into_iter().zip(&mut atomic.shadow).enumerate()
+    {
+      if new != *shadow {
+        atomic.words.store(index, new);
+        *shadow = new;
+      }
+    }
+  }
+
+  /// Applies `op` to word `offset` (wrapped to the var's length) of
+  /// cross-thread atomic global `index`, returning the previous value (or
+  /// `Value::Unit` for a store). `signed` says whether the atomic holds an
+  /// `i32`.
+  fn shared_atomic_op(
+    &self,
+    index: usize,
+    offset: usize,
+    op: AtomicOp,
+    operand: Option<Primitive>,
+    signed: bool,
+  ) -> Value {
+    let bits = match operand {
+      Some(Primitive::U32(u)) => u,
+      Some(Primitive::I32(i)) => i as u32,
+      None => 0,
+      Some(other) => panic!("atomic operand must be an integer, got {other:?}"),
+    };
+    let atomic = self.shared_atomics[index].as_ref().unwrap();
+    let previous = atomic.words.apply(op, offset, bits);
+    match op {
+      AtomicOp::Store => Value::Unit,
+      _ if signed => Primitive::I32(previous as i32).into(),
+      _ => Primitive::U32(previous).into(),
     }
   }
 
@@ -6616,6 +6730,60 @@ fn eval_assignment_op<IO: IOManager>(
     *accessed_value = new_value;
   }
   Ok(Value::Unit)
+}
+
+/// An atomic op on a cross-thread atomic global (or an element of an array
+/// of them), performed directly on its shared word; `None` for any other
+/// application.
+fn eval_shared_atomic_op<IO: IOManager>(
+  env: &mut EvaluationEnvironment<IO>,
+  name: &str,
+  args: &[Exp<ExpTypeInfo>],
+) -> Option<Result<Value, EvalException>> {
+  let operand_is_i32 = || args[1].data.kind.unwrap_known() == Type::I32;
+  let op = AtomicOp::of_builtin(name, operand_is_i32)?;
+  let (root, index) = match &args[0].kind {
+    ExpKind::Name(root) => (root, None),
+    ExpKind::Access(Accessor::ArrayIndex(index), inner) => {
+      let ExpKind::Name(root) = &inner.kind else {
+        return None;
+      };
+      (root, Some(&**index))
+    }
+    ExpKind::Application(inner, indices) if indices.len() == 1 => {
+      let ExpKind::Name(root) = &inner.kind else {
+        return None;
+      };
+      (root, Some(&indices[0]))
+    }
+    _ => return None,
+  };
+  let shared_index = env.shared_indices.get(root).copied()?;
+  env.shared_atomics[shared_index].as_ref()?;
+  Some((|| {
+    let offset = match index {
+      Some(index) => match eval(index.clone(), env)? {
+        Value::Prim(Primitive::U32(u)) => u as usize,
+        Value::Prim(Primitive::I32(i)) => i as u32 as usize,
+        other => panic!("atomic array index must be an integer, got {other:?}"),
+      },
+      None => 0,
+    };
+    let operand = match args.get(1) {
+      Some(operand) => Some(eval(operand.clone(), env)?.unwrap_primitive()),
+      None => None,
+    };
+    // The atomic's inner type: the operand's, or for a load, the field's.
+    let signed = match &operand {
+      Some(operand) => matches!(operand, Primitive::I32(_)),
+      None => matches!(
+        args[0].data.kind.unwrap_known(),
+        Type::Struct(atomic)
+          if atomic.fields[0].field_type.unwrap_known() == Type::I32
+      ),
+    };
+    Ok(env.shared_atomic_op(shared_index, offset, op, operand, signed))
+  })())
 }
 
 /// Performs an atomic mutation op (`atomic-store`, `atomic-add`, …): resolves
@@ -7039,6 +7207,9 @@ fn eval_application<IO: IOManager>(
       // hold one texture), so it's resolved by name, not by value.
       if &*name == "set-render-target" {
         return Ok(set_render_target(env, &args[0]));
+      }
+      if let Some(result) = eval_shared_atomic_op(env, &name, &args) {
+        return result;
       }
       let f_arc = match f_signature.abstract_ancestor {
         Some(arc) => arc,
@@ -9538,6 +9709,7 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
       EvaluationEnvironment::build_inner(env_program, io, external_vars)?;
     let (mut vm_program, function_names) =
       program.compile_to_bytecode_program_cpu();
+    vm_program.attach_shared_atomics(&env.shared_table);
     // Main's copy of the implicit `easl_sample_rate` local (see
     // `Program::extract_audio_info`) — the tree-walker env's copy is
     // seeded at env construction, but the VM reads its own slots.

@@ -6,8 +6,11 @@ use easl::{
     BufferUpload, EvalError, FrameDriver, IOManager, MidiState, StdoutIO,
     TextureHandle, UserspaceEvalError, WindowEvent,
   },
+  thread_sync::AtomicWords,
   window::GpuCore,
 };
+
+use crate::atomics::SharedArrayWords;
 
 /// The web runtime's IO manager. GPU work and window/input queries go
 /// through a `StdoutIO` holding the canvas's `GpuCore` (the page's event
@@ -211,6 +214,18 @@ impl IOManager for WebIO {
   ) -> Result<(), EvalError> {
     crate::audio::start(entry_name, source)
       .map_err(|e| UserspaceEvalError::AudioRuntimeError(e).into())
+  }
+
+  /// Shared atomics live in `SharedArrayBuffer`s, which the audio worklet
+  /// gets when it starts.
+  fn shared_atomic_words(
+    &mut self,
+    index: usize,
+    words: usize,
+  ) -> Arc<dyn AtomicWords> {
+    let words = SharedArrayWords::zeroed(words);
+    crate::audio::share_atomic_buffer(index as u32, words.buffer().clone());
+    words.into_words()
   }
 
   /// Every shared variable this side publishes goes to the audio worklet.

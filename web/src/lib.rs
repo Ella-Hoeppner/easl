@@ -3,6 +3,7 @@
 //! rendering into a canvas through WebGPU. Frames come from
 //! `requestAnimationFrame` rather than a native window loop.
 
+mod atomics;
 mod audio;
 mod audio_engine;
 mod io;
@@ -40,7 +41,7 @@ use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent};
 /// `workletUrl` (the audio worklet script) for programs that play audio,
 /// and `startMidi`, called if the program reads MIDI. Resolves once the
 /// program finishes; compile and runtime errors reject with their
-/// description.
+/// description, prefixed `easl: ` so it's clear where they come from.
 #[wasm_bindgen(js_name = runEaslProgram)]
 pub async fn run_easl_program(
   canvas: HtmlCanvasElement,
@@ -49,11 +50,22 @@ pub async fn run_easl_program(
   sources: Vec<String>,
   host: JsValue,
 ) -> Result<(), JsError> {
+  run_program(canvas, main_path, paths, sources, host)
+    .await
+    .map_err(|message| JsError::new(&format!("easl: {message}")))
+}
+
+async fn run_program(
+  canvas: HtmlCanvasElement,
+  main_path: String,
+  paths: Vec<String>,
+  sources: Vec<String>,
+  host: JsValue,
+) -> Result<(), String> {
   console_error_panic_hook::set_once();
   let source_map: HashMap<PathBuf, String> =
     paths.into_iter().map(PathBuf::from).zip(sources).collect();
-  let program = compile_program(Path::new(&main_path), &source_map)
-    .map_err(|e| JsError::new(&e))?;
+  let program = compile_program(Path::new(&main_path), &source_map)?;
   let audio_source = (!program
     .find_fn_names_by_entry_point(|e| e == EntryPoint::Audio)
     .is_empty())
@@ -88,6 +100,7 @@ pub async fn run_easl_program(
     let _ = start_midi.call0(&JsValue::NULL);
   }
 
+  check_shared_atomics_supported(&program)?;
   let (surface, device, queue, surface_config) =
     create_surface_and_device(&canvas).await?;
 
@@ -162,7 +175,7 @@ fn compile_program(
 /// Rejects programs whose vertex shaders use storage-write variables: native
 /// easl requests the `VERTEX_WRITABLE_STORAGE` feature for them, which
 /// browsers don't offer.
-fn check_browser_support(bindings: &[GpuBindingInfo]) -> Result<(), JsError> {
+fn check_browser_support(bindings: &[GpuBindingInfo]) -> Result<(), String> {
   let names: Vec<&str> = bindings
     .iter()
     .filter(|binding| {
@@ -173,17 +186,49 @@ fn check_browser_support(bindings: &[GpuBindingInfo]) -> Result<(), JsError> {
   if names.is_empty() {
     Ok(())
   } else {
-    Err(JsError::new(&format!(
+    Err(format!(
       "vertex shaders use the storage-write variable(s) {}, which browsers \
        don't support; make them `@storage` (read-only) or only use them \
        outside vertex shaders",
       names.join(", ")
-    )))
+    ))
   }
 }
 
-fn describe_error(error: impl std::fmt::Debug) -> JsError {
-  JsError::new(&format!("{error:?}"))
+/// Rejects programs with atomics shared between the main and audio threads
+/// on pages that aren't cross-origin isolated: those atomics live in
+/// `SharedArrayBuffer`s (see `atomics`), which browsers only allow on
+/// isolated pages.
+fn check_shared_atomics_supported(program: &Program) -> Result<(), String> {
+  if atomics::cross_origin_isolated() {
+    return Ok(());
+  }
+  let names: Vec<Arc<str>> = program
+    .thread_shared_globals()
+    .into_iter()
+    .map(|(name, _)| name)
+    .filter(|name| {
+      program
+        .top_level_vars
+        .iter()
+        .any(|var| &var.name == name && var.var_type.involves_atomic())
+    })
+    .collect();
+  if names.is_empty() {
+    Ok(())
+  } else {
+    Err(format!(
+      "the atomic variable(s) {} are used by both the main thread and the \
+       audio thread, which needs a cross-origin isolated page: serve it with \
+       the headers {}",
+      names.join(", "),
+      atomics::ISOLATION_HEADERS
+    ))
+  }
+}
+
+fn describe_error(error: impl std::fmt::Debug) -> String {
+  format!("{error:?}")
 }
 
 /// Creates a WebGPU device and a surface for `canvas`, sized to the
@@ -197,7 +242,7 @@ async fn create_surface_and_device(
     wgpu::Queue,
     wgpu::SurfaceConfiguration,
   ),
-  JsError,
+  String,
 > {
   let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
     backends: wgpu::Backends::BROWSER_WEBGPU,
@@ -213,7 +258,7 @@ async fn create_surface_and_device(
       force_fallback_adapter: false,
     })
     .await
-    .map_err(|_| JsError::new("easl needs a browser with WebGPU support"))?;
+    .map_err(|_| "this browser has no WebGPU support".to_string())?;
   let (device, queue) = adapter
     .request_device(&wgpu::DeviceDescriptor {
       label: None,
@@ -316,7 +361,7 @@ impl WebApp {
   async fn complete_readbacks(
     &mut self,
     mut state: Result<VmRunState, EvalError>,
-  ) -> Result<VmRunState, JsError> {
+  ) -> Result<VmRunState, String> {
     loop {
       match state.map_err(describe_error)? {
         VmRunState::AwaitingReadback => {

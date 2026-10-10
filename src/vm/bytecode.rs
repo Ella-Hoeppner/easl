@@ -8,6 +8,9 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::compiler::{types::Type, vars::VariableAddressSpace};
+use crate::thread_sync::{
+  AtomicOp, AtomicWords, NativeAtomicWords, ThreadSharedTable,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Op {
@@ -294,6 +297,34 @@ pub enum Op {
   /// hot path.
   MarkSharedDirty,
 
+  /// The atomics shared between threads (`SharedVarInfo::atomic`) live in
+  /// shared words, not in replicas. For these ops, `arg_positions[0]` is
+  /// the var's index into `Code::shared_vars`.
+  ///
+  /// Loads the var's shared words into its slots (before a read).
+  SharedAtomicLoad,
+  /// Stores the words of the var's slots that changed since its last
+  /// load or store into its shared words (after a write), so a write to
+  /// one element doesn't overwrite another thread's update to another.
+  SharedAtomicStore,
+  /// The atomic ops on one shared word: arg 1 is a slot holding the word's
+  /// offset into the var (wrapped to its length), arg 2 the operand's
+  /// slot; the word's previous value goes to `return_position`.
+  /// `SharedAtomicLoadWord` takes no operand, `SharedAtomicStoreWord`
+  /// returns nothing.
+  SharedAtomicLoadWord,
+  SharedAtomicStoreWord,
+  SharedAtomicExchange,
+  SharedAtomicAdd,
+  SharedAtomicSub,
+  SharedAtomicMaxU32,
+  SharedAtomicMaxI32,
+  SharedAtomicMinU32,
+  SharedAtomicMinI32,
+  SharedAtomicAnd,
+  SharedAtomicOr,
+  SharedAtomicXor,
+
   /// Marks host binding `arg_positions[0]` as possibly newer on the GPU
   /// than on the CPU. Emitted after each dispatch for every binding it
   /// writes (CPU-runtime mode only).
@@ -328,6 +359,44 @@ pub enum Op {
   // arrays, window queries) goes through this single opcode so the dispatch
   // loop stays small and the audio hot path is untouched.
   HostCall,
+}
+
+impl Op {
+  /// The opcode applying `op` to a shared atomic word.
+  pub fn shared_atomic(op: AtomicOp) -> Self {
+    match op {
+      AtomicOp::Load => Op::SharedAtomicLoadWord,
+      AtomicOp::Store => Op::SharedAtomicStoreWord,
+      AtomicOp::Exchange => Op::SharedAtomicExchange,
+      AtomicOp::Add => Op::SharedAtomicAdd,
+      AtomicOp::Sub => Op::SharedAtomicSub,
+      AtomicOp::MaxU32 => Op::SharedAtomicMaxU32,
+      AtomicOp::MaxI32 => Op::SharedAtomicMaxI32,
+      AtomicOp::MinU32 => Op::SharedAtomicMinU32,
+      AtomicOp::MinI32 => Op::SharedAtomicMinI32,
+      AtomicOp::And => Op::SharedAtomicAnd,
+      AtomicOp::Or => Op::SharedAtomicOr,
+      AtomicOp::Xor => Op::SharedAtomicXor,
+    }
+  }
+  /// The inverse of [`Op::shared_atomic`].
+  fn as_shared_atomic(self) -> AtomicOp {
+    match self {
+      Op::SharedAtomicLoadWord => AtomicOp::Load,
+      Op::SharedAtomicStoreWord => AtomicOp::Store,
+      Op::SharedAtomicExchange => AtomicOp::Exchange,
+      Op::SharedAtomicAdd => AtomicOp::Add,
+      Op::SharedAtomicSub => AtomicOp::Sub,
+      Op::SharedAtomicMaxU32 => AtomicOp::MaxU32,
+      Op::SharedAtomicMaxI32 => AtomicOp::MaxI32,
+      Op::SharedAtomicMinU32 => AtomicOp::MinU32,
+      Op::SharedAtomicMinI32 => AtomicOp::MinI32,
+      Op::SharedAtomicAnd => AtomicOp::And,
+      Op::SharedAtomicOr => AtomicOp::Or,
+      Op::SharedAtomicXor => AtomicOp::Xor,
+      other => unreachable!("{other:?} isn't a shared atomic op"),
+    }
+  }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -469,6 +538,27 @@ impl Instruction {
       }
       Op::DynResize => self.arg_positions[1],
       Op::MarkSharedDirty | Op::MarkGpuNewer | Op::CheckGpuRead => 0,
+      // The var's slots are a global's, covered by the globals' range.
+      Op::SharedAtomicLoad | Op::SharedAtomicStore => 0,
+      Op::SharedAtomicLoadWord => {
+        self.return_position.max(self.arg_positions[1])
+      }
+      Op::SharedAtomicStoreWord => {
+        self.arg_positions[1].max(self.arg_positions[2])
+      }
+      Op::SharedAtomicExchange
+      | Op::SharedAtomicAdd
+      | Op::SharedAtomicSub
+      | Op::SharedAtomicMaxU32
+      | Op::SharedAtomicMaxI32
+      | Op::SharedAtomicMinU32
+      | Op::SharedAtomicMinI32
+      | Op::SharedAtomicAnd
+      | Op::SharedAtomicOr
+      | Op::SharedAtomicXor => self
+        .return_position
+        .max(self.arg_positions[1])
+        .max(self.arg_positions[2]),
       Op::HeapLen | Op::HeapCopy => {
         self.return_position.max(self.arg_positions[0])
       }
@@ -587,6 +677,11 @@ pub struct SharedVarInfo {
   /// whose live audience (beyond the acting participant) is empty.
   pub audience: u32,
   pub storage: SharedVarStorage,
+  /// Holds atomics: lives in shared words (`ThreadSharedTable` slot's
+  /// `atomic_words`) that every participant uses directly, never published
+  /// or adopted. Its storage is `Slots`, a local copy loaded before reads.
+  #[serde(default)]
+  pub atomic: bool,
 }
 
 /// The layout of a value in VM words, as far as sharing it across threads
@@ -939,6 +1034,13 @@ pub enum RunResult {
   Suspended(HostSuspendReason),
 }
 
+/// A var holding atomics, as one program sees it: the shared words, and
+/// what this program last loaded or stored to them.
+pub struct SharedAtomic {
+  pub words: Arc<dyn AtomicWords>,
+  pub shadow: Vec<u32>,
+}
+
 /// Mutable view of the per-shared-variable runtime state a host call (or
 /// the thread-sync publish/adopt functions) may need alongside the stack
 /// and dynamic memory.
@@ -1164,6 +1266,10 @@ pub struct BytecodeProgram {
   /// Per-shared-variable spare snapshot buffers, recycled between
   /// publications so steady-state publishing allocates nothing.
   pub shared_scratch: Vec<Option<Vec<u32>>>,
+  /// Per-shared-variable shared words, for the vars holding atomics
+  /// (`SharedVarInfo::atomic`), aligned with `Code::shared_vars`. Set by
+  /// `attach_shared_atomics`.
+  pub shared_atomics: Vec<Option<SharedAtomic>>,
   /// Per-host-binding "the GPU may have written this since the CPU last
   /// read it back" flags, aligned with `Code::host_bindings`. Set by
   /// `Op::MarkGpuNewer`, cleared by `Op::CheckGpuRead`; a flag may stay set
@@ -1198,6 +1304,7 @@ impl BytecodeProgram {
       shared_dirty: vec![false; code.shared_vars.len()],
       shared_adopted: vec![0; code.shared_vars.len()],
       shared_scratch: (0..code.shared_vars.len()).map(|_| None).collect(),
+      shared_atomics: (0..code.shared_vars.len()).map(|_| None).collect(),
       gpu_newer: vec![false; code.host_bindings.len()],
       code,
     };
@@ -1206,6 +1313,21 @@ impl BytecodeProgram {
       program.execute();
     }
     program
+  }
+  /// Connects the vars holding atomics to their shared words in `table`
+  /// (once per program, before it runs anything touching them), making
+  /// native ones if no participant has made them yet.
+  pub fn attach_shared_atomics(&mut self, table: &ThreadSharedTable) {
+    for (index, info) in self.code.shared_vars.iter().enumerate() {
+      if info.atomic {
+        let words = info.layout.words() as usize;
+        self.shared_atomics[index] = Some(SharedAtomic {
+          words: table.slots[index]
+            .atomic_words(words, || NativeAtomicWords::zeroed(words)),
+          shadow: vec![0; words],
+        });
+      }
+    }
   }
   pub fn prepare_to_run_function(&mut self, function_index: usize) {
     self.call_stack.clear();
@@ -1265,6 +1387,7 @@ impl BytecodeProgram {
       shared_dirty,
       shared_adopted,
       shared_scratch,
+      shared_atomics,
       gpu_newer,
     } = self;
     // Heap helpers for the `Heap*` ops. `release` implements
@@ -2314,6 +2437,62 @@ impl BytecodeProgram {
 
         Op::MarkSharedDirty => {
           shared_dirty[instruction.arg_positions[0] as usize] = true;
+        }
+        Op::SharedAtomicLoad | Op::SharedAtomicStore => {
+          let index = instruction.arg_positions[0] as usize;
+          let SharedVarStorage::Slots { position, .. } =
+            code.shared_vars[index].storage
+          else {
+            unreachable!("a shared atomic is slot-backed")
+          };
+          let shared = shared_atomics[index]
+            .as_mut()
+            .expect("shared atomics are attached before running");
+          let slots = &mut stack[position as usize..][..shared.shadow.len()];
+          if instruction.op == Op::SharedAtomicLoad {
+            for (index, (slot, shadow)) in
+              slots.iter_mut().zip(&mut shared.shadow).enumerate()
+            {
+              *slot = shared.words.load(index);
+              *shadow = *slot;
+            }
+          } else {
+            for (index, (slot, shadow)) in
+              slots.iter().zip(&mut shared.shadow).enumerate()
+            {
+              if *slot != *shadow {
+                shared.words.store(index, *slot);
+                *shadow = *slot;
+              }
+            }
+          }
+        }
+        Op::SharedAtomicLoadWord
+        | Op::SharedAtomicStoreWord
+        | Op::SharedAtomicExchange
+        | Op::SharedAtomicAdd
+        | Op::SharedAtomicSub
+        | Op::SharedAtomicMaxU32
+        | Op::SharedAtomicMaxI32
+        | Op::SharedAtomicMinU32
+        | Op::SharedAtomicMinI32
+        | Op::SharedAtomicAnd
+        | Op::SharedAtomicOr
+        | Op::SharedAtomicXor => {
+          let [index, offset_slot, operand_slot] = instruction.arg_positions;
+          let shared = shared_atomics[index as usize]
+            .as_ref()
+            .expect("shared atomics are attached before running");
+          let op = instruction.op.as_shared_atomic();
+          let previous = shared.words.apply(
+            op,
+            stack[offset_slot as usize] as usize,
+            stack[operand_slot as usize],
+          );
+          if op == AtomicOp::Store {
+            continue;
+          }
+          stack[instruction.return_position as usize] = previous;
         }
       }
     }

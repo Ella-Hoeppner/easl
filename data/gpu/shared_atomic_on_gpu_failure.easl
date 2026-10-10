@@ -1,0 +1,18 @@
+; An atomic shared between the main and audio threads lives in words the
+; threads share; the GPU's copy would be a separate buffer.
+(var counter: (Atomic u32))
+
+@compute
+(defn count []
+  (atomic-add counter 1u)
+  (atomic-store counter 0u))
+
+(defn voice []: f32
+  (atomic-add counter 1u)
+  0.)
+
+@cpu
+(defn main []
+  (start-audio voice)
+  (dispatch-compute-shader count (vec3u 1u))
+  (print (atomic-load counter)))

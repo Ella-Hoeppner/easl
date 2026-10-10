@@ -1,0 +1,26 @@
+; Atomics shared between the page and its audio worklet live in
+; SharedArrayBuffers both threads operate on: the audio thread counts only
+; once it sees main's `go`, and each side sees the other's updates while
+; both keep running, not at frame or render-quantum boundaries.
+(var go: (Atomic u32))
+(var ticks: (Atomic u32))
+(var hits: [2: (Atomic i32)])
+
+(defn voice []: f32
+  (when (== (atomic-load go) 1u)
+    (atomic-sub (hits 1u) 1)
+    (atomic-store ticks (+ (atomic-load ticks) 1u)))
+  0.)
+
+@cpu
+(defn main []
+  (start-audio voice)
+  (spawn-window
+    (fn []
+      (atomic-store go 1u)
+      (atomic-max (hits 0u) 7)
+      (when (> (atomic-load ticks) 1000u)
+        ; the audio thread decrements before it counts a tick
+        (print (< (atomic-load (hits 1u)) -1000))
+        (print (atomic-load (hits 0u)))
+        (close-window)))))

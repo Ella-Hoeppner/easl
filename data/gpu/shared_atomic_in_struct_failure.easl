@@ -1,0 +1,16 @@
+; An atomic shared between threads must be an atomic or a fixed-size array
+; of atomics, not part of a larger value.
+(struct Stats
+  count: (Atomic u32)
+  scale: f32)
+
+(var stats: Stats)
+
+(defn voice []: f32
+  (atomic-add stats.count 1u)
+  stats.scale)
+
+@cpu
+(defn main []
+  (start-audio voice)
+  (print (atomic-load stats.count)))

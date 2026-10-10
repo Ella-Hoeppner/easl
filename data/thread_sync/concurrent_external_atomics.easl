@@ -1,0 +1,32 @@
+; Driven by `concurrent_external_atomics` in thread_sync_tests.rs, with real
+; threads: this program's frames count themselves in `(hits 0u)` while an
+; embedder thread stores to `(hits 1u)` through an `ExternalVars` handle as
+; fast as it can, then sets `embedder-done`. The embedder's element writes
+; never touch the other element, so the count is exact, and both sides see
+; every write as soon as it happens.
+
+@external
+(var hits: [2: (Atomic u32)])
+
+@external
+(var embedder-done: u32)
+
+@local
+(var frame: u32 0u)
+
+@local
+(var quiet-frames: u32 0u)
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (atomic-add (hits 0u) 1u)
+      (= frame (+ frame 1u))
+      (when (!= embedder-done 0u)
+        (= quiet-frames (+ quiet-frames 1u)))
+      (when (== quiet-frames 3u)
+        (print frame)
+        (print (atomic-load (hits 0u)))
+        (print (atomic-load (hits 1u)))
+        (close-window)))))

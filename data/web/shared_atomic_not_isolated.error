@@ -1,0 +1,1 @@
+easl: the atomic variable(s) counter are used by both the main thread and the audio thread, which needs a cross-origin isolated page: serve it with the headers Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp

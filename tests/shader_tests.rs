@@ -1340,3 +1340,11 @@ error_test!(
   string_escape_failure,
   CompileErrorKind::InvalidStringEscape("\\q".into())
 );
+error_test!(
+  shared_atomic_on_gpu_failure,
+  CompileErrorKind::GpuUsedThreadSharedAtomic("counter".into())
+);
+error_test!(
+  shared_atomic_in_struct_failure,
+  CompileErrorKind::UnsupportedThreadSharedAtomicType("stats".into())
+);

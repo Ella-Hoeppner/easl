@@ -44,7 +44,8 @@ pub fn publish_shared(
     return;
   }
   for (index, info) in shared_vars.iter().enumerate() {
-    if info.audience & live_others == 0 {
+    // Atomics live in their shared words, never in snapshots.
+    if info.audience & live_others == 0 || info.atomic {
       continue;
     }
     // A forced publish is bootstrap gap-filling for a newly-joined
@@ -133,7 +134,7 @@ pub fn adopt_shared(
     return;
   }
   for (index, info) in shared_vars.iter().enumerate() {
-    if info.audience & self_bit == 0 {
+    if info.audience & self_bit == 0 || info.atomic {
       continue;
     }
     let Some(snapshot) =

@@ -1,0 +1,21 @@
+; Two audio voices hammering the same atomics from two real threads (see
+; `shared_atomic_contention` in audio_tests.rs): no update may be lost.
+(var counter: (Atomic u32))
+(var hits: [2: (Atomic i32)])
+
+(defn up []: f32
+  (atomic-add counter 1u)
+  (atomic-sub (hits 1u) 1)
+  0.)
+
+(defn down []: f32
+  (atomic-add counter 2u)
+  (atomic-max (hits 0u) 3)
+  0.)
+
+@cpu
+(defn main []
+  (start-audio up)
+  (start-audio down)
+  (print (atomic-load counter))
+  (print hits))

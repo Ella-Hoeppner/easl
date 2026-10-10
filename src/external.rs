@@ -41,6 +41,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use crate::compiler::program::Program;
@@ -48,7 +49,9 @@ use crate::compiler::types::{ConcreteArraySize, Type};
 use crate::interpreter::{
   Value, shared_words_to_value, value_to_shared_words, vm_words_of,
 };
-use crate::thread_sync::{ThreadSharedTable, participant};
+use crate::thread_sync::{
+  AtomicWords, NativeAtomicWords, ThreadSharedTable, participant,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExternalVarError {
@@ -109,6 +112,9 @@ struct ExternalVarLayout {
   element_stride: Option<usize>,
   /// Total word length for fixed-size vars (`None` for unsized arrays).
   word_len: Option<usize>,
+  /// The var's shared words, when it holds atomics: those are read and
+  /// written directly rather than through snapshots.
+  atomic_words: Option<Arc<dyn AtomicWords>>,
 }
 
 /// The embedder's replica of one shared variable, plus the version it last
@@ -138,7 +144,7 @@ impl ExternalVars {
   /// participant live, so the program's boundaries will start publishing
   /// external-audience variables as soon as it runs.
   pub fn new(program: &Program) -> Arc<Self> {
-    let vars: Vec<ExternalVarLayout> = program
+    let mut vars: Vec<ExternalVarLayout> = program
       .thread_shared_globals()
       .into_iter()
       .map(|(name, audience)| {
@@ -172,6 +178,7 @@ impl ExternalVars {
           audience,
           element_stride,
           word_len,
+          atomic_words: None,
         }
       })
       .collect();
@@ -182,6 +189,15 @@ impl ExternalVars {
       .collect();
     let table = Arc::new(ThreadSharedTable::new(vars.len()));
     table.join(participant::EXTERNAL);
+    for (index, var) in vars.iter_mut().enumerate() {
+      if var.ty.involves_atomic() {
+        let words = vm_words_of(&var.ty);
+        var.atomic_words = Some(
+          table.slots[index]
+            .atomic_words(words, || NativeAtomicWords::zeroed(words)),
+        );
+      }
+    }
     let replica = Mutex::new(
       vars
         .iter()
@@ -237,6 +253,12 @@ impl ExternalVars {
   /// Adopts the newest published snapshot of var `index` into the locked
   /// replica, if there is one.
   fn refresh(&self, index: usize, replica: &mut Vec<ReplicaVar>) {
+    if let Some(atomic_words) = &self.vars[index].atomic_words {
+      for (word_index, word) in replica[index].words.iter_mut().enumerate() {
+        *word = atomic_words.load(word_index);
+      }
+      return;
+    }
     if let Some(snapshot) =
       self.table.slots[index].adopt_if_newer(replica[index].adopted)
     {
@@ -248,8 +270,20 @@ impl ExternalVars {
 
   /// Publishes the locked replica's current words for var `index` and
   /// records the new version as adopted (re-adopting our own publication
-  /// would be a wasted copy).
-  fn publish(&self, index: usize, replica: &mut Vec<ReplicaVar>) {
+  /// would be a wasted copy). A var holding atomics instead stores the
+  /// words in `written`, leaving the others to whoever else writes them.
+  fn publish(
+    &self,
+    index: usize,
+    replica: &mut Vec<ReplicaVar>,
+    written: Range<usize>,
+  ) {
+    if let Some(atomic_words) = &self.vars[index].atomic_words {
+      for word_index in written {
+        atomic_words.store(word_index, replica[index].words[word_index]);
+      }
+      return;
+    }
     let (version, _reusable_buffer) =
       self.table.slots[index].publish(replica[index].words.clone());
     replica[index].adopted = version;
@@ -296,7 +330,7 @@ impl ExternalVars {
     let mut replica = self.replica.lock().unwrap();
     replica[index].words.clear();
     replica[index].words.extend_from_slice(words);
-    self.publish(index, &mut replica);
+    self.publish(index, &mut replica, 0..words.len());
     Ok(())
   }
 
@@ -356,7 +390,7 @@ impl ExternalVars {
       });
     }
     words[start..start + stride].copy_from_slice(element_words);
-    self.publish(index, &mut replica);
+    self.publish(index, &mut replica, start..start + stride);
     Ok(())
   }
 

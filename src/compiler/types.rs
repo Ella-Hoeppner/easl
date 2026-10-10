@@ -1445,6 +1445,20 @@ impl Type {
   pub fn is_sampler(&self) -> bool {
     matches!(self, Type::Struct(s) if &*s.name == "Sampler")
   }
+  /// Whether this type is, or contains, an `Atomic`.
+  pub fn involves_atomic(&self) -> bool {
+    match self {
+      Type::Struct(s) => {
+        &*s.name == "Atomic"
+          || s
+            .fields
+            .iter()
+            .any(|f| f.field_type.unwrap_known().involves_atomic())
+      }
+      Type::Array(_, inner) => inner.unwrap_known().involves_atomic(),
+      _ => false,
+    }
+  }
   /// Whether this type is, or contains, a texture or sampler.
   pub fn involves_texture_or_sampler(&self) -> bool {
     match self {

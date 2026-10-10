@@ -1,0 +1,25 @@
+; Atomics used by both main and audio code live in words both threads
+; operate on directly: each thread sees the other's writes immediately
+; rather than at iteration boundaries, and no snapshots are published or
+; adopted for them.
+(var counter: (Atomic u32))
+(var level: (Atomic i32))
+(var hits: [3: (Atomic u32)])
+
+(defn voice []: f32
+  (atomic-add counter 1u)
+  (atomic-min level -3)
+  (atomic-or (hits 1u) 4u)
+  0.)
+
+@cpu
+(defn main []
+  (= counter (Atomic 100u))
+  (start-audio voice)
+  (spawn-window (fn []
+                  (print (atomic-add counter 10u))
+                  (print (atomic-load counter))
+                  (print (atomic-load level))
+                  (print (atomic-exchange level 5))
+                  (atomic-xor (hits 2u) 1u)
+                  (print hits))))

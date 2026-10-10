@@ -2,7 +2,8 @@
 // processor holding its own instance of the easl runtime, which runs the
 // audio program the page compiled one render quantum at a time.
 // Shared variables and MIDI arrive from the page as messages, and shared
-// variables this thread publishes go back the same way.
+// variables this thread publishes go back the same way, except atomics,
+// whose words both threads operate on in shared buffers.
 
 import "./easl-text-polyfill.js";
 import { initSync, AudioEngine } from "./easl_web.js";
@@ -10,13 +11,19 @@ import { initSync, AudioEngine } from "./easl_web.js";
 class EaslAudioProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
-    const { module, program, functionNames } = options.processorOptions;
+    const { module, program, functionNames, atomicIndices, atomicBuffers } =
+      options.processorOptions;
     this.engine = null;
     this.running = false;
     this.port.onmessage = (event) => this.receive(event.data);
     try {
       initSync({ module });
-      this.engine = new AudioEngine(program, functionNames);
+      this.engine = new AudioEngine(
+        program,
+        functionNames,
+        atomicIndices,
+        atomicBuffers,
+      );
     } catch (error) {
       this.fail(error);
     }

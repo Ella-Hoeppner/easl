@@ -10,7 +10,10 @@ use easl::{
   thread_sync::{ThreadSharedTable, participant},
   vm::bytecode::{BytecodeProgram, Code},
 };
+use js_sys::SharedArrayBuffer;
 use wasm_bindgen::prelude::*;
+
+use crate::atomics::SharedArrayWords;
 
 /// One program's audio thread: its bytecode replica, running the entry the
 /// page started, and its side of the shared-variable table.
@@ -27,11 +30,15 @@ pub struct AudioEngine {
 #[wasm_bindgen]
 impl AudioEngine {
   /// Loads the page's audio program: its serialized code
-  /// (`Code::to_bytes`) and its functions' names.
+  /// (`Code::to_bytes`), its functions' names, and the buffers holding its
+  /// shared atomics' words (`atomic_buffers[i]` for the shared variable at
+  /// `atomic_indices[i]`).
   #[wasm_bindgen(constructor)]
   pub fn new(
     program: &[u8],
     function_names: Vec<String>,
+    atomic_indices: Vec<u32>,
+    atomic_buffers: Vec<SharedArrayBuffer>,
   ) -> Result<AudioEngine, JsError> {
     console_error_panic_hook::set_once();
     let program = BytecodeProgram::from_code(
@@ -40,6 +47,12 @@ impl AudioEngine {
     let table =
       Arc::new(ThreadSharedTable::new(program.code.shared_vars.len()));
     table.join(participant::AUDIO);
+    for (index, buffer) in atomic_indices.into_iter().zip(atomic_buffers) {
+      let index = index as usize;
+      let words = program.code.shared_vars[index].layout.words() as usize;
+      table.slots[index]
+        .atomic_words(words, || SharedArrayWords::over(buffer).into_words());
+    }
     let function_names = function_names.into_iter().map(Arc::from).collect();
     Ok(AudioEngine {
       program: Some((program, function_names)),

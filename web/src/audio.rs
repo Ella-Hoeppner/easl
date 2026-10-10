@@ -11,11 +11,16 @@
 //! `ThreadSharedTable`, and every snapshot a side publishes at its boundary
 //! (a frame here, a render quantum there) is posted to the other side and
 //! installed in its table, to be adopted at that side's next boundary.
+//! Atomics are the exception: their words live in `SharedArrayBuffer`s
+//! both sides operate on directly (see `atomics`), handed to the worklet
+//! when it's created.
 
 use std::{cell::RefCell, sync::Arc};
 
 use easl::{audio::AudioSource, thread_sync::ThreadSharedTable};
-use js_sys::{Array, Object, Reflect, Uint8Array, Uint32Array};
+use js_sys::{
+  Array, Object, Reflect, SharedArrayBuffer, Uint8Array, Uint32Array,
+};
 use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::{
@@ -50,6 +55,16 @@ struct Output {
 thread_local! {
   static HOST: RefCell<Option<AudioHost>> = const { RefCell::new(None) };
   static OUTPUT: RefCell<Option<Output>> = const { RefCell::new(None) };
+  /// The buffers holding shared atomics' words (see `atomics`), by shared
+  /// variable index, for the worklet to operate on too.
+  static ATOMIC_BUFFERS: RefCell<Vec<(u32, SharedArrayBuffer)>> =
+    const { RefCell::new(vec![]) };
+}
+
+/// Records the buffer holding the words of the shared atomic at `index`,
+/// which the worklet gets when it starts.
+pub fn share_atomic_buffer(index: u32, buffer: SharedArrayBuffer) {
+  ATOMIC_BUFFERS.with(|buffers| buffers.borrow_mut().push((index, buffer)));
 }
 
 /// Prepares audio for a program with audio entry points: creates the audio
@@ -233,6 +248,12 @@ async fn create_worklet(
   let context = OUTPUT
     .with(|o| o.borrow().as_ref().map(|o| o.context.clone()))
     .ok_or("audio isn't configured")?;
+  let (atomic_indices, atomic_buffers) = ATOMIC_BUFFERS.with(|buffers| {
+    let buffers = buffers.borrow();
+    let indices: Vec<u32> = buffers.iter().map(|(index, _)| *index).collect();
+    let buffers: Array = buffers.iter().map(|(_, buffer)| buffer).collect();
+    (Uint32Array::from(&indices[..]), buffers)
+  });
   let (worklet_url, processor_options) = HOST.with(|h| {
     let h = h.borrow();
     let host = h.as_ref().expect("audio host configured");
@@ -242,6 +263,8 @@ async fn create_worklet(
         ("module", host.module.clone()),
         ("program", program.into()),
         ("functionNames", function_names.into()),
+        ("atomicIndices", atomic_indices.into()),
+        ("atomicBuffers", atomic_buffers.into()),
       ]),
     )
   });

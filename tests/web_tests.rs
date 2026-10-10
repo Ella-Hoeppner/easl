@@ -212,6 +212,18 @@ mod harness {
     ),
   ];
 
+  /// Tests whose page is served without the cross-origin isolation headers
+  /// every other page gets (`ISOLATION_HEADERS`): the rejection of
+  /// cross-thread atomics there, and atomics shared only with the GPU, which
+  /// need no isolation.
+  const NOT_ISOLATED: &[&str] =
+    &["web/shared_atomic_not_isolated", "buffer/cpu_atomic_ops"];
+
+  /// The headers that make a page cross-origin isolated, which programs with
+  /// atomics shared between threads need (for `SharedArrayBuffer`).
+  const ISOLATION_HEADERS: &str = "Cross-Origin-Opener-Policy: same-origin\r\n\
+    Cross-Origin-Embedder-Policy: require-corp\r\n";
+
   /// How long one test may run.
   const TEST_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -242,6 +254,8 @@ mod harness {
     source: PathBuf,
     expected: Expected,
     script: &'static [Step],
+    /// Whether its page is cross-origin isolated (see `NOT_ISOLATED`).
+    isolated: bool,
   }
 
   enum Expected {
@@ -366,6 +380,7 @@ mod harness {
           .find(|(scripted, _)| suite == "web" && *scripted == test)
           .map_or(&[][..], |(_, script)| *script);
         cases.push(Case {
+          isolated: !NOT_ISOLATED.contains(&&*name),
           name,
           source,
           expected,
@@ -420,7 +435,8 @@ mod harness {
   /// `/runtime/`, so the browser compiles the wasm once.
   struct Server {
     port: u16,
-    programs: Arc<Mutex<HashMap<usize, String>>>,
+    /// Each test's program, and whether its page is cross-origin isolated.
+    programs: Arc<Mutex<HashMap<usize, (String, bool)>>>,
     next_id: AtomicUsize,
   }
 
@@ -431,7 +447,8 @@ mod harness {
       let runtime_js = fs::read(runtime_dir.join("easl_web.js")).unwrap();
       let runtime_wasm =
         fs::read(runtime_dir.join("easl_web_bg.wasm")).unwrap();
-      let programs = Arc::new(Mutex::new(HashMap::<usize, String>::new()));
+      let programs =
+        Arc::new(Mutex::new(HashMap::<usize, (String, bool)>::new()));
       let served_programs = Arc::clone(&programs);
       let files = Arc::new((runtime_js, runtime_wasm));
       thread::spawn(move || {
@@ -452,14 +469,21 @@ mod harness {
     }
 
     /// Serves `program_js` as a new test's program, returning the URL of its
-    /// page.
-    fn add_program(&self, program_js: String) -> (usize, String) {
+    /// page, which is cross-origin isolated if `isolated`.
+    fn add_program(
+      &self,
+      program_js: String,
+      isolated: bool,
+    ) -> (usize, String) {
       let id = self.next_id.fetch_add(1, Ordering::Relaxed);
       self.programs.lock().unwrap().insert(
         id,
-        // Every runtime file the program refers to (`./easl_web.js`, the
-        // wasm, the audio worklet) is served once, from `/runtime/`.
-        program_js.replace("\"./", "\"/runtime/"),
+        (
+          // Every runtime file the program refers to (`./easl_web.js`, the
+          // wasm, the audio worklet) is served once, from `/runtime/`.
+          program_js.replace("\"./", "\"/runtime/"),
+          isolated,
+        ),
       );
       (
         id,
@@ -474,7 +498,7 @@ mod harness {
 
   fn serve(
     stream: TcpStream,
-    programs: &Mutex<HashMap<usize, String>>,
+    programs: &Mutex<HashMap<usize, (String, bool)>>,
     runtime_js: &[u8],
     runtime_wasm: &[u8],
   ) -> io::Result<()> {
@@ -483,6 +507,7 @@ mod harness {
     reader.read_line(&mut request_line)?;
     let path = request_line.split_whitespace().nth(1).unwrap_or("");
     let program_body;
+    let mut isolation_headers = ISOLATION_HEADERS;
     let (content_type, body): (&str, &[u8]) = match path {
       "/runtime/easl_web.js" => ("text/javascript", runtime_js),
       "/runtime/easl_web_bg.wasm" => ("application/wasm", runtime_wasm),
@@ -496,11 +521,16 @@ mod harness {
         let mut parts = path.trim_start_matches("/t/").splitn(2, '/');
         let id: Option<usize> = parts.next().and_then(|id| id.parse().ok());
         match (id, parts.next()) {
-          (Some(_), Some("index.html")) => ("text/html", TEST_PAGE.as_bytes()),
+          (Some(id), Some("index.html")) => {
+            if programs.lock().unwrap().get(&id).is_some_and(|p| !p.1) {
+              isolation_headers = "";
+            }
+            ("text/html", TEST_PAGE.as_bytes())
+          }
           (Some(id), Some("easl-program.js")) => {
             program_body = programs.lock().unwrap().get(&id).cloned();
             match &program_body {
-              Some(program) => ("text/javascript", program.as_bytes()),
+              Some((program, _)) => ("text/javascript", program.as_bytes()),
               None => ("", &[]),
             }
           }
@@ -519,7 +549,7 @@ mod harness {
         stream,
         "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n\
          Content-Length: {}\r\nCache-Control: no-store\r\n\
-         Connection: close\r\n\r\n",
+         {isolation_headers}Connection: close\r\n\r\n",
         body.len()
       )?;
       stream.write_all(body)
@@ -577,7 +607,7 @@ mod harness {
 
     /// Fails the run with a clear message if this Chrome has no WebGPU.
     fn check_webgpu(&self, server: &Server) {
-      let (id, url) = server.add_program(String::new());
+      let (id, url) = server.add_program(String::new(), true);
       let mut tab = Tab::open(self, &url);
       let result = tab.session.evaluate(
         "(async () => !!(navigator.gpu && \
@@ -887,7 +917,7 @@ mod harness {
     let program_js = bundle_program(&case.source)
       .map_err(|e| format!("compile error:\n{e}"))?
       .program_js;
-    let (id, url) = server.add_program(program_js);
+    let (id, url) = server.add_program(program_js, case.isolated);
     let mut tab = Tab::open(chrome, &url);
     let result = run_program(&mut tab.session, case.script);
     let pixel = match &case.expected {

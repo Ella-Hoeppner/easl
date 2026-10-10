@@ -1,1 +1,1 @@
-vertex shaders use the storage-write variable(s) x, which browsers don't support
+easl: vertex shaders use the storage-write variable(s) x, which browsers don't support

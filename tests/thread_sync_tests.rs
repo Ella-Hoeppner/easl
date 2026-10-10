@@ -592,6 +592,61 @@ fn concurrent_external_writes() {
   }
 }
 
+/// An embedder storing to one element of an `@external` array of atomics
+/// while the program's frames count themselves in another, on real
+/// threads: both sides see each other's writes, and the embedder's element
+/// writes never clobber the program's.
+#[test]
+fn concurrent_external_atomics() {
+  const EMBEDDER_WRITES: u32 = 50_000;
+  let source_path =
+    Path::new("./data/thread_sync/concurrent_external_atomics.easl");
+  let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
+  else {
+    panic!("failed to load program")
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
+  for runtime in [CpuRuntime::TreeWalking, CpuRuntime::BytecodeVm] {
+    let external = ExternalVars::new(&program);
+    let embedder = {
+      let external = Arc::clone(&external);
+      std::thread::spawn(move || {
+        for value in 1..=EMBEDDER_WRITES {
+          external
+            .write_external_var_index_raw("hits", 1, &[value])
+            .unwrap();
+        }
+        external
+          .write_external_var_raw("embedder-done", &[1])
+          .unwrap();
+      })
+    };
+    let (io, _) = run_program_entry_with_io_runtime_and_external_from_path(
+      program.clone(),
+      None,
+      CaptureIO::new(),
+      source_path,
+      runtime,
+      Some(Arc::clone(&external)),
+    )
+    .unwrap_or_else(|e| panic!("evaluation error ({runtime:?}): {e:#?}"));
+    embedder.join().unwrap();
+    let [frames, count, last_write] = io.prints.as_slice() else {
+      panic!("expected three prints, got {:?}", io.prints)
+    };
+    assert_eq!(count, frames, "{runtime:?}: lost a frame's increment");
+    assert_eq!(*last_write, format!("{EMBEDDER_WRITES}u"), "{runtime:?}");
+    let frames: u32 = frames.trim_end_matches('u').parse().unwrap();
+    assert_eq!(
+      external.read_external_var_raw("hits").unwrap(),
+      vec![frames, EMBEDDER_WRITES],
+      "{runtime:?}"
+    );
+  }
+}
+
 macro_rules! thread_sync_test {
   ($name:ident, $schedule:expr) => {
     #[test]
@@ -772,6 +827,8 @@ thread_sync_test!(
 thread_sync_test!(audio_captured_closure_hof, [Frame, AudioBatch(4), Frame]);
 thread_sync_test!(audio_nested_lambda_capture, [Frame, AudioBatch(4), Frame]);
 thread_sync_test!(audio_push_shared, [Frame, AudioBatch(2), Frame]);
+thread_sync_test!(audio_shared_atomics, [Frame, AudioBatch(2), Frame]);
+thread_sync_test!(audio_shared_atomic_overwrite, [Frame, AudioBatch(1), Frame]);
 thread_sync_test!(
   local_never_shared,
   [Frame, AudioBatch(2), Frame, AudioBatch(2)]

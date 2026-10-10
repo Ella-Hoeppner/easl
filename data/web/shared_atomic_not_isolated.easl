@@ -1,0 +1,14 @@
+; An atomic used by both the main and audio threads lives in a
+; SharedArrayBuffer, which browsers only allow on cross-origin isolated
+; pages; the harness serves this one without the isolation headers.
+(var counter: (Atomic u32))
+
+(defn voice []: f32
+  (atomic-add counter 1u)
+  0.)
+
+@cpu
+(defn main []
+  (start-audio voice)
+  (spawn-window (fn []
+                  (print (atomic-load counter)))))

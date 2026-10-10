@@ -1,0 +1,36 @@
+; Atomics on the CPU: constructed with an initial value that reaches the
+; GPU, and every atomic op, with the GPU's atomic increments visible to the
+; CPU and the CPU's to the GPU.
+
+(var counter: (Atomic u32))
+(var signed: (Atomic i32))
+(var counters: [4: (Atomic u32)])
+
+@compute
+@{workgroup-size 64}
+(defn count-up []
+  (atomic-add counter 1u)
+  (atomic-add (counters 2u) 2u)
+  (atomic-store (counters 3u) 7u))
+
+@cpu
+(defn main []
+  (= counter (Atomic 10u))
+  (dispatch-compute-shader count-up (vec3u 2u 1u 1u))
+  (print (atomic-load counter))
+  (print (atomic-add counter 5u))
+  (print (atomic-sub counter 3u))
+  (print (atomic-max counter 500u))
+  (print (atomic-min counter 7u))
+  (print (atomic-and counter 6u))
+  (print (atomic-or counter 9u))
+  (print (atomic-xor counter 3u))
+  (print (atomic-exchange counter 100u))
+  (atomic-store counter 41u)
+  (dispatch-compute-shader count-up (vec3u 1u 1u 1u))
+  (print (atomic-load counter))
+  (print (atomic-load (counters 2u)))
+  (= signed (Atomic -5i))
+  (print (atomic-max signed -9i))
+  (print (atomic-min signed -9i))
+  (print (atomic-load signed)))

@@ -2,7 +2,7 @@
 //! `Instruction`s for the VM in `crate::vm::bytecode`. The two halves only
 //! meet through `Code` / `BytecodeProgram`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
@@ -17,6 +17,7 @@ use crate::compiler::structs::AbstractStruct;
 use crate::compiler::types::{
   AbstractType, ConcreteArraySize, Type, TypeDescription, TypeState,
 };
+use crate::thread_sync::AtomicOp;
 use crate::vm::bytecode::{
   BytecodeProgram, Code, Function, HostBinding, HostBindingStorage,
   HostDispatch, HostOp, Instruction, Op, SharedVarInfo, WindowQueryKind,
@@ -249,6 +250,10 @@ pub struct BytecodeCompilationState {
   /// Thread-shared globals: name → index into `shared_vars`. Populated for
   /// both compilation modes; drives `MarkSharedDirty` emission.
   pub shared_var_indices: HashMap<Arc<str>, u16>,
+  /// The shared globals holding atomics (`SharedVarInfo::atomic`), which
+  /// live in shared words: reads load them, writes store them, and atomic
+  /// ops act on them directly.
+  pub shared_atomics: HashSet<Arc<str>>,
   /// Storage records for the shared globals, index-aligned with the sorted
   /// shared-name list; filled during global allocation, carried into
   /// `Code::shared_vars`.
@@ -303,6 +308,7 @@ impl BytecodeCompilationState {
       dynamic_array_memory: HashMap::new(),
       cell_regions: vec![],
       shared_var_indices: HashMap::new(),
+      shared_atomics: HashSet::new(),
       shared_vars: vec![],
       globals: HashMap::new(),
       global_slots: vec![],
@@ -987,6 +993,20 @@ impl BytecodeCompilationState {
     result
   }
   /// Emit a 1-slot binary op and return the result slot.
+  /// A fresh slot holding a copy of the word at `source`.
+  fn emit_word_copy(&mut self, source: u16) -> u16 {
+    let dest = self.take_stack_slot(1);
+    self.emit_word_move(source, dest);
+    dest
+  }
+  /// Copies the word at `source` to `dest`.
+  fn emit_word_move(&mut self, source: u16, dest: u16) {
+    self.push_instruction(Instruction {
+      op: Op::Move,
+      arg_positions: [source, 1, 0],
+      return_position: dest,
+    });
+  }
   pub fn emit_binary(&mut self, op: Op, arg0: u16, arg1: u16) -> u16 {
     let result = self.take_stack_slot(1);
     self.push_instruction(Instruction {
@@ -2605,6 +2625,37 @@ impl BytecodeCompilationState {
         arg_positions[0],
         arg_positions[1],
       )),
+      // Atomics: the VM runs one thread, so each op is the plain word
+      // operation on the atomic's slot (`arg_positions[0]`, which an element
+      // of an array of atomics reaches through its write-back). The
+      // read-modify-write ops return the value from before the op.
+      "atomic-load" => Some(self.emit_word_copy(arg_positions[0])),
+      "atomic-store" => {
+        self.emit_word_move(arg_positions[1], arg_positions[0]);
+        None
+      }
+      "atomic-exchange" => {
+        let old = self.emit_word_copy(arg_positions[0]);
+        self.emit_word_move(arg_positions[1], arg_positions[0]);
+        Some(old)
+      }
+      "atomic-add" | "atomic-sub" | "atomic-max" | "atomic-min"
+      | "atomic-and" | "atomic-or" | "atomic-xor" => {
+        let value_type = &arg_types[1];
+        let op = match f_name {
+          "atomic-add" => arithmetic_op_for(value_type, "+"),
+          "atomic-sub" => arithmetic_op_for(value_type, "-"),
+          "atomic-max" => max_op_for(value_type),
+          "atomic-min" => min_op_for(value_type),
+          "atomic-and" => bitwise_op_for(value_type, "&"),
+          "atomic-or" => bitwise_op_for(value_type, "|"),
+          _ => bitwise_op_for(value_type, "^"),
+        };
+        let old = self.emit_word_copy(arg_positions[0]);
+        let new = self.emit_binary(op, old, arg_positions[1]);
+        self.emit_word_move(new, arg_positions[0]);
+        Some(old)
+      }
       _ => todo!("haven't implemented builtin fn \"{f_name}\" for the VM yet"),
     }
   }
@@ -2848,7 +2899,11 @@ impl BytecodeCompilationState {
       }
       if let Some(index) = self.shared_var_indices.get(name).copied() {
         self.push_instruction(Instruction {
-          op: Op::MarkSharedDirty,
+          op: if self.shared_atomics.contains(name) {
+            Op::SharedAtomicStore
+          } else {
+            Op::MarkSharedDirty
+          },
           arg_positions: [index, 0, 0],
           return_position: 0,
         });
@@ -3708,6 +3763,57 @@ impl TypedExp {
   /// `Dyn*` opcodes rather than host ops. Returns `None` when the
   /// application isn't one of these shapes, letting the CPU interception
   /// and the generic path proceed.
+  /// An atomic op on an atomic shared between threads (or an element of an
+  /// array of them): one atomic operation on the shared word, so it can't
+  /// lose another thread's concurrent update.
+  fn try_compile_shared_atomic_op(
+    &self,
+    f_name: &str,
+    args: &[TypedExp],
+    state: &mut BytecodeCompilationState,
+  ) -> Option<Option<u16>> {
+    let operand_is_i32 = || args[1].data.unwrap_known() == Type::I32;
+    let atomic_op = AtomicOp::of_builtin(f_name, operand_is_i32)?;
+    let (name, index) = match &args.first()?.kind {
+      ExpKind::Name(name) => (name, None),
+      ExpKind::Access(Accessor::ArrayIndex(index), inner) => {
+        let ExpKind::Name(name) = &inner.kind else {
+          return None;
+        };
+        (name, Some(&**index))
+      }
+      ExpKind::Application(inner, indices) if indices.len() == 1 => {
+        let ExpKind::Name(name) = &inner.kind else {
+          return None;
+        };
+        (name, Some(&indices[0]))
+      }
+      _ => return None,
+    };
+    if !state.shared_atomics.contains(name) {
+      return None;
+    }
+    let shared_index = state.shared_var_indices[name];
+    let offset = match index {
+      Some(index) => index
+        .compile_to_bytecode(CompilePosition::Value, state)
+        .unwrap(),
+      None => state.emit_u32_constant(0),
+    };
+    let operand = args.get(1).map(|operand| {
+      operand
+        .compile_to_bytecode(CompilePosition::Value, state)
+        .unwrap()
+    });
+    let dest = (atomic_op != AtomicOp::Store).then(|| state.take_stack_slot(1));
+    let op = Op::shared_atomic(atomic_op);
+    state.push_instruction(Instruction {
+      op,
+      arg_positions: [shared_index, offset, operand.unwrap_or(offset)],
+      return_position: dest.unwrap_or(0),
+    });
+    Some(dest)
+  }
   fn try_compile_dyn_array_builtin(
     &self,
     f_name: &str,
@@ -4569,6 +4675,11 @@ impl TypedExp {
           || !state.shared_var_indices.is_empty())
         .then(|| self.argument_writes().read_and_written_globals().1);
         if let Some(result) =
+          self.try_compile_shared_atomic_op(&f_name, args, state)
+        {
+          return result;
+        }
+        if let Some(result) =
           self.try_compile_dyn_array_builtin(&f_name, args, state)
         {
           if let Some(writes) = &cpu_write_marks {
@@ -4914,6 +5025,13 @@ impl TypedExp {
       }
       Name(name) => {
         state.emit_read_check(name);
+        if state.shared_atomics.contains(name) {
+          state.push_instruction(Instruction {
+            op: Op::SharedAtomicLoad,
+            arg_positions: [state.shared_var_indices[name], 0, 0],
+            return_position: 0,
+          });
+        }
         if let Some((memory, stride)) =
           state.dynamic_array_memory.get(name).copied()
         {
