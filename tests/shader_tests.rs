@@ -1348,3 +1348,8 @@ error_test!(
   shared_atomic_in_struct_failure,
   CompileErrorKind::UnsupportedThreadSharedAtomicType("stats".into())
 );
+error_test!(
+  unbound_name_in_generic_variant_failure,
+  CompileErrorKind::UnboundName("g".into()),
+  CompileErrorKind::CouldntInferTypes
+);

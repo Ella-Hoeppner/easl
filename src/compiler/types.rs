@@ -3447,7 +3447,8 @@ impl TypeState {
                         Err(e) => errors.log(e),
                       }
                     } else {
-                      std::mem::swap(size, &mut Some(other_size.clone()))
+                      *size = Some(other_size.clone());
+                      anything_changed = true;
                     }
                   }
                   anything_changed
@@ -3478,11 +3479,13 @@ impl TypeState {
           (TypeState::OneOf(possibilities), TypeState::Known(t)) => {
             let compatible = t.filter_compatibles(&possibilities);
             if !compatible.is_empty() {
-              std::mem::swap(
-                this,
-                &mut TypeState::OneOf(compatible).simplified(),
-              );
-              true
+              // Progress only if the candidates actually narrowed: a set
+              // that stays the same (say, while an error elsewhere keeps the
+              // other side from resolving) must not keep inference looping.
+              let narrowed = TypeState::OneOf(compatible).simplified();
+              let changed = narrowed != *this;
+              *this = narrowed;
+              changed
             } else {
               errors.log(CompileError::new(
                 IncompatibleTypes(this.clone().into(), other.clone().into()),
@@ -3511,8 +3514,9 @@ impl TypeState {
                 source_trace,
                 errors,
               );
-              std::mem::swap(this, &mut narrowed);
-              true
+              let changed = narrowed != *this;
+              *this = narrowed;
+              changed
             } else {
               false
             }
@@ -4187,9 +4191,10 @@ impl<'p> MutableProgramLocalContext<'p> {
           Ok(typestate) => {
             t.mutually_constrain(typestate, source_trace, errors)
           }
-          Err(mut typestate) => {
-            t.mutually_constrain(&mut typestate, source_trace, errors)
-          }
+          // A fresh copy of a global's type (a generic unit variant gets
+          // new unification variables each time): constraining it would be
+          // discarded, so only constraining `t` is progress.
+          Err(typestate) => t.constrain(&typestate, source_trace, errors),
         },
         Err(e) => {
           errors.log(e);

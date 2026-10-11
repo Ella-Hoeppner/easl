@@ -1,0 +1,10 @@
+; An unbound name leaves part of a generic enum's payload type unknown
+; forever: inference must still stop and report it, not keep looping.
+(struct (Pair T U)
+  first: T
+  second: U)
+
+@cpu
+(defn main []
+  (let [x (if true (Some (Pair 1. (g 1.))) None)]
+    (print 1u)))
