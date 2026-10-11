@@ -1,0 +1,33 @@
+; Every level of a closure chain captures the previous closure through a
+; higher-order parameter (`g` in `wrap`), so each capture is typed as the
+; previous closure's scope struct. A closure dispatched from a frame closure
+; captures the chain at depths 2, 3, and 4; every level must run on the GPU.
+(var out: [3: f32])
+
+(defn wrap [g: (Fn [f32] f32)
+            k: f32]: (Fn [f32] f32)
+  (fn [x: f32]
+    (+ (g x) k)))
+
+(defn run-on-gpu [two: (Fn [f32] f32)
+                  three: (Fn [f32] f32)
+                  four: (Fn [f32] f32)]
+  (spawn-window
+    (fn []
+      (dispatch-compute-shader
+        (fn []
+          (= (out 0u) (two 3.))
+          (= (out 1u) (three 3.))
+          (= (out 2u) (four 3.)))
+        (vec3u 1u))
+      (print out)
+      (close-window))))
+
+@cpu
+(defn main []
+  (let [scale 2.
+        one (fn [x: f32] (* x scale))
+        two (wrap one 1.)
+        three (wrap two 10.)
+        four (wrap three 100.)]
+    (run-on-gpu two three four)))

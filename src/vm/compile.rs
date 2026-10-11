@@ -2983,15 +2983,12 @@ impl BytecodeCompilationState {
           panic!("captured scope field with non-concrete type")
         };
         match capture {
-          LiftedCapture::Closure(nested_captures) => {
-            let Type::Function(signature) = field_type else {
-              panic!("closure capture record on a non-function field")
-            };
-            let nested_struct = signature
-              .closure_scope()
-              .expect("captured closure without a scope struct");
+          LiftedCapture::Closure {
+            scope: nested_struct,
+            captures: nested_captures,
+          } => {
             self.emit_scope_capture_writes(
-              &nested_struct,
+              nested_struct,
               value_pos,
               nested_captures,
             );
@@ -3032,15 +3029,12 @@ impl BytecodeCompilationState {
         panic!("captured scope field with non-concrete type")
       };
       match capture {
-        LiftedCapture::Closure(nested_captures) => {
-          let Type::Function(signature) = field_type else {
-            panic!("closure capture record on a non-function field")
-          };
-          let nested_struct = signature
-            .closure_scope()
-            .expect("captured closure without a scope struct");
+        LiftedCapture::Closure {
+          scope: nested_struct,
+          captures: nested_captures,
+        } => {
           self.emit_audio_scope_seed_writes(
-            &nested_struct,
+            nested_struct,
             base_pos + offset,
             nested_captures,
             seeded,
@@ -3109,15 +3103,12 @@ impl BytecodeCompilationState {
         panic!("captured scope field with non-concrete type")
       };
       match capture {
-        LiftedCapture::Closure(nested_captures) => {
-          let Type::Function(signature) = field_type else {
-            panic!("closure capture record on a non-function field")
-          };
-          let nested_struct = signature
-            .closure_scope()
-            .expect("captured closure without a scope struct");
+        LiftedCapture::Closure {
+          scope: nested_struct,
+          captures: nested_captures,
+        } => {
           self.emit_scope_capture_writes(
-            &nested_struct,
+            nested_struct,
             base_pos + offset,
             nested_captures,
           );

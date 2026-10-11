@@ -1,0 +1,18 @@
+; An audio closure 4 levels deep, where every level captures the previous
+; closure through a higher-order parameter (`g` in `wrap`), so each
+; capture is typed as the previous closure's scope struct. Every level's
+; captures must reach the audio thread.
+(defn wrap [g: (Fn [f32] f32)
+            k: f32]: (Fn [f32] f32)
+  (fn [x: f32]
+    (+ (g x) k)))
+
+@cpu
+(defn main []
+  (let [scale 0.5
+        one (fn [x: f32] (* x scale))
+        two (wrap one 0.125)
+        three (wrap two 0.25)
+        four (wrap three -0.5)]
+    (start-audio four)
+    (spawn-window (fn [] (print 1u)))))

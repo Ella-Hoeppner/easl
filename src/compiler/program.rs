@@ -487,7 +487,10 @@ pub(crate) struct FnContexts {
 /// closure-entry lift passes and read by the seed/effect walkers in both
 /// runtimes. Entries are positionally aligned with the scope struct's
 /// fields: a data capture carries its lifted global's name, a captured
-/// closure carries the record of its own scope's lift. Names are minted
+/// closure carries its scope struct and the record of that scope's lift
+/// (the walkers read the scope struct from here: a closure captured
+/// through a higher-order parameter has its scope struct, not a function
+/// type, as its field type). Names are minted
 /// once, by `NameContext::gensym`, and carried here — never reconstructed
 /// by convention: underscore-concatenated capture paths aren't injective
 /// (entry field `a_b` with capture `c` collides with field `a` and
@@ -496,7 +499,10 @@ pub(crate) struct FnContexts {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LiftedCapture {
   Global(Arc<str>),
-  Closure(Arc<LiftedCaptures>),
+  Closure {
+    scope: AbstractStruct,
+    captures: Arc<LiftedCaptures>,
+  },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -510,7 +516,7 @@ impl LiftedCaptures {
     for field in &self.fields {
       match field {
         LiftedCapture::Global(name) => out.push(name.clone()),
-        LiftedCapture::Closure(sub) => sub.global_names(out),
+        LiftedCapture::Closure { captures, .. } => captures.global_names(out),
       }
     }
   }
@@ -2546,25 +2552,25 @@ impl Program {
       let AbstractType::Type(field_type) = &field.field_type else {
         panic!("captured scope field with non-concrete type")
       };
-      if let Type::Function(signature) = field_type {
-        let Some(field_ancestor) = &signature.abstract_ancestor else {
-          panic!("captured closure without an abstract ancestor")
-        };
-        if field_ancestor.read().unwrap().captured_scope.is_none() {
-          panic!(
-            "captured scope-less closure; these are unit-like and \
-             shouldn't be captured"
-          )
-        }
+      if let Some(field_ancestor) = self.captured_closure_ancestor(field_type) {
+        let scope = field_ancestor
+          .read()
+          .unwrap()
+          .captured_scope
+          .clone()
+          .expect("captured closure without a scope struct");
         let (family, nested_captures) = self.cloneify_captured_closure_family(
-          field_ancestor.clone(),
+          field_ancestor,
           target,
           entry_scope_name,
           &format!("{capture_path}{}_", field.name),
           state,
           errors,
         );
-        lifted_fields.push(LiftedCapture::Closure(nested_captures));
+        lifted_fields.push(LiftedCapture::Closure {
+          scope,
+          captures: nested_captures,
+        });
         rewrites
           .insert(field.name.clone(), CaptureRewrite::CalleeClone { family });
       } else {
@@ -2610,6 +2616,40 @@ impl Program {
         fields: lifted_fields,
       }),
     )
+  }
+  /// The closure a captured scope field holds, if it holds one: a field of
+  /// function type, or a field typed as a closure's scope struct (what a
+  /// closure passed through a higher-order parameter is captured as once
+  /// that parameter is inlined), which is that closure.
+  fn captured_closure_ancestor(
+    &self,
+    field_type: &Type,
+  ) -> Option<Arc<RwLock<AbstractFunctionSignature>>> {
+    match field_type {
+      Type::Function(signature) => {
+        let Some(ancestor) = &signature.abstract_ancestor else {
+          panic!("captured closure without an abstract ancestor")
+        };
+        if ancestor.read().unwrap().captured_scope.is_none() {
+          panic!(
+            "captured scope-less closure; these are unit-like and \
+             shouldn't be captured"
+          )
+        }
+        Some(ancestor.clone())
+      }
+      Type::Struct(s) => self
+        .abstract_functions_iter()
+        .find(|f| {
+          f.read()
+            .unwrap()
+            .captured_scope
+            .as_ref()
+            .is_some_and(|scope| scope.name.0 == s.name)
+        })
+        .cloned(),
+      _ => None,
+    }
   }
   /// Creates (and memoizes) the scope-less clones of a closure captured —
   /// directly or transitively — by a closure entry. The whole *family* is
@@ -4315,16 +4355,27 @@ impl Program {
         continue;
       };
       // The implementation's own function-type return signature (what the
-      // emitter and dispatch-baking read).
-      impl_w.expression.data.with_dereferenced_mut(|ts| {
-        if let TypeState::Known(Type::Function(sig)) = ts {
-          sig.return_type.with_dereferenced_mut(|rt| {
-            if let TypeState::Known(Type::Function(return_signature)) = rt {
-              return_signature.abstract_ancestor = Some(dispatch.clone());
-            }
-          });
-        }
-      });
+      // emitter and dispatch-baking read). Replaced rather than written
+      // through: a specialization's types can share unification variables
+      // with the function it was cloned from, so writing through them would
+      // stamp every sibling with whichever closure was stamped last.
+      if let TypeState::Known(Type::Function(mut signature)) = impl_w
+        .expression
+        .data
+        .kind
+        .with_dereferenced(TypeState::clone)
+        && let TypeState::Known(Type::Function(mut return_signature)) =
+          signature
+            .return_type
+            .kind
+            .with_dereferenced(TypeState::clone)
+      {
+        return_signature.abstract_ancestor = Some(dispatch.clone());
+        signature.return_type.kind =
+          TypeState::Known(Type::Function(return_signature));
+        impl_w.expression.data.kind =
+          TypeState::Known(Type::Function(signature));
+      }
       drop(impl_w);
       if let AbstractType::Type(Type::Function(rf)) =
         &mut f.write().unwrap().return_type

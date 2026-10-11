@@ -828,6 +828,11 @@ thread_sync_test!(audio_captured_closure_hof, [Frame, AudioBatch(4), Frame]);
 thread_sync_test!(audio_nested_lambda_capture, [Frame, AudioBatch(4), Frame]);
 thread_sync_test!(audio_push_shared, [Frame, AudioBatch(2), Frame]);
 thread_sync_test!(audio_shared_atomics, [Frame, AudioBatch(2), Frame]);
+thread_sync_test!(audio_closure_param_chain_deep, [Frame, AudioBatch(2)]);
+thread_sync_test!(
+  audio_struct_typed_captures_every_depth,
+  [Frame, AudioBatch(2)]
+);
 thread_sync_test!(audio_shared_atomic_overwrite, [Frame, AudioBatch(1), Frame]);
 thread_sync_test!(
   local_never_shared,

@@ -1,0 +1,30 @@
+; Capture lifting with every level's captured closure typed as the previous
+; closure's scope struct: `wrap` builds the closure it returns inside a
+; nested lambda (`make`), so each level's `g` is captured from an enclosing
+; closure's scope. Depths 2, 3, and 4 must all run on the GPU.
+(var out: [3: f32])
+
+(defn wrap [g: (Fn [f32] f32)
+            k: f32]: (Fn [f32] f32)
+  (let [make (fn []
+               (fn [x: f32]
+                 (+ (g x) k)))]
+    (make)))
+
+@cpu
+(defn main []
+  (let [scale 2.
+        one (fn [x: f32] (* x scale))
+        two (wrap one 1.)
+        three (wrap two 10.)
+        four (wrap three 100.)]
+    (spawn-window
+      (fn []
+        (dispatch-compute-shader
+          (fn []
+            (= (out 0u) (two 3.))
+            (= (out 1u) (three 3.))
+            (= (out 2u) (four 3.)))
+          (vec3u 1u))
+        (print out)
+        (close-window)))))

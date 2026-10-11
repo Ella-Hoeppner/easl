@@ -5777,24 +5777,16 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         continue;
       };
       match capture {
-        LiftedCapture::Closure(nested_captures) => {
-          let AbstractType::Type(Type::Function(signature)) = &field.field_type
-          else {
-            panic!("closure capture record on a non-function field")
-          };
-          let nested_struct = signature
-            .closure_scope()
-            .expect("captured closure without a scope struct");
+        LiftedCapture::Closure {
+          scope: nested_struct,
+          captures: nested_captures,
+        } => {
           // A captured closure's value is its own scope data.
           let inner = match field_value {
             Value::Fun(Function::Scoped { scope, .. }) => (**scope).clone(),
             other => other.clone(),
           };
-          self.seed_audio_scope_globals(
-            &nested_struct,
-            &inner,
-            nested_captures,
-          );
+          self.seed_audio_scope_globals(nested_struct, &inner, nested_captures);
         }
         LiftedCapture::Global(global_name) => {
           let field_value = field_value.clone();
@@ -5831,21 +5823,17 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
         continue;
       };
       match capture {
-        LiftedCapture::Closure(nested_captures) => {
-          let AbstractType::Type(Type::Function(signature)) = &field.field_type
-          else {
-            panic!("closure capture record on a non-function field")
-          };
-          let nested_struct = signature
-            .closure_scope()
-            .expect("captured closure without a scope struct");
+        LiftedCapture::Closure {
+          scope: nested_struct,
+          captures: nested_captures,
+        } => {
           // A captured closure's value is its own scope data.
           let inner = match field_value {
             Value::Fun(Function::Scoped { scope, .. }) => (**scope).clone(),
             other => other.clone(),
           };
           self.write_scope_capture_bindings(
-            &nested_struct,
+            nested_struct,
             &inner,
             nested_captures,
             written,

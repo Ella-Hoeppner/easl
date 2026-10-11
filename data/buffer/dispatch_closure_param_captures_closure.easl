@@ -1,0 +1,23 @@
+; A closure dispatched from a frame closure captures a closure that
+; arrives through a higher-order parameter (`f`, captured by the frame
+; closure first), and that closure captures another closure (`inner`),
+; which captures data. Every level must run on the GPU.
+(var out: [2: f32])
+
+(defn run-on-gpu [f: (Fn [f32] f32)]
+  (spawn-window
+    (fn []
+      (dispatch-compute-shader
+        (fn []
+          (= (out 0u) (f 3.))
+          (= (out 1u) (f 5.)))
+        (vec3u 1u))
+      (print out)
+      (close-window))))
+
+@cpu
+(defn main []
+  (let [scale 2.
+        inner (fn [x: f32] (* x scale))
+        outer (fn [x: f32] (+ (inner x) 1.))]
+    (run-on-gpu outer)))

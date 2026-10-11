@@ -534,9 +534,43 @@ cpu_test!(module_diamond);
 cpu_test!(module_use_paths);
 cpu_test!(module_overload_privacy);
 cpu_test!(module_constructor_overloads);
+cpu_test!(nested_lambda_returned_closure_chain);
 cpu_test!(def_nary_initializer);
 cpu_test!(bitwise_compound_assignment);
 cpu_test!(string_def);
 cpu_test!(heap_initializers);
 cpu_test!(closure_capture_ref_field);
 cpu_test!(ref_arg_bindings);
+
+/// `nested_lambda_returned_closure_chain` compiled and run on many fresh
+/// threads, each with new hash seeds: the specializations' closures once
+/// got a sibling's layout in some hash orders, so one run proves little.
+#[test]
+fn nested_lambda_returned_closure_chain_every_hash_order() {
+  let expected =
+    fs::read_to_string("./data/cpu/nested_lambda_returned_closure_chain.txt")
+      .unwrap();
+  for attempt in 0..24 {
+    let expected = expected.clone();
+    let output = std::thread::Builder::new()
+      .stack_size(64 << 20)
+      .spawn(move || {
+        let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(
+          Path::new("./data/cpu/nested_lambda_returned_closure_chain.easl"),
+        ) else {
+          panic!("failed to load program")
+        };
+        let errors = program.validate_raw_program(CompilerTarget::WGSL);
+        assert!(errors.is_empty(), "compile errors: {errors:#?}");
+        run_program_capturing_output_with_runtime(
+          program,
+          CpuRuntime::BytecodeVm,
+        )
+        .unwrap()
+      })
+      .unwrap()
+      .join()
+      .unwrap();
+    assert_eq!(output, expected, "attempt {attempt}: wrong VM output");
+  }
+}

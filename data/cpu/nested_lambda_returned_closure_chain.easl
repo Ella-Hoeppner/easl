@@ -1,0 +1,21 @@
+; `wrap` builds the closure it returns inside a nested lambda (`make`), and
+; is called with three different closures, so each `wrap` specialization
+; has its own `make` returning its own differently-sized closure. Each must
+; return its own closure, not a sibling's.
+(defn wrap [g: (Fn [f32] f32)
+            k: f32]: (Fn [f32] f32)
+  (let [make (fn []
+               (fn [x: f32]
+                 (+ (g x) k)))]
+    (make)))
+
+@cpu
+(defn main []
+  (let [scale 2.
+        one (fn [x: f32] (* x scale))
+        two (wrap one 1.)
+        three (wrap two 10.)
+        four (wrap three 100.)]
+    (print (two 3.))
+    (print (three 3.))
+    (print (four 3.))))
