@@ -23,6 +23,7 @@ use crate::compiler::util::compile_word;
 use crate::compiler::{
   builtins::{
     ASSIGNMENT_OPS, ATOMIC_MUTATION_OPS, address_mode_enum, filter_mode_enum,
+    short_circuit_deciding_value,
   },
   enums::AbstractEnum,
   error::{CompileError, SourceTrace},
@@ -6720,6 +6721,25 @@ fn eval_assignment_op<IO: IOManager>(
   Ok(Value::Unit)
 }
 
+/// `&&` and `||`: the second operand is evaluated only when the first
+/// doesn't decide the result; `None` for any other application.
+fn eval_short_circuit<IO: IOManager>(
+  env: &mut EvaluationEnvironment<IO>,
+  name: &str,
+  args: &mut Vec<Exp<ExpTypeInfo>>,
+) -> Option<Result<Value, EvalException>> {
+  let deciding_value = short_circuit_deciding_value(name)?;
+  let second = args.pop().unwrap();
+  let first = args.pop().unwrap();
+  Some((|| match eval(first, env)? {
+    Value::Prim(Primitive::Bool(value)) if value == deciding_value => {
+      Ok(Value::Prim(Primitive::Bool(value)))
+    }
+    Value::Prim(Primitive::Bool(_)) => eval(second, env),
+    other => panic!("`{name}` operand must be a bool, got {other:?}"),
+  })())
+}
+
 /// An atomic op on a cross-thread atomic global (or an element of an array
 /// of them), performed directly on its shared word; `None` for any other
 /// application.
@@ -7197,6 +7217,9 @@ fn eval_application<IO: IOManager>(
         return Ok(set_render_target(env, &args[0]));
       }
       if let Some(result) = eval_shared_atomic_op(env, &name, &args) {
+        return result;
+      }
+      if let Some(result) = eval_short_circuit(env, &name, &mut args) {
         return result;
       }
       let f_arc = match f_signature.abstract_ancestor {

@@ -1350,6 +1350,18 @@ pub fn assignment_function() -> AbstractFunctionSignature {
   }
 }
 
+/// For the short-circuiting builtins `&&` and `||` (and their spellings `and`
+/// and `or`), the value of the first operand that decides the result alone:
+/// `false` for `&&`, `true` for `||`. The second operand is evaluated only
+/// when the first isn't this value, on every backend.
+pub fn short_circuit_deciding_value(name: &str) -> Option<bool> {
+  match name {
+    "&&" | "and" => Some(false),
+    "||" | "or" => Some(true),
+    _ => None,
+  }
+}
+
 fn boolean_functions() -> Vec<AbstractFunctionSignature> {
   vec![
     AbstractFunctionSignature {

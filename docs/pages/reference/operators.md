@@ -78,7 +78,7 @@ Ordered comparisons, on any scalar type and element-wise on vectors.
 (&& a: bool b: bool): bool
 ```
 
-Logical and. **Associative.** `and` is an alias for `&&`.
+Logical and. **Associative.** Short-circuits: `b` is evaluated only when `a` is `true`, so `(&& (< i (array-length arr)) (== (arr i) x))` never reads out of range. `and` is an alias for `&&`.
 
 ### `||` / `or`
 
@@ -86,7 +86,7 @@ Logical and. **Associative.** `and` is an alias for `&&`.
 (|| a: bool b: bool): bool
 ```
 
-Logical or. **Associative.** `or` is an alias for `||`.
+Logical or. **Associative.** Short-circuits: `b` is evaluated only when `a` is `false`. `or` is an alias for `||`.
 
 ### `!` / `not`
 

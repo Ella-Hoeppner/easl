@@ -189,6 +189,7 @@ buffer_test!(dispatch_closure_param_captures_closure);
 buffer_test!(dispatch_closure_param_captures_closure_deep);
 buffer_test!(dispatch_struct_typed_captures_every_depth);
 buffer_test!(argument_order_gpu);
+buffer_test!(short_circuit_gpu);
 buffer_test!(for_update_runs_on_continue_gpu);
 buffer_test!(storage_ref_gpu_roundtrip);
 buffer_test!(gpu_read_outside_application);

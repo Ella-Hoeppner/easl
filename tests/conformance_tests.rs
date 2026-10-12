@@ -612,6 +612,7 @@ conformance_test!(match_enum_unit);
 conformance_test!(match_enum_data);
 conformance_test!(enum_bool_payload);
 conformance_test!(argument_order);
+conformance_test!(short_circuit);
 conformance_test!(for_update_continue);
 conformance_test!(match_vector);
 conformance_test!(swizzle_assignment);

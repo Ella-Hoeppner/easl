@@ -1,0 +1,24 @@
+; `&&` and `||` evaluate their second operand only when the first doesn't
+; decide the result, including when the second operand's `let` is lifted out
+; of the expression: every backend agrees (`order-log` records which `note`
+; calls ran: 1345). The values are pinned against expected output by the
+; cpu `short_circuit_evaluation` and buffer `short_circuit_gpu` tests.
+@local
+(var order-log: f32)
+
+(defn note [digit: f32
+            value: bool]: bool
+  (= order-log (+ (* order-log 10.) digit))
+  value)
+
+(defn f []: f32
+  (= order-log 0.)
+  (&& (note 1. false)
+      (let [x (note 2. true)]
+        x))
+  (|| (note 3. false)
+      (let [x (note 4. true)]
+        x))
+  (|| (note 5. true)
+      (if (note 6. true) true false))
+  order-log)

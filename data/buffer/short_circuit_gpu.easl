@@ -1,0 +1,40 @@
+; `&&` and `||` short-circuit in shader code too, including when the second
+; operand's statements are lifted out of the expression. `note` appends its
+; digit to `order-log`, so each log shows which operands ran.
+@local
+(var order-log: f32)
+
+(defn note [digit: f32
+            value: bool]: bool
+  (= order-log (+ (* order-log 10.) digit))
+  value)
+
+@storage-write
+(var out: [5: f32])
+
+@cpu
+(defn main []
+  (dispatch-compute-shader
+    (fn []
+      (= order-log 0.)
+      (&& (note 1. false) (note 2. true))
+      (= (out 0u) order-log)
+      (= order-log 0.)
+      (&& (note 1. false)
+          (let [x (note 2. true)]
+            x))
+      (= (out 1u) order-log)
+      (= order-log 0.)
+      (|| (note 1. true)
+          (if (note 2. true) true false))
+      (= (out 2u) order-log)
+      (= order-log 0.)
+      (|| (note 1. false)
+          (let [x (note 2. true)]
+            x))
+      (= (out 3u) order-log)
+      (= order-log 0.)
+      (&& (note 1. true) (note 2. false) (note 3. true))
+      (= (out 4u) order-log))
+    (vec3u 1u))
+  (print out))

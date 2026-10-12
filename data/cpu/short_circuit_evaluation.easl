@@ -1,0 +1,64 @@
+; `&&` and `||` evaluate their second operand only when the first doesn't
+; decide the result, whatever shape the second operand has. `note` appends
+; its digit to `order-log`, so each printed log shows which operands ran.
+@local
+(var order-log: u32)
+
+(defn note [digit: u32
+            value: bool]: bool
+  (= order-log (+ (* order-log 10u) digit))
+  value)
+
+(defn early-return [c: bool]: u32
+  (if (&& c (return 7u)) 1u 2u))
+
+@cpu
+(defn main []
+  (= order-log 0u)
+  (print (&& (note 1u false) (note 2u true)))
+  (print order-log)
+  (= order-log 0u)
+  (print (&& (note 1u true) (note 2u false)))
+  (print order-log)
+  (= order-log 0u)
+  (print (|| (note 1u true) (note 2u false)))
+  (print order-log)
+  (= order-log 0u)
+  (print (|| (note 1u false) (note 2u true)))
+  (print order-log)
+  ; second operands that need statements lifted out of them
+  (= order-log 0u)
+  (print (&& (note 1u false)
+             (let [x (note 2u true)]
+               x)))
+  (print order-log)
+  (= order-log 0u)
+  (print (|| (note 1u true)
+             (if (note 2u true) true false)))
+  (print order-log)
+  (= order-log 0u)
+  (print (|| (note 1u false)
+             (let [x (note 2u true)]
+               x)))
+  (print order-log)
+  ; n-ary, and the `and`/`or` spellings
+  (= order-log 0u)
+  (print (&& (note 1u true) (note 2u false) (note 3u true)))
+  (print order-log)
+  (= order-log 0u)
+  (print (and (note 1u false) (note 2u true)))
+  (print (or (note 3u true) (note 4u true)))
+  (print order-log)
+  ; statement position
+  (= order-log 0u)
+  (&& (note 1u false) (note 2u true))
+  (|| (note 3u true) (note 4u true))
+  (print order-log)
+  ; a guard keeps an out-of-range index from being read
+  (let [arr (into-dynamic-array [1u 2u 3u])
+        i 5u]
+    (print (&& (< i (array-length arr)) (== (arr i) 3u)))
+    (print (|| (>= i (array-length arr)) (== (arr i) 3u))))
+  ; a `return` in the second operand runs only when it's reached
+  (print (early-return false))
+  (print (early-return true)))

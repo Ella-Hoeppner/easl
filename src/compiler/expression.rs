@@ -22,6 +22,7 @@ use crate::{
       ASSIGNMENT_OPS, INFIX_OPS, assignment_function,
       builtin_vec_constructor_type, get_builtin_struct,
       is_builtin_mat_constructor_type, rename_builtin_fn,
+      short_circuit_deciding_value,
     },
     effects::EffectType,
     entry::IOAttributes,
@@ -6093,6 +6094,10 @@ impl TypedExp {
                 return Ok(true);
               }
             }
+            if exp.short_circuit_to_match() {
+              changed = true;
+              return Ok(true);
+            }
             match &mut exp.kind {
               Application(_, _)
               | ArrayLiteral(_)
@@ -6669,6 +6674,53 @@ impl TypedExp {
         })
         .unwrap();
     }
+  }
+  /// Rewrites `(&& a b)` into `(match a true b false false)` (and `(|| a b)`
+  /// into `(match a true true false b)`) when `b` is about to have
+  /// statements lifted out of it, which would run them before `a` decides
+  /// whether `b` is evaluated at all. Otherwise the application stays, and
+  /// every backend short-circuits it. Returns whether it rewrote.
+  fn short_circuit_to_match(&mut self) -> bool {
+    let Application(f, args) = &self.kind else {
+      return false;
+    };
+    let Name(f_name) = &f.kind else {
+      return false;
+    };
+    let Some(deciding_value) = short_circuit_deciding_value(f_name) else {
+      return false;
+    };
+    if !matches!(
+      args[1].kind,
+      Block(_)
+        | Match(_, _)
+        | Let(_, _)
+        | Return(_)
+        | Discard
+        | Continue
+        | Break
+    ) {
+      return false;
+    }
+    take(self, |exp| {
+      let b = ExpBuilder::at(&exp.source_trace);
+      let Application(_, args) = exp.kind else {
+        unreachable!()
+      };
+      let [first, second]: [TypedExp; 2] =
+        args.try_into().unwrap_or_else(|_| {
+          panic!("a short-circuiting builtin takes exactly two arguments")
+        });
+      let deciding_arm = (b.bool(deciding_value), b.bool(deciding_value));
+      let other_arm = (b.bool(!deciding_value), second);
+      let arms = if deciding_value {
+        vec![deciding_arm, other_arm]
+      } else {
+        vec![other_arm, deciding_arm]
+      };
+      b.with_data(Match(Box::new(first), arms), exp.data)
+    });
+    true
   }
   pub fn throw_away_inner_values_in_blocks(&mut self, program: &Program) {
     self

@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
 
+use crate::compiler::builtins::short_circuit_deciding_value;
 use crate::compiler::enums::Enum;
 use crate::compiler::expression::{Accessor, ExpKind, Number, TypedExp};
 use crate::compiler::functions::{
@@ -2103,16 +2104,6 @@ impl BytecodeCompilationState {
       }
 
       // --- Boolean ---
-      "&&" | "and" => Some(self.emit_binary(
-        Op::LogicalAnd,
-        arg_positions[0],
-        arg_positions[1],
-      )),
-      "||" | "or" => Some(self.emit_binary(
-        Op::LogicalOr,
-        arg_positions[0],
-        arg_positions[1],
-      )),
       "!" | "not" => Some(self.emit_unary(Op::LogicalNot, arg_positions[0])),
 
       // --- Bitwise ---
@@ -3748,6 +3739,47 @@ fn enum_pattern_variant_index(
 // =============================================================================
 
 impl TypedExp {
+  /// `&&` and `||`: the second operand is compiled behind a jump, so it runs
+  /// only when the first operand doesn't decide the result.
+  fn try_compile_short_circuit(
+    &self,
+    f_name: &str,
+    args: &[TypedExp],
+    state: &mut BytecodeCompilationState,
+  ) -> Option<Option<u16>> {
+    let deciding_value = short_circuit_deciding_value(f_name)?;
+    let result = state.take_stack_slot(1);
+    let first = args[0]
+      .compile_to_bytecode(CompilePosition::Value, state)
+      .unwrap();
+    state.push_instruction(Instruction {
+      op: Op::Move,
+      arg_positions: [first, 1, 0],
+      return_position: result,
+    });
+    let skip_jump = state.instructions.len();
+    state.push_instruction(Instruction {
+      op: if deciding_value {
+        Op::JumpWhen
+      } else {
+        Op::JumpWhenNot
+      },
+      arg_positions: [result, 0, 0],
+      return_position: 0,
+    });
+    let second = args[1]
+      .compile_to_bytecode(CompilePosition::Value, state)
+      .unwrap();
+    state.push_instruction(Instruction {
+      op: Op::Move,
+      arg_positions: [second, 1, 0],
+      return_position: result,
+    });
+    let after = state.instructions.len() as u32;
+    state.instructions[skip_jump].arg_positions[1] = (after >> 16) as u16;
+    state.instructions[skip_jump].arg_positions[2] = after as u16;
+    Some(Some(result))
+  }
   /// CPU-runtime-mode lowering for builtins the pure VM can't express: GPU
   /// orchestration, printing, windowing, and dynamic-array access. Returns
   /// `None` when `f_name` isn't such a builtin, letting the generic path
@@ -4672,6 +4704,11 @@ impl TypedExp {
         let cpu_write_marks: Option<Vec<Arc<str>>> = (state.cpu_mode
           || !state.shared_var_indices.is_empty())
         .then(|| self.argument_writes().read_and_written_globals().1);
+        if let Some(result) =
+          self.try_compile_short_circuit(&f_name, args, state)
+        {
+          return result;
+        }
         if let Some(result) =
           self.try_compile_shared_atomic_op(&f_name, args, state)
         {
