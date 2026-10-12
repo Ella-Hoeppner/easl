@@ -1,0 +1,23 @@
+; An audio closure that builds a closure capturing its own captured
+; closure: the nested closure becomes a lifted clone family calling the
+; captured closure's audio clone, both directly and through a higher-order
+; function. Each sample advances the voice's own `phase`, then returns
+; `(h (h phase))` with `h(x) = 0.5x + 0.25`.
+(defn make-scale [k: f32]: (Fn [f32] f32)
+  (fn [x] (* x k)))
+
+(defn apply-twice [f: (Fn [f32] f32)
+                   x: f32]: f32
+  (f (f x)))
+
+(defn make-voice [g: (Fn [f32] f32)]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (= phase (+ phase 0.125))
+      (let [h (fn [x] (+ (g x) 0.25))]
+        (apply-twice h phase)))))
+
+@cpu
+(defn main []
+  (start-audio (make-voice (make-scale 0.5)))
+  (spawn-window (fn [] ())))

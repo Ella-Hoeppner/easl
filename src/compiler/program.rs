@@ -2,6 +2,7 @@ use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use std::hash::Hash;
+use std::mem;
 use std::sync::{Arc, RwLock};
 
 use fsexp::{Ast, document::Document, syntax::EncloserOrOperator};
@@ -646,6 +647,11 @@ struct ClosureLiftState {
   /// `cloneify_closure_receiver`).
   receiver_clones:
     HashMap<(Arc<str>, usize, (Arc<str>, String)), CapturedClosureClone>,
+  /// (Nested closure's scope-struct name, its captured families' keys) →
+  /// the (memoized) clone family of a closure constructed inside a lifted
+  /// body whose every capture is a lifted closure (see
+  /// `cloneify_nested_closure_family`).
+  nested_clones: HashMap<(Arc<str>, String), ClosureFamily>,
   new_functions: Vec<Arc<RwLock<AbstractFunctionSignature>>>,
   /// Entry-fn-name → lifted-capture record, installed into the Program's
   /// registry at the end of the pass.
@@ -2240,9 +2246,13 @@ impl Program {
   /// own global, and each call forwarding a captured *closure* (its
   /// trailing `scope.field` arg) is repointed to the callee's GPU clone
   /// with the scope arg dropped — the clone reads its own lifted globals
-  /// instead (see `cloneify_captured_closure_family`). Reference-ownership
-  /// chains rooted at the scope become owned — naga doesn't allow
-  /// storage-space pointers, and scopes are read-only on the GPU.
+  /// instead (see `cloneify_captured_closure_family`). A closure built in
+  /// the body whose every capture is a lifted closure becomes a lifted
+  /// family itself (`cloneify_nested_closure_family`): a `let` binding of
+  /// it is dropped and its name denotes the family, like a captured
+  /// closure's field does. Reference-ownership chains rooted at the scope
+  /// become owned — naga doesn't allow storage-space pointers, and scopes
+  /// are read-only on the GPU.
   fn rewrite_dispatched_scope_body(
     &self,
     body: &mut TypedExp,
@@ -2260,39 +2270,126 @@ impl Program {
         CaptureRewrite::CalleeClone { .. } => None,
       })
       .collect();
+    let scope_field_name = |exp: &TypedExp| -> Option<Arc<str>> {
+      if let Some(scope_name) = scope_name
+        && let ExpKind::Access(Accessor::Field(field_name), inner) = &exp.kind
+        && matches!(&inner.kind, ExpKind::Name(name) if name == scope_name)
+      {
+        Some(field_name.clone())
+      } else {
+        None
+      }
+    };
+    // The ways an expression can denote a lifted closure: a field of the
+    // (removed) scope param, or a name in `families` — inside a receiver
+    // clone the (removed) closure-valued param, or a lifted nested
+    // closure's binding.
+    let denoted_family = |exp: &TypedExp,
+                          families: &HashMap<Arc<str>, ClosureFamily>|
+     -> Option<(Arc<str>, ClosureFamily)> {
+      if let Some(field_name) = scope_field_name(exp) {
+        if let Some(CaptureRewrite::CalleeClone { family }) =
+          rewrites.get(&field_name)
+        {
+          return Some((field_name, family.clone()));
+        }
+        return None;
+      }
+      if let ExpKind::Name(name) = &exp.kind
+        && let Some(family) = families.get(name)
+      {
+        return Some((name.clone(), family.clone()));
+      }
+      None
+    };
+    // A closure construction whose every capture denotes a lifted closure:
+    // the closure, and the denoted captures in scope-field order.
+    let lifted_nested_closure =
+      |exp: &TypedExp,
+       families: &HashMap<Arc<str>, ClosureFamily>|
+       -> Option<(
+        Arc<RwLock<AbstractFunctionSignature>>,
+        Vec<(Arc<str>, ClosureFamily)>,
+      )> {
+        let closure = exp.constructed_closure()?;
+        let ExpKind::Application(_, args) = &exp.kind else {
+          unreachable!()
+        };
+        let field_count = closure
+          .read()
+          .unwrap()
+          .captured_scope
+          .as_ref()
+          .map_or(0, |scope| scope.fields.len());
+        if args.len() != field_count {
+          return None;
+        }
+        let captures = args
+          .iter()
+          .map(|arg| denoted_family(arg, families))
+          .collect::<Option<Vec<_>>>()?;
+        Some((closure, captures))
+      };
+    let mut families: HashMap<Arc<str>, ClosureFamily> = closure_params.clone();
+    // Each placeholder name standing for a lifted nested closure built as
+    // an argument, with the captured closure errors name it by.
+    let mut placeholder_display_names: HashMap<Arc<str>, Arc<str>> =
+      HashMap::new();
     body
       .walk_mut(&mut |e| {
-        let scope_field_name = |exp: &TypedExp| -> Option<Arc<str>> {
-          if let Some(scope_name) = scope_name
-            && let ExpKind::Access(Accessor::Field(field_name), inner) =
-              &exp.kind
-            && matches!(&inner.kind, ExpKind::Name(name) if name == scope_name)
-          {
-            Some(field_name.clone())
-          } else {
-            None
-          }
-        };
-        // Both ways an expression can denote a lifted captured closure:
-        // a field of the (removed) scope param, or — inside a receiver
-        // clone — the bare name of the (removed) closure-valued param.
-        let closure_family_of =
-          |exp: &TypedExp| -> Option<(Arc<str>, ClosureFamily)> {
-            if let Some(field_name) = scope_field_name(exp) {
-              if let Some(CaptureRewrite::CalleeClone { family }) =
-                rewrites.get(&field_name)
-              {
-                return Some((field_name, family.clone()));
+        if let ExpKind::Let(bindings, _) = &mut e.kind {
+          // In order: a later binding can capture an earlier lifted one.
+          let mut kept = Vec::with_capacity(bindings.len());
+          for binding in mem::take(bindings) {
+            match lifted_nested_closure(&binding.3, &families) {
+              Some((closure, captures)) => {
+                let family = self.cloneify_nested_closure_family(
+                  closure,
+                  captures.into_iter().map(|(_, family)| family).collect(),
+                  target,
+                  state,
+                  errors,
+                );
+                families.insert(binding.0, family);
               }
-              return None;
+              None => kept.push(binding),
             }
-            if let ExpKind::Name(name) = &exp.kind
-              && let Some(family) = closure_params.get(name)
-            {
-              return Some((name.clone(), family.clone()));
-            }
-            None
-          };
+          }
+          let all_lifted = kept.is_empty();
+          *bindings = kept;
+          if all_lifted {
+            take(e, |e| {
+              let ExpKind::Let(_, body) = e.kind else {
+                unreachable!()
+              };
+              *body
+            });
+          }
+        }
+        if let ExpKind::Application(_, args) = &mut e.kind {
+          for arg in args.iter_mut() {
+            let Some((closure, captures)) =
+              lifted_nested_closure(arg, &families)
+            else {
+              continue;
+            };
+            let display_name = captures[0].0.clone();
+            let family = self.cloneify_nested_closure_family(
+              closure,
+              captures.into_iter().map(|(_, family)| family).collect(),
+              target,
+              state,
+              errors,
+            );
+            let placeholder: Arc<str> =
+              self.names.write().unwrap().gensym("lifted_closure");
+            *arg = ExpBuilder::at(&arg.source_trace)
+              .with_data(ExpKind::Name(placeholder.clone()), arg.data.clone());
+            families.insert(placeholder.clone(), family);
+            placeholder_display_names.insert(placeholder, display_name);
+          }
+        }
+        let closure_family_of = |exp: &TypedExp| denoted_family(exp, &families);
         let scope_rooted = |exp: &TypedExp| {
           let mut root = exp;
           loop {
@@ -2412,10 +2509,12 @@ impl Program {
             ),
           }
         } else if let ExpKind::Name(name) = &e.kind
-          && closure_params.contains_key(name)
+          && families.contains_key(name)
         {
+          let display_name =
+            placeholder_display_names.get(name).unwrap_or(name);
           errors.log(CompileError::new(
-            CapturedClosureUsedAsValue(name.to_string()),
+            CapturedClosureUsedAsValue(display_name.to_string()),
             e.source_trace.clone(),
           ));
           return Ok(false);
@@ -2784,36 +2883,8 @@ impl Program {
       state,
       errors,
     );
-    let mut members: Vec<Arc<RwLock<AbstractFunctionSignature>>> = vec![];
-    for f in self.abstract_functions_iter() {
-      let member = f.read().unwrap();
-      if let Some((AbstractType::AbstractStruct(s), _)) =
-        member.arg_types.last()
-        && s.name.0 == scope_struct_name
-        && matches!(
-          member.implementation,
-          FunctionImplementationKind::Composite(_)
-        )
-        // A function-typed arg with no inlined ancestor means this member
-        // never went through higher-order-argument inlining, so nothing
-        // can call it anymore (specializations keep the — unit-like,
-        // ancestor-carrying — arg entry in their signatures).
-        && !member.arg_types[..member.arg_types.len() - 1].iter().any(
-          |(t, _)| {
-            matches!(
-              t,
-              AbstractType::Type(Type::Function(f))
-                if f.abstract_ancestor.is_none()
-            )
-          },
-        )
-      {
-        drop(member);
-        members.push(f.clone());
-      }
-    }
     let mut clones: HashMap<Arc<str>, CapturedClosureClone> = HashMap::new();
-    for member in members {
+    for member in self.closure_family_members(&scope_struct_name) {
       let member_name = member.read().unwrap().name.clone();
       if clones.contains_key(&member_name) {
         continue;
@@ -2853,6 +2924,118 @@ impl Program {
     );
     state.clones.insert(memo_key, result.clone());
     result
+  }
+  /// The members of the closure family whose scope struct is
+  /// `scope_struct_name`: the closure's definition and its higher-order
+  /// specializations, i.e. every composite function whose trailing
+  /// parameter is that scope struct.
+  fn closure_family_members(
+    &self,
+    scope_struct_name: &Arc<str>,
+  ) -> Vec<Arc<RwLock<AbstractFunctionSignature>>> {
+    let mut members = vec![];
+    for f in self.abstract_functions_iter() {
+      let member = f.read().unwrap();
+      if let Some((AbstractType::AbstractStruct(s), _)) =
+        member.arg_types.last()
+        && s.name.0 == *scope_struct_name
+        && matches!(
+          member.implementation,
+          FunctionImplementationKind::Composite(_)
+        )
+        // A function-typed arg with no inlined ancestor means this member
+        // never went through higher-order-argument inlining, so nothing
+        // can call it anymore (specializations keep the — unit-like,
+        // ancestor-carrying — arg entry in their signatures).
+        && !member.arg_types[..member.arg_types.len() - 1].iter().any(
+          |(t, _)| {
+            matches!(
+              t,
+              AbstractType::Type(Type::Function(f))
+                if f.abstract_ancestor.is_none()
+            )
+          },
+        )
+      {
+        drop(member);
+        members.push(f.clone());
+      }
+    }
+    members
+  }
+  /// The clone family of a closure constructed *inside* a lifted body
+  /// (`(let [h (fn [x] (g x))] ...)` in a dispatched or audio closure
+  /// that captures `g`) whose every capture is a lifted closure:
+  /// `field_families[i]` is the family of the closure its `i`th scope
+  /// field captures. Such a closure needs no state of its own, so like a
+  /// captured closure it becomes scope-less clones of its family members
+  /// whose bodies call the captured closures' clones; the construction
+  /// then denotes this family instead of building a value. Memoized per
+  /// (closure, captured families).
+  fn cloneify_nested_closure_family(
+    &self,
+    closure: Arc<RwLock<AbstractFunctionSignature>>,
+    field_families: Vec<ClosureFamily>,
+    target: ClosureLiftTarget,
+    state: &mut ClosureLiftState,
+    errors: &mut ErrorLog,
+  ) -> ClosureFamily {
+    let (closure_name, scope_struct) = {
+      let closure = closure.read().unwrap();
+      let Some(scope_struct) = closure.captured_scope.clone() else {
+        panic!("cloneify_nested_closure_family called on a scope-less closure")
+      };
+      (closure.name.clone(), scope_struct)
+    };
+    let scope_struct_name = scope_struct.name.0.clone();
+    let memo_key = (
+      scope_struct_name.clone(),
+      format!(
+        "nested:{}",
+        field_families
+          .iter()
+          .map(|family| format!("{}/{}", family.key.0, family.key.1))
+          .collect::<Vec<_>>()
+          .join(";")
+      ),
+    );
+    if let Some(existing) = state.nested_clones.get(&memo_key) {
+      return existing.clone();
+    }
+    let rewrites: HashMap<Arc<str>, CaptureRewrite> = scope_struct
+      .fields
+      .iter()
+      .zip(field_families)
+      .map(|(field, family)| {
+        (field.name.clone(), CaptureRewrite::CalleeClone { family })
+      })
+      .collect();
+    let mut clones: HashMap<Arc<str>, CapturedClosureClone> = HashMap::new();
+    let mut members = self.closure_family_members(&scope_struct_name);
+    members.push(closure);
+    for member in members {
+      let member_name = member.read().unwrap().name.clone();
+      if clones.contains_key(&member_name) {
+        continue;
+      }
+      let clone = self.cloneify_captured_closure_member(
+        member,
+        &scope_struct_name,
+        &rewrites,
+        target,
+        "nested_",
+        state,
+        errors,
+      );
+      clones.insert(member_name, clone);
+    }
+    debug_assert!(clones.contains_key(&closure_name));
+    let family = ClosureFamily {
+      key: memo_key.clone(),
+      clones: Arc::new(clones),
+    };
+    state.nested_clones.insert(memo_key, family.clone());
+    family
   }
   /// Clones one member of a captured closure's family: trailing scope
   /// parameter dropped, body rewritten via `rewrites` to read the shared
@@ -3675,6 +3858,7 @@ impl Program {
       new_vars: vec![],
       clones: HashMap::new(),
       receiver_clones: HashMap::new(),
+      nested_clones: HashMap::new(),
       new_functions: vec![],
       lifted_captures: vec![],
     };
@@ -4040,6 +4224,7 @@ impl Program {
       new_vars: vec![],
       clones: HashMap::new(),
       receiver_clones: HashMap::new(),
+      nested_clones: HashMap::new(),
       new_functions: vec![],
       lifted_captures: vec![],
     };

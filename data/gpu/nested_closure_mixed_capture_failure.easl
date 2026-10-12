@@ -1,0 +1,24 @@
+; A closure built inside a dispatched closure that captures both a captured
+; closure and a per-invocation value. Lifting the nested closure (as when it
+; captures nothing but captured closures) would need a per-invocation scope
+; holding just the data, which isn't supported: a clean error.
+(defn make-scale [k: f32]: (Fn [f32] f32)
+  (fn [x] (* x k)))
+
+(defn apply-twice [f: (Fn [f32] f32)
+                   x: f32]: f32
+  (f (f x)))
+
+@storage-write
+(var out: [2: f32])
+
+@cpu
+(defn main []
+  (let [g (make-scale 2.)]
+    (dispatch-compute-shader
+      (fn []
+        (let [t (out 1u)
+              h (fn [x] (+ (g x) t))]
+          (= (out 0u) (apply-twice h 1.))))
+      (vec3u 1u))
+    (print out)))

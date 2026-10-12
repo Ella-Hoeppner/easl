@@ -6913,4 +6913,34 @@ impl TypedExp {
       _ => false,
     }
   }
+  /// The closure this expression constructs, when it's a closure's scope
+  /// construction: what `extract_inner_functions` turns a capturing lambda
+  /// into, an application of the scope struct's constructor whose own type
+  /// is the closure's function type.
+  pub fn constructed_closure(
+    &self,
+  ) -> Option<Arc<RwLock<AbstractFunctionSignature>>> {
+    let Application(f, _) = &self.kind else {
+      return None;
+    };
+    let applies_struct_constructor = f.data.kind.with_dereferenced(|t| {
+      matches!(t, TypeState::Known(Type::Function(signature))
+      if signature.abstract_ancestor.as_ref().is_some_and(|ancestor| {
+        matches!(
+          ancestor.read().unwrap().implementation,
+          FunctionImplementationKind::StructConstructor
+        )
+      }))
+    });
+    if !applies_struct_constructor {
+      return None;
+    }
+    self.data.kind.with_dereferenced(|t| match t {
+      TypeState::Known(Type::Function(signature)) => signature
+        .abstract_ancestor
+        .clone()
+        .filter(|ancestor| ancestor.read().unwrap().captured_scope.is_some()),
+      _ => None,
+    })
+  }
 }

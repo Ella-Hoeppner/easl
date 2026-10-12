@@ -1,0 +1,51 @@
+; Closures built inside a dispatched closure that capture the dispatched
+; closure's own captured closures: the nested closures become lifted clone
+; families themselves (their captures are already lifted), whether they're
+; called directly, passed to higher-order functions (directly or through a
+; chain), capture several captured closures or another nested closure, or
+; are written inline as a higher-order argument. `run-on-gpu` is the shape
+; of a helper dispatching a closure parameter whose body builds a nested
+; closure capturing that parameter's captured closure.
+(defn make-scale [k: f32]: (Fn [f32] f32)
+  (fn [x] (* x k)))
+
+(defn make-offset [k: f32]: (Fn [f32] f32)
+  (fn [x] (+ x k)))
+
+(defn apply-twice [f: (Fn [f32] f32)
+                   x: f32]: f32
+  (f (f x)))
+
+(defn apply-twice-via [f: (Fn [f32] f32)
+                       x: f32]: f32
+  (apply-twice f x))
+
+@storage-write
+(var out: [8: f32])
+
+(defn run-on-gpu [f: (Fn [f32] f32)
+                  slot: u32]
+  (dispatch-compute-shader (fn [] (= (out slot) (f 1.)))
+                           (vec3u 1u)))
+
+@cpu
+(defn main []
+  (let [g (make-scale 2.)
+        o (make-offset 10.)]
+    (dispatch-compute-shader
+      (fn []
+        (let [h (fn [x] (+ (g x) 1.))
+              both (fn [x] (o (g x)))
+              outer (fn [x] (h (h x)))]
+          (= (out 0u) (h 3.))
+          (= (out 1u) (apply-twice h 0.))
+          (= (out 2u) (both 1.))
+          (= (out 3u) (outer 1.))
+          (= (out 4u) (apply-twice-via both 0.))
+          (= (out 5u) (apply-twice (fn [x] (g (g x))) 1.))))
+      (vec3u 1u))
+    (run-on-gpu (fn [x]
+                  (let [field (fn [p] (g (+ p 1.)))]
+                    (+ (field x) (apply-twice field x))))
+                6u)
+    (print out)))

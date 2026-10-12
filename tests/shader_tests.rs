@@ -1051,6 +1051,18 @@ error_test!(
   CompileErrorKind::CopiedStatefulClosure("c".into())
 );
 error_test!(
+  copied_stateful_closure_frame_closure_failure,
+  CompileErrorKind::CopiedStatefulClosure("osc".into())
+);
+error_test!(
+  copied_stateful_closure_audio_entry_failure,
+  CompileErrorKind::CopiedStatefulClosure("osc".into())
+);
+error_test!(
+  nested_closure_mixed_capture_failure,
+  CompileErrorKind::CapturedClosureUsedAsValue("g".into())
+);
+error_test!(
   fn_value_dynamic_start_audio_failure,
   CompileErrorKind::DynamicFunctionValueNotAllowedHere("start-audio".into())
 );

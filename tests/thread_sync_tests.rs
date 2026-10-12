@@ -799,6 +799,10 @@ thread_sync_test!(
 );
 thread_sync_test!(audio_ref_element_write, [Frame, AudioBatch(4), Frame]);
 thread_sync_test!(
+  audio_nested_closure_capture,
+  [Frame, AudioBatch(4), AudioBatch(4)]
+);
+thread_sync_test!(
   audio_match_voice,
   [Frame, AudioBatch(4), AudioBatch(4), Frame, AudioBatch(4)]
 );

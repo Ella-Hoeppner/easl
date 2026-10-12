@@ -222,11 +222,12 @@ pub enum CompileErrorKind {
   )]
   EscapingClosureCapturesRefArg(String),
   #[error(
-    "the captured closure `{0}` can only be called or passed to a \
-     function here — inside a dispatched or audio closure, a captured \
-     closure's state is lifted into per-capture globals, so the closure \
-     no longer exists as a value that can be stored or built into a data \
-     structure"
+    "the captured closure `{0}` can only be called, passed to a function, \
+     or captured by a closure that captures nothing but captured closures \
+     here — inside a dispatched or audio closure, a captured closure's \
+     state is lifted into per-capture globals, so the closure no longer \
+     exists as a value that can be stored, built into a data structure, or \
+     captured alongside other values"
   )]
   CapturedClosureUsedAsValue(String),
   #[error("Match expression missing scrutinee")]

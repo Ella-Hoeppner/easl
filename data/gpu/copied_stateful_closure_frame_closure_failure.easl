@@ -1,0 +1,15 @@
+; A frame closure runs every frame and keeps its captured variables, so a
+; closure it builds capturing a stateful closure copies one that stays in
+; use: under copy semantics the oscillator would never advance.
+(defn create-counter [increment: f32]: (Fn [] f32)
+  (let [@var phase 0.]
+    (fn []
+      (= phase (% (+ phase increment) 1.))
+      phase)))
+
+@cpu
+(defn main []
+  (let [osc (create-counter 0.125)]
+    (spawn-window (fn []
+                    (let [h (fn [] (osc))]
+                      (print (h)))))))

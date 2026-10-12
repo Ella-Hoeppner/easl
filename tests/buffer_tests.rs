@@ -186,6 +186,7 @@ buffer_test!(ref_element_write_back_keeps_gpu_writes);
 buffer_test!(overloaded_entry_ascription);
 buffer_test!(dispatch_captured_closure_unused);
 buffer_test!(dispatch_closure_param_captures_closure);
+buffer_test!(nested_closure_captures_gpu);
 buffer_test!(dispatch_closure_param_captures_closure_deep);
 buffer_test!(dispatch_struct_typed_captures_every_depth);
 buffer_test!(argument_order_gpu);

@@ -5996,6 +5996,13 @@ struct CopyCheck<'a, 'p> {
   escapes: HashMap<Arc<str>, BTreeSet<usize>>,
   reported: HashSet<(String, Arc<str>)>,
   errors: Vec<CompileError>,
+  /// The implementations (by address) of closures a host builtin keeps and
+  /// runs repeatedly (every frame, every sample, every dispatch). Their
+  /// captured variables persist across runs while their bodies' own
+  /// bindings are fresh each run, so a body is walked as if inside a loop:
+  /// copying a captured stateful closure there copies one that stays in
+  /// use.
+  host_invoked: HashSet<usize>,
 }
 
 /// Per-body state of the copy check's walk.
@@ -6009,6 +6016,9 @@ struct CopyWalk<'b> {
   variables: HashSet<Arc<str>>,
   /// Names declared inside each enclosing loop, innermost last.
   loops: Vec<HashSet<Arc<str>>>,
+  /// The scope parameter, when the body is a closure's: its fields are
+  /// the closure's captured variables.
+  scope_param: Option<Arc<str>>,
   instance: Option<usize>,
   slots: Option<&'b [Skel]>,
   changed: bool,
@@ -6343,7 +6353,14 @@ impl<'a, 'p> CopyCheck<'a, 'p> {
     }) || repeated
       || is_global;
     if still_used {
-      self.error(&name, exp);
+      // A captured variable is named by its field of the scope parameter.
+      let display_name = match unaliased[name.len()..].strip_prefix('.') {
+        Some(fields) if walk.scope_param.as_ref() == Some(&name) => {
+          fields.split('.').next().unwrap_or(fields).into()
+        }
+        _ => name.clone(),
+      };
+      self.error(&display_name, exp);
     }
   }
   fn error(&mut self, name: &Arc<str>, exp: &TypedExp) {
@@ -6717,12 +6734,29 @@ impl<'a, 'p> CopyCheck<'a, 'p> {
     let slots = checked
       .instance
       .and_then(|i| self.analysis.map(|a| a.instances[i].slots.as_slice()));
+    let host_invoked = matches!(
+      &checked.function.read().unwrap().implementation,
+      FunctionImplementationKind::Composite(implementation)
+        if self.host_invoked.contains(&(Arc::as_ptr(implementation) as usize))
+    );
     let mut walk = CopyWalk {
       function_name: checked.name.clone(),
       reference_params,
       aliases: HashMap::new(),
       variables: arg_names.iter().map(|(n, _)| n.clone()).collect(),
-      loops: vec![],
+      loops: if host_invoked {
+        vec![HashSet::new()]
+      } else {
+        vec![]
+      },
+      scope_param: checked
+        .function
+        .read()
+        .unwrap()
+        .captured_scope
+        .is_some()
+        .then(|| arg_names.last().map(|(n, _)| n.clone()))
+        .flatten(),
       instance: checked.instance,
       slots,
       changed: false,
@@ -6743,6 +6777,38 @@ impl<'a, 'p> CopyCheck<'a, 'p> {
 }
 
 impl Program {
+  /// The implementations (by address) of the closures passed to a host
+  /// builtin (`HOST_BUILTINS`), which runs them repeatedly.
+  fn host_invoked_closures(&self) -> HashSet<usize> {
+    let mut host_invoked = HashSet::new();
+    for f in self.abstract_functions_iter() {
+      let FunctionImplementationKind::Composite(implementation) =
+        f.read().unwrap().implementation.clone()
+      else {
+        continue;
+      };
+      let _ = implementation.read().unwrap().expression.walk(&mut |exp| {
+        if let ExpKind::Application(f, args) = &exp.kind
+          && let ExpKind::Name(name) = &f.kind
+          && HOST_BUILTINS.contains(&&**name)
+        {
+          for arg in args {
+            arg.data.kind.with_dereferenced(|t| {
+              if let TypeState::Known(Type::Function(signature)) = t
+                && let Some(ancestor) = &signature.abstract_ancestor
+                && let FunctionImplementationKind::Composite(closure) =
+                  &ancestor.read().unwrap().implementation
+              {
+                host_invoked.insert(Arc::as_ptr(closure) as usize);
+              }
+            });
+          }
+        }
+        Ok::<bool, Never>(true)
+      });
+    }
+    host_invoked
+  }
   /// Rejects copying a value that holds a closure mutating its captured
   /// variables while the original stays usable — binding it to a second
   /// name, storing it in an array / struct / global, capturing it in another
@@ -6786,6 +6852,7 @@ impl Program {
     if !scope_writes.values().any(|w| *w) {
       return;
     }
+    let host_invoked = self.host_invoked_closures();
     let registry: Vec<(
       Arc<RwLock<AbstractFunctionSignature>>,
       Arc<RwLock<TopLevelFunction>>,
@@ -6843,6 +6910,7 @@ impl Program {
       escapes: HashMap::new(),
       reported: HashSet::new(),
       errors: vec![],
+      host_invoked,
     };
     let bodies: Vec<CheckedBody> = bodies
       .into_iter()
