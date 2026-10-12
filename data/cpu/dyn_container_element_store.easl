@@ -1,8 +1,8 @@
 ; Element stores into a runtime-sized array of heap-payload enums
-; (`emit_embedding_element_store`): the old element's embedded ids are
-; released (loaded to scratch — releasing by id value releases the
-; container's ids), the new value is staged with fresh owned shares,
-; word-copied in, and the stage's id words zeroed (ownership moved into
+; (`emit_embedding_element_store`): the new value is staged with fresh
+; owned shares, the old element's embedded ids are released (loaded to
+; scratch — releasing by id value releases the container's ids), the
+; stage is word-copied in, and its id words zeroed (ownership moved into
 ; the container). Each loop iteration's payload then survives the next
 ; iteration's construction-site release. The `[String]`/`[[f32]]`
 ; `Cells` containers handle the same pattern via Arc children.

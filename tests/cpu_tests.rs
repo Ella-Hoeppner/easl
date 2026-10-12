@@ -248,6 +248,7 @@ cpu_test!(dyn_container_enum_elements);
 cpu_test!(dyn_container_struct_elements);
 cpu_test!(dyn_container_element_store);
 cpu_test!(dyn_container_copy_semantics);
+cpu_test!(heap_store_back);
 cpu_test!(dyn_container_string_elements);
 cpu_test!(dyn_container_global);
 cpu_test!(fixed_array_dyn_elements_across_calls);

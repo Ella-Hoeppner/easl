@@ -448,9 +448,30 @@ impl BytecodeCompilationState {
         self.emit_copy_instruction(Op::Move, [src, size, 0], dest, 0, pending);
       }
       HeapCopyPlan::Fixups(fixups) => {
-        self.emit_heap_fixups(fixups, Op::HeapRelease, dest, pending);
+        // The old value's ids are released only after the new value's are
+        // promoted: a source that borrows the destination's own ids
+        // (`(= b b)`, or a value read out of the destination) would
+        // otherwise promote ids the release had just freed. So the old
+        // words are saved to scratch first and released from there.
+        let old = self.take_stack_slot(size);
+        let dest_source = if let Some(group) = pending {
+          group.record(
+            self.instructions.len() as u32,
+            PatchedOperand::FirstArg,
+            0,
+          );
+          0
+        } else {
+          dest
+        };
+        self.push_instruction(Instruction {
+          op: Op::Move,
+          arg_positions: [dest_source, size, 0],
+          return_position: old,
+        });
         self.emit_copy_instruction(Op::Move, [src, size, 0], dest, 0, pending);
         self.emit_heap_fixups(fixups, Op::HeapPromote, dest, pending);
+        self.emit_heap_fixups(fixups, Op::HeapRelease, old, &mut None);
       }
     }
   }
@@ -933,11 +954,14 @@ impl BytecodeCompilationState {
   }
   /// An ownership-correct element store into an embedding-element
   /// container: ensure the cell is uniquely owned (cells only — regions
-  /// are never shared), release the old element's embedded ids (read
-  /// into scratch — releasing by id value is releasing the container's
-  /// ids), stage the new value with fresh owned shares, word-copy the
-  /// stage into the container, and zero the stage's id words (ownership
-  /// moved into the container; the source slots keep their own).
+  /// are never shared), stage the new value with fresh owned shares,
+  /// release the old element's embedded ids (read into scratch —
+  /// releasing by id value is releasing the container's ids), word-copy
+  /// the stage into the container, and zero the stage's id words
+  /// (ownership moved into the container; the source slots keep their
+  /// own). Promoting before releasing matters when the source borrows the
+  /// element's own ids (an element read stored back): released first,
+  /// those ids would already be freed.
   fn emit_embedding_element_store(
     &mut self,
     container: EmbeddingContainer,
@@ -949,6 +973,13 @@ impl BytecodeCompilationState {
     if let EmbeddingContainer::Cell(id_slot) = container {
       self.emit_ensure_unique_cell(id_slot, stride, fixups);
     }
+    let staging = self.take_stack_slot(stride);
+    self.push_instruction(Instruction {
+      op: Op::Move,
+      arg_positions: [src_slot, stride, 0],
+      return_position: staging,
+    });
+    self.emit_heap_fixups(fixups, Op::HeapPromote, staging, &mut None);
     let old_scratch = self.take_stack_slot(stride);
     self.push_instruction(match container {
       EmbeddingContainer::Cell(id_slot) => Instruction {
@@ -963,13 +994,6 @@ impl BytecodeCompilationState {
       },
     });
     self.emit_heap_fixups(fixups, Op::HeapRelease, old_scratch, &mut None);
-    let staging = self.take_stack_slot(stride);
-    self.push_instruction(Instruction {
-      op: Op::Move,
-      arg_positions: [src_slot, stride, 0],
-      return_position: staging,
-    });
-    self.emit_heap_fixups(fixups, Op::HeapPromote, staging, &mut None);
     self.push_instruction(match container {
       EmbeddingContainer::Cell(id_slot) => Instruction {
         op: Op::HeapStore,

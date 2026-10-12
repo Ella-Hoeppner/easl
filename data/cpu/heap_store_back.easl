@@ -1,0 +1,52 @@
+; Storing a value that borrows the destination's own heap ids back into
+; it: a value read out of an array, a field, or a variable and stored
+; straight back. The incoming ids must be promoted before the outgoing
+; ones are released; in the other order the release frees the cell the
+; incoming value still points to, and the store leaves an empty array.
+(struct Buf text: [u32] count: u32)
+(struct App bufs: [Buf])
+(struct Holder buf: Buf)
+(enum Slot (Full Buf) Empty)
+@local (var gbufs: [Buf] (into-dynamic-array [(Buf (into-dynamic-array [9u]) 0u)]))
+
+(defn touch [@var @ref app: App k: u32]
+  (let [@var b (app.bufs k)]
+    (+= b.count 1u)
+    (= (app.bufs k) b)))
+
+(defn ident [b: Buf]: Buf b)
+
+@cpu
+(defn main []
+  ; copied out of an array, changed, and stored back, through a reference
+  (let [@var app (App (into-dynamic-array [(Buf (into-dynamic-array [1u 2u 3u]) 0u)]))]
+    (touch app 0u)
+    (touch app 0u)
+    (print (array-length (.text (app.bufs 0u))))
+    (print (.count (app.bufs 0u))))
+  ; an element stored straight back, and through a `let`
+  (let [@var bufs (into-dynamic-array [(Buf (into-dynamic-array [1u 2u 3u]) 0u)])]
+    (= (bufs 0u) (bufs 0u))
+    (let [b (bufs 0u)]
+      (= (bufs 0u) b))
+    (print (array-length (.text (bufs 0u)))))
+  ; an enum payload embedding an array
+  (let [@var slots (into-dynamic-array [(Slot/Full (Buf (into-dynamic-array [1u 2u 3u]) 0u))])]
+    (= (slots 0u) (slots 0u))
+    (match (slots 0u)
+      (Slot/Full b) (print (array-length b.text))
+      Slot/Empty (print 0u)))
+  ; a struct field, and a whole variable
+  (let [@var h (Holder (Buf (into-dynamic-array [1u 2u 3u]) 0u))
+        @var b (Buf (into-dynamic-array [1u 2u 3u]) 0u)]
+    (= h.buf h.buf)
+    (print (array-length h.buf.text))
+    (= b b)
+    (= b (ident b))
+    (print (array-length b.text)))
+  ; a global's runtime-sized array
+  (= gbufs (into-dynamic-array [(Buf (into-dynamic-array [1u 2u 3u]) 0u)]))
+  (= (gbufs 0u) (gbufs 0u))
+  (let [b (gbufs 0u)]
+    (= (gbufs 0u) b))
+  (print (array-length (.text (gbufs 0u)))))
