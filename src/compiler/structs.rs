@@ -257,7 +257,7 @@ impl AbstractStructField {
     generics: &HashMap<Arc<str>, ExpTypeInfo>,
     generic_constants: &HashMap<Arc<str>, ConstGenericValue>,
     typedefs: &TypeDefs,
-    source_trace: SourceTrace,
+    source_trace: &SourceTrace,
   ) -> CompileResult<StructField> {
     Ok(StructField {
       attributes: self.attributes.clone(),
@@ -551,18 +551,13 @@ impl AbstractStruct {
     generics: &HashMap<Arc<str>, ExpTypeInfo>,
     generic_constants: &HashMap<Arc<str>, ConstGenericValue>,
     typedefs: &TypeDefs,
-    source_trace: SourceTrace,
+    source_trace: &SourceTrace,
   ) -> CompileResult<Struct> {
     let new_fields = s
       .fields
       .iter()
       .map(|field| {
-        field.fill_generics(
-          generics,
-          generic_constants,
-          typedefs,
-          source_trace.clone(),
-        )
+        field.fill_generics(generics, generic_constants, typedefs, source_trace)
       })
       .collect::<CompileResult<Vec<_>>>()?;
     Ok(Struct {
@@ -613,7 +608,7 @@ impl AbstractStruct {
       &generics_map,
       &generic_constants_map,
       typedefs,
-      source_trace,
+      &source_trace,
     )
   }
   pub fn fill_generics_with_unification_variables(

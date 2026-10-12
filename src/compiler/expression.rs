@@ -28,8 +28,8 @@ use crate::{
     enums::AbstractEnum,
     error::{CompileError, CompileErrorKind::*, CompileResult, err},
     functions::{
-      AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
-      FunctionTargetConfiguration, Ownership, RefMutability,
+      AbstractFunctionSignature, EffectsMemo, FunctionArgumentAnnotation,
+      FunctionSignature, FunctionTargetConfiguration, Ownership, RefMutability,
       SpecialCasedBuiltinFunction, SpecializationOrigin,
     },
     program::{CompilerTarget, NameContext, Program, TypeDefs},
@@ -1087,7 +1087,7 @@ impl TypedExp {
                         }
                         let bindings_ast = children_iter.next().unwrap();
                         let mut child_exps = children_iter
-                          .clone()
+                          .by_ref()
                           .map(|child| {
                             Self::try_from_easl_tree(
                               child, typedefs, skolems, ctx, names,
@@ -1223,7 +1223,7 @@ impl TypedExp {
                       }
                       "do" => {
                         let child_exps = children_iter
-                          .clone()
+                          .by_ref()
                           .map(|child| {
                             Self::try_from_easl_tree(
                               child, typedefs, skolems, ctx, names,
@@ -1464,7 +1464,7 @@ impl TypedExp {
                           ));
                         };
                         let body_expressions = children_iter
-                          .clone()
+                          .by_ref()
                           .map(|child| {
                             TypedExp::try_from_easl_tree(
                               child, typedefs, skolems, ctx, names,
@@ -1497,7 +1497,7 @@ impl TypedExp {
                       }
                       "while" => {
                         let mut sub_expressions = children_iter
-                          .clone()
+                          .by_ref()
                           .map(|child| {
                             TypedExp::try_from_easl_tree(
                               child, typedefs, skolems, ctx, names,
@@ -1702,6 +1702,54 @@ impl TypedExp {
           },
         }
       }
+    })
+  }
+  /// Whether `predicate` holds for this expression or any expression nested
+  /// in it. Stops at the first match.
+  pub fn any_subexpression(
+    &self,
+    mut predicate: impl FnMut(&Self) -> bool,
+  ) -> bool {
+    self
+      .walk(&mut |exp| if predicate(exp) { Err(()) } else { Ok(true) })
+      .is_err()
+  }
+  /// Whether this expression may apply a function held in a local binding
+  /// or reached through an accessor: it applies a function-typed callee
+  /// that isn't a name, or binds a function-typed local (a parameter, `let`
+  /// value, `match` binding, or loop variable) that such a call could name.
+  pub fn may_apply_local_function(&self) -> bool {
+    let is_function = |t: &TypeState| {
+      t.with_dereferenced(|t| matches!(t, TypeState::Known(Type::Function(_))))
+    };
+    self.any_subexpression(|exp| match &exp.kind {
+      Application(f, _) => {
+        !matches!(f.kind, Name(_)) && is_function(&f.data.kind)
+      }
+      Function(..) => exp.data.with_dereferenced(|t| match t {
+        TypeState::Known(Type::Function(f)) => f
+          .args
+          .iter()
+          .any(|(arg, _)| is_function(&arg.var_type.kind)),
+        _ => false,
+      }),
+      Let(bindings, _) => bindings
+        .iter()
+        .any(|(_, _, _, value)| is_function(&value.data.kind)),
+      Match(scrutinee, arms) => {
+        arms.iter().any(|(pattern, _)| match &pattern.kind {
+          Name(_) => is_function(&scrutinee.data.kind),
+          Application(_, args) => {
+            args.iter().any(|arg| is_function(&arg.data.kind))
+          }
+          _ => false,
+        })
+      }
+      ForLoop {
+        increment_variable_type,
+        ..
+      } => is_function(increment_variable_type),
+      _ => false,
     })
   }
   pub fn walk<E>(
@@ -3294,6 +3342,43 @@ impl TypedExp {
       _ => false,
     }
   }
+  /// When this is a not-yet-typed name of overloaded functions applied to
+  /// `args`, gives it only the candidates `concrete_signatures_accepting`
+  /// finds, sparing the concretization of overloads the arguments rule out.
+  /// They stay a `OneOf` even when there's one, exactly as if every
+  /// candidate had been given and `constrain_fn_by_argument_types` hadn't
+  /// filtered them yet: it narrows them to the same set right after.
+  fn give_overloads_accepting(
+    &mut self,
+    args: &mut [Self],
+    ctx: &MutableProgramLocalContext,
+  ) -> bool {
+    let Name(name) = &self.kind else {
+      return false;
+    };
+    if self.data.already_constrained_against_signatures
+      || !ctx.program.names_functions(name)
+      || !self
+        .data
+        .with_dereferenced(|typestate| matches!(typestate, TypeState::Unknown))
+    {
+      return false;
+    }
+    let arg_types: Vec<&mut TypeState> =
+      args.iter_mut().map(|arg| &mut arg.data.kind).collect();
+    let Some(candidates) = ctx.program.concrete_signatures_accepting(
+      name,
+      &arg_types,
+      &self.source_trace,
+    ) else {
+      return false;
+    };
+    self.data.already_constrained_against_signatures = true;
+    self.data.with_dereferenced_mut(|typestate| {
+      *typestate = TypeState::OneOf(candidates)
+    });
+    true
+  }
   fn propagate_types_inner(
     &mut self,
     ctx: &mut MutableProgramLocalContext,
@@ -3449,6 +3534,7 @@ impl TypedExp {
         for arg in args.iter_mut() {
           anything_changed |= arg.propagate_types_inner(ctx, errors);
         }
+        anything_changed |= f.give_overloads_accepting(args, ctx);
         anything_changed |= f.propagate_types_inner(ctx, errors);
         if !matches!(&f.kind, Name(_)) {
           let mut options = vec![
@@ -4406,7 +4492,7 @@ impl TypedExp {
                         AbstractFunctionSignature::concretize(
                           monomorphized.clone(),
                           &new_program.typedefs,
-                          source_trace.clone(),
+                          &source_trace,
                         )
                         .unwrap()
                         .into(),
@@ -4483,6 +4569,25 @@ impl TypedExp {
     base_program: &Program,
     new_program: &mut Program,
   ) -> bool {
+    // Only calls to composite functions with reference parameters are
+    // rewritten, so a body without one has nothing to walk.
+    if !self.any_subexpression(|exp| {
+      if let Application(f, _) = &exp.kind
+        && let TypeState::Known(Type::Function(signature)) = &f.data.kind
+        && let Some(abstract_ancestor) = &signature.abstract_ancestor
+      {
+        let abstract_ancestor = abstract_ancestor.read().unwrap();
+        matches!(
+          abstract_ancestor.implementation,
+          FunctionImplementationKind::Composite(_)
+        ) && (!matches!(f.kind, Name(_))
+          || !abstract_ancestor.reference_arg_positions().is_empty())
+      } else {
+        false
+      }
+    }) {
+      return false;
+    }
     let mut changed = false;
     self
       .walk_mut_with_ctx::<Never>(
@@ -5161,23 +5266,33 @@ impl TypedExp {
     let Application(f, args) = &self.kind else {
       return vec![];
     };
-    let Type::Function(function_signature) = f.data.kind.unwrap_known() else {
+    // A mutable `@ref` parameter writes through its argument — also after
+    // reference-address-space monomorphization has turned it into a pointer
+    // (a storage-global element passed by reference on the CPU / audio
+    // thread takes that path).
+    let Some(mutable_params) = f.data.kind.with_known(|t| match t {
+      Type::Function(function_signature) => Some(
+        function_signature
+          .args
+          .iter()
+          .map(|(arg_var, _)| {
+            matches!(
+              arg_var.var_type.ownership,
+              Ownership::MutableReference
+                | Ownership::Pointer(_, RefMutability::Mutable)
+            )
+          })
+          .collect::<Vec<bool>>(),
+      ),
+      _ => None,
+    }) else {
       return vec![];
     };
-    function_signature
-      .args
-      .iter()
+    mutable_params
+      .into_iter()
       .zip(args.iter())
-      .filter_map(|((arg_var, _), arg)| {
-        // A mutable `@ref` parameter writes through its argument — also
-        // after reference-address-space monomorphization has turned it into
-        // a pointer (a storage-global element passed by reference on the
-        // CPU / audio thread takes that path).
-        if !matches!(
-          arg_var.var_type.ownership,
-          Ownership::MutableReference
-            | Ownership::Pointer(_, RefMutability::Mutable)
-        )
+      .filter_map(|(mutable_param, arg)| {
+        if !mutable_param
           // A lent closure's write is its borrow's own (by-reference)
           // argument.
           || is_function_value_borrow(arg)
@@ -5202,11 +5317,15 @@ impl TypedExp {
   }
 
   pub fn effects(&self) -> EffectType {
+    self.effects_with(&mut EffectsMemo::default())
+  }
+  /// [`Self::effects`], reusing `memo`'s callee effects.
+  pub fn effects_with(&self, memo: &mut EffectsMemo) -> EffectType {
     let mut e = match &self.kind {
       Name(name) => Effect::ReadsVar(name.clone()).into(),
       Block(exps) | ArrayLiteral(exps) => exps
         .into_iter()
-        .map(|exp| exp.effects())
+        .map(|exp| exp.effects_with(memo))
         .reduce(|mut a, b| {
           a.merge(b);
           a
@@ -5214,13 +5333,13 @@ impl TypedExp {
         .unwrap_or_else(|| EffectType::empty())
         .into(),
       Let(items, exp) => {
-        let effects =
-          items
-            .iter()
-            .fold(exp.effects(), |mut e, (_, _, _, value_exp)| {
-              e.merge(value_exp.effects());
-              e
-            });
+        let effects = items.iter().fold(
+          exp.effects_with(memo),
+          |mut e, (_, _, _, value_exp)| {
+            e.merge(value_exp.effects_with(memo));
+            e
+          },
+        );
         let bound_names: HashSet<Arc<str>> =
           items.iter().map(|(name, _, _, _)| name.clone()).collect();
         effects
@@ -5237,15 +5356,26 @@ impl TypedExp {
           .collect::<HashSet<Effect>>()
           .into()
       }
-      Application(f, args) => match f.data.kind.unwrap_known() {
-        Type::Function(function_signature) => {
-          let mut effects = function_signature.effects();
-          effects.merge(f.effects());
+      Application(f, args) => match f.data.kind.with_dereferenced(|t| match t {
+        TypeState::Known(Type::Function(function_signature)) => {
+          Some(function_signature.abstract_ancestor.clone())
+        }
+        TypeState::Known(Type::Array(_, _)) => None,
+        TypeState::Known(t @ Type::Struct(_))
+          if t.is_vector() || t.is_matrix() =>
+        {
+          None
+        }
+        _ => unreachable!(),
+      }) {
+        Some(abstract_ancestor) => {
+          let mut effects =
+            FunctionSignature::callee_effects(&abstract_ancestor, memo);
+          effects.merge(f.effects_with(memo));
           // `array-length` only inspects its argument's length, which the
           // GPU can never change — so an array variable passed to it
           // directly is a length-only read, not an element read.
-          let is_array_length = function_signature
-            .abstract_ancestor
+          let is_array_length = abstract_ancestor
             .as_ref()
             .map(|ancestor| &*ancestor.read().unwrap().name == "array-length")
             .unwrap_or(false);
@@ -5254,34 +5384,29 @@ impl TypedExp {
               effects.merge(Effect::ReadsArrayLength(name.clone()));
               continue;
             }
-            effects.merge(arg.effects());
+            effects.merge(arg.effects_with(memo));
           }
           effects.merge(self.argument_writes());
           effects
         }
-        Type::Array(_, _) => {
-          let mut effects = f.effects();
-          effects.merge(args[0].effects());
+        // Indexing an array, vector, or matrix.
+        None => {
+          let mut effects = f.effects_with(memo);
+          effects.merge(args[0].effects_with(memo));
           effects
         }
-        t @ Type::Struct(_) if t.is_vector() || t.is_matrix() => {
-          let mut effects = f.effects();
-          effects.merge(args[0].effects());
-          effects
-        }
-        _ => unreachable!(),
       },
       Access(accessor, exp) => {
-        let mut effects = exp.effects();
+        let mut effects = exp.effects_with(memo);
         if let Accessor::ArrayIndex(index_exp) = accessor {
-          effects.merge(index_exp.effects())
+          effects.merge(index_exp.effects_with(memo))
         }
         effects
       }
       Match(exp, items) => {
-        let mut effects = exp.effects();
+        let mut effects = exp.effects_with(memo);
         for (_, arm) in items {
-          effects.merge(arm.effects());
+          effects.merge(arm.effects_with(memo));
         }
         effects
       }
@@ -5293,12 +5418,13 @@ impl TypedExp {
         body_expression,
         ..
       } => {
-        let mut effects = increment_variable_initial_value_expression.effects();
-        effects.merge(continue_condition_expression.effects());
+        let mut effects =
+          increment_variable_initial_value_expression.effects_with(memo);
+        effects.merge(continue_condition_expression.effects_with(memo));
         if let Some(update_expression) = update_expression {
-          effects.merge(update_expression.effects());
+          effects.merge(update_expression.effects_with(memo));
         }
-        effects.merge(body_expression.effects());
+        effects.merge(body_expression.effects_with(memo));
         effects
           .remove(&Effect::ModifiesLocalVar(increment_variable_name.0.clone()));
         effects.remove(&Effect::ReadsVar(increment_variable_name.0.clone()));
@@ -5312,15 +5438,15 @@ impl TypedExp {
         condition_expression,
         body_expression,
       } => {
-        let mut effects = condition_expression.effects();
-        effects.merge(body_expression.effects());
+        let mut effects = condition_expression.effects_with(memo);
+        effects.merge(body_expression.effects_with(memo));
         effects.remove(&Effect::Break);
         effects.remove(&Effect::Continue);
         effects
       }
       Break => Effect::Break.into(),
       Return(exp) => {
-        let mut inner_effects = exp.effects();
+        let mut inner_effects = exp.effects_with(memo);
         inner_effects.merge(Effect::Return);
         inner_effects
       }
@@ -5329,7 +5455,7 @@ impl TypedExp {
       // writes of its own parameters, and `return`, which exits this
       // function rather than the enclosing one.
       Function(arg_names, body) => {
-        let mut effects = body.effects();
+        let mut effects = body.effects_with(memo);
         for (arg, _) in arg_names {
           effects.remove(&Effect::ReadsVar(arg.clone()));
           effects.remove(&Effect::ReadsArrayLength(arg.clone()));
@@ -5342,9 +5468,8 @@ impl TypedExp {
       Discard => Effect::Discard.into(),
       _ => EffectType::empty(),
     };
-    match self.data.unwrap_known() {
-      Type::String => e.merge(Effect::CPUExclusiveType("String".into())),
-      _ => {}
+    if self.data.with_known(|t| matches!(t, Type::String)) {
+      e.merge(Effect::CPUExclusiveType("String".into()));
     }
     e
   }
@@ -5426,7 +5551,10 @@ impl TypedExp {
           for name in usages_to_delete {
             var_usages.remove(&name);
           }
-          let e = exp.effects();
+          let e = match &exp.kind {
+            ExpKind::Function(..) => exp.effects(),
+            _ => EffectType::empty(),
+          };
           match &mut exp.kind {
             ExpKind::Function(_, body) => {
               let real_writes =
@@ -5620,12 +5748,25 @@ impl TypedExp {
         .walk_mut_with_ctx::<()>(
           &mut |exp, ctx| {
             if let Application(f, args) = &mut exp.kind {
-              if let Type::Function(f_type) = f.data.unwrap_known() {
-                for (i, ((f_param, _), arg)) in
-                  f_type.args.iter().zip(args.iter_mut()).enumerate()
+              if let Some(param_ownerships) =
+                f.data.kind.with_known(|t| match t {
+                  Type::Function(f_type) => Some(
+                    f_type
+                      .args
+                      .iter()
+                      .map(|(param, _)| param.var_type.ownership)
+                      .collect::<Vec<Ownership>>(),
+                  ),
+                  _ => None,
+                })
+              {
+                for (i, (param_ownership, arg)) in param_ownerships
+                  .into_iter()
+                  .zip(args.iter_mut())
+                  .enumerate()
                 {
                   if matches!(
-                    f_param.var_type.ownership,
+                    param_ownership,
                     Ownership::Reference | Ownership::MutableReference
                   ) && let ExpKind::Access(Accessor::Swizzle(_), _) =
                     &arg.kind
@@ -5651,8 +5792,7 @@ impl TypedExp {
                       ExpKind::Name(result_name.clone()),
                       exp.data.clone(),
                     )];
-                    if Ownership::MutableReference == f_param.var_type.ownership
-                    {
+                    if Ownership::MutableReference == param_ownership {
                       let Type::Struct(arg_accessed_struct) =
                         arg_accessed_value.data.unwrap_known()
                       else {
@@ -5725,7 +5865,7 @@ impl TypedExp {
                     changed = true;
                     return Ok(true);
                   }
-                  if Ownership::Reference == f_param.var_type.ownership
+                  if Ownership::Reference == param_ownership
                     && let ExpKind::Name(original_name) = &arg.kind
                     && let VariableKind::Let =
                       ctx.get_variable_kind(&original_name)
@@ -5967,14 +6107,16 @@ impl TypedExp {
                 // unit values are later erased, and its evaluation must
                 // stay, in its place in the order.
                 let by_reference: Vec<bool> = match &exp.kind {
-                  Application(f, _) => match f.data.kind.try_unwrap_known() {
-                    Some(Type::Function(signature)) => signature
-                      .args
-                      .iter()
-                      .map(|(a, _)| a.var_type.ownership != Ownership::Owned)
-                      .collect(),
-                    _ => vec![],
-                  },
+                  Application(f, _) => {
+                    f.data.kind.with_dereferenced(|t| match t {
+                      TypeState::Known(Type::Function(signature)) => signature
+                        .args
+                        .iter()
+                        .map(|(a, _)| a.var_type.ownership != Ownership::Owned)
+                        .collect(),
+                      _ => vec![],
+                    })
+                  }
                   _ => vec![],
                 };
                 let is_application = matches!(exp.kind, Application(_, _));
@@ -5993,10 +6135,9 @@ impl TypedExp {
                     |i: usize| by_reference.get(i).copied().unwrap_or(false);
                   let effectful = |slot: &TypedExp| {
                     !matches!(slot.kind, Name(_))
-                      && !matches!(
-                        slot.data.kind.try_unwrap_known(),
-                        Some(Type::Function(_))
-                      )
+                      && !slot.data.kind.with_dereferenced(|t| {
+                        matches!(t, TypeState::Known(Type::Function(_)))
+                      })
                       && !slot.effects().is_side_effect_free()
                   };
                   let diverges = slots.iter().any(|slot| {
@@ -6012,8 +6153,9 @@ impl TypedExp {
                           Some(i)
                         } else if is_application
                           && !by_reference(i)
-                          && slot.data.kind.try_unwrap_known()
-                            == Some(Type::Unit)
+                          && slot.data.kind.with_dereferenced(|t| {
+                            matches!(t, TypeState::Known(Type::Unit))
+                          })
                           && effectful(slot)
                         {
                           Some(i + 1)
@@ -6331,7 +6473,7 @@ impl TypedExp {
                 for (index, (binding_name, _, variable_kind, value)) in
                   items.iter_mut().enumerate()
                 {
-                  if let Type::Function(_) = value.data.unwrap_known() {
+                  if value.data.with_known(|t| matches!(t, Type::Function(_))) {
                     *variable_kind = VariableKind::Var;
                   }
                   match &value.kind {

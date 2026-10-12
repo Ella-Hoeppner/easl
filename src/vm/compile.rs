@@ -9,8 +9,8 @@ use std::sync::{Arc, RwLock};
 use crate::compiler::enums::Enum;
 use crate::compiler::expression::{Accessor, ExpKind, Number, TypedExp};
 use crate::compiler::functions::{
-  FunctionImplementationKind, Ownership, RefMutability, TopLevelFunction,
-  extract_mat_size as parse_mat_size,
+  EffectsMemo, FunctionImplementationKind, Ownership, RefMutability,
+  TopLevelFunction, extract_mat_size as parse_mat_size,
 };
 use crate::compiler::program::{LiftedCapture, LiftedCaptures};
 use crate::compiler::structs::AbstractStruct;
@@ -291,6 +291,9 @@ pub struct BytecodeCompilationState {
   /// param in `dynamic_array_memory` (and unregistering it after the
   /// body) instead of binding a local slot.
   pub pending_ref_region_params: HashMap<usize, (u16, u16)>,
+  /// Callee effects for the whole compilation, which only reads function
+  /// bodies (so no memoized entry can go stale).
+  pub effects_memo: EffectsMemo,
 }
 
 impl BytecodeCompilationState {
@@ -327,6 +330,7 @@ impl BytecodeCompilationState {
       array_mut_ref_store_instructions: vec![],
       lifted_audio_captures: HashMap::new(),
       lifted_gpu_captures: HashMap::new(),
+      effects_memo: EffectsMemo::default(),
     }
   }
   pub fn take_stack_slot(&mut self, size: u16) -> u16 {
@@ -2934,7 +2938,10 @@ impl BytecodeCompilationState {
     else {
       panic!("dispatched function {entry_name} wasn't composite")
     };
-    let effects = implementation.read().unwrap().effects();
+    let effects = implementation
+      .read()
+      .unwrap()
+      .effects_with(&mut self.effects_memo);
     let (reads, writes) = effects.gpu_read_and_written_globals();
     let read_indices: Vec<u16> = reads
       .iter()

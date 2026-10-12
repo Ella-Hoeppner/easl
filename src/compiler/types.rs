@@ -220,6 +220,31 @@ pub enum AbstractType {
 }
 
 impl AbstractType {
+  /// Whether this parameter type, once concretized, can be compatible
+  /// (`TypeState::are_compatible`) with an argument of type `arg`. Only a
+  /// type whose concrete form doesn't depend on generics is ruled out: a
+  /// struct or enum (compatible only with one of the same name) or a scalar
+  /// (compatible only with itself).
+  pub fn may_be_compatible_with(&self, arg: &TypeState) -> bool {
+    let matches = |t: &Type| match self {
+      AbstractType::AbstractStruct(s) => {
+        matches!(t, Type::Struct(t) if t.name == s.name.0)
+      }
+      AbstractType::AbstractEnum(e) => {
+        matches!(t, Type::Enum(t) if t.name == e.name.0)
+      }
+      AbstractType::Unit => *t == Type::Unit,
+      AbstractType::Type(
+        scalar @ (Type::Unit | Type::F32 | Type::I32 | Type::U32 | Type::Bool),
+      ) => t == scalar,
+      _ => true,
+    };
+    arg.with_dereferenced(|arg| match arg {
+      TypeState::Known(t) => matches(t),
+      TypeState::OneOf(ts) => ts.iter().any(matches),
+      _ => true,
+    })
+  }
   /// This type as it would be written in easl: `(Pair T f32)`, `[N: T]`.
   pub fn describe(&self) -> String {
     match self {
@@ -351,7 +376,7 @@ impl AbstractType {
     generics: &HashMap<Arc<str>, ExpTypeInfo>,
     generic_constants: &HashMap<Arc<str>, ConstGenericValue>,
     typedefs: &TypeDefs,
-    source_trace: SourceTrace,
+    source_trace: &SourceTrace,
   ) -> CompileResult<ExpTypeInfo> {
     Ok(match self {
       AbstractType::Unit => TypeState::Known(Type::Unit).into(),
@@ -3242,6 +3267,20 @@ impl TypeState {
       }
     })
   }
+  /// Runs `f` on the known type in place, without cloning it; panics, like
+  /// `unwrap_known`, if the type isn't known.
+  pub fn with_known<T>(&self, f: impl FnOnce(&Type) -> T) -> T {
+    self.with_dereferenced(|typestate| match typestate {
+      TypeState::Known(t) => f(t),
+      _ => panic!("unwrapped non-Known TypeState \"{typestate:?}\""),
+    })
+  }
+  /// Whether the type is known and satisfies `f`, without cloning it.
+  pub fn is_known_and(&self, f: impl FnOnce(&Type) -> bool) -> bool {
+    self.with_dereferenced(
+      |typestate| matches!(typestate, TypeState::Known(t) if f(t)),
+    )
+  }
   pub fn try_unwrap_known(&self) -> Option<Type> {
     self.with_dereferenced(|typestate| {
       if let TypeState::Known(t) = typestate {
@@ -3527,6 +3566,24 @@ impl TypeState {
       })
     })
   }
+  /// `constrain` against a state the caller no longer needs: when this
+  /// state is still unknown, `other` is moved in rather than cloned.
+  pub fn constrain_owned(
+    &mut self,
+    other: TypeState,
+    source_trace: &SourceTrace,
+    errors: &mut ErrorLog,
+  ) -> bool {
+    if matches!(
+      other,
+      TypeState::Unknown | TypeState::UnificationVariable(_)
+    ) || !self.with_dereferenced(|this| matches!(this, TypeState::Unknown))
+    {
+      return self.constrain(&other, source_trace, errors);
+    }
+    self.with_dereferenced_mut(|this| *this = other.simplified());
+    true
+  }
   pub fn mutually_constrain(
     &mut self,
     other: &mut TypeState,
@@ -3545,24 +3602,17 @@ impl TypeState {
   ) -> bool {
     self.with_dereferenced_mut(|typestate| {
       if let TypeState::OneOf(possibilities) = typestate {
-        let mut anything_changed = false;
-        let mut new_possibilities: Vec<Type> = vec![];
-        for possibility in possibilities {
-          match possibility {
-            Type::Function(signature) => {
-              if TypeState::are_compatible(
-                &signature.return_type.kind,
-                return_type,
-              ) {
-                new_possibilities.push(Type::Function(signature.clone()))
-              } else {
-                anything_changed = true;
-              }
-            }
-            other => new_possibilities.push(other.clone()),
-          }
-        }
-        if new_possibilities.is_empty() {
+        let kept: Vec<bool> = possibilities
+          .iter()
+          .map(|possibility| match possibility {
+            Type::Function(signature) => TypeState::are_compatible(
+              &signature.return_type.kind,
+              return_type,
+            ),
+            _ => true,
+          })
+          .collect();
+        if !kept.contains(&true) {
           errors.log(CompileError::new(
             IncompatibleTypes(
               typestate.clone().into(),
@@ -3572,7 +3622,10 @@ impl TypeState {
           ));
           false
         } else {
-          *typestate = TypeState::OneOf(new_possibilities).simplified();
+          let anything_changed = kept.contains(&false);
+          let mut kept = kept.into_iter();
+          possibilities.retain(|_| kept.next().unwrap());
+          typestate.simplify();
           anything_changed
         }
       } else {
@@ -3589,52 +3642,41 @@ impl TypeState {
     self.with_dereferenced_mut(|typestate| match typestate {
       TypeState::OneOf(possibilities) => {
         let mut anything_changed = false;
-        let mut new_possibilities: Vec<Type> = vec![];
-        for possibility in possibilities {
-          match possibility {
+        let mut kept = Vec::with_capacity(possibilities.len());
+        for possibility in possibilities.iter() {
+          let keep = match possibility {
             Type::Function(signature) => {
-              if signature.are_args_compatible(
-                &arg_types.iter().map(|t| (*t).clone()).collect(),
-              ) {
-                new_possibilities.push(Type::Function(signature.clone()))
-              } else {
-                anything_changed = true;
-              }
+              signature.are_args_compatible(&arg_types)
             }
-            Type::Array(size, inner_type) => {
-              if arg_types.len() == 1
+            Type::Array(_, _) => {
+              arg_types.len() == 1
                 && TypeState::are_compatible(
                   &arg_types[0],
                   &TypeState::OneOf(vec![Type::U32, Type::I32]),
                 )
-              {
-                new_possibilities
-                  .push(Type::Array(size.clone(), inner_type.clone()))
-              } else {
-                anything_changed = true;
-              }
             }
             Type::Struct(_)
               if possibility.is_vector() || possibility.is_matrix() =>
             {
-              if arg_types.len() == 1
+              arg_types.len() == 1
                 && TypeState::are_compatible(
                   &arg_types[0],
                   &TypeState::OneOf(vec![Type::U32, Type::I32]),
                 )
-              {
-                new_possibilities.push(possibility.clone())
-              } else {
-                anything_changed = true;
-              }
             }
-            _ => errors.log(CompileError::new(
-              ExpectedFunctionFoundNonFunction,
-              source_trace.clone(),
-            )),
-          }
+            _ => {
+              errors.log(CompileError::new(
+                ExpectedFunctionFoundNonFunction,
+                source_trace.clone(),
+              ));
+              kept.push(false);
+              continue;
+            }
+          };
+          anything_changed |= !keep;
+          kept.push(keep);
         }
-        if new_possibilities.is_empty() {
+        if !kept.contains(&true) {
           errors.log(CompileError::new(
             FunctionArgumentTypesIncompatible {
               f: typestate.clone().into(),
@@ -3644,18 +3686,15 @@ impl TypeState {
           ));
           false
         } else {
-          std::mem::swap(
-            typestate,
-            &mut TypeState::OneOf(new_possibilities).simplified(),
-          );
+          let mut kept = kept.into_iter();
+          possibilities.retain(|_| kept.next().unwrap());
+          typestate.simplify();
           anything_changed
         }
       }
       TypeState::Known(t) => match t {
         Type::Function(signature) => {
-          if !signature.are_args_compatible(
-            &arg_types.iter().map(|t| (*t).clone()).collect(),
-          ) {
+          if !signature.are_args_compatible(&arg_types) {
             errors.log(CompileError::new(
               FunctionArgumentTypesIncompatible {
                 f: typestate.clone().into(),
@@ -4034,9 +4073,8 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
       .map(|x| x.0)
   }
   pub fn is_bound(&self, name: &str) -> bool {
-    let name_rc: Arc<str> = name.to_string().into();
     self.variables.contains_key(name)
-      || self.program.names_functions(&name_rc)
+      || self.program.names_functions(name)
       || self
         .program
         .top_level_vars
@@ -4052,8 +4090,7 @@ impl<P: Deref<Target = Program>> LocalContext<P> {
         .is_some()
   }
   pub fn is_globally_bound(&self, name: &str) -> bool {
-    let name_rc: Arc<str> = name.to_string().into();
-    self.program.names_functions(&name_rc)
+    self.program.names_functions(name)
       || self
         .program
         .top_level_vars
@@ -4181,7 +4218,7 @@ impl<'p> MutableProgramLocalContext<'p> {
           false
         }
         Ok(Some(signatures)) => {
-          t.constrain(&TypeState::OneOf(signatures), source_trace, errors)
+          t.constrain_owned(TypeState::OneOf(signatures), source_trace, errors)
         }
         Ok(None) => panic!(),
       }

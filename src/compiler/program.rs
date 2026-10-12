@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use std::hash::Hash;
 use std::sync::{Arc, RwLock};
@@ -37,8 +38,9 @@ use crate::{
     expression::{Accessor, ExpKind, ExpressionCompilationPosition, Number},
     function_values::holds_function,
     functions::{
-      AbstractFunctionSignature, FunctionArgumentAnnotation, FunctionSignature,
-      FunctionTargetConfiguration, Ownership, TopLevelFunction,
+      AbstractFunctionSignature, EffectsMemo, FunctionArgumentAnnotation,
+      FunctionSignature, FunctionTargetConfiguration, Ownership,
+      TopLevelFunction,
     },
     structs::{AbstractStructField, UntypedStruct},
     types::{
@@ -228,6 +230,9 @@ pub struct NameContext {
   user_names: HashSet<Arc<str>>,
   generated_names: HashSet<Arc<str>>,
   monomorphized_names: HashMap<(Arc<str>, Vec<Arc<str>>), Arc<str>>,
+  /// For each base name `gensym` has suffixed, the suffix to try next: names
+  /// are only ever added, so every lower suffix is still taken.
+  next_gensym_suffixes: HashMap<Arc<str>, usize>,
 }
 
 impl NameContext {
@@ -236,6 +241,7 @@ impl NameContext {
       user_names: HashSet::new(),
       generated_names: HashSet::new(),
       monomorphized_names: HashMap::new(),
+      next_gensym_suffixes: HashMap::new(),
     }
   }
   fn track_all_ast_names(&mut self, ast: &EaslTree) {
@@ -246,6 +252,11 @@ impl NameContext {
     });
   }
   fn track_user_name(&mut self, name: &str) {
+    // A name and its compiled form are tracked together, so a tracked name
+    // needs nothing more (and skips allocating both again).
+    if self.user_names.contains(name) {
+      return;
+    }
     self.user_names.insert(name.into());
     self.user_names.insert(compile_word(name.into()).into());
   }
@@ -254,7 +265,11 @@ impl NameContext {
   }
   pub fn gensym(&mut self, base_name: &str) -> Arc<str> {
     if self.is_taken(base_name) {
-      let mut i = 0;
+      let mut i = self
+        .next_gensym_suffixes
+        .get(base_name)
+        .copied()
+        .unwrap_or(0);
       let final_name: Arc<str> = loop {
         let modified_name = base_name.to_string() + &format!("_{i}");
         if !self.is_taken(&modified_name) {
@@ -262,6 +277,7 @@ impl NameContext {
         }
         i += 1;
       };
+      self.next_gensym_suffixes.insert(base_name.into(), i + 1);
       self.generated_names.insert(final_name.clone());
       final_name
     } else {
@@ -636,6 +652,19 @@ struct ClosureLiftState {
   lifted_captures: Vec<(Arc<str>, Arc<LiftedCaptures>)>,
 }
 
+/// A target's emitted functions (see `Program::emitted_function_closure`).
+struct EmittedFunctions {
+  /// Every composite function, callees first (the deterministic emission
+  /// order).
+  ordered: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)>,
+  /// The reachable subset of `ordered`: the functions that emit.
+  emitted: HashSet<Arc<str>>,
+  /// The functions that are themselves valid for the target
+  /// (`TopLevelFunction::is_valid_for_target`); an emitted function outside
+  /// this set compiles to an empty string.
+  valid: HashSet<Arc<str>>,
+}
+
 #[derive(Debug)]
 pub struct Program {
   pub names: RwLock<NameContext>,
@@ -719,22 +748,25 @@ impl Program {
     signature: Arc<RwLock<AbstractFunctionSignature>>,
   ) -> Arc<RwLock<AbstractFunctionSignature>> {
     let name = Arc::clone(&signature.read().unwrap().name);
-    self.names.write().unwrap().track_user_name(&name);
-    if let FunctionImplementationKind::Composite(f) =
-      &signature.read().unwrap().implementation
     {
-      let f = f.read().unwrap();
-      for (arg_name, _) in f.arg_names.iter() {
-        self.names.write().unwrap().track_user_name(&arg_name);
+      let mut names = self.names.write().unwrap();
+      names.track_user_name(&name);
+      if let FunctionImplementationKind::Composite(f) =
+        &signature.read().unwrap().implementation
+      {
+        let f = f.read().unwrap();
+        for (arg_name, _) in f.arg_names.iter() {
+          names.track_user_name(&arg_name);
+        }
+        f.expression
+          .walk(&mut |exp| {
+            if let ExpKind::Name(name) = &exp.kind {
+              names.track_user_name(&name);
+            }
+            Ok::<bool, Never>(true)
+          })
+          .unwrap();
       }
-      f.expression
-        .walk(&mut |exp| {
-          if let ExpKind::Name(name) = &exp.kind {
-            self.names.write().unwrap().track_user_name(&name);
-          }
-          Ok::<bool, Never>(true)
-        })
-        .unwrap();
     }
     let bucket = self.abstract_functions.entry(name).or_default();
     if let Some(existing) = bucket
@@ -903,40 +935,93 @@ impl Program {
       _ => {}
     }
   }
-  pub fn concrete_signatures(
-    &mut self,
+  /// The signatures `fn_name` names: its registry bucket, or every
+  /// member's of an overload group.
+  fn named_signatures(
+    &self,
     fn_name: &Arc<str>,
-    source_trace: SourceTrace,
-  ) -> CompileResult<Option<Vec<Type>>> {
-    let signatures: Vec<Arc<RwLock<AbstractFunctionSignature>>> =
-      if let Some(members) = self.overload_groups.get(fn_name) {
+  ) -> Option<Vec<Arc<RwLock<AbstractFunctionSignature>>>> {
+    if let Some(members) = self.overload_groups.get(fn_name) {
+      Some(
         members
           .iter()
           .flat_map(|member| {
             self.abstract_functions.get(member).into_iter().flatten()
           })
           .cloned()
-          .collect()
-      } else if let Some(signatures) = self.abstract_functions.get(fn_name) {
-        signatures.clone()
-      } else {
-        return Ok(None);
-      };
-    {
-      signatures
-        .into_iter()
-        .map(|signature| {
-          Ok(Type::Function(Box::new(
-            AbstractFunctionSignature::concretize(
-              Arc::new(RwLock::new(signature.read().unwrap().clone())),
-              &self.typedefs,
-              source_trace.clone(),
-            )?,
-          )))
-        })
-        .collect::<CompileResult<Vec<_>>>()
-        .map(|x| Some(x))
+          .collect(),
+      )
+    } else {
+      self.abstract_functions.get(fn_name).cloned()
     }
+  }
+  /// A function type for one reference to `signature`, whose ancestor is a
+  /// fresh copy of it.
+  fn concrete_signature(
+    &self,
+    signature: &Arc<RwLock<AbstractFunctionSignature>>,
+    source_trace: &SourceTrace,
+  ) -> CompileResult<Type> {
+    Ok(Type::Function(Box::new(
+      AbstractFunctionSignature::concretize(
+        Arc::new(RwLock::new(signature.read().unwrap().clone())),
+        &self.typedefs,
+        source_trace,
+      )?,
+    )))
+  }
+  pub fn concrete_signatures(
+    &mut self,
+    fn_name: &Arc<str>,
+    source_trace: SourceTrace,
+  ) -> CompileResult<Option<Vec<Type>>> {
+    let Some(signatures) = self.named_signatures(fn_name) else {
+      return Ok(None);
+    };
+    signatures
+      .iter()
+      .map(|signature| self.concrete_signature(signature, &source_trace))
+      .collect::<CompileResult<Vec<_>>>()
+      .map(Some)
+  }
+  /// The candidates `constrain_fn_by_argument_types` keeps out of
+  /// `concrete_signatures(fn_name)` for arguments of `arg_types`, plus some
+  /// it rejects, built without concretizing the overloads
+  /// `AbstractFunctionSignature::may_accept_arguments` rules out. `None`
+  /// unless `fn_name` has several overloads, some are ruled out, and some
+  /// candidate is kept (an incompatibility error lists every overload);
+  /// the caller then gives the name all of them as usual.
+  pub fn concrete_signatures_accepting(
+    &self,
+    fn_name: &Arc<str>,
+    arg_types: &[&mut TypeState],
+    source_trace: &SourceTrace,
+  ) -> Option<Vec<Type>> {
+    let signatures = self.named_signatures(fn_name)?;
+    if signatures.len() < 2 {
+      return None;
+    }
+    let plausible: Vec<_> = signatures
+      .iter()
+      .filter(|signature| {
+        signature.read().unwrap().may_accept_arguments(arg_types)
+      })
+      .collect();
+    if plausible.len() == signatures.len() {
+      return None;
+    }
+    let candidates = plausible
+      .into_iter()
+      .map(|signature| self.concrete_signature(signature, source_trace))
+      .collect::<CompileResult<Vec<_>>>()
+      .ok()?;
+    candidates
+      .iter()
+      .any(|candidate| {
+        matches!(candidate, Type::Function(signature)
+          if signature.are_args_compatible(arg_types))
+      })
+      .then_some(candidates)
   }
   /// Whether `name` names functions: a registry bucket or an overload
   /// group.
@@ -1025,13 +1110,13 @@ impl Program {
     for tree in trees.into_iter() {
       use crate::parse::Encloser::*;
       use fsexp::syntax::EncloserOrOperator::*;
-      let (tree_body, annotation) =
-        extract_annotation(tree.clone(), &mut errors);
+      let tree_position = tree.position().clone();
+      let (tree_body, annotation) = extract_annotation(tree, &mut errors);
       let EaslTree::Inner((position, Encloser(Parens)), children) = &tree_body
       else {
         errors.log(CompileError::new(
           UnrecognizedTopLevelForm(tree_body),
-          tree.position().clone().into(),
+          tree_position.into(),
         ));
         continue;
       };
@@ -3923,6 +4008,8 @@ impl Program {
         }
       }
     }
+    // Only reads function bodies, so one memo serves the whole loop.
+    let mut memo = EffectsMemo::default();
     for name in reachable {
       let Some(f) = by_name.get(&name) else {
         continue;
@@ -3933,7 +4020,8 @@ impl Program {
         continue;
       };
       let implementation = implementation.read().unwrap();
-      let remaining = implementation.effects().window_info_kinds();
+      let remaining =
+        implementation.effects_with(&mut memo).window_info_kinds();
       for kind in remaining {
         errors.log(CompileError {
           kind: GpuKeyQueryRequiresLiteralString(kind.fn_name().to_string()),
@@ -4097,6 +4185,13 @@ impl Program {
     self.lifted_gpu_captures.extend(lifted_captures);
   }
   pub fn monomorphize_reference_address_spaces(&mut self) {
+    // Walking a body points each of its calls to a function with reference
+    // parameters at a variant without them, and the pass never changes a
+    // walked body or the signatures it calls again, so each body is walked
+    // once. The map holds the walked bodies, so none is freed and its
+    // address reused while the pass runs.
+    let mut walked: HashMap<usize, Arc<RwLock<TopLevelFunction>>> =
+      HashMap::new();
     loop {
       let mut monomorphized_ctx = Program::default();
       monomorphized_ctx.names = RwLock::new(self.names.read().unwrap().clone());
@@ -4108,17 +4203,21 @@ impl Program {
           &f.read().unwrap().implementation
         {
           if borrowed_f.reference_arg_positions().is_empty() {
-            let mut borrowed_implementation = implementation.write().unwrap();
-            changed |= borrowed_implementation
-              .expression
-              .monomorphize_reference_address_spaces(
-                &self,
-                &mut monomorphized_ctx,
-              );
+            let key = Arc::as_ptr(implementation) as usize;
+            if !walked.contains_key(&key) {
+              walked.insert(key, implementation.clone());
+              changed |= implementation
+                .write()
+                .unwrap()
+                .expression
+                .monomorphize_reference_address_spaces(
+                  &self,
+                  &mut monomorphized_ctx,
+                );
+            }
             let mut new_f = (**f).read().unwrap().clone();
             new_f.implementation =
               FunctionImplementationKind::Composite(implementation.clone());
-            drop(borrowed_implementation);
             monomorphized_ctx
               .add_abstract_function(Arc::new(RwLock::new(new_f)));
           }
@@ -4140,14 +4239,33 @@ impl Program {
   }
   pub fn extract_builtin_attribute_lookup_functions(&mut self) {
     let mut used_attributes: HashSet<BuiltinIOAttribute> = HashSet::new();
+    // Each body's lookups, gathered before any body is rewritten so one memo
+    // serves every body. (The rewrite below adds only an assignment, which
+    // looks nothing up.)
+    let mut memo = EffectsMemo::default();
+    let looked_up_attributes: HashMap<usize, Vec<BuiltinIOAttribute>> = self
+      .abstract_functions_iter()
+      .filter_map(|f| match &f.read().unwrap().implementation {
+        FunctionImplementationKind::Composite(implementation) => Some((
+          Arc::as_ptr(implementation) as usize,
+          implementation
+            .read()
+            .unwrap()
+            .effects_with(&mut memo)
+            .looked_up_builtin_attributes(),
+        )),
+        _ => None,
+      })
+      .collect();
+    drop(memo);
     for f in self.abstract_functions_iter() {
       let borrowed_f = f.read().unwrap();
       if let FunctionImplementationKind::Composite(implementation) =
         &f.read().unwrap().implementation
       {
-        let mut implementation = implementation.write().unwrap();
         let attributes =
-          implementation.effects().looked_up_builtin_attributes();
+          looked_up_attributes[&(Arc::as_ptr(implementation) as usize)].clone();
+        let mut implementation = implementation.write().unwrap();
         let Type::Function(signature) =
           implementation.expression.data.unwrap_known()
         else {
@@ -4322,14 +4440,19 @@ impl Program {
       }
       match &cur.kind {
         ExpKind::Application(callee, _)
-          if let Type::Function(callee_sig) = callee.data.unwrap_known()
-            && let Some(callee_ancestor) = &callee_sig.abstract_ancestor =>
+          if let Some(callee_ancestor) =
+            callee.data.with_known(|t| match t {
+              Type::Function(callee_sig) => {
+                callee_sig.abstract_ancestor.clone()
+              }
+              _ => None,
+            }) =>
         {
           let scope_name = callee_ancestor.read().unwrap().name.clone();
           scope_to_dispatch.get(&scope_name).cloned()
         }
         ExpKind::Name(n)
-          if matches!(cur.data.unwrap_known(), Type::Function(_)) =>
+          if cur.data.with_known(|t| matches!(t, Type::Function(_))) =>
         {
           fn_by_name.get(n).cloned()
         }
@@ -4389,95 +4512,116 @@ impl Program {
     let mut any_changed = false;
     loop {
       let mut changed = false;
-      let copy_program = self.clone();
       for top_level_f in self.abstract_functions_iter() {
         let mut borrowed_f = top_level_f.write().unwrap();
         match &borrowed_f.implementation {
           FunctionImplementationKind::Composite(implementation) => {
             let mut borrowed_implementation = implementation.write().unwrap();
-            borrowed_implementation
-              .expression
-              .walk_mut_with_ctx(
-                &mut |exp, ctx| {
+            // Only a function-typed name, application, `let`, or block
+            // without an ancestor can gain one below, so a body without
+            // one has nothing to walk.
+            let fillable =
+              borrowed_implementation.expression.any_subexpression(|exp| {
+                matches!(
+                  exp.kind,
+                  ExpKind::Name(_)
+                    | ExpKind::Application(..)
+                    | ExpKind::Let(..)
+                    | ExpKind::Block(_)
+                ) && exp.data.with_dereferenced(|t| {
+                  matches!(
+                    t,
+                    TypeState::Known(Type::Function(f))
+                      if f.abstract_ancestor.is_none()
+                  )
+                })
+              });
+            if fillable {
+              borrowed_implementation
+                .expression
+                .walk_mut_with_ctx(
+                  &mut |exp, ctx| {
+                    exp.data.as_known_mut(|t| {
+                      if let Type::Function(f) = t
+                        && f.abstract_ancestor.is_none()
+                      {
+                        match &exp.kind {
+                          ExpKind::Name(name) => {
+                            if let Some((v, _)) = ctx.variables.get(name)
+                              && let Type::Function(bound_f) =
+                                v.var_type.unwrap_known()
+                              && let Some(abstract_ancestor) =
+                                bound_f.abstract_ancestor
+                            {
+                              f.abstract_ancestor = Some(abstract_ancestor);
+                              changed = true;
+                            }
+                          }
+                          ExpKind::Application(applied_f_exp, _) => {
+                            if let ExpKind::Name(applied_f_name) =
+                              &applied_f_exp.kind
+                              && let Type::Function(applied_f_sig) =
+                                applied_f_exp.data.unwrap_known()
+                              && applied_f_sig.abstract_ancestor.is_some()
+                              && let Type::Function(_) =
+                                applied_f_sig.return_type.unwrap_known()
+                              && let Some(signatures) =
+                                self.abstract_functions.get(applied_f_name)
+                              && let Some(signature) = signatures.get(0)
+                              // Skip when the applied function is the one we're
+                              // currently walking (which we hold write-locked):
+                              // higher-order-argument inlining of mutually
+                              // delegating overloads can produce a specialization
+                              // whose body names itself, and `signature.read()`
+                              // on our own already-write-locked lock would
+                              // deadlock. Reading our own return-type ancestor
+                              // mid-mutation would be meaningless anyway.
+                              && !Arc::ptr_eq(top_level_f, signature)
+                              && let AbstractType::Type(Type::Function(
+                                returned_f,
+                              )) = &signature.read().unwrap().return_type
+                              && let Some(returned_abstract_ancestor) =
+                                &returned_f.abstract_ancestor
+                            {
+                              f.abstract_ancestor =
+                                Some(returned_abstract_ancestor.clone());
+                              changed = true;
+                            }
+                          }
+                          _ => {}
+                        }
+                      }
+                      Ok::<bool, Never>(true)
+                    })
+                  },
+                  &mut ImmutableProgramLocalContext::empty(self),
+                )
+                .unwrap();
+              borrowed_implementation
+                .expression
+                .walk_mut(&mut |exp| {
                   exp.data.as_known_mut(|t| {
                     if let Type::Function(f) = t
                       && f.abstract_ancestor.is_none()
-                    {
-                      match &exp.kind {
-                        ExpKind::Name(name) => {
-                          if let Some((v, _)) = ctx.variables.get(name)
-                            && let Type::Function(bound_f) =
-                              v.var_type.unwrap_known()
-                            && let Some(abstract_ancestor) =
-                              bound_f.abstract_ancestor
-                          {
-                            f.abstract_ancestor = Some(abstract_ancestor);
-                            changed = true;
-                          }
-                        }
-                        ExpKind::Application(applied_f_exp, _) => {
-                          if let ExpKind::Name(applied_f_name) =
-                            &applied_f_exp.kind
-                            && let Type::Function(applied_f_sig) =
-                              applied_f_exp.data.unwrap_known()
-                            && applied_f_sig.abstract_ancestor.is_some()
-                            && let Type::Function(_) =
-                              applied_f_sig.return_type.unwrap_known()
-                            && let Some(signatures) =
-                              self.abstract_functions.get(applied_f_name)
-                            && let Some(signature) = signatures.get(0)
-                            // Skip when the applied function is the one we're
-                            // currently walking (which we hold write-locked):
-                            // higher-order-argument inlining of mutually
-                            // delegating overloads can produce a specialization
-                            // whose body names itself, and `signature.read()`
-                            // on our own already-write-locked lock would
-                            // deadlock. Reading our own return-type ancestor
-                            // mid-mutation would be meaningless anyway.
-                            && !Arc::ptr_eq(top_level_f, signature)
-                            && let AbstractType::Type(Type::Function(
-                              returned_f,
-                            )) = &signature.read().unwrap().return_type
-                            && let Some(returned_abstract_ancestor) =
-                              &returned_f.abstract_ancestor
-                          {
-                            f.abstract_ancestor =
-                              Some(returned_abstract_ancestor.clone());
-                            changed = true;
-                          }
-                        }
-                        _ => {}
+                      && let Some(inner_exp) = match &exp.kind {
+                        ExpKind::Let(_, body) => Some(body.as_ref()),
+                        ExpKind::Block(exps) => exps.last(),
+                        _ => None,
                       }
+                      && let Type::Function(inner_f) =
+                        inner_exp.data.unwrap_known()
+                      && let Some(inner_abstract_ancestor) =
+                        inner_f.abstract_ancestor
+                    {
+                      f.abstract_ancestor =
+                        Some(inner_abstract_ancestor.clone());
+                      changed = true;
                     }
-                    Ok::<bool, Never>(true)
-                  })
-                },
-                &mut ImmutableProgramLocalContext::empty(&copy_program),
-              )
-              .unwrap();
-            borrowed_implementation
-              .expression
-              .walk_mut(&mut |exp| {
-                exp.data.as_known_mut(|t| {
-                  if let Type::Function(f) = t
-                    && f.abstract_ancestor.is_none()
-                    && let Some(inner_exp) = match &exp.kind {
-                      ExpKind::Let(_, body) => Some(body.as_ref()),
-                      ExpKind::Block(exps) => exps.last(),
-                      _ => None,
-                    }
-                    && let Type::Function(inner_f) =
-                      inner_exp.data.unwrap_known()
-                    && let Some(inner_abstract_ancestor) =
-                      inner_f.abstract_ancestor
-                  {
-                    f.abstract_ancestor = Some(inner_abstract_ancestor.clone());
-                    changed = true;
-                  }
-                });
-                Ok::<bool, Never>(true)
-              })
-              .unwrap();
+                  });
+                  Ok::<bool, Never>(true)
+                })
+                .unwrap();
+            }
             let inner_abstract_ancestor = if let ExpKind::Function(_, body) =
               &borrowed_implementation.expression.kind
               && let Type::Function(inner_f) = body.data.unwrap_known()
@@ -4532,6 +4676,13 @@ impl Program {
     for f in self.abstract_functions_iter() {
       let borrowed_f = f.read().unwrap();
       match &borrowed_f.implementation {
+        // Only calls through a scope field or a local binding are rewritten.
+        FunctionImplementationKind::Composite(implementation)
+          if !implementation
+            .read()
+            .unwrap()
+            .expression
+            .may_apply_local_function() => {}
         FunctionImplementationKind::Composite(implementation) => implementation
           .write()
           .unwrap()
@@ -4860,6 +5011,17 @@ impl Program {
         }
         match &borrowed_f.implementation {
           FunctionImplementationKind::Composite(implementation) => {
+            // Only nested lambdas are extracted, so a body without one has
+            // nothing to walk.
+            let mut is_root = true;
+            if !implementation.read().unwrap().expression.any_subexpression(
+              |exp| {
+                !std::mem::replace(&mut is_root, false)
+                  && matches!(exp.kind, ExpKind::Function(..))
+              },
+            ) {
+              continue;
+            }
             // A lambda nested inside an already-extracted closure body
             // refers to the enclosing closure's captures as fields of the
             // enclosing scope param. Capturing that param *whole* would
@@ -4900,8 +5062,12 @@ impl Program {
                     root_encountered = true;
                     return Ok(true);
                   }
-                  let effects = exp.effects();
-                  if let ExpKind::Function(arg_names, body) = &mut exp.kind {
+                  if let ExpKind::Function(..) = &exp.kind {
+                    let effects = exp.effects();
+                    let ExpKind::Function(arg_names, body) = &mut exp.kind
+                    else {
+                      unreachable!()
+                    };
                     // If any captured variable is a function whose abstract
                     // ancestor hasn't been resolved yet, defer extraction until
                     // propagate_abstract_function_signatures has set it.
@@ -5635,8 +5801,9 @@ impl Program {
     // be emitted (`easl_midi_notes`'s `Option<MidiNote>` is monomorphized
     // into the typedefs only if the enum is actually constructed/matched,
     // which audio-only `get-midi-note` use never does).
+    let functions = self.emitted_function_closure(target);
     let wgsl_referenced_globals = if target == CompilerTarget::WGSL {
-      self.wgsl_referenced_globals()
+      self.wgsl_referenced_globals(&functions)
     } else {
       HashSet::new()
     };
@@ -5950,9 +6117,8 @@ impl Program {
     // clones / CPU-only specializations fall away by unreachability. This is
     // also the set `wgsl_referenced_globals` walks to decide which
     // compiler-generated vars' declarations to emit.
-    let (ordered_functions, emitted) = self.emitted_function_closure(target);
-    for (f_name, implementation) in ordered_functions {
-      if !emitted.contains(&f_name) {
+    for (f_name, implementation) in functions.ordered {
+      if !functions.emitted.contains(&f_name) {
         continue;
       }
       {
@@ -5969,11 +6135,12 @@ impl Program {
           continue;
         }
       }
-      compiled_string += &implementation
-        .read()
-        .unwrap()
-        .clone()
-        .compile(&f_name, &mut names, &self, target)?;
+      compiled_string += &implementation.read().unwrap().clone().compile(
+        &f_name,
+        &mut names,
+        functions.valid.contains(&f_name),
+        target,
+      )?;
       compiled_string += "\n\n";
     }
     Ok(compiled_string)
@@ -8287,11 +8454,11 @@ impl Program {
     let mut dependencies: HashMap<Arc<str>, HashSet<Arc<str>>> = HashMap::new();
     let mut fns: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> = vec![];
     for f in self.abstract_functions_iter() {
-      let f = f.read().unwrap().clone();
+      let f = f.read().unwrap();
       if f.generic_args.is_empty()
         && !f.has_uninlined_higher_order_arguments()
         && let FunctionImplementationKind::Composite(implementation) =
-          f.implementation
+          &f.implementation
       {
         fns.push((f.name.clone(), implementation.clone()));
         dependencies.insert(f.name.clone(), HashSet::new());
@@ -8376,29 +8543,42 @@ impl Program {
         })
         .unwrap();
     }
-    let mut final_fns: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> = vec![];
-    while !fns.is_empty() {
-      let mut broke = false;
-      for i in 0..fns.len() {
-        if dependencies.get(&fns[i].0).unwrap().is_empty() {
-          let (name, implementation) = fns.remove(i);
-          for remaining_dependencies in dependencies.values_mut() {
-            remaining_dependencies.remove(&name);
-          }
-          final_fns.push((name, implementation));
-          broke = true;
-          break;
-        }
-      }
-      if !broke {
-        panic!(
-          "Couldn't find topological sort of user functions.\n\
-           If you're seeing this, there's a compiler bug; an earlier compiler \
-           stage should have caught the dependency loop "
-        )
+    // Repeatedly takes the earliest function (in `fns` order) whose
+    // dependencies have all been taken.
+    let mut unmet_dependencies: Vec<usize> = fns
+      .iter()
+      .map(|(name, _)| dependencies[name].len())
+      .collect();
+    let mut dependents: HashMap<&Arc<str>, Vec<usize>> = HashMap::new();
+    for (i, (name, _)) in fns.iter().enumerate() {
+      for dependency in dependencies[name].iter() {
+        dependents.entry(dependency).or_default().push(i);
       }
     }
-    final_fns
+    let mut ready: BinaryHeap<Reverse<usize>> = unmet_dependencies
+      .iter()
+      .enumerate()
+      .filter(|(_, unmet)| **unmet == 0)
+      .map(|(i, _)| Reverse(i))
+      .collect();
+    let mut order: Vec<usize> = vec![];
+    while let Some(Reverse(i)) = ready.pop() {
+      order.push(i);
+      for dependent in dependents.remove(&fns[i].0).unwrap_or_default() {
+        unmet_dependencies[dependent] -= 1;
+        if unmet_dependencies[dependent] == 0 {
+          ready.push(Reverse(dependent));
+        }
+      }
+    }
+    if order.len() < fns.len() {
+      panic!(
+        "Couldn't find topological sort of user functions.\n\
+         If you're seeing this, there's a compiler bug; an earlier compiler \
+         stage should have caught the dependency loop "
+      )
+    }
+    order.into_iter().map(|i| fns[i].clone()).collect()
   }
   /// Statically determines which top-level vars are shared across CPU
   /// threads: touched (read or written) by code reachable from more than
@@ -8435,6 +8615,7 @@ impl Program {
     let var_names: HashSet<Arc<str>> =
       self.top_level_vars.iter().map(|v| v.name.clone()).collect();
     let mut used: HashSet<Arc<str>> = HashSet::new();
+    let mut memo = EffectsMemo::default();
     for f in self.abstract_functions_iter() {
       let f = f.read().unwrap();
       if f
@@ -8452,7 +8633,7 @@ impl Program {
         let (reads, writes) = implementation
           .read()
           .unwrap()
-          .effects()
+          .effects_with(&mut memo)
           .gpu_read_and_written_globals();
         used.extend(
           reads
@@ -8474,22 +8655,15 @@ impl Program {
     }));
     used
   }
-  /// The functions actually emitted to `target`, as
-  /// `(ordered_functions, emitted_names)`: the transitive call-graph
+  /// The functions actually emitted to `target`: the transitive call-graph
   /// closure of the root set (this target's entry points plus every
   /// directly-user-written, transitively-target-valid function — the
-  /// easl-as-a-library contract). `ordered_functions` is the full
-  /// callees-first list (for deterministic emission order); `emitted` is
-  /// the reachable subset. Shared by `compile_to_target`'s function
+  /// easl-as-a-library contract). Shared by `compile_to_target`'s function
   /// emission and `wgsl_referenced_globals`.
-  #[allow(clippy::type_complexity)]
   fn emitted_function_closure(
     &self,
     target: CompilerTarget,
-  ) -> (
-    Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)>,
-    HashSet<Arc<str>>,
-  ) {
+  ) -> EmittedFunctions {
     use crate::compiler::expression::ExpKind;
     let ordered_functions = self.composite_functions_in_usage_order();
     let registry_names: HashSet<Arc<str>> = ordered_functions
@@ -8515,18 +8689,33 @@ impl Program {
         .unwrap();
       callees.insert(f_name.clone(), found);
     }
+    let non_binding_globals = if target == CompilerTarget::WGSL {
+      self.wgsl_non_binding_globals()
+    } else {
+      HashSet::new()
+    };
     // `ordered_functions` is topological (callees first), so one pass
     // suffices for the transitive-validity fixpoint.
+    let mut valid: HashSet<Arc<str>> = HashSet::new();
     let mut transitively_valid: HashMap<Arc<str>, bool> = HashMap::new();
+    let mut memo = EffectsMemo::default();
     for (f_name, implementation) in ordered_functions.iter() {
-      let valid = implementation
-        .read()
-        .unwrap()
-        .is_valid_for_target(self, target)
-        && callees[f_name]
-          .iter()
-          .all(|callee| transitively_valid[callee]);
-      transitively_valid.insert(f_name.clone(), valid);
+      let locally_valid = implementation.read().unwrap().is_valid_for_target(
+        self,
+        target,
+        &non_binding_globals,
+        &mut memo,
+      );
+      if locally_valid {
+        valid.insert(f_name.clone());
+      }
+      transitively_valid.insert(
+        f_name.clone(),
+        locally_valid
+          && callees[f_name]
+            .iter()
+            .all(|callee| transitively_valid[callee]),
+      );
     }
     let mut emitted: HashSet<Arc<str>> = HashSet::new();
     let mut queue: Vec<Arc<str>> = ordered_functions
@@ -8547,7 +8736,31 @@ impl Program {
         queue.extend(callees[&f_name].iter().cloned());
       }
     }
-    (ordered_functions, emitted)
+    EmittedFunctions {
+      ordered: ordered_functions,
+      emitted,
+      valid,
+    }
+  }
+  /// The GPU-space globals whose types can't be a WGSL binding. A function
+  /// reading one has no WGSL form (see `TopLevelFunction::is_valid_for_target`).
+  fn wgsl_non_binding_globals(&self) -> HashSet<Arc<str>> {
+    self
+      .top_level_vars
+      .iter()
+      .filter(|v| {
+        matches!(
+          v.kind,
+          TopLevelVariableKind::Var {
+            address_space: VariableAddressSpace::Uniform
+              | VariableAddressSpace::StorageRead
+              | VariableAddressSpace::StorageReadWrite,
+            ..
+          }
+        ) && !v.var_type.is_valid_wgsl_binding_layout()
+      })
+      .map(|v| v.name.clone())
+      .collect()
   }
   /// The top-level vars referenced by name anywhere in the WGSL output:
   /// `gpu_used_globals` (entry-point effect reads/writes, textures) plus
@@ -8561,15 +8774,17 @@ impl Program {
   /// signature-only `is_valid_for_target` yet never be emitted (audio
   /// entries don't compile to WGSL), and counting it would emit a var
   /// whose type isn't even in the typedefs → dangling reference.
-  fn wgsl_referenced_globals(&self) -> HashSet<Arc<str>> {
+  /// `functions` is the WGSL `emitted_function_closure`.
+  fn wgsl_referenced_globals(
+    &self,
+    functions: &EmittedFunctions,
+  ) -> HashSet<Arc<str>> {
     use crate::compiler::expression::ExpKind;
     let var_names: HashSet<Arc<str>> =
       self.top_level_vars.iter().map(|v| v.name.clone()).collect();
     let mut referenced = self.gpu_used_globals();
-    let (ordered_functions, emitted) =
-      self.emitted_function_closure(CompilerTarget::WGSL);
-    for (f_name, implementation) in ordered_functions.iter() {
-      if !emitted.contains(f_name) {
+    for (f_name, implementation) in functions.ordered.iter() {
+      if !functions.emitted.contains(f_name) {
         continue;
       }
       implementation
@@ -8625,6 +8840,13 @@ impl Program {
   /// directly, which only works for an atomic or a fixed-size array of
   /// them, and only on the CPU: the GPU's copy is a separate buffer.
   pub fn validate_thread_shared_atomics(&self, errors: &mut ErrorLog) {
+    if !self
+      .top_level_vars
+      .iter()
+      .any(|v| v.var_type.involves_atomic())
+    {
+      return;
+    }
     let gpu_used = self.gpu_used_globals();
     for (name, _) in self.thread_shared_globals() {
       let v = self
@@ -8660,7 +8882,8 @@ impl Program {
     use crate::compiler::expression::ExpKind;
     let var_names: HashSet<Arc<str>> =
       self.top_level_vars.iter().map(|v| v.name.clone()).collect();
-    let globals_reachable_from = |root_entry: fn(&EntryPoint) -> bool| {
+    let mut memo = EffectsMemo::default();
+    let mut globals_reachable_from = |root_entry: fn(&EntryPoint) -> bool| {
       let mut visited: HashSet<Arc<str>> = HashSet::new();
       let mut queue: Vec<Arc<RwLock<TopLevelFunction>>> = vec![];
       for f in self.abstract_functions_iter() {
@@ -8676,7 +8899,7 @@ impl Program {
       let mut globals: HashSet<Arc<str>> = HashSet::new();
       while let Some(f) = queue.pop() {
         let f = f.read().unwrap();
-        let effects = f.effects();
+        let effects = f.effects_with(&mut memo);
         let (reads, writes) = effects.read_and_written_globals();
         // Length-only reads count as touches here, unlike in the GPU
         // readback set they're excluded from: the GPU can never resize a
@@ -9257,20 +9480,25 @@ impl Program {
             .entry_point
             .map(|e| !matches!(e, EntryPoint::Cpu))
             .unwrap_or(false);
-          let gpu_only = implementation_read.effects().0.iter().any(|e| {
-            matches!(
-              e,
-              Effect::FragmentExclusiveFunction(_)
-                | Effect::LookupBuiltinAttribute(_)
-            )
-          });
+          let gpu_only = implementation_read
+            .effects_with(&mut state.effects_memo)
+            .0
+            .iter()
+            .any(|e| {
+              matches!(
+                e,
+                Effect::FragmentExclusiveFunction(_)
+                  | Effect::LookupBuiltinAttribute(_)
+              )
+            });
           is_non_cpu_entry || gpu_only
         } else {
           let skip_for_entry_point = implementation_read
             .entry_point
             .map(|e| !e.should_compile_to_target(CompilerTarget::VM))
             .unwrap_or(false);
-          let effects = implementation_read.effects();
+          let effects =
+            implementation_read.effects_with(&mut state.effects_memo);
           let has_cpu_exclusive = effects
             .cpu_exclusive_functions()
             .iter()

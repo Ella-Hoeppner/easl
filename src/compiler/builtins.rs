@@ -3844,13 +3844,13 @@ pub fn built_in_macros() -> Vec<Macro> {
         (position, EncloserOrOperator::Encloser(Encloser::Parens)),
         children,
       ) => {
-        let mut children = children.clone();
         if !children.is_empty()
           && let EaslTree::Leaf(if_position, leaf) = &children[0]
           && leaf.as_str() == "if"
         {
           if children.len() == 4 {
             let if_position = if_position.clone();
+            let mut children = children.clone();
             let false_branch = children.remove(3);
             let true_branch = children.remove(2);
             let condition = children.remove(1);
@@ -3893,12 +3893,12 @@ pub fn built_in_macros() -> Vec<Macro> {
         (enclosing_position, EncloserOrOperator::Encloser(Encloser::Parens)),
         children,
       ) => {
-        let mut children = children.clone();
         if !children.is_empty()
           && let EaslTree::Leaf(when_position, leaf) = &children[0]
           && leaf.as_str() == "when"
         {
           let when_position = when_position.clone();
+          let mut children = children.clone();
           if children.len() > 2 {
             let condition = children.remove(1);
             let condition_position = condition.position().clone();

@@ -999,24 +999,53 @@ impl AbstractFunctionSignature {
       specialized_from: None,
     })
   }
+  /// The bounds on the type generic `name` (its last declaration's, like
+  /// the unification variable `concretize` binds it to).
+  fn generic_constraints(&self, name: &Arc<str>) -> Vec<TypeConstraint> {
+    self
+      .generic_args
+      .iter()
+      .rev()
+      .find_map(|(generic_name, generic_arg, _)| match generic_arg {
+        GenericArgument::Type(bounds) if generic_name == name => {
+          Some(bounds.clone())
+        }
+        _ => None,
+      })
+      .expect("unrecognized generic")
+  }
+  /// Whether `FunctionSignature::are_args_compatible` can accept arguments
+  /// of these types for a concretization of this signature: false only when
+  /// it rejects every concretization, either by arity or by a parameter
+  /// whose concrete form doesn't depend on generics
+  /// (`AbstractType::may_be_compatible_with`).
+  pub fn may_accept_arguments(&self, arg_types: &[&mut TypeState]) -> bool {
+    if arg_types.len() == self.arg_types.len() {
+      self
+        .arg_types
+        .iter()
+        .zip(arg_types)
+        .all(|((t, _), arg)| t.may_be_compatible_with(arg))
+    } else {
+      self.associative
+        && !arg_types.is_empty()
+        && self.arg_types.first().is_none_or(|(t, _)| {
+          arg_types.iter().all(|arg| t.may_be_compatible_with(arg))
+        })
+    }
+  }
   pub fn concretize(
     f: Arc<RwLock<Self>>,
     typedefs: &TypeDefs,
-    source_trace: SourceTrace,
+    source_trace: &SourceTrace,
   ) -> CompileResult<FunctionSignature> {
     let f_borrowed = f.read().unwrap();
-    let (generic_variables, generic_constraints): (
-      HashMap<Arc<str>, ExpTypeInfo>,
-      HashMap<Arc<str>, Vec<TypeConstraint>>,
-    ) = f_borrowed
+    let generic_variables: HashMap<Arc<str>, ExpTypeInfo> = f_borrowed
       .generic_args
       .iter()
       .filter_map(|(name, generic_arg, _)| {
-        if let GenericArgument::Type(bounds) = generic_arg {
-          Some((
-            (name.clone(), TypeState::fresh_unification_variable().into()),
-            (name.clone(), bounds.clone()),
-          ))
+        if let GenericArgument::Type(_) = generic_arg {
+          Some((name.clone(), TypeState::fresh_unification_variable().into()))
         } else {
           None
         }
@@ -1043,10 +1072,7 @@ impl AbstractFunctionSignature {
               .get(var_name)
               .expect("unrecognized generic")
               .clone(),
-            generic_constraints
-              .get(var_name)
-              .expect("unrecognized generic")
-              .clone(),
+            f_borrowed.generic_constraints(var_name),
           ),
           AbstractType::Type(t) => (t.clone().known().into(), vec![]),
           AbstractType::AbstractStruct(s) => (
@@ -1055,7 +1081,7 @@ impl AbstractFunctionSignature {
               &generic_variables,
               &generic_constants,
               typedefs,
-              source_trace.clone(),
+              source_trace,
             )?)
             .known()
             .into(),
@@ -1067,7 +1093,7 @@ impl AbstractFunctionSignature {
               &generic_variables,
               &generic_constants,
               typedefs,
-              source_trace.clone(),
+              source_trace,
             )?)
             .known()
             .into(),
@@ -1083,7 +1109,7 @@ impl AbstractFunctionSignature {
                   &generic_variables,
                   &generic_constants,
                   typedefs,
-                  source_trace.clone(),
+                  source_trace,
                 )?
                 .into(),
             )
@@ -1140,16 +1166,18 @@ impl AbstractFunctionSignature {
       .into(),
       AbstractType::Unit => TypeState::Known(Type::Unit).into(),
     };
-    for (v, _) in args.iter_mut() {
-      v.var_type.kind.replace_skolems_with_unification_variables(
+    if !f_borrowed.generic_args.is_empty() {
+      for (v, _) in args.iter_mut() {
+        v.var_type.kind.replace_skolems_with_unification_variables(
+          &generic_variables,
+          &generic_constants,
+        );
+      }
+      return_type.kind.replace_skolems_with_unification_variables(
         &generic_variables,
         &generic_constants,
       );
     }
-    return_type.kind.replace_skolems_with_unification_variables(
-      &generic_variables,
-      &generic_constants,
-    );
     Ok(FunctionSignature {
       args,
       return_type,
@@ -1199,7 +1227,7 @@ impl FunctionSignature {
         })
         .is_some()
   }
-  pub fn are_args_compatible(&self, arg_types: &Vec<TypeState>) -> bool {
+  pub fn are_args_compatible(&self, arg_types: &[&mut TypeState]) -> bool {
     if arg_types.len() != self.args.len() {
       if let Some(ancestor) = &self.abstract_ancestor {
         if ancestor.read().unwrap().associative {
@@ -1211,7 +1239,7 @@ impl FunctionSignature {
             if !TypeState::are_compatible(arg_typestate, &arg.var_type.kind) {
               return false;
             }
-            if let TypeState::Known(t) = arg_typestate {
+            if let TypeState::Known(t) = &**arg_typestate {
               for constraint in arg_constraints.iter() {
                 if !t.satisfies_constraint(constraint) {
                   return false;
@@ -1229,7 +1257,7 @@ impl FunctionSignature {
       if !TypeState::are_compatible(&arg.var_type, &arg_types[i]) {
         return false;
       }
-      if let TypeState::Known(t) = &arg_types[i] {
+      if let TypeState::Known(t) = &*arg_types[i] {
         for constraint in arg_constraints {
           if !t.satisfies_constraint(constraint) {
             return false;
@@ -1285,9 +1313,16 @@ impl FunctionSignature {
       .map(|abstract_ancestor| abstract_ancestor.read().unwrap().name.clone())
   }
   pub fn effects(&self) -> EffectType {
-    if let Some(abstract_ancestor) = &self.abstract_ancestor {
+    Self::callee_effects(&self.abstract_ancestor, &mut EffectsMemo::default())
+  }
+  /// The effects of calling a function whose type has this ancestor.
+  pub fn callee_effects(
+    abstract_ancestor: &Option<Arc<RwLock<AbstractFunctionSignature>>>,
+    memo: &mut EffectsMemo,
+  ) -> EffectType {
+    if let Some(abstract_ancestor) = abstract_ancestor {
       match &abstract_ancestor.read().unwrap().implementation {
-        FunctionImplementationKind::Composite(f) => f.read().unwrap().effects(),
+        FunctionImplementationKind::Composite(f) => memo.body_effects(f),
         FunctionImplementationKind::Builtin { effect_type, .. } => {
           effect_type.clone()
         }
@@ -1324,12 +1359,14 @@ impl TopLevelFunction {
   /// non-function address space (WGSL: the storage-space `ptr` argument
   /// emission is malformed, and no shader-callable code can produce such
   /// a reference anyway), or through an entry-point marking the target
-  /// doesn't compile. `compile` emits an empty string for exactly the
-  /// functions this rejects.
+  /// doesn't compile. `non_binding_globals` is
+  /// `Program::wgsl_non_binding_globals` (empty for other targets).
   pub fn is_valid_for_target(
     &self,
     program: &Program,
     target: CompilerTarget,
+    non_binding_globals: &HashSet<Arc<str>>,
+    memo: &mut EffectsMemo,
   ) -> bool {
     if !self
       .entry_point
@@ -1376,29 +1413,13 @@ impl TopLevelFunction {
     // but the body still references the un-emittable binding.
     if target == CompilerTarget::WGSL {
       use crate::compiler::expression::ExpKind;
-      let non_binding_legal: std::collections::HashSet<Arc<str>> = program
-        .top_level_vars
-        .iter()
-        .filter(|v| {
-          matches!(
-            v.kind,
-            crate::compiler::vars::TopLevelVariableKind::Var {
-              address_space: VariableAddressSpace::Uniform
-                | VariableAddressSpace::StorageRead
-                | VariableAddressSpace::StorageReadWrite,
-              ..
-            }
-          ) && !v.var_type.is_valid_wgsl_binding_layout()
-        })
-        .map(|v| v.name.clone())
-        .collect();
-      if !non_binding_legal.is_empty() {
+      if !non_binding_globals.is_empty() {
         let mut reads_bad_global = false;
         self
           .expression
           .walk(&mut |exp| {
             if let ExpKind::Name(name) = &exp.kind
-              && non_binding_legal.contains(name)
+              && non_binding_globals.contains(name)
             {
               reads_bad_global = true;
               return Ok::<bool, Never>(false);
@@ -1411,23 +1432,22 @@ impl TopLevelFunction {
         }
       }
     }
-    let effects = self.effects();
+    let effects = self.effects_with(memo);
     effects.cpu_exclusive_functions().is_empty()
       && effects.cpu_exclusive_types().is_empty()
       && effects.window_info_kinds().is_empty()
       && effects.gpu_illegal_address_space_writes(program).is_empty()
   }
+  /// Emits this function, or an empty string when it isn't `valid` (its
+  /// `is_valid_for_target`): skipped functions' bodies are never lowered at
+  /// all.
   pub fn compile(
     self,
     name: &str,
     names: &mut NameContext,
-    program: &Program,
+    valid: bool,
     target: CompilerTarget,
   ) -> CompileResult<String> {
-    // The validity gate is `is_valid_for_target` above; `fn_string` below
-    // is only evaluated when it passes, so skipped functions' bodies are
-    // never lowered at all.
-    let valid = self.is_valid_for_target(program, target);
     let TypedExp { data, kind, .. } = self.expression;
     let Type::Function(signature) = data.unwrap_known() else {
       panic!("attempted to compile function with invalid type data")
@@ -1552,8 +1572,12 @@ impl TopLevelFunction {
     })
   }
   pub fn effects(&self) -> EffectType {
+    self.effects_with(&mut EffectsMemo::default())
+  }
+  /// [`Self::effects`], reusing `memo`'s callee effects.
+  pub fn effects_with(&self, memo: &mut EffectsMemo) -> EffectType {
     if let ExpKind::Function(..) = &self.expression.kind {
-      self.expression.effects()
+      self.expression.effects_with(memo)
     } else {
       EffectType::empty()
     }
@@ -1600,5 +1624,36 @@ impl TopLevelFunction {
       .expression
       .compile_to_bytecode(CompilePosition::Value, state);
     state.close_function();
+  }
+}
+
+/// Callee body effects, computed once each for the life of the memo. An
+/// application's effects include its callee's body effects, so without one a
+/// function called from many places (or from functions that are themselves
+/// called from many places) is re-analyzed at every call. Use a memo only
+/// while no function body is rewritten: one effects computation (what
+/// `effects()` does), or a pass that only reads bodies.
+#[derive(Default)]
+pub struct EffectsMemo {
+  /// By implementation address. Each entry holds its implementation, so no
+  /// address is reused while the memo exists.
+  callees: HashMap<usize, (Arc<RwLock<TopLevelFunction>>, EffectType)>,
+}
+
+impl EffectsMemo {
+  /// The effects of `implementation`'s body, computed on first request.
+  fn body_effects(
+    &mut self,
+    implementation: &Arc<RwLock<TopLevelFunction>>,
+  ) -> EffectType {
+    let key = Arc::as_ptr(implementation) as usize;
+    if let Some((_, effects)) = self.callees.get(&key) {
+      return effects.clone();
+    }
+    let effects = implementation.read().unwrap().effects_with(self);
+    self
+      .callees
+      .insert(key, (implementation.clone(), effects.clone()));
+    effects
   }
 }

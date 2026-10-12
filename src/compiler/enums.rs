@@ -155,7 +155,7 @@ impl AbstractEnumVariant {
     generics: &HashMap<Arc<str>, ExpTypeInfo>,
     generic_constants: &HashMap<Arc<str>, ConstGenericValue>,
     typedefs: &TypeDefs,
-    source_trace: SourceTrace,
+    source_trace: &SourceTrace,
   ) -> CompileResult<EnumVariant> {
     Ok(EnumVariant {
       name: self.name.clone(),
@@ -227,7 +227,7 @@ impl AbstractEnum {
     generics: &HashMap<Arc<str>, ExpTypeInfo>,
     generic_constants: &HashMap<Arc<str>, ConstGenericValue>,
     typedefs: &TypeDefs,
-    source_trace: SourceTrace,
+    source_trace: &SourceTrace,
   ) -> CompileResult<Enum> {
     let new_variants = s
       .variants
@@ -237,7 +237,7 @@ impl AbstractEnum {
           generics,
           generic_constants,
           typedefs,
-          source_trace.clone(),
+          source_trace,
         )
       })
       .collect::<CompileResult<Vec<_>>>()?;
@@ -331,7 +331,7 @@ impl AbstractEnum {
       &generics_map,
       &generic_constants_map,
       typedefs,
-      source_trace,
+      &source_trace,
     )
   }
   pub fn fill_generics_with_unification_variables(

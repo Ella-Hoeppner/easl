@@ -530,8 +530,9 @@ fn load_and_parse_easl_multidocument_with_resolution(
     let import_path = unprocessed_imports.remove(0);
     let easl_subsource = lookup(&import_path)?;
     let subdocument = parse_easl_without_comments(&easl_subsource);
+    let subdocument_parsed = subdocument.parsing_failures.is_empty();
     documents.add_document(
-      subdocument.clone(),
+      subdocument,
       import_path.to_str().unwrap().to_string(),
       easl_subsource,
     );
@@ -553,7 +554,7 @@ fn load_and_parse_easl_multidocument_with_resolution(
         &mut errors,
       )?;
     }
-    if !subdocument.parsing_failures.is_empty() {
+    if !subdocument_parsed {
       record_imports(&mut documents, import_forms);
       return Ok(Err(documents));
     }

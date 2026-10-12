@@ -187,7 +187,12 @@ impl EffectType {
     self.0.is_empty()
   }
   pub fn merge(&mut self, other: impl Into<Self>) {
-    self.0.extend(other.into().0);
+    // The larger set absorbs the smaller one.
+    let mut other = other.into();
+    if other.0.len() > self.0.len() {
+      std::mem::swap(&mut self.0, &mut other.0);
+    }
+    self.0.extend(other.0);
   }
   pub fn remove(&mut self, e: &Effect) {
     self.0.remove(e);

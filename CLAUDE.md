@@ -74,6 +74,13 @@ Run `cargo fmt` before handing changes back (it reformats `tests/format_tests.rs
 
 **Hash order**: hash seeds are intentionally random — never fix them to paper over order-dependence; fix the order-dependence (dedupe by identity, not generated names; register before rewriting; sort address-keyed maps before iterating).
 
+**Compile-time performance**: a multi-file program of a few thousand lines validates in about 130ms (release); keep it that way.
+- Never compute a subtree analysis (`effects()`, a full `walk`) at every node of a walk: guard it to the node kinds that use it (computing `effects()` at every node of every body once made closure extraction quadratic and 70% of compile time).
+- `effects()` of an application includes the callee's body effects. An `EffectsMemo` (functions.rs) holds each callee's body effects, keyed by implementation (and holding it, so no address is reused): `effects()` uses a fresh one per call, and read-only passes (`gpu_used_globals`, `thread_shared_globals`, `emitted_function_closure`, a few validations, and bytecode compilation via `BytecodeCompilationState::effects_memo`) create one and pass it to `effects_with` so it spans the pass. A memo is valid only while no function body is rewritten.
+- Read types in place with `TypeState::with_known` (panics on unknown types, like `unwrap_known`, without cloning) instead of `unwrap_known()` when only inspecting.
+- Several passes skip bodies a cheap `TypedExp::any_subexpression` pre-check proves they can't change; such a check must be exactly equivalent (over-inclusive is fine, under-inclusive is a bug).
+- Profiling: time phases around `load_easl_program_from_file`, `validate_raw_program`, `compile_to_target`, and the bytecode compiles in a small release-mode harness; per-pass timers inside `validate_raw_program` are the most reliable signal (sampling profilers truncate the deep recursion and misattribute it).
+
 ## Compilation Pipeline
 
 Before it, `Program::from_easl_documents` macroexpands each document and runs **module resolution** (`resolve_modules`, modules.rs), which hands the rest of the compiler one flat list of definitions with every name rewritten to an internal name. Then `Program::validate_raw_program` (program.rs), in order:
