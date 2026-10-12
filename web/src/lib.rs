@@ -26,13 +26,16 @@ use easl::{
     VmRunState, pick_entry_point_name,
   },
   load_easl_program_from_sources,
-  window::{BufferRead, GpuCore, ScreenTarget, install_gpu_error_handler},
+  window::{
+    BufferRead, GpuCore, SCROLL_LINE_HEIGHT, ScreenTarget,
+    install_gpu_error_handler,
+  },
 };
 use io::WebIO;
 use js_sys::{Function, Promise, Reflect};
 use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent};
+use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent, WheelEvent};
 
 /// Compiles and runs an easl program, rendering into `canvas`. The program
 /// is given as parallel lists of file paths and sources, with `main_path`
@@ -338,6 +341,7 @@ impl WebApp {
       gpu.mouse_just_down = false;
       gpu.mouse_right_just_down = false;
       gpu.mouse_delta = (0., 0.);
+      gpu.mouse_scroll_delta = (0., 0.);
       match gpu.mouse_capture_request.take() {
         // Browsers only grant pointer lock shortly after a user gesture,
         // which is how programs normally request it (on a click).
@@ -526,6 +530,24 @@ fn install_input_listeners(
       2 => gpu.mouse_right_down = false,
       _ => {}
     }
+  });
+  // Scrolling over the canvas is input to the program, not to the page.
+  // `WheelEvent`'s deltas already point the way `mouse-scroll-delta`'s do;
+  // they're converted from the event's unit (CSS pixels, lines, or pages)
+  // to physical pixels.
+  let wheel_gpu = Arc::clone(gpu);
+  let wheel_canvas = canvas.clone();
+  add_listener(canvas, "wheel", move |event: WheelEvent| {
+    event.prevent_default();
+    let scale = device_pixel_ratio();
+    let unit = match event.delta_mode() {
+      WheelEvent::DOM_DELTA_LINE => SCROLL_LINE_HEIGHT as f64 * scale,
+      WheelEvent::DOM_DELTA_PAGE => wheel_canvas.height() as f64,
+      _ => scale,
+    };
+    let mut gpu = wheel_gpu.write().unwrap();
+    gpu.mouse_scroll_delta.0 += (event.delta_x() * unit) as f32;
+    gpu.mouse_scroll_delta.1 += (event.delta_y() * unit) as f32;
   });
   // Right clicks are input, not a request for the context menu.
   add_listener(canvas, "contextmenu", move |event: web_sys::Event| {

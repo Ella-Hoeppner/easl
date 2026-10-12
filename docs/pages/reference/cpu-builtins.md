@@ -191,6 +191,14 @@ Whether the right (secondary) mouse button is held, or was pressed this frame. I
 
 The raw mouse motion since the previous frame, in device units, with +y pointing down. Unlike `mouse-coords`, it keeps reporting motion while the cursor is captured and pinned in place, which makes it the right input for first-person camera controls.
 
+### `mouse-scroll-delta`
+
+```easl
+(mouse-scroll-delta): vec2f
+```
+
+How far the mouse wheel or trackpad scrolled since the previous frame, in pixels (the units of `mouse-coords`), with +y scrolling down (toward the end of a document) and +x scrolling right. Trackpads report pixels directly; a wheel that scrolls by lines counts 40 logical pixels per line. In the browser, scrolling over the canvas doesn't scroll the page.
+
 ### `capture-mouse`
 
 ```easl

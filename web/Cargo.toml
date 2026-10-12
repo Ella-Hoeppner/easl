@@ -39,6 +39,7 @@ features = [
   "MessagePort",
   "MouseEvent",
   "PointerEvent",
+  "WheelEvent",
   "Window",
   "Worklet",
 ]

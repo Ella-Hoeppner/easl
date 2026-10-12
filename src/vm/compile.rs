@@ -4411,13 +4411,15 @@ impl TypedExp {
         state.emit_host_op(HostOp::StartAudio { entry });
         Some(None)
       }
-      "window-resolution" | "mouse-coords" | "mouse-delta" => {
+      "window-resolution" | "mouse-coords" | "mouse-delta"
+      | "mouse-scroll-delta" => {
         let dest = state.take_stack_slot(2);
         state.emit_host_op(HostOp::WindowQuery {
           kind: match f_name {
             "window-resolution" => WindowQueryKind::Resolution,
             "mouse-coords" => WindowQueryKind::MouseCoords,
-            _ => WindowQueryKind::MouseDelta,
+            "mouse-delta" => WindowQueryKind::MouseDelta,
+            _ => WindowQueryKind::MouseScrollDelta,
           },
           dest,
         });

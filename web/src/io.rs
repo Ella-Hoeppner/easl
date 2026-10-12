@@ -177,6 +177,10 @@ impl IOManager for WebIO {
     self.inner.mouse_delta()
   }
 
+  fn mouse_scroll_delta(&self) -> (f32, f32) {
+    self.inner.mouse_scroll_delta()
+  }
+
   fn mouse_captured(&self) -> bool {
     self.inner.mouse_captured()
   }

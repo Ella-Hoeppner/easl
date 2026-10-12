@@ -54,6 +54,8 @@ mod harness {
     MouseUp(f64, f64),
     RightMouseDown(f64, f64),
     RightMouseUp(f64, f64),
+    /// A wheel event at (x, y) scrolling by (dx, dy) CSS pixels.
+    MouseWheel(f64, f64, f64, f64),
     /// Sends a raw MIDI message through the runtime's `sendMidiMessage`.
     Midi(&'static [u8]),
   }
@@ -99,6 +101,18 @@ mod harness {
         AwaitPrint("8u"),
         RightMouseUp(100., 50.),
         AwaitPrint("0u"),
+        KeyDown("q"),
+        KeyUp("q"),
+      ],
+    ),
+    (
+      "mouse_scroll",
+      &[
+        AwaitPrint("\"ready\""),
+        MouseWheel(100., 50., 0., 120.),
+        AwaitPrint("(vec2f 0. 120.)"),
+        MouseWheel(100., 50., -30., 0.),
+        AwaitPrint("(vec2f -30. 120.)"),
         KeyDown("q"),
         KeyUp("q"),
       ],
@@ -1077,6 +1091,7 @@ mod harness {
         RightMouseUp(x, y) => {
           mouse_event(session, "mouseReleased", "right", x, y)?
         }
+        MouseWheel(x, y, dx, dy) => wheel_event(session, x, y, dx, dy)?,
         Midi(bytes) => {
           session.evaluate(&format!(
             "import(\"./easl-program.js\").then((program) => \
@@ -1136,6 +1151,23 @@ mod harness {
       params["text"] = json!(key);
     }
     session.call("Input.dispatchKeyEvent", params).map(|_| ())
+  }
+
+  fn wheel_event(
+    session: &mut Session,
+    x: f64,
+    y: f64,
+    dx: f64,
+    dy: f64,
+  ) -> Result<(), String> {
+    session
+      .call(
+        "Input.dispatchMouseEvent",
+        json!({
+          "type": "mouseWheel", "x": x, "y": y, "deltaX": dx, "deltaY": dy
+        }),
+      )
+      .map(|_| ())
   }
 
   fn mouse_event(

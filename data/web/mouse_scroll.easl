@@ -1,0 +1,16 @@
+; `mouse-scroll-delta` from real `wheel` events: the running total is
+; printed whenever a frame scrolls. +y scrolls down, and pixel deltas pass
+; through unscaled at a device pixel ratio of 1.
+@local (var total: vec2f (vec2f 0.))
+
+@cpu
+(defn main []
+  (spawn-window
+    (fn []
+      (when (== (window-frame-index) 0u)
+        (print "ready"))
+      (let [delta (mouse-scroll-delta)]
+        (when (any (!= delta (vec2f 0.)))
+          (+= total delta)
+          (print total)))
+      (when (key-just-down? "q") (close-window)))))

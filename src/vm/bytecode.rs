@@ -812,6 +812,8 @@ pub enum WindowQueryKind {
   MouseRightJustDown,
   /// vec2f, 2 slots.
   MouseDelta,
+  /// vec2f, 2 slots.
+  MouseScrollDelta,
   MouseCaptured,
 }
 

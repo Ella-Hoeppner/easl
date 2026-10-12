@@ -29,6 +29,9 @@ pub enum WindowInfoKind {
   MouseRightJustDown,
   /// `mouse-delta` — raw mouse motion accumulated since the previous frame.
   MouseDelta,
+  /// `mouse-scroll-delta` — mouse wheel / trackpad scrolling accumulated
+  /// since the previous frame.
+  MouseScrollDelta,
   /// `mouse-captured?` — whether `capture-mouse` currently holds the cursor.
   MouseCaptured,
   /// `key-down?` — takes a compile-time string literal; each distinct key
@@ -49,7 +52,7 @@ pub enum WindowInfoBindingSource {
 }
 
 impl WindowInfoKind {
-  pub const ALL: [WindowInfoKind; 14] = [
+  pub const ALL: [WindowInfoKind; 15] = [
     WindowInfoKind::Resolution,
     WindowInfoKind::Time,
     WindowInfoKind::DeltaTime,
@@ -61,6 +64,7 @@ impl WindowInfoKind {
     WindowInfoKind::MouseRightDown,
     WindowInfoKind::MouseRightJustDown,
     WindowInfoKind::MouseDelta,
+    WindowInfoKind::MouseScrollDelta,
     WindowInfoKind::MouseCaptured,
     WindowInfoKind::KeyDown,
     WindowInfoKind::KeyJustDown,
@@ -79,6 +83,7 @@ impl WindowInfoKind {
       WindowInfoKind::MouseRightDown => "mouse-right-down?",
       WindowInfoKind::MouseRightJustDown => "mouse-right-just-down?",
       WindowInfoKind::MouseDelta => "mouse-delta",
+      WindowInfoKind::MouseScrollDelta => "mouse-scroll-delta",
       WindowInfoKind::MouseCaptured => "mouse-captured?",
       WindowInfoKind::KeyDown => "key-down?",
       WindowInfoKind::KeyJustDown => "key-just-down?",
@@ -104,6 +109,7 @@ impl WindowInfoKind {
       WindowInfoKind::MouseRightDown => "mouse_right_down_info",
       WindowInfoKind::MouseRightJustDown => "mouse_right_just_down_info",
       WindowInfoKind::MouseDelta => "mouse_delta_info",
+      WindowInfoKind::MouseScrollDelta => "mouse_scroll_delta_info",
       WindowInfoKind::MouseCaptured => "mouse_captured_info",
       WindowInfoKind::KeyDown => "key_down_info",
       WindowInfoKind::KeyJustDown => "key_just_down_info",

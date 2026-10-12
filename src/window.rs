@@ -17,8 +17,8 @@ use winit::{
   application::ApplicationHandler,
   dpi::{PhysicalPosition, PhysicalSize},
   event::{
-    DeviceEvent, DeviceId, ElementState, MouseButton, StartCause,
-    WindowEvent as WinitWindowEvent,
+    DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta,
+    StartCause, WindowEvent as WinitWindowEvent,
   },
   event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
   keyboard::{Key, NamedKey},
@@ -78,6 +78,11 @@ pub fn persistent_gpu() -> Option<Arc<RwLock<GpuCore>>> {
 pub fn persistent_gpu() -> Option<Arc<RwLock<GpuCore>>> {
   None
 }
+
+/// How far one line of a line-based scroll (most mouse wheels) scrolls, in
+/// logical pixels: `mouse-scroll-delta` reports pixels, and only some
+/// devices (trackpads) report pixels themselves.
+pub const SCROLL_LINE_HEIGHT: f32 = 40.;
 
 /// The texture format used for binding textures that can serve as render
 /// targets, and for the headless offscreen fallback.  Rgba16Float gives 16-bit
@@ -458,6 +463,10 @@ pub struct GpuCore {
   /// Raw mouse motion accumulated since the previous frame, in device units
   /// (+y down). Cleared after each frame's eval completes.
   pub mouse_delta: (f32, f32),
+  /// Scrolling accumulated since the previous frame, in physical pixels
+  /// (+y scrolls down, toward the end of a document). Cleared after each
+  /// frame's eval completes.
+  pub mouse_scroll_delta: (f32, f32),
   /// True while the cursor is captured (hidden and locked to the window).
   pub mouse_captured: bool,
   /// A pending `capture-mouse` (`Some(true)`) or `release-mouse`
@@ -1836,6 +1845,7 @@ impl GpuCore {
       mouse_right_down: false,
       mouse_right_just_down: false,
       mouse_delta: (0., 0.),
+      mouse_scroll_delta: (0., 0.),
       mouse_captured: false,
       mouse_capture_request: None,
       surface: None,
@@ -2416,6 +2426,7 @@ impl<'a, D: FrameDriver> App<'a, D> {
         gpu.mouse_right_down = false;
         gpu.mouse_right_just_down = false;
         gpu.mouse_delta = (0., 0.);
+        gpu.mouse_scroll_delta = (0., 0.);
         gpu.mouse_capture_request = None;
         if gpu.mouse_captured {
           set_cursor_captured(&state.window, false);
@@ -2574,6 +2585,7 @@ impl<'a, D: FrameDriver> ApplicationHandler for App<'a, D> {
           gpu.mouse_just_down = false;
           gpu.mouse_right_just_down = false;
           gpu.mouse_delta = (0., 0.);
+          gpu.mouse_scroll_delta = (0., 0.);
           if let Some(captured) = gpu.mouse_capture_request.take() {
             gpu.mouse_captured = set_cursor_captured(&state.window, captured);
           }
@@ -2720,6 +2732,25 @@ impl<'a, D: FrameDriver> ApplicationHandler for App<'a, D> {
       WinitWindowEvent::CursorLeft { .. } => {
         if let Some(state) = &self.state {
           state.gpu.write().unwrap().mouse_present = false;
+        }
+      }
+      WinitWindowEvent::MouseWheel { delta, .. } => {
+        if let Some(state) = &self.state {
+          let (dx, dy) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => {
+              let line_height =
+                SCROLL_LINE_HEIGHT * state.window.scale_factor() as f32;
+              (x * line_height, y * line_height)
+            }
+            MouseScrollDelta::PixelDelta(position) => {
+              (position.x as f32, position.y as f32)
+            }
+          };
+          // winit's deltas are how the content should move, the opposite
+          // of the direction scrolled.
+          let mut gpu = state.gpu.write().unwrap();
+          gpu.mouse_scroll_delta.0 -= dx;
+          gpu.mouse_scroll_delta.1 -= dy;
         }
       }
       WinitWindowEvent::MouseInput {

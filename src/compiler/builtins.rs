@@ -2973,6 +2973,24 @@ fn shader_dispatch_functions() -> Vec<AbstractFunctionSignature> {
       ..Default::default()
     },
     AbstractFunctionSignature {
+      name: "mouse-scroll-delta".into(),
+      return_type: AbstractType::AbstractStruct(
+        vec2()
+          .fill_abstract_generics(vec![AbstractType::Type(Type::F32)])
+          .into(),
+      ),
+      implementation: FunctionImplementationKind::Builtin {
+        effect_type: vec![
+          Effect::Window,
+          Effect::WindowInfo(WindowInfoKind::MouseScrollDelta),
+        ]
+        .into(),
+        target_configuration: FunctionTargetConfiguration::Default,
+        target_specific_emulations: HashSet::new(),
+      },
+      ..Default::default()
+    },
+    AbstractFunctionSignature {
       name: "mouse-captured?".into(),
       return_type: AbstractType::Type(Type::Bool),
       implementation: FunctionImplementationKind::Builtin {

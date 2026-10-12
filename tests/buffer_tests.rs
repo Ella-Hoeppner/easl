@@ -313,6 +313,7 @@ fn dynamic_key_query_spoofed() {
     mouse_right_down: false,
     mouse_right_just_down: false,
     mouse_delta: (0., 0.),
+    mouse_scroll_delta: (0., 0.),
     mouse_captured: false,
     keys_down: vec!["3u".to_string(), "7u".to_string(), "a".to_string()],
     keys_just_down: vec!["f1u".to_string()],
@@ -357,6 +358,7 @@ fn gpu_window_info_spoofed() {
     mouse_right_down: false,
     mouse_right_just_down: false,
     mouse_delta: (0., 0.),
+    mouse_scroll_delta: (0., 0.),
     mouse_captured: false,
     keys_down: vec!["a".to_string()],
     keys_just_down: vec!["b".to_string()],
@@ -378,8 +380,8 @@ fn gpu_window_info_spoofed() {
   }
 }
 
-/// `mouse-delta`, `mouse-captured?`, the right mouse button, and named keys
-/// reach both the GPU
+/// `mouse-delta`, `mouse-scroll-delta`, `mouse-captured?`, the right mouse
+/// button, and named keys reach both the GPU
 /// (implicit bindings) and the CPU, and `capture-mouse` / `release-mouse`
 /// reach the IO manager, identically on both CPU runtimes.
 #[test]
@@ -401,13 +403,15 @@ fn mouse_capture_spoofed() {
     mouse_right_down: true,
     mouse_right_just_down: false,
     mouse_delta: (-3.5, 12.25),
+    mouse_scroll_delta: (2.5, -40.),
     mouse_captured: false,
     keys_down: vec![" ".to_string(), "ctrl".to_string()],
     keys_just_down: vec![],
   };
   let expected = vec![
-    "[-3.5 12.25 0. 1. 0. 1. 0.]".to_string(),
+    "[-3.5 12.25 0. 1. 0. 1. 0. 2.5 -40.]".to_string(),
     "(vec2f -3.5 12.25)".to_string(),
+    "(vec2f 2.5 -40.)".to_string(),
     "true".to_string(),
     "true".to_string(),
     "false".to_string(),

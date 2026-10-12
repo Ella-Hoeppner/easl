@@ -1,10 +1,10 @@
-; `mouse-delta`, `mouse-captured?`, the right mouse button, and named keys
-; on both sides: GPU and CPU code alike read the frame's snapshot through
-; implicit uniform bindings. `capture-mouse` / `release-mouse` requests are
-; recorded by the spoofing IO manager. Run by the hand-written `mouse_capture_spoofed` test
-; in buffer_tests.rs.
+; `mouse-delta`, `mouse-scroll-delta`, `mouse-captured?`, the right mouse
+; button, and named keys on both sides: GPU and CPU code alike read the
+; frame's snapshot through implicit uniform bindings. `capture-mouse` /
+; `release-mouse` requests are recorded by the spoofing IO manager. Run by
+; the hand-written `mouse_capture_spoofed` test in buffer_tests.rs.
 @storage-write
-(var out: [7: f32])
+(var out: [9: f32])
 
 @compute
 (defn probe []
@@ -29,7 +29,9 @@
   (= (out 6u)
      (if (mouse-right-just-down?)
        1.
-       0.)))
+       0.))
+  (= (out 7u) (.x (mouse-scroll-delta)))
+  (= (out 8u) (.y (mouse-scroll-delta))))
 
 @cpu
 (defn main []
@@ -39,6 +41,7 @@
                   (dispatch-compute-shader probe (vec3u 1u))
                   (print out)
                   (print (mouse-delta))
+                  (print (mouse-scroll-delta))
                   (print (key-down? "ctrl"))
                   (print (mouse-right-down?))
                   (print (mouse-right-just-down?))

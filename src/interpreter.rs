@@ -2580,6 +2580,17 @@ fn apply_builtin_fn<IO: IOManager>(
         .collect(),
       ))
     }
+    "mouse-scroll-delta" => {
+      let (x, y) = env.io.mouse_scroll_delta();
+      Ok(Value::Struct(
+        [
+          ("x".into(), Value::Prim(Primitive::F32(x))),
+          ("y".into(), Value::Prim(Primitive::F32(y))),
+        ]
+        .into_iter()
+        .collect(),
+      ))
+    }
     "mouse-captured?" => {
       Ok(Value::Prim(Primitive::Bool(env.io.mouse_captured())))
     }
@@ -3548,6 +3559,7 @@ pub struct SpoofedWindowInfo {
   pub mouse_right_down: bool,
   pub mouse_right_just_down: bool,
   pub mouse_delta: (f32, f32),
+  pub mouse_scroll_delta: (f32, f32),
   pub mouse_captured: bool,
   /// Keys reported as currently held down.
   pub keys_down: Vec<String>,
@@ -3584,6 +3596,10 @@ pub fn window_info_words<IO: IOManager>(
       }
       WindowInfoKind::MouseDelta => {
         let (x, y) = io.mouse_delta();
+        vec![x.to_bits(), y.to_bits()]
+      }
+      WindowInfoKind::MouseScrollDelta => {
+        let (x, y) = io.mouse_scroll_delta();
         vec![x.to_bits(), y.to_bits()]
       }
       WindowInfoKind::MouseCaptured => vec![io.mouse_captured() as u32],
@@ -4143,6 +4159,14 @@ pub trait IOManager: Sized {
   fn mouse_delta(&self) -> (f32, f32) {
     (0., 0.)
   }
+  /// Returns the mouse wheel / trackpad scrolling accumulated since the
+  /// previous frame, in physical pixels (like `mouse-coords`), with +y
+  /// scrolling down (toward the end of a document) and +x scrolling right.
+  /// A wheel that scrolls by lines counts `window::SCROLL_LINE_HEIGHT`
+  /// logical pixels per line. Always (0, 0) outside of a real window.
+  fn mouse_scroll_delta(&self) -> (f32, f32) {
+    (0., 0.)
+  }
   /// Returns true while `capture-mouse` holds the cursor (hidden and locked
   /// to the window). Always false outside of a real window.
   fn mouse_captured(&self) -> bool {
@@ -4599,6 +4623,14 @@ impl IOManager for StdoutIO {
     #[cfg(feature = "window")]
     if let Some(gpu) = &self.gpu {
       return gpu.read().unwrap().mouse_delta;
+    }
+    (0., 0.)
+  }
+
+  fn mouse_scroll_delta(&self) -> (f32, f32) {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = &self.gpu {
+      return gpu.read().unwrap().mouse_scroll_delta;
     }
     (0., 0.)
   }
@@ -5136,6 +5168,13 @@ impl IOManager for CaptureIO {
       return spoof.mouse_delta;
     }
     self.inner.mouse_delta()
+  }
+
+  fn mouse_scroll_delta(&self) -> (f32, f32) {
+    if let Some(spoof) = &self.spoofed_window_info {
+      return spoof.mouse_scroll_delta;
+    }
+    self.inner.mouse_scroll_delta()
   }
 
   fn mouse_captured(&self) -> bool {
@@ -9003,6 +9042,11 @@ fn vm_host_call<IO: IOManager>(
         }
         WindowQueryKind::MouseDelta => {
           let (x, y) = env.io.mouse_delta();
+          stack[d] = x.to_bits();
+          stack[d + 1] = y.to_bits();
+        }
+        WindowQueryKind::MouseScrollDelta => {
+          let (x, y) = env.io.mouse_scroll_delta();
           stack[d] = x.to_bits();
           stack[d + 1] = y.to_bits();
         }
