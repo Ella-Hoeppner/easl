@@ -1,0 +1,13 @@
+; A dispatch with more workgroups in a dimension than the GPU allows is a
+; runtime error naming the limit (WebGPU's default of 65535 here, with no
+; GPU), not a GPU validation failure.
+@storage-write
+(var out: [1: u32])
+
+@compute
+(defn work []
+  (= (out 0u) 1u))
+
+@cpu
+(defn main []
+  (dispatch-compute-shader work (vec3u 1u 70000u 1u)))

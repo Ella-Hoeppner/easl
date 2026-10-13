@@ -47,7 +47,7 @@ use crate::thread_sync::{
 };
 use crate::video::VideoRegistry;
 use crate::vm::bytecode::{
-  DynMemory, HeapCell, SharedAtomic, alloc_heap_cell, heap_index,
+  DynMemory, HeapCell, SharedAtomic, Trap, alloc_heap_cell, heap_index,
   heap_string_words, release_heap_id, string_to_words, words_to_string,
 };
 use crate::vm::compile::vm_stack_size;
@@ -135,10 +135,20 @@ pub enum InternalEvalError {
 pub enum UserspaceEvalError {
   #[error("Compilation error: {0}")]
   CompilationError(Box<CompileError>),
-  #[error("Array index out of bounds: index {0} in array of size {1}")]
-  ArrayIndexOutOfBounds(usize, usize),
-  #[error("Negative array index: {0}")]
-  NegativeArrayIndex(isize),
+  #[error("{0}")]
+  Trap(Trap),
+  #[error(
+    "`dispatch-compute-shader` was called with {count} \
+     workgroups in the {dimension} dimension, but this GPU supports at most \
+     {limit} workgroups per dimension. Use larger workgroups \
+     (`@{{workgroup-size ...}}`), or split the work across several \
+     dispatches"
+  )]
+  TooManyWorkgroups {
+    dimension: &'static str,
+    count: u32,
+    limit: u32,
+  },
   #[error("`window` feature not enabled")]
   WindowFeatureNotEnabled,
   #[error(
@@ -178,6 +188,45 @@ impl From<CompileError> for EvalError {
 impl From<UserspaceEvalError> for EvalError {
   fn from(e: UserspaceEvalError) -> Self {
     Self::Userspace(e)
+  }
+}
+
+impl From<Trap> for EvalError {
+  fn from(trap: Trap) -> Self {
+    Self::Userspace(UserspaceEvalError::Trap(trap))
+  }
+}
+
+impl From<Trap> for EvalException {
+  fn from(trap: Trap) -> Self {
+    EvalError::from(trap).into()
+  }
+}
+
+/// WebGPU's default `maxComputeWorkgroupsPerDimension`.
+const DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION: u32 = 65535;
+
+/// The element `index` names in a container of `length` elements, or the
+/// trap both CPU runtimes report for it.
+fn checked_index(index: i64, length: usize) -> Result<usize, Trap> {
+  if index < 0 {
+    return Err(Trap::NegativeIndex(index as i32));
+  }
+  if index as u64 >= length as u64 {
+    return Err(Trap::IndexOutOfBounds {
+      index: index as u32,
+      length: length as u32,
+    });
+  }
+  Ok(index as usize)
+}
+
+/// An index value's integer, signed or not.
+fn index_value(index: &Value) -> i64 {
+  match index {
+    Value::Prim(Primitive::U32(u)) => *u as i64,
+    Value::Prim(Primitive::I32(i)) => *i as i64,
+    other => panic!("non-integer index {other:?}"),
   }
 }
 
@@ -2140,13 +2189,10 @@ fn apply_builtin_fn<IO: IOManager>(
         v
       };
       let workgroup_count = (get_u32("x"), get_u32("y"), get_u32("z"));
-      env.setup_gpu_if_needed();
-      let pre_upload = env.collect_dirty_uploads(&read_global_variable_names);
-      env.io.record_compute(
-        env.gpu_entry_id(&entry_name),
+      env.record_compute_dispatch(
         &entry_name,
         workgroup_count,
-        pre_upload,
+        &read_global_variable_names,
       )?;
       env.mark_gpu_written(&written_global_variable_names);
       Ok(Value::Unit)
@@ -2309,8 +2355,12 @@ fn apply_builtin_fn<IO: IOManager>(
           if removing {
             let index = index.unwrap();
             if index as usize >= length {
-              panic!(
-                "remove index out of bounds: index {index}, length {length}"
+              return Err(
+                Trap::RemoveOutOfBounds {
+                  index,
+                  length: length as u32,
+                }
+                .into(),
               );
             }
             return Ok(Value::ZeroedArray { length: length - 1 });
@@ -2325,9 +2375,12 @@ fn apply_builtin_fn<IO: IOManager>(
         "insert" => {
           let index = index.unwrap();
           if index as usize > elements.len() {
-            panic!(
-              "insert index out of bounds: index {index}, length {}",
-              elements.len()
+            return Err(
+              Trap::InsertOutOfBounds {
+                index,
+                length: elements.len() as u32,
+              }
+              .into(),
             );
           }
           elements.insert(index as usize, args.remove(0).0);
@@ -2335,9 +2388,12 @@ fn apply_builtin_fn<IO: IOManager>(
         "remove" => {
           let index = index.unwrap();
           if index as usize >= elements.len() {
-            panic!(
-              "remove index out of bounds: index {index}, length {}",
-              elements.len()
+            return Err(
+              Trap::RemoveOutOfBounds {
+                index,
+                length: elements.len() as u32,
+              }
+              .into(),
             );
           }
           elements.remove(index as usize);
@@ -6467,6 +6523,54 @@ impl<IO: IOManager> EvaluationEnvironment<IO> {
   /// Ensures a GPU context is available for compute dispatches. If the IO
   /// manager supports real GPU but none has been set yet (i.e. no window was
   /// opened), this lazily creates a headless GPU core.
+  /// Queues a compute dispatch of `entry_name` (with the uploads of the
+  /// globals it reads), after checking the workgroup counts against the
+  /// GPU's limit.
+  fn record_compute_dispatch(
+    &mut self,
+    entry_name: &str,
+    workgroup_count: (u32, u32, u32),
+    read_names: &[Arc<str>],
+  ) -> Result<(), EvalError> {
+    self.setup_gpu_if_needed();
+    let limit = self.max_compute_workgroups_per_dimension();
+    let (x, y, z) = workgroup_count;
+    for (dimension, count) in [("x", x), ("y", y), ("z", z)] {
+      if count > limit {
+        return Err(
+          TooManyWorkgroups {
+            dimension,
+            count,
+            limit,
+          }
+          .into(),
+        );
+      }
+    }
+    let pre_upload = self.collect_dirty_uploads(read_names);
+    self.io.record_compute(
+      self.gpu_entry_id(entry_name),
+      entry_name,
+      workgroup_count,
+      pre_upload,
+    )
+  }
+
+  /// The GPU's limit on a compute dispatch's workgroups per dimension;
+  /// WebGPU's default limit when there's no GPU.
+  fn max_compute_workgroups_per_dimension(&self) -> u32 {
+    #[cfg(feature = "window")]
+    if let Some(gpu) = self.io.get_gpu() {
+      return gpu
+        .read()
+        .unwrap()
+        .device
+        .limits()
+        .max_compute_workgroups_per_dimension;
+    }
+    DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION
+  }
+
   fn setup_gpu_if_needed(&mut self) {
     #[cfg(feature = "window")]
     {
@@ -6683,12 +6787,12 @@ fn eval_assignment_op<IO: IOManager>(
     match access {
       AccessKind::Index(i) => match accessed_value {
         Value::Array(a) => {
-          let length = a.len() as i64;
-          accessed_value = &mut a[(((i % length) + length) % length) as usize];
+          let i = checked_index(i, a.len())?;
+          accessed_value = &mut a[i];
         }
         Value::Struct(s) => {
           // Vector stored as Struct with x/y/z/w fields.
-          let field_name = ["x", "y", "z", "w"][i as usize];
+          let field_name = ["x", "y", "z", "w"][checked_index(i, s.len())?];
           accessed_value = s.get_mut(field_name).unwrap();
         }
         _ => panic!(),
@@ -6796,11 +6900,15 @@ fn eval_shared_atomic_op<IO: IOManager>(
   env.shared_atomics[shared_index].as_ref()?;
   Some((|| {
     let offset = match index {
-      Some(index) => match eval(index.clone(), env)? {
-        Value::Prim(Primitive::U32(u)) => u as usize,
-        Value::Prim(Primitive::I32(i)) => i as u32 as usize,
-        other => panic!("atomic array index must be an integer, got {other:?}"),
-      },
+      Some(index) => {
+        let index = index_value(&eval(index.clone(), env)?);
+        let length = env.shared_atomics[shared_index]
+          .as_ref()
+          .unwrap()
+          .words
+          .len();
+        checked_index(index, length)?
+      }
       None => 0,
     };
     let operand = match args.get(1) {
@@ -6886,8 +6994,8 @@ fn eval_atomic_op<IO: IOManager>(
         let Value::Array(a) = accessed_value else {
           panic!()
         };
-        let length = a.len() as i64;
-        accessed_value = &mut a[(((i % length) + length) % length) as usize];
+        let i = checked_index(i, a.len())?;
+        accessed_value = &mut a[i];
       }
       AccessKind::Field(field_name) => {
         let Value::Struct(s) = accessed_value else {
@@ -7033,12 +7141,12 @@ fn write_back_through_lhs<IO: IOManager>(
     match access {
       AccessKind::Index(i) => match slot {
         Value::Array(a) => {
-          let length = a.len() as i64;
-          slot = &mut a[(((i % length) + length) % length) as usize];
+          let i = checked_index(i, a.len())?;
+          slot = &mut a[i];
         }
         Value::Struct(s) => {
           // Vector stored as Struct with x/y/z/w fields.
-          let field_name = ["x", "y", "z", "w"][i as usize];
+          let field_name = ["x", "y", "z", "w"][checked_index(i, s.len())?];
           slot = s.get_mut(field_name).unwrap();
         }
         _ => panic!("indexed access into non-array, non-struct value"),
@@ -7557,35 +7665,14 @@ fn eval_application<IO: IOManager>(
       }
       let elem_type = inner_type.unwrap_known();
       let array = eval(*f, env)?;
-      let index_value = eval(args.remove(0), env)?;
-      let Value::Prim(primitive) = index_value else {
-        panic!();
-      };
-      let u = match primitive {
-        Primitive::U32(u) => u as usize,
-        Primitive::I32(i) => {
-          if i < 0 {
-            return Err(NegativeArrayIndex(i as isize).into());
-          } else {
-            i as usize
-          }
-        }
-        _ => panic!(),
-      };
+      let index = index_value(&eval(args.remove(0), env)?);
       match array {
         Value::Array(array_values) => {
-          if u < array_values.len() {
-            array_values[u].clone()
-          } else {
-            return Err(ArrayIndexOutOfBounds(u, array_values.len()).into());
-          }
+          array_values[checked_index(index, array_values.len())?].clone()
         }
         Value::ZeroedArray { length } => {
-          if u < length {
-            Value::zeroed(elem_type, env)?
-          } else {
-            return Err(ArrayIndexOutOfBounds(u, length).into());
-          }
+          checked_index(index, length)?;
+          Value::zeroed(elem_type, env)?
         }
         _ => panic!(),
       }
@@ -7653,18 +7740,13 @@ fn eval_access<IO: IOManager>(
         )
       }
       Accessor::ArrayIndex(exp) => {
-        let index = eval(*exp, env)?;
-        let u_index = |len: usize| match index.unwrap_primitive() {
-          Primitive::U32(u) => u as usize % len,
-          Primitive::I32(i) => i.rem_euclid(len as i32) as usize,
-          _ => panic!(),
-        };
+        let index = index_value(&eval(*exp, env)?);
         match value {
           Value::Array(values) => {
-            let i = u_index(values.len());
-            values[i].clone()
+            values[checked_index(index, values.len())?].clone()
           }
-          Value::ZeroedArray { .. } => {
+          Value::ZeroedArray { length } => {
+            checked_index(index, length)?;
             let Type::Array(_, inner_type) = exp_type else {
               panic!()
             };
@@ -7672,12 +7754,8 @@ fn eval_access<IO: IOManager>(
           }
           // Vector indexing: stored as a Struct with x/y/z/w fields.
           Value::Struct(fields) if exp_type.is_vector() => {
-            let len = fields.len();
-            let i = u_index(len);
-            fields
-              .get(["x", "y", "z", "w"][i])
-              .expect("vector index out of bounds")
-              .clone()
+            let i = checked_index(index, fields.len())?;
+            fields[["x", "y", "z", "w"][i]].clone()
           }
           _ => panic!(),
         }
@@ -8935,14 +9013,10 @@ fn vm_host_call<IO: IOManager>(
         .collect();
       let ws = *workgroup_slot as usize;
       let workgroup_count = (stack[ws], stack[ws + 1], stack[ws + 2]);
-      env.setup_gpu_if_needed();
-      let pre_upload = env.collect_dirty_uploads(&read_names);
-      let entry_name = &code.host_strings[*entry as usize];
-      env.io.record_compute(
-        env.gpu_entry_id(entry_name),
-        entry_name,
+      env.record_compute_dispatch(
+        &code.host_strings[*entry as usize],
         workgroup_count,
-        pre_upload,
+        &read_names,
       )?;
       env.mark_gpu_written(&written_names);
     }
@@ -9658,6 +9732,7 @@ impl<IO: IOManager> FrameDriver for VmFrameDriver<'_, IO> {
            that can block on the GPU"
         )
       }
+      Ok(RunResult::Trapped(trap)) => Err(trap.into()),
       Err(e) => Err(EvalException::Error(e)),
     };
     // Publish on success and on close-window (the frame's writes are still
@@ -9898,6 +9973,7 @@ impl<IO: IOManager> VmCpuRuntime<IO> {
     };
     let result = self.program.execute_with_host(&mut host)?;
     match (activity, result) {
+      (_, RunResult::Trapped(trap)) => Err(trap.into()),
       (_, RunResult::Suspended(HostSuspendReason::GpuReadback { binding })) => {
         self.awaiting_readback = Some((activity, binding));
         Ok(VmRunState::AwaitingReadback)

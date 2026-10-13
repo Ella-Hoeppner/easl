@@ -56,5 +56,5 @@ Converts a fixed-size array to a runtime-sized one, e.g. to fill a runtime-sized
 (reverse arr: [T]): [T]
 ```
 
-Return a new array with `value` appended, inserted at `index`, the element at `index` removed, or the order reversed; `arr` itself is unchanged, so growing an array is `(= arr (push arr x))`. [`concat`](cpu-builtins.md#concat) joins arrays. CPU and audio code only.
+Return a new array with `value` appended, inserted at `index`, the element at `index` removed, or the order reversed; `arr` itself is unchanged, so growing an array is `(= arr (push arr x))`. An `index` past the end (for `insert`, past `(array-length arr)`, which appends) is a runtime error. [`concat`](cpu-builtins.md#concat) joins arrays. CPU and audio code only.
 <!-- index: insert remove reverse -->

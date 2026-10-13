@@ -103,7 +103,7 @@ Draws `vert-count` vertices with the vertex shader `vert` and fragment shader `f
 (dispatch-compute-shader entry: F workgroup-count: vec3u): ()
 ```
 
-Runs the compute shader `entry` over `workgroup-count` workgroups (the shader's `@{workgroup-size ...}` sets the threads in each). See [CPU and GPU writes](../cpu.md#cpu-and-gpu-see-each-others-writes).
+Runs the compute shader `entry` over `workgroup-count` workgroups (the shader's `@{workgroup-size ...}` sets the threads in each). Each component can be at most the GPU's `maxComputeWorkgroupsPerDimension` (65535 on most devices); a larger count is a runtime error. See [CPU and GPU writes](../cpu.md#cpu-and-gpu-see-each-others-writes).
 
 ## Window and input queries
 

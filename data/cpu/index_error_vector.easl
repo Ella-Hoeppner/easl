@@ -1,0 +1,6 @@
+; Vectors are bounds-checked like arrays.
+@cpu
+(defn main []
+  (let [v (vec3f 1. 2. 3.)
+        i 3u]
+    (print (v i))))

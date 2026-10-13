@@ -1,0 +1,8 @@
+; An out-of-range read of a fixed-size global, which the VM once read from
+; past the global's slots.
+(var xs: [2: u32])
+
+@cpu
+(defn main []
+  (let [i 5u]
+    (print (xs i))))

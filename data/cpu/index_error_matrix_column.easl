@@ -1,0 +1,6 @@
+; A matrix's columns are bounds-checked like an array's elements.
+@cpu
+(defn main []
+  (let [m (mat2x2f 1. 2. 3. 4.)
+        i 2u]
+    (print (m i))))

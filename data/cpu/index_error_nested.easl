@@ -1,0 +1,7 @@
+; The inner index of a nested array, in range for the outer array.
+@cpu
+(defn main []
+  (let [grid [[1u 2u] [3u 4u] [5u 6u]]
+        i 2u
+        j 2u]
+    (print ((grid i) j))))

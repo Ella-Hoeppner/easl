@@ -98,6 +98,8 @@ You index into an array using the application syntax, e.g.:
     (print (arr 1u))) ; prints 2.
 ```
 
+An index at or past the array's length, or a negative `i32` index, is a runtime error in CPU and audio code: the program stops with an error naming the index and the length. Vector components and matrix columns are checked the same way. GPU code can't stop, so it follows WGSL's rules instead: an out-of-range read gives an unspecified value, and an out-of-range write may land elsewhere in the array or be dropped.
+
 ## Assignment
 
 The special `=` function is used to assign to variables. It can also be used to assign to struct fields, array elements, or swizzles: 

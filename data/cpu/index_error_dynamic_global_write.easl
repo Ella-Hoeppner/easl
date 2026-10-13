@@ -1,0 +1,8 @@
+; An out-of-range write into a runtime-sized global.
+(var xs: [f32])
+
+@cpu
+(defn main []
+  (= xs (zeroed-array 3))
+  (let [i 3u]
+    (= (xs i) 1.)))

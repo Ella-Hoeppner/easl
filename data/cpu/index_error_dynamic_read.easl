@@ -1,0 +1,8 @@
+; Out-of-range indexing is a runtime error on both CPU runtimes (the GPU
+; can't fail, and keeps WGSL's behavior). A runtime-sized local array read.
+@cpu
+(defn main []
+  (let [arr: [u32] (into-dynamic-array [1u 2u])
+        i 5u]
+    (print (arr 1u))
+    (print (arr i))))

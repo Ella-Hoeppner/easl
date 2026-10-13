@@ -155,6 +155,12 @@ pub enum Op {
   // Array access
   ArrayLookup,
   ArrayStore,
+  /// Traps unless the index in slot `arg_positions[0]` is below the
+  /// length `arg_positions[1]` (an immediate): guards `ArrayLookup` on a
+  /// fixed-size array, vector, or matrix.
+  CheckIndex,
+  /// Traps if the `i32` index in slot `arg_positions[0]` is negative.
+  CheckNonNegativeIndex,
 
   // Dynamic (runtime-sized) global array access. These operate on
   // `BytecodeProgram::dyn_memory` — flat per-global word buffers living
@@ -509,6 +515,8 @@ impl Instruction {
       // HostCall operands are metadata-table indices, not slots; the slots
       // host ops touch are covered by `Code::min_stack_size`.
       Op::InvokeFunction | Op::Return | Op::Jump | Op::HostCall => 0,
+      // The length operand is an immediate.
+      Op::CheckIndex | Op::CheckNonNegativeIndex => self.arg_positions[0],
       Op::Constant => self.return_position,
       Op::Move => {
         if self.arg_positions[1] == 0 {
@@ -1034,6 +1042,45 @@ pub enum HostSuspendReason {
 pub enum RunResult {
   Finished,
   Suspended(HostSuspendReason),
+  /// The program hit a fatal runtime error. Its call stack is cleared:
+  /// it can't resume.
+  Trapped(Trap),
+}
+
+/// A fatal runtime error in easl code. The tree-walker reports the same
+/// values, so both CPU runtimes fail with the same message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trap {
+  IndexOutOfBounds { index: u32, length: u32 },
+  NegativeIndex(i32),
+  InsertOutOfBounds { index: u32, length: u32 },
+  RemoveOutOfBounds { index: u32, length: u32 },
+}
+
+impl std::fmt::Display for Trap {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    match self {
+      Trap::IndexOutOfBounds { index, length } => {
+        write!(f, "index {index} is out of bounds for length {length}")
+      }
+      Trap::NegativeIndex(index) => {
+        write!(
+          f,
+          "index {index} is out of bounds: indices can't be negative"
+        )
+      }
+      Trap::InsertOutOfBounds { index, length } => write!(
+        f,
+        "`insert` index {index} is out of bounds for an array of length \
+         {length}"
+      ),
+      Trap::RemoveOutOfBounds { index, length } => write!(
+        f,
+        "`remove` index {index} is out of bounds for an array of length \
+         {length}"
+      ),
+    }
+  }
 }
 
 /// A var holding atomics, as one program sees it: the shared words, and
@@ -1369,8 +1416,11 @@ impl BytecodeProgram {
       .copy_from_slice(&data[..n]);
     Some(n)
   }
+  /// Runs without a host (audio, global initializers, tests). A trap here
+  /// has no caller to report to, so it panics with the trap's message.
   pub fn execute(&mut self) {
     match self.execute_with_host(&mut NoopHost) {
+      Ok(RunResult::Trapped(trap)) => panic!("easl runtime error: {trap}"),
       Ok(_) => {}
       Err(never) => match never {},
     }
@@ -1438,6 +1488,13 @@ impl BytecodeProgram {
           return Ok(RunResult::Suspended(reason));
         }
       };
+    }
+    // Ends the run with a fatal runtime error.
+    macro_rules! trap {
+      ($trap:expr) => {{
+        call_stack.clear();
+        return Ok(RunResult::Trapped($trap));
+      }};
     }
     loop {
       let Some(instruction_index) = ip.next() else {
@@ -1936,6 +1993,22 @@ impl BytecodeProgram {
           );
         },
 
+        Op::CheckIndex => {
+          let [index_slot, length, _] = instruction.arg_positions;
+          let index = stack[index_slot as usize];
+          if index >= length as u32 {
+            trap!(Trap::IndexOutOfBounds {
+              index,
+              length: length as u32,
+            });
+          }
+        }
+        Op::CheckNonNegativeIndex => {
+          let index = stack[instruction.arg_positions[0] as usize] as i32;
+          if index < 0 {
+            trap!(Trap::NegativeIndex(index));
+          }
+        }
         Op::ArrayStore => unsafe {
           let [src_pos, index_pos, inner_data_size] = instruction.arg_positions;
           let idx = *stack.get_unchecked(index_pos as usize);
@@ -1961,9 +2034,10 @@ impl BytecodeProgram {
           let region = &dyn_memory[memory as usize];
           let elements = region.len_elements(stride) as usize;
           if index >= elements {
-            panic!(
-              "dynamic array index out of bounds: index {index}, length                {elements}"
-            );
+            trap!(Trap::IndexOutOfBounds {
+              index: index as u32,
+              length: elements as u32,
+            });
           }
           let dest = instruction.return_position as usize;
           match region {
@@ -1991,9 +2065,10 @@ impl BytecodeProgram {
           let region = &mut dyn_memory[memory as usize];
           let elements = region.len_elements(stride) as usize;
           if index >= elements {
-            panic!(
-              "dynamic array index out of bounds: index {index}, length                {elements}"
-            );
+            trap!(Trap::IndexOutOfBounds {
+              index: index as u32,
+              length: elements as u32,
+            });
           }
           if let DynMemory::Cells(cells) = region {
             // The source slot holds a heap id; the region takes an owned
@@ -2039,16 +2114,17 @@ impl BytecodeProgram {
           let stride = stride as usize;
           let dest = instruction.return_position as usize;
           let Some(cell) = deref_cell!(id_slot) else {
-            panic!(
-              "dynamic array index out of bounds: index {index}, length 0"
-            );
+            trap!(Trap::IndexOutOfBounds {
+              index: index as u32,
+              length: 0,
+            });
           };
           let elements = cell.memory.len_elements(stride) as usize;
           if index >= elements {
-            panic!(
-              "dynamic array index out of bounds: index {index}, length \
-               {elements}"
-            );
+            trap!(Trap::IndexOutOfBounds {
+              index: index as u32,
+              length: elements as u32,
+            });
           }
           // Extract a cell-element child while the parent borrow is live;
           // the table mutation (release + alloc of the dest id) happens
@@ -2078,9 +2154,10 @@ impl BytecodeProgram {
           let stride = instruction.return_position as usize;
           let index = stack[index_slot as usize] as usize;
           let Some(i) = heap_index(stack[id_slot as usize]) else {
-            panic!(
-              "dynamic array index out of bounds: index {index}, length 0"
-            );
+            trap!(Trap::IndexOutOfBounds {
+              index: index as u32,
+              length: 0,
+            });
           };
           // For cell-element parents the source slot holds a heap id;
           // clone its cell out before mutably borrowing the parent.
@@ -2103,10 +2180,10 @@ impl BytecodeProgram {
           );
           let elements = cell.memory.len_elements(stride) as usize;
           if index >= elements {
-            panic!(
-              "dynamic array index out of bounds: index {index}, length \
-               {elements}"
-            );
+            trap!(Trap::IndexOutOfBounds {
+              index: index as u32,
+              length: elements as u32,
+            });
           }
           if let Some(child) = src_child {
             let DynMemory::Cells(cells) = &mut cell.memory else {
@@ -2194,19 +2271,19 @@ impl BytecodeProgram {
             Op::HeapPush => elements,
             Op::HeapInsert => {
               if index > elements {
-                panic!(
-                  "insert index out of bounds: index {index}, length \
-                   {elements}"
-                );
+                trap!(Trap::InsertOutOfBounds {
+                  index,
+                  length: elements,
+                });
               }
               index
             }
             Op::HeapRemove => {
               if index >= elements {
-                panic!(
-                  "remove index out of bounds: index {index}, length \
-                   {elements}"
-                );
+                trap!(Trap::RemoveOutOfBounds {
+                  index,
+                  length: elements,
+                });
               }
               index
             }

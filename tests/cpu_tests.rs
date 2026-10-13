@@ -70,6 +70,40 @@ fn run_cpu_test(name: &str) {
   }
 }
 
+/// Runs a program expected to fail with a runtime error on both CPU
+/// runtimes, with the message in `name.error`.
+fn run_cpu_error_test(name: &str) {
+  let expected = fs::read_to_string(format!("./data/cpu/{name}.error"))
+    .unwrap_or_else(|_| panic!("Unable to read data/cpu/{name}.error"));
+  let Ok(Ok((_, Ok(mut program)))) =
+    load_easl_program_from_file(Path::new(&format!("./data/cpu/{name}.easl")))
+  else {
+    panic!("{name}: failed to load");
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "{name}: compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
+  for runtime in [CpuRuntime::TreeWalking, CpuRuntime::BytecodeVm] {
+    let error =
+      run_program_capturing_output_with_runtime(program.clone(), runtime)
+        .expect_err(&format!("{name}: no runtime error ({runtime:?})"));
+    assert_eq!(
+      error.to_string(),
+      expected.trim_end(),
+      "{name}: error mismatch ({runtime:?})"
+    );
+  }
+}
+
+macro_rules! cpu_error_test {
+  ($name:ident) => {
+    #[test]
+    fn $name() {
+      run_cpu_error_test(stringify!($name));
+    }
+  };
+}
+
 macro_rules! cpu_test {
   ($name:ident) => {
     #[test]
@@ -576,3 +610,16 @@ fn nested_lambda_returned_closure_chain_every_hash_order() {
     assert_eq!(output, expected, "attempt {attempt}: wrong VM output");
   }
 }
+cpu_error_test!(dispatch_too_many_workgroups_error);
+cpu_error_test!(index_error_dynamic_global_write);
+cpu_error_test!(index_error_dynamic_read);
+cpu_error_test!(index_error_fixed_compound_assign);
+cpu_error_test!(index_error_fixed_global_read);
+cpu_error_test!(index_error_insert);
+cpu_error_test!(index_error_matrix_column);
+cpu_error_test!(index_error_negative);
+cpu_error_test!(index_error_nested);
+cpu_error_test!(index_error_ref_element_arg);
+cpu_error_test!(index_error_remove);
+cpu_error_test!(index_error_shared_atomic);
+cpu_error_test!(index_error_vector);

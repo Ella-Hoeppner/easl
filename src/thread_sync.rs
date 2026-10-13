@@ -136,10 +136,9 @@ impl AtomicOp {
 }
 
 impl dyn AtomicWords {
-  /// Applies `op` to word `index` (wrapped to the words' length) with
-  /// `operand`, returning the word's previous value (`Store` returns 0).
+  /// Applies `op` to word `index` with `operand`, returning the word's
+  /// previous value (`Store` returns 0).
   pub fn apply(&self, op: AtomicOp, index: usize, operand: u32) -> u32 {
-    let index = index % self.len();
     match op {
       AtomicOp::Load => self.load(index),
       AtomicOp::Store => {

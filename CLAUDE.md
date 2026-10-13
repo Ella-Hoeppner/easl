@@ -202,7 +202,7 @@ Readable/writable by an embedding host through `ExternalVars`. Must be in a GPU 
 - The `_raw` methods speak flat VM-layout words — a documented public contract
 
 ### Windowing builtins
-`(spawn-window (fn [] ...))` (per-frame callback), `(dispatch-render-shaders vert frag count)`, `(dispatch-compute-shader f (vec3u x y z))`, `(close-window)`. GPU work runs in **program order** within a frame: compute, render-to-texture, and screen draws see each other's writes, and each sees exactly the CPU writes made before it (pinned by the `screen_draw_*` buffer tests).
+`(spawn-window (fn [] ...))` (per-frame callback), `(dispatch-render-shaders vert frag count)`, `(dispatch-compute-shader f (vec3u x y z))`, `(close-window)`. GPU work runs in **program order** within a frame: compute, render-to-texture, and screen draws see each other's writes, and each sees exactly the CPU writes made before it (pinned by the `screen_draw_*` buffer tests). Both runtimes queue a compute dispatch through `record_compute_dispatch`, which rejects a workgroup count over the device's `max_compute_workgroups_per_dimension` (WebGPU's default without a GPU) as a runtime error (`TooManyWorkgroups`) before wgpu would.
 
 ### Window-info queries
 `window-resolution`, `window-time`, `mouse-*`, `key-down?`, etc. work in CPU and GPU code and always read a **per-frame snapshot**: `extract_gpu_window_info` rewrites every query into a read of an implicit uniform binding (bools as `u32`), refreshed at frame start. The rewrite is unconditional — CPU uses too — **by design**: every query in a frame sees one value, and whether some other call site dispatches a helper to the GPU never changes what its CPU calls observe. Key queries with literal strings get bindings; runtime-computed key strings stay CPU-only live queries.
@@ -293,6 +293,7 @@ let result = f32::from_bits(program.stack[program.get_function_return_position(f
 
 ### Invariants
 - **Static absolute addressing** — valid because easl has no recursion
+- **Runtime errors are traps**: a fatal error in easl code (an out-of-range index, `insert`/`remove` past the end) ends the run with `RunResult::Trapped(Trap)` (call stack cleared). The tree-walker reports the same `Trap` values (`UserspaceEvalError::Trap`, via `checked_index`), so both runtimes fail with the same message; the CPU runtime turns a trap into an `EvalError`, and `execute()` (audio, global initializers) panics with it. `ArrayLookup`/`ArrayStore` index without checking (`unsafe`), so every lookup at a user index must be preceded by `emit_index_bounds_check` (`Op::CheckIndex`, skipped for an in-range literal); an `i32` index compiled with `compile_index_to_bytecode` gets `Op::CheckNonNegativeIndex`. GPU code follows WGSL's out-of-range rules instead (it can't fail). User-catchable errors are deliberately deferred (a principled effect-handling design is planned)
 - **Every function's return slot is reserved separately from args and temps**: heap-id slots release on overwrite, so a scalar written over one would be misread as a heap id. Args start at `first_arg_position`
 - **`$init_globals`** (synthetic, unspeakable name) runs initializers once in `from_code`
 - **Global slot locations are public** (`Code::globals`, `get_global_slot`, `write_global`) — embedders stream values in between runs
@@ -372,7 +373,7 @@ All suites run with `--features window`. Most CPU-side suites run every test on 
 
 - **Every suite that runs `.easl` programs also checks their WGSL**: after validating a program, the cpu, buffer, vm, sync, thread-sync, audio, window, and video harnesses call `common::assert_valid_wgsl` (`tests/common/mod.rs`), which emits it to WGSL and validates the output with naga. Every GPU-valid user function is emitted whether or not anything runs it on the GPU, so this is what catches WGSL emission bugs in CPU-oriented code. New harnesses should call it too
 - **Shader** (`data/gpu/`): `success_test!(name)` validates emitted WGSL with naga (written to `out/` for inspection); `error_test!(name, CompileErrorKind::X(...))` asserts the exact error set with `PartialEq` — payloads must match
-- **CPU** (`data/cpu/`): `cpu_test!(name)` compares printed output to `name.txt`. Files under `data/cpu/modules/` are libraries imported by the `module_*` tests
+- **CPU** (`data/cpu/`): `cpu_test!(name)` compares printed output to `name.txt`; `cpu_error_test!(name)` expects a runtime error with the message in `name.error` on both runtimes. Files under `data/cpu/modules/` are libraries imported by the `module_*` tests
 - **Import** (`data/import/<name>/main.easl` + its imported files): `import_test!` compiles to WGSL and naga-validates; `import_error_test!(name, errors…)` asserts the exact (deduplicated) error set
 - **Buffer** (`data/buffer/`): real GPU dispatch round trips, compared to `.txt`. `screen_test!` programs render to a 1×1 screen texture and compare against `.screen.txt`: prints, then `frame <i>: r g b a` per frame
 - **Window** (`data/window/`): `StringIO` event logs — lines `spawn-window`, `print: <msg>`, `dispatch-render-shaders <vert> <frag> <count>`, `dispatch-compute-shader <entry> (vec3u Xu Yu Zu)`

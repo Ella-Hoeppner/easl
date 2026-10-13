@@ -1,0 +1,9 @@
+; An out-of-range element passed to a `@var @ref` parameter.
+(defn bump [@var @ref x: f32]
+  (+= x 1.))
+
+@cpu
+(defn main []
+  (let [@var arr [1. 2. 3.]
+        i 3u]
+    (bump (arr i))))

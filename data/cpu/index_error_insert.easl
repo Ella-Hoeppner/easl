@@ -1,0 +1,7 @@
+; `insert` accepts an index up to the length (appending), not past it.
+@cpu
+(defn main []
+  (let [@var arr: [u32] (into-dynamic-array [1u 2u])]
+    (= arr (insert arr 2u 3u))
+    (print arr)
+    (= arr (insert arr 4u 4u))))

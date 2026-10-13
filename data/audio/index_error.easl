@@ -1,0 +1,9 @@
+; An out-of-range index in audio code: the audio thread can't return an
+; error to anyone, so it panics with the runtime error's message.
+(var table: [4: f32])
+
+@audio
+(defn f [t: f32]: f32
+  (table (u32 (* t 8.))))
+
+@cpu (defn main [])

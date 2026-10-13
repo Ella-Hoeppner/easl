@@ -1,0 +1,5 @@
+; `remove` of an index past the end.
+@cpu
+(defn main []
+  (let [@var arr: [u32] (into-dynamic-array [1u 2u])]
+    (= arr (remove arr 2u))))

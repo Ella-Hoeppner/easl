@@ -3538,6 +3538,22 @@ fn vec_kind(t: &Type) -> Option<(u16, Type)> {
 }
 
 /// Returns Some((cols, rows, element_type)) for matNxM types.
+/// The element count of a fixed-size indexable value: an array's length,
+/// a vector's components, or a matrix's columns.
+fn fixed_index_length(t: &Type) -> u16 {
+  if let Type::Array(Some(size), _) = t {
+    return size
+      .as_literal()
+      .unwrap_or_else(|| panic!("non-literal array size in {t:?}"))
+      as u16;
+  }
+  if let Some((cols, _, _)) = mat_kind(t) {
+    return cols;
+  }
+  vec_kind(t)
+    .unwrap_or_else(|| panic!("indexed a value of non-indexable type {t:?}"))
+    .0
+}
 fn mat_kind(t: &Type) -> Option<(u16, u16, Type)> {
   if let Type::Struct(s) = t
     && let Some((cols, rows)) = parse_mat_size(&s.name)
@@ -3727,6 +3743,49 @@ fn enum_pattern_variant_index(
 // =============================================================================
 
 impl TypedExp {
+  /// Compiles this index expression; a negative `i32` index traps.
+  fn compile_index_to_bytecode(
+    &self,
+    state: &mut BytecodeCompilationState,
+  ) -> u16 {
+    let slot = self
+      .compile_to_bytecode(CompilePosition::Value, state)
+      .unwrap();
+    if self.data.with_known(|t| *t == Type::I32)
+      && self.literal_index().is_none()
+    {
+      state.push_instruction(Instruction {
+        op: Op::CheckNonNegativeIndex,
+        arg_positions: [slot, 0, 0],
+        return_position: 0,
+      });
+    }
+    slot
+  }
+  /// Traps unless this index, compiled to `slot`, is below `length`. A
+  /// literal index already known to be in range needs no check.
+  fn emit_index_bounds_check(
+    &self,
+    slot: u16,
+    length: u16,
+    state: &mut BytecodeCompilationState,
+  ) {
+    if self.literal_index().is_some_and(|i| i < length as i64) {
+      return;
+    }
+    state.push_instruction(Instruction {
+      op: Op::CheckIndex,
+      arg_positions: [slot, length, 0],
+      return_position: 0,
+    });
+  }
+  /// The value of a non-negative integer literal index.
+  fn literal_index(&self) -> Option<i64> {
+    match self.kind {
+      ExpKind::NumberLiteral(Number::Int(i)) if i >= 0 => Some(i),
+      _ => None,
+    }
+  }
   /// `&&` and `||`: the second operand is compiled behind a jump, so it runs
   /// only when the first operand doesn't decide the result.
   fn try_compile_short_circuit(
@@ -3798,13 +3857,13 @@ impl TypedExp {
         let ExpKind::Name(name) = &inner.kind else {
           return None;
         };
-        (name, Some(&**index))
+        (name, Some((&**index, &**inner)))
       }
       ExpKind::Application(inner, indices) if indices.len() == 1 => {
         let ExpKind::Name(name) = &inner.kind else {
           return None;
         };
-        (name, Some(&indices[0]))
+        (name, Some((&indices[0], &**inner)))
       }
       _ => return None,
     };
@@ -3813,9 +3872,15 @@ impl TypedExp {
     }
     let shared_index = state.shared_var_indices[name];
     let offset = match index {
-      Some(index) => index
-        .compile_to_bytecode(CompilePosition::Value, state)
-        .unwrap(),
+      Some((index, array)) => {
+        let slot = index.compile_index_to_bytecode(state);
+        index.emit_index_bounds_check(
+          slot,
+          fixed_index_length(&array.data.unwrap_known()),
+          state,
+        );
+        slot
+      }
       None => state.emit_u32_constant(0),
     };
     let operand = args.get(1).map(|operand| {
@@ -3883,9 +3948,7 @@ impl TypedExp {
             state.dynamic_array_memory.get(name).copied()
           && let Type::Array(_, element_type) = inner.data.unwrap_known()
         {
-          let index_slot = index_exp
-            .compile_to_bytecode(CompilePosition::Value, state)
-            .unwrap();
+          let index_slot = index_exp.compile_index_to_bytecode(state);
           let src_slot = args[1]
             .compile_to_bytecode(CompilePosition::Value, state)
             .unwrap();
@@ -3930,9 +3993,7 @@ impl TypedExp {
           let heap_id_slot = inner
             .compile_to_bytecode(CompilePosition::MutRef, state)
             .unwrap();
-          let index_slot = index_exp
-            .compile_to_bytecode(CompilePosition::Value, state)
-            .unwrap();
+          let index_slot = index_exp.compile_index_to_bytecode(state);
           let src_slot = args[1]
             .compile_to_bytecode(CompilePosition::Value, state)
             .unwrap();
@@ -5646,9 +5707,7 @@ impl TypedExp {
                 state.dynamic_array_memory.get(name).copied()
             {
               let dest = state.take_stack_slot(stride);
-              let index_slot = index_exp
-                .compile_to_bytecode(CompilePosition::Value, state)
-                .unwrap();
+              let index_slot = index_exp.compile_index_to_bytecode(state);
               state.emit_read_check(name);
               state.push_instruction(Instruction {
                 op: Op::DynLoad,
@@ -5719,9 +5778,7 @@ impl TypedExp {
                 exp.compile_to_bytecode(position, state).unwrap();
               let stride = vm_stack_size(&self.data.unwrap_known());
               let dest = state.take_stack_slot(stride);
-              let index_slot = index_exp
-                .compile_to_bytecode(CompilePosition::Value, state)
-                .unwrap();
+              let index_slot = index_exp.compile_index_to_bytecode(state);
               state.push_instruction(Instruction {
                 op: Op::HeapLoad,
                 arg_positions: [heap_id_slot, index_slot, stride],
@@ -5785,9 +5842,12 @@ impl TypedExp {
             let element_type = self.data.unwrap_known();
             let inner_data_size = vm_stack_size(&element_type);
             let result_position = state.take_stack_slot(inner_data_size);
-            let index_pos = index_exp
-              .compile_to_bytecode(CompilePosition::Value, state)
-              .unwrap();
+            let index_pos = index_exp.compile_index_to_bytecode(state);
+            index_exp.emit_index_bounds_check(
+              index_pos,
+              fixed_index_length(&exp.data.unwrap_known()),
+              state,
+            );
             state.push_instruction(Instruction {
               op: Op::ArrayLookup,
               arg_positions: [inner_exp_pos, index_pos, inner_data_size],

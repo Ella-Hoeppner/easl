@@ -1,0 +1,13 @@
+; An out-of-range element of an atomic array shared with the audio thread
+; (whose words both threads operate on directly).
+(var hits: [3: (Atomic u32)])
+
+(defn voice []: f32
+  (atomic-or (hits 1u) 4u)
+  0.)
+
+@cpu
+(defn main []
+  (start-audio voice)
+  (let [i 3u]
+    (print (atomic-add (hits i) 10u))))

@@ -195,6 +195,26 @@ fn vm_audio_driver_entry_switch() {
   assert!(driver.switch_entry("no-such-entry").is_err());
 }
 
+#[test]
+#[should_panic(
+  expected = "easl runtime error: index 4 is out of bounds for length 4"
+)]
+fn vm_audio_driver_index_error() {
+  use easl::audio::VmAudioDriver;
+  let source_path = Path::new("./data/audio/index_error.easl");
+  let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(source_path)
+  else {
+    panic!("failed to load program");
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
+  let (program, names) = program.compile_to_bytecode_program();
+  let mut driver = VmAudioDriver::new("f", program, &names, None).unwrap();
+  // At 8 Hz, samples 0..3 read elements 0..3 and sample 4 reads past them.
+  driver.run_batch(5, 8.0, |_| {}, |_| {}, |_| {});
+}
+
 /// An audio program round-tripped through `Code::to_bytes` /
 /// `from_bytes` (how the web runtime hands its page's compilation to the
 /// audio worklet) renders the same samples and publishes the same shared

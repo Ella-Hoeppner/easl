@@ -1,0 +1,9 @@
+; An out-of-range compound assignment into a fixed-size local array, which
+; the VM once wrote into a neighboring variable's memory.
+@cpu
+(defn main []
+  (let [@var arr [1u 2u]
+        @var other 7u
+        i 2u]
+    (+= (arr i) 1u)
+    (print other)))
