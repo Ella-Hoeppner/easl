@@ -1,0 +1,9 @@
+(vec4b true false false false)
+(vec4b false false true true)
+(vec4b true true false false)
+(vec4b false true true true)
+true
+(vec2b true false)
+(vec3b true false false)
+true
+false

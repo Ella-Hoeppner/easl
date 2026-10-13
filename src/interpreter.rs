@@ -707,15 +707,20 @@ fn apply_builtin_fn<IO: IOManager>(
   match &*f_name {
     "=" => Ok(args.remove(1).0),
     "<" | ">" | "<=" | ">=" => {
-      let a = args.remove(0).0.unwrap_primitive().as_num();
-      let b = args.remove(0).0.unwrap_primitive().as_num();
-      Ok(Value::Prim(Primitive::Bool(match &*f_name {
-        "<" => a < b,
-        ">" => a > b,
-        "<=" => a <= b,
-        ">=" => a >= b,
-        _ => unreachable!(),
-      })))
+      let values = vec![args.remove(0).0, args.remove(0).0];
+      Ok(Value::multi_map_primitive_or_vec_components(
+        &values,
+        |prims| {
+          let (a, b) = (prims[0].clone().as_num(), prims[1].clone().as_num());
+          Primitive::Bool(match &*f_name {
+            "<" => a < b,
+            ">" => a > b,
+            "<=" => a <= b,
+            ">=" => a >= b,
+            _ => unreachable!(),
+          })
+        },
+      ))
     }
     "==" => {
       if let (Value::String(a), Value::String(b)) = (&args[0].0, &args[1].0) {

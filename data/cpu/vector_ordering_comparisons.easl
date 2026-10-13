@@ -1,0 +1,15 @@
+; `<`, `>`, `<=` and `>=` compare vectors component-wise on both runtimes,
+; for every vector width and element type, and scalars as before.
+@cpu
+(defn main []
+  (let [a (vec4f 1. 2. 3. 4.)
+        b (vec4f 2. 2. 2. 2.)]
+    (print (< a b))
+    (print (> a b))
+    (print (<= a b))
+    (print (>= a b))
+    (print (any (> (abs (vec4f -5. 0. 0. 0.)) (vec4f 1.)))))
+  (print (<= (vec2u 1u 5u) (vec2u 3u 3u)))
+  (print (> (vec3i 1i -5i 3i) (vec3i 0i 3i 3i)))
+  (print (< 1. 2.))
+  (print (>= 1u 2u)))
