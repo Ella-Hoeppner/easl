@@ -2401,7 +2401,13 @@ impl BytecodeProgram {
           let a = deref_cell!(a_slot);
           let b = deref_cell!(b_slot);
           let memory = if cells_element {
-            let mut cells: Vec<Option<Arc<HeapCell>>> = vec![];
+            let mut cells: Vec<Option<Arc<HeapCell>>> = Vec::with_capacity(
+              [a, b]
+                .into_iter()
+                .flatten()
+                .map(|c| c.memory.len_elements(1) as usize)
+                .sum(),
+            );
             for cell in [a, b].into_iter().flatten() {
               let DynMemory::Cells(children) = &cell.memory else {
                 unreachable!("heap-backed concat source wasn't Cells")
@@ -2424,7 +2430,14 @@ impl BytecodeProgram {
               elements: count(a) + count(b),
             }
           } else {
-            let mut words: Vec<u32> = vec![];
+            let mut words: Vec<u32> = Vec::with_capacity(
+              [a, b]
+                .into_iter()
+                .flatten()
+                .map(|c| c.memory.len_elements(flat_stride) as usize)
+                .sum::<usize>()
+                * flat_stride,
+            );
             for cell in [a, b].into_iter().flatten() {
               match &cell.memory {
                 DynMemory::Words(w) => words.extend_from_slice(w),
@@ -2531,10 +2544,11 @@ impl BytecodeProgram {
         }
         Op::StrConcat => {
           let [a_slot, b_slot, _] = instruction.arg_positions;
-          let mut words =
-            heap_string_words(heap, stack[a_slot as usize]).to_vec();
-          words
-            .extend_from_slice(heap_string_words(heap, stack[b_slot as usize]));
+          let a = heap_string_words(heap, stack[a_slot as usize]);
+          let b = heap_string_words(heap, stack[b_slot as usize]);
+          let mut words = Vec::with_capacity(a.len() + b.len());
+          words.extend_from_slice(a);
+          words.extend_from_slice(b);
           let cell = Arc::new(HeapCell {
             memory: DynMemory::Words(words),
             stride: 1,

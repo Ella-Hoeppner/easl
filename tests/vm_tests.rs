@@ -246,3 +246,37 @@ fn ref_args_reserve_no_copies() {
   assert!(per_call < 16, "each call adds {per_call} stack slots");
   stack_size(70);
 }
+
+/// Each `concat` allocates its result at exactly the combined length, for
+/// flat arrays, arrays of heap values, and strings.
+#[test]
+fn concat_allocates_exactly() {
+  use easl::vm::bytecode::{DynMemory, heap_index};
+  let Ok(Ok((_, Ok(mut program)))) =
+    load_easl_program_from_file(Path::new("./data/vm/concat_capacity.easl"))
+  else {
+    panic!("failed to load program");
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
+  let (mut bytecode_program, function_names) =
+    program.compile_to_bytecode_program_cpu();
+  for (name, expected_length) in [("flat", 5), ("nested", 3), ("text", 5)] {
+    let f = function_names.iter().position(|n| &**n == name).unwrap();
+    bytecode_program.prepare_to_run_function(f);
+    bytecode_program.execute();
+    let id = bytecode_program.stack
+      [bytecode_program.get_function_return_position(f) as usize];
+    let cell = bytecode_program.heap[heap_index(id).unwrap()]
+      .as_ref()
+      .unwrap();
+    let (length, capacity) = match &cell.memory {
+      DynMemory::Words(words) => (words.len(), words.capacity()),
+      DynMemory::Cells(cells) => (cells.len(), cells.capacity()),
+      DynMemory::Zeroed { .. } => panic!("{name}: result is lazily zeroed"),
+    };
+    assert_eq!(length, expected_length, "{name}: wrong length");
+    assert_eq!(capacity, length, "{name}: over-allocated");
+  }
+}

@@ -2067,7 +2067,10 @@ fn apply_builtin_fn<IO: IOManager>(
       else {
         panic!()
       };
-      Ok(Value::String(format!("{a}{b}")))
+      let mut s = String::with_capacity(a.len() + b.len());
+      s.push_str(a);
+      s.push_str(b);
+      Ok(Value::String(s))
     }
     "concat" => {
       let Type::Array(_, element_type) = return_type else {
