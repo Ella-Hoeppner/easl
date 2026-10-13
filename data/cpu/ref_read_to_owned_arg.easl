@@ -1,0 +1,72 @@
+; A value read through a reference (a field, an element, or the whole
+; referenced value) passes to an owned parameter as a copy, like any value:
+; the callee mutating its copy never touches the caller's value, heap
+; values included, while mutations made through the reference itself land.
+(struct Mouse
+  yaw: f32
+  hist: [4: f32]
+  pos: vec2f)
+
+(defn twice [x: f32]: f32
+  (* x 2.))
+
+(defn sum2 [v: vec2f]: f32
+  (+ v.x v.y))
+
+(defn read-field [@ref m: Mouse]: f32
+  (twice m.yaw))
+
+(defn read-element [@ref m: Mouse]: f32
+  (twice (m.hist 1u)))
+
+(defn read-vec [@var @ref m: Mouse]: f32
+  (sum2 m.pos))
+
+(defn read-whole-array [@ref xs: [4: f32] i: u32]: f32
+  (twice (xs i)))
+
+(struct Bag
+  items: [f32]
+  name: String)
+
+(defn scribble [@var xs: [f32]]: f32
+  (= (xs 0u) 99.)
+  (xs 0u))
+
+(defn shout [s: String]: String
+  (concat s "!"))
+
+(defn via-ref [@ref b: Bag]: f32
+  (print (shout b.name))
+  (scribble b.items))
+
+(defn via-mut-ref [@var @ref b: Bag]: f32
+  (= b.items (push b.items 5.))
+  (scribble b.items))
+
+(defn bump-and-twice [@var @ref x: f32]: f32
+  (+= x 1.)
+  (twice x))
+
+(var gxs: [3: f32])
+
+@cpu
+(defn main []
+  (let [@var b (Bag (into-dynamic-array [1. 2.]) "bag")]
+    (print (via-ref b))
+    (print b.items)
+    (print (via-mut-ref b))
+    (print b.items))
+  (let [@var arr [1. 2. 3.]
+        i 1u]
+    (print (bump-and-twice (arr i)))
+    (print arr))
+  (= gxs [1. 2. 3.])
+  (let [i 2u]
+    (print (bump-and-twice (gxs i)))
+    (print gxs))
+  (let [@var m (Mouse 1.5 [1. 2. 3. 4.] (vec2f 1. 2.))]
+    (print (read-field m))
+    (print (read-element m))
+    (print (read-vec m))
+    (print (read-whole-array m.hist 2u))))

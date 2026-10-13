@@ -1551,14 +1551,9 @@ impl Program {
                     {
                       let arg = &args[i];
                       match expected_ownership {
-                        Ownership::Owned => {
-                          if arg.data.ownership != Ownership::Owned {
-                            errors.log(CompileError::new(
-                              ArgumentMustBeOwnedValue,
-                              arg.source_trace.clone(),
-                            ));
-                          }
-                        }
+                        // A value read through a reference passed to an
+                        // owned parameter is copied, like any value.
+                        Ownership::Owned => {}
                         Ownership::Reference | Ownership::MutableReference => {
                           if let Some(name) = arg.name_or_inner_accessed_name()
                           {

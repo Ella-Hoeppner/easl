@@ -536,8 +536,6 @@ pub enum CompileErrorKind {
   DuplicateStructFieldName,
   #[error("Duplicate enum variant name")]
   DuplicateEnumVariantName,
-  #[error("Argument must be an owned value, found a reference")]
-  ArgumentMustBeOwnedValue,
   #[error("Argument must be a named value, as this function expects reference")]
   ReferenceArgumentMustBeName,
   #[error(

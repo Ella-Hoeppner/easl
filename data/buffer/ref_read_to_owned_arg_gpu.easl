@@ -1,0 +1,51 @@
+; Values read through references passed to owned parameters, in GPU code:
+; a whole storage global's field, its whole value, and nested calls, plus
+; the same functions on the CPU with locals.
+(struct Mouse
+  yaw: f32
+  hist: [4: f32]
+  pos: vec2f)
+
+(defn twice [x: f32]: f32
+  (* x 2.))
+
+(defn mouse-yaw [m: Mouse]: f32
+  m.yaw)
+
+(defn whole [@ref m: Mouse]: f32
+  (mouse-yaw m))
+
+(defn nested [@ref m: Mouse]: f32
+  (twice (twice m.yaw)))
+
+(defn through-chain [@ref ms: [2: Mouse] i: u32]: f32
+  (twice (mouse-yaw (ms i))))
+
+(defn mutate-then-read [@var @ref m: Mouse]: f32
+  (+= m.yaw 1.)
+  (twice m.yaw))
+
+@storage-write
+(var gm: Mouse)
+
+@storage-write
+(var out: [4: f32])
+
+@compute
+(defn work []
+  (= (out 0u) (whole gm))
+  (= (out 1u) (nested gm))
+  (= (out 2u) (twice gm.yaw)))
+
+@cpu
+(defn main []
+  (let [@var m (Mouse 1.5 [1. 2. 3. 4.] (vec2f 1. 2.))
+        ms [m m]]
+    (print (whole m))
+    (print (nested m))
+    (print (through-chain ms 1u))
+    (print (mutate-then-read m))
+    (print m.yaw)
+    (= gm m)
+    (dispatch-compute-shader work (vec3u 1u))
+    (print out)))
