@@ -280,3 +280,33 @@ fn concat_allocates_exactly() {
     assert_eq!(capacity, length, "{name}: over-allocated");
   }
 }
+
+/// A `let` binding of an array element owns shares of the element's heap
+/// ids, and releases them the next time it runs: running it many times
+/// leaves a bounded number of live heap cells.
+#[test]
+fn let_element_binding_releases_shares() {
+  let Ok(Ok((_, Ok(mut program)))) = load_easl_program_from_file(Path::new(
+    "./data/vm/let_element_binding_leak.easl",
+  )) else {
+    panic!("failed to load program");
+  };
+  let errors = program.validate_raw_program(CompilerTarget::WGSL);
+  assert!(errors.is_empty(), "compile errors: {errors:#?}");
+  common::assert_valid_wgsl(&program);
+  let (mut bytecode_program, function_names) =
+    program.compile_to_bytecode_program_cpu();
+  let f = function_names.iter().position(|n| &**n == "f").unwrap();
+  bytecode_program.prepare_to_run_function(f);
+  bytecode_program.execute();
+  assert_eq!(
+    bytecode_program.stack
+      [bytecode_program.get_function_return_position(f) as usize],
+    1000
+  );
+  let live_cells = bytecode_program.heap.iter().flatten().count();
+  assert!(
+    live_cells < 20,
+    "{live_cells} live heap cells after 1000 calls"
+  );
+}

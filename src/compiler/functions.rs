@@ -7,7 +7,7 @@ use take_mut::take;
 use crate::compiler::entry::BuiltinIOAttribute;
 use crate::compiler::exp_builder::{ExpBuilder, let_around};
 use crate::compiler::expression::compile_typed_name;
-use crate::compiler::types::AbstractArraySize;
+use crate::compiler::types::{AbstractArraySize, ConcreteArraySize};
 use crate::vm::compile::{
   BytecodeCompilationState, CompilePosition, RefArgBinding,
 };
@@ -1416,6 +1416,54 @@ pub struct BuiltInFunction {
 }
 
 impl TopLevelFunction {
+  /// What WGSL can't express about runtime-sized arrays in this function:
+  /// returning one, taking one by value, or binding one locally.
+  /// GPU-reachable functions report these
+  /// (`Program::validate_gpu_runtime_sized_use`); any other function with
+  /// one isn't emitted to WGSL. A `@ref` runtime-sized param is fine: the
+  /// only runtime-sized lvalues in GPU code are whole storage globals,
+  /// which the reference monomorphizer inlines in place of the param.
+  pub fn wgsl_runtime_sized_errors(&self) -> Vec<CompileError> {
+    let mut errors = vec![];
+    let Type::Function(signature) = self.expression.data.unwrap_known() else {
+      return errors;
+    };
+    let is_runtime_sized =
+      |t: &Type| matches!(t, Type::Array(Some(ConcreteArraySize::Unsized), _));
+    let source_trace = &self.expression.source_trace;
+    if is_runtime_sized(&signature.return_type.unwrap_known()) {
+      errors.push(CompileError::new(
+        GpuFunctionReturnsRuntimeSizedArray,
+        source_trace.clone(),
+      ));
+    }
+    if signature.args.iter().any(|(arg, _)| {
+      arg.var_type.ownership == Ownership::Owned
+        && is_runtime_sized(&arg.var_type.unwrap_known())
+    }) {
+      errors.push(CompileError::new(
+        GpuFunctionAcceptsRuntimeSizedArray,
+        source_trace.clone(),
+      ));
+    }
+    self
+      .expression
+      .walk(&mut |exp| {
+        if let ExpKind::Let(bindings, _) = &exp.kind {
+          for (_, _, _, value) in bindings.iter() {
+            if value.data.with_known(is_runtime_sized) {
+              errors.push(CompileError::new(
+                RuntimeSizedLocalInGpuCode,
+                value.source_trace.clone(),
+              ));
+            }
+          }
+        }
+        Ok::<bool, Never>(true)
+      })
+      .unwrap();
+    errors
+  }
   /// Whether this function has a valid representation in `target`'s
   /// output — the leaf predicate of `compile_to_target`'s closure-based
   /// emission. A function is target-invalid through its effects
@@ -1426,13 +1474,13 @@ impl TopLevelFunction {
   /// non-function address space (WGSL: the storage-space `ptr` argument
   /// emission is malformed, and no shader-callable code can produce such
   /// a reference anyway), or through an entry-point marking the target
-  /// doesn't compile. `non_binding_globals` is
-  /// `Program::wgsl_non_binding_globals` (empty for other targets).
+  /// doesn't compile. `unemittable_globals` is
+  /// `Program::wgsl_unemittable_globals` (empty for other targets).
   pub fn is_valid_for_target(
     &self,
     program: &Program,
     target: CompilerTarget,
-    non_binding_globals: &HashSet<Arc<str>>,
+    unemittable_globals: &HashSet<Arc<str>>,
     memo: &mut EffectsMemo,
   ) -> bool {
     if !self
@@ -1479,14 +1527,13 @@ impl TopLevelFunction {
     // embeds a runtime-sized array — the signature loses the `Wavetable`
     // but the body still references the un-emittable binding.
     if target == CompilerTarget::WGSL {
-      use crate::compiler::expression::ExpKind;
-      if !non_binding_globals.is_empty() {
+      if !unemittable_globals.is_empty() {
         let mut reads_bad_global = false;
         self
           .expression
           .walk(&mut |exp| {
             if let ExpKind::Name(name) = &exp.kind
-              && non_binding_globals.contains(name)
+              && unemittable_globals.contains(name)
             {
               reads_bad_global = true;
               return Ok::<bool, Never>(false);
@@ -1498,6 +1545,13 @@ impl TopLevelFunction {
           return false;
         }
       }
+    }
+    // A runtime-sized value used in a way WGSL can't express (see
+    // `wgsl_runtime_sized_errors`) leaves the function no WGSL form.
+    if target == CompilerTarget::WGSL
+      && !self.wgsl_runtime_sized_errors().is_empty()
+    {
+      return false;
     }
     let effects = self.effects_with(memo);
     effects.cpu_exclusive_functions().is_empty()

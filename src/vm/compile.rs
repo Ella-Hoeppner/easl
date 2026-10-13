@@ -39,6 +39,9 @@ pub struct IntermediateBytecodeFunction {
   pub stack_frame_start: u16,
   pub arg_positions: Vec<u16>,
   pub arg_sizes: Vec<u16>,
+  /// Scratch slots (start, size) that every value copy in this function
+  /// shares for the destination's old words (see `emit_copy_with_plan`).
+  pub copy_scratch: Option<(u16, u16)>,
 }
 
 /// Where a per-usage-specialized function's argument lives at one call
@@ -334,6 +337,22 @@ impl BytecodeCompilationState {
       effects_memo: EffectsMemo::default(),
     }
   }
+  /// `size` slots of the current function's shared copy scratch (see
+  /// `emit_copy_with_plan`), growing it when it's too small; fresh slots
+  /// outside a function.
+  fn copy_scratch(&mut self, size: u16) -> u16 {
+    if let Some(function) = &self.current_function
+      && let Some((start, available)) = function.copy_scratch
+      && available >= size
+    {
+      return start;
+    }
+    let start = self.take_stack_slot(size);
+    if let Some(function) = &mut self.current_function {
+      function.copy_scratch = Some((start, size));
+    }
+    start
+  }
   pub fn take_stack_slot(&mut self, size: u16) -> u16 {
     let i = self.consumed_stack_space;
     self.consumed_stack_space = self
@@ -358,6 +377,7 @@ impl BytecodeCompilationState {
       stack_frame_start: self.consumed_stack_space,
       arg_positions: vec![],
       arg_sizes: vec![],
+      copy_scratch: None,
     });
     // Reserve the return slot(s) at the very start of the frame, before
     // any arg or body-temp allocation. The return value must not
@@ -453,7 +473,11 @@ impl BytecodeCompilationState {
         // (`(= b b)`, or a value read out of the destination) would
         // otherwise promote ids the release had just freed. So the old
         // words are saved to scratch first and released from there.
-        let old = self.take_stack_slot(size);
+        // The old words are only needed until the release just below, so
+        // every copy in the function can share one scratch area (big
+        // structs copied at many places would otherwise each take their
+        // own, and slots are few).
+        let old = self.copy_scratch(size);
         let dest_source = if let Some(group) = pending {
           group.record(
             self.instructions.len() as u32,
@@ -3271,6 +3295,18 @@ fn aliases_variable_storage(e: &TypedExp) -> bool {
   }
 }
 
+/// True for an array element, or a field chain into one: its words are
+/// read out with any heap ids borrowed from the array, which can replace
+/// or free them (a write-back through a reference to the element, say)
+/// while a binding of the value is still live.
+fn reads_array_element(e: &TypedExp) -> bool {
+  match &e.kind {
+    ExpKind::Access(Accessor::ArrayIndex(_), _) => true,
+    ExpKind::Access(Accessor::Field(_), inner) => reads_array_element(inner),
+    _ => false,
+  }
+}
+
 /// Which storage an embedding-element container lives in: a heap cell
 /// (locals and values, addressed through the id in a slot) or a
 /// dynamic-memory region (globals). Regions are never `Arc`-shared, so
@@ -5291,14 +5327,20 @@ impl TypedExp {
               .unwrap();
             let t = value.data.unwrap_known();
             let size = vm_stack_size(&t);
-            if aliases_variable_storage(value) && size > 0 {
+            let borrows_heap_ids = reads_array_element(value)
+              && !matches!(HeapCopyPlan::for_type(&t), HeapCopyPlan::Flat);
+            if (aliases_variable_storage(value) || borrows_heap_ids) && size > 0
+            {
               // An initializer that compiles to another variable's
               // storage (a bare Name, or a field chain rooted in one)
               // must be bound by copy: aliasing it would let
               // reassignment of either side show through the other.
-              // Value semantics, matching the tree-walker's clone. (Any
-              // other initializer's result slot is owned by this
-              // binding alone, so aliasing it is safe.)
+              // Value semantics, matching the tree-walker's clone. So
+              // must an array element holding heap ids: the binding needs
+              // its own shares of them, and the copy releases the shares
+              // it took last time it ran. (Any other initializer's result
+              // slot is owned by this binding alone, so aliasing it is
+              // safe.)
               let slot = state.take_stack_slot(size);
               state.emit_value_copy(value_pos, size, slot, &t);
               state.locals.insert(name.clone(), slot);

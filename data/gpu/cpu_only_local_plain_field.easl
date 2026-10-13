@@ -1,0 +1,34 @@
+; A @local global with a CPU-only type isn't emitted to WGSL, so neither is
+; a function using it, even one that only touches its plain fields; nor is
+; one reading a @local runtime-sized array, which WGSL can't declare.
+(struct Builder
+  items: [u32]
+  open: bool
+  count: u32)
+
+@local (var builder: Builder (Builder (zeroed-array 0u) false 0u))
+
+(defn start-building []
+  (= builder.open true)
+  (= builder.count 0u))
+
+(defn add [x: u32]
+  (= builder.items (push builder.items x))
+  (+= builder.count 1u))
+
+@local (var history: [u32])
+
+(defn first-entry []: u32
+  (history 0u))
+
+@cpu
+(defn main []
+  (= history (into-dynamic-array [3u]))
+  (print (first-entry))
+  (start-building)
+  (add 5u)
+  (print builder.count))
+
+@fragment
+(defn fragment []: vec4f
+  (vec4f 1.))

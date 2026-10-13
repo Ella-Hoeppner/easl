@@ -4942,62 +4942,7 @@ impl Program {
       {
         continue;
       }
-      // A runtime-sized array without a GPU binding is a CPU/audio-only
-      // value (e.g. a `load-wav`ed sample buffer): WGSL has no
-      // representation for an unsized array outside a storage binding, so
-      // it's omitted from shader output. (Shader code can't legally
-      // reference one anyway.)
-      if target == CompilerTarget::WGSL
-        && matches!(
-          &v.var_type,
-          Type::Array(
-            Some(crate::compiler::types::ConcreteArraySize::Unsized),
-            _
-          )
-        )
-        && !matches!(
-          v.kind,
-          TopLevelVariableKind::Var {
-            group_and_binding: Some(_),
-            ..
-          }
-        )
-      {
-        continue;
-      }
-      // A global whose type has no WGSL or C form — by the same rule that
-      // leaves CPU-only structs out (Strings, videos, runtime-sized arrays
-      // embedded in a struct or enum, closures that can't be emitted) — is
-      // CPU-only; shader code can't reference one. A runtime-sized array
-      // itself has a form as a storage binding, handled below.
-      let is_runtime_sized_array = matches!(
-        &v.var_type,
-        Type::Array(
-          Some(crate::compiler::types::ConcreteArraySize::Unsized),
-          _
-        )
-      );
-      if !is_runtime_sized_array && self.type_makes_struct_cpu_only(&v.var_type)
-      {
-        continue;
-      }
-      // A GPU-space var whose type isn't host-shareable because it involves
-      // a bool is guaranteed GPU-unused by `validate_gpu_used_binding_types`
-      // — it's an ordinary CPU value with no legal WGSL declaration, so it's
-      // omitted from shader output. (`@local` bool vars stay:
-      // `var<private> b: bool` is valid WGSL.)
-      if target == CompilerTarget::WGSL
-        && matches!(
-          v.kind,
-          TopLevelVariableKind::Var {
-            address_space: VariableAddressSpace::Uniform
-              | VariableAddressSpace::StorageRead
-              | VariableAddressSpace::StorageReadWrite,
-            ..
-          }
-        )
-        && v.var_type.involves_bool()
-      {
+      if self.omits_global(v, target) {
         continue;
       }
       compiled_string += &v.clone().compile(&mut names, target);
@@ -6054,66 +5999,25 @@ impl Program {
     }
     while let Some(f) = queue.pop() {
       let f = f.read().unwrap();
-      let Type::Function(signature) = f.expression.data.unwrap_known() else {
-        continue;
-      };
-      let source_trace = f.expression.source_trace.clone();
-      if matches!(
-        signature.return_type.unwrap_known(),
-        Type::Array(Some(ConcreteArraySize::Unsized), _)
-      ) {
-        errors.log(CompileError {
-          kind: GpuFunctionReturnsRuntimeSizedArray,
-          source_trace: source_trace.clone(),
-        });
-      }
-      // Only *owned* runtime-sized params are rejected: a `@ref`
-      // runtime-sized param never exists in the emitted GPU code — the
-      // only runtime-sized lvalues in GPU-reachable code are whole
-      // storage globals (locals, fields, and nested bindings are all
-      // rejected), and a whole-global ref arg is inlined away by the
-      // reference monomorphizer, which replaces the parameter with a
-      // direct usage of the specific global.
-      if signature.args.iter().any(|(arg, _)| {
-        arg.var_type.ownership == Ownership::Owned
-          && matches!(
-            arg.var_type.unwrap_known(),
-            Type::Array(Some(ConcreteArraySize::Unsized), _)
-          )
-      }) {
-        errors.log(CompileError {
-          kind: GpuFunctionAcceptsRuntimeSizedArray,
-          source_trace: source_trace.clone(),
-        });
+      for error in f.wgsl_runtime_sized_errors() {
+        errors.log(error);
       }
       let mut discovered: Vec<(Arc<str>, Arc<RwLock<TopLevelFunction>>)> =
         vec![];
       f.expression
         .walk(&mut |exp| {
-          match &exp.kind {
-            ExpKind::Let(bindings, _) => {
-              for (_, _, _, value) in bindings.iter() {
-                if matches!(
-                  value.data.unwrap_known(),
-                  Type::Array(Some(ConcreteArraySize::Unsized), _)
-                ) {
-                  errors.log(CompileError {
-                    kind: RuntimeSizedLocalInGpuCode,
-                    source_trace: value.source_trace.clone(),
-                  });
-                }
-              }
-            }
-            _ => {}
-          }
-          // struct/enum *values* with runtime-sized contents
-          if matches!(exp.data.unwrap_known(), Type::Struct(_) | Type::Enum(_))
-            && exp.data.unwrap_known().involves_runtime_sized_array()
-          {
-            errors.log(CompileError {
-              kind: RuntimeSizedFieldOnGpu,
-              source_trace: exp.source_trace.clone(),
-            });
+          // Struct/enum *values* with runtime-sized contents. (Only checked
+          // here, before the capture lifts: afterwards a split global's
+          // accesses keep its original type though they resolve to its
+          // parts, so emission can't use this rule.)
+          if exp.data.with_known(|t| {
+            matches!(t, Type::Struct(_) | Type::Enum(_))
+              && t.involves_runtime_sized_array()
+          }) {
+            errors.log(CompileError::new(
+              RuntimeSizedFieldOnGpu,
+              exp.source_trace.clone(),
+            ));
           }
           // follow composite callees
           if let ExpKind::Application(applied_f, _) = &exp.kind
@@ -7802,8 +7706,8 @@ impl Program {
         .unwrap();
       callees.insert(f_name.clone(), found);
     }
-    let non_binding_globals = if target == CompilerTarget::WGSL {
-      self.wgsl_non_binding_globals()
+    let unemittable_globals = if target == CompilerTarget::WGSL {
+      self.wgsl_unemittable_globals()
     } else {
       HashSet::new()
     };
@@ -7816,7 +7720,7 @@ impl Program {
       let locally_valid = implementation.read().unwrap().is_valid_for_target(
         self,
         target,
-        &non_binding_globals,
+        &unemittable_globals,
         &mut memo,
       );
       if locally_valid {
@@ -7855,22 +7759,68 @@ impl Program {
       valid,
     }
   }
-  /// The GPU-space globals whose types can't be a WGSL binding. A function
-  /// reading one has no WGSL form (see `TopLevelFunction::is_valid_for_target`).
-  fn wgsl_non_binding_globals(&self) -> HashSet<Arc<str>> {
+  /// Whether `target`'s output leaves out the global `v`, whose type has
+  /// no form there:
+  /// - a runtime-sized array without a binding, in WGSL (e.g. a
+  ///   `load-wav`ed sample buffer: WGSL has no unsized array outside a
+  ///   storage binding);
+  /// - a CPU-only type, in any target (Strings, videos, runtime-sized
+  ///   arrays embedded in a struct or enum, closures that can't be
+  ///   emitted); a runtime-sized array itself has a form as a storage
+  ///   binding;
+  /// - in WGSL, a GPU-space var involving a bool, which isn't
+  ///   host-shareable and is guaranteed GPU-unused by
+  ///   `validate_gpu_used_binding_types` (`var<private> b: bool` is valid
+  ///   WGSL, so `@local` bools stay).
+  fn omits_global(&self, v: &TopLevelVar, target: CompilerTarget) -> bool {
+    let is_runtime_sized_array = matches!(
+      &v.var_type,
+      Type::Array(Some(ConcreteArraySize::Unsized), _)
+    );
+    let gpu_space = matches!(
+      v.kind,
+      TopLevelVariableKind::Var {
+        address_space: VariableAddressSpace::Uniform
+          | VariableAddressSpace::StorageRead
+          | VariableAddressSpace::StorageReadWrite,
+        ..
+      }
+    );
+    let has_binding = matches!(
+      v.kind,
+      TopLevelVariableKind::Var {
+        group_and_binding: Some(_),
+        ..
+      }
+    );
+    (target == CompilerTarget::WGSL && is_runtime_sized_array && !has_binding)
+      || (!is_runtime_sized_array
+        && self.type_makes_struct_cpu_only(&v.var_type))
+      || (target == CompilerTarget::WGSL
+        && gpu_space
+        && v.var_type.involves_bool())
+  }
+  /// The globals a WGSL function can't refer to: GPU-space globals whose
+  /// types can't be a WGSL binding, and globals WGSL output leaves out
+  /// (`omits_global`). A function referring to one has no WGSL form
+  /// either (see `TopLevelFunction::is_valid_for_target`), even when it
+  /// only touches the global's plain fields.
+  fn wgsl_unemittable_globals(&self) -> HashSet<Arc<str>> {
     self
       .top_level_vars
       .iter()
       .filter(|v| {
-        matches!(
-          v.kind,
-          TopLevelVariableKind::Var {
-            address_space: VariableAddressSpace::Uniform
-              | VariableAddressSpace::StorageRead
-              | VariableAddressSpace::StorageReadWrite,
-            ..
-          }
-        ) && !v.var_type.is_valid_wgsl_binding_layout()
+        let gpu_space_without_binding =
+          matches!(
+            v.kind,
+            TopLevelVariableKind::Var {
+              address_space: VariableAddressSpace::Uniform
+                | VariableAddressSpace::StorageRead
+                | VariableAddressSpace::StorageReadWrite,
+              ..
+            }
+          ) && !v.var_type.is_valid_wgsl_binding_layout();
+        gpu_space_without_binding || self.omits_global(v, CompilerTarget::WGSL)
       })
       .map(|v| v.name.clone())
       .collect()

@@ -1,0 +1,42 @@
+; A `let` copy of an array element, or of a field of one, keeps its arrays
+; while the element is changed through a reference.
+(struct Buf
+  path: [u32]
+  saved: [u32]
+  text: [u32]
+  version: u32)
+
+(struct App
+  bufs: [Buf])
+
+@local (var app: App)
+
+(defn mark-saved [@var @ref b: Buf]
+  (let [text b.text]
+    (= b.saved text)
+    (= b.version 2u)))
+
+(defn save [k: u32]
+  (let [b (app.bufs k)]
+    (when (> (array-length b.path) 0u)
+      (mark-saved (app.bufs k)))))
+
+(defn run [k: u32]
+  (let [b (app.bufs k)]
+    (print (array-length b.path))
+    (save k)
+    (print (array-length b.path))))
+
+(defn run-field [k: u32]
+  (let [p (.path (app.bufs k))]
+    (print (array-length p))
+    (save k)
+    (print (array-length p))))
+
+@cpu
+(defn main []
+  (= app (App (into-dynamic-array [(Buf (into-dynamic-array [1u 2u 3u]) (zeroed-array 0u) (into-dynamic-array [7u 8u]) 1u)])))
+  (run 0u)
+  (run 0u)
+  (run-field 0u)
+  (run-field 0u))

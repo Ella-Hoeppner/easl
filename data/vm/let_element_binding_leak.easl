@@ -1,0 +1,21 @@
+; Used by `let_element_binding_releases_shares` in vm_tests.rs: a `let`
+; binding of an array element takes its own shares of the element's heap
+; ids, and must release them the next time it runs, or every call leaks.
+(struct Buf
+  path: [u32]
+  version: u32)
+
+(defn peek [bufs: [Buf] k: u32]: u32
+  (let [b (bufs k)]
+    b.version))
+
+(defn f []: u32
+  (let [bufs (into-dynamic-array [(Buf (into-dynamic-array [1u 2u 3u]) 1u)])
+        @var total 0u]
+    (for [i 1000u]
+      (+= total (peek bufs 0u)))
+    total))
+
+@cpu
+(defn main []
+  (print (f)))

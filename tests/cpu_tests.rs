@@ -303,6 +303,8 @@ cpu_test!(disjoint_ref_args_swap);
 cpu_test!(ref_element_snapshot_intervening_mutation);
 cpu_test!(fixed_array_ref_element_intervening_mutation);
 cpu_test!(fixed_array_ref_element_aliased_owned);
+cpu_test!(let_copy_survives_ref_mutation);
+cpu_test!(struct_element_write_back);
 cpu_test!(fixed_array_literal_in_loop);
 cpu_test!(ref_element_aliased_owned_snapshot);
 cpu_test!(unit_if_compound_assignment_arms);

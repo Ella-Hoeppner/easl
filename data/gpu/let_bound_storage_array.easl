@@ -1,0 +1,16 @@
+; WGSL has no local runtime-sized arrays, so a function that binds a copy of
+; a storage array in a `let` isn't emitted to WGSL (it's CPU-only), even
+; though everything it touches is GPU-visible.
+@external (var status: [u32])
+
+(defn running? []: bool
+  (let [words status]
+    (if (> (array-length words) 1u) (== (words 1u) 1u) false)))
+
+@cpu
+(defn main []
+  (print (running?)))
+
+@fragment
+(defn fragment []: vec4f
+  (vec4f (f32 (status 0u))))

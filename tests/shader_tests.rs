@@ -1108,6 +1108,8 @@ success_test!(fn_value_mixed_signature_assignment);
 success_test!(nested_lambda_scope_temporary_gpu);
 success_test!(lambda_return_fragment);
 success_test!(lambda_discard_fragment);
+success_test!(cpu_only_local_plain_field);
+success_test!(let_bound_storage_array);
 error_test!(
   compound_mat_divide_invalid,
   CompileErrorKind::FunctionArgumentTypesIncompatible {

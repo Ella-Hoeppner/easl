@@ -1,0 +1,15 @@
+; Each element of an array of structs with array fields, copied out with
+; `let`, changed, and stored back, keeps its arrays.
+(struct Buf text: [u32] count: u32)
+(struct App bufs: [Buf])
+(defn touch [@var @ref app: App k: u32]
+  (let [@var b (app.bufs k)]
+    (+= b.count 1u)
+    (= (app.bufs k) b)))
+@cpu (defn main []
+  (let [@var app (App (into-dynamic-array [(Buf (into-dynamic-array [1u 2u 3u]) 0u)]))]
+    (touch app 0u)
+    (touch app 0u)
+    (touch app 0u)
+    (print (array-length (.text (app.bufs 0u))))
+    (print (.count (app.bufs 0u)))))
